@@ -131,6 +131,14 @@ DEFAULT_OPERATORS = ("Andy", "Jeff")
 
 JOURNAL = 400
 
+# Jeff, 2026-10-30: nothing plays on the public PA automatically. An
+# announcement is only ever an operator's press, named by who pressed it
+# and where. These are the engine's own names (the scheduler's and the
+# alert hold's system actions say "LTC Player" on the "engine"): a play in
+# one of them is not a press and is refused (play()).
+ENGINE_NAMES = frozenset(("ltc player", "ltcplay", "engine", "system",
+                          "scheduler"))
+
 # The scheduler states in which a show is running (schedule.SHOW and
 # schedule.PAUSED, by name, so this module never imports schedule.py). An
 # announcement pressed in one of these plays over the show and Holds
@@ -1580,7 +1588,7 @@ class AnnounceService:
                                         "a show started")
             self._player.start_fade(fade_frames)
 
-    def play(self, ann_id, who, screen, surface=False, automatic=None):
+    def play(self, ann_id, who, screen, surface=False):
         """Play one announcement. `surface` True: the press came from a
         screen or the Stream Deck through the remote routes (remote.py),
         and `who` names the person signed in there or the surface itself,
@@ -1600,20 +1608,16 @@ class AnnounceService:
         It plays through the show audio while a show audio process runs
         (show_route), else on its own output (the config's "device").
 
-        `automatic`: a play nobody pressed (the alert hold's Delayed,
-        alerthold.py): a callable returning None while it may still play,
-        or the sentence why not. Such a play never asks for a Hold (so the
-        hold_requester's safety cuts never run: nothing on the rig is
-        changed by a timer), is journaled with actor "system", and asks
-        `automatic()` once before anything is claimed and again in the
-        same locked section that starts the sound, so an Acknowledge or a
-        Resume during the file read always wins."""
-        actor = "system" if automatic is not None else "operator"
-        if automatic is not None:
-            surface = True
+        Only ever an operator's press (Jeff, 2026-10-30: nothing plays on
+        the public PA automatically). A play must name the person or
+        surface that pressed it and the screen it was pressed on, and a
+        play in the engine's own name (ENGINE_NAMES: the scheduler, the
+        alert hold, a timer) is refused before anything is claimed. There
+        is no automatic play here at all."""
+        actor = "operator"
         who = _clean((who or "").strip())
         screen = _clean((screen or "").strip())
-        tone = ann_id == TEST_TONE and surface and automatic is None
+        tone = ann_id == TEST_TONE and surface
         if ann_id not in IDS and not tone:
             raise ValueError(f"{ann_id!r} is not one of {', '.join(IDS)}.")
         label = LABELS[ann_id]
@@ -1639,6 +1643,20 @@ class AnnounceService:
                           outcome="refused", reason=missing, text=text,
                           ann_id=ann_id, who=who or None,
                           screen=screen or None, state=state)
+                raise ValueError(text)
+            engine = self._engine_name(who, screen)
+            if engine:
+                what = "Test tone" if tone else f"Play of {label}"
+                text = (f"A {what} came from {engine}, not from a person's "
+                        f"press. "
+                        f"Nothing plays on the public PA automatically. "
+                        f"Nothing was changed.")
+                # A refused Test tone journals as one (as during a show).
+                self._emit(actor="system",
+                          action="test tone" if tone else "play",
+                          outcome="refused", reason="not an operator press",
+                          text=text, ann_id=ann_id, who=who, screen=screen,
+                          state=state)
                 raise ValueError(text)
             if not surface and \
                     who.lower() not in {n.lower() for n in self.operators}:
@@ -1735,17 +1753,7 @@ class AnnounceService:
             over_show = state in SHOW_STATES
             held = False
             hold_note = ""
-            if automatic is not None:
-                why = self._automatic_refusal(automatic)
-                if why:
-                    text = (f"The {label} announcement was not played: "
-                            f"{why}")
-                    self._emit(actor=actor, action="play",
-                              outcome="refused", reason=why, text=text,
-                              ann_id=ann_id, who=who, screen=screen,
-                              state=state)
-                    raise ValueError(text)
-            elif tone:
+            if tone:
                 hold_note = "A test tone holds nothing."
             elif self.hold_requester is not None and not over_show:
                 hold_refusal, claim_epoch = self._request_hold(
@@ -1766,7 +1774,7 @@ class AnnounceService:
                         over_show = True
                     else:
                         held = True
-            if automatic is None and not held and not hold_note:
+            if not held and not hold_note:
                 hold_note = no_hold_note(state)
             # Claim the slot now, before the lock is released for the file
             # read below: a second press must be refused as "already
@@ -1854,17 +1862,6 @@ class AnnounceService:
                           state=self._current_state())
                 raise ValueError(text)
             state = self._current_state()
-            if automatic is not None:
-                why = self._automatic_refusal(automatic)
-                if why:
-                    self.playing = None
-                    text = (f"The {label} announcement was not played: "
-                            f"{why}")
-                    self._emit(actor=actor, action="play",
-                              outcome="refused", reason=why, text=text,
-                              ann_id=ann_id, who=who, screen=screen,
-                              state=state)
-                    raise ValueError(text)
             # The SECOND look at the Hold, immediately before the sound
             # starts: READ-ONLY, never asks for Hold again. An earlier
             # version re-Held here, which could silently re-pause a show
@@ -1935,9 +1932,6 @@ class AnnounceService:
                     f"sent, peak {_db_text(peak)}. " +
                     ("The schedule is held for it; only Resume carries on."
                      if held else
-                     "It plays while the schedule is on the alert hold; "
-                     "nothing else was changed." if automatic is not None
-                     else
                      hold_note if hold_note else
                      "It plays over the running show; nothing was paused "
                      "or stopped." if over_show else
@@ -2073,14 +2067,14 @@ class AnnounceService:
                  "hostapi": dev.get("hostapi") or None, "channels": out_ch})
 
     @staticmethod
-    def _automatic_refusal(check):
-        """The sentence why an automatic play may not go on, or None. A
-        check that raises is a no."""
-        try:
-            why = check()
-        except Exception as e:                   # noqa: BLE001
-            return f"its check could not be made ({_clean(str(e))})."
-        return _clean(why) if why else None
+    def _engine_name(who, screen):
+        """The engine's own name when `who` or `screen` is one
+        (ENGINE_NAMES), else "": a play in the engine's name is not a
+        person's press."""
+        for v in (who, screen):
+            if v and v.strip().lower() in ENGINE_NAMES:
+                return v
+        return ""
 
     def test_tone(self, who, screen):
         """The rack screen's Test tone: 1 s of a soft 440 Hz at -20 dBFS
