@@ -1525,13 +1525,15 @@ class _FlameCut:
         b = self._block(idx)
         e = self.errors.get(b)
         if e is not None:
-            raise e
+            # With no traceback: raised again on every frame, it would
+            # grow one for good (final review of #177).
+            raise e.with_traceback(None)
         blk = self.blocks.get(b)
         if blk is None:
             return None
         sh = self.short.get(b)
         if sh is not None and idx >= sh[0]:
-            raise sh[1]
+            raise sh[1].with_traceback(None)
         at = (idx - self._first(b)) * self.count
         return blk[at:at + self.count]
 
@@ -2154,7 +2156,15 @@ class FlameCues:
                     return self._late_zero((id(s), label),
                                            CUES_READING_RENDER)
                 if isinstance(got, Exception):
-                    raise got
+                    # The render file itself could not be opened or read:
+                    # said as a render that could not be read, never as a
+                    # cut tried again (final review of #177), and never
+                    # raised again on every frame.
+                    name = type(got).__name__
+                    return self._zero(
+                        f"the show's render could not be read "
+                        f"({name}: {got})", fault=True,
+                        cause=("read", label, name))
                 f, spans, made, checked_at = got
             else:
                 f, spans, made, checked_at = self._render(hits[0].path,

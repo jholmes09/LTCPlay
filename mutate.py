@@ -7314,8 +7314,8 @@ def build():
 
  ("flame cues: a block that could not be cut is a silent zero",
   "ltcplay/fire_ice.py",
-  "        if e is not None:\n            raise e",
-  "        if False:\n            raise e"),
+  "        if e is not None:\n            # With no traceback",
+  "        if False:\n            # With no traceback"),
 
  ("flame cues: a block not cut yet is a silent zero",
   "ltcplay/fire_ice.py",
@@ -7675,6 +7675,34 @@ def build():
   "ltcplay/fire_ice.py",
   "            return not (\"memory\" in text or \"allocat\" in text)",
   "            return True"),
+
+ # -- final review of #177 (2026-10-30)
+ ("flame cues: a render that cannot be opened is said as a cut tried again",
+  "ltcplay/fire_ice.py",
+  "                    name = type(got).__name__\n"
+  "                    return self._zero(",
+  "                    raise got\n"
+  "                    return self._zero("),
+
+ ("flame cues: a kept error grows a traceback on every frame",
+  "ltcplay/fire_ice.py",
+  "            raise e.with_traceback(None)",
+  "            raise e"),
+
+ ("flame cues: a short render's error grows a traceback on every frame",
+  "ltcplay/fire_ice.py",
+  "            raise sh[1].with_traceback(None)",
+  "            raise sh[1]"),
+
+ ("flame cues: a start that works keeps its failed-start count",
+  "ltcplay/fire_ice.py",
+  "        self._start_tries.pop(attr, None)",
+  "        pass"),
+
+ ("flame cues: the journal counts a fault's kind, not its cue",
+  "ltcplay/fire_ice.py",
+  "        key = why if cause is None else cause",
+  "        key = why if cause is None else cause[0]"),
 
  ("flame cues: nothing is cut ahead of the show timecode",
   "ltcplay/fire_ice.py",

@@ -43712,6 +43712,143 @@ def test_fire_ice_flame_cut_round5_of_177():
     print("  ok")
 
 
+def test_fire_ice_flame_cut_final_of_177():
+    section("fire & ice (final review of #177): a render file that cannot be "
+            "opened is a render that could not be read, never a cut tried "
+            "again; a kept error raised on every frame never grows a "
+            "traceback; a start that works ends its failed-start count; one "
+            "journal line per cue, not per kind of fault")
+    import shutil
+    import tempfile
+    import types
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+
+    def cut_of(name, **kw):
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, name), **kw)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        return ctl, clk, paths, bg
+    real_load = FS.FSEQ._load_block
+    real_thread = F.threading.Thread
+    try:
+        # (1) The render deleted: could not be read, FileNotFoundError.
+        ctl, clk, paths, bg = cut_of("open", frames=300)
+        os.remove(paths[0])
+        bg._check_renders_once()
+        bg._refresh_once()
+        got = _fi_settled(bg, _fi_at(clk, 30))
+        check(got is None and bg.fault.startswith(
+            "the show's render could not be read (FileNotFoundError") and
+              "tried again" not in bg.fault,
+              f"a render that cannot be opened: could not be read: "
+              f"{bg.fault!r}")
+        bg.close()
+        # (2) A kept error, a short render's too, raised on 200 frames:
+        # its traceback stays short.
+        ctl, clk, paths, bg = cut_of("tb", frames=300, corrupt_block=4)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        n4 = int(cut.firsts[4] * 25 * 30 // 1000) + 1
+        for _ in range(200):
+            bg(_fi_at(clk, n4))
+        ctl2, clk2, paths2, bg2 = cut_of("tbs", frames=600,
+                                         compression="none",
+                                         cut_tail_frames=3)
+        bg2._check_renders_once()
+        bg2._refresh_once()
+        cut2 = bg2._cuts[paths2[0]]
+        cut2.ensure(0, 599)
+        for _ in range(200):
+            bg2(_fi_at(clk2, int(599 * 25 * 30 // 1000)))
+
+        def depth(e):
+            n, tb = 0, e.__traceback__ if e is not None else None
+            while tb is not None:
+                n, tb = n + 1, tb.tb_next
+            return n
+        kept = cut.errors.get(4)
+        short = next(iter(cut2.short.values()))[1]
+        check(kept is not None and depth(kept) <= 3 and depth(short) <= 3
+              and "could not be read" in bg.fault and
+              "could not be read" in bg2.fault,
+              f"raised 200 times, a kept error's traceback stays short: "
+              f"{depth(kept)} {depth(short)} entries")
+        bg.close()
+        bg2.close()
+        # (3) A start that works ends the failed-start count: a later
+        # failed start is backed off from 1 s again, not 2.
+        ctl, clk, paths, c = cut_of("tries", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        c._journal = lambda t, **k: None
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+
+        def dies():
+            raise RuntimeError("dies")
+        c._cutting = dies
+        tries = []
+
+        class NoStart(real_thread):
+            def start(self):
+                tries.append(m[0])
+                raise RuntimeError("can't start new thread")
+        F.threading.Thread = NoStart
+        try:
+            c.start()                     # a failed first start, at 0
+        finally:
+            F.threading.Thread = real_thread
+        m[0] = 1.1
+        c.start()                         # it works, and dies
+        c._cutter.join(5)
+        tries.clear()
+        F.threading.Thread = NoStart
+        try:
+            m[0] = 2.0
+            c.start()                     # fails: the first of a new count
+            m[0] = 3.2
+            c.start()                     # 1.2 s on: tried again
+        finally:
+            F.threading.Thread = real_thread
+        check(tries == [2.0, 3.2],
+              f"a start that works ends the failed-start count: {tries}")
+        c._stop.set()
+        c._thread = c._cutter = None
+        c.close()
+        # (4) The same fault on two cues: a journal line for each cue.
+        ctl, clk, paths, bg = cut_of("cues", frames=300, ncues=2)
+        bg._check_renders_once()
+        bg._refresh_once()
+        lines = []
+        bg._journal = lambda t, **k: lines.append(t)
+
+        def nomem(self, idx):
+            if idx == 2:
+                raise MemoryError("again")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = nomem
+        try:
+            for p in paths:
+                cut = bg._cuts[p]
+                cut.blocks.pop(2, None)
+                cut.ensure(cut.firsts[2], cut.firsts[2])
+        finally:
+            FS.FSEQ._load_block = real_load
+        bg(_fi_at(clk, 60, label="c0"))
+        bg(_fi_at(clk, 60, label="c1"))
+        said = [t for t in lines if "could not be cut here" in t]
+        check(len(said) == 2, f"one line for each cue: {said}")
+        bg.close()
+    finally:
+        FS.FSEQ._load_block = real_load
+        F.threading.Thread = real_thread
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_onlyone_named_lock_sees_a_copy_in_another_folder():
     section("one copy: on Windows every lock is also a named kernel mutex, "
             "so a copy whose files were redirected into another app's "
@@ -94438,6 +94575,7 @@ if __name__ == "__main__":
         test_fire_ice_flame_cut_round3_of_177,
         test_fire_ice_flame_cut_round4_of_177,
         test_fire_ice_flame_cut_round5_of_177,
+        test_fire_ice_flame_cut_final_of_177,
         test_onlyone_named_lock_sees_a_copy_in_another_folder,
         test_onlyone_named_lock_is_machine_wide_or_says_so,
         test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender,
