@@ -929,14 +929,24 @@ that long. The stages, in this order:
 - **Where: Interface 2.0, the Schedule tab, Fireball timeline.** Pick
   the show file, then FSEQ or Timeline. Each stage is one row: tap its
   name to use it or leave it out, type its start (HH:MM:SS:FF) and its
-  length in seconds. The bar under the rows draws each stage on the show's
-  length. A row that would be refused says why in red at once and nothing
-  is sent. Save sends it; Revert reads the saved one again. The card says
-  who saved it last, and when a show is live that a save applies from the
+  length in seconds (2.5 or 2,5). A time typed into a stage that is not
+  used uses it. The bar under the rows draws each stage on the show's
+  length. A row that would be refused says why in red under the row at
+  once and nothing is sent. Save sends it, against the version you
+  started from; Revert reads the saved one again. If someone else saved
+  this show's timeline since you started (seen when you come back to the
+  tab, or when Save is refused), Save stays greyed ("Saved elsewhere:
+  Revert") until you press Revert and make your change again. While a
+  save is on its way the fields are locked. Picking another show file
+  empties the rows until that show's own timeline has been read. If the
+  timeline file is broken, an admin sees **Replace the file** (it asks
+  first: every other show's timeline in it is lost). The card says who
+  saved it last, and when a show is live that a save applies from the
   next frame. Signed out, without the Settings row, or from an iPad with
-  arming from a screen off, every field and Save are greyed and Save says
-  why ("Sign in to edit", "Admins only", "Arming off here"). Hold, Stop
-  show, Disarm flames and Abort stay at full strength above and beside it.
+  arming from a screen off, every field and Save are greyed with a dashed
+  edge and Save says why ("Sign in to edit", "Admins only", "Arming off
+  here"). Hold, Stop show, Disarm flames and Abort stay at full strength
+  above and beside it.
 
 ### Every show, FSEQ or Timeline (a behaviour change)
 

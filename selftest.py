@@ -93404,7 +93404,9 @@ def test_fireball_timeline_docs_in_plain_words():
                  "Interface 2.0, the Schedule tab, Fireball timeline",
                  "nothing is sent", "Sign in to edit", "Admins only",
                  "Arming off here", "Hold, Stop show, Disarm flames and "
-                 "Abort stay at full strength"):
+                 "Abort stay at full strength", "Saved elsewhere: Revert",
+                 "**Replace the file**", "the fields are locked",
+                 "empties the rows"):
         check(" ".join(need.split()) in " ".join(o.split()),
               f"OPERATOR.md's fireball timeline section says {need!r}")
     c = _fb_doc_part("OPERATOR.md", "### The fuel and air charge", "\n## ")
@@ -94799,6 +94801,81 @@ go();
 """
 
 
+_FBT_FLOW_JS = r"""
+<script>
+(function(){
+const posts = [];
+const V = {rev:4, show_len_s:300.0, error:"", show_problem:"", default_source:"fseq",
+  entry:{source:"fseq", stages:[{stage:"fuel", start:"00:00:01:00", dur_s:1.0}], edited_by:"Andy", edited_at:""}};
+let lists = 0, other = null, saveAnswer = null;
+const realFetch = window.fetch;
+const J = (o, code) => new Response(JSON.stringify(o), {status:code || 200, headers:{"Content-Type":"application/json"}});
+window.fetch = function(u, o){
+  u = String(u);
+  if(o && o.method === "POST" && u.indexOf("fireball-timeline-save") >= 0){
+    posts.push(JSON.parse(String(o.body || "{}")));
+    return new Promise(r => setTimeout(() => r(saveAnswer ? saveAnswer() : J({ok:true, text:"Saved."})), 800));
+  }
+  if(u.indexOf("/api/timelines") >= 0){ lists++; return Promise.resolve(J({timelines:[{file:"Show.json"}, {file:"Other.json"}]})); }
+  if(u.indexOf("/api/remote/fireball-timeline?") >= 0){
+    if(u.indexOf("Other.json") >= 0) return new Promise(r => { other = () => r(J(Object.assign({}, V, {rev:9, entry:{source:"timeline", stages:[]}}))); });
+    return Promise.resolve(J(JSON.parse(JSON.stringify(V))));
+  }
+  return realFetch.apply(this, arguments);
+};
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const q = id => document.getElementById(id);
+const row = k => document.querySelector('#fbt-rows [data-k="' + k + '"]');
+const typeIn = (el, v) => { el.value = v; el.dispatchEvent(new Event("input", {bubbles:true})); };
+const tab = t => document.querySelector('.tab[data-tab="' + t + '"]').click();
+const save = () => ({dis:q("fbt-save").disabled, why:q("fbt-why").textContent});
+async function go(){
+  for(let i = 0; i < 60 && !document.querySelector("#fbt-rows .fbt-row"); i++) await wait(100);
+  await wait(600);
+  const res = {sel_h:Math.round(q("fbt-show").getBoundingClientRect().height), lists0:lists};
+  typeIn(row("igniter").querySelector(".st"), "00:00:04:00");
+  await wait(100);
+  res.typed_used = row("igniter").querySelector(".use").getAttribute("aria-pressed");
+  typeIn(row("igniter").querySelector(".du"), "0.5");
+  typeIn(row("fuel").querySelector(".du"), "2,5");
+  V.rev = 5;
+  tab("day"); await wait(300); tab("schedule"); await wait(900);
+  res.b1 = {dur:row("fuel").querySelector(".du").value, save:save(), msg:q("fbt-msg").textContent, lists:lists};
+  q("fbt-save").click(); await wait(300);
+  res.b1.posts = posts.length;
+  q("fbt-revert").click(); await wait(600);
+  res.revert = {save:save(), dur:row("fuel").querySelector(".du").value};
+  typeIn(row("fuel").querySelector(".du"), "2,5");
+  await wait(100);
+  q("fbt-save").click(); await wait(200);
+  res.inflight = {locked:[...document.querySelectorAll("#fbt-rows input")].every(i => i.disabled), save:save()};
+  await wait(1500);
+  res.saved = posts.slice(-1)[0] || null;
+  q("fbt-show").value = "Other.json"; q("fbt-show").dispatchEvent(new Event("change", {bubbles:true}));
+  await wait(300);
+  res.b2 = {starts:[...document.querySelectorAll("#fbt-rows .st")].map(i => i.value),
+    locked:[...document.querySelectorAll("#fbt-rows input")].every(i => i.disabled), save:save()};
+  const n = posts.length;
+  q("fbt-save").click(); await wait(200);
+  res.b2.posts = posts.length - n;
+  if(other) other();
+  await wait(600);
+  res.b2.after = {src:[...document.querySelectorAll("#fbt-src .b.on")].map(b => b.dataset.v), locked:row("fuel").querySelector(".st").disabled};
+  typeIn(row("fuel").querySelector(".st"), "00:00:01:00");
+  typeIn(row("fuel").querySelector(".du"), "1");
+  saveAnswer = () => J({error:"Not saved: someone saved the fireball timeline since this screen read it. Press Revert to read it again, check the times, and save again."}, 409);
+  q("fbt-save").click(); await wait(1300);
+  res.refused = {save:save(), msg:q("fbt-msg").textContent};
+  const pre = document.createElement("pre"); pre.id = "rack-measure";
+  pre.textContent = JSON.stringify(res);
+  document.body.appendChild(pre);
+}
+go();
+})();
+</script>
+"""
+
+
 def test_ui2_fireball_timeline_editor():
     section("interface 2.0's fireball timeline editor (Schedule): Jeff's "
             "four stages in his order with their channels, a start and a "
@@ -94822,9 +94899,10 @@ def test_ui2_fireball_timeline_editor():
     js_b = two.find("// ---- The brand (1.0's loadBrand)")
     js = two[js_a:js_b]
     check(js_a > 0 and js_b > js_a and
-          'post("/api/remote/fireball-timeline-save", actor(fbtBody(' in js
+          'post("/api/remote/fireball-timeline-save", actor(body));' in js
+          and 'body = fbtBody(show, FBT_BASE, FBT_SRC, chk.stages);' in js
           and 'getJSON("/api/remote/fireball-timeline?show=" + '
-              'encodeURIComponent(FBT_SHOW)' in js,
+              'encodeURIComponent(want)' in js,
           "it reads fireball-timeline and saves through "
           "fireball-timeline-save, with the actor's seen")
     check("purge" not in js.lower().replace("purge is never a stage", "")
@@ -94839,7 +94917,8 @@ def test_ui2_fireball_timeline_editor():
           "the ? says what each part does, Purge never here")
     for word in ("No contact", "Sign in to edit", "Admins only",
                  "Arming off here", "Show cannot be timed", "No changes",
-                 "Loading"):
+                 "Loading", "File broken: replace it",
+                 "Saved elsewhere: Revert", "Saving"):
         check(('"' + word + '"') in js and len(word.split()) <= 8,
               f"says why in 8 words or fewer: {word!r}")
     from ltcplay import fireball_timeline as FT
@@ -94857,8 +94936,8 @@ def test_ui2_fireball_timeline_editor():
         check(not IN_CI, "node is missing on this CI runner")
     else:
         fns = "\n".join(_js_function(two, n) or "" for n in (
-            "fbtParseTc", "fbtTcText", "fbtCheck", "fbtWhy", "fbtBody",
-            "fbtBands"))
+            "fbtParseTc", "fbtTcText", "fbtDur", "fbtCheck", "fbtWhy",
+            "fbtBlock", "fbtBody", "fbtBands"))
         consts = "\n".join(re.findall(r"^const FBT_(?:FPS|STAGES) = .*;$",
                                       two, re.M))
         body = lo + "\n" + consts + "\n" + fns + r"""
@@ -94876,6 +94955,13 @@ c = fbtCheck([{k:"fuel", used:true, start:"00:00:01:00", dur:"36000"}], 300);
 t(c.stages.length === 1 && c.stages[0].dur_s === 36000, "no longest length (Jeff)");
 c = fbtCheck([{k:"fuel", used:true, start:"00:00:01:00", dur:"-1"}, {k:"air", used:true, start:"00:00:01:00", dur:"x"}, {k:"valve", used:true, start:"00:00:01:00", dur:"Infinity"}], 300);
 t(c.errors.fuel && c.errors.air && c.errors.valve && !c.stages.length, "negative, words, infinity: refused");
+t(fbtDur("2,5") === 2.5 && fbtDur("2.5") === 2.5 && fbtDur(" 3 ") === 3 && fbtDur(".5") === 0.5, "a point or a comma before the decimals");
+t(fbtDur("2,5,1") === null && fbtDur("1e3") === null && fbtDur("0") === null && fbtDur("") === null && fbtDur("2..5") === null, "anything else is not a length");
+t(fbtBlock(null, "S", "", false, false) === "Loading" && fbtBlock({rev:1}, "S", "T", false, false) === "Loading", "no data, or another show's: Loading");
+t(fbtBlock({rev:1, error:"x"}, "S", "S", false, false) === "File broken: replace it", "a broken file");
+t(fbtBlock({rev:1, show_problem:"x"}, "S", "S", false, false) === "Show cannot be timed", "a show that cannot be timed");
+t(fbtBlock({rev:1}, "S", "S", true, false) === "Saved elsewhere: Revert", "stale: Revert first");
+t(fbtBlock({rev:1}, "S", "S", false, true) === "Saving" && fbtBlock({rev:1}, "S", "S", false, false) === "", "saving; else nothing blocks");
 const st = (me, arming) => ({me:me, arming:{enabled:!!arming}});
 const admin = {user:"Andy", role:"admin", may:{settings:true}};
 t(fbtWhy(st(admin, false), true, false) === "", "an admin on the show PC may");
@@ -95027,6 +95113,51 @@ console.log(JSON.stringify(out));
                       f"{where}: view only: every field and Save disabled, "
                       f"Save says why, nothing sent: {res['save']} "
                       f"{res['posts']}")
+    # The review's flows (#194): one admin, the show PC.
+    got = _rack_screen_in_chromium(
+        chrome, page, status(admin), ((1366, 768),),
+        measure_js=_FBT_FLOW_JS, frag="?tour=0#schedule", budget_ms=30000,
+        routes=routes)
+    res = got.get((1366, 768))
+    if check(isinstance(res, dict) and "b1" in res,
+             f"the flows ran: {res!r}"[:600]):
+        check(res["sel_h"] >= 56, f"the show file picker is a 56 px "
+                                  f"target: {res['sel_h']}")
+        check(res["typed_used"] == "true",
+              "a time typed into a stage not used uses it")
+        b1 = res["b1"]
+        check(b1["dur"] == "2,5" and b1["save"] == {
+            "dis": True, "why": "Saved elsewhere: Revert"} and
+              "Press Revert" in b1["msg"] and b1["posts"] == 0,
+              f"someone saved meanwhile (the tab left and opened): the "
+              f"edit stays, Save waits for Revert, nothing sent: {b1}")
+        check(b1["lists"] > res["lists0"],
+              f"the show list is read again when the tab opens: {b1}")
+        check(res["revert"] == {"save": {"dis": True, "why": "No changes"},
+                                "dur": "1"},
+              f"Revert reads the newer one: {res['revert']}")
+        check(res["inflight"]["locked"] and
+              res["inflight"]["save"]["dis"],
+              f"a save on its way: every field locked: {res['inflight']}")
+        sv = res["saved"] or {}
+        check(sv.get("rev") == 5 and sv.get("show") == "Show.json" and
+              [s.get("dur_s") for s in sv.get("stages", [])
+               if s.get("stage") == "fuel"] == [2.5],
+              f"saved against the revision it was made on, 2,5 as 2.5: "
+              f"{sv}")
+        b2 = res["b2"]
+        check(b2["starts"] == ["", "", "", ""] and b2["locked"] and
+              b2["save"]["dis"] and b2["save"]["why"] == "Loading" and
+              b2["posts"] == 0,
+              f"another show picked: nothing of the last one, locked, no "
+              f"save until its own read: {b2}")
+        check(b2["after"] == {"src": ["timeline"], "locked": False},
+              f"its own read: its data, open: {b2['after']}")
+        check(res["refused"]["save"] == {"dis": True,
+                                         "why": "Saved elsewhere: Revert"}
+              and "Press Revert" in res["refused"]["msg"],
+              f"the engine refused a stale save: Save waits for Revert: "
+              f"{res['refused']}")
     print("  ok")
 
 

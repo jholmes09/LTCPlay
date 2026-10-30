@@ -459,8 +459,8 @@ class Store:
             if isinstance(base_rev, bool) or \
                     not isinstance(base_rev, int) or base_rev != doc["rev"]:
                 text = ("Not saved: someone saved the fireball timeline "
-                        "since this screen read it. Reload it, check the "
-                        "times, and save again.")
+                        "since this screen read it. Press Revert to read "
+                        "it again, check the times, and save again.")
                 self._audit(who, screen, show, "refused", text)
                 return False, text, None
             before = entry_of(doc, show)
