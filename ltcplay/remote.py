@@ -4714,6 +4714,10 @@ class Remote:
         lf = getattr(self, "live_flame", None)
         programming = lf is not None and (getattr(lf, "on", False) or
                                           getattr(lf, "_starting", False))
+        if programming and not getattr(lf, "on", False):
+            return ("live flame programming is starting, and turning it "
+                    "off turns the fuel pump off. Turn it off first, or "
+                    "wait for it to start and turn it off.")
         if programming:
             return ("live flame programming is on, and turning it off "
                     "turns the fuel pump off. Turn it off first.")

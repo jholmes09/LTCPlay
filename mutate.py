@@ -2783,8 +2783,38 @@ MUTATIONS = [
 
  ("pump: a second ON adds time",
   "ltcplay/fuelpump.py",
-  "            ok = False\n            late = \"\"\n            if running is None and self._off_gen != off0:",
-  "            ok = False\n            late = \"\"\n            running = None\n            if False:"),
+  "            broke = \"\"\n            if running is None and self._off_gen != off0:",
+  "            broke = \"\"\n            running = None\n            if False:"),
+
+ ("pump: the run is not reserved before the second look",
+  "ltcplay/fuelpump.py",
+  "                self.run = {\"id\": rid, \"reserved\": True}",
+  "                pass"),
+
+ ("pump: cut() leaves an ON being checked free to start after it",
+  "ltcplay/fuelpump.py",
+  "                self._off_gen += 1\n                was, self.run",
+  "                was, self.run"),
+
+ ("pump: a start that raised leaves the reservation (the pump wedged)",
+  "ltcplay/fuelpump.py",
+  "                if isinstance(self.run, dict) and \"deadline\" not in \\\n                        self.run:\n                    self.run = None",
+  "                pass"),
+
+ ("pump: the screens read a reservation as a run",
+  "ltcplay/fuelpump.py",
+  "        r = self._live_run()",
+  "        r = self.run"),
+
+ ("pump: on() reads a reservation as a run",
+  "ltcplay/fuelpump.py",
+  "            return self._live_run() is not None and link is not None and \\",
+  "            return self.run is not None and link is not None and \\"),
+
+ ("pump: a run's last_off carries no count",
+  "ltcplay/fuelpump.py",
+  "        self.last_off = {\"reason\": why, \"who\": by, \"n\": self._offs}",
+  "        self.last_off = {\"reason\": why, \"who\": by}"),
 
  ("pump: live flame programming starts while the pump runs",
   "ltcplay/remote.py",
@@ -12457,8 +12487,8 @@ def build():
   '            if False:\n                # Only ever changed from a fresh read'),
 
  ('users: deck can be a name', 'ltcplay/users.py',
-  'RESERVED = ("unsigned", "system", "signed out", "nobody", "deck")',
-  'RESERVED = ("unsigned", "system", "signed out", "nobody")'),
+  'RESERVED = ("unsigned", "system", "signed out", "nobody", "deck", "engine",',
+  'RESERVED = ("unsigned", "system", "signed out", "nobody", "engine",'),
 
  ('users: a users file that is not UTF-8 reads as no users', 'ltcplay/users.py',
   '            with open(self.path, "rb") as fh:\n                raw = fh.read()',
@@ -16025,6 +16055,43 @@ def build():
   "ltcplay/web/remote.html",
   "(lv === \"stale\" ? \"STALE. \" : \"\")",
   "\"\""),
+
+ # When, not how long ago (Jeff, 2026-10-30): each line says the date and
+ # time it was last updated, in the show's zone; no advisory only line.
+ ("weather: the times are said in UTC, not the show's zone",
+  "ltcplay/weather.py",
+  "    return datetime.fromtimestamp(epoch, tz)\n",
+  "    return datetime.fromtimestamp(epoch, timezone.utc)\n"),
+
+ ("weather: the schedule file's time zone is ignored",
+  "ltcplay/weather.py",
+  "    return zone(name) or zone(ZONE_DEFAULT)",
+  "    return zone(ZONE_DEFAULT)"),
+
+ ("weather: a changed schedule time zone is never read again",
+  "ltcplay/weather.py",
+  "        if self._zone_key != key or self._zone is None:",
+  "        if self._zone is None:"),
+
+ ("weather: a time ahead of this PC's clock is said as still to come",
+  "ltcplay/weather.py",
+  "    if now is not None and epoch > now:\n        epoch = now",
+  "    if False:\n        epoch = now"),
+
+ ("weather: the measured line says no time",
+  "ltcplay/weather.py",
+  "                f\"{updated_text(d['valid'], tz, now)}.{tail(pick['s'])}\")",
+  "                f\"{tail(pick['s'])}\")"),
+
+ ("weather: the NWS issue time is said as this PC's fetch time",
+  "ltcplay/weather.py",
+  "                         f\"NWS issued {when_text(d['issued'], tz, now)}. \"",
+  "                         f\"NWS issued {when_text(got, tz, now)}. \""),
+
+ ("weather: 2.0's wind button says advisory only again",
+  "ltcplay/web/remote2.html",
+  "  return {cls:v.cls === \"ok\" ? \"ok\" : \"stale\", text:t, v};",
+  "  return {cls:v.cls === \"ok\" ? \"ok\" : \"stale\", text:t + \". Advisory only.\", v};"),
 
  ("weather: the engine's route answers no weather",
   "ltcplay/remote.py",
