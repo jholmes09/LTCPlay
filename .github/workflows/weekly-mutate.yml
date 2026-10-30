@@ -1,11 +1,11 @@
-name: nightly mutate
+name: weekly mutate
 
-# The whole mutation list, every night, on main. The per-PR gate
+# The whole mutation list, once a week, on main. The per-PR gate
 # (selftest.yml) runs only the mutations a diff can have changed the result
 # of; this is the sweep that proves the rest is still caught, so a test
 # weakened without being renamed, or a change in one file that silenced a
-# test of another, shows here within a day and never reaches a release tag
-# unseen (a tag runs the whole list too, on ubuntu and windows).
+# test of another, shows here within the week and never reaches a release
+# tag unseen (a tag runs the whole list too, on ubuntu and windows).
 #
 # Run it by hand from the Actions tab (Run workflow) before a tech build or
 # whenever a full proof is wanted, choosing the OS. Each shard takes 3.5 to
@@ -16,15 +16,19 @@ name: nightly mutate
 # hours of wall time (both OSes, about twice that). Starting the workflow
 # again while a sweep runs cancels the older sweep, on any branch: a new
 # start means the old one's result is no longer wanted, and two sweeps at
-# once would take 16 slots. A failure here is a NOT CAUGHT mutation (the suite
-# stayed green with that line broken: strengthen the test), an UNEXPECTED
-# MISS or NOW CAUGHT against mutate_expected_misses.txt, a SETUP FAIL (the
-# mutation's text no longer matches the code: refresh it), or a shard that
-# ran out of time (re-run it). TESTING.md has the longer version.
+# once would take 16 slots. A red sweep is never silent: the report job
+# opens an issue labelled `mutate-sweep` (or adds to the open one) naming
+# the red shards with links, and closes it when a later sweep is green. A
+# failure here is a NOT CAUGHT mutation (the suite stayed green with that
+# line broken: strengthen the test), an UNEXPECTED MISS or NOW CAUGHT
+# against mutate_expected_misses.txt, a SETUP FAIL (the mutation's text no
+# longer matches the code: refresh it), or a shard that ran out of time
+# (re-run it). TESTING.md has the longer version.
 on:
   schedule:
-    # 07:12 UTC, 03:12 Eastern: after the day's merges, before anyone is up.
-    - cron: "12 7 * * *"
+    # Sundays 07:12 UTC, 03:12 Eastern: after the week's merges, before the
+    # week's work.
+    - cron: "12 7 * * 0"
   workflow_dispatch:
     inputs:
       os:
@@ -39,7 +43,7 @@ permissions:
 # One sweep at a time for the whole repository (not per branch), so the
 # sweep can never hold more than 8 job slots. A newer start cancels the
 # running one; scheduled starts (only ever on the default branch) do the
-# same, so a sweep that overruns a day gives way to the next night's.
+# same, so a sweep that overruns a week gives way to the next one.
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: true
@@ -80,7 +84,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: .github/workflows/nightly-mutate.yml
+          cache-dependency-path: .github/workflows/weekly-mutate.yml
       - run: python -m pip install numpy zstandard tzdata pillow
       - id: sweep
         shell: bash
@@ -153,8 +157,9 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # Which shards are red, with a link to each, in the run's summary. Each
-  # shard's own summary says why. Green whatever it finds.
+  # Which shards are red, with a link to each, in the run's summary and in
+  # an issue (opened, or added to) so a red sweep is never silent; a green
+  # sweep closes the issue.
   report:
     needs: sweep
     if: always() && needs.sweep.result != 'skipped' && needs.sweep.result != 'cancelled'
@@ -162,17 +167,22 @@ jobs:
     timeout-minutes: 10
     permissions:
       actions: read
+      issues: write
+      contents: read
     steps:
-      - shell: bash
+      - name: Say which shards are red, in the summary and in an issue
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}
           REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           JOB_PREFIX: "sweep ("
+          LABEL: mutate-sweep
         run: |
           gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
             --jq '.jobs[] | [.name, (.conclusion // .status), .html_url] | @tsv' > "$RUNNER_TEMP/jobs.tsv"
-          python3 - "$RUNNER_TEMP/jobs.tsv" <<'PY'
+          python3 - "$RUNNER_TEMP/jobs.tsv" "$RUNNER_TEMP/report.md" <<'PY'
           import os, sys
 
           prefix = os.environ["JOB_PREFIX"]
@@ -185,20 +195,51 @@ jobs:
           red = [s for s in shards if s[1] not in ("success", "skipped")]
           out = []
           if not shards:
-              out.append("### nightly mutate: no shard jobs were found in this run")
+              out.append("### weekly mutate: no shard jobs were found in this run")
+              red = [("(no shards)", "missing", os.environ["RUN_URL"])]
           elif not red:
-              out.append(f"### nightly mutate: all {len(shards)} shards green")
+              out.append(f"### weekly mutate: all {len(shards)} shards green")
           else:
-              out += [f"### nightly mutate: {len(red)} of {len(shards)} shards red", "",
+              out += [f"### weekly mutate: {len(red)} of {len(shards)} shards red", "",
                       "| shard | result | job |", "|---|---|---|"]
               out += [f"| {n} | {c} | [open]({u}) |" for n, c, u in red]
               out += ["",
-                      "Each red shard's own summary (above, under its job) says "
+                      "Each red shard's own summary (under its job) says "
                       "why: the kind of failure and the mutation or test. Its "
                       "annotations say the same, and its full log is the "
-                      "artifact named `mutate-log-<os>-shard-<n>`, kept 7 days."]
+                      "artifact named `mutate-log-<os>-shard-<n>`, kept 7 days. "
+                      "TESTING.md says what each kind of failure means and what "
+                      "to do about it."]
           text = "\n".join(out) + "\n"
           print(text)
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
               fh.write(text)
+          with open(sys.argv[2], "w", encoding="utf-8") as fh:
+              fh.write(text)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"red={len(red)}\n")
           PY
+          red=$(grep -c '| \[open\]' "$RUNNER_TEMP/report.md" || true)
+          gh label create "$LABEL" --repo "$REPO" --color B60205 \
+            --description "the weekly mutation sweep is red" --force 2>/dev/null || true
+          open_issue=$(gh issue list --repo "$REPO" --label "$LABEL" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+          if (( red > 0 )); then
+            body="The weekly mutation sweep on main is red: [run $RUN_ID]($RUN_URL).
+
+          $(cat "$RUNNER_TEMP/report.md")
+
+          Nothing should be tagged while this is open. Fix the test (or refresh the mutation), merge, and the next sweep closes this issue when it is green. Re-run the red shards from the run page for a timed-out shard."
+            if [[ -n "$open_issue" ]]; then
+              gh issue comment "$open_issue" --repo "$REPO" --body "$body"
+              echo "::error::the weekly mutation sweep is red; added to issue #$open_issue"
+            else
+              num=$(gh issue create --repo "$REPO" --title "Weekly mutation sweep is red" --label "$LABEL" --body "$body")
+              echo "::error::the weekly mutation sweep is red; opened $num"
+            fi
+          elif [[ -n "$open_issue" ]]; then
+            gh issue comment "$open_issue" --repo "$REPO" --body "The weekly mutation sweep is green again: [run $RUN_ID]($RUN_URL). Closing."
+            gh issue close "$open_issue" --repo "$REPO"
+            echo "the sweep is green; closed issue #$open_issue"
+          else
+            echo "the sweep is green"
+          fi

@@ -22,7 +22,12 @@ name: selftest
 #              bench-build they are not required to merge: the required
 #              checks are selftest (ubuntu-latest), selftest
 #              (windows-latest), changes and installer (windows-app.yml).
-#              The whole list also runs on demand (nightly-mutate.yml).
+#              The whole list also runs every Sunday and on demand
+#              (weekly-mutate.yml).
+#   ci         the ONE required check on main: green when selftest, changes
+#              and every mutate shard are green, or when mutate had nothing
+#              to run. Branch protection names this job, not the shards, so
+#              the shard count can follow the work.
 #
 # A PR runs once, as a pull_request. Pushes run only for main and for release
 # tags, so a PR branch is not tested twice. ready_for_review is listed with
@@ -321,7 +326,7 @@ jobs:
   # Each red shard's own summary says why (the kind of failure and the
   # mutation), its annotations carry the same, and its log is the artifact
   # named after it. Nothing is posted to the PR, and this job is green
-  # whatever it finds: the required checks are the shards themselves.
+  # whatever it finds: the required check on main is `ci`, below.
   mutate-report:
     needs: [changes, mutate]
     if: always() && needs.mutate.result != 'skipped' && needs.mutate.result != 'cancelled'
@@ -371,3 +376,46 @@ jobs:
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
               fh.write(text)
           PY
+
+  # The one required check on main. Green only when the suite passed on
+  # both OSes, the changes job decided, and every mutate shard that had to
+  # run passed; red when any of them failed, was cancelled, or did not run
+  # when it should have. Skipped on a draft PR, like the shards (a draft
+  # cannot be merged; marking it ready starts a fresh run with the shards in
+  # it).
+  ci:
+    needs: [selftest, changes, mutate]
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SELFTEST: ${{ needs.selftest.result }}
+          CHANGES: ${{ needs.changes.result }}
+          MUTATE: ${{ needs.mutate.result }}
+          MODE: ${{ needs.changes.outputs.mode }}
+        run: |
+          echo "selftest: $SELFTEST, changes: $CHANGES, mutate: $MUTATE (mode $MODE)"
+          # A red weekly sweep (its issue is open) is said on every PR, so
+          # it is fixed before the next merge, as the rule has always been.
+          open_issue=$(gh issue list --repo "$REPO" --label mutate-sweep --state open --json number,url --jq '.[0] | "#\(.number) \(.url)"' 2>/dev/null || true)
+          if [[ -n "$open_issue" ]]; then
+            echo "::warning title=the weekly mutation sweep is red::fix that before merging anything else: $open_issue"
+          fi
+          bad=0
+          [[ "$SELFTEST" == success ]] || { echo "::error::selftest is not green ($SELFTEST)"; bad=1; }
+          [[ "$CHANGES" == success ]] || { echo "::error::the changes job is not green ($CHANGES)"; bad=1; }
+          if [[ "$MODE" == none ]]; then
+            [[ "$MUTATE" == skipped ]] || { echo "::error::mutate ran with nothing to run ($MUTATE)"; bad=1; }
+            echo "nothing this change can have broken is mutated: no shard ran"
+          else
+            [[ "$MUTATE" == success ]] || { echo "::error::the mutate shards are not green ($MUTATE); the mutate-report job lists the red ones"; bad=1; }
+          fi
+          if (( bad )); then exit 1; fi
+          echo "ci: green"
