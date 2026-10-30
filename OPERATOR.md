@@ -876,7 +876,8 @@ stop:
 - **Stop.** On the show screen (1.0), Start now turns into a red **Stop**
   while a show is live (playing, or paused on Hold), while the rig is
   being checked before a show, while Start now waits for the show audio,
-  and while Programming playback plays. On the Programming screen, Run
+  while Programming playback plays, and during a rehearsal Run (the
+  Programming mode) while its timecode is moving. On the Programming screen, Run
   turns into **Stop** at those same times. In 2.0, **Stop show** sits in
   the SHOW tab's controls and in the strip on every other tab, solid red,
   and its place is empty when nothing is playing. With no contact with
@@ -898,7 +899,14 @@ stop:
   comes during the Hold waits as a delayed show for Start now. Start now
   still works from the Hold, as an explicit start (with its rig check).
   After the last show of the night there is nothing to hold: the night
-  closes, as before. A second Stop while on Hold disarms everything again
+  closes, as before. A Stop pressed the very moment a show comes due holds
+  the schedule before that show can start: it never starts the show and
+  never just pauses it, and while a Stop is under way the scheduler starts
+  no show. **Reset does not end a Stop's Hold** (it can still clear the
+  fault flag): only Resume does. **A Stop's Hold outlives the 02:00 night
+  reset**: if nobody presses Resume, the next evening with shows comes up
+  on Hold too, so no show starts unattended while Run is on (Jeff,
+  2026-10-30). A second Stop while on Hold disarms everything again
   and stays on Hold. While a Stop is still disarming and fading to dark,
   Resume, Start now and Run are refused until it has finished.
 - **Stop never turns Run off.** Run stays on: Hold (or a Stop's Hold) is
@@ -909,8 +917,9 @@ stop:
   press Resume.") or, if any part did not work, which part, and what to
   press. If the engine refuses, it says why in its own words.
 - **Run off** is on the Programming screen's Run button: with Run on and
-  nothing playing, the button reads Run off. It asks first, then does a
-  Stop and stops playback, so Run is off. Run off needs the Show
+  nothing playing, the button reads Run off. In 2.0 it is in Stop's place
+  on the SHOW tab at those times, in full colour. It asks first, then does
+  a Stop and stops playback, so Run is off. Run off needs the Show
   permission; Stop never does. Right after Stop turns back into Start
   now, Run or Run off, the button waits 2 seconds before it takes a
   press, and a press made just as the show ended or started does nothing

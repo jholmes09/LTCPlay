@@ -18476,8 +18476,9 @@ def test_nothing_plays_on_the_pa_without_an_operator_press():
           {n.lower() for n in U.RESERVED},
           f"every engine name is reserved: {sorted(A.ENGINE_NAMES)} "
           f"{U.RESERVED}")
+    # "Deck" too: the Stream Deck's own lines are written as it.
     for nm in ("Engine", "Scheduler", "LTC Player", "ltcplay", "System",
-               "  ltc   player "):
+               "  ltc   player ", "Deck"):
         try:
             U.check_name(nm)
             check(False, f"an account may be named {nm!r}")
@@ -57601,7 +57602,9 @@ def test_stop_at_showtime_never_starts_or_pauses_a_show():
     # A tick while a Stop is under way starts nothing.
     R = _RemoteRig(S)
     try:
-        R.now[0] = _den(S, 18, 0, 1)
+        # Exactly at show 1's time (late_grace_s is 0 in this rule): the
+        # tick would start it.
+        R.now[0] = _den(S, 18, 0)
         R.svc.halt_begin()
         try:
             R.svc.tick()
@@ -57788,12 +57791,13 @@ def test_fire_ice_stop_while_the_cue_starts():
 
         def play_then_stop(cue=None):
             out = real(cue)
+            # The Stop lands while its own sequence has not run yet.
             n.c.stop("Andy", "Rack screen")
-            n.c.run_pending()
             return out
         n.sess.clock_play = play_then_stop
         del n.calls[:]
         stops = n.c.stops
+        gen = n.c._gen
         r = n.w.runner.start_show(8, who="Andy")
         n.c.run_pending()
         got = [k for k, _a, _t in n.calls]
@@ -57804,6 +57808,9 @@ def test_fire_ice_stop_while_the_cue_starts():
               f"a Stop during the start: the music is stopped after it "
               f"began, the conductor's Stop runs again, the start fails: "
               f"{r.sentence} {got} {n.c.stops}")
+        check(n.c._gen == gen + 2,
+              f"the second Stop starts the whole sequence afresh (a new "
+              f"generation), never only a re-blank: {n.c._gen - gen}")
         check(not n.c.latched, "nothing latched")
     finally:
         n.c.close()
