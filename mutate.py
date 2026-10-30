@@ -20517,6 +20517,132 @@ def build():
   "                    self._timed_remember(owner, rid, seq)\n                self._note(f\"{who or device}'s timed purge on the {device} \"",
   "                    self._timed_remember(owner, rid, seq, make=True)\n                self._note(f\"{who or device}'s timed purge on the {device} \""),
 
+ # -- the fireball timeline (fireball_timeline.py, Jeff 2026-10-30) --------
+ ("fireball timeline: a stale revision overwrites a newer save",
+  "ltcplay/fireball_timeline.py",
+  "not isinstance(base_rev, int) or base_rev != doc[\"rev\"]:",
+  "not isinstance(base_rev, int):"),
+
+ ("fireball timeline: a start past the end of the show is accepted",
+  "ltcplay/fireball_timeline.py",
+  "            if show_len_s is not None and fr / FPS >= show_len_s:",
+  "            if show_len_s is not None and fr / FPS > show_len_s:"),
+
+ ("fireball timeline: a stage given twice is accepted",
+  "ltcplay/fireball_timeline.py",
+  "        if key in seen:",
+  "        if False:"),
+
+ ("fireball timeline: a duration of 0 is accepted",
+  "ltcplay/fireball_timeline.py",
+  "    if not math.isfinite(v) or v <= 0:",
+  "    if not math.isfinite(v) or v < 0:"),
+
+ ("fireball timeline: frame 30 is accepted at 30 fps",
+  "ltcplay/fireball_timeline.py",
+  "    if f >= FPS:",
+  "    if f > FPS:"),
+
+ ("fireball timeline: Purge is accepted as a stage",
+  "ltcplay/fireball_timeline.py",
+  "        word = STAGE_WORD.get(key) if isinstance(key, str) else None",
+  "        word = dict(STAGE_WORD, purge=\"Purge\").get(key) if isinstance(key, str) else None"),
+
+ ("fireball timeline: an unknown field in the file is accepted",
+  "ltcplay/fireball_timeline.py",
+  "        extra = set(entry) - _ENTRY_KEYS",
+  "        extra = set()"),
+
+ ("fireball timeline: the version before a save is not kept",
+  "ltcplay/fireball_timeline.py",
+  "                self._keep_history(doc[\"rev\"], bool(err), old)",
+  "                pass"),
+
+ ("fireball timeline: a save is not audited",
+  "ltcplay/fireball_timeline.py",
+  "            self._audit(who, screen, show, \"accepted\", what)",
+  "            pass"),
+
+ ("fireball timeline: a rebuilt file restarts at revision 1 (round 5)",
+  "ltcplay/fireball_timeline.py",
+  "                max(doc[\"rev\"], int(self._wall() * 1000)) + 1",
+  "                doc[\"rev\"] + 1"),
+
+ ("fireball timeline: a save by someone without the Settings row",
+  "ltcplay/remote.py",
+  "                                \"signed-in admin.\")\n        if not u.may(me.get(\"role\"), \"settings\"):\n            return refused(403, f\"{me.get('name')} may not: \"\n                                f\"{users_mod.perm_label('settings')}.\")\n        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the fireball timeline",
+  "                                \"signed-in admin.\")\n        if False:\n            return refused(403, f\"{me.get('name')} may not: \"\n                                f\"{users_mod.perm_label('settings')}.\")\n        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the fireball timeline"),
+
+ ("fireball timeline: a save signed out",
+  "ltcplay/remote.py",
+  "        if u is None or not u.active() or not me.get(\"name\"):\n            return refused(403, \"editing the fireball timeline needs a \"",
+  "        if u is None:\n            return refused(403, \"editing the fireball timeline needs a \""),
+
+ ("fireball timeline: a save from the show network without screen_arming",
+  "ltcplay/remote.py",
+  "        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the fireball timeline from a \"",
+  "        if False:\n            return refused(403, \"editing the fireball timeline from a \""),
+
+ ("fireball timeline: the page's own show length is trusted",
+  "ltcplay/remote.py",
+  "            show, cue, length, body.get(\"source\"), body.get(\"stages\"),",
+  "            show, cue, body.get(\"show_len_s\") or length, body.get(\"source\"), body.get(\"stages\"),"),
+
+ ("fireball timeline: a save is not a Settings press",
+  "ltcplay/users.py",
+  "    \"fireball-timeline-save\": \"settings\",",
+  "    \"fireball-timeline-save\": None,"),
+
+ ("fireball timeline: a save over an unreadable file is taken",
+  "ltcplay/fireball_timeline.py",
+  "            if err and replace_unreadable is not True:",
+  "            if False:"),
+
+ ("fireball timeline: a missing file once saved reads as never saved",
+  "ltcplay/fireball_timeline.py",
+  "                if self.path and os.path.isdir(self.history_dir()):",
+  "                if False:"),
+
+ ("fireball timeline: the history copy is written before the save is in place",
+  "ltcplay/fireball_timeline.py",
+  "                old = self._read_bytes()\n                self._write(new)",
+  "                old = self._read_bytes()\n                os.makedirs(self.history_dir(), exist_ok=True)\n                self._keep_history(doc[\"rev\"], bool(err), old)\n                self._write(new)"),
+
+ ("fireball timeline: a refused replace leaves its temporary file",
+  "ltcplay/fireball_timeline.py",
+  "            try:\n                os.remove(tmp)\n            except OSError:\n                pass\n            raise",
+  "            raise"),
+
+ ("fireball timeline: a read is not under the store's lock",
+  "ltcplay/fireball_timeline.py",
+  "        with self._lock:\n            if not self.path or not os.path.exists(self.path):",
+  "        if True:\n            if not self.path or not os.path.exists(self.path):"),
+
+ ("fireball timeline: a save keeps the spelling it was given",
+  "ltcplay/remote.py",
+  "        show = real\n        cue, length, why = self.fireball_show_info(show)",
+  "        cue, length, why = self.fireball_show_info(show)"),
+
+ ("fireball timeline: show names are compared case for case",
+  "ltcplay/fireball_timeline.py",
+  "    return str(name).rstrip(\" .\").lower()",
+  "    return str(name)"),
+
+ ("fireball timeline: two spellings of one show are taken",
+  "ltcplay/remote.py",
+  "        if len(same) == 1:\n            return same[0], \"\"",
+  "        if len(same) >= 1:\n            return same[0], \"\""),
+
+ ("fireball timeline: a refused history copy makes a save that was made say Not saved",
+  "ltcplay/fireball_timeline.py",
+  "            except OSError as e:\n                warn = (",
+  "            except KeyError as e:\n                warn = ("),
+
+ ("fireball timeline: names are folded as Unicode case folding (sz as ss)",
+  "ltcplay/fireball_timeline.py",
+  "    return str(name).rstrip(\" .\").lower()",
+  "    return str(name).rstrip(\" .\").casefold()"),
+
  ("play-from cues: a cue right at the end of the show audio is saved",
   "ltcplay/play_from.py",
   "                fr / FPS >= audio_len_s:",

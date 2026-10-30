@@ -227,10 +227,16 @@ PLAY_FROM_POST_ROUTES = ("play-from-cues-save",)
 # show network needs screen_arming; anything else turns it off, never
 # refused.
 PUMP_POST_ROUTES = ("fuel-pump",)
+# The fireball timeline (fireball_timeline.py, Jeff 2026-10-30): read by
+# anyone; a save is the role matrix's Settings row (admin by default,
+# users.py), a signed-in person, from the show network with screen_arming
+# too. Restricted by who, never by when: a save during a show is allowed.
+FIREBALL_TIMELINE_GET_ROUTES = ("fireball-timeline",)
+FIREBALL_TIMELINE_POST_ROUTES = ("fireball-timeline-save",)
 GET_ROUTES = ("whoami", "status", "network", "deck-input",
               "announce-outputs") + \
     MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES + \
-    CLEANING_GET_ROUTES + PLAY_FROM_GET_ROUTES
+    CLEANING_GET_ROUTES + PLAY_FROM_GET_ROUTES + FIREBALL_TIMELINE_GET_ROUTES
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
@@ -238,7 +244,7 @@ POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     "announce-output", "announce-test-tone") + \
     MORNING_POST_ROUTES + FUEL_POST_ROUTES + FIREBALL_POST_ROUTES + \
     CLEANING_POST_ROUTES + HAZER_POST_ROUTES + PLAY_FROM_POST_ROUTES + \
-    PUMP_POST_ROUTES
+    PUMP_POST_ROUTES + FIREBALL_TIMELINE_POST_ROUTES
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
 # on the show machine itself (and the role matrix's Settings, users.py), with
 # a confirm; OFF from any surface, signed in or not: it only takes risk away.
@@ -1946,6 +1952,8 @@ class Remote:
             return cleaning_mod.route_get(self.cleaning, ctx, self.wall)
         if name in PLAY_FROM_GET_ROUTES:
             return self.play_from_get(query, ctx)
+        if name in FIREBALL_TIMELINE_GET_ROUTES:
+            return self.fireball_timeline_get(query)
         return 404, {"error": "no such thing here"}
 
     def post(self, route, body, ctx):
@@ -2021,6 +2029,8 @@ class Remote:
             return (*self.play_from_save(body, ctx),) + ({},)
         if name in PUMP_POST_ROUTES:
             return (*self.pump_post(body, ctx),) + ({},)
+        if name in FIREBALL_TIMELINE_POST_ROUTES:
+            return (*self.fireball_timeline_save(body, ctx),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
             return (*self.press(name, body, ctx),) + ({},)
         if name == "arm-hold":
@@ -4991,6 +5001,164 @@ class Remote:
         except Exception as e:                   # noqa: BLE001
             return {"available": False,
                     "down": f"{type(e).__name__}: {e}"}
+    # -- the fireball timeline (fireball_timeline.py) -------------------------
+    def fireball_timeline_store(self):
+        """The fireball timeline's file in the settings folder (one Store
+        per engine, made on first use). Sends nothing."""
+        st = getattr(self, "_fbtl_store", None)
+        if st is None or st.audit is not getattr(self, "audit", None):
+            from . import fireball_timeline as fbtl
+
+            def _journal(who, screen, outcome, text, fault=False):
+                self._journal(who or "system", screen or "engine",
+                              "fireball timeline", outcome, text,
+                              fault=fault)
+            st = self._fbtl_store = fbtl.Store(
+                self.folder, journal=_journal,
+                audit=getattr(self, "audit", None), wall=self.wall)
+        return st
+
+    def fireball_show_name(self, show):
+        """(the show file's own name as the show folder spells it, "") or
+        (None, why). Windows and macOS folders ignore case (and Windows
+        trailing dots and spaces), but the engine finds a show's timeline
+        by the name the playing session has, which is the folder's own
+        spelling: a timeline is always saved under that spelling (review
+        of #187: "show.json" was saved, "Show.json" played, and the show
+        fell back to its FSEQ)."""
+        folder = getattr(self.control, "folder", None)
+        name = os.path.basename(str(show or ""))
+        if not folder or not name or name != show:
+            return None, f"{show!r} is not a show file"
+        try:
+            entries = [e for e in os.listdir(folder)
+                       if os.path.isfile(os.path.join(folder, e))]
+        except OSError as e:
+            return None, f"the show folder could not be read ({e})"
+        if name in entries:
+            return name, ""
+        from . import fireball_timeline as fbtl
+        same = [e for e in entries
+                if fbtl.show_key(e) == fbtl.show_key(name)]
+        if len(same) == 1:
+            return same[0], ""
+        if len(same) > 1:
+            return None, (f"{name} matches more than one show file "
+                          f"({', '.join(sorted(same))}); rename one")
+        return None, f"{name} is not in the show folder"
+
+    def fireball_show_info(self, show):
+        """(the show's own cue, its length in seconds, "") for a show file
+        in the show folder, opened as the Check button opens one (nothing
+        sent, nothing played), or (None, None, why). `show` must be the
+        folder's own spelling (fireball_show_name)."""
+        ctl = self.control
+        folder = getattr(ctl, "folder", None)
+        name, why = self.fireball_show_name(show)
+        if why:
+            return None, None, why
+        path = os.path.join(folder, name)
+        from . import clock as clock_mod
+        from .session import Session
+        kw = dict(getattr(ctl, "defaults", None) or {})
+        kw.update(no_output=True, no_log=True, sd=getattr(ctl, "_sd", None))
+        s = None
+        try:
+            s = Session(path, **kw)
+            s.open()
+            cue = clock_mod.show_cue_of(s.clock, s.tl)
+            length = clock_mod.show_len_of(s.clock, s.tl)
+        except Exception as e:                       # noqa: BLE001
+            return None, None, (f"{name} could not be opened "
+                                f"({type(e).__name__}: {e})")
+        finally:
+            if s is not None:
+                try:
+                    s.stop()
+                except Exception:                    # noqa: BLE001
+                    pass
+        if cue is None or not length:
+            return None, None, (f"{name} does not play from the show "
+                                f"audio, so it has no show cue to time the "
+                                f"fireball against")
+        return cue, float(length), ""
+
+    def fireball_timeline_get(self, query=""):
+        """GET fireball-timeline[?show=<file>]: the file's revision, its
+        error, every show's entry, and with ?show= that show's entry, its
+        own cue and length, and whether an edit is refused now. Anyone may
+        read it. (code, body)."""
+        import urllib.parse
+        show = (urllib.parse.parse_qs(query or "").get("show") or [None])[0]
+        try:
+            out = self.fireball_timeline_store().view(show)
+        except Exception as e:                       # noqa: BLE001
+            return 500, {"error": f"The fireball timeline could not be "
+                                  f"read ({type(e).__name__})."}
+        if show is not None:
+            real, _why = self.fireball_show_name(show)
+            if real and real != show:
+                # The folder's own spelling: the entry the engine uses.
+                show = real
+                out = self.fireball_timeline_store().view(show)
+            cue, length, why = self.fireball_show_info(show)
+            out.update(cue=cue, show_len_s=length, show_problem=why)
+        return 200, out
+
+    def fireball_timeline_save(self, body, ctx):
+        """POST fireball-timeline-save {"show", "rev", "source": "fseq" or
+        "timeline", "stages": [{"stage", "start", "dur_s"}]}: the Settings
+        row (users.classify, checked by web.py first, and again here), a
+        signed-in person, from the show network screen_arming too. Allowed
+        during a show (Jeff, 2026-10-30: editing is restricted by who, not
+        by when); how a running show takes a new revision is the engine's
+        (a later change). The show's own cue and length are worked out
+        here, never taken from the page. Saved with a revision check,
+        history, a journal line and an audit event. Sends nothing.
+        (code, body)."""
+        from . import users as users_mod
+        who, device, _surface = self._actor(ctx, body)
+        me = getattr(ctx, "session", None) or {}
+        u = self.users
+        st = self.fireball_timeline_store()
+        show = body.get("show")
+
+        def refused(code, why):
+            text = f"Not saved: {why} Nothing was changed."
+            self._journal(who, device, "fireball timeline", "refused",
+                          f"{who or 'Someone'}'s fireball timeline save for "
+                          f"{show!r} on the {device} was refused. {why}")
+            st._audit(who, device, str(show)[:200], "refused", why)
+            return code, {"error": text}
+        if u is None or not u.active() or not me.get("name"):
+            return refused(403, "editing the fireball timeline needs a "
+                                "signed-in admin.")
+        if not u.may(me.get("role"), "settings"):
+            return refused(403, f"{me.get('name')} may not: "
+                                f"{users_mod.perm_label('settings')}.")
+        if not self.may_act_from(ctx.local):
+            return refused(403, "editing the fireball timeline from a "
+                                "device on the show network needs "
+                                "screen_arming (on the show machine itself: "
+                                "Programming, Arming from a screen, Turn "
+                                "on).")
+        if not isinstance(show, str):
+            return refused(400, "choose a show file.")
+        real, why = self.fireball_show_name(show)
+        if why:
+            return refused(409, why[0].upper() + why[1:] + ".")
+        show = real
+        cue, length, why = self.fireball_show_info(show)
+        if why:
+            return refused(409, why[0].upper() + why[1:] + ".")
+        ok, text, entry = st.save(
+            show, cue, length, body.get("source"), body.get("stages"),
+            body.get("rev"), who=who, screen=device,
+            replace_unreadable=body.get("replace_unreadable") is True)
+        if not ok:
+            return 409, {"error": text + " Nothing was changed."
+                         if "Nothing" not in text else text}
+        return 200, {"ok": True, "text": text, "entry": entry}
 
     def hazers_view(self, fl):
         """The status's "hazers": hazers.Hazers.view, and the display only
