@@ -40831,6 +40831,10 @@ def test_rack_screen_stop_in_place_of_start_now():
         check(f in logic, f"{f} is pure page logic")
     # Stop is a double tap with no confirm box (Jeff, 2026-10-30), with
     # exactly the Abort sign's tap rule.
+    check(page.count("const step = stopTapStep(t ? t.prev : null, "
+                     "monoNow(), kind, false);") == 1,
+          "Stop's second tap is decided by the time between the taps, "
+          "never by whether the first tap's timer has run")
     check("const STOP_CONFIRM" not in page and
           'confirmBox("Stop the show?"' not in page,
           "Stop asks nothing: no confirm box, no STOP_CONFIRM")
@@ -40851,7 +40855,7 @@ def test_rack_screen_stop_in_place_of_start_now():
                  'const d = decide("b-start", lk.mode);',
                  'if(d.act === "stop") return stopTap("b-start", ev, '
                  '"ctl-msg");',
-                 'const d = decide("b-run", runLook(ST).mode);',
+                 'const d = decide("b-run", runLook(ST, nowStale()).mode);',
                  'if(d.act === "stop") return stopTap("b-run", ev, '
                  '"run-msg");',
                  'return pressStop("run-msg", "run-off");',
@@ -40901,6 +40905,12 @@ t(runLook(att("STANDBY", {running:true}, {transport:{programming:true, playhead:
 // Where Stop is drawn (Jeff, 2026-10-30: if nothing is playing there is no
 // Stop button).
 t(stopShows(att("SHOW", {})) && stopShows(att("PAUSED", {})), "a show live or paused: Stop");
+// A rehearsal Run with its timecode moving is playing (cold review of
+// #191, B1); one whose timecode is not moving is not.
+t(stopShows(att("STANDBY", {running:true, state:"LOCKED"}, {transport:{programming:true}})) && stopShows(att("STANDBY", {running:true, state:"FREERUN"}, {transport:{programming:true}})), "a rehearsal Run with timecode moving: Stop");
+t(!stopShows(att("STANDBY", {running:true, state:"LOST"}, {transport:{programming:true}})) && !stopShows(att("STANDBY", {running:true, state:"STANDBY"}, {transport:{programming:true}})) && !stopShows(att("STANDBY", {running:true, state:"LOCKED"})), "no timecode moving, or not a rehearsal: no Stop");
+// The Run card with no contact is Stop, as Start now is (B2).
+t(runLook(att("STANDBY", {running:true}), true).mode === "stop" && runLook(att("STANDBY", {running:false}), true).mode === "stop" && runLook(att("STANDBY", {running:true}), false).mode === "runoff", "the Run card with no contact: Stop");
 t(!stopShows(att("IDLE", {running:true})) && !stopShows(att("STANDBY", {running:true})) && !stopShows(att("HOLD", {running:true})) && !stopShows(att("CLOSING", {})) && !stopShows(null), "nothing playing: no Stop");
 t(stopShows(att("STANDBY", {}, {preroll:{state:"checking"}})) && stopShows(att("STANDBY", {}, {preroll:{state:"queued"}})), "the rig check before a show: Stop");
 t(stopShows({schedule:{attached:true, state:"STANDBY", start_waiting:true}}), "Start now waiting for the audio: Stop");
@@ -56844,6 +56854,12 @@ def test_stop_disarms_every_flame_group_without_the_latch():
         R.svc.operator_press = lambda what, *a, **kw: (
             presses.append((what, R.svc.machine.state)),
             order.append("show"), real_press(what, *a, **kw))[2]
+        # The halt's scheduler step is one locked step (cold review of
+        # #191, A-F1): halt_schedule, which ends a live show with STOP_SHOW.
+        real_hs = R.svc.halt_schedule
+        R.svc.halt_schedule = lambda *a, **kw: (
+            presses.append(("halt_schedule", R.svc.machine.state)),
+            order.append("show"), real_hs(*a, **kw))[2]
         real_stop = R.httpd.control.stop
         R.httpd.control.stop = lambda: (order.append("stop"),
                                         real_stop())[1]
@@ -56886,7 +56902,7 @@ def test_stop_disarms_every_flame_group_without_the_latch():
               out.get("lasers", {}).get("disarmed") is True and
               out.get("flames", {}).get("disarmed") is True,
               f"and the answer says each went: {out}")
-        check(presses == [("stop-show", S.SHOW)] and
+        check(presses == [("halt_schedule", S.SHOW)] and
               "abort" not in [p_[0] for p_ in presses],
               f"the scheduler's Stop, never its Abort: {presses}")
         R.settle()
@@ -92126,6 +92142,13 @@ window.fetch = function(u, o){
       j.show = Object.assign({}, j.show, {running:true});
       return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}});
     });
+  // Run on with nothing playing (between shows): Run off is drawn.
+  if(window.__runon && /\/api\/remote\/status/.test(String(u)))
+    return realFetch.apply(this, arguments).then(r => r.json()).then(j => {
+      j.show = Object.assign({}, j.show, {running:true});
+      if(j.schedule) j.schedule.start_blocked = null;
+      return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}});
+    });
   if(o && o.method === "POST") posts.push({u:String(u), b:String(o.body || "")});
   if(window.__fail && o && o.method === "POST" && window.__fail.test(String(u)))
     return Promise.resolve(new Response(JSON.stringify({error:"Refused for the test."}), {status:409, headers:{"Content-Type":"application/json"}}));
@@ -92245,6 +92268,19 @@ async function presses(){
   res.stop_after_two = n("/api/remote/stop");
   res.sheet_after = !document.getElementById("sheet").hidden;
   window.__live = false; await wait(2600);
+  // Run off (cold review of #191, B1): with Run on and nothing playing it
+  // is in Stop's place, full colour; it asks, then sends run-off.
+  window.__runon = true; await wait(1600);
+  const ro = document.getElementById("b-runoff");
+  res.runoff_shown = shown(ro) && !ro.disabled && !shown(sb);
+  ro.click(); await wait(300);
+  res.runoff_sheet = !document.getElementById("sheet").hidden;
+  res.runoff_before_yes = n("/api/remote/run-off");
+  const ryes = document.querySelector('#sh-row [data-i="1"]');
+  if(ryes) ryes.click();
+  await wait(500);
+  res.runoff_after_yes = n("/api/remote/run-off");
+  window.__runon = false; await wait(2600);
   const arm = document.querySelector('[data-arm="0"]');
   const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:1};
   arm.dispatchEvent(new PointerEvent("pointerdown", o)); await wait(450);
@@ -92960,9 +92996,13 @@ def test_ui2_show_tab_in_a_browser():
     for what, status, sz, frag in runs:
         if not frag:
             frag = "?tour=0"
+        # The presses run also walks Stop with a show live and Run off
+        # with Run on (cold review of #191), each a few polls long.
         got = _rack_screen_in_chromium(chrome, page, status, sz,
                                        measure_js=_UI2_MEASURE_JS,
-                                       frag=frag, budget_ms=15000)
+                                       frag=frag, budget_ms=30000
+                                       if frag.startswith("?presses")
+                                       else 15000)
         for (w, h), res in got.items():
             where = f"2.0, {what}, {w}x{h}"
             if not check(isinstance(res, dict) and "layout" in res,
@@ -93060,6 +93100,12 @@ def test_ui2_show_tab_in_a_browser():
                       p["stop_calm_posts"] == 0,
                       f"{where}: with nothing playing there is no Stop, "
                       f"and a tap where it was sends nothing: {p}")
+                check(p and p["runoff_shown"] and p["runoff_sheet"] and
+                      p["runoff_before_yes"] == 0 and
+                      p["runoff_after_yes"] == 1,
+                      f"{where}: with Run on and nothing playing, Run off is "
+                      f"in Stop's place, asks first, then sends run-off: "
+                      f"{p}")
                 check(p and p["stop_live_shown"] and p["stop_live_red"] and
                       p["stop_after_one"] == 0 and not p["sheet"] and
                       p["stop_label_one"] == "Tap again" and
@@ -93115,7 +93161,7 @@ def test_ui2_show_tab_in_a_browser():
                       f"still work: {sl}")
                 check(p and set(p["routes"]) <= {
                     "/api/remote/abort", "/api/remote/hold",
-                    "/api/remote/stop", "/api/remote/arm-hold",
+                    "/api/remote/stop", "/api/remote/run-off", "/api/remote/arm-hold",
                     "/api/remote/arm-release", "/api/remote/disarm-all",
                     "/api/remote/group-disarm"},
                       f"{where}: nothing else was posted: {p}")

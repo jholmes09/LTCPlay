@@ -7852,8 +7852,8 @@ def build():
 
  ("scheduler fix round 2: the Abort latch is never read back",
   "ltcplay/schedule.py",
-  "        abort_latched=doc.get(\"abort_latched\", False))",
-  "        abort_latched=False)"),
+  "        abort_latched=doc.get(\"abort_latched\", False),\n",
+  "        abort_latched=False,\n"),
 
  ("scheduler fix round 2: the scheduler ignores its own saved Abort latch",
   "ltcplay/schedule_service.py",
@@ -8129,8 +8129,8 @@ def build():
 
  ("scheduler fix round 3: R309 a schedule change rebuild drops the latch",
   "ltcplay/schedule.py",
-  "                abort_latched=saved.abort_latched)",
-  "                abort_latched=False)"),
+  "                abort_latched=saved.abort_latched,\n",
+  "                abort_latched=False,\n"),
 
  ("scheduler fix round 3: R312 a hung conductor request is a fault only "
   "after 30 s",
@@ -8708,7 +8708,9 @@ def build():
 
  ('fix round 1: an Abort during the start leaves the music playing',
   'ltcplay/fire_ice.py',
+  '            why = "it was aborted while it was starting"\n'
   '            self.show.music_halt(C.ABORT_FADE_S)',
+  '            why = "it was aborted while it was starting"\n'
   '            pass'),
 
 
@@ -12119,8 +12121,8 @@ def build():
   '            if False:\n                # Only ever changed from a fresh read'),
 
  ('users: deck can be a name', 'ltcplay/users.py',
-  'RESERVED = ("unsigned", "system", "signed out", "nobody", "deck")',
-  'RESERVED = ("unsigned", "system", "signed out", "nobody")'),
+  'RESERVED = ("unsigned", "system", "signed out", "nobody", "deck", "engine",',
+  'RESERVED = ("unsigned", "system", "signed out", "nobody", "engine",'),
 
  ('users: a users file that is not UTF-8 reads as no users', 'ltcplay/users.py',
   '            with open(self.path, "rb") as fh:\n                raw = fh.read()',
@@ -16375,8 +16377,8 @@ def build():
 
  ("conductor: a second Stop starts a new fade",
   "ltcplay/conductor.py",
-  '            again = (not latched and self._want is not None and',
-  '            again = (False and self._want is not None and'),
+  '            again = (not latched and not force_new and',
+  '            again = (False and not force_new and'),
 
  ("conductor: Stop never disarms the lasers at the conductor",
   "ltcplay/conductor.py",
@@ -16412,9 +16414,9 @@ def build():
 
  ("scheduler: a Stop's Hold brings the intermission back",
   "ltcplay/schedule.py",
-  "        tx.m = replace(tx.m, held_from=STANDBY)\n"
+  "        tx.m = replace(tx.m, held_from=STANDBY, stop_hold=True)\n"
   "        _enter(tx, HOLD, after_stop=stopped)",
-  "        tx.m = replace(tx.m, held_from=STANDBY)\n"
+  "        tx.m = replace(tx.m, held_from=STANDBY, stop_hold=True)\n"
   "        _enter(tx, HOLD)"),
 
  ("scheduler: Resume lands in the middle of a Stop",
@@ -16521,6 +16523,86 @@ def build():
   "ltcplay/web/remote2.html",
   "  const id = b.id, can = stopShows(ST) || !!isSt;",
   "  const id = b.id, can = stopShows(ST);"),
+
+ # Cold review of #191: the fixes, each with a mutation.
+ ("scheduler: a tick during a Stop starts the show coming due (A-F1)",
+  "ltcplay/schedule_service.py",
+  "            if self._halt_defers(now, ev):\n                pass\n",
+  "            if False:\n                pass\n"),
+
+ ("scheduler: a Stop at showtime ticks first and pauses the show (A-F1)",
+  "ltcplay/schedule_service.py",
+  "            self._press_stamp = self.stamp_press()\n"
+  "            try:\n                out = self._apply(ev)\n",
+  "            self._press_stamp = self.stamp_press()\n"
+  "            self.tick()\n"
+  "            if self.machine.state == sch.SHOW:\n"
+  "                ev = replace(ev, kind=sch.HOLD_ON, confirmed=False)\n"
+  "            try:\n                out = self._apply(ev)\n"),
+
+ ("scheduler: Reset ends a Stop's Hold (A-F4)",
+  "ltcplay/schedule_service.py",
+  "            elif m.state == sch.HOLD and not stop_held:",
+  "            elif m.state == sch.HOLD:"),
+
+ ("scheduler: a Stop's Hold is not marked as a Stop's",
+  "ltcplay/schedule.py",
+  "    tx.m = replace(tx.m, held_from=m.state,\n"
+  "                   stop_hold=str(ev.detail or \"\").startswith(\n"
+  "                       STOP_HOLD_DETAILS))",
+  "    tx.m = replace(tx.m, held_from=m.state)"),
+
+ ("scheduler: a Stop's Hold ends at the night reset (A-F2)",
+  "ltcplay/schedule_service.py",
+  "        stop_held = (self.machine.state == sch.HOLD and\n"
+  "                     self.machine.stop_hold)",
+  "        stop_held = False"),
+
+ ("scheduler: a Stop's Hold is lost over a night with no shows (A-F2)",
+  "ltcplay/schedule_service.py",
+  "            self._stop_hold_carry = was_night\n",
+  "            pass\n"),
+
+ ("scheduler: a Stop's Hold is not kept in tonight's file",
+  "ltcplay/schedule.py",
+  "    if m.stop_hold:\n        doc[\"stop_hold\"] = True\n",
+  ""),
+
+ ("fire & ice: a Stop during the cue start leaves the music playing (A-F3)",
+  "ltcplay/fire_ice.py",
+  "        if getattr(self.conductor, \"stops\", 0) != stops0:",
+  "        if False:"),
+
+ ("conductor: a Stop for a start that began under it never fades afresh",
+  "ltcplay/conductor.py",
+  "            again = (not latched and not force_new and",
+  "            again = (not latched and"),
+
+ ("Rack screen: Stop's second tap is decided by its timer, not the time",
+  "ltcplay/web/remote.html",
+  "  const step = stopTapStep(t ? t.prev : null, monoNow(), kind, false);",
+  "  const step = stopTapStep(t ? t.prev : null, monoNow(), kind, !!t);"),
+
+ ("Rack screen: the Run card ignores lost contact (B2)",
+  "ltcplay/web/remote.html",
+  "  if(stale && st) return {mode:\"stop\", label:\"Stop\", sub:\"no contact\"};\n"
+  "  if(!(show.running",
+  "  if(!(show.running"),
+
+ ("Rack screen: no Stop in a rehearsal Run with timecode moving (B1)",
+  "ltcplay/web/remote.html",
+  "  if(tr.programming && show.running && TC_MOVING.includes(show.state)) return true;",
+  ""),
+
+ ("ui2 page: no Run off (B1)",
+  "ltcplay/web/remote2.html",
+  "  return !HALT_BUSY && !isSt && runIsOn(ST) && !stopShows(ST) && !STOP_TAPS2[\"b-stop\"];",
+  "  return false;"),
+
+ ("ui2 page: Run off turns Run off without asking",
+  "ltcplay/web/remote2.html",
+  "  if(!(await confirmBox(\"Turn Run off?\", RUN_OFF_CONFIRM, \"Yes, Run off\", \"red\"))) return;\n",
+  ""),
 
  ("conductor: Stop leaves a Hold decided before it in the line",
   "ltcplay/schedule_service.py",
