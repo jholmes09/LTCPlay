@@ -42530,6 +42530,97 @@ def test_fire_ice_flame_cut_round2_of_177():
         f.close()
         check(not bad, f"frame by frame to the first missing one: {bad[:4]}")
         c4.close()
+        # Review B of #177. A render whose tail is missing across several
+        # pieces: one journal line for it, not one a piece.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "t"), frames=900,
+                                       compression="none",
+                                       cut_tail_frames=500)
+        c5 = F.FlameCues(ctl, "Flames", background=True)
+        c5._stop.set()
+        c5._check_renders_once()
+        c5._refresh_once()
+        lines = []
+        c5._journal = lambda t, **k: lines.append((t, k.get("fault")))
+        c5._cuts[paths[0]].ensure(0, 899)
+        for k in range(0, 900, 7):
+            c5(_fi_at(clk, int(k * 25 * 30 // 1000)))
+        bad_lines = [t for t, f in lines if f and "could not be read" in t]
+        check(len(bad_lines) == 1,
+              f"a render missing its tail: one line for it: {bad_lines}")
+        c5.close()
+        # A block that fails for a reason that is not the render's bytes
+        # (memory): uncut, tried again later, then cut. A corrupt block
+        # stays for good (test_fire_ice_flame_cut_guards).
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "m"), frames=300)
+        c6 = F.FlameCues(ctl, "Flames", background=True)
+        c6._stop.set()
+        c6._check_renders_once()
+        c6._refresh_once()
+        cut6 = c6._cuts[paths[0]]
+        cut6.blocks.pop(3, None)
+        tick = [500.0]
+        cut6.clock = lambda: tick[0]
+        real_load = FS.FSEQ._load_block
+        boom = [True]
+
+        def flaky(self, idx):
+            if idx == 3 and boom[0]:
+                boom[0] = False
+                raise MemoryError("for a moment")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = flaky
+        try:
+            cut6.ensure(cut6.firsts[3], cut6.firsts[3])
+            uncut = 3 not in cut6.blocks and 3 not in cut6.errors
+            cut6.ensure(cut6.firsts[3], cut6.firsts[3])
+            waited = 3 not in cut6.blocks
+            tick[0] += 1.0
+            cut6.ensure(cut6.firsts[3], cut6.firsts[3])
+        finally:
+            FS.FSEQ._load_block = real_load
+        check(uncut and waited and 3 in cut6.blocks and not cut6.errors,
+              f"a MemoryError: the block uncut, not before its retry, then "
+              f"cut: {uncut} {waited} {sorted(cut6.blocks)} {cut6.errors}")
+        c6.close()
+        # A render still being read while the show plays: zero, and the
+        # CUES FAULT after 1 s, never silent zeros for as long as it lasts.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "r"), frames=300)
+        c7 = F.FlameCues(ctl, "Flames", background=True)
+        c7._stop.set()                     # nothing reads: stalled at Run
+        m7 = [10.0]
+        c7._mono = lambda: m7[0]
+        got = c7(_fi_at(clk, 30))
+        quiet = got is None and c7.fault == ""
+        m7[0] += F.CUT_FAULT_AFTER_S + 0.1
+        got = c7(_fi_at(clk, 31))
+        check(quiet and got is None and "still being read" in c7.fault,
+              f"a reader stalled at Run: a CUES FAULT after 1 s: "
+              f"{c7.fault!r}")
+        c7.close()
+        # Six first start()s at once (the sender and the screens' threads):
+        # one reading and one cutting thread, never more.
+        c8 = F.FlameCues(ctl, "Flames", background=True)
+        real_mono = c8._mono
+
+        def slow_mono():
+            time.sleep(0.01)              # widen the window a race needs
+            return real_mono()
+        c8._mono = slow_mono
+        go = threading.Event()
+
+        def hit():
+            go.wait()
+            c8.start()
+        ts = [threading.Thread(target=hit) for _ in range(6)]
+        for t in ts:
+            t.start()
+        go.set()
+        for t in ts:
+            t.join(5)
+        n = sum(1 for t in threading.enumerate()
+                if t.name.startswith("ltcplay-flame-cues") and t.is_alive())
+        check(n == 2, f"six start()s at once: {n} threads (2 wanted)")
+        c8.close()
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")

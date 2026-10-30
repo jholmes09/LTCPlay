@@ -7191,9 +7191,15 @@ def build():
   "ltcplay/fire_ice.py",
   "            if b in self.blocks or b in self.errors:\n"
   "                continue\n"
+  "            r = self.retry.get(b)\n"
+  "            if r is not None and self.clock() < r[1]:\n"
+  "                continue\n"
   "            with self.lock:\n"
   "                if b in self.blocks or b in self.errors:",
   "            if b in self.blocks:\n"
+  "                continue\n"
+  "            r = self.retry.get(b)\n"
+  "            if r is not None and self.clock() < r[1]:\n"
   "                continue\n"
   "            with self.lock:\n"
   "                if b in self.blocks:"),
@@ -7222,6 +7228,27 @@ def build():
   "        now = self._mono()",
   "        if t is not None:\n            return\n"
   "        now = self._mono()"),
+
+ # -- review B of #177 (2026-10-30)
+ ("flame cues: a passing error faults its block for good",
+  "ltcplay/fire_ice.py",
+  "                    if _cut_data_error(e):",
+  "                    if True:"),
+
+ ("flame cues: a missing tail journals a line for every piece",
+  "ltcplay/fire_ice.py",
+  "                short = (n, FSEQError(CUT_SHORT_TEXT))",
+  "                short = (n, FSEQError(f\"{CUT_SHORT_TEXT} at {n}\"))"),
+
+ ("flame cues: a reader stalled at Run is silent zeros for good",
+  "ltcplay/fire_ice.py",
+  "        return self._zero(why, fault=True)\n\n    def _locate",
+  "        return self._zero(why)\n\n    def _locate"),
+
+ ("flame cues: start() is not locked",
+  "ltcplay/fire_ice.py",
+  "        with self._start_lock:\n",
+  "        if True:\n"),
 
  # -- review of #177 (2026-10-30)
  ("flame cues: the uncut timer restarts at every block",

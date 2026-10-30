@@ -1143,6 +1143,26 @@ CUT_PIECE_FRAMES = 200
 # FAULT for 25 to 75 ms). The flame link's own seek guard holds every flame
 # at zero for 0.5 s after any move anyway.
 CUT_FAULT_AFTER_S = 1.0
+# A block whose cut failed for a reason that is not the render's own bytes
+# (memory, the system) is tried again after these, then every last one.
+CUT_RETRY_S = (0.5, 1.0, 2.0, 5.0)
+CUT_SHORT_TEXT = "the render's channel data ends before its last frames"
+
+
+def _cut_data_error(e):
+    """True for an error in the render's own bytes (it will never cut):
+    a truncated or corrupt block, a bad table. Anything else may pass."""
+    import zlib
+    from .fseq import FSEQError
+    kinds = [FSEQError, zlib.error, ValueError, IndexError, EOFError]
+    try:
+        import zstandard
+        kinds.append(zstandard.ZstdError)
+    except Exception:                            # noqa: BLE001
+        pass
+    return isinstance(e, tuple(kinds))
+
+
 # How often the cutting thread looks at the play position.
 CUT_EVERY_S = 0.05
 CUES_LOADING = ("the show's flame cues are still being cut from its render "
@@ -1188,6 +1208,7 @@ class _FlameCut:
             self.mv = None
             self.firsts = [b[0] for b in g._blocks]
         self.lock = _th.Lock()
+        self.retry = {}          # block index -> (tries, not before)
         self.blocks = {}         # block index -> its frames' rows, joined
         self.errors = {}         # block index -> the error cutting it
         self.short = {}          # block index -> (first missing frame, error)
@@ -1202,6 +1223,7 @@ class _FlameCut:
         c.g, c.whole, c.mv = None, False, None
         c.firsts = [0]
         c.lock = _th.Lock()
+        c.retry = {}
         c.blocks, c.errors, c.short = {}, {0: error}, {}
         return c
 
@@ -1213,6 +1235,8 @@ class _FlameCut:
     def _block(self, idx):
         import bisect
         return max(0, bisect.bisect_right(self.firsts, idx) - 1)
+
+    clock = staticmethod(time.monotonic)
 
     def ensure(self, lo, hi):
         """Cut every block holding frames lo to hi (inside the render),
@@ -1227,6 +1251,9 @@ class _FlameCut:
         for b in range(self._block(lo), self._block(hi) + 1):
             if b in self.blocks or b in self.errors:
                 continue
+            r = self.retry.get(b)
+            if r is not None and self.clock() < r[1]:
+                continue
             with self.lock:
                 if b in self.blocks or b in self.errors:
                     continue
@@ -1235,8 +1262,19 @@ class _FlameCut:
                     if short is not None:
                         self.short[b] = short
                     self.blocks[b] = rows
+                    self.retry.pop(b, None)
                 except Exception as e:
-                    self.errors[b] = e
+                    if _cut_data_error(e):
+                        # The render's own bytes are wrong: for good.
+                        self.errors[b] = e
+                    else:
+                        # Anything else (memory, the system) may pass: the
+                        # block stays uncut (zero, a CUES FAULT after 1 s)
+                        # and is tried again later each time (review of
+                        # #177: one MemoryError faulted it all night).
+                        n = (r[0] if r else 0) + 1
+                        self.retry[b] = (n, self.clock() + CUT_RETRY_S[
+                            min(n, len(CUT_RETRY_S)) - 1])
             _t.sleep(0)
 
     def _cut_block(self, b):
@@ -1260,8 +1298,10 @@ class _FlameCut:
             at = (n - first) * cc
             if at + cc > len(raw):
                 from .fseq import FSEQError
-                short = (n, FSEQError(f"frame {n} runs past the end of the "
-                                      f"render's data"))
+                # One sentence per render, whichever piece it is found in
+                # (review of #177: a frame number in it journaled a line
+                # for every piece).
+                short = (n, FSEQError(CUT_SHORT_TEXT))
                 break
             rows.append(FlameCues._cut(raw[at:at + cc], self.spans,
                                        self.span))
@@ -1388,6 +1428,21 @@ class FlameCues:
                            outcome="cues_refused" if fault else "cues_zero",
                            **({"fault": True} if fault else {}))
         return None
+
+    def _late_zero(self, key, why):
+        """Zero while the show plays and its render or layout is still being
+        read: silent for CUT_FAULT_AFTER_S (one episode per `key` until a
+        row is served), then the CUES FAULT `why` (review of #177: a reader
+        stalled at Run used to give silent zeros for as long as it
+        lasted)."""
+        now = self._mono()
+        u = self._uncut
+        if u is None or u[0] != key:
+            u = self._uncut = (key, now)
+        if now - u[1] < CUT_FAULT_AFTER_S:
+            self.fault = ""
+            return None
+        return self._zero(why, fault=True)
 
     def _locate(self, session):
         """The flame controller's channels, found again for every new
@@ -1763,9 +1818,9 @@ class FlameCues:
                 return self._zero(RENDER_OLDER_THAN_LAYOUT, fault=True)
             lay = self._layout
             if lay is None or lay[0] is not s:
-                return self._zero("the flame controller's channels are "
-                                  "still being read (off the flame link's "
-                                  "sender)")
+                return self._late_zero(
+                    "read", "the flame controller's channels are still "
+                    "being read (off the flame link's sender)")
             span, total, laid = lay[1], lay[2], lay[3]
         else:
             span = self._locate(s)
@@ -1784,9 +1839,9 @@ class FlameCues:
             if self._bg:
                 got = self._by_path.get(hits[0].path)
                 if got is None:
-                    return self._zero("the show's render is still being "
-                                      "read into memory (off the flame "
-                                      "link's sender)")
+                    return self._late_zero(
+                        "read", "the show's render is still being read into "
+                        "memory (off the flame link's sender)")
                 if isinstance(got, Exception):
                     raise got
                 f, spans, made, checked_at = got
