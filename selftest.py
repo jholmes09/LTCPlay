@@ -62752,6 +62752,55 @@ def test_pump_review_fixes():
         check(v.get("available") is True and v.get("left_s") is None,
               f"view() with a reservation where a run was read: still "
               f"available, no KeyError: {v}")
+        # Final delta review: an ON from a stale or ageless screen is
+        # refused (a stalled request landing after a Pump off or a Stop);
+        # Pump off never is.
+        for label, seen in (("15 s old", R.seen() - 15000),
+                            ("120 s old", R.seen() - 120000),
+                            ("missing", None), ("not a number", "x")):
+            body = {"on": True, "seconds": 300, "run": f"stale-{label}"}
+            if seen is not None:
+                body["seen"] = seen
+            st, _h, out = R.ask("POST", "/api/remote/fuel-pump", body,
+                                client=loop)
+            check(st == 409 and "more than 1 s old" in out.get("error", "")
+                  and pm.run is None and not link.pump_on,
+                  f"an ON whose screen status is {label}: refused: {st} "
+                  f"{out}")
+        st, _h, out = R.ask("POST", "/api/remote/fuel-pump",
+                            {"on": False, "seen": R.seen() - 120000},
+                            client=loop)
+        check(st == 200, f"Pump off from a stale screen still works: {st}")
+        st, _h, out = tap(True)
+        check(st == 200 and link.pump_on,
+              f"an ON from a live screen is taken: {st} {out}")
+        off()
+        # The audit, on the second look's refusal and on a failed start.
+        audited = []
+
+        class _Audit:
+            def event(self, **kw):
+                audited.append(kw)
+        pm.audit = _Audit()
+        lf4 = _LF()
+        real_blk2 = pm._blocker
+
+        def starts_now():
+            # The first look (refusal()) passes; the second, with the run
+            # reserved, sees live flame programming starting.
+            if pm.run is not None:
+                lf4._starting = True
+            return real_blk2()
+        pm._blocker = starts_now
+        R.remote.live_flame = lf4
+        st, _h, out = tap(True)
+        pm._blocker = real_blk2
+        R.remote.live_flame = None
+        check(st == 409 and any(a.get("result") == "refused" and
+                                "starting" in str(a.get("reason"))
+                                for a in audited),
+              f"the second look's refusal is audited: {audited[-1:]}")
+        audited.clear()
         # Delta review 2: a start that raises never wedges the pump.
         real_gen = link.pump_gen
 
@@ -62764,9 +62813,33 @@ def test_pump_review_fixes():
               pm.run is None and not link.pump_on,
               f"a start that raised: refused in words, no reservation "
               f"left: {out}")
+        check(any(a.get("result") == "refused" and
+                  "starting it failed" in str(a.get("reason"))
+                  for a in audited),
+              f"and audited: {audited[-1:]}")
+        # One that raises after the link took it: the link is told OFF.
+        real_start = link.pump_start
+
+        def start_then_raise(*a, **k):
+            real_start(*a, **k)
+            raise RuntimeError("after the link took it")
+        link.pump_start = start_then_raise
+        st, _h, out = tap(True)
+        link.pump_start = real_start
+        check(st == 409 and pm.run is None and not link.pump_on,
+              f"a start that raised after the link took it: the link "
+              f"names no pump: {out} {link.pump_on}")
+        pm.audit = None
         st, _h, out = tap(True)
         check(st == 200 and link.pump_on,
               f"and the next ON works (not wedged): {st} {out}")
+        from ltcplay import fuelpump as FP2
+        other = FP2.FuelPump(link_get=lambda: link, flames_get=lambda: None,
+                             abort_standing=lambda: False, threaded=False)
+        check(pm.view(R.remote.flame_status.view()).get("boot") == pm.boot
+              and other.boot != pm.boot,
+              "the screens get this engine's boot id, new at every start, so "
+              "a screen left open across a restart resets its run time")
         n_before = (pm.last_off or {}).get("n", 0)
         off()
         tap(True)

@@ -4601,6 +4601,25 @@ class Remote:
                           f"{who or 'Someone'}'s fuel pump ON from the "
                           f"{device} was refused. {why}")
             return 403, {"error": why}
+        # The press's own age (final delta review of #189): an ON sent from
+        # a status more than ARM_FRESH_S old (or none) is refused, as an
+        # arm hold is, so a request that stalled on weak Wi-Fi and lands
+        # after a Pump off or a Stop can never start the pump then.
+        try:
+            seen = float(body.get("seen"))
+        except (TypeError, ValueError):
+            seen = None
+        if seen is None or seen != seen or \
+                abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:
+            why = ("The fuel pump was not turned on: the press came from a "
+                   "screen whose status was more than 1 s old (or said "
+                   "nothing of its age), so it may be from before a Pump "
+                   "off or a Stop. Wait for the screen to be live, then "
+                   "press again.")
+            self._journal(who, device, "fuel-pump", "refused",
+                          f"{who or 'Someone'}'s fuel pump ON from the "
+                          f"{device} was refused. {why}")
+            return 409, {"error": why}
         ps = self.pump_settings()
         if ps["error"]:
             return 409, {"error": f"The fuel pump was not turned on: "
