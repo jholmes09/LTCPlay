@@ -19545,6 +19545,21 @@ def build():
   "            vals = bytes(values)\n            if len(vals) != UNIVERSE_SIZE:\n                return False\n            keep",
   "            vals = bytes(values)[:UNIVERSE_SIZE].ljust(UNIVERSE_SIZE, b\"\\0\")\n            keep"),
 
+ ("fireball manual: the show's own sent values carry the page's frame",
+  "ltcplay/flamelink.py",
+  "        return tc, self._with_manual(vals, self._clock())",
+  "        vals = self._with_manual(vals, self._clock())\n        self._show_part = bytes(vals)\n        return tc, vals"),
+
+ ("fireball manual: a frame that did not go out counts as the show's",
+  "ltcplay/flamelink.py",
+  "            self.show_sent = show if ok else bytes(UNIVERSE_SIZE)",
+  "            self.show_sent = show"),
+
+ ("fireball manual: the timeline judges its charge from the composed frame",
+  "ltcplay/web.py",
+  "            sent_get=lambda: getattr(link, \"show_sent\", None))",
+  "            sent_get=None)"),
+
  ("fireball: a held pad whose pointer leaves it stays on",
   "ltcplay/web/remote.html",
   "$(\"fb-pads\").addEventListener(\"pointerout\", e => {",
@@ -19809,8 +19824,8 @@ def build():
 
  ("fireball cues: the engine never names flamesafe's fireball group",
   "ltcplay/web.py",
-  "            journal=say, group_get=fireball_slots)",
-  "            journal=say)"),
+  "            journal=say, group_get=fireball_slots,",
+  "            journal=say,"),
 
 ]
 

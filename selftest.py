@@ -97007,6 +97007,10 @@ def test_fireball_cues_wiring():
               cues.fireball._plan is not None and
               cues.fireball._plan[1] == "",
               "built, read, and on the flame cues")
+        link.show_sent = bytes([7] * 512)
+        check(cues.fireball._sent(None) == bytes([7] * 512),
+              "the timeline reads the flame link's show_sent (the show's "
+              "own values, before the Fireball page's frame)")
         check(cues.fireball._group == [55, 56, 57, 58, 59],
               f"it reads flamesafe's fireball group from the Startup page "
               f"(review C-4): {cues.fireball._group}")
@@ -97269,6 +97273,34 @@ def test_fireball_manual_merged_on_the_flame_link():
     lk.manual_set(page(s55=255), lk._zero_gen)
     lk.manual_clear()
     check(R.now()[54] == 0, "manual_clear: off on the next frame")
+    # The show path's own sent values (show_sent) never carry the page's
+    # frame: the timeline judges "its own charge carrying on" from them
+    # (third review D-F1: Andy's top-off read as the show's charge).
+    import types as _ty
+    R.live = True
+    lk.release()
+    lk._sock = _ty.SimpleNamespace(sendto=lambda d, a: len(d))
+    seen_ = []
+    lk.observer = lambda tc, v, ok: seen_.append(bytes(v))
+    R.cue = [0] * 512
+    R.now()
+    lk.manual_set(page(s55=255), lk._zero_gen)
+    lk.send_frame()
+    check(seen_[-1][54] == 255 and lk.show_sent[54] == 0,
+          f"the page's Fuel went out; the show's own values say 0: "
+          f"{seen_[-1][54]} {lk.show_sent[54]}")
+    R.cue[54] = 255
+    lk.manual_set(page(s55=255), lk._zero_gen)
+    lk.send_frame()
+    check(lk.show_sent[54] == 255, "the show's own Fuel: 255")
+    lk.manual_clear()
+    lk._sock = _ty.SimpleNamespace(sendto=lambda d, a: (_ for _ in ()).throw(
+        OSError("down")))
+    lk.send_frame()
+    check(lk.show_sent[54] == 0, "a frame that did not go out: zeros")
+    lk._sock = None
+    lk.observer = None
+    R.cue = [0] * 512
     # With the seek guard on: the show's cues held off after a jump, the
     # page's press still goes out (it is no cue).
     G = _fbm_link(guard=True)
