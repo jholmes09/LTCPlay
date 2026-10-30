@@ -954,10 +954,27 @@ but it wouldn't allow it. Don't restrict the schedule in any way."
   anyway:". An exception outside the season is used: its date runs its
   own hours. Only a time that is not a time (25:00), a time zone this PC
   does not know, a misspelled setting and a late grace over 15 seconds
-  are still refused.
+  are still refused. A show length, guard or gap between shows over 24
+  hours, and a season before 1971 or after 9998, are used as 24 hours and
+  as those dates, and said. A weekday written twice is said; the later
+  one is used.
 - **A weekday can be written in full,** "Thursday" as well as "thu".
 - **Tonight's Delay, move and add can go past midnight.** A time typed in
-  the small hours ("00:30") is tonight's, after midnight.
+  the small hours ("00:30") is tonight's, after midnight, and the list
+  shows it as "00:30 (tomorrow)". A time that would land more than 3
+  hours after tonight's last show is never guessed: typing "10:55" at
+  22:40 (meant 22:55) is refused with "type 10:55 tomorrow to confirm".
+  Add "tomorrow" or "today" to the time when that is what you mean.
+- **The night only moves forward.** Once a night has handed over to the
+  next, saving a schedule that gives it longer hours never opens it
+  again; the change is for the next time that weekday comes round.
+- **A restart keeps a night that still has a show to run,** for example a
+  show moved to 02:30: it carries on until that show and its guard are
+  over. A restart after a night has handed over closes it, and a show of
+  it still to come is MISSED, in the journal.
+- **Tonight's saved list** with a show on the next morning is written as
+  format 5. An older LTC Player refuses such a file in words and sets it
+  aside rather than reading 00:30 as earlier the same evening.
 
 **What the 2 AM reset did, and what replaces it.** Every night used to
 end at 2 AM the next morning: a show could not be planned before 2 AM, a

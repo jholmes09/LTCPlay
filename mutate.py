@@ -8889,13 +8889,12 @@ def build():
  # Item 7: tonight's file format.
  ("scheduler fix round 2: a dark night is written as format 3",
   "ltcplay/schedule.py",
-  "        \"format\": TONIGHT_FORMAT if marked else TONIGHT_PLAIN_FORMAT,",
-  "        \"format\": TONIGHT_PLAIN_FORMAT,"),
+  "                   TONIGHT_FORMAT if marked else TONIGHT_PLAIN_FORMAT),",
+  "                   TONIGHT_PLAIN_FORMAT),"),
 
  ("scheduler fix round 2: format 3 files may carry dark and the latch",
   "ltcplay/schedule.py",
-  "    allowed = TONIGHT_KEYS | (TONIGHT_OPTIONAL if fmt == TONIGHT_FORMAT\n"
-  "                              else frozenset())",
+  "    allowed = TONIGHT_KEYS | (TONIGHT_OPTIONAL if fmt in (\n        TONIGHT_FORMAT, TONIGHT_NEXT_DAY_FORMAT)\n                              else frozenset())",
   "    allowed = TONIGHT_KEYS | TONIGHT_OPTIONAL"),
 
  # -- PR #30 fix round 3 (third independent review), 2026-10-03. All named
@@ -9070,8 +9069,8 @@ def build():
 
  ("scheduler 2 AM reset: the service moves on at midnight (calendar date)",
   "ltcplay/schedule_service.py",
-  "        return sch.night_of(now, self.rule.tz, self.rule, self.machine)",
-  "        return now.astimezone(self.rule.tz).date()"),
+  "        d = sch.night_of(now, self.rule.tz, self.rule, self.machine)\n        m = self.machine",
+  "        d = now.astimezone(self.rule.tz).date()\n        m = self.machine"),
 
  ("after midnight: a night past midnight ends at midnight",
   "ltcplay/schedule.py",
@@ -9095,8 +9094,8 @@ def build():
 
  ("after midnight: a small hours time typed tonight is not after midnight",
   "ltcplay/schedule.py",
-  "        return later\n",
-  "        return when\n"),
+  "        # the small hours, after midnight.\n        pick = later",
+  "        # the small hours, after midnight.\n        pick = same"),
 
  ("after midnight: tonight's file refuses a show after midnight",
   "ltcplay/schedule.py",
@@ -9127,6 +9126,96 @@ def build():
   "ltcplay/schedule.py",
   "        if n.interval_min * 60 < need:",
   "        if False:"),
+
+ ("review196A: a save takes the night back to an earlier one",
+  "ltcplay/schedule_service.py",
+  "            return max(d, m.date)",
+  "            return d"),
+
+ ("review196A: a restart goes back before the latest saved night",
+  "ltcplay/schedule_service.py",
+  "        return d if floor is None else max(d, floor)",
+  "        return d"),
+
+ ("review196A: a restart drops a show still to come on the night before",
+  "ltcplay/schedule_service.py",
+  "                       if st == sch.PENDING and back <= 2]",
+  "                       if False]"),
+
+ ("review196A: a restart closes a night that still has a show to run",
+  "ltcplay/schedule_service.py",
+  "            if now < ends:\n                # It still has a show",
+  "            if False:\n                # It still has a show"),
+
+ ("review196A: the night picked up at a start is not taken as tonight",
+  "ltcplay/schedule_service.py",
+  "            d = self._tonight(now)\n        if self.machine.date == d:",
+  "        if self.machine.date == d:"),
+
+ ("review196A: a time far after tonight's last show is guessed",
+  "ltcplay/schedule.py",
+  "    if pick > last + EDIT_DAY_LIMIT:",
+  "    if False:"),
+
+ ("review196A: a time typed with tomorrow is not tomorrow",
+  "ltcplay/schedule.py",
+  "    if day == \"tomorrow\":\n        return later",
+  "    if False:\n        return later"),
+
+ ("review196A: a huge show length is not capped",
+  "ltcplay/schedule.py",
+  "        show_len_s = _capped(show_len_s, MAX_SPAN_S, \"show_len_s\", notes)",
+  "        pass"),
+
+ ("review196A: a huge guard is not capped",
+  "ltcplay/schedule.py",
+  "        guard_s = _capped(guard_s, MAX_SPAN_S, \"guard_s\", notes)",
+  "        pass"),
+
+ ("review196A: a season from year 1 is not capped",
+  "ltcplay/schedule.py",
+  "                first_date = SEASON_MIN",
+  "                pass"),
+
+ ("review196A: every night of a long season is checked",
+  "ltcplay/schedule.py",
+  "    while d <= hi and k < SCAN_NIGHTS:",
+  "    while d <= hi:"),
+
+ ("review196A: a weekday written twice is not said",
+  "ltcplay/schedule.py",
+  "                    if k in weekly:",
+  "                    if False:"),
+
+ ("review196A: the overlap names a date, not the weekday",
+  "ltcplay/schedule.py",
+  "               f\"A {names[WEEKDAYS[d.weekday()]]} night\")",
+  "               f\"The night of {d}\")"),
+
+ ("review196A: a night's last show is taken as its first",
+  "ltcplay/schedule.py",
+  "        return start, start + k * step",
+  "        return start, start"),
+
+ ("review196A: a 24 hour night is no night",
+  "ltcplay/schedule.py",
+  "    on = d + timedelta(days=1) if n.last_end <= n.first_start else d",
+  "    on = d + timedelta(days=1) if n.last_end < n.first_start else d"),
+
+ ("review196A: the next night's preshow cuts this night's own shows",
+  "ltcplay/schedule.py",
+  "        r = min(r, opens if end is None else max(end, opens))",
+  "        r = min(r, opens)"),
+
+ ("review196A: a next morning time is not said as tomorrow",
+  "ltcplay/schedule.py",
+  "        return clock(local) + (\" (tomorrow)\" if day == 1 else",
+  "        return clock(local) + (\"\" if day == 1 else"),
+
+ ("review196A: a next morning list is written in an older format",
+  "ltcplay/schedule.py",
+  "    next_day = any(t is not None",
+  "    next_day = False and any(t is not None"),
 
  ("scheduler 2 AM reset: a show running at the reset is cut by it",
   "ltcplay/schedule_service.py",
@@ -20159,8 +20248,8 @@ def build():
  # (Jeff, Pico, 2026-10-29).
  ("saved schedule: a save waits for a restart to plan tonight again",
   "ltcplay/schedule_service.py",
-  "                self._journal_rule_warnings()\n                self._follow_rule(self.clock())\n            return self.rule",
-  "                self._journal_rule_warnings()\n            return self.rule"),
+  "            else:\n                self._follow_rule(self.clock())\n            rule = self.rule",
+  "            rule = self.rule"),
 
  ("saved schedule: a closed night stays closed though a show is still to come",
   "ltcplay/schedule.py",

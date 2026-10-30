@@ -12880,6 +12880,212 @@ def test_schedule_shows_after_midnight():
     svc.stop()
     print("  ok")
 
+def test_schedule_after_midnight_review_a():
+    section("scheduler (review A of PR #196): the night only moves forward, "
+            "a save never reopens a night that handed over; a restart keeps "
+            "a night with a show still to run, and misses out loud what it "
+            "cannot run; a typed time far from tonight asks for its day; "
+            "huge values are capped and said; long seasons are checked "
+            "quickly; a 24 hour night; an early next night never cuts this "
+            "night's shows")
+    S = _sched()
+    if S is None:
+        return
+    import copy
+    import json
+    import tempfile
+    import time as _t
+    from datetime import date, timedelta, timezone
+    from ltcplay import schedule_service as SV
+
+    def doc(weekly, **kw):
+        return _sched_doc(season={"first_date": "2026-10-01",
+                                  "last_date": "2027-03-31"},
+                          weekly=weekly, exceptions={}, late_grace_s=15, **kw)
+
+    def at(d, h, mi, s=0):
+        return _den(S, h, mi, s, d=d)
+    THU, FRI = (2026, 11, 12), (2026, 11, 13)
+
+    def run(svc, now, until, step=10):
+        t = now[0].astimezone(timezone.utc)
+        while t < until:
+            t += timedelta(seconds=step)
+            now[0] = t
+            svc.tick()
+
+    def mk(d, start):
+        work = tempfile.mkdtemp()
+        now = [start]
+        svc = _svc(S, work, now, rule=d)
+        svc.start(thread=False)
+        return svc, now, work
+
+    # B1: Thursday's shows run, the night hands over to Friday at 02:00;
+    # at 02:10 a save makes Thursday run to 03:30. Thursday is not reopened
+    # and nothing starts on Friday morning.
+    night = {"first_start": "22:35", "interval_min": 15, "last_end": "23:59"}
+    d0 = doc({"thu": dict(night), "fri": dict(night)})
+    svc, now, _w = mk(d0, at(THU, 22, 0))
+    run(svc, now, at(FRI, 2, 10))
+    check(svc.machine.date == date(*FRI), "setup: on Friday's night")
+    d1 = copy.deepcopy(d0)
+    d1["weekly"]["thu"]["last_end"] = "03:30"
+    SV.save_rule(svc.path, d1)
+    svc.reload()
+    run(svc, now, at(FRI, 2, 20))
+    work = svc.state_dir
+    svc.stop()
+    # A restart then (02:21) does not go back either: Friday has a saved
+    # list, so Thursday is behind it.
+    now[0] = at(FRI, 2, 21)
+    b = _svc(S, work, now)
+    b.start(thread=False)
+    run(b, now, at(FRI, 4, 0))
+    check(svc.machine.date == date(*FRI) and _starts(svc) == [1, 2, 3, 4, 5],
+          f"a save never takes the night back to Thursday: "
+          f"{svc.machine.date} {_starts(svc)}")
+    check(b.machine.date == date(*FRI) and not _starts(b),
+          f"nor does a restart after it: {b.machine.date} {_starts(b)}")
+    b.stop()
+
+    # B2: show 5 moved to 02:30, a restart at 02:01 runs it on Thursday's
+    # night; a restart at 02:50 (after the hand over) misses it out loud.
+    for when, ran in (((2, 1), True), ((2, 50), False)):
+        svc, now, work = mk(doc({"thu": dict(night)}), at(THU, 22, 0))
+        run(svc, now, at(THU, 23, 30))
+        svc._apply(_op(S, S.EDIT_MOVE, show=5, at="2:30"))
+        run(svc, now, at(THU, 23, 40))
+        svc.stop()
+        now[0] = at(FRI, *when)
+        b = _svc(S, work, now)
+        b.start(thread=False)
+        run(b, now, at(FRI, 3, 0))
+        if ran:
+            f = json.load(open(SV.tonight_path(date(*THU), work),
+                               encoding="utf-8"))
+            s5 = [x for x in f["slots"] if x["n"] == 5][0]
+            check(any("carries on" in r["text"] for r in b.journal),
+                  "the start says the night carries on")
+            check(_starts(b) == [5] and s5["status"] == S.DONE,
+                  f"a restart at 02:01 keeps Thursday and runs show 5 at "
+                  f"02:30, on Thursday's list: {s5['status']} {_starts(b)}")
+        else:
+            f = json.load(open(SV.tonight_path(date(*THU), work),
+                               encoding="utf-8"))
+            s5 = [x for x in f["slots"] if x["n"] == 5][0]
+            check(not _starts(b) and s5["status"] == S.MISSED and
+                  any(r["action"] == "miss" and r["show"] == 5
+                      for r in b.journal),
+                  f"a restart at 02:50 misses show 5 out loud: "
+                  f"{s5['status']} {_starts(b)}")
+        b.stop()
+    # The same before an early next night: Friday's first show at 00:50,
+    # Thursday's show 2 moved to 00:25, a restart at 00:21.
+    d2 = doc({"thu": {"first_start": "23:00", "interval_min": 20,
+                      "last_end": "23:45"},
+              "fri": {"first_start": "00:50", "interval_min": 20,
+                      "last_end": "01:40"}})
+    svc, now, work = mk(d2, at(THU, 22, 0))
+    run(svc, now, at(THU, 23, 10))
+    svc._apply(_op(S, S.EDIT_MOVE, show=2, at="0:25"))
+    run(svc, now, at(FRI, 0, 20))
+    svc.stop()
+    now[0] = at(FRI, 0, 21)
+    b = _svc(S, work, now)
+    b.start(thread=False)
+    run(b, now, at(FRI, 0, 30))
+    check(_starts(b)[:1] == [2] and b.machine.date in (date(*THU),
+                                                       date(*FRI)),
+          f"a restart at 00:21 still runs Thursday's 00:25 show: "
+          f"{_starts(b)}")
+    b.stop()
+
+    # B3: at 22:40, "10:55" (meant 22:55) is not guessed to be Friday
+    # morning; "10:55 tomorrow" is, and "23:59 today" is today.
+    svc, now, _w = mk(doc({"thu": dict(night)}), at(THU, 22, 0))
+    run(svc, now, at(THU, 22, 40))
+    o = svc._apply(_op(S, S.EDIT_MOVE, show=2, at="10:55"))
+    check(o.refused and '"10:55 tomorrow"' in o.refused and
+          svc.machine.hm(svc.machine.slot(2).start) == "22:50",
+          f"a time 11 hours after the last show asks for its day: "
+          f"{o.refused!r}")
+    _no_dashes(o.refused, "typo refusal")
+    o = svc._apply(_op(S, S.EDIT_MOVE, show=3, at="10:55 tomorrow"))
+    check(not o.refused and svc.machine.slot(3).start == at(FRI, 10, 55),
+          f"typed with its day it is taken: {o.refused!r}")
+    o = svc._apply(_op(S, S.EDIT_MOVE, show=4, at="23:59 today"))
+    check(not o.refused and svc.machine.slot(4).start == at(THU, 23, 59),
+          f"today is today: {o.refused!r}")
+    svc.stop()
+
+    # Huge values load, capped to 24 hours and said; the ticks run.
+    for k in ("show_len_s", "guard_s"):
+        big = doc({"thu": dict(night)}, **{k: 10 ** 14})
+        r = S.parse_rule(big)
+        w = " ".join(S.rule_warnings(r))
+        check(getattr(r, k) == S.MAX_SPAN_S and "86400 is used" in w,
+              f"{k} 1e14 is capped and said: {getattr(r, k)} {w[:120]!r}")
+        svc, now, _w = mk(big, at(THU, 22, 0))
+        run(svc, now, at(THU, 22, 2), step=30)
+        check(svc.machine is not None, f"{k} 1e14: the ticks run")
+        svc.stop()
+    wide = S.parse_rule(_sched_doc(season={"first_date": "0001-01-01",
+                                           "last_date": "9999-12-31"},
+                                   exceptions={}))
+    w = " ".join(S.rule_warnings(wide))
+    check(wide.first_date == S.SEASON_MIN and
+          wide.last_date == S.SEASON_MAX and "is used" in w,
+          f"a season from year 1 to 9999 is capped and said: {w[:160]!r}")
+    # A long season is checked quickly, the first 400 nights only.
+    every = {k: {"first_start": "18:00", "interval_min": 1,
+                 "last_end": "23:59"} for k in S.WEEKDAYS}
+    long_r = S.parse_rule(_sched_doc(season={"first_date": "2026-10-01",
+                                             "last_date": "2099-12-31"},
+                                     weekly=every, exceptions={}))
+    t0 = _t.monotonic()
+    w = " ".join(S.rule_warnings(long_r, most=20))
+    took = _t.monotonic() - t0
+    check(took < 3.0 and "first 400 nights" in w,
+          f"a season to 2099 is checked in {took:.1f} s, said: "
+          f"{w[-120:]!r}")
+    # A weekday written twice is said.
+    r = S.parse_rule(_sched_doc(weekly={"thu": dict(night),
+                                        "Thursday": dict(night)},
+                                exceptions={}))
+    check("is thu again" in " ".join(S.rule_warnings(r)),
+          "a weekday written twice is said")
+    # Nights running into each other are named by weekday.
+    r = S.parse_rule(doc({"thu": {"first_start": "23:00", "interval_min": 30,
+                                  "last_end": "01:30"},
+                          "fri": {"first_start": "00:30", "interval_min": 30,
+                                  "last_end": "01:30"}}))
+    w = " ".join(S.rule_warnings(r))
+    check("A Thursday night has a show" in w,
+          f"the overlap names the weekday: {w[:160]!r}")
+
+    # A 24 hour night: last_end == first_start runs to the same time the
+    # next day.
+    r = S.parse_rule(doc({"thu": {"first_start": "18:00",
+                                  "interval_min": 60, "last_end": "18:00"}}))
+    p = S.expand(r, date(*THU))
+    check(len(p.starts) == 24 and S.clock(p.starts[-1]) == "17:00" and
+          p.starts[-1].date() == date(*FRI),
+          f"a 24 hour night holds 24 hourly shows: {len(p.starts)}")
+
+    # An early next night never cuts this night's own shows: Thursday 23:00
+    # to 01:30 (shows to 01:00), Friday's first at 00:40. Thursday's 00:30
+    # and 01:00 shows run; the hand over waits for them.
+    r = S.parse_rule(doc({"thu": {"first_start": "23:00", "interval_min": 30,
+                                  "last_end": "01:30"},
+                          "fri": {"first_start": "00:40", "interval_min": 30,
+                                  "last_end": "02:30"}}))
+    ends = S.night_reset(date(*THU), r.tz, r)
+    check(ends >= at(FRI, 1, 0) + timedelta(seconds=560),
+          f"the hand over waits for Thursday's 01:00 show and guard: "
+          f"{ends}")
+    print("  ok")
+
 def test_schedule_rule_file_with_a_bom():
     section("scheduler: a rule file saved by Windows Notepad reads")
     S = _sched()
@@ -101753,6 +101959,7 @@ if __name__ == "__main__":
         test_schedule_save_review_a_cases,
         test_schedule_save_review_round_4,
         test_schedule_shows_after_midnight,
+        test_schedule_after_midnight_review_a,
         test_schedule_run_warning_says_only_what_is_true,
         test_schedule_late_failed_start_is_a_fault,
         test_schedule_after_a_stopped_show_is_one_choice,
