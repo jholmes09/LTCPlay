@@ -214,7 +214,10 @@ channels. flamesafe writes slot 77 itself, from its arm state only: a value
 the FSEQ or xLights has on channel 77 is never sent (CONTRACT.md, "What the
 wire carries"). The flame controller's span must still reach 77: `ltc serve`
 refuses at start a group whose safety or fire slot is past it. A show set
-to its fireball timeline ignores the FSEQ's 55 to 59 altogether.
+to its fireball timeline ignores the FSEQ's 55 to 59 altogether. No show
+ever sends the FSEQ's 59 (Purge is by hand only), and an FSEQ show's 55
+and 56 go out only under the charge rule (OPERATOR.md, "Every show, FSEQ
+or Timeline").
 
 A flame group with a safety slot for each fixture (flamesafe multi-safety, the wave flamer) has one machine per fixture, and locking one locks that fixture's safety slot with its fire slots. With no `machines` list the pairing comes from the slot layout, never the list order: a fixture's fire slots are the ones directly below its safety slot (channels 1 to 5 fire, channel 6 safety). If the layout does not say, the whole group is one machine and locking it locks every slot. In a `machines` list each machine of such a group must name its own `safety`, and its slots must be on that fixture.
 

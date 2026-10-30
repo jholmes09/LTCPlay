@@ -1652,6 +1652,11 @@ class FlameCues:
         # yet, so the cues are never live, nor refused without the fault,
         # while the screens say CUES FAULT.
         self._stale = (None, frozenset())
+        # The fireball timeline (fireball_cues.FireballCues, Jeff
+        # 2026-10-30), set by web.serve: for a show set to "timeline",
+        # slots 55 to 59 of every frame this returns come from it, at the
+        # same cue time this read the render at. None: the frame as read.
+        self.fireball = None
 
     def _note(self, text, **f):
         if self._journal is not None:
@@ -1797,6 +1802,11 @@ class FlameCues:
         s = getattr(self.control, "session", None)
         if s is None or not getattr(s, "running", False):
             return
+        fb = self.fireball
+        if fb is not None:
+            # Read here, off the sender, BEFORE the layout is published:
+            # whoever finds the layout finds the timeline read too.
+            fb.refresh()
         span = self._locate(s)
         self._layout = (s, span, self._total, self._layout_mtime)
         by = {}
@@ -2306,7 +2316,7 @@ class FlameCues:
                 out[0:count] = row
                 self._why = ""
                 self.fault = ""
-                return out
+                return self._with_fireball(out, s, label, rel, cue)
             data = f.frame(idx)
         except Exception as e:
             name = type(e).__name__
@@ -2332,7 +2342,18 @@ class FlameCues:
                                                   src + hi - dst]
         self._why = ""
         self.fault = ""
-        return out
+        return self._with_fireball(out, s, label, rel, cue)
+
+    def _with_fireball(self, out, s, label, rel, cue):
+        """The frame with the fireball timeline applied (FireballCues), or
+        as read when none is set up. In background mode its file is read
+        on the reading thread only; without it (the selftest), here."""
+        fb = self.fireball
+        if fb is None:
+            return out
+        if not self._bg and fb._plan is None:
+            fb.refresh()
+        return fb.apply(out, s, label, rel, cue)
 
 
 class OffThreadJournal:

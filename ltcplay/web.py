@@ -2448,6 +2448,47 @@ def _attach_fireball(httpd):
     httpd.server_close = _close_fireball
 
 
+def _attach_fireball_timeline(httpd):
+    """The fireball timeline on the flame cues (fireball_cues.py, Jeff
+    2026-10-30): for a show set to "timeline", slots 55 to 59 come from
+    the settings folder's ltcplay_fireball_timeline.json. Built before any
+    show can run. If it cannot be built, every show's fireball slots are
+    zero (fail closed: a show set to the timeline never falls back to its
+    FSEQ), and that is said."""
+    from . import fire_ice as fire_ice_mod
+    from . import fireball_cues as fbc_mod
+    remote = httpd.remote
+    link = getattr(httpd.fire_ice, "flame_link", None)
+    cues = getattr(link, "cues", None)
+    if not isinstance(cues, fire_ice_mod.FlameCues):
+        return
+    say = getattr(link, "journal_line", None)
+    try:
+        def fireball_slots():
+            # flamesafe's fireball group's fire slots, as the Fireball page
+            # reads them (the Startup page's reading of flamesafe's
+            # config), or None when there is none to compare.
+            from . import fireball as fireball_mod
+            g, _why = fireball_mod.find_group(
+                getattr(getattr(httpd, "morning", None), "groups", None)
+                or [])
+            return g["fire"] if g else None
+        fb = fbc_mod.FireballCues(
+            remote.fireball_timeline_store(),
+            charge_get=lambda: getattr(remote, "fireball_charge", None),
+            journal=say, group_get=fireball_slots)
+        fb.refresh()
+    except Exception as e:                       # noqa: BLE001
+        fb = fbc_mod.FireballCues(None, journal=say)
+        fb._plan = (None, f"the fireball timeline could not be set up "
+                          f"({type(e).__name__}: {e}); no show fires its "
+                          f"fireball", {})
+        print(f"The fireball timeline could not be set up: "
+              f"{type(e).__name__}: {e}")
+    cues.fireball = fb
+    remote.fireball_cues = fb
+
+
 def _attach_fireball_charge(httpd):
     """The fireball's charge state (fireball_charge.py, Jeff 2026-10-30):
     watches every flame frame after it went out (chained onto the flame
@@ -2989,6 +3030,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                   f"{type(e).__name__}: {e}")
     if fire_ice is not None and \
             getattr(httpd.fire_ice, "flame_link", None) is not None:
+        _attach_fireball_timeline(httpd)
         _attach_hazers(httpd)
         _attach_pump(httpd)
     if httpd.morning is not None:

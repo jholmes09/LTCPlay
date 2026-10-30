@@ -986,8 +986,76 @@ that long. The stages, in this order:
   own spelling of its name ("show.json" typed on a Mac or Windows PC is
   saved as "Show.json"); two files whose names differ only by case are
   refused: rename one.
-- **Where.** The editor is on Interface 2.0 (a later update). Until it is
-  there, nothing sends from the timeline either.
+- **Where.** The editor is on Interface 2.0 (a later update).
+
+### Every show, FSEQ or Timeline (a behaviour change)
+
+Jeff: never a double charge under any circumstance, and Purge by hand
+only. So for **every** show, also one that plays its fireball from its
+FSEQ:
+
+- **Purge (59) never comes from a show.** Whatever the FSEQ has on 59 is
+  zero. Purge is only the Fireball page's Purge button.
+- **The FSEQ's Fuel Charge (55) and Air Charge (56) follow the same charge
+  rule as the timeline:** they go out only while that tank is EMPTY, or
+  carrying on the charge they started; otherwise they are held off and the
+  journal and the screens say so once ("Fuel already charged: the FSEQ's
+  Fuel Charge was skipped (no double charge)."). After a shot or a Purge
+  empties the tank, the next charge in the FSEQ goes out again.
+  A charge the FSEQ itself turns off has ended: a second Fuel cue a
+  moment later, or a flicker effect, never charges a charged tank again.
+- **The fireball must be on 55 to 59.** If flamesafe's fireball group is
+  on other channels, no show fires its fireball (its own channels are held
+  at zero), both tanks become NOT KNOWN on the charge record, and the
+  screens say why, until the group is on 55 to 59.
+- **No fireball group found at all** in flamesafe's config: 55 to 59 are
+  still guarded for every show, whatever is wired to them. Purge (59) is
+  always zero, and Fuel (55) and Air (56) each get one charge until a
+  shot (57) or a Purge empties the record again.
+- Valve Open (57), the Igniter (58) and every other channel of an FSEQ
+  show are exactly as before.
+
+### In a show set to Timeline
+
+- The show's FSEQ values on 55 to 59 are ignored, always. Each stage's
+  channel is ON (255) from its start for its duration, on the show audio's
+  own cue time, and off otherwise. **Purge (59) is never set.**
+- Everything that stops flames stops these: they reach the Fireball only
+  while it is **armed** (flamesafe), only while the show plays, and Hold,
+  Stop, Abort, a seek and a Programming move work on them exactly as on
+  any flame cue. After a Resume a stage whose time is still running comes
+  back like any flame cue does, **except a charge** (below).
+- **Never a double charge.** The Fuel or Air stage turns its channel on
+  only while that tank is EMPTY (see the charge record below), or while it
+  carries on the very charge it started. A new charge also waits until
+  the charge record says PENDING on disk (below); if that cannot be
+  saved, the stage is skipped: "the charge record cannot be saved:
+  automatic charging is off". Otherwise it is skipped for the
+  rest of that play, and the journal and every screen's status say so
+  once, for example
+  "Fuel already charged: the Fuel stage was skipped (no double charge)."
+  A tank NOT KNOWN is skipped too: purge or fire to reset it. A charge cut
+  short (stopped for more than a quarter of a second: Hold, Stop, a seek)
+  never charges again in that play, even after a Resume inside its time:
+  "Fuel charge cut short ... not charged again in this play": that shot
+  is under-charged, and the journal says so too. A stage interrupted for
+  0.25 s or less resumes within the same window; longer ends it. So a
+  dropped frame, a send that failed, a short link outage, a lockout
+  undone at once, or a Hold under 0.1 s with an instant Resume rides
+  through as the same charge; its time on never adds up to more than its
+  window. The Valve Open and Igniter stages are not limited by this.
+- **Editing during a show.** A saved change is taken on the next frame. A
+  stage already started keeps the times it started with. A stage not
+  started yet takes the new times, unless its new start is already behind
+  the show: then it is not fired in this play. A change of source (FSEQ
+  or Timeline) applies from the next time a show cue starts: the play
+  running finishes its own stages, Valve Open included.
+- A show plays the timeline saved for it under any spelling of its file
+  name ("SHOW.JSON" plays the timeline of "Show.json"); two entries that
+  differ only by case are a fault and that show fires no fireball.
+- If the timeline file cannot be read, or could not be set up, 55 to 59
+  are zero for **every** show (a Timeline show never falls back to its
+  FSEQ) and the journal and every screen's status say why.
 
 ### The fuel and air charge (never a double charge)
 
