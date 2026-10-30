@@ -952,6 +952,26 @@ What each end leaves on the pixels:
 | A show that started and then failed | black |
 | A start refused before anything went out (Auto start off, an Abort standing, the show audio not ready) | left as they were |
 
+**No black frame between the show and the idle look** (Jeff's report,
+2026-10-30: "a little blip of black when we go from intermission to the
+show or vice versa"). The show's timecode runs 30 frames a second, so it
+ends on the next whole timecode frame after the lights file ends, up to
+1/30 s later. In that moment the pixels used to send one black frame
+(25 ms) before the idle look. Now the lights file's last frame stays up
+through it, at most 2/30 s, and the idle look follows on the next frame.
+That is the same with the show file's Intermission cue after the show or
+without it. A Hold, an Abort or a Stop in that moment still goes black at
+once. Show audio (or `clock.zones.show_len_s`) that ends up to one
+timecode frame (1/30 s) after the lights file is covered by the same
+hold: the last frame stays up, not black. If it runs on longer than that,
+the pixels are black for the rest (after the held frames), as below,
+unless the show file says `"gaps": "idle"`, which puts the idle look up
+there instead. A free run (GO) on the show audio clock gets the same hold
+at the end of every cue it passes, gaps between cues included: the cue's
+last frame stays up for at most 2/30 s, then the gap look. Only the Fire
+& Ice show audio clock does this; a show chased off a timecode feed (GPL)
+is unchanged.
+
 After a Start now show ends by itself with nothing else tonight, the
 night closes and the pixels stay on the idle look all through the closed
 night, until the next show starts. Abort then still disarms every flame
