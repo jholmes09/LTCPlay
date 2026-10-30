@@ -2716,8 +2716,79 @@ MUTATIONS = [
 
  ("ui 2.0: arming a hazer is not greyed for a role that may not arm",
   "ltcplay/web/remote2.html",
-  "    b.disabled = !look.armed && !mayArm;",
-  "    b.disabled = false;"),
+  " !mayArm ? signWhy(s, \"arm\") :",
+  " false ? signWhy(s, \"arm\") :"),
+
+ ("ui 2.0: announcements play from off the show PC",
+  "ltcplay/web/remote2.html",
+  "  if(!local) return \"Show PC only\";\n",
+  ""),
+
+ ("ui 2.0: announcements stay live with no contact",
+  "ltcplay/web/remote2.html",
+  "  if(!st || isStaleNow) return \"No contact\";\n",
+  ""),
+
+ ("ui 2.0: Stop sound is live off the show PC",
+  "ltcplay/web/remote2.html",
+  "function annStopWhy(st, local){ return local ? \"\" : \"Show PC only\"; }",
+  "function annStopWhy(st, local){ return \"\"; }"),
+
+ ("ui 2.0: a disabled control still takes a press",
+  "ltcplay/web/remote2.html",
+  "color:#B3A68E;pointer-events:none}",
+  "color:#B3A68E}"),
+
+ ("ui 2.0: the screen never goes calm",
+  "ltcplay/web/remote2.html",
+  "  document.body.classList.toggle(\"inactive\", inactiveNow(ST, isSt));",
+  "  document.body.classList.toggle(\"inactive\", false);"),
+
+ ("ui 2.0: the calm tone dims Hold and Disarm flames",
+  "ltcplay/web/remote2.html",
+  "body.inactive #lz-b[data-mode=\"arm\"]{filter:saturate(.3)}",
+  "body.inactive #lz-b[data-mode=\"arm\"], body.inactive #b-hold, body.inactive #b-disall{filter:saturate(.3)}"),
+
+ ("ui 2.0: a live hazard reads calm",
+  "ltcplay/web/remote2.html",
+  "  if(st && pinItems(st).length) return false;\n",
+  ""),
+
+ ("ui 2.0: a live hazard reads calm once contact is lost",
+  "ltcplay/web/remote2.html",
+  "  if(st && pinItems(st).length) return false;\n  if(!st || isStaleNow) return true;",
+  "  if(!st || isStaleNow) return true;\n  if(st && pinItems(st).length) return false;"),
+
+ ("ui 2.0: a show playing reads calm when signed out",
+  "ltcplay/web/remote2.html",
+  "  if(isLive(st)) return false;\n  if(st.me && st.me.view_only) return true;",
+  "  if(st.me && st.me.view_only) return true;"),
+
+ ("ui 2.0: the calm tone mutes the state pill",
+  "ltcplay/web/remote2.html",
+  "body.inactive .state > div:not(#pill), body.inactive #b-go,",
+  "body.inactive .state, body.inactive #b-go,"),
+
+ ("ui 2.0: a signed-in viewer is told to sign in",
+  "ltcplay/web/remote2.html",
+  "  if(me.user) return perm === \"arm\" ? (short ? \"Cannot arm\" : \"Your sign-in cannot arm\") : \"View only\";\n",
+  ""),
+
+
+ ("ui 2.0: the brand can add a header row",
+  "ltcplay/web/remote2.html",
+  "#brand{flex:1 1 0;",
+  "#brand{flex:1 1 auto;"),
+
+ ("ui 2.0: the page title is not the show's",
+  "ltcplay/web/remote2.html",
+  "    document.title = title + \" remote\";\n    $(\"brand\").title = title;",
+  "    $(\"brand\").title = title;"),
+
+ ("ui 2.0: arming a hazer from an iPad is live while arming from screens is off",
+  "ltcplay/web/remote2.html",
+  "      !(ME && ME.local) && !(s.arming && s.arming.enabled) ? \"Arming off here\" : \"\";",
+  "      false ? \"Arming off here\" : \"\";"),
 
  ("ui: a hazer on Hold reads plain ARMED",
   "ltcplay/web/remote.html",

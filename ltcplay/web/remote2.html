@@ -25,6 +25,10 @@
    waiting, red fault or danger, grey off or safe, blue information); an
    icon and a word on every control; fixed regions, so nothing moves when
    the state changes. */
+@font-face{font-family:"Playfair Display";font-weight:900;font-style:normal;
+  font-display:swap;src:url(/brand/PlayfairDisplay-900.woff2) format("woff2")}
+@font-face{font-family:"Cinzel";font-weight:700;font-style:normal;
+  font-display:swap;src:url(/brand/Cinzel-700.woff2) format("woff2")}
 @font-face{font-family:"Inter";font-weight:400;font-style:normal;
   font-display:swap;src:url(/brand/Inter-400.woff2) format("woff2")}
 @font-face{font-family:"Inter";font-weight:700;font-style:normal;
@@ -37,6 +41,8 @@
   --green:#28BE5A; --green-ink:#04150a; --amber:#F5A01E; --amber-ink:#1e1000;
   --red:#E61E18; --red-hi:#FF5A50; --red-deep:#9E1016; --grey:#A79C88; --blue:#5AAEFF;
   --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  --serif:"Playfair Display",Georgia,"Times New Roman",serif;
+  --caps:"Cinzel","Trajan Pro",Georgia,serif;
   --mono:ui-monospace,"Cascadia Mono",Consolas,Menlo,monospace;
   /* sizes, the 1024x768 iPad first */
   --fs:20px; --gap:8px; --pad:12px;
@@ -77,6 +83,21 @@ svg.i{width:1.15em;height:1.15em;flex:0 0 auto;fill:currentColor}
 header{display:flex;flex-wrap:wrap;align-items:center;gap:var(--gap);padding:var(--gap) var(--pad);
   border-bottom:1px solid var(--line)}
 #tabs{display:flex;gap:6px;flex:0 1 auto}
+/* The brand (1.0's header): the logo, the kicker and the show's name. It
+   takes only the room the header has left (a zero basis), so it never
+   adds a row or pushes a control; fitBrand() drops the kicker, then the
+   name (the page title keeps it), then the brand, to fit. The logo's box
+   is reserved, so nothing moves while it or the name loads. */
+#brand{flex:1 1 0;min-width:0;display:flex;align-items:center;overflow:hidden;height:var(--hdr-btn);
+  margin-right:calc(-1 * var(--gap))}
+/* The header's gap is inside the brand (the negative margin), so even an
+   empty brand never makes a line wrap. */
+#brand::after{content:"";flex:0 0 var(--gap)}
+#brand-logo{flex:0 0 auto;height:var(--hdr-btn);width:auto;aspect-ratio:228/166}
+#brand .bt{min-width:0;margin-left:10px;display:flex;flex-direction:column;justify-content:center}
+#brand-k{margin:0;font:700 13px/1.25 var(--caps);letter-spacing:.2em;text-transform:uppercase;color:var(--gold);white-space:nowrap}
+#brand-show{margin:0;font:900 22px/1.1 var(--serif);color:var(--cream);white-space:nowrap}
+#next-b{flex:0 0 auto;font-family:var(--serif);font-weight:900;color:var(--gold);white-space:nowrap}
 .tab{display:inline-flex;align-items:center;gap:8px;min-height:var(--hdr-btn);padding:0 14px;
   border:2px solid transparent;border-radius:10px;background:transparent;font-weight:700;cursor:pointer;color:var(--muted)}
 .tab.on{color:var(--cream);border-color:var(--gold);background:var(--panel2)}
@@ -109,7 +130,17 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) calc(va
 .b.blue{background:#0d2742;border-color:var(--blue);color:#E3F1FF}
 .b.safe{background:#2b2723;border-color:#8b8170;color:var(--cream)}
 .b.hold{border-style:solid;border-width:3px}
-.b:disabled{cursor:default;background:#100d0a;border:2px dashed #5b5040;color:#B3A68E}
+.b:disabled{cursor:default;background:#100d0a;border:2px dashed #5b5040;color:#B3A68E;pointer-events:none}
+.b:disabled .fill{display:none}
+/* The quiet tone: signed out, no contact or the show not running. Only
+   what is not an emergency control is quieter (less colour, the same
+   lightness, so text keeps its contrast); Abort, Hold, Stop, every Disarm
+   and the live modes' Stops keep their full colour, and so do the state
+   pill (NO CONTACT, NOT READY) and a hazer whose state is not known (its
+   button is a disarm). Nothing moves. */
+body.inactive .state > div:not(#pill), body.inactive #b-go, body.inactive #b-armall, body.inactive #ann .head, body.inactive #ann-btns,
+body.inactive .tile:not(.armed) .tn, body.inactive .tile:not(.armed) .ts, body.inactive #hazers [data-hzb]:not(.on):not(.unk),
+body.inactive #lz-b[data-mode="arm"]{filter:saturate(.3)}
 .b .fill{position:absolute;left:0;top:0;bottom:0;width:0;background:rgba(255,255,255,.28);pointer-events:none;transition:width .1s linear}
 .q{width:56px;height:56px;min-width:56px;border-radius:50%;border:2px solid var(--blue);background:#0d1d30;
   color:#E3F1FF;font-weight:800;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;padding:0;flex:0 0 auto}
@@ -195,8 +226,11 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) calc(va
 .hzl .st span{min-width:3.2em;text-align:center;font-weight:800}
 .hzl .st .b{min-width:56px;min-height:56px;padding:0 10px}
 .hzrow .b{min-height:56px;height:100%;padding:2px 6px;gap:0;justify-content:center;flex-direction:column;line-height:1.1}
-.hzrow .b .hn{font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
-.hzrow .b .hw{font-weight:800}
+/* Each line box holds the fallback fonts' full height (Segoe UI on Windows
+   is about 1.33 em), so neither the name's overflow:hidden nor the button
+   cuts a word; the row is as tall as this (layoutGroups). */
+.hzrow .b .hn{font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;line-height:1.35}
+.hzrow .b .hw{font-weight:800;line-height:1.35}
 .hzrow .b.on{background:#0b2414;border-color:var(--green);color:#9BF5B7}
 .hzrow .b.off{background:var(--panel);border-color:var(--line);color:var(--cream)}
 .hzrow .b.unk{border-style:dashed;color:var(--grey)}
@@ -281,12 +315,18 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 .qc h3{margin:12px 0 4px;font-size:calc(var(--fs) + 2px)}
 .qc dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:6px 14px}
 .qc dt{font-weight:800}
+.qbrand{display:flex;align-items:center;gap:14px;margin:0 0 10px}
+.qbrand img{height:66px;width:auto;aspect-ratio:228/166}
+.qbrand p{margin:0}
+.qbrand .qk{font:700 14px/1.2 var(--caps);letter-spacing:.2em;text-transform:uppercase;color:var(--gold)}
+.qbrand .qs{font:900 26px/1.1 var(--serif)}
 .qc dd{margin:0}
 @media print{
   body{overflow:visible;background:#fff;color:#000}
   body > *{display:none !important}
   #qcard{display:block !important;color:#000;font:14pt/1.35 var(--sans);padding:12mm}
   #qcard h2{font-size:20pt;margin:0 0 6mm}
+  #qcard .qk{color:#6b4e12}
 }
 
 /* ---- narrower screens: iPad portrait, small laptops ---- */
@@ -313,6 +353,13 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 /* A phone: the SHOW pane scrolls between the header and the footer, so
    nothing ever goes under Abort. */
 @media (max-width:600px){
+  /* A phone: the logo alone, in the room left on the buttons' last line
+     (placeBrand moves it there). */
+  .hright #brand{margin-right:0;margin-left:-4px;justify-content:flex-end;height:44px}
+  .hright #brand::after{display:none}
+  .hright #brand::before{content:"";flex:0 0 4px}
+  #brand-logo{height:30px}
+  .hb{padding:0 6px}
   :root{--fs:20px; --pad:8px; --gap:6px; --next-h:auto; --state-h:auto; --tr-h:auto; --al-h:auto; --tile-btn:60px; --tc-fs:30px}
   #tabs,.hright{flex-wrap:wrap;margin-left:0}
   main{overflow-y:auto}
@@ -369,6 +416,10 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 </svg>
 <div id="app">
 <header>
+  <div id="brand" data-brand>
+    <img id="brand-logo" src="/brand/logo_small.png" alt="Jeff Holmes Presents" width="60" height="44" onerror="this.hidden=true;if(window.fitBrand)fitBrand()">
+    <div class="bt"><p id="brand-k">Jeff Holmes Presents</p><p id="brand-show">Show remote</p></div>
+  </div>
   <nav id="tabs" role="tablist" aria-label="Screens">
     <button class="tab on" data-tab="show" role="tab"><svg class="i"><use href="#i-play"/></svg>Show</button>
     <button class="tab" data-tab="day" role="tab"><svg class="i"><use href="#i-sun"/></svg>Day</button>
@@ -384,7 +435,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 </header>
 <!-- What to do next, on every tab; a live hazard (cleaning, live flame,
      flames in rehearsal) pinned here with its own Stop, never paged. -->
-<div id="next" class="ok"><svg class="i"><use href="#i-info"/></svg><span class="t" id="next-t">Connecting to the show PC</span><span id="pins"></span><button class="q" data-q="next" aria-label="Help: next step">?</button></div>
+<div id="next" class="ok"><svg class="i"><use href="#i-info"/></svg><span id="next-b" data-brand hidden></span><span class="t" id="next-t">Connecting to the show PC</span><span id="pins"></span><button class="q" data-q="next" aria-label="Help: next step">?</button></div>
 <main>
   <!-- Off the SHOW tab: the presses that make things safe, always here. -->
   <div id="mini" hidden>
@@ -420,7 +471,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <div class="flames">
       <div id="groups" aria-label="Flame groups and lasers"></div>
       <div class="allcol">
-        <button class="b green hold" id="b-armall"><div class="fill"></div><svg class="i"><use href="#i-ring"/></svg><span>Hold: arm flames</span></button>
+        <button class="b green hold" id="b-armall"><div class="fill"></div><svg class="i"><use href="#i-ring"/></svg><span class="lbl"><span id="armall-l">Hold: arm flames</span><small id="armall-why"></small></span></button>
         <button class="b safe" id="b-disall"><svg class="i"><use href="#i-shield"/></svg><span>Disarm flames</span></button>
       </div>
       <!-- The hazers (hazers.py, Jeff 2026-10-29): a plain tap ON or OFF
@@ -485,6 +536,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 
 <!-- The quick card (Help, Quick card): what to print and keep by the rack. -->
 <div id="qcard" class="qc">
+  <div class="qbrand" data-brand><img src="/brand/logo_small.png" alt="Jeff Holmes Presents" width="91" height="66" onerror="this.hidden=true"><div><p class="qk">Jeff Holmes Presents</p><p class="qs">Show remote</p></div></div>
   <h2>LTC Player: quick card</h2>
   <h3>The four big ones</h3>
   <dl>
@@ -506,7 +558,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <dt>Hold to arm</dt><dd>Press and keep your finger down.</dd>
     <dt>Disarm</dt><dd>One tap. Always works.</dd>
     <dt>Disarm flames</dt><dd>Every flame group. Lasers have their own.</dd>
-    <dt>Red Stop at the top</dt><dd>Stops cleaning or live flame.</dd>
+    <dt>Red Stop at the top</dt><dd>Stops cleaning, live flame or Programming flames.</dd>
     <dt>Wind</dt><dd>Advisory only. The on-site wind check decides.</dd>
   </dl>
 </div>
@@ -774,6 +826,15 @@ function pinItems(st){
   const lf = s.live_flame || {};
   if(lf.on === true) out.push({key:"lf", text:"Live flame on. Armed groups can fire.", pill:"LIVE FLAME", btn:"Live flame off",
     full:"Live flame programming: xLights drives the flames. Only an armed group fires. Never use xLights' test tools while a group is armed. Turned on by " + (lf.who || "someone") + "."});
+  // Programming playback playing the show's flame cues (#173: no switch,
+  // so nothing else here says flames can fire). Its Stop is 1.0's Hold,
+  // which the engine makes Programming playback's Pause; a safety press,
+  // never refused.
+  const pf = s.programming_flames || {};
+  if(pf.on === true) out.push({key:"pf", text:"Flames can fire from Programming.", pill:"FLAMES LIVE", btn:"Stop",
+    full:"Programming playback is playing the show's flame cues: an armed group fires. Stop is Hold, which pauses the playback. Abort ends it too."});
+  // Two pins: each Stop names what it stops.
+  if(out.length > 1) out.forEach(p => { if(p.key === "pf") p.btn = "Stop Programming"; });
   return out;
 }
 // The big button: the next step, one of Reset, Resume, Run show, Start
@@ -800,7 +861,7 @@ function goLook(st, isStaleNow, local, waiting){
     else L = {mode:"start", label:"Start now", icon:"play", tone:"green", off:!fresh, why:fresh ? "Starts the next show" : "No contact"};
   }
   // Signed out is view only: none of these is a safety press.
-  if(!["live", "loading", "none", "checking"].includes(L.mode) && !mayRow(st, "show")){ L.off = true; L.why = "Sign in first"; }
+  if(!["live", "loading", "none", "checking"].includes(L.mode) && !mayRow(st, "show")){ L.off = true; L.why = signWhy(st, "show"); }
   return L;
 }
 // The line at the top: what to do next, in eight words or fewer.
@@ -819,14 +880,14 @@ function nextStep(st, isStaleNow, local, items){
   const pch = prerollChoice(st.preroll, sch);
   if(pch && !pch.continued) return {tone:"bad", icon:"warn", text:"Rig check failed. Fix it, or continue."};
   if(st.alert_hold && st.alert_hold.held === true) return {tone:"warn", icon:"warn", text:"Alert holds the show. Acknowledge, then Resume."};
-  if(st.me && st.me.view_only) return {tone:"warn", icon:"user", text:"Sign in to use the controls."};
+  if(st.me && st.me.view_only) return {tone:"warn", icon:"user", text:"Signed out: view only. Sign in to control."};
   if(isHeld(st)) return {tone:"warn", icon:"pause", text:"Held. Press Resume to carry on."};
   if(sch.attached && !isLive(st) && prerollLook(st.preroll).checking) return {tone:"warn", icon:"clock", text:"Checking the rig before the show."};
   // A fault: what it is, and what the slot's button does (only an alert
   // with Acknowledge says Acknowledge).
   if(bad.length) return {tone:"bad", icon:"warn", text:bad[0].what + (bad[0].act === "ack" ? " Fix, then Acknowledge." : " See the alert.")};
   if(isRehearsal(st) && !isLive(st)) return {tone:"warn", icon:"info", text:"Rehearsal: the schedule starts no show."};
-  if(sch.attached && !runIsOn(st)) return {tone:"warn", icon:"power", text: local ? "Press Run show to start tonight." : "Run is off. Press Run on show PC."};
+  if(sch.attached && !runIsOn(st)) return {tone:"warn", icon:"power", text: local ? "Show not running. Press Run show." : "Show not running. Press Run on show PC."};
   const c = countdownRead(CD, monoNow());
   if(sch.state === "SHOW") return {tone:"ok", icon:"play", text:"Show " + (sch.running || "") + " running." + (c && c.kind === "left" ? " " + clockText(c.s) + " left." : "")};
   if(sch.start_waiting) return {tone:"ok", icon:"clock", text:"Starting when the show audio loads."};
@@ -842,6 +903,27 @@ function nextStep(st, isStaleNow, local, items){
   if(sch.delayed) return {tone:"warn", icon:"clock", text:"Show " + sch.delayed.show + " delayed. Press Start now."};
   if(sch.attached) return {tone:"ok", icon:"check", text:"No more shows tonight."};
   return {tone:"ok", icon:"info", text:"No schedule on this show PC."};
+}
+// Signed out (view only), no contact, nothing heard yet, or the show not
+// running: the page's quiet tone. From the engine's status only. Pure.
+// Why a press is not this screen's (review of #175): signed out, sign
+// in; signed in without the right, say so rather than "Sign in".
+function signWhy(st, perm, short){
+  const me = (st && st.me) || (typeof ME !== "undefined" && ME) || {};
+  if(me.user) return perm === "arm" ? (short ? "Cannot arm" : "Your sign-in cannot arm") : "View only";
+  return perm === "arm" ? (short ? "Sign in" : "Sign in to arm") : short ? "Sign in" : "Sign in first";
+}
+function inactiveNow(st, isStaleNow){
+  // A live hazard (cleaning, live flame, flames in Programming) never
+  // looks calm, whoever is signed in, and least of all with no contact
+  // (review of #175: the last status still says it is live).
+  if(st && pinItems(st).length) return false;
+  if(!st || isStaleNow) return true;
+  // A show playing is never calm, signed out or not.
+  if(isLive(st)) return false;
+  if(st.me && st.me.view_only) return true;
+  const sch = st.schedule || {};
+  return !!(sch.attached && !runIsOn(st) && !isLive(st));
 }
 // The state pill: an icon and a word, coloured by the one grammar. Never
 // READY with a fault open or a live mode on.
@@ -859,7 +941,7 @@ function pillLook(st, isStaleNow, items){
   if(sch.attached && prerollLook(st.preroll).checking) return {cls:"warn", icon:"clock", text:"CHECKING RIG"};
   if((items || []).some(i => i.tone === "bad")) return {cls:"bad", icon:"warn", text:"NOT READY"};
   if(!sch.attached) return {cls:"off", icon:"info", text:"NO SCHEDULE"};
-  if(!runIsOn(st)) return {cls:"off", icon:"power", text:"RUN IS OFF"};
+  if(!runIsOn(st)) return {cls:"off", icon:"power", text:"NOT RUNNING"};
   return {cls:"ok", icon:"check", text:"READY"};
 }
 
@@ -958,6 +1040,7 @@ function renderAlertSlot(){
   // Continue anyway is the run permission's (1.0's engine rule); never
   // turned off under a finger that holds it.
   if(!PR_HOLD) ab.disabled = it.act === "pr-continue" && !mayRow(ST, "show");
+  if(!PR_HOLD && ab.disabled) setText($("al-act-l"), signWhy(ST, "show"));
   if(it.act === "pr-continue" && it.holdMs) PR_HOLD_MS = it.holdMs;
 }
 // No contact: the slot never shows an old "No alerts"; it says the
@@ -1029,7 +1112,7 @@ function renderMini(isSt){
   if($("mini").hidden) return;
   const L = announceLook((ST || {}).announce, (ST || {}).booth);
   $("m-snd").hidden = !L.show;
-  $("m-snd").disabled = L.stopOff || ANN_BUSY;
+  $("m-snd").disabled = L.stopOff || ANN_BUSY || !!annStopWhy(ST, !!(ME && ME.local));
   $("m-disl").hidden = !$("lz");
   $("m-stop").disabled = HALT_BUSY;
 }
@@ -1043,7 +1126,7 @@ $("m-snd").addEventListener("click", () => annPress("announce-stop"));
 let PIN_SIG = "";
 function renderPins(){
   const pins = pinItems(ST);
-  const sig = pins.map(p => p.key).join(",");
+  const sig = pins.map(p => p.key + ":" + p.btn).join(",");
   if(sig === PIN_SIG) return;
   PIN_SIG = sig;
   $("pins").innerHTML = pins.map(p => `<button class="b red" data-pin="${p.key}">${icon("stop")}${esc(p.btn)}</button>`).join("");
@@ -1058,6 +1141,11 @@ $("pins").addEventListener("click", async e => {
   } else if(k === "lf"){
     try{ const j = await post("/api/remote/live-flame", {on: false}); say("Live flame programming off.", j.text, "ok"); }
     catch(e2){ say("Not turned off.", e2.message, "bad"); disarmFailed("Live flame NOT off.", e2.message); }
+  } else if(k === "pf"){
+    // 1.0's Hold (its b-hold: press("hold")), the same route and body; a
+    // refusal stays in the alert slot, as the other pins' do.
+    try{ const j = await post("/api/remote/hold", actor(undefined)); say("Held: Programming paused.", j.text || "", "ok"); }
+    catch(e2){ say("NOT held.", e2.message, "bad"); disarmFailed("Programming NOT paused. Abort or Disarm flames.", e2.message); }
   }
 });
 
@@ -1137,6 +1225,13 @@ function renderStale(){
   const pl = pillLook(ST, isSt, ALERTS);
   $("pill").className = pl.cls; setIcon($("pill-i"), pl.icon); setText($("pill-t"), pl.text);
   renderPins();
+  try{ renderAnnounce(); }catch(e){}
+  // A hazer's arm goes quiet the moment contact is lost, not at the next poll.
+  if(ST) try{ renderHazers(ST); }catch(e){}
+  // The calm tone (Jeff, 2026-10-29): signed out, no contact or the show
+  // not running, everything that is not an emergency control is quieter.
+  document.body.classList.toggle("inactive", inactiveNow(ST, isSt));
+  try{ fitNextBrand(); }catch(e){}
   if(isSt) drawSlotStale(); else if($("alert").classList.contains("stale")){ $("alert").className = ""; renderAlertSlot(); }
   renderMini(isSt);
   if(isSt){
@@ -1522,6 +1617,9 @@ function layoutGroups(){
     hz.style.gridRow = inset ? String(rows) : "auto";
   }
   box.style.gridTemplateColumns = "repeat(" + cols + ", minmax(0,1fr))";
+  // The hazers' own row is only as tall as its buttons: as one more 1fr
+  // row it was drawn as tall as a flame tile, and the SHOW tab scrolled.
+  box.style.gridTemplateRows = hz && !hz.hidden && !inset ? "repeat(" + rows + ", minmax(min-content,1fr)) auto" : "";
 }
 window.addEventListener("resize", layoutGroups);
 // The hazers (hazers.py): a row of one button per hazer (ARMED or
@@ -1566,7 +1664,12 @@ function renderHazers(s){
     setText(b.querySelector(".hw"), look.state);
     // Arming greyed for a role that may not arm (reviewer B, 6); a disarm
     // never.
-    b.disabled = !look.armed && !mayArm;
+    // Arming needs the arm permission, a live page and, from the show
+    // network, arming from a screen (remote.hazer_post); a disarm never.
+    const hzWhy = look.armed ? "" : stale() ? "No contact" : !mayArm ? signWhy(s, "arm") :
+      !(ME && ME.local) && !(s.arming && s.arming.enabled) ? "Arming off here" : "";
+    b.disabled = !!hzWhy;
+    if(hzWhy) setText(b.querySelector(".hw"), hzWhy);
     b.title = look.label + ". " + look.act + ". " + look.line + (!look.armed && v.down ? ". Cannot arm: " + v.down : "");
     b.setAttribute("aria-label", look.label + ". " + look.act);
   });
@@ -1718,6 +1821,15 @@ function renderAllButtons(isSt){
   // once (an Abort standing, live flame programming one group at a time).
   const can = (HOLD && HOLD.all) || (allButtonMode(ST, isSt) === "arm" && !armAllRefusal(ST));
   if(!(HOLD && HOLD.all)) b.disabled = !can || !mayRow(ST, "arm");
+  // Why it is off, in a word or two (the cell is narrow; the SHOW tab must
+  // not scroll); the engine's own refusal in full on the button's title.
+  const ar = armAllRefusal(ST);
+  // Off, it reads "Arm flames" over the reason: two lines, as tall as the
+  // live label, so the SHOW tab never grows.
+  setText($("armall-why"), !b.disabled ? "" : isSt ? "No contact" : !mayRow(ST, "arm") ? signWhy(ST, "arm", true) :
+    ar ? "Not now" : allButtonMode(ST, isSt) === "arm" ? "Not now" : "All armed");
+  setText($("armall-l"), b.disabled ? "Arm flames" : "Hold: arm flames");
+  b.title = b.disabled && ar ? ar : "";
   $("b-disall").disabled = false;
 }
 const ARMALL = $("b-armall");
@@ -1777,8 +1889,9 @@ function renderLasers(isSt){
   else {
     const why = lzArmRefusal(la, ls, isSt);
     b.className = "b " + (why ? "" : "green");
-    setIcon(b.querySelector("svg"), "laser"); setText($("lz-bl"), why ? (locked ? "Laser locked" : "Arming off") : "Arm lasers");
-    b.disabled = !!why || !mayRow(ST, "arm");
+    const may = mayRow(ST, "arm");
+    setIcon(b.querySelector("svg"), "laser"); setText($("lz-bl"), why ? (locked ? "Laser locked" : "Arming off") : !may ? signWhy(ST, "arm") : "Arm lasers");
+    b.disabled = !!why || !may;
   }
 }
 async function lzTileClick(){
@@ -1795,9 +1908,26 @@ async function lzTileClick(){
 
 // ---- announcements: one press plays (1.0's), Stop sound ends the sound
 let ANN_SIG = "", ANN_BUSY = false;
+// What stops an announcement press right now, in a few words, from the
+// engine's own rules (remote.announce_post): the show PC only, a fresh
+// page for a Play, the run permission, and announceLook's own reasons. ""
+// when a Play can go. Pure.
+function annWhy(st, isStaleNow, local){
+  if(!st || isStaleNow) return "No contact";
+  if(!local) return "Show PC only";
+  if(!mayRow(st, "show")) return (st.me && st.me.user) ? "View only" : "Sign in to use";
+  const an = st.announce || {};
+  if(an.ok === false) return "Cannot play now";
+  if(!(an.route || {}).ok) return "No sound output";
+  return "";
+}
+// Stop sound: never refused on the show PC (a stale page included); the
+// engine refuses it from anywhere else.
+function annStopWhy(st, local){ return local ? "" : "Show PC only"; }
 function renderAnnounce(){
   const s = ST || {};
   const L = announceLook(s.announce, s.booth);
+  const local = !!(ME && ME.local), why = annWhy(ST, stale(), local), stopWhy = annStopWhy(ST, local);
   $("ann").hidden = !L.show;
   if(!L.show) return;
   const an = s.announce || {};
@@ -1808,20 +1938,21 @@ function renderAnnounce(){
   setText($("ann-word"), playing ? (starting ? "Starting" : "Playing") : (an.held_failed ? "Failed" : "Announce"));
   $("ann-w").style.color = (playing || an.held_failed) ? "var(--amber)" : "";
   let note = "";
-  if(playing) note = String(playing.name || "") + (playing.held_schedule ? ": schedule held" : "");
-  else if(an.ok === false) note = "Cannot play now";
-  else if(L.devBad) note = "No sound output";
+  if(playing && stopWhy) note = "Stop sound: " + stopWhy;
+  else if(playing) note = String(playing.name || "") + (playing.held_schedule ? ": schedule held" : "");
+  else if(why) note = why;
   else note = an.over_show ? "Plays over the show" : "Holds the schedule";
   setText($("ann-note"), note);
-  $("ann-note").className = (L.devBad || an.ok === false) ? "bad" : "";
-  const sig = JSON.stringify([L.buttons, ANN_BUSY, mayRow(s, "show")]);
+  $("ann-note").className = (why && !playing) || (playing && stopWhy) ? "bad" : "";
+  const sig = JSON.stringify([L.buttons, ANN_BUSY, why]);
   if(sig !== ANN_SIG){
     ANN_SIG = sig;
-    const may = mayRow(s, "show");
+    // Truly off when it cannot act: the disabled attribute, no pressed
+    // look, and the reason beside it.
     $("ann-btns").innerHTML = L.buttons.map(b =>
-      `<button class="b ${b.on ? "on" : ""}" data-ann="${esc(b.id)}"${b.off || ANN_BUSY || !may ? " disabled" : ""}>${icon("mega")}<span>${esc(b.label)}${b.missing ? "<small>Missing</small>" : ""}</span></button>`).join("");
+      `<button class="b ${b.on ? "on" : ""}" data-ann="${esc(b.id)}"${b.off || ANN_BUSY || why ? " disabled" : ""}>${icon("mega")}<span>${esc(b.label)}${b.missing ? "<small>Missing</small>" : ""}</span></button>`).join("");
   }
-  $("ann-stop").disabled = L.stopOff || ANN_BUSY;
+  $("ann-stop").disabled = L.stopOff || ANN_BUSY || !!stopWhy;
 }
 async function annPress(route, extra){
   if(ANN_BUSY) return;            // one press, one announcement
@@ -1982,7 +2113,7 @@ $("wx").addEventListener("click", () => {
 
 // ---- "?" : one plain sentence per control ----
 const QHELP = {
-  next: ["Next step", [["This line", "Says what to do next."], ["A red Stop here", "Stops a live mode: cleaning or live flame."]]],
+  next: ["Next step", [["This line", "Says what to do next."], ["A red Stop here", "Stops a live mode: cleaning, live flame or Programming flames."]]],
   transport: ["Show controls", [["Run show", "Turns tonight's show on. Shows start on time."], ["Start now", "Starts the next show early."],
     ["Resume", "Carries on after a Hold."], ["Reset", "Clears an Abort. Then arm again."],
     ["Hold", "Pauses the schedule. Resume carries on."], ["Stop show", "Ends everything. Rig goes dark."],
@@ -2076,6 +2207,66 @@ async function loadUiDefault(){
   catch(e){ say("Not changed.", e.message, "bad"); }
   loadUiDefault();
 }));
+
+// ---- The brand (1.0's loadBrand): the show's name from the settings, the
+// page fine without it. The one GET 1.0 already makes; never a write.
+let SHOW_NAME = "";
+async function loadBrand(){
+  try{
+    const b = await getJSON("/api/brand", 3000);
+    // Only words: a value that is not a string is not a name.
+    const str = v => typeof v === "string" ? v.trim() : "";
+    const title = str(b.show) || str(b.product) || "Show remote";
+    SHOW_NAME = str(b.show) || str(b.product);
+    setText($("brand-show"), title);
+    document.querySelectorAll("#qcard .qs").forEach(e => setText(e, title));
+    document.title = title + " remote";
+    $("brand").title = title;
+  }catch(e){ /* the credit is not worth failing the page over */ }
+  fitBrand();
+}
+// What of the brand fits the room the header leaves it: the kicker over
+// 1100 px, the name over 700 px, each only while nothing is cut; the logo
+// alone, or nothing, when even the name does not fit.
+function fitBrand(){
+  const br = $("brand"), k = $("brand-k"), n = $("brand-show"), logo = $("brand-logo");
+  if(!br) return;
+  br.style.visibility = "";
+  k.hidden = innerWidth < 1100; n.hidden = innerWidth < 700;
+  const fits = () => br.scrollWidth <= br.clientWidth + 1 && n.scrollWidth <= n.clientWidth + 1;
+  if(!fits()) k.hidden = true;
+  if(!fits()) n.hidden = true;
+  if(!fits() || (logo.hidden && n.hidden)) br.style.visibility = "hidden";
+}
+// The calm screens (signed out, not running, no contact) carry the show's
+// name in the top line too, when it fits there on one line.
+let NEXT_B_KEY = "";
+function fitNextBrand(){
+  const nb = $("next-b"), t = $("next-t");
+  const want = document.body.classList.contains("inactive") && SHOW_NAME ? SHOW_NAME + "." : "";
+  const key = want + "|" + t.textContent + "|" + innerWidth + "x" + innerHeight;
+  if(key === NEXT_B_KEY) return;
+  NEXT_B_KEY = key;
+  nb.hidden = true;
+  if(!want) return;
+  const h0 = t.getBoundingClientRect().height;
+  setText(nb, want); nb.hidden = false;
+  const nx = $("next");
+  if(t.getBoundingClientRect().height > h0 + 1 || t.scrollWidth > t.clientWidth + 1 ||
+     nx.scrollWidth > nx.clientWidth + 1) nb.hidden = true;
+}
+// On a phone the brand sits in the buttons' group, whose last line has the
+// room; elsewhere first in the header, on the left.
+function placeBrand(){
+  const hr = document.querySelector("header .hright"), br = $("brand");
+  if(innerWidth <= 600){ if(br.parentElement !== hr) hr.appendChild(br); }
+  else if(br.parentElement !== hr.parentElement || br.nextElementSibling !== $("tabs")) hr.parentElement.insertBefore(br, $("tabs"));
+}
+placeBrand();
+try{ new ResizeObserver(fitBrand).observe($("brand")); }catch(e){}
+window.addEventListener("resize", () => { placeBrand(); fitBrand(); });
+if(document.fonts && document.fonts.ready) document.fonts.ready.then(fitBrand);
+loadBrand();
 
 // The announcements: in the footer beside Abort, or on a phone in the
 // SHOW pane (which scrolls there), so the footer stays the sign's height.
