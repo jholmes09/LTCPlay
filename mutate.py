@@ -18911,6 +18911,62 @@ def build():
   "    cues.fireball = fb\n    remote.fireball_cues = fb",
   "    cues.fireball = fb if fb.store is not None else None\n    remote.fireball_cues = fb"),
 
+ # -- the Fireball page during a show (flamelink manual frame, Jeff 2026-10-30)
+ ("fireball manual: the manual frame overrides the show instead of the larger winning",
+  "ltcplay/flamelink.py",
+  "            if v > out[s - 1]:",
+  "            if True:"),
+
+ ("fireball manual: Hold leaves a manual press on",
+  "ltcplay/flamelink.py",
+  "            # again after it, they go out again.\n            self._manual = None\n",
+  "            # again after it, they go out again.\n"),
+
+ ("fireball manual: Stop and Abort leave a manual press on",
+  "ltcplay/flamelink.py",
+  "                self._purge = None\n                self._manual = None",
+  "                self._purge = None"),
+
+ ("fireball manual: the manual frame reaches slots outside the fireball",
+  "ltcplay/flamelink.py",
+  "        for s in self.manual_slots:",
+  "        for s in range(1, UNIVERSE_SIZE + 1):"),
+
+ ("fireball manual: a manual press is taken while a Stop is repeated",
+  "ltcplay/flamelink.py",
+  "            if (gen is not None and gen != self._zero_gen) or \\\n                    self.abort_repeating():",
+  "            if (gen is not None and gen != self._zero_gen):"),
+
+ ("fireball manual: a locked slot fires from the manual frame",
+  "ltcplay/flamelink.py",
+  "        return self._unlocked(bytes(out))",
+  "        return bytes(out)"),
+
+ ("fireball manual: a manual frame with no heartbeat stays on",
+  "ltcplay/flamelink.py",
+  "        if not 0 <= now - m[1] <= PURGE_HOLD_S:\n            self._manual = None\n            return values",
+  "        if False:\n            self._manual = None\n            return values"),
+
+ ("fireball manual: the page is usable with an Abort standing",
+  "ltcplay/fireball.py",
+  "            if remote._abort_standing():",
+  "            if False:"),
+
+ ("fireball manual: the page is usable while a Stop is repeated",
+  "ltcplay/fireball.py",
+  "            if link is not None and link.abort_repeating():",
+  "            if False:"),
+
+ ("fireball manual: the page is still refused during a show",
+  "ltcplay/fireball.py",
+  "                                                           in_show=True),",
+  "                                                           in_show=False),"),
+
+ ("fireball manual: the page uses the purge frame (not live only)",
+  "ltcplay/fireball.py",
+  "                taken = link.manual_set(vals)",
+  "                taken = link.purge_set(vals)"),
+
 ]
 
 

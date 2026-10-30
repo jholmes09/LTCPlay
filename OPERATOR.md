@@ -553,17 +553,26 @@ dropping; and the All off button (any screen). Losing focus (another window
 clicked) lets go of Valve Open and Igniter. After any of these nothing
 comes back on by itself: press again.
 
-**When it will not work** it says why in plain words: a show live or on
-Hold, an Abort standing, Run pressed (the show file owns the channels),
-live flame programming on, a purge selected
-on the Startup page (and that purge waits while a Fireball channel is on),
-any screen in Arrange mode, the Fireball locked out, or the purge switch
-off (`purge_arming`, and from an iPad `screen_arming`, in
-ltcplay_remote.json). One screen at a time. Signed out it is view only;
-turning a channel on needs the arm permission (an operator or admin), and
-All off always works. The values go out the way the Startup page's purge
-does, on the engine's own flame link to flamesafe, which stays the only
-program that writes to the flame node.
+**It works during a show too** (Jeff, 2026-10-30), and between shows:
+Andy can run any phase by hand, for example to top off the pressure. What
+the page holds on is added to what the show sends on the same channel
+(the show's cues or the fireball timeline): each channel is the larger of
+the two, so neither can switch the other's ON off. Stop, Hold and Abort
+turn everything off at the press, the show's and the page's; after a Hold
+you may press again (also during the Hold).
+
+**When it will not work** it says why in plain words: an Abort standing,
+a Stop or Abort still being sent to flamesafe (press again in a moment),
+live flame programming on, a purge selected on the Startup page (and that
+purge waits while a Fireball channel is on), any screen in Arrange mode,
+the Fireball locked out, the lock state not trusted, the flame link not
+sending, or the purge switch off (`purge_arming`, and from an iPad
+`screen_arming`, in ltcplay_remote.json). A show live, Hold and Run
+pressed no longer stop it. One screen at a time. Signed out it is view
+only; turning a channel on needs the arm permission (an operator or
+admin), and All off always works. The values go out on the engine's own
+flame link to flamesafe, which stays the only program that writes to the
+flame node, and only while the Fireball is ARMED.
 
 **First test at the rack, fuel valve closed and the key switch on test or
 off, with Andy:**

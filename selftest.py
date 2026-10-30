@@ -84096,6 +84096,13 @@ class _FakeFireballLink:
         self.cur = None
         self.cleared += 1
 
+    # The Fireball page's manual frame (2026-10-30): the same record.
+    manual_set = purge_set
+    manual_clear = purge_clear
+
+    def abort_repeating(self):
+        return getattr(self, "repeating", False)
+
     def set_locked_channels(self, slots):
         self.locked = set(slots)
 
@@ -84600,9 +84607,16 @@ def test_fireball_at_the_engine():
             st2, _h, v = R.ask("GET", "/api/remote/fireball", client=loop)
         finally:
             R.remote.control.state = real_state
-        check(st == 409 and "Run is pressed" in out["error"] and
-              "Run is pressed" in v["blocked"],
-              f"Run pressed: refused, and the page says why: {out}")
+        check(st == 200 and v["blocked"] == "",
+              f"Run pressed: allowed (Jeff, 2026-10-30: the buttons work "
+              f"during a show): {out} {v['blocked']}")
+        beat(set(), "a9", 2)
+        # A Stop or Abort still being repeated to flamesafe: refused.
+        link.repeating = True
+        st, out = beat({"fuel"}, "a9b", 1)
+        link.repeating = False
+        check(st == 409 and "still being sent to flamesafe" in out["error"],
+              f"a Stop still being repeated: refused: {out}")
         # A lock on the fireball's slot (the Startup page's lockout).
         R.fb._locked = lambda: {57}
         st, out = beat({"fuel"}, "a10", 1)
@@ -84650,11 +84664,20 @@ def test_fireball_at_the_engine():
                             {"controls": {"fuel": True}, "run": "s1",
                              "seq": 1, "seen": R.seen()}, client=loop)
         st2, _h, v = R.ask("GET", "/api/remote/fireball", client=loop)
-        check(st == 409 and "scheduled show is live" in out["error"] and
-              "scheduled show is live" in v["blocked"] and
-              R.link.cur is None,
-              f"a show live: nothing, and the page says why: {out} "
+        check(st == 200 and v["blocked"] == "" and
+              R.link.cur is not None and R.link.cur[54] == 255,
+              f"a show live: the buttons work (Jeff, 2026-10-30): {out} "
               f"{v['blocked']}")
+        R.ask("POST", "/api/remote/fireball-beat",
+              {"controls": {}, "run": "s1", "seq": 2, "seen": R.seen()},
+              client=loop)
+        # An Abort standing still refuses.
+        R.remote._abort_standing = lambda: True
+        st, _h, out = R.ask("POST", "/api/remote/fireball-beat",
+                            {"controls": {"fuel": True}, "run": "s2",
+                             "seq": 3, "seen": R.seen()}, client=loop)
+        check(st == 409 and "aborted" in out["error"],
+              f"an Abort standing: refused: {out}")
     finally:
         R.close()
     # web.serve's wiring: built on the Morning page's groups and the flame
@@ -93373,6 +93396,389 @@ def test_fireball_timeline_end_to_end_real_flamesafe():
     print("  ok")
 
 
+
+# -- the Fireball page during a show (Jeff, 2026-10-30) ---------------------
+
+def test_flame_link_manual_frame_merge():
+    section("the flame link's manual frame (the Fireball page): live or "
+            "not, merged channel by channel with the larger value winning, "
+            "on the fireball's slots only; no source can hold a channel "
+            "OFF under another's ON; Hold, Stop and Abort cut it; stale "
+            "after 0.25 s; never during an Abort's repeat; locks win")
+    import json
+    from ltcplay import flamelink as fl
+    key = _fl_key()
+    good = {"port": 5571, "universe": 1, "key": key, "frame_stale_ms": 500}
+    t = [100.0]
+    state = {"tc": "00:00:10:00", "live": True}
+    cue = {"v": [0] * 512}
+    link = _flk_unguarded(fl.FlameLinkConfig.parse(good),
+                          cues=lambda tc: list(cue["v"]),
+                          show_state=lambda: (state["tc"], state["live"]),
+                          journal=_FlJournal(), clock=lambda: t[0])
+    sock = _FlSock()
+    link._sock = sock
+    link.release()
+
+    def sent():
+        link.send_frame()
+        for data, _a in reversed(sock.sent):
+            d = json.loads(data)
+            if d.get("t") == "flame":
+                return d["values"]
+        return None
+
+    def tick(dt=0.025):
+        t[0] += dt
+        f = int(state["tc"][9:11]) + 1
+        s = int(state["tc"][6:8]) + f // 30
+        state["tc"] = f"00:00:{s:02d}:{f % 30:02d}"
+    link.manual_slots = frozenset((55, 56, 57, 58, 59))
+    man = bytearray(512)
+    man[54] = 255          # Fuel Charge
+    man[56] = 255          # Valve Open
+    man[410] = 255         # not a fireball slot: never sent
+    # Live: the show's cue has Air on and Valve off.
+    v = [0] * 512
+    v[55] = 255
+    v[200] = 77
+    cue["v"] = v
+    check(link.manual_set(bytes(man)), "taken")
+    tick()
+    got = sent()
+    check(got[54] == 255 and got[55] == 255 and got[56] == 255 and
+          got[410] == 0 and got[200] == 77,
+          f"live: manual Fuel and Valve on top of the show's Air; each the "
+          f"larger; a slot outside the fireball never: "
+          f"{got[54:57]} {got[410]} {got[200]}")
+    # The show's ON is never held OFF by the manual frame's 0, and the
+    # manual ON never by the show's 0.
+    man2 = bytearray(512)
+    link.manual_set(bytes(man2))
+    tick()
+    check(sent()[55] == 255, "a manual 0 never holds the show's ON off")
+    v2 = [0] * 512
+    cue["v"] = v2
+    link.manual_set(bytes(man))
+    tick()
+    check(sent()[54] == 255, "a show 0 never holds the manual ON off")
+    # Stale: no heartbeat for more than 0.25 s.
+    tick(0.3)
+    check(sent()[54] == 0, "no heartbeat for 0.3 s: gone")
+    # Hold (zero): cut at once; pressed again after it, it goes out again,
+    # also during the Hold.
+    link.manual_set(bytes(man))
+    tick()
+    check(sent()[54] == 255, "on again")
+    gen = link._zero_gen
+    link.zero()
+    check([json.loads(d) for d, _a in sock.sent][-1]["values"][54] == 0,
+          "Hold: the zero frame at the press")
+    state["live"] = False
+    tick()
+    check(sent()[54] == 0, "Hold: the manual frame was cut")
+    check(not link.manual_set(bytes(man), gen=gen),
+          "a beat read before the Hold is refused")
+    check(link.manual_set(bytes(man)), "pressed again during the Hold")
+    tick()
+    check(sent()[54] == 255, "it goes out during the Hold")
+    # Not live, with the Startup page's purge frame: the larger wins too.
+    pv = bytearray(512)
+    pv[58] = 200
+    link.purge_set(bytes(pv))
+    link.manual_set(bytes(man))
+    tick()
+    got = sent()
+    check(got[54] == 255 and got[58] == 200, "not live: merged with the "
+                                             "purge frame")
+    link.purge_clear()
+    # Stop / Abort: disarm_all cuts it, and nothing is taken while the
+    # disarm is repeated.
+    link.release()
+    state["live"] = True
+    link.manual_set(bytes(man))
+    link.disarm_all("Stop held (selftest)")
+    check(link.abort_repeating() and not link.manual_set(bytes(man)),
+          "Stop: cut, and refused while it is repeated")
+    tick()
+    check(sent()[54] == 0, "Stop: zero")
+    t[0] += 5.0
+    link.release()
+    check(link.manual_set(bytes(man)), "after the repeat: taken again")
+    tick()
+    check(sent()[54] == 255, "and sent")
+    # A locked slot stays zero.
+    link.set_locked_channels([55])
+    link.manual_set(bytes(man))
+    tick()
+    got = sent()
+    check(got[54] == 0 and got[56] == 255, "a locked slot stays zero")
+    link.set_locked_channels([])
+    # manual_clear.
+    link.manual_set(bytes(man))
+    link.manual_clear()
+    tick()
+    check(sent()[54] == 0 and not link.manual_active(), "cleared")
+    # Garbage is refused.
+    check(not link.manual_set(b"\x01" * 10) and
+          not link.manual_set(None), "a wrong frame is refused")
+    print("  ok")
+
+
+def test_fireball_buttons_during_a_timeline_show_real_flamesafe():
+    section("the Fireball page's buttons during a show, end to end with the "
+            "real flamesafe: a timeline show playing, Andy tops off the "
+            "Fuel by hand (counted as a top-off, not a double charge); a "
+            "manual press and the timeline never fight (each channel the "
+            "larger); Stop cuts both at the press; Purge only by hand")
+    import json as _j
+    import socket as _so
+    import subprocess
+    import types
+    from ltcplay import flamelink as fl
+    from ltcplay import flameprog as fp
+    from ltcplay import streamdeck as sd
+    from ltcplay import fireball as FB
+    from ltcplay import fireball_timeline as FT
+    from ltcplay import fireball_charge as FC
+    from ltcplay import fireball_cues as FQ
+    F = _fi_mod()
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+    node = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    node.bind(("127.0.0.1", 0))
+    node.settimeout(0.01)
+    listen, statusp, armp = _lf_free_udps(3)
+    work = tempfile.mkdtemp()
+    cfg_path = os.path.join(work, "flamesafe.json")
+    groups = [{"name": "front row", "safety": 401, "fire": [411]},
+              {"name": "fireball", "safety": 77,
+               "fire": [55, 56, 57, 58, 59]}]
+    names = [g["name"] for g in groups]
+    _j.dump({
+        "flamesafe_config": 1, "confirmed": False, "note": "selftest",
+        "universe": 1,
+        "destination": {"ip": "127.0.0.1", "port": node.getsockname()[1]},
+        "link": {"listen_ip": "127.0.0.1", "listen_port": listen,
+                 "status_ip": "127.0.0.1", "status_port": statusp,
+                 "arm_port": armp, "key": key},
+        "gflame_range": "60-80%", "arm_value": 157,
+        "accept_unsourced_risk": True, "min_arm_dwell_ms": 1000,
+        "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
+        "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
+        "groups": groups}, open(cfg_path, "w"))
+    show = os.path.join(work, "show")
+    os.makedirs(show)
+    with open(os.path.join(show, "xlights_networks.xml"), "w") as fh:
+        fh.write(_FI2_NETWORKS.format(extra="", name="Flames",
+                                      state="Inactive", after=""))
+    render = os.path.join(show, "Show.fseq")
+    _fb_fseq_rows(render, lambda i: bytes(((i * 7 + c) % 254) + 1
+                                          for c in range(1022)), 1200, 1022)
+    store = FT.Store(work)
+    store.save("Show.json", "Show", 30.0, "timeline", [
+        _st("air", "00:00:03:00", 2)], 0, who="Andy")
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "flamesafe",
+                             cfg_path], cwd=here, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    said = []
+    threading.Thread(target=lambda: [said.append(l) for l in proc.stdout],
+                     daemon=True).start()
+    clk = _PfClock()
+    clk.source = "audio_master"
+    sess = types.SimpleNamespace(
+        running=True, clock=clk, timeline_path=os.path.join(work,
+                                                            "Show.json"),
+        player=types.SimpleNamespace(override=None, freerun_epoch=None),
+        tl=types.SimpleNamespace(show_dir=show, cues=[
+            types.SimpleNamespace(name="Show", path=render)]))
+    cues = F.FlameCues(types.SimpleNamespace(session=sess), "Flames")
+    link = fl.FlameLink(fl.FlameLinkConfig.from_flamesafe_config(cfg_path),
+                        cues=cues, show_state=fl.audio_master_state(
+                            lambda: clk if sess.running else None))
+    link.tc_fps = 30.0
+    arm = sd.ArmSocket("127.0.0.1", armp, key, 2)
+    arm.open()
+    status = sd.StatusSocket("127.0.0.1", statusp, key)
+    status.open()
+    stop = threading.Event()
+
+    def flames():
+        st, at = status.last, status.last_at
+        if st is None or at is None:
+            return None
+        return {"connected": True, "stale": False,
+                "age_ms": int((time.monotonic() - at) * 1000),
+                "groups": [{"name": g.get("name"), "armed": g.get("armed"),
+                            "fire_slots": g.get("fire_slots"),
+                            "sent_fire": g.get("sent_fire")}
+                           for g in st.get("groups") or []]}
+    tracker = FC.ChargeTracker(work, flames_get=flames)
+    link.observer = tracker.observe
+    cues.fireball = FQ.FireballCues(store, charge_get=lambda: tracker)
+    g, _w = FB.find_group([{"name": x["name"], "safeties": [x["safety"]],
+                            "fire": x["fire"]} for x in groups])
+    fb = FB.FireballPanel(g, "", link_get=lambda: link, flames_get=flames)
+    fb.on_controls = lambda on, who, screen: tracker.note_manual(on, who,
+                                                                 screen)
+    link.start()
+    me = ("Rack screen", "w-e2e")
+    SL = (55, 56, 57, 58, 59)
+    count = [0]
+
+    def deck():
+        while not stop.is_set():
+            arm.send(names)
+            status.poll()
+            time.sleep(0.02)
+
+    def wait_for(cond, seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if cond():
+                return True
+            time.sleep(0.02)
+        return cond()
+
+    def armed():
+        st = status.last
+        return st["groups"][1].get("armed") if st else None
+
+    def arm_fireball():
+        for _cycle in range(5):
+            arm.set_group(1, False)
+            time.sleep(1.2)
+            arm.set_group(1, True)
+            if wait_for(lambda: armed() == "armed", 4):
+                return True
+        return False
+
+    def node_for(seconds, during=None):
+        out = []
+        while True:
+            try:
+                node.recvfrom(2048)
+            except (_so.timeout, OSError):
+                break
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if during is not None:
+                during()
+            try:
+                data, _a = node.recvfrom(2048)
+            except _so.timeout:
+                continue
+            out.append((clk.pos(), tuple(fp.parse_e131(data).values[s - 1]
+                                         for s in SL)))
+        return out
+
+    blk = threading.Lock()
+
+    def beat(on, run):
+        with blk:
+            count[0] += 1
+            return fb.beat({"controls": {k: True for k in on}, "run": run,
+                            "seq": count[0]}, me, who="Andy",
+                           screen="Rack screen")
+
+    def hold(on, run, seconds):
+        """The page's heartbeat on its own thread while the node is read
+        for `seconds`; then everything off."""
+        done = threading.Event()
+
+        def go():
+            while not done.is_set():
+                beat(on, run)
+                time.sleep(0.05)
+        th = threading.Thread(target=go, daemon=True)
+        th.start()
+        try:
+            return node_for(seconds)
+        finally:
+            done.set()
+            th.join(1)
+            beat(set(), run)
+    threading.Thread(target=deck, daemon=True).start()
+    try:
+        if not check(wait_for(lambda: status.last is not None, 15),
+                     "flamesafe is up: " + "".join(said)[-500:]):
+            return
+        check(arm_fireball(), "the fireball armed")
+        wait_for(lambda: tracker.armed_now() == "armed", 3)
+        # The show plays (timeline: Air at 3 s for 2 s).
+        link.release()
+        clk._cue = {"label": "Show", "position_s": 0.0}
+        clk.paused = False
+        clk.base, clk.t0 = 0.0, time.monotonic()
+        # Andy charges Fuel by hand during the show (1.0 to 1.6 s).
+        wait_for(lambda: (clk.pos() or 0) >= 1.0, 3)
+        rec = hold({"fuel"}, "m1", 0.6)
+        check(any(v[0] == 255 for _p, v in rec),
+              f"a manual Fuel Charge during the show reaches the node: "
+              f"{rec[-2:]}")
+        beat(set(), "m1")
+        check(wait_for(lambda: tracker.state("fuel") == "charged", 1) and
+              tracker.tanks["fuel"]["by"] == "Andy",
+              f"fuel CHARGED by Andy: {tracker.tanks['fuel']}")
+        # Andy tops it off: counted, named, not a double charge.
+        time.sleep(0.3)
+        hold({"fuel"}, "m2", 0.4)
+        tracker.pump()
+        check(wait_for(lambda: tracker.tanks["fuel"]["topoffs"] >= 1, 1) and
+              "top-off by Andy" in tracker.tanks["fuel"]["last_event"],
+              f"a top-off by Andy: {tracker.tanks['fuel']}")
+        # Inside the timeline's Air window, Andy holds Air too, then lets
+        # go: the channel stays on (the timeline's), never pulled off.
+        wait_for(lambda: (clk.pos() or 0) >= 3.4, 4)
+        rec = hold({"air"}, "m3", 0.4)
+        rec2 = node_for(0.5)
+        check(rec and all(v[1] == 255 for p, v in rec + rec2
+                          if p is not None and 3.5 <= p < 4.9),
+              f"Air from the timeline and the button together: on all "
+              f"along, never pulled off: "
+              f"{[(round(p, 2), v) for p, v in rec + rec2 if not v[1]][:3]}")
+        # Purge only by hand: nothing of the show ever drove 59.
+        check(all(v[4] == 0 for _p, v in rec + rec2), "59 never by itself")
+        # Stop during a manual hold inside the Air window: both cut at the
+        # press.
+        wait_for(lambda: (clk.pos() or 0) >= 4.0, 3)
+        beat({"fuel", "igniter"}, "m4")
+        link.disarm_all("Stop held (selftest)")
+        clk._cue = None
+        rec = node_for(0.4, during=lambda: beat({"fuel", "igniter"}, "m4"))
+        check(rec and all(v == (0,) * 5 for _p, v in rec[2:]),
+              f"Stop: the button and the timeline cut at the press: "
+              f"{rec[:4]}")
+        check(not fb.active(), "and the Fireball page's run is over")
+        check(tracker.state("fuel") == "charged",
+              "Stop leaves the tank CHARGED")
+        # Purge by hand resets it.
+        check(wait_for(lambda: armed() != "armed", 3), "disarmed by Stop")
+        check(arm_fireball(), "armed again")
+        hold({"purge"}, "m5", 0.5)
+        check(wait_for(lambda: tracker.state("fuel") == "empty" and
+                       tracker.state("air") == "empty", 2),
+              f"a purge by hand: both tanks EMPTY: {tracker.tanks}")
+    finally:
+        stop.set()
+        try:
+            link.stop()
+        except Exception:
+            pass
+        fb.close()
+        tracker.close()
+        cues.close()
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        node.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
@@ -94166,6 +94572,8 @@ if __name__ == "__main__":
         test_fireball_timeline_equals_an_equivalent_fseq,
         test_fireball_cues_wiring,
         test_fireball_timeline_end_to_end_real_flamesafe,
+        test_flame_link_manual_frame_merge,
+        test_fireball_buttons_during_a_timeline_show_real_flamesafe,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):

@@ -809,6 +809,15 @@ class FlameLink:
         # None. Read by values_now while the show is not live.
         self._purge = None
         self.purges_sent = 0
+        # The manual frame (the Fireball page's buttons, Jeff 2026-10-30):
+        # (bytes(512), clock when set), or None. Unlike the purge frame it goes out live or not, merged into
+        # whatever else the frame carries channel by channel as the larger
+        # of the two (send_frame), on `manual_slots` only, and only until
+        # the next zero() or disarm_all() (Hold, Stop, Abort, a show's
+        # end) or PURGE_HOLD_S after its last heartbeat.
+        self._manual = None
+        self.manual_slots = frozenset()
+        self.manuals_sent = 0
         # A timed purge's hard end on this link's clock (purge_limit), or
         # None: past it the purge frame is zeros until purge_clear().
         self._purge_until = None
@@ -1441,6 +1450,68 @@ class FlameLink:
         except Exception:
             return False
 
+    def manual_set(self, values, gen=None):
+        """The Fireball page's heartbeat: `values` (512 ints 0 to 255) on
+        `manual_slots` go out on the next frames for PURGE_HOLD_S, live or
+        not, each the larger of it and what the frame already carries
+        there; then they stop by themselves unless set again. Refused
+        (False) while an Abort or Stop is being repeated, and when `gen`
+        is given and a zero() or disarm_all() has landed since the caller
+        read it. Never raises."""
+        try:
+            vals = bytes(values)
+            if len(vals) != UNIVERSE_SIZE:
+                raise ValueError("wrong length")
+        except Exception:
+            return False
+        with self._lock:
+            if (gen is not None and gen != self._zero_gen) or \
+                    self.abort_repeating():
+                self._manual = None
+                return False
+            self._manual = (vals, self._clock())
+        return True
+
+    def manual_clear(self):
+        """The Fireball page's channels off now (also done by zero() and
+        disarm_all())."""
+        with self._lock:
+            self._manual = None
+
+    def manual_active(self):
+        m = self._manual
+        try:
+            return m is not None and 0 <= self._clock() - m[1] <= \
+                PURGE_HOLD_S
+        except Exception:
+            return False
+
+    def _with_manual(self, values):
+        """`values` with the manual frame merged in: on each of
+        `manual_slots` the larger of the two, so neither source can hold a
+        channel OFF under the other's ON (only zero() and disarm_all() cut
+        everything: they clear the manual frame under this lock, so one
+        set before them never goes out after them), and only within
+        PURGE_HOLD_S of the last heartbeat. Locked slots stay zero. Under
+        self._lock."""
+        m = self._manual
+        if m is None:
+            return values
+        now = self._clock()
+        if not 0 <= now - m[1] <= PURGE_HOLD_S:
+            self._manual = None
+            return values
+        out = bytearray(values)
+        hit = False
+        for s in self.manual_slots:
+            v = m[0][s - 1]
+            if v > out[s - 1]:
+                out[s - 1] = v
+                hit = True
+        if hit:
+            self.manuals_sent += 1
+        return self._unlocked(bytes(out))
+
     def purge_clear(self):
         """Stop a purge now: the next frame carries zeros (or the show's
         cues, if a show is live). Also done by zero() and disarm_all().
@@ -1833,6 +1904,9 @@ class FlameLink:
                 # zeroed, and only while the show is not live: values_now;
                 # so is a live flame programming frame, by the same rule).
                 values = bytes(UNIVERSE_SIZE)
+            # The Fireball page's buttons (Jeff, 2026-10-30): merged in
+            # channel by channel, the larger value wins, live or not.
+            values = self._with_manual(values)
             # The hazers (2026-10-29): their channels zero in the flame
             # values (fire, the fuel tracker, "firing"), then each ARMED
             # hazer's stored levels while a show plays. A frame read before
@@ -1912,6 +1986,9 @@ class FlameLink:
         one cannot delay it (fix round 1, item 7)."""
         with self._lock:
             self._purge = None
+            # The Fireball page's buttons too (Hold, a show's end): pressed
+            # again after it, they go out again.
+            self._manual = None
             # Any zero (a Hold, a show's end, the dark sequence) ends live
             # flame programming at the link too: xLights stops with the
             # fire (flameprog.py ends the mode on its next pass).
@@ -1949,6 +2026,7 @@ class FlameLink:
                 # on the disarm_all itself.
                 self._hazers_on = frozenset()
                 self._purge = None
+                self._manual = None
                 # An Abort ends live flame programming at the link, at
                 # once, whichever surface sent it (flameprog.py sees it).
                 # No timed purge's hard end outlives it (review of #172).
