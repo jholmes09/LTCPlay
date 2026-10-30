@@ -105,7 +105,9 @@ HOOKUPS = (
 NOTE_NAMES = NOTE_KINDS + tuple(name for name, _who in HOOKUPS)
 # An alert kind that plays a recorded note of another name: the rig check
 # alert (preroll.py, PR #162) plays booth_preroll_hold.wav.
-NOTE_ALIAS = {"preroll": "preroll_hold"}
+NOTE_ALIAS = {"preroll": "preroll_hold",
+              # MadMapper's output off (showwindows.py): the video note.
+              "output": "video"}
 # The folder of notes, beside the program and in the Settings and logs
 # folder alike (installer.iss ships it as {app}\\Booth notes).
 FOLDER = "Booth notes"

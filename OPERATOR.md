@@ -922,7 +922,9 @@ that long. The stages, in this order:
   never falls back to its FSEQ), and every save is refused, because saving
   over it would lose every other show's timeline. An admin either repairs
   the file or replaces it on purpose (the broken one is kept in
-  `fireball_timeline_history`). A show is saved under the show folder's
+  `fireball_timeline_history`). If the copy of the version before cannot
+  be kept, the save still stands and says so. A show is saved under the
+  show folder's
   own spelling of its name ("show.json" typed on a Mac or Windows PC is
   saved as "Show.json"); two files whose names differ only by case are
   refused: rename one.
@@ -942,6 +944,11 @@ FSEQ:
   journal and the screens say so once ("Fuel already charged: the FSEQ's
   Fuel Charge was skipped (no double charge)."). After a shot or a Purge
   empties the tank, the next charge in the FSEQ goes out again.
+  A charge the FSEQ itself turns off has ended: a second Fuel cue a
+  moment later, or a flicker effect, never charges a charged tank again.
+- **The fireball must be on 55 to 59.** If flamesafe's fireball group is
+  on other channels, no show fires its fireball (its own channels are held
+  at zero) and the screens say why, until the group is on 55 to 59.
 - Valve Open (57), the Igniter (58) and every other channel of an FSEQ
   show are exactly as before.
 
@@ -1017,7 +1024,9 @@ of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
   journal line and one audit line. If the file cannot be written (on
   Windows an antivirus or the indexer can hold it), the record is kept in
   memory, written again every second until it is, and the screens show
-  the fault meanwhile: do not restart LTC Player until it clears. Every screen's status carries it as one
+  the fault meanwhile: do not restart LTC Player until it clears. (If it
+  is restarted anyway, the newest record the write left behind is the one
+  read; if that cannot be read, both tanks are NOT KNOWN.) Every screen's status carries it as one
   sentence, for example "Fuel: charged 14:32. Air: charged 14:35. No shot
   fired." There is no pressure reading: it is never invented.
 
@@ -1238,6 +1247,7 @@ Continue anyway then leaves video, lasers and flames off.
 | Booth speaker | its output attached (only when one is set up) | yes, when set up |
 | Timecode | Art-Net timecode (30 frames a second) going out with no receiver refusing it; BEYOND's black zone stream flowing | yes |
 | Video | MadMapper running; the screens taken to black first; the show bank selected; a test timecode from 00:00:00:00 sent to MadMapper ALONE; its heartbeat (/float-1) answering AND moving at about real time; MadMapper then parked on frame 0 | yes |
+| MadMapper output | MadMapper's video output on: a full-screen MadMapper window with no title bar filling the projector's display, read from Windows' window list (nothing is sent to MadMapper). With `madmapper_output_monitor` 0 (the default) any display but the rack screen's counts; n: only display n. One display only (the projector not detected), a setting past the displays this PC has, or a list that cannot be read: fails. Not checked when MadMapper is on another PC or `madmapper_output_check` is false | yes |
 | Flame link | a new flamesafe status frame during the check, no fault, the flame link sending and not locked, the Stream Deck program arming live | yes |
 | Lasers | blanking set up, the laser arm readable, a blank sent now that got out, BEYOND's black zone flowing (timecode blanking), BEYOND running | yes |
 | Network | every device the show uses answers a ping: MadMapper and BEYOND when on another PC, the timecode receivers, the flame node, and every pixel controller that answered a ping since Run (some never answer one at all) | yes |
@@ -1263,16 +1273,94 @@ Acknowledging
 it before the time does not let the show start by itself; it is raised
 again at the time. Resume alone never lets the scheduler start a show
 whose check failed (unlike other alerts): use Start now, which checks
-again, or Continue anyway. A later check that passes clears it. Start now that
-fails its check is refused with the reason.
+again, or Continue anyway. A later check that passes on a fresh run
+(Check again, Check the rig, Start now's own check) clears the failure
+and the rig check alert, and the journal says "Rig check passed, failure
+cleared (who)". It starts nothing: a held show stays held. While the
+schedule is held for a show whose check failed and whose time has not
+gone by, the screens say "Rig check passed. Press Resume." Resume then
+checks the show once more and starts it if that passes. Otherwise they
+say Press Start now: a show whose time has gone by (it waits for Start
+now, held or not), no hold at all, or a
+cleared "rig check could not run" alert, which leaves no show for Resume
+to release. If the rig check still cannot run, that alert comes back.
+A failure raised after that check began is never cleared by it, and a
+check that fails again keeps the failure with the new reasons. The
+other way round too: a show's own check that passed counts only until a
+failure is recorded after it (Start now's check failing, a Pre-check, a
+check that could not run). The show is then checked again before it
+starts. Start now
+that fails its check is refused with the reason.
+
+**MadMapper's output after a reboot** (Jeff, 2026-10-29). LTC Player
+cannot turn MadMapper's video output on; it sees it. The rack screen's
+lamp **MadMapper output** says on, OFF or not known. The supervisor gives
+MadMapper 3 minutes after it starts; still off, it raises an **output**
+alert with what to do (MadMapper: Output menu, Fullscreen; and, so it comes
+back by itself, Preferences, Misc, Start fullscreen when opening a project
+at startup), and clears it itself when the output comes on (a rig check
+that sees it on clears it too). The settings, both in
+ltcplay_fire_ice.json and read by the engine and the supervisor alike:
+`madmapper_output_check` (true; false turns the check, the lamp and the
+alert off, for an output that is not a full-screen window) and
+`madmapper_output_monitor` (0: any display but the rack screen's; 1 the
+main display, 2 the next, as showpc.json's page_monitor counts). After
+changing either one, Reload engine is enough (or stop and start LTC
+Player): the engine reads them when it starts, the supervisor within a
+few seconds. A failed MadMapper output check holds the show like any
+other, but Continue anyway leaves nothing off for it: the rule (a
+full-screen MadMapper window with no title bar) is not yet proven on a
+real MadMapper 6 (BENCH.md), so the video is never blacked on its word.
+The
+supervisor also keeps the rack screen in front of BEYOND and MadMapper
+windows after a reboot (showpc.json `rack_screen_keep_in_front`, true).
+It never raises the rack screen over MadMapper's output, never takes the
+keyboard from someone typing in another program, never covers a dialog or
+a window a person has in front, and leaves a minimized rack screen
+minimized. Its five minutes count from the sign-in, so stopping and starting
+LTC Player later does not bring them back, and windows that were already
+open when LTC Player started count as old (it raises over a BEYOND or
+MadMapper window only when one opens after that). A dialog over the rack
+screen stops it: BEYOND's or MadMapper's (owned by its window or not),
+and any program's message box (Explorer's, LTC Player's own). So does
+the window in front if the last key, touch or click (in the last minute)
+came while that window was open, including one back in front after the
+lock screen (unlocked by Windows Hello, with no key). A window nobody is
+using does not stop it. For 2 s after the
+rack screen comes to the front with no touch in it, a key that would
+start or arm something is ignored (it was typed for another program);
+Abort, Hold, Stop and every Disarm or Off key always work.
+
+How the output is judged: the rack screen's display is where its window
+is (unless MadMapper's output sits over it there: then that display is
+the projector's), else showpc.json's page_monitor, else the main display;
+the lamp, the rig check and the alert all use that one rule. The output
+counts as on only when no other window hides a quarter of it or more (the
+rack screen or BEYOND in front of it on the projector reads OFF, saying
+which window). Mirrored (duplicate) displays look like one display to
+Windows and read OFF: set `madmapper_output_monitor` to 1 there. See-through
+overlays (a game overlay, notifications) hide nothing. With several
+projector displays and `madmapper_output_monitor` 0, ONE uncovered output
+on any of them reads on: the check is for one projector display, so set
+the number when there are more. The alert is raised only for a show whose
+MadMapper runs on this PC (and not when ltcplay_fire_ice.json cannot be
+read); the watch still reads and logs the windows. The supervisor
+reads these settings again every few seconds, so a change (and Reload
+engine) applies without restarting LTC Player; the engine's rig check and
+lamp read them when the engine starts, so Reload engine is enough. The
+output alert holds a show at its time like any fault, and like every
+alert it plays nothing on the PA: the booth speaker says it.
 
 The show screen (and the iPad) then shows the failed checks and two
 choices:
 
 - **Check the rig again** (an admin, on the show PC): the same checks,
   nothing started. Also on the Programming screen's Rig check card, any
-  time between shows with Run pressed, never in the minute before a show.
-  Once it passes, press Resume, then Start now (which checks once more).
+  time between shows with Run pressed, never in the minute before a show
+  unless a rig check failure stands (a failed show is never checked
+  again by itself). Once it passes, press what the screen says: Resume
+  while the show is held (it is checked once more, then starts), else
+  Start now (which checks once more).
 - **Hold to continue anyway** (signed in, with the Start now permission):
   hold the button until it fills, like Hold to arm; a tap does nothing.
   Its text lists exactly what is still failing. The show starts NOW, late,
