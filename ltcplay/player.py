@@ -77,6 +77,9 @@ PULSE_PERIOD_S = 1.0
 # thread waking a little late. Past it the gap look goes out as before, so
 # a show whose audio runs on after its lights file is still dark there.
 # Only that clock: a show chased off a timecode feed (GPL) never holds.
+# clock.ArtNetMaster ("artnet_master") rounds its end up the same way but
+# is left out on purpose: the Fire & Ice runner refuses any clock but
+# "audio_master", so no show night runs on it (review of #179).
 SHOW_END_HOLD_S = 2.0 / 30.0
 
 

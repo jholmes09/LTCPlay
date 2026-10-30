@@ -961,13 +961,15 @@ ends on the next whole timecode frame after the lights file ends, up to
 through it, at most 2/30 s, and the idle look follows on the next frame.
 That is the same with the show file's Intermission cue after the show or
 without it. A Hold, an Abort or a Stop in that moment still goes black at
-once. Show audio (or `clock.zones.show_len_s`) up to 2/30 s longer than
-the lights file is covered by the same hold: the last frame stays up, not
-black. If it runs on longer than that, the pixels are black for the rest,
-as below, unless the show file says `"gaps": "idle"`, which puts the idle
-look up there instead. A free run (GO) past the end of the last cue gets
-the same short hold of its last frame, then the gap look. Only the Fire &
-Ice show audio clock does this; a show chased off a timecode feed (GPL)
+once. Show audio (or `clock.zones.show_len_s`) that ends up to one
+timecode frame (1/30 s) after the lights file is covered by the same
+hold: the last frame stays up, not black. If it runs on longer than that,
+the pixels are black for the rest (after the held frames), as below,
+unless the show file says `"gaps": "idle"`, which puts the idle look up
+there instead. A free run (GO) on the show audio clock gets the same hold
+at the end of every cue it passes, gaps between cues included: the cue's
+last frame stays up for at most 2/30 s, then the gap look. Only the Fire
+& Ice show audio clock does this; a show chased off a timecode feed (GPL)
 is unchanged.
 
 After a Start now show ends by itself with nothing else tonight, the

@@ -43743,7 +43743,7 @@ def test_no_dark_frame_between_the_show_and_the_idle_look():
           f"{plmod.SHOW_END_HOLD_S}")
     # A Hold across the end, then Resume: the same.
     bad = []
-    for ph in phases[:4]:
+    for ph in phases:
         got = runs(show_end(241, 6.0, ph, hold_at=5.9))
         if [x for x, _n in got] != ["show", "idle"]:
             bad.append((ph, got))
@@ -43787,16 +43787,39 @@ def test_no_dark_frame_between_the_show_and_the_idle_look():
             held = bytes(p._tick() or b"")
             st.t += 0.1
             late = p._tick()
-            p.override = "blackout"
-            st.t -= 0.1
-            dark = p._tick()
         finally:
             st.close()
-        check(any(held) and not late and not dark,
+        check(any(held) and not late,
               f"{len(cues)} cue(s): the last frame held in the rounding "
-              f"frame, the gap look once SHOW_END_HOLD_S is past, and a "
-              f"blackout over the held frame: {held[:1]!r} {late!r} "
-              f"{dark!r}")
+              f"frame, the gap look once SHOW_END_HOLD_S is past: "
+              f"{held[:1]!r} {late!r}")
+    # A Hold's or an Abort's black in the rounding frame wins: through the
+    # real FireIceShow's black (pixels_fade_out), with the show audio
+    # clock still in its last frame, the output is black and the source
+    # says so; given back (pixels_restore), the held last frame again.
+    F = _fi_mod()
+    tl = _timeline([("01:00:00:00", "Show", show)], idle="/tmp/idle.fseq")
+    p = Player(tl, FakeNetmap(), CountingSender())
+    p.clock = types.SimpleNamespace(source="audio_master")
+    sess = types.SimpleNamespace(running=True, player=p, log=None)
+    fis = F.FireIceShow(types.SimpleNamespace(session=sess),
+                        flame_link=object())
+    st = _Stepped(p, step_ms=25)
+    try:
+        st.feed(base + 9.99)
+        st.t += 0.02
+        before = bytes(p._tick() or b"")
+        fis.pixels_fade_out(0)
+        dark = bytes(p._tick() or b"")
+        dark_src = p.source
+        fis.pixels_restore(0)
+        back = bytes(p._tick() or b"")
+    finally:
+        st.close()
+    check(any(before) and not any(dark) and dark_src == plmod.BLACK and
+          back == before,
+          f"a Hold's black over the held last frame: {before[:1]!r} "
+          f"{dark[:1]!r} {dark_src!r} {back[:1]!r}")
     print("  ok")
 
 
