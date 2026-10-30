@@ -49,9 +49,9 @@ The rules, each a refusal or a cut
     is armed. So no value is ever up on the arm tick, and flamesafe's
     clean rising edge rule (every fire slot under 15) always holds.
   - The page works during a show (a scheduled show playing, the show
-    clock playing a cue, Run pressed, Programming playback). It is
-    unavailable while: a Hold is standing (a show held or paused), an
-    Abort is standing, live flame programming is on, a purge is selected
+    clock playing a cue, Run pressed, Programming playback) and through a
+    Hold (Jeff, 2026-10-30: a Hold zeroes the show's own values, never the
+    page's). It is unavailable while: an Abort is standing, live flame programming is on, a purge is selected
     or firing on the Startup page, any screen is in Arrange mode, the lock
     state is not trusted, the flame link is not sending. Each says why.
   - The Startup page's purge rules: purge_arming on, and from the show
@@ -71,8 +71,8 @@ The rules, each a refusal or a cut
     beat whatever this module does.
   - CUT, all to zero at once, on: the fireball group seen not armed (a
     disarm, a lockout, flamesafe holding it), flamesafe's status stale,
-    the flame link zeroed or disarmed (zero() and disarm_all() are Stop,
-    Hold, Abort, a show ending: the link's own counter says so), Abort
+    the flame link disarmed (disarm_all() is Stop and Abort: the link's
+    own disarm count says so; a Hold or a show ending does not), Abort
     (Morning.on_abort), any blocker above appearing, a refused beat, a
     stale heartbeat, the page leaving, hidden or closed, its status gone
     stale, sign out (the beat is refused), and All off from any screen.
@@ -223,11 +223,13 @@ class FireballPanel:
         return self.group is not None
 
     def _gen(self, link):
-        """The flame link's zero count: zero() and disarm_all() (Stop,
-        Hold, Abort, a show ending, every disarm through the link) bump
-        it. None when it cannot be read."""
+        """The flame link's disarm count (abort_id): every disarm_all()
+        (Stop, Abort) bumps it; a zero() (Hold, a show ending) does not.
+        None when it cannot be read."""
         try:
-            g = getattr(link, "_zero_gen")
+            # The disarm count (Stop, Abort): a Hold or a show's end does
+            # not end the page's channels (Jeff, 2026-10-30).
+            g = getattr(link, "abort_id")
             return g if isinstance(g, int) else None
         except Exception:                                # noqa: BLE001
             return None
@@ -332,7 +334,7 @@ class FireballPanel:
                                   "name its run. Nothing was turned on.",
                          "cut": True}
         # The zero count is read BEFORE the checks (review of #193, 5): a
-        # Hold, Stop or Abort that lands after them moves it, so the frame
+        # Stop or Abort that lands after them moves it, so the frame
         # this beat would set is refused at the link (manual_set's gen).
         link0 = self._link()
         gen0 = self._gen(link0) if link0 is not None else None
@@ -419,7 +421,7 @@ class FireballPanel:
                 # double charge).
                 self._tell(on, who, screen)
                 # Refused by the link itself when a zero() or disarm_all()
-                # (Stop, Hold, Abort) has moved its count since the run
+                # (Stop, Abort) has moved its count since the run
                 # started.
                 took = link.manual_set(vals, r["gen"])
                 # A zero() or disarm_all() that landed just after the
@@ -431,8 +433,8 @@ class FireballPanel:
             if self._run is r or self._run is None:
                 link.manual_clear()
             if self._run is r:
-                self.cut("the flame link was zeroed (Stop, Hold, Abort or "
-                         "a disarm)", who=who, screen=screen)
+                self.cut("the flame link was disarmed (Stop, Abort or a "
+                         "disarm through it)", who=who, screen=screen)
             return 409, {"error": "Everything was turned off: "
                                   f"{self.last_cut or 'the run ended'}. "
                                   "Press again.", "cut": True}
@@ -526,8 +528,8 @@ class FireballPanel:
         else:
             link = self._link()
             if link is None or self._gen(link) != r["gen"]:
-                why = "the flame link was zeroed (Stop, Hold, Abort or a "\
-                      "disarm)"
+                why = "the flame link was disarmed (Stop, Abort or a "\
+                      "disarm through it)"
             else:
                 why = self.refusal()
         if why:
@@ -604,9 +606,9 @@ class FireballPanel:
 def _during_show_blockers(remote, m):
     """The Fireball page's own rules during a show (Jeff, 2026-10-30): a
     show playing, the show clock playing, Run pressed and Programming
-    playback do NOT hold it off; an Abort standing, a Hold (a show held or
-    paused), live flame programming, and the Startup page's settings or
-    lock state not trusted do. "" or the sentence. May raise (the caller
+    playback and a Hold do NOT hold it off; an Abort standing, live flame
+    programming, and the Startup page's settings or lock state not trusted
+    do. "" or the sentence. May raise (the caller
     fails closed)."""
     svc = remote.schedule
     mach = getattr(svc, "machine", None)
@@ -614,12 +616,9 @@ def _during_show_blockers(remote, m):
     if getattr(mach, "abort_latched", False) or \
             getattr(cond, "latched", False):
         return "the show is aborted; press Reset first."
-    if getattr(mach, "state", None) in ("HOLD", "PAUSED"):
-        return "a Hold is standing; Resume or Reset first."
-    # The conductor holding (a Programming Hold, an announcement's DARK)
-    # whatever the schedule's state (review of #193, 4).
-    if getattr(cond, "_look", None) in ("HELD", "DARK"):
-        return "a Hold is standing; Resume or Reset first."
+    # A Hold (the schedule HOLD or PAUSED, the conductor's held look) does
+    # NOT hold the page off (Jeff, 2026-10-30): it zeroes the show's own
+    # values only.
     lf = getattr(remote, "live_flame", None)
     if lf is not None and lf.on:
         return ("live flame programming is on; nothing fires from this "

@@ -203,10 +203,12 @@ PROGRAM_HOLD_S = 0.25
 # the purge frame. Unlike the purge frame it is read whether or not a show
 # is live: on those slots each frame carries the HIGHER of the show's own
 # value (the FSEQ or the fireball timeline) and the page's, channel by
-# channel, so neither source can turn the other's channel off. zero() and
-# disarm_all() (Hold, Stop, Abort, a show's end) drop it at once, the
-# lockout zeroes its slots, and flamesafe still passes them only while the
-# fireball group is ARMED.
+# channel, so neither source can turn the other's channel off. Stop and
+# Abort (disarm_all: the disarm count, abort_id) drop it at once; a Hold,
+# a show's end or a Programming move (zero(), a landing) do NOT (Jeff,
+# 2026-10-30: Hold never ends the Fireball page's channels): they zero
+# the SHOW's values only. The lockout zeroes its slots, and flamesafe still
+# passes them only while the fireball group is ARMED.
 MANUAL_HOLD_S = 0.25
 # Programming playback (playhead.py, Jeff 2026-10-29: the switch "Fire
 # flames while scrubbing" is gone). The show's own flame cues follow the
@@ -915,10 +917,11 @@ class FlameLink:
         self._program_session = 0
         self.programs_sent = 0
         # The Fireball page's frame (MANUAL_HOLD_S): (bytes(512), clock when
-        # set, the zero count then), or None; the only slots it may carry;
-        # how many frames it went out on. Every zero() and disarm_all()
-        # (Hold, a show's end, Stop, Abort) moves the zero count, and a
-        # frame set before that is never sent again (_with_manual).
+        # set, the disarm count (abort_id) then), or None; the only slots it
+        # may carry; how many frames it went out on. Every disarm_all()
+        # (Stop, Abort) moves the disarm count, and a frame set before that
+        # is never sent again (_with_manual). zero() (Hold, a show's end)
+        # does not end it.
         self._manual = None
         self.manual_slots = frozenset()
         self.manuals_sent = 0
@@ -1602,8 +1605,8 @@ class FlameLink:
         """The Fireball page's heartbeat: `values` (512 ints 0 to 255) on
         manual_slots go out on the next frames for MANUAL_HOLD_S, live or
         not, merged with the show's own by the higher value per channel.
-        With `gen`, refused (False) when a zero() or disarm_all() has
-        happened since the caller read _zero_gen. True when taken."""
+        With `gen`, refused (False) when a disarm_all() (Stop, Abort) has
+        happened since the caller read abort_id. True when taken."""
         try:
             vals = bytes(values)
             if len(vals) != UNIVERSE_SIZE:
@@ -1612,18 +1615,18 @@ class FlameLink:
             for s in self.manual_slots:
                 keep[s - 1] = vals[s - 1]
             with self._lock:
-                if gen is not None and self._zero_gen != gen:
+                if gen is not None and self.abort_id != gen:
                     self._manual = None
                     return False
-                self._manual = (bytes(keep), self._clock(), self._zero_gen)
+                self._manual = (bytes(keep), self._clock(), self.abort_id)
             return True
         except Exception:
             return False
 
     def manual_clear(self):
         """The Fireball page's frame off now: the next frame carries only
-        the show's own values on its slots. zero() and disarm_all() end it
-        too, by the zero count."""
+        the show's own values on its slots. disarm_all() (Stop, Abort) ends
+        it too, by the disarm count."""
         with self._lock:
             self._manual = None
 
@@ -1632,7 +1635,7 @@ class FlameLink:
         held."""
         m = self._manual
         try:
-            return m is not None and m[2] == self._zero_gen and \
+            return m is not None and m[2] == self.abort_id and \
                 0 <= self._clock() - m[1] <= MANUAL_HOLD_S
         except Exception:
             return False
@@ -1641,11 +1644,11 @@ class FlameLink:
         """`vals` with the Fireball page's frame merged: on each of its
         slots the higher of the two values, then the lockout. A frame older
         than MANUAL_HOLD_S (or from a clock that went back), or set before
-        the last zero() or disarm_all(), is dropped here."""
+        the last disarm_all() (Stop, Abort), is dropped here."""
         m = self._manual
         if m is None:
             return vals
-        if m[2] != self._zero_gen or now - m[1] > MANUAL_HOLD_S or \
+        if m[2] != self.abort_id or now - m[1] > MANUAL_HOLD_S or \
                 now < m[1]:
             with self._lock:
                 if self._manual is m:
@@ -1661,6 +1664,24 @@ class FlameLink:
         if not hit:
             return vals
         self.manuals_sent += 1
+        return self._unlocked(bytes(out))
+
+    def _manual_now(self):
+        """The Fireball page's frame alone (its slots, the lockout applied)
+        while it is held, else zeros: what a frame whose show values were
+        dropped (a zero(), a landing) still carries. Takes no lock (the
+        sender holds self._lock)."""
+        out = bytearray(UNIVERSE_SIZE)
+        m = self._manual
+        try:
+            now = self._clock()
+            if m is None or m[2] != self.abort_id or \
+                    now - m[1] > MANUAL_HOLD_S or now < m[1]:
+                return bytes(out)
+            for s in self.manual_slots:
+                out[s - 1] = m[0][s - 1]
+        except Exception:
+            return bytes(UNIVERSE_SIZE)
         return self._unlocked(bytes(out))
 
     # -- live flame programming (flameprog.py) -------------------------------
@@ -2160,6 +2181,7 @@ class FlameLink:
         goes out as zeros: `_zero_gen` says one did."""
         gen = self._zero_gen
         lgen = self._land_gen
+        aid = self.abort_id
         with self._read_lock:
             tc, values = self.values_now()
             run = self._haze_running()
@@ -2182,6 +2204,12 @@ class FlameLink:
                 # zeroed, and only while the show is not live: values_now;
                 # so is a live flame programming frame, by the same rule).
                 values = bytes(UNIVERSE_SIZE)
+            dropped = lgen != self._land_gen or gen != self._zero_gen
+            if dropped and aid == self.abort_id:
+                # A zero() (Hold, a show's end) or a landing dropped the
+                # show's values; the Fireball page's are not the show's and
+                # stay (Jeff, 2026-10-30). A disarm_all() drops them too.
+                values = self._manual_now()
             # The hazers (2026-10-29): their channels zero in the flame
             # values (fire, the fuel tracker, "firing"), then each ARMED
             # hazer's stored levels while a show plays. A frame read before
@@ -2190,7 +2218,8 @@ class FlameLink:
             self.last_values_nonzero = any(values)
             sp = self._show_part
             show = bytes(map(min, sp, values)) \
-                if len(sp) == len(values) else bytes(UNIVERSE_SIZE)
+                if len(sp) == len(values) and not dropped \
+                else bytes(UNIVERSE_SIZE)
             wire = self._with_haze(values, run and gen == self._zero_gen)
             seq, mono = self._next()
             ok = self._send(encode_flame(seq, tc, mono, self.cfg.universe,
@@ -2211,13 +2240,17 @@ class FlameLink:
                 pass
         return ok
 
-    def _send_zero_frame(self):
+    def _send_zero_frame(self, keep_manual=False):
         """An all-zero flame frame, now, built from nothing but zeros: no
-        provider is asked (fix round 1, item 7). Under self._lock."""
+        provider is asked (fix round 1, item 7). Under self._lock. With
+        `keep_manual` (zero(): a Hold, a show's end) the Fireball page's
+        own channels stay as it holds them."""
         seq, mono = self._next()
-        self.last_values_nonzero = False
+        vals = self._manual_now() if keep_manual else bytes(UNIVERSE_SIZE)
+        self.last_values_nonzero = any(vals)
+        self.show_sent = bytes(UNIVERSE_SIZE)
         return self._send(encode_flame(seq, None, mono, self.cfg.universe,
-                                       bytes(UNIVERSE_SIZE), self.cfg.key,
+                                       vals, self.cfg.key,
                                        self._hazers_said()))
 
     def _abort_overdue(self):
@@ -2274,7 +2307,7 @@ class FlameLink:
             self._program_on = False
             self.zeroed = True
             self._zero_gen += 1
-            return self._send_zero_frame()
+            return self._send_zero_frame(keep_manual=True)
 
     def release(self):
         """flames_release: cue values go out again from the next frame, and

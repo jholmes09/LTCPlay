@@ -7335,7 +7335,7 @@ def build():
  ("flamelink: zero() waits for the next tick instead of sending at once",
   "ltcplay/flamelink.py",
   '''            self._zero_gen += 1
-            return self._send_zero_frame()''',
+            return self._send_zero_frame(keep_manual=True)''',
   '''            self._zero_gen += 1
             return self._sock is not None'''),
 
@@ -7365,7 +7365,7 @@ def build():
   "ltcplay/flamelink.py",
   '''            self.zeroed = True
             self._zero_gen += 1
-            return self._send_zero_frame()''',
+            return self._send_zero_frame(keep_manual=True)''',
   '''            ok = self.send_frame()
             self.zeroed = True
             self._zero_gen += 1
@@ -7374,7 +7374,7 @@ def build():
  ("fix1: zero() asks the providers for its frame",
   "ltcplay/flamelink.py",
   '''            self._zero_gen += 1
-            return self._send_zero_frame()''',
+            return self._send_zero_frame(keep_manual=True)''',
   '''            self._zero_gen += 1
             return self.send_frame()'''),
 
@@ -20218,10 +20218,6 @@ def build():
   "    if getattr(mach, \"abort_latched\", False) or \\\n            getattr(cond, \"latched\", False):\n        return \"the show is aborted",
   "    if getattr(mach, \"abort_latched\", False):\n        return \"the show is aborted"),
 
- ("fireball manual: the conductor holding does not hold the page off",
-  "ltcplay/fireball.py",
-  "    if getattr(cond, \"_look\", None) in (\"HELD\", \"DARK\"):",
-  "    if False:"),
 
  ("fireball manual: flamesafe not confirming the locks does not hold the page off",
   "ltcplay/fireball.py",
@@ -20237,6 +20233,31 @@ def build():
   "ltcplay/flamelink.py",
   "            vals = bytes(values)\n            if len(vals) != UNIVERSE_SIZE:\n                return False\n            keep",
   "            vals = bytes(values)[:UNIVERSE_SIZE].ljust(UNIVERSE_SIZE, b\"\\0\")\n            keep"),
+
+ ("fireball manual: a Hold during a frame's read drops the page's channels",
+  "ltcplay/flamelink.py",
+  "            if dropped and aid == self.abort_id:",
+  "            if False:"),
+
+ ("fireball manual: the zero frame a Hold sends drops the page's channels",
+  "ltcplay/flamelink.py",
+  "            return self._send_zero_frame(keep_manual=True)",
+  "            return self._send_zero_frame()"),
+
+ ("fireball manual: the page counts a Hold as a disarm",
+  "ltcplay/fireball.py",
+  "            g = getattr(link, \"abort_id\")",
+  "            g = getattr(link, \"_zero_gen\")"),
+
+ ("fireball manual: a Hold holds the page off during a show",
+  "ltcplay/fireball.py",
+  "    # A Hold (the schedule HOLD or PAUSED, the conductor's held look) does",
+  "    if getattr(mach, \"state\", None) in (\"HOLD\", \"PAUSED\"):\n        return \"a Hold is standing.\"\n    # A Hold (the schedule HOLD or PAUSED, the conductor's held look) does"),
+
+ ("fireball manual: the page's frame ends on a zero()",
+  "ltcplay/flamelink.py",
+  "            if m is None or m[2] != self.abort_id or \\\n",
+  "            if m is None or m[2] != self.abort_id or self.zeroed or \\\n"),
 
  ("fireball manual: the show's own sent values carry the page's frame",
   "ltcplay/flamelink.py",
@@ -20277,19 +20298,19 @@ def build():
 
  ("fireball manual: the page's frame never expires at the link",
   "ltcplay/flamelink.py",
-  "        if m[2] != self._zero_gen or now - m[1] > MANUAL_HOLD_S or \\\n"
+  "        if m[2] != self.abort_id or now - m[1] > MANUAL_HOLD_S or \\\n"
   "                now < m[1]:",
-  "        if m[2] != self._zero_gen or now < m[1]:"),
+  "        if m[2] != self.abort_id or now < m[1]:"),
 
  ("fireball manual: the page's frame outlives a zero or a disarm_all",
   "ltcplay/flamelink.py",
-  "        if m[2] != self._zero_gen or now - m[1] > MANUAL_HOLD_S or \\\n"
+  "        if m[2] != self.abort_id or now - m[1] > MANUAL_HOLD_S or \\\n"
   "                now < m[1]:",
   "        if now - m[1] > MANUAL_HOLD_S or now < m[1]:"),
 
  ("fireball manual: a beat read before a zero is taken",
   "ltcplay/flamelink.py",
-  "                if gen is not None and self._zero_gen != gen:\n"
+  "                if gen is not None and self.abort_id != gen:\n"
   "                    self._manual = None\n                    return False",
   "                if False:\n"
   "                    self._manual = None\n                    return False"),
@@ -20332,10 +20353,6 @@ def build():
   "                              remote, link, during_show=True),",
   "                              remote, link),"),
 
- ("fireball manual: a Hold does not hold the page off during a show",
-  "ltcplay/fireball.py",
-  "    if getattr(mach, \"state\", None) in (\"HOLD\", \"PAUSED\"):",
-  "    if False:"),
 
  ("fireball manual: an Abort standing does not hold the page off",
   "ltcplay/fireball.py",

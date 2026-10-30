@@ -554,8 +554,8 @@ and turns them all off when it disarms (if one still shows ON, it says "turn
 Fuel, Air, Purge off before arming").
 
 **Everything goes off by itself** (within a quarter of a second) on: Stop,
-Hold, Abort, the end of a show, Disarm Fireball, Disarm all flame groups
-or the Fireball's deck key; flamesafe not reporting; leaving the page, closing it or hiding
+Abort, Disarm Fireball, Disarm all flame groups or the Fireball's deck
+key; the Fireball locked out; the flame link lost; flamesafe not reporting; leaving the page, closing it or hiding
 it; this page's status not being live; signing out; the connection
 dropping; and the All off button (any screen). Losing focus (another window
 clicked) lets go of Valve Open and Igniter. After any of these nothing
@@ -574,8 +574,12 @@ charge**: the button says "Charged: a press is a top-off", and the
 journal names who topped it off. A tank charged by hand is not charged
 again by the timeline in that show (its stage is skipped and says so).
 
-**When it will not work** it says why in plain words: a Hold standing (a
-show held, or a Hold between shows), an Abort standing, live flame
+**A Hold does not turn the page off** (Jeff, 2026-10-30). Hold, and the
+end of a show, zero the show's own fireball values (its FSEQ or its
+timeline); what you hold on this page stays on through them.
+
+**When it will not work** it says why in plain words: an Abort standing,
+live flame
 programming on, a purge selected on the Startup page (and that purge
 waits while a Fireball channel is on), any screen in Arrange mode, the
 Fireball locked out, or the purge switch off (`purge_arming`, and from an
@@ -597,8 +601,9 @@ off, with Andy:**
    follows, and goes off when pressed again.
 4. Hold Valve Open, then Igniter: on while held, off the moment you lift.
 5. With Fuel Charge on: press Disarm Fireball, then (armed again) Abort,
-   Stop, Hold, the Fireball's deck key, and close the page. Each time every
-   channel goes off at once and stays off.
+   Stop, the Fireball's deck key, and close the page. Each time every
+   channel goes off at once and stays off. Then with Fuel Charge on press
+   Hold: it stays on (a Hold never turns the page off); Stop turns it off.
 6. Pull the network cable of the iPad (or close the browser) while holding
    Valve Open: it goes off within a second.
 7. Only then open the fuel valve, one channel at a time.
