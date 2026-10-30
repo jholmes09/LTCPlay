@@ -2366,6 +2366,12 @@ class Remote:
                 self.timed_purge_cut(f"{_who} signed out on the {ctx.device}",
                                      ctx.user, ctx.device,
                                      token=getattr(ctx, "token", "") or "")
+                # The Fireball page's channels end here too, at once, not on
+                # the page's next beat or the 0.25 s backstop (round-4
+                # review, s28/s48): this screen's run, and on the show
+                # machine (every session made here ended) any run.
+                self.fireball_signout_cut(
+                    f"{_who} signed out on the {ctx.device}", ctx)
             if ended:
                 # Only this device's own hold (a hold belongs to the device
                 # it came from), and only when a sign-in really ended: a
@@ -3498,20 +3504,10 @@ class Remote:
         ph = self.playhead
         if not ph.applies():
             ph = None
-        fb = self.fireball
-        if ph is not None and name in ("play-from", "loop") and \
-                fb is not None and fb.active():
-            # A Programming Play from or Loop never starts while the
-            # Fireball page has a channel on (a landing under a held
-            # Fireball channel). The page itself works during Programming
-            # playback once it plays (fireball.py, Jeff 2026-10-30): start
-            # playback first, then press.
-            why = ("A Fireball channel is on. Turn the Fireball page off "
-                   "first. Nothing was played.")
-            self._journal(who, screen, name, "refused",
-                          f"{label}'s {name} on the {screen} was refused. "
-                          f"{why}")
-            return 409, {"error": why}
+        # The Fireball page works at any time (Jeff, 2026-10-30): a
+        # Programming Play from or Loop is never refused because a Fireball
+        # channel is on (round-4 review); the page's frame is not the show's
+        # and a landing drops only the show's values (flamelink.py).
 
         def here():
             if ph is not None:
@@ -5383,6 +5379,21 @@ class Remote:
         except Exception as e:                   # noqa: BLE001
             return f"the engine's state could not be read ({type(e).__name__})."
         return ""
+
+    def fireball_signout_cut(self, why, ctx):
+        """A sign-out that ended a session: the Fireball page's run from
+        this screen (on the show machine itself, any run) is cut now.
+        Cutting is always safe. Never raises."""
+        fb = self.fireball
+        if fb is None:
+            return False
+        try:
+            owner = (fb.summary() or {}).get("owner")
+            if owner is None or not (ctx.local or owner == ctx.device):
+                return False
+            return fb.cut(why, who=ctx.user or "", screen=ctx.device)
+        except Exception:                        # noqa: BLE001
+            return False
 
     def timed_purge_cut(self, why, who="", screen="", token=None,
                         group=None):

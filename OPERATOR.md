@@ -555,16 +555,17 @@ Fuel, Air, Purge off before arming").
 
 **Everything goes off by itself** (within a quarter of a second) on: Stop,
 Abort, Disarm Fireball, Disarm all flame groups or the Fireball's deck
-key; the Fireball locked out; the flame link lost; flamesafe not reporting; leaving the page, closing it or hiding
-it; this page's status not being live; signing out; the connection
-dropping; and the All off button (any screen). Losing focus (another window
+key; the Fireball locked out; the flame link lost, or a single frame to
+flamesafe that could not be sent; flamesafe not reporting; leaving the page, closing it or hiding
+it; this page's status not being live; signing out (at once, at the
+engine); the connection dropping; and the All off button (any screen). Losing focus (another window
 clicked) lets go of Valve Open and Igniter. After any of these nothing
 comes back on by itself: press again.
 
 **During a show too** (Jeff, 2026-10-30: Andy may start any phase by hand
 at any time). The page works while a show plays, while Run is pressed and
-during Programming playback. (Programming's Play from and Loop are refused
-while a Fireball channel is on: start playback first, then press.) On each Fireball channel the higher of the
+during Programming playback, and Programming's Play from and Loop work
+with a Fireball channel on (it stays on). On each Fireball channel the higher of the
 show's value (its FSEQ, or its fireball timeline) and this page's goes
 out, so the page can add a channel the show has off, and can never turn
 off one the show has on. The page shows the fuel and air charge record

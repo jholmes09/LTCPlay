@@ -17826,9 +17826,9 @@ def build():
   '                    cancel(f"Hold was pressed on the {screen}")',
   '                    pass'),
 
- ("Programming playback starts over a Fireball channel that is on", "ltcplay/remote.py",
-  '        if ph is not None and name in ("play-from", "loop") and \\\n                fb is not None and fb.active():',
-  '        if False:'),
+ ("Programming Play from is refused while the Fireball page has a channel on (round 4)", "ltcplay/remote.py",
+  '        # The Fireball page works at any time (Jeff, 2026-10-30): a\n',
+  '        if name in ("play-from", "loop") and self.fireball is not None and self.fireball.active():\n            return 409, {"error": "A Fireball channel is on."}\n        # The Fireball page works at any time (Jeff, 2026-10-30): a\n'),
 
  # Jeff's field report, 2026-10-28: Stop, Reset from Hold, refusal reasons.
  ("a refused start's alert says only that the show did not start",
@@ -18015,17 +18015,13 @@ def build():
 
  ("fireball: the watcher does not see the flame link zeroed",
   "ltcplay/fireball.py",
-  "            if link is None or self._gen(link) != r[\"gen\"]:",
-  "            if link is None:"),
+  "        if link is None or self._gen(link) != r[\"gen\"]:\n            return (\"the flame link was disarmed",
+  "        if link is None:\n            return (\"the flame link was disarmed"),
 
  ("fireball: the watcher does not look at the rules",
   "ltcplay/fireball.py",
-  "            else:\n"
-  "                why = self.refusal()\n"
-  "        if why:",
-  "            else:\n"
-  "                why = \"\"\n"
-  "        if why:"),
+  "            why = self._link_why(self._link(), r) or self.refusal()\n",
+  "            why = self._link_why(self._link(), r)\n"),
 
  ("fireball: a cut run can come back",
   "ltcplay/fireball.py",
@@ -18047,7 +18043,7 @@ def build():
 
  ("fireball: a zero that lands during a beat is ignored",
   "ltcplay/fireball.py",
-  "                lost = took is False or self._gen(link) != r[\"gen\"]",
+  "                lost = took is False or self._link_why(link, r)",
   "                lost = False"),
 
  ("fireball: a disarm seen just after the frame went in is ignored",
@@ -20369,6 +20365,31 @@ def build():
   "ltcplay/flamelink.py",
   "            self.show_sent = show if ok else bytes(UNIVERSE_SIZE)",
   "            self.show_sent = show"),
+
+ ("fireball manual: the show's sent values keep a frame a zero() dropped (round 4, E2)",
+  "ltcplay/flamelink.py",
+  "                if len(sp) == len(values) and not dropped \\\n",
+  "                if len(sp) == len(values) \\\n"),
+
+ ("fireball manual: a zero frame leaves the show's sent values (round 4, E15)",
+  "ltcplay/flamelink.py",
+  "        self.show_sent = bytes(UNIVERSE_SIZE)\n        return self._send(encode_flame(seq, None, mono,",
+  "        return self._send(encode_flame(seq, None, mono,"),
+
+ ("fireball manual: a frame not sent keeps the page's frame (round 4, s95)",
+  "ltcplay/flamelink.py",
+  "            self._manual = None\n            self.manual_drops += 1",
+  "            pass"),
+
+ ("fireball manual: a frame not sent does not cut the page's run (round 4, s95)",
+  "ltcplay/fireball.py",
+  "        if self._drops(link) != r.get(\"drops\"):",
+  "        if False:"),
+
+ ("fireball manual: a sign-out leaves the page's run to its beats (round 4, s28)",
+  "ltcplay/remote.py",
+  "                self.fireball_signout_cut(\n",
+  "                (lambda *a: None)(\n"),
 
  ("fireball manual: the timeline judges its charge from the composed frame",
   "ltcplay/web.py",

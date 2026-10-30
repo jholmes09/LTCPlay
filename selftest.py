@@ -57046,17 +57046,20 @@ def test_remote_transport_on_the_show_audio():
         st, _h, out = R.ask("POST", "/api/remote/continue",
                             {"seen": R.seen()})
         R.settle()
-        # The Fireball page with a channel on: no Programming playback
-        # starts over it (one source of fire values at a time).
+        # The Fireball page with a channel on never refuses a Programming
+        # Play from (Jeff, 2026-10-30: the page works at any time; round-4
+        # review): the page's frame is not the show's.
         real_fb = R.remote.fireball
-        R.remote.fireball = types.SimpleNamespace(active=lambda: True)
+        R.remote.fireball = types.SimpleNamespace(
+            active=lambda: True, summary=lambda: {"owner": None})
         n = len(calls)
         st, _h, out = R.ask("POST", "/api/remote/play-from",
                             {"at": "00:01:00:00", "seen": R.seen()})
+        R.settle()
         R.remote.fireball = real_fb
-        check(st == 409 and "Fireball" in out.get("error", "") and
-              len(calls) == n,
-              f"Play from went over a Fireball channel: {st} {out}")
+        check(st == 200 and "Fireball" not in str(out) and len(calls) > n,
+              f"Play from refused over a Fireball channel: {st} {out} "
+              f"{calls[n:]}")
         n = len(calls)
         st, _h, out = R.ask("POST", "/api/remote/abort",
                             {"confirmed": True, "seen": R.seen()})
@@ -87596,6 +87599,30 @@ def test_fireball_panel_rules():
     P.t[0] += 0.05
     check("disarmed" in fb.tick() and not fb.active(),
           "a disarm_all() through the flame link (Stop, Abort): cut")
+    # A frame the flame link could not send (round-4 review, s95): the run
+    # is cut on the link's count, and a later beat of it brings nothing
+    # back by itself; a fresh press starts again.
+    link.manual_drops = 0
+    start("cs")
+    link.manual_drops += 1
+    P.t[0] += 0.05
+    check(fb.tick() == "a frame to flamesafe could not be sent" and
+          not fb.active() and link.cur is None,
+          f"a frame not sent: cut: {fb.last_cut!r}")
+    code, out = beat({"fuel"}, run="cs", seq=9)
+    check(code == 409 and link.cur is None and not fb.active(),
+          f"the cut run's next beat brings nothing back: {code} {out}")
+    start("ct")
+    link.on_set = lambda: setattr(link, "manual_drops",
+                                  link.manual_drops + 1)
+    P.t[0] += 0.05
+    code, out = beat({"fuel"}, run="ct", seq=2)
+    link.on_set = None
+    check(code == 409 and link.cur is None and not fb.active() and
+          "could not be sent" in fb.last_cut,
+          f"a frame not sent while a beat's frame went in: cut: {code} "
+          f"{fb.last_cut!r}")
+    del link.manual_drops
     start("c4")
     P.why[0] = "a scheduled show is live (SHOW)"
     P.t[0] += 0.05
@@ -88123,6 +88150,18 @@ def test_fireball_signed_out_is_view_only():
                            window="w-aaaaaa")
         check(st == 200 and not P.fb.active() and P.link.cur is None,
               "and off")
+        # Signing out cuts the page's channels at the engine at once, not
+        # on the page's next beat or the 0.25 s backstop (round-4 review,
+        # s28/s48).
+        st, out, _h = http("/api/remote/fireball-beat",
+                           body({"fuel"}, "o2", 6, True), cookie=ck["Ola"],
+                           window="w-aaaaaa")
+        check(st == 200 and P.fb.active(), f"Fuel on again: {st} {out}")
+        st, out, _h = http("/api/remote/signout", {}, cookie=ck["Ola"])
+        check(st == 200 and not P.fb.active() and P.link.cur is None and
+              "signed out" in P.fb.last_cut,
+              f"signed out: the Fireball run cut at once: {st} "
+              f"{P.fb.last_cut!r}")
         # The handler writes a request's audit line just after its answer
         # has gone (web.py's finally), so the last line is waited for: a
         # busy runner read the log in between (mutate shard 19 baseline,
@@ -88131,9 +88170,9 @@ def test_fireball_signed_out_is_view_only():
             rem.audit.flush(5.0)
             return [l for l in _audit_lines(rem.audit.folder)
                     if l["action"] == "fireball-beat"]
-        wait_for(lambda: len(_beats()) >= 5, timeout=5.0, step=0.05)
+        wait_for(lambda: len(_beats()) >= 6, timeout=5.0, step=0.05)
         beats = _beats()
-        check(len(beats) == 5,
+        check(len(beats) == 6,
               f"every refused press and every change is in the audit log, "
               f"not the beats between: {len(beats)}")
         check(any(l["action"] == "fireball-off"
@@ -88825,6 +88864,15 @@ def test_fireball_doc_in_plain_words():
                  "what you hold on this page stays on through them",
                  "never on 77"):
         check(need in part, f"OPERATOR.md's Fireball section says {need!r}")
+    for need in ("a single frame to flamesafe that could not be sent",
+                 "signing out (at once, at the engine)",
+                 "Play from and Loop work with a Fireball channel on"):
+        check(" ".join(need.split()) in " ".join(part.split()),
+              f"OPERATOR.md's Fireball section says {need!r} (round-4 "
+              f"review)")
+    check("are refused while a Fireball channel is on" not in
+          " ".join(part.split()),
+          "OPERATOR.md no longer says Play from is refused over the page")
     check("Run pressed (the show file owns the channels)" not in part,
           "OPERATOR.md no longer says Run pressed holds the page off")
     flat = lambda x: " ".join(x.split())
@@ -100630,6 +100678,44 @@ def test_fireball_manual_merged_on_the_flame_link():
         OSError("down")))
     lk.send_frame()
     check(lk.show_sent[54] == 0, "a frame that did not go out: zeros")
+    # A frame that did not go out drops the page's frame too, counted
+    # (round-4 review, s95): when the link is back, Andy's Fuel does not
+    # come back by itself.
+    R.cue = [0] * 512
+    d0 = getattr(lk, "manual_drops", 0)
+    lk.manual_set(page(s55=255), lk.abort_id)
+    lk.send_frame()
+    check(lk._manual is None and getattr(lk, "manual_drops", 0) == d0 + 1,
+          f"a send that failed: the page's frame dropped, counted: "
+          f"{getattr(lk, 'manual_drops', 0) - d0}")
+    lk._sock = _ty.SimpleNamespace(sendto=lambda d, a: len(d))
+    lk.send_frame()
+    check(seen_[-1][54] == 0, "the link back: the page's Fuel stays off "
+                              "until a fresh press")
+    # The show's own values that a zero() dropped mid-frame are never
+    # read as the show's charge (round-4 review, E2): the page's frame
+    # that went out instead is not the show's.
+    R.cue = [0] * 512
+    R.cue[54] = 255
+    real_cues = lk.cues
+    lk.cues = lambda tc: (lk.zero(), real_cues(tc))[1]
+    lk.manual_set(page(s55=255), lk.abort_id)
+    lk.send_frame()
+    lk.cues = real_cues
+    check(seen_[-1][54] == 255 and lk.show_sent[54] == 0,
+          f"a zero() landed while the show's Fuel was read: the page's Fuel "
+          f"went out, the show's own sent values say 0: {seen_[-1][54]} "
+          f"{lk.show_sent[54]}")
+    # A zero() (Hold, a show's end) clears the show's sent values at once
+    # (round-4 review, E15).
+    lk.manual_clear()
+    lk.release()
+    lk.send_frame()
+    check(lk.show_sent[54] == 255, "the show's own Fuel went out")
+    lk.zero()
+    check(lk.show_sent[54] == 0, f"a zero(): the show's sent values are "
+                                 f"zeros at once: {lk.show_sent[54]}")
+    lk.release()
     lk._sock = None
     lk.observer = None
     R.cue = [0] * 512
@@ -100651,9 +100737,10 @@ def test_fireball_page_beats_race_the_sender():
     section("the Fireball page's beat against the flame link's sender "
             "(review of #193): the charge state knows who holds a charge "
             "before the frame can go out, so Andy's charge is his and his "
-            "top-off is never a double charge; a Stop, Hold or Abort that "
-            "lands after the beat's checks, or while its frame is set, "
-            "means nothing goes out; a frame of the wrong size is refused")
+            "top-off is never a double charge; a Stop or Abort that lands "
+            "after the beat's checks, or while its frame is set, means "
+            "nothing goes out (a Hold does not end the page's frame: "
+            "Jeff, 2026-10-30); a frame of the wrong size is refused")
     import types
     from ltcplay import fireball as FB
     from ltcplay import fireball_charge as FC
