@@ -42101,7 +42101,8 @@ def test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender():
     print("  ok")
 
 
-def _fi_cut_show(work, ncues=1, frames=300, sparse=True, corrupt_block=None):
+def _fi_cut_show(work, ncues=1, frames=300, sparse=True, corrupt_block=None,
+                  compression="zlib", cut_tail_frames=0):
     """A show folder for the cut-ahead tests: Pixels A 1-510, Flames
     511-1022; `ncues` renders of `frames` frames (zlib, 37 frames a
     block), each frame its own byte ((i * 7 + 3) & 255), sparse by default
@@ -42119,12 +42120,21 @@ def _fi_cut_show(work, ncues=1, frames=300, sparse=True, corrupt_block=None):
     for k in range(ncues):
         p = os.path.join(show, f"c{k}.fseq")
         _fx.write_fseq(p, frame_count=frames, step_ms=25,
-                       compression="zlib", block_frames=37,
+                       compression=compression, block_frames=37,
                        **({"sparse_ranges": [(0, 100), (600, 200)]}
                           if sparse else {"channel_count": 1022}),
                        fill=lambda i: (i * 7 + 3) & 0xFF)
         paths.append(p)
         cues.append(types.SimpleNamespace(name=f"c{k}", path=p))
+    if cut_tail_frames:
+        # A render whose last frames are missing (cut short on disk).
+        from ltcplay import fseq as FS
+        f = FS.FSEQ(paths[0])
+        cc = f.channel_count
+        f.close()
+        with open(paths[0], "r+b") as fh:
+            fh.seek(0, 2)
+            fh.truncate(fh.tell() - cut_tail_frames * cc - cc // 2)
     if corrupt_block is not None:
         from ltcplay import fseq as FS
         f = FS.FSEQ(paths[0])
@@ -42151,6 +42161,19 @@ def _fi_at(clk, n, label=None):
     if label is not None:
         clk._cue = {"label": label, "position_s": 0.0}
     return f"00:{m:02d}:{s:02d}:{f:02d}"
+
+
+def _fi_settled(bg, tc):
+    """bg(tc) once its CUT_FAULT_AFTER_S grace is over (a fake clock): what
+    a frame that stays uncut finally says."""
+    mono = [5000.0]
+    bg._mono = lambda: mono[0]
+    bg(tc)
+    mono[0] += 2.0
+    got = bg(tc)
+    import time as _t
+    bg._mono = _t.monotonic
+    return got
 
 
 def test_fire_ice_flame_cues_cut_ahead_match_and_never_decompress():
@@ -42209,24 +42232,50 @@ def test_fire_ice_flame_cues_cut_ahead_match_and_never_decompress():
         other.__dict__.update(cut.__dict__)
         other.span = (cut.span[0] + 1, cut.span[1])
         bg._cuts = {paths[0]: other}
-        check(bg(_fi_at(clk, 100)) is None and bg.fault == F.CUES_LOADING,
+        check(_fi_settled(bg, _fi_at(clk, 100)) is None and
+              bg.fault == F.CUES_LOADING,
               f"a cut for another span: zero and a CUES FAULT: {bg.fault!r}")
         other.span = cut.span
         other.f = FS.FSEQ(paths[0])
-        check(bg(_fi_at(clk, 100)) is None and bg.fault == F.CUES_LOADING,
+        check(_fi_settled(bg, _fi_at(clk, 100)) is None and
+              bg.fault == F.CUES_LOADING,
               "a cut of another FSEQ of the same render: never used")
         other.f.close()
         bg._cuts = {paths[0]: cut}
         check(bg(_fi_at(clk, 100)) == want and bg.fault == "",
               "its own cut again: the cues")
-        # Not cut yet while the show plays: a CUES FAULT at once, then the
-        # cues once the reading thread has cut it.
+        # Not cut yet while the show plays: zero, a CUES FAULT only once it
+        # has stayed so for CUT_FAULT_AFTER_S (no journal line, no blink, for
+        # a move that is cut in time), then the cues once it is cut.
         far = 290 * 30 // 40
-        cut.blocks.pop(cut._block(289))       # as if not cut yet
+        check(cut._block(289) in cut.blocks, "the far block was cut ahead")
+        cut.blocks.pop(cut._block(289), None)     # as if not cut yet
+        mono = [1000.0]
+        bg._mono = lambda: mono[0]
+        lines = []
+        bg._journal = lambda t, **k: lines.append((t, k))
         got = bg(_fi_at(clk, far))
-        check(got is None and bg.fault == F.CUES_LOADING,
-              f"a block not cut yet: a CUES FAULT, not a silent zero: "
-              f"{bg.fault!r}")
+        check(got is None and bg.fault == "" and not lines,
+              f"a block not cut yet: zero, no fault and no line at first: "
+              f"{bg.fault!r} {lines}")
+        mono[0] += F.CUT_FAULT_AFTER_S - 0.1
+        check(bg(_fi_at(clk, far)) is None and bg.fault == "",
+              "still inside the grace: no fault")
+        mono[0] += 0.2
+        got = bg(_fi_at(clk, far))
+        check(got is None and bg.fault == F.CUES_LOADING and
+              len([1 for _t, k in lines if k.get("fault")]) == 1,
+              f"still not cut after {F.CUT_FAULT_AFTER_S} s: a CUES FAULT, "
+              f"never a silent zero: {bg.fault!r}")
+        # A cutting thread that could not be started again: the fault at
+        # once, and it says the cues will not follow.
+        bg._start_failed.add("_cutter")
+        mono[0] += 5
+        check(bg(_fi_at(clk, far)) is None and
+              bg.fault == F.CUES_CUTTER_DEAD and
+              "restart LTC Player" in bg.fault,
+              f"the cutter gone: the fault says so: {bg.fault!r}")
+        bg._start_failed.clear()
         bg._cut_ahead()
         check(bg(_fi_at(clk, far)) == direct(_fi_at(clk, far)) and
               bg.fault == "", "cut by the next pass: the cues")
@@ -42269,7 +42318,7 @@ def test_fire_ice_flame_cut_guards():
         bg._data[paths[0]] = (FS.FSEQ(alt), alt_data)
         bg._cuts = {}
         bg._refresh_once()
-        got = bg(_fi_at(clk, 10))
+        got = _fi_settled(bg, _fi_at(clk, 10))
         check(paths[0] not in bg._cuts and got is None and
               bg.fault == F.CUES_LOADING,
               f"bytes that are another render's: not cut, a CUES FAULT, "
@@ -42316,9 +42365,11 @@ def test_fire_ice_flame_cut_guards():
             ok.append(bool(got) and sp.fault == "")
         check(all(ok), f"12 cues of 2000 frames: every cue's start ready "
                        f"after one pass ({took:.2f} s): {ok}")
-        check(all(len(c.blocks) <= 4 for c in sp._cuts.values()),
-              f"and only their start is cut, not whole renders: "
-              f"{[len(c.blocks) for c in sp._cuts.values()]}")
+        nb = [len(sp._cuts[p].blocks) for p in paths]
+        check(all(n <= 4 for n in nb[1:]) and nb[0] < len(
+            sp._cuts[paths[0]].firsts),
+              f"only each cue's start is cut (the playing one ahead of its "
+              f"timecode), never whole renders: {nb}")
         sp.close()
         # A block that cannot be cut: the frames before it as they are, then
         # a CUES FAULT with the render's own error, the block tried once.
@@ -42353,6 +42404,1447 @@ def test_fire_ice_flame_cut_guards():
                                    f"{tried.count(4)}")
         bg.close()
     finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_cut_followups_of_174():
+    section("fire & ice (review of #174): the cutting has a thread of its "
+            "own, so a stalled read cannot starve the playing cue; a thread "
+            "that dies is started again and journaled; an uncompressed "
+            "render is cut in pieces straight from memory, never copied "
+            "whole, and one missing its tail plays every frame it has; a "
+            "compressed block's channel data is not kept")
+    import shutil
+    import tempfile
+    import threading
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    try:
+        # A stalled reading thread: the cutting thread still cuts ahead.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "s"), frames=1200)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg.start()
+        for _ in range(250):
+            if bg(_fi_at(clk, 5)):
+                break
+            time.sleep(0.02)
+        stalled, release = threading.Event(), threading.Event()
+        real_check = bg._check_renders_once
+
+        def stuck():
+            if threading.current_thread().name == "ltcplay-flame-cues-read":
+                stalled.set()
+                release.wait(10)
+            return real_check()
+        bg._check_renders_once = stuck
+        check(stalled.wait(3), "setup: the reading thread is stalled")
+        far = 25 * 30                       # 25 s on: never cut before
+        cut = bg._cuts[paths[0]]
+        n_far = int(25 * 1000 // 25)
+        check(cut._block(n_far) not in cut.blocks, "setup: 25 s is not cut")
+        got = None
+        for _ in range(100):
+            got = bg(_fi_at(clk, far))
+            if got:
+                break
+            time.sleep(0.02)
+        check(got is not None and bg.fault == "" and stalled.is_set()
+              and not release.is_set(),
+              f"with the reading thread stalled, the cutting thread cut the "
+              f"playing cue ahead: {bg.fault!r}")
+        release.set()
+        # A thread that dies is started again on the next frame, said once.
+        lines = []
+        bg._journal = lambda t, **k: lines.append((t, k))
+
+        class Die(BaseException):
+            pass
+        real_cut = bg._cut_ahead
+        killed = threading.Event()
+
+        def die():
+            if not killed.is_set():
+                killed.set()
+                raise Die("killed by the test")
+            return real_cut()
+        old_t = bg._cutter
+        bg._cut_ahead = die
+        old_t.join(3)
+        check(not old_t.is_alive(), "setup: the cutting thread died")
+        bg(_fi_at(clk, far))
+        new_t = bg._cutter
+        check(new_t is not old_t and new_t.is_alive() and
+              any("ltcplay-flame-cues-cut stopped (Die: killed by the "
+                  "test)" in t and k.get("fault") for t, k in lines),
+              f"started again on the next frame, journaled as a fault: "
+              f"{[t for t, _k in lines]}")
+        bg.close()
+        # Uncompressed, the last 3 frames (and a half) missing: no copy of
+        # the render, every frame it has equal to the direct read, the
+        # missing ones the render's own fault.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "u"), frames=600,
+                                       compression="none",
+                                       cut_tail_frames=3)
+        direct = F.FlameCues(ctl, "Flames")
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        real_load = FS.FSEQ._load_block
+        loads = []
+
+        def spy_load(self, idx):
+            if any(self is c.g for c in list(bg._cuts.values())):
+                loads.append(idx)
+            return real_load(self, idx)
+        FS.FSEQ._load_block = spy_load
+        try:
+            bg._check_renders_once()
+            bg._refresh_once()
+            cut = bg._cuts[paths[0]]
+            cut.ensure(0, 599)
+        finally:
+            FS.FSEQ._load_block = real_load
+        check(cut.whole and not loads and len(cut.blocks) == 3,
+              f"an uncompressed render is cut in pieces straight from "
+              f"memory: {len(cut.blocks)} pieces, block loads {loads}")
+        bad = []
+        for k in range(0, 595):
+            n = int(k * 1000 // 25)
+            tc = _fi_at(clk, int(k * 25 * 30 // 1000))
+            a, b = _fi_settled(bg, tc), direct(tc)
+            if a != b:
+                bad.append(k)
+        check(not bad, f"every frame it has, as the direct read: {bad[:4]}")
+        tc = _fi_at(clk, int(599 * 25 * 30 // 1000))
+        got = bg(tc)
+        check(got is None and bg.fault.startswith(
+            "the show's render could not be read"),
+              f"a missing frame: the render's own fault: {bg.fault!r}")
+        bg.close()
+        direct.close()
+        # Compressed: the block's channel data is not kept after its cut.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "z"), frames=300)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.ensure(0, 299)
+        check(len(cut.blocks) == len(cut.firsts) and cut.g._cache == b"",
+              f"every block cut, no block's channel data kept: "
+              f"{len(cut.g._cache)} bytes")
+        bg.close()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_cut_round2_of_177():
+    section("fire & ice (review of #177): a cue that stays uncut while it "
+            "plays on across blocks is a CUES FAULT after 1 s, never silent "
+            "zeros; a new episode after a served row has its grace again; "
+            "the playing cue is cut far ahead, before its render is "
+            "published; a thread that keeps dying is restarted later each "
+            "time and becomes a fault on the screens; close() joins both "
+            "threads; a render's first missing frame is exact")
+    import shutil
+    import tempfile
+    import threading
+    import types
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    try:
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "a"), frames=1200)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()                    # no thread: driven by hand
+        bg._check_renders_once()
+        _fi_at(clk, 10 * 30)              # the show at 10 s
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        check(bg(_fi_at(clk, 10 * 30)) is not None and bg.fault == "",
+              "the playing cue is cut where it is before its render is "
+              "published")
+        check(F.CUT_AHEAD_S >= 10 and
+              cut._block(int(22 * 1000 // 25)) in cut.blocks,
+              f"and far ahead of it ({F.CUT_AHEAD_S} s): 22 s is cut")
+        # Playing on across uncut blocks (37 frames, under 1 s each) with
+        # nothing cutting: one episode, a CUES FAULT after 1 s.
+        mono = [100.0]
+        bg._mono = lambda: mono[0]
+        for b in list(cut.blocks):
+            if b >= cut._block(int(23 * 1000 // 25)):
+                cut.blocks.pop(b, None)
+        start = 23 * 30
+        silent, first_fault = 0, None
+        for k in range(90):               # 3 s of show at 30 frames a second
+            got = bg(_fi_at(clk, start + k))
+            if got is None and bg.fault == "":
+                silent += 1
+            if bg.fault == F.CUES_LOADING and first_fault is None:
+                first_fault = k / 30.0
+            mono[0] += 1 / 30.0
+        check(first_fault is not None and first_fault <= F.CUT_FAULT_AFTER_S
+              + 0.05 and silent <= 31,
+              f"uncut across blocks: a CUES FAULT after {first_fault} s, "
+              f"{silent} silent zero frames")
+        # A served row ends the episode: the next one has its grace again.
+        cut.ensure(int(start / 30 * 40), int((start + 200) / 30 * 40))
+        mono[0] += 1.0
+        check(bg(_fi_at(clk, start + 95)) is not None, "setup: served")
+        cut.blocks.pop(cut._block(int(28 * 1000 // 25)), None)
+        mono[0] += 0.5
+        got = bg(_fi_at(clk, 28 * 30))
+        check(got is None and bg.fault == "",
+              f"a new uncut moment after a served row: its own grace: "
+              f"{bg.fault!r}")
+        # A cutting thread that could not be started is cleared once it is.
+        bg._start_failed.add("_cutter")
+        bg._stop.clear()
+        bg._cutter = types.SimpleNamespace(is_alive=lambda: False)
+        bg._restarts["_cutter"] = (0, None, mono[0])
+        bg.start()
+        check(not bg._start_failed and bg._cutter.is_alive(),
+              "started again: no longer said to be gone")
+        # close() joins both threads, even a busy cutter.
+        bg._cut_ahead = lambda *a, **k: time.sleep(0.3)
+        time.sleep(0.1)
+        cutter = bg._cutter
+        bg.close()
+        check(not cutter.is_alive() and not (bg._thread and
+                                             bg._thread.is_alive()),
+              "close() joined the cutting and the reading thread")
+        # The cutting thread looks every CUT_EVERY_S.
+        waits = []
+
+        class Stop:
+            def wait(self, t):
+                waits.append(t)
+                return len(waits) > 2
+        c2 = F.FlameCues(ctl, "Flames", background=True)
+        c2._stop = Stop()
+        c2._cut_ahead = lambda: None
+        c2._cutting()
+        check(F.CUT_EVERY_S <= 0.1 and waits and
+              all(w == F.CUT_EVERY_S for w in waits),
+              f"the cutting thread looks every {F.CUT_EVERY_S} s: {waits}")
+        # A thread that dies on every pass: restarted later each time, a
+        # line each restart, a screen fault after RESTART_FAULT_AFTER.
+        c3 = F.FlameCues(ctl, "Flames", background=True)
+        lines = []
+        c3._journal = lambda t, **k: lines.append(t)
+        m3 = [0.0]
+        c3._mono = lambda: m3[0]
+
+        def dies():
+            raise RuntimeError("dies every pass")
+        c3._cutting = dies
+        starts = 0
+        for step in range(400):           # 40 s, a frame every 0.1 s
+            before = c3._cutter
+            c3.start()
+            if c3._cutter is not before:
+                starts += 1
+                c3._cutter.join(1)
+            m3[0] += 0.1
+        restarted = [t for t in lines if "ltcplay-flame-cues-cut stopped"
+                     in t]
+        check(5 <= len(restarted) <= 7 and starts == len(restarted) + 1,
+              f"backed off: {len(restarted)} restarts in 40 s (1, 2, 5, 10, "
+              f"30 s apart): {starts} starts")
+        # faults_now() first: it may clear thread_fault, and reading
+        # thread_fault before it hid a faults_now() that always clears it.
+        shown = c3.faults_now()
+        check("keeps stopping" in shown and "restart LTC Player" in shown
+              and shown == c3.thread_fault,
+              f"and a fault on the screens: {shown!r}")
+        c3.close()
+        # A render missing its tail: each frame up to the last whole one,
+        # then the first missing one raises, exactly.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "u"), frames=600,
+                                       compression="none",
+                                       cut_tail_frames=3)
+        c4 = F.FlameCues(ctl, "Flames", background=True)
+        c4._stop.set()
+        c4._check_renders_once()
+        c4._refresh_once()
+        cut4 = c4._cuts[paths[0]]
+        cut4.ensure(0, 599)
+        f = FS.FSEQ(paths[0])
+        bad = []
+        for i in range(560, 600):
+            try:
+                want = F.FlameCues._cut(f.frame(i), cut4.spans, cut4.span)
+            except Exception:
+                want = None
+            try:
+                got = cut4.row(i)
+            except Exception:
+                got = None
+            if got != want or (want is not None and len(got) != 512):
+                bad.append((i, got and len(got), want and len(want)))
+        f.close()
+        check(not bad, f"frame by frame to the first missing one: {bad[:4]}")
+        c4.close()
+        # Review B of #177. A render whose tail is missing across several
+        # pieces: one journal line for it, not one a piece.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "t"), frames=900,
+                                       compression="none",
+                                       cut_tail_frames=500)
+        c5 = F.FlameCues(ctl, "Flames", background=True)
+        c5._stop.set()
+        c5._check_renders_once()
+        c5._refresh_once()
+        lines = []
+        c5._journal = lambda t, **k: lines.append((t, k.get("fault")))
+        c5._cuts[paths[0]].ensure(0, 899)
+        for k in range(0, 900, 7):
+            c5(_fi_at(clk, int(k * 25 * 30 // 1000)))
+        bad_lines = [t for t, f in lines if f and "could not be read" in t]
+        check(len(bad_lines) == 1,
+              f"a render missing its tail: one line for it: {bad_lines}")
+        c5.close()
+        # A block that fails for a reason that is not the render's bytes
+        # (memory): uncut, tried again later, then cut. A corrupt block
+        # stays for good (test_fire_ice_flame_cut_guards).
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "m"), frames=300)
+        c6 = F.FlameCues(ctl, "Flames", background=True)
+        c6._stop.set()
+        c6._check_renders_once()
+        c6._refresh_once()
+        cut6 = c6._cuts[paths[0]]
+        cut6.blocks.pop(3, None)
+        tick = [500.0]
+        cut6.clock = lambda: tick[0]
+        real_load = FS.FSEQ._load_block
+        boom = [True]
+
+        def flaky(self, idx):
+            if idx == 3 and boom[0]:
+                boom[0] = False
+                raise MemoryError("for a moment")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = flaky
+        try:
+            cut6.ensure(cut6.firsts[3], cut6.firsts[3])
+            uncut = 3 not in cut6.blocks and 3 not in cut6.errors
+            cut6.ensure(cut6.firsts[3], cut6.firsts[3])
+            waited = 3 not in cut6.blocks
+            tick[0] += 1.0
+            cut6.ensure(cut6.firsts[3], cut6.firsts[3])
+        finally:
+            FS.FSEQ._load_block = real_load
+        check(uncut and waited and 3 in cut6.blocks and not cut6.errors,
+              f"a MemoryError: the block uncut, not before its retry, then "
+              f"cut: {uncut} {waited} {sorted(cut6.blocks)} {cut6.errors}")
+        c6.close()
+        # A render still being read while the show plays: zero, and the
+        # CUES FAULT after 1 s, never silent zeros for as long as it lasts.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "r"), frames=300)
+        c7 = F.FlameCues(ctl, "Flames", background=True)
+        c7._stop.set()                     # nothing reads: stalled at Run
+        m7 = [10.0]
+        c7._mono = lambda: m7[0]
+        got = c7(_fi_at(clk, 30))
+        quiet = got is None and c7.fault == ""
+        m7[0] += F.CUT_FAULT_AFTER_S + 0.1
+        got = c7(_fi_at(clk, 31))
+        check(quiet and got is None and "still being read" in c7.fault,
+              f"a reader stalled at Run: a CUES FAULT after 1 s: "
+              f"{c7.fault!r}")
+        c7.close()
+        # Six first start()s at once (the sender and the screens' threads):
+        # one reading and one cutting thread, never more.
+        c8 = F.FlameCues(ctl, "Flames", background=True)
+        real_mono = c8._mono
+
+        def slow_mono():
+            time.sleep(0.01)              # widen the window a race needs
+            return real_mono()
+        c8._mono = slow_mono
+        go = threading.Event()
+
+        def hit():
+            go.wait()
+            c8.start()
+        ts = [threading.Thread(target=hit) for _ in range(6)]
+        for t in ts:
+            t.start()
+        go.set()
+        for t in ts:
+            t.join(5)
+        n = sum(1 for t in threading.enumerate()
+                if t.name.startswith("ltcplay-flame-cues") and t.is_alive())
+        check(n == 2, f"six start()s at once: {n} threads (2 wanted)")
+        c8.close()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def _fi_one_block_render(path, header_frames, body_frames, entry_len=None,
+                         trailing=b""):
+    """An uncompressed FSEQ v2 render with a ONE-entry block table (sparse:
+    channels 1 to 100 and 601 to 800, each frame its own byte as
+    _fi_cut_show's). `entry_len` is the block's length in the table (the
+    channel data's own length when None); `trailing` follows the frames."""
+    import struct
+    sparse = [(0, 100), (600, 200)]
+    cc = sum(n for _s, n in sparse)
+    body = b"".join(bytes(((i * 7 + 3) & 0xFF,)) * cc
+                    for i in range(body_frames)) + trailing
+    tbl = struct.pack("<II", 0, len(body) if entry_len is None
+                      else entry_len)
+    sp = b"".join(struct.pack("<I", s)[:3] + struct.pack("<I", n)[:3]
+                  for s, n in sparse)
+    off = 32 + len(tbl) + len(sp)
+    head = bytearray(32)
+    head[0:4] = b"PSEQ"
+    struct.pack_into("<H", head, 4, off)
+    head[6], head[7] = 2, 2
+    struct.pack_into("<H", head, 8, off)
+    struct.pack_into("<I", head, 10, cc)
+    struct.pack_into("<I", head, 14, header_frames)
+    head[18] = 25
+    head[20], head[21], head[22] = 0, 1, len(sparse)   # none, 1 block
+    with open(path, "wb") as fh:
+        fh.write(bytes(head) + tbl + sp + body)
+    return cc
+
+
+def test_fire_ice_flame_cut_round3_of_177():
+    section("fire & ice (review 3 of #177): an uncompressed render with one "
+            "block is cut only to that block's end, faulting where the "
+            "direct read does; a cut that keeps failing for any reason is "
+            "named after its retries, and a block failing to cut is a fault "
+            "at once; a thread that keeps stopping outranks 'they follow'; "
+            "the restart back-off counts the time a thread ran; the grace "
+            "ends at a pause, a stop, a new session or cue; a restart is "
+            "journaled only once it runs")
+    import shutil
+    import tempfile
+    import threading
+    import types
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+
+    def cut_of(name, **kw):
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, name), **kw)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()                    # no thread: driven by hand
+        return ctl, clk, paths, bg
+
+    def as_direct(cut, path, n):
+        """Frames whose cut differs from the direct read (a value, or one
+        raising and the other not), and the two errors at frame 0."""
+        f = FS.FSEQ(path)
+        bad, first = [], None
+        for i in range(n):
+            try:
+                want, werr = F.FlameCues._cut(f.frame(i), cut.spans,
+                                              cut.span), None
+            except Exception as e:
+                want, werr = None, e
+            try:
+                got, gerr = cut.row(i), None
+            except Exception as e:
+                got, gerr = None, e
+            if i == 0:
+                first = (werr, gerr)
+            if got != want or (werr is None) != (gerr is None) or \
+                    (got is None and gerr is None):
+                bad.append(i)
+        f.close()
+        return bad, first
+    try:
+        # A. One-block uncompressed renders, cut only to the block's end.
+        cases = (
+            ("trailing", dict(header_frames=340, body_frames=300,
+                              entry_len=300 * 300,
+                              trailing=b"\xff" * (40 * 300)), 340),
+            ("short entry", dict(header_frames=300, body_frames=300,
+                                 entry_len=290 * 300), 300),
+            ("truncated", dict(header_frames=300, body_frames=250,
+                               entry_len=300 * 300), 300))
+        for k, (what, kw, n) in enumerate(cases):
+            ctl, clk, paths, bg = cut_of(f"a{k}", frames=300)
+            _fi_one_block_render(paths[0], **kw)
+            bg._check_renders_once()
+            bg._refresh_once()
+            cut = bg._cuts[paths[0]]
+            cut.ensure(0, n - 1)
+            bad, (werr, gerr) = as_direct(cut, paths[0], n)
+            check(cut.whole and not bad,
+                  f"one block, {what}: every frame as the direct read, a "
+                  f"value or a fault: {bad[:4]} of {len(bad)}")
+            if what == "truncated":
+                check(isinstance(gerr, FS.FSEQError) and
+                      str(gerr) == str(werr),
+                      f"truncated: the direct read's own error: {gerr!r} "
+                      f"{werr!r}")
+            last = int((n - 1) * 25 * 30 // 1000)
+            got = _fi_settled(bg, _fi_at(clk, last))
+            check(got is None and bg.fault.startswith(
+                "the show's render could not be read"),
+                  f"one block, {what}: its last frame is a CUES FAULT, never "
+                  f"junk: {got and got[90:92]} {bg.fault!r}")
+            bg.close()
+        # B. A cut that fails for a reason that is not the render's bytes
+        # (a missing zstandard): a CUES FAULT naming it at once while it
+        # waits for its retry, then, after CUT_RETRIES retries, for good,
+        # journaled once.
+        ctl, clk, paths, bg = cut_of("b", frames=300)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.blocks.pop(3, None)           # frames 111 to 147
+        tick = [0.0]
+        cut.clock = lambda: tick[0]
+        lines = []
+        bg._journal = lambda t, **k: lines.append(t)
+        mono = [100.0]
+        bg._mono = lambda: mono[0]
+        real_load = FS.FSEQ._load_block
+        calls = []
+
+        def nomod(self, idx):
+            if idx == 3:
+                calls.append(idx)
+                raise ModuleNotFoundError("No module named 'zstandard'")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = nomod
+        try:
+            cut.ensure(cut.firsts[3], cut.firsts[3])
+            served = bg(_fi_at(clk, 75)) is not None      # frame 100
+            got = bg(_fi_at(clk, 90))                      # frame 120
+            check(served and got is None and
+                  "ModuleNotFoundError" in bg.fault,
+                  f"a block failing to cut between served rows: a CUES "
+                  f"FAULT naming it at once, never a silent grace: "
+                  f"{bg.fault!r}")
+            for _ in range(10):            # 25 s: before any slow retry
+                tick[0] += 2.5
+                cut.ensure(cut.firsts[3], cut.firsts[3])
+        finally:
+            FS.FSEQ._load_block = real_load
+        check(len(calls) == F.CUT_RETRIES + 1 and isinstance(
+            cut.errors.get(3), ModuleNotFoundError) and 3 not in cut.retry,
+              f"tried {len(calls)} times ({F.CUT_RETRIES} retries), then "
+              f"for good: {cut.errors.get(3)!r}")
+        for k in range(20):
+            got = bg(_fi_at(clk, 90 + k % 5))
+        named = [t for t in lines if "could not be cut from its render "
+                 "(ModuleNotFoundError" in t]
+        check(got is None and "ModuleNotFoundError: No module named" in
+              bg.fault and "tried again every 30 s" in bg.fault and
+              "could not be read" not in bg.fault and len(named) == 1,
+              f"for good: the screens and one journal line name it: "
+              f"{bg.fault!r} {named}")
+        bg.close()
+        # B. Each retry waits longer: 0.5, 1 then 2 s.
+        ctl, clk, paths, bg = cut_of("r", frames=300)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.blocks.pop(4, None)
+        tick = [0.0]
+        cut.clock = lambda: tick[0]
+        calls = []
+
+        def nomem(self, idx):
+            if idx == 4:
+                calls.append(tick[0])
+                raise MemoryError("again")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = nomem
+        try:
+            for t in (0.0, 0.6, 1.2, 1.7, 3.0, 3.8):
+                tick[0] = t
+                cut.ensure(cut.firsts[4], cut.firsts[4])
+        finally:
+            FS.FSEQ._load_block = real_load
+        check(calls == [0.0, 0.6, 1.7, 3.8] and
+              isinstance(cut.errors.get(4), MemoryError),
+              f"retried after 0.5, 1 and 2 s, then for good: {calls} "
+              f"{cut.errors.get(4)!r}")
+        bg.close()
+        # C. A thread that keeps stopping outranks 'they follow'.
+        ctl, clk, paths, bg = cut_of("c", frames=600)
+        bg._check_renders_once()
+        bg._refresh_once()
+        keeps = ("the thread that cuts the show's flame cues from its "
+                 "renders keeps stopping (3 restarts, the last: X); restart "
+                 "LTC Player")
+        bg.thread_fault = keeps
+        bg.fault = F.CUES_LOADING
+        shown = bg.faults_now()
+        bg.fault = F.RENDER_OLDER_THAN_LAYOUT
+        refused = bg.faults_now()
+        check(shown == keeps and refused == F.RENDER_OLDER_THAN_LAYOUT,
+              f"a thread that keeps stopping outranks the loading fault, "
+              f"never a refusal: {shown!r} {refused!r}")
+        bg.thread_fault, bg.fault = "", ""
+        # C. A cutter waiting out its back-off promises nothing.
+        cut = bg._cuts[paths[0]]
+        for b in list(cut.blocks):
+            if b >= 5:
+                cut.blocks.pop(b)
+        bg._stop.clear()
+        bg.start = lambda: bg             # nothing started by hand here
+        bg._cutter = types.SimpleNamespace(is_alive=lambda: False)
+        got = _fi_settled(bg, _fi_at(clk, 165))       # frame 220
+        waiting = bg.fault
+        bg.thread_fault = keeps
+        _fi_settled(bg, _fi_at(clk, 166))
+        check(got is None and waiting == F.CUES_CUTTER_WAITING and
+              "within a second" not in waiting and bg.fault == keeps,
+              f"a stopped cutter: no promise of a second, and one that "
+              f"keeps stopping says so: {waiting!r} {bg.fault!r}")
+        bg._cutter = None
+        bg._stop.set()
+        bg.close()
+        # D. The back-off counts the time a thread RAN.
+        ctl, clk, paths, c = cut_of("d", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        lines = []
+        c._journal = lambda t, **k: lines.append(t)
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+        gate = threading.Event()
+        mode = ["short"]
+
+        def body():
+            if mode[0] == "long":
+                gate.wait(5)
+            raise RuntimeError("dies")
+        c._cutting = body
+
+        def step():
+            before = c._cutter
+            c.start()
+            if c._cutter is not before:
+                c._cutter.join(5)
+                return True
+            return False
+        restarts = 0
+        for _ in range(3000):
+            if step() and c._restarts["_cutter"][0] >= 6:
+                break
+            m[0] += 0.1
+        n6 = c._restarts["_cutter"][0]
+        m[0] += 200.0                     # nobody asks for 200 s
+        again = step()
+        m[0] += 1.0
+        soon = step()
+        check(n6 == 6 and again and "(restart 7)" in lines[-1] and
+              not soon,
+              f"200 s with no start() call is not a thread that ran: "
+              f"restart 7, then 60 s apart: {n6} {lines[-1:]} {soon}")
+        mode[0] = "long"
+        m[0] += 61.0
+        before = c._cutter
+        c.start()
+        long_t = c._cutter
+        m[0] += 61.0                      # it runs 61 s, then dies
+        gate.set()
+        long_t.join(5)
+        restarts = step()
+        check(long_t is not before and restarts and
+              "(restart 1)" in lines[-1],
+              f"a thread that ran 61 s before it died starts the count "
+              f"again: {lines[-1:]}")
+        c._stop.set()
+        c._thread = None
+        c.close()
+        # E. The grace ends at a pause, a stop, a new cue or session.
+        ctl, clk, paths, c = cut_of("e", frames=600, ncues=2)
+        c._check_renders_once()
+        c._refresh_once()
+        for p in paths:
+            cut = c._cuts[p]
+            for b in list(cut.blocks):
+                if b >= 5:
+                    cut.blocks.pop(b)
+        m = [10.0]
+        c._mono = lambda: m[0]
+        s = ctl.session
+        for what in ("paused", "stopped"):
+            c(_fi_at(clk, 165, label="c0"))
+            m[0] += 0.9
+            if what == "paused":
+                clk.paused = True
+            else:
+                s.running = False
+            c(_fi_at(clk, 165))
+            m[0] += 5.0
+            clk.paused, s.running = False, True
+            got = c(_fi_at(clk, 166))
+            check(got is None and c.fault == "",
+                  f"{what} on an uncut frame, then on again: a grace of its "
+                  f"own: {c.fault!r}")
+            m[0] += 2.0
+            c(_fi_at(clk, 167))
+        c._uncut = None
+        c(_fi_at(clk, 165, label="c0"))
+        m[0] += 0.9
+        c(_fi_at(clk, 166))
+        m[0] += 0.2
+        got = c(_fi_at(clk, 167, label="c1"))
+        check(got is None and c.fault == "",
+              f"another cue, uncut: a grace of its own: {c.fault!r}")
+        c.close()
+        # E. A new session still being read: a grace of its own; and a
+        # fault left from before never shows while it lasts.
+        ctl, clk, paths, c = cut_of("s", frames=300)
+        m = [10.0]
+        c._mono = lambda: m[0]
+        c.fault = "a fault from before"
+        c(_fi_at(clk, 30))
+        quiet = c.fault == ""
+        m[0] += 0.9
+        c(_fi_at(clk, 31))
+        ctl.session = types.SimpleNamespace(**vars(ctl.session))
+        m[0] += 0.2
+        got = c(_fi_at(clk, 32))
+        check(quiet and got is None and c.fault == "",
+              f"a fault from before is cleared in the grace, and a new "
+              f"session has a grace of its own: {quiet} {c.fault!r}")
+        c.close()
+        # F. A thread that cannot be started: said so, never 'started
+        # again'; once it starts, then said.
+        ctl, clk, paths, c = cut_of("f", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        lines = []
+        c._journal = lambda t, **k: lines.append(t)
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+        dead = types.SimpleNamespace(is_alive=lambda: False)
+        c._cutter = dead
+        c._cutting = lambda: c._stop.wait(5)
+        real_thread = F.threading.Thread
+
+        class NoStart(real_thread):
+            def start(self):
+                raise RuntimeError("can't start new thread")
+        F.threading.Thread = NoStart
+        try:
+            c.start()
+        finally:
+            F.threading.Thread = real_thread
+        failed = list(lines)
+        m[0] += 2.0
+        c.start()
+        check(any("could not be started (RuntimeError" in t for t in failed)
+              and not any("started again" in t for t in failed) and
+              c._cutter is not dead and c._cutter.is_alive() and
+              "was started again" in lines[-1],
+              f"a failed start is said as one, a restart only once it "
+              f"runs: {failed} {lines[-1:]}")
+        c._stop.set()
+        c._thread = None
+        c.close()
+        # F. close() while a start() waits for the lock: nothing started.
+        ctl, clk, paths, c = cut_of("g", frames=300)
+        c._stop.clear()
+        c._start_lock.acquire()
+        t = threading.Thread(target=c.start)
+        t.start()
+        time.sleep(0.1)
+        c._stop.set()
+        c._start_lock.release()
+        t.join(5)
+        check(c._thread is None and c._cutter is None,
+              "a start() that waited out a close() starts nothing")
+        c.close()
+        # G. A thread fault stays on the screens until both threads have
+        # run RESTART_RESET_S since their last start, then clears.
+        ctl, clk, paths, c = cut_of("h", frames=300)
+        alive = types.SimpleNamespace(is_alive=lambda: True)
+        c._thread = c._cutter = alive
+        c._restarts = {"_thread": (0, 0.0, 0.0), "_cutter": (3, 0.0, 0.0)}
+        m = [30.0]
+        c._mono = lambda: m[0]
+        c.thread_fault = keeps
+        early = c.faults_now()
+        m[0] = 61.0
+        later = c.faults_now()
+        check(early == keeps and later == "" and c.thread_fault == "",
+              f"the thread fault holds until both ran 60 s, then clears: "
+              f"{early!r} {later!r}")
+        c._thread = c._cutter = None
+        c.close()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_cut_round4_of_177():
+    section("fire & ice (round 2 review of #177): a cut fault that is not "
+            "the render's bytes is tried again every 30 s, never kept for "
+            "every later show; a look ends the uncut grace; the back-off "
+            "counts from a death; a retry set meanwhile is seen under the "
+            "lock; a first start that fails is backed off and its recovery "
+            "said; a render whose sparse ranges disagree with its channel "
+            "count is refused in both paths; a garbage frame count lists no "
+            "pieces; a thread that dies at once keeps its reason")
+    import shutil
+    import struct
+    import tempfile
+    import threading
+    import tracemalloc
+    import types
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+
+    def cut_of(name, **kw):
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, name), **kw)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        return ctl, clk, paths, bg
+    real_load = FS.FSEQ._load_block
+    try:
+        # A1. MemoryError on block 5 at Run for longer than its retries:
+        # named for good, then tried again every CUT_RETRY_SLOW_S, so a
+        # later Run plays it.
+        ctl, clk, paths, bg = cut_of("a1", frames=600)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        for b in list(cut.blocks):
+            if b >= 5:
+                cut.blocks.pop(b)
+        tick = [0.0]
+        cut.clock = lambda: tick[0]
+        bad = [True]
+        calls = []
+
+        def nomem(self, idx):
+            if idx >= 5:
+                calls.append(idx)
+                if bad[0]:
+                    raise MemoryError("at Run")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = nomem
+        try:
+            for _ in range(8):
+                cut.ensure(cut.firsts[5], cut.firsts[5])
+                tick[0] += 3.0
+            named = isinstance(cut.errors.get(5), MemoryError)
+            got = _fi_settled(bg, _fi_at(clk, 150))       # frame 200
+            faulted = got is None and "MemoryError" in bg.fault
+            bad[0] = False                # the memory came back
+            n = len(calls)
+            tick[0] += 5.0
+            cut.ensure(cut.firsts[5], cut.firsts[5])
+            early = len(calls) == n
+            ctl.session.running = False   # Stop, then Run again
+            bg(_fi_at(clk, 150))
+            ctl.session.running = True
+            tick[0] += F.CUT_RETRY_SLOW_S
+            bg._refresh_once()
+            _fi_at(clk, 150)
+            bg._cut_ahead()
+            got = bg(_fi_at(clk, 150))
+        finally:
+            FS.FSEQ._load_block = real_load
+        check(named and faulted and early and got is not None and
+              bg.fault == "" and 5 not in cut.errors,
+              f"a passing error kept as a fault is tried again every "
+              f"{F.CUT_RETRY_SLOW_S:g} s, and a later Run plays it: "
+              f"{named} {faulted} {early} {bg.fault!r}")
+        bg.close()
+        # A2. A look ends the uncut grace.
+        ctl, clk, paths, bg = cut_of("a2", frames=600)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        for b in list(cut.blocks):
+            if b >= 5:
+                cut.blocks.pop(b)
+        m = [10.0]
+        bg._mono = lambda: m[0]
+        bg(_fi_at(clk, 165))
+        m[0] += 0.9
+        ctl.session.player.override = "blackout"
+        bg(_fi_at(clk, 165))
+        m[0] += 0.5
+        ctl.session.player.override = None
+        got = bg(_fi_at(clk, 166))
+        check(got is None and bg.fault == "",
+              f"a look on an uncut frame, then the show: a grace of its "
+              f"own: {bg.fault!r}")
+        bg.close()
+        # A2. The back-off counts from when the thread died, not from when
+        # it was started.
+        ctl, clk, paths, c = cut_of("a3", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+        gate = threading.Event()
+
+        def body():
+            gate.wait(5)
+            raise RuntimeError("dies")
+        c._cutting = body
+        c.start()                         # first start at 0
+        first = c._cutter
+        gate.set()
+        first.join(5)
+        gate.clear()
+        c.start()                         # restart 1 at once, at 0
+        r1 = c._cutter
+        m[0] = 30.0                       # it runs 30 s, then dies
+        gate.set()
+        r1.join(5)
+        gate.clear()
+        m[0] = 30.2
+        c.start()
+        soon = c._cutter is not r1
+        m[0] = 31.1
+        c.start()
+        later = c._cutter is not r1
+        check(not soon and later,
+              f"restart 2 waits 1 s from the death, not from the start: "
+              f"{soon} {later}")
+        gate.set()
+        c._stop.set()
+        c._thread = None
+        c.close()
+        # A4. A retry set by the other cutting thread while this one waited
+        # for the lock is seen under the lock: not cut again at once.
+        ctl, clk, paths, bg = cut_of("a4", frames=300)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.blocks.pop(4, None)
+        cuts = []
+        real_cb = cut._cut_block
+
+        def spy(b):
+            cuts.append(b)
+            return real_cb(b)
+        cut._cut_block = spy
+        cut.lock.acquire()
+        t = threading.Thread(target=cut.ensure,
+                             args=(cut.firsts[4], cut.firsts[4]))
+        t.start()
+        time.sleep(0.2)
+        cut.retry[4] = (1, cut.clock() + 100.0, MemoryError("other"))
+        cut.lock.release()
+        t.join(5)
+        check(cuts == [], f"a retry set meanwhile is honoured: {cuts}")
+        bg.close()
+        # A5. A first start that fails: backed off, and the recovery said.
+        ctl, clk, paths, c = cut_of("a5", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        lines = []
+        c._journal = lambda t, **k: lines.append(t)
+        tries = []
+        real_thread = F.threading.Thread
+
+        class NoStart(real_thread):
+            def start(self):
+                tries.append(self.name)
+                raise RuntimeError("can't start new thread")
+        c._cutting = lambda: c._stop.wait(5)
+        c._refresher = lambda: c._stop.wait(5)
+        F.threading.Thread = NoStart
+        try:
+            c.start()
+            c.start()
+            m[0] += 0.5
+            c.start()
+        finally:
+            F.threading.Thread = real_thread
+        n_tries = len(tries)
+        m[0] += 1.0
+        c.start()
+        check(n_tries == 2 and c._cutter is not None and
+              c._cutter.is_alive() and not c._start_failed and
+              any("is running now, after it could not be started" in t
+                  for t in lines),
+              f"a failed first start is backed off ({n_tries} tries, 2 "
+              f"wanted) and its recovery journaled: {lines[-2:]}")
+        c._stop.set()
+        c.close()
+        # B1. Sparse ranges that cover more than the channel count: refused
+        # in the direct path and the cut one, never shifted bytes.
+        ctl, clk, paths, bg = cut_of("b1", frames=300)
+        with open(paths[0], "r+b") as fh:
+            head = bytearray(fh.read(32))
+            n_blocks = ((head[20] & 0xF0) << 4) | head[21]
+            fh.seek(32 + n_blocks * 8 + 6)            # the second range
+            fh.write(struct.pack("<I", 600)[:3] + struct.pack("<I", 250)[:3])
+        direct = F.FlameCues(ctl, "Flames")
+        bg._check_renders_once()
+        bg._refresh_once()
+        tc = _fi_at(clk, 30)
+        a, b = direct(tc), _fi_settled(bg, tc)
+        check(a is None and b is None and
+              direct.fault.startswith("the show's render has 300 channels "
+                                      "but its sparse ranges cover 350") and
+              bg.fault == direct.fault,
+              f"ranges past the channels: refused in both paths: "
+              f"{direct.fault!r} {bg.fault!r}")
+        try:
+            F.FlameCues._cut(bytes(300), [(0, 0, 100), (600, 100, 250)],
+                             (511, 512))
+            check(False, "a cut past the frame's bytes was made")
+        except FS.FSEQError:
+            check(True, "a cut past the frame's bytes raises")
+        direct.close()
+        bg.close()
+        # B2. A garbage frame count lists no pieces.
+        ctl, clk, paths, bg = cut_of("b2", frames=300)
+        _fi_one_block_render(paths[0], header_frames=200_000_000,
+                             body_frames=300)
+        bg._check_renders_once()
+        tracemalloc.start()
+        try:
+            bg._refresh_once()
+            _cur, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        cut = bg._cuts.get(paths[0])
+        check(cut is not None and cut.whole and peak < 8_000_000 and
+              cut.row(10) is not None,
+              f"200 million frames in the header: {peak / 1e6:.1f} MB at "
+              f"Run, the frames it has cut")
+        bg.close()
+        # B4. A thread that dies at once keeps its own reason.
+        ctl, clk, paths, c = cut_of("b4", frames=300)
+        c._stop.clear()
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+        c._cutter = types.SimpleNamespace(is_alive=lambda: False)
+        c._died["_cutter"] = "RuntimeError: the first death"
+
+        def dies_at_once():
+            raise RuntimeError("the second death")
+        c._cutting = dies_at_once
+
+        class JoinOnStart(real_thread):
+            def start(self):
+                super().start()
+                self.join(5)
+        F.threading.Thread = JoinOnStart
+        try:
+            c.start()
+        finally:
+            F.threading.Thread = real_thread
+        check(c._died.get("_cutter") == "RuntimeError: the second death",
+              f"a death during the start keeps its reason: "
+              f"{c._died.get('_cutter')!r}")
+        c._stop.set()
+        c._thread = c._cutter = None
+        c.close()
+    finally:
+        FS.FSEQ._load_block = real_load
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_cut_round5_of_177():
+    section("fire & ice (round 3 review of #177): a cut that could not be "
+            "set up for a passing reason is set up again every 30 s, a "
+            "damaged render never; failed starts are not restarts; a kept "
+            "error carries no traceback; a passing fault says it is tried "
+            "again and is journaled once per cause; ranges covering fewer "
+            "channels than the header are refused; a stale death reason is "
+            "never repeated; a failed slow retry waits 30 s again; a data "
+            "error is never retried; zstd out of memory may pass")
+    import shutil
+    import struct
+    import sys as _sys
+    import tempfile
+    import types
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+
+    def cut_of(name, **kw):
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, name), **kw)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        return ctl, clk, paths, bg
+    real_init = F._FlameCut.__init__
+    real_load = FS.FSEQ._load_block
+    real_thread = F.threading.Thread
+    try:
+        # A1. The set-up fails once with a MemoryError: a fault saying it
+        # is tried again, kept (not set up on every pass) until 30 s, then
+        # set up again and played. A damaged render's set-up is for good.
+        for kind, err in (("passing", MemoryError("set up")),
+                          ("damaged", ValueError("bad table"))):
+            ctl, clk, paths, bg = cut_of("a1" + kind, frames=300)
+            lines = []
+            bg._journal = lambda t, **k: lines.append(t)
+            inits = []
+
+            def flaky(self, *a, **k):
+                inits.append(1)
+                if len(inits) == 1:
+                    raise err
+                return real_init(self, *a, **k)
+            F._FlameCut.__init__ = flaky
+            try:
+                bg._check_renders_once()
+                bg._refresh_once()
+                first = bg._cuts[paths[0]]
+                for k in range(10):
+                    got = _fi_settled(bg, _fi_at(clk, 30 + k))
+                fault = bg.fault
+                bg._refresh_once()
+                kept = bg._cuts[paths[0]] is first and len(inits) == 1
+                first.clock = lambda: F._FlameCut.clock() + 31.0
+                bg._refresh_once()
+                got = bg(_fi_at(clk, 30))
+            finally:
+                F._FlameCut.__init__ = real_init
+            said = [t for t in lines if "could not be" in t]
+            if kind == "passing":
+                check(kept and "MemoryError: set up" in fault and
+                      "tried again every 30 s" in fault and
+                      len(said) == 1 and len(inits) == 2 and
+                      got is not None and bg.fault == "",
+                      f"a passing set-up failure: said once as tried "
+                      f"again, kept for 30 s, then set up and played: "
+                      f"{fault!r} {said} {len(inits)} {bg.fault!r}")
+            else:
+                check(kept and fault.startswith(
+                    "the show's render could not be read (ValueError") and
+                      len(inits) == 1 and got is None,
+                      f"a damaged render's set-up is for good: {fault!r} "
+                      f"{len(inits)}")
+            bg.close()
+        # A2. Five failed starts of a dead thread are not five restarts.
+        ctl, clk, paths, c = cut_of("a2", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        lines = []
+        c._journal = lambda t, **k: lines.append(t)
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+        c._cutter = types.SimpleNamespace(is_alive=lambda: False)
+
+        def dies():
+            raise RuntimeError("dies")
+        c._cutting = dies
+
+        class NoStart(real_thread):
+            def start(self):
+                raise RuntimeError("can't start new thread")
+        F.threading.Thread = NoStart
+        try:
+            for _ in range(5):
+                c.start()
+                m[0] += 61.0
+        finally:
+            F.threading.Thread = real_thread
+        c.start()
+        first = lines[-1]
+        c._cutter.join(5)
+        m[0] += 1.1
+        before = c._cutter
+        c.start()
+        check("(restart 1)" in first and c.thread_fault == "" and
+              c._cutter is not before,
+              f"failed starts are not restarts: {first!r}, and the next "
+              f"death waits 1 s: {c.thread_fault!r}")
+        c._stop.set()
+        c._cutter.join(5)
+        c._thread = None
+        c.close()
+        # A3. A kept error carries no traceback (it would pin the frames
+        # and the decompressed block).
+        ctl, clk, paths, bg = cut_of("a3", frames=300, corrupt_block=4)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.blocks.pop(2, None)
+        cut.blocks.pop(3, None)
+
+        def nomem(self, idx):
+            if idx in (2, 3):
+                raise MemoryError(f"block {idx}")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = nomem
+        try:
+            cut.ensure(cut.firsts[2], cut.firsts[4])
+        finally:
+            FS.FSEQ._load_block = real_load
+        kept = [cut.errors.get(4)] + [r[2] for r in cut.retry.values()]
+        check(len(kept) == 3 and all(e is not None and e.__traceback__ is None
+                                     for e in kept),
+              f"kept errors carry no traceback: "
+              f"{[e is not None and e.__traceback__ for e in kept]}")
+        failed = F._FlameCut.failed(cut.f, cut.span, MemoryError("x"))
+        try:
+            raise MemoryError("with a traceback")
+        except MemoryError as e:
+            failed2 = F._FlameCut.failed(cut.f, cut.span, e)
+        check(failed2.errors[0].__traceback__ is None and failed is not None,
+              "a failed set-up keeps its error with no traceback")
+        bg.close()
+        # B-2. Two blocks failing with their own words: one journal line.
+        ctl, clk, paths, bg = cut_of("b2", frames=300)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.blocks.pop(2, None)
+        cut.blocks.pop(3, None)
+        lines = []
+        bg._journal = lambda t, **k: lines.append(t)
+        FS.FSEQ._load_block = nomem
+        try:
+            cut.ensure(cut.firsts[2], cut.firsts[3])
+        finally:
+            FS.FSEQ._load_block = real_load
+        for n in (60, 61, 90, 91, 60, 90):    # frames 80, 81, 120, 121
+            bg(_fi_at(clk, n))
+        said = [t for t in lines if "could not be cut here" in t]
+        check(len(said) == 1 and "MemoryError" in bg.fault,
+              f"one line per cause, not per block: {said}")
+        bg.close()
+        # A5. Ranges covering FEWER channels than the header: refused too.
+        ctl, clk, paths, bg = cut_of("a5", frames=300)
+        with open(paths[0], "r+b") as fh:
+            head = bytearray(fh.read(32))
+            n_blocks = ((head[20] & 0xF0) << 4) | head[21]
+            fh.seek(32 + n_blocks * 8 + 6)
+            fh.write(struct.pack("<I", 600)[:3] + struct.pack("<I", 150)[:3])
+        direct = F.FlameCues(ctl, "Flames")
+        got = direct(_fi_at(clk, 30))
+        check(got is None and "sparse ranges cover 250" in direct.fault,
+              f"ranges under the header's count: refused: {direct.fault!r}")
+        direct.close()
+        bg.close()
+        # A5. A thread that died with a reason, then ended with none: the
+        # next restart says it ended, never the old reason.
+        ctl, clk, paths, c = cut_of("a6", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        lines = []
+        c._journal = lambda t, **k: lines.append(t)
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+        mode = ["raise"]
+
+        def body():
+            if mode[0] == "raise":
+                raise RuntimeError("the old reason")
+        c._cutting = body
+        c.start()
+        c._cutter.join(5)
+        mode[0] = "return"
+        c.start()                         # restart 1: says the old reason
+        c._cutter.join(5)
+        m[0] += 1.1
+        c.start()                         # restart 2: it just ended
+        check("the old reason" in lines[-2] and "(it ended)" in lines[-1],
+              f"a stale reason is never repeated: {lines[-2:]}")
+        c._stop.set()
+        c._thread = None
+        c.close()
+        # A5. A slow retry that fails waits 30 s again; a data error is
+        # never tried again.
+        ctl, clk, paths, bg = cut_of("a7", frames=300, corrupt_block=4)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.blocks.pop(2, None)
+        cut.errors.pop(4, None)           # its first failure, on this clock
+        cut.slow.pop(4, None)
+        tick = [0.0]
+        cut.clock = lambda: tick[0]
+        tries = []
+        real_cb = cut._cut_block
+
+        def spy(b):
+            tries.append((b, tick[0]))
+            if b == 2:
+                raise MemoryError("again")
+            return real_cb(b)
+        cut._cut_block = spy
+        for t in (0.0, 1.0, 3.0, 6.0, 37.0, 38.0, 50.0, 68.0):
+            tick[0] = t
+            cut.ensure(cut.firsts[2], cut.firsts[2])
+            cut.ensure(cut.firsts[4], cut.firsts[4])
+        t2 = [t for b, t in tries if b == 2]
+        t4 = [t for b, t in tries if b == 4]
+        check(t2 == [0.0, 1.0, 3.0, 6.0, 37.0, 68.0],
+              f"a slow retry that fails waits 30 s again: {t2}")
+        check(t4 == [0.0] and 4 in cut.errors,
+              f"a data error is never tried again: {t4}")
+        bg.close()
+        # B-3. zstd: out of memory may pass, bad data is for good.
+        fake = types.ModuleType("zstandard")
+
+        class ZstdError(Exception):
+            pass
+        fake.ZstdError = ZstdError
+        saved = _sys.modules.get("zstandard")
+        _sys.modules["zstandard"] = fake
+        try:
+            oom = F._cut_data_error(ZstdError(
+                "decompression error: Allocation error : not enough memory"))
+            bad = F._cut_data_error(ZstdError(
+                "decompression error: Unknown frame descriptor"))
+        finally:
+            if saved is None:
+                _sys.modules.pop("zstandard", None)
+            else:
+                _sys.modules["zstandard"] = saved
+        check(not oom and bad, f"zstd out of memory may pass, bad data does "
+                               f"not: {oom} {bad}")
+    finally:
+        F._FlameCut.__init__ = real_init
+        FS.FSEQ._load_block = real_load
+        F.threading.Thread = real_thread
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_cut_final_of_177():
+    section("fire & ice (final review of #177): a render file that cannot be "
+            "opened is a render that could not be read, never a cut tried "
+            "again; a kept error raised on every frame never grows a "
+            "traceback; a start that works ends its failed-start count; one "
+            "journal line per cue, not per kind of fault")
+    import shutil
+    import tempfile
+    import types
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+
+    def cut_of(name, **kw):
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, name), **kw)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        return ctl, clk, paths, bg
+    real_load = FS.FSEQ._load_block
+    real_thread = F.threading.Thread
+    try:
+        # (1) The render deleted: could not be read, FileNotFoundError.
+        ctl, clk, paths, bg = cut_of("open", frames=300)
+        os.remove(paths[0])
+        bg._check_renders_once()
+        bg._refresh_once()
+        got = _fi_settled(bg, _fi_at(clk, 30))
+        check(got is None and bg.fault.startswith(
+            "the show's render could not be read (FileNotFoundError") and
+              "tried again" not in bg.fault,
+              f"a render that cannot be opened: could not be read: "
+              f"{bg.fault!r}")
+        bg.close()
+        # (2) A kept error, a short render's too, raised on 200 frames:
+        # its traceback stays short.
+        ctl, clk, paths, bg = cut_of("tb", frames=300, corrupt_block=4)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        n4 = int(cut.firsts[4] * 25 * 30 // 1000) + 1
+        for _ in range(200):
+            bg(_fi_at(clk, n4))
+        ctl2, clk2, paths2, bg2 = cut_of("tbs", frames=600,
+                                         compression="none",
+                                         cut_tail_frames=3)
+        bg2._check_renders_once()
+        bg2._refresh_once()
+        cut2 = bg2._cuts[paths2[0]]
+        cut2.ensure(0, 599)
+        for _ in range(200):
+            bg2(_fi_at(clk2, int(599 * 25 * 30 // 1000)))
+
+        def depth(e):
+            n, tb = 0, e.__traceback__ if e is not None else None
+            while tb is not None:
+                n, tb = n + 1, tb.tb_next
+            return n
+        kept = cut.errors.get(4)
+        short = next(iter(cut2.short.values()))[1]
+        check(kept is not None and depth(kept) <= 3 and depth(short) <= 3
+              and "could not be read" in bg.fault and
+              "could not be read" in bg2.fault,
+              f"raised 200 times, a kept error's traceback stays short: "
+              f"{depth(kept)} {depth(short)} entries")
+        bg.close()
+        bg2.close()
+        # (3) A start that works ends the failed-start count: a later
+        # failed start is backed off from 1 s again, not 2.
+        ctl, clk, paths, c = cut_of("tries", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        c._journal = lambda t, **k: None
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+
+        def dies():
+            raise RuntimeError("dies")
+        c._cutting = dies
+        tries = []
+
+        class NoStart(real_thread):
+            def start(self):
+                tries.append(m[0])
+                raise RuntimeError("can't start new thread")
+        F.threading.Thread = NoStart
+        try:
+            c.start()                     # a failed first start, at 0
+        finally:
+            F.threading.Thread = real_thread
+        m[0] = 1.1
+        c.start()                         # it works, and dies
+        c._cutter.join(5)
+        tries.clear()
+        F.threading.Thread = NoStart
+        try:
+            m[0] = 2.0
+            c.start()                     # fails: the first of a new count
+            m[0] = 3.2
+            c.start()                     # 1.2 s on: tried again
+        finally:
+            F.threading.Thread = real_thread
+        check(tries == [2.0, 3.2],
+              f"a start that works ends the failed-start count: {tries}")
+        c._stop.set()
+        c._thread = c._cutter = None
+        c.close()
+        # (4) The same fault on two cues: a journal line for each cue.
+        ctl, clk, paths, bg = cut_of("cues", frames=300, ncues=2)
+        bg._check_renders_once()
+        bg._refresh_once()
+        lines = []
+        bg._journal = lambda t, **k: lines.append(t)
+
+        def nomem(self, idx):
+            if idx == 2:
+                raise MemoryError("again")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = nomem
+        try:
+            for p in paths:
+                cut = bg._cuts[p]
+                cut.blocks.pop(2, None)
+                cut.ensure(cut.firsts[2], cut.firsts[2])
+        finally:
+            FS.FSEQ._load_block = real_load
+        bg(_fi_at(clk, 60, label="c0"))
+        bg(_fi_at(clk, 60, label="c1"))
+        said = [t for t in lines if "could not be cut here" in t]
+        check(len(said) == 2, f"one line for each cue: {said}")
+        bg.close()
+    finally:
+        FS.FSEQ._load_block = real_load
+        F.threading.Thread = real_thread
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")
 
@@ -46063,9 +47555,9 @@ def test_flame_frame_timing_alert_and_systems_line():
     check(r and r["state"] == "warn" and
           r["word"] == "1 frame(s) late in the last hour, worst 178 ms",
           f"and the Systems line: {r}")
-    first = al[0].id
-    rm.alerts.clear(id=first, who="Andy", action="Acknowledge",
-                    screen="rack")
+    if al:
+        rm.alerts.clear(id=al[0].id, who="Andy", action="Acknowledge",
+                        screen="rack")
     rm._frame_timing_work()
     check(not rm.alerts.open(), "acknowledged, and no new late frame: it "
                                 "stays cleared")
@@ -96402,6 +97894,12 @@ if __name__ == "__main__":
         test_fire_ice_flame_link_from_flamesafe_config,
         test_fire_ice_flame_cues_cut_ahead_match_and_never_decompress,
         test_fire_ice_flame_cut_guards,
+        test_fire_ice_flame_cut_followups_of_174,
+        test_fire_ice_flame_cut_round2_of_177,
+        test_fire_ice_flame_cut_round3_of_177,
+        test_fire_ice_flame_cut_round4_of_177,
+        test_fire_ice_flame_cut_round5_of_177,
+        test_fire_ice_flame_cut_final_of_177,
         test_onlyone_named_lock_sees_a_copy_in_another_folder,
         test_onlyone_named_lock_is_machine_wide_or_says_so,
         test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender,
