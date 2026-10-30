@@ -15,7 +15,8 @@ When it runs
     time, only while Run is pressed and the scheduler would start it by
     itself. Passed: the show starts at its time. Failed: a "preroll" alert
     is raised and, at the show's time, the existing alert hold applies
-    (alerthold.py: Held at once, 60 s, then one Delayed on the PA). Could
+    (alerthold.py: Held at once, the booth speaker says so, nothing on
+    the PA; Jeff, 2026-10-30). Could
     not run before the time (Run pressed late, LTC Player started inside
     the window, the schedule changed): it runs then, and the show starts
     late, said in the journal; checks are never skipped.
@@ -161,6 +162,9 @@ def item_text(it):
     if it["ok"]:
         return f"{it['name']} OK" + (f" ({it['text']})" if it.get("note")
                                      else "")
+    if not it.get("required", True):
+        # Advisory (Announcements, Jeff 2026-10-30): said, never a failure.
+        return f"{it['name']} WARNING: {it['text']}"
     return f"{it['name']} FAILED: {it['text']}"
 
 
@@ -532,11 +536,15 @@ def check_audio(p, clk, refusal=""):
 
 
 def check_announcements(p, ann):
-    """The Delayed announcement could play now: announcements running,
-    their output attached, the recording sound. Nothing is played."""
+    """ADVISORY (web.py wires it with required False; Jeff, 2026-10-30):
+    the operator's announcement buttons could play now: announcements
+    running, their output attached, the Delayed recording sound. Nothing
+    is played. Nothing plays on the PA automatically any more, so a
+    failure here is a warning line and never fails the rig check or holds
+    a show."""
     if ann is None:
         return False, ("announcements are not running in this engine, so "
-                       "the Delayed message could not play")
+                       "the announcement buttons cannot play")
     st = ann.status()
     if not st.get("ok", True):
         return False, str(st.get("error") or "the announcements file "

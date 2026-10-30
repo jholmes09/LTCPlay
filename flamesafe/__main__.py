@@ -56,18 +56,19 @@ def aim_line(groups, path):
 
 
 def passthrough_line(entries, path):
-    """The start line for the passthrough entries (2026-10-29, the hazers):
-    each name and its slots, or that there are none, and the file. Display
+    """The start line for the passthrough entries (2026-10-29, the hazers;
+    2026-10-30, a switch such as the fuel pump): each name and its slots, or that there are none, and the file. Display
     only."""
     where = os.path.abspath(str(path))
     if not entries:
         return (f"passthrough: none in {where}. Every slot that belongs to "
                 f"no group is zero.")
-    parts = [f"{p.name} haze {p.haze}, fan {p.fan}" for p in entries]
-    return (f"passthrough: {'; '.join(parts)} (the show's values only while "
-            f"the show program has it switched on, the link is fresh and no "
-            f"Abort has stood since; else zero; off at start), read from "
-            f"{where}")
+    parts = [f"{p.name} switch {p.switch} at {p.on}" if p.kind == "switch"
+             else f"{p.name} haze {p.haze}, fan {p.fan}" for p in entries]
+    return (f"passthrough: {'; '.join(parts)} (the show's values, or a "
+            f"switch's own on value, only while the show program has it "
+            f"switched on, the link is fresh and no Abort has stood since; "
+            f"else zero; off at start), read from {where}")
 
 
 def main(argv=None):
