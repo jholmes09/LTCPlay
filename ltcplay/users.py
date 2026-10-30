@@ -123,7 +123,8 @@ PERMS = (
                  "flame programming, moving Programming playback from an "
                  "iPad while flames follow it, the timecode input, the "
                  "announcement output, the audit upload, idle sign out, "
-                 "sign out after the last show, the fireball timeline"),
+                 "sign out after the last show, the play-from cues, the "
+                 "fireball timeline"),
     ("users", "Users: add, remove, reset passwords, set roles, clear "
               "sign-in lockouts"),
 )
@@ -226,6 +227,9 @@ REMOTE_ROUTES = {
     # The hazers (hazers.py): Hazers off only takes something away; a
     # hazer ON is an arm press, OFF safety (classify).
     "hazers-off": "safety", "hazer": "arm", "hazer-level": "arm",
+    # Play-from cues (play_from.py): saving the cue list is setup, admin
+    # only by default. It sends nothing and starts nothing.
+    "play-from-cues-save": "settings",
     # The fuel pump (fuelpump.py, 2026-10-30): ON is an arm press, OFF
     # safety (classify).
     "fuel-pump": "arm",
