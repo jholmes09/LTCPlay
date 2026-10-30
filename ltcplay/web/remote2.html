@@ -392,6 +392,34 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 #pf-msg.ok{color:var(--green)}
 @media (max-width:700px){ .pfrow{grid-template-columns:minmax(0,1fr) minmax(172px,1fr)} .pfrow.head{display:none} }
 .seg .b.on{border-color:var(--gold);background:#3a2c10}
+/* The fireball timeline editor (Schedule): rows, a preview bar. */
+.card.fbt{flex-direction:column;align-items:stretch}
+.fbt-h,.fbt-pick,.fbt-foot,.fbt-ask{display:flex;align-items:center;gap:var(--gap);flex-wrap:wrap;min-width:0}
+.fbt-h .t{flex:1 1 12em}
+.fbt-pick select.f{flex:1 1 14em;min-width:0;width:auto}
+/* A field this screen may not change: greyed, with a dashed edge (the
+   disabled buttons' look); the text keeps its contrast. */
+.fbt input.f:disabled,.fbt select.f:disabled{background:#100d0a;border:2px dashed #5b5040;color:#B3A68E}
+#fbt-rows{display:flex;flex-direction:column;gap:6px}
+.fbt-row{display:grid;grid-template-columns:minmax(7em,1.2fr) minmax(8.5em,1.4fr) minmax(5em,1fr);gap:6px;align-items:center}
+.fbt-row .b{justify-content:flex-start;padding:0 10px}
+.fbt-row .b small{font-size:calc(var(--fs) - 4px);color:var(--muted)}
+.fbt-row .b.on{border-color:var(--gold);background:#3a2c10}
+.fbt-row input.f{min-width:0;font-family:var(--mono)}
+.fbt-row .err{grid-column:1 / -1;color:var(--red-hi);font-weight:700;font-size:calc(var(--fs) - 2px)}
+.fbt-row .err:empty{display:none}
+.fbt-bar{position:relative;height:28px;border-radius:8px;border:2px solid var(--line);background:#0e0b08;overflow:hidden}
+.fbt-bar i{position:absolute;top:2px;bottom:2px;min-width:3px;border-radius:4px}
+.fbt-bar i[data-k="fuel"]{background:var(--amber);top:2px;bottom:19px}
+.fbt-bar i[data-k="air"]{background:var(--blue);top:8px;bottom:13px}
+.fbt-bar i[data-k="igniter"]{background:var(--red-hi);top:14px;bottom:7px}
+.fbt-bar i[data-k="valve"]{background:var(--green);top:19px;bottom:2px}
+#fbt-msg{flex:1 1 12em;min-width:0;color:var(--muted)}
+#fbt-msg.bad{color:#FFD2CC}
+#fbt-msg.ok{color:#9BE7B4}
+.fbt-ask{border:2px solid var(--gold);border-radius:10px;padding:8px 10px}
+#fbt-ask-q{flex:1 1 12em;min-width:0;font-weight:700}
+@media (max-width:560px){ .fbt-row{grid-template-columns:1fr 1fr} .fbt-row .b{grid-column:1 / -1} }
 
 /* ---- sheets (confirm, details, help, sign in) over everything but Abort ---- */
 #sheet{position:fixed;inset:0;z-index:60;background:rgba(7,6,5,.86);display:flex;align-items:flex-start;justify-content:center;
@@ -633,6 +661,37 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   <section class="pane" id="t-schedule" hidden>
     <div class="cards">
       <div class="card"><div class="t"><b>Tonight's shows</b><span>Times and notes.</span></div><a class="b blue" href="/remote1#tonight"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
+      <!-- The fireball timeline (fireball_timeline.py, Jeff 2026-10-30):
+           per show file, a start timecode and a duration for each stage.
+           Editing is the Settings row (admins), by who never by when: a
+           show may be live. Nothing here fires anything; the Abort, Hold,
+           Stop show and Disarm flames strip stays above it. -->
+      <div class="card fbt" id="fbt" hidden>
+        <div class="fbt-h">
+          <div class="t"><b>Fireball timeline</b><span id="fbt-sub">Start and length of each stage.</span></div>
+          <button class="q" data-q="fireball" aria-label="Help: fireball timeline">?</button>
+        </div>
+        <div class="fbt-pick">
+          <select id="fbt-show" class="f" aria-label="Show file"></select>
+          <div class="seg" id="fbt-src" role="radiogroup" aria-label="Where the fireball comes from"><button class="b" data-v="fseq" role="radio">FSEQ</button><button class="b" data-v="timeline" role="radio">Timeline</button></div>
+        </div>
+        <div id="fbt-rows"></div>
+        <div class="fbt-bar" id="fbt-bar" aria-hidden="true"></div>
+        <div class="fbt-foot">
+          <span id="fbt-msg" role="status"></span>
+          <button class="b" id="fbt-retry" hidden><svg class="i"><use href="#i-back"/></svg>Could not read: Retry</button>
+          <button class="b red" id="fbt-replace" hidden>Replace the file</button>
+          <button class="b" id="fbt-revert"><svg class="i"><use href="#i-back"/></svg>Revert</button>
+          <button class="b blue" id="fbt-save"><svg class="i"><use href="#i-check"/></svg><span class="lbl"><span>Save</span><small id="fbt-why"></small></span></button>
+        </div>
+        <!-- An unsaved edit is never dropped without asking (another show,
+             Revert): a plain question in the card, not a sheet. -->
+        <div class="fbt-ask" id="fbt-ask" role="group" aria-labelledby="fbt-ask-q" hidden>
+          <span id="fbt-ask-q">Your changes are not saved.</span>
+          <button class="b blue" id="fbt-keep">Keep editing</button>
+          <button class="b" id="fbt-drop">Discard my changes</button>
+        </div>
+      </div>
     </div>
   </section>
   <section class="pane" id="t-settings" hidden>
@@ -942,6 +1001,7 @@ function showTab(t){
   TABS.forEach(k => { $("t-" + k).hidden = k !== t; });
   document.querySelectorAll(".tab").forEach(b => { b.classList.toggle("on", b.dataset.tab === t); b.setAttribute("aria-selected", b.dataset.tab === t ? "true" : "false"); });
   if(t === "settings"){ loadUiDefault(); loadPlayFrom(); }
+  if(t === "schedule") fbtOpen();
   if(t === "show") layoutGroups();
   $("mini").hidden = t === "show";
 }
@@ -1443,6 +1503,7 @@ function renderStale(){
   $("pill").className = pl.cls; setIcon($("pill-i"), pl.icon); setText($("pill-t"), pl.text);
   renderPins();
   try{ renderAnnounce(); }catch(e){}
+  try{ if(TAB === "schedule"){ if($("fbt").hidden) fbtOpen(true); fbtGate(isSt); } }catch(e){}
   // A hazer's arm goes quiet the moment contact is lost, not at the next poll.
   if(ST) try{ renderHazers(ST); }catch(e){}
   if(ST) try{ renderPump(ST); }catch(e){}
@@ -2623,6 +2684,9 @@ const QHELP = {
     ["Hold: arm flames", "Press and hold to arm every flame group. Not the lasers."], ["Disarm flames", "One tap makes every flame group safe. Not the lasers."],
     ["Arm lasers", "Arms every laser, after you confirm."], ["Disarm lasers", "One tap makes every laser safe."]]],
   announce: ["Announcements", [["A button", "Plays it now. Between shows it holds the schedule."], ["Stop sound", "Stops the sound only. Resume carries on."]]],
+  fireball: ["Fireball timeline", [["A stage", "On from its start for its length. Untick to leave it out."], ["Start", "Show cue time, HH:MM:SS:FF, 30 frames a second."],
+    ["Length", "Seconds. No limit."], ["FSEQ or Timeline", "Where this show's fireball comes from."], ["Purge", "Never here. Only by hand, on the Fireball page."],
+    ["Save", "Admins. During a show too: from the next frame."], ["Charges", "Fuel or Air already charged: that stage is skipped."]]],
 };
 function qOpen(k){
   const q = QHELP[k]; if(!q) return;
@@ -3420,6 +3484,346 @@ async function loadUiDefault(){
   catch(e){ say("Not changed.", e.message, "bad"); }
   loadUiDefault();
 }));
+
+// ---- The fireball timeline (fireball_timeline.py; Jeff, 2026-10-30) ----
+// Per show file: each stage's start on the show cue's own time
+// (HH:MM:SS:FF at 30 frames a second) and its length in seconds, in Jeff's
+// order Fuel, Air, Igniter, Valve Open. Purge is never a stage. The engine
+// checks everything again and works out the show's cue and length itself:
+// the checks here only say early, in plain words, what it would refuse.
+// Saving is the Settings row, signed in, and from the show network arming
+// from a screen too; a show may be live (by who, never by when). Nothing
+// here fires anything, and the Abort, Hold, Stop show and Disarm flames
+// strip above it never changes.
+//
+// An edit is always saved against the revision it was made on (FBT_BASE):
+// a newer revision read meanwhile (leaving the tab and coming back) never
+// becomes the edit's base; Save is then refused here until Revert. The
+// data on the screen always belongs to the selected show (FBT_FOR): while
+// another show's read is on its way the rows are empty and locked. While
+// any read of the selected show is on its way (FBT_READING) the fields
+// and Save are locked too, so nothing typed is lost under it. A read that
+// fails keeps what is on the screen when it is this show's (an unsaved
+// edit stays) and offers Retry (FBT_FAIL). An unsaved edit is never
+// dropped without asking (FBT_ASK: another show, Revert).
+const FBT_FPS = 30;
+const FBT_STAGES = [["fuel", "Fuel", 55], ["air", "Air", 56], ["igniter", "Igniter", 58], ["valve", "Valve Open", 57]];
+let FBT = null, FBT_SHOW = "", FBT_FOR = "", FBT_BASE = null, FBT_DIRTY = false, FBT_BUSY = false, FBT_SRC = "fseq", FBT_SEQ = 0;
+// FBT_STALE: someone saved since this edit was based (read again, or the
+// engine refused the save): Save waits for Revert.
+let FBT_STALE = false;
+let FBT_READING = false, FBT_FAIL = false, FBT_ASK = null;
+// A save with no answer in this long is given up here, said, and the
+// fields unlocked (a test may shorten it).
+let FBT_POST_MS = 15000;
+// A start HH:MM:SS:FF as whole frames, or null.
+function fbtParseTc(text){
+  const m = /^(\d{2}):(\d{2}):(\d{2}):(\d{2})$/.exec(String(text === undefined || text === null ? "" : text).trim());
+  if(!m) return null;
+  const h = Number(m[1]), mi = Number(m[2]), s = Number(m[3]), f = Number(m[4]);
+  if(mi > 59 || s > 59 || f >= FBT_FPS) return null;
+  return ((h * 60 + mi) * 60 + s) * FBT_FPS + f;
+}
+function fbtTcText(fr){
+  const two = n => String(n).padStart(2, "0");
+  const f = fr % FBT_FPS, s = Math.floor(fr / FBT_FPS);
+  return two(Math.floor(s / 3600)) + ":" + two(Math.floor(s / 60) % 60) + ":" + two(s % 60) + ":" + two(f);
+}
+// A length as typed: a point or one comma before the decimals ("2,5").
+// A comma before exactly three digits ("1,000") could be a thousand or
+// one: refused (fbtDurUnclear says so), never guessed.
+function fbtDurUnclear(v){
+  return /^\d+,\d{3}$/.test(String(v === undefined || v === null ? "" : v).trim());
+}
+function fbtDur(v){
+  if(fbtDurUnclear(v)) return null;
+  const txt = String(v === undefined || v === null ? "" : v).trim().replace(",", ".");
+  if(!txt || !/^\d*\.?\d+$|^\d+\.$/.test(txt)) return null;
+  const d = Number(txt);
+  return isFinite(d) && d > 0 ? d : null;
+}
+// The rows as typed ([{k, used, start, dur}]): what each used row would be
+// refused for, in plain words, and the stages a save would send.
+function fbtCheck(rows, showLen){
+  const errors = {}, stages = [];
+  for(const r of rows || []){
+    if(!r || !r.used) continue;
+    const e = [];
+    const fr = fbtParseTc(r.start);
+    if(fr === null) e.push("Start: write HH:MM:SS:FF, frames 00 to 29.");
+    else if(typeof showLen === "number" && showLen > 0 && fr / FBT_FPS >= showLen) e.push("Start is after the end of the show.");
+    const d = fbtDur(r.dur);
+    if(d === null){
+      const t = String(r.dur).trim();
+      e.push(fbtDurUnclear(t) ? "Length: " + t + " is unclear: write " + t.replace(",", "") + " or " + t.replace(",", ".") + "." : "Length: a number of seconds above 0.");
+    }
+    if(e.length) errors[r.k] = e.join(" ");
+    else stages.push({stage:r.k, start:fbtTcText(fr), dur_s:d});
+  }
+  return {errors:errors, stages:stages};
+}
+// Why this screen may not save, in 8 words or fewer, or "".
+function fbtWhy(st, local, isSt){
+  if(isSt) return "No contact";
+  const me = (st && st.me) || {};
+  if(!me.user) return "Sign in to edit";
+  if(!mayRow(st, "settings")) return "Admins only";
+  if(!local && !(st && st.arming && st.arming.enabled)) return "Arming off here";
+  return "";
+}
+// Why THIS edit may not be saved now (the data, not the person), or "".
+// `reading`: a read of this show is on its way; `failed`: the last one
+// failed; `rowsBad`: a row shows a red error.
+function fbtBlock(v, show, forShow, stale, busy, reading, failed, rowsBad){
+  if(reading) return "Loading";
+  if(!v || forShow !== show) return failed ? "Could not read: Retry" : "Loading";
+  if(v.error) return "File broken: replace it";
+  if(v.show_problem) return "Show cannot be timed";
+  if(stale) return "Saved elsewhere: Revert";
+  if(busy) return "Saving";
+  if(rowsBad) return "Fix the marked rows";
+  return "";
+}
+// The save's body: the revision this edit was based on, the source, the
+// stages.
+function fbtBody(show, rev, source, stages){
+  return {show:show, rev:rev, source:source, stages:stages};
+}
+// The preview bar: [{k, left, width}] in percent of the show's length.
+function fbtBands(stages, showLen){
+  if(!(typeof showLen === "number" && showLen > 0)) return [];
+  const out = [];
+  for(const s of stages || []){
+    const a = fbtParseTc(s.start); if(a === null) continue;
+    const t0 = a / FBT_FPS, t1 = Math.min(showLen, t0 + Number(s.dur_s));
+    if(!(t1 > t0)) continue;
+    out.push({k:s.stage, left:100 * t0 / showLen, width:100 * (t1 - t0) / showLen});
+  }
+  return out;
+}
+function fbtRowsNow(){
+  return FBT_STAGES.map(([k]) => {
+    const row = document.querySelector(`#fbt-rows [data-k="${k}"]`);
+    if(!row) return {k:k, used:false, start:"", dur:""};
+    return {k:k, used:row.querySelector(".use").getAttribute("aria-pressed") === "true",
+      start:row.querySelector(".st").value, dur:row.querySelector(".du").value};
+  });
+}
+function fbtDrawRows(entry){
+  const by = {};
+  ((entry && entry.stages) || []).forEach(s => { by[s.stage] = s; });
+  $("fbt-rows").innerHTML = FBT_STAGES.map(([k, w, ch]) => {
+    const s = by[k];
+    return `<div class="fbt-row" data-k="${k}"><button class="b use${s ? " on" : ""}" aria-pressed="${s ? "true" : "false"}"><span class="lbl"><span>${esc(w)}</span><small>${s ? "Used" : "Not used"}, ch ${ch}</small></span></button>` +
+      `<input class="f st" inputmode="numeric" autocomplete="off" placeholder="00:00:00:00" aria-label="${esc(w)} start, HH:MM:SS:FF" value="${esc(s ? s.start : "")}">` +
+      `<input class="f du" inputmode="decimal" autocomplete="off" placeholder="seconds" aria-label="${esc(w)} length in seconds" value="${esc(s ? String(s.dur_s) : "")}">` +
+      `<div class="err"></div></div>`;
+  }).join("");
+}
+function fbtSay(text, cls){ setText($("fbt-msg"), text || ""); $("fbt-msg").className = cls || ""; }
+function fbtDraw(){
+  const v = FBT_FOR === FBT_SHOW ? FBT : null;
+  const len = v && typeof v.show_len_s === "number" ? v.show_len_s : null;
+  const chk = fbtCheck(fbtRowsNow(), len);
+  FBT_STAGES.forEach(([k]) => {
+    const row = document.querySelector(`#fbt-rows [data-k="${k}"]`); if(!row) return;
+    setText(row.querySelector(".err"), chk.errors[k] || "");
+    const used = row.querySelector(".use").getAttribute("aria-pressed") === "true";
+    row.querySelector(".use").classList.toggle("on", used);
+    const sm = row.querySelector(".use small"); setText(sm, (used ? "Used" : "Not used") + sm.textContent.replace(/^(Used|Not used)/, ""));
+  });
+  document.querySelectorAll("#fbt-src .b").forEach(b => { const on = b.dataset.v === FBT_SRC; b.classList.toggle("on", on); b.setAttribute("aria-checked", on ? "true" : "false"); });
+  $("fbt-bar").innerHTML = fbtBands(chk.stages, len).map(b => `<i data-k="${b.k}" style="left:${b.left.toFixed(3)}%;width:${b.width.toFixed(3)}%"></i>`).join("");
+  return chk;
+}
+// Enabled or not, every 250 ms: the calm rule (a control that cannot act
+// is disabled and says why in a few words; it sends nothing). The fields
+// are locked while a save or a read of this show is on its way, so
+// nothing typed is lost.
+function fbtGate(isSt){
+  if($("fbt").hidden) return;
+  const why = fbtWhy(ST, !!(ME && ME.local), isSt);
+  const v = FBT;
+  const ours = !!v && FBT_FOR === FBT_SHOW;
+  const len = ours && typeof v.show_len_s === "number" ? v.show_len_s : null;
+  const rowsBad = ours && Object.keys(fbtCheck(fbtRowsNow(), len).errors).length > 0;
+  const block = fbtBlock(v, FBT_SHOW, FBT_FOR, FBT_STALE, FBT_BUSY, FBT_READING, FBT_FAIL, rowsBad);
+  const lock = !!why || !ours || !!(v && (v.error || v.show_problem)) || FBT_BUSY || FBT_READING;
+  document.querySelectorAll("#fbt-rows input, #fbt-rows .use, #fbt-src .b").forEach(el => { el.disabled = lock; });
+  $("fbt-save").disabled = !!why || !!block || !FBT_DIRTY;
+  setText($("fbt-why"), why || block || (FBT_DIRTY ? "" : "No changes"));
+  if(FBT_ASK && !FBT_DIRTY) FBT_ASK = null;
+  $("fbt-ask").hidden = !FBT_ASK;
+  $("fbt-revert").disabled = FBT_BUSY || !!FBT_ASK;
+  $("fbt-retry").hidden = !FBT_FAIL || FBT_READING;
+  $("fbt-retry").disabled = FBT_BUSY;
+  $("fbt-replace").hidden = !(ours && v.error) || !!why;
+  $("fbt-show").disabled = FBT_BUSY || !!FBT_ASK || !$("fbt-show").options.length;
+}
+// Read the show list (each time the tab opens) and the selected show's
+// timeline. `keepDraft`: an unsaved edit stays, and a newer revision read
+// under it marks it stale instead of becoming its base.
+async function fbtLoad(keepDraft, listToo){
+  const seq = ++FBT_SEQ;
+  FBT_READING = true; FBT_FAIL = false; fbtGate(stale());
+  try{
+    if(listToo || !$("fbt-show").options.length){
+      const j = await getJSON("/api/timelines", 3000);
+      if(seq !== FBT_SEQ) return;
+      const ok = (j.timelines || []).filter(t => !t.error).map(t => t.file);
+      const sel = ST && ST.selected_show;
+      if(!FBT_SHOW || !ok.includes(FBT_SHOW)){
+        FBT_SHOW = sel && ok.includes(sel) ? sel : (ok[0] || "");
+        FBT_DIRTY = false; FBT_STALE = false;
+      }
+      $("fbt-show").innerHTML = ok.map(f => `<option value="${esc(f)}">${esc(f)}</option>`).join("");
+      $("fbt-show").value = FBT_SHOW;
+    }
+    if(!FBT_SHOW){ FBT = null; FBT_FOR = ""; fbtDrawRows(null); fbtSay("No show file in the show folder.", "bad"); return; }
+    const want = FBT_SHOW;
+    const v = await getJSON("/api/remote/fireball-timeline?show=" + encodeURIComponent(want), 8000);
+    if(seq !== FBT_SEQ || want !== FBT_SHOW) return;
+    const keep = keepDraft && FBT_DIRTY && FBT_FOR === want;
+    FBT = v; FBT_FOR = want;
+    if(keep){
+      if(FBT_BASE !== v.rev) FBT_STALE = true;
+    } else {
+      FBT_BASE = v.rev; FBT_STALE = false; FBT_DIRTY = false;
+      FBT_SRC = (v.entry && v.entry.source) || v.default_source || "fseq";
+      fbtDrawRows(v.entry);
+    }
+    const e = v.entry || {};
+    const live = isLive(ST || {});
+    fbtSay(v.error ? v.error + ". An admin can replace it: every other show's timeline in it is lost." :
+      v.show_problem ? v.show_problem + "." :
+      FBT_STALE ? "Someone saved this show's timeline since you started. Press Revert to read theirs, then make your change again." :
+      (e.edited_by ? "Last saved by " + e.edited_by + (e.edited_at ? " at " + e.edited_at.replace("T", " ").replace("Z", " UTC") : "") + "." : "Not saved for this show yet: it plays from its FSEQ.") +
+      (live ? " A show is live: a save applies from the next frame." : ""), v.error || v.show_problem || FBT_STALE ? "bad" : "");
+  }catch(err){
+    if(seq !== FBT_SEQ) return;
+    FBT_FAIL = true;
+    if(FBT && FBT_FOR === FBT_SHOW){
+      // This show's own data stays, an unsaved edit with it.
+      fbtSay("Could not read it again: " + short8(err.message, "not readable now.") + (FBT_DIRTY ? " Your changes are kept." : ""), "bad");
+    } else {
+      // Nothing of another show stays on the screen.
+      FBT = null; FBT_FOR = ""; FBT_DIRTY = false; FBT_STALE = false;
+      fbtDrawRows(null);
+      fbtSay(short8(err.message, "Not readable now."), "bad");
+    }
+  }finally{
+    if(seq === FBT_SEQ) FBT_READING = false;
+  }
+  fbtDraw();
+  fbtGate(stale());
+}
+// Shown when the engine has a fireball (its group, or the timeline on the
+// flame cues); the list and the show read again each time the Schedule tab
+// opens. `quiet`: only when it was hidden and is now there (the 250 ms
+// check).
+function fbtOpen(quiet){
+  const fb = ST && ST.fireball;
+  const there = !!((fb && fb.available) || (ST && ST.fireball_timeline));
+  if(quiet && !there) return;
+  $("fbt").hidden = !there;
+  if(there) fbtLoad(true, true);
+}
+// Another show: nothing of the last one stays, and nothing may be typed
+// or saved until this one's own read is here.
+function fbtPick(show){
+  FBT_SHOW = show; FBT = null; FBT_FOR = ""; FBT_DIRTY = false; FBT_STALE = false; FBT_ASK = null;
+  $("fbt-show").value = show;
+  fbtDrawRows(null); fbtSay("Reading " + FBT_SHOW + ".", ""); fbtDraw(); fbtGate(stale());
+  fbtLoad(false, false);
+}
+function fbtRevert(){ FBT_DIRTY = false; FBT_STALE = false; FBT_ASK = null; fbtLoad(false, false); }
+// An unsaved edit is asked about first, in the card (no sheet, nothing
+// dimmed): Keep editing, or Discard my changes and go on.
+function fbtAsk(what){ FBT_ASK = what; fbtGate(stale()); }
+$("fbt-show").addEventListener("change", () => {
+  const to = $("fbt-show").value;
+  if(FBT_DIRTY && to !== FBT_SHOW){ $("fbt-show").value = FBT_SHOW; fbtAsk({kind:"show", to:to}); return; }
+  fbtPick(to);
+});
+$("fbt-keep").addEventListener("click", () => { FBT_ASK = null; fbtGate(stale()); });
+$("fbt-drop").addEventListener("click", () => {
+  const a = FBT_ASK; FBT_ASK = null;
+  if(!a) return fbtGate(stale());
+  if(a.kind === "show") fbtPick(a.to); else fbtRevert();
+});
+$("fbt-src").addEventListener("click", e => {
+  const b = e.target.closest(".b"); if(!b || b.disabled) return;
+  FBT_SRC = b.dataset.v; FBT_DIRTY = true; fbtDraw(); fbtGate(stale());
+});
+$("fbt-rows").addEventListener("click", e => {
+  const b = e.target.closest(".use"); if(!b || b.disabled) return;
+  b.setAttribute("aria-pressed", b.getAttribute("aria-pressed") === "true" ? "false" : "true");
+  FBT_DIRTY = true; fbtDraw(); fbtGate(stale());
+});
+$("fbt-rows").addEventListener("input", e => {
+  // A time typed into a stage that is not used uses it: what is typed is
+  // never silently left out of the save.
+  const row = e.target.closest && e.target.closest(".fbt-row");
+  if(row && String(e.target.value || "").trim()) row.querySelector(".use").setAttribute("aria-pressed", "true");
+  FBT_DIRTY = true; fbtDraw(); fbtGate(stale());
+});
+$("fbt-revert").addEventListener("click", () => { if(FBT_DIRTY) fbtAsk({kind:"revert"}); else fbtRevert(); });
+$("fbt-retry").addEventListener("click", () => { if(!FBT_BUSY) fbtLoad(true, false); });
+// The save's own POST (1.0's post, with a time limit): no answer in
+// FBT_POST_MS is said in plain words and the fields unlock.
+async function fbtPost(p, body){
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), FBT_POST_MS);
+  try{
+    const r = await fetch(p, {method:"POST", credentials:"same-origin", cache:"no-store", signal:ctl.signal,
+      headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(body || {})});
+    const j = await r.json().catch(() => ({}));
+    if(!r.ok){ const e = new Error(refusedWords(j, r.statusText)); e.status = r.status; e.code = j.code || ""; throw e; }
+    return j;
+  }catch(err){
+    if(ctl.signal.aborted){ const e = new Error("No answer: check the connection"); e.noAnswer = true; throw e; }
+    throw err;
+  }finally{ clearTimeout(t); }
+}
+async function fbtSave(replace){
+  if(FBT_BUSY || !FBT) return;
+  const why = fbtWhy(ST, !!(ME && ME.local), stale());
+  if(why){ fbtSay(why + ".", "bad"); return; }
+  const block = replace ? (FBT_FOR !== FBT_SHOW || FBT_READING ? "Loading" : "") : fbtBlock(FBT, FBT_SHOW, FBT_FOR, FBT_STALE, FBT_BUSY, FBT_READING, FBT_FAIL, false);
+  if(block){ fbtSay(block + ".", "bad"); return; }
+  const chk = fbtDraw();
+  if(Object.keys(chk.errors).length){ fbtSay("Not saved: fix the stages marked above.", "bad"); return; }
+  const show = FBT_SHOW, body = fbtBody(show, FBT_BASE, FBT_SRC, chk.stages);
+  if(replace) body.replace_unreadable = true;
+  FBT_BUSY = true; fbtGate(stale());
+  try{
+    const j = await fbtPost("/api/remote/fireball-timeline-save", actor(body));
+    FBT_DIRTY = false; FBT_STALE = false;
+    // What was saved is this show's newest revision: the base from now on,
+    // even when reading it back fails.
+    if(j.entry && typeof j.entry.rev === "number") FBT_BASE = j.entry.rev;
+    say("Fireball timeline saved.", j.text || "Saved.", "ok");
+    FBT_BUSY = false;
+    await fbtLoad(false, false);
+    if(FBT_FAIL) fbtSay("Saved. Could not read it back: Retry.", "bad");
+    else fbtSay(j.text || "Saved.", "ok");
+  }catch(err){
+    FBT_BUSY = false;
+    if(/someone saved/i.test(err.message)){
+      FBT_STALE = true;
+      fbtSay("Someone saved this show's timeline since you started. Press Revert to read theirs, then make your change again.", "bad");
+    } else if(err.noAnswer){
+      fbtSay("No answer: check the connection. It may have saved: Revert reads what is there.", "bad");
+    } else fbtSay(err.message, "bad");
+    say(err.noAnswer ? "Fireball timeline: no answer." : "Fireball timeline NOT saved.", err.message, "bad");
+  }
+  fbtGate(stale());
+}
+$("fbt-save").addEventListener("click", () => fbtSave(false));
+$("fbt-replace").addEventListener("click", async () => {
+  if(!(await confirmBox("Replace the broken file?", "A new timeline file holds this show only. Every other show's timeline in the broken file is lost; the broken file is kept in the history.", "Yes, replace it", "red"))) return;
+  fbtSave(true);
+});
 
 // ---- Settings: play-from cues (admin edits; anyone signed in reads) ----
 // The cue list per show file (play_from.py): a name, a time from the top

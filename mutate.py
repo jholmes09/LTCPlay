@@ -21157,6 +21157,172 @@ def build():
   "tk.state === \"charged\" ? \"Charged: a press is a top-off\"",
   "tk.state === \"charged\" ? \"\""),
 
+ # -- the fireball timeline editor on 2.0 (remote2.html, 2026-10-30) -----
+ ("fireball editor: an operator may save the timeline",
+  "ltcplay/web/remote2.html",
+  "  if(!mayRow(st, \"settings\")) return \"Admins only\";",
+  "  if(false) return \"Admins only\";"),
+
+ ("fireball editor: signed out may save the timeline",
+  "ltcplay/web/remote2.html",
+  "  if(!me.user) return \"Sign in to edit\";",
+  "  if(false) return \"Sign in to edit\";"),
+
+ ("fireball editor: an iPad saves with arming from a screen off",
+  "ltcplay/web/remote2.html",
+  "  if(!local && !(st && st.arming && st.arming.enabled)) return \"Arming off here\";",
+  "  if(false) return \"Arming off here\";"),
+
+ ("fireball editor: no contact may save",
+  "ltcplay/web/remote2.html",
+  "  if(isSt) return \"No contact\";",
+  "  if(false) return \"No contact\";"),
+
+ ("fireball editor: a refused row is sent anyway",
+  "ltcplay/web/remote2.html",
+  "  if(Object.keys(chk.errors).length){ fbtSay(\"Not saved: fix the stages marked above.\", \"bad\"); return; }",
+  "  if(false){ fbtSay(\"Not saved: fix the stages marked above.\", \"bad\"); return; }"),
+
+ ("fireball editor: fields stay open for a screen that may not save",
+  "ltcplay/web/remote2.html",
+  "document.querySelectorAll(\"#fbt-rows input, #fbt-rows .use, #fbt-src .b\").forEach(el => { el.disabled = lock; });",
+  "document.querySelectorAll(\"#fbt-rows input, #fbt-rows .use, #fbt-src .b\").forEach(el => { el.disabled = false; });"),
+
+ ("fireball editor: frame 30 is a timecode",
+  "ltcplay/web/remote2.html",
+  "  if(mi > 59 || s > 59 || f >= FBT_FPS) return null;",
+  "  if(mi > 59 || s > 59 || f > FBT_FPS) return null;"),
+
+ ("fireball editor: a length of 0 is accepted",
+  "ltcplay/web/remote2.html",
+  "  return isFinite(d) && d > 0 ? d : null;",
+  "  return isFinite(d) && d >= 0 ? d : null;"),
+
+ ("fireball editor: the save does not carry the revision it read",
+  "ltcplay/web/remote2.html",
+  "  return {show:show, rev:rev, source:source, stages:stages};",
+  "  return {show:show, rev:0, source:source, stages:stages};"),
+
+ ("fireball editor: a stage left out is sent",
+  "ltcplay/web/remote2.html",
+  "    if(!r || !r.used) continue;",
+  "    if(!r) continue;"),
+
+ ("fireball editor: a newer revision read under an edit becomes its base",
+  "ltcplay/web/remote2.html",
+  "      if(FBT_BASE !== v.rev) FBT_STALE = true;",
+  "      FBT_BASE = v.rev;"),
+
+ ("fireball editor: Save is not held for Revert after someone saved",
+  "ltcplay/web/remote2.html",
+  "  if(stale) return \"Saved elsewhere: Revert\";",
+  "  if(false) return \"Saved elsewhere: Revert\";"),
+
+ ("fireball editor: a stale refusal leaves Save open",
+  "ltcplay/web/remote2.html",
+  "    if(/someone saved/i.test(err.message)){\n      FBT_STALE = true;",
+  "    if(/someone saved/i.test(err.message)){\n      FBT_STALE = false;"),
+
+ ("fireball editor: another show's rows stay while the new one is read",
+  "ltcplay/web/remote2.html",
+  "  FBT_SHOW = show; FBT = null; FBT_FOR = \"\"; FBT_DIRTY = false; FBT_STALE = false; FBT_ASK = null;\n  $(\"fbt-show\").value = show;\n  fbtDrawRows(null);",
+  "  FBT_SHOW = show; FBT_DIRTY = false; FBT_STALE = false; FBT_ASK = null;\n  $(\"fbt-show\").value = show;\n  fbtDrawRows(FBT && FBT.entry);"),
+
+ ("fireball editor: a save goes while the data is another show's",
+  "ltcplay/web/remote2.html",
+  "  if(!v || forShow !== show) return failed ? ",
+  "  if(!v) return failed ? "),
+
+ ("fireball editor: fields stay open while a save is on its way",
+  "ltcplay/web/remote2.html",
+  "  const lock = !!why || !ours || !!(v && (v.error || v.show_problem)) || FBT_BUSY || FBT_READING;",
+  "  const lock = !!why || !ours || !!(v && (v.error || v.show_problem)) || FBT_READING;"),
+
+ ("fireball editor: an unsaved edit is wiped when coming back and the read fails (round 2)",
+  "ltcplay/web/remote2.html",
+  "    if(FBT && FBT_FOR === FBT_SHOW){\n      // This show's own data stays",
+  "    if(false){\n      // This show's own data stays"),
+
+ ("fireball editor: no Retry after a failed read (round 2)",
+  "ltcplay/web/remote2.html",
+  "  $(\"fbt-retry\").hidden = !FBT_FAIL || FBT_READING;",
+  "  $(\"fbt-retry\").hidden = true;"),
+
+ ("fireball editor: Save says Loading when nothing is loading (round 2)",
+  "ltcplay/web/remote2.html",
+  "return failed ? \"Could not read: Retry\" : \"Loading\";",
+  "return \"Loading\";"),
+
+ ("fireball editor: fields stay open while a read is on its way (round 2)",
+  "ltcplay/web/remote2.html",
+  "  const lock = !!why || !ours || !!(v && (v.error || v.show_problem)) || FBT_BUSY || FBT_READING;",
+  "  const lock = !!why || !ours || !!(v && (v.error || v.show_problem)) || FBT_BUSY;"),
+
+ ("fireball editor: Save stays open while a read is on its way (round 2)",
+  "ltcplay/web/remote2.html",
+  "  if(reading) return \"Loading\";\n",
+  ""),
+
+ ("fireball editor: another show drops an unsaved edit without asking (round 2)",
+  "ltcplay/web/remote2.html",
+  "  if(FBT_DIRTY && to !== FBT_SHOW){",
+  "  if(false){"),
+
+ ("fireball editor: Revert drops an unsaved edit without asking (round 2)",
+  "ltcplay/web/remote2.html",
+  "{ if(FBT_DIRTY) fbtAsk({kind:\"revert\"}); else fbtRevert(); }",
+  "{ fbtRevert(); }"),
+
+ ("fireball editor: Keep editing does not close the question (round 2)",
+  "ltcplay/web/remote2.html",
+  "$(\"fbt-keep\").addEventListener(\"click\", () => { FBT_ASK = null; fbtGate(stale()); });",
+  "$(\"fbt-keep\").addEventListener(\"click\", () => {});"),
+
+ ("fireball editor: a save not read back says only Saved (round 2)",
+  "ltcplay/web/remote2.html",
+  "    if(FBT_FAIL) fbtSay(\"Saved. Could not read it back: Retry.\", \"bad\");\n    else ",
+  "    "),
+
+ ("fireball editor: the next save is against the old revision (round 2)",
+  "ltcplay/web/remote2.html",
+  "    if(j.entry && typeof j.entry.rev === \"number\") FBT_BASE = j.entry.rev;\n",
+  ""),
+
+ ("fireball editor: Save stays open with red rows (round 2)",
+  "ltcplay/web/remote2.html",
+  "  if(rowsBad) return \"Fix the marked rows\";\n",
+  ""),
+
+ ("fireball editor: 1,000 is read as 1 s (round 2)",
+  "ltcplay/web/remote2.html",
+  "  if(fbtDurUnclear(v)) return null;\n",
+  ""),
+
+ ("fireball editor: a save with no answer locks the fields for ever (round 2)",
+  "ltcplay/web/remote2.html",
+  "  const t = setTimeout(() => ctl.abort(), FBT_POST_MS);",
+  "  const t = 0;"),
+
+ ("fireball editor: a time typed into an unused stage is left out",
+  "ltcplay/web/remote2.html",
+  "  if(row && String(e.target.value || \"\").trim()) row.querySelector(\".use\").setAttribute(\"aria-pressed\", \"true\");",
+  "  if(false) row.querySelector(\".use\").setAttribute(\"aria-pressed\", \"true\");"),
+
+ ("fireball editor: a decimal comma is not a length",
+  "ltcplay/web/remote2.html",
+  "trim().replace(\",\", \".\");",
+  "trim();"),
+
+ ("fireball editor: the show list is not read again when the tab opens",
+  "ltcplay/web/remote2.html",
+  "  if(there) fbtLoad(true, true);",
+  "  if(there) fbtLoad(true, false);"),
+
+ ("fireball editor: the show picker is a small target",
+  "ltcplay/web/remote2.html",
+  "select.f{font:inherit;min-height:56px;",
+  "select.f{font:inherit;min-height:0;"),
+
  # -- the fireball timeline on the flame cues (fireball_cues.py) -----------
  ("fireball cues: the FSEQ's 55 to 59 are not masked for a timeline show",
   "ltcplay/fireball_cues.py",
