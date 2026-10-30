@@ -1908,7 +1908,9 @@ def _stop_show(m, ev, now):
         + (f"The schedule is on Hold: no show starts by itself until "
            f"Resume; a show whose time passes meanwhile is delayed and "
            f"waits for Start now." if held else
-           f"There are no more shows tonight, so the night closes."),
+           f"There are no more shows tonight, so the night closes; the "
+           f"Stop's Hold stands until Resume, so no show starts by itself "
+           f"on a later night."),
         # As an Abort leaves the night (never straight to closing; the
         # latch is not set here, only an Abort's conductor call sets it,
         # schedule_service), but on HOLD while a show is still to come.

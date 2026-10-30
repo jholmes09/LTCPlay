@@ -17385,9 +17385,10 @@ def build():
   "        early = []"),
 
  ("scheduler: a Stop between shows leaves the idle look up (round 2, 5)",
-  "ltcplay/schedule_service.py",
-  "        if kind == \"hold\" and self.conductor is not None:",
-  "        if False:"),
+  "ltcplay/remote.py",
+  "        threading.Thread(target=go, daemon=True,\n"
+  "                         name=\"ltcplay-stop-conductor\").start()",
+  "        pass"),
 
  ("scheduler: a Stop's Hold between shows is not dark (round 2, 5)",
   "ltcplay/schedule.py",
@@ -17492,8 +17493,31 @@ def build():
   "                self.machine = replace(m, stop_hold=True)\n"
   "                self._save_tonight()\n"
   "            return\n"
-  "        if m.state not in self.SHOWTIME_FROM:",
+  "        if m.state not in self.SHOWTIME_FROM or not m.waiting():",
   "            return\n"
+  "        if m.state not in self.SHOWTIME_FROM or not m.waiting():"),
+
+ # Cold review of #191 round 3, review B.
+ ("halt: the conductor's Stop is not asked at the press (round 3, F1/F3)",
+  "ltcplay/remote.py",
+  "            out[\"_cond_done\"] = self._conductor_stop_now(who, screen)",
+  "            out[\"_cond_done\"] = None"),
+
+ ("halt: the Stop ends before the conductor has taken it (round 3, F4)",
+  "ltcplay/remote.py",
+  "        done = h.get(\"_cond_done\")\n"
+  "        if done is not None:\n"
+  "            done.wait(STOP_FADE_WAIT_S)",
+  "        done = h.get(\"_cond_done\")"),
+
+ ("scheduler: a Stop with nothing left tonight holds the night open (round 3, F2)",
+  "ltcplay/schedule_service.py",
+  "        elif st in self.SHOWTIME_FROM and not m.waiting():",
+  "        elif False:"),
+
+ ("scheduler: the Stop's Hold keeps a finished night from closing (round 3, F2)",
+  "ltcplay/schedule_service.py",
+  "        if m.state not in self.SHOWTIME_FROM or not m.waiting():",
   "        if m.state not in self.SHOWTIME_FROM:"),
 
  ("conductor: Stop leaves a Hold decided before it in the line",
@@ -18223,8 +18247,8 @@ def build():
   ': await fetch("/api/remote/stop", ', ': await fetch("/api/stop", '),
 
  ("Stop from a screen does not disarm or end the show", "ltcplay/remote.py",
-  "        h = self.halt(who, screen, how=\"pressed\")\n        out = {k: h[k]",
-  "        h = {}\n        out = {k: h[k]"),
+  "        h = self.halt(who, screen, how=\"pressed\")\n",
+  "        h = {}\n"),
 
  ("Reset ends a Hold inside the late grace and the show starts",
   "ltcplay/schedule.py",

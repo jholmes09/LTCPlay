@@ -5376,6 +5376,12 @@ class Remote:
     def _stop_press(self, who, screen, run_off=False):
         # A screen's Stop is a double tap (pressed); the deck's is held.
         h = self.halt(who, screen, how="pressed")
+        # The halt (and with it the refusal of Start now, Resume and Run)
+        # stays open until the conductor has taken the Stop (cold review
+        # of #191 round 3, F4).
+        done = h.get("_cond_done")
+        if done is not None:
+            done.wait(STOP_FADE_WAIT_S)
         out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show",
                                  "hold", "programming")
                if h.get(k) is not None}
@@ -5522,6 +5528,16 @@ class Remote:
                 out["lasers_blank"] = {"ok": bool(b_ok), "text": b_text}
                 if not b_ok:
                     out["failed"].append("laser blank")
+            # 3b. The conductor's Stop, asked at once, whatever the
+            # scheduler is doing (cold review of #191 round 3, F1, F3):
+            # Abort's sequence, so any look still up (a show, the idle or
+            # intermission look, after a Hold, while closing) goes dark.
+            # Never behind the scheduler's lock or tonight's save: on a
+            # thread of its own, waited for URGENT_WAIT_S here (the
+            # conductor's own lock may be busy), and the halt stays open
+            # until it has been taken (F4, _stop_press). The scheduler's
+            # own Stop, below, finds it under way (a re-blank only).
+            out["_cond_done"] = self._conductor_stop_now(who, screen)
             # 4. What an Abort clears: screen holds, the purge, the
             # fireball and the cleaning (at once, not when their watchers
             # next see the flame link's zero), the laser tests.
@@ -5561,6 +5577,32 @@ class Remote:
                       + (f" These did NOT work: {bad}." if bad else ""),
                       fault=bool(bad))
         return out
+
+    # How long the press waits for the conductor to take its Stop before
+    # carrying on (the scheduler's urgent line uses the same 0.25 s).
+    COND_STOP_WAIT_S = 0.25
+
+    def _conductor_stop_now(self, who, screen):
+        """Conductor.stop on a thread of its own, waited for at most
+        COND_STOP_WAIT_S. Returns an Event set once it has answered (or
+        None with no conductor). Never raises."""
+        cond = getattr(self.schedule, "conductor", None)
+        fn = getattr(cond, "stop", None)
+        if fn is None:
+            return None
+        done = threading.Event()
+
+        def go():
+            try:
+                fn(who or "", screen or "")
+            except Exception:                    # noqa: BLE001
+                pass
+            finally:
+                done.set()
+        threading.Thread(target=go, daemon=True,
+                         name="ltcplay-stop-conductor").start()
+        done.wait(self.COND_STOP_WAIT_S)
+        return done
 
     def _halt_programming(self, out, who, screen):
         """halt() step 5: Programming playback stopped, if it is on."""

@@ -973,17 +973,22 @@ stop:
   flag), and neither does Continue anyway. A show whose time comes during
   the Hold waits as a delayed show for Start now. **Start now** still works
   from it, as an explicit start with its rig check: it starts that one
-  show, and the Hold comes back when that show ends. A Stop between shows
-  takes the idle or intermission look down too (the Hold is dark); Resume
-  brings it back. A second Stop disarms everything again and stays on
+  show, and the Hold comes back when that show ends. Every Stop takes
+  whatever look is still up down to dark, whatever the schedule was
+  doing (a show, the idle or intermission look, on Hold, while closing);
+  the Hold is dark, and Resume brings the look back. After a Stop on the
+  night's last show (or once nothing is left tonight) the night closes
+  as usual, fading to black, and the Stop's Hold waits for the next
+  night with shows. A second Stop disarms everything again and stays on
   Hold. A Stop pressed the very moment a show comes due holds the
   schedule before that show can start: it never starts the show and never
   just pauses it, and while a Stop is under way the scheduler starts no
   show. A show start already on its way when the Stop lands is refused,
   and one whose music already began is stopped and faded again. While a
-  Stop is still disarming and fading to dark, Resume, Start now and Run
-  are refused until it has finished. The Stop's fade never waits on a
-  file being written.
+  Stop is still disarming and fading to dark (until the show conductor
+  has taken it), Resume, Start now and Run are refused until it has
+  finished. The Stop's fade never waits on a file being written or on
+  the scheduler.
 - **Stop never turns Run off.** Run stays on: Hold (or a Stop's Hold) is
   how the schedule is stopped. Each flame group needs arming again, and
   the lasers can only be armed again after Resume. The line under the

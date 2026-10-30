@@ -2431,7 +2431,10 @@ class Service:
                 self.machine = replace(m, stop_hold=True)
                 self._save_tonight()
             return
-        if m.state not in self.SHOWTIME_FROM:
+        if m.state not in self.SHOWTIME_FROM or not m.waiting():
+            # Nothing left tonight: the tick closes the night as it would
+            # (cold review of #191 round 3, F2); the Stop's Hold stands
+            # for the next state a show could start from.
             return
         night = self._stop_carry.get("night")
         ev = sch.Event(
@@ -2732,6 +2735,12 @@ class Service:
             ev = sch.Event(sch.STOP_SHOW, "operator", who=who,
                            screen=screen, confirmed=True, surface=True)
             kind = "stop"
+        elif st in self.SHOWTIME_FROM and not m.waiting():
+            # No show left tonight (the last one just ended): the night
+            # closes as it would (round 3, F2); the Stop's Hold stands for
+            # the next night with shows.
+            return {"ok": True, "kind": "carried", "state": st,
+                    "text": self.STOP_HELD_LATER}
         elif st in self.SHOWTIME_FROM:
             ev = sch.Event(sch.HOLD_ON, "operator", who=who, screen=screen,
                            surface=True,
@@ -2750,19 +2759,9 @@ class Service:
         if out.refused:
             return {"ok": False, "kind": kind, "state": self.machine.state,
                     "text": out.refused}
-        if kind == "hold" and self.conductor is not None:
-            # Between shows the idle or intermission look goes dark too:
-            # the conductor's Stop (Abort's sequence; nothing is playing,
-            # so it only takes things down).
-            calls = self._decide_conductor([("Stop", "stop", frozenset())],
-                                           ev)
-            self._journal_line(
-                "system", "Sent to the show conductor, Stop (the look "
-                          "between shows goes dark). Its own line says what "
-                          "it did.", action="conductor", outcome="sent",
-                reason="stop asked of the show conductor")
-            for c in calls:
-                self._calls.put(c)
+        # (Between shows the look goes dark by the conductor's Stop, which
+        # Remote.halt asks for at the press, never behind this lock or
+        # tonight's save: cold review of #191 round 3, F1 and F3.)
         text = " ".join(self._reworded(le).text for le in out.log if le.text)
         return {"ok": True, "kind": kind, "state": self.machine.state,
                 "text": text or "Done."}

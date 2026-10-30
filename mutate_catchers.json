@@ -3065,5 +3065,9 @@
 "scheduler: the Stop's Hold back after a Start now is not dark (round 3, M2)": "test_stop_hold_round3",
 "scheduler: the Stop's Hold coming back cancels a Start now (round 3, L1)": "test_stop_hold_round3",
 "scheduler: an unreadable Stop's Hold file counts as not held": "test_stop_hold_round3",
-"scheduler: a tick never marks an existing Hold as the Stop's": "test_stop_hold_round3"
+"scheduler: a tick never marks an existing Hold as the Stop's": "test_stop_hold_round3",
+"halt: the conductor's Stop is not asked at the press (round 3, F1/F3)": "test_stop_round3_dark_close_and_timing",
+"halt: the Stop ends before the conductor has taken it (round 3, F4)": "test_stop_round3_dark_close_and_timing",
+"scheduler: a Stop with nothing left tonight holds the night open (round 3, F2)": "test_stop_round3_dark_close_and_timing",
+"scheduler: the Stop's Hold keeps a finished night from closing (round 3, F2)": "test_stop_round3_dark_close_and_timing"
 }

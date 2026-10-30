@@ -58379,8 +58379,12 @@ def test_stop_disarms_every_flame_group_without_the_latch():
                            {"who": "", "screen": "Stream Deck",
                             "halt": True}, client=("127.0.0.1", 50000))
         kinds = [o if isinstance(o, str) else o[0] for o in order]
-        check(st == 200 and kinds == ["disarm", "cut", "lasers",
-                                      "show", "conductor_stop"],
+        # The conductor's Stop is asked at the press (on its own thread,
+        # round 3 of the cold review, F1/F3) and again by the scheduler's
+        # Stop (a re-blank then): both, after the flames and the lasers.
+        check(st == 200 and kinds[:3] == ["disarm", "cut", "lasers"] and
+              "show" in kinds and kinds.count("conductor_stop") >= 1 and
+              "stop" not in kinds,
               f"the deck's halt during a show: the flames first (as an "
               f"Abort), then live flames, the lasers, the show, the "
               f"conductor's Stop, and playback NOT stopped (Run stays on): "
@@ -59665,6 +59669,131 @@ def test_stop_hold_round3():
         finally:
             svc2.stop()
         _os.remove(path)
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_stop_round3_dark_close_and_timing():
+    section("Stop (cold review of #191 round 3, review B): every Stop asks "
+            "the conductor for its dark Stop at the press, whatever the "
+            "scheduler is doing (on Hold, closing); a Stop on the last show "
+            "lets the night close with the Stop's Hold carried; the "
+            "conductor's Stop never waits on tonight's save or a tick "
+            "holding the scheduler's lock; the Stop stays under way until "
+            "the conductor has taken it")
+    S = _sched()
+    if S is None:
+        return
+    from datetime import timedelta
+    # F1: show 1 ended, STANDBY, an operator's Hold, then Stop.
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        R.svc._apply(S.Event(S.SHOW_ENDED, "madmapper"), _den(S, 18, 8))
+        R.settle()
+        R.ask("POST", "/api/remote/hold", {"seen": R.seen()})
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and
+              R.c.snapshot()["look"] != "STOPPED_DARK",
+              f"setup: on an operator's Hold with the intermission look up: "
+              f"{R.svc.machine.state} {R.c.snapshot()['look']}")
+        asked = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (asked.append(a), real_cs(*a, **kw))[1]
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        check(asked and R.c.snapshot()["look"] == "STOPPED_DARK" and
+              R.svc.machine.stop_hold,
+              f"a Stop on a Hold takes the look down too: {asked} "
+              f"{R.c.snapshot()['look']}")
+    finally:
+        R.close()
+    # F2: a Stop on the last show; the night closes; the Hold is carried.
+    R = _RemoteRig(S)
+    try:
+        m = R.svc.machine
+        last = m.slots[-1]
+        R.now[0] = last.start
+        R.svc.tick()
+        R.settle()
+        R.now[0] = last.start + timedelta(seconds=1)
+        _confirm(S, R.svc)
+        R.settle()
+        R.now[0] = last.start + timedelta(minutes=2)
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        # A second Stop before the closing tick: still nothing to hold.
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        for mins in (4, 50):
+            R.now[0] = last.start + timedelta(minutes=mins)
+            R.svc.tick()
+            R.settle()
+        check(R.svc.machine.state in (S.CLOSING, S.OFF) and
+              R.svc.stop_held(),
+              f"the night closes after a Stop on its last show, and the "
+              f"Stop's Hold stands for the next night: "
+              f"{R.svc.machine.state}")
+        # A Stop in CLOSING or OFF asks the conductor's dark Stop too.
+        asked = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (asked.append(a), real_cs(*a, **kw))[1]
+        R.ask("POST", "/api/remote/stop", {})
+        check(asked, f"a Stop after the night closed still asks the "
+                     f"conductor's Stop: {asked}")
+    finally:
+        R.close()
+    # F3: a slow tonight save, and a tick holding the lock mid-save.
+    R = _RemoteRig(S)
+    try:
+        R.now[0] = _den(S, 17, 58)
+        R.svc.tick()
+        R.settle()
+        asked = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (asked.append(time.monotonic()),
+                                     real_cs(*a, **kw))[1]
+        real_save = R.svc._save_tonight
+        R.svc._save_tonight = lambda *a, **kw: (time.sleep(1.5),
+                                                real_save(*a, **kw))[1]
+        R.svc.machine = _dc_replace(R.svc.machine, faults=())
+        ticker = threading.Thread(
+            target=lambda: R.svc._apply(S.Event(S.FAULT_RAISED, "system",
+                                                detail="test")))
+        ticker.start()
+        time.sleep(0.1)          # the save under the lock is under way
+        t0 = time.monotonic()
+        R.ask("POST", "/api/remote/stop", {})
+        ticker.join()
+        R.svc._save_tonight = real_save
+        R.settle()
+        check(asked and asked[0] - t0 < 0.5,
+              f"the conductor's Stop is asked at once, never behind the "
+              f"save or the scheduler's lock: "
+              f"{(asked[0] - t0) if asked else None}")
+    finally:
+        R.close()
+    # F4: the Stop stays under way until the conductor has taken it (a
+    # Stop between shows, where nothing else is waited for).
+    R = _RemoteRig(S)
+    try:
+        R.now[0] = _den(S, 17, 58)
+        R.svc.tick()
+        R.settle()
+        took = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (time.sleep(0.6),
+                                     took.append(time.monotonic()),
+                                     real_cs(*a, **kw))[2]
+        t0 = time.monotonic()
+        R.ask("POST", "/api/remote/stop", {})
+        t1 = time.monotonic()
+        R.settle()
+        check(took and took[0] <= t1,
+              f"the Stop answers only once the conductor has taken it, so "
+              f"Start now and Resume stay refused until then: "
+              f"{[x - t0 for x in took]} answered after {t1 - t0:.2f} s")
     finally:
         R.close()
     print("  ok")
@@ -99951,6 +100080,7 @@ if __name__ == "__main__":
         test_stop_hold_stands_until_resume,
         test_stop_round2_conductor_and_marks,
         test_stop_hold_round3,
+        test_stop_round3_dark_close_and_timing,
         test_screen_arm_end_to_end_probes,
         test_screen_arming_switch_and_refusals,
         test_engine_stall_probe_memory_is_bounded,

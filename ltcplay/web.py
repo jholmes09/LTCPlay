@@ -973,6 +973,11 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:                   # noqa: BLE001
             return {"failed": ["halt"],
                     "error": f"{type(e).__name__}: {e}"}
+        done = h.get("_cond_done") if isinstance(h, dict) else None
+        if done is not None:
+            # The halt stays open until the conductor has taken the Stop
+            # (cold review of #191 round 3, F4).
+            done.wait(HALT_FADE_WAIT_S)
         out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show",
                                  "hold", "programming")
                if h.get(k) is not None}
