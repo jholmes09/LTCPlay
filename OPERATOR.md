@@ -850,21 +850,70 @@ channel, and is either ARMED or DISARMED.
 - **If a tile says Waiting for flamesafe,** flamesafe has not taken the
   arm yet; if it stays that way, disarm it and arm it again.
 
-**Do not add a fuel pump to flamesafe.json yet.** flamesafe can now read a
-one-channel "switch" entry for the fireball's fuel pump, but LTC Player
-cannot until its own update lands. A pump line in `flamesafe.json` before
-BOTH are updated goes wrong two ways:
+## The fireball's fuel pump
 
-- Only flamesafe updated: flamesafe starts, but LTC Player refuses the
-  file and does not start, which stops the whole show.
-- LTC Player not updated and only flamesafe restarted: flamesafe reports
-  the pump among its passthrough entries, LTC Player sees its hazers
-  differ, and no hazer can be armed.
+Jeff, 2026-10-30: "a toggle for a fuel pump. This is something for Andy to
+manually control as needed. It does not need to be armed or disarmed but
+it should be affected by the stop button." And: "Off on Stop, NOT Hold.
+Pump should auto-stop after 5 minutes. Allow Andy to set duration before
+he triggers it."
 
-The order is: update both programs, then add the line, then restart both.
-Before the pump is wired, check at the bench that the DMX node (the
-PixLite) drops its outputs to zero when the flame universe stops arriving,
-rather than holding the last look.
+- **What it is.** One DMX channel on the flame universe (channel 100, on
+  at 255), not a flame: no safety channel, no hold to arm. flamesafe
+  writes the on value itself; the show file never drives it.
+- **Run time.** The default is **5:00**: unless you set another time
+  before you turn it on, the pump runs 5 minutes and turns off by itself.
+  To run it longer or shorter, set the time first, in minutes and
+  seconds. The ceiling is **60:00**: a longer time is refused and says
+  so (an admin can change the ceiling, `pump_max_s` in
+  `ltcplay_remote.json`, up to 4 hours). Turning it on while it runs is
+  refused, and never adds time: press Pump off, then start it again with
+  the time you want.
+- **When.** Any time: during a show, between shows, in Programming.
+- **Who.** Turning it on needs the same sign-in as arming a flame group
+  (the arm row of the role matrix), and from an iPad needs arming from a
+  screen switched on. Pump off works for everyone, always.
+- **What turns it off.** Its time up, Pump off, Stop, Abort, the night
+  closing (and the night being over, for a run started before), flamesafe
+  not answering for a second, the flame link not sending, flamesafe not
+  passing it for a second and a half (press Fuel pump: On again), and a
+  restart of LTC Player or flamesafe. **Hold does not turn it off.**
+- **Anything that sends the disarm to every flame group turns it off
+  too**, on purpose (it only takes something away): Disarm all flame
+  groups when the Stream Deck does not answer and LTC Player falls back
+  to the disarm to every group, the wave flamer cleaning's disarm, and
+  live flame programming ending. The journal names which one. Live flame
+  programming cannot be turned on while the pump runs, because a Hold or
+  Start now ends live flame programming, and that would turn the pump
+  off; press Pump off first.
+- After a Stop, an Abort or any of those, wait a second before you turn
+  it on again.
+- **When it is refused.** An Abort standing (press Reset first), a Stop or
+  Abort still being sent (wait a second), live flame programming on,
+  flamesafe not answering, the flame link not sending, the night closing,
+  its channel in the lockout file, flamesafe and LTC Player reading
+  different pump settings, or the pump already on. The screen says
+  which.
+
+**Setting it up.** Add this one line to the `passthrough` list in
+`flamesafe.json`, after the hazers:
+
+```json
+{"name": "Fireball Fuel Pump", "switch": 100, "on": 255}
+```
+
+`switch` is the DMX channel and `on` the value it takes when on (1 to
+255). Channel 100 must be in no flame group and no other passthrough
+entry. With no such line there is no pump and no pump button.
+
+**Order matters.** A flamesafe or an LTC Player older than the fuel pump
+update refuses a `flamesafe.json` with this line. With only flamesafe
+updated, LTC Player does not start, which stops the whole show; with only
+flamesafe restarted and an older LTC Player still running, no hazer can
+be armed. Install BOTH updates first, then add the line, then restart
+flamesafe and LTC Player. Before the pump is wired, check at the bench
+that the DMX node (the PixLite) drops its outputs to zero when the flame
+universe stops arriving, rather than holding the last look.
 
 ## The fireball timeline
 
@@ -1199,6 +1248,24 @@ the show. Programming: Show file card, Stop, then Run. On 2.0, Open in
 file, on this machine" card (it ends playback and turns Run off), not
 "Stop the show audio". 2.0 shows it as "Flame cues are off" with the
 full text behind a tap. It is display only.
+
+**Other flame cue faults while a show plays.** The flame cues are cut from
+the show's render on a thread of their own, a little ahead of the show. A
+frame not cut yet is zero, and a CUES FAULT once it has stayed so for 1 s.
+"The show's render could not be read (...)" names the error, and so does
+"could not be cut here (...); it is tried again" while a passing trouble
+(memory, the system) is tried again. A cut that fails every try stays a
+fault, and is still tried again every 30 s, so the next show plays it once
+the trouble has passed. "The thread that cuts the show's flame cues ...
+keeps stopping ... restart LTC Player" means what it says: restart LTC
+Player before the next show.
+
+**Known: a flame can fire part way through its cue.** If the flame cues
+were zero for a while during a show (any CUES FAULT above, or a render
+still being read) and come back while a flame cue is on, that flame fires
+from that frame to the end of its cue. The seek guard holds only flames
+that were already on when the timecode moved; it does not hold a cue that
+comes back after a fault. After any CUES FAULT in a show, expect that.
 
 ## The rig check before each show (pre-roll)
 
