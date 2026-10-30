@@ -20031,6 +20031,286 @@ def build():
   "                    self._timed_remember(owner, rid, seq)\n                self._note(f\"{who or device}'s timed purge on the {device} \"",
   "                    self._timed_remember(owner, rid, seq, make=True)\n                self._note(f\"{who or device}'s timed purge on the {device} \""),
 
+ ("play-from cues: a cue right at the end of the show audio is saved",
+  "ltcplay/play_from.py",
+  "                fr / FPS >= audio_len_s:",
+  "                fr / FPS > audio_len_s:"),
+
+ ("play-from cues: a lead-in under 1 s is saved",
+  "ltcplay/play_from.py",
+  "    if v < LEAD_IN_MIN_S:",
+  "    if v < 0:"),
+
+ ("play-from cues: a lead-in left out is 1 s, not 2",
+  "ltcplay/play_from.py",
+  "    if v is None:\n        return LEAD_IN_DEFAULT_S",
+  "    if v is None:\n        return LEAD_IN_MIN_S"),
+
+ ("play-from cues: a lead-in may start before the top of the show cue",
+  "ltcplay/play_from.py",
+  "        elif fr is not None and lead is not None and fr < lead * FPS:",
+  "        elif False:"),
+
+ ("play-from cues: Finale and finale are two names",
+  "ltcplay/play_from.py",
+  "            key = name_key(name)",
+  "            key = name"),
+
+ ("play-from cues: an unknown field in a cue is kept quiet",
+  "ltcplay/play_from.py",
+  "        extra = set(c) - _CUE_KEYS",
+  "        extra = set()"),
+
+ ("play-from cues: the list is not kept in time order",
+  "ltcplay/play_from.py",
+  "    out.sort(key=lambda c: (parse_tc(c[\"tc\"]), c[\"name\"].casefold()))",
+  "    pass"),
+
+ ("play-from cues: a page may claim an id the list does not have",
+  "ltcplay/play_from.py",
+  "        if c[\"id\"] is not None and c[\"id\"] not in known:",
+  "        if False:"),
+
+ ("play-from cues: a new cue reuses a deleted cue's id",
+  "ltcplay/play_from.py",
+  "    nxt = max(max(used, default=0) + 1, int(next_id or 1))",
+  "    nxt = len(before) + 1"),
+
+ ("play-from cues: a stale revision overwrites another editor's save",
+  "ltcplay/play_from.py",
+  "                        base_rev != doc[\"rev\"]:",
+  "                        False:"),
+
+ ("play-from cues: a saved file is not kept in the history",
+  "ltcplay/play_from.py",
+  "        try:\n            self._keep_history(data, new[\"rev\"], False)",
+  "        try:\n            pass"),
+
+ ("play-from cues: a refused save is not in the audit log",
+  "ltcplay/play_from.py",
+  "        self._audit(who, screen, str(show)[:MAX_TEXT], \"refused\", text)",
+  "        pass"),
+
+ ("play-from cues: a save writes no journal line",
+  "ltcplay/play_from.py",
+  "        self._note(who, screen, \"saved\", text)",
+  "        pass"),
+
+ ("play-from cues: an operator may save the list",
+  "ltcplay/users.py",
+  "    \"play-from-cues-save\": \"settings\",",
+  "    \"play-from-cues-save\": \"show\","),
+
+ ("play-from cues: the engine lets any role save",
+  "ltcplay/remote.py",
+  "        if not u.may(me.get(\"role\"), \"settings\"):\n            return refused(403, f\"{me.get('name')} may not: \"\n                                f\"{users_mod.perm_label('settings')}.\")\n        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the play-from cues",
+  "        if False:\n            return refused(403, f\"{me.get('name')} may not: \"\n                                f\"{users_mod.perm_label('settings')}.\")\n        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the play-from cues"),
+
+ ("play-from cues: a save from the show network needs no screen_arming",
+  "ltcplay/remote.py",
+  "        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the play-from cues",
+  "        if False:\n            return refused(403, \"editing the play-from cues"),
+
+ ("play-from cues: signed out reads the list",
+  "ltcplay/remote.py",
+  "        if not (me.get(\"name\") and not no_users) and \\",
+  "        if False and \\"),
+
+ ("play-from cues: the page's audio length is trusted",
+  "ltcplay/remote.py",
+  "        cue, length, why = self.play_from_show_info(show)\n        if why:\n            return refused(409,",
+  "        cue, length, why = body.get(\"cue\"), body.get(\"audio_len_s\"), \"\"\n        if why:\n            return refused(409,"),
+
+ ("play-from cues: the show length, not the audio's, bounds a cue",
+  "ltcplay/remote.py",
+  "        return cue, float(got[\"audio_s\"]), \"\"",
+  "        return cue, float(got[\"show_s\"]), \"\""),
+
+ ("ui2 page: the play-from card passes a name used twice",
+  "ltcplay/web/remote2.html",
+  "    else if(seen[key(name)] > 1) out.push(\"Name used twice.\");",
+  "    else if(false) out.push(\"Name used twice.\");"),
+
+ ("ui2 page: the play-from card passes a cue past the audio end",
+  "ltcplay/web/remote2.html",
+  "    else if(audioLen && fr / 30 >= audioLen) out.push(",
+  "    else if(false) out.push("),
+
+ ("ui2 page: the play-from card passes a lead-in under 1 s",
+  "ltcplay/web/remote2.html",
+  "    if(!Number.isInteger(ln) || ln < minL || ln > maxL)",
+  "    if(!Number.isInteger(ln) || ln > maxL)"),
+
+ ("ui2 page: the play-from card sends no id, so a rename is a delete and an add",
+  "ltcplay/web/remote2.html",
+  "    if(c.id) o.id = c.id;",
+  "    if(false) o.id = c.id;"),
+
+ ("play-from cues: a file that cannot be read is saved over without a replace",
+  "ltcplay/play_from.py",
+  "                if err and replace is not True:",
+  "                if False:"),
+
+ ("play-from cues: anything in the replace field replaces a broken file",
+  "ltcplay/remote.py",
+  "                                  replace=body.get(\"replace\") is True)",
+  "                                  replace=bool(body.get(\"replace\")))"),
+
+ ("play-from cues: a good file's revision is its own, even below one kept",
+  "ltcplay/play_from.py",
+  "                got[\"rev\"] = self._high_water(got[\"rev\"])\n",
+  "                pass\n"),
+
+ ("play-from cues: a file that cannot be read is revision 0",
+  "ltcplay/play_from.py",
+  "                return (dict(empty_doc(), rev=self._high_water(raw_rev)),",
+  "                return (empty_doc(),"),
+
+ ("play-from cues: a deleted file is revision 0",
+  "ltcplay/play_from.py",
+  "                    high = self._high_water()\n",
+  "                    high = 0\n"),
+
+ ("play-from cues: a replace does not keep the broken file first",
+  "ltcplay/play_from.py",
+  "        if new is not None and err and old is not None:",
+  "        if False:"),
+
+ ("play-from cues: a file held open for a moment is not tried again",
+  "ltcplay/play_from.py",
+  "RETRIES = 5\n",
+  "RETRIES = 1\n"),
+
+ ("play-from cues: a read does not wait for a save",
+  "ltcplay/play_from.py",
+  "        with self._lock:\n            if not self.path:\n                return empty_doc(), \"\"",
+  "        if True:\n            if not self.path:\n                return empty_doc(), \"\""),
+
+ ("play-from cues: a lead-in too big for a float raises",
+  "ltcplay/play_from.py",
+  "    if not isinstance(v, int):\n        raise CueError(words)\n",
+  "    if float(v) != int(v):\n        raise CueError(words)\n"),
+
+ ("play-from cues: a file nested too deep raises out of load",
+  "ltcplay/play_from.py",
+  "            except Exception as e:               # noqa: BLE001\n                what = ",
+  "            except (OSError, ValueError) as e:\n                what = "),
+
+ ("play-from cues: a new cue takes a deleted cue's id (high-water ignored)",
+  "ltcplay/play_from.py",
+  "    nxt = max(max(used, default=0) + 1, int(next_id or 1))",
+  "    nxt = max(used, default=0) + 1"),
+
+ ("play-from cues: the next id is not saved",
+  "ltcplay/play_from.py",
+  "                     \"cues\": new_cues, \"next_id\": nxt,",
+  "                     \"cues\": new_cues,"),
+
+ ("play-from cues: control and invisible characters are kept",
+  "ltcplay/play_from.py",
+  "    if any(unicodedata.category(ch) in (\"Cc\", \"Cf\") and ch not in _JOINERS",
+  "    if False and any(unicodedata.category(ch) in (\"Cc\", \"Cf\") and ch not in _JOINERS"),
+
+ ("play-from cues: two spellings of one name are two names",
+  "ltcplay/play_from.py",
+  "    return unicodedata.normalize(\"NFC\", name).casefold()",
+  "    return name.casefold()"),
+
+ ("play-from cues: a time in other scripts' digits is read",
+  "ltcplay/play_from.py",
+  "_TC = re.compile(r\"([0-9]{2}):([0-9]{2}):([0-9]{2}):([0-9]{2})\")",
+  "_TC = re.compile(r\"(\\d{2}):(\\d{2}):(\\d{2}):(\\d{2})\")"),
+
+ ("play-from cues: a list whose show file is gone is not named",
+  "ltcplay/remote.py",
+  "        out[\"missing\"] = [n for n in out[\"shows\"] if n not in here]",
+  "        out[\"missing\"] = []"),
+
+ ("play-from cues: a show file's name is matched without its case",
+  "ltcplay/remote.py",
+  "        if name not in self.play_from_show_files():",
+  "        if not os.path.isfile(os.path.join(folder, name)):"),
+
+ ("play-from cues: with no users the show PC cannot read the list",
+  "ltcplay/remote.py",
+  "                not (no_users and ctx.local):",
+  "                True:"),
+
+ ("play-from cues: with no users the show network reads the list",
+  "ltcplay/remote.py",
+  "                not (no_users and ctx.local):",
+  "                not no_users:"),
+
+ ("ui2 page: the play-from card saves over a broken file without Replace",
+  "ltcplay/web/remote2.html",
+  "  return !!(PF && PF.may_edit && !PF_STALE && (!PF.error || PF_REPLACE));",
+  "  return !!(PF && PF.may_edit && !PF_STALE);"),
+
+ ("ui2 page: the play-from card saves again from a stale copy",
+  "ltcplay/web/remote2.html",
+  "  if(String(message).includes(PF_STALE_WORDS)) PF_STALE = true;",
+  "  if(false) PF_STALE = true;"),
+
+ ("ui2 page: the play-from Time field cuts off HH:MM:SS:FF",
+  "ltcplay/web/remote2.html",
+  "minmax(0,2fr) minmax(172px,1.3fr)",
+  "minmax(0,2fr) minmax(0,1.3fr)"),
+
+ ("play-from cues: a file saved before and gone now reads as no cues and no error",
+  "ltcplay/play_from.py",
+  "                    if high > 0 or self.history():",
+  "                    if False:"),
+
+ ("play-from cues: a stale page restores the last copy",
+  "ltcplay/play_from.py",
+  "                    not isinstance(base_rev, int) or base_rev != doc[\"rev\"]:\n                why = (f\"someone saved",
+  "                    not isinstance(base_rev, int) or False:\n                why = (f\"someone saved"),
+
+ ("play-from cues: a replace goes on when the broken file could not be kept",
+  "ltcplay/play_from.py",
+  "                return False, text, None\n        try:\n            if new is None:",
+  "                pass\n        try:\n            if new is None:"),
+
+ ("play-from cues: two first requests make two stores",
+  "ltcplay/remote.py",
+  "        with _PFC_STORE_LOCK:\n            st = getattr(self, \"_pfc_store\", None)",
+  "        if True:\n            st = getattr(self, \"_pfc_store\", None)"),
+
+ ("play-from cues: a new audit log is not handed to the store",
+  "ltcplay/remote.py",
+  "            st.audit = getattr(self, \"audit\", None)\n            return st",
+  "            return st"),
+
+ ("play-from cues: a file held open a moment is called unreadable",
+  "ltcplay/play_from.py",
+  "READ_WAIT_S = 2.0\n",
+  "READ_WAIT_S = 0.25\n"),
+
+ ("play-from cues: a revision too big resets to 0",
+  "ltcplay/play_from.py",
+  "            top = max(top, min(file_rev, MAX_REV))",
+  "            top = max(top, file_rev if file_rev <= MAX_REV else 0)"),
+
+ ("play-from cues: names are rewritten (NFKC), not kept as typed",
+  "ltcplay/play_from.py",
+  "    return v\n\n\ndef name_key",
+  "    return unicodedata.normalize(\"NFKC\", v)\n\n\ndef name_key"),
+
+ ("play-from cues: a joiner inside a name is refused",
+  "ltcplay/play_from.py",
+  "    if any(unicodedata.category(ch) in (\"Cc\", \"Cf\") and ch not in _JOINERS",
+  "    if any(unicodedata.category(ch) in (\"Cc\", \"Cf\") and ch not in ()"),
+
+ ("ui2 page: the play-from card keeps Save after the file broke",
+  "ltcplay/web/remote2.html",
+  "  else if(PF && String(message).includes(PF_REPLACE_WORDS)){ PF.error = String(message); PF_REPLACE = false; }",
+  "  else if(false){ PF.error = String(message); PF_REPLACE = false; }"),
+
+ ("play-from cues: the file is written in text mode (Windows new lines), so the kept copy is not the file",
+  "ltcplay/play_from.py",
+  "            with open(tmp, \"wb\") as fh:\n                fh.write(data)",
+  "            with open(tmp, \"w\", encoding=\"utf-8\", newline=\"\\r\\n\") as fh:\n                fh.write(data.decode(\"utf-8\"))"),
+
 ]
 
 
