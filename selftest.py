@@ -18162,26 +18162,29 @@ def _set_time(R, t, settle=0.6):
     time.sleep(settle)
 
 
-def test_alert_hold_at_showtime_then_one_delayed_announcement():
-    section("alert hold (Jeff, 2026-10-26), the real scheduler RUNNING (its "
-            "own thread, tick hooks and the alert worker) and the real "
-            "clock: idle does nothing; at showtime the schedule Holds at "
-            "once (system action), the booth sounds, the rack screen says "
-            "Held: alert open with a countdown; then ONE Delayed, made "
-            "with no laser or flame cut (nothing on the rig changes by a "
-            "timer); the show waits for Resume")
+def test_alert_hold_at_showtime_holds_and_tells_the_booth_only():
+    section("alert hold (Jeff, 2026-10-26 and 2026-10-30), the real "
+            "scheduler RUNNING (its own thread, tick hooks and the booth "
+            "worker) and the real clock: idle does nothing; at showtime the "
+            "schedule Holds at once (system action); the BOOTH speaker plays "
+            "its held note first, then the alert's own note; the screens say "
+            "Held: alert open. Press Resume.; nothing ever plays on the "
+            "public PA, however long it is held; Acknowledge does not "
+            "resume; only Resume carries on")
     S = _sched()
     if S is None:
         return
-    from ltcplay import alerthold as AH
-    real_cd = AH.COUNTDOWN_S
-    AH.COUNTDOWN_S = 0.8
+    from ltcplay import alerthold as AH, boothaudio as BA
+    check(not hasattr(AH, "COUNTDOWN_S") and
+          not hasattr(AH, "ANNOUNCEMENT"),
+          "the alert hold has no countdown and no announcement of its own")
+    check("held" in BA.NOTE_NAMES and os.path.isfile(os.path.join(
+              BA.shipped_folder(), BA.note_file("held"))),
+          "the held note is in the booth note set and shipped "
+          "(booth_held.wav)")
     R, booth, ann = _alert_hold_rig(S)
     loop = ("127.0.0.1", 5000)
     try:
-        check(AH.ANNOUNCE_KINDS == {"audio", "video", "flames", "link",
-                                    "timecode", "start", "preroll"},
-              "the announcing kinds are Jeff's")
         sv = R.svc
         R.remote.alerts.raise_("audio", "The show audio is lost.")
         state0 = sv.machine.state
@@ -18189,11 +18192,12 @@ def test_alert_hold_at_showtime_then_one_delayed_announcement():
         check(sv.machine.state == state0 and R.remote.alert_hold.hold is None
               and not R.remote.alert_hold.view()["held"],
               f"idle: no hold, no timer: {sv.machine.state}")
-        played_before = len(booth.played)
+        booth.played.clear()
         R.now[0] = _den(S, 18, 0)
         check(wait_for(lambda: sv.machine.state == S.HOLD, timeout=3),
               f"showtime with an alert open: held, the show not started: "
               f"{sv.machine.state}")
+
         # The scheduler's own thread writes the journal row just after it
         # moves the state, so the row is waited for too (on a busy Windows
         # runner the check could read the journal between the two).
@@ -18207,180 +18211,350 @@ def test_alert_hold_at_showtime_then_one_delayed_announcement():
               f"journaled as the engine's system action: {rows[-1:]}")
         check(wait_for(lambda: R.remote.alert_hold.hold is not None,
                        timeout=3), "the alert hold started")
-        check(len(booth.played) > played_before,
-              f"the booth sounds at the Hold: {booth.played}")
+        check(wait_for(lambda: "audio" in booth.played, timeout=3) and
+              booth.played[0] == "held" and
+              booth.played.count("held") == 1,
+              f"the booth: the held note once, first, then the alert's "
+              f"own note: {booth.played}")
         st, _h, out = _ask(R.httpd, "GET", "/api/remote/status", client=loop)
         ah = out.get("alert_hold") or {}
-        check(ah.get("held") and ah.get("state") == "counting" and
-              isinstance(ah.get("countdown_s"), int) and
-              ah["text"].startswith("Held: alert open."),
-              f"the rack screen: Held: alert open, with the countdown: {ah}")
+        check(ah == {"held": True, "text": "Held: alert open. Press Resume."},
+              f"the screens: Held: alert open. Press Resume.: {ah}")
         _no_dashes(ah.get("text", ""), "alert hold text")
-        check(ann.playing is None, "before the countdown ends: nothing")
-        check(wait_for(lambda: R.remote.alert_hold.view().get("state") ==
-                       "announced", timeout=5) and any(
-                  r["outcome"] == "started" for r in ann.journal),
-              "after it, through the scheduler's own ticks: the Delayed "
-              "announcement, really started")
-        check(sv.machine.state == S.HOLD, "still held")
-        check(R.cuts == [], f"the automatic Delayed made no laser or flame "
-                            f"cut: {R.cuts}")
-        prow = [r for r in ann.journal if r["outcome"] == "started"]
-        check(prow and prow[-1]["actor"] == "system" and
-              "alert hold" in prow[-1]["text"] and
-              "nothing else was changed" in prow[-1]["text"],
-              f"the automatic play is journaled as the system, saying it "
-              f"plays during the alert hold: {prow[-1:]}")
+        wait_for(lambda: any(r.get("action") == "alert hold"
+                             for r in list(sv.journal)), timeout=3)
         rows = [r for r in sv.journal if r.get("action") == "alert hold"]
-        check(any(r["outcome"] == "announced" and r["actor"] == "system"
-                  for r in rows), f"journaled as a system action: {rows}")
-        ann.stop("x", "y", surface=True)
-        time.sleep(1.2)
-        check(ann.playing is None,
-              "once per Hold: it never plays a second time")
+        check(len(rows) == 1 and rows[0]["actor"] == "system" and
+              rows[0]["outcome"] == "held" and
+              "nothing plays on the public PA" in rows[0]["text"],
+              f"journaled once, saying the PA plays nothing: {rows}")
+        _no_dashes(rows[0]["text"] if rows else "", "alert hold journal")
+        # Long past the minute the old countdown waited: nothing on the PA.
+        for mi, sec in ((0, 30), (1, 1), (1, 30)):
+            _set_time(R, _den(S, 18, mi, sec), settle=0.3)
+        tried = [r for r in ann.journal if r.get("action") == "play"]
+        check(ann.playing is None and not tried and R.cuts == [],
+              f"held for 90 s: nothing played on the PA, nothing cut: "
+              f"{tried} {R.cuts}")
+        check(sv.machine.state == S.HOLD, "still held")
         R.remote.alerts.clear(action="Acknowledge", who="Andy",
                               screen="Rack screen")
-        time.sleep(0.5)
-        check(sv.machine.state == S.HOLD, "acknowledged: still held")
+        time.sleep(0.4)
+        v = R.remote.alert_hold.view()
+        check(sv.machine.state == S.HOLD and v.get("held") and
+              v.get("text", "").startswith("Held: the alert was "
+                                           "acknowledged. Press Resume"),
+              f"acknowledged: still held, and said: {v}")
         with sv._locked():
             sv._apply(S.Event(S.RESUME, "operator", who="Andy",
                               screen="Rack screen"))
         check(sv.machine.state != S.HOLD and
               not R.remote.alert_hold.view()["held"],
               "only Resume carries on, and the state card clears")
+        check(ann.playing is None and not [
+                  r for r in ann.journal if r.get("action") == "play"],
+              "and still nothing on the PA")
     finally:
-        AH.COUNTDOWN_S = real_cd
         R.close()
     print("  ok")
 
 
-def test_alert_hold_acknowledge_cancels_and_quiet_kinds():
-    section("alert hold, the scheduler running: Acknowledge cancels (and "
-            "does not resume); with two loud alerts one Acknowledge is not "
-            "enough; deck and gate hold quietly; a missing recording holds "
-            "silently and says so; a Resume before the end means none")
+def _ann_spy(ann):
+    """Wrap an AnnounceService so every call that could start sound on the
+    PA (play, test_tone) is recorded before it runs. Returns the list."""
+    calls = []
+    real_play, real_tone = ann.play, ann.test_tone
+
+    def play(*a, **kw):
+        calls.append(("play", a, kw))
+        return real_play(*a, **kw)
+
+    def tone(*a, **kw):
+        calls.append(("test_tone", a, kw))
+        return real_tone(*a, **kw)
+    ann.play, ann.test_tone = play, tone
+    return calls
+
+
+def test_nothing_plays_on_the_pa_without_an_operator_press():
+    section("Jeff, 2026-10-30: nothing plays on the public PA "
+            "automatically. Read from the code: the only calls that can "
+            "start an announcement are the operator's routes, play() takes "
+            "no automatic play and refuses one in the engine's own name. "
+            "Exercised on the real scheduler: every alert kind raised and "
+            "re-sounded, the showtime hold, a failed rig check, a failed "
+            "start, missed and delayed shows, Hold, Resume, Start now, "
+            "Stop, Abort and the night's end: the announcement player is "
+            "never asked to play. A person's press still plays")
+    import ast
+    import inspect
+    root = os.path.dirname(os.path.abspath(__file__))
+    from ltcplay import announce as A, alerthold as AH, alerts as AL
+    # 1. By the code itself.
+    params = list(inspect.signature(A.AnnounceService.play).parameters)
+    check(params == ["self", "ann_id", "who", "screen", "surface"],
+          f"play() takes only a press (who, screen, surface): {params}")
+    check("announce" not in inspect.signature(
+              AH.AlertHold.__init__).parameters,
+          "the alert hold is given no announcement service at all")
+    allowed = {("ltcplay/remote.py", "announce_post", "play"),
+               ("ltcplay/remote.py", "announce_test_tone", "test_tone"),
+               ("ltcplay/announce.py", "test_tone", "play"),
+               ("ltcplay/announce.py", "post", "play")}
+    found = set()
+    files = []
+    for top in ("ltcplay", "flamesafe", os.path.join("packaging",
+                                                     "windows")):
+        for dp, _dn, fns in os.walk(os.path.join(root, top)):
+            files += [os.path.join(dp, f) for f in fns if f.endswith(".py")]
+    for path in files:
+        rel = os.path.relpath(path, root).replace(os.sep, "/")
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(fn):
+                if not (isinstance(node, ast.Call) and
+                        isinstance(node.func, ast.Attribute) and
+                        node.func.attr in ("play", "test_tone")):
+                    continue
+                recv = ast.unparse(node.func.value).lower()
+                if "ann" in recv or (rel == "ltcplay/announce.py" and
+                                     recv == "self"):
+                    found.add((rel, fn.name, node.func.attr))
+    check(found == allowed,
+          f"the only calls that start an announcement are the operator's "
+          f"routes: extra {sorted(found - allowed)}, missing "
+          f"{sorted(allowed - found)}")
+    # The show engine's own path to the player (Conductor.announce, its
+    # self.announcer(...), wired to AnnounceService.play in fire_ice.py):
+    # reached only from a Stream Deck key press, never by the engine.
+    c_allowed = {
+        # Who asks the conductor to announce: page 2's key edge only.
+        ("ltcplay/streamdeck.py", "_page2_run", "_announce_press"),
+        ("ltcplay/streamdeck.py", "_announce_press", "getattr announce"),
+        # Inside the conductor: announce() queues it, the executor plays.
+        ("ltcplay/conductor.py", "announce", "_accept announce="),
+        ("ltcplay/conductor.py", "_run", "_run_announce"),
+        ("ltcplay/conductor.py", "_run_announce", "_play"),
+        ("ltcplay/conductor.py", "_play", "announcer"),
+        # The wiring: the player's play() and nothing else.
+        ("ltcplay/fire_ice.py", "announcer=announce.play"),
+        ("ltcplay/conductor.py", "__init__", "self.announcer = announcer")}
+    c_found = set()
+    for path in files:
+        rel = os.path.relpath(path, root).replace(os.sep, "/")
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                for kw in node.keywords:
+                    if kw.arg == "announcer":
+                        v = kw.value
+                        if isinstance(v, ast.IfExp):
+                            v = v.body
+                        c_found.add((rel, "announcer=" + ast.unparse(v)))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Assign) and any(
+                        isinstance(t, ast.Attribute) and t.attr == "announcer"
+                        for t in node.targets):
+                    c_found.add((rel, fn.name, ast.unparse(node)))
+                if not isinstance(node, ast.Call):
+                    continue
+                f = node.func
+                if isinstance(f, ast.Name) and f.id == "getattr" and \
+                        len(node.args) >= 2 and \
+                        isinstance(node.args[1], ast.Constant) and \
+                        node.args[1].value == "announce" and \
+                        "conductor" in ast.unparse(node.args[0]).lower():
+                    c_found.add((rel, fn.name, "getattr announce"))
+                if not isinstance(f, ast.Attribute):
+                    continue
+                if f.attr in ("announce", "_announce_press", "_run_announce",
+                              "_play", "announcer") and (
+                        f.attr != "_play" or rel == "ltcplay/conductor.py"):
+                    c_found.add((rel, fn.name, f.attr))
+                if f.attr == "_accept" and any(
+                        kw.arg == "announce" for kw in node.keywords):
+                    c_found.add((rel, fn.name, "_accept announce="))
+    check(c_found == c_allowed,
+          f"the conductor's announcement (Conductor.announce, "
+          f"self.announcer) is reached only from a Stream Deck press: extra "
+          f"{sorted(c_found - c_allowed)}, missing "
+          f"{sorted(c_allowed - c_found)}")
+    # 2. Exercised: the real scheduler, a real AnnounceService, every
+    # automatic path there is.
     S = _sched()
     if S is None:
         return
-    from ltcplay import alerthold as AH
-    real_cd = AH.COUNTDOWN_S
-    AH.COUNTDOWN_S = 0.6
+    R, booth, ann = _alert_hold_rig(S, run=False)
+    calls = _ann_spy(ann)
     try:
-        for case in ("ack", "two", "deck", "gate", "missing", "resumed"):
-            kind = case if case in ("deck", "gate") else "flames"
-            R, booth, ann = _alert_hold_rig(
-                S, recordings=(case != "missing"))
+        sv = R.svc
+        al = R.remote.alerts
+
+        def ev(kind, **kw):
             try:
-                sv = R.svc
-                R.remote.alerts.raise_(kind, f"A {kind} problem.")
-                if case == "two":
-                    R.remote.alerts.raise_("video", "MadMapper is gone.")
-                R.now[0] = _den(S, 18, 0)
-                check(wait_for(lambda: R.remote.alert_hold.hold is not None,
-                               timeout=3) and sv.machine.state == S.HOLD,
-                      f"{case}: held")
-                if case in ("ack", "two"):
-                    R.remote.alerts.clear(kind=kind, action="Acknowledge",
-                                          who="Andy", screen="Rack screen")
-                if case == "resumed":
-                    with sv._locked():
-                        sv._apply(S.Event(S.RESUME, "operator", who="Andy",
-                                          screen="Rack screen"))
-                time.sleep(1.5)
-                v = R.remote.alert_hold.view()
-                if case == "two":
-                    check(wait_for(lambda: R.remote.alert_hold.view().get(
-                              "state") == "announced", timeout=4),
-                          f"two: the other loud alert is still open, so "
-                          f"it plays: {v}")
-                    continue
-                check(ann.playing is None,
-                      f"{case}: no announcement: {ann.playing}")
-                if case in ("ack", "resumed", "deck", "gate"):
-                    tried = [r for r in ann.journal
-                             if r.get("action") == "play"]
-                    check(not tried,
-                          f"{case}: the Delayed was never even tried "
-                          f"(cancelled at the countdown, not refused by "
-                          f"the last-moment check): {tried}")
-                if case == "ack":
-                    check(sv.machine.state == S.HOLD and
-                          v.get("state") == "cancelled",
-                          f"ack: cancelled, still held: {v}")
-                elif case in ("deck", "gate"):
-                    check(v.get("state") == "quiet" and
-                          v.get("countdown_s") is None and
-                          v.get("text", "").startswith("Held: alert open."),
-                          f"{case}: held quietly: {v}")
-                elif case == "missing":
-                    check(sv.machine.state == S.HOLD and
-                          v.get("state") == "failed" and
-                          "could not play" in v.get("text", ""),
-                          f"missing recording: held, said on screen: {v}")
-                else:
-                    check(not v.get("held"),
-                          f"resumed before the end: nothing more: {v}")
-                check(R.cuts == [], f"{case}: no cut: {R.cuts}")
-            finally:
-                R.close()
+                with sv._locked():
+                    sv._apply(S.Event(kind, kw.pop("actor", "operator"),
+                                      **kw))
+            except Exception:                    # noqa: BLE001
+                pass
+
+        def at(*hms):
+            R.now[0] = _den(S, *hms)
+            sv.tick()
+            R.remote._booth_work()
+        for kind in AL.KINDS:
+            al.raise_(kind, f"A {kind} problem.")
+        al.sound_now()
+        R.remote._booth_work()
+        # A failed rig check (the real PreRoll, raising its alert here),
+        # with the Announcements check failing too.
+        from ltcplay import preroll as P
+        pr = P.PreRoll([("Video", True, lambda p: (False, "no answer")),
+                        ("Announcements", False,
+                         lambda p: P.check_announcements(p, None))],
+                       window_s=3, alert=al.raise_,
+                       clear_alert=lambda k: None)
+        pr.run(("night", 1), "show 1 (18:00)")
+        check(any(a.kind == "preroll" for a in al.open()),
+              "setup: the rig check alert is open")
+        at(17, 59, 50)
+        at(18, 0)
+        check(sv.machine.state == S.HOLD and
+              R.remote.alert_hold.view().get("held"),
+              f"setup: held at showtime for the alerts: {sv.machine.state}")
+        # Held through the next showtimes (delayed, then missed shows),
+        # with every alert re-sounding on the booth.
+        t_real = al._clock
+        base = t_real()
+        for i, hm in enumerate(((18, 1), (18, 5), (18, 20), (18, 21),
+                                (18, 40))):
+            al._clock = (lambda b=base + 31 * (i + 1): b)
+            at(*hm)
+        al._clock = t_real
+        check(booth.played.count("held") >= 1 and
+              booth.played.count("audio") >= 2,
+              f"setup: the booth said held and re-sounded: {booth.played}")
+        ev(S.FAULT_RAISED, actor="system", detail="a fault")
+        ev(S.SHOW_FAILED, actor="system", detail="the show did not start")
+        al.clear(action="Acknowledge", who="Andy", screen="Rack screen")
+        ev(S.RESUME, who="Andy", screen="Rack screen")
+        ev(S.START_NOW, who="Andy", screen="Rack screen")
+        at(18, 41)
+        ev(S.HOLD_ON, who="Andy", screen="Rack screen")
+        ev(S.RESUME, who="Andy", screen="Rack screen")
+        ev(S.STOP_SHOW, who="Andy", screen="Rack screen")
+        at(18, 42)
+        al.raise_("start", "Show 3 did not start.")
+        at(19, 0)
+        ev(S.ABORT, who="Andy", screen="Rack screen")
+        at(19, 1)
+        ev(S.SKIP_NEXT, who="Andy", screen="Rack screen")
+        ev(S.DELAY_NEXT, who="Andy", screen="Rack screen")
+        ev(S.END_NIGHT, who="Andy", screen="Rack screen")
+        for hm in ((21, 59), (22, 0), (22, 30)):
+            at(*hm)
+        time.sleep(0.3)
+        tried = [r for r in ann.journal if r.get("action") in
+                 ("play", "test tone")]
+        check(calls == [] and not tried and ann.playing is None,
+              f"nothing asked the announcement player to play: {calls} "
+              f"{tried}")
     finally:
-        AH.COUNTDOWN_S = real_cd
+        R.close()
+    # No account can carry one of the engine's names (users.check_name),
+    # so a real person's press never reads as the engine's.
+    from ltcplay import users as U
+    check({n.lower() for n in A.ENGINE_NAMES} <=
+          {n.lower() for n in U.RESERVED},
+          f"every engine name is reserved: {sorted(A.ENGINE_NAMES)} "
+          f"{U.RESERVED}")
+    for nm in ("Engine", "Scheduler", "LTC Player", "ltcplay", "System",
+               "  ltc   player "):
+        try:
+            U.check_name(nm)
+            check(False, f"an account may be named {nm!r}")
+        except ValueError as e:
+            _no_dashes(str(e), "check_name's refusal")
+    check(U.check_name("Andy") == "Andy", "a person's name is still fine")
+    # 3. A play in the engine's own name is refused before anything is
+    # claimed; a person's press plays.
+    R, booth, ann = _alert_hold_rig(S, run=False)
+    try:
+        for who, screen in (("LTC Player", "engine"),
+                            ("Andy", "engine"), ("system", "Rack screen")):
+            try:
+                ann.play("delayed", who, screen, surface=True)
+                check(False, f"a play as {who} on {screen} was accepted")
+            except ValueError as e:
+                check("not from a person's press" in str(e) and
+                      ann.playing is None,
+                      f"{who} on {screen}: refused: {e}")
+                _no_dashes(str(e), "the engine-name refusal")
+        rows = [r for r in ann.journal if r.get("outcome") == "refused"]
+        check(len(rows) == 3 and all(r["reason"] == "not an operator press"
+                                     for r in rows),
+              f"each refusal journaled: {rows}")
+        try:
+            ann.test_tone("LTC Player", "engine")
+            check(False, "a Test tone in the engine's name was accepted")
+        except ValueError as e:
+            check(str(e).startswith("A Test tone came from LTC Player") and
+                  ann.playing is None, f"a Test tone as the engine: {e}")
+        rows = [r for r in ann.journal if r.get("outcome") == "refused"]
+        check(len(rows) == 4 and rows[-1]["action"] == "test tone" and
+              rows[-1]["reason"] == "not an operator press",
+              f"a refused Test tone journals as a Test tone: {rows[-1:]}")
+        ann.play("delayed", "Andy", "Rack screen", surface=True)
+        check(ann.playing == "delayed",
+              "the operator's own press still plays the Delayed")
+    finally:
+        R.close()
     print("  ok")
 
 
-def test_alert_hold_acknowledge_during_the_file_read():
-    section("alert hold (review of PR #133, 3): an Acknowledge 0.15 s into "
-            "a 0.5 s file read stops the Delayed from starting; one after "
-            "it has started lets it finish")
+def test_alert_hold_every_holding_kind_holds_alike():
+    section("alert hold (Jeff, 2026-10-30): every alert kind but the display "
+            "only ones holds the show at showtime the same way, the booth "
+            "says held first, and nothing plays on the PA; a display only "
+            "kind never holds")
     S = _sched()
     if S is None:
         return
-    from ltcplay import alerthold as AH
-    real_cd = AH.COUNTDOWN_S
-    AH.COUNTDOWN_S = 0.3
-    try:
-        for when in ("during", "after"):
-            R, booth, ann = _alert_hold_rig(S)
-            try:
-                sv = R.svc
-                real_decode = ann._decode
-                loading = threading.Event()
-
-                def slow(aid, _real=real_decode):
-                    loading.set()
-                    time.sleep(0.5)
-                    return _real(aid)
-                ann._decode = slow
-                R.remote.alerts.raise_("audio", "The show audio is lost.")
-                R.now[0] = _den(S, 18, 0)
-                check(loading.wait(5), f"{when}: the Delayed started loading")
-                check(R.remote.alert_hold.view().get("state") == "announcing",
-                      f"{when}: while it loads the card says it is "
-                      f"starting: {R.remote.alert_hold.view()}")
-                if when == "during":
-                    time.sleep(0.15)
-                    R.remote.alerts.clear(action="Acknowledge", who="Andy",
-                                          screen="Rack screen")
-                    time.sleep(0.8)
-                    check(ann.playing is None and
-                          R.remote.alert_hold.view().get("state") ==
-                          "cancelled",
-                          f"acknowledged during the read: never started: "
-                          f"{ann.playing} {R.remote.alert_hold.view()}")
-                else:
-                    check(wait_for(lambda: any(
-                              r["outcome"] == "started"
-                              for r in ann.journal), timeout=3),
-                          "setup: it started")
-                    R.remote.alerts.clear(action="Acknowledge", who="Andy",
-                                          screen="Rack screen")
-                    time.sleep(0.3)
-                    check(ann.playing == "delayed",
-                          "acknowledged after it started: it finishes")
-            finally:
-                R.close()
-    finally:
-        AH.COUNTDOWN_S = real_cd
+    from ltcplay import alerts as AL
+    for kind in AL.KINDS:
+        R, booth, ann = _alert_hold_rig(S, run=False)
+        try:
+            sv = R.svc
+            R.remote.alerts.raise_(kind, f"A {kind} problem.")
+            booth.played.clear()
+            R.now[0] = _den(S, 18, 0)
+            sv.tick()
+            v = R.remote.alert_hold.view()
+            if kind in AL.DISPLAY_ONLY:
+                check(sv.machine.state != S.HOLD and not v.get("held") and
+                      "held" not in booth.played,
+                      f"{kind}: display only, never holds: "
+                      f"{sv.machine.state}")
+            else:
+                check(sv.machine.state == S.HOLD and v == {
+                          "held": True,
+                          "text": "Held: alert open. Press Resume."} and
+                      booth.played[:1] == ["held"],
+                      f"{kind}: held, said, the booth told first: "
+                      f"{sv.machine.state} {v} {booth.played}")
+            check(ann.playing is None and not [
+                      r for r in ann.journal if r.get("action") == "play"]
+                  and R.cuts == [],
+                  f"{kind}: nothing on the PA, nothing cut: {R.cuts}")
+        finally:
+            R.close()
     print("  ok")
 
 
@@ -18394,127 +18568,121 @@ def test_alert_hold_respects_any_operator_resume():
     S = _sched()
     if S is None:
         return
-    from ltcplay import alerthold as AH
-    real_cd = AH.COUNTDOWN_S
-    AH.COUNTDOWN_S = 0.3
+    R, booth, ann = _alert_hold_rig(S, grace=15)
     try:
-        R, booth, ann = _alert_hold_rig(S, grace=15)
-        try:
-            sv = R.svc
-            check(sv.machine.late_grace_s == 15, "setup: grace 15 tonight")
-            R.now[0] = _den(S, 17, 59, 50)
-            time.sleep(0.4)
-            with sv._locked():
-                sv._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
-                                  screen="Rack screen"))
-            R.remote.alerts.raise_("video", "MadMapper is gone.")
-            R.now[0] = _den(S, 18, 0, 4)
-            time.sleep(0.4)
-            with sv._locked():
-                sv._apply(S.Event(S.RESUME, "operator", who="Andy",
-                                  screen="Rack screen"))
-            check(wait_for(lambda: sv.machine.state == S.SHOW, timeout=3),
-                  f"the operator's Resume starts the show: "
-                  f"{sv.machine.state}")
-            time.sleep(0.8)
-            holds = [r for r in sv.journal if r.get("action") == S.HOLD_ON
-                     and r.get("actor") == "system"]
-            check(not holds and ann.playing is None and
-                  R.remote.alert_hold.hold is None,
-                  f"no engine Hold, no Delayed: {holds}")
-        finally:
-            R.close()
-        # A new alert after an Acknowledge and a Resume holds again.
-        R, booth, ann = _alert_hold_rig(S, grace=15)
-        try:
-            sv = R.svc
-            R.remote.alerts.raise_("deck", "The Stream Deck is unplugged.")
-            R.now[0] = _den(S, 18, 0)
-            check(wait_for(lambda: sv.machine.state == S.HOLD, timeout=3),
-                  "held for the deck alert")
-            R.remote.alerts.clear(action="Acknowledge", who="Andy",
-                                  screen="Rack screen")
-            R.remote.alerts.raise_("audio", "The show audio is lost.")
-            R.now[0] = _den(S, 18, 0, 3)
-            with sv._locked():
-                sv._apply(S.Event(S.RESUME, "operator", who="Andy",
-                                  screen="Rack screen"))
-            # Resumed with the audio alert open: that one is handled.
-            time.sleep(0.6)
-            check(sv.machine.state == S.SHOW,
-                  f"Resumed with the audio alert open: the show starts, "
-                  f"not held again for it: {sv.machine.state}")
-        finally:
-            R.close()
-        # A Resume pressed BEFORE showtime with an alert open is the
-        # operator's choice too: at 18:00:00 the show starts, unheld.
-        R, booth, ann = _alert_hold_rig(S, grace=15, run=False)
-        try:
-            sv = R.svc
-            R.now[0] = _den(S, 17, 59, 50)
-            sv.tick()
-            with sv._locked():
-                sv._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
-                                  screen="Rack screen"))
-            R.remote.alerts.raise_("video", "MadMapper is gone.")
-            R.now[0] = _den(S, 17, 59, 58)
-            with sv._locked():
-                sv._apply(S.Event(S.RESUME, "operator", who="Andy",
-                                  screen="Rack screen"))
-            sv.tick()
-            R.now[0] = _den(S, 18, 0)
-            sv.tick()
-            check(sv.machine.state == S.SHOW,
-                  f"Resumed before showtime with the alert open: the show "
-                  f"starts at 18:00:00, never held again: "
-                  f"{sv.machine.state}")
-        finally:
-            R.close()
-        # Resumed with alerts {1, 2} open, then 2 acknowledged before the
-        # next tick: {1} is part of what the operator chose, never re-held.
-        R, booth, ann = _alert_hold_rig(S, grace=15, run=False)
-        try:
-            sv = R.svc
-            R.remote.alerts.raise_("deck", "The Stream Deck is unplugged.")
-            R.remote.alerts.raise_("audio", "The show audio is lost.")
-            R.now[0] = _den(S, 18, 0)
-            sv.tick()
-            check(sv.machine.state == S.HOLD, "held for both alerts")
-            R.now[0] = _den(S, 18, 0, 3)
-            with sv._locked():
-                sv._apply(S.Event(S.RESUME, "operator", who="Andy",
-                                  screen="Rack screen"))
-            R.remote.alerts.clear(kind="audio", action="Acknowledge",
-                                  who="Andy", screen="Rack screen")
-            sv.tick()
-            check(sv.machine.state == S.SHOW,
-                  f"a subset of the alerts Resumed with: the show starts, "
-                  f"not held again: {sv.machine.state}")
-        finally:
-            R.close()
-        # The same alert, Acknowledge not pressed, Resume: no second Hold
-        # (test_alert_hold_never_re_holds_after_resume). A NEW alert in the
-        # tick right after the Resume: held again.
-        R, booth, ann = _alert_hold_rig(S, grace=15, run=False)
-        try:
-            sv = R.svc
-            R.remote.alerts.raise_("deck", "The Stream Deck is unplugged.")
-            R.now[0] = _den(S, 18, 0)
-            sv.tick()
-            check(sv.machine.state == S.HOLD, "held for the deck alert")
-            R.now[0] = _den(S, 18, 0, 3)
-            with sv._locked():
-                sv._apply(S.Event(S.RESUME, "operator", who="Andy",
-                                  screen="Rack screen"))
-            R.remote.alerts.raise_("audio", "The show audio is lost.")
-            sv.tick()
-            check(sv.machine.state == S.HOLD,
-                  f"a NEW alert at the same showtime holds again: "
-                  f"{sv.machine.state}")
-        finally:
-            R.close()
+        sv = R.svc
+        check(sv.machine.late_grace_s == 15, "setup: grace 15 tonight")
+        R.now[0] = _den(S, 17, 59, 50)
+        time.sleep(0.4)
+        with sv._locked():
+            sv._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                              screen="Rack screen"))
+        R.remote.alerts.raise_("video", "MadMapper is gone.")
+        R.now[0] = _den(S, 18, 0, 4)
+        time.sleep(0.4)
+        with sv._locked():
+            sv._apply(S.Event(S.RESUME, "operator", who="Andy",
+                              screen="Rack screen"))
+        check(wait_for(lambda: sv.machine.state == S.SHOW, timeout=3),
+              f"the operator's Resume starts the show: "
+              f"{sv.machine.state}")
+        time.sleep(0.8)
+        holds = [r for r in sv.journal if r.get("action") == S.HOLD_ON
+                 and r.get("actor") == "system"]
+        check(not holds and ann.playing is None and
+              R.remote.alert_hold.hold is None,
+              f"no engine Hold, no Delayed: {holds}")
     finally:
-        AH.COUNTDOWN_S = real_cd
+        R.close()
+    # A new alert after an Acknowledge and a Resume holds again.
+    R, booth, ann = _alert_hold_rig(S, grace=15)
+    try:
+        sv = R.svc
+        R.remote.alerts.raise_("deck", "The Stream Deck is unplugged.")
+        R.now[0] = _den(S, 18, 0)
+        check(wait_for(lambda: sv.machine.state == S.HOLD, timeout=3),
+              "held for the deck alert")
+        R.remote.alerts.clear(action="Acknowledge", who="Andy",
+                              screen="Rack screen")
+        R.remote.alerts.raise_("audio", "The show audio is lost.")
+        R.now[0] = _den(S, 18, 0, 3)
+        with sv._locked():
+            sv._apply(S.Event(S.RESUME, "operator", who="Andy",
+                              screen="Rack screen"))
+        # Resumed with the audio alert open: that one is handled.
+        time.sleep(0.6)
+        check(sv.machine.state == S.SHOW,
+              f"Resumed with the audio alert open: the show starts, "
+              f"not held again for it: {sv.machine.state}")
+    finally:
+        R.close()
+    # A Resume pressed BEFORE showtime with an alert open is the
+    # operator's choice too: at 18:00:00 the show starts, unheld.
+    R, booth, ann = _alert_hold_rig(S, grace=15, run=False)
+    try:
+        sv = R.svc
+        R.now[0] = _den(S, 17, 59, 50)
+        sv.tick()
+        with sv._locked():
+            sv._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                              screen="Rack screen"))
+        R.remote.alerts.raise_("video", "MadMapper is gone.")
+        R.now[0] = _den(S, 17, 59, 58)
+        with sv._locked():
+            sv._apply(S.Event(S.RESUME, "operator", who="Andy",
+                              screen="Rack screen"))
+        sv.tick()
+        R.now[0] = _den(S, 18, 0)
+        sv.tick()
+        check(sv.machine.state == S.SHOW,
+              f"Resumed before showtime with the alert open: the show "
+              f"starts at 18:00:00, never held again: "
+              f"{sv.machine.state}")
+    finally:
+        R.close()
+    # Resumed with alerts {1, 2} open, then 2 acknowledged before the
+    # next tick: {1} is part of what the operator chose, never re-held.
+    R, booth, ann = _alert_hold_rig(S, grace=15, run=False)
+    try:
+        sv = R.svc
+        R.remote.alerts.raise_("deck", "The Stream Deck is unplugged.")
+        R.remote.alerts.raise_("audio", "The show audio is lost.")
+        R.now[0] = _den(S, 18, 0)
+        sv.tick()
+        check(sv.machine.state == S.HOLD, "held for both alerts")
+        R.now[0] = _den(S, 18, 0, 3)
+        with sv._locked():
+            sv._apply(S.Event(S.RESUME, "operator", who="Andy",
+                              screen="Rack screen"))
+        R.remote.alerts.clear(kind="audio", action="Acknowledge",
+                              who="Andy", screen="Rack screen")
+        sv.tick()
+        check(sv.machine.state == S.SHOW,
+              f"a subset of the alerts Resumed with: the show starts, "
+              f"not held again: {sv.machine.state}")
+    finally:
+        R.close()
+    # The same alert, Acknowledge not pressed, Resume: no second Hold
+    # (test_alert_hold_never_re_holds_after_resume). A NEW alert in the
+    # tick right after the Resume: held again.
+    R, booth, ann = _alert_hold_rig(S, grace=15, run=False)
+    try:
+        sv = R.svc
+        R.remote.alerts.raise_("deck", "The Stream Deck is unplugged.")
+        R.now[0] = _den(S, 18, 0)
+        sv.tick()
+        check(sv.machine.state == S.HOLD, "held for the deck alert")
+        R.now[0] = _den(S, 18, 0, 3)
+        with sv._locked():
+            sv._apply(S.Event(S.RESUME, "operator", who="Andy",
+                              screen="Rack screen"))
+        R.remote.alerts.raise_("audio", "The show audio is lost.")
+        sv.tick()
+        check(sv.machine.state == S.HOLD,
+              f"a NEW alert at the same showtime holds again: "
+              f"{sv.machine.state}")
+    finally:
+        R.close()
     print("  ok")
 
 
@@ -18591,7 +18759,8 @@ def test_alert_hold_resume_covers_only_its_own_show():
 
 def test_alert_workers_started_once_under_a_lock():
     section("alert hold (last review of PR #133, 3): two ticks at once start "
-            "exactly one hold worker and one booth worker")
+            "exactly one booth worker (there is no hold worker: nothing "
+            "plays on the PA by itself, Jeff 2026-10-30)")
     from ltcplay import remote as remote_mod
     S = _sched()
     if S is None:
@@ -18621,40 +18790,14 @@ def test_alert_workers_started_once_under_a_lock():
     finally:
         remote_mod.threading.Thread = real_thread
         R.close()
-    check(made.count("ltcplay-alert-hold") == 1 and
-          made.count("ltcplay-alert-booth") == 1,
-          f"exactly one of each worker: {made}")
-    print("  ok")
-
-
-def test_alert_hold_an_old_hold_never_clears_a_newer_one():
-    section("alert hold (final review of PR #133, A): the scheduler's tick "
-            "inside the old hold's check can start a NEW hold; dropping the "
-            "old one never clears the new one")
-    from ltcplay import alerts as AL, alerthold as AH
-    al = AL.Alerts(booth=None)
-    al.raise_("deck", "The Stream Deck is unplugged.")
-    ah = None
-
-    class _Svc:
-        def hold_still_claimed(self, epoch):
-            if epoch == 1:
-                ah.started(2, "deck: again")     # a new hold, mid check
-                return False
-            return True
-    ah = AH.AlertHold(al, _Svc())
-    ah.started(1, "deck: unplugged")
-    old = ah.hold
-    ah.tick()
-    check(ah.hold is not None and ah.hold is not old and
-          ah.hold["epoch"] == 2,
-          f"the newer hold survives: {ah.hold}")
+    check(made == ["ltcplay-alert-booth"],
+          f"exactly one booth worker: {made}")
     print("  ok")
 
 
 def test_alert_workers_stop_with_the_server():
     section("alert hold (final review of PR #133, C): the real server close "
-            "(web.serve's server_close) stops both alert workers, and a "
+            "(web.serve's server_close) stops the alert worker, and a "
             "tick after it starts none")
     from ltcplay import web as web_mod
     import tempfile as _tf
@@ -18665,35 +18808,32 @@ def test_alert_workers_stop_with_the_server():
         try:
             if when == "after":
                 r._alert_tick()
-                check(wait_for(lambda: r._alert_thread is not None and
-                               r._alert_thread.is_alive() and
+                check(wait_for(lambda: r._booth_thread is not None and
                                r._booth_thread.is_alive(), timeout=3),
-                      "setup: both workers running")
+                      "setup: the worker running")
         finally:
             httpd.server_close()
         if when == "after":
-            check(wait_for(lambda: not r._alert_thread.is_alive() and
-                           not r._booth_thread.is_alive(), timeout=5),
-                  "the server's close stopped both workers")
+            check(wait_for(lambda: not r._booth_thread.is_alive(),
+                           timeout=5),
+                  "the server's close stopped the worker")
         else:
             r._alert_tick()
-            check(r._alert_thread is None and r._booth_thread is None,
+            check(r._booth_thread is None,
                   "a tick after the close starts no worker")
         import shutil as _sh
         _sh.rmtree(folder, ignore_errors=True)
     print("  ok")
 
 
-def test_alert_booth_never_waits_behind_the_delayed():
-    section("alert hold (delta review of PR #133, 3): the booth re-sound has "
-            "a worker of its own: a 3 s Delayed file read never silences "
-            "the booth note; the workers stop with the Remote")
+def test_alert_booth_keeps_sounding_while_held():
+    section("alert hold: the booth re-sound has a worker of its own and "
+            "keeps sounding while the schedule is held for the alert; the "
+            "worker stops with the Remote; a night cannot run past "
+            "midnight")
     S = _sched()
     if S is None:
         return
-    from ltcplay import alerthold as AH
-    real_cd = AH.COUNTDOWN_S
-    AH.COUNTDOWN_S = 0.2
     R, booth, ann = _alert_hold_rig(S)
     try:
         names = []
@@ -18704,28 +18844,19 @@ def test_alert_booth_never_waits_behind_the_delayed():
                 return super().play(kind)
         R.remote.alerts.booth = _NamedBooth(response_s=0.25)
         b = R.remote.alerts.booth
-        real_decode = ann._decode
-        reading = threading.Event()
-
-        def slow(aid, _real=real_decode):
-            reading.set()
-            time.sleep(3.0)
-            return _real(aid)
-        ann._decode = slow
         R.remote.alerts.raise_("audio", "The show audio is lost.")
         R.now[0] = _den(S, 18, 0)
-        check(reading.wait(5), "the Delayed is reading its file")
+        check(wait_for(lambda: R.svc.machine.state == S.HOLD, timeout=3),
+              "held for the alert")
         n0 = len(b.played)
         time.sleep(2.0)
         check(len(b.played) - n0 >= 2,
-              f"the booth kept sounding during the read: "
+              f"the booth kept sounding while held: "
               f"{len(b.played) - n0} notes in 2 s")
-        time.sleep(2.5)         # the read is over: both workers free
-        check("ltcplay-alert-hold" not in names,
-              f"the booth note is only ever the booth worker's: "
-              f"{sorted(set(names))}")
+        check("ltcplay-alert-booth" in names,
+              f"the re-sound is the booth worker's: {sorted(set(names))}")
+        check(ann.playing is None, "nothing on the PA")
     finally:
-        AH.COUNTDOWN_S = real_cd
         R.close()
     check(wait_for(lambda: not (R.remote._booth_thread and
                                 R.remote._booth_thread.is_alive()),
@@ -18746,13 +18877,10 @@ def test_alert_booth_never_waits_behind_the_delayed():
 def test_alert_hold_never_re_holds_after_resume():
     section("alert hold (review of PR #133, 2): Hold at 18:00:00, Resume at "
             "18:00:05 with a 15 s late grace and the alert still open: no "
-            "second Hold, no second announcement; the show starts")
+            "second Hold; the show starts; nothing ever on the PA")
     S = _sched()
     if S is None:
         return
-    from ltcplay import alerthold as AH
-    real_cd = AH.COUNTDOWN_S
-    AH.COUNTDOWN_S = 0.3
     R, booth, ann = _alert_hold_rig(S, grace=15)
     try:
         sv = R.svc
@@ -18760,10 +18888,6 @@ def test_alert_hold_never_re_holds_after_resume():
         R.now[0] = _den(S, 18, 0)
         check(wait_for(lambda: sv.machine.state == S.HOLD, timeout=3),
               "held at 18:00:00")
-        check(wait_for(lambda: R.remote.alert_hold.view().get("state") ==
-                       "announced", timeout=5),
-              "the Delayed played once")
-        ann.stop("x", "y", surface=True)
         R.now[0] = _den(S, 18, 0, 5)
         with sv._locked():
             sv._apply(S.Event(S.RESUME, "operator", who="Andy",
@@ -18773,9 +18897,10 @@ def test_alert_hold_never_re_holds_after_resume():
         check(len(holds) == 1 and sv.machine.state != S.HOLD,
               f"no second Hold: {[r['text'] for r in holds]} "
               f"{sv.machine.state}")
-        check(ann.playing is None, "no second announcement")
+        check(ann.playing is None and not [
+                  r for r in ann.journal if r.get("action") == "play"],
+              "nothing on the PA")
     finally:
-        AH.COUNTDOWN_S = real_cd
         R.close()
     print("  ok")
 
@@ -18837,8 +18962,8 @@ def test_alert_hold_never_touches_a_running_show():
 
 
 def test_alert_worker_never_stalls_a_scheduler_tick():
-    section("alert hold (review of PR #133, 4): the booth re-sound and the "
-            "Delayed run on the alert worker, never on the scheduler's "
+    section("alert hold (review of PR #133, 4): the booth re-sound runs on "
+            "the alert worker, never on the scheduler's "
             "thread: a booth note that takes 1 s leaves the tick hook "
             "returning at once")
     S = _sched()
@@ -18867,8 +18992,7 @@ def test_alert_worker_never_stalls_a_scheduler_tick():
               "the hook is on the scheduler's own tick list")
     finally:
         R.close()
-    # The booth note is only ever the booth worker's: while it is busy in
-    # a slow note, the hold worker (free, no hold) never sounds one.
+    # The booth note is only ever the booth worker's.
     R, booth, ann = _alert_hold_rig(S)
     try:
         names = []
@@ -18881,9 +19005,11 @@ def test_alert_worker_never_stalls_a_scheduler_tick():
         R.remote.alerts.booth = _SlowNamedBooth(response_s=0.25)
         R.remote.alerts.raise_("deck", "The Stream Deck is unplugged.")
         time.sleep(3.0)
+        # The first note is the raise's own (on the raising thread); every
+        # re-sound after it is the booth worker's.
         check(names.count("ltcplay-alert-booth") >= 2 and
-              "ltcplay-alert-hold" not in names,
-              f"only the booth worker sounds the booth: {names}")
+              set(names[1:]) == {"ltcplay-alert-booth"},
+              f"only the booth worker re-sounds the booth: {names}")
     finally:
         R.close()
     print("  ok")
@@ -18955,8 +19081,8 @@ def test_alert_hold_rack_screen_words():
 const out = [];
 const t = (c, m) => { if(!c) out.push(m); };
 t(alertHoldLook(null) === null && alertHoldLook({held:false}) === null, "not held: nothing");
-const L = alertHoldLook({held:true, state:"counting", countdown_s:42, text:"Held: alert open. The Delayed announcement plays in 42 s unless the alert is acknowledged."});
-t(L && L.word === "Held" && /42 s/.test(L.label), "held: Held and the sentence");
+const L = alertHoldLook({held:true, text:"Held: alert open. Press Resume."});
+t(L && L.word === "Held" && L.label === "Held: alert open. Press Resume.", "held: Held and the sentence");
 console.log(JSON.stringify(out));
 """
     r = _node_js(node, js, capture_output=True, text=True, timeout=60)
@@ -43634,6 +43760,195 @@ def test_the_show_takes_over_the_pixels_on_its_first_frame():
     print("  ok")
 
 
+def test_no_dark_frame_between_the_show_and_the_idle_look():
+    section("pixels: at a show's end the show audio clock runs its "
+            "timecode to the end of the lights file rounded up to the next "
+            "timecode frame; the show's last frame is held through that "
+            "frame, then the idle look, with no dark frame between, with "
+            "the show file's Intermission cue after it or not (Jeff, "
+            "2026-10-30: \"a little blip of black ... vice versa\"; review "
+            "of #179, B1); a longer tail is still dark, gaps idle makes it "
+            "the idle look, and a show chased off a timecode feed is "
+            "unchanged")
+    import types
+    import ltcplay.player as plmod
+    idle = _LitFSEQ(100, frames=40, channels=64)
+
+    def show_end(lights_frames, audio_s, phase, intermission=True,
+                 gaps=None, chased=False, hold_at=None):
+        """The real Player, ticked every 25 ms (from `phase`), fed and
+        ended by the real AudioMaster (_am_rig: its local audio engine on
+        the test's clock): its sink is Player.feed_timecode, its on_stop
+        Player.drop_clock, its on_pause/on_resume the hard park, as
+        session.py wires them. The show file has the Show at 01:00:00:00
+        and, with `intermission`, the Intermission at 02:00:00:00. With
+        `hold_at`, the clock is paused that many seconds into the show
+        for 1 s, then resumed. Returns the looks that went out from 0.5 s
+        before the end of the lights file to 0.3 s after the clock
+        ended the cue."""
+        lights_s = lights_frames * 0.025
+        r = _am_rig(seconds=audio_s, lengths={"Show": lights_s})
+        am, sim, vc, tl = r["am"], r["sim"], r["vc"], r["tl"]
+        for c in tl.cues:
+            c.fseq = _LitFSEQ(10, frames=(lights_frames if c.name == "Show"
+                                          else 40), channels=64)
+            c.duration = c.fseq.duration_ms / 1000.0
+            c._spans = [(0, 0, 64)]
+            c._gaps = None
+        if not intermission:
+            tl.cues = [c for c in tl.cues if c.name == "Show"]
+        p = Player(tl, FakeNetmap(), CountingSender(), gaps=gaps)
+        p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq",
+                                  "preshow loop")
+        p.idle_cue.fseq = idle
+        p.idle_cue._spans = [(0, 0, 64)]
+        p.idle_cue._gaps = None
+        p.clock = (types.SimpleNamespace(source="ltc_audio_slave")
+                   if chased else am)
+        stopped = []
+        am.sink = p.feed_timecode
+        am.on_stop = lambda: (stopped.append(vc()), p.drop_clock())
+        am.on_pause = lambda: p.set_hard_park(True)
+        am.on_resume = lambda: p.set_hard_park(False)
+        st = _Stepped(p, step_ms=25)
+        looks = []
+        try:
+            am.play(3600.0, None, "Show")
+            t0 = vc()
+            k = 0
+            held = None
+            while not stopped or vc() < stopped[0] + 0.3:
+                t = t0 + phase + k * 0.025
+                k += 1
+                if hold_at is not None and held is None and \
+                        t - t0 >= hold_at:
+                    held = t
+                    am.pause(fade_ms=0)
+                if held is not None and held > 0 and t - held >= 1.0:
+                    held = -1.0
+                    am.resume(fade_ms=0)
+                sim.run(t)
+                st.t = vc()
+                f = bytes(p._alert_mix(p._tick()) or b"")
+                if p.last_ltc_seconds is not None and \
+                        p.last_ltc_seconds - 3600.0 >= lights_s - 0.5 or \
+                        stopped:
+                    looks.append("black" if not any(f) else
+                                 "idle" if f[0] >= 100 else "show")
+                if k > 4000:
+                    break
+        finally:
+            st.close()
+            am.stop()
+        return looks
+
+    def runs(looks):
+        out = []
+        for x in looks:
+            if not out or out[-1][0] != x:
+                out.append([x, 0])
+            out[-1][1] += 1
+        return [(x, n) for x, n in out]
+    phases = [i * 0.0025 for i in range(10)]
+    # Jeff's show: a lights file that ends between two timecode frames
+    # (241 frames of 25 ms, 6.025 s; the timecode ends at 6.033 s), the
+    # audio a little shorter, then 0.005 s longer (inside the held frame).
+    for audio_s in (6.0, 6.03):
+        for inter in (True, False):
+            bad = []
+            for ph in phases:
+                got = runs(show_end(241, audio_s, ph, intermission=inter))
+                if [x for x, _n in got] != ["show", "idle"]:
+                    bad.append((ph, got))
+            check(not bad,
+                  f"audio {audio_s} s, Intermission cue {inter}: the "
+                  f"show's last frame, then the idle look, with no dark "
+                  f"frame between, at every tick phase: {bad[:3]}")
+    check(plmod.SHOW_END_HOLD_S <= 0.07,
+          f"the show's last frame is held at most two timecode frames: "
+          f"{plmod.SHOW_END_HOLD_S}")
+    # A Hold across the end, then Resume: the same.
+    bad = []
+    for ph in phases:
+        got = runs(show_end(241, 6.0, ph, hold_at=5.9))
+        if [x for x, _n in got] != ["show", "idle"]:
+            bad.append((ph, got))
+    check(not bad, f"a Hold just before the end, then Resume: no dark "
+                   f"frame between the show and the idle look: {bad[:3]}")
+    # The same show chased off a timecode feed (GPL's way): unchanged, the
+    # rounding frame still goes out black at some tick phases.
+    blacks = [runs(show_end(241, 6.0, ph, chased=True)) for ph in phases]
+    check(any("black" in [x for x, _n in g] for g in blacks),
+          f"a show chased off a timecode feed is unchanged: {blacks[:3]}")
+    # Audio 1 s longer than the lights file: the tail past the lights
+    # file is dark as before, with only the rounding frame held; with
+    # "gaps": "idle" that tail is the idle look. With and without the
+    # Intermission cue.
+    for inter in (True, False):
+        got = runs(show_end(241, 7.0, 0.0, intermission=inter))
+        check([x for x, _n in got] == ["show", "black", "idle"] and
+              got[1][1] >= 36,
+              f"Intermission cue {inter}: a tail longer than a timecode "
+              f"frame is still dark: {got}")
+        got = runs(show_end(241, 7.0, 0.0, intermission=inter,
+                            gaps="idle"))
+        check([x for x, _n in got] == ["show", "idle"],
+              f"Intermission cue {inter}: with gaps idle the tail is the "
+              f"idle look: {got}")
+    # By hand: a Hold's or an Abort's black over the held frame wins; the
+    # hold ends after SHOW_END_HOLD_S whatever comes after the cue.
+    base = tcmod.parse_tc("01:00:00:00", 30)
+    show = _LitFSEQ(10, frames=400, channels=64)
+    for cues in ([("01:00:00:00", "Show", show)],
+                 [("01:00:00:00", "Show", show),
+                  ("02:00:00:00", "Intermission",
+                   _LitFSEQ(10, frames=40, channels=64))]):
+        tl = _timeline(cues, idle="/tmp/idle.fseq")
+        p = Player(tl, FakeNetmap(), CountingSender())
+        p.clock = types.SimpleNamespace(source="audio_master")
+        st = _Stepped(p, step_ms=25)
+        try:
+            st.feed(base + 9.99)
+            st.t += 0.02
+            held = bytes(p._tick() or b"")
+            st.t += 0.1
+            late = p._tick()
+        finally:
+            st.close()
+        check(any(held) and not late,
+              f"{len(cues)} cue(s): the last frame held in the rounding "
+              f"frame, the gap look once SHOW_END_HOLD_S is past: "
+              f"{held[:1]!r} {late!r}")
+    # A Hold's or an Abort's black in the rounding frame wins: through the
+    # real FireIceShow's black (pixels_fade_out), with the show audio
+    # clock still in its last frame, the output is black and the source
+    # says so; given back (pixels_restore), the held last frame again.
+    F = _fi_mod()
+    tl = _timeline([("01:00:00:00", "Show", show)], idle="/tmp/idle.fseq")
+    p = Player(tl, FakeNetmap(), CountingSender())
+    p.clock = types.SimpleNamespace(source="audio_master")
+    sess = types.SimpleNamespace(running=True, player=p, log=None)
+    fis = F.FireIceShow(types.SimpleNamespace(session=sess),
+                        flame_link=object())
+    st = _Stepped(p, step_ms=25)
+    try:
+        st.feed(base + 9.99)
+        st.t += 0.02
+        before = bytes(p._tick() or b"")
+        fis.pixels_fade_out(0)
+        dark = bytes(p._tick() or b"")
+        dark_src = p.source
+        fis.pixels_restore(0)
+        back = bytes(p._tick() or b"")
+    finally:
+        st.close()
+    check(any(before) and not any(dark) and dark_src == plmod.BLACK and
+          back == before,
+          f"a Hold's black over the held last frame: {before[:1]!r} "
+          f"{dark[:1]!r} {dark_src!r} {back[:1]!r}")
+    print("  ok")
+
+
 def test_fire_ice_review_hand_mutations():
     section("fire & ice: the runner starts the show it was told, confirms "
             "only the cue it started, closes the night for real; a release "
@@ -46991,6 +47306,18 @@ def test_mutate_fast_path_never_turns_red_green():
               f"twice: {mine}")
         check(learned.get("m one") == "test_other",
               f"the catcher learned is where it really stopped: {learned}")
+
+        # A hint may name several tests, comma separated: a run red in any
+        # of them counts as the hinted run (confirmed in file order).
+        code, lines, calls, learned = sweep(
+            red_in_t_guard, {"m one": "test_other,test_guard"})
+        mine = [c for c in calls if c[0] == "m one"]
+        check(code == 0 and mine == [
+                  ("m one", True, "test_other,test_guard", False, True),
+                  ("m one", True, None, False, True)],
+              f"red in the second test a hint names counts: {mine}")
+        check(learned.get("m one") == "test_guard",
+              f"the catcher learned is the one test it stopped in: {learned}")
 
         # Red only when the hinted test runs first (an order-dependent leak:
         # the suite in file order is green under the mutation). The file
@@ -60407,7 +60734,7 @@ def test_booth_notes_by_name_and_shipped_by_the_installer():
         check(AL.Alerts(booth=None).play_note("held")[0] is False,
               "no booth: play_note is a sentence, never an error")
         # The showtime hold: "held" once, then the alert's own note, in
-        # that order, and the countdown is what it always was.
+        # that order, on the booth speaker only (Jeff, 2026-10-30).
         booth = _CountingBooth()
         al2 = AL.Alerts(booth=booth, clock=lambda: 50.0)
         al2.raise_("deck", "The Stream Deck is unplugged.")
@@ -60418,9 +60745,10 @@ def test_booth_notes_by_name_and_shipped_by_the_installer():
         check(booth.played[0] == "held" and booth.played.count("held") == 1
               and sorted(booth.played[1:]) == ["audio", "deck"],
               f"held once, first, then each alert's note: {booth.played}")
-        check(h.hold["due"] == 500.0 + AH.COUNTDOWN_S and
-              h.hold["state"] == "counting",
-              f"the hold's countdown is unchanged: {h.hold}")
+        check(set(h.hold) == {"epoch", "why", "at", "ids"} and
+              not hasattr(AH, "COUNTDOWN_S"),
+              f"the hold has no countdown and nothing for the PA: "
+              f"{h.hold}")
         # The order on the speaker itself: one stream at a time, in turn.
         order, busy = [], [0, 0]
 
@@ -62224,13 +62552,13 @@ def test_aim_slots_are_seen_on_the_rack_screen():
           f"a new difference opens beside an open flames alert and leaves "
           f"its sentence alone: {rm.alerts.view()}")
     # Display only (review of #150): no booth note, no pulse, and it never
-    # holds a show at showtime nor brings the Delayed announcement.
-    from ltcplay import alerthold as AH
+    # holds a show at showtime (and nothing ever plays on the PA by
+    # itself: Jeff, 2026-10-30).
     from ltcplay import alerts as AL
     aim_a = [x for x in rm.alerts.open() if x.kind == "aim"][0]
     check(aim_a.booth_ok is None and "aim" in AL.DISPLAY_ONLY and
-          "aim" not in AH.ANNOUNCE_KINDS and aim_a.severity == "warning",
-          f"no booth note, not an announcing kind: {aim_a.booth}")
+          aim_a.severity == "warning",
+          f"no booth note, display only: {aim_a.booth}")
     g_ = rm.alert_hold.gate()
     check(g_ is not None and aim_a.id not in g_[1] and "aim:" not in g_[0],
           f"the showtime gate holds for the flames alert only: {g_}")
@@ -87176,7 +87504,8 @@ def test_weather_parsers_read_each_source():
 
 
 def test_weather_rules_age_stale_no_data_disagree_alerts():
-    section("weather: every number with its age; measured over 20 min is "
+    section("weather: every number says when it was last updated (a date "
+            "and time, never how long ago); measured over 20 min is "
             "amber STALE, over 45 min grey NO CURRENT DATA with no number; "
             "the forecast stale when this PC has not got it for 1 h or the "
             "NWS has not updated it for 18 h; sources 10 mph apart "
@@ -87193,20 +87522,26 @@ def test_weather_rules_age_stale_no_data_disagree_alerts():
     meas, fc = v["lines"][0], v["lines"][1]
     check(v["state"] == "ok" and meas["level"] == "ok" and
           fc["level"] == "ok", f"all fresh: {v}")
+    # The times the block says (Jeff, 2026-10-30): when, not how long
+    # ago, in the show's zone (no ltcplay_schedule.json here: America/
+    # Denver). WX_NOW is noon in Lehi; the reading is from 11:55.
     check(meas["text"] == "Measured, I-15 Point of the Mountain (UTALP): "
-          "12 mph, gusts 21 mph, from NNW (340°). 5 min old.",
+          "12 mph, gusts 21 mph, from NNW (340°). Last updated Oct 26, "
+          "11:55 AM.",
           f"the measured line: {meas['text']!r}")
     check(fc["text"] == "Forecast for this spot (NWS): 10 mph, gusts 18 "
-          "mph, from S (170°). Issued 44 min ago; this PC got it under 1 "
-          "min ago.",
+          "mph, from S (170°). NWS issued Oct 26, 11:15 AM. Last updated "
+          "Oct 26, 12:00 PM.",
           f"the forecast line: {fc['text']!r}")
-    check(v["banner"] and v["banner"][0].startswith(
-          "NWS WIND ADVISORY in effect until ") and "Checked under 1 min "
-          "ago." in v["banner"][0], f"the Wind Advisory banner: "
-                                    f"{v['banner']}")
+    check(v["banner"] == ["NWS WIND ADVISORY in effect until 6:00 PM. "
+                          "Last updated Oct 26, 12:00 PM."],
+          f"the Wind Advisory banner: {v['banner']}")
+    check(v["alerts_line"]["text"] == "NWS wind and fire alerts for this "
+          "spot: see above. Last updated Oct 26, 12:00 PM.",
+          f"the alerts line: {v['alerts_line']}")
     check(v["disagree"] == "" and v["internet"] == "",
           "2 mph apart: no disagreement")
-    check(v["advisory"].startswith("Advisory only"), "advisory only")
+    check("advisory" not in v, "no advisory only line (Jeff, 2026-10-30)")
     num = re.compile(r"\d+ mph")
     for when, lv in ((15 * 60, "ok"), (20 * 60 + 1, "stale"),
                      (45 * 60, "stale"), (45 * 60 + 1, "none"),
@@ -87218,8 +87553,9 @@ def test_weather_rules_age_stale_no_data_disagree_alerts():
             check(W.NO_DATA in ln["text"] and not num.search(ln["text"]),
                   f"no current data shows no number: {ln['text']!r}")
         else:
-            check(re.search(r"\d+ min old\.", ln["text"]),
-                  f"a number shown carries its age: {ln['text']!r}")
+            check(ln["text"].endswith(" Last updated Oct 26, 11:55 AM."),
+                  f"a number shown says when it was updated: "
+                  f"{ln['text']!r}")
     # The forecast (Jeff, 2026-10-28, item 15c): judged on when this PC
     # last GOT it from the NWS (over 1 h amber, over 6 h grey), and on the
     # NWS's own issue time only past 18 h, since the NWS often leaves a
@@ -87230,28 +87566,33 @@ def test_weather_rules_age_stale_no_data_disagree_alerts():
     check(fd["fetched_at"] == WX_NOW, f"the fetch time is kept: {fd}")
     issued = fd["issued"]
     fd["speed"] = [[0, 4e9, 8.0]]
+    # Issued 11:15:41 AM on Oct 26 (Denver).
     for issued_ago, got_ago, lv, words in (
             (3 * 3600 + 54 * 60, 6 * 60, "ok",
-             "Issued 3 h 54 min ago; this PC got it 6 min ago."),
-            (3 * 3600 + 54 * 60, 3600, "ok", "this PC got it 1 h ago."),
+             "NWS issued Oct 26, 11:15 AM. Last updated Oct 26, 3:03 PM."),
+            (3 * 3600 + 54 * 60, 3600, "ok", "Last updated Oct 26, 2:09 PM."),
             (5 * 3600, 3600 + 60, "stale",
-             "Stale because this PC has not got it from the NWS for 1 h 1 "
-             "min (the limit is 1 h)."),
-            (12 * 3600, 6 * 3600, "stale", "for 6 h (the limit is 1 h)"),
-            (18 * 3600, 6 * 60, "ok", "Issued 18 h ago;"),
+             "Last updated Oct 26, 3:14 PM. Stale because this PC has not "
+             "got it from the NWS within the 1 h limit."),
+            (12 * 3600, 6 * 3600, "stale", "Last updated Oct 26, 5:15 PM. "
+             "Stale because this PC"),
+            (18 * 3600, 6 * 60, "ok", "NWS issued Oct 26, 11:15 AM. Last "
+             "updated Oct 27, 5:09 AM."),
             (18 * 3600 + 60, 6 * 60, "stale",
-             "Stale because the NWS has not updated it for 18 h 1 min (it "
-             "normally does at least twice a day; the limit is 18 h)."),
+             "Stale because the NWS has not updated it within the 18 h "
+             "limit (it normally does at least twice a day)."),
             (8 * 3600, 6 * 3600 + 60, "none",
-             "This PC last got it from the NWS 6 h 1 min ago, over the 6 "
-             "h limit. Issued 8 h ago."),
-            (36 * 3600, 6 * 60, "stale", "updated it for 36 h"),
+             "This PC has not got it from the NWS within the 6 h limit. "
+             "Last updated Oct 26, 1:14 PM. NWS issued Oct 26, 11:15 AM."),
+            (36 * 3600, 6 * 60, "stale", "updated it within the 18 h limit"),
             (36 * 3600 + 60, 6 * 60, "none",
-             "The NWS has not updated it for 36 h 1 min, over the 36 h "
-             "limit."),
+             "The NWS has not updated it within the 36 h limit. NWS issued "
+             "Oct 26, 11:15 AM."),
             (3600, -16 * 60, "none",
              "Its time is in the future; check this PC's clock."),
-            (3600, -14 * 60, "ok", "this PC got it under 1 min ago.")):
+            # A fetch time a little ahead (this PC's clock behind): said
+            # as now, never as a time still to come.
+            (3600, -14 * 60, "ok", "Last updated Oct 26, 12:15 PM.")):
         t["wall"] = issued + issued_ago
         fd["fetched_at"] = t["wall"] - got_ago
         ln = w.view()["lines"][1]
@@ -87346,8 +87687,9 @@ def test_weather_backup_stations_and_why_no_data():
             "with none current it says NO CURRENT DATA and why, per source")
     from ltcplay import weather as W
     num = re.compile(r"\d+ mph")
-    stopped = WX_NOW - (3 * 3600 + 12 * 60)
-    at_ = W._clock_text(stopped)
+    # When, not how long ago (Jeff, 2026-10-30): UTALP's last reading at
+    # 8:48 AM, 3 h 12 min before noon in Lehi.
+    at_ = "Oct 26, 8:48 AM"
     old_utalp = _wx_mesonet(valid="2026-10-26T14:48:00Z")
 
     def run(cfg=None, **over):
@@ -87364,7 +87706,8 @@ def test_weather_backup_stations_and_why_no_data():
     w, net, v, ln = run()
     check(ln["source"] == "mesonet" and ln["level"] == "ok" and
           ln["text"] == "Measured, I-15 Point of the Mountain (UTALP): 12 "
-          "mph, gusts 21 mph, from NNW (340°). 5 min old." and
+          "mph, gusts 21 mph, from NNW (340°). Last updated Oct 26, 11:55 AM."
+          and
           v["disagree"] == "" and v["state"] == "ok",
           f"all fresh: the station, as before: {ln}")
     check(list(w.every) == ["mesonet", "awc", "alerts", "forecast"],
@@ -87378,9 +87721,10 @@ def test_weather_backup_stations_and_why_no_data():
     _w, _n, v, ln = run(mesonet=old_utalp)
     check(ln["source"] == "awc:KPVU" and ln["level"] == "backup" and
           ln["text"] == "Measured, backup station Provo airport (KPVU), 17 "
-          "mi away: 12 mph, gusts not reported, from S (180°). 4 min old. "
-          f"Using the backup because UTALP (Iowa mesonet) stopped reporting "
-          f"at {at_}, last reading 3 h 12 min ago.",
+          "mi away: 12 mph, gusts not reported, from S (180°). Last updated "
+          "Oct 26, 11:56 AM. "
+          f"Using the backup because UTALP (Iowa mesonet) stopped reporting"
+          f", last updated {at_}.",
           f"UTALP stalled: the backup, named, and why: {ln['text']!r}")
     check(v["state"] == "stale", f"a backup makes the block amber: {v}")
     # The review's case: UTALP 30 mph but STALE (25 min), Provo 8 mph
@@ -87391,10 +87735,11 @@ def test_weather_backup_stations_and_why_no_data():
                         awc=_wx_awc("KPVU", wspd=7) + _wx_kslc(wspd=7))
     check(ln["source"] == "mesonet" and ln["level"] == "stale" and
           ln["text"] == "Measured, I-15 Point of the Mountain (UTALP): 30 "
-          "mph, gusts 21 mph, from NNW (340°). 25 min old. STALE: over its "
-          "20 min limit. KPVU (aviationweather.gov) reads 8 mph, 4 min old, "
-          "current; KSLC (aviationweather.gov) reads 8 mph, 4 min old, "
-          "current. This line shows the highest reading." and
+          "mph, gusts 21 mph, from NNW (340°). Last updated Oct 26, 11:35 AM. "
+          "STALE: over its 20 min limit. KPVU (aviationweather.gov) reads 8 "
+          "mph, last updated Oct 26, 11:56 AM, current; KSLC "
+          "(aviationweather.gov) reads 8 mph, last updated Oct 26, 11:56 "
+          "AM, current. This line shows the highest reading." and
           "measured UTALP 30 mph, measured KPVU 8 mph, measured KSLC 8 mph"
           in v["disagree"],
           f"UTALP stale and higher: it leads, STALE, Provo beside it: "
@@ -87413,9 +87758,10 @@ def test_weather_backup_stations_and_why_no_data():
           ln["text"].startswith("Measured, backup station Provo airport "
                                 "(KPVU), 17 mi away: 35 mph, gusts 47 mph")
           and ln["text"].endswith(
-              "UTALP (Iowa mesonet) reads 12 mph, 5 min old, current; KSLC "
-              "(aviationweather.gov) reads 10 mph, 4 min old, current. This "
-              "line shows the highest reading.") and
+              "UTALP (Iowa mesonet) reads 12 mph, last updated Oct 26, 11:55 "
+              "AM, current; KSLC (aviationweather.gov) reads 10 mph, last "
+              "updated Oct 26, 11:56 AM, current. This line shows the "
+              "highest reading.") and
           "measured KPVU 35 mph, measured UTALP 12 mph, measured KSLC 10 "
           "mph" in v["disagree"],
           f"the highest current reading leads: {ln['text']!r}")
@@ -87423,13 +87769,15 @@ def test_weather_backup_stations_and_why_no_data():
     # is said; 9 mph lower is not.
     _w, _n, v, ln = run(awc=_wx_awc("KPVU", wspd=0) + _wx_kslc())
     check(ln["source"] == "mesonet" and ln["level"] == "ok" and
-          ln["text"].endswith("5 min old. KPVU (aviationweather.gov) reads 0 "
-                              "mph, 4 min old, current. This line shows the "
-                              "highest reading.") and
+          ln["text"].endswith("Last updated Oct 26, 11:55 AM. KPVU "
+                              "(aviationweather.gov) reads 0 mph, last "
+                              "updated Oct 26, 11:56 AM, current. This line "
+                              "shows the highest reading.") and
           "measured UTALP 12 mph, measured KPVU 0 mph" in v["disagree"],
           f"a backup 12 mph lower is said: {ln['text']!r}")
     _w, _n, v, ln = run(awc=_wx_awc("KPVU", wspd=3) + _wx_kslc())
-    check(ln["text"].endswith("5 min old.") and v["disagree"] == "",
+    check(ln["text"].endswith("Last updated Oct 26, 11:55 AM.") and
+          v["disagree"] == "",
           f"a backup 8 mph lower is not: {ln['text']!r}")
     # Down: offline, an HTTP error, no report, a report for one only.
     _w, _n, v, ln = run(mesonet=W.FetchError("no answer in 8 s",
@@ -87443,7 +87791,7 @@ def test_weather_backup_stations_and_why_no_data():
     _w, _n, v, ln = run(mesonet=old_utalp, awc=204)
     check(ln["level"] == "none" and ln["source"] == "" and
           ln["text"] == f"Measured wind: {W.NO_DATA}. UTALP (Iowa mesonet) "
-          f"stopped reporting at {at_}, last reading 3 h 12 min ago. KPVU "
+          f"stopped reporting, last updated {at_}. KPVU "
           "(aviationweather.gov) answered with no usable reading: "
           "aviationweather.gov has no report from KPVU in the last 2 h. "
           "KSLC (aviationweather.gov) answered with no usable reading: "
@@ -87456,8 +87804,8 @@ def test_weather_backup_stations_and_why_no_data():
     check(ln["source"] == "awc:KSLC" and ln["text"].startswith(
           "Measured, backup station Salt Lake City airport (KSLC), 25 mi "
           "away: 10 mph,") and ln["text"].endswith(
-          f"Using the backup because UTALP (Iowa mesonet) stopped reporting "
-          f"at {at_}, last reading 3 h 12 min ago; KPVU (aviationweather.gov)"
+          f"Using the backup because UTALP (Iowa mesonet) stopped reporting"
+          f", last updated {at_}; KPVU (aviationweather.gov)"
           " answered with no usable reading: aviationweather.gov has no "
           "report from KPVU in the last 2 h."),
           f"one airport reporting: {ln['text']!r}")
@@ -87469,8 +87817,9 @@ def test_weather_backup_stations_and_why_no_data():
         check(ln["level"] == lv, f"Provo {mins} min old reads {lv}: {ln}")
         if lv == "none":
             check(not num.search(ln["text"]) and
-                  f"last reading {mins // 60} h {mins % 60} min ago" in
-                  ln["text"], f"past its limit: no number: {ln['text']!r}")
+                  "KPVU (aviationweather.gov) stopped reporting, last "
+                  "updated Oct 26, 9:59 AM" in ln["text"],
+                  f"past its limit: no number: {ln['text']!r}")
     _w, _n, v, ln = run(cfg={"station_limits": {"kpvu": {
         "stale_min": 30, "no_data_min": 60}}}, mesonet=old_utalp,
         awc=_wx_awc("KPVU", obs=WX_NOW - 70 * 60))
@@ -87478,16 +87827,18 @@ def test_weather_backup_stations_and_why_no_data():
     # A higher STALE backup leads over a current lower UTALP, marked.
     _w, _n, v, ln = run(awc=_wx_awc("KPVU", obs=WX_NOW - 80 * 60, wspd=30))
     check(ln["source"] == "awc:KPVU" and ln["level"] == "stale" and
-          "1 h 20 min old. STALE: over its 75 min limit. UTALP (Iowa "
-          "mesonet) reads 12 mph, 5 min old, current." in ln["text"],
+          "Last updated Oct 26, 10:40 AM. STALE: over its 75 min limit. "
+          "UTALP (Iowa mesonet) reads 12 mph, last updated Oct 26, 11:55 "
+          "AM, current." in ln["text"],
           f"a higher STALE backup leads, marked: {ln['text']!r}")
     # Nothing current: the highest STALE reading, amber.
     _w, _n, v, ln = run(mesonet=_wx_mesonet(valid="2026-10-26T17:35:00Z"),
                         awc=_wx_awc("KPVU", obs=WX_NOW - 80 * 60, wspd=30))
     check(ln["source"] == "awc:KPVU" and ln["level"] == "stale" and
-          ln["text"].endswith("UTALP (Iowa mesonet) reads 12 mph, 25 min "
-                              "old, STALE (over its 20 min limit). This "
-                              "line shows the highest reading."),
+          ln["text"].endswith("UTALP (Iowa mesonet) reads 12 mph, last "
+                              "updated Oct 26, 11:35 AM, STALE (over its 20 "
+                              "min limit). This line shows the highest "
+                              "reading."),
           f"only STALE ones: the highest, amber: {ln['text']!r}")
     # The setting moves them.
     w2, net2, _t = _wx_service(tempfile.mkdtemp(), _wx_all_good(),
@@ -87688,13 +88039,15 @@ def test_weather_failure_backoff_and_disk_cache():
                                cfg={"backup_stations": []})
     v = w7.view()
     check(v["lines"][0]["level"] == "stale" and
-          "35 min old" in v["lines"][0]["text"],
+          v["lines"][0]["text"].endswith(" Last updated Oct 26, 11:55 AM."),
           f"after a restart, half an hour later, the saved reading is "
-          f"35 min old and amber: {v['lines'][0]}")
+          f"35 min old, amber, and says when it was updated: "
+          f"{v['lines'][0]}")
     check(v["lines"][1]["level"] == "ok" and net7.calls == [],
           "the saved forecast is shown before any fetch")
-    check(v["banner"] and "Checked 30 min ago" in v["banner"][0],
-          f"the saved alert check keeps its age: {v['banner']}")
+    check(v["banner"] and v["banner"][0].endswith(
+          "Last updated Oct 26, 12:00 PM."),
+          f"the saved alert check keeps its time: {v['banner']}")
     # Another station's saved reading is not this one's.
     w8, _n, _t = _wx_service(work, {}, cfg={"mesonet_station": "UTPOM"})
     check(w8.src["mesonet"]["data"] is None,
@@ -87844,7 +88197,7 @@ def test_weather_is_display_only_and_off_the_show_path():
             mods.add(("." * node.level) + (node.module or "") + ":" +
                      ",".join(a.name for a in node.names))
     allowed = {"json", "math", "os", "re", "socket", "threading", "time",
-               "urllib.error", "urllib.request",
+               "urllib.error", "urllib.request", "zoneinfo",
                "datetime:datetime,timezone"}
     check(mods <= allowed, f"weather.py imports only the standard library "
                            f"it needs: {sorted(mods - allowed)}")
@@ -88032,6 +88385,157 @@ def test_weather_check_command():
     print("  ok")
 
 
+def _wx_no_ago(text, what):
+    """`text` says when, never how long ago, and has no advisory only
+    line (Jeff, 2026-10-30). The NWS's own event names (a WIND ADVISORY)
+    are the alert itself, not the old line, and are left alone."""
+    t = re.sub(r"(?i)\b(wind|blowing dust) advisory\b", "", str(text))
+    check(not re.search(r"(?i)\bago\b", t), f"{what} says 'ago': {text!r}")
+    check(not re.search(r"(?i)\badvisory\b", t),
+          f"{what} says 'Advisory': {text!r}")
+
+
+def test_weather_says_when_not_how_long_ago():
+    section("weather (Jeff, 2026-10-30): the block says when each reading "
+            "was last updated, as a date and a 12 hour time in the show's "
+            "time zone (ltcplay_schedule.json's, else America/Denver), and "
+            "when the NWS issued its forecast, never how long ago; no "
+            "reading says No reading yet with no time; a STALE one still "
+            "says so; a time ahead of this PC's clock is said as now; no "
+            "advisory only line anywhere. The states are judged as before")
+    import ast as _ast
+    from ltcplay import weather as W
+    den = W.zone("America/Denver")
+    check(den is not None, "this machine knows America/Denver")
+    # The words for a time: 23:59 local is that day, not the next (UTC is
+    # already the next day); noon and midnight; the fall back night's
+    # repeated hour; the spring forward morning.
+    for utc, want in (("2026-10-26T18:00:00Z", "Oct 26, 12:00 PM"),
+                      ("2026-11-01T05:59:00Z", "Oct 31, 11:59 PM"),
+                      ("2026-11-01T06:00:00Z", "Nov 1, 12:00 AM"),
+                      ("2026-11-01T07:30:00Z", "Nov 1, 1:30 AM"),
+                      ("2026-11-01T08:30:00Z", "Nov 1, 1:30 AM"),
+                      ("2026-11-01T09:30:00Z", "Nov 1, 2:30 AM"),
+                      ("2027-03-14T08:59:00Z", "Mar 14, 1:59 AM"),
+                      ("2027-03-14T09:00:00Z", "Mar 14, 3:00 AM"),
+                      ("2026-12-31T06:59:00Z", "Dec 30, 11:59 PM"),
+                      ("2027-01-01T06:59:00Z", "Dec 31, 11:59 PM")):
+        got = W.when_text(W.parse_time(utc), den)
+        check(got == want, f"{utc} in Denver is {want!r}: {got!r}")
+    t0 = W.parse_time("2026-10-26T18:00:00Z")
+    check(W.when_text(t0 + 600, den, now=t0) == "Oct 26, 12:00 PM" and
+          W.updated_text(t0 - 60, den, now=t0) ==
+          "Last updated Oct 26, 11:59 AM",
+          "a time ahead of now is said as now; Last updated")
+    # The show's zone: ltcplay_schedule.json's, read again when it
+    # changes; a zone this PC does not know, or no file, is Denver's.
+    work = tempfile.mkdtemp()
+    w, _n, t = _wx_service(work, _wx_all_good(), cfg={"backup_stations": []})
+    w.poll_once()
+    check(w.zone().key == "America/Denver", f"no file: {w.zone()}")
+    rule = os.path.join(work, W.RULE_FILE)
+
+    def put_zone(z):
+        with open(rule, "w", encoding="utf-8") as fh:
+            json.dump({"timezone": z, "weekly": {}}, fh)
+        st = os.stat(rule)
+        os.utime(rule, ns=(st.st_atime_ns, st.st_mtime_ns + 10 ** 9))
+    put_zone("America/New_York")
+    v = w.view()
+    check(v["lines"][0]["text"].endswith("Last updated Oct 26, 1:55 PM.")
+          and "until 8:00 PM." in v["banner"][0],
+          f"the schedule's zone (New York): {v['lines'][0]['text']!r} "
+          f"{v['banner']}")
+    put_zone("Not/AZone")
+    check(w.view()["lines"][0]["text"].endswith(
+          "Last updated Oct 26, 11:55 AM."), "an unknown zone: Denver's")
+    with open(rule, "w", encoding="utf-8") as fh:
+        fh.write("{not json")
+    check(W.show_zone(work).key == "America/Denver",
+          "an unreadable schedule file: Denver's")
+    os.remove(rule)
+    # A fresh reading, then the same reading STALE: the words still say
+    # STALE (the page puts STALE. before the line), and when.
+    ln = w.view()["lines"][0]
+    check(ln["level"] == "ok" and ln["text"] == "Measured, I-15 Point of "
+          "the Mountain (UTALP): 12 mph, gusts 21 mph, from NNW (340°). "
+          "Last updated Oct 26, 11:55 AM.", f"fresh: {ln['text']!r}")
+    t["wall"] = WX_NOW + 25 * 60
+    ln = w.view()["lines"][0]
+    check(ln["level"] == "stale" and ln["age_s"] == 30 * 60 and
+          ln["text"].endswith("Last updated Oct 26, 11:55 AM.") and
+          ln["sources"][0]["text"] == "the last UTALP (Iowa mesonet) "
+          "reading is stale, over its 20 min limit, last updated Oct 26, "
+          "11:55 AM", f"stale: {ln}")
+    # The forecast says when the NWS issued it and when this PC got it.
+    t["wall"] = WX_NOW
+    fc = w.view()["lines"][1]
+    check(fc["text"].endswith("NWS issued Oct 26, 11:15 AM. Last updated "
+                              "Oct 26, 12:00 PM.") and
+          fc["issued_age_s"] == 44 * 60 + 19 and fc["age_s"] == 0,
+          f"the NWS issue time and this PC's: {fc}")
+    # No reading yet: said, with no time.
+    w0, _n0, _t0 = _wx_service(tempfile.mkdtemp(), {},
+                               cfg={"backup_stations": []})
+    v0 = w0.view()
+    check(v0["lines"][0]["text"] == f"Measured wind: {W.NO_DATA}. UTALP "
+          f"(Iowa mesonet): no reading yet." and
+          v0["lines"][1]["text"] == f"Forecast for this spot (NWS): "
+          f"{W.NO_DATA}. No reading yet." and
+          v0["alerts_line"]["text"] == "NWS wind and fire alerts: no "
+          "reading yet." and
+          not any("Last updated" in ln["text"] for ln in v0["lines"]),
+          f"no reading yet, no time: {v0}")
+    # Every sentence the block and the self check can say: no 'ago', no
+    # advisory only, no advisory field.
+    views = [v0, w.view()]
+    for when in (25 * 60, 50 * 60, 8 * 3600, 40 * 3600, -3600):
+        t["wall"] = WX_NOW + when
+        views.append(w.view())
+    t["wall"] = WX_NOW
+    w2, _n2, _t2 = _wx_service(tempfile.mkdtemp(), _wx_all_good(),
+                               cfg={"nws_station": "KU42"})
+    w2.poll_once()
+    views.append(w2.view())
+    w2.src["mesonet"]["data"]["valid"] = WX_NOW - 3 * 3600
+    w2.src["alerts"]["data"]["checked"] = WX_NOW - 3600
+    views.append(w2.view())
+    w3, _n3, _t3 = _wx_service(tempfile.mkdtemp(), {})
+    w3.poll_once()
+    views += [w3.view(), W.view_when_missing(),
+              W.judge({}, W.check_config(None), WX_NOW, "bad key.")]
+    for vv in views:
+        check("advisory" not in vv, f"no advisory field: {sorted(vv)}")
+        _wx_no_ago(json.dumps(vv, ensure_ascii=False), "the weather view")
+    lines = []
+    W.run_check(work, get=_WxNet(_wx_all_good()), out=lines.append,
+                wall=lambda: WX_NOW)
+    text = "\n".join(lines)
+    check("12 mph, gusts 21 mph, from NNW (340°), last updated Oct 26, "
+          "11:55 AM" in text and "NWS issued Oct 26, 11:15 AM" in text,
+          f"the self check says when: {text[-1200:]}")
+    _wx_no_ago(re.sub(r"(?m)^  [{\[].*$", "", text), "the weather check")
+    # And every string weather.py can say, read from its source (the NWS
+    # event names it filters on aside).
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(here, "ltcplay", "weather.py"),
+               encoding="utf-8").read()
+    tree = _ast.parse(src)
+    docs = {id(n.body[0].value) for n in _ast.walk(tree)
+            if isinstance(n, (_ast.Module, _ast.FunctionDef, _ast.ClassDef))
+            and n.body and isinstance(n.body[0], _ast.Expr)
+            and isinstance(n.body[0].value, _ast.Constant)}
+    said = [n.value for n in _ast.walk(tree)
+            if isinstance(n, _ast.Constant) and isinstance(n.value, str)
+            and id(n) not in docs and n.value not in W.FIRE_EVENTS]
+    check(len(said) > 100, f"weather.py's strings are read: {len(said)}")
+    for x in said:
+        _wx_no_ago(x, "a weather.py string")
+    check(not hasattr(W, "ADVISORY") and not hasattr(W, "age_text"),
+          "no ADVISORY and no age_text in weather.py")
+    print("  ok")
+
+
 def _wx_page_view():
     """A full Weather view, as the engine serves it, for the page tests."""
     from ltcplay import weather as W
@@ -88056,7 +88560,7 @@ function go(){
       flames_bottom:fl.bottom + scrollY, right:r.right, vw:innerWidth,
       cut:[...document.querySelectorAll("#wx-lines div")].filter(d => d.scrollWidth > d.clientWidth + 1).map(d => d.textContent),
       lines:[...document.querySelectorAll("#wx-lines div")].map(d => [d.className, d.textContent, getComputedStyle(d).color]),
-      foot:document.getElementById("wx-foot").textContent,
+      foot:!!document.getElementById("wx-foot"),
       where:document.getElementById("wx-where").textContent,
       buttons:box.querySelectorAll("button,input,a").length,
       sw:document.scrollingElement.scrollWidth};
@@ -88107,9 +88611,9 @@ let b = wxBlock(V, 3);
 t(b.cls === "stale", "a stale line makes the block amber: " + b.cls);
 t(b.lines[0].cls === "alert" && /^NWS WIND ADVISORY in effect/.test(b.lines[0].text), "the alert leads: " + JSON.stringify(b.lines[0]));
 t(b.lines[1].cls === "alert" && /^Sources disagree, verify on site/.test(b.lines[1].text), "then the disagreement");
-t(b.lines[2].cls === "stale" && /^STALE\. Measured/.test(b.lines[2].text) && / 27 min old\./.test(b.lines[2].text), "the measured line, amber, its age: " + b.lines[2].text);
-t(b.lines[3].cls === "ok" && /^Forecast for this spot \(NWS\): 40 mph/.test(b.lines[3].text), "the forecast line: " + b.lines[3].text);
-t(/^Advisory only/.test(b.foot), "advisory only, in the foot");
+t(b.lines[2].cls === "stale" && /^STALE\. Measured/.test(b.lines[2].text) && / Last updated Oct 26, 11:55 AM\.$/.test(b.lines[2].text), "the measured line, amber, STALE in words, when it was updated: " + b.lines[2].text);
+t(b.lines[3].cls === "ok" && /^Forecast for this spot \(NWS\): 40 mph/.test(b.lines[3].text) && / NWS issued Oct 26, 11:15 AM\. Last updated Oct 26, 12:00 PM\.$/.test(b.lines[3].text), "the forecast line: " + b.lines[3].text);
+t(!("foot" in b) && !/advisory only/i.test(JSON.stringify(b)) && !/\bago\b/i.test(JSON.stringify(b.lines)), "no advisory only and no 'ago' (Jeff, 2026-10-30): " + JSON.stringify(b));
 b = wxBlock(V, 61);
 t(b.cls === "none" && b.lines.length === 1 && /^NO CURRENT DATA, use on-site wind check/.test(b.lines[0].text) && !/mph/.test(JSON.stringify(b)), "61 s without the engine: grey, no number: " + JSON.stringify(b));
 t(wxBlock(V, null).cls === "none" && wxBlock(null, 1).cls === "none", "never heard: grey");
@@ -88132,6 +88636,39 @@ console.log(JSON.stringify(out));
             bad = None
         check(r.returncode == 0 and bad == [],
               f"wxBlock, in node: {r.stdout[-800:]!r} {r.stderr[-400:]!r}")
+        # 2.0's wind button (remote2.html, wxLine, on 1.0's wxBlock) and
+        # its sheet and help: no advisory only, no 'ago' (Jeff,
+        # 2026-10-30).
+        _one, two = _ui2_pages()
+        wl = _js_function(two, "wxLine")
+        check(wl is not None, "2.0 has wxLine")
+        check("Advisory" not in two and "v.foot" not in two and
+              "<dt>Wind</dt><dd>Tap it for each reading and when it was "
+              "last updated.</dd>" in two,
+              "2.0 says no advisory only, in the button, sheet or help")
+        js2 = logic + (wl or "") + "const V = " + json.dumps(view) + ";\n" + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+let L = wxLine(V, 3);
+t(L.cls === "alert" && L.text === "Wind 12 mph, stale. NWS alert.", "an alert: " + JSON.stringify(L.text));
+L = wxLine(Object.assign({}, V, {banner:[]}), 3);
+t(L.cls === "stale" && L.text === "Wind 12 mph, stale", "stale: " + JSON.stringify(L.text));
+L = wxLine(Object.assign({}, V, {banner:[], state:"ok", lines:[Object.assign({}, V.lines[0], {level:"ok"})]}), 3);
+t(L.cls === "ok" && L.text === "Wind 12 mph", "fresh: " + JSON.stringify(L.text));
+t(wxLine(V, 61).text === "NO CURRENT DATA, use on-site wind check", "the engine quiet: grey");
+t(wxLine(null, null).text === "Wind: waiting", "never heard");
+const all = [wxLine(V, 3), wxLine(V, 61), wxLine(null, null), wxLine({state:"error"}, 1)].map(x => x.text + " " + JSON.stringify(x.v)).join(" ");
+t(!/advisory only/i.test(all) && !/\bago\b/i.test(all.replace(/heardAgoS/g, "")), "no advisory only, no ago: " + all);
+console.log(JSON.stringify(out));
+"""
+        r = _node_js(node, js2, capture_output=True, text=True, timeout=60)
+        try:
+            bad = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            bad = None
+        check(r.returncode == 0 and bad == [],
+              f"2.0's wxLine, in node: {r.stdout[-800:]!r} "
+              f"{r.stderr[-400:]!r}")
     else:
         check(not IN_CI, "node is missing on this CI runner")
     chrome = _find_chromium()
@@ -88157,7 +88694,9 @@ console.log(JSON.stringify(out));
               texts[1].startswith("Sources disagree, verify on site") and
               texts[2].startswith("STALE. Measured, I-15 Point of the "
                                   "Mountain (UTALP)") and
-              m["foot"].startswith("Advisory only") and
+              m["foot"] is False and
+              not any("dvisory only" in x or re.search(r"\bago\b", x)
+                      for x in texts) and
               m["where"].startswith("Thanksgiving Point area"),
               f"{w}x{h}: the block reads right: {m}")
         check(m["lines"][2][2] == "rgb(245, 160, 30)",
@@ -88333,9 +88872,10 @@ def test_preroll_checks_prove_each_device_and_fail_closed():
             "announcements": [{"id": "delayed", "available": True}]}
     ann = types.SimpleNamespace(status=lambda: good)
     check(P.check_announcements(_pr_probe(), ann) == (True, ""),
-          "announcements: the Delayed could play")
+          "announcements: the Delayed button could play")
     check(P.check_announcements(_pr_probe(), None)[0] is False,
-          "no announcements in the engine: failed")
+          "no announcements in the engine: not OK (a warning: "
+          "test_preroll_announcements_is_only_a_warning)")
     bad = dict(good, device_available=False, device_reason="not attached")
     check(P.check_announcements(_pr_probe(), types.SimpleNamespace(
         status=lambda: bad))[0] is False, "output missing: failed")
@@ -88513,11 +89053,10 @@ def test_preroll_runner_unknown_is_failure_and_cancel_is_clean():
             "'preroll' alert and a later pass clears it; a cancel stops "
             "the checks and raises nothing; the per-device line reads "
             "'Audio OK, ..., Lasers FAILED: ...'")
-    from ltcplay import preroll as P, alerts as AL, alerthold as AH
+    from ltcplay import preroll as P, alerts as AL
     check("preroll" in AL.KINDS and AL.SEVERITY["preroll"] == "fault" and
-          "preroll" not in AL.DISPLAY_ONLY and "preroll" in
-          AH.ANNOUNCE_KINDS, "the alert kind holds at showtime and "
-                             "announces like the other faults")
+          "preroll" not in AL.DISPLAY_ONLY,
+          "the alert kind holds at showtime like the other faults")
     al = AL.Alerts()
     lines = []
     state = {"Lasers": (False, "BEYOND is not running")}
@@ -89200,8 +89739,9 @@ def test_preroll_continue_anyway_starts_now_with_failed_outputs_off():
             "check holds the show, a person's Continue starts it NOW (late), "
             "journaled with who and the failed checks; the failed video and "
             "lasers stay OFF for that show (no bank select, no fade up, no "
-            "timecode to MadMapper, no laser output, no unblank), the "
-            "Delayed countdown stops, the alert stays open; the next show "
+            "timecode to MadMapper, no laser output, no unblank), a pressed "
+            "announcement still playing fades as the show starts, the alert "
+            "stays open; the next show "
             "is checked again in full and runs with everything; never past "
             "an Abort, never by the scheduler itself")
     n = _pr_night({"Video": (False, "MadMapper did not answer the "
@@ -89229,15 +89769,12 @@ def test_preroll_continue_anyway_starts_now_with_failed_outputs_off():
           "unattended, it never continues by itself")
     check(n.w.runner.continue_off is None, "nothing set to continue")
     del n.calls[:]
-    stopped = []
     n.now[0] = _den(S, 18, 2, 30)
-    r = svc.continue_anyway("Andy", "Rack screen",
-                            on_continue=lambda: stopped.append(True))
+    r = svc.continue_anyway("Andy", "Rack screen")
     _settle(svc, c)
     _mm_flush(n.link)
-    check(r["ok"] is True and svc.machine.state == S.SHOW and
-          stopped == [True],
-          f"started now, the Delayed countdown told to stop: {r}")
+    check(r["ok"] is True and svc.machine.state == S.SHOW,
+          f"started now: {r}")
     _no_dashes(r["text"], "Continue anyway's answer")
     s1 = svc.machine.slot(svc.machine.running)
     check(s1.fired_at == _den(S, 18, 2, 30),
@@ -89365,11 +89902,10 @@ def test_preroll_continue_anyway_needs_a_signed_in_hold():
     section("pre-roll, Continue anyway's press: a signed-in person with the "
             "run permission (the Show row), the button HELD for the arm "
             "buttons' hold, timed by the engine; a tap, an unsigned screen "
-            "or another person's finish does nothing; the Delayed is "
-            "stopped; the page says exactly what fails")
+            "or another person's finish does nothing; the page says "
+            "exactly what fails")
     import types
     from ltcplay import remote as RM, preroll as P, users as U
-    from ltcplay import alerthold as AH, alerts as AL
     check(U.classify("/api/remote/preroll-continue") == "show",
           "the run permission (the Show row)")
     pr = P.PreRoll([("Video", True, lambda p: (False, "MadMapper did not "
@@ -89377,15 +89913,11 @@ def test_preroll_continue_anyway_needs_a_signed_in_hold():
                    window_s=3)
     pr.run(("s", 1), "show 1 (18:00)")
     said = []
-    svc = types.SimpleNamespace(continue_anyway=lambda who, screen,
-                                on_continue=None: (
-        said.append((who, screen)), on_continue and on_continue(),
+    svc = types.SimpleNamespace(continue_anyway=lambda who, screen: (
+        said.append((who, screen)),
         {"ok": True, "text": "started"})[-1])
-    stopped = []
     me = types.SimpleNamespace(
-        preroll=pr, schedule=svc, users_active=lambda: True,
-        alert_hold=types.SimpleNamespace(
-            stop_for_continue=lambda who: stopped.append(who)))
+        preroll=pr, schedule=svc, users_active=lambda: True)
     ctx = types.SimpleNamespace(user="Andy", local=True, screen="Rack screen",
                                 device="rack")
     go = lambda body, cx=ctx: RM.Remote.preroll_continue(me, body, cx)  # noqa
@@ -89409,26 +89941,10 @@ def test_preroll_continue_anyway_needs_a_signed_in_hold():
     go({"phase": "begin", "token": "t4"})
     time.sleep(P.CONTINUE_HOLD_S + 0.05)
     st, out = go({"phase": "done", "token": "t4"})
-    check(st == 200 and said == [("Andy", "Rack screen")] and
-          stopped == ["Andy"], f"held: continued, the Delayed stopped: "
-                               f"{st} {out} {said} {stopped}")
+    check(st == 200 and said == [("Andy", "Rack screen")],
+          f"held: continued: {st} {out} {said}")
     st, out = go({"phase": "done", "token": "t4"})
     check(st == 409 and len(said) == 1, "a hold is used once")
-    # The alert hold's countdown, and a Delayed it already started.
-    al = AL.Alerts()
-    al.raise_("preroll", "The rig check failed.")
-    played = []
-    ann = types.SimpleNamespace(
-        status=lambda: {"playing": {"id": "delayed"}},
-        stop=lambda who, screen, surface=False: played.append("stop"))
-    ah = AH.AlertHold(al, None, announce=lambda: ann)
-    ah.started(1, "preroll: x")
-    check(ah.hold["state"] == "counting", "counting")
-    ah.stop_for_continue("Andy")
-    check(ah.hold["state"] == "cancelled", "Continue ends the countdown")
-    ah.hold["state"] = "announced"
-    ah.stop_for_continue("Andy")
-    check(played == ["stop"], "and stops a Delayed already playing")
     # What a Continue leaves off, from the failed checks.
     off = P.outputs_off([
         {"name": "Video", "ok": False}, {"name": "Audio", "ok": False},
@@ -89492,6 +90008,130 @@ console.log(JSON.stringify(out));
 
 
 
+def test_preroll_announcements_is_only_a_warning():
+    section("pre-roll (Jeff, 2026-10-30): nothing plays on the PA by "
+            "itself, so the Announcements check is ADVISORY: wired by "
+            "web.serve with required false; with no announcements, no "
+            "output or no Delayed recording the rig check still PASSES, "
+            "says 'Announcements WARNING: ...' in its line, raises no "
+            "alert, holds no show and needs no Continue anyway; the rack "
+            "screen lists it as a warning, never as FAILED, and a missing "
+            "Delayed recording stays visible on a passing check: the "
+            "Announcements lamp says warn (1.0 and 2.0) and 1.0's Rig "
+            "check card says the warning on its own line")
+    import types
+    from ltcplay import web as W, preroll as P, alerts as AL
+    F = _fi_mod()
+    svc = types.SimpleNamespace(preroll=None, _journal_line=lambda *a, **k:
+                                None)
+    remote = types.SimpleNamespace(preroll=None, alerts=AL.Alerts(),
+                                   programming=lambda: (False, ""))
+    wiring = types.SimpleNamespace(runner=None, devices=None,
+                                   conductor=None, flame_link=None,
+                                   laser_arm=None)
+    good = {"ok": True, "device_available": True,
+            "announcements": [{"id": "delayed", "available": True}]}
+    cases = (("no announcements", None),
+             ("no output", types.SimpleNamespace(status=lambda: dict(
+                 good, device_available=False,
+                 device_reason="not attached"))),
+             ("no recording", types.SimpleNamespace(status=lambda: dict(
+                 good, announcements=[{"id": "delayed", "available": False,
+                                       "reason": "Recording missing"}]))))
+    for what, ann in cases:
+        al = AL.Alerts()
+        remote.alerts, remote.preroll, svc.preroll = al, None, None
+        httpd = types.SimpleNamespace(schedule=svc, fire_ice=wiring,
+                                      remote=remote, control=None,
+                                      madmapper=None, announce=ann)
+        built = W._attach_preroll(httpd, F.FireIceConfig(
+            scheduler_performs=True), None)
+        real = [c for c in built.checks if c[0] == "Announcements"]
+        check(len(real) == 1 and real[0][1] is False,
+              f"{what}: the engine wires Announcements as advisory: {real}")
+        # Every other check passes; the real Announcements check runs.
+        pr = P.PreRoll([("Audio", True, lambda p: (True, ""))] + real,
+                       window_s=3, alert=al.raise_,
+                       clear_alert=lambda k: None)
+        r = pr.run(("night", 1), "show 1 (18:00)")
+        item = [i for i in r["items"] if i["name"] == "Announcements"]
+        check(r["state"] == "passed" and item and not item[0]["ok"] and
+              item[0]["required"] is False,
+              f"{what}: the rig check passes, Announcements not OK: {r}")
+        check("Announcements WARNING: " in r["text"] and
+              "FAILED" not in r["text"],
+              f"{what}: said as a warning line: {r['text']}")
+        _no_dashes(r["text"], "the warning line")
+        check(not al.open() and pr.last_failed() is None,
+              f"{what}: no alert, nothing to continue past: {al.view()}")
+    # A missing Delayed recording stays visible on a passing rig check:
+    # the rack screen's Announcements lamp (1.0's strip, 2.0's Systems
+    # badge) says warn, never bad, and the 1.0 Rig check card says it on
+    # its own line (prerollLook's warn, below).
+    from ltcplay import remote as RM
+    here = os.path.dirname(os.path.abspath(__file__))
+    with tempfile.TemporaryDirectory() as d:
+        rem = RM.Remote(None, folder=d)
+        rem._announce = object()
+        for missing, avail, want in (
+                (True, False, ("warn", "Delayed recording missing")),
+                (False, False, ("warn", "Delayed recording cannot play")),
+                (False, True, ("ok", "own output"))):
+            rem._ann_cache = (rem.clock(), {
+                "configured": True, "ok": True, "device_set": True,
+                "route": {"ok": True, "kind": "own"},
+                "items": [{"id": "delayed", "available": avail,
+                           "missing": missing}], "playing": None})
+            lamp = [(x["state"], x["word"]) for x in rem.subsystems({})
+                    if x["name"] == "Announcements"]
+            check(lamp == [want],
+                  f"the Announcements lamp, Delayed available {avail}: "
+                  f"{lamp}")
+            _no_dashes(lamp[0][1] if lamp else "", "the lamp's word")
+    with open(os.path.join(here, "ltcplay", "web", "remote2.html"),
+              encoding="utf-8") as fh:
+        two = fh.read()
+    check('[/^announcements$/, /delayed recording/, "Delayed button cannot '
+          'play. Tell Jeff."]' in two and
+          two.find("/delayed recording/") <
+          two.find('[/^announcements$/, /./,'),
+          "2.0's Systems badge names the missing Delayed in plain words")
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    check('<div class="warnbox open" id="rc-warn" hidden></div>' in page and
+          '$("rc-warn").hidden = !prl.warn;' in page and
+          '$("rc-warn").textContent = prl.warn;' in page,
+          "1.0's Rig check card shows the warning line on a passing check")
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const L = prerollLook({state:"passed", items:[{name:"Audio", ok:true, required:true}, {name:"Announcements", ok:false, required:false, text:"the announcement output is not usable: not attached"}]});
+t(L.items[1] === "Announcements WARNING: the announcement output is not usable: not attached", "a warning line: " + L.items[1]);
+t(L.trouble === "" && L.now === "Last check passed, with a WARNING", "no trouble, passed with a warning: " + L.now);
+t(L.warn === "Announcements WARNING: the announcement output is not usable: not attached.", "the card's warning line: " + L.warn);
+const G = prerollLook({state:"passed", items:[{name:"Audio", ok:true, required:true}, {name:"Announcements", ok:true, required:false}]});
+t(G.now === "Last check passed" && G.warn === "", "all OK: no warning: " + G.now + " " + G.warn);
+const F = prerollLook({state:"failed", manual:false, age_s:5, label:"show 1", items:[{name:"Video", ok:false, required:true, text:"x"}, {name:"Announcements", ok:false, required:false, text:"y"}]});
+t(/Video FAILED: x/.test(F.trouble) && !/Announcements/.test(F.trouble), "a real failure names only what failed: " + F.trouble);
+console.log(JSON.stringify(out));
+"""
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        bad = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        bad = [f"node failed: {r.stderr[-400:]}"]
+    for m in bad:
+        check(False, f"prerollLook: {m}")
+    print("  ok")
+
+
 def test_preroll_wiring_in_the_engine():
     section("pre-roll wiring (web.serve): built only for a Fire & Ice "
             "scheduler that performs with preroll_s above 0, with every "
@@ -89518,9 +90158,10 @@ def test_preroll_wiring_in_the_engine():
     check(isinstance(pr, P.PreRoll) and svc.preroll is pr and
           remote.preroll is pr and pr.window_s == 10 and
           [c[0] for c in pr.checks] == list(P.NAMES) and
-          all(c[1] for c in pr.checks),
-          f"built, every check required, in order: "
-          f"{[c[0] for c in getattr(pr, 'checks', [])]}")
+          all(c[1] == (c[0] != "Announcements") for c in pr.checks),
+          f"built, every check required but Announcements (advisory, "
+          f"Jeff 2026-10-30), in order: "
+          f"{[c[:2] for c in getattr(pr, 'checks', [])]}")
     # Fail closed: a rig check that cannot be built is an alert that holds
     # every show, never a quiet print.
     svc.preroll = None
@@ -89624,6 +90265,404 @@ def _js_same(text):
     lines = [ln.split("//")[0] if ln.strip().startswith("//") else ln
              for ln in str(text or "").splitlines()]
     return re.sub(r"\s+", " ", "\n".join(lines)).strip()
+
+
+# --------------------------------------- JavaScript an iPad on iPadOS 15 runs --
+
+# What Safari on iPadOS 15.0 cannot run, by where it breaks. "parse": the
+# whole <script> block fails to load (one lookbehind in 2.0 left the iPad
+# with a dead page). "runtime": that line throws when it runs.
+_JS_NEWER_PARSE = (
+    ("a regular expression lookbehind (?<= or (?<! (Safari 16.4)",
+     "lookbehind"),
+    ("a static class block (Safari 16.4)", "static_block"),
+    ("an await outside an async function (top-level await, Safari 15 "
+     "modules only)", "await"),
+)
+_JS_NEWER_RUNTIME = (
+    # (the tokens, what it is, the polyfill that makes it safe)
+    ((".", "at", "("), "Array.prototype.at (Safari 15.4)",
+     ("Array", ".", "prototype", ".", "at", "=")),
+    (("structuredClone", "("), "structuredClone (Safari 15.4)", None),
+    (("Object", ".", "hasOwn"), "Object.hasOwn (Safari 15.4)", None),
+    ((".", "replaceAll", "("), "String.prototype.replaceAll (Safari 13.1)",
+     None),
+)
+_JS_KEYWORDS_BEFORE_PAREN_BLOCK = {"if", "for", "while", "switch", "catch",
+                                   "with"}
+_JS_REGEX_AFTER = {"return", "typeof", "instanceof", "in", "of", "new",
+                   "delete", "void", "throw", "case", "do", "else", "yield",
+                   "await"}
+
+
+def _js_tokens(src):
+    """A small lexer: [(kind, text, line)] with kind one of "id", "num",
+    "str", "tmpl", "re", "punct". Comments are dropped; a template's ${ }
+    parts are lexed as code (their tokens sit between "tmpl" pieces)."""
+    out = []
+    i, n, line = 0, len(src), 1
+    tmpl_depth = []          # brace depth at each open ${ in a template
+
+    def prev_sig():
+        return out[-1] if out else None
+
+    def regex_allowed():
+        p = prev_sig()
+        if p is None:
+            return True
+        k, t, _l = p
+        if k in ("num", "str", "tmpl", "re"):
+            return False
+        if k == "id":
+            return t in _JS_REGEX_AFTER
+        return t not in (")", "]", "}")
+
+    def read_template(i, line):
+        # From just after ` or }, to the closing ` or an opening ${.
+        j = i
+        while j < n:
+            c = src[j]
+            if c == "\\":
+                j += 2
+                continue
+            if c == "`":
+                return j + 1, line + src.count("\n", i, j), False
+            if c == "$" and src.startswith("${", j):
+                return j + 2, line + src.count("\n", i, j), True
+            j += 1
+        return n, line + src.count("\n", i, n), False
+
+    depth = 0
+    while i < n:
+        c = src[i]
+        if c == "\n":
+            line += 1
+            i += 1
+            continue
+        if c in " \t\r\f\v":
+            i += 1
+            continue
+        if src.startswith("//", i):
+            j = src.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if src.startswith("/*", i):
+            j = src.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            line += src.count("\n", i, j)
+            i = j
+            continue
+        if c in "\"'":
+            j = i + 1
+            while j < n and src[j] != c and src[j] != "\n":
+                j += 2 if src[j] == "\\" else 1
+            out.append(("str", src[i + 1:j], line))
+            i = j + 1
+            continue
+        if c == "`":
+            j, nl, opened = read_template(i + 1, line)
+            out.append(("tmpl", src[i:j], line))
+            line = nl
+            if opened:
+                tmpl_depth.append(depth)
+            i = j
+            continue
+        if c == "}" and tmpl_depth and tmpl_depth[-1] == depth:
+            tmpl_depth.pop()
+            j, nl, opened = read_template(i + 1, line)
+            out.append(("tmpl", src[i:j], line))
+            line = nl
+            if opened:
+                tmpl_depth.append(depth)
+            i = j
+            continue
+        if c == "/" and regex_allowed():
+            j, cls = i + 1, False
+            while j < n and src[j] != "\n":
+                d = src[j]
+                if d == "\\":
+                    j += 2
+                    continue
+                if d == "[":
+                    cls = True
+                elif d == "]":
+                    cls = False
+                elif d == "/" and not cls:
+                    break
+                j += 1
+            j += 1
+            while j < n and (src[j].isalnum() or src[j] == "_"):
+                j += 1
+            out.append(("re", src[i:j], line))
+            i = j
+            continue
+        if c.isalpha() or c in "_$":
+            j = i + 1
+            while j < n and (src[j].isalnum() or src[j] in "_$"):
+                j += 1
+            out.append(("id", src[i:j], line))
+            i = j
+            continue
+        if c.isdigit():
+            m = re.match(r"\d[\w.]*", src[i:])
+            out.append(("num", m.group(0), line))
+            i += len(m.group(0))
+            continue
+        for p in ("...", "=>", "?.", "**", "==", "!=", "<=", ">=", "&&",
+                  "||", "??", "++", "--", "+=", "-=", "*=", "/="):
+            if src.startswith(p, i):
+                out.append(("punct", p, line))
+                i += len(p)
+                break
+        else:
+            if c in "{([":
+                depth += 1
+            elif c in "})]":
+                depth -= 1
+            out.append(("punct", c, line))
+            i += 1
+    return out
+
+
+def _js_awaits_outside_async(toks):
+    """The lines of every `await` that is not inside an async function."""
+    bad = []
+    match = {}
+    stack = []
+    for k, (kind, t, _l) in enumerate(toks):
+        if kind == "punct" and t in "({[":
+            stack.append(k)
+        elif kind == "punct" and t in ")}]" and stack:
+            match[k] = stack.pop()
+    # The function context of each "{": True async, False plain, None a
+    # block or object (inherits).
+    ctx = []          # [(kind "brace"/"expr", async, depth at open)]
+    depth = 0
+
+    def is_async_before(k):
+        return k >= 0 and toks[k][0] == "id" and toks[k][1] == "async"
+
+    def arrow_async(k):
+        # toks[k] is "=>": async when its parameters follow `async`.
+        p = k - 1
+        if p >= 0 and toks[p][1] == ")" and p in match:
+            return is_async_before(match[p] - 1)
+        return is_async_before(p - 1)
+
+    for k, (kind, t, line) in enumerate(toks):
+        # an arrow's expression body ends at , ; or a closer at its depth
+        while (ctx and ctx[-1][0] == "expr" and kind == "punct" and
+               ((t in ",;" and depth == ctx[-1][2]) or
+                (t in ")]}" and depth <= ctx[-1][2]))):
+            ctx.pop()
+        if kind == "punct" and t == "=>":
+            nxt = toks[k + 1] if k + 1 < len(toks) else None
+            if not (nxt and nxt[1] == "{"):
+                ctx.append(("expr", arrow_async(k), depth))
+            continue
+        if kind == "punct" and t in "([":
+            depth += 1
+            continue
+        if kind == "punct" and t in ")]":
+            depth -= 1
+            continue
+        if kind == "punct" and t == "{":
+            p = k - 1
+            fn = None
+            if p >= 0 and toks[p][1] == "=>":
+                fn = arrow_async(p)
+            elif p >= 0 and toks[p][1] == ")" and p in match:
+                q = match[p] - 1
+                if q >= 0 and toks[q][1] == "function":
+                    fn = is_async_before(q - 1)
+                elif q >= 0 and toks[q][0] == "id" and \
+                        toks[q][1] not in _JS_KEYWORDS_BEFORE_PAREN_BLOCK:
+                    if q - 1 >= 0 and toks[q - 1][1] == "function":
+                        fn = is_async_before(q - 2)
+                    else:
+                        fn = is_async_before(q - 1)   # a method
+            ctx.append(("brace", fn, depth))
+            depth += 1
+            continue
+        if kind == "punct" and t == "}":
+            depth -= 1
+            while ctx and ctx[-1][0] == "expr":
+                ctx.pop()
+            if ctx:
+                ctx.pop()
+            continue
+        if kind == "id" and t == "await":
+            inner = next((a for _k, a, _d in reversed(ctx) if a is not None),
+                         None)
+            if inner is not True:
+                bad.append(line)
+    return bad
+
+
+def _js_newer_than_ipados15(src):
+    """[(line, what)] for each thing in `src` (JavaScript) that Safari on
+    iPadOS 15.0 cannot run."""
+    found = []
+    toks = _js_tokens(src)
+    for k, (kind, t, line) in enumerate(toks):
+        if kind in ("re", "str", "tmpl") and ("(?<=" in t or "(?<!" in t):
+            found.append((line, _JS_NEWER_PARSE[0][0]))
+        if kind == "id" and t == "static" and k + 1 < len(toks) and \
+                toks[k + 1][1] == "{":
+            found.append((line, _JS_NEWER_PARSE[1][0]))
+    for line in _js_awaits_outside_async(toks):
+        found.append((line, _JS_NEWER_PARSE[2][0]))
+    # The ones that throw where they run, matched on code tokens only (a
+    # word in a string or a comment is not a call).
+    words = [t for kind, t, _l in toks if kind in ("id", "num", "punct")]
+    lines = [l for kind, _t, l in toks if kind in ("id", "num", "punct")]
+    for seq, what, guard in _JS_NEWER_RUNTIME:
+        hits = [i for i in range(len(words) - len(seq) + 1)
+                if tuple(words[i:i + len(seq)]) == seq]
+        if guard is not None and any(
+                tuple(words[i:i + len(guard)]) == guard
+                for i in range(len(words))):
+            continue
+        found += [(lines[i], what) for i in hits]
+    return sorted(set(found))
+
+
+def _js_scripts(page):
+    """[(line the code starts on, code)] for each inline <script> in an
+    HTML page (a <script src=...> is served on its own and read there)."""
+    out = []
+    for m in re.finditer(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>",
+                         page, re.S | re.I):
+        out.append((page.count("\n", 0, m.start(1)) + 1, m.group(1)))
+    return out
+
+
+def _js_balanced(code):
+    """True when the lexer read `code` through with its brackets matched,
+    so a string, template or regular expression it misread cannot hide
+    the rest of the script from the scan."""
+    depth = 0
+    for kind, t, _l in _js_tokens(code):
+        if kind == "punct" and t in "({[":
+            depth += 1
+        elif kind == "punct" and t in ")}]":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
+
+
+def test_ui2_runs_on_ipados15():
+    section("2.0 runs on iPadOS 15 and later: no script on a served page "
+            "(the pages, /remote-logic.js and the 2.0 page as served) uses "
+            "what Safari on iPadOS 15.0 cannot run (a lookbehind or a "
+            "static class block leaves the whole script dead, as one "
+            "lookbehind did to 2.0 on an older iPad; an await outside an "
+            "async function; Array.prototype.at, structuredClone, "
+            "Object.hasOwn, replaceAll); and 2.0's footer still cuts a "
+            "sentence where it did")
+    here = os.path.dirname(os.path.abspath(__file__))
+    web_dir = os.path.join(here, "ltcplay", "web")
+    from ltcplay import web as web_mod
+    # The scan finds each thing, and only in code.
+    for src, want in (
+            ("s.split(/(?<=[.!?])\\s/)", "lookbehind"),
+            ("new RegExp('(?<!a)b')", "lookbehind"),
+            ("class A { static { x = 1; } }", "static class block"),
+            ("await x;", "await outside"),
+            ("function f(){ if(a){ await x; } }", "await outside"),
+            ("a.at(-1)", "Array.prototype.at"),
+            ("o = structuredClone(p)", "structuredClone"),
+            ("Object.hasOwn(o, 'k')", "Object.hasOwn"),
+            ("s.replaceAll('a', 'b')", "replaceAll")):
+        got = _js_newer_than_ipados15(src)
+        check(len(got) == 1 and want in got[0][1],
+              f"the iPadOS 15 scan finds {want} in {src!r}: {got}")
+    for src in ("async function f(){ if(a){ await x; } }",
+                "const f = async () => await g();",
+                "el.onclick = async (e) => { try{ await post(1); }"
+                "catch(x){} };",
+                "const o = { async m(){ await 1; }, n(){ return 2; } };",
+                "setTimeout(async function(){ await f(); }, 1);",
+                "x = 'a.at(1)'; // c.at(2) structuredClone(d) (?<=e)",
+                "Array.prototype.at = function(i){ return this[i]; };"
+                " a.at(-1);",
+                "t = `${a ? `${b.x}` : '/'}`; r = x / 2 / y;",
+                "class A { static n = 1; static f(){ return 2; } }"):
+        got = _js_newer_than_ipados15(src)
+        check(not got, f"the iPadOS 15 scan passes {src!r}: {got}")
+    # Every page in the web folder, every .js file served from it, 1.0's
+    # rules as /remote-logic.js serves them and 2.0 as /remote2 serves it.
+    pages = sorted(f for f in os.listdir(web_dir) if f.endswith(".html"))
+    check({"index.html", "remote.html", "remote2.html"} <= set(pages),
+          f"the scan reads the three pages: {pages}")
+    scripts = []
+    for f in pages:
+        with open(os.path.join(web_dir, f), encoding="utf-8") as fh:
+            scripts += [(f, at, code) for at, code in _js_scripts(fh.read())]
+    for root, _dirs, files in os.walk(web_dir):
+        for f in sorted(files):
+            if f.endswith(".js"):
+                with open(os.path.join(root, f), encoding="utf-8") as fh:
+                    scripts.append((os.path.relpath(os.path.join(root, f),
+                                                    web_dir), 1, fh.read()))
+    logic = web_mod.remote_logic()
+    check(bool(logic and logic.strip()), "/remote-logic.js has 1.0's rules")
+    scripts.append(("/remote-logic.js", 1, logic or ""))
+    served2 = web_mod.remote2_page().decode("utf-8")
+    scripts += [("/remote2 as served", at, code)
+                for at, code in _js_scripts(served2)]
+    check(sum(1 for s in scripts if s[0] == "remote2.html") >= 2 and
+          sum(1 for s in scripts if s[0] == "/remote2 as served") >= 3,
+          "2.0's own scripts and 1.0's rules written into it are read")
+    for where, at, code in scripts:
+        if not check(_js_balanced(code),
+                     f"{where} (the script at line {at}): the iPadOS 15 "
+                     f"scan read it through, brackets matched"):
+            continue
+        for line, what in _js_newer_than_ipados15(code):
+            check(False, f"{where} line {at + line - 1}: {what}, which "
+                         f"Safari on iPadOS 15.0 cannot run")
+    # short8 cuts where the lookbehind did, on every kind of sentence.
+    two = _ui2_pages()[1]
+    fn = _js_function(two, "short8")
+    check(fn is not None and "(?<" not in fn, "short8 has no lookbehind")
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node or not fn:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  note: node is not here; short8 was checked by reading only")
+        print("  ok")
+        return
+    cases = ["", "   ", "Done.", "Done. Next.", "Armed! Go now.",
+             "Is it on? Yes.", "No stop at all", "v1.2 is out. Then more.",
+             "a.b.c d. e", "Line one.\nLine two.", "Tab.\tafter",
+             "Ends here.", "Wait... more words here.", "?! odd. x",
+             "One two three four five six seven eight nine. Ten.",
+             "One two three four five six seven eight. Nine.",
+             "  Padded. text  ", "Two  spaces.  Here."]
+    js = fn + "\nconst ref = (text, fallback) => { " \
+        "const t = String(text || \"\").trim(); " \
+        "if(!t) return fallback || \"\"; " \
+        "const first = t.split(new RegExp(\"(?<=[.!?])\\\\s\"))[0]; " \
+        "return first.split(/\\s+/).length <= 8 ? first : " \
+        "(fallback || \"Done. Tap Details.\"); };\n" \
+        "const cases = " + json.dumps(cases) + ";\nconst bad = [];\n" \
+        "for(const c of cases){ for(const fb of [undefined, \"fb\"]){ " \
+        "const a = short8(c, fb), b = ref(c, fb); " \
+        "if(a !== b) bad.push([c, fb, a, b]); } }\n" \
+        "console.log(JSON.stringify(bad));\n"
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, "short8.js")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(js)
+        r = subprocess.run([node, p], capture_output=True, text=True,
+                           timeout=60)
+    check(r.returncode == 0 and r.stdout.strip() == "[]",
+          f"short8 cuts each sentence where the lookbehind did: "
+          f"{r.stdout.strip()[:600]} {r.stderr.strip()[:600]}")
+    print("  ok")
 
 
 def test_ui2_pages_served_and_switched():
@@ -92420,12 +93459,12 @@ if __name__ == "__main__":
         test_rack_screen_small_screens_with_announcements_and_setup,
         test_rack_screen_setup_card_refits_when_warnings_come,
         test_alerts_booth_resounds_every_30_s_until_acknowledged,
-        test_alert_hold_at_showtime_then_one_delayed_announcement,
-        test_alert_hold_acknowledge_cancels_and_quiet_kinds,
+        test_alert_hold_at_showtime_holds_and_tells_the_booth_only,
+        test_nothing_plays_on_the_pa_without_an_operator_press,
+        test_alert_hold_every_holding_kind_holds_alike,
         test_alert_hold_never_touches_a_running_show,
         test_alert_hold_rack_screen_words,
         test_deck_stop_works_while_held_for_an_alert,
-        test_alert_hold_acknowledge_during_the_file_read,
         test_alert_hold_never_re_holds_after_resume,
         test_alert_hold_respects_any_operator_resume,
         test_preroll_checks_prove_each_device_and_fail_closed,
@@ -92440,8 +93479,8 @@ if __name__ == "__main__":
         test_preroll_continue_anyway_starts_now_with_failed_outputs_off,
         test_preroll_continue_anyway_needs_a_signed_in_hold,
         test_preroll_wiring_in_the_engine,
-        test_alert_booth_never_waits_behind_the_delayed,
-        test_alert_hold_an_old_hold_never_clears_a_newer_one,
+        test_preroll_announcements_is_only_a_warning,
+        test_alert_booth_keeps_sounding_while_held,
         test_alert_hold_resume_covers_only_its_own_show,
         test_alert_workers_started_once_under_a_lock,
         test_alert_workers_stop_with_the_server,
@@ -92669,6 +93708,7 @@ if __name__ == "__main__":
         test_fire_ice_review_hand_mutations,
         test_every_show_start_clears_the_pixels,
         test_the_show_takes_over_the_pixels_on_its_first_frame,
+        test_no_dark_frame_between_the_show_and_the_idle_look,
         test_hold_abort_stop_black_the_pixels_after_a_start,
         test_closed_night_abort_and_stop_say_what_they_did,
         test_fire_ice_show_log_is_written_off_the_logging_threads,
@@ -92932,6 +93972,7 @@ if __name__ == "__main__":
         test_weather_settings_are_checked,
         test_weather_is_display_only_and_off_the_show_path,
         test_weather_check_command,
+        test_weather_says_when_not_how_long_ago,
         test_weather_block_on_the_rack_screen,
         test_waver_head_settle_may_be_zero,
         test_open_beyond_window_finder_and_front,
@@ -92942,6 +93983,7 @@ if __name__ == "__main__":
         test_config_watch_reloads_only_what_is_safe_and_is_quick,
         test_config_watch_on_the_status_and_reload_engine,
         test_ui2_pages_served_and_switched,
+        test_ui2_runs_on_ipados15,
         test_ui2_page_makes_only_1_0_presses,
         test_ui2_show_tab_in_a_browser,
         test_ui2_day_makes_only_1_0_presses,
