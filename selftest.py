@@ -86930,6 +86930,33 @@ console.log(JSON.stringify(out));
     print("  ok")
 
 
+def _key_safe_scan(page):
+    """([buttons that stop, disarm, turn off, hold or abort without
+    data-safe], [ids of the data-safe buttons]) of a rack page's source,
+    its JavaScript templates included."""
+    import re as _re
+    want = _re.compile(r"\b(stop|disarm|turn off|all off|calibration off|"
+                       r"hazers off|abort)\b|^hold$", _re.I)
+    skip = _re.compile(r'id="(hz-same|abort-said-ok)"|data-ann=|data-lz=|'
+                       r'data-hzb=')
+    lacking, ids = [], []
+    for m in _re.finditer(r"<button\b([^>]*)>(.*?)</button>", page, _re.S):
+        attrs, inner = m.group(1), m.group(2)
+        label = _re.sub(r"<[^>]+>", " ", inner)
+        label = _re.sub(r'\$\{icon\("([a-z]+)"\)\}', r" \1 ", label)
+        label = _re.sub(r"\s+", " ", label).strip()
+        if skip.search(attrs):
+            continue
+        safe = "data-safe" in attrs
+        mid = _re.search(r'\bid="([^"$]+)"', attrs)
+        if safe and mid:
+            ids.append(mid.group(1))
+        if (want.search(label) or _re.search(r'id="(b-abort|b-hold|m-hold)"',
+                                             attrs)) and not safe:
+            lacking.append((attrs.strip()[:40], label[:30]))
+    return lacking, sorted(set(ids))
+
+
 def test_rack_page_key_guard_never_holds_back_the_safe_buttons():
     section("both pages' key guard (review A of #176, rounds 2 and 3): for 2 s "
             "after the window comes to the front with no touch in it, a "
@@ -86949,12 +86976,20 @@ def test_rack_page_key_guard_never_holds_back_the_safe_buttons():
         if not node or a < 0 or b < 0:
             continue
         guard = page[a:b + len("}, true);\n")]
+        # Every button that stops, disarms, turns off or holds carries
+        # data-safe (review B round 4): derived from the page, so a new
+        # one cannot be forgotten.
+        lacking, safe_ids = _key_safe_scan(page)
+        check(not lacking, f"{name}: stop, disarm, off or Hold buttons "
+                           f"without data-safe: {lacking}")
+        check(len(safe_ids) >= 8, f"{name}: the safe buttons: {safe_ids}")
         js = r"""
 let NOW = 0; const performance = {now: () => NOW};
 const H = {};
 const window = {addEventListener: (t, f) => { (H[t] = H[t] || []).push(f); }};
 """ + guard + r"""
-function btn(id, mode, cls){ const b = {id: id, dataset: {mode: mode || ""},
+function btn(id, mode, cls, safe){ const d = {mode: mode || ""}; if(safe) d.safe = "";
+  const b = {id: id, dataset: d,
   classList: {contains: c => (cls || []).includes(c)}}; b.closest = () => b; return b; }
 function key(type, t, code){ const e = {target: t, code: code, dropped: false,
   preventDefault(){ this.dropped = true; }, stopImmediatePropagation(){}};
@@ -86962,13 +86997,17 @@ function key(type, t, code){ const e = {target: t, code: code, dropped: false,
 const out = [];
 const t = (c, m) => { if(!c) out.push(m); };
 function focusNow(){ NOW += 10000; (H.focus || []).forEach(f => f({})); }
-for(const id of ["b-abort", "b-hold", "b-stop", "b-disarm", "m-hold", "m-stop", "lz-disarm",
-                 "hz-off", "ann-stop", "wc-stop", "fb-alloff", "fb-disarm", "sa-off"]){
+for(const id of SAFE_IDS){
   focusNow();
-  t(key("keydown", btn(id), "Enter") && key("keyup", btn(id), "Enter"), id + " Enter held back");
+  t(key("keydown", btn(id, "", [], true), "Enter") && key("keyup", btn(id, "", [], true), "Enter"), id + " Enter held back");
   focusNow();
-  t(key("keydown", btn(id), "Space") && key("keyup", btn(id), "Space"), id + " Space held back");
+  t(key("keydown", btn(id, "", [], true), "Space") && key("keyup", btn(id, "", [], true), "Space"), id + " Space held back");
 }
+focusNow();
+t(!key("keydown", btn("b-hold"), "Enter"), "a button without data-safe: held back (the attribute decides)");
+// Keys held when the window lost focus are forgotten.
+NOW += 10000; key("keydown", btn("x"), "Space"); (H.blur || []).forEach(f => f({})); focusNow();
+t(!key("keyup", btn("b-start", "start", ["go"]), "Space"), "a key held across a blur: its release is not let through");
 focusNow();
 t(key("keydown", btn("b-start", "stop", ["stopnow"]), "Enter") &&
   key("keyup", btn("b-start", "stop", ["stopnow"]), "Enter"), "Start now while it is Stop: held back");
@@ -86990,13 +87029,26 @@ t(key("keyup", btn("mo-fire"), "Space"), "the purge's release right after focus:
 focusNow(); (H.pointerdown || []).forEach(f => f({}));
 t(key("keydown", btn("b-start", "start"), "Enter"), "after a touch: keys work");
 console.log(JSON.stringify(out));
-"""
+""".replace("SAFE_IDS", json.dumps(safe_ids))
         r = _node_js(node, js, capture_output=True, text=True, timeout=60)
         try:
             bad = json.loads(r.stdout.strip().splitlines()[-1])
         except (ValueError, IndexError):
             bad = [f"node said: {r.stdout[-300:]} {r.stderr[-300:]}"]
         check(not bad, f"{name}: the key guard: {bad}")
+    # The Startup page's purge key obeys the guard (review B round 4): a
+    # Space just after the window came forward never starts a fire, on any
+    # button; and a Start or Stop key decides from its keydown's mode.
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    i = page.find('if((location.hash || "").replace("#", "") !== "morning") return;')
+    j = page.find("fireStart();", i)
+    check(i > 0 and 0 < page.find("if(keyFresh()){", i) < j,
+          "the purge's Space handler returns while the key guard is fresh, "
+          "before fireStart")
+    check('el.addEventListener("keydown", e => { if(!e.repeat && (e.key === '
+          '"Enter" || e.key === " ")) DOWN_MODE[id] = el.dataset.mode; });'
+          in page, "Start now / Stop decides from the keydown's mode")
     print("  ok")
 
 

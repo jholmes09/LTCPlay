@@ -388,11 +388,11 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 <main>
   <!-- Off the SHOW tab: the presses that make things safe, always here. -->
   <div id="mini" hidden>
-    <button class="b amber" id="m-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
-    <button class="b red" id="m-stop"><svg class="i"><use href="#i-stop"/></svg>Stop show</button>
-    <button class="b safe" id="m-disf"><svg class="i"><use href="#i-shield"/></svg>Disarm flames</button>
-    <button class="b safe" id="m-disl"><svg class="i"><use href="#i-shield"/></svg>Disarm lasers</button>
-    <button class="b redline" id="m-snd"><svg class="i"><use href="#i-stop"/></svg>Stop sound</button>
+    <button data-safe class="b amber" id="m-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
+    <button data-safe class="b red" id="m-stop"><svg class="i"><use href="#i-stop"/></svg>Stop show</button>
+    <button data-safe class="b safe" id="m-disf"><svg class="i"><use href="#i-shield"/></svg>Disarm flames</button>
+    <button data-safe class="b safe" id="m-disl"><svg class="i"><use href="#i-shield"/></svg>Disarm lasers</button>
+    <button data-safe class="b redline" id="m-snd"><svg class="i"><use href="#i-stop"/></svg>Stop sound</button>
   </div>
   <!-- SHOW: top to bottom, what to do next, where the show is, the
        transport that applies now, one alert, flames and lasers,
@@ -406,8 +406,8 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     </div>
     <div class="tr">
       <button class="b green" id="b-go" data-mode="none"><svg class="i"><use href="#i-play"/></svg><span class="lbl"><span id="go-l">Start now</span><small id="go-why"></small></span></button>
-      <button class="b amber" id="b-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
-      <button class="b redline" id="b-stop"><svg class="i"><use href="#i-stop"/></svg><span id="stop-l">Stop show</span></button>
+      <button data-safe class="b amber" id="b-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
+      <button data-safe class="b redline" id="b-stop"><svg class="i"><use href="#i-stop"/></svg><span id="stop-l">Stop show</span></button>
       <button class="q" data-q="transport" aria-label="Help: show controls">?</button>
     </div>
     <div id="alert" class="none">
@@ -421,7 +421,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
       <div id="groups" aria-label="Flame groups and lasers"></div>
       <div class="allcol">
         <button class="b green hold" id="b-armall"><div class="fill"></div><svg class="i"><use href="#i-ring"/></svg><span>Hold: arm flames</span></button>
-        <button class="b safe" id="b-disall"><svg class="i"><use href="#i-shield"/></svg><span>Disarm flames</span></button>
+        <button data-safe class="b safe" id="b-disall"><svg class="i"><use href="#i-shield"/></svg><span>Disarm flames</span></button>
       </div>
       <!-- The hazers (hazers.py, Jeff 2026-10-29): a plain tap ON or OFF
            per hazer, and Hazers off. Abort and Stop switch them off. -->
@@ -461,7 +461,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
       <!-- The heading is the announcements' "?": a tap says what they do. -->
       <button class="head" data-q="announce" aria-label="Announcements: what they do"><b id="ann-w"><svg class="i"><use href="#i-mega"/></svg><span id="ann-word">Announce</span><span class="qm" aria-hidden="true">?</span></b><span id="ann-note"></span></button>
       <div id="ann-btns"></div>
-      <button class="b redline" id="ann-stop"><svg class="i"><use href="#i-stop"/></svg>Stop sound</button>
+      <button data-safe class="b redline" id="ann-stop"><svg class="i"><use href="#i-stop"/></svg>Stop sound</button>
     </div>
     <div class="frow">
       <button class="b" id="wx"><svg class="i"><use href="#i-wind"/></svg><span id="wx-t">Wind: waiting</span></button>
@@ -471,7 +471,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 </footer>
 </div>
 
-<div id="abortbar"><button id="b-abort" aria-label="Abort. Tap twice to abort."><span class="oct" aria-hidden="true"><i></i></span><span class="w" id="abort-w">ABORT</span></button></div>
+<div id="abortbar"><button data-safe id="b-abort" aria-label="Abort. Tap twice to abort."><span class="oct" aria-hidden="true"><i></i></span><span class="w" id="abort-w">ABORT</span></button></div>
 
 <div id="sheet" hidden role="dialog" aria-modal="true">
   <div class="box">
@@ -663,7 +663,7 @@ function sheet(title, html, buttons, flip){
     $("sh-body").innerHTML = html || "";
     const row = $("sh-row");
     row.className = flip ? "flip" : "";
-    row.innerHTML = (buttons || [{label:"Close"}]).map((b, i) => `<button class="b ${b.cls || ""}" data-i="${i}">${b.icon ? icon(b.icon) : ""}${esc(b.label)}</button>`).join("");
+    row.innerHTML = (buttons || [{label:"Close"}]).map((b, i) => `<button class="b ${b.cls || ""}"${b.safe ? " data-safe" : ""} data-i="${i}">${b.icon ? icon(b.icon) : ""}${esc(b.label)}</button>`).join("");
     $("sheet").hidden = false;
     const done = (v) => { if(SHEET_DONE !== done) return; SHEET_DONE = null; $("sheet").hidden = true; res(v); };
     SHEET_DONE = done;
@@ -680,22 +680,25 @@ document.addEventListener("keydown", e => { if(e.key === "Escape" && SHEET_DONE)
 // direction (Abort, Hold, Stop, every Disarm, every Off and Stop, a
 // two-way button while it disarms or stops), and the release of a key
 // whose press was let through (a purge held on Space always ends).
-const KEY_SAFE = new Set(["b-abort", "b-hold", "b-stop", "b-disarm", "m-hold", "m-stop",
-  "al-sum-dis", "lz-disarm", "mo-ldisarm", "ann-stop", "ann-banner-stop", "wc-banner-stop",
-  "wc-stop", "lf-banner-off", "lf-off", "sf-banner-off", "sa-off", "fb-alloff", "fb-disarm",
-  "hz-off", "mo-cal-off"]);
+// Data driven (review B round 4): every such button carries data-safe,
+// and the selftest checks that no stop, disarm, off or Hold button lacks it.
 function keySafe(t){
   const b = t && t.closest ? (t.closest("button") || t) : t;
   if(!b) return false;
-  if(KEY_SAFE.has(b.id)) return true;
+  if(b.dataset && b.dataset.safe !== undefined) return true;
   const m = b.dataset ? b.dataset.mode : "";
   return m === "stop" || m === "disarm" || (b.classList && (b.classList.contains("disarm") || b.classList.contains("stopnow")));
 }
 const KEY_GUARD = {at: 0, pointed: true, passed: new Set()};
 window.addEventListener("focus", () => { KEY_GUARD.at = performance.now(); KEY_GUARD.pointed = false; });
+// Keys held when the window lost focus come up elsewhere: forgotten.
+window.addEventListener("blur", () => { KEY_GUARD.passed.clear(); });
 window.addEventListener("pointerdown", () => { KEY_GUARD.pointed = true; }, true);
+function keyFresh(){
+  return !KEY_GUARD.pointed && performance.now() - KEY_GUARD.at <= 2000;
+}
 function keyGuarded(e){
-  return !KEY_GUARD.pointed && performance.now() - KEY_GUARD.at <= 2000 && !keySafe(e.target);
+  return keyFresh() && !keySafe(e.target);
 }
 window.addEventListener("keydown", e => {
   if(keyGuarded(e)){ e.preventDefault(); e.stopImmediatePropagation(); return; }
@@ -712,9 +715,9 @@ window.addEventListener("keyup", e => {
 // A confirm: Yes only on the button that says it. `flip` puts Yes on the
 // other side (Start's confirm, as in 1.0, so a Stop's Yes is never where
 // a Start's was).
-async function confirmBox(q, detail, yes, cls, flip){
+async function confirmBox(q, detail, yes, cls, flip, safe){
   const v = await sheet(q, `<div>${esc(detail || "")}</div>`,
-    [{label:"Cancel", value:false}, {label:yes, value:true, cls:cls || "green"}], flip);
+    [{label:"Cancel", value:false, safe:true}, {label:yes, value:true, cls:cls || "green", safe:!!safe}], flip);
   return v === true;
 }
 
@@ -1086,7 +1089,7 @@ function renderPins(){
   const sig = pins.map(p => p.key).join(",");
   if(sig === PIN_SIG) return;
   PIN_SIG = sig;
-  $("pins").innerHTML = pins.map(p => `<button class="b red" data-pin="${p.key}">${icon("stop")}${esc(p.btn)}</button>`).join("");
+  $("pins").innerHTML = pins.map(p => `<button data-safe class="b red" data-pin="${p.key}">${icon("stop")}${esc(p.btn)}</button>`).join("");
 }
 $("pins").addEventListener("click", async e => {
   const b = e.target.closest("button[data-pin]"); if(!b) return;
@@ -1238,6 +1241,7 @@ function drawTransport(isSt){
   st.disabled = HALT_BUSY;
 }
 $("b-go").addEventListener("pointerdown", () => { DOWN_MODE.go = $("b-go").dataset.mode; });
+$("b-go").addEventListener("keydown", e => { if(!e.repeat && (e.key === "Enter" || e.key === " ")) DOWN_MODE.go = $("b-go").dataset.mode; });
 // What the press means: decided from the mode seen at touch-down (1.0's
 // pressDecision): a press whose meaning changed under the finger, or just
 // after a show ended, does nothing and says so.
@@ -1287,7 +1291,7 @@ $("b-hold").addEventListener("click", () => press("hold"));
 // Stop: the engine's complete halt (1.0's pressStop): the confirm, the same
 // body, the same answer read the same way.
 async function pressStop(){
-  if(!(await confirmBox("Stop the show?", "Flames and lasers disarm. Rig goes dark.", "Yes, stop", "red"))) return;
+  if(!(await confirmBox("Stop the show?", "Flames and lasers disarm. Rig goes dark.", "Yes, stop", "red", false, true))) return;
   if(HALT_BUSY) return;
   HALT_BUSY = true;
   say("Stopping...", "Stopping: disarming, then fading to dark...", "warn");
@@ -1583,11 +1587,11 @@ function renderHazers(s){
     HZ_KEY = key;
     row.innerHTML = compact ?
       `<div class="tn">Hazers</div><div class="hzs" id="hz-sum"></div><div class="hzb2">` +
-      `<button class="b safe" id="hz-off"><span class="hn">Hazers off</span></button>` +
+      `<button data-safe class="b safe" id="hz-off"><span class="hn">Hazers off</span></button>` +
       `<button class="b" id="hz-open"><span class="hn">Hazers</span></button></div>` :
       v.hazers.map((h, i) =>
         `<button class="b off" data-hzb="${i}"><span class="hn"></span><span class="hw"></span></button>`).join("") +
-      `<button class="b safe" id="hz-off"><span class="hn">Hazers off</span></button>` +
+      `<button data-safe class="b safe" id="hz-off"><span class="hn">Hazers off</span></button>` +
       `<button class="b" id="hz-open"><span class="hn">Levels</span></button>`;
     row.querySelectorAll("[data-hzb]").forEach(b => b.addEventListener("click", () => hazerTap(Number(b.dataset.hzb))));
     $("hz-off").addEventListener("click", hazersOff);
