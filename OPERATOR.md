@@ -1045,8 +1045,8 @@ of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
 - **What charges a tank:** Fuel Charge (55) or Air Charge (56) reaching
   the Fireball while flamesafe says it is armed, from the show or from the
   Fireball page.
-- **What empties both tanks:** the shot (Valve Open, 57, on and then off
-  again) or Purge (59, on and then off again), each only once flamesafe
+- **What empties both tanks:** the shot (Jeff: Valve Open IS the shot;
+  57 on and then off again) or Purge (59, on and then off again), each only once flamesafe
   has reported sending it. Nothing else: **Stop, Hold, the end of a show,
   a disarm and a restart of LTC Player change nothing.** The Igniter
   plays no part.
@@ -1058,12 +1058,12 @@ of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
   flamesafe's status was not known. A shot or a purge seen for certain
   makes it EMPTY again. While a tank is CHARGED or NOT KNOWN, nothing
   charges it automatically.
-- **The very first start** (no record yet, or the record lost) counts both
-  tanks NOT KNOWN, not empty (a behaviour change for Andy to confirm):
-  the timeline charges nothing, and the Fireball page says so. Fire the
-  shot or press Purge on the Fireball page; or, if both tanks are known to
-  be depressurised, an admin presses **Tanks are empty** there (it asks
-  first, and the journal names who). It changes NOT KNOWN tanks only: a
+- **The very first start** (no record yet) counts both tanks EMPTY (Jeff:
+  tanks start empty), and the journal says: if the fuel or air tank is
+  pressurised now, press Purge on the Fireball page.
+- **Tanks are empty** (an admin, on the Fireball page, while a tank is
+  NOT KNOWN): if both tanks are known to be depressurised, it makes the
+  NOT KNOWN ones EMPTY (it asks first, and the journal names who). A
   charged tank is emptied only by the shot or by Purge.
 - **Evidence.** A charge counts when it went out while flamesafe said the
   Fireball was armed, or when flamesafe itself reports having sent it

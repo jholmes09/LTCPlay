@@ -98460,11 +98460,11 @@ def test_fireball_timeline_docs_in_plain_words():
               f"OPERATOR.md's fireball timeline section says {need!r}")
     c = _fb_doc_part("OPERATOR.md", "### The fuel and air charge", "\n## ")
     for need in ("EMPTY", "CHARGED", "NOT KNOWN", "Fuel Charge (55)",
-                 "Air Charge (56)", "Valve Open, 57", "Purge (59",
+                 "Air Charge (56)", "Valve Open IS the shot", "Purge (59",
                  "Stop, Hold, the end of a show", "change nothing",
                  "Igniter plays no part", "top-off is not a double charge",
                  "very first start", "press Purge",
-                 "counts both tanks NOT KNOWN, not empty",
+                 "counts both tanks EMPTY", "tanks start empty",
                  "**Tanks are empty**", "flamesafe itself reports",
                  "written again every second until it is",
                  "ltcplay_fireball_charge.json", "never invented"):
@@ -98592,18 +98592,24 @@ def test_fireball_charge_state():
           "Fuel 55, Air 56, Valve Open 57, Purge 59")
     work = tempfile.mkdtemp()
     try:
-        # The very first run (or a lost record): no file, both NOT KNOWN,
-        # never EMPTY (review of #185), said as a fault, written; an admin
-        # confirms them empty (Tanks are empty).
+        # The very first run: no file, both tanks START EMPTY (Jeff,
+        # 2026-10-30), said once, written.
         C = _fbc(work)
         tr = C.tr
-        check(tr.state("fuel") == U and tr.state("air") == U and
-              tr.first_run, "no file: both tanks NOT KNOWN")
+        check(tr.state("fuel") == E and tr.state("air") == E and
+              tr.first_run, "no file: both tanks EMPTY (the first run)")
         tr.pump()
-        check(any(a[2] == "first_run" and "both tanks are NOT KNOWN" in a[3]
-                  and k.get("fault") for a, k in C.lines) and
+        check(any(a[2] == "first_run" and "both tanks start EMPTY" in a[3]
+                  and not k.get("fault") for a, k in C.lines) and
               os.path.exists(tr.path),
-              f"said as a fault and written: {C.lines[:1]}")
+              f"said once (not a fault) and written: {C.lines[:1]}")
+        # Tanks are empty (an admin) for NOT KNOWN tanks: journaled and
+        # audited; nothing to confirm when none is NOT KNOWN.
+        ok, text = tr.confirm_empty("Andy", "Rack screen")
+        check(not ok and "nothing to confirm" in text,
+              f"nothing NOT KNOWN: nothing to confirm: {text}")
+        tr.tanks["fuel"]["state"] = U
+        tr.tanks["air"]["state"] = U
         ok, text = tr.confirm_empty("Andy", "Rack screen")
         tr.pump()
         check(ok and tr.state("fuel") == E and tr.state("air") == E and
@@ -98611,9 +98617,6 @@ def test_fireball_charge_state():
               text and C.events[-1]["user"] == "Andy" and
               C.events[-1]["target"] == "confirmed_empty",
               f"an admin confirms them empty: journaled and audited: {text}")
-        ok, text = tr.confirm_empty("Andy", "Rack screen")
-        check(not ok and "nothing to confirm" in text,
-              f"nothing NOT KNOWN: nothing to confirm: {text}")
         check(_fbc(None).tr.state("fuel") == E,
               "memory only (no settings folder): EMPTY")
         check(tr.sentence() == "Fuel: empty. Air: empty.",
@@ -100569,12 +100572,10 @@ def test_fireball_timeline_end_to_end_real_flamesafe():
                             "sent_fire": g.get("sent_fire")}
                            for g in st.get("groups") or []]}
     tracker = FC.ChargeTracker(work, flames_get=flames)
-    # No record yet: both NOT KNOWN; Andy confirms them empty, as on the
-    # first night (Tanks are empty).
-    check(tracker.state("fuel") == "unknown" and
-          tracker.confirm_empty("Andy", "Rack screen")[0] and
-          tracker.state("fuel") == "empty",
-          "no record: NOT KNOWN until confirmed empty")
+    # No record yet: both tanks start EMPTY (Jeff, 2026-10-30).
+    check(tracker.state("fuel") == "empty" and
+          tracker.state("air") == "empty",
+          "no record: both tanks start EMPTY")
     link.observer = tracker.observe
     cues.fireball = FQ.FireballCues(store, charge_get=lambda: tracker)
     link.start()

@@ -20112,10 +20112,10 @@ def build():
   "                _before(tc, values, ok)\n",
   "                pass\n"),
 
- ("fireball charge: no record reads as both tanks EMPTY",
+ ("fireball charge: no record (the first run) reads as NOT KNOWN",
   "ltcplay/fireball_charge.py",
-  "            state = UNKNOWN if self.path else EMPTY",
-  "            state = EMPTY"),
+  "            self.tanks = {k: _new_tank(EMPTY, now, \"first run: no charge \"",
+  "            self.tanks = {k: _new_tank(UNKNOWN, now, \"first run: no charge \""),
 
  ("fireball charge: a record that could not be written is never tried again",
   "ltcplay/fireball_charge.py",
