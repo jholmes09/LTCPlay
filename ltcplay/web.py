@@ -975,9 +975,16 @@ class Handler(BaseHTTPRequestHandler):
                     "error": f"{type(e).__name__}: {e}"}
         done = h.get("_cond_done") if isinstance(h, dict) else None
         if done is not None:
-            # The halt stays open until the conductor has taken the Stop
-            # (cold review of #191 round 3, F4).
+            # The halt stays open until the conductor has taken the Stop,
+            # and its fade is over (cold review of #191 round 3, F4).
             done.wait(HALT_FADE_WAIT_S)
+            cond = getattr(getattr(self.server, "schedule", None),
+                           "conductor", None)
+            if cond is not None and getattr(cond, "threaded", False):
+                try:
+                    cond.wait_idle(HALT_FADE_WAIT_S)
+                except Exception:                # noqa: BLE001
+                    pass
         out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show",
                                  "hold", "programming")
                if h.get(k) is not None}

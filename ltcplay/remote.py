@@ -5382,6 +5382,15 @@ class Remote:
         done = h.get("_cond_done")
         if done is not None:
             done.wait(STOP_FADE_WAIT_S)
+            # And until its fade is over, so a Start now pressed right
+            # after the Stop is never faded out by the Stop's own music
+            # step (a threaded conductor; STOP_FADE_WAIT_S at most).
+            cond = getattr(self.schedule, "conductor", None)
+            if cond is not None and getattr(cond, "threaded", False):
+                try:
+                    cond.wait_idle(STOP_FADE_WAIT_S)
+                except Exception:                # noqa: BLE001
+                    pass
         out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show",
                                  "hold", "programming")
                if h.get(k) is not None}

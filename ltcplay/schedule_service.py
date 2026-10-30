@@ -2725,8 +2725,10 @@ class Service:
                     "text": self.STOP_HELD_LATER}
         st = m.state
         if st == sch.HOLD:
-            if not m.stop_hold:
-                self.machine = replace(m, stop_hold=True)
+            if not m.stop_hold or not m.dark:
+                # The Stop's now, and dark: the conductor's Stop (asked at
+                # the press) has taken the look down.
+                self.machine = replace(m, stop_hold=True, dark=True)
                 self._save_tonight()
             return {"ok": True, "kind": "held", "state": st,
                     "text": "The schedule was already on Hold; it stays on "
