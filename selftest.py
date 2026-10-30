@@ -57818,6 +57818,216 @@ def test_fire_ice_stop_while_the_cue_starts():
     print("  ok")
 
 
+def test_stop_hold_stands_until_resume():
+    section("A Stop's Hold stands until Resume (cold review of #191 round "
+            "2): a Stop of the night's last show, a Stop while closing and "
+            "a second Stop all leave it standing, so the next night's shows "
+            "do not start by themselves with Run on; it is kept on disk and "
+            "survives a restart; the screens say Held after Stop; Resume "
+            "releases it; Start now from it starts one show and the Hold "
+            "comes back; Continue anyway does not release it")
+    S = _sched()
+    if S is None:
+        return
+    import os as _os
+    from datetime import timedelta
+    from ltcplay import schedule_service as SV
+    # 1. The last show of the night.
+    R = _RemoteRig(S)
+    try:
+        m = R.svc.machine
+        last = m.slots[-1]
+        R.now[0] = last.start
+        R.svc.tick()
+        R.settle()
+        R.now[0] = last.start + timedelta(seconds=1)
+        _confirm(S, R.svc)
+        R.settle()
+        check(R.svc.machine.state == S.SHOW and
+              R.svc.machine.running == last.n, "setup: the last show live")
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        path = R.svc._stop_hold_path()
+        check(R.svc.stop_held() and _os.path.exists(path),
+              f"the last show's Stop leaves the Stop's Hold standing, on "
+              f"disk: {R.svc.machine.state} {R.svc._stop_carry}")
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        check((out.get("schedule") or {}).get("stop_held") is True,
+              f"the screens are told: {out.get('schedule', {}).get('stop_held')}")
+        for d in range(1, 8):
+            R.now[0] = _den(S, 3, 0) + timedelta(days=d)
+            R.svc.tick()
+            R.settle()
+        R.now[0] = _den(S, 18, 0) + timedelta(days=7)
+        R.svc.tick()
+        R.settle()
+        m = R.svc.machine
+        check(m.state == S.HOLD and m.running == 0 and m.stop_hold,
+              f"the next night with shows is on the Stop's Hold; its first "
+              f"show does not start: {m.date} {m.state} {m.running}")
+        # Reset does not end it (it is the Stop's).
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
+        check(R.svc.machine.state == S.HOLD and R.svc.stop_held(),
+              f"Reset leaves it: {st} {out}")
+        # 2. A restart reads it back.
+        svc2 = _svc(S, R.work, R.now)
+        try:
+            check(svc2.stop_held(),
+                  "a restarted engine reads the Stop's Hold back from disk")
+        finally:
+            svc2.stop()
+        st, _h, out = R.ask("POST", "/api/remote/resume", {"seen": R.seen()})
+        R.settle()
+        check(st == 200 and not R.svc.stop_held() and
+              not _os.path.exists(path) and
+              R.svc.machine.state == S.STANDBY,
+              f"Resume releases it, and its file goes: {st} {out} "
+              f"{R.svc.machine.state}")
+    finally:
+        R.close()
+    # 3. A Stop while closing, then Resume with nothing held.
+    R = _RemoteRig(S)
+    try:
+        m = R.svc.machine
+        R.svc.machine = _dc_replace(m, slots=tuple(s_ for s_ in m.slots
+                                                   if s_.n == 1))
+        _live_show(R)
+        R.svc._apply(S.Event(S.SHOW_ENDED, "madmapper"), _den(S, 18, 8))
+        R.now[0] = _den(S, 18, 9)
+        R.svc.tick()
+        R.settle()
+        check(R.svc.machine.state in (S.CLOSING, S.OFF),
+              f"setup: the night is closing: {R.svc.machine.state}")
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        check(st == 200 and R.svc.stop_held() and not out.get("failed"),
+              f"a Stop while closing: the Stop's Hold stands: {out}")
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        check(R.svc.stop_held(), "a second Stop: it still stands")
+        r = R.svc.operator_press("resume", "Andy", "Rack screen")
+        check(r["ok"] and not R.svc.stop_held(),
+              f"Resume with nothing held releases it: {r}")
+    finally:
+        R.close()
+    # 4. Start now from it: one show, then the Hold is back.
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        R.now[0] = _den(S, 18, 10)
+        st, _h, out = R.ask("POST", "/api/remote/start-now",
+                            {"seen": R.seen(), "confirmed": True})
+        R.settle()
+        check(R.svc.machine.state == S.SHOW,
+              f"setup: Start now from the Stop's Hold: {st} {out}")
+        R.now[0] = _den(S, 18, 10, 1)
+        _confirm(S, R.svc)
+        R.settle()
+        R.svc._apply(S.Event(S.SHOW_ENDED, "madmapper"), _den(S, 18, 17, 30))
+        R.settle()
+        R.now[0] = _den(S, 18, 17, 30)
+        R.svc.tick()
+        R.now[0] = _den(S, 18, 20)
+        R.svc.tick()
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and R.svc.machine.running == 0
+              and R.svc.stop_held(),
+              f"after that show the Stop's Hold is back; show 2 waits: "
+              f"{R.svc.machine.state} {R.svc.machine.running}")
+    finally:
+        R.close()
+    # 5. Continue anyway never releases it (the source).
+    import inspect as _insp
+    src = _insp.getsource(SV.Service.continue_anyway)
+    check("if m.state == sch.HOLD and not self.stop_held():" in src,
+          "Continue anyway resumes only an operator's own Hold")
+    print("  ok")
+
+
+def test_stop_round2_conductor_and_marks():
+    section("Stop (cold review of #191 round 2): a show start asked for "
+            "before a Stop is refused, as after an Abort; a Stop's conductor "
+            "call never waits on tonight's save; a Stop between shows is "
+            "dark and takes the idle look down; a Stop on a Hold marks it "
+            "as the Stop's; a restart keeps the mark")
+    C = _cond_mod()
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    stops = c.stops
+    check(c.stop("Andy", "rack screen").ok, "Stop")
+    r = c.show_starting("the scheduler", "engine")
+    check(not r.ok and "Stop was pressed" in r.sentence,
+          f"a show start after the Stop, with no new music start, is "
+          f"refused: {r}")
+    r = c.show_starting("the scheduler", "engine", stops=stops)
+    check(not r.ok, f"one decided before the Stop is refused: {r}")
+    c.run_pending()
+    c.music_started()
+    r = c.show_starting("the scheduler", "engine", stops=c.stops)
+    check(r.ok and c.snapshot()["look"] == C.PLAYING,
+          f"a new start after the Stop is taken: {r}")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import schedule_service as SV
+    # The conductor's Stop is asked before tonight's save.
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        order = []
+        real_save = R.svc._save_tonight
+        R.svc._save_tonight = lambda *a, **kw: (order.append("save"),
+                                                real_save(*a, **kw))[1]
+        real_put = R.svc._calls.put
+        R.svc._calls.put = lambda call: (order.append(call.method),
+                                         real_put(call))[1]
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        check("stop" in order and "save" in order and
+              order.index("stop") < order.index("save"),
+              f"the conductor's Stop is queued before tonight's save: "
+              f"{order}")
+    finally:
+        R.close()
+    # Between shows: dark, and the conductor's Stop takes the look down.
+    R = _RemoteRig(S)
+    try:
+        asked = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (asked.append(a), real_cs(*a, **kw))[1]
+        R.now[0] = _den(S, 17, 58)
+        R.svc.tick()
+        R.settle()
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        m = R.svc.machine
+        check(m.state == S.HOLD and m.dark and asked,
+              f"a Stop between shows: on Hold, dark, the conductor's Stop "
+              f"asked: {m.state} {m.dark} {asked}")
+        R.ask("POST", "/api/remote/resume", {"seen": R.seen()})
+        R.settle()
+        check(R.svc.machine.state in (S.IDLE, S.STANDBY) and
+              not R.svc.machine.dark, "Resume brings the look back")
+        # A Stop on an operator's own Hold marks it as the Stop's.
+        R.ask("POST", "/api/remote/hold", {"seen": R.seen()})
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and
+              not R.svc.machine.stop_hold, "setup: an operator's Hold")
+        R.svc._stop_carry = None
+        r = R.svc.halt_schedule("Andy", "Rack screen")
+        check(r["kind"] == "held" and R.svc.machine.stop_hold,
+              f"a Stop on it marks it as the Stop's: {r}")
+        # A restart keeps the mark (tonight's file).
+        rule = R.svc.rule
+        doc = json.loads(json.dumps(S.machine_to_doc(R.svc.machine)))
+        back = S.machine_from_doc(doc, rule, R.svc.machine.date, R.now[0])
+        check(doc.get("stop_hold") is True and back.stop_hold,
+              f"tonight's file keeps it, and it is read back: {doc}")
+    finally:
+        R.close()
+    print("  ok")
+
+
 def test_stop_says_when_its_flame_disarm_failed():
     """Third review of #126, P2-2: /api/stop also disarms every flame group,
     and when that disarm fails, the Rack screen says so instead of a bare
@@ -96313,6 +96523,8 @@ if __name__ == "__main__":
         test_reset_never_ends_a_stops_hold,
         test_stops_hold_outlives_the_night,
         test_fire_ice_stop_while_the_cue_starts,
+        test_stop_hold_stands_until_resume,
+        test_stop_round2_conductor_and_marks,
         test_screen_arm_end_to_end_probes,
         test_screen_arming_switch_and_refusals,
         test_engine_stall_probe_memory_is_bounded,
