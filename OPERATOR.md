@@ -882,8 +882,36 @@ that long. The stages, in this order:
   and one audit line: who, which screen, and what changed, stage by
   stage. If the file cannot be read, no show fires its fireball from a
   timeline: a show set to Timeline never falls back to its FSEQ.
-- **Where.** The editor is on Interface 2.0 (a later update). Until it is
-  there, nothing sends from the timeline either.
+- **Where.** The editor is on Interface 2.0 (a later update).
+
+### In a show set to Timeline
+
+- The show's FSEQ values on 55 to 59 are ignored, always. Each stage's
+  channel is ON (255) from its start for its duration, on the show audio's
+  own cue time, and off otherwise. **Purge (59) is never set.**
+- Everything that stops flames stops these: they reach the Fireball only
+  while it is **armed** (flamesafe), only while the show plays, and Hold,
+  Stop, Abort, a seek and a Programming move work on them exactly as on
+  any flame cue. After a Resume a stage whose time is still running comes
+  back like any flame cue does, **except a charge** (below).
+- **Never a double charge.** The Fuel or Air stage turns its channel on
+  only while that tank is EMPTY (see the charge record below), or while it
+  carries on the very charge it started. Otherwise it is skipped for the
+  rest of that play, and the journal and every screen's status say so
+  once, for example
+  "Fuel already charged: the Fuel stage was skipped (no double charge)."
+  A tank NOT KNOWN is skipped too: purge or fire to reset it. A charge cut
+  short by Hold, Stop or a seek never charges again in that play, even
+  after a Resume inside its time. The Valve Open and Igniter stages are
+  not limited by this.
+- **Editing during a show.** A saved change is taken on the next frame. A
+  stage already started keeps the times it started with. A stage not
+  started yet takes the new times, unless its new start is already behind
+  the show: then it is not fired in this play. A change of source (FSEQ
+  or Timeline) applies from the next time a show cue starts.
+- If the timeline file cannot be read, or could not be set up, 55 to 59
+  are zero for **every** show (a Timeline show never falls back to its
+  FSEQ) and the journal and every screen's status say why.
 
 ### The fuel and air charge (never a double charge)
 

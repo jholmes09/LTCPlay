@@ -92123,12 +92123,24 @@ def test_fireball_timeline_docs_in_plain_words():
                  "ltcplay_fireball_charge.json", "never invented"):
         check(" ".join(need.split()) in " ".join(c.split()),
               f"OPERATOR.md's charge section says {need!r}")
+    s = _fb_doc_part("OPERATOR.md", "### In a show set to Timeline", "\n### ")
+    for need in ("ignored, always", "ON (255)", "Purge (59) is never set",
+                 "**armed**", "Hold, Stop, Abort, a seek",
+                 "Never a double charge", "only while that tank is EMPTY",
+                 "Fuel already charged: the Fuel stage was skipped (no "
+                 "double charge).", "NOT KNOWN is skipped",
+                 "never charges again in that play",
+                 "keeps the times it started with",
+                 "not fired in this play", "next time a show cue starts",
+                 "zero for **every** show"):
+        check(" ".join(need.split()) in " ".join(s.split()),
+              f"OPERATOR.md's timeline in a show says {need!r}")
     order = [o.index(w) for w in ("| Fuel (", "| Air (", "| Igniter (",
                                   "| Valve Open (")]
     check(order == sorted(order),
           "OPERATOR.md lists the stages in Jeff's order: Fuel, Air, "
           "Igniter, Valve Open")
-    for name, part in (("MORNING.md", m), ("OPERATOR.md", o + c)):
+    for name, part in (("MORNING.md", m), ("OPERATOR.md", o + c + s)):
         check("\u2014" not in part and "\u2013" not in part,
               f"{name}'s fireball text has no em or en dashes")
     print("  ok")

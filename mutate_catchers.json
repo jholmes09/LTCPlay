@@ -893,7 +893,7 @@
 "fireball cues: an edit moves a stage that has started": "test_fireball_cues_rules",
 "fireball cues: the FSEQ's 55 to 59 are not masked for a timeline show": "test_fireball_cues_rules",
 "fireball cues: the flame cues skip the timeline in background mode": "test_fireball_cues_wiring",
-"fireball cues: the flame cues skip the timeline when reading in the call": "test_fireball_cues_wiring",
+"fireball cues: the flame cues skip the timeline when reading in the call": "test_fireball_timeline_equals_an_equivalent_fseq",
 "fireball cues: the shot is followed by an automatic purge": "test_fireball_cues_never_drive_purge",
 "fireball timeline: Purge is accepted as a stage": "test_fireball_timeline_model",
 "fireball timeline: a duration of 0 is accepted": "test_fireball_timeline_model",
