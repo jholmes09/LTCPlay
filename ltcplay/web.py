@@ -1045,6 +1045,15 @@ class Handler(BaseHTTPRequestHandler):
                 fn(reason, who, screen)
             except Exception:                    # noqa: BLE001
                 pass
+        # The fuel pump OFF (fuelpump.py, Jeff 2026-10-30: "it should be
+        # affected by the stop button"); the disarm_all below does it at
+        # the link too.
+        fn = getattr(rm, "pump_cut", None)
+        if fn is not None:
+            try:
+                fn(reason, who, screen)
+            except Exception:                    # noqa: BLE001
+                pass
         # The wave flamer cleaning (cleaning.py): Stop ends it, from the
         # rack screen, an iPad or the Stream Deck.
         cl = getattr(rm, "cleaning", None)
@@ -2243,6 +2252,39 @@ def _attach_hazers(httpd):
               f"while a show plays.", action="flame_link", outcome="hazers")
 
 
+def _attach_pump(httpd):
+    """The fireball's fuel pump (fuelpump.py, Jeff 2026-10-30): built for
+    the Fire & Ice engine with a flame link whose flamesafe config lists
+    one. OFF at start. A failure leaves it unavailable (OFF, its slot
+    zero) and is said once; the show is never held back."""
+    from . import fuelpump as fuelpump_mod
+    remote = httpd.remote
+    link = getattr(httpd.fire_ice, "flame_link", None)
+    if link is None or link.pump_name() is None:
+        return
+    try:
+        def _journal(who, screen, outcome, text, fault=False):
+            remote._journal(who or "system", screen or "engine",
+                            "fuel-pump", outcome, text, fault=fault)
+        fs = remote.flame_status
+        remote.pump = fuelpump_mod.FuelPump(
+            link_get=lambda: getattr(httpd.fire_ice, "flame_link", None),
+            flames_get=lambda: fs.view() if fs is not None else None,
+            abort_standing=remote._abort_standing,
+            blocker=remote.pump_blocker,
+            journal=_journal, audit=getattr(remote, "audit", None))
+    except Exception as e:                       # noqa: BLE001
+        print(f"The fuel pump could not be set up: {type(e).__name__}: {e}")
+        return
+    say = getattr(link, "journal_line", None)
+    if say is not None:
+        n, slot, on = link.cfg.pump
+        say(f"Flame link: fuel pump {n} on channel {slot} at {on}, read from "
+            f"{getattr(link, 'flamesafe_path', '')}. It is OFF until turned "
+            f"on; Stop and Abort turn it off.", action="flame_link",
+            outcome="fuel pump")
+
+
 def _attach_fuel(httpd):
     """The Fuel page (fuel.py, FUEL.md): the Morning page's machines, and
     the flame link watched when there is one. It only observes: a failure
@@ -2792,6 +2834,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     if fire_ice is not None and \
             getattr(httpd.fire_ice, "flame_link", None) is not None:
         _attach_hazers(httpd)
+        _attach_pump(httpd)
     if httpd.morning is not None:
         _attach_fuel(httpd)
         if fire_ice is not None and \

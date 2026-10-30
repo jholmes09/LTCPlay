@@ -109,6 +109,9 @@ from . import users as users_mod
 from . import version as version_mod
 from .morning import (TIMED_DEFAULT_S, TIMED_MAX_DEFAULT_S,
                       TIMED_MAX_LIMIT_S, TIMED_MIN_S, TIMED_PRESETS_S)
+from .fuelpump import (DEFAULT_S as PUMP_DEFAULT_S,
+                       MAX_DEFAULT_S as PUMP_MAX_DEFAULT_S,
+                       MAX_LIMIT_S as PUMP_MAX_LIMIT_S, MIN_S as PUMP_MIN_S)
 from .playhead import ShowAudioPlayhead
 
 FIXED_PORT = 7878
@@ -209,6 +212,11 @@ CLEANING_POST_ROUTES = ("cleaning-beat", "cleaning-stop")
 # and from the show network need screen_arming; a disarm and Hazers off
 # never.
 HAZER_POST_ROUTES = ("hazer", "hazers-off", "hazer-level")
+# The fireball's fuel pump (fuelpump.py, Jeff 2026-10-30): read by anyone in
+# the status; {"on": true} is an arm press (users.classify) and from the
+# show network needs screen_arming; anything else turns it off, never
+# refused.
+PUMP_POST_ROUTES = ("fuel-pump",)
 GET_ROUTES = ("whoami", "status", "network", "deck-input",
               "announce-outputs") + \
     MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES + \
@@ -219,7 +227,7 @@ POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     "network", "screen-arming", "alert", "live-flame",
     "announce-output", "announce-test-tone") + \
     MORNING_POST_ROUTES + FUEL_POST_ROUTES + FIREBALL_POST_ROUTES + \
-    CLEANING_POST_ROUTES + HAZER_POST_ROUTES
+    CLEANING_POST_ROUTES + HAZER_POST_ROUTES + PUMP_POST_ROUTES
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
 # on the show machine itself (and the role matrix's Settings, users.py), with
 # a confirm; OFF from any surface, signed in or not: it only takes risk away.
@@ -585,11 +593,16 @@ def load_settings(folder=None):
     # timed purge this show machine allows, 30 s unless an admin sets it in
     # this file, never more than morning.TIMED_MAX_LIMIT_S; purge_timed_s
     # the duration last started here, the page's default.
+    # pump_max_s and pump_s (Jeff, 2026-10-30, the fuel pump): the same
+    # pair for the fuel pump's run time, 60 minutes and 5 minutes unless
+    # set, never more than fuelpump.MAX_LIMIT_S.
     out = {"show_network_address": None, "flamesafe_config": None,
            "screen_arming": False, "purge_arming": True, "booth_alert": None,
            "alert_pixels": None, "ui_default": 1,
            "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
-           "purge_timed_s": TIMED_DEFAULT_S, "path": path}
+           "purge_timed_s": TIMED_DEFAULT_S,
+           "pump_max_s": PUMP_MAX_DEFAULT_S, "pump_s": PUMP_DEFAULT_S,
+           "path": path}
     if not os.path.exists(path):
         return out
     try:
@@ -609,7 +622,9 @@ def settings_from_doc(doc, path, out=None):
                "screen_arming": False, "purge_arming": True,
                "booth_alert": None, "alert_pixels": None,
                "ui_default": 1, "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
-               "purge_timed_s": TIMED_DEFAULT_S, "path": path}
+               "purge_timed_s": TIMED_DEFAULT_S,
+               "pump_max_s": PUMP_MAX_DEFAULT_S, "pump_s": PUMP_DEFAULT_S,
+               "path": path}
     if not isinstance(doc, dict):
         raise ValueError(f"{path} is not a settings object.")
     if doc.get("show_network_address"):
@@ -640,6 +655,17 @@ def settings_from_doc(doc, path, out=None):
             # Never unlimited, never a guess: a wrong value is refused.
             raise ValueError(f"{path}: {k} must be a whole number of "
                              f"seconds from {lo} to {TIMED_MAX_LIMIT_S}.")
+        out[k] = v
+    for k in ("pump_max_s", "pump_s"):
+        if k not in doc:
+            continue
+        v = doc[k]
+        if isinstance(v, bool) or not isinstance(v, int) or \
+                not PUMP_MIN_S <= v <= PUMP_MAX_LIMIT_S:
+            # Never unlimited, never a guess: a wrong value is refused.
+            raise ValueError(f"{path}: {k} must be a whole number of "
+                             f"seconds from {PUMP_MIN_S} to "
+                             f"{PUMP_MAX_LIMIT_S}.")
         out[k] = v
     if doc.get("booth_alert") is not None:
         # Checked by boothaudio.parse_config, which owns the shape; a bad
@@ -1205,8 +1231,15 @@ class FlameStatus:
                 "groups": groups,
                 # The hazers as flamesafe reports them (2026-10-29), None
                 # while stale or from an older flamesafe.
+                # Each entry's kind (2026-10-30): "hazer", or "switch" for
+                # the fuel pump with its on value; an entry from a
+                # flamesafe that says no kind is a hazer.
                 "passthrough": ([
                     {"name": str(p.get("name", "")),
+                     "kind": str(p.get("kind") or "hazer"),
+                     "on": (p.get("on") if isinstance(p.get("on"), int)
+                            and not isinstance(p.get("on"), bool)
+                            else None),
                      "slots": _ints(p.get("slots")) or [],
                      "asked": bool(p.get("asked")),
                      "enabled": bool(p.get("enabled")),
@@ -1563,6 +1596,9 @@ class Remote:
         self._hz_said = None
         self._hz_alert_id = None
         self._hz_lock = threading.Lock()
+        # fuelpump.FuelPump, set by web.serve when flamesafe's config has a
+        # fuel pump (2026-10-30).
+        self.pump = None
         self.live_flame = None       # flameprog.LiveFlame, set by web.serve
         self.clock = clock
         self.wall = wall
@@ -1956,6 +1992,8 @@ class Remote:
             return (*self.announce_post(name, body, ctx),) + ({},)
         if name in HAZER_POST_ROUTES:
             return (*self.hazer_post(name, body, ctx),) + ({},)
+        if name in PUMP_POST_ROUTES:
+            return (*self.pump_post(body, ctx),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
             return (*self.press(name, body, ctx),) + ({},)
         if name == "arm-hold":
@@ -3188,6 +3226,10 @@ class Remote:
             # the link already; this is the belt, and the journal line.
             self.hazers_cut(f"{who or 'someone'} pressed Abort on the "
                             f"{screen}", who, screen)
+            # The fuel pump OFF at the press too (Jeff, 2026-10-30), the
+            # same way: the link's disarm_all did it already; the belt.
+            self.pump_cut(f"{who or 'someone'} pressed Abort on the "
+                          f"{screen}", who, screen)
         if name in ("abort", "hold"):
             # Every laser disarmed at the press too (Jeff, 2026-10-22,
             # ruling 3), from every surface, before the confirm check and
@@ -4502,6 +4544,102 @@ class Remote:
             return 409, {"error": text}
         return 200, {"ok": True, "text": text}
 
+    # -- the fuel pump (fuelpump.py) ------------------------------------------
+    def pump_cut(self, reason, who="", screen=""):
+        """Stop or Abort: the fuel pump OFF at the flame link now, the
+        journal and audit lines on a thread of their own. Never raises,
+        never waits."""
+        pm = self.pump
+        if pm is None:
+            return False
+        try:
+            was = pm.cut()
+            threading.Thread(target=pm.off, args=(reason,),
+                             kwargs={"who": who, "screen": screen,
+                                     "system": not who, "was": was},
+                             daemon=True, name="ltcplay-pump-off").start()
+            return True
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def pump_settings(self):
+        """The fuel pump's run times on this show machine: the screens'
+        default (the last started here), the longest, the shortest and
+        the most an admin may set, from ltcplay_remote.json; "error" when
+        that file cannot be read (then the pump is not turned on)."""
+        out = {"default_s": PUMP_DEFAULT_S, "max_s": PUMP_MAX_DEFAULT_S,
+               "min_s": PUMP_MIN_S, "limit_s": PUMP_MAX_LIMIT_S,
+               "error": ""}
+        try:
+            rs = load_settings(self.folder)
+        except (ValueError, OSError) as e:
+            out["error"] = str(e)
+            return out
+        out["max_s"] = rs["pump_max_s"]
+        out["default_s"] = min(rs["pump_s"], rs["pump_max_s"])
+        return out
+
+    def pump_post(self, body, ctx):
+        """POST fuel-pump {"on": true, "seconds": N, "run": "<press id>"}
+        or {"on": false}. ON is an arm press (users.classify, checked by
+        web.py first) and, from the show network, needs screen_arming
+        (may_act_from); anything but the JSON word true turns it OFF, is
+        never refused and never starts it. (code, body)."""
+        pm = self.pump
+        if pm is None:
+            return 404, {"error": "There is no fuel pump in this engine."}
+        who, device, _surface = self._actor(ctx, body)
+        on = body.get("on") is True
+        if not on:
+            ok, text = pm.set(False, who=who, screen=device)
+            return 200, {"ok": True, "text": text}
+        if not self.may_act_from(ctx.local):
+            why = ("Turning the fuel pump on from a device on the show "
+                   "network needs screen_arming (on the show machine "
+                   "itself: Programming, Arming from a screen, Turn on). "
+                   "Nothing was changed.")
+            self._journal(who, device, "fuel-pump", "refused",
+                          f"{who or 'Someone'}'s fuel pump ON from the "
+                          f"{device} was refused. {why}")
+            return 403, {"error": why}
+        ps = self.pump_settings()
+        if ps["error"]:
+            return 409, {"error": f"The fuel pump was not turned on: "
+                                  f"{ps['error']}"}
+        ok, text = pm.set(True, who=who, screen=device,
+                          seconds=body.get("seconds"), run=body.get("run"),
+                          max_s=ps["max_s"])
+        if not ok:
+            return 409, {"error": text}
+        # The run time started last is this show PC's default next time.
+        # After the start, never before it: a slow disk never delays it,
+        # and a failed save changes nothing.
+        try:
+            secs = (pm.run or {}).get("seconds")
+            if secs is not None and \
+                    load_settings(self.folder)["pump_s"] != secs:
+                save_settings(self.folder, pump_s=secs)
+        except (ValueError, OSError, TypeError):
+            pass
+        return 200, {"ok": True, "text": text}
+
+    def pump_view(self, fl):
+        """The status's "pump": fuelpump.FuelPump.view with this show
+        machine's run times, or None with no pump in this engine. Never
+        raises."""
+        pm = self.pump
+        if pm is None:
+            return None
+        try:
+            v = pm.view(fl)
+            ps = self.pump_settings()
+            v.update(default_s=ps["default_s"], max_s=ps["max_s"],
+                     min_s=ps["min_s"], settings_error=ps["error"])
+            return v
+        except Exception as e:                   # noqa: BLE001
+            return {"available": False,
+                    "down": f"{type(e).__name__}: {e}"}
+
     def hazers_view(self, fl):
         """The status's "hazers": hazers.Hazers.view, and the display only
         "hazers" alert while flamesafe's list and this engine's differ.
@@ -4548,6 +4686,17 @@ class Remote:
         if lf is not None and getattr(lf, "on", False):
             return ("live flame programming is on, and turning it off "
                     "disarms every hazer. Turn it off first.")
+        return ""
+
+    def pump_blocker(self):
+        """Why the fuel pump may not be turned ON now beyond fuelpump.py's
+        own checks, or "": live flame programming on (its end sends the
+        Abort's disarm to flamesafe, which turns the pump off)."""
+        lf = getattr(self, "live_flame", None)
+        programming = lf is not None and getattr(lf, "on", False)
+        if programming:
+            return ("live flame programming is on, and turning it off "
+                    "turns the fuel pump off. Turn it off first.")
         return ""
 
     @staticmethod
@@ -5210,6 +5359,10 @@ class Remote:
             # halt). The flame link's disarm_all in step 1 did it at the
             # link already; this is the belt, and the journal line.
             self.hazers_cut(why, who, screen)
+            # The fuel pump OFF too (Jeff, 2026-10-30: "it should be
+            # affected by the stop button"); step 1's disarm_all did it at
+            # the link already.
+            self.pump_cut(why, who, screen)
             # 3. Every laser: disarmed on the arm, and blanked at once.
             fn = getattr(m, "lasers_disarm_now", None)
             if fn is not None:
@@ -7155,6 +7308,9 @@ class Remote:
         hzv = self.hazers_view(out["flames"])
         if hzv is not None:
             out["hazers"] = hzv
+        pmv = self.pump_view(out["flames"])
+        if pmv is not None:
+            out["pump"] = pmv
         out["beyond_link"] = self.beyond_link()
         try:
             _snap = self.schedule.conductor.snapshot() or {}

@@ -842,11 +842,53 @@ channel, and is either ARMED or DISARMED.
 - **If a tile says Waiting for flamesafe,** flamesafe has not taken the
   arm yet; if it stays that way, disarm it and arm it again.
 
-**Do not add a fuel pump to flamesafe.json yet.** flamesafe can now read a
-one-channel "switch" entry for the fireball's fuel pump, but LTC Player
-cannot until its own update lands. A pump entry in `flamesafe.json` before
-BOTH flamesafe and LTC Player are updated stops BOTH from starting. The
-order is: update both programs, then add the entry, then restart both.
+## The fireball's fuel pump
+
+Jeff, 2026-10-30: "a toggle for a fuel pump. This is something for Andy to
+manually control as needed. It does not need to be armed or disarmed but
+it should be affected by the stop button." And: "Off on Stop, NOT Hold.
+Pump should auto-stop after 5 minutes. Allow Andy to set duration before
+he triggers it."
+
+- **What it is.** One DMX channel on the flame universe (channel 100, on
+  at 255), not a flame: no safety channel, no hold to arm. flamesafe
+  writes the on value itself; the show file never drives it.
+- **Run time.** Set it before you turn the pump on, in minutes and
+  seconds. It starts at 5:00, and the run time you started last is the
+  next default on that show PC. The pump turns off by itself when the
+  time is up. Turning it on while it runs is refused: press Pump off,
+  then start it again with the time you want. The longest run is 60:00
+  unless an admin changes `pump_max_s` in `ltcplay_remote.json` (at most
+  4 hours); a longer time is refused and says so.
+- **When.** Any time: during a show, between shows, in Programming.
+- **Who.** Turning it on needs the same sign-in as arming a flame group
+  (the arm row of the role matrix), and from an iPad needs arming from a
+  screen switched on. Pump off works for everyone, always.
+- **What turns it off.** Its time up, Pump off, Stop, Abort, live flame
+  programming ending, flamesafe not answering for a second, the flame
+  link not sending, and a restart of LTC Player or flamesafe. **Hold does
+  not turn it off.** After a Stop or an Abort, wait a second before you
+  turn it on again.
+- **When it is refused.** An Abort standing (press Reset first), a Stop or
+  Abort still being sent (wait a second), live flame programming on,
+  flamesafe not answering, its channel in the lockout file, or flamesafe
+  and LTC Player reading different pump settings. The screen says which.
+
+**Setting it up.** Add this one line to the `passthrough` list in
+`flamesafe.json`, after the hazers:
+
+```json
+{"name": "Fireball Fuel Pump", "switch": 100, "on": 255}
+```
+
+`switch` is the DMX channel and `on` the value it takes when on (1 to
+255). Channel 100 must be in no flame group and no other passthrough
+entry. With no such line there is no pump and no pump button.
+
+**Order matters.** A flamesafe or an LTC Player older than the fuel pump
+update refuses a `flamesafe.json` with this line, and does not start.
+Install BOTH updates first, then add the line, then restart flamesafe and
+LTC Player.
 
 ## Stop, Hold and Reset on the rack screen
 

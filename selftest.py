@@ -61548,6 +61548,974 @@ def test_hazers_end_to_end_against_the_real_flamesafe():
     print("  ok")
 
 
+# ------------------------------------------------------- the fuel pump ----
+# Jeff, 2026-10-30: "Somewhere in the fire controls, we need a toggle for a
+# fuel pump. This is something for Andy to manually control as needed. It
+# does not need to be armed or disarmed but it should be affected by the
+# stop button." flamesafe's passthrough switch {"name", "switch", "on"}
+# (flamesafe/CONTRACT.md, "A switch"); the engine's ON/OFF
+# (ltcplay/fuelpump.py) on the flame link (ltcplay/flamelink.py).
+
+_PM = ("Fireball Fuel Pump", 100, 255)
+
+
+def _pm_doc(pump=True, hazers=True):
+    """flamesafe.example.json with the fuel pump at 100, ON 255."""
+    import json as _j
+    here = os.path.dirname(os.path.abspath(__file__))
+    ex = _j.load(open(os.path.join(here, "flamesafe",
+                                   "flamesafe.example.json"),
+                      encoding="utf-8"))
+    pt = list(ex["passthrough"]) if hazers else []
+    if pump:
+        pt.append({"name": _PM[0], "switch": _PM[1], "on": _PM[2]})
+    ex["passthrough"] = pt
+    return ex
+
+
+def _pm_values(pump=7, fire=0):
+    """A show frame with stray data on the pump's slot (the FSEQ must never
+    drive it) and on every hazer slot, and `fire` on front row's 411."""
+    v = _hz_values(fire=fire)
+    v[_PM[1] - 1] = pump
+    return v
+
+
+def _pm_link(folder, cues=None, pump=True, hazers=True, live=True):
+    """_hz_link's FlameLink, read from a flamesafe.json in `folder` that is
+    the example with the fuel pump added."""
+    import json as _j
+    from ltcplay import flamelink as fl
+    path = os.path.join(folder, "flamesafe.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        _j.dump(_pm_doc(pump, hazers), fh)
+    cfg = fl.FlameLinkConfig.from_flamesafe_config(path)
+    t = [100.0]
+    state = {"live": live}
+
+    def show():
+        t[0] += 0.04
+        n = int(t[0] * 30)
+        return (f"00:{n // 1800 % 60:02d}:{n // 30 % 60:02d}:{n % 30:02d}",
+                state["live"])
+    link = _flk_unguarded(cfg, cues=cues or (lambda tc: _pm_values()),
+                          show_state=show, clock=lambda: t[0])
+    link._sock = _FlSock()
+    link.release()
+    link.state = state
+    link.haze_gate = lambda: True
+    return link
+
+
+def _pm_on(link, seconds=300.0):
+    """The pump ON at the link for `seconds`, as the engine's timer starts
+    it (pump_start with the current Abort count)."""
+    return link.pump_start(seconds, link.pump_gen())
+
+
+def test_pump_flame_link():
+    section("fuel pump at the flame link (Jeff, 2026-10-30): read from "
+            "flamesafe's passthrough as flamesafe reads it, and refused as "
+            "flamesafe refuses it; OFF at start; switched by name in "
+            "hazers_on with no show gate; its slot is ZERO in every frame "
+            "(flamesafe writes its on value), whatever the FSEQ or xLights "
+            "carries; ON only through pump_start, with a hard end and a "
+            "beat on the link's own clock, past either OFF for good; Hold "
+            "(zero) leaves it on; Abort and Stop switch it off before the "
+            "first copy and end any start or beat that read the count "
+            "before them; ON is refused while the Abort repeats")
+    import json as _j
+    import shutil
+    import tempfile
+    from ltcplay import flamelink as fl
+    ex = _pm_doc()
+    check(fl.pump_of(ex) == _PM and
+          [(n, list(sl)) for n, sl in fl.hazers_of(ex)] == _HZ,
+          f"the engine reads the pump, and the hazers beside it as before: "
+          f"{fl.pump_of(ex)} {fl.hazers_of(ex)}")
+    check(fl.pump_of(_pm_doc(pump=False)) is None and
+          fl.pump_of({"groups": []}) is None,
+          "no switch entry: no pump (and no button)")
+    check(fl.pump_of(_pm_doc(hazers=False)) == _PM and
+          fl.hazers_of(_pm_doc(hazers=False)) == (),
+          "a pump and no hazers")
+    pump = {"name": _PM[0], "switch": 100, "on": 255}
+    for bad, why in (
+            (dict(pump, on=0), "on 0"), (dict(pump, on=256), "on 256"),
+            (dict(pump, on=True), "on true"), (dict(pump, on="255"),
+                                                "on a string"),
+            (dict(pump, on=1.5), "on a decimal"),
+            ({"name": _PM[0], "switch": 100}, "no on"),
+            (dict(pump, switch=0), "slot 0"), (dict(pump, switch=513),
+                                               "slot 513"),
+            (dict(pump, switch=True), "slot true"),
+            (dict(pump, switch=401), "a group's safety slot"),
+            (dict(pump, switch=411), "a group's fire slot"),
+            (dict(pump, switch=12), "a wave flamer safety"),
+            (dict(pump, switch=80), "a hazer's slot"),
+            (dict(pump, haze=99), "an extra key"),
+            (dict(pump, name="Hazer 1"), "a hazer's name")):
+        d = _pm_doc(pump=False)
+        d["passthrough"].append(bad)
+        try:
+            fl.pump_of(d)
+            check(False, f"the engine accepted {why}")
+        except fl.FlameLinkConfigError as e:
+            check("flamesafe refuses this file too" in str(e) and
+                  "—" not in str(e) and "–" not in str(e),
+                  f"the engine refuses {why}: {e}")
+    d = _pm_doc()
+    d["passthrough"].append({"name": "Pump 2", "switch": 101, "on": 255})
+    try:
+        fl.pump_of(d)
+        check(False, "the engine accepted a second switch")
+    except fl.FlameLinkConfigError as e:
+        check("second switch" in str(e), f"a second switch is refused: {e}")
+    d = _pm_doc()
+    d["passthrough"].append({"name": "Hazer 4", "haze": 100, "fan": 101})
+    try:
+        fl.hazers_of(d)
+        check(False, "the engine accepted a hazer on the pump's slot")
+    except fl.FlameLinkConfigError as e:
+        check("flamesafe refuses this file too" in str(e),
+              f"a hazer on the pump's slot is refused: {e}")
+
+    work = tempfile.mkdtemp()
+    try:
+        seen = []
+        link = _pm_link(work, cues=lambda tc: _pm_values(pump=255))
+        link.observer = lambda tc, v, ok: seen.append(bytes(v))
+        check(link.pump_name() == _PM[0] and link.cfg.pump == _PM and
+              not link.pump_on, "OFF at start")
+        link.send_frame()
+        o = _hz_last(link)
+        check(o["hazers_on"] == [] and o["values"][99] == 0,
+              f"OFF: the frame says so, and the FSEQ's 255 on the pump's "
+              f"slot is zeroed: {o['hazers_on']} {o['values'][99]}")
+        check(link.pump_set(True) is False and not link.pump_on,
+              "pump_set(True) never turns it on: only pump_start, which "
+              "needs an end")
+        for bad in (0, -1, float("nan"), float("inf"), "300", None):
+            check(link.pump_start(bad, link.pump_gen()) is False and
+                  not link.pump_on, f"pump_start({bad!r}) is refused")
+        check(link.pump_start(300, link.pump_gen() - 1) is False and
+              not link.pump_on,
+              "pump_start with an Abort count read before a Stop is "
+              "refused (the zero-count race)")
+        check(_pm_on(link) is True and link.pump_on, "pump_start: ON")
+        link.state["live"] = False
+        link.send_frame()
+        o = _hz_last(link)
+        check(o["hazers_on"] == [_PM[0]] and o["values"][99] == 0,
+              f"ON with no show playing (no show gate): its name in "
+              f"hazers_on, its slot still zero (flamesafe writes the on "
+              f"value): {o['hazers_on']} {o['values'][99]}")
+        link.state["live"] = True
+        link.hazers_set(["Hazer 2"])
+        link.pump_beat(link.pump_gen())
+        link.send_frame()
+        o = _hz_last(link)
+        check(o["hazers_on"] == sorted(["Hazer 2", _PM[0]]) and
+              o["values"][99] == 0, f"beside a hazer: {o['hazers_on']}")
+        check(seen and all(b[99] == 0 for b in seen),
+              "the fuel tracker is never told a value on the pump's slot")
+        link.cues = lambda tc: _pm_values(pump=255, fire=0)
+        link.hazers_set([])
+        link.pump_beat(link.pump_gen())
+        link.send_frame()
+        check(not link.last_values_nonzero,
+              "a frame with only the pump on is not 'firing'")
+        link.pump_beat(link.pump_gen())
+        link.zero()
+        link.send_frame()
+        check(link.pump_on and _hz_last(link)["hazers_on"] == [_PM[0]],
+              "a zero (Hold, a show's end) leaves the pump ON (Jeff: Off "
+              "on Stop, NOT Hold)")
+        link.release()
+        check(link.snapshot()["pump_on"] is True, "the snapshot says ON")
+        # The beat: PUMP_HOLD_S without one and it is OFF for good.
+        t = link._clock
+        clock = [t()]
+        link._clock = lambda: clock[0]
+        check(link.pump_beat(link.pump_gen()), "a beat")
+        clock[0] += fl.PUMP_HOLD_S - 0.01
+        check(link.pump_on, "a beat within PUMP_HOLD_S keeps it on")
+        clock[0] += 0.02
+        check(not link.pump_on and "stalled" in link.pump_ended(),
+              f"no beat for longer: OFF at the link by itself: "
+              f"{link.pump_ended()}")
+        check(link.pump_beat(link.pump_gen()) is False and
+              not link.pump_on, "a late beat never relights it")
+        # The hard end: beats keep coming, it still ends.
+        link.pump_start(1.0, link.pump_gen())
+        for _ in range(9):
+            clock[0] += 0.1
+            check(link.pump_beat(link.pump_gen()), "beating")
+        clock[0] += 0.11
+        check(link.pump_beat(link.pump_gen()) is False and
+              not link.pump_on and link.pump_ended() == "its time was up",
+              f"past its hard end: OFF though the beats carry on: "
+              f"{link.pump_ended()}")
+        link.send_frame()
+        check(_hz_last(link)["hazers_on"] == [], "and the frame says OFF")
+        # A caller's deadline: the end is never later than it.
+        mine = [500.0]
+        link.pump_start(300, link.pump_gen(), deadline=mine[0] + 2.0,
+                        clock=lambda: mine[0])
+        check(abs(link._pump_until - (clock[0] + 2.0)) < 1e-6,
+              "with the engine's deadline 2 s away the link's end is 2 s "
+              "away, not 300")
+        check(link.pump_start(300, link.pump_gen(), deadline=mine[0] - 1,
+                              clock=lambda: mine[0]) is False,
+              "a deadline already past starts nothing")
+        link._clock = t
+        _pm_on(link)
+        gen = link.pump_gen()
+        n0 = len(link._sock.sent)
+        link.disarm_all("Stop from the rack screen")
+        after = [_j.loads(d) for d, _a in link._sock.sent[n0:]]
+        check(after and after[0]["t"] == "flame" and
+              after[0]["hazers_on"] == [] and not link.pump_on,
+              f"Stop and Abort (disarm_all): the zero frame already says "
+              f"the pump OFF: {[(x['t'], x.get('hazers_on')) for x in after]}")
+        link.release()
+        check(link.pump_beat(gen) is False and not link.pump_on,
+              "a beat carrying the count from before the Stop is refused")
+        check(link.abort_repeating() and _pm_on(link) is False and
+              not link.pump_on,
+              "ON is refused while the Stop or Abort is being repeated")
+        link._abort_repeat = None
+        check(_pm_on(link) is True, "after it: ON again")
+        check(link.pump_set("true") is not True and not link.pump_on,
+              "anything but True through pump_set is OFF")
+        _pm_on(link)
+        link.pump_stop()
+        check(not link.pump_on, "pump_stop: OFF")
+        _pm_on(link)
+        link.state["live"] = False
+        s = link.program_begin()
+        link.program_set(bytes(_pm_values(pump=255, fire=230)), s)
+        link.send_frame()
+        o = _hz_last(link)
+        check(o["values"][99] == 0 and o["values"][410] == 230,
+              f"live xLights: its data on the pump's slot is zeroed: "
+              f"{o['values'][99]}")
+        link.program_end()
+        nohz = _pm_link(work, hazers=False)
+        nohz.send_frame()
+        check(_hz_last(nohz)["hazers_on"] == [],
+              "a pump and no hazers: the frame still carries hazers_on")
+        _pm_on(nohz)
+        nohz.send_frame()
+        check(_hz_last(nohz)["hazers_on"] == [_PM[0]], "and names it ON")
+        none = _pm_link(work, pump=False, hazers=False)
+        none.send_frame()
+        check("hazers_on" not in _hz_last(none) and
+              _pm_on(none) is False and none.pump_name() is None,
+              "no pump and no hazers: the frame is the one before either "
+              "existed, and ON does nothing")
+        again = _pm_link(work)
+        check(not again.pump_on, "a new engine: OFF")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def _pm_rig(S):
+    """_hz_rig with the fuel pump: the FlameLink read from the example
+    with the pump at 100, flamesafe's status carrying it as a switch
+    (passing whenever the link has it ON), and fuelpump.FuelPump built as
+    web.serve builds it on the rig's clock, no timer thread."""
+    import json as _j
+    import shutil
+    import tempfile
+    from ltcplay import fuelpump as FP
+    from ltcplay import hazers as HZ
+    R = _hz_rig(S)
+    R.pm_work = tempfile.mkdtemp()
+    R.link = _pm_link(R.pm_work)
+    R.remote.hazers = HZ.Hazers(
+        link_get=lambda: R.link,
+        flames_get=lambda: R.remote.flame_status.view(),
+        abort_standing=lambda: R.aborted[0] or R.remote._abort_standing(),
+        show_state=lambda: R.show[0], blocker=R.remote.hazer_blocker,
+        folder=R.work, clock=lambda: R.mono[0], threaded=False)
+    R.pm = {"name": _PM[0], "kind": "switch", "slots": [_PM[1]],
+            "switch": _PM[1], "on": _PM[2], "asked": False,
+            "enabled": False, "passing": False, "locked": [False],
+            "sent": [0], "why": "switched off in the show program"}
+    R.pm_lag = False
+
+    def feed():
+        on = R.link.hazers_on
+        for p in R.pt:
+            p["kind"] = "hazer"
+            p["asked"] = p["enabled"] = p["passing"] = p["name"] in on
+        if not R.pm_lag:
+            R.pm["asked"] = R.pm["enabled"] = R.pm["passing"] = \
+                R.link.pump_on
+        R.pm["sent"] = [_PM[2] if R.pm["passing"] else 0]
+        R.remote.flame_status.note(_j.dumps({
+            "t": "status", "k": "k" * 20, "fault": "", "groups": R.groups,
+            "passthrough": R.pt + [R.pm]}).encode())
+    R.feed = feed
+    feed()
+    R.remote.pump = FP.FuelPump(
+        link_get=lambda: R.link,
+        flames_get=lambda: R.remote.flame_status.view(),
+        abort_standing=lambda: R.aborted[0] or R.remote._abort_standing(),
+        blocker=R.remote.pump_blocker,
+        journal=lambda who, screen, outcome, text, fault=False:
+        R.remote._journal(who or "system", screen or "engine", "fuel-pump",
+                          outcome, text, fault=fault),
+        clock=lambda: R.mono[0], threaded=False)
+    close = R.close
+
+    def close_all():
+        try:
+            close()
+        finally:
+            shutil.rmtree(R.pm_work, ignore_errors=True)
+    R.close = close_all
+    return R
+
+
+def test_pump_at_the_engine():
+    section("fuel pump at the engine (fuelpump.py, Jeff 2026-10-30): OFF at "
+            "start; ON for a run time chosen first (5:00 unless chosen, the "
+            "last one remembered, pump_max_s the longest, a longer one "
+            "refused in words); it ends by itself on the engine's timer, "
+            "and on a stall between passes or inside one, and on a Stop "
+            "landing during a pass; a replayed or repeated ON starts "
+            "nothing and never adds time; the arm row and screen_arming "
+            "for ON, OFF never refused; refused with an Abort standing, "
+            "within 0.75 s of a Stop or Abort, live flame programming on, "
+            "flamesafe stale, its pump different or not reported, its slot "
+            "locked; Hold leaves it on; Abort and Stop (both routes) turn "
+            "it off, journaled; the countdown and the state on the "
+            "screens; the hazers are not confused by it")
+    S = _sched()
+    if S is None:
+        return
+    import itertools
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import fuelpump as FP
+    check("fuel-pump" in RM.POST_ROUTES and
+          RM.PUMP_POST_ROUTES == ("fuel-pump",), "the route exists")
+    check(U.REMOTE_ROUTES.get("fuel-pump") == "arm" and
+          U.classify("/api/remote/fuel-pump", {"on": True}) == "arm" and
+          all(U.classify("/api/remote/fuel-pump", b) == "safety"
+              for b in ({"on": False}, {"on": "true"}, {"on": 1}, {},
+                        None, [True], {"on": False, "seconds": 300})),
+          "the role matrix: ON is an arm press, anything else safety")
+    check("turning the fuel pump on" in dict(U.PERMS)["arm"] and
+          "the fuel pump off" in U.SAFETY_ROWS, "the matrix rows say so")
+    check(FP.DEFAULT_S == 300 and FP.MAX_DEFAULT_S == 3600 and
+          FP.clock_text(300) == "5:00" and FP.clock_text(252) == "4:12" and
+          FP.clock_text(3725) == "62:05",
+          "5 minutes by default, 60 the longest unless an admin says, m:ss")
+    for v in (300, 1, 3600):
+        check(FP.pump_seconds(v) == (v, ""), f"{v} s is taken")
+    for v in (0, -5, 3601, 1.5, "300", True, None, float("nan")):
+        secs, why = FP.pump_seconds(v)
+        check(secs is None and why and "—" not in why,
+              f"{v!r} is refused in words: {why}")
+    check("pump_max_s" in FP.pump_seconds(3601)[1] and
+          "can raise" in FP.pump_seconds(3601)[1],
+          "a run time over the longest names pump_max_s and says an admin "
+          "can raise it")
+    loop, ipad = ("127.0.0.1", 5000), ("10.20.0.44", 50000)
+    R = _pm_rig(S)
+    link = R.link
+    pm = R.remote.pump
+    ids = itertools.count(1)
+
+    def tap(on, client=loop, seconds=300, run=None, **kw):
+        body = {"on": on, "seen": R.seen()}
+        if on is True:
+            body.update(seconds=seconds,
+                        run=run if run is not None else f"p{next(ids)}")
+        return R.ask("POST", "/api/remote/fuel-pump", body, client=client,
+                     **kw)
+
+    def view():
+        R.feed()
+        _st, _h, s = R.ask("GET", "/api/remote/status", client=loop)
+        return s.get("pump") or {}
+
+    def said(text):
+        end = time.monotonic() + 2.0
+        while time.monotonic() < end:
+            if pm.last_off and text in pm.last_off.get("reason", ""):
+                return True
+            time.sleep(0.01)
+        return False
+
+    def off():
+        tap(False)
+        link._abort_repeat = None
+        R.feed()
+    try:
+        v = view()
+        check(v.get("available") and v["name"] == _PM[0] and
+              v["slot"] == 100 and v["on_value"] == 255 and
+              v["on"] is False and v["state"] == "off" and
+              v["refusal"] == "" and v["agree"] is True and
+              v["default_s"] == 300 and v["max_s"] == 3600 and
+              v["left_s"] is None,
+              f"every screen's status: the pump, OFF, ON would be taken, "
+              f"5:00 the default, 60:00 the longest: {v}")
+        hv = R.remote.hazers_view(R.remote.flame_status.view())
+        check(hv.get("agree") is True and
+              not [a for a in R.remote.alerts.open() if a.kind == "hazers"],
+              f"flamesafe reporting the pump does not make the hazers "
+              f"differ: {hv.get('agree')}")
+        st, _h, out = tap(True, seconds=240)
+        check(st == 200 and link.pump_on and "4:00" in out["text"],
+              f"a tap on the rack screen: ON for 4:00: {st} {out}")
+        check(RM.load_settings(R.work)["pump_s"] == 240 and
+              view()["default_s"] == 240,
+              "the run time started is the next default on this show PC")
+        R.mono[0] += 0.1
+        check(pm.pump_send() == "" and link.pump_on, "the timer beats it")
+        R.mono[0] += 0.1
+        pm.pump_send()
+        v = view()
+        check(v["state"] == "on" and v["left_s"] == 239.8 and
+              v["seconds"] == 240,
+              f"the countdown on the engine's clock: {v['left_s']}")
+        st, _h, out = tap(True, seconds=3000)
+        check(st == 409 and "already on" in out["error"] and
+              pm.run["seconds"] == 240,
+              f"a second ON never adds time: {out}")
+        rid = "replayed-press"
+        off()
+        st, _h, out = tap(True, run=rid)
+        check(st == 200 and link.pump_on, "setup: ON")
+        off()
+        st, _h, out = tap(True, run=rid)
+        check(st == 409 and "already used" in out["error"] and
+              not link.pump_on,
+              f"the same press again (a replayed request) starts nothing: "
+              f"{out}")
+        st, _h, out = tap(True, run="")
+        check(st == 409 and not link.pump_on, f"a press with no id: {out}")
+        for bad in (0, 3601, 1.5, "300", None):
+            st, _h, out = tap(True, seconds=bad)
+            check(st == 409 and not link.pump_on and
+                  "not turned on" in out["error"],
+                  f"run time {bad!r}: refused: {out['error']}")
+        RM.save_settings(R.work, pump_max_s=600)
+        st, _h, out = tap(True, seconds=601)
+        check(st == 409 and "10:00" in out["error"] and
+              "pump_max_s" in out["error"] and not link.pump_on,
+              f"an admin's pump_max_s of 600: 601 s refused: {out}")
+        check(view()["max_s"] == 600 and view()["default_s"] == 300,
+              "and the screens are told the longest")
+        for badv in (0, 14401, "600", True, 1.5):
+            try:
+                RM.save_settings(R.work, pump_max_s=badv)
+                check(False, f"pump_max_s {badv!r} was saved")
+            except ValueError as e:
+                check("pump_max_s" in str(e), f"pump_max_s {badv!r} is "
+                                              f"refused: {e}")
+        RM.save_settings(R.work, pump_max_s=3600)
+        # Its own end on the engine's timer.
+        st, _h, out = tap(True, seconds=1)
+        for _ in range(9):
+            R.mono[0] += 0.1
+            check(pm.pump_send() == "", "running")
+        R.mono[0] += 0.11
+        check(pm.pump_send() == "its 0:01 were up" and not link.pump_on and
+              pm.run is None and said("were up"),
+              f"its time up: OFF by itself, said: {pm.last_off}")
+        R.feed()
+        # A stall between passes.
+        off()
+        tap(True)
+        R.mono[0] += FP.BEAT_STALE_S + 0.05
+        check("stalled" in pm.pump_send() and not link.pump_on,
+              "the timer stalled between passes: OFF, never relit")
+        R.mono[0] -= FP.BEAT_STALE_S + 0.05
+        R.feed()
+        # A stall inside a pass: the clock jumps during the checks.
+        off()
+        tap(True)
+        real_down = pm.down
+
+        def slow_down():
+            R.mono[0] += FP.BEAT_STALE_S + 0.05
+            return real_down()
+        pm.down = slow_down
+        why = pm.pump_send()
+        pm.down = real_down
+        check("stalled" in why and not link.pump_on,
+              f"a stall inside a pass (fresh clock reading): OFF: {why}")
+        R.feed()
+        # A Stop landing during a pass, before and after the beat.
+        for where in ("before", "after"):
+            off()
+            tap(True)
+            real_beat = link.pump_beat
+
+            def racing(gen, where=where, real_beat=real_beat):
+                if where == "before":
+                    link.disarm_all("Stop racing the pump's timer")
+                    return real_beat(gen)
+                ok = real_beat(gen)
+                link.disarm_all("Stop racing the pump's timer")
+                return ok
+            link.pump_beat = racing
+            why = pm.pump_send()
+            del link.pump_beat
+            check(why and not link.pump_on and pm.run is None,
+                  f"a Stop landing {where} the beat inside a pass: OFF: "
+                  f"{why}")
+            link.release()
+        off()
+        # The link's own hard end, whatever the engine's timer thinks.
+        tap(True, seconds=300)
+        link._pump_until = link._clock() - 0.01
+        why = pm.pump_send()
+        check("flame link turned it off" in why and "time was up" in why and
+              not link.pump_on,
+              f"the link's hard end passed: OFF, the engine follows: {why}")
+        R.feed()
+        off()
+        st, _h, out = tap(True)
+        R.pm_lag = True
+        check(view()["state"] == "waiting",
+              "ON here, flamesafe not yet passing it: 'waiting'")
+        R.pm_lag = False
+        check(view()["state"] == "on", "flamesafe passing it: 'on'")
+        R.show[0] = "playing"
+        off()
+        tap(True)
+        check(link.pump_on, "during a show: ON (Jeff: it may run then)")
+        R.ask("POST", "/api/remote/hold", {"seen": R.seen()}, client=loop)
+        pm.pump_send()
+        check(link.pump_on and pm.run is not None,
+              "Hold leaves the pump ON (Jeff: Off on Stop, NOT Hold)")
+        R.show[0] = "idle"
+        off()
+        RM.save_settings(R.work, screen_arming=False)
+        st, _h, out = tap(True, client=ipad)
+        check(st == 403 and "screen_arming" in out["error"] and
+              not link.pump_on,
+              f"ON from the show network without screen_arming: refused: "
+              f"{st} {out}")
+        tap(True)
+        st, _h, out = tap(False, client=ipad)
+        check(st == 200 and not link.pump_on,
+              f"OFF from there is never refused: {st} {out}")
+        RM.save_settings(R.work, screen_arming=True)
+        st, _h, out = tap(True, client=ipad)
+        check(st == 200 and link.pump_on,
+              f"with screen_arming on, ON from the show network: {st} {out}")
+        off()
+        # Refusals.
+        R.aborted[0] = True
+        st, _h, out = tap(True)
+        check(st == 409 and "Abort is standing" in out["error"] and
+              not link.pump_on, f"an Abort standing: refused: {out}")
+        check(view()["refusal"].startswith("an Abort is standing"),
+              "and the status says why, for the button")
+        R.aborted[0] = False
+
+        class _LF:
+            on = True
+        R.remote.live_flame = _LF()
+        st, _h, out = tap(True)
+        check(st == 409 and "live flame programming" in out["error"] and
+              not link.pump_on, f"live flame programming on: {out}")
+        R.remote.live_flame = None
+        R.mono[0] += 1.5
+        st, _h, out = tap(True)
+        check(st == 409 and "has not reported" in out["error"] and
+              not link.pump_on, f"flamesafe's status 1.5 s old: {out}")
+        R.feed()
+        R.pm["on"] = 200
+        R.feed()
+        st, _h, out = tap(True)
+        check(st == 409 and "differ" in out["error"] and not link.pump_on,
+              f"flamesafe's pump at another on value: refused: {out}")
+        R.pm["on"] = 255
+        R.pm["slots"] = [101]
+        R.feed()
+        st, _h, out = tap(True)
+        check(st == 409 and "differ" in out["error"] and not link.pump_on,
+              f"flamesafe's pump on another slot: refused: {out}")
+        check(view()["agree"] is False, "and the status says they differ")
+        R.pm["slots"] = [100]
+        R.pm["kind"] = "hazer"
+        R.feed()
+        st, _h, out = tap(True)
+        check(st == 409 and "does not report a fuel pump" in out["error"]
+              and not link.pump_on,
+              f"a flamesafe that reports no switch (an older one): "
+              f"refused: {out}")
+        R.pm["kind"] = "switch"
+        R.feed()
+        link.set_locked_channels([100])
+        st, _h, out = tap(True)
+        check(st == 409 and "lockout file" in out["error"] and
+              not link.pump_on, f"its slot locked: refused: {out}")
+        link.set_locked_channels([])
+        link.disarm_all("Stop from the selftest")
+        st, _h, out = tap(True)
+        check(st == 409 and "still being sent" in out["error"] and
+              not link.pump_on,
+              f"a Stop still being sent to flamesafe (0.75 s): refused: "
+              f"{out}")
+        link._abort_repeat = None
+        link.release()
+
+        class _NoArm:
+            def may(self, role, perm):
+                return perm != "arm"
+
+            def machine_user(self):
+                return None
+
+            def active(self):
+                return True
+        tap(True)
+        R.remote.users = _NoArm()
+        st, _h, out = tap(False)
+        check(st == 200 and not link.pump_on,
+              f"may not arm: OFF still works: {st} {out}")
+        st, _h, out = tap(True)
+        check(st == 403 and out.get("role_refused") and not link.pump_on,
+              f"may not arm: ON is refused: {st} {out}")
+        R.remote.users = None
+        # flamesafe going quiet ends it on the next pass.
+        tap(True)
+        R.feed()
+        check(pm.pump_send() == "" and link.pump_on, "fresh: it runs")
+        R.mono[0] += 1.5
+        check(pm.pump_send() and not link.pump_on,
+              "flamesafe silent for 1.5 s: the timer turns it off")
+        R.feed()
+        # Abort, Stop (the deck's halt and the plain /api/stop).
+        tap(True)
+        R.ask("POST", "/api/remote/abort", {"seen": R.seen(),
+                                            "confirmed": True}, client=loop)
+        check(not link.pump_on and pm.run is None and said("Abort"),
+              f"Abort: OFF at the press, said: {pm.last_off}")
+        R.ask("POST", "/api/remote/reset", {"seen": R.seen()}, client=loop)
+        R.settle()
+        R.feed()
+        pm.last_off = None
+        link._abort_repeat = None
+        st, _h, out = tap(True)
+        check(st == 200 and link.pump_on, f"setup: ON again: {out}")
+        R.remote.halt("Ollie", "Rack screen")
+        check(not link.pump_on and pm.run is None and said("Stop"),
+              f"Stop (the deck's halt): OFF, said: {pm.last_off}")
+        R.feed()
+        pm.last_off = None
+        link._abort_repeat = None
+        tap(True)
+        check(link.pump_on, "setup: ON again")
+        st, _h, out = R.ask("POST", "/api/stop", {}, client=loop)
+        check(not link.pump_on and pm.run is None and said("Stop"),
+              f"Stop (the plain /api/stop): OFF: {st} {pm.last_off}")
+        R.feed()
+        link._abort_repeat = None
+        tap(True)
+        R.ask("POST", "/api/remote/abort", {"seen": R.seen()}, client=loop)
+        check(not link.pump_on,
+              "an unconfirmed Abort still turns it off (it only takes "
+              "something away)")
+        lines = [r.get("text", "") for r in R.lines_for("fuel-pump")]
+        check(any("turned the fuel pump" in t and "for 4:00" in t
+                  for t in lines) and
+              any("Fuel pump off" in t for t in lines) and
+              any("refused" in t for t in lines) and
+              not any("—" in t or "–" in t for t in lines),
+              f"the journal says each on, off and refusal: {lines[-4:]}")
+        R.remote.pump = None
+        st, _h, out = tap(True)
+        check(st == 404, f"no pump in this engine: 404: {st}")
+        _st, _h, s = R.ask("GET", "/api/remote/status", client=loop)
+        check("pump" not in s, "and no pump in the status (no button)")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_pump_timer_thread_ends_it():
+    section("fuel pump timer (fuelpump.py): the real timer thread keeps it "
+            "on and ends it by itself at its time; with the thread wrecked "
+            "the flame link stops naming it within PUMP_HOLD_S")
+    import shutil
+    import tempfile
+    from ltcplay import flamelink as fl
+    from ltcplay import fuelpump as FP
+    work = tempfile.mkdtemp()
+    try:
+        link = _pm_link(work)
+        link._clock = time.monotonic
+        fresh = {"connected": True, "stale": False, "age_ms": 10,
+                 "passthrough": [{"name": _PM[0], "kind": "switch",
+                                  "slots": [_PM[1]], "on": _PM[2],
+                                  "passing": True}]}
+        link.snapshot = lambda: {"open": True, "sending_ok": True,
+                                 "locked_channels": []}
+        pm = FP.FuelPump(link_get=lambda: link, flames_get=lambda: fresh,
+                         abort_standing=lambda: False)
+        ok, text = pm.set(True, seconds=1, run="t1")
+        check(ok and link.pump_on, f"ON for 0:01: {text}")
+        time.sleep(0.6)
+        check(link.pump_on, "past PUMP_HOLD_S the timer still beats it")
+        end = time.monotonic() + 2.0
+        while (link.pump_on or pm.run is not None) and \
+                time.monotonic() < end:
+            time.sleep(0.02)
+        check(not link.pump_on and pm.run is None and
+              "up" in (pm.last_off or {}).get("reason", ""),
+              f"its time up: OFF by itself: {pm.last_off}")
+        ok, _t = pm.set(True, seconds=60, run="t2")
+        check(ok and link.pump_on, "ON for 1:00")
+        pm.pump_send = lambda now=None: ""     # a timer that does nothing
+        pm.run = dict(pm.run)                  # its thread loses its run
+        time.sleep(fl.PUMP_HOLD_S + 0.2)
+        check(not link.pump_on and "stalled" in link.pump_ended(),
+              f"a wrecked timer: the link stops naming it by itself: "
+              f"{link.pump_ended()}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_pump_end_to_end_against_the_real_flamesafe():
+    section("fuel pump end to end: the real flamesafe in its own process, "
+            "the real FlameLink, over loopback UDP: OFF at start whatever "
+            "the FSEQ carries on 100; ON puts flamesafe's own 255 on the "
+            "node with the frame carrying 0 there; Hold leaves it on; its "
+            "hard end and a stopped timer zero it; Stop and Abort "
+            "(disarm_all) zero it and it stays off until started again; a "
+            "foreign keyed sender cannot turn it on; the engine dying zeroes "
+            "it within flamesafe's frame_stale_ms")
+    import json as _j
+    import socket as _so
+    import subprocess
+    import threading
+    from ltcplay import flamelink as fl
+    from ltcplay import flameprog as fp
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+
+    def free_port():
+        s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+    node = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    node.bind(("127.0.0.1", 0))
+    node.settimeout(0.05)
+    status_rx = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    status_rx.bind(("127.0.0.1", 0))
+    status_rx.settimeout(0.2)
+    listen = free_port()
+    work = tempfile.mkdtemp()
+    cfg_path = os.path.join(work, "flamesafe.json")
+    _j.dump({
+        "flamesafe_config": 1, "confirmed": False, "note": "selftest",
+        "universe": 1,
+        "destination": {"ip": "127.0.0.1", "port": node.getsockname()[1]},
+        "link": {"listen_ip": "127.0.0.1", "listen_port": listen,
+                 "status_ip": "127.0.0.1",
+                 "status_port": status_rx.getsockname()[1], "key": key},
+        "gflame_range": "30-50%", "arm_value": 78,
+        "accept_unsourced_risk": False, "min_arm_dwell_ms": 1000,
+        "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
+        "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
+        "groups": [{"name": "front row", "safety": 401, "fire": [411, 412]}],
+        "passthrough": [{"name": n, "haze": sl[0], "fan": sl[1]}
+                        for n, sl in _HZ] +
+        [{"name": _PM[0], "switch": _PM[1], "on": _PM[2]}]},
+        open(cfg_path, "w"))
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "flamesafe",
+                             cfg_path], cwd=here, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    said = []
+    threading.Thread(target=lambda: [said.append(l) for l in proc.stdout],
+                     daemon=True).start()
+    stop = threading.Event()
+    last = {"st": None}
+
+    def read_status():
+        while not stop.is_set():
+            try:
+                d, _a = status_rx.recvfrom(65535)
+            except (_so.timeout, OSError):
+                continue
+            o = fl.decode_status(d, key)
+            if o is not None:
+                last["st"] = o
+    threading.Thread(target=read_status, daemon=True).start()
+    t0 = time.perf_counter()
+
+    def show_tc():
+        n = int((time.perf_counter() - t0) * 30)
+        return f"00:{n // 1800 % 60:02d}:{n // 30 % 60:02d}:{n % 30:02d}"
+    cfg = fl.FlameLinkConfig.from_flamesafe_config(cfg_path)
+    feed = {"pump": 7}
+    link = _flk_unguarded(cfg,
+                          cues=lambda tc: _pm_values(pump=feed["pump"]),
+                          show_state=lambda: (show_tc(), True))
+    link.release()
+    link.haze_gate = lambda: True
+    beating = {"gen": None}
+
+    def beat():
+        # The engine's timer, as fuelpump.FuelPump runs it.
+        while not stop.is_set():
+            g = beating["gen"]
+            if g is not None:
+                link.pump_beat(g)
+            time.sleep(0.1)
+    threading.Thread(target=beat, daemon=True).start()
+
+    def start(seconds=300.0):
+        g = link.pump_gen()
+        ok = link.pump_start(seconds, g)
+        beating["gen"] = g if ok else None
+        return ok
+
+    def pump(seconds=0.4):
+        """Slot 100 on the node's last packet after `seconds`."""
+        end = time.monotonic() + seconds
+        got = None
+        while time.monotonic() < end:
+            try:
+                data, _a = node.recvfrom(2048)
+            except _so.timeout:
+                continue
+            got = fp.parse_e131(data).values
+        return None if got is None else got[_PM[1] - 1]
+
+    def first_zero(limit):
+        """Seconds until the node first shows 0 on slot 100, or None."""
+        t1 = time.monotonic()
+        while time.monotonic() - t1 < limit:
+            try:
+                data, _a = node.recvfrom(2048)
+            except _so.timeout:
+                continue
+            if fp.parse_e131(data).values[_PM[1] - 1] == 0:
+                return time.monotonic() - t1
+        return None
+
+    def entry():
+        for p in (last["st"] or {}).get("passthrough") or []:
+            if p.get("name") == _PM[0]:
+                return p
+        return None
+    try:
+        check(cfg.pump == _PM, f"the engine reads the pump: {cfg.pump}")
+        link.start()
+        first = pump(3.0)
+        if not check(first is not None, "flamesafe sends to the node: " +
+                     "".join(said)[-400:]):
+            return
+        check(any(f"{_PM[0]} switch 100 at 255" in l for l in said),
+              "flamesafe's start line names the pump")
+        check(first == 0, f"OFF at start: zero on the node though the FSEQ "
+                          f"carries 7 on 100: {first}")
+        feed["pump"] = 0
+        start()
+        got = pump(0.6)
+        check(got == 255, f"ON: flamesafe's own 255 on the node, the frame "
+                          f"carrying 0 there: {got}")
+        e = entry()
+        check(e and e.get("kind") == "switch" and e.get("passing") and
+              e.get("sent") == [255],
+              f"flamesafe's status says the switch passes: {e}")
+        link.zero()
+        got = pump(0.5)
+        check(got == 255, f"Hold (zero): still ON on the node: {got}")
+        link.release()
+        # Its hard end: the timer keeps beating, the link still ends it.
+        beating["gen"] = None
+        time.sleep(0.2)
+        start(1.0)
+        got = pump(0.5)
+        check(got == 255, f"setup: ON for 1 s: {got}")
+        got = pump(1.0)
+        check(got == 0, f"past its hard end: zero on the node though the "
+                        f"timer still beats: {got}")
+        # A timer that stops: the link drops it within PUMP_HOLD_S.
+        start()
+        check(pump(0.5) == 255, "setup: ON")
+        beating["gen"] = None
+        dt = first_zero(2.0)
+        check(dt is not None and dt < fl.PUMP_HOLD_S + 0.4,
+              f"the engine's timer stopped: zero on the node in {dt} s")
+        start()
+        check(pump(0.5) == 255, "setup: ON")
+        link.disarm_all("Stop from the selftest")
+        got = pump(0.3)
+        check(got == 0, f"Stop (disarm_all): zero on the node: {got}")
+        link.release()
+        check(link.abort_repeating() and link.pump_start(
+            300, link.pump_gen()) is False,
+              "while the Stop is still being repeated it cannot go on")
+        time.sleep(link.cfg.abort_repeat_s + 0.1)
+        got = pump(0.4)
+        check(got == 0, f"after the Stop it stays off: {got}")
+        start()
+        got = pump(1.5)
+        check(got == 255,
+              f"started again at the engine (its frames said OFF since the "
+              f"Stop, then ON): 255 again: {got}")
+        link.disarm_all("Abort from the selftest")
+        got = pump(0.3)
+        check(got == 0, f"Abort: zero on the node: {got}")
+        link.release()
+        time.sleep(link.cfg.abort_repeat_s + 0.1)
+        # A foreign keyed sender saying the pump ON, with 255 on its slot.
+        rogue = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        vals = [0] * 512
+        vals[_PM[1] - 1] = 255
+        for i in range(10):
+            rogue.sendto(_j.dumps({
+                "v": 2, "k": key, "t": "flame", "seq": 10 ** 12 + i,
+                "tc": None, "mono": 10.0 ** 6 + i, "universe": 1,
+                "values": vals, "hazers_on": [_PM[0]]}).encode(),
+                ("127.0.0.1", listen))
+            time.sleep(0.02)
+        got = pump()
+        check(got == 0, f"a foreign keyed sender cannot turn it on: {got}")
+        rogue.close()
+        time.sleep(0.6)                   # its foreign-sender window passes
+        # The engine dies with the pump on: no more frames at all.
+        start()
+        got = pump(1.5)
+        check(got == 255, f"setup: ON before the engine dies: {got}")
+        link.stop()
+        dt = first_zero(3.0)
+        check(dt is not None and dt <= 0.5 + 0.3,
+              f"the engine gone: flamesafe zeroes the pump within its "
+              f"frame_stale_ms (500 ms): {dt} s")
+    finally:
+        stop.set()
+        link.stop()
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        node.close()
+        status_rx.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_streamdeck_hazers_page():
     section("Stream Deck hazers page (Jeff, 2026-10-29): page 1 has no free "
             "key, so page 3; with no announcements key 5 opens it with a "
@@ -92179,6 +93147,10 @@ if __name__ == "__main__":
         test_hazers_flame_link,
         test_hazers_at_the_engine,
         test_hazers_end_to_end_against_the_real_flamesafe,
+        test_pump_flame_link,
+        test_pump_at_the_engine,
+        test_pump_timer_thread_ends_it,
+        test_pump_end_to_end_against_the_real_flamesafe,
         test_hazers_on_the_rack_screens,
         test_streamdeck_hazers_page,
         test_aim_slots_are_seen_on_the_rack_screen,
