@@ -888,8 +888,15 @@ that long. The stages, in this order:
   and save again), keeps the version before it in
   `fireball_timeline_history` (the last 50), and writes one journal line
   and one audit line: who, which screen, and what changed, stage by
-  stage. If the file cannot be read, no show fires its fireball from a
-  timeline: a show set to Timeline never falls back to its FSEQ.
+  stage. If the file cannot be read, or it is missing after it was saved
+  once, no show fires its fireball from a timeline (a show set to Timeline
+  never falls back to its FSEQ), and every save is refused, because saving
+  over it would lose every other show's timeline. An admin either repairs
+  the file or replaces it on purpose (the broken one is kept in
+  `fireball_timeline_history`). A show is saved under the show folder's
+  own spelling of its name ("show.json" typed on a Mac or Windows PC is
+  saved as "Show.json"); two files whose names differ only by case are
+  refused: rename one.
 - **Where.** The editor is on Interface 2.0 (a later update).
 
 ### In a show set to Timeline
@@ -944,12 +951,22 @@ of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
   flamesafe's status was not known. A shot or a purge seen for certain
   makes it EMPTY again. While a tank is CHARGED or NOT KNOWN, nothing
   charges it automatically.
-- **The very first start** (no record yet) counts both tanks EMPTY and the
-  journal says: if the fuel or air tank is pressurised now, press Purge
-  on the Fireball page.
+- **The very first start** (no record yet, or the record lost) counts both
+  tanks NOT KNOWN, not empty (a behaviour change for Andy to confirm):
+  the timeline charges nothing, and the Fireball page says so. Fire the
+  shot or press Purge on the Fireball page; or, if both tanks are known to
+  be depressurised, an admin presses **Tanks are empty** there (it asks
+  first, and the journal names who). It changes NOT KNOWN tanks only: a
+  charged tank is emptied only by the shot or by Purge.
+- **Evidence.** A charge counts when it went out while flamesafe said the
+  Fireball was armed, or when flamesafe itself reports having sent it
+  (so a short charge right after arming is never missed).
 - Kept in `ltcplay_fireball_charge.json` in the settings folder (written
   whole on every change, so it survives a power cut); every change is one
-  journal line and one audit line. Every screen's status carries it as one
+  journal line and one audit line. If the file cannot be written (on
+  Windows an antivirus or the indexer can hold it), the record is kept in
+  memory, written again every second until it is, and the screens show
+  the fault meanwhile: do not restart LTC Player until it clears. Every screen's status carries it as one
   sentence, for example "Fuel: charged 14:32. Air: charged 14:35. No shot
   fired." There is no pressure reading: it is never invented.
 
