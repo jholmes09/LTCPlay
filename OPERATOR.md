@@ -554,8 +554,8 @@ and turns them all off when it disarms (if one still shows ON, it says "turn
 Fuel, Air, Purge off before arming").
 
 **Everything goes off by itself** (within a quarter of a second) on: Stop,
-Hold, Abort, the end of a show, Disarm Fireball, Disarm all flame groups
-or the Fireball's deck key; flamesafe not reporting; leaving the page, closing it or hiding
+Abort, Disarm Fireball, Disarm all flame groups or the Fireball's deck
+key; the Fireball locked out; the flame link lost; flamesafe not reporting; leaving the page, closing it or hiding
 it; this page's status not being live; signing out; the connection
 dropping; and the All off button (any screen). Losing focus (another window
 clicked) lets go of Valve Open and Igniter. After any of these nothing
@@ -574,8 +574,12 @@ charge**: the button says "Charged: a press is a top-off", and the
 journal names who topped it off. A tank charged by hand is not charged
 again by the timeline in that show (its stage is skipped and says so).
 
-**When it will not work** it says why in plain words: a Hold standing (a
-show held, or a Hold between shows), an Abort standing, live flame
+**A Hold does not turn the page off** (Jeff, 2026-10-30). Hold, and the
+end of a show, zero the show's own fireball values (its FSEQ or its
+timeline); what you hold on this page stays on through them.
+
+**When it will not work** it says why in plain words: an Abort standing,
+live flame
 programming on, a purge selected on the Startup page (and that purge
 waits while a Fireball channel is on), any screen in Arrange mode, the
 Fireball locked out, or the purge switch off (`purge_arming`, and from an
@@ -597,8 +601,9 @@ off, with Andy:**
    follows, and goes off when pressed again.
 4. Hold Valve Open, then Igniter: on while held, off the moment you lift.
 5. With Fuel Charge on: press Disarm Fireball, then (armed again) Abort,
-   Stop, Hold, the Fireball's deck key, and close the page. Each time every
-   channel goes off at once and stays off.
+   Stop, the Fireball's deck key, and close the page. Each time every
+   channel goes off at once and stays off. Then with Fuel Charge on press
+   Hold: it stays on (a Hold never turns the page off); Stop turns it off.
 6. Pull the network cable of the iPad (or close the browser) while holding
    Valve Open: it goes off within a second.
 7. Only then open the fuel valve, one channel at a time.
@@ -1065,8 +1070,8 @@ of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
 - **What charges a tank:** Fuel Charge (55) or Air Charge (56) reaching
   the Fireball while flamesafe says it is armed, from the show or from the
   Fireball page.
-- **What empties both tanks:** the shot (Valve Open, 57, on and then off
-  again) or Purge (59, on and then off again), each only once flamesafe
+- **What empties both tanks:** the shot (Jeff: Valve Open IS the shot;
+  57 on and then off again) or Purge (59, on and then off again), each only once flamesafe
   has reported sending it. Nothing else: **Stop, Hold, the end of a show,
   a disarm and a restart of LTC Player change nothing.** The Igniter
   plays no part.
@@ -1078,12 +1083,12 @@ of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
   flamesafe's status was not known. A shot or a purge seen for certain
   makes it EMPTY again. While a tank is CHARGED or NOT KNOWN, nothing
   charges it automatically.
-- **The very first start** (no record yet, or the record lost) counts both
-  tanks NOT KNOWN, not empty (a behaviour change for Andy to confirm):
-  the timeline charges nothing, and the Fireball page says so. Fire the
-  shot or press Purge on the Fireball page; or, if both tanks are known to
-  be depressurised, an admin presses **Tanks are empty** there (it asks
-  first, and the journal names who). It changes NOT KNOWN tanks only: a
+- **The very first start** (no record yet) counts both tanks EMPTY (Jeff:
+  tanks start empty), and the journal says: if the fuel or air tank is
+  pressurised now, press Purge on the Fireball page.
+- **Tanks are empty** (an admin, on the Fireball page, while a tank is
+  NOT KNOWN): if both tanks are known to be depressurised, it makes the
+  NOT KNOWN ones EMPTY (it asks first, and the journal names who). A
   charged tank is emptied only by the shot or by Purge.
 - **Evidence.** A charge counts when it went out while flamesafe said the
   Fireball was armed, or when flamesafe itself reports having sent it

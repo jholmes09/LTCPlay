@@ -2244,7 +2244,7 @@ function fireballState(v, on, stale, viewOnly){
     if(any && !out.cut) out.cut = "the Fireball is not armed";
     if(!out.block) out.block = "Arm the Fireball first.";
   } else {
-    out.text = "Armed. Fuel Charge, Air Charge and Purge stay on until pressed again; Valve Open and Igniter are on only while held. Abort, Hold, Stop and any disarm turn everything off.";
+    out.text = "Armed. Fuel Charge, Air Charge and Purge stay on until pressed again; Valve Open and Igniter are on only while held. Abort, Stop and any disarm turn everything off; a Hold does not.";
   }
   out.ok = !out.block;
   return out;

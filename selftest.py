@@ -87327,6 +87327,7 @@ class _FakeFireballLink:
 
     def __init__(self):
         self._zero_gen = 0
+        self.abort_id = 0           # the disarm count (Stop, Abort)
         self.cur = None
         self.sets = 0
         self.cleared = 0
@@ -87350,7 +87351,7 @@ class _FakeFireballLink:
     # the same `cur` here; refused, as the real one, when the zero count
     # moved since the caller read it.
     def manual_set(self, values, gen=None):
-        if gen is not None and gen != self._zero_gen:
+        if gen is not None and gen != self.abort_id:
             self.cur = None
             return False
         return self.purge_set(values)
@@ -87370,6 +87371,13 @@ class _FakeFireballLink:
     def zero(self):
         """As FlameLink.zero(): the purge frame dropped, the count bumped."""
         self._zero_gen += 1
+        self.cur = None
+
+    def disarm_all(self, reason=""):
+        """As FlameLink.disarm_all() (Stop, Abort): every frame dropped,
+        the zero count and the disarm count bumped."""
+        self._zero_gen += 1
+        self.abort_id += 1
         self.cur = None
 
 
@@ -87579,9 +87587,15 @@ def test_fireball_panel_rules():
     P.age[0] = 20
     start("c3")
     link.zero()
+    link.cur = bytes(link.cur or b"")    # (the fake's zero dropped it)
     P.t[0] += 0.05
-    check("zeroed" in fb.tick() and not fb.active(),
-          "the flame link zeroed (Stop, Hold, Abort): cut")
+    check(fb.tick() == "" and fb.active(),
+          "a zero() (a Hold, a show's end): the page carries on (Jeff, "
+          "2026-10-30)")
+    link.disarm_all("Stop")
+    P.t[0] += 0.05
+    check("disarmed" in fb.tick() and not fb.active(),
+          "a disarm_all() through the flame link (Stop, Abort): cut")
     start("c4")
     P.why[0] = "a scheduled show is live (SHOW)"
     P.t[0] += 0.05
@@ -87616,15 +87630,15 @@ def test_fireball_panel_rules():
     fb.on_abort("Jeff", "Rack screen")
     check(not fb.active() and link.cur is None and "Abort" in fb.last_cut,
           "an Abort cuts it")
-    # A zero or disarm that lands while a beat's frame goes in: the beat
-    # clears it again and the run is cut.
+    # A disarm that lands while a beat's frame goes in: the beat clears it
+    # again and the run is cut.
     start("c11")
-    link.on_set = link.zero
+    link.on_set = link.disarm_all
     P.t[0] += 0.05
     code, out = beat({"fuel"}, run="c11", seq=2)
     link.on_set = None
     check(code == 409 and link.cur is None and not fb.active(),
-          f"Stop, Hold or Abort in the middle of a beat wins: {out}")
+          f"Stop or Abort in the middle of a beat wins: {out}")
     # A disarm read right after the frame went in (the belt).
     start("c12")
     seq = [0]
@@ -87931,15 +87945,6 @@ def test_fireball_at_the_engine():
                 ("the conductor latched",
                  lambda: setattr(cond, "_latched", True),
                  lambda: setattr(cond, "_latched", False), "aborted"),
-                ("the schedule PAUSED, the conductor not holding",
-                 lambda: (setattr(R.svc, "machine", _dc.replace(
-                     real_m, state="PAUSED")), setattr(cond, "_look",
-                                                        "PLAYING")),
-                 None, "Hold"),
-                ("the conductor HELD",
-                 lambda: setattr(cond, "_look", "HELD"), None, "Hold"),
-                ("the conductor DARK",
-                 lambda: setattr(cond, "_look", "DARK"), None, "Hold"),
                 ("locks not confirmed",
                  lambda: setattr(R.m, "_locks_confirmed",
                                  lambda: "flamesafe has not taken the "
@@ -87996,17 +88001,35 @@ def test_fireball_at_the_engine():
         R.settle()
         R.feed()
         R.mono[0] += 0.05
-        R.fb.tick()
-        check(R.svc.machine.state == R.S.PAUSED and not R.fb.active() and
-              R.link.cur is None,
-              f"Hold: everything on the page is off: {R.svc.machine.state} "
-              f"{R.fb.last_cut!r}")
+        why = R.fb.tick()
+        check(R.svc.machine.state == R.S.PAUSED and R.fb.active() and
+              why == "",
+              f"Hold (Jeff, 2026-10-30): the page carries on: "
+              f"{R.svc.machine.state} {why!r} {R.fb.last_cut!r}")
         st, _h, out = R.ask("POST", "/api/remote/fireball-beat",
-                            {"controls": {"fuel": True}, "run": "s2",
+                            {"controls": {"fuel": True}, "run": "s1",
                              "seq": 2, "seen": R.seen()}, client=loop)
-        check(st == 409 and "Hold is standing" in out["error"] and
-              R.link.cur is None,
-              f"and nothing goes on while the Hold stands: {st} {out}")
+        check(st == 200 and R.link.cur is not None and
+              R.link.cur[54] == 255,
+              f"and its Fuel stays on through the Hold: {st} {out}")
+        import dataclasses as _dc2
+        cond2, m2 = R.svc.conductor, R.svc.machine
+        for what, set_ in (
+                ("the conductor HELD", lambda: setattr(cond2, "_look",
+                                                       "HELD")),
+                ("the conductor DARK", lambda: setattr(cond2, "_look",
+                                                       "DARK")),
+                ("the schedule HOLD", lambda: setattr(
+                    R.svc, "machine", _dc2.replace(m2, state="HOLD")))):
+            look0 = cond2._look
+            set_()
+            try:
+                why = FB.engine_blockers(R.remote, R.link, during_show=True)
+            finally:
+                cond2._look = look0
+                R.svc.machine = m2
+            check("Hold" not in why,
+                  f"{what}: never holds the page off: {why!r}")
     finally:
         R.close()
     # web.serve's wiring: built on the Morning page's groups and the flame
@@ -88797,7 +88820,9 @@ def test_fireball_doc_in_plain_words():
                  "the higher of the\nshow's value",
                  "never turn\noff one the show has on",
                  "is a top-off, not a double\ncharge",
-                 "Charged: a press is a top-off", "the end of a show",
+                 "Charged: a press is a top-off",
+                 "A Hold does not turn the page off",
+                 "what you hold on this page stays on through them",
                  "never on 77"):
         check(need in part, f"OPERATOR.md's Fireball section says {need!r}")
     check("Run pressed (the show file owns the channels)" not in part,
@@ -98470,11 +98495,11 @@ def test_fireball_timeline_docs_in_plain_words():
               f"OPERATOR.md's fireball timeline section says {need!r}")
     c = _fb_doc_part("OPERATOR.md", "### The fuel and air charge", "\n## ")
     for need in ("EMPTY", "CHARGED", "NOT KNOWN", "Fuel Charge (55)",
-                 "Air Charge (56)", "Valve Open, 57", "Purge (59",
+                 "Air Charge (56)", "Valve Open IS the shot", "Purge (59",
                  "Stop, Hold, the end of a show", "change nothing",
                  "Igniter plays no part", "top-off is not a double charge",
                  "very first start", "press Purge",
-                 "counts both tanks NOT KNOWN, not empty",
+                 "counts both tanks EMPTY", "tanks start empty",
                  "**Tanks are empty**", "flamesafe itself reports",
                  "written again every second until it is",
                  "ltcplay_fireball_charge.json", "never invented"):
@@ -98602,18 +98627,24 @@ def test_fireball_charge_state():
           "Fuel 55, Air 56, Valve Open 57, Purge 59")
     work = tempfile.mkdtemp()
     try:
-        # The very first run (or a lost record): no file, both NOT KNOWN,
-        # never EMPTY (review of #185), said as a fault, written; an admin
-        # confirms them empty (Tanks are empty).
+        # The very first run: no file, both tanks START EMPTY (Jeff,
+        # 2026-10-30), said once, written.
         C = _fbc(work)
         tr = C.tr
-        check(tr.state("fuel") == U and tr.state("air") == U and
-              tr.first_run, "no file: both tanks NOT KNOWN")
+        check(tr.state("fuel") == E and tr.state("air") == E and
+              tr.first_run, "no file: both tanks EMPTY (the first run)")
         tr.pump()
-        check(any(a[2] == "first_run" and "both tanks are NOT KNOWN" in a[3]
-                  and k.get("fault") for a, k in C.lines) and
+        check(any(a[2] == "first_run" and "both tanks start EMPTY" in a[3]
+                  and not k.get("fault") for a, k in C.lines) and
               os.path.exists(tr.path),
-              f"said as a fault and written: {C.lines[:1]}")
+              f"said once (not a fault) and written: {C.lines[:1]}")
+        # Tanks are empty (an admin) for NOT KNOWN tanks: journaled and
+        # audited; nothing to confirm when none is NOT KNOWN.
+        ok, text = tr.confirm_empty("Andy", "Rack screen")
+        check(not ok and "nothing to confirm" in text,
+              f"nothing NOT KNOWN: nothing to confirm: {text}")
+        tr.tanks["fuel"]["state"] = U
+        tr.tanks["air"]["state"] = U
         ok, text = tr.confirm_empty("Andy", "Rack screen")
         tr.pump()
         check(ok and tr.state("fuel") == E and tr.state("air") == E and
@@ -98621,9 +98652,6 @@ def test_fireball_charge_state():
               text and C.events[-1]["user"] == "Andy" and
               C.events[-1]["target"] == "confirmed_empty",
               f"an admin confirms them empty: journaled and audited: {text}")
-        ok, text = tr.confirm_empty("Andy", "Rack screen")
-        check(not ok and "nothing to confirm" in text,
-              f"nothing NOT KNOWN: nothing to confirm: {text}")
         check(_fbc(None).tr.state("fuel") == E,
               "memory only (no settings folder): EMPTY")
         check(tr.sentence() == "Fuel: empty. Air: empty.",
@@ -100557,7 +100585,7 @@ def test_fireball_manual_merged_on_the_flame_link():
           "the link keeps only the fireball's slots of the page's frame")
     # And a frame with other slots in it (as if kept unmasked) still
     # merges only the fireball's slots.
-    lk._manual = (bytes([255] * 512), R.clk[0], lk._zero_gen)
+    lk._manual = (bytes([255] * 512), R.clk[0], lk.abort_id)
     v = R.now()
     check(v[54] == 255 and v[59] == 0 and v[76] == 0 and v[99] == 7,
           f"only the fireball's slots are merged, whatever the frame "
@@ -100595,18 +100623,57 @@ def test_fireball_manual_merged_on_the_flame_link():
     lk.send_frame()
     check(lk.zeroed and seen and seen[-1][55] == 255,
           "between shows (the cues zeroed): the page's frame goes out")
-    # zero() and disarm_all() drop it; a beat read before is refused.
+    # zero() (a Hold, a show's end) does NOT end it (Jeff, 2026-10-30):
+    # the zero frame sent at once, and the frames after, still carry the
+    # page's channels (the show's own values are zero), and a beat read
+    # before the Hold is taken. disarm_all() (Stop, Abort) drops it and
+    # refuses a beat read before.
+    import types
     R.live = True
     lk.release()
-    g = lk._zero_gen
+    R.cue = [0] * 512
+    R.cue[55] = 255                       # the show's own Air on 56
+    zs = []
+    lk._sock = types.SimpleNamespace(sendto=lambda d, a: zs.append(d) or
+                                     len(d))
+    g = lk.abort_id
     lk.manual_set(page(s55=255), g)
     lk.zero()
-    check(not lk.manual_active() and R.now()[54] == 0, "zero() (a Hold, a "
-          "show's end): the page's frame is gone at once")
-    check(lk.manual_set(page(s55=255), g) is False and R.now()[54] == 0,
-          "a beat from before the zero is refused and sends nothing")
+    check(lk.manual_active() and lk.last_values_nonzero,
+          "zero() (a Hold, a show's end): the zero frame sent at once "
+          "keeps the page's channel")
+    v = R.now()
+    check(v[54] == 255 and v[55] == 0,
+          f"and after it: the page's Fuel on, the show's Air zero: "
+          f"{v[54]} {v[55]}")
+    check(lk.manual_set(page(s55=255), g) is True and R.now()[54] == 255,
+          "a beat read before the Hold is taken")
+    # A Hold landing while a frame is read (between the read and the
+    # send): the show's values of that frame are dropped, the page's go
+    # out.
+    seen_h = []
+    lk.observer = lambda tc, v, ok: seen_h.append(bytes(v))
     lk.release()
-    g = lk._zero_gen
+    lk.manual_set(page(s55=255), lk.abort_id)
+    R.cue[55] = 255
+    real_cues = lk.cues
+    lk.cues = lambda tc: (lk.zero(), list(R.cue))[1]
+    R.clk[0] += 1 / 30
+    R.f = getattr(R, "f", 30) + 1
+    from ltcplay import fireball_timeline as _FT
+    R.tc = _FT.tc_text(R.f)
+    lk.send_frame()
+    lk.cues = real_cues
+    lk.observer = None
+    check(seen_h and seen_h[-1][54] == 255 and seen_h[-1][55] == 0 and
+          lk.show_sent[55] == 0,
+          f"a Hold during the read: the show's Air dropped, the page's "
+          f"Fuel out: {seen_h[-1][54] if seen_h else None} "
+          f"{seen_h[-1][55] if seen_h else None}")
+    lk._sock = None
+    R.cue = [0] * 512
+    lk.release()
+    g = lk.abort_id
     lk.manual_set(page(s55=255), g)
     lk.disarm_all("Stop")
     check(not lk.manual_active() and R.now()[54] == 0 and
@@ -100615,7 +100682,7 @@ def test_fireball_manual_merged_on_the_flame_link():
     lk.release()
     lk._abort_repeat = None
     # The lockout zeroes the page's slot.
-    lk.manual_set(page(s55=255, s56=255), lk._zero_gen)
+    lk.manual_set(page(s55=255, s56=255), lk.abort_id)
     lk.set_locked_channels([55])
     v = R.now()
     check(v[54] == 0 and v[55] == 255, "a locked slot: zero from the page "
@@ -100624,7 +100691,7 @@ def test_fireball_manual_merged_on_the_flame_link():
     # Live flame programming on (live or not): the page's frame is not
     # merged (one source at a time).
     lk._program_on = True
-    lk.manual_set(page(s55=255), lk._zero_gen)
+    lk.manual_set(page(s55=255), lk.abort_id)
     check(R.now()[54] == 0, "live flame programming on during a show: no "
                             "page frame")
     R.live = False
@@ -100633,12 +100700,12 @@ def test_fireball_manual_merged_on_the_flame_link():
     R.live = True
     # The show state cannot be read: zeros, the page's frame too.
     R.raise_state = True
-    lk.manual_set(page(s55=255), lk._zero_gen)
+    lk.manual_set(page(s55=255), lk.abort_id)
     check(R.now()[54] == 0, "the show state unreadable: zeros, the page's "
                             "frame too")
     R.raise_state = False
     # manual_clear: off at once.
-    lk.manual_set(page(s55=255), lk._zero_gen)
+    lk.manual_set(page(s55=255), lk.abort_id)
     lk.manual_clear()
     check(R.now()[54] == 0, "manual_clear: off on the next frame")
     # The show path's own sent values (show_sent) never carry the page's
@@ -100652,13 +100719,13 @@ def test_fireball_manual_merged_on_the_flame_link():
     lk.observer = lambda tc, v, ok: seen_.append(bytes(v))
     R.cue = [0] * 512
     R.now()
-    lk.manual_set(page(s55=255), lk._zero_gen)
+    lk.manual_set(page(s55=255), lk.abort_id)
     lk.send_frame()
     check(seen_[-1][54] == 255 and lk.show_sent[54] == 0,
           f"the page's Fuel went out; the show's own values say 0: "
           f"{seen_[-1][54]} {lk.show_sent[54]}")
     R.cue[54] = 255
-    lk.manual_set(page(s55=255), lk._zero_gen)
+    lk.manual_set(page(s55=255), lk.abort_id)
     lk.send_frame()
     check(lk.show_sent[54] == 255, "the show's own Fuel: 255")
     lk.manual_clear()
@@ -100712,12 +100779,15 @@ def test_fireball_page_beats_race_the_sender():
         after the frame is set (and, with `zero_first`, a Stop lands just
         before it is set)."""
         zero_first = False
+        hold_first = False
 
         def __getattr__(self, k):
             return getattr(real, k)
 
         def manual_set(self, values, gen=None):
             if self.zero_first:
+                real.disarm_all("Stop (selftest)")
+            if self.hold_first:
                 real.zero()
             took = real.manual_set(values, gen)
             tc, v = real.values_now()
@@ -100773,23 +100843,34 @@ def test_fireball_page_beats_race_the_sender():
               all(s[56] == 0 for s in sent[n:]) and not P.active(),
               f"a Stop while the frame is set: nothing out, cut: {code} "
               f"{out} {[s[56] for s in sent[n:]]}")
-        # A Hold landing after the beat's checks, before its run starts.
+        # A Stop landing after the beat's checks, before its run starts.
         n = len(sent)
         orig = P.refusal
 
-        def refusal_then_hold(check_armed=True):
+        def refusal_then_stop(check_armed=True):
             why = orig(check_armed)
-            real.zero()
+            real.disarm_all("Stop (selftest)")
             return why
-        P.refusal = refusal_then_hold
+        P.refusal = refusal_then_stop
         try:
             code, out = beat({"igniter"}, "r4")
         finally:
             P.refusal = orig
         check(code == 409 and all(s[57] == 0 for s in sent[n:]) and
               not P.active(),
-              f"a Hold just after the checks: nothing out: {code} {out} "
+              f"a Stop just after the checks: nothing out: {code} {out} "
               f"{[s[57] for s in sent[n:]]}")
+        # A Hold (zero()) while the frame is set: the page's frame stands
+        # and goes out (Jeff, 2026-10-30: Hold never ends it).
+        n = len(sent)
+        link.hold_first = True
+        code, out = beat({"igniter"}, "r5")
+        link.hold_first = False
+        check(code == 200 and sent[n:] and sent[-1][57] == 255 and
+              P.active(),
+              f"a Hold while the frame is set: it goes out, the run goes "
+              f"on: {code} {out} {[s[57] for s in sent[n:]]}")
+        beat(set(), "r5")
         # A frame of the wrong size is refused.
         check(real.manual_set(bytes(513)) is False and
               real.manual_set(bytes(511)) is False,
@@ -100843,7 +100924,7 @@ def test_fireball_manual_and_timeline_never_double_charge():
             v = bytearray(512)
             for s in andy:
                 v[s - 1] = 255
-            lk.manual_set(bytes(v), lk._zero_gen)
+            lk.manual_set(bytes(v), lk.abort_id)
         R.clk[0] += 1 / 30
         tr._read_armed()
         tc, vals = lk.values_now()
@@ -101016,12 +101097,10 @@ def test_fireball_timeline_end_to_end_real_flamesafe():
                             "sent_fire": g.get("sent_fire")}
                            for g in st.get("groups") or []]}
     tracker = FC.ChargeTracker(work, flames_get=flames)
-    # No record yet: both NOT KNOWN; Andy confirms them empty, as on the
-    # first night (Tanks are empty).
-    check(tracker.state("fuel") == "unknown" and
-          tracker.confirm_empty("Andy", "Rack screen")[0] and
-          tracker.state("fuel") == "empty",
-          "no record: NOT KNOWN until confirmed empty")
+    # No record yet: both tanks start EMPTY (Jeff, 2026-10-30).
+    check(tracker.state("fuel") == "empty" and
+          tracker.state("air") == "empty",
+          "no record: both tanks start EMPTY")
     link.observer = tracker.observe
     cues.fireball = FQ.FireballCues(store, charge_get=lambda: tracker)
     link.start()
