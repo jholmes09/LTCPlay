@@ -91797,7 +91797,7 @@ def test_play_from_cue_model():
             ([{"name": "", "tc": "00:00:03:00"}], "needs a name"),
             ([{"name": "x" * 41, "tc": "00:00:03:00"}], "longer than 40"),
             ([{"name": "x" * 40, "tc": "00:00:03:00"}], None),
-            ([{"name": "Act – two", "tc": "00:00:03:00"}],
+            ([{"name": "Act \u2013 two", "tc": "00:00:03:00"}],
              "long dash"),
             ([{"name": "A", "tc": "00:00:03:00", "note": "n" * 201}],
              "longer than 200"),
@@ -91935,7 +91935,7 @@ def test_play_from_cue_store():
         check(lines and lines[-1][0][2] == "saved" and
               "Jeff saved the play-from cues for Fire and Ice.json on the "
               "Rack screen (revision 1): Top added" in lines[-1][0][3],
-              f"the journal line names who, where and what: {lines[-1]}")
+              f"the journal line names who, where and what: {lines[-1:]}")
         check(events[-1]["user"] == "Jeff" and
               events[-1]["action"] == "play-from cues" and
               events[-1]["target"] == show and
@@ -92062,7 +92062,7 @@ def test_play_from_cue_store():
         wall[0] += 1
         ok, text, entry = store.save(show, "Show", 60.0, cues, 0, who="Jeff")
         h = store.history()
-        check(ok and entry["rev"] == 1 and h[0].endswith(
+        check(ok and entry["rev"] == 1 and h and h[0].endswith(
             "-rev0-unreadable.json") and open(os.path.join(
                 store.history_dir(), h[0]), encoding="utf-8").read() ==
               '{"play_from_format": 1, "rev": 1, "shows": {}, "x": 1}',
@@ -92395,7 +92395,7 @@ def test_play_from_cue_card_in_2_0():
         [{"name": "   ", "tc": "00:00:05:00", "lead_in_s": 2}],
         [{"name": "x" * 40, "tc": "00:00:05:00", "lead_in_s": 2}],
         [{"name": "x" * 41, "tc": "00:00:05:00", "lead_in_s": 2}],
-        [{"name": "Act — two", "tc": "00:00:05:00", "lead_in_s": 2}],
+        [{"name": "Act \u2014 two", "tc": "00:00:05:00", "lead_in_s": 2}],
         [{"name": "A", "tc": "00:00:05:00", "lead_in_s": 2,
           "note": "n" * 200}],
         [{"name": "A", "tc": "00:00:05:00", "lead_in_s": 2,
@@ -92420,22 +92420,37 @@ def test_play_from_cue_card_in_2_0():
     check(any(want) and not all(want), "the cases hold lists the engine "
           "saves and lists it refuses")
     fns = "\n".join(_js_function(two, n) or "" for n in
-                    ("pfFrames", "pfTc", "pfCheck"))
+                    ("pfFrames", "pfTc", "pfCheck", "pfBody"))
     js = ("const PF_DASH = /[\\u2013\\u2014]/;\n" + fns +
           "\nconst rules = " + json.dumps(PF.Store(None).view()) + ";\n"
           "const cases = " + json.dumps(cases) + ";\n"
           "console.log(JSON.stringify(cases.map(c => "
-          "pfCheck(c, 120.0, rules))));\n")
+          "pfCheck(c, 120.0, rules))));\n"
+          "console.log(JSON.stringify(pfBody([{id:\"c2\", name:\" Big  "
+          "finale \", tc:\"00:01:41:00 \", lead_in_s:\"3\", note:\"\"}, "
+          "{name:\"New\", tc:\"00:00:20:00\", lead_in_s:\"\"}, "
+          "{name:\"Two\", tc:\"00:00:21:00\", lead_in_s:2, "
+          "note:\" x \"}])));\n")
     with tempfile.TemporaryDirectory() as td:
         p = os.path.join(td, "pf.js")
         with open(p, "w", encoding="utf-8") as fh:
             fh.write(js)
         r = subprocess.run([node, p], capture_output=True, text=True,
                            timeout=60)
+    out_lines = r.stdout.strip().splitlines()
     try:
-        got = json.loads(r.stdout)
-    except ValueError:
-        got = None
+        got = json.loads(out_lines[0])
+        sent = json.loads(out_lines[1])
+    except (ValueError, IndexError):
+        got = sent = None
+    check(sent == [{"name": "Big  finale", "tc": "00:01:41:00", "note": "",
+                    "lead_in_s": 3, "id": "c2"},
+                   {"name": "New", "tc": "00:00:20:00", "note": "",
+                    "lead_in_s": None},
+                   {"name": "Two", "tc": "00:00:21:00", "note": "x",
+                    "lead_in_s": 2}],
+          f"Save sends each cue with the id it was read with (none for a "
+          f"new one), trimmed, an empty lead-in as none: {sent}")
     check(got is not None and len(got) == len(cases),
           f"the card's rules ran: {r.stdout[:300]} {r.stderr[:600]}")
     for i, cues in enumerate(cases if got else []):

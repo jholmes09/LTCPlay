@@ -3102,7 +3102,7 @@ async function loadUiDefault(){
 // The cue list per show file (play_from.py): a name, a time from the top
 // of the show cue, a lead-in and a note. Saving sends nothing to the rig
 // and starts nothing; the engine checks every rule again.
-const PF_DASH = /[–—]/;
+const PF_DASH = /[\u2013\u2014]/;
 let PF = null, PF_DIRTY = false;
 function pfFrames(tc){
   const m = /^(\d{2}):(\d{2}):(\d{2}):(\d{2})$/.exec(String(tc || "").trim());
@@ -3135,6 +3135,17 @@ function pfCheck(cues, audioLen, rules){
     else if(fr !== null && !(audioLen && fr / 30 >= audioLen) && fr < ln * 30) out.push("Lead-in starts before the top.");
     if(String(c.note || "").trim().length > (r.max_note || 200)) out.push("Note too long.");
     return out;
+  });
+}
+// What Save sends: each cue as typed, trimmed, with the id it was read
+// with (none for a new cue), so a rename or a retime stays the same cue.
+function pfBody(cues){
+  return cues.map(c => {
+    const o = {name:String(c.name || "").trim(), tc:String(c.tc || "").trim(), note:String(c.note || "").trim()};
+    const l = String(c.lead_in_s === null || c.lead_in_s === undefined ? "" : c.lead_in_s).trim();
+    o.lead_in_s = l === "" ? null : Number(l);
+    if(c.id) o.id = c.id;
+    return o;
   });
 }
 function pfMsg(text, cls){ const m = $("pf-msg"); setText(m, text || ""); m.className = cls || ""; }
@@ -3211,13 +3222,7 @@ $("pf-add").addEventListener("click", () => {
 $("pf-save").addEventListener("click", async () => {
   if(!PF || !PF.entry) return;
   if(pfCheck(PF.entry.cues, PF.audio_len_s, PF).some(b => b.length)){ pfDraw(); pfMsg("Fix the marked cues first.", "bad"); return; }
-  const cues = PF.entry.cues.map(c => {
-    const o = {name:String(c.name || "").trim(), tc:String(c.tc || "").trim(), note:String(c.note || "").trim()};
-    const l = String(c.lead_in_s === null || c.lead_in_s === undefined ? "" : c.lead_in_s).trim();
-    o.lead_in_s = l === "" ? null : Number(l);
-    if(c.id) o.id = c.id;
-    return o;
-  });
+  const cues = pfBody(PF.entry.cues);
   try{
     const j = await post("/api/remote/play-from-cues-save", {show:PF.show, rev:PF.rev, cues:cues});
     PF_DIRTY = false;

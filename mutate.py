@@ -18733,6 +18733,121 @@ def build():
   "                    self._timed_remember(owner, rid, seq)\n                self._note(f\"{who or device}'s timed purge on the {device} \"",
   "                    self._timed_remember(owner, rid, seq, make=True)\n                self._note(f\"{who or device}'s timed purge on the {device} \""),
 
+ ("play-from cues: a cue right at the end of the show audio is saved",
+  "ltcplay/play_from.py",
+  "                fr / FPS >= audio_len_s:",
+  "                fr / FPS > audio_len_s:"),
+
+ ("play-from cues: a lead-in under 1 s is saved",
+  "ltcplay/play_from.py",
+  "    if v < LEAD_IN_MIN_S:",
+  "    if v < 0:"),
+
+ ("play-from cues: a lead-in left out is 1 s, not 2",
+  "ltcplay/play_from.py",
+  "    if v is None:\n        return LEAD_IN_DEFAULT_S",
+  "    if v is None:\n        return LEAD_IN_MIN_S"),
+
+ ("play-from cues: a lead-in may start before the top of the show cue",
+  "ltcplay/play_from.py",
+  "        elif fr is not None and lead is not None and fr < lead * FPS:",
+  "        elif False:"),
+
+ ("play-from cues: Finale and finale are two names",
+  "ltcplay/play_from.py",
+  "            key = name.casefold()",
+  "            key = name"),
+
+ ("play-from cues: an unknown field in a cue is kept quiet",
+  "ltcplay/play_from.py",
+  "        extra = set(c) - _CUE_KEYS",
+  "        extra = set()"),
+
+ ("play-from cues: the list is not kept in time order",
+  "ltcplay/play_from.py",
+  "    out.sort(key=lambda c: (parse_tc(c[\"tc\"]), c[\"name\"].casefold()))",
+  "    pass"),
+
+ ("play-from cues: a page may claim an id the list does not have",
+  "ltcplay/play_from.py",
+  "        if c[\"id\"] is not None and c[\"id\"] not in known:",
+  "        if False:"),
+
+ ("play-from cues: a new cue reuses a deleted cue's id",
+  "ltcplay/play_from.py",
+  "    nxt = max(used, default=0) + 1",
+  "    nxt = len(before) + 1"),
+
+ ("play-from cues: a stale revision overwrites another editor's save",
+  "ltcplay/play_from.py",
+  "                        base_rev != doc[\"rev\"]:",
+  "                        False:"),
+
+ ("play-from cues: the version before a save is not kept",
+  "ltcplay/play_from.py",
+  "                self._keep_history(doc[\"rev\"], bool(err))\n",
+  "                pass\n"),
+
+ ("play-from cues: a refused save is not in the audit log",
+  "ltcplay/play_from.py",
+  "        self._audit(who, screen, str(show)[:MAX_TEXT], \"refused\", text)",
+  "        pass"),
+
+ ("play-from cues: a save writes no journal line",
+  "ltcplay/play_from.py",
+  "            self._note(who, screen, \"saved\", text)",
+  "            pass"),
+
+ ("play-from cues: an operator may save the list",
+  "ltcplay/users.py",
+  "    \"play-from-cues-save\": \"settings\",",
+  "    \"play-from-cues-save\": \"show\","),
+
+ ("play-from cues: the engine lets any role save",
+  "ltcplay/remote.py",
+  "        if not u.may(me.get(\"role\"), \"settings\"):\n            return refused(403, f\"{me.get('name')} may not: \"\n                                f\"{users_mod.perm_label('settings')}.\")\n        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the play-from cues",
+  "        if False:\n            return refused(403, f\"{me.get('name')} may not: \"\n                                f\"{users_mod.perm_label('settings')}.\")\n        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the play-from cues"),
+
+ ("play-from cues: a save from the show network needs no screen_arming",
+  "ltcplay/remote.py",
+  "        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the play-from cues",
+  "        if False:\n            return refused(403, \"editing the play-from cues"),
+
+ ("play-from cues: signed out reads the list",
+  "ltcplay/remote.py",
+  "        if u is None or not u.active() or not me.get(\"name\"):\n            return 403, {\"error\": \"Sign in to read the play-from cues.\"}",
+  "        if False:\n            return 403, {\"error\": \"Sign in to read the play-from cues.\"}"),
+
+ ("play-from cues: the page's audio length is trusted",
+  "ltcplay/remote.py",
+  "        cue, length, why = self.play_from_show_info(show)\n        if why:\n            return refused(409,",
+  "        cue, length, why = body.get(\"cue\"), body.get(\"audio_len_s\"), \"\"\n        if why:\n            return refused(409,"),
+
+ ("play-from cues: the show length, not the audio's, bounds a cue",
+  "ltcplay/remote.py",
+  "        return cue, float(got[\"audio_s\"]), \"\"",
+  "        return cue, float(got[\"show_s\"]), \"\""),
+
+ ("ui2 page: the play-from card passes a name used twice",
+  "ltcplay/web/remote2.html",
+  "    else if(seen[name.toLowerCase()] > 1) out.push(\"Name used twice.\");",
+  "    else if(false) out.push(\"Name used twice.\");"),
+
+ ("ui2 page: the play-from card passes a cue past the audio end",
+  "ltcplay/web/remote2.html",
+  "    else if(audioLen && fr / 30 >= audioLen) out.push(",
+  "    else if(false) out.push("),
+
+ ("ui2 page: the play-from card passes a lead-in under 1 s",
+  "ltcplay/web/remote2.html",
+  "    if(!Number.isInteger(ln) || ln < minL || ln > maxL)",
+  "    if(!Number.isInteger(ln) || ln > maxL)"),
+
+ ("ui2 page: the play-from card sends no id, so a rename is a delete and an add",
+  "ltcplay/web/remote2.html",
+  "    if(c.id) o.id = c.id;",
+  "    if(false) o.id = c.id;"),
+
 ]
 
 

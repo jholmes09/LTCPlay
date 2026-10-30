@@ -79,7 +79,7 @@ _DOC_KEYS = {"play_from_format", "rev", "shows"}
 _ENTRY_KEYS = {"cue", "audio_len_s", "cues", "edited_by", "edited_at",
                "screen"}
 _CUE_KEYS = {"id", "name", "tc", "lead_in_s", "note"}
-_DASHES = ("–", "—")
+_DASHES = ("\u2013", "\u2014")
 
 
 class CueError(ValueError):
