@@ -43634,6 +43634,132 @@ def test_the_show_takes_over_the_pixels_on_its_first_frame():
     print("  ok")
 
 
+def test_no_dark_frame_between_the_show_and_the_idle_look():
+    section("pixels: at a show's end the show audio clock runs its "
+            "timecode to the end of the lights file rounded up to the next "
+            "timecode frame; the show's last frame is held through that "
+            "frame, then the idle look, with no dark frame between (Jeff, "
+            "2026-10-30: \"a little blip of black ... vice versa\"); a "
+            "longer tail is still dark, and a show chased off a timecode "
+            "feed is unchanged")
+    import math
+    import types
+    import ltcplay.player as plmod
+    idle = _LitFSEQ(100, frames=40, channels=64)
+    base = tcmod.parse_tc("01:00:00:00", 30)
+
+    def show_end(frames, audio_s, source="audio_master", gaps=None):
+        """The real Player, ticked every 25 ms, fed the way AudioMaster
+        feeds it (one timecode frame every 1/30 s, from the cue's start),
+        ended the way AudioMaster ends a cue: drop_clock once the frame
+        reaches the longest of the audio and the lights file, rounded up
+        to a whole timecode frame (clock._end_frames). Returns the looks
+        that went out from 2 s before the end of the lights file."""
+        show = _LitFSEQ(10, frames=frames, channels=64)
+        tl = _timeline([("01:00:00:00", "Show", show)],
+                       idle="/tmp/idle.fseq", gaps=gaps)
+        p = Player(tl, FakeNetmap(), CountingSender(), gaps=gaps)
+        p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq",
+                                  "preshow loop")
+        p.idle_cue.fseq = idle
+        p.idle_cue._spans = [(0, 0, 64)]
+        p.idle_cue._gaps = None
+        p.clock = types.SimpleNamespace(source=source)
+        st = _Stepped(p, step_ms=25)
+        looks = []
+        try:
+            lights_s = show.duration_ms / 1000.0
+            end = max(int(math.ceil(audio_s * 30 - 1e-9)),
+                      int(math.ceil(lights_s * 30 - 1e-9)))
+            k = int((lights_s - 2.0) * 30)
+            epoch = st.t - k / 30.0
+            ended = False
+            for _ in range(int((audio_s - lights_s + 2.5) / 0.025)):
+                st.t += 0.025
+                while not ended and epoch + k / 30.0 <= st.t + 1e-9:
+                    if k >= end:
+                        p.drop_clock()
+                        ended = True
+                    else:
+                        p.feed_timecode(base + k / 30.0, epoch + k / 30.0,
+                                        False, "fed")
+                        k += 1
+                f = bytes(p._alert_mix(p._tick()) or b"")
+                looks.append("black" if not any(f) else
+                             "idle" if f[0] >= 100 else "show")
+        finally:
+            st.close()
+        return looks
+
+    def runs(looks):
+        out = []
+        for x in looks:
+            if not out or out[-1][0] != x:
+                out.append([x, 0])
+            out[-1][1] += 1
+        return [(x, n) for x, n in out]
+    # Jeff's show: a lights file that ends between two timecode frames
+    # (18167 frames of 25 ms, 454.175 s; the timecode ends at 454.200 s).
+    looks = show_end(18167, 454.17)
+    got = runs(looks)
+    check([x for x, _n in got] == ["show", "idle"],
+          f"the show's last frame, then the idle look, no dark frame "
+          f"between: {got}")
+    check(plmod.SHOW_END_HOLD_S <= 0.07,
+          f"the show's last frame is held at most two timecode frames: "
+          f"{plmod.SHOW_END_HOLD_S}")
+    # The same show chased off a timecode feed (GPL's way): unchanged.
+    got = runs(show_end(18167, 454.17, source="ltc_audio_slave"))
+    check(got[-2:] == [("black", 1), ("idle", got[-1][1])],
+          f"a show chased off a timecode feed is unchanged: {got}")
+    # Audio 1.8 s longer than the lights file: the tail past the lights
+    # file is dark as before ("Past the end of the lights file the lights
+    # ... are dark"), with only the rounding frame held.
+    got = runs(show_end(18167, 456.0))
+    check([x for x, _n in got] == ["show", "black", "idle"] and
+          got[1][1] >= 68,
+          f"a tail longer than a timecode frame is still dark: {got}")
+    # ... and with "gaps": "idle" that tail is the idle look.
+    got = runs(show_end(18167, 456.0, gaps="idle"))
+    check([x for x, _n in got] == ["show", "idle"],
+          f"with gaps idle the tail is the idle look: {got}")
+    # A Hold's or an Abort's black in that last frame still wins.
+    show = _LitFSEQ(10, frames=400, channels=64)
+    tl = _timeline([("01:00:00:00", "Show", show)], idle="/tmp/idle.fseq")
+    p = Player(tl, FakeNetmap(), CountingSender())
+    p.clock = types.SimpleNamespace(source="audio_master")
+    st = _Stepped(p, step_ms=25)
+    try:
+        st.feed(base + 9.99)
+        st.t += 0.02
+        held = bytes(p._tick() or b"")
+        p.override = "blackout"
+        dark = p._tick()
+    finally:
+        st.close()
+    check(any(held) and not dark,
+          f"the held last frame, and a blackout over it: {held[:1]!r} "
+          f"{dark!r}")
+    # A cue still to come: the gap between two cues is the gap look as
+    # before (bridge_ms rules it), never this hold.
+    tl = _timeline([("01:00:00:00", "Show", show),
+                    ("01:00:30:00", "Later", _LitFSEQ(10, frames=400,
+                                                      channels=64))],
+                   idle="/tmp/idle.fseq")
+    p = Player(tl, FakeNetmap(), CountingSender())
+    p.clock = types.SimpleNamespace(source="audio_master")
+    st = _Stepped(p, step_ms=25)
+    try:
+        st.feed(base + 9.99)
+        st.t += 0.02
+        gap = p._tick()
+    finally:
+        st.close()
+    check(not gap, f"with a cue still to come the gap look goes out: "
+                   f"{gap!r}")
+    print("  ok")
+
+
 def test_fire_ice_review_hand_mutations():
     section("fire & ice: the runner starts the show it was told, confirms "
             "only the cue it started, closes the night for real; a release "
@@ -92053,6 +92179,7 @@ if __name__ == "__main__":
         test_fire_ice_review_hand_mutations,
         test_every_show_start_clears_the_pixels,
         test_the_show_takes_over_the_pixels_on_its_first_frame,
+        test_no_dark_frame_between_the_show_and_the_idle_look,
         test_hold_abort_stop_black_the_pixels_after_a_start,
         test_closed_night_abort_and_stop_say_what_they_did,
         test_fire_ice_show_log_is_written_off_the_logging_threads,

@@ -63,6 +63,21 @@ SHOW, IDLE, HOLD, BLACK = "show", "preshow", "hold", "black"
 # repeating, a 1 s cycle.
 PULSE_PERIOD_S = 1.0
 
+# Jeff's report, 2026-10-30: "a little blip of black when we go from
+# intermission to the show or vice versa". At a show's end the show audio
+# clock (clock.AudioMaster, "audio_master") runs its timecode to the end of
+# the lights file ROUNDED UP to the next timecode frame (30 a second), then
+# hands the pixels to the idle look (drop_clock). In between, up to one
+# timecode frame, the tick was past the last cue with no cue after it and
+# sent the gap look: one black pixel frame (25 ms at 40 frames a second)
+# between the show's last frame and the idle look. With that clock the
+# show's last frame is held instead, for at most this long past the end of
+# the lights file: that one rounding frame, and one more for the clock's
+# thread waking a little late. Past it the gap look goes out as before, so
+# a show whose audio runs on after its lights file is still dark there.
+# Only that clock: a show chased off a timecode feed (GPL) never holds.
+SHOW_END_HOLD_S = 2.0 / 30.0
+
 
 def pulse_level(elapsed):
     """0 to 255 and back over PULSE_PERIOD_S: a triangle, 0 at the start of
@@ -924,9 +939,10 @@ class Player:
             nxt = self.next_cue
             ended_at = cue.tc_seconds + (cue.fseq.frame_count *
                                          cue.fseq.step_time_ms / 1000.0)
-            if nxt is not None and self.bridge_s > 0 and \
-                    0 < nxt.tc_seconds - tc <= self.bridge_s and \
-                    tc - ended_at <= self.bridge_s:
+            if (nxt is not None and self.bridge_s > 0 and
+                    0 < nxt.tc_seconds - tc <= self.bridge_s and
+                    tc - ended_at <= self.bridge_s) or \
+                    self._show_clock_ending(nxt, tc, ended_at):
                 self.current_cue = cue
                 self.current_frame = cue.fseq.frame_count - 1
                 out = self._render(cue, self.current_frame)
@@ -959,6 +975,18 @@ class Player:
             self.source = SHOW
         self._note_change(prev_state, prev_cue, prev_source)
         return out
+
+    def _show_clock_ending(self, nxt, tc, ended_at):
+        """True while the show audio clock is in its last timecode frame,
+        just past the end of the lights file of the show's last cue: the
+        tick holds that cue's last frame until the clock hands the pixels
+        to the idle look (SHOW_END_HOLD_S says why). False on any other
+        clock, with a cue still to come, or once SHOW_END_HOLD_S is
+        past."""
+        clk = getattr(self, "clock", None)
+        if getattr(clk, "source", None) != "audio_master" or nxt is not None:
+            return False
+        return 0.0 <= tc - ended_at < SHOW_END_HOLD_S
 
     def _next_from_memory(self):
         """What comes next, judged from the last timecode actually seen.

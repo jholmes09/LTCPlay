@@ -8925,6 +8925,26 @@ def build():
   '                if hold is not None:\n                    held = hold()\n',
   '                if hold is not None:\n                    p.override = "blackout"\n                    held = hold()\n'),
 
+ ("pixels: the show's last frame is not held through the show clock's last timecode frame",
+  'ltcplay/player.py',
+  '                    self._show_clock_ending(nxt, tc, ended_at):\n',
+  '                    False:\n'),
+
+ ("pixels: the show-end hold also holds a show chased off a timecode feed",
+  'ltcplay/player.py',
+  '        if getattr(clk, "source", None) != "audio_master" or nxt is not None:\n',
+  '        if nxt is not None:\n'),
+
+ ("pixels: the show-end hold also holds the last frame before a cue still to come",
+  'ltcplay/player.py',
+  '        if getattr(clk, "source", None) != "audio_master" or nxt is not None:\n',
+  '        if getattr(clk, "source", None) != "audio_master":\n'),
+
+ ("pixels: the show-end hold never ends, so a long tail holds the last frame",
+  'ltcplay/player.py',
+  '        return 0.0 <= tc - ended_at < SHOW_END_HOLD_S\n',
+  '        return 0.0 <= tc - ended_at\n'),
+
  ("pixels: the held look never hands over to the show",
   'ltcplay/player.py',
   '        if hand is not None:\n            self._take_handoff(hand, epoch, fed, now)\n',
