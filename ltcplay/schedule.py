@@ -2466,10 +2466,13 @@ def rebuild_night(rule, saved, dropped=None):
     Otherwise tonight is built again from the new rule, keeping what
     already happened: every show with a final status (and one that was
     running, or delayed and waiting for Start now) is carried over as it
-    is, a show taken off tonight's list or skipped stays SKIPPED. Tonight's
-    moves and delays of shows still to come, and shows added tonight, are
-    dropped: each one is a sentence, also appended to `dropped` when given,
-    so the answer to a save can say so plainly.
+    is, a show taken off tonight's list or skipped stays SKIPPED. A show
+    still to come that was delayed or moved tonight keeps its new time
+    while the time it was planned for is still in the schedule (dropping
+    it put the show back at a time already gone by, and it was MISSED).
+    A move of a show whose time left the schedule, and a show added
+    tonight, are dropped: each one is a sentence, also appended to
+    `dropped` when given, so the answer to a save can say so plainly.
 
     Every show keeps the number it had tonight (Jeff, Pico, 2026-10-29:
     after a rebuild the extra show 19 came back as show 23): a show that
@@ -2495,6 +2498,9 @@ def rebuild_night(rule, saved, dropped=None):
     taken = set()
     # The number of the show still to come at each planned time.
     to_come = {}
+    # A show still to come that was delayed or moved tonight, by the time
+    # it was planned for.
+    moved = {}
 
     def drop(text):
         notes.append(text)
@@ -2508,12 +2514,15 @@ def rebuild_night(rule, saved, dropped=None):
                      f"because the schedule changed.")
                 continue
             to_come.setdefault(planned, sl.n)
-            if sl.planned is not None:
+            if sl.planned is not None and planned in fresh_times:
+                # Its time is still in the schedule: the Delay or move is
+                # kept (review of PR #180: dropping it put the show back at
+                # a time already gone by, and it was MISSED).
+                moved.setdefault(planned, sl)
+                notes.append(f"Tonight's move of the {hm(planned)} show to "
+                             f"{hm(sl.start)} (a Delay or a move) is kept.")
+            elif sl.planned is not None:
                 drop(f"Tonight's move of the {hm(planned)} show to "
-                     f"{hm(sl.start)} (a Delay or a move) is dropped "
-                     f"because the schedule changed: it is back at "
-                     f"{hm(planned)}." if planned in fresh_times else
-                     f"Tonight's move of the {hm(planned)} show to "
                      f"{hm(sl.start)} (a Delay or a move) is dropped "
                      f"because the schedule changed, and the "
                      f"{hm(planned)} show is no longer in the schedule.")
@@ -2551,9 +2560,13 @@ def rebuild_night(rule, saved, dropped=None):
                          f"{'new in' if new else 'still in'} the schedule, "
                          f"but tonight was closed with Close for the night, "
                          f"so it is skipped.")
-        elif new:
-            notes.append(f"Show {n} at {hm(sl.start)} is new in the "
-                         f"schedule.")
+        else:
+            if new:
+                notes.append(f"Show {n} at {hm(sl.start)} is new in the "
+                             f"schedule.")
+            was = moved.get(sl.start)
+            if was is not None:
+                sl = replace(sl, start=was.start, planned=was.planned)
         slots[n] = replace(sl, n=n)
     m = _carried(fresh, saved,
                  tuple(sorted(slots.values(), key=lambda x: x.n)), running)

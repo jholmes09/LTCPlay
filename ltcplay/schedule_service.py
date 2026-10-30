@@ -1022,14 +1022,17 @@ class Service:
 
     # -- a schedule saved while running (Jeff, Pico, 2026-10-29) -----------
     # What a rebuild keeps and drops (sch.rebuild_night), said once at its
-    # head. A show taken off tonight's list or skipped stays SKIPPED; only
-    # moves and delays of shows still to come, and shows added tonight, are
-    # dropped, each in a sentence of its own.
+    # head. A show taken off tonight's list or skipped stays SKIPPED, and a
+    # Delay or move is kept while the show's time is in the schedule; only
+    # a move of a show whose time left the schedule, and shows added
+    # tonight, are dropped, each in a sentence of its own.
     REBUILT_WHAT = (
         "Shows that already happened keep their status and their numbers, "
-        "and a show taken off tonight's list or skipped stays skipped. "
-        "Tonight's moves and delays of shows still to come, and shows added "
-        "tonight, are dropped; each one is said below.")
+        "and a show taken off tonight's list or skipped stays skipped. A "
+        "Delay or move of a show still to come is kept while that show's "
+        "time is still in the schedule. A move of a show whose time is no "
+        "longer in the schedule, and shows added tonight, are dropped; "
+        "each one is said below.")
     REBUILT_RESTART = (
         "The schedule file changed after tonight's list was saved, so "
         "tonight is rebuilt from the new schedule. " + REBUILT_WHAT)

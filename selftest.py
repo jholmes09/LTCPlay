@@ -13562,8 +13562,8 @@ def test_schedule_save_keeps_tonights_delays_when_times_unchanged():
           "18:05", f"show 1 still waits for 18:05: {_starts(svc)}")
     svc.stop()
 
-    # A save that changes tonight's times drops the delay, and says so in
-    # its answer; the removed show stays SKIPPED.
+    # A save that changes tonight's times keeps the delay of a show whose
+    # time is still in the schedule; the removed show stays SKIPPED.
     work = tempfile.mkdtemp()
     now = [_den(S, 17, 40)]
     svc = _svc(S, work, now, rule=rule())
@@ -13575,13 +13575,59 @@ def test_schedule_save_keeps_tonights_delays_when_times_unchanged():
     svc.reload()
     m = svc.machine
     words = svc.tonight_words()
-    check("This save undid tonight's changes: Tonight's move of the 18:00 "
-          "show to 18:05 (a Delay or a move) is dropped" in words,
-          f"the answer says the delay was undone: {words!r}")
-    check(m.hm(m.slot(1).start) == "18:00" and
+    check("undid" not in words and "next show 1 at 18:05" in words,
+          f"the answer undoes nothing: {words!r}")
+    check(m.hm(m.slot(1).start) == "18:05" and
+          m.hm(m.slot(1).planned) == "18:00" and
           m.slot(2).status == S.SKIPPED,
-          f"show 1 is back at 18:00 and show 2 stays taken off: "
+          f"show 1 keeps its delay to 18:05 and show 2 stays taken off: "
           f"{[(s.n, m.hm(s.start), s.status) for s in m.slots[:2]]}")
+    check(any("move of the 18:00 show to 18:05 (a Delay or a move) is kept"
+              in r["text"] for r in svc.journal),
+          "the journal says the delay was kept")
+    svc.stop()
+
+    # Review of PR #180: a Delay next past the show's own time, then a save
+    # that adds a later show. The delayed show is not put back at a time
+    # gone by (it was MISSED); it starts at its delayed time.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 40)]
+    svc = _svc(S, work, now, rule=rule())
+    svc.start(thread=False)
+    now[0] = _den(S, 17, 59)
+    svc._apply(_op(S, S.DELAY_NEXT, minutes=5))
+    now[0] = _den(S, 18, 2)
+    svc.tick()
+    SV.save_rule(svc.path, rule(last_end="22:30"))
+    svc.reload()
+    m = svc.machine
+    check(m.slot(1).status == S.PENDING and m.hm(m.slot(1).start) == "18:05"
+          and not _starts(svc),
+          f"show 1 still waits for 18:05 after the save: "
+          f"{m.slot(1).status} {m.hm(m.slot(1).start)} {_starts(svc)}")
+    now[0] = _den(S, 18, 5)
+    svc.tick()
+    check(_starts(svc) == [1], f"show 1 starts at 18:05: {_starts(svc)}")
+    svc.stop()
+
+    # A move of a show whose time left the schedule is dropped, and the
+    # answer says so.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 40)]
+    svc = _svc(S, work, now, rule=rule())
+    svc.start(thread=False)
+    now[0] = _den(S, 17, 45)
+    svc._apply(_op(S, S.DELAY_NEXT, minutes=5))
+    SV.save_rule(svc.path, rule(first_start="18:10"))
+    svc.reload()
+    m = svc.machine
+    words = svc.tonight_words()
+    check("This save undid tonight's changes: Tonight's move of the 18:00 "
+          "show to 18:05 (a Delay or a move) is dropped" in words and
+          "no longer in the schedule" in words,
+          f"the answer says the delay was undone: {words!r}")
+    check(m.hm(m.next_slot().start) == "18:10",
+          f"the next show is the new 18:10: {m.hm(m.next_slot().start)}")
     _no_dashes(words, "undone answer")
     svc.stop()
 
@@ -13844,7 +13890,8 @@ def test_schedule_save_review_a_cases():
           f"{_starts(svc)}")
     # The same times with a new guard: tonight's list is kept, on the new
     # guard (a restart could not tell the old one, so a save does not
-    # either); a change of tonight's times undoes the move and says so.
+    # either); a change of tonight's times keeps the move while 18:00 is
+    # still a show time, and undoes it, saying so, once it is not.
     SV.save_rule(svc.path, rule(guard=90, exc={"2026-12-25": None}))
     svc.reload()
     m = svc.machine
@@ -13853,9 +13900,17 @@ def test_schedule_save_review_a_cases():
           f"{m.guard_s} {m.hm(m.slot(1).start)}")
     SV.save_rule(svc.path, rule(guard=90, interval_min=25))
     svc.reload()
+    m = svc.machine
+    check(m.hm(m.slot(1).start) == "18:30" and
+          "undid" not in svc.tonight_words(),
+          f"new times keep the move of a show still in the schedule: "
+          f"{m.hm(m.slot(1).start)} {svc.tonight_words()!r}")
+    SV.save_rule(svc.path, rule(guard=90, interval_min=25,
+                                first_start="18:01"))
+    svc.reload()
     words = svc.tonight_words()
     m = svc.machine
-    check(m.hm(m.slot(1).start) == "18:00" and
+    check(m.hm(m.next_slot().start) == "18:01" and
           "This save undid tonight's changes: Tonight's move of the 18:00 "
           "show to 18:30" in words,
           f"new times rebuild tonight and say what was undone: {words!r}")
