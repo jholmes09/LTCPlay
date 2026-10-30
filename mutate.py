@@ -1092,8 +1092,8 @@ MUTATIONS = [
 
  ("soak: the screens see only a refusal, never the show-load CUES FAULT",
   "ltcplay/fire_ice.py",
-  "        return self.fault or self.render_fault_now()",
-  "        return self.fault"),
+  "        return self.fault or self.thread_fault or rf",
+  "        return self.fault or self.thread_fault"),
 
  ("flame cues: a stale render is not refused while the reader is mid-pass",
   "ltcplay/fire_ice.py",
@@ -1151,11 +1151,11 @@ MUTATIONS = [
   "ltcplay/fire_ice.py",
   "        if not self._bg or self._stop.is_set():\n"
   "            return self\n"
-  "        for attr, body, name in self.THREADS:",
+  "        # From the sender",
   "        if not self._bg or self._stop.is_set() or \\\n"
   "                getattr(self, '_layout', None) is None:\n"
   "            return self\n"
-  "        for attr, body, name in self.THREADS:"),
+  "        # From the sender"),
 
  ("soak: another show folder in showpc.json goes unsaid",
   "ltcplay/remote.py",
@@ -7213,13 +7213,67 @@ def build():
  # -- review of #174, round 2 follow-ups (2026-10-29)
  ("flame cues: the cutting thread never cuts ahead",
   "ltcplay/fire_ice.py",
-  "        while not self._stop.wait(0.05):\n            self._cut_ahead()",
-  "        while not self._stop.wait(0.05):\n            pass"),
+  "        while not self._stop.wait(CUT_EVERY_S):\n            self._cut_ahead()",
+  "        while not self._stop.wait(CUT_EVERY_S):\n            pass"),
 
  ("flame cues: a dead background thread is never started again",
   "ltcplay/fire_ice.py",
-  "            if t is not None and t.is_alive():\n                continue",
-  "            if t is not None:\n                continue"),
+  "        if t is not None and t.is_alive():\n            return\n"
+  "        now = self._mono()",
+  "        if t is not None:\n            return\n"
+  "        now = self._mono()"),
+
+ # -- review of #177 (2026-10-30)
+ ("flame cues: the uncut timer restarts at every block",
+  "ltcplay/fire_ice.py",
+  "                    key = id(cut)",
+  "                    key = (id(cut), cut._block(idx) if cut is not None\n"
+  "                           else None)"),
+
+ ("flame cues: the lookahead is back to 3 s",
+  "ltcplay/fire_ice.py",
+  "CUT_AHEAD_S = 15.0",
+  "CUT_AHEAD_S = 3.0"),
+
+ ("flame cues: the playing cue is not cut before its render is published",
+  "ltcplay/fire_ice.py",
+  "        self._cut_ahead(s, cuts)\n        self._cuts = cuts",
+  "        self._cuts = cuts"),
+
+ ("flame cues: a thread that keeps dying is restarted at once every time",
+  "ltcplay/fire_ice.py",
+  "            if last is not None and n and now - last < \\",
+  "            if False and \\"),
+
+ ("flame cues: a thread that keeps dying is never a screen fault",
+  "ltcplay/fire_ice.py",
+  "            if n >= self.RESTART_FAULT_AFTER:",
+  "            if False:"),
+
+ ("flame cues: close() leaves the cutting thread running",
+  "ltcplay/fire_ice.py",
+  "        for t in (self._thread, self._cutter):",
+  "        for t in (self._thread,):"),
+
+ ("flame cues: the first missing frame of a render reads as there",
+  "ltcplay/fire_ice.py",
+  "        if sh is not None and idx >= sh[0]:",
+  "        if sh is not None and idx > sh[0]:"),
+
+ ("flame cues: a served row does not end the uncut episode",
+  "ltcplay/fire_ice.py",
+  "                self._uncut = None\n                count = span[1]",
+  "                count = span[1]"),
+
+ ("flame cues: a thread started again is still said to be gone",
+  "ltcplay/fire_ice.py",
+  "            self._start_failed.discard(attr)",
+  "            pass"),
+
+ ("flame cues: the cutting thread looks only once a second",
+  "ltcplay/fire_ice.py",
+  "        while not self._stop.wait(CUT_EVERY_S):\n            self._cut_ahead()",
+  "        while not self._stop.wait(1.0):\n            self._cut_ahead()"),
 
  ("flame cues: a cutter that cannot start still promises the cues",
   "ltcplay/fire_ice.py",

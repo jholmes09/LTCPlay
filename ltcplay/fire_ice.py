@@ -1143,6 +1143,8 @@ CUT_PIECE_FRAMES = 200
 # FAULT for 25 to 75 ms). The flame link's own seek guard holds every flame
 # at zero for 0.5 s after any move anyway.
 CUT_FAULT_AFTER_S = 1.0
+# How often the cutting thread looks at the play position.
+CUT_EVERY_S = 0.05
 CUES_LOADING = ("the show's flame cues are still being cut from its render "
                 "(off the flame link's sender), so they are zero here; "
                 "they follow within a second")
@@ -1345,7 +1347,10 @@ class FlameCues:
         self._died = {}          # thread attribute -> what ended it
         self._restarted = {}     # thread attribute -> when last restarted
         self._start_failed = set()
-        self._uncut = None       # ((cut, block), since) while not cut yet
+        self._restarts = {}      # thread attribute -> (restarts, last, began)
+        self._start_lock = threading.Lock()
+        self.thread_fault = ""   # a thread that keeps stopping, for screens
+        self._uncut = None       # (cut, since) while not cut yet
         self._mono = time.monotonic
         # The CUES FAULT said at show load (soak 2026-10-21): renders of
         # the running show older than its xlights_networks.xml, which
@@ -1556,9 +1561,9 @@ class FlameCues:
 
     def _cutting(self):
         """The cutting thread (review of #174): the playing cue cut
-        CUT_AHEAD_S ahead, every 50 ms. Memory only, never the disk, so a
-        read or a stat stalled on the reading thread cannot stop it."""
-        while not self._stop.wait(0.05):
+        CUT_AHEAD_S ahead, every CUT_EVERY_S. Memory only, never the disk,
+        so a read or a stat stalled on the reading thread cannot stop it."""
+        while not self._stop.wait(CUT_EVERY_S):
             self._cut_ahead()
 
     def _guarded(self, attr, body):
@@ -1569,9 +1574,19 @@ class FlameCues:
         except BaseException as e:               # noqa: BLE001
             self._died[attr] = f"{type(e).__name__}: {e}"[:200]
 
-    THREADS = (("_thread", "_refresher", "ltcplay-flame-cues-read"),
-               ("_cutter", "_cutting", "ltcplay-flame-cues-cut"))
-    RESTART_EVERY_S = 1.0
+    THREADS = (("_thread", "_refresher", "ltcplay-flame-cues-read",
+                "reads the show's renders and checks their dates against "
+                "the layout"),
+               ("_cutter", "_cutting", "ltcplay-flame-cues-cut",
+                "cuts the show's flame cues from its renders"))
+    # A thread that keeps dying is started again later each time (review
+    # of #177): 1 s, then 2, 5, 10, 30 and every 60 s; one that ran this
+    # long before it died starts the count again.
+    RESTART_BACKOFF_S = (1.0, 2.0, 5.0, 10.0, 30.0, 60.0)
+    RESTART_RESET_S = 60.0
+    # After this many restarts in a row it is a fault on the screens too
+    # (faults_now), until the thread runs RESTART_RESET_S again.
+    RESTART_FAULT_AFTER = 3
 
     def start(self):
         """Background mode: the reading thread and the cutting thread,
@@ -1585,30 +1600,59 @@ class FlameCues:
         nothing without background mode, or once closed."""
         if not self._bg or self._stop.is_set():
             return self
-        for attr, body, name in self.THREADS:
-            t = getattr(self, attr)
-            if t is not None and t.is_alive():
-                continue
-            now = self._mono()
-            if t is not None:
-                last = self._restarted.get(attr)
-                if last is not None and now - last < self.RESTART_EVERY_S:
-                    continue
-                self._restarted[attr] = now
-                why = self._died.pop(attr, "it ended")
-                self._note(f"Flame cues: the thread {name} stopped ({why}); "
-                           f"it was started again.", fault=True,
-                           action="flames", outcome="cues_thread_restarted")
-            try:
-                nt = threading.Thread(target=self._guarded,
-                                      args=(attr, getattr(self, body)),
-                                      daemon=True, name=name)
-                nt.start()
-                setattr(self, attr, nt)
-                self._start_failed.discard(attr)
-            except Exception:                    # noqa: BLE001
-                self._start_failed.add(attr)
+        # From the sender and from the screens' threads (render_fault_now):
+        # one caller at a time, so a thread is never started twice.
+        with self._start_lock:
+            for attr, body, name, does in self.THREADS:
+                self._start_one(attr, body, name, does)
         return self
+
+    def _start_one(self, attr, body, name, does):
+        t = getattr(self, attr)
+        if t is not None and t.is_alive():
+            return
+        now = self._mono()
+        if t is not None:
+            n, last, began = self._restarts.get(attr, (0, None, None))
+            if began is not None and now - began >= self.RESTART_RESET_S:
+                n = 0
+            if last is not None and n and now - last < \
+                    self.RESTART_BACKOFF_S[min(n, len(
+                        self.RESTART_BACKOFF_S)) - 1]:
+                return
+            n += 1
+            why = self._died.pop(attr, "it ended")
+            self._note(f"Flame cues: the thread {name} stopped ({why}); it "
+                       f"was started again (restart {n}).", fault=True,
+                       action="flames", outcome="cues_thread_restarted")
+            if n >= self.RESTART_FAULT_AFTER:
+                self.thread_fault = (
+                    f"the thread that {does} keeps stopping ({n} restarts, "
+                    f"the last: {why}); restart LTC Player")
+            self._restarts[attr] = (n, now, now)
+        else:
+            self._restarts[attr] = (0, None, now)
+        try:
+            nt = threading.Thread(target=self._guarded,
+                                  args=(attr, getattr(self, body)),
+                                  daemon=True, name=name)
+            nt.start()
+            setattr(self, attr, nt)
+            self._start_failed.discard(attr)
+        except Exception:                        # noqa: BLE001
+            self._start_failed.add(attr)
+
+    def _settle_threads(self):
+        """A thread that has run RESTART_RESET_S since it was started again
+        clears its screen fault."""
+        now = self._mono()
+        if self.thread_fault and all(
+                (getattr(self, a) is not None and getattr(self, a).is_alive()
+                 and (self._restarts.get(a, (0, None, now))[2] is None or
+                      now - self._restarts.get(a, (0, None, now))[2]
+                      >= self.RESTART_RESET_S))
+                for a, _b, _n, _d in self.THREADS):
+            self.thread_fault = ""
 
     def _cutter_dead(self):
         """True when a background thread could not be started again: the
@@ -1663,8 +1707,11 @@ class FlameCues:
 
     def faults_now(self):
         """What the rack screen and the Stream Deck show as CUES FAULT:
-        the refusal now in force, else the show-load one."""
-        return self.fault or self.render_fault_now()
+        the refusal now in force, else a background thread that keeps
+        stopping (review of #177), else the show-load one."""
+        rf = self.render_fault_now()
+        self._settle_threads()
+        return self.fault or self.thread_fault or rf
 
     def close(self):
         self._stop.set()
@@ -1814,8 +1861,10 @@ class FlameCues:
                     row = cut.row(idx)
                 if row is None:
                     dead = self._cutter_dead()
-                    key = (id(cut), cut._block(idx) if cut is not None
-                           else None)
+                    # Keyed on the cut alone (review of #177): playing on
+                    # across uncut blocks is ONE episode, and it faults
+                    # after CUT_FAULT_AFTER_S however short the blocks.
+                    key = id(cut)
                     now = self._mono()
                     u = self._uncut
                     if u is None or u[0] != key:
