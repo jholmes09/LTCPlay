@@ -63589,6 +63589,13 @@ def test_pump_flame_link():
                               clock=lambda: mine[0]) is False,
               "a deadline already past starts nothing")
         link._clock = t
+        check(fl.PUMP_MAX_S == 600, "the link's own ceiling is 10:00")
+        link.pump_start(3600, link.pump_gen())
+        left = link._pump_until - link._clock()
+        check(0 < left <= 600.0 + 1e-6,
+              f"the link's hard end is never past 10:00, whatever the "
+              f"engine asks: {left:.1f} s")
+        link.pump_stop()
         _pm_on(link)
         gen = link.pump_gen()
         n0 = len(link._sock.sent)
@@ -63848,6 +63855,21 @@ def test_pump_at_the_engine():
               "and the screens are told the longest (and the default is "
               "never longer than it)")
         RM.save_settings(R.work, pump_max_s=14400)
+        import json as _jj
+        sp = os.path.join(R.work, RM.SETTINGS_FILE)
+        with open(sp, encoding="utf-8") as fh:
+            sdoc = _jj.load(fh)
+        sdoc["pump_max_s"] = 14400
+        with open(sp, "w", encoding="utf-8") as fh:
+            _jj.dump(sdoc, fh)
+        check(RM.load_settings(R.work)["pump_max_s"] == 600,
+              "a file written with 14400 by hand is read as 600")
+        RM.save_settings(R.work, pump_max_s=14400)
+        on_disk = _jj.load(open(os.path.join(R.work, RM.SETTINGS_FILE),
+                                encoding="utf-8"))
+        check(on_disk.get("pump_max_s") == 600,
+              f"saving pump_max_s 14400 writes 600 (never above it on disk "
+              f"either): {on_disk.get('pump_max_s')}")
         check(RM.load_settings(R.work)["pump_max_s"] == 600 and
               view()["max_s"] == 600,
               "a pump_max_s above 600 (from before the 10:00 ceiling) is "
@@ -64622,6 +64644,175 @@ def test_pump_signout_stops_it():
         check(pm.pump_send() == "" and link.pump_on and pm.run is not None,
               "Andy signing out on his iPad leaves Ollie's run going")
         tap(False, hdr)
+        R.feed()
+        link._abort_repeat = None
+        ipad = ("10.20.0.44", 50000)
+
+        def tap_from(on, hdr, client):
+            n[0] += 1
+            body = {"on": on, "seen": R.seen()}
+            if on is True:
+                body.update(seconds=300, run=f"so{n[0]}")
+            return R.ask("POST", "/api/remote/fuel-pump", body,
+                         client=client, headers=hdr)
+        # The same person on two screens: signing out on one leaves the run
+        # the other started; signing out on that one stops it.
+        ok, _w, itok, _n = us.sign_in("Ollie", "Ollie-pw-1234", False,
+                                      "10.20.0.44")
+        ihdr = {"Cookie": f"{U.COOKIE}={itok}"}
+        st, _h, out = tap_from(True, ihdr, ipad)
+        check(st == 200 and link.pump_on and pm.run["token"] == itok,
+              f"Ollie turns it on from his iPad: {st} {out}")
+        us.sign_out(tok, "rack", local=False)
+        R.mono[0] += 0.1
+        check(pm.pump_send() == "" and link.pump_on,
+              "Ollie signing out on the rack screen leaves the run his "
+              "iPad started")
+        R.ask("POST", "/api/remote/signout", {}, client=ipad, headers=ihdr)
+        check(not link.pump_on and
+              "Ollie signed out" in (pm.last_off or {}).get("reason", ""),
+              f"signing out on the iPad stops it: {pm.last_off}")
+        R.feed()
+        link._abort_repeat = None
+        # The show PC signing everyone out through the real route: the
+        # journal names the person who signed out (cold review A, 1).
+        ok, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True, "rack")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        ok, _w, jtok, _n = us.sign_in("Jeff", "", True, "rack",
+                                      new_password="Jeff-pw-1234")
+        st, _h, out = tap(True, hdr)
+        check(st == 200 and link.pump_on, f"setup: Ollie's run: {out}")
+        R.ask("POST", "/api/remote/signout", {}, client=loop,
+              headers={"Cookie": f"{U.COOKIE}={jtok}"})
+        lo = pm.last_off or {}
+        check(not link.pump_on and pm.run is None and
+              "Jeff signed out" in lo.get("reason", "") and
+              "Ollie's sign-in" in lo.get("reason", "") and
+              lo.get("who") == "Jeff",
+              f"Jeff signs out at the show PC (every sign-in made there "
+              f"ends): off at once, Jeff named: {lo}")
+        R.feed()
+        link._abort_repeat = None
+        ok, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True, "rack")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        # An unreadable users file is never said as a sign-out (A2).
+        tap(True, hdr)
+        real_check = us.session_check
+        us.session_check = lambda t: ("broken", None)
+        R.mono[0] += 0.1
+        why = pm.pump_send()
+        us.session_check = real_check
+        check("users file unreadable" in why and "signed out" not in why
+              and not link.pump_on,
+              f"a users file that cannot be read: said as that: {why}")
+        R.feed()
+        link._abort_repeat = None
+        # A busy users lock is never waited on (A4): read as signed in for
+        # a while, then said.
+        tap(True, hdr)
+        held, release = threading.Event(), threading.Event()
+
+        def hold_users():
+            with us._lock:
+                held.set()
+                release.wait(10)
+        th = threading.Thread(target=hold_users, daemon=True)
+        th.start()
+        held.wait(5)
+        t0 = time.monotonic()
+        R.mono[0] += 0.1
+        why = pm.pump_send()
+        took = time.monotonic() - t0
+        check(why == "" and link.pump_on and took < 0.5,
+              f"the users lock held (a password hash): the timer does not "
+              f"wait on it ({took:.2f} s) and the run goes on: {why!r}")
+        for _ in range(40):
+            R.mono[0] += 0.1
+            R.feed()
+            why = pm.pump_send()
+            if why:
+                break
+        release.set()
+        th.join(5)
+        check("busy too long" in why and not link.pump_on,
+              f"held past {R.remote.PUMP_USERS_BUSY_S:g} s: it ends, said: "
+              f"{why}")
+        R.feed()
+        link._abort_repeat = None
+        # A demotion stops the run (B1).
+        tap(True, hdr)
+        us.set_role("Ollie", "viewer")
+        R.mono[0] += 0.1
+        why = pm.pump_send()
+        check("may no longer turn the fuel pump on" in why and
+              not link.pump_on,
+              f"Ollie made a viewer while his run goes: it ends: {why}")
+        us.set_role("Ollie", "operator")
+        R.feed()
+        link._abort_repeat = None
+        # A sign-in that ends while the ON is on its way never starts it
+        # (A3): during its first checks, and inside the reservation.
+        starts = []
+        real_start = link.pump_start
+
+        def counting(*a, **k):
+            starts.append(1)
+            return real_start(*a, **k)
+        link.pump_start = counting
+        real_ref = pm.refusal
+
+        def out_meanwhile():
+            us.sign_out(tok, "rack", local=False)
+            return real_ref()
+        pm.refusal = out_meanwhile
+        reserved = []
+        real_blk0 = pm._blocker
+
+        def seeing():
+            reserved.append(pm.run is not None)
+            return real_blk0()
+        pm._blocker = seeing
+        st, _h, out = tap(True, hdr)
+        pm.refusal = real_ref
+        pm._blocker = real_blk0
+        check(st == 409 and "signed out" in out.get("error", "") and
+              not starts and not link.pump_on and not any(reserved),
+              f"(refused before any reservation: {reserved})")
+        check(st == 409 and "signed out" in out.get("error", "") and
+              not starts and not link.pump_on,
+              f"signed out while the ON was being checked: never started: "
+              f"{st} {out}")
+        ok, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True, "rack")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        real_blk = pm._blocker
+
+        def out_in_reservation():
+            if pm.run is not None:
+                us.sign_out(tok, "rack", local=False)
+            return real_blk()
+        pm._blocker = out_in_reservation
+        st, _h, out = tap(True, hdr)
+        pm._blocker = real_blk
+        link.pump_start = real_start
+        check(st == 409 and "signed out" in out.get("error", "") and
+              not starts and not link.pump_on and pm.run is None,
+              f"signed out inside the reservation: never started: {st} "
+              f"{out}")
+        ok, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True, "rack")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        # An ON from no sign-in (the Stream Deck's screen) is refused while
+        # there are users, even with Ollie signed in on this machine.
+        import types
+        ctx = types.SimpleNamespace(local=True, token="", user="Ollie",
+                                    device="Stream Deck",
+                                    screen="Stream Deck",
+                                    source="127.0.0.1")
+        st, out = R.remote.pump_post({"on": True, "seconds": 300,
+                                      "run": "deck1", "seen": R.seen(),
+                                      "screen": "Stream Deck"}, ctx)
+        check(st == 403 and "needs a sign-in" in out.get("error", "") and
+              not link.pump_on,
+              f"an ON with no sign-in of its own: refused: {st} {out}")
     finally:
         R.remote.users = None
         R.close()

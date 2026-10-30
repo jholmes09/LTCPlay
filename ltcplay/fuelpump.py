@@ -133,6 +133,10 @@ def pump_seconds(v, max_s=MAX_DEFAULT_S):
     return v, ""
 
 
+class _NotStarted(Exception):
+    """Inside the reservation: the run must not start, with why."""
+
+
 class FuelPump:
     """The fuel pump's run, its refusals and its timer.
 
@@ -383,6 +387,12 @@ class FuelPump:
             why = self.refusal()
             if why:
                 why = f"The fuel pump was not turned on: {why}"
+        if not why:
+            # Its sign-in, again here (cold review A of #195, 3): one that
+            # ended while this press was on its way never starts it.
+            gone = self._sign_in_gone(token, who)
+            if gone:
+                why = f"The fuel pump was not turned on: {gone}."
         if why:
             self._note(who, screen, "refused",
                        f"{who or 'Someone'} asked to turn the fuel pump on "
@@ -420,6 +430,9 @@ class FuelPump:
             try:
                 started = self._start_reserved(running, late, link, rid,
                                                secs, who, screen, token)
+            except _NotStarted as e:
+                started = (False, None)
+                late = str(e)
             except Exception as e:
                 # Never a wedged pump: nothing started, the link told OFF.
                 started = (False, None)
@@ -464,6 +477,11 @@ class FuelPump:
         clears the reservation whatever happens."""
         ok, r = False, None
         if running is None and not late:
+            # And once more inside the reservation, never waiting on the
+            # users lock: the pump starts only on a sign-in seen live now.
+            gone = self._sign_in_gone(token, who)
+            if gone:
+                raise _NotStarted(gone)
             gen = link.pump_gen()
             now = self._clock()
             r = {"id": rid, "seconds": secs, "start": now, "beat": now,
@@ -494,8 +512,8 @@ class FuelPump:
                    f"{who or 'Someone'} turned the fuel pump ({name}, "
                    f"channel {c[1]}) on on the {screen} for "
                    f"{clock_text(secs)}. It turns off by itself then; Stop, "
-                   f"Abort, Pump off and a lost link to flamesafe turn it "
-                   f"off sooner. Hold does not.")
+                   f"Abort, Pump off, signing out and a lost link to "
+                   f"flamesafe turn it off sooner. Hold does not.")
         self._audit(who, screen, "fuel pump on", "accepted",
                     f"{secs} s")
         why = self.pump_send()
@@ -506,6 +524,14 @@ class FuelPump:
                              name="ltcplay-fuel-pump").start()
         return True, (f"The fuel pump is ON for {clock_text(secs)}. It "
                       f"turns off by itself.")
+
+    def _sign_in_gone(self, token, who):
+        """Why the sign-in behind a run (or a press) no longer lets it run,
+        or "": the engine's signed_out check. Never raises."""
+        try:
+            return self._signed_out(token or "", who or "") or ""
+        except Exception:
+            return "whether the sign-in is still live could not be read"
 
     def _night(self):
         try:
@@ -527,10 +553,7 @@ class FuelPump:
                 return "an Abort is standing"
         except Exception:
             return "whether an Abort is standing could not be read"
-        try:
-            gone = self._signed_out(r.get("token", ""), r.get("who", ""))
-        except Exception:
-            gone = "whether its starter is still signed in could not be read"
+        gone = self._sign_in_gone(r.get("token", ""), r.get("who", ""))
         if gone:
             return gone
         night = self._night()
