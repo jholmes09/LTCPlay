@@ -148,6 +148,8 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) calc(va
 body.inactive .state > div:not(#pill), body.inactive #b-go, body.inactive #b-armall, body.inactive #ann .head, body.inactive #ann-btns,
 body.inactive .tile:not(.armed) .tn, body.inactive .tile:not(.armed) .ts, body.inactive #hazers [data-hzb]:not(.on):not(.unk),
 body.inactive #lz-b[data-mode="arm"]{filter:saturate(.3)}
+/* The fuel pump's On only; never Pump off. */
+body.inactive #pm-on{filter:saturate(.3)}
 /* DAY, when this screen cannot act (signed out, no contact; Run off is
    DAY's normal state, so not then): the steps and their controls go quiet,
    never a Stop, a Disarm, Hazers off or Hold. */
@@ -225,6 +227,20 @@ main > #mini{padding:var(--gap) var(--pad) 0}
    its name and ON or OFF, then Hazers off. */
 .hzrow{grid-column:1 / -1;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:var(--gap);min-width:0}
 .hzrow[hidden]{display:none}
+/* The fireball's fuel pump (2026-10-30): one row of its own under the
+   hazers: its state and countdown, the run time to set first, Fuel pump:
+   On, and Pump off (never disabled, never quieted). */
+.pmrow{grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);align-items:stretch}
+.pmrow .pmw{display:flex;flex-direction:column;justify-content:center;min-width:0;padding:0 4px;font-weight:800;line-height:1.15}
+.pmrow .pmw .hw{font-weight:700}
+.pmrow .pmw.on .hw{color:var(--green)}
+.pmrow .pmt{display:flex;flex-direction:column;justify-content:center;gap:2px;min-width:0}
+.pmrow .pmt input{min-height:44px;width:100%;box-sizing:border-box;font:inherit;font-weight:800;font-size:1.15em;text-align:center;
+  border-radius:10px;border:2px solid var(--line);background:#100d0a;color:inherit}
+.pmrow .pmt input:disabled{border-style:dashed;color:#B3A68E}
+.pmrow .b{min-height:56px}
+.pmrow .pmwhy{grid-column:1 / -1;color:#E8D9B8;line-height:1.25;padding:0 4px}
+.pmrow .pmwhy[hidden]{display:none}
 /* Where the flame grid leaves two cells free in its last row, the hazers
    sit there as a 2 by 2 block instead of a row of their own
    (layoutGroups). */
@@ -547,6 +563,20 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
       <!-- The hazers (hazers.py, Jeff 2026-10-29): a plain tap ON or OFF
            per hazer, and Hazers off. Abort and Stop switch them off. -->
       <div id="hazers" class="hzrow" hidden aria-label="Hazers"></div>
+      <!-- The fireball's fuel pump (fuelpump.py, Jeff 2026-10-30): set the
+           run time first, then Fuel pump: On; it turns off by itself at
+           the end of it. Pump off, Stop and Abort turn it off; Hold does
+           not. Shown only when flamesafe.json lists a pump. -->
+      <div id="pump" class="hzrow pmrow" hidden aria-label="Fuel pump">
+        <div class="pmw" id="pm-w"><span class="hn">Fuel pump</span><span class="hw" id="pm-state">Off</span></div>
+        <label class="pmt"><span class="dim">Run time (m:ss)</span><input id="pm-time" type="text" inputmode="numeric" autocomplete="off" maxlength="6" value="5:00" aria-label="Fuel pump run time, minutes and seconds"></label>
+        <button class="b green" id="pm-on"><span class="lbl"><span>Fuel pump: On</span><small id="pm-on-why"></small></span></button>
+        <button class="b safe" id="pm-off"><svg class="i"><use href="#i-shield"/></svg><span>Pump off</span></button>
+        <!-- Why On cannot be pressed, in full, as text on the screen: a
+             disabled button takes no tap, so a tooltip never shows on an
+             iPad (review B of #189, 1). -->
+        <div class="pmwhy" id="pm-why" hidden></div>
+      </div>
     </div>
   </section>
 
@@ -1347,6 +1377,7 @@ function render(){
   renderAlertSlot();
   renderGroups(s.flames || {});
   renderHazers(s);
+  renderPump(s);
   renderAnnounce();
   renderSys();
   document.querySelector('.tab[data-tab="settings"]').hidden = !(ME && ME.local && mayRow(s, "settings"));
@@ -1379,6 +1410,7 @@ function renderStale(){
   try{ renderAnnounce(); }catch(e){}
   // A hazer's arm goes quiet the moment contact is lost, not at the next poll.
   if(ST) try{ renderHazers(ST); }catch(e){}
+  if(ST) try{ renderPump(ST); }catch(e){}
   // The calm tone (Jeff, 2026-10-29): signed out, no contact or the show
   // not running, everything that is not an emergency control is quieter.
   const calm = inactiveNow(ST, isSt);
@@ -1775,7 +1807,10 @@ function layoutGroups(){
   box.style.gridTemplateColumns = "repeat(" + cols + ", minmax(0,1fr))";
   // The hazers' own row is only as tall as its buttons: as one more 1fr
   // row it was drawn as tall as a flame tile, and the SHOW tab scrolled.
-  box.style.gridTemplateRows = hz && !hz.hidden && !inset ? "repeat(" + rows + ", minmax(min-content,1fr)) auto" : "";
+  // The fuel pump's row (2026-10-30) is the same: only as tall as it is.
+  const pm = $("pump");
+  const extra = (hz && !hz.hidden && !inset ? 1 : 0) + (pm && !pm.hidden ? 1 : 0);
+  box.style.gridTemplateRows = extra ? "repeat(" + rows + ", minmax(min-content,1fr))" + " auto".repeat(extra) : "";
 }
 window.addEventListener("resize", layoutGroups);
 // The hazers (hazers.py): a row of one button per hazer (ARMED or
@@ -1899,6 +1934,149 @@ async function hazerTap(i){
   try{ const j = await post("/api/remote/hazer", actor({hazer: h.name, on: !h.armed})); say(j.text || "", "", "ok"); }
   catch(e){ say(armShort(e.message), e.message, "bad"); }
 }
+// The fireball's fuel pump (fuelpump.py, Jeff 2026-10-30): "Off on Stop,
+// NOT Hold. Pump should auto-stop after 5 minutes. Allow Andy to set
+// duration before he triggers it." The run time is typed first (m:ss, or
+// whole minutes); the field starts at the engine's default, 5:00, and goes
+// back to it each time the pump turns off, so a longer run is always set
+// on purpose. The engine checks it again and runs the timer; this page
+// only shows the countdown from the engine's status. Pump off is never
+// disabled.
+let PUMP_TYPED = false, PUMP_WAS_ON = false, PUMP_OFF_SEEN = "", PUMP_BUSY = false, PUMP_OK_AT = 0;
+// What the line under the row says while On waits for its answer, or
+// after none came (delta review of #189, 3), and how long it waits.
+let PUMP_NOTE = "", PUMP_NOTE_AT = 0, PUMP_BOOT = "";
+const PUMP_ANSWER_MS = 10000;
+function pumpReset(v){
+  // The run time back to the default (5:00): after a run is started, a
+  // run ends, Pump off or a Stop.
+  PUMP_TYPED = false;
+  $("pm-time").value = pumpClock((v && v.default_s) || 300);
+}
+function pumpWhyFull(s, v, secs, why){
+  // The reason On cannot be pressed, as a sentence for the line under the
+  // row: the engine's own sentence when it refuses, else the short one.
+  if(!why) return "";
+  if(why === "Pump is on") return "The pump is on. To change the run time, press Pump off, then start it again.";
+  if(v.refusal && why === short8(v.refusal, "Not now: see below")) return "Fuel pump: On cannot be pressed now: " + v.refusal;
+  return "Fuel pump: On cannot be pressed now: " + why + ".";
+}
+function pumpSeconds(text){
+  const t = String(text || "").trim();
+  let m = /^(\d{1,3})$/.exec(t);
+  if(m) return Number(m[1]) * 60;
+  m = /^(\d{1,3}):([0-5]\d)$/.exec(t);
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+}
+function pumpClock(sec){
+  const v = Math.max(0, Math.floor(Number(sec) || 0));
+  return Math.floor(v / 60) + ":" + String(v % 60).padStart(2, "0");
+}
+function pumpWords(v, st){
+  // The pump's state in words, from the engine's status.
+  if(st) return v.on ? "Not known: no contact" : "Off";
+  if(v.state === "flamesafe_on") return "flamesafe has it on: press Pump off";
+  if(!v.on) return "Off";
+  return v.state === "waiting" ? "Waiting for flamesafe" : "Pump on: " + pumpClock(v.left_s) + " left";
+}
+function pumpWhy(s, v, secs){
+  // Why Fuel pump: On cannot be pressed now, in a few words, or "".
+  if(v.on) return "Pump is on";
+  if(stale()) return "No contact";
+  if(!mayRow(s, "arm")) return signWhy(s, "arm", true);
+  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return "Arming off here";
+  if(secs === null) return "Run time as m:ss";
+  if(secs < (v.min_s || 1)) return "Run time too short";
+  if(v.max_s && secs > v.max_s) return "Longest is " + pumpClock(v.max_s);
+  if(v.settings_error) return "Settings file unreadable";
+  if(v.refusal) return short8(v.refusal, "Not now: see below");
+  return "";
+}
+function renderPump(s){
+  const v = s && s.pump, row = $("pump");
+  if(!v || !v.available){
+    if(!row.hidden){ row.hidden = true; layoutGroups(); }
+    return;
+  }
+  if(row.hidden){
+    row.hidden = false;
+    if(!PUMP_TYPED) $("pm-time").value = pumpClock(v.default_s || 300);
+    layoutGroups();
+  }
+  // A run that ended: the field goes back to the default (5:00).
+  if(PUMP_WAS_ON && !v.on){ PUMP_TYPED = false; $("pm-time").value = pumpClock(v.default_s || 300); }
+  PUMP_WAS_ON = !!v.on;
+  // Something turned it off (Stop, Abort, Pump off anywhere): the same.
+  const offKey = v.last_off ? JSON.stringify(v.last_off) : "";
+  if(offKey && offKey !== PUMP_OFF_SEEN && PUMP_OFF_SEEN !== "") pumpReset(v);
+  if(offKey) PUMP_OFF_SEEN = offKey; else if(PUMP_OFF_SEEN === "") PUMP_OFF_SEEN = "-";
+  // The engine restarted (a new boot id): the pump is off there; the run
+  // time goes back to 5:00 too.
+  if(v.boot && PUMP_BOOT && v.boot !== PUMP_BOOT) pumpReset(v);
+  if(v.boot) PUMP_BOOT = v.boot;
+  const fl = s.flames || {};
+  const st = stale() || !fl.connected || !!fl.stale;
+  const secs = pumpSeconds($("pm-time").value);
+  const w = $("pm-w");
+  w.className = "pmw" + (v.on && v.state === "on" && !st ? " on" : "");
+  setText($("pm-state"), pumpWords(v, st));
+  const why = pumpWhy(s, v, secs);
+  const on = $("pm-on");
+  on.disabled = !!why || PUMP_BUSY;
+  setText($("pm-on-why"), why);
+  if(PUMP_NOTE && !PUMP_BUSY && (v.on || Date.now() - PUMP_NOTE_AT > 30000)) PUMP_NOTE = "";
+  const full = PUMP_NOTE || pumpWhyFull(s, v, secs, why);
+  setText($("pm-why"), full);
+  $("pm-why").hidden = !full;
+  on.title = full || ("Fuel pump: On for " + pumpClock(secs) + ". It turns off by itself then.");
+  $("pm-time").disabled = !!v.on;
+  // Pump off: never disabled, never quieted (it only takes risk away).
+  $("pm-off").disabled = false;
+  $("pm-off").title = "Pump off: the fuel pump off now.";
+}
+$("pm-time").addEventListener("input", () => {
+  PUMP_TYPED = true;
+  if(ST) try{ renderPump(ST); }catch(e){}
+});
+$("pm-on").addEventListener("click", async () => {
+  const secs = pumpSeconds($("pm-time").value);
+  if(secs === null){ say("Run time as m:ss.", "", "bad"); return; }
+  if(PUMP_BUSY) return;
+  PUMP_BUSY = true; $("pm-on").disabled = true;
+  PUMP_NOTE = "Sending..."; PUMP_NOTE_AT = Date.now();
+  if(ST) try{ renderPump(ST); }catch(e){}
+  const run = String(Date.now()) + "-" + String(Math.random()).slice(2, 10);
+  // No answer in PUMP_ANSWER_MS: On is pressable again and says so.
+  const late = new Promise((_ok, no) => setTimeout(() => no(Object.assign(new Error("No answer. Check the pump."), {late: true})), PUMP_ANSWER_MS));
+  try{
+    const j = await Promise.race([post("/api/remote/fuel-pump", actor({on: true, seconds: secs, run: run})), late]);
+    PUMP_OK_AT = Date.now();
+    pumpReset(ST && ST.pump);
+    PUMP_NOTE = "";
+    say(short8(j.text, "Pump on."), j.text, "ok");
+  }
+  catch(e){
+    if(e.late){
+      PUMP_NOTE = "No answer. Check the pump."; PUMP_NOTE_AT = Date.now();
+      say("No answer. Check the pump.", "", "bad");
+    } else {
+      // Any answer puts the run time back to 5:00, a refusal too (Jeff:
+      // back to 5:00 as soon as On is answered; delta review of #189, 1).
+      pumpReset(ST && ST.pump);
+      PUMP_NOTE = "";
+      // A second tap's "already on" never paints over the first tap's
+      // success (review B of #189, 3).
+      const running = Date.now() - PUMP_OK_AT < 5000 || !!(ST && ST.pump && ST.pump.on);
+      if(!(running && /already on/.test(e.message))) say(armShort(e.message), e.message, "bad");
+    }
+  }
+  finally{ PUMP_BUSY = false; if(ST) try{ renderPump(ST); }catch(e){} }
+});
+$("pm-off").addEventListener("click", async () => {
+  pumpReset(ST && ST.pump);
+  try{ const j = await post("/api/remote/fuel-pump", actor({on: false})); say(j.text || "The fuel pump is OFF.", "", "ok"); }
+  catch(e){ say(armShort(e.message), e.message, "bad"); }
+});
 async function hazersOff(){
   try{ const j = await post("/api/remote/hazers-off", actor({})); say(j.text || "Every hazer is DISARMED.", "", "ok"); }
   catch(e){ say(armShort(e.message), e.message, "bad"); }
@@ -3086,7 +3264,7 @@ function renderCleaning(){
 // of #169): Space on a focused Abort, Hold, Stop, Disarm, Hazers off or a
 // pinned Stop presses that button and never fires.
 const FIRE_KEY_NEVER = "#b-abort, #b-hold, #b-stop, #b-disall, #m-hold, #m-stop, #m-disf, #m-disl, #m-snd, #ann-stop, " +
-  "#pins button, #wc-stop, #hz-off, #d-hz-off, #broken-go, [data-arm][data-mode=\"disarm\"], #lz-b[data-mode=\"disarm\"], .b.red, .b.redline, .b.safe, .b.amber";
+  "#pins button, #wc-stop, #hz-off, #d-hz-off, #pm-off, #broken-go, [data-arm][data-mode=\"disarm\"], #lz-b[data-mode=\"disarm\"], .b.red, .b.redline, .b.safe, .b.amber";
 function fireKeyNotOurs(e){
   if(SHEET_DONE || !$("sheet").hidden) return true;
   const t = e.target;

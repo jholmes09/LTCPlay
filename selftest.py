@@ -98034,8 +98034,11 @@ def test_ui2_page_makes_only_1_0_presses():
             r'\b(?:press|annPress)\("([a-z-]+)"', src)}
         return out
     r1, r2 = routes(one), routes(two)
-    check(r2 - r1 == {"/api/remote/ui-default"},
-          f"2.0 adds one route, the default interface: {sorted(r2 - r1)}")
+    # The fuel pump (2026-10-30) is 2.0 only: 1.0 is being retired and
+    # gets no new controls (FIREBALL_TIMELINE_DESIGN, section 4).
+    check(r2 - r1 == {"/api/remote/ui-default", "/api/remote/fuel-pump"},
+          f"2.0 adds two routes, the default interface and the fuel pump: "
+          f"{sorted(r2 - r1)}")
     # The presses, body for body.
     for press in ('press("start-now", {confirmed:true})',
                   'press("disarm-all")', 'press("group-disarm", {group:i})',
@@ -98806,6 +98809,347 @@ def _ui2_status_inactive(kind, hazers=True):
                                      "elapsed_s": 3, "length_s": 12,
                                      "held_schedule": True}
     return st
+
+
+def test_ui2_fuel_pump_row():
+    section("interface 2.0's fuel pump (Jeff, 2026-10-30): a row under the "
+            "hazers, hidden with no pump; the run time typed first (m:ss "
+            "or minutes), kept on the screen, the engine's default until "
+            "then; Fuel pump: On posts on true with the seconds and a new "
+            "press id each tap, and is disabled with a reason whenever the "
+            "engine would refuse it; Pump off posts on false, is never "
+            "disabled or quieted, and Space on it never fires; the "
+            "countdown is the engine's")
+    import shutil
+    import subprocess
+    _one, two = _ui2_pages()
+    check('<div id="pump" class="hzrow pmrow" hidden aria-label="Fuel pump">'
+          in two, "the row is there, hidden until the status has a pump")
+    check('<button class="b safe" id="pm-off">' in two and
+          '<button class="b green" id="pm-on">' in two and
+          'id="pm-time" type="text" inputmode="numeric"' in two,
+          "Pump off (safe), Fuel pump: On and the run time field")
+    check("#pm-off," in two[two.find("const FIRE_KEY_NEVER"):][:400],
+          "Space on a focused Pump off never fires (the key guard)")
+    check("body.inactive #pm-on{filter:saturate(.3)}" in two and
+          "body.inactive #pm-off" not in two,
+          "the calm tone quiets Fuel pump: On, never Pump off")
+    on = two[two.find('$("pm-on").addEventListener'):][:1400]
+    off = two[two.find('$("pm-off").addEventListener'):][:400]
+    check('post("/api/remote/fuel-pump", actor({on: true, seconds: secs, '
+          'run: run}))' in on and
+          'const run = String(Date.now()) + "-" + String(Math.random())'
+          in on, "On posts on true, the seconds and a new press id")
+    check('post("/api/remote/fuel-pump", actor({on: false}))' in off and
+          "seconds" not in off,
+          "Pump off posts on false and nothing that could start it")
+    rp = _js_function(two, "renderPump")
+    check(rp and '$("pm-off").disabled = false;' in rp and
+          "pm-off\").disabled = !" not in rp,
+          "Pump off is never disabled")
+    pw = _js_function(two, "pumpWords")
+    check(rp and pw and "left_s" in pw and '"Pump on: "' in pw and
+          "pumpWords(v, st)" in rp, "the countdown is the engine's left_s")
+    check(rp and "if(PUMP_WAS_ON && !v.on){ PUMP_TYPED = false; "
+          '$("pm-time").value = pumpClock(v.default_s || 300); }' in rp and
+          "ltc_ui2_pump" not in two and
+          "if(offKey && offKey !== PUMP_OFF_SEEN && PUMP_OFF_SEEN !== \"\") "
+          "pumpReset(v);" in rp and
+          'pumpReset(ST && ST.pump);\n  try{ const j = await post('
+          '"/api/remote/fuel-pump", actor({on: false}))' in two and
+          "Tap for why" not in two and
+          "if(v.boot && PUMP_BOOT && v.boot !== PUMP_BOOT) pumpReset(v);"
+          in rp,
+          "the run time goes back to the default (5:00) each time the pump "
+          "turns off, and no screen remembers another as its default")
+    check("\u2013" not in two and "\u2014" not in two, "no dashes")
+    node = shutil.which("node")
+    if not node:
+        print("  (node not found: the pump's rules were not run)")
+        print("  ok")
+        return
+    js = "\n".join(_js_function(two, n) for n in
+                   ("pumpSeconds", "pumpClock", "pumpWhy",
+                    "pumpWords")) + r"""
+let STALE = false, ME = {local: true};
+function stale(){ return STALE; }
+function mayRow(s, p){ return !!(s.may && s.may[p]); }
+function signWhy(){ return "Sign in"; }
+function short8(t, f){ const w = String(t).split(/\s+/); return w.length <= 8 ? t : f; }
+const out = {};
+out.parse = ["5", "5:00", "4:12", "0:30", " 12:05 ", "60", "5:60", "5:5",
+             "a", "", "1:2:3", "-1", "1.5", "1000"].map(pumpSeconds);
+out.clock = [300, 252, 3725, 0, 59.9].map(pumpClock);
+const ok = {may: {arm: true}, arming: {enabled: false}};
+const v = {on: false, min_s: 1, max_s: 3600, refusal: ""};
+out.ready = pumpWhy(ok, v, 300);
+out.running = pumpWhy(ok, Object.assign({}, v, {on: true}), 300);
+out.bad = pumpWhy(ok, v, null);
+out.long = pumpWhy(ok, v, 3601);
+out.refused = pumpWhy(ok, Object.assign({}, v, {refusal: "an Abort is standing."}), 300);
+out.signed = pumpWhy({may: {arm: false}}, v, 300);
+ME = {local: false};
+out.ipad = pumpWhy(ok, v, 300);
+out.ipad_on = pumpWhy(Object.assign({}, ok, {arming: {enabled: true}}), v, 300);
+ME = {local: true};
+STALE = true;
+out.stale = pumpWhy(ok, v, 300);
+out.words = [pumpWords({on: false, state: "off"}, false),
+             pumpWords({on: true, state: "on", left_s: 252.4}, false),
+             pumpWords({on: true, state: "waiting"}, false),
+             pumpWords({on: false, state: "flamesafe_on"}, false),
+             pumpWords({on: true, state: "on", left_s: 9}, true),
+             pumpWords({on: false, state: "off"}, true)];
+console.log(JSON.stringify(out));
+"""
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        o = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        check(False, f"the pump's rules ran: {r.stdout} {r.stderr}")
+        return
+    check(o["parse"] == [300, 300, 252, 30, 725, 3600, None, None, None,
+                         None, None, None, None, None],
+          f"m:ss or whole minutes, nothing else: {o['parse']}")
+    check(o["clock"] == ["5:00", "4:12", "62:05", "0:00", "0:59"],
+          f"shown as m:ss: {o['clock']}")
+    check(o["ready"] == "" and o["running"] == "Pump is on" and
+          o["bad"] == "Run time as m:ss" and o["long"] == "Longest is 60:00"
+          and o["refused"] == "an Abort is standing." and
+          o["signed"] == "Sign in" and o["ipad"] == "Arming off here" and
+          o["ipad_on"] == "" and o["stale"] == "No contact",
+          f"On is disabled, with a reason, exactly when the engine would "
+          f"refuse it: {o}")
+    check(o["words"] == ["Off", "Pump on: 4:12 left", "Waiting for flamesafe",
+                         "flamesafe has it on: press Pump off",
+                         "Not known: no contact", "Off"],
+          f"the state in words: {o['words']}")
+    print("  ok")
+
+
+_UI2_PUMP_JS = r"""
+<script>
+(function(){
+const posts = [];
+const realFetch = window.fetch;
+window.fetch = function(u, o){
+  if(window.__dead && /\/api\/remote\/status/.test(String(u))) return Promise.reject(new Error("no contact"));
+  if(o && o.method === "POST") posts.push({u:String(u), b:String(o.body || "")});
+  if(window.__hang && o && o.method === "POST" && /fuel-pump/.test(String(u)))
+    return new Promise(() => {});
+  if(window.__already && o && o.method === "POST" && /fuel-pump/.test(String(u)) && /"on":true/.test(String(o.body || "")))
+    return Promise.resolve(new Response(JSON.stringify({error:"The fuel pump is already on (4:59 left). A second press never adds time: press Pump off, then start it again."}), {status:409, headers:{"Content-Type":"application/json"}}));
+  return realFetch.apply(this, arguments);
+};
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const q = id => document.getElementById(id);
+const sent = () => posts.filter(p => /fuel-pump/.test(p.u)).map(p => JSON.parse(p.b));
+function look(){
+  const off = q("pm-off"), R = q("pump").getBoundingClientRect();
+  return {row: !q("pump").hidden && q("pump").getClientRects().length > 0,
+    state: q("pm-state").textContent, on_dis: q("pm-on").disabled,
+    why: q("pm-on-why").textContent, off_dis: off.disabled,
+    full: q("pm-why").hidden ? "" : q("pm-why").textContent,
+    full_shown: !q("pm-why").hidden && q("pm-why").getClientRects().length > 0 && parseFloat(getComputedStyle(q("pm-why")).fontSize) >= 19.5,
+    msg: q("msg-t").textContent, msg_cls: q("msg").className,
+    off_filt: getComputedStyle(off).filter, time: q("pm-time").value,
+    time_dis: q("pm-time").disabled,
+    safe_dis: ["b-abort", "b-hold", "b-stop"].map(id => q(id) ? q(id).disabled : null),
+    right: Math.round(R.right), vw: innerWidth,
+    xscroll: document.scrollingElement.scrollWidth - innerWidth,
+    off_h: Math.round(off.getBoundingClientRect().height)};
+}
+async function go(){
+  for(let i = 0; i < 80 && !(typeof ST !== "undefined" && ST && ST.pump !== undefined); i++) await wait(100);
+  await wait(500);
+  const out = {first: look()};
+  posts.length = 0; q("pm-on").click(); await wait(300); out.on = sent();
+  posts.length = 0; q("pm-off").click(); await wait(300); out.off = sent();
+  q("pm-time").value = "5:7"; q("pm-time").dispatchEvent(new Event("input")); await wait(150);
+  out.bad = look();
+  posts.length = 0; q("pm-on").click(); await wait(300); out.bad_on = sent();
+  q("pm-time").value = "4:30"; q("pm-time").dispatchEvent(new Event("input")); await wait(150);
+  out.typed = look();
+  posts.length = 0; q("pm-on").click(); await wait(300); out.typed_on = sent();
+  out.after_on = look();
+  posts.length = 0; q("pm-on").click(); await wait(300); out.again_on = sent();
+  // Two quick taps: the second answered "already on" never paints over
+  // the first's success.
+  posts.length = 0;
+  q("pm-on").click(); q("pm-on").click(); await wait(400);
+  out.double = {n: sent().length};
+  window.__already = true; posts.length = 0;
+  q("pm-time").value = "4:30"; q("pm-time").dispatchEvent(new Event("input")); await wait(100);
+  q("pm-on").click(); await wait(400);
+  out.double.later = sent().length;
+  out.double.msg = q("msg-t").textContent; out.double.cls = q("msg").className;
+  out.double.time = q("pm-time").value;
+  window.__already = false;
+  // No answer: "Sending..." while it waits, then On pressable again with
+  // "No answer. Check the pump." after 10 s.
+  window.__hang = true; posts.length = 0;
+  q("pm-on").click(); await wait(300);
+  out.hang = {sending: q("pm-why").hidden ? "" : q("pm-why").textContent, busy: q("pm-on").disabled};
+  await wait(10500);
+  out.hang.after = q("pm-why").hidden ? "" : q("pm-why").textContent;
+  out.hang.free = !q("pm-on").disabled;
+  window.__hang = false;
+  window.__dead = true; await wait(2800);
+  out.dead = look();
+  posts.length = 0; q("pm-off").click(); await wait(300); out.dead_off = sent();
+  return out;
+}
+setTimeout(() => go().then(o => o, e => ({error: String(e && e.stack || e)})).then(o => {
+  const pre = document.createElement("pre"); pre.id = "rack-measure";
+  pre.textContent = JSON.stringify(o); document.body.appendChild(pre);
+}), 50);
+})();
+</script>
+"""
+
+
+def _ui2_status_pump(kind):
+    """A show running, with the fuel pump in one of its states."""
+    st = _ui2_status_running()
+    st["flames"]["groups"] = st["flames"]["groups"][:3]
+    pump = {"available": True, "name": "Fireball Fuel Pump", "slot": 100,
+            "on_value": 255, "on": False, "state": "off", "left_s": None,
+            "seconds": None, "why": "switched off in the show program",
+            "refusal": "", "down": "", "agree": True, "last_off": None,
+            "default_s": 240, "max_s": 3600, "min_s": 1,
+            "settings_error": ""}
+    if kind == "on":
+        pump.update(on=True, state="on", left_s=252.4, seconds=300, why="")
+    if kind == "refused":
+        pump["refusal"] = ("an Abort is standing. Press Reset, then turn it "
+                           "on again.")
+    if kind == "signed out":
+        st["me"] = {"local": True, "user": None, "role": None,
+                    "view_only": True,
+                    "may": {k: False for k in ("show", "arm", "unlock",
+                                               "checklist", "show_files",
+                                               "settings", "users")}}
+    if kind != "none":
+        st["pump"] = pump
+    return st
+
+
+def test_ui2_fuel_pump_in_a_browser():
+    section("interface 2.0's fuel pump drawn (Jeff, 2026-10-30): the row "
+            "shows only with a pump; the engine's default run time; On "
+            "posts the typed seconds with a new press id each tap and is "
+            "disabled with its reason (running, a refusal, signed out, a "
+            "bad time, no contact), sending nothing then; Pump off is "
+            "never disabled or quieted and always posts on false; Abort, "
+            "Hold and Stop stay live; nothing goes off the side")
+    one, two = _ui2_pages()
+    lo = one[one.find('<script id="remote-logic">') +
+             len('<script id="remote-logic">'):]
+    lo = lo[:lo.find("</script>")]
+    page = two.replace('<script src="/remote-logic.js"></script>',
+                       "<script>" + lo + "</script>", 1)
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    brand = {"/api/brand": {"show": "Fire and Ice"}}
+    for kind, sizes in (("off", ((1366, 768), (1024, 768), (390, 844))),
+                        ("on", ((1366, 768),)), ("refused", ((1366, 768),)),
+                        ("signed out", ((1366, 768),)),
+                        ("none", ((1366, 768),))):
+        got = _rack_screen_in_chromium(chrome, page, _ui2_status_pump(kind),
+                                       sizes, measure_js=_UI2_PUMP_JS,
+                                       frag="?tour=0", routes=brand,
+                                       budget_ms=45000)
+        for (w, h), r in got.items():
+            where = f"2.0 fuel pump, {kind}, {w}x{h}"
+            if not check(isinstance(r, dict) and "first" in r,
+                         f"{where}: drawn and measured: {r!r}"[:900]):
+                continue
+            a = r["first"]
+            if kind == "none":
+                check(not a["row"], f"{where}: no pump, no row: {a}")
+                continue
+            check(a["row"] and a["right"] <= a["vw"] and a["xscroll"] <= 0
+                  and a["off_h"] >= 56,
+                  f"{where}: the row is drawn, nothing off the side, Pump "
+                  f"off 56 px or more: {a}")
+            check(a["safe_dis"] == [False, False, False],
+                  f"{where}: Abort, Hold and Stop stay live: {a}")
+            for k in ("first", "bad", "typed", "dead"):
+                x = r[k]
+                check(not x["off_dis"] and "saturate" not in x["off_filt"],
+                      f"{where}, {k}: Pump off is never disabled or "
+                      f"quieted: {x}")
+            bare = lambda xs: [{k: v for k, v in x.items() if k != "seen"}
+                               for x in xs]
+            check(bare(r["off"]) == [{"on": False}] and
+                  bare(r["dead_off"]) == [{"on": False}],
+                  f"{where}: Pump off posts on false, with contact and "
+                  f"without: {r['off']} {r['dead_off']}")
+            check(r["dead"]["on_dis"] and r["dead"]["why"] in
+                  ("No contact", "Pump is on"),
+                  f"{where}: no contact: On disabled, says why: "
+                  f"{r['dead']}")
+            if kind == "off":
+                check(a["time"] == "4:00" and not a["on_dis"] and
+                      a["why"] == "" and a["state"] == "Off",
+                      f"{where}: the engine's default 4:00, On ready: {a}")
+                on = r["on"]
+                check(len(on) == 1 and on[0]["on"] is True and
+                      on[0]["seconds"] == 240 and on[0]["run"],
+                      f"{where}: On posts on true, 240 s and a press id: "
+                      f"{on}")
+                check(r["bad"]["on_dis"] and
+                      r["bad"]["why"] == "Run time as m:ss" and
+                      r["bad_on"] == [],
+                      f"{where}: a time that is not m:ss: On disabled, "
+                      f"says why, sends nothing: {r['bad']} {r['bad_on']}")
+                t = r["typed_on"] + r["again_on"]
+                check(len(t) == 2 and t[0]["seconds"] == 270 and
+                      t[1]["seconds"] == 240 and t[0]["run"] != t[1]["run"],
+                      f"{where}: 4:30 typed posts 270 s, then the field is "
+                      f"back to the default (4:00 here) once On is "
+                      f"answered, and each tap a new press id: {t}")
+                check(r["after_on"]["time"] == "4:00",
+                      f"{where}: On answered: the run time is back to the "
+                      f"default: {r['after_on']['time']}")
+                check(r["double"]["time"] == "4:00",
+                      f"{where}: a refused On puts the run time back to "
+                      f"the default too: {r['double']}")
+                check(r["hang"]["sending"] == "Sending..." and
+                      r["hang"]["busy"] and r["hang"]["free"] and
+                      r["hang"]["after"] == "No answer. Check the pump.",
+                      f"{where}: On waiting says Sending..., and with no "
+                      f"answer in 10 s is pressable again and says so: "
+                      f"{r['hang']}")
+                check(r["double"]["n"] == 1 and r["double"]["later"] == 1 and
+                      "already on" not in r["double"]["msg"] and
+                      "bad" not in r["double"]["cls"],
+                      f"{where}: two quick taps send one press and the "
+                      f"second never paints over the first: {r['double']}")
+            if kind == "on":
+                check(a["state"] == "Pump on: 4:12 left" and a["on_dis"] and
+                      a["why"] == "Pump is on" and a["time_dis"] and
+                      r["on"] == [],
+                      f"{where}: the countdown, On disabled while it runs "
+                      f"(a second press never adds time): {a} {r['on']}")
+            if kind == "refused":
+                check(a["on_dis"] and a["why"] == "an Abort is standing." and
+                      r["on"] == [] and a["full_shown"] and
+                      "Press Reset" in a["full"],
+                      f"{where}: the engine's refusal disables On and says "
+                      f"why: {a}")
+            if kind == "signed out":
+                check(a["on_dis"] and a["why"] == "Sign in" and
+                      r["on"] == [] and a["full_shown"] and
+                      "Sign in" in a["full"],
+                      f"{where}: signed out: On disabled, Sign in: {a}")
+    print("  ok")
 
 
 def test_ui2_calm_screens_and_brand():
@@ -100357,6 +100701,8 @@ if __name__ == "__main__":
         test_pump_review_fixes,
         test_pump_timer_thread_ends_it,
         test_pump_end_to_end_against_the_real_flamesafe,
+        test_ui2_fuel_pump_row,
+        test_ui2_fuel_pump_in_a_browser,
         test_hazers_on_the_rack_screens,
         test_streamdeck_hazers_page,
         test_aim_slots_are_seen_on_the_rack_screen,
