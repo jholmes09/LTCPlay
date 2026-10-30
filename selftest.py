@@ -12989,9 +12989,12 @@ def test_schedule_saved_after_the_night_closed_plans_tonight_at_once():
                            confirmed=True)
     tick_to(22, 34, 47)
     m = svc.machine
-    check(m.state == S.STANDBY and m.slot(4).status == S.PENDING,
-          f"after the extra show is stopped the night waits for 22:35: "
-          f"{m.state} {m.slot(4).status}")
+    # Since #191 a Stop leaves the schedule on a Stop's Hold, which only
+    # Resume or a show started by hand ends; the 22:35 slot still waits.
+    check(m.state == S.HOLD and m.stop_hold and
+          m.slot(4).status == S.PENDING,
+          f"after the extra show is stopped the night waits, on the Stop's "
+          f"Hold, for 22:35: {m.state} {m.slot(4).status}")
     lines = [x["text"] for x in since()]
     check(not any("last show of the night has gone by" in x or
                   "Closing finished" in x for x in lines),
@@ -14405,6 +14408,25 @@ def test_schedule_save_review_round_4():
           f"the same schedule saved again holds the same rows: "
           f"{once} then {len(svc.machine.slots)}")
     svc.stop()
+    # A save during a Stop's Hold (#191) keeps it, on the machine and in
+    # tonight's file: only Resume, or a show started by hand, ends it.
+    svc, now = started(rule(), _den(S, 17, 40))
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    svc.operator_press("stop-show", "Andy", "Rack screen", confirmed=True)
+    check(r["ok"] and svc.machine.state == S.HOLD and svc.machine.stop_hold,
+          f"setup: a Stop's Hold: {svc.machine.state}")
+    SV.save_rule(svc.path, rule(interval_min=30))
+    svc.reload()
+    check(svc.machine.state == S.HOLD and svc.machine.stop_hold,
+          f"a save keeps the Stop's Hold: {svc.machine.state} "
+          f"{svc.machine.stop_hold}")
+    work = svc.state_dir
+    svc.stop()
+    b = _svc(S, work, now)
+    b.start(thread=False)
+    check(b.machine.state == S.HOLD and b.machine.stop_hold,
+          f"and a restart after it too: {b.machine.state}")
+    b.stop()
     print("  ok")
 
 def test_schedule_run_warning_says_only_what_is_true():

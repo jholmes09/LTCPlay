@@ -20878,6 +20878,11 @@ def build():
   "        \"No show still to come tonight changed its time, so tonight's list \"\n        \"is kept as it is,",
   "        \"Tonight's show times did not change, so tonight's list \"\n        \"is kept as it is,"),
 
+ ("review180: a save drops the Stop's Hold",
+  "ltcplay/schedule.py",
+  "                   never_opened=saved.never_opened,\n                   stop_hold=saved.stop_hold)",
+  "                   never_opened=saved.never_opened,\n                   stop_hold=False)"),
+
  ("review180: the answer to a save on Hold does not say the Hold stands",
   "ltcplay/schedule_service.py",
   "            text += \" The schedule is on Hold: nothing starts until Resume.\"\n",

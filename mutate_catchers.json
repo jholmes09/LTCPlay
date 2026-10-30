@@ -2198,6 +2198,7 @@
 "review180: a Programming Run gives no warning that the show will not start": "test_schedule_run_warning_says_only_what_is_true",
 "review180: a closed night is written as format 3": "test_schedule_save_never_reopens_an_operator_closed_night",
 "review180: a kept list on restart forgets the show that was running": "test_schedule_save_review_a_cases",
+"review180: a save drops the Stop's Hold": "test_schedule_save_review_round_4",
 "review180 r5: a time too close to a delayed show is not skipped": "test_schedule_save_review_round_4",
 "review180 r5: a time gone by is weighed against a delayed show": "test_schedule_save_review_round_4",
 "review180 r5: a save drops a Delay whose planned time left the file": "test_schedule_save_review_round_4",
