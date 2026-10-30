@@ -842,6 +842,51 @@ channel, and is either ARMED or DISARMED.
 - **If a tile says Waiting for flamesafe,** flamesafe has not taken the
   arm yet; if it stays that way, disarm it and arm it again.
 
+## Saving the schedule during the night
+
+On 2026-10-29 a schedule saved after the night had closed planned nothing
+until the engine was restarted. Now:
+
+- **A save rebuilds tonight at once.** Saving on the Programming screen
+  ("Schedule: the show times") rebuilds tonight's list from the new file
+  straight away, the same rebuild a restart makes. Shows that already ran
+  keep their number and status, an extra show (Start now) keeps its
+  number, and a show still to come at a time the old list also had keeps
+  its number. A new time gets the lowest number no other show tonight has.
+  Tonight's moves, added shows and removals of shows still to come are
+  dropped, as after a restart.
+- **The answer says what tonight now holds.** For example "tonight now has
+  4 shows still to come, next show 4 at 22:35", or "Saved, but there are
+  no more shows tonight:" and the reason (every show has gone by, or the
+  schedule's own reason, such as a dark night). The journal says the same,
+  one line for each change.
+- **A closed night opens again** when the saved file has a show still to
+  come tonight. The scheduler goes back to STANDBY with the rig dark.
+  Nothing is started and no look is sent; the next show starts at its time
+  only while Run is pressed, by the usual rules. A night closed with
+  **Close for the night** stays closed: a new time on it is SKIPPED.
+- **A show whose time has already gone by** is never started late. It is
+  MISSED, or DELAYED during a Hold or behind an extra show, exactly as
+  after a restart, and waits for Start now.
+- **A Hold stays a Hold, and an Abort stays latched.** A save on Hold keeps
+  the Hold (Resume is still needed), and after an Abort every show is
+  missed until Reset, as before.
+- **During a show the save is refused** on the Programming screen. If the
+  file changes some other way while a show runs, the show and its status
+  are left alone and tonight is rebuilt once it has ended; the journal
+  says so.
+- **Start now just before a show** runs an extra show, as before. The show
+  it pushes aside is DELAYED and waits for Start now; the later shows still
+  run on time, and the night closes only after its last scheduled show.
+
+**After an engine restart, press Run.** A restart always leaves Run off,
+and LTC Player never presses it for you (no show starts unattended). While
+Run is off and a show is still to come, the rack screen says so in red:
+"Run is off: the 22:50 show (show 5) will NOT start. Press Run." It is a
+fault banner on 1.0's show screen and Schedule screen, an alert on 2.0's
+show screen, and part of the answer to a schedule save. It goes as soon as
+Run is pressed.
+
 ## Stop, Hold and Reset on the rack screen
 
 Jeff, 2026-10-28. Each screen has one Stop, where the button that started

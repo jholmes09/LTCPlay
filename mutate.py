@@ -18713,6 +18713,118 @@ def build():
   "                    self._timed_remember(owner, rid, seq)\n                self._note(f\"{who or device}'s timed purge on the {device} \"",
   "                    self._timed_remember(owner, rid, seq, make=True)\n                self._note(f\"{who or device}'s timed purge on the {device} \""),
 
+ # A schedule saved while ltcplay runs, and Run off after a restart
+ # (Jeff, Pico, 2026-10-29).
+ ("saved schedule: a save waits for a restart to plan tonight again",
+  "ltcplay/schedule_service.py",
+  "            else:\n                self._follow_rule(self.clock())\n            return self.rule",
+  "            return self.rule"),
+
+ ("saved schedule: a closed night stays closed though a show is still to come",
+  "ltcplay/schedule.py",
+  "    elif tx.m.waiting():\n        tx.m = replace(tx.m, held_from=\"\")",
+  "    elif False:\n        tx.m = replace(tx.m, held_from=\"\")"),
+
+ ("saved schedule: a reopened night brings a look back instead of staying dark",
+  "ltcplay/schedule.py",
+  "        _enter(tx, STANDBY, after_stop=True)\n        nxt = tx.m.next_slot() or tx.m.delayed()",
+  "        _enter(tx, STANDBY)\n        nxt = tx.m.next_slot() or tx.m.delayed()"),
+
+ ("saved schedule: the rebuilt list is not saved, so a restart rebuilds again",
+  "ltcplay/schedule_service.py",
+  "        self._record(out, now)\n        self._save_tonight()\n        self._journal_line(\"system\", self._tonight_words(now),",
+  "        self._record(out, now)\n        self._journal_line(\"system\", self._tonight_words(now),"),
+
+ ("saved schedule: an extra show is renumbered by a rebuild",
+  "ltcplay/schedule.py",
+  "        slots[sl.n] = sl\n        if sl.status == RUNNING:",
+  "        slots[sl.n + (50 if sl.origin == \"operator\" else 0)] = replace(sl, n=sl.n + (50 if sl.origin == \"operator\" else 0))\n        if sl.status == RUNNING:"),
+
+ ("saved schedule: a time still to come loses its show's number",
+  "ltcplay/schedule.py",
+  "            to_come.setdefault(planned, sl.n)\n",
+  "            pass\n"),
+
+ ("saved schedule: a save rebuilds tonight under a running show",
+  "ltcplay/schedule.py",
+  "FOLLOW_LATER = frozenset((SHOW, PAUSED, CLOSING))",
+  "FOLLOW_LATER = frozenset((PAUSED, CLOSING))"),
+
+ ("saved schedule: a save during a show is never followed once it ends",
+  "ltcplay/schedule_service.py",
+  "            self._follow_rule(now)\n            ev = self._tick_event()",
+  "            ev = self._tick_event()"),
+
+ ("saved schedule: the wait for a show is said on every tick",
+  "ltcplay/schedule_service.py",
+  "            if self._follow_said != key:",
+  "            if True:"),
+
+ ("saved schedule: a save on Hold ends the Hold",
+  "ltcplay/schedule.py",
+  "        tx.m = replace(tx.m, state=was, held_from=m.held_from, dark=m.dark)",
+  "        tx.m = replace(tx.m, state=STANDBY if was == HOLD else was, held_from=m.held_from, dark=m.dark)"),
+
+ ("saved schedule: a show made due during a Hold is missed, not delayed",
+  "ltcplay/schedule.py",
+  "    _sweep(tx, held=(was == HOLD))\n    if was != OFF:",
+  "    _sweep(tx, held=False)\n    if was != OFF:"),
+
+ ("saved schedule: a night closed with Close for the night opens again",
+  "ltcplay/schedule.py",
+  "            if closed:\n                sl = replace(sl, status=SKIPPED, reason=CLOSED_BY_OPERATOR)",
+  "            if False:\n                sl = replace(sl, status=SKIPPED, reason=CLOSED_BY_OPERATOR)"),
+
+ ("saved schedule: no more shows tonight gives no reason from the schedule",
+  "ltcplay/schedule_service.py",
+  "        elif not plan.starts:\n            why = plan.why",
+  "        elif not plan.starts:\n            why = \"\""),
+
+ ("saved schedule: the Programming screen says loaded with nothing planned",
+  "ltcplay/remote.py",
+  "                elif callable(words):\n                    loaded = \" \" + str(words())",
+  "                elif False:\n                    loaded = \" \" + str(words())"),
+
+ ("Run off: no warning that the next show will not start",
+  "ltcplay/schedule_service.py",
+  "        if nxt is None or self._run_pressed():\n            return None\n        return (f\"Run is off:",
+  "        if True:\n            return None\n        return (f\"Run is off:"),
+
+ ("Run off: the warning stays after Run is pressed",
+  "ltcplay/schedule_service.py",
+  "        if nxt is None or self._run_pressed():\n            return None\n        return (f\"Run is off:",
+  "        if nxt is None:\n            return None\n        return (f\"Run is off:"),
+
+ ("Run off: the warning says a show will not start with auto_start off",
+  "ltcplay/schedule_service.py",
+  "        if getattr(cfg, \"auto_start\", \"when_run_pressed\") == \"off\":\n            return None\n        if m.state in (sch.SHOW, sch.PAUSED, sch.CLOSING, sch.OFF,",
+  "        if m.state in (sch.SHOW, sch.PAUSED, sch.CLOSING, sch.OFF,"),
+
+ ("Run off: the remote status drops the warning",
+  "ltcplay/remote.py",
+  "                    \"run_warning\": st.get(\"run_warning\"),\n",
+  ""),
+
+ ("Run off: rack screen 1.0 does not show the warning on the show screen",
+  "ltcplay/web/remote.html",
+  "  setWarn(\"run-warn\", sch.run_warning || \"\");\n",
+  ""),
+
+ ("Run off: rack screen 1.0's warning is not a fault",
+  "ltcplay/web/remote.html",
+  "  LOCAL_FAULT[\"run-warn\"] = !!sch.run_warning;\n",
+  "  LOCAL_FAULT[\"run-warn\"] = false;\n"),
+
+ ("Run off: rack screen 1.0's Schedule screen does not show the warning",
+  "ltcplay/web/remote.html",
+  "  setWarn(\"tn-run-warn\", sch.run_warning || \"\");\n",
+  ""),
+
+ ("Run off: rack screen 2.0 does not show the warning",
+  "ltcplay/web/remote2.html",
+  "  if(sch.run_warning) items.push({key:\"run\", tone:\"bad\", what:\"Run is off.\", do:\"Press Run.\", full:sch.run_warning});\n",
+  ""),
+
 ]
 
 

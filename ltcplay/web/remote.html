@@ -927,7 +927,7 @@ button.fb-pad.na{opacity:.45}
   </nav>
 </header>
 
-<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="lfbanner" id="wc-banner" hidden><b>WAVE FLAMER CLEANING</b><span id="wc-banner-text"></span><button id="wc-banner-stop">Stop</button></div><div class="lfbanner" id="tp-banner" hidden><b>TIMED PURGE</b><span id="tp-banner-text"></span><button id="tp-banner-stop">Stop purge</button></div><div class="lfbanner annbar" id="ann-banner" hidden><b id="ann-banner-word">HELD FOR ANNOUNCEMENT</b><span id="ann-banner-text"></span><button id="ann-banner-stop">Stop</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox open" id="pr-box" hidden><span id="pr-text"></span><div class="row" style="margin-top:6px"><button class="ghost" id="pr-recheck">Check the rig again</button><button id="pr-continue">Hold to continue anyway</button></div><div id="pr-msg"></div></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div><div class="warnbox" id="cfg-note" hidden></div><button class="ghost" id="cfg-reload" hidden>Reload engine</button></div><div id="nofile" hidden></div></div>
+<div id="alerts"><div class="lfbanner" id="lf-banner" hidden><b>LIVE FLAME PROGRAMMING</b><span id="lf-banner-text"></span><button id="lf-banner-off">Turn off</button></div><div class="lfbanner" id="wc-banner" hidden><b>WAVE FLAMER CLEANING</b><span id="wc-banner-text"></span><button id="wc-banner-stop">Stop</button></div><div class="lfbanner" id="tp-banner" hidden><b>TIMED PURGE</b><span id="tp-banner-text"></span><button id="tp-banner-stop">Stop purge</button></div><div class="lfbanner annbar" id="ann-banner" hidden><b id="ann-banner-word">HELD FOR ANNOUNCEMENT</b><span id="ann-banner-text"></span><button id="ann-banner-stop">Stop</button></div><div class="alsum" id="al-sum" hidden><span class="alkind" id="al-sum-kind"></span><span class="altext" id="al-sum-text"></span><button class="disarm" id="al-sum-dis" hidden>Disarm all</button><button class="ghost" id="al-more" aria-expanded="false">Show all</button></div><div id="al-body"><div id="al-list"></div><div class="warnbox open" id="run-warn" hidden></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox open" id="pr-box" hidden><span id="pr-text"></span><div class="row" style="margin-top:6px"><button class="ghost" id="pr-recheck">Check the rig again</button><button id="pr-continue">Hold to continue anyway</button></div><div id="pr-msg"></div></div><div class="warnbox" id="fl-warn" hidden></div><div class="warnbox" id="an-note" hidden></div><div class="warnbox" id="cfg-note" hidden></div><button class="ghost" id="cfg-reload" hidden>Reload engine</button></div><div id="nofile" hidden></div></div>
 
 <div id="main">
   <!-- The show screen: only what the operator needs during a show. -->
@@ -1029,6 +1029,7 @@ button.fb-pad.na{opacity:.45}
   <!-- Schedule (was Tonight; Jeff, 2026-10-23): the night's shows, compact. -->
   <section id="v-tonight" class="view" hidden>
     <div class="tsum"><span id="tn-state"></span><span id="tn-next" class="dim"></span></div>
+    <div class="warnbox open" id="tn-run-warn" hidden></div>
     <div id="tonight"></div>
     <div class="dim" style="font-size:13px">Tap a show to see its notes.</div>
   </section>
@@ -1342,7 +1343,7 @@ button.fb-pad.na{opacity:.45}
     </section>
     <section class="card" id="sched-edit" hidden>
       <h2>Schedule: the show times</h2>
-      <div class="dim" style="font-size:14px">The scheduler starts a show at each time below (once Run has been pressed and the Fire &amp; Ice settings say it performs). Edits here are written to the schedule file and loaded at once.</div>
+      <div class="dim" style="font-size:14px">The scheduler starts a show at each time below (once Run has been pressed and the Fire &amp; Ice settings say it performs). Edits here are written to the schedule file and loaded at once: tonight's list is rebuilt from them straight away, even after the night has closed, and nothing is started by it.</div>
       <div class="three" style="margin-top:8px">
         <div><label for="se-tz">Time zone</label><select id="se-tz"></select><div class="dim" style="font-size:12px;margin-top:2px" id="se-tz-now"></div></div>
         <div><label for="se-first">Season starts</label><input id="se-first" type="date"></div>
@@ -2653,6 +2654,13 @@ function render(){
   $("abortbar").classList.toggle("idle", idle);
   $("abort-sub").textContent = idle ? "Nothing to abort right now" : "Stops the show. Flames then need Arm again";
   if(!ABORT_TAP) $("b-abort").title = ABORT_TITLE + " " + $("abort-sub").textContent + ".";
+  // Run off with a show to come (an engine restart leaves it off, Jeff,
+  // Pico, 2026-10-29): a fault banner on the show screen and the Schedule
+  // screen, the engine's own sentence. Display only: nothing presses Run.
+  LOCAL_FAULT["run-warn"] = !!sch.run_warning;
+  LOCAL_LABEL["run-warn"] = "Run is off";
+  setWarn("run-warn", sch.run_warning || "");
+  setWarn("tn-run-warn", sch.run_warning || "");
   LOCAL_FAULT["st-trouble"] = !!s.laser_fault;
   LOCAL_LABEL["st-trouble"] = s.laser_fault ? "Lasers" : "Engine";
   setWarn("st-trouble", [(!pch && prl.trouble) || null, s.disk && s.disk.text ? s.disk.text : null, s.laser_fault ? s.laser_fault + ". Hold and Abort cannot blank the lasers: set BEYOND's OSC address, or blank them at BEYOND." : null, sch.trouble, s.show_folder && s.show_folder.problem ? s.show_folder.problem : null, sch.conductor === false && sch.attached ? "No show conductor is attached in this engine: Hold, Resume and Abort are journaled by the scheduler only." : null].filter(Boolean).join(" "));
@@ -2867,7 +2875,7 @@ function renderAlertFold(){
   const s = ST || {}, items = [];
   (s.alerts || []).forEach(a => items.push({key:"a" + a.id, fault: a.severity === "fault",
     label: ALERT_LABEL[a.kind] || a.kind, text: a.text}));
-  ["lock-banner", "st-trouble", "fl-warn", "an-note", "cfg-note"].forEach(id => {
+  ["run-warn", "lock-banner", "st-trouble", "fl-warn", "an-note", "cfg-note"].forEach(id => {
     const el = $(id);
     if(!el.hidden) items.push({key:id + ":" + (LOCAL_LABEL[id] || id), fault:!!LOCAL_FAULT[id], label:LOCAL_LABEL[id] || "", text:el.textContent});
   });

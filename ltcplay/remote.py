@@ -6409,10 +6409,19 @@ class Remote:
         loaded = ""
         if svc is not None and hasattr(svc, "reload"):
             try:
+                # Tonight's list is rebuilt at once, even on a night that
+                # had closed, and the answer says what it now holds (Jeff,
+                # Pico, 2026-10-29: "has loaded it" while nothing was
+                # planned).
                 svc.reload()
                 err = str(getattr(svc, "error", "") or "")
-                loaded = (f" The scheduler could not load it: {err}" if err
-                          else " The scheduler has loaded it.")
+                words = getattr(svc, "tonight_words", None)
+                if err:
+                    loaded = f" The scheduler could not load it: {err}"
+                elif callable(words):
+                    loaded = " " + str(words())
+                else:
+                    loaded = " The scheduler has loaded it."
             except Exception as e:               # noqa: BLE001
                 loaded = f" The scheduler could not reload it: {e}"
         cw = self.config_watch
@@ -7100,6 +7109,7 @@ class Remote:
                     "next": st.get("next"), "delayed": st.get("delayed"),
                     "dry_run": st.get("dry_run"),
                     "start_blocked": st.get("start_blocked"),
+                    "run_warning": st.get("run_warning"),
                     "slots": tn.get("slots", [])}
             except Exception as e:
                 out["schedule"] = {"attached": True, "ok": False,
