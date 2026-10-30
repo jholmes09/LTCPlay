@@ -2344,7 +2344,7 @@
 "after midnight: a night past midnight ends at midnight": "test_schedule_shows_after_midnight",
 "scheduler 2 AM reset: a night ends at its own date's reset, not the next day's": "test_schedule_night_reset_boundary",
 "scheduler 2 AM reset: a show running at the reset is cut by it": "test_schedule_conductor_calls_after_the_save_and_off_the_lock",
-"scheduler 2 AM reset: the night is read on UTC, not the local clock": "test_schedule_restart_keeps_tonight",
+"scheduler 2 AM reset: the night is read on UTC, not the local clock": "test_schedule_shows_after_midnight",
 "scheduler 2 AM reset: the nightly reset is at 1 AM": "test_schedule_expands_the_season",
 "scheduler 2 AM reset: the nightly reset is at 3 AM": "test_schedule_expands_the_season",
 "scheduler 2 AM reset: the service moves on at midnight (calendar date)": "test_schedule_restart_keeps_tonight",

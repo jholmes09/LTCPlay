@@ -5258,7 +5258,8 @@ class Remote:
         show, Jeff, 2026-10-26): {"night", "ended"} once the night's last
         show has ended, else None.
 
-        The night is the schedule's own (its 02:00 reset, schedule.night_of),
+        The night is the schedule's own (schedule.night_of: until it hands
+        over to the next, 2 AM or later while a show of it still runs),
         and "ended" is when the last show of it that really ran ended (a
         slot's ended_at; a restart's assumed end does not count). A show
         started by hand (Start now) counts, but only on a night that had a

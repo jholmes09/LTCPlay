@@ -915,6 +915,47 @@ flamesafe and LTC Player. Before the pump is wired, check at the bench
 that the DMX node (the PixLite) drops its outputs to zero when the flame
 universe stops arriving, rather than holding the last look.
 
+## Schedule times: any time of day, past midnight
+
+Jeff, 2026-10-30: "I tried to schedule a show between Midnight and 2 AM
+but it wouldn't allow it. Don't restrict the schedule in any way."
+
+- **A night can run past midnight, and past 2 AM.** Write the last show's
+  end time after midnight: Thursday "first show 22:35, last show ends
+  01:30" runs Thursday's shows at 22:35, 22:50 and so on through the
+  small hours, all on Thursday's night. A last end at or before the first
+  show is on the next morning.
+- **A night can start at any time,** 00:30 included: Friday "first show
+  00:30" is Friday's night, at half past midnight on Friday.
+- **Nothing about the times is refused any more.** Shows closer together
+  than a show and its guard, a night with no room for a show, a season
+  that ends before it starts, an exception outside the season and two
+  nights that run into each other are all saved. The answer to the save
+  (and the journal) says what to know, starting "Warnings, saved
+  anyway:". An exception outside the season is used: its date runs its
+  own hours. Only a time that is not a time (25:00), a time zone this PC
+  does not know, a misspelled setting and a late grace over 15 seconds
+  are still refused.
+- **A weekday can be written in full,** "Thursday" as well as "thu".
+- **Tonight's Delay, move and add can go past midnight.** A time typed in
+  the small hours ("00:30") is tonight's, after midnight.
+
+**What the 2 AM reset did, and what replaces it.** Every night used to
+end at 2 AM the next morning: a show could not be planned before 2 AM, a
+night could not run past midnight, and a show still delayed at 2 AM was
+MISSED. Now a night ends where it hands over to the next one: at 2 AM as
+before when nothing of it is left to run; later, while one of its shows
+(planned, delayed or moved) still has to run and its guard is not over;
+earlier, when the next night's first show is earlier (30 minutes before
+it, when its preshow begins), but never before this night's own shows
+have run. A show still delayed when the night hands over is MISSED, as
+before; the journal says "when the night ended, as the next night began"
+when that is not 2 AM. The hand over never drops a planned show, never
+starts a show early and never presses or releases Run. If two nights
+run into each other, the earlier one finishes first and a show of the
+next night whose time has gone by by then is missed: the save warns
+about it.
+
 ## Saving the schedule during the night
 
 On 2026-10-29 a schedule saved after the night had closed planned nothing

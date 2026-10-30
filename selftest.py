@@ -12837,6 +12837,22 @@ def test_schedule_shows_after_midnight():
           f"{[(x.n, x.status) for x in svc.machine.slots]}")
     svc.stop()
 
+    # Read on the local clock, east of UTC too: in Berlin, with Saturday's
+    # first show at 00:45, 00:30 local on Saturday (23:30 UTC on Friday) is
+    # already Saturday's night.
+    ber = S.parse_rule(_sched_doc(
+        timezone="Europe/Berlin",
+        season={"first_date": "2026-11-01", "last_date": "2027-01-31"},
+        weekly={"fri": {"first_start": "20:00", "interval_min": 30,
+                        "last_end": "22:00"},
+                "sat": {"first_start": "00:45", "interval_min": 30,
+                        "last_end": "02:00"}}, exceptions={}))
+    from datetime import datetime as _dt
+    t = _dt(2026, 11, 14, 0, 30, tzinfo=S.zone("Europe/Berlin"))
+    check(S.night_of(t, ber.tz, ber) == date(2026, 11, 14),
+          f"00:30 in Berlin before a 00:45 first show is that night's: "
+          f"{S.night_of(t, ber.tz, ber)}")
+
     # Two nights that run into each other are saved, and said.
     clash = S.parse_rule(rule(fri={"first_start": "00:30",
                                    "interval_min": 30, "last_end": "01:30"}))

@@ -2411,9 +2411,8 @@ class Service:
 
     # -- the night ------------------------------------------------------
     def _tonight(self, now):
-        """The night `now` belongs to: the local date from the nightly
-        reset on, the day before until then (sch.night_of, Jeff,
-        2026-10-03)."""
+        """The night `now` belongs to (sch.night_of with the rule and the
+        machine): the night before until it hands over, then today's."""
         return sch.night_of(now, self.rule.tz, self.rule, self.machine)
 
     # How many days back a start looks for a night left open (a delayed
@@ -2421,9 +2420,10 @@ class Service:
     OPEN_NIGHT_LOOK_BACK = 7
 
     def _ensure_night(self, now):
-        """The night the scheduler is on, loaded or moved on at the
-        nightly reset. A night runs until sch.NIGHT_RESET (2 AM local) on
-        the next calendar day, always (Jeff, 2026-10-03): until then a
+        """The night the scheduler is on, loaded or moved on where it
+        hands over (sch.night_reset with the rule and the machine: 2 AM, or
+        later while a show of it still has to run, or earlier for an early
+        next night; Jeff, 2026-10-30): until then a
         delayed show waits for Start now or Close for the night (Jeff,
         2026-10-01); at it the night closes and a show still delayed is
         MISSED, out loud (_still_open). Only a show running or paused at
@@ -2461,10 +2461,10 @@ class Service:
         # A new day. Settle yesterday first: a show still on its list
         # (the machine was asleep across it) is marked MISSED in the
         # journal rather than dropped without a word. This tick never
-        # starts a show, so it needs no alert gate: a night cannot run past
-        # midnight (schedule.parse_rule refuses it) and the reset is at
-        # NIGHT_RESET (2 AM), so every slot on yesterday's list is long
-        # past by now; BOOT_DONE below starts nothing either, and the next
+        # starts a show, so it needs no alert gate: a night hands over only
+        # once its last show and guard are over (sch.night_reset), so every
+        # slot on yesterday's list is past by now; BOOT_DONE below starts
+        # nothing either, and the next
         # TICK goes through the gate (review of PR #133, 7 and 8).
         self._apply(sch.Event(sch.TICK, "scheduler"), now)
         how = self._still_open(now, d)

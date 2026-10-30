@@ -172,12 +172,15 @@ CONFIRM_WINDOW_S = 10
 # _in_preshow_lead, used by _boot_done, _tick and _resume.
 PRESHOW_LEAD_S = 30 * 60
 
-# The nightly reset (Jeff, 2026-10-03). A show night runs until this time,
-# local, on the next calendar day, always. At it last night closes: a show
-# still delayed is MISSED, out loud, with a fault line naming it
-# (close_at_reset). A show scheduled at or after it belongs to that calendar
-# day's night (night_of), so no night's first show may be before it
-# (_night). Jeff's reason: during operations nothing happens at 2 AM, and
+# The nightly reset (Jeff, 2026-10-03). Until 2026-10-30 a show night ran
+# until this time, local, on the next calendar day, always, and no night's
+# first show could be before it. Since Jeff's "Don't restrict the schedule
+# in any way" (2026-10-30) it is only where a night hands over when nothing
+# of it is left to run: night_reset with the rule moves the hand over later
+# while a show of the night still has to run, and earlier when the next
+# night's first show is earlier. A show still delayed at the hand over is
+# MISSED, out loud (close_at_reset). Jeff's reason for 2 AM: during
+# operations nothing happens at 2 AM, and
 # media shoots sometimes run at 4 or 5 AM, so 2 AM is the safe gap. It
 # replaced the 2026-10-02 default, where a night closed only when the next
 # night's preshow began (30 minutes before its first show). The Abort latch
