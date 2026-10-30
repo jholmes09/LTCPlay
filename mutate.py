@@ -3097,8 +3097,8 @@ MUTATIONS = [
 
  ("flamesafe: passthrough: a hazer slot in the lockout file passes",
   "flamesafe/composer.py",
-  "                    if sl not in self._locked:\n                        buf[sl - 1] = self._frame[sl - 1]",
-  "                    if True:\n                        buf[sl - 1] = self._frame[sl - 1]"),
+  "                    if sl not in self._locked:\n                        buf[sl - 1] = (p.on if p.kind",
+  "                    if True:\n                        buf[sl - 1] = (p.on if p.kind"),
 
  ("flamesafe: passthrough: a hazer slot may be a group's slot",
   "flamesafe/config.py",
