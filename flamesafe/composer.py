@@ -255,6 +255,18 @@ class Composer:
         if overlap:
             raise ValueError(f"passthrough slots {overlap} are flame group "
                              f"slots")
+        # The switch kind (2026-10-30, the fuel pump) writes its own `on`
+        # value: refused here too unless that is 1 to 255, and unless no
+        # two entries share a slot, however the Config was built.
+        for p in self.pt:
+            if p.kind == "switch" and (
+                    isinstance(p.on, bool) or not isinstance(p.on, int)
+                    or not 1 <= p.on <= 255):
+                raise ValueError(f"passthrough {p.name!r}: on {p.on!r} is "
+                                 f"not 1 to 255")
+        pt_slots = [s for p in self.pt for s in p.slots]
+        if len(pt_slots) != len(set(pt_slots)):
+            raise ValueError("two passthrough entries share a slot")
         self._pt_asked = [False] * len(self.pt)
         self._pt_on = [False] * len(self.pt)
         self._pt_block = [PT_START] * len(self.pt)
@@ -1113,9 +1125,13 @@ class Composer:
             passing = self._pt_on[i] and self._frame is not None
             pt_passing.append(passing)
             if passing:
+                # A switch (2026-10-30, the fuel pump) carries its own
+                # configured `on` value, never the frame's: no frame can
+                # put any other level on it.
                 for sl in p.slots:
                     if sl not in self._locked:
-                        buf[sl - 1] = self._frame[sl - 1]
+                        buf[sl - 1] = (p.on if p.kind == "switch"
+                                       else self._frame[sl - 1])
         sent_fire = []
         commanded_fire = []
         for i, g in enumerate(self.groups):
@@ -1334,15 +1350,19 @@ class Composer:
                 why = PT_OFF
             else:
                 why = "safety program fault"
-            out.append({"name": p.name, "slots": list(p.slots),
-                        "haze": p.haze, "fan": p.fan,
-                        "asked": self._pt_asked[i],
-                        "enabled": self._pt_on[i],
-                        "passing": ok,
-                        "locked": locked,
-                        "sent": [buf[sl - 1] if buf is not None else 0
-                                 for sl in p.slots],
-                        "why": why})
+            e = {"name": p.name, "kind": p.kind, "slots": list(p.slots)}
+            if p.kind == "switch":
+                e.update(switch=p.switch, on=p.on)
+            else:
+                e.update(haze=p.haze, fan=p.fan)
+            e.update({"asked": self._pt_asked[i],
+                      "enabled": self._pt_on[i],
+                      "passing": ok,
+                      "locked": locked,
+                      "sent": [buf[sl - 1] if buf is not None else 0
+                               for sl in p.slots],
+                      "why": why})
+            out.append(e)
         return out
 
     def _status(self, t, values, sent_fire, commanded_fire, held, live,

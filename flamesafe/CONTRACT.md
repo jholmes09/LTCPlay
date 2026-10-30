@@ -531,7 +531,8 @@ fixture is the other way round):
 ```
 
 Refused at start (flamesafe does not start) unless: a list of at most 16
-objects with exactly `name`, `haze` and `fan`; each name 1 to 64
+objects with exactly `name`, `haze` and `fan` (or, since 2026-10-30, a
+switch with exactly `name`, `switch` and `on`: see "A switch" below); each name 1 to 64
 characters and used by no other entry and no group; `haze` and `fan` each
 a whole number 1 to 512, two different slots; no slot listed by another
 entry; and no slot that is any group's safety, fire or aim slot. Left out,
@@ -597,6 +598,44 @@ flamesafe journals one
 start line, `passthrough: Hazer 1 80, 81; ... read from <path>` (or
 `passthrough: none in <path>`), and one line when an Abort switches off a
 hazer that was on.
+
+**A switch: the fireball's fuel pump (added 2026-10-30).** Jeff: "we
+need a toggle for a fuel pump. This is something for Andy to manually
+control as needed. It does not need to be armed or disarmed but it should
+be affected by the stop button." A second entry kind, one slot that is
+either 0 or the entry's own `on` value:
+
+```json
+"passthrough": [
+  {"name": "Hazer 1", "haze": 80, "fan": 81},
+  {"name": "Fireball Fuel Pump", "switch": 100, "on": 255}
+]
+```
+
+An entry that has `switch` is a switch and must have exactly `name`,
+`switch` (a whole number 1 to 512) and `on` (a whole number 1 to 255; not
+a decimal, not true or false). Every other passthrough rule above applies
+to it unchanged: the name is its own, its slot is no group's safety, fire
+or aim slot and no other entry's slot, it counts towards the 16, and it is
+switched on and off by name in the same `hazers_on` list, with the same
+take-aways (start, stale link, change of sender, panic tick, `disarm_all`)
+and the same OFF-then-ON rule. The one difference: while it is switched on
+its slot carries **the entry's own `on` value, written by flamesafe**,
+never the value the frame carries on that slot. So no frame, whatever it
+holds there, can put any other level on the pump; the frame only says ON
+or OFF. A slot in the lockout file is zero. A Composer refuses, when it is
+built, a switch whose `on` is not 1 to 255 and two entries that share a
+slot, however its Config was made. The status frame's entry for a switch
+has `kind` `"switch"`, `slots` (its one slot), `switch` and `on` in place
+of `haze` and `fan`; a hazer's entry gains `kind` `"hazer"` and is
+otherwise unchanged. The start line names it as `Fireball Fuel Pump switch
+100 at 255`.
+
+**Deploy order for a switch.** A flamesafe or an LTC Player from before
+this date refuses a config with a switch entry (an unknown key in a
+passthrough entry; LTC Player: an entry without `haze` and `fan`) and does
+not start. Update BOTH programs first, then add the entry to
+`flamesafe.json`, then restart both.
 
 **ltcplay's side** (`ltcplay/hazers.py`, `ltcplay/flamelink.py`). The
 engine reads the same `passthrough` list from this file and holds, per
@@ -1326,6 +1365,16 @@ hazer off), and a flamesafe from before this date ignores the field, so its
 hazers stay zero (fail closed). A flamesafe from before this date refuses a
 config with `passthrough` as an unknown key and does not start. Deploy and
 restart flamesafe and ltcplay together.
+
+Version 2, 2026-10-30 (passthrough switch, the fireball's fuel pump): a
+passthrough entry may be a switch, `{name, switch, on}` (see "A switch"
+under "Passthrough: the hazers"); the status frame's passthrough entries
+gain `kind`, and a switch's carries `switch` and `on` in place of `haze`
+and `fan`. No field on the flame link changed: a switch is switched by
+name in the existing `hazers_on`. A config without a switch runs exactly
+as before. A flamesafe or LTC Player from before this date refuses a
+config with a switch and does not start: update both, then add the entry,
+then restart both.
 
 Version 2, 2026-10-28 (aim slots seen): the status frame gains a per group
 `aim_slots`, and flamesafe journals one `aim slots:` line at start naming

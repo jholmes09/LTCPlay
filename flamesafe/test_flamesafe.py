@@ -6228,8 +6228,9 @@ def test_passthrough_status_and_start_line():
     pt = r.out.status["passthrough"]
     check([(p["name"], p["slots"]) for p in pt] == HAZERS,
           f"one status entry per hazer: {pt}")
-    check(all(set(p) == {"name", "slots", "haze", "fan", "asked", "enabled",
-                         "passing", "locked", "sent", "why"} for p in pt) and
+    check(all(set(p) == {"name", "kind", "slots", "haze", "fan", "asked",
+                         "enabled", "passing", "locked", "sent", "why"}
+              and p["kind"] == "hazer" for p in pt) and
           (pt[0]["haze"], pt[0]["fan"]) == (80, 81), f"its fields: {pt[0]}")
     check(json.loads(link.encode_status(r.out.status, KEY).decode())
           ["passthrough"] == pt, "it survives the wire")
@@ -6255,6 +6256,347 @@ def test_passthrough_status_and_start_line():
     check(not out.status["passthrough"][0]["passing"]
           and out.universe == bytes(512),
           "a panic tick is all zeros, hazers included")
+
+
+# =========================================================================
+# Passthrough switch: the fireball's fuel pump (Jeff, 2026-10-30). "It does
+# not need to be armed or disarmed but it should be affected by the stop
+# button." One slot (Jeff: channel 100) in no group; while the show program
+# has it switched on (hazers_on), the link is fresh and nothing has taken it
+# away since it was last seen OFF, flamesafe writes the entry's OWN `on`
+# value there (Jeff: 255), never the frame's value; else zero.
+# =========================================================================
+
+PUMP_NAME = "Fireball Fuel Pump"
+PUMP_SLOT = 100
+
+
+def _pump_entry(slot=PUMP_SLOT, on=255, name=PUMP_NAME):
+    return {"name": name, "switch": slot, "on": on}
+
+
+def pump_rig(on=255, **over):
+    d = example_dict()
+    pt = d["passthrough"] + [_pump_entry(on=on)]
+    return Rig(passthrough=pt, **over)
+
+
+def _pump(r):
+    return r.out.universe[PUMP_SLOT - 1]
+
+
+def _pump_st(r):
+    return r.out.status["passthrough"][3]
+
+
+def test_passthrough_switch_config():
+    section("passthrough switch config (2026-10-30, the fuel pump): a "
+            "{name, switch, on} entry loads beside the hazers; Jeff's live "
+            "layout with the pump at 100 loads; a config without one is "
+            "unchanged; every bad on, bad slot, overlap and extra key is "
+            "refused")
+    cfg = pump_rig().cfg
+    p = cfg.passthrough[3]
+    check(p.kind == "switch" and p.name == PUMP_NAME and p.switch == 100
+          and p.on == 255 and p.slots == [100] and p.haze is None
+          and p.fan is None, f"the pump entry: {p!r}")
+    check([q.kind for q in cfg.passthrough[:3]] == ["hazer"] * 3 and
+          [(q.name, q.slots) for q in cfg.passthrough[:3]] == HAZERS,
+          "the hazers beside it are read exactly as before")
+    check(make_config().passthrough[0].kind == "hazer" and
+          len(make_config().passthrough) == 3,
+          "the example (no pump) is unchanged: three hazers, no switch")
+    jeff = make_config(groups=copy.deepcopy(JEFF_GROUPS),
+                       gflame_range="60-80%", arm_value=157,
+                       accept_unsourced_risk=True,
+                       passthrough=example_dict()["passthrough"] +
+                       [_pump_entry()])
+    check([q.slots for q in jeff.passthrough] ==
+          [[80, 81], [82, 83], [84, 85], [100]],
+          "Jeff's live layout (fireball 77/55-59 and the rest) with the "
+          "hazers at 80 to 85 and the pump at 100 validates")
+    check(config.Passthrough("x", switch=7, on=9).slots == [7] and
+          config.Passthrough("x", 80, 81).kind == "hazer",
+          "a Passthrough built by hand: positional is a hazer as before")
+
+    def refused(entry, want, extra=()):
+        d = example_dict()
+        d["passthrough"] = list(extra) + [entry]
+        try:
+            config.from_dict(d)
+        except config.ConfigError as e:
+            return check(want in str(e), f"{entry!r} refused for {want!r}: "
+                                         f"{e}")
+        return check(False, f"passthrough {entry!r} was accepted")
+
+    for bad_on in (0, 256, -1, True, False, "255", 1.5, None, 255.0):
+        refused(_pump_entry(on=bad_on), "a whole number 1 to 255")
+    refused({"name": PUMP_NAME, "switch": 100}, "a whole number 1 to 255")
+    for bad_slot in (0, 513, True, "100", None, 100.0):
+        refused(_pump_entry(slot=bad_slot), "not a slot between 1 and 512")
+    refused(_pump_entry(slot=401), "a safety slot of front row")
+    refused(_pump_entry(slot=411), "a fire slot of front row")
+    refused(_pump_entry(slot=1), "an aim slot of wave flamer")
+    refused(_pump_entry(slot=441), "a fire slot of pump")
+    refused(_pump_entry(slot=80), "already a slot of 'Hazer 1'",
+            extra=example_dict()["passthrough"])
+    refused({"name": "Hazer 4", "haze": 100, "fan": 101},
+            f"already a slot of {PUMP_NAME!r}", extra=[_pump_entry()])
+    refused(_pump_entry(name="Pump 2"), f"already a slot of {PUMP_NAME!r}",
+            extra=[_pump_entry()])
+    refused(_pump_entry(slot=101), "already used", extra=[_pump_entry()])
+    refused(_pump_entry(name="Hazer 1"), "already used",
+            extra=example_dict()["passthrough"])
+    refused(_pump_entry(name="pump"), "already used")
+    refused(_pump_entry(name=""), "has no name")
+    refused(_pump_entry(name="x" * 65), "longer than")
+    refused(dict(_pump_entry(), haze=80), "a key this program does not know")
+    refused(dict(_pump_entry(), fan=81), "a key this program does not know")
+    refused(dict(_pump_entry(), arm=1), "a key this program does not know")
+    refused({"name": PUMP_NAME, "on": 255}, "a key this program does not know")
+    refused({"name": PUMP_NAME, "haze": 100, "fan": 101, "on": 255},
+            "a key this program does not know")
+    for bad in (dict(groups=copy.deepcopy(JEFF_GROUPS) + [
+            {"name": "spare", "safety": 100, "fire": [90]}]),
+                dict(groups=copy.deepcopy(JEFF_GROUPS) + [
+            {"name": "spare", "safety": 91, "fire": [100]}])):
+        d = example_dict()
+        d.update(bad, gflame_range="60-80%", arm_value=157,
+                 accept_unsourced_risk=True)
+        d["passthrough"] = d["passthrough"] + [_pump_entry()]
+        try:
+            config.from_dict(d)
+            check(False, "a group on the pump's slot was accepted")
+        except config.ConfigError as e:
+            check("never a flame group's slot" in str(e),
+                  f"a group on the pump's slot is refused: {e}")
+
+
+def test_passthrough_switch_composer_refusals():
+    section("passthrough switch (2026-10-30): a Composer refuses a switch "
+            "with an on value outside 1 to 255, a switch on a group slot, "
+            "and two entries sharing a slot, however its Config was built")
+    for on in (0, 256, True, None, "255"):
+        cfg = make_config()
+        sw = config.Passthrough("pump", switch=100, on=1)
+        sw.on = on
+        cfg.passthrough = list(cfg.passthrough) + [sw]
+        try:
+            Composer(cfg)
+            check(False, f"a Composer took a switch with on {on!r}")
+        except ValueError as e:
+            check("not 1 to 255" in str(e), f"on {on!r} refused: {e}")
+    cfg = make_config()
+    cfg.passthrough = [config.Passthrough("pump", switch=411, on=255)]
+    try:
+        Composer(cfg)
+        check(False, "a Composer took a switch on front row's fire slot")
+    except ValueError as e:
+        check("411" in str(e), f"a switch on a group slot is refused: {e}")
+    cfg = make_config()
+    cfg.passthrough = list(cfg.passthrough) + [
+        config.Passthrough("pump", switch=81, on=255)]
+    try:
+        Composer(cfg)
+        check(False, "a Composer took a switch on a hazer's slot")
+    except ValueError as e:
+        check("share a slot" in str(e), f"a shared slot is refused: {e}")
+    Composer(pump_rig().cfg)
+    check(True, "the example's hazers with the pump at 100 build")
+
+
+def test_passthrough_switch_writes_its_own_on_value():
+    section("passthrough switch (2026-10-30): while switched on the pump's "
+            "slot carries the configured on value whatever the frame holds "
+            "there (0, 7, 255); off it is zero whatever the frame holds; off "
+            "at start until seen OFF; stale link, lockout and a panic tick "
+            "take it away")
+    for on in (255, 137):
+        r = pump_rig(on=on)
+        r.hazers = (PUMP_NAME,)
+        r.run(4, {PUMP_SLOT: 255})
+        check(_pump(r) == 0 and _pump_st(r)["why"] == composer.PT_START,
+              f"on {on}: ON in the very first frames is not enough: "
+              f"{_pump_st(r)}")
+        r.hazers = ()
+        for v in (0, 7, 255):
+            r.run(2, {PUMP_SLOT: v})
+            check(_pump(r) == 0 and _pump_st(r)["why"] == composer.PT_OFF,
+                  f"on {on}: OFF is zero though the frame carries {v} "
+                  f"there: {_pump(r)}")
+        r.hazers = (PUMP_NAME,)
+        for v in (0, 7, 255, on):
+            r.run(1, {PUMP_SLOT: v})
+            check(_pump(r) == on,
+                  f"on {on}: switched ON, the slot carries the configured "
+                  f"{on} with the frame carrying {v}: {_pump(r)}")
+        st = _pump_st(r)
+        check(st["kind"] == "switch" and st["asked"] and st["enabled"] and
+              st["passing"] and st["why"] == "" and st["sent"] == [on] and
+              st["slots"] == [PUMP_SLOT] and st["switch"] == PUMP_SLOT and
+              st["on"] == on, f"on {on}: the status says it: {st}")
+        check(_haze(r) == [0] * 6 and r.out.universe[PUMP_SLOT] == 0 and
+              r.out.universe[PUMP_SLOT - 2] == 0,
+              "the hazers (not switched on) and the slots either side stay "
+              "zero")
+    # The take-aways, with on 255.
+    r = pump_rig()
+    r.run(2)
+    r.hazers = (PUMP_NAME,)
+    r.run(1)
+    check(_pump(r) == 255, "setup: the pump is on with every frame slot 0")
+    r.link_alive = False
+    r.wait(r.cfg.frame_stale_ms / 1000.0)
+    check(_pump(r) == 0 and _pump_st(r)["why"] == composer.PT_LINK,
+          f"a stale link zeroes the pump: {_pump_st(r)}")
+    r.link_alive = True
+    r.run(3)
+    check(_pump(r) == 0, "the link back with ON still asked is not enough")
+    r.hazers = ()
+    r.run(1)
+    r.hazers = (PUMP_NAME,)
+    r.run(1)
+    check(_pump(r) == 255, "OFF then ON after the link is back")
+    r.c.note_locked_slots({PUMP_SLOT})
+    r.run(1)
+    check(_pump(r) == 0 and _pump_st(r)["locked"] == [True] and
+          _pump_st(r)["why"] == composer.PT_LOCKED,
+          f"the pump's slot in the lockout file is zero, said: "
+          f"{_pump_st(r)}")
+    r.c.note_locked_slots(set())
+    r.run(1)
+    check(_pump(r) == 255, "setup: on again once unlocked")
+    r.step(dt=(r.cfg.overrun_ms + 50) / 1000.0)
+    check(r.out.universe == bytes(512), "an overrun tick is all zeros")
+    r.run(3)
+    check(_pump(r) == 0 and _pump_st(r)["why"] == composer.PT_FAULT,
+          f"after a panic, zero though asked: {_pump_st(r)}")
+    r.hazers = ()
+    r.run(1)
+    r.hazers = (PUMP_NAME, "Hazer 2")
+    r.run(1, HAZE)
+    check(_pump(r) == 255 and _haze(r) == [0, 0, 201, 121, 0, 0],
+          f"OFF then ON: the pump and a hazer run side by side, each its "
+          f"own way: {_pump(r)} {_haze(r)}")
+
+
+def test_passthrough_switch_abort_and_senders():
+    section("passthrough switch (2026-10-30): the show's Abort and Stop "
+            "(disarm_all) zero the pump on the tick it arrives in, it stays "
+            "zero until switched OFF and ON again; a foreign or new sender "
+            "can never switch it on")
+    r = pump_rig()
+    r.run(2)
+    r.hazers = (PUMP_NAME, "Hazer 1")
+    r.run(1, HAZE)
+    check(_pump(r) == 255 and _haze(r)[:2] == [200, 120], "pump and hazer on")
+    check(_disarm(r, reason="Stop on the rack screen") == "",
+          "the Stop's disarm_all is accepted")
+    r.out = r.c.tick()
+    check(_pump(r) == 0 and _pump_st(r)["why"] == composer.PT_ABORT,
+          f"zero on the disarm_all's own tick: {_pump_st(r)}")
+    check(any(k == "passthrough" and PUMP_NAME in m
+              for k, m in r.log.events),
+          "the journal names the pump among what the Abort switched off")
+    r.run(5, {PUMP_SLOT: 255})
+    check(_pump(r) == 0, "frames still asking ON after it keep it zero")
+    r.hazers = ()
+    r.run(1)
+    r.hazers = (PUMP_NAME,)
+    r.run(1)
+    check(_pump(r) == 255, "OFF then ON brings it back")
+    OTHER = ("127.0.0.1", 40999)
+    r.hazers = ()
+    r.run(1)
+    vals = bytearray(512)
+    vals[PUMP_SLOT - 1] = 255
+    why = r.c.ingest_frame(link.FlameFrame(10 ** 6, None, r.t + 1, 1,
+                                           bytes(vals),
+                                           frozenset([PUMP_NAME])),
+                           sender=OTHER)
+    check(why == "another sender", f"a foreign frame is refused: {why}")
+    r.out = r.c.tick()
+    check(_pump(r) == 0, "a foreign sender saying the pump ON leaves it off")
+    r.link_alive = False
+    r.wait(r.cfg.frame_stale_ms / 1000.0 + 0.1)
+    r.hazers = (PUMP_NAME,)
+    r.frame({}, sender=OTHER)
+    r.out = r.c.tick()
+    check(_pump(r) == 0 and _pump_st(r)["why"] == composer.PT_NEW_SENDER,
+          f"a different sender taking the link asking ON is zero: "
+          f"{_pump_st(r)}")
+
+
+def test_passthrough_switch_never_touches_a_group():
+    section("passthrough switch (2026-10-30): the pump switched on and off, "
+            "and an Abort's reset, change no group's arming, edges or "
+            "outputs; an armed fireball group stays armed and arms with the "
+            "pump at 255")
+    script = [((), {}), ((PUMP_NAME,), {411: 200}), ((), {100: 255, 411: 0}),
+              ((PUMP_NAME,), {100: 9, 412: 230}), ((PUMP_NAME,), {413: 1})]
+    outs = []
+    for with_pump in (False, True):
+        r = pump_rig()
+        r.prove_alive()
+        r.inp.set(0, 2)
+        seen = []
+        for hz, cue in script * 3:
+            r.hazers = hz if with_pump else ()
+            r.run(4, cue)
+            seen.append((bytes(b for i, b in enumerate(r.out.universe)
+                               if i + 1 != PUMP_SLOT),
+                         [(g["armed"], g["reason"]) for g in
+                          r.out.status["groups"]]))
+        outs.append(seen)
+        if with_pump:
+            check(_pump(r) == 255, "the pump did run in this run")
+    check(outs[0] == outs[1], "every group's arming and every other slot "
+                              "are identical with the pump running")
+    d = example_dict()
+    groups = d["groups"]
+    i = next(k for k, g in enumerate(groups) if g["name"] == "fireball")
+    groups[i] = {"name": "fireball", "safety": FB_SAFETY, "fire": FB_FIRE}
+    r = Rig(gflame_range="60-80%", arm_value=157, accept_unsourced_risk=True,
+            groups=groups, passthrough=d["passthrough"] + [_pump_entry()])
+    r.prove_alive()
+    r.run(1)
+    r.hazers = (PUMP_NAME,)
+    r.run(2)
+    check(_pump(r) == 255, "setup: pump on, fireball disarmed")
+    r.inp.set(i)
+    r.run(4)
+    check(r.group(i)["armed"] == "armed" and _pump(r) == 255,
+          f"the fireball arms with the pump at 255 (not a fire slot, so no "
+          f"dirty edge): {r.group(i)['armed']}")
+    r.hazers = ()
+    r.run(2)
+    check(r.group(i)["armed"] == "armed" and _pump(r) == 0,
+          "switching the pump off leaves the fireball armed")
+    check(set(r.out.universe[s - 1] for s in range(1, 513)
+              if s not in r.cfg.all_slots()) == {0},
+          "nothing outside the groups is non-zero with the pump off")
+
+
+def test_passthrough_switch_status_and_start_line():
+    section("passthrough switch is said (2026-10-30): the status frame "
+            "carries the pump as kind switch with its slot and on value, "
+            "and flamesafe's start line names it")
+    r = pump_rig()
+    r.run(2)
+    st = _pump_st(r)
+    check(set(st) == {"name", "kind", "slots", "switch", "on", "asked",
+                      "enabled", "passing", "locked", "sent", "why"} and
+          st["kind"] == "switch" and st["slots"] == [PUMP_SLOT] and
+          st["switch"] == PUMP_SLOT and st["on"] == 255 and
+          st["sent"] == [0], f"its fields: {st}")
+    check(json.loads(link.encode_status(r.out.status, KEY).decode())
+          ["passthrough"] == r.out.status["passthrough"],
+          "it survives the wire")
+    line = fsmain.passthrough_line(r.cfg.passthrough, "f.json")
+    check(f"; {PUMP_NAME} switch 100 at 255 " in line and
+          line.startswith("passthrough: Hazer 1 haze 80, fan 81; "),
+          f"the start line: {line}")
+    check("\u2013" not in line and "\u2014" not in line, "no dashes")
 
 
 # =========================================================================
@@ -6492,6 +6834,12 @@ if __name__ == "__main__":
     test_passthrough_is_refused_on_a_group_slot_and_written_first()
     test_passthrough_never_touches_a_group()
     test_passthrough_status_and_start_line()
+    test_passthrough_switch_config()
+    test_passthrough_switch_composer_refusals()
+    test_passthrough_switch_writes_its_own_on_value()
+    test_passthrough_switch_abort_and_senders()
+    test_passthrough_switch_never_touches_a_group()
+    test_passthrough_switch_status_and_start_line()
     test_the_wall_from_this_side()
     defined = {n for n, v in list(globals().items())
                if n.startswith("test_") and callable(v)}

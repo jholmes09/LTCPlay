@@ -842,6 +842,12 @@ channel, and is either ARMED or DISARMED.
 - **If a tile says Waiting for flamesafe,** flamesafe has not taken the
   arm yet; if it stays that way, disarm it and arm it again.
 
+**Do not add a fuel pump to flamesafe.json yet.** flamesafe can now read a
+one-channel "switch" entry for the fireball's fuel pump, but LTC Player
+cannot until its own update lands. A pump entry in `flamesafe.json` before
+BOTH flamesafe and LTC Player are updated stops BOTH from starting. The
+order is: update both programs, then add the entry, then restart both.
+
 ## Stop, Hold and Reset on the rack screen
 
 Jeff, 2026-10-28. Each screen has one Stop, where the button that started
