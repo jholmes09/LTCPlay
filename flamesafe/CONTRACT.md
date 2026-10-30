@@ -631,11 +631,12 @@ of `haze` and `fan`; a hazer's entry gains `kind` `"hazer"` and is
 otherwise unchanged. The start line names it as `Fireball Fuel Pump switch
 100 at 255`.
 
-**Deploy order for a switch.** A flamesafe or an LTC Player from before
-this date refuses a config with a switch entry (an unknown key in a
-passthrough entry; LTC Player: an entry without `haze` and `fan`) and does
-not start. Update BOTH programs first, then add the entry to
-`flamesafe.json`, then restart both.
+**Deploy order for a switch.** A flamesafe from before this date refuses a
+config with a switch entry (an unknown key in a passthrough entry) and
+does not start. LTC Player refuses it too (an entry without `haze` and
+`fan`) until its own fuel pump update (#188) is installed: this flamesafe
+change alone does NOT make LTC Player read a switch. Install BOTH updates
+first, then add the entry to `flamesafe.json`, then restart both.
 
 **ltcplay's side** (`ltcplay/hazers.py`, `ltcplay/flamelink.py`). The
 engine reads the same `passthrough` list from this file and holds, per
