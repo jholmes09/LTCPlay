@@ -92112,6 +92112,343 @@ def test_fireball_timeline_show_info_from_a_real_show_file():
     print("  ok")
 
 
+
+# -- the fireball's charge state (Jeff, 2026-10-30; fireball_charge.py) ------
+
+def _fbc(work=None, **kw):
+    """A ChargeTracker on the test's clocks, by hand (no thread)."""
+    import types
+    from ltcplay import fireball_charge as FC
+    C = types.SimpleNamespace(t=[1000.0], wall=[1_800_000_000.0], lines=[],
+                              events=[])
+
+    class _Audit:
+        def event(self, **k):
+            C.events.append(k)
+    C.tr = FC.ChargeTracker(
+        work, journal=lambda *a, **k: C.lines.append((a, k)),
+        audit=_Audit(), wall=lambda: C.wall[0], clock=lambda: C.t[0],
+        threaded=False, **kw)
+    return C
+
+
+def _fbc_frame(**on):
+    v = bytearray(512)
+    for k, slot in (("fuel", 55), ("air", 56), ("valve", 57),
+                    ("igniter", 58), ("purge", 59), ("safety", 77)):
+        if on.get(k):
+            v[slot - 1] = on[k] if on[k] is not True else 255
+    return bytes(v)
+
+
+def test_fireball_charge_state():
+    section("the fireball's charge state: Fuel and Air Charge make a tank "
+            "CHARGED; only a shot (Valve Open on, then off) or a purge "
+            "resets it; Stop, Hold, the end of a show and an engine restart "
+            "never do; a top-off from the Fireball page is counted; "
+            "UNKNOWN when the evidence is not certain; every change "
+            "written atomically, journaled and audited")
+    import json as _j
+    import shutil
+    from ltcplay import fireball_charge as FC
+    E, C_, U = FC.EMPTY, FC.CHARGED, FC.UNKNOWN
+    check(FC.TANKS == (("fuel", "Fuel", 55), ("air", "Air", 56)) and
+          FC.VALVE_SLOT == 57 and FC.PURGE_SLOT == 59,
+          "Fuel 55, Air 56, Valve Open 57, Purge 59")
+    work = tempfile.mkdtemp()
+    try:
+        # The very first run: no file, both EMPTY, said once, written.
+        C = _fbc(work)
+        tr = C.tr
+        check(tr.state("fuel") == E and tr.state("air") == E and
+              tr.first_run, "no file: both tanks EMPTY (the first run)")
+        tr.pump()
+        check(any(a[2] == "first_run" and "both tanks start EMPTY" in a[3]
+                  for a, _k in C.lines) and os.path.exists(tr.path),
+              f"said and written: {C.lines[:1]}")
+        check(tr.sentence() == "Fuel: empty. Air: empty.",
+              f"the words: {tr.sentence()}")
+        # Not armed: nothing reached the fireball, nothing changes.
+        tr.see(_fbc_frame(fuel=True, air=True), "off")
+        check(tr.state("fuel") == E and tr.state("air") == E,
+              "a charge sent while the group is not armed: still EMPTY")
+        # Armed: Fuel Charge on: CHARGED by the show, once.
+        n = len(C.lines)
+        for _ in range(5):
+            tr.see(_fbc_frame(fuel=True), "armed")
+        tr.pump()
+        check(tr.state("fuel") == C_ and tr.state("air") == E and
+              tr.tanks["fuel"]["by"] == "the show" and
+              tr.tanks["fuel"]["charged_at"] and
+              [a[2] for a, _k in C.lines[n:]] == ["charged"],
+              f"Fuel Charge on: CHARGED, one line for one charge: "
+              f"{C.lines[n:]}")
+        doc = _j.load(open(tr.path, encoding="utf-8"))
+        check(doc["tanks"]["fuel"]["state"] == "charged" and
+              FC.read_doc(doc)[0] == doc["rev"],
+              "written to the file at once")
+        check(C.events[-1]["action"] == "fireball charge" and
+              C.events[-1]["target"] == "charged" and
+              "Fuel CHARGED" in C.events[-1]["reason"], "and audited")
+        # Stop / Hold / the end of a show: the channels go to zero, the
+        # tank stays charged.
+        for _ in range(10):
+            tr.see(_fbc_frame(), "armed")
+        tr.see(_fbc_frame(), "off")
+        check(tr.state("fuel") == C_, "Stop, Hold, zeros, a disarm: still "
+                                      "CHARGED (Stop does not depressurise)")
+        # The Igniter is independent: it resets nothing.
+        tr.see(_fbc_frame(igniter=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        check(tr.state("fuel") == C_, "the Igniter alone resets nothing")
+        # Fuel Charge on again, not from the Fireball page: a double charge
+        # is a fault (the engine's guard is to stop it ever happening).
+        n = len(C.lines)
+        tr.see(_fbc_frame(fuel=True), "armed")
+        tr.pump()
+        check(tr.state("fuel") == C_ and
+              [a[2] for a, _k in C.lines[n:]] == ["double_charge"] and
+              C.lines[-1][1].get("fault") is True,
+              f"on again while charged, not from the page: a fault: "
+              f"{C.lines[n:]}")
+        tr.see(_fbc_frame(), "armed")
+        # A top-off by Andy from the Fireball page: counted, said, no fault.
+        n = len(C.lines)
+        tr.note_manual({"fuel"}, "Andy", "Rack screen")
+        tr.see(_fbc_frame(fuel=True), "armed")
+        tr.see(_fbc_frame(fuel=True), "armed")
+        tr.pump()
+        tf = tr.tanks["fuel"]
+        check(tf["state"] == C_ and tf["topoffs"] == 2 and
+              [a[2] for a, _k in C.lines[n:]] == ["topoff"] and
+              C.lines[-1][0][0] == "Andy" and
+              C.lines[-1][0][3].startswith("Top-off by Andy (fuel already "
+                                           "charged") and
+              not C.lines[-1][1].get("fault"),
+              f"a top-off by Andy: {C.lines[n:]} {tf}")
+        check(tr.sentence() == f"Fuel: charged {tr._clock_text(tf['charged_at'])}, "
+                               f"topped off 2 times. Air: empty. No shot fired.",
+              f"the words: {tr.sentence()}")
+        tr.note_manual(set(), "Andy", "Rack screen")
+        tr.see(_fbc_frame(), "armed")
+        # Air by Andy from empty: CHARGED by Andy.
+        tr.note_manual({"air"}, "Andy", "Rack screen")
+        tr.see(_fbc_frame(air=True), "armed")
+        check(tr.state("air") == C_ and tr.tanks["air"]["by"] == "Andy",
+              "Air charged by Andy")
+        tr.note_manual(set())
+        tr.see(_fbc_frame(), "armed")
+        tr.pump()
+        # An engine restart: read back exactly.
+        C2 = _fbc(work)
+        check(C2.tr.state("fuel") == C_ and C2.tr.state("air") == C_ and
+              C2.tr.tanks["fuel"]["topoffs"] == 2 and not C2.tr.first_run
+              and not C2.tr.fault,
+              "an engine restart reads both tanks back CHARGED")
+        tr = C2.tr
+        # The shot: Valve Open on (any length), then off: both EMPTY.
+        tr.see(_fbc_frame(valve=True, igniter=True), "armed")
+        check(tr.state("fuel") == C_ and tr.releasing == "shot",
+              "while the valve is open: still charged, releasing")
+        tr.pump()
+        doc = _j.load(open(tr.path, encoding="utf-8"))
+        check(doc["releasing"] == "shot", "releasing is written at once")
+        tr.see(_fbc_frame(), "armed")
+        tr.pump()
+        check(tr.state("fuel") == E and tr.state("air") == E and
+              tr.tanks["fuel"]["topoffs"] == 0 and tr.releasing == "" and
+              "the shot was fired (Valve Open)" in C2.lines[-1][0][3],
+              f"the valve closed: the shot was fired, both EMPTY: "
+              f"{C2.lines[-1]}")
+        # Purge resets too.
+        tr.see(_fbc_frame(fuel=True, air=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        tr.see(_fbc_frame(purge=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        tr.pump()
+        check(tr.state("fuel") == E and tr.state("air") == E and
+              C2.lines[-1][0][2] == "purge", "a purge: both EMPTY")
+        # A charge on while the valve is open: charged again when it shuts.
+        tr.see(_fbc_frame(fuel=True), "armed")
+        tr.see(_fbc_frame(valve=True), "armed")
+        tr.see(_fbc_frame(valve=True, air=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        check(tr.state("fuel") == E and tr.state("air") == C_,
+              f"Air Charge on while the valve was open: air CHARGED after "
+              f"it, fuel EMPTY: {tr.state('fuel')} {tr.state('air')}")
+        tr.see(_fbc_frame(purge=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        # Not certain: a charge sent with flamesafe's status unknown.
+        tr.see(_fbc_frame(fuel=True), "unknown")
+        tr.see(_fbc_frame(), "unknown")
+        check(tr.state("fuel") == U and tr.state("air") == E,
+              "a charge with flamesafe's status not known: UNKNOWN")
+        # A release that is not certain never makes a tank EMPTY.
+        tr.see(_fbc_frame(purge=True), "unknown")
+        tr.see(_fbc_frame(), "unknown")
+        check(tr.state("fuel") == U, "a purge not seen for certain: still "
+                                     "UNKNOWN")
+        tr.see(_fbc_frame(fuel=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        tr.see(_fbc_frame(valve=True), "unknown")
+        tr.see(_fbc_frame(), "unknown")
+        check(tr.state("fuel") == U and tr.state("air") == E,
+              "a charged tank and an uncertain valve: UNKNOWN; an empty one "
+              "stays empty")
+        tr.see(_fbc_frame(purge=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        check(tr.state("fuel") == E, "a certain purge resets UNKNOWN")
+        # A frame that did not go out changes nothing.
+        tr.observe("00:00:01:00", _fbc_frame(fuel=True), False)
+        check(tr.state("fuel") == E, "a frame not sent: nothing")
+        # observe() with no fresh status reading: UNKNOWN (never certain).
+        tr.observe("00:00:01:00", _fbc_frame(fuel=True), True)
+        tr.observe("00:00:01:01", _fbc_frame(), True)
+        check(tr.state("fuel") == U, "observe() with no status read yet: "
+                                     "UNKNOWN")
+        tr._flames = lambda: {"connected": True, "stale": False,
+                              "age_ms": 20, "groups": [
+                                  {"name": "fireball", "armed": "armed"}]}
+        tr._read_armed()
+        tr.observe("t", _fbc_frame(purge=True), True)
+        tr.observe("t", _fbc_frame(), True)
+        check(tr.state("fuel") == E, "with flamesafe saying ARMED: certain")
+        C.t[0] += 1.0
+        C2.t[0] += 1.0
+        check(tr.armed_now() == "unknown", "a status reading older than "
+                                           "0.5 s is not known")
+        # The sender's call never touches a file.
+        import builtins
+        real_open, real_replace = builtins.open, os.replace
+        touched = []
+        builtins.open = lambda *a, **k: touched.append(a) or real_open(*a,
+                                                                       **k)
+        os.replace = lambda *a, **k: touched.append(a) or real_replace(*a,
+                                                                       **k)
+        try:
+            tr._read_armed()
+            for _ in range(20):
+                tr.observe("t", _fbc_frame(fuel=True), True)
+                tr.observe("t", _fbc_frame(valve=True), True)
+                tr.observe("t", _fbc_frame(), True)
+        finally:
+            builtins.open, os.replace = real_open, real_replace
+        check(not touched, f"observe() never opens or writes a file: "
+                           f"{touched[:2]}")
+        tr.pump()
+        # The engine stopped while the valve was open: UNKNOWN, a fault.
+        tr.see(_fbc_frame(fuel=True), "armed")
+        tr.see(_fbc_frame(valve=True), "armed")
+        tr.pump()
+        C3 = _fbc(work)
+        C3.tr.pump()
+        check(C3.tr.state("fuel") == U and C3.tr.state("air") == U and
+              C3.tr.releasing == "" and
+              any(k.get("fault") and "stopped while the valve was open" in
+                  a[3] for a, k in C3.lines),
+              f"a restart in the middle of a release: both UNKNOWN: "
+              f"{C3.lines[-1:]}")
+        check(C3.tr.sentence() == "Fuel: not known. Air: not known. Purge "
+                                  "or fire to reset.",
+              f"the words: {C3.tr.sentence()}")
+        # A file that cannot be read: UNKNOWN, said.
+        for bad in ("{oops", '{"fireball_charge_format": 1}',
+                    '{"fireball_charge_format": 1, "rev": 1, "releasing": '
+                    '"", "tanks": {"fuel": {}, "air": {}}}'):
+            with open(os.path.join(work, FC.FILE), "w") as fh:
+                fh.write(bad)
+            C4 = _fbc(work)
+            check(C4.tr.state("fuel") == U and C4.tr.state("air") == U and
+                  "could not be read" in C4.tr.fault and
+                  C4.tr.view()["fault"] and _cfg_dashes(C4.tr.fault),
+                  f"a broken file: both UNKNOWN: {C4.tr.fault}")
+        # A write that fails: the state is kept, the fault said once.
+        C4.tr._write = lambda doc: (_ for _ in ()).throw(
+            OSError(28, "No space left on device"))
+        C4.tr.see(_fbc_frame(purge=True), "armed")
+        C4.tr.see(_fbc_frame(), "armed")
+        C4.tr.pump()
+        check(C4.tr.state("fuel") == E and "could not be written" in
+              C4.tr.view()["fault"], "a failed write: the state stands in "
+                                     "memory, the fault shown")
+        v = C4.tr.view()
+        check(v["psi"] is None and set(v["tanks"]) == {"fuel", "air"} and
+              v["tanks"]["fuel"]["slot"] == 55 and v["text"],
+              "the view: both tanks, the words, and no pressure invented")
+        # It sends nothing.
+        src = open(FC.__file__, encoding="utf-8").read()
+        for word in ("purge_set", "program_set", "sendto", "import socket",
+                     "flamelink"):
+            check(word not in src, f"fireball_charge.py has no {word!r}")
+        check(_cfg_dashes(src), "no em or en dash in fireball_charge.py")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fireball_charge_wiring():
+    section("the fireball's charge state in the engine: chained onto the "
+            "flame link's observer (the fuel tracker still told), told who "
+            "pressed by the Fireball page, in every screen's status")
+    import types
+    from ltcplay import web as W
+    from ltcplay import remote as RM
+    from ltcplay import fireball_charge as FC
+    work = tempfile.mkdtemp()
+    seen = []
+    link = types.SimpleNamespace(observer=lambda *a: seen.append(a))
+    closed = []
+
+    class _Svc:
+        conductor = None
+        machine = None
+
+        def journal_press(self, *a, **kw):
+            pass
+    rm = RM.Remote(None, _Svc(), folder=work, log=lambda t_: None)
+    rm.fireball = types.SimpleNamespace(on_controls=None)
+    httpd = types.SimpleNamespace(
+        remote=rm, fire_ice=types.SimpleNamespace(flame_link=link),
+        server_close=lambda: closed.append(1))
+    try:
+        W._attach_fireball_charge(httpd)
+        tr = rm.fireball_charge
+        check(isinstance(tr, FC.ChargeTracker), "built")
+        link.observer("00:00:01:00", _fbc_frame(fuel=True), True)
+        check(seen and seen[-1][1] == _fbc_frame(fuel=True) and
+              tr.frames == 1, "the fuel tracker's observer is still told, "
+                              "and so is the charge state")
+        rm.fireball.on_controls({"fuel"}, "Andy", "Rack screen")
+        check(tr._manual.get("fuel", ("",))[0] == "Andy",
+              "the Fireball page tells who holds Fuel Charge")
+        st = rm.status(RM.Ctx(True, "127.0.0.1"))
+        check(st.get("fireball_charge", {}).get("tanks", {}).get(
+            "fuel", {}).get("state") in ("empty", "unknown") and
+              "text" in st["fireball_charge"],
+              f"in the status: {st.get('fireball_charge')}")
+        httpd.server_close()
+        check(closed == [1] and tr._stop.is_set(), "closed with the engine")
+    finally:
+        try:
+            rm.fireball_charge.close()
+        except Exception:
+            pass
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    # The Fireball page tells what it holds, and every cut tells set().
+    P = _fb_panel()
+    told = []
+    P.fb.on_controls = lambda on, who, screen: told.append((set(on), who))
+    me = ("Rack screen", "w-a")
+    P.fb.beat({"controls": {"fuel": True}, "run": "r1", "seq": 1,
+               "seen": 0}, me, who="Andy", screen="Rack screen")
+    check(told and told[-1] == ({"fuel"}, "Andy"),
+          f"a beat that went in tells what is held and by whom: {told}")
+    P.fb.cut("test")
+    check(told[-1] == (set(), ""), f"a cut tells nothing is held: {told}")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
@@ -92898,6 +93235,8 @@ if __name__ == "__main__":
         test_fireball_timeline_store,
         test_fireball_timeline_routes,
         test_fireball_timeline_show_info_from_a_real_show_file,
+        test_fireball_charge_state,
+        test_fireball_charge_wiring,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):

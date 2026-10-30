@@ -18784,6 +18784,62 @@ def build():
   "    \"fireball-timeline-save\": \"settings\",",
   "    \"fireball-timeline-save\": None,"),
 
+ # -- the fireball's charge state (fireball_charge.py, Jeff 2026-10-30) ----
+ ("fireball charge: zeros (Stop, Hold, a show's end) empty the tanks",
+  "ltcplay/fireball_charge.py",
+  "            if rel is not None and not (valve or purge):\n                self._release = None\n                self._released(rel, now_w)",
+  "            if rel is not None and not (valve or purge):\n                self._release = None\n                self._released(rel, now_w)\n            elif rel is None and not any(lv.values()):\n                self._released({\"kind\": \"shot\", \"certain\": True, \"during\": {}}, now_w)"),
+
+ ("fireball charge: the Igniter counts as the shot",
+  "ltcplay/fireball_charge.py",
+  "            valve, purge = vals[VALVE_SLOT - 1], vals[PURGE_SLOT - 1]",
+  "            valve, purge = vals[VALVE_SLOT - 1] or vals[57], vals[PURGE_SLOT - 1]"),
+
+ ("fireball charge: a charge counts while the group is not armed",
+  "ltcplay/fireball_charge.py",
+  "        if armed == \"off\":",
+  "        if False:"),
+
+ ("fireball charge: a release not seen for certain empties the tanks",
+  "ltcplay/fireball_charge.py",
+  "            elif rel[\"certain\"]:",
+  "            elif True:"),
+
+ ("fireball charge: a charge with the status not known leaves the tank EMPTY",
+  "ltcplay/fireball_charge.py",
+  "            if t[\"state\"] == EMPTY:\n                self._set(k, UNKNOWN,",
+  "            if False:\n                self._set(k, UNKNOWN,"),
+
+ ("fireball charge: a broken file reads as EMPTY",
+  "ltcplay/fireball_charge.py",
+  "            self.tanks = {k: _new_tank(UNKNOWN, now, f\"{FILE} could not be \"",
+  "            self.tanks = {k: _new_tank(EMPTY, now, f\"{FILE} could not be \""),
+
+ ("fireball charge: a restart in the middle of a release is not UNKNOWN",
+  "ltcplay/fireball_charge.py",
+  "            if rel:\n                what = ",
+  "            if False:\n                what = "),
+
+ ("fireball charge: a change is not written to the file",
+  "ltcplay/fireball_charge.py",
+  "        if persist:\n            self.rev += 1",
+  "        if False:\n            self.rev += 1"),
+
+ ("fireball charge: a top-off from the Fireball page is called a double charge",
+  "ltcplay/fireball_charge.py",
+  "            if m is not None:\n                self._set(k, CHARGED, f\"top-off by {m[0]}\"",
+  "            if False:\n                self._set(k, CHARGED, f\"top-off by {m[0]}\""),
+
+ ("fireball charge: a charge on during the shot is forgotten",
+  "ltcplay/fireball_charge.py",
+  "            if during is not None:\n                self._set(k, during,",
+  "            if False:\n                self._set(k, during,"),
+
+ ("fireball charge: the fuel tracker is no longer told of each frame",
+  "ltcplay/web.py",
+  "                _before(tc, values, ok)\n",
+  "                pass\n"),
+
 ]
 
 

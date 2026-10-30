@@ -1562,6 +1562,8 @@ class Remote:
         self.morning = None          # morning.Morning, set by web.serve
         self.fuel = None             # fuel.FuelTracker, set by web.serve
         self.fireball = None         # fireball.FireballPanel, web.serve
+        # fireball_charge.ChargeTracker, web.serve (display only here)
+        self.fireball_charge = None
         self.cleaning = None         # cleaning.CleaningPanel, web.serve
         # hazers.Hazers, set by web.serve (Fire & Ice with a flame link),
         # and the "hazers" mismatch alert's sentence and id.
@@ -7286,6 +7288,15 @@ class Remote:
         hzv = self.hazers_view(out["flames"])
         if hzv is not None:
             out["hazers"] = hzv
+        fbc = self.fireball_charge
+        if fbc is not None:
+            # The fuel and air tanks (fireball_charge.py): display only.
+            try:
+                out["fireball_charge"] = fbc.view()
+            except Exception as e:               # noqa: BLE001
+                out["fireball_charge"] = {
+                    "fault": f"{type(e).__name__}: {e}", "text": "",
+                    "tanks": {}}
         out["beyond_link"] = self.beyond_link()
         try:
             _snap = self.schedule.conductor.snapshot() or {}
