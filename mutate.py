@@ -2872,6 +2872,44 @@ MUTATIONS = [
   "        self._pt_reset(PT_ABORT)",
   "        pass"),
 
+ # passthrough switch (2026-10-30): the fireball's fuel pump
+ ("flamesafe: passthrough switch: the pump's slot carries the frame's value, not its own on",
+  "flamesafe/composer.py",
+  "                        buf[sl - 1] = (p.on if p.kind == \"switch\"\n"
+  "                                       else self._frame[sl - 1])",
+  "                        buf[sl - 1] = self._frame[sl - 1]"),
+
+ ("flamesafe: passthrough switch: an on value outside 1 to 255 loads",
+  "flamesafe/config.py",
+  "                    not SWITCH_ON_MIN <= on <= SWITCH_ON_MAX:",
+  "                    False:"),
+
+ ("flamesafe: passthrough switch: a switch entry takes a haze, fan or any other key",
+  "flamesafe/config.py",
+  "        _only_known(e, SWITCH_KEYS if is_switch else PASSTHROUGH_KEYS,",
+  "        _only_known(e, set(e) if is_switch else PASSTHROUGH_KEYS,"),
+
+ ("flamesafe: passthrough switch: a Composer takes a switch whose on is not 1 to 255",
+  "flamesafe/composer.py",
+  "            if p.kind == \"switch\" and (",
+  "            if False and ("),
+
+ ("flamesafe: passthrough switch: a Composer takes two entries on one slot",
+  "flamesafe/composer.py",
+  "        if len(pt_slots) != len(set(pt_slots)):",
+  "        if False:"),
+
+ ("flamesafe: passthrough switch: a Composer takes a slot outside 1 to 512",
+  "flamesafe/composer.py",
+  "        if bad:\n            raise ValueError(f\"passthrough slots {bad} are not 1 to \"",
+  "        if False:\n            raise ValueError(f\"passthrough slots {bad} are not 1 to \""),
+
+ ("flamesafe: passthrough switch: the switch is read as a hazer",
+  "flamesafe/config.py",
+  "        is_switch = \"switch\" in e",
+  "        is_switch = False"),
+
+
  ("flamesafe: passthrough: a change of sender leaves the hazers as they were",
   "flamesafe/composer.py",
   "                self._pt_reset(PT_NEW_SENDER)",
@@ -2889,8 +2927,8 @@ MUTATIONS = [
 
  ("flamesafe: passthrough: a hazer slot in the lockout file passes",
   "flamesafe/composer.py",
-  "                    if sl not in self._locked:\n                        buf[sl - 1] = self._frame[sl - 1]",
-  "                    if True:\n                        buf[sl - 1] = self._frame[sl - 1]"),
+  "                    if sl not in self._locked:\n                        buf[sl - 1] = (p.on if p.kind",
+  "                    if True:\n                        buf[sl - 1] = (p.on if p.kind"),
 
  ("flamesafe: passthrough: a hazer slot may be a group's slot",
   "flamesafe/config.py",

@@ -396,6 +396,11 @@ def hazers_of(doc, path="flamesafe's config"):
             raise FlameLinkConfigError(f"{where}: {name!r} is not a hazer "
                                        f"name of its own. flamesafe refuses "
                                        f"this file too.")
+        if "switch" in e:
+            raise FlameLinkConfigError(
+                f"{where}: {name!r} is a switch entry (the fuel pump), which "
+                f"needs a newer LTC Player. Take it out of flamesafe.json or "
+                f"update LTC Player.")
         slots = [e.get("haze"), e.get("fan")]
         if any(not _is_int(x) or not 1 <= x <= UNIVERSE_SIZE or x in taken
                for x in slots) or slots[0] == slots[1]:
