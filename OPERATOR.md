@@ -991,7 +991,20 @@ that long. The stages, in this order:
 Jeff, 2026-10-30: "If air and fuel were pressurized, but there was no
 shot, the stop button doesn't depressurize that. ... Do not under any
 circumstances double charge the air or fuel." LTC Player keeps a record
-of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
+of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN, and
+for the record as a whole a mark, PENDING.
+
+- **PENDING (write first, then charge).** Before any automatic charge
+  goes out (a timeline's Fuel or Air stage, or an FSEQ's Fuel or Air
+  Charge), LTC Player writes "an automatic charge may be going out" to
+  the record and waits until it is on disk. That is one write, at the
+  first charge of a show, a few milliseconds. If it cannot be written,
+  the automatic charge is **not sent** and the screens say "the charge
+  record cannot be saved: automatic charging is off". If LTC Player
+  stops with PENDING on the record, an EMPTY tank reads NOT KNOWN at the
+  next start. A shot, a Purge or Tanks are empty clears it. A Fuel or
+  Air press on the Fireball page also writes PENDING, but is never held
+  back by it: a press always goes out.
 
 - **What charges a tank:** Fuel Charge (55) or Air Charge (56) reaching
   the Fireball while flamesafe says it is armed, from the show or from the
@@ -1018,7 +1031,11 @@ of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
     known (flamesafe down or not reporting): the tank may really be empty,
     but nothing proves it;
   - no record could be written in the settings folder at the very first
-    start.
+    start;
+  - LTC Player stopped with PENDING on the record;
+  - the record and a copy left by a write that did not finish disagree,
+    or only that copy was found, or the record could not be read;
+  - flamesafe's fireball group was found on other channels than 55 to 59.
 
   A shot or a purge seen for certain makes it EMPTY again. While a tank
   is CHARGED or NOT KNOWN, nothing charges it automatically.
@@ -1043,10 +1060,13 @@ of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
   memory, written again every second until it is, and the screens show
   the fault meanwhile: do not restart LTC Player until it clears. (If it
   is restarted anyway, the newest record the write left behind is the one
-  read, by its revision number, which only ever goes up; if that cannot
-  be read, both tanks are NOT KNOWN.) If flamesafe's fireball group is on
-  other channels than 55 to 59, the record watches nothing until it is,
-  and the screens say so. Every screen's status carries it as one
+  read, by its revision number, which is taken from the clock (in
+  milliseconds) and only ever goes up, so a later record always ranks
+  above an earlier one. A clock set back can only cost an extra NOT
+  KNOWN, never a wrong EMPTY. If that copy cannot be read, both tanks are
+  NOT KNOWN.) If flamesafe's fireball group is on other channels than 55
+  to 59, both tanks become NOT KNOWN and are written so, and the screens
+  say why: a group put back on 55 to 59 never finds an old EMPTY. Every screen's status carries it as one
   sentence, for example "Fuel: charged 14:32. Air: charged 14:35. No shot
   fired." There is no pressure reading: it is never invented.
 

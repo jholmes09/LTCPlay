@@ -20261,8 +20261,8 @@ def build():
 
  ("fireball charge: a broken file reads as EMPTY",
   "ltcplay/fireball_charge.py",
-  "        if isinstance(src, Exception):\n            self._not_known(f\"{FILE} could not be read\", now,",
-  "        if isinstance(src, Exception):\n            self.tanks = {k: _new_tank(EMPTY, now, \"x\") for k in TANK_WORD}; self.releasing = \"\"; return\n            self._not_known(f\"{FILE} could not be read\", now,"),
+  "        if isinstance(main, Exception):\n            # Which of the two",
+  "        if isinstance(main, Exception):\n            self.tanks = {k: _new_tank(EMPTY, now, \"x\") for k in TANK_WORD}; self.releasing = \"\"; return\n            # Which of the two"),
 
  ("fireball charge: a restart in the middle of a release is not UNKNOWN",
   "ltcplay/fireball_charge.py",
@@ -20271,8 +20271,8 @@ def build():
 
  ("fireball charge: a change is not written to the file",
   "ltcplay/fireball_charge.py",
-  "        if persist:\n            self.rev += 1",
-  "        if False:\n            self.rev += 1"),
+  "        if persist:\n            self._next_rev()",
+  "        if False:\n            self._next_rev()"),
 
  ("fireball charge: a top-off from the Fireball page is called a double charge",
   "ltcplay/fireball_charge.py",
@@ -20346,7 +20346,7 @@ def build():
 
  ("fireball charge: a newer record left in .tmp is ignored at start",
   "ltcplay/fireball_charge.py",
-  "        if isinstance(got, tuple) and (not isinstance(main, tuple) or\n                                       got[0] > main[0]):",
+  "        if isinstance(got, tuple) and got[0] > main[0]:",
   "        if False:"),
 
  ("fireball charge: a .tmp that cannot be read is ignored",
@@ -20361,8 +20361,8 @@ def build():
 
  ("fireball charge: an older .tmp beats the newer main file (round 4)",
   "ltcplay/fireball_charge.py",
-  "                                       got[0] > main[0]):",
-  "                                       True):"),
+  "        if isinstance(got, tuple) and got[0] > main[0]:",
+  "        if isinstance(got, tuple):"),
 
  ("fireball charge: an unreadable .tmp hides what the main file last said (round 4)",
   "ltcplay/fireball_charge.py",
@@ -20371,8 +20371,8 @@ def build():
 
  ("fireball charge: a first run whose record cannot be written starts EMPTY (round 4)",
   "ltcplay/fireball_charge.py",
-  "        try:\n            self._write(self._doc())\n        except OSError as e:",
-  "        try:\n            pass\n        except OSError as e:"),
+  "        try:\n            self._write(self._doc())\n            self._durable_rev = self.rev\n        except OSError as e:",
+  "        try:\n            self._durable_rev = self.rev\n        except OSError as e:"),
 
  ("fireball charge: the first run is said quietly, without the folder (round 4)",
   "ltcplay/fireball_charge.py",
@@ -20403,6 +20403,61 @@ def build():
   "ltcplay/fireball_charge.py",
   "                if isinstance(slots, list) and slots:\n                    self._group_check(slots)",
   "                if False:\n                    self._group_check(slots)"),
+
+ ("fireball charge: the revision ignores the clock (round 5)",
+  "ltcplay/fireball_charge.py",
+  "        self.rev = max(self.rev, ms) + 1",
+  "        self.rev = self.rev + 1"),
+
+ ("fireball charge: a .tmp alone is trusted (round 5, F4)",
+  "ltcplay/fireball_charge.py",
+  "        if main is None:\n            # Only a .tmp,",
+  "        if main is None and False:\n            # Only a .tmp,"),
+
+ ("fireball charge: a readable .tmp is used when the main file is unreadable (round 5, F2)",
+  "ltcplay/fireball_charge.py",
+  "        if isinstance(main, Exception):\n            # Which of the two",
+  "        if isinstance(main, Exception) and not isinstance(got, tuple):\n            # Which of the two"),
+
+ ("fireball charge: two records that disagree are trusted on EMPTY (round 5, B1)",
+  "ltcplay/fireball_charge.py",
+  "            odd = [k for k in TANK_WORD if tanks[k][\"state\"] == EMPTY and\n                   other[1][k][\"state\"] != EMPTY]",
+  "            odd = []"),
+
+ ("fireball charge: a restart ignores the write-ahead mark (round 5)",
+  "ltcplay/fireball_charge.py",
+  "        if pending:\n            # An automatic charge may have gone out",
+  "        if False:\n            # An automatic charge may have gone out"),
+
+ ("fireball charge: the write-ahead mark is not written (round 5)",
+  "ltcplay/fireball_charge.py",
+  "                    self._event(\"system\", \"engine\", \"pending\", None,\n                                persist=True)",
+  "                    pass"),
+
+ ("fireball charge: an automatic charge goes before the mark is on disk (round 5)",
+  "ltcplay/fireball_charge.py",
+  "                    self._pending_rev = self.rev\n                    return \"wait\"",
+  "                    self._pending_rev = self.rev\n                    return \"ok\""),
+
+ ("fireball charge: a mark that cannot be written still lets charges go (round 5)",
+  "ltcplay/fireball_charge.py",
+  "                if self._failed_rev is not None and self._failed_rev >= pr:\n                    return \"failed\"",
+  "                if False:\n                    return \"failed\""),
+
+ ("fireball charge: the shot leaves the write-ahead mark (round 5)",
+  "ltcplay/fireball_charge.py",
+  "        # charge writes it again first.\n        self.pending = False",
+  "        # charge writes it again first."),
+
+ ("fireball charge: a press on the page never asks for the mark (round 5)",
+  "ltcplay/fireball_charge.py",
+  "                # review), but a restart after this charge then finds it.\n                self.charge_ready()",
+  "                # review), but a restart after this charge then finds it.\n                pass"),
+
+ ("fireball charge: a group fault leaves the tanks as they were (round 5, F3)",
+  "ltcplay/fireball_charge.py",
+  "                        if self.tanks[k][\"state\"] != UNKNOWN:\n                            self._set(k, UNKNOWN,",
+  "                        if False:\n                            self._set(k, UNKNOWN,"),
 
  ("fireball charge: close() waits on a hung write for ever (round 4)",
   "ltcplay/fireball_charge.py",
