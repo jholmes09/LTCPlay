@@ -3057,6 +3057,11 @@ MUTATIONS = [
   "  if(offKey && offKey !== PUMP_OFF_SEEN && PUMP_OFF_SEEN !== \"\") pumpReset(v);\n",
   ""),
 
+ ("ui 2.0: the run time keeps a longer one across an engine restart",
+  "ltcplay/web/remote2.html",
+  "  if(v.boot && PUMP_BOOT && v.boot !== PUMP_BOOT) pumpReset(v);\n",
+  ""),
+
  ("ui 2.0: the reason On is disabled is only a tooltip",
   "ltcplay/web/remote2.html",
   "  $(\"pm-why\").hidden = !full;",

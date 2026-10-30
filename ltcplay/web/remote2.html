@@ -1894,7 +1894,7 @@ async function hazerTap(i){
 let PUMP_TYPED = false, PUMP_WAS_ON = false, PUMP_OFF_SEEN = "", PUMP_BUSY = false, PUMP_OK_AT = 0;
 // What the line under the row says while On waits for its answer, or
 // after none came (delta review of #189, 3), and how long it waits.
-let PUMP_NOTE = "", PUMP_NOTE_AT = 0;
+let PUMP_NOTE = "", PUMP_NOTE_AT = 0, PUMP_BOOT = "";
 const PUMP_ANSWER_MS = 10000;
 function pumpReset(v){
   // The run time back to the default (5:00): after a run is started, a
@@ -1959,6 +1959,10 @@ function renderPump(s){
   const offKey = v.last_off ? JSON.stringify(v.last_off) : "";
   if(offKey && offKey !== PUMP_OFF_SEEN && PUMP_OFF_SEEN !== "") pumpReset(v);
   if(offKey) PUMP_OFF_SEEN = offKey; else if(PUMP_OFF_SEEN === "") PUMP_OFF_SEEN = "-";
+  // The engine restarted (a new boot id): the pump is off there; the run
+  // time goes back to 5:00 too.
+  if(v.boot && PUMP_BOOT && v.boot !== PUMP_BOOT) pumpReset(v);
+  if(v.boot) PUMP_BOOT = v.boot;
   const fl = s.flames || {};
   const st = stale() || !fl.connected || !!fl.stale;
   const secs = pumpSeconds($("pm-time").value);

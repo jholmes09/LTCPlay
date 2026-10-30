@@ -93184,7 +93184,9 @@ def test_ui2_fuel_pump_row():
           "pumpReset(v);" in rp and
           'pumpReset(ST && ST.pump);\n  try{ const j = await post('
           '"/api/remote/fuel-pump", actor({on: false}))' in two and
-          "Tap for why" not in two,
+          "Tap for why" not in two and
+          "if(v.boot && PUMP_BOOT && v.boot !== PUMP_BOOT) pumpReset(v);"
+          in rp,
           "the run time goes back to the default (5:00) each time the pump "
           "turns off, and no screen remembers another as its default")
     check("\u2013" not in two and "\u2014" not in two, "no dashes")
