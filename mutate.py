@@ -39,8 +39,9 @@ it (twice, with --expected), and the restore is proved byte for byte.
                        that failed a check (LTC_SELFTEST_FAILFAST in
                        selftest.py). --no-failfast runs every test.
     --hints FILE       mutate_catchers.json: run the test that caught each
-                       mutation last time first. A run counts only when it
-                       fails in that test, and that test passes when run
+                       mutation last time first (or several, comma
+                       separated, all first). A run counts only when it
+                       fails in one of them, and they pass when run
                        first with nothing mutated (checked once per test);
                        anything else runs again in file order. A hinted
                        catch is confirmed by a plain file-order run with no
@@ -3678,7 +3679,7 @@ MUTATIONS = [
 
  ("an announcement that held nothing never says why",
   "ltcplay/announce.py",
-  '            if automatic is None and not held and not hold_note:\n'
+  '            if not held and not hold_note:\n'
   '                hold_note = no_hold_note(state)',
   '            if False:\n'
   '                hold_note = no_hold_note(state)'),
@@ -3837,9 +3838,9 @@ MUTATIONS = [
   "            if False:"),
 
  ("announcements: the test tone takes a Hold", "ltcplay/announce.py",
-  '            elif tone:\n'
+  '            if tone:\n'
   '                hold_note = "A test tone holds nothing."',
-  '            elif False:\n'
+  '            if False:\n'
   '                hold_note = "A test tone holds nothing."'),
 
  ("announcements: the default level in the show mix is 0 dB",
@@ -10317,22 +10318,10 @@ def build():
   "            if not shows and m.delayed() is None:",
   "            if not shows:"),
 
- ("alert hold: two ticks at once can start two hold workers",
+ ("alert hold: two ticks at once can start two booth workers",
   "ltcplay/remote.py",
   "        with self._alert_lock:\n            self._start_alert_workers()",
   "        self._start_alert_workers()"),
-
- ("alert hold: an old hold clears a newer one",
-  "ltcplay/alerthold.py",
-  "        if self.hold is h:\n            self.hold = None",
-  "        self.hold = None"),
-
- ("alert hold: the automatic play's journal line hides the alert hold",
-  "ltcplay/announce.py",
-  '                     "It plays while the schedule is on the alert hold; "\n'
-  '                     "nothing else was changed." if automatic is not None\n'
-  '                     else\n',
-  ""),
 
  ("alert hold: the server's close never stops the alert workers",
   "ltcplay/web.py",
@@ -10346,13 +10335,8 @@ def build():
 
  ("alert hold: a tick after the close starts the workers again",
   "ltcplay/remote.py",
-  "        if self._alert_stop.is_set():\n            return\n        self._alert_wake.set()",
-  "        self._alert_wake.set()"),
-
- ("alert hold: the hold worker does the booth's work too",
-  "ltcplay/remote.py",
-  "                args=(self._alert_wake, self._hold_work),",
-  "                args=(self._alert_wake, self._alert_work),"),
+  "        if self._alert_stop.is_set():\n            return\n        self._booth_wake.set()",
+  "        self._booth_wake.set()"),
 
  ("alert hold: an operator's own Resume at showtime is not respected",
   "ltcplay/schedule_service.py",
@@ -10366,8 +10350,8 @@ def build():
 
  ("alert hold: the alert workers never stop",
   "ltcplay/remote.py",
-  "        self._alert_stop.set()\n        self._alert_wake.set()",
-  "        self._alert_wake.set()"),
+  "        self._alert_stop.set()\n        self._booth_wake.set()",
+  "        self._booth_wake.set()"),
 
  ("alert hold: the remote never hooks the scheduler's ticks",
   "ltcplay/remote.py",
@@ -10381,60 +10365,83 @@ def build():
 
  ("alert hold: the alert work runs on the scheduler's thread",
   "ltcplay/remote.py",
-  "        self._alert_wake.set()\n        self._booth_wake.set()\n"
+  "        self._booth_wake.set()\n"
   "        with self._alert_lock:",
-  "        self._alert_work()\n        self._booth_wake.set()\n"
+  "        self._booth_work()\n"
   "        with self._alert_lock:"),
 
- ("alert hold: Acknowledge does not cancel the announcement",
-  "ltcplay/alerthold.py",
-  "        if self._acknowledged(h):\n            self._cancel(h)\n"
-  "            return\n        if self._clock() < h[\"due\"]:",
-  "        if False:\n            self._cancel(h)\n"
-  "            return\n        if self._clock() < h[\"due\"]:"),
+ # Jeff, 2026-10-30: nothing plays on the public PA automatically.
+ ("no PA: the alert hold plays the Delayed on the PA by itself again",
+  "ltcplay/remote.py",
+  "        self.alert_hold = AlertHold(self.alerts, schedule, clock=clock)\n",
+  "        self.alert_hold = AlertHold(self.alerts, schedule, clock=clock)\n"
+  "        _auto_started = self.alert_hold.started\n"
+  "\n"
+  "        def _auto_delayed(epoch, why, _s=_auto_started):\n"
+  "            _s(epoch, why)\n"
+  "            try:\n"
+  "                self._announce.play(\"delayed\", \"Andy\", \"Rack screen\",\n"
+  "                                    surface=True)\n"
+  "            except Exception:\n"
+  "                pass\n"
+  "        self.alert_hold.started = _auto_delayed\n"),
 
- ("alert hold: one Acknowledge cancels while another loud alert is open",
-  "ltcplay/alerthold.py",
-  "        return not (h[\"loud\"] & now_ids)",
-  "        return bool(h[\"ids\"] - now_ids)"),
+ ("no PA: a play in the engine's own name is not refused",
+  "ltcplay/announce.py",
+  "            engine = self._engine_name(who, screen)\n            if engine:",
+  "            engine = self._engine_name(who, screen)\n            if False:"),
 
- ("alert hold: deck and gate alerts announce too",
-  "ltcplay/alerthold.py",
-  "        loud_ids = {a.id for a in open_ if a.kind in ANNOUNCE_KINDS}",
-  "        loud_ids = {a.id for a in open_}"),
+ ("no PA: the engine's own names are not known",
+  "ltcplay/announce.py",
+  'ENGINE_NAMES = frozenset(("ltc player", "ltcplay", "engine", "system",\n'
+  '                          "scheduler"))',
+  "ENGINE_NAMES = frozenset()"),
 
- ("alert hold: the announcement plays after the operator resumed",
-  "ltcplay/alerthold.py",
-  "        if h is None:\n            return\n        if not self._still_held(h):\n"
-  "            self._drop(h)\n            return",
-  "        if h is None:\n            return\n        if False:\n"
-  "            self._drop(h)\n            return"),
+ ("no PA: the rig check's Announcements is required again",
+  "ltcplay/web.py",
+  '            ("Announcements", False,',
+  '            ("Announcements", True,'),
 
- ("alert hold: the announcement plays on every tick after the countdown",
-  "ltcplay/alerthold.py",
-  '        h["state"], h["due"] = "announcing", None\n',
+ ("no PA: an advisory check reads FAILED in the rig check's line",
+  "ltcplay/preroll.py",
+  '    if not it.get("required", True):\n'
+  '        # Advisory (Announcements, Jeff 2026-10-30): said, never a failure.\n'
+  '        return f"{it[\'name\']} WARNING: {it[\'text\']}"\n',
   ""),
 
- ("alert hold: the countdown is not waited for",
-  "ltcplay/alerthold.py",
-  '        if self._clock() < h["due"]:\n            return',
-  '        if False:\n            return'),
+ ("no PA: the rack screen lists an advisory check as FAILED",
+  "ltcplay/web/remote.html",
+  '(i.required === false ? " WARNING: " : " FAILED: ")',
+  '" FAILED: "'),
 
- ("alert hold: the automatic Delayed asks for a Hold, and its safety cuts",
-  "ltcplay/announce.py",
-  "            elif self.hold_requester is not None and not over_show:",
-  "            if self.hold_requester is not None and not over_show:"),
+ # Cold review of PR #183.
+ ("no PA: the engine announces through the conductor by itself",
+  "ltcplay/fire_ice.py",
+  "    svc.conductor = conductor\n",
+  "    svc.conductor = conductor\n"
+  "    svc.on_show_started = (lambda *a, **k: conductor.announce(\n"
+  "        \"delayed\", \"Andy\", \"Rack screen\"))\n"),
 
- ("alert hold: an Acknowledge during the file read does not stop it",
+ ("no PA: a missing Delayed recording reads OK on the Announcements lamp",
+  "ltcplay/remote.py",
+  "                if dl and not dl[0].get(\"available\"):",
+  "                if False:"),
+
+ ("no PA: a passing rig check hides its warning on 1.0's card",
+  "ltcplay/web/remote.html",
+  '    $("rc-warn").hidden = !prl.warn;',
+  '    $("rc-warn").hidden = true;'),
+
+ ("no PA: an account may take one of the engine's names",
+  "ltcplay/users.py",
+  'RESERVED = ("unsigned", "system", "signed out", "nobody", "deck", "engine",\n'
+  '            "scheduler", "ltc player", "ltcplay")',
+  'RESERVED = ("unsigned", "system", "signed out", "nobody", "deck")'),
+
+ ("no PA: a refused Test tone in the engine's name journals as a Play",
   "ltcplay/announce.py",
-  "            if automatic is not None:\n"
-  "                why = self._automatic_refusal(automatic)\n"
-  "                if why:\n"
-  "                    self.playing = None",
-  "            if False:\n"
-  "                why = self._automatic_refusal(automatic)\n"
-  "                if why:\n"
-  "                    self.playing = None"),
+  '                          action="test tone" if tone else "play",',
+  '                          action="play",'),
 
  # Review of PR #129 (cold review, 2026-10-27).
  ("an announcement pressed at showtime pauses the show that just started",
@@ -18095,17 +18102,9 @@ def build():
   '        elif self._aborted():\n            why = "the show is aborted; press Reset first"',
   '        elif False:\n            why = "the show is aborted; press Reset first"'),
 
- ('continue anyway: the Delayed countdown keeps going', 'ltcplay/schedule_service.py',
-  '                try:\n                    on_continue()\n',
-  '                try:\n                    pass\n'),
-
  ('continue anyway: the choice is not journaled', 'ltcplay/schedule_service.py',
   '        self.journal_press(\n            who, screen, "continue anyway", "chosen",',
   '        (lambda *a, **k: None)(\n            who, screen, "continue anyway", "chosen",'),
-
- ("continue anyway: the alert hold's countdown is not cancelled", 'ltcplay/alerthold.py',
-  '            if h["state"] == "counting":\n                h["state"], h["due"] = "cancelled", None\n                self._journal(f"The Delayed announcement was cancelled: "',
-  '            if False:\n                h["state"], h["due"] = "cancelled", None\n                self._journal(f"The Delayed announcement was cancelled: "'),
 
  ('continue anyway: a network failure naming MadMapper leaves the video on', 'ltcplay/preroll.py',
   '        if i.get("name") in ("Network", "Timecode"):',
@@ -19637,11 +19636,13 @@ def _sweep(todo, workers, expected, unknown, expected_file):
     def attempt(hint, root, env):
         """One run of the mutant: (green, the test it stopped in, what
         failed, the hint if the run that counts had it first). A run with a
-        hint counts only when it failed in the hinted test; any other result
-        (green, red elsewhere, stopped without saying where) is run again in
-        file order, and that one counts."""
+        hint counts only when it failed in a hinted test (a hint may name
+        several, comma separated, as LTC_SELFTEST_FIRST does); any other
+        result (green, red elsewhere, stopped without saying where) is run
+        again in file order, and that one counts."""
         green = run_suite(limit, ff, hint, False, root, env)
-        if hint and not (not green and _LAST_STOP[0] == hint):
+        if hint and not (not green
+                         and _LAST_STOP[0] in hint.split(",")):
             green = run_suite(limit, ff, None, False, root, env)
             hint = None
         return green, _LAST_STOP[0], list(_LAST_FAILS), hint
