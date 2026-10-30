@@ -84097,6 +84097,21 @@ class _FakeFireballLink:
         self.cur = None
         self.cleared += 1
 
+    # The Fireball page's own frame (FlameLink.manual_set, 2026-10-30):
+    # the same `cur` here; refused, as the real one, when the zero count
+    # moved since the caller read it.
+    def manual_set(self, values, gen=None):
+        if gen is not None and gen != self._zero_gen:
+            self.cur = None
+            return False
+        return self.purge_set(values)
+
+    def manual_clear(self):
+        self.purge_clear()
+
+    def set_manual_slots(self, slots):
+        self.manual_slots = set(slots)
+
     def set_locked_channels(self, slots):
         self.locked = set(slots)
 
@@ -84490,8 +84505,9 @@ def test_fireball_at_the_engine():
             "channel goes on only with the Fireball armed and none of the "
             "Startup page's purge rules against it; one screen and window "
             "at a time; it waits for a purge selection and the purge waits "
-            "for it; Arrange mode, live flame programming, Run pressed and "
-            "a show live hold it off and say why; an Abort cuts it and "
+            "for it; Arrange mode and live flame programming hold it off and "
+            "say why; Run pressed and a show live do NOT (Jeff, 2026-10-30) "
+            "but a Hold does; an Abort cuts it and "
             "nothing goes on until the Fireball is armed again; web.serve "
             "closes it first")
     S = _sched()
@@ -84599,11 +84615,18 @@ def test_fireball_at_the_engine():
         try:
             st, out = beat({"fuel"}, "a9", 1)
             st2, _h, v = R.ask("GET", "/api/remote/fireball", client=loop)
+            # The wave flamer cleaning (the same rules without
+            # during_show) is still held off by Run pressed.
+            cl_why = FB.engine_blockers(R.remote, link, cleaning=False)
         finally:
             R.remote.control.state = real_state
-        check(st == 409 and "Run is pressed" in out["error"] and
-              "Run is pressed" in v["blocked"],
-              f"Run pressed: refused, and the page says why: {out}")
+        check(st == 200 and link.cur[54] == 255 and v["blocked"] == "",
+              f"Run pressed: the Fireball page still works (Jeff: at any "
+              f"time, during a show too): {out} {v['blocked']!r}")
+        check("Run is pressed" in cl_why,
+              f"but the cleaning's rules still refuse Run pressed: {cl_why}")
+        st, out = beat(set(), "a9", 2)
+        check(st == 200 and link.cur is None, "all off")
         # A lock on the fireball's slot (the Startup page's lockout).
         R.fb._locked = lambda: {57}
         st, out = beat({"fuel"}, "a10", 1)
@@ -84641,7 +84664,10 @@ def test_fireball_at_the_engine():
         check(fb_lines, "the journal has the Fireball page's lines")
     finally:
         R.close()
-    # A show live: the page says why.
+    # A show live: the page works (Jeff, 2026-10-30: "Andy may manually
+    # start any phase with toggle buttons at any time, including during a
+    # show"); a Hold cuts it and holds it off; the cleaning's rules still
+    # refuse a live show.
     R = _fireball_rig(S)
     try:
         _fb_armed(R)
@@ -84651,11 +84677,27 @@ def test_fireball_at_the_engine():
                             {"controls": {"fuel": True}, "run": "s1",
                              "seq": 1, "seen": R.seen()}, client=loop)
         st2, _h, v = R.ask("GET", "/api/remote/fireball", client=loop)
-        check(st == 409 and "scheduled show is live" in out["error"] and
-              "scheduled show is live" in v["blocked"] and
+        check(st == 200 and R.link.cur is not None and
+              R.link.cur[54] == 255 and v["blocked"] == "",
+              f"a show live: Fuel Charge goes on: {out} {v['blocked']!r}")
+        cl_why = FB.engine_blockers(R.remote, R.link, cleaning=False)
+        check("scheduled show is live" in cl_why,
+              f"the cleaning's rules still refuse a live show: {cl_why}")
+        st, _h, out = R.ask("POST", "/api/remote/hold", {})
+        R.settle()
+        R.feed()
+        R.mono[0] += 0.05
+        R.fb.tick()
+        check(R.svc.machine.state == R.S.PAUSED and not R.fb.active() and
               R.link.cur is None,
-              f"a show live: nothing, and the page says why: {out} "
-              f"{v['blocked']}")
+              f"Hold: everything on the page is off: {R.svc.machine.state} "
+              f"{R.fb.last_cut!r}")
+        st, _h, out = R.ask("POST", "/api/remote/fireball-beat",
+                            {"controls": {"fuel": True}, "run": "s2",
+                             "seq": 2, "seen": R.seen()}, client=loop)
+        check(st == 409 and "Hold is standing" in out["error"] and
+              R.link.cur is None,
+              f"and nothing goes on while the Hold stands: {st} {out}")
     finally:
         R.close()
     # web.serve's wiring: built on the Morning page's groups and the flame
@@ -84834,6 +84876,8 @@ def test_fireball_end_to_end_real_flamesafe():
     g, _w = FB.find_group([{"name": x["name"], "safeties": [x["safety"]],
                             "fire": x["fire"]} for x in groups])
     fb = FB.FireballPanel(g, "", link_get=lambda: link, flames_get=flames)
+    # As fireball.build does: the only slots the page's frame may carry.
+    link.set_manual_slots(g["fire"])
     me = ("Rack screen", "w-e2e")
 
     def deck():
@@ -93100,6 +93144,295 @@ def test_fireball_cues_wiring():
 
 
 
+def _fbm_link(live=True, guard=False):
+    """A real FlameLink on a fake clock, its show state and cues set by the
+    test: R.live, R.tc, R.cue (512 values or None)."""
+    import types
+    from ltcplay import flamelink as fl
+    R = types.SimpleNamespace(clk=[1000.0], live=live, tc="00:00:01:00",
+                              cue=[0] * 512, raise_state=False)
+
+    def state():
+        if R.raise_state:
+            raise RuntimeError("show state")
+        return R.tc, R.live
+    cfg = fl.FlameLinkConfig("127.0.0.1", 5571, 1, _fl_key(),
+                             frame_stale_ms=500)
+    R.link = fl.FlameLink(cfg, cues=lambda tc: R.cue, show_state=state,
+                          clock=lambda: R.clk[0], seek_guard=guard)
+    R.link.release()
+    R.fl = fl
+
+    def now(step=1 / 30):
+        """One frame `step` seconds on, the show timecode moving with it
+        (a still timecode would zero the show's own values)."""
+        from ltcplay import fireball_timeline as FT
+        R.clk[0] += step
+        R.f = getattr(R, "f", 30) + max(1, int(round(step * 30)))
+        R.tc = FT.tc_text(R.f)
+        return bytes(R.link.values_now()[1])
+    R.now = now
+    return R
+
+
+def test_fireball_manual_merged_on_the_flame_link():
+    section("the Fireball page's frame on the flame link (Jeff, 2026-10-30: "
+            "any phase by hand at any time, during a show too): only the "
+            "fireball's fire slots, never 77; the higher of the show's and "
+            "the page's value per channel, live or not; never lowers the "
+            "show's; dropped after MANUAL_HOLD_S, by zero() and "
+            "disarm_all() (a late beat refused), by the lockout; not with "
+            "live flame programming or an unreadable show state")
+    from ltcplay import flamelink as fl
+    check(fl.MANUAL_HOLD_S == fl.PURGE_HOLD_S == 0.25,
+          "the page's frame is held a quarter second, as the purge's")
+    R = _fbm_link()
+    lk = R.link
+
+    def page(**on):
+        v = bytearray(512)
+        for s, x in on.items():
+            v[int(s[1:]) - 1] = x
+        return bytes(v)
+    # Before the engine names the fireball's slots nothing passes.
+    check(lk.manual_set(page(s55=255)) is True and R.now()[54] == 0,
+          "no slots named yet: the page's frame carries nothing")
+    lk.set_manual_slots([55, 56, 57, 58, 59, True, 0, 513])
+    check(lk.manual_slots == frozenset((55, 56, 57, 58, 59)),
+          f"the slots: the fireball's five; not a slot 1 to 512 left out: "
+          f"{sorted(lk.manual_slots)}")
+    lk.set_manual_slots([55, "x"])
+    check(lk.manual_slots == frozenset(),
+          "a list that cannot be read: no slot at all (fails closed)")
+    lk.set_manual_slots([55, 56, 57, 58, 59])
+    # Live show: the show's frame (the timeline's Air on 56, a value on
+    # 58, noise elsewhere) and the page's Fuel and Valve.
+    R.cue = [0] * 512
+    R.cue[55] = 255            # 56 Air from the timeline
+    R.cue[57] = 200            # 58 from the show
+    R.cue[56] = 100            # 57 from the show, lower than the page's
+    R.cue[99] = 7
+    lk.manual_set(page(s55=255, s57=255, s58=0, s60=255, s77=255,
+                       s100=255))
+    v = R.now()
+    check(v[54] == 255 and v[55] == 255 and v[56] == 255 and v[57] == 200
+          and v[99] == 7 and v[59] == 0 and v[76] == 0,
+          f"live: the higher value on each fireball slot (55 page, 56 "
+          f"show, 57 page over show, 58 show kept: the page never lowers "
+          f"it); 60, 77 and 100 never from the page: "
+          f"{[v[i] for i in (54, 55, 56, 57, 58, 59, 76, 99)]}")
+    check(lk.manual_active() and lk.snapshot()["manual"] is True,
+          "the link says the page's frame is held")
+    # Stale: dropped after MANUAL_HOLD_S on the link's own clock.
+    lk.manual_set(page(s55=255))
+    v = R.now(0.24)
+    check(v[54] == 255, "still held at 0.24 s")
+    v = R.now(0.02)
+    check(v[54] == 0 and v[55] == 255 and lk._manual is None and
+          not lk.manual_active(),
+          "no beat for more than 0.25 s: the page's values are gone, the "
+          "show's stay")
+    # The clock going back drops it too.
+    lk.manual_set(page(s55=255))
+    R.clk[0] -= 1.0
+    check(R.now(0)[54] == 0, "a clock that went back: dropped")
+    # Not live (between shows, zeroed): the page's frame alone goes out,
+    # with a Startup page purge frame beside it.
+    R.live = False
+    lk.zero()
+    lk.manual_set(page(s56=255))
+    lk.purge_set(page(s411=255))
+    v = R.now()
+    check(v[55] == 255 and v[410] == 255 and v[54] == 0,
+          f"not live: the page's frame and the purge frame together: "
+          f"{v[55]} {v[410]}")
+    # send_frame with the cues zeroed (between shows): the page's frame
+    # still goes out (the observer sees what went out).
+    seen = []
+    lk.observer = lambda tc, vals, ok: seen.append(bytes(vals))
+    lk.purge_clear()
+    lk.manual_set(page(s56=255))
+    lk.send_frame()
+    check(lk.zeroed and seen and seen[-1][55] == 255,
+          "between shows (the cues zeroed): the page's frame goes out")
+    # zero() and disarm_all() drop it; a beat read before is refused.
+    R.live = True
+    lk.release()
+    g = lk._zero_gen
+    lk.manual_set(page(s55=255), g)
+    lk.zero()
+    check(lk._manual is None and R.now()[54] == 0, "zero() (a Hold, a "
+          "show's end): the page's frame is gone at once")
+    check(lk.manual_set(page(s55=255), g) is False and R.now()[54] == 0,
+          "a beat from before the zero is refused and sends nothing")
+    lk.release()
+    g = lk._zero_gen
+    lk.manual_set(page(s55=255), g)
+    lk.disarm_all("Stop")
+    check(lk._manual is None and lk.manual_set(page(s55=255), g) is False,
+          "disarm_all() (Stop, Abort): dropped, a late beat refused")
+    lk.release()
+    lk._abort_repeat = None
+    # The lockout zeroes the page's slot.
+    lk.manual_set(page(s55=255, s56=255), lk._zero_gen)
+    lk.set_locked_channels([55])
+    v = R.now()
+    check(v[54] == 0 and v[55] == 255, "a locked slot: zero from the page "
+                                       "too")
+    lk.set_locked_channels([])
+    # Live flame programming on (live or not): the page's frame is not
+    # merged (one source at a time).
+    lk._program_on = True
+    lk.manual_set(page(s55=255), lk._zero_gen)
+    check(R.now()[54] == 0, "live flame programming on during a show: no "
+                            "page frame")
+    R.live = False
+    check(R.now()[54] == 0, "and not between shows either")
+    lk._program_on = False
+    R.live = True
+    # The show state cannot be read: zeros, the page's frame too.
+    R.raise_state = True
+    lk.manual_set(page(s55=255), lk._zero_gen)
+    check(R.now()[54] == 0, "the show state unreadable: zeros, the page's "
+                            "frame too")
+    R.raise_state = False
+    # manual_clear: off at once.
+    lk.manual_set(page(s55=255), lk._zero_gen)
+    lk.manual_clear()
+    check(R.now()[54] == 0, "manual_clear: off on the next frame")
+    # With the seek guard on: the show's cues held off after a jump, the
+    # page's press still goes out (it is no cue).
+    G = _fbm_link(guard=True)
+    G.link.set_manual_slots([55, 56, 57, 58, 59])
+    G.cue = [0] * 512
+    G.cue[55] = 255
+    G.link.manual_set(page(s55=255))
+    v = G.now()
+    check(v[55] == 0 and v[54] == 255,
+          f"the seek guard holds the show's 56 off at the landing; the "
+          f"page's 55 goes out: {v[54]} {v[55]}")
+    print("  ok")
+
+
+def test_fireball_manual_and_timeline_never_double_charge():
+    section("the Fireball page and the timeline together on a real flame "
+            "link and charge state: Andy's Fuel charges an EMPTY tank; the "
+            "timeline's Fuel stage is then skipped (no double charge); the "
+            "timeline's Air charges; Andy's Air during it is the same "
+            "charge; Andy's Fuel again is a top-off by Andy, never a "
+            "double charge; the shot empties both; Purge never from the "
+            "timeline")
+    import shutil
+    from ltcplay import fireball_charge as FC
+    from ltcplay import fireball_timeline as FT
+    R = _fbm_link()
+    lk = R.link
+    lk.set_manual_slots([55, 56, 57, 58, 59])
+    lines = []
+    tr = FC.ChargeTracker(
+        None, flames_get=lambda: {"connected": True, "stale": False,
+                                  "age_ms": 10, "groups": [
+                                      {"name": "fireball",
+                                       "armed": "armed"}]},
+        journal=lambda who, screen, outcome, text, fault=False:
+        lines.append((who, outcome, text, fault)),
+        clock=lambda: R.clk[0], threaded=False)
+    Q = _fbq_rig([_st("fuel", "00:00:01:00", 1),
+                  _st("air", "00:00:02:00", 1),
+                  _st("valve", "00:00:04:00", 0.2)], tank=tr)
+    cue_obj = Q.cue_obj
+    frame = [0]
+    R.cue = None
+
+    def cues(tc):
+        return Q.fq.apply([0] * 512, Q.session, "Show", frame[0] / 30.0,
+                          cue_obj)
+    lk.cues = cues
+    andy = set()
+    sent = []
+
+    def step(f):
+        frame[0] = f
+        R.tc = FT.tc_text(f)
+        if andy:
+            v = bytearray(512)
+            for s in andy:
+                v[s - 1] = 255
+            lk.manual_set(bytes(v), lk._zero_gen)
+        R.clk[0] += 1 / 30
+        tr._read_armed()
+        tc, vals = lk.values_now()
+        tr.observe(tc, vals, True)
+        sent.append(bytes(vals))
+    try:
+        for f in range(0, 10):
+            step(f)
+        andy.add(55)
+        tr.note_manual({"fuel"}, "Andy", "Rack screen")
+        for f in range(10, 20):
+            tr.note_manual({"fuel"}, "Andy", "Rack screen")
+            step(f)
+        andy.clear()
+        tr.note_manual(set())
+        for f in range(20, 70):
+            step(f)
+        tr.pump()
+        check(tr.state("fuel") == "charged" and
+              tr.tanks["fuel"]["by"] == "Andy" and
+              all(sent[f][54] == 0 for f in range(30, 70)),
+              f"Andy's Fuel charged the EMPTY tank; the timeline's Fuel "
+              f"stage (frames 30 to 60) never turned 55 on: "
+              f"{tr.tanks['fuel']}")
+        check("Fuel already charged: the Fuel stage was skipped (no double "
+              "charge)." in Q.fq.messages, f"and said so: {Q.fq.messages}")
+        check(all(sent[f][55] == 255 for f in range(60, 70)) and
+              tr.state("air") == "charged" and
+              tr.tanks["air"]["by"] == "the show",
+              "the timeline's Air charges the EMPTY air tank")
+        # Andy's Air during the timeline's Air: the same charge, 255 on.
+        andy.add(56)
+        for f in range(70, 95):
+            tr.note_manual({"air"}, "Andy", "Rack screen")
+            step(f)
+        andy.clear()
+        tr.note_manual(set())
+        check(all(sent[f][55] == 255 for f in range(70, 95)) and
+              tr.tanks["air"]["topoffs"] == 0,
+              "Andy's Air during the timeline's: one continuous charge, no "
+              "top-off counted")
+        for f in range(95, 100):
+            step(f)
+        # Andy's Fuel again: a top-off, never a double charge.
+        andy.add(55)
+        for f in range(100, 105):
+            tr.note_manual({"fuel"}, "Andy", "Rack screen")
+            step(f)
+        andy.clear()
+        tr.note_manual(set())
+        for f in range(105, 110):
+            step(f)
+        tr.pump()
+        check(tr.tanks["fuel"]["topoffs"] == 1 and
+              any(o == "topoff" and w == "Andy" for w, o, _t, _f in lines),
+              f"Andy's Fuel on a charged tank: a top-off by Andy: "
+              f"{tr.tanks['fuel']}")
+        for f in range(110, 140):
+            step(f)
+        tr.pump()
+        check(all(sent[f][56] == 255 for f in range(120, 126)) and
+              tr.state("fuel") == "empty" and tr.state("air") == "empty",
+              f"the shot (Valve Open 57) empties both tanks: "
+              f"{tr.state('fuel')} {tr.state('air')}")
+        check(not any(o == "double_charge" for _w, o, _t, _f in lines),
+              f"never a double charge: {[l[1] for l in lines]}")
+        check(all(s[58] == 0 for s in sent),
+              "Purge (59) never set from the timeline")
+    finally:
+        tr.close()
+        shutil.rmtree(Q.work, ignore_errors=True)
+    print("  ok")
+
+
 def test_fireball_timeline_end_to_end_real_flamesafe():
     section("the fireball timeline end to end: the real flamesafe with "
             "Jeff's fireball group (safety 77, fire 55 to 59), the real "
@@ -94242,6 +94575,8 @@ if __name__ == "__main__":
         test_fireball_timeline_equals_an_equivalent_fseq,
         test_fireball_cues_wiring,
         test_fireball_timeline_end_to_end_real_flamesafe,
+        test_fireball_manual_merged_on_the_flame_link,
+        test_fireball_manual_and_timeline_never_double_charge,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):

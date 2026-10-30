@@ -22,14 +22,23 @@ imports flamesafe). Nothing here names a slot number.
 The path (nothing new reaches the rig)
 ======================================
 
-The values go out as the Startup page's purge frame on the engine's own
-flame link (FlameLink.purge_set, PURGE_HOLD_S), the same frame the
-Startup page's purge and, beside it, live flame programming
-(program_set) use. flamesafe stays the only program that writes the flame
-universe. It sends a fire value only for a group that is ARMED, and only
-an operator arms it, by the normal hold to arm (the rack screen's button
-or the Stream Deck's key). This page never arms anything and has no path
-to the arm link.
+The values go out on the engine's own flame link as the Fireball page's
+own frame (FlameLink.manual_set, MANUAL_HOLD_S; Jeff, 2026-10-30: "Andy
+may manually start any phase with toggle buttons at any time, including
+during a show"). The link carries it ONLY on the fireball group's fire
+slots (set_manual_slots, from build), whether or not a show is live, and
+on each of those slots sends the HIGHER of the show's own value (its FSEQ,
+or its fireball timeline: fireball_cues.py) and this page's, so neither
+can turn the other's channel off. flamesafe stays the only program that
+writes the flame universe. It sends a fire value only for a group that is
+ARMED, and only an operator arms it, by the normal hold to arm (the rack
+screen's button or the Stream Deck's key). This page never arms anything
+and has no path to the arm link.
+
+A charge pressed here while the tank is already charged is a top-off by
+that person, not a double charge (Jeff): the charge state
+(fireball_charge.py) counts it as one, and the timeline then skips its own
+charge of that tank for the rest of the show.
 
 The rules, each a refusal or a cut
 ==================================
@@ -39,12 +48,12 @@ The rules, each a refusal or a cut
     that is not: the frame carries zeros on every fireball slot until it
     is armed. So no value is ever up on the arm tick, and flamesafe's
     clean rising edge rule (every fire slot under 15) always holds.
-  - The page is unavailable while a show can send flame cues or another
-    source has the flame values: a scheduled show live or paused, a Hold,
-    an Abort standing, the show clock playing a cue, Run pressed, live
-    flame programming on, a purge selected
-    or firing on the Startup page, any screen in Arrange mode, the lock
-    state not trusted, the flame link not sending. Each says why.
+  - The page works during a show (a scheduled show playing, the show
+    clock playing a cue, Run pressed, Programming playback). It is
+    unavailable while: a Hold is standing (a show held or paused), an
+    Abort is standing, live flame programming is on, a purge is selected
+    or firing on the Startup page, any screen is in Arrange mode, the lock
+    state is not trusted, the flame link is not sending. Each says why.
   - The Startup page's purge rules: purge_arming on, and from the show
     network screen_arming too; the page's status under a second old; a
     machine locked out never fires (any fireball slot locked: nothing
@@ -398,15 +407,18 @@ class FireballPanel:
                 # nothing is set.
                 lost = True
             else:
-                link.purge_set(vals)
-                # A zero() or disarm_all() (Stop, Hold, Abort) that landed
-                # before the frame went in: the count moved, and the frame
-                # comes straight out again. One that lands after it clears
-                # the frame itself.
-                lost = self._gen(link) != r["gen"]
+                # Refused by the link itself when a zero() or disarm_all()
+                # (Stop, Hold, Abort) has moved its count since the run
+                # started.
+                took = link.manual_set(vals, r["gen"])
+                # A zero() or disarm_all() that landed just after the
+                # frame went in: the count moved, and the frame comes
+                # straight out again. One that lands later clears the
+                # frame itself.
+                lost = took is False or self._gen(link) != r["gen"]
         if lost:
             if self._run is r or self._run is None:
-                link.purge_clear()
+                link.manual_clear()
             if self._run is r:
                 self.cut("the flame link was zeroed (Stop, Hold, Abort or "
                          "a disarm)", who=who, screen=screen)
@@ -472,7 +484,7 @@ class FireballPanel:
         link = self._link()
         if r is not None and link is not None:
             try:
-                link.purge_clear()
+                link.manual_clear()
             except Exception:                            # noqa: BLE001
                 pass
         self._tell(set(), who, screen)
@@ -579,7 +591,36 @@ class FireballPanel:
 
 # ------------------------------------------------------------ the engine --
 
-def engine_blockers(remote, link=None, cleaning=True):
+def _during_show_blockers(remote, m):
+    """The Fireball page's own rules during a show (Jeff, 2026-10-30): a
+    show playing, the show clock playing, Run pressed and Programming
+    playback do NOT hold it off; an Abort standing, a Hold (a show held or
+    paused), live flame programming, and the Startup page's settings or
+    lock state not trusted do. "" or the sentence. May raise (the caller
+    fails closed)."""
+    svc = remote.schedule
+    mach = getattr(svc, "machine", None)
+    cond = getattr(svc, "conductor", None)
+    if getattr(mach, "abort_latched", False) or \
+            getattr(cond, "latched", False):
+        return "the show is aborted; press Reset first."
+    if getattr(mach, "state", None) in ("HOLD", "PAUSED"):
+        return "a Hold is standing; Resume or Reset first."
+    lf = getattr(remote, "live_flame", None)
+    if lf is not None and lf.on:
+        return ("live flame programming is on; nothing fires from this "
+                "page until it is off.")
+    if m.config_error:
+        return (f"ltcplay_morning.json could not be read "
+                f"({m.config_error}), so nothing fires from this page "
+                f"until it is fixed.")
+    why = m.lock_problem()
+    if why:
+        return f"{why}; nothing fires from this page until then."
+    return ""
+
+
+def engine_blockers(remote, link=None, cleaning=True, during_show=False):
     """Why the engine forbids the Fireball page's controls right now, in a
     sentence, or "": the Startup page's purge rules (a show live or paused,
     an Abort standing, the show clock playing, live flame programming
@@ -587,7 +628,10 @@ def engine_blockers(remote, link=None, cleaning=True):
     trusted, flamesafe not holding the engine's locks, Arrange mode, a
     purge selected or firing), a Hold, Run pressed, the flame link not
     sending, and (with `cleaning`) the wave flamer cleaning running
-    (cleaning.py, which asks the same rules for itself). Fails closed."""
+    (cleaning.py, which asks the same rules for itself). With
+    `during_show` (the Fireball page itself, Jeff 2026-10-30) a show
+    playing and Run pressed are allowed: _during_show_blockers. The
+    cleaning never passes it. Fails closed."""
     try:
         m = remote.morning
         if m is None:
@@ -596,24 +640,30 @@ def engine_blockers(remote, link=None, cleaning=True):
         if cl is not None and cl.active():
             return ("the wave flamer cleaning is running on the Shutdown "
                     "page; stop it first.")
-        why = remote.morning_live_refusal() or m._live_or_broken()
-        if why:
-            return why
-        svc = remote.schedule
-        st = getattr(getattr(svc, "machine", None), "state", None)
-        if st == "HOLD":
-            return "a Hold is standing; Resume or Reset first."
-        s = getattr(remote.control, "session", None)
-        if s is not None and getattr(s, "running", False):
-            return ("Run is pressed (a show file is running), so the show "
-                    "file owns the flame channels; press Stop first.")
-        try:
-            cs = remote.control.state() or {}
-        except Exception:                                # noqa: BLE001
-            cs = {}
-        if cs.get("running") or cs.get("starting"):
-            return ("Run is pressed (a show file is running), so the show "
-                    "file owns the flame channels; press Stop first.")
+        if during_show:
+            why = _during_show_blockers(remote, m)
+            if why:
+                return why
+        else:
+            why = remote.morning_live_refusal() or m._live_or_broken()
+            if why:
+                return why
+            svc = remote.schedule
+            st = getattr(getattr(svc, "machine", None), "state", None)
+            if st == "HOLD":
+                return "a Hold is standing; Resume or Reset first."
+            s = getattr(remote.control, "session", None)
+            if s is not None and getattr(s, "running", False):
+                return ("Run is pressed (a show file is running), so the "
+                        "show file owns the flame channels; press Stop "
+                        "first.")
+            try:
+                cs = remote.control.state() or {}
+            except Exception:                            # noqa: BLE001
+                cs = {}
+            if cs.get("running") or cs.get("starting"):
+                return ("Run is pressed (a show file is running), so the show "
+                        "file owns the flame channels; press Stop first.")
         why = m._locks_confirmed()
         if why:
             return why
@@ -654,9 +704,16 @@ def build(remote, morning, link, journal=None, threaded=True,
         fs = getattr(remote, "flame_status", None)
         return fs.view() if fs is not None else None
 
+    if group is not None and link is not None:
+        # The only slots the page's frame may carry on the flame link.
+        try:
+            link.set_manual_slots(group["fire"])
+        except Exception:                                # noqa: BLE001
+            pass
     panel = FireballPanel(group, problem, link_get=lambda: link,
                           flames_get=flames,
-                          blockers=lambda: engine_blockers(remote, link),
+                          blockers=lambda: engine_blockers(
+                              remote, link, during_show=True),
                           locked_slots=locked, journal=journal,
                           clock=clock, threaded=threaded)
     # The Startup page's purge waits while this has anything on (one

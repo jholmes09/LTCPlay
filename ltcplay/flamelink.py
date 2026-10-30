@@ -193,6 +193,21 @@ PURGE_HOLD_S = 0.25
 # fire. While the mode is on the show's own cues are never sent (one
 # source at a time).
 PROGRAM_HOLD_S = 0.25
+# The Fireball page's own frame (fireball.py; Jeff, 2026-10-30: "Andy may
+# manually start any phase with toggle buttons at any time, including
+# during a show"). The page re-asserts it with manual_set() every 100 ms
+# while a button is on. It carries values ONLY on the slots manual_slots
+# names (the fireball group's fire slots, from flamesafe's config; empty
+# until the engine sets them, so nothing passes before then), and only for
+# MANUAL_HOLD_S after the last manual_set on this link's own clock, like
+# the purge frame. Unlike the purge frame it is read whether or not a show
+# is live: on those slots each frame carries the HIGHER of the show's own
+# value (the FSEQ or the fireball timeline) and the page's, channel by
+# channel, so neither source can turn the other's channel off. zero() and
+# disarm_all() (Hold, Stop, Abort, a show's end) drop it at once, the
+# lockout zeroes its slots, and flamesafe still passes them only while the
+# fireball group is ARMED.
+MANUAL_HOLD_S = 0.25
 # Programming playback (playhead.py, Jeff 2026-10-29: the switch "Fire
 # flames while scrubbing" is gone). The show's own flame cues follow the
 # Programming screen's transport through this link's show path, exactly as
@@ -819,6 +834,12 @@ class FlameLink:
         self._program = None
         self._program_session = 0
         self.programs_sent = 0
+        # The Fireball page's frame (MANUAL_HOLD_S): (bytes(512), clock when
+        # set), or None; the only slots it may carry; how many frames it
+        # went out on.
+        self._manual = None
+        self.manual_slots = frozenset()
+        self.manuals_sent = 0
         # Programming transport moves (landing()): +1 on each, so a frame
         # whose values were read across one goes out as zeros.
         self._land_gen = 0
@@ -1238,8 +1259,19 @@ class FlameLink:
 
     # -- what goes in a frame --------------------------------------------------
     def values_now(self):
-        """(tc, values) for a frame sent now. Never raises; zeros on
-        anything uncertain. Calls the providers: never under self._lock."""
+        """(tc, values) for a frame sent now: the show's (or the purge's, or
+        live flame programming's) values, with the Fireball page's frame
+        merged on its slots (_with_manual). Never raises; zeros on anything
+        uncertain. Calls the providers: never under self._lock."""
+        tc, vals, manual_ok = self._values_show()
+        if not manual_ok:
+            return tc, vals
+        return tc, self._with_manual(vals, self._clock())
+
+    def _values_show(self):
+        """(tc, values, whether the Fireball page's frame may be merged)
+        before that frame: the show path, the purge and live flame
+        programming exactly as before it existed."""
         self._haze_live = False
         zeros = bytes(UNIVERSE_SIZE)
         try:
@@ -1247,7 +1279,7 @@ class FlameLink:
         except Exception as e:
             self._cue_episode("state", f"the show state could not be read "
                                        f"({_exc_text(e)})")
-            return None, zeros
+            return None, zeros, False
         if not (isinstance(tc, str) and _TC.fullmatch(tc)):
             tc = None
         # Is the timecode MOVING (fix round 1, item 5)? Tracked on every
@@ -1286,16 +1318,19 @@ class FlameLink:
             # source at a time).
             self._cue_episode("", "")
             if self._program_on:
-                return tc, self._program_values(now)
-            return tc, self._purge_values(now)
+                # Live flame programming's frame alone (one source at a
+                # time): not the Fireball page's either.
+                return tc, self._program_values(now), False
+            return tc, self._purge_values(now), True
         if self._program_on:
             # Live flame programming is on: the show's own cues are held
             # off (one source at a time) and its frame is not read either.
             # The mode ends as soon as the engine sees the show start.
-            return tc, zeros
+            # Nor the Fireball page's frame: one source at a time.
+            return tc, zeros, False
         if self.zeroed or tc is None or land:
             self._cue_episode("", "")
-            return tc, zeros
+            return tc, zeros, True
         if self._tc_moved_at is None or now - self._tc_moved_at > TC_STILL_S:
             settling = (self._resumed_at is not None
                         and tc == self._held_tc
@@ -1310,16 +1345,16 @@ class FlameLink:
                     "still", f"the show timecode has not moved for more than "
                              f"{TC_STILL_S:g} s (stuck at {tc}) though the "
                              f"show reads as playing")
-            return tc, zeros
+            return tc, zeros, True
         try:
             v = self.cues(tc)
         except Exception as e:
             self._cue_episode("raised", f"the flame cue provider raised "
                                         f"{_exc_text(e)}")
-            return tc, zeros
+            return tc, zeros, True
         if v is None:
             self._cue_episode("", "")
-            return tc, zeros
+            return tc, zeros, True
         try:
             vals = list(v)
             if len(vals) != UNIVERSE_SIZE or \
@@ -1329,7 +1364,7 @@ class FlameLink:
             self._cue_episode("garbage", f"the flame cue provider did not "
                                          f"answer {UNIVERSE_SIZE} whole "
                                          f"numbers 0 to 255")
-            return tc, zeros
+            return tc, zeros, True
         self._cue_episode("", "")
         # A channel seen at zero since the last seek may fire again: its
         # next rise is a cue start this show actually played through.
@@ -1338,11 +1373,11 @@ class FlameLink:
             for i in [i for i in blocked if vals[i] == 0]:
                 blocked.discard(i)
         if not settled:
-            return tc, zeros
+            return tc, zeros, True
         if blocked:
             for i in blocked:
                 vals[i] = 0
-        return tc, self._unlocked(bytes(vals))
+        return tc, self._unlocked(bytes(vals)), True
 
     # -- the purge frame and the lockout (2026-10-17) -------------------------
     def _purge_values(self, now):
@@ -1460,6 +1495,82 @@ class FlameLink:
                 (until is None or now < until)
         except Exception:
             return False
+
+    # -- the Fireball page's frame (fireball.py, 2026-10-30) ------------------
+    def set_manual_slots(self, slots):
+        """The only slots the Fireball page's frame may carry (the fireball
+        group's fire slots). Anything that is not a slot 1 to 512 is left
+        out. Never raises."""
+        try:
+            self.manual_slots = frozenset(
+                int(s) for s in slots
+                if not isinstance(s, bool) and 1 <= int(s) <= UNIVERSE_SIZE)
+        except Exception:
+            self.manual_slots = frozenset()
+
+    def manual_set(self, values, gen=None):
+        """The Fireball page's heartbeat: `values` (512 ints 0 to 255) on
+        manual_slots go out on the next frames for MANUAL_HOLD_S, live or
+        not, merged with the show's own by the higher value per channel.
+        With `gen`, refused (False) when a zero() or disarm_all() has
+        happened since the caller read _zero_gen. True when taken."""
+        try:
+            vals = bytes(values)
+            if len(vals) != UNIVERSE_SIZE:
+                return False
+            keep = bytearray(UNIVERSE_SIZE)
+            for s in self.manual_slots:
+                keep[s - 1] = vals[s - 1]
+            with self._lock:
+                if gen is not None and gen != self._zero_gen:
+                    self._manual = None
+                    return False
+                self._manual = (bytes(keep), self._clock())
+            return True
+        except Exception:
+            return False
+
+    def manual_clear(self):
+        """The Fireball page's frame off now: the next frame carries only
+        the show's own values on its slots. Also done by zero() and
+        disarm_all()."""
+        with self._lock:
+            self._manual = None
+
+    def manual_active(self):
+        """True while a Fireball page frame set within MANUAL_HOLD_S is
+        held."""
+        m = self._manual
+        try:
+            return m is not None and \
+                0 <= self._clock() - m[1] <= MANUAL_HOLD_S
+        except Exception:
+            return False
+
+    def _with_manual(self, vals, now):
+        """`vals` with the Fireball page's frame merged: on each of its
+        slots the higher of the two values, then the lockout. A frame older
+        than MANUAL_HOLD_S (or from a clock that went back) is dropped
+        here."""
+        m = self._manual
+        if m is None:
+            return vals
+        if now - m[1] > MANUAL_HOLD_S or now < m[1]:
+            with self._lock:
+                if self._manual is m:
+                    self._manual = None
+            return vals
+        out = bytearray(vals)
+        hit = False
+        for s in self.manual_slots:
+            v = m[0][s - 1]
+            if v > out[s - 1]:
+                out[s - 1] = v
+                hit = True
+        if not hit:
+            return vals
+        self.manuals_sent += 1
+        return self._unlocked(bytes(out))
 
     # -- live flame programming (flameprog.py) -------------------------------
     def _program_values(self, now):
@@ -1825,7 +1936,8 @@ class FlameLink:
                 values = bytes(UNIVERSE_SIZE)
                 self._seek_reset()
             if gen != self._zero_gen or (self.zeroed and self._purge is None
-                                         and self._program is None):
+                                         and self._program is None
+                                         and self._manual is None):
                 # A zero() or disarm_all() that landed since the values were
                 # read wins (gen); and with the cues zeroed, only a purge
                 # frame still held may carry a value (the purge frame is the
@@ -1912,6 +2024,9 @@ class FlameLink:
         one cannot delay it (fix round 1, item 7)."""
         with self._lock:
             self._purge = None
+            # The Fireball page's frame too (Hold, a show's end): the page
+            # sees the count move and turns everything off.
+            self._manual = None
             # Any zero (a Hold, a show's end, the dark sequence) ends live
             # flame programming at the link too: xLights stops with the
             # fire (flameprog.py ends the mode on its next pass).
@@ -1949,6 +2064,7 @@ class FlameLink:
                 # on the disarm_all itself.
                 self._hazers_on = frozenset()
                 self._purge = None
+                self._manual = None
                 # An Abort ends live flame programming at the link, at
                 # once, whichever surface sent it (flameprog.py sees it).
                 # No timed purge's hard end outlives it (review of #172).
@@ -2116,6 +2232,8 @@ class FlameLink:
                 "program_on": self._program_on,
                 "program": self.program_active(),
                 "programs_sent": self.programs_sent,
+                "manual": self.manual_active(),
+                "manuals_sent": self.manuals_sent,
                 "landings": self.landings,
                 "locked_channels": sorted(self._locked),
                 "hazers_on": sorted(self._hazers_on),
