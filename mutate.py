@@ -3134,6 +3134,11 @@ MUTATIONS = [
   "        if len(pt_slots) != len(set(pt_slots)):",
   "        if False:"),
 
+ ("flamesafe: passthrough switch: a Composer takes a slot outside 1 to 512",
+  "flamesafe/composer.py",
+  "        if bad:\n            raise ValueError(f\"passthrough slots {bad} are not 1 to \"",
+  "        if False:\n            raise ValueError(f\"passthrough slots {bad} are not 1 to \""),
+
  ("flamesafe: passthrough switch: the switch is read as a hazer",
   "flamesafe/config.py",
   "        is_switch = \"switch\" in e",
