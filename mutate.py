@@ -2996,6 +2996,107 @@ MUTATIONS = [
   "                not PUMP_MIN_S <= v <= PUMP_MAX_LIMIT_S:",
   "                False:"),
 
+ # the fuel pump on interface 2.0 (2026-10-30)
+ ("ui 2.0: Pump off is disabled with no contact",
+  "ltcplay/web/remote2.html",
+  "  $(\"pm-off\").disabled = false;",
+  "  $(\"pm-off\").disabled = stale();"),
+
+ ("ui 2.0: Fuel pump: On is live for a role that may not arm",
+  "ltcplay/web/remote2.html",
+  "  if(!mayRow(s, \"arm\")) return signWhy(s, \"arm\", true);\n  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return \"Arming off here\";\n  if(secs === null)",
+  "  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return \"Arming off here\";\n  if(secs === null)"),
+
+ ("ui 2.0: Fuel pump: On is live from an iPad while arming from screens is off",
+  "ltcplay/web/remote2.html",
+  "  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return \"Arming off here\";\n  if(secs === null)",
+  "  if(secs === null)"),
+
+ ("ui 2.0: Fuel pump: On is live when the engine would refuse it",
+  "ltcplay/web/remote2.html",
+  "  if(v.refusal) return short8(v.refusal, \"Not now: see below\");",
+  ""),
+
+ ("ui 2.0: Fuel pump: On is live while the pump runs",
+  "ltcplay/web/remote2.html",
+  "  if(v.on) return \"Pump is on\";",
+  ""),
+
+ ("ui 2.0: Fuel pump: On is live with a run time that is not m:ss",
+  "ltcplay/web/remote2.html",
+  "  if(secs === null) return \"Run time as m:ss\";",
+  ""),
+
+ ("ui 2.0: Pump off could start the pump",
+  "ltcplay/web/remote2.html",
+  "post(\"/api/remote/fuel-pump\", actor({on: false}))",
+  "post(\"/api/remote/fuel-pump\", actor({on: true, seconds: 300, run: String(Date.now())}))"),
+
+ ("ui 2.0: one press id for every tap of Fuel pump: On",
+  "ltcplay/web/remote2.html",
+  "  const run = String(Date.now()) + \"-\" + String(Math.random()).slice(2, 10);\n  // No answer",
+  "  const run = \"pump\";\n  // No answer"),
+
+ ("ui 2.0: a refused On keeps a longer run time",
+  "ltcplay/web/remote2.html",
+  "      // back to 5:00 as soon as On is answered; delta review of #189, 1).\n      pumpReset(ST && ST.pump);",
+  "      // back to 5:00 as soon as On is answered; delta review of #189, 1)."),
+
+ ("ui 2.0: On waits for its answer forever",
+  "ltcplay/web/remote2.html",
+  "    const j = await Promise.race([post(\"/api/remote/fuel-pump\", actor({on: true, seconds: secs, run: run})), late]);",
+  "    const j = await post(\"/api/remote/fuel-pump\", actor({on: true, seconds: secs, run: run}));"),
+
+ ("ui 2.0: On waiting for its answer says nothing",
+  "ltcplay/web/remote2.html",
+  "  PUMP_NOTE = \"Sending...\"; PUMP_NOTE_AT = Date.now();",
+  "  PUMP_NOTE_AT = Date.now();"),
+
+ ("ui 2.0: the run time keeps a longer one after a Stop or Pump off elsewhere",
+  "ltcplay/web/remote2.html",
+  "  if(offKey && offKey !== PUMP_OFF_SEEN && PUMP_OFF_SEEN !== \"\") pumpReset(v);\n",
+  ""),
+
+ ("ui 2.0: the run time keeps a longer one across an engine restart",
+  "ltcplay/web/remote2.html",
+  "  if(v.boot && PUMP_BOOT && v.boot !== PUMP_BOOT) pumpReset(v);\n",
+  ""),
+
+ ("ui 2.0: the reason On is disabled is only a tooltip",
+  "ltcplay/web/remote2.html",
+  "  $(\"pm-why\").hidden = !full;",
+  "  $(\"pm-why\").hidden = true;"),
+
+ ("ui 2.0: a second tap's already on paints over the first tap's success",
+  "ltcplay/web/remote2.html",
+  "    if(!(running && /already on/.test(e.message))) say(armShort(e.message), e.message, \"bad\");",
+  "    say(armShort(e.message), e.message, \"bad\");"),
+
+ ("ui 2.0: the run time keeps a longer one after On is answered",
+  "ltcplay/web/remote2.html",
+  "    PUMP_OK_AT = Date.now();\n    pumpReset(ST && ST.pump);",
+  "    PUMP_OK_AT = Date.now();"),
+
+ ("ui 2.0: Space on a focused Pump off is not kept from firing",
+  "ltcplay/web/remote2.html",
+  "#d-hz-off, #pm-off,",
+  "#d-hz-off,"),
+
+ ("ui 2.0: the run time keeps a longer one after the pump turns off",
+  "ltcplay/web/remote2.html",
+  "  if(PUMP_WAS_ON && !v.on){ PUMP_TYPED = false; $(\"pm-time\").value = pumpClock(v.default_s || 300); }\n",
+  ""),
+
+ ("ui 2.0: flamesafe having the pump on is not said",
+  "ltcplay/web/remote2.html",
+  "  if(v.state === \"flamesafe_on\") return \"flamesafe has it on: press Pump off\";\n",
+  ""),
+
+ ("ui 2.0: the calm tone quiets Pump off",
+  "ltcplay/web/remote2.html",
+  "body.inactive #pm-on{filter:saturate(.3)}",
+  "body.inactive #pm-on, body.inactive #pm-off{filter:saturate(.3)}"),
+
  ("deck: with announcements a tap of key 5 opens the hazers page",
   "ltcplay/streamdeck.py",
   "                if self.hazers_view():\n                    # Hazers too: a hold opens their page (tick), a tap",
