@@ -965,7 +965,7 @@ stop:
   with Run on: the next night with shows comes up on Hold (Jeff,
   2026-10-30). It is kept in `ltcplay_stop_hold.json` next to tonight's
   file, so a restart keeps it too. If that file cannot be written, the
-  fault flag says so and it is tried again every second until it is; a
+  fault flag says so and it is tried again on every tick until it is; a
   file that cannot be read counts as a Stop's Hold. When the Hold comes
   back after a Start now's show, the look goes dark again. Every screen says **Held after Stop:
   press Resume**. Only **Resume** ends it (pressed with nothing held, it
