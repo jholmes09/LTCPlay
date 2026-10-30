@@ -1564,6 +1564,8 @@ class Remote:
         self.fireball = None         # fireball.FireballPanel, web.serve
         # fireball_charge.ChargeTracker, web.serve (display only here)
         self.fireball_charge = None
+        # fireball_cues.FireballCues, web.serve (display only here)
+        self.fireball_cues = None
         self.cleaning = None         # cleaning.CleaningPanel, web.serve
         # hazers.Hazers, set by web.serve (Fire & Ice with a flame link),
         # and the "hazers" mismatch alert's sentence and id.
@@ -4519,7 +4521,11 @@ class Remote:
         """The fireball timeline's file in the settings folder (one Store
         per engine, made on first use). Sends nothing."""
         st = getattr(self, "_fbtl_store", None)
-        if st is None or st.audit is not getattr(self, "audit", None):
+        if st is not None:
+            # The audit log may be set up after the store was made: the
+            # same store (its listeners kept), the current audit log.
+            st.audit = getattr(self, "audit", None)
+        else:
             from . import fireball_timeline as fbtl
 
             def _journal(who, screen, outcome, text, fault=False):
@@ -7297,6 +7303,14 @@ class Remote:
                 out["fireball_charge"] = {
                     "fault": f"{type(e).__name__}: {e}", "text": "",
                     "tanks": {}}
+        fbq = self.fireball_cues
+        if fbq is not None:
+            # The fireball timeline's fault and its skips (fireball_cues.py).
+            try:
+                out["fireball_timeline"] = fbq.view()
+            except Exception as e:               # noqa: BLE001
+                out["fireball_timeline"] = {
+                    "fault": f"{type(e).__name__}: {e}", "messages": []}
         out["beyond_link"] = self.beyond_link()
         try:
             _snap = self.schedule.conductor.snapshot() or {}

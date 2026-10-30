@@ -18840,6 +18840,72 @@ def build():
   "                _before(tc, values, ok)\n",
   "                pass\n"),
 
+ # -- the fireball timeline on the flame cues (fireball_cues.py) -----------
+ ("fireball cues: the FSEQ's 55 to 59 are not masked for a timeline show",
+  "ltcplay/fireball_cues.py",
+  "        out = self._masked(out)\n        if label != run.cue:",
+  "        if label != run.cue:"),
+
+ ("fireball cues: a broken timeline file falls back to the FSEQ",
+  "ltcplay/fireball_cues.py",
+  "        if plan is None or plan[1]:",
+  "        if plan is None:"),
+
+ ("fireball cues: a charged tank is charged again (double charge)",
+  "ltcplay/fireball_cues.py",
+  "        if state == \"empty\":\n            return \"\"",
+  "        if state in (\"empty\", \"charged\"):\n            return \"\""),
+
+ ("fireball cues: a tank in an unknown state is charged",
+  "ltcplay/fireball_cues.py",
+  "        if state == \"empty\":\n            return \"\"",
+  "        if state != \"charged\":\n            return \"\""),
+
+ ("fireball cues: a charge cut short charges again after a Resume",
+  "ltcplay/fireball_cues.py",
+  "        if tank in run.sent_tanks:",
+  "        if False:"),
+
+ ("fireball cues: a charge stops after its first frame",
+  "ltcplay/fireball_cues.py",
+  "        if carrying_on:\n            return \"\"",
+  "        if False:\n            return \"\""),
+
+ ("fireball cues: a stage moved into the past by an edit fires late",
+  "ltcplay/fireball_cues.py",
+  "            if relf is not None and w[\"s0\"] < relf:",
+  "            if False:"),
+
+ ("fireball cues: an edit moves a stage that has started",
+  "ltcplay/fireball_cues.py",
+  "            if k not in self.started:\n                self.stages[k] = w",
+  "            if True:\n                self.stages[k] = w"),
+
+ ("fireball cues: a source switch applies in the middle of a play",
+  "ltcplay/fireball_cues.py",
+  "        if run.source != \"timeline\":\n            return out",
+  "        run.source = (entry or {}).get(\"source\", \"fseq\")\n        if run.source != \"timeline\":\n            return out"),
+
+ ("fireball cues: the shot is followed by an automatic purge",
+  "ltcplay/fireball_cues.py",
+  "        run.prev_on = now_on\n        return out",
+  "        run.prev_on = now_on\n        if 57 in now_on:\n            out[58] = ON_VALUE\n        return out"),
+
+ ("fireball cues: the flame cues skip the timeline in background mode",
+  "ltcplay/fire_ice.py",
+  "                return self._with_fireball(out, s, label, rel, cue)\n            data = f.frame(idx)",
+  "                return out\n            data = f.frame(idx)"),
+
+ ("fireball cues: the flame cues skip the timeline when reading in the call",
+  "ltcplay/fire_ice.py",
+  "        return self._with_fireball(out, s, label, rel, cue)\n\n    def _with_fireball",
+  "        return out\n\n    def _with_fireball"),
+
+ ("fireball cues: a timeline that cannot be built lets every show's FSEQ fire the fireball",
+  "ltcplay/web.py",
+  "    cues.fireball = fb\n    remote.fireball_cues = fb",
+  "    cues.fireball = fb if fb.store is not None else None\n    remote.fireball_cues = fb"),
+
 ]
 
 
