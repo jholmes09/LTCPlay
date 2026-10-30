@@ -994,6 +994,9 @@ function goLook(st, isStaleNow, local, waiting){
   const fresh = !isStaleNow;
   let L;
   if(sch.attached && sch.aborted) L = {mode:"reset", label:"Reset", icon:"reset", tone:"amber", off:!fresh, why:fresh ? "Clears the Abort" : "No contact"};
+  // A Stop's Hold (Jeff, 2026-10-30): it stands until Resume, also when
+  // nothing is held right now (the night closing, over, or without shows).
+  else if(sch.stop_held && !isLive(st)) L = {mode:"resume", label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "Held after Stop" : "No contact"};
   else if(isHeld(st)) L = {mode:"resume", label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "Carries on" : "No contact"};
   else if(isLive(st)) L = {mode:"live", label:"Show running", icon:"play", tone:"green", off:true, why:"Hold pauses it"};
   // A rehearsal: the scheduler starts nothing, so nothing to start here.
@@ -1026,6 +1029,7 @@ function nextStep(st, isStaleNow, local, items){
   if(bad.some(i => i.key === "dis-fail")) return {tone:"bad", icon:"warn", text:"Disarm NOT done. Use Deck or e-stop."};
   const pins = pinItems(st);
   if(pins.length) return {tone:"bad", icon:"flame", text: pins.length > 1 ? pins.length + " live modes on. Stop when done." : pins[0].text};
+  if(sch.stop_held && !isLive(st)) return {tone:"warn", icon:"pause", text:"Held after Stop: press Resume."};
   const pch = prerollChoice(st.preroll, sch);
   if(pch && pch.cleared) return {tone:"warn", icon:"check", text:String((st.preroll.cleared || {}).say || "Rig check passed. Press Resume.")};
   if(pch && !pch.continued) return {tone:"bad", icon:"warn", text:"Rig check failed. Fix it, or continue."};

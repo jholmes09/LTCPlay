@@ -1640,14 +1640,16 @@ def _hold(m, ev, now):
                     f"Resume carries on from there.")
         tx.note(HOLD_ON, "paused", "PAUSED (operator hold)", text, show=n)
         return tx.done()
-    tx.m = replace(tx.m, held_from=m.state,
-                   stop_hold=str(ev.detail or "").startswith(
-                       STOP_HOLD_DETAILS))
+    stop = str(ev.detail or "").startswith(STOP_HOLD_DETAILS)
+    tx.m = replace(tx.m, held_from=m.state, stop_hold=stop)
     # While an Abort has not been Reset, a Hold (an operator's, or an
     # announcement's) keeps the rig dark: only Reset ends the Abort (Jeff:
     # after an Abort the rig stays dark until the operator acts, and Reset
     # is that act). Before 2026-10-02 it brought the intermission loop back.
-    _enter(tx, HOLD, after_stop=ev.latched)
+    # A Stop's Hold is dark too (cold review of #191 round 2, item 5): no
+    # look is asked for; the engine takes the idle look down with the
+    # conductor's Stop. Resume brings the look back.
+    _enter(tx, HOLD, after_stop=ev.latched or stop)
     if ev.detail:
         text = (f"{_operator_name(ev)} {ev.detail}. No show starts by "
                 f"itself until Resume; a show whose time passes meanwhile "

@@ -2342,13 +2342,13 @@ class ShowRunner:
         started only once it is confirmed. Returns a conductor Result at
         once. `who` is "the scheduler" for a show that came due, or the
         operator who pressed Start now."""
-        clk = self.show._clock()
-        s = self.show._session()
         # A Stop that lands while this start is under way (an urgent Stop
         # goes beside the line, so it can overtake a start already being
         # made) is seen after the cue starts, as an Abort is (cold review
-        # of #191, A-F3).
+        # of #191, A-F3). Read before anything else (round 2, item 9).
         stops0 = getattr(self.conductor, "stops", 0)
+        clk = self.show._clock()
+        s = self.show._session()
         # A Continue anyway is for the start it was pressed for, whatever
         # happens to it: never carried to a later one.
         cont, self.continue_off = self.continue_off, None

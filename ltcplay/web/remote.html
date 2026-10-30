@@ -2030,6 +2030,9 @@ function stopShows(st){
   const sch = (st && st.schedule) || {}, show = (st && st.show) || {};
   const tr = (st && st.transport) || {}, pr = (st && st.preroll) || {};
   if(sch.state === "SHOW" || sch.state === "PAUSED") return true;
+  // The rig is up by the conductor's own look, whatever the scheduler's
+  // state says (cold review of #191 round 2): Stop is there.
+  if(sch.lit === true) return true;
   if(sch.start_waiting === true) return true;
   if(pr.state === "checking" || pr.state === "queued") return true;
   if(tr.programming && tr.playhead === "show_audio" && tr.playing) return true;
@@ -2671,6 +2674,10 @@ function render(){
     else if(sch.held){ word = sch.state === "PAUSED" ? "Paused" : "On hold";
       label = sch.state === "PAUSED" ? "Held. The show is paused." : "On hold"; cls = "warn"; }
     else { word = sch.state || "..."; label = ""; }
+    // A Stop's Hold stands until Resume (Jeff, 2026-10-30), also when
+    // nothing is held right now (the night closing, over, or without shows).
+    if(sch.stop_held && sch.state !== "SHOW" && sch.state !== "PAUSED" && !sch.aborted){
+      word = "On hold"; label = "Held after Stop: press Resume."; cls = "warn"; }
     if(sch.error) label += (label ? ". " : "") + sch.error;
   }
   // The alert hold (alerthold.py, Jeff 2026-10-26): held at showtime with

@@ -735,6 +735,10 @@ class Conductor:
         # Every Stop asked of this conductor, counted (fire_ice's show start
         # re-checks it after the cue starts, as it does the Abort latch).
         self.stops = 0
+        # A Stop came after the music last started (music_started): a show
+        # start asked for before that Stop is refused (cold review of #191
+        # round 2, blocker 2), as an Abort's latch refuses it.
+        self._stopped_since_music = False
         self._mode = PRODUCTION
         self._announcing = None    # an announcement not yet started
         self._applied = {"flames": UNKNOWN, "lasers": UNKNOWN,
@@ -819,13 +823,24 @@ class Conductor:
             return done("Resume: the music fades back in; lasers and flame "
                         "cues come back once the timecode is moving.")
 
-    def show_starting(self, who="", screen=""):
+    def show_starting(self, who="", screen="", stops=None):
         """A show cue has just started: bring back whatever a previous Abort
         or announcement left dark (lasers only through the gate)."""
         with self._lock:
             refused = self._refuse_if_latched("Show start")
             if refused:
                 return refused
+            # `stops`: the Stop count when the scheduler decided this
+            # start (its ordered line). Without it, a Stop since the music
+            # last started (music_started) decides.
+            if (stops is not None and stops != self.stops) or \
+                    (stops is None and self._stopped_since_music):
+                # This start was asked for before a Stop that has landed
+                # since (a start still in the line when an urgent Stop went
+                # beside it): the Stop stands, nothing comes back up.
+                return self._refused("Show start", "Stop was pressed after "
+                                     "this show started, so the rig stays "
+                                     "dark.")
             if not self._playing():
                 return self._refused("Show start", "no show cue is playing.")
             # A fact, not a command: the caller has just started the cue, so
@@ -846,6 +861,7 @@ class Conductor:
         stopped). Starts nothing and changes no look."""
         with self._lock:
             self._set("music", MUSIC_PLAYING)
+            self._stopped_since_music = False
 
     def pixels_to_show(self, clear):
         """A fact, like music_started(): a show start is handing the pixel
@@ -1021,6 +1037,7 @@ class Conductor:
         again) always starts the whole sequence afresh."""
         with self._lock:
             self.stops += 1
+            self._stopped_since_music = True
             latched = self._latched
             again = (not latched and not force_new and
                      self._want is not None and

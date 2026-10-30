@@ -5154,7 +5154,8 @@ class Remote:
                 end()
 
     def _stop_press(self, who, screen, run_off=False):
-        h = self.halt(who, screen)
+        # A screen's Stop is a double tap (pressed); the deck's is held.
+        h = self.halt(who, screen, how="pressed")
         out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show",
                                  "hold", "programming")
                if h.get(k) is not None}
@@ -5192,7 +5193,7 @@ class Remote:
                             ", ".join(out["failed"]) + " did NOT work.")
         return (500 if "error" in out else 200), out
 
-    def halt(self, who, screen):
+    def halt(self, who, screen, how="held"):
         """Stop, a complete halt of everything (Jeff, 2026-10-26), during a
         scheduled show too, with every guarantee a screen's Abort had (Jeff,
         2026-10-30), in the Abort's order, WITHOUT the Abort latch. Every
@@ -5255,7 +5256,7 @@ class Remote:
                     out["failed"].append("flames")
             # 2. Live flame programming, cut as an Abort cuts it (review of
             # #130, second pass, 3).
-            why = f"{label} held Stop on the {screen}"
+            why = f"{label} {how} Stop on the {screen}"
             self.timed_purge_cut(why, who, screen)
             for name in ("live_flame_cut",):
                 fn = getattr(self, name, None)
@@ -5301,7 +5302,7 @@ class Remote:
             # fireball and the cleaning (at once, not when their watchers
             # next see the flame link's zero), the laser tests.
             try:
-                self.cancel_holds(f"{who or 'someone'} held Stop on the "
+                self.cancel_holds(f"{who or 'someone'} {how} Stop on the "
                                   f"{screen}")
             except Exception:                    # noqa: BLE001
                 pass
@@ -5331,7 +5332,7 @@ class Remote:
                                      out["lasers_blank"]) if x is not None]
         bad = ", ".join(out["failed"])
         self._journal(who, screen, "stop", "fault" if bad else "done",
-                      f"{label} held Stop on the {screen}: a complete halt. "
+                      f"{label} {how} Stop on the {screen}: a complete halt. "
                       + " ".join(parts)
                       + (f" These did NOT work: {bad}." if bad else ""),
                       fault=bool(bad))
@@ -7276,6 +7277,8 @@ class Remote:
                     "held": state in ("HOLD", "PAUSED"),
                     "aborted": bool(cv.get("aborted")),
                     "conductor": cv.get("attached", False),
+                    "lit": cv.get("lit") is True,
+                    "stop_held": cv.get("stop_held") is True,
                     "trouble": cv.get("trouble"),
                     "next": st.get("next"), "delayed": st.get("delayed"),
                     "dry_run": st.get("dry_run"),
