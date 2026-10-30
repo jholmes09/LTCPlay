@@ -15651,6 +15651,43 @@ def build():
   "(lv === \"stale\" ? \"STALE. \" : \"\")",
   "\"\""),
 
+ # When, not how long ago (Jeff, 2026-10-30): each line says the date and
+ # time it was last updated, in the show's zone; no advisory only line.
+ ("weather: the times are said in UTC, not the show's zone",
+  "ltcplay/weather.py",
+  "    return datetime.fromtimestamp(epoch, tz)\n",
+  "    return datetime.fromtimestamp(epoch, timezone.utc)\n"),
+
+ ("weather: the schedule file's time zone is ignored",
+  "ltcplay/weather.py",
+  "    return zone(name) or zone(ZONE_DEFAULT)",
+  "    return zone(ZONE_DEFAULT)"),
+
+ ("weather: a changed schedule time zone is never read again",
+  "ltcplay/weather.py",
+  "        if self._zone_key != key or self._zone is None:",
+  "        if self._zone is None:"),
+
+ ("weather: a time ahead of this PC's clock is said as still to come",
+  "ltcplay/weather.py",
+  "    if now is not None and epoch > now:\n        epoch = now",
+  "    if False:\n        epoch = now"),
+
+ ("weather: the measured line says no time",
+  "ltcplay/weather.py",
+  "                f\"{updated_text(d['valid'], tz, now)}.{tail(pick['s'])}\")",
+  "                f\"{tail(pick['s'])}\")"),
+
+ ("weather: the NWS issue time is said as this PC's fetch time",
+  "ltcplay/weather.py",
+  "                         f\"NWS issued {when_text(d['issued'], tz, now)}. \"",
+  "                         f\"NWS issued {when_text(got, tz, now)}. \""),
+
+ ("weather: 2.0's wind button says advisory only again",
+  "ltcplay/web/remote2.html",
+  "  return {cls:v.cls === \"ok\" ? \"ok\" : \"stale\", text:t, v};",
+  "  return {cls:v.cls === \"ok\" ? \"ok\" : \"stale\", text:t + \". Advisory only.\", v};"),
+
  ("weather: the engine's route answers no weather",
   "ltcplay/remote.py",
   "            return 200, (w.view() if w is not None\n",

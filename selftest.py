@@ -87503,7 +87503,8 @@ def test_weather_parsers_read_each_source():
 
 
 def test_weather_rules_age_stale_no_data_disagree_alerts():
-    section("weather: every number with its age; measured over 20 min is "
+    section("weather: every number says when it was last updated (a date "
+            "and time, never how long ago); measured over 20 min is "
             "amber STALE, over 45 min grey NO CURRENT DATA with no number; "
             "the forecast stale when this PC has not got it for 1 h or the "
             "NWS has not updated it for 18 h; sources 10 mph apart "
@@ -87520,20 +87521,26 @@ def test_weather_rules_age_stale_no_data_disagree_alerts():
     meas, fc = v["lines"][0], v["lines"][1]
     check(v["state"] == "ok" and meas["level"] == "ok" and
           fc["level"] == "ok", f"all fresh: {v}")
+    # The times the block says (Jeff, 2026-10-30): when, not how long
+    # ago, in the show's zone (no ltcplay_schedule.json here: America/
+    # Denver). WX_NOW is noon in Lehi; the reading is from 11:55.
     check(meas["text"] == "Measured, I-15 Point of the Mountain (UTALP): "
-          "12 mph, gusts 21 mph, from NNW (340°). 5 min old.",
+          "12 mph, gusts 21 mph, from NNW (340°). Last updated Oct 26, "
+          "11:55 AM.",
           f"the measured line: {meas['text']!r}")
     check(fc["text"] == "Forecast for this spot (NWS): 10 mph, gusts 18 "
-          "mph, from S (170°). Issued 44 min ago; this PC got it under 1 "
-          "min ago.",
+          "mph, from S (170°). NWS issued Oct 26, 11:15 AM. Last updated "
+          "Oct 26, 12:00 PM.",
           f"the forecast line: {fc['text']!r}")
-    check(v["banner"] and v["banner"][0].startswith(
-          "NWS WIND ADVISORY in effect until ") and "Checked under 1 min "
-          "ago." in v["banner"][0], f"the Wind Advisory banner: "
-                                    f"{v['banner']}")
+    check(v["banner"] == ["NWS WIND ADVISORY in effect until 6:00 PM. "
+                          "Last updated Oct 26, 12:00 PM."],
+          f"the Wind Advisory banner: {v['banner']}")
+    check(v["alerts_line"]["text"] == "NWS wind and fire alerts for this "
+          "spot: see above. Last updated Oct 26, 12:00 PM.",
+          f"the alerts line: {v['alerts_line']}")
     check(v["disagree"] == "" and v["internet"] == "",
           "2 mph apart: no disagreement")
-    check(v["advisory"].startswith("Advisory only"), "advisory only")
+    check("advisory" not in v, "no advisory only line (Jeff, 2026-10-30)")
     num = re.compile(r"\d+ mph")
     for when, lv in ((15 * 60, "ok"), (20 * 60 + 1, "stale"),
                      (45 * 60, "stale"), (45 * 60 + 1, "none"),
@@ -87545,8 +87552,9 @@ def test_weather_rules_age_stale_no_data_disagree_alerts():
             check(W.NO_DATA in ln["text"] and not num.search(ln["text"]),
                   f"no current data shows no number: {ln['text']!r}")
         else:
-            check(re.search(r"\d+ min old\.", ln["text"]),
-                  f"a number shown carries its age: {ln['text']!r}")
+            check(ln["text"].endswith(" Last updated Oct 26, 11:55 AM."),
+                  f"a number shown says when it was updated: "
+                  f"{ln['text']!r}")
     # The forecast (Jeff, 2026-10-28, item 15c): judged on when this PC
     # last GOT it from the NWS (over 1 h amber, over 6 h grey), and on the
     # NWS's own issue time only past 18 h, since the NWS often leaves a
@@ -87557,28 +87565,33 @@ def test_weather_rules_age_stale_no_data_disagree_alerts():
     check(fd["fetched_at"] == WX_NOW, f"the fetch time is kept: {fd}")
     issued = fd["issued"]
     fd["speed"] = [[0, 4e9, 8.0]]
+    # Issued 11:15:41 AM on Oct 26 (Denver).
     for issued_ago, got_ago, lv, words in (
             (3 * 3600 + 54 * 60, 6 * 60, "ok",
-             "Issued 3 h 54 min ago; this PC got it 6 min ago."),
-            (3 * 3600 + 54 * 60, 3600, "ok", "this PC got it 1 h ago."),
+             "NWS issued Oct 26, 11:15 AM. Last updated Oct 26, 3:03 PM."),
+            (3 * 3600 + 54 * 60, 3600, "ok", "Last updated Oct 26, 2:09 PM."),
             (5 * 3600, 3600 + 60, "stale",
-             "Stale because this PC has not got it from the NWS for 1 h 1 "
-             "min (the limit is 1 h)."),
-            (12 * 3600, 6 * 3600, "stale", "for 6 h (the limit is 1 h)"),
-            (18 * 3600, 6 * 60, "ok", "Issued 18 h ago;"),
+             "Last updated Oct 26, 3:14 PM. Stale because this PC has not "
+             "got it from the NWS within the 1 h limit."),
+            (12 * 3600, 6 * 3600, "stale", "Last updated Oct 26, 5:15 PM. "
+             "Stale because this PC"),
+            (18 * 3600, 6 * 60, "ok", "NWS issued Oct 26, 11:15 AM. Last "
+             "updated Oct 27, 5:09 AM."),
             (18 * 3600 + 60, 6 * 60, "stale",
-             "Stale because the NWS has not updated it for 18 h 1 min (it "
-             "normally does at least twice a day; the limit is 18 h)."),
+             "Stale because the NWS has not updated it within the 18 h "
+             "limit (it normally does at least twice a day)."),
             (8 * 3600, 6 * 3600 + 60, "none",
-             "This PC last got it from the NWS 6 h 1 min ago, over the 6 "
-             "h limit. Issued 8 h ago."),
-            (36 * 3600, 6 * 60, "stale", "updated it for 36 h"),
+             "This PC has not got it from the NWS within the 6 h limit. "
+             "Last updated Oct 26, 1:14 PM. NWS issued Oct 26, 11:15 AM."),
+            (36 * 3600, 6 * 60, "stale", "updated it within the 18 h limit"),
             (36 * 3600 + 60, 6 * 60, "none",
-             "The NWS has not updated it for 36 h 1 min, over the 36 h "
-             "limit."),
+             "The NWS has not updated it within the 36 h limit. NWS issued "
+             "Oct 26, 11:15 AM."),
             (3600, -16 * 60, "none",
              "Its time is in the future; check this PC's clock."),
-            (3600, -14 * 60, "ok", "this PC got it under 1 min ago.")):
+            # A fetch time a little ahead (this PC's clock behind): said
+            # as now, never as a time still to come.
+            (3600, -14 * 60, "ok", "Last updated Oct 26, 12:15 PM.")):
         t["wall"] = issued + issued_ago
         fd["fetched_at"] = t["wall"] - got_ago
         ln = w.view()["lines"][1]
@@ -87673,8 +87686,9 @@ def test_weather_backup_stations_and_why_no_data():
             "with none current it says NO CURRENT DATA and why, per source")
     from ltcplay import weather as W
     num = re.compile(r"\d+ mph")
-    stopped = WX_NOW - (3 * 3600 + 12 * 60)
-    at_ = W._clock_text(stopped)
+    # When, not how long ago (Jeff, 2026-10-30): UTALP's last reading at
+    # 8:48 AM, 3 h 12 min before noon in Lehi.
+    at_ = "Oct 26, 8:48 AM"
     old_utalp = _wx_mesonet(valid="2026-10-26T14:48:00Z")
 
     def run(cfg=None, **over):
@@ -87691,7 +87705,8 @@ def test_weather_backup_stations_and_why_no_data():
     w, net, v, ln = run()
     check(ln["source"] == "mesonet" and ln["level"] == "ok" and
           ln["text"] == "Measured, I-15 Point of the Mountain (UTALP): 12 "
-          "mph, gusts 21 mph, from NNW (340°). 5 min old." and
+          "mph, gusts 21 mph, from NNW (340°). Last updated Oct 26, 11:55 AM."
+          and
           v["disagree"] == "" and v["state"] == "ok",
           f"all fresh: the station, as before: {ln}")
     check(list(w.every) == ["mesonet", "awc", "alerts", "forecast"],
@@ -87705,9 +87720,10 @@ def test_weather_backup_stations_and_why_no_data():
     _w, _n, v, ln = run(mesonet=old_utalp)
     check(ln["source"] == "awc:KPVU" and ln["level"] == "backup" and
           ln["text"] == "Measured, backup station Provo airport (KPVU), 17 "
-          "mi away: 12 mph, gusts not reported, from S (180°). 4 min old. "
-          f"Using the backup because UTALP (Iowa mesonet) stopped reporting "
-          f"at {at_}, last reading 3 h 12 min ago.",
+          "mi away: 12 mph, gusts not reported, from S (180°). Last updated "
+          "Oct 26, 11:56 AM. "
+          f"Using the backup because UTALP (Iowa mesonet) stopped reporting"
+          f", last updated {at_}.",
           f"UTALP stalled: the backup, named, and why: {ln['text']!r}")
     check(v["state"] == "stale", f"a backup makes the block amber: {v}")
     # The review's case: UTALP 30 mph but STALE (25 min), Provo 8 mph
@@ -87718,10 +87734,11 @@ def test_weather_backup_stations_and_why_no_data():
                         awc=_wx_awc("KPVU", wspd=7) + _wx_kslc(wspd=7))
     check(ln["source"] == "mesonet" and ln["level"] == "stale" and
           ln["text"] == "Measured, I-15 Point of the Mountain (UTALP): 30 "
-          "mph, gusts 21 mph, from NNW (340°). 25 min old. STALE: over its "
-          "20 min limit. KPVU (aviationweather.gov) reads 8 mph, 4 min old, "
-          "current; KSLC (aviationweather.gov) reads 8 mph, 4 min old, "
-          "current. This line shows the highest reading." and
+          "mph, gusts 21 mph, from NNW (340°). Last updated Oct 26, 11:35 AM. "
+          "STALE: over its 20 min limit. KPVU (aviationweather.gov) reads 8 "
+          "mph, last updated Oct 26, 11:56 AM, current; KSLC "
+          "(aviationweather.gov) reads 8 mph, last updated Oct 26, 11:56 "
+          "AM, current. This line shows the highest reading." and
           "measured UTALP 30 mph, measured KPVU 8 mph, measured KSLC 8 mph"
           in v["disagree"],
           f"UTALP stale and higher: it leads, STALE, Provo beside it: "
@@ -87740,9 +87757,10 @@ def test_weather_backup_stations_and_why_no_data():
           ln["text"].startswith("Measured, backup station Provo airport "
                                 "(KPVU), 17 mi away: 35 mph, gusts 47 mph")
           and ln["text"].endswith(
-              "UTALP (Iowa mesonet) reads 12 mph, 5 min old, current; KSLC "
-              "(aviationweather.gov) reads 10 mph, 4 min old, current. This "
-              "line shows the highest reading.") and
+              "UTALP (Iowa mesonet) reads 12 mph, last updated Oct 26, 11:55 "
+              "AM, current; KSLC (aviationweather.gov) reads 10 mph, last "
+              "updated Oct 26, 11:56 AM, current. This line shows the "
+              "highest reading.") and
           "measured KPVU 35 mph, measured UTALP 12 mph, measured KSLC 10 "
           "mph" in v["disagree"],
           f"the highest current reading leads: {ln['text']!r}")
@@ -87750,13 +87768,15 @@ def test_weather_backup_stations_and_why_no_data():
     # is said; 9 mph lower is not.
     _w, _n, v, ln = run(awc=_wx_awc("KPVU", wspd=0) + _wx_kslc())
     check(ln["source"] == "mesonet" and ln["level"] == "ok" and
-          ln["text"].endswith("5 min old. KPVU (aviationweather.gov) reads 0 "
-                              "mph, 4 min old, current. This line shows the "
-                              "highest reading.") and
+          ln["text"].endswith("Last updated Oct 26, 11:55 AM. KPVU "
+                              "(aviationweather.gov) reads 0 mph, last "
+                              "updated Oct 26, 11:56 AM, current. This line "
+                              "shows the highest reading.") and
           "measured UTALP 12 mph, measured KPVU 0 mph" in v["disagree"],
           f"a backup 12 mph lower is said: {ln['text']!r}")
     _w, _n, v, ln = run(awc=_wx_awc("KPVU", wspd=3) + _wx_kslc())
-    check(ln["text"].endswith("5 min old.") and v["disagree"] == "",
+    check(ln["text"].endswith("Last updated Oct 26, 11:55 AM.") and
+          v["disagree"] == "",
           f"a backup 8 mph lower is not: {ln['text']!r}")
     # Down: offline, an HTTP error, no report, a report for one only.
     _w, _n, v, ln = run(mesonet=W.FetchError("no answer in 8 s",
@@ -87770,7 +87790,7 @@ def test_weather_backup_stations_and_why_no_data():
     _w, _n, v, ln = run(mesonet=old_utalp, awc=204)
     check(ln["level"] == "none" and ln["source"] == "" and
           ln["text"] == f"Measured wind: {W.NO_DATA}. UTALP (Iowa mesonet) "
-          f"stopped reporting at {at_}, last reading 3 h 12 min ago. KPVU "
+          f"stopped reporting, last updated {at_}. KPVU "
           "(aviationweather.gov) answered with no usable reading: "
           "aviationweather.gov has no report from KPVU in the last 2 h. "
           "KSLC (aviationweather.gov) answered with no usable reading: "
@@ -87783,8 +87803,8 @@ def test_weather_backup_stations_and_why_no_data():
     check(ln["source"] == "awc:KSLC" and ln["text"].startswith(
           "Measured, backup station Salt Lake City airport (KSLC), 25 mi "
           "away: 10 mph,") and ln["text"].endswith(
-          f"Using the backup because UTALP (Iowa mesonet) stopped reporting "
-          f"at {at_}, last reading 3 h 12 min ago; KPVU (aviationweather.gov)"
+          f"Using the backup because UTALP (Iowa mesonet) stopped reporting"
+          f", last updated {at_}; KPVU (aviationweather.gov)"
           " answered with no usable reading: aviationweather.gov has no "
           "report from KPVU in the last 2 h."),
           f"one airport reporting: {ln['text']!r}")
@@ -87796,8 +87816,9 @@ def test_weather_backup_stations_and_why_no_data():
         check(ln["level"] == lv, f"Provo {mins} min old reads {lv}: {ln}")
         if lv == "none":
             check(not num.search(ln["text"]) and
-                  f"last reading {mins // 60} h {mins % 60} min ago" in
-                  ln["text"], f"past its limit: no number: {ln['text']!r}")
+                  "KPVU (aviationweather.gov) stopped reporting, last "
+                  "updated Oct 26, 9:59 AM" in ln["text"],
+                  f"past its limit: no number: {ln['text']!r}")
     _w, _n, v, ln = run(cfg={"station_limits": {"kpvu": {
         "stale_min": 30, "no_data_min": 60}}}, mesonet=old_utalp,
         awc=_wx_awc("KPVU", obs=WX_NOW - 70 * 60))
@@ -87805,16 +87826,18 @@ def test_weather_backup_stations_and_why_no_data():
     # A higher STALE backup leads over a current lower UTALP, marked.
     _w, _n, v, ln = run(awc=_wx_awc("KPVU", obs=WX_NOW - 80 * 60, wspd=30))
     check(ln["source"] == "awc:KPVU" and ln["level"] == "stale" and
-          "1 h 20 min old. STALE: over its 75 min limit. UTALP (Iowa "
-          "mesonet) reads 12 mph, 5 min old, current." in ln["text"],
+          "Last updated Oct 26, 10:40 AM. STALE: over its 75 min limit. "
+          "UTALP (Iowa mesonet) reads 12 mph, last updated Oct 26, 11:55 "
+          "AM, current." in ln["text"],
           f"a higher STALE backup leads, marked: {ln['text']!r}")
     # Nothing current: the highest STALE reading, amber.
     _w, _n, v, ln = run(mesonet=_wx_mesonet(valid="2026-10-26T17:35:00Z"),
                         awc=_wx_awc("KPVU", obs=WX_NOW - 80 * 60, wspd=30))
     check(ln["source"] == "awc:KPVU" and ln["level"] == "stale" and
-          ln["text"].endswith("UTALP (Iowa mesonet) reads 12 mph, 25 min "
-                              "old, STALE (over its 20 min limit). This "
-                              "line shows the highest reading."),
+          ln["text"].endswith("UTALP (Iowa mesonet) reads 12 mph, last "
+                              "updated Oct 26, 11:35 AM, STALE (over its 20 "
+                              "min limit). This line shows the highest "
+                              "reading."),
           f"only STALE ones: the highest, amber: {ln['text']!r}")
     # The setting moves them.
     w2, net2, _t = _wx_service(tempfile.mkdtemp(), _wx_all_good(),
@@ -88015,13 +88038,15 @@ def test_weather_failure_backoff_and_disk_cache():
                                cfg={"backup_stations": []})
     v = w7.view()
     check(v["lines"][0]["level"] == "stale" and
-          "35 min old" in v["lines"][0]["text"],
+          v["lines"][0]["text"].endswith(" Last updated Oct 26, 11:55 AM."),
           f"after a restart, half an hour later, the saved reading is "
-          f"35 min old and amber: {v['lines'][0]}")
+          f"35 min old, amber, and says when it was updated: "
+          f"{v['lines'][0]}")
     check(v["lines"][1]["level"] == "ok" and net7.calls == [],
           "the saved forecast is shown before any fetch")
-    check(v["banner"] and "Checked 30 min ago" in v["banner"][0],
-          f"the saved alert check keeps its age: {v['banner']}")
+    check(v["banner"] and v["banner"][0].endswith(
+          "Last updated Oct 26, 12:00 PM."),
+          f"the saved alert check keeps its time: {v['banner']}")
     # Another station's saved reading is not this one's.
     w8, _n, _t = _wx_service(work, {}, cfg={"mesonet_station": "UTPOM"})
     check(w8.src["mesonet"]["data"] is None,
@@ -88171,7 +88196,7 @@ def test_weather_is_display_only_and_off_the_show_path():
             mods.add(("." * node.level) + (node.module or "") + ":" +
                      ",".join(a.name for a in node.names))
     allowed = {"json", "math", "os", "re", "socket", "threading", "time",
-               "urllib.error", "urllib.request",
+               "urllib.error", "urllib.request", "zoneinfo",
                "datetime:datetime,timezone"}
     check(mods <= allowed, f"weather.py imports only the standard library "
                            f"it needs: {sorted(mods - allowed)}")
@@ -88359,6 +88384,157 @@ def test_weather_check_command():
     print("  ok")
 
 
+def _wx_no_ago(text, what):
+    """`text` says when, never how long ago, and has no advisory only
+    line (Jeff, 2026-10-30). The NWS's own event names (a WIND ADVISORY)
+    are the alert itself, not the old line, and are left alone."""
+    t = re.sub(r"(?i)\b(wind|blowing dust) advisory\b", "", str(text))
+    check(not re.search(r"(?i)\bago\b", t), f"{what} says 'ago': {text!r}")
+    check(not re.search(r"(?i)\badvisory\b", t),
+          f"{what} says 'Advisory': {text!r}")
+
+
+def test_weather_says_when_not_how_long_ago():
+    section("weather (Jeff, 2026-10-30): the block says when each reading "
+            "was last updated, as a date and a 12 hour time in the show's "
+            "time zone (ltcplay_schedule.json's, else America/Denver), and "
+            "when the NWS issued its forecast, never how long ago; no "
+            "reading says No reading yet with no time; a STALE one still "
+            "says so; a time ahead of this PC's clock is said as now; no "
+            "advisory only line anywhere. The states are judged as before")
+    import ast as _ast
+    from ltcplay import weather as W
+    den = W.zone("America/Denver")
+    check(den is not None, "this machine knows America/Denver")
+    # The words for a time: 23:59 local is that day, not the next (UTC is
+    # already the next day); noon and midnight; the fall back night's
+    # repeated hour; the spring forward morning.
+    for utc, want in (("2026-10-26T18:00:00Z", "Oct 26, 12:00 PM"),
+                      ("2026-11-01T05:59:00Z", "Oct 31, 11:59 PM"),
+                      ("2026-11-01T06:00:00Z", "Nov 1, 12:00 AM"),
+                      ("2026-11-01T07:30:00Z", "Nov 1, 1:30 AM"),
+                      ("2026-11-01T08:30:00Z", "Nov 1, 1:30 AM"),
+                      ("2026-11-01T09:30:00Z", "Nov 1, 2:30 AM"),
+                      ("2027-03-14T08:59:00Z", "Mar 14, 1:59 AM"),
+                      ("2027-03-14T09:00:00Z", "Mar 14, 3:00 AM"),
+                      ("2026-12-31T06:59:00Z", "Dec 30, 11:59 PM"),
+                      ("2027-01-01T06:59:00Z", "Dec 31, 11:59 PM")):
+        got = W.when_text(W.parse_time(utc), den)
+        check(got == want, f"{utc} in Denver is {want!r}: {got!r}")
+    t0 = W.parse_time("2026-10-26T18:00:00Z")
+    check(W.when_text(t0 + 600, den, now=t0) == "Oct 26, 12:00 PM" and
+          W.updated_text(t0 - 60, den, now=t0) ==
+          "Last updated Oct 26, 11:59 AM",
+          "a time ahead of now is said as now; Last updated")
+    # The show's zone: ltcplay_schedule.json's, read again when it
+    # changes; a zone this PC does not know, or no file, is Denver's.
+    work = tempfile.mkdtemp()
+    w, _n, t = _wx_service(work, _wx_all_good(), cfg={"backup_stations": []})
+    w.poll_once()
+    check(w.zone().key == "America/Denver", f"no file: {w.zone()}")
+    rule = os.path.join(work, W.RULE_FILE)
+
+    def put_zone(z):
+        with open(rule, "w", encoding="utf-8") as fh:
+            json.dump({"timezone": z, "weekly": {}}, fh)
+        st = os.stat(rule)
+        os.utime(rule, ns=(st.st_atime_ns, st.st_mtime_ns + 10 ** 9))
+    put_zone("America/New_York")
+    v = w.view()
+    check(v["lines"][0]["text"].endswith("Last updated Oct 26, 1:55 PM.")
+          and "until 8:00 PM." in v["banner"][0],
+          f"the schedule's zone (New York): {v['lines'][0]['text']!r} "
+          f"{v['banner']}")
+    put_zone("Not/AZone")
+    check(w.view()["lines"][0]["text"].endswith(
+          "Last updated Oct 26, 11:55 AM."), "an unknown zone: Denver's")
+    with open(rule, "w", encoding="utf-8") as fh:
+        fh.write("{not json")
+    check(W.show_zone(work).key == "America/Denver",
+          "an unreadable schedule file: Denver's")
+    os.remove(rule)
+    # A fresh reading, then the same reading STALE: the words still say
+    # STALE (the page puts STALE. before the line), and when.
+    ln = w.view()["lines"][0]
+    check(ln["level"] == "ok" and ln["text"] == "Measured, I-15 Point of "
+          "the Mountain (UTALP): 12 mph, gusts 21 mph, from NNW (340°). "
+          "Last updated Oct 26, 11:55 AM.", f"fresh: {ln['text']!r}")
+    t["wall"] = WX_NOW + 25 * 60
+    ln = w.view()["lines"][0]
+    check(ln["level"] == "stale" and ln["age_s"] == 30 * 60 and
+          ln["text"].endswith("Last updated Oct 26, 11:55 AM.") and
+          ln["sources"][0]["text"] == "the last UTALP (Iowa mesonet) "
+          "reading is stale, over its 20 min limit, last updated Oct 26, "
+          "11:55 AM", f"stale: {ln}")
+    # The forecast says when the NWS issued it and when this PC got it.
+    t["wall"] = WX_NOW
+    fc = w.view()["lines"][1]
+    check(fc["text"].endswith("NWS issued Oct 26, 11:15 AM. Last updated "
+                              "Oct 26, 12:00 PM.") and
+          fc["issued_age_s"] == 44 * 60 + 19 and fc["age_s"] == 0,
+          f"the NWS issue time and this PC's: {fc}")
+    # No reading yet: said, with no time.
+    w0, _n0, _t0 = _wx_service(tempfile.mkdtemp(), {},
+                               cfg={"backup_stations": []})
+    v0 = w0.view()
+    check(v0["lines"][0]["text"] == f"Measured wind: {W.NO_DATA}. UTALP "
+          f"(Iowa mesonet): no reading yet." and
+          v0["lines"][1]["text"] == f"Forecast for this spot (NWS): "
+          f"{W.NO_DATA}. No reading yet." and
+          v0["alerts_line"]["text"] == "NWS wind and fire alerts: no "
+          "reading yet." and
+          not any("Last updated" in ln["text"] for ln in v0["lines"]),
+          f"no reading yet, no time: {v0}")
+    # Every sentence the block and the self check can say: no 'ago', no
+    # advisory only, no advisory field.
+    views = [v0, w.view()]
+    for when in (25 * 60, 50 * 60, 8 * 3600, 40 * 3600, -3600):
+        t["wall"] = WX_NOW + when
+        views.append(w.view())
+    t["wall"] = WX_NOW
+    w2, _n2, _t2 = _wx_service(tempfile.mkdtemp(), _wx_all_good(),
+                               cfg={"nws_station": "KU42"})
+    w2.poll_once()
+    views.append(w2.view())
+    w2.src["mesonet"]["data"]["valid"] = WX_NOW - 3 * 3600
+    w2.src["alerts"]["data"]["checked"] = WX_NOW - 3600
+    views.append(w2.view())
+    w3, _n3, _t3 = _wx_service(tempfile.mkdtemp(), {})
+    w3.poll_once()
+    views += [w3.view(), W.view_when_missing(),
+              W.judge({}, W.check_config(None), WX_NOW, "bad key.")]
+    for vv in views:
+        check("advisory" not in vv, f"no advisory field: {sorted(vv)}")
+        _wx_no_ago(json.dumps(vv, ensure_ascii=False), "the weather view")
+    lines = []
+    W.run_check(work, get=_WxNet(_wx_all_good()), out=lines.append,
+                wall=lambda: WX_NOW)
+    text = "\n".join(lines)
+    check("12 mph, gusts 21 mph, from NNW (340°), last updated Oct 26, "
+          "11:55 AM" in text and "NWS issued Oct 26, 11:15 AM" in text,
+          f"the self check says when: {text[-1200:]}")
+    _wx_no_ago(re.sub(r"(?m)^  [{\[].*$", "", text), "the weather check")
+    # And every string weather.py can say, read from its source (the NWS
+    # event names it filters on aside).
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(here, "ltcplay", "weather.py"),
+               encoding="utf-8").read()
+    tree = _ast.parse(src)
+    docs = {id(n.body[0].value) for n in _ast.walk(tree)
+            if isinstance(n, (_ast.Module, _ast.FunctionDef, _ast.ClassDef))
+            and n.body and isinstance(n.body[0], _ast.Expr)
+            and isinstance(n.body[0].value, _ast.Constant)}
+    said = [n.value for n in _ast.walk(tree)
+            if isinstance(n, _ast.Constant) and isinstance(n.value, str)
+            and id(n) not in docs and n.value not in W.FIRE_EVENTS]
+    check(len(said) > 100, f"weather.py's strings are read: {len(said)}")
+    for x in said:
+        _wx_no_ago(x, "a weather.py string")
+    check(not hasattr(W, "ADVISORY") and not hasattr(W, "age_text"),
+          "no ADVISORY and no age_text in weather.py")
+    print("  ok")
+
+
 def _wx_page_view():
     """A full Weather view, as the engine serves it, for the page tests."""
     from ltcplay import weather as W
@@ -88383,7 +88559,7 @@ function go(){
       flames_bottom:fl.bottom + scrollY, right:r.right, vw:innerWidth,
       cut:[...document.querySelectorAll("#wx-lines div")].filter(d => d.scrollWidth > d.clientWidth + 1).map(d => d.textContent),
       lines:[...document.querySelectorAll("#wx-lines div")].map(d => [d.className, d.textContent, getComputedStyle(d).color]),
-      foot:document.getElementById("wx-foot").textContent,
+      foot:!!document.getElementById("wx-foot"),
       where:document.getElementById("wx-where").textContent,
       buttons:box.querySelectorAll("button,input,a").length,
       sw:document.scrollingElement.scrollWidth};
@@ -88434,9 +88610,9 @@ let b = wxBlock(V, 3);
 t(b.cls === "stale", "a stale line makes the block amber: " + b.cls);
 t(b.lines[0].cls === "alert" && /^NWS WIND ADVISORY in effect/.test(b.lines[0].text), "the alert leads: " + JSON.stringify(b.lines[0]));
 t(b.lines[1].cls === "alert" && /^Sources disagree, verify on site/.test(b.lines[1].text), "then the disagreement");
-t(b.lines[2].cls === "stale" && /^STALE\. Measured/.test(b.lines[2].text) && / 27 min old\./.test(b.lines[2].text), "the measured line, amber, its age: " + b.lines[2].text);
-t(b.lines[3].cls === "ok" && /^Forecast for this spot \(NWS\): 40 mph/.test(b.lines[3].text), "the forecast line: " + b.lines[3].text);
-t(/^Advisory only/.test(b.foot), "advisory only, in the foot");
+t(b.lines[2].cls === "stale" && /^STALE\. Measured/.test(b.lines[2].text) && / Last updated Oct 26, 11:55 AM\.$/.test(b.lines[2].text), "the measured line, amber, STALE in words, when it was updated: " + b.lines[2].text);
+t(b.lines[3].cls === "ok" && /^Forecast for this spot \(NWS\): 40 mph/.test(b.lines[3].text) && / NWS issued Oct 26, 11:15 AM\. Last updated Oct 26, 12:00 PM\.$/.test(b.lines[3].text), "the forecast line: " + b.lines[3].text);
+t(!("foot" in b) && !/advisory only/i.test(JSON.stringify(b)) && !/\bago\b/i.test(JSON.stringify(b.lines)), "no advisory only and no 'ago' (Jeff, 2026-10-30): " + JSON.stringify(b));
 b = wxBlock(V, 61);
 t(b.cls === "none" && b.lines.length === 1 && /^NO CURRENT DATA, use on-site wind check/.test(b.lines[0].text) && !/mph/.test(JSON.stringify(b)), "61 s without the engine: grey, no number: " + JSON.stringify(b));
 t(wxBlock(V, null).cls === "none" && wxBlock(null, 1).cls === "none", "never heard: grey");
@@ -88459,6 +88635,39 @@ console.log(JSON.stringify(out));
             bad = None
         check(r.returncode == 0 and bad == [],
               f"wxBlock, in node: {r.stdout[-800:]!r} {r.stderr[-400:]!r}")
+        # 2.0's wind button (remote2.html, wxLine, on 1.0's wxBlock) and
+        # its sheet and help: no advisory only, no 'ago' (Jeff,
+        # 2026-10-30).
+        _one, two = _ui2_pages()
+        wl = _js_function(two, "wxLine")
+        check(wl is not None, "2.0 has wxLine")
+        check("Advisory" not in two and "v.foot" not in two and
+              "<dt>Wind</dt><dd>Tap it for each reading and when it was "
+              "last updated.</dd>" in two,
+              "2.0 says no advisory only, in the button, sheet or help")
+        js2 = logic + (wl or "") + "const V = " + json.dumps(view) + ";\n" + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+let L = wxLine(V, 3);
+t(L.cls === "alert" && L.text === "Wind 12 mph, stale. NWS alert.", "an alert: " + JSON.stringify(L.text));
+L = wxLine(Object.assign({}, V, {banner:[]}), 3);
+t(L.cls === "stale" && L.text === "Wind 12 mph, stale", "stale: " + JSON.stringify(L.text));
+L = wxLine(Object.assign({}, V, {banner:[], state:"ok", lines:[Object.assign({}, V.lines[0], {level:"ok"})]}), 3);
+t(L.cls === "ok" && L.text === "Wind 12 mph", "fresh: " + JSON.stringify(L.text));
+t(wxLine(V, 61).text === "NO CURRENT DATA, use on-site wind check", "the engine quiet: grey");
+t(wxLine(null, null).text === "Wind: waiting", "never heard");
+const all = [wxLine(V, 3), wxLine(V, 61), wxLine(null, null), wxLine({state:"error"}, 1)].map(x => x.text + " " + JSON.stringify(x.v)).join(" ");
+t(!/advisory only/i.test(all) && !/\bago\b/i.test(all.replace(/heardAgoS/g, "")), "no advisory only, no ago: " + all);
+console.log(JSON.stringify(out));
+"""
+        r = _node_js(node, js2, capture_output=True, text=True, timeout=60)
+        try:
+            bad = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            bad = None
+        check(r.returncode == 0 and bad == [],
+              f"2.0's wxLine, in node: {r.stdout[-800:]!r} "
+              f"{r.stderr[-400:]!r}")
     else:
         check(not IN_CI, "node is missing on this CI runner")
     chrome = _find_chromium()
@@ -88484,7 +88693,9 @@ console.log(JSON.stringify(out));
               texts[1].startswith("Sources disagree, verify on site") and
               texts[2].startswith("STALE. Measured, I-15 Point of the "
                                   "Mountain (UTALP)") and
-              m["foot"].startswith("Advisory only") and
+              m["foot"] is False and
+              not any("dvisory only" in x or re.search(r"\bago\b", x)
+                      for x in texts) and
               m["where"].startswith("Thanksgiving Point area"),
               f"{w}x{h}: the block reads right: {m}")
         check(m["lines"][2][2] == "rgb(245, 160, 30)",
@@ -93145,6 +93356,7 @@ if __name__ == "__main__":
         test_weather_settings_are_checked,
         test_weather_is_display_only_and_off_the_show_path,
         test_weather_check_command,
+        test_weather_says_when_not_how_long_ago,
         test_weather_block_on_the_rack_screen,
         test_waver_head_settle_may_be_zero,
         test_open_beyond_window_finder_and_front,
