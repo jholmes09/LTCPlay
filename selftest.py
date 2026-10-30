@@ -100672,6 +100672,8 @@ def test_fireball_timeline_docs_in_plain_words():
                  "the same window; longer ends it",
                  "a Hold under 0.1 s with an instant Resume rides through",
                  "under-charged, and the journal says so too",
+                 "A new charge also waits until the charge record says "
+                 "PENDING on disk",
                  "under any\nspelling",
                  "not fired in this play", "next time a show cue starts",
                  "finishes its own stages, Valve Open included",
@@ -100700,7 +100702,7 @@ def test_fireball_timeline_docs_in_plain_words():
                  "the next charge in the FSEQ goes out again",
                  "A charge the FSEQ itself turns off has ended",
                  "The fireball must be on 55 to 59",
-                 "the charge record watches nothing",
+                 "both tanks become NOT KNOWN on the charge record",
                  "No fireball group found at all",
                  "Purge (59) is always zero",
                  "each get one charge until a shot (57) or a Purge",
@@ -101832,9 +101834,17 @@ class _FbcTank:
     def __init__(self, fuel="empty", air="empty"):
         self.tanks = {"fuel": fuel, "air": air}
         self.last_sent = bytes(512)
+        # charge_ready's answers in turn (the last one repeats); asked
+        # counts the questions.
+        self.ready = ["ok"]
+        self.asked = 0
 
     def state(self, tank):
         return self.tanks[tank]
+
+    def charge_ready(self):
+        self.asked += 1
+        return self.ready.pop(0) if len(self.ready) > 1 else self.ready[0]
 
 
 def _fbq_rig(stages, source="timeline", cue="Show", show_len_s=600.0,
@@ -102302,6 +102312,95 @@ def test_fireball_cues_rules():
         check(sum(1 for g in got if g[57]) == 30 and
               sum(1 for g in got if g[56]) == 30,
               "the Igniter and Valve Open are not charges: they run")
+        # Write first (round-5 review): a new automatic charge waits for
+        # the charge record's mark on disk, frame by frame, and is
+        # skipped, said and journaled as a fault when it cannot be saved.
+        R = _fbq_rig([_st("fuel", "00:00:01:00", 1),
+                      _st("valve", "00:00:03:00", 0.2)])
+        rigs.append(R)
+        R.tank.ready = ["wait", "wait", "wait", "ok"]
+        R.frame(0)
+        check(R.tank.asked == 1, "the mark is asked for as the play starts")
+        got = [R.frame(f)[54] for f in range(1, 70)]
+        on = [f + 1 for f, v in enumerate(got) if v]
+        check(on and on[0] == 32 and on[-1] == 59,
+              f"held off while the mark is on its way, then on to the end "
+              f"of its window: {on[:2]}..{on[-1:]}")
+        R = _fbq_rig([_st("fuel", "00:00:01:00", 1),
+                      _st("air", "00:00:01:15", 1)])
+        rigs.append(R)
+        R.tank.ready = ["failed"]
+        got = [R.frame(f) for f in range(0, 90)]
+        msgs = [m for m in R.fq.messages if "cannot be saved" in m]
+        check(not any(g[54] or g[55] for g in got) and len(msgs) == 2 and
+              "automatic charging is off" in msgs[0] and
+              any(k.get("fault") and "cannot be saved" in t
+                  for t, k in R.lines),
+              f"the mark cannot be written: no automatic charge, said, a "
+              f"fault: {R.fq.messages}")
+        R = _fbq_rig([], source="fseq")
+        rigs.append(R)
+        R.tank.ready = ["wait", "wait", "ok"]
+        base = [0] * 512
+        base[54] = 255
+        got = [R.frame(f, base=base)[54] for f in range(0, 6)]
+        check(got == [0, 0, 255, 255, 255, 255],
+              f"an FSEQ's Fuel Charge waits for the mark too: {got}")
+        R = _fbq_rig([], source="fseq")
+        rigs.append(R)
+        R.tank.ready = ["failed"]
+        got = [R.frame(f, base=base)[54] for f in range(0, 6)]
+        check(got == [0] * 6 and any("cannot be saved" in m
+                                     for m in R.fq.messages),
+              f"and is not sent when it cannot be saved: {got}")
+        # A landing inside an FSEQ charge while the mark is on its way:
+        # held until the FSEQ turns it off, never a late start past the
+        # landing guard; a timeline stage the play landed inside likewise.
+        R = _fbq_rig([], source="fseq")
+        rigs.append(R)
+        R.tank.ready = ["wait", "ok"]
+        got = [R.frame(f, base=base)[54] for f in range(60, 66)]
+        got.append(R.frame(66)[54])
+        got.append(R.frame(67, base=base)[54])
+        check(got == [0, 0, 0, 0, 0, 0, 0, 255],
+              f"landed inside an FSEQ charge: held until it ends: {got}")
+        R = _fbq_rig([_st("fuel", "00:00:01:00", 2)])
+        rigs.append(R)
+        R.tank.ready = ["wait", "wait", "ok"]   # the play's ask, the frame's
+        got = [R.frame(f)[54] for f in range(45, 95)]
+        check(not any(got) and not [m for m in R.fq.messages if m],
+              f"landed inside the Fuel window while the mark was on its "
+              f"way: quiet, as the landing guard: {got.count(255)}")
+        # With the real charge record: the first FSEQ charge frame waits
+        # for the write, then goes; a folder that cannot be written means
+        # no automatic charge.
+        from ltcplay import fireball_charge as _FC
+        wfc = tempfile.mkdtemp()
+        try:
+            trr = _FC.ChargeTracker(wfc, threaded=False)
+            trr.pump()
+            R = _fbq_rig([], source="fseq", tank=trr)
+            rigs.append(R)
+            g0 = R.frame(0, base=base)[54]
+            trr.pump()
+            g1 = R.frame(1, base=base)[54]
+            check(g0 == 0 and g1 == 255 and trr.pending,
+                  f"the real record: held one frame, then on: {g0} {g1}")
+            trf = _FC.ChargeTracker(wfc, threaded=False)
+            trf._write = lambda doc: (_ for _ in ()).throw(
+                PermissionError(13, "folder locked"))
+            trf.confirm_empty("Andy")
+            trf.pump()
+            R = _fbq_rig([], source="fseq", tank=trf)
+            rigs.append(R)
+            got = []
+            for f in range(0, 5):
+                got.append(R.frame(f, base=base)[54])
+                trf.pump()
+            check(got == [0] * 5, f"the real record, a folder that cannot "
+                                  f"be written: no automatic charge: {got}")
+        finally:
+            shutil.rmtree(wfc, ignore_errors=True)
         # Edits during a show.
         R = _fbq_rig([_st("fuel", "00:00:01:00", 1),
                       _st("air", "00:00:04:00", 1),

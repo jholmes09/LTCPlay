@@ -1006,8 +1006,8 @@ FSEQ:
   moment later, or a flicker effect, never charges a charged tank again.
 - **The fireball must be on 55 to 59.** If flamesafe's fireball group is
   on other channels, no show fires its fireball (its own channels are held
-  at zero), the charge record watches nothing, and the screens say why,
-  until the group is on 55 to 59.
+  at zero), both tanks become NOT KNOWN on the charge record, and the
+  screens say why, until the group is on 55 to 59.
 - **No fireball group found at all** in flamesafe's config: 55 to 59 are
   still guarded for every show, whatever is wired to them. Purge (59) is
   always zero, and Fuel (55) and Air (56) each get one charge until a
@@ -1027,7 +1027,10 @@ FSEQ:
   back like any flame cue does, **except a charge** (below).
 - **Never a double charge.** The Fuel or Air stage turns its channel on
   only while that tank is EMPTY (see the charge record below), or while it
-  carries on the very charge it started. Otherwise it is skipped for the
+  carries on the very charge it started. A new charge also waits until
+  the charge record says PENDING on disk (below); if that cannot be
+  saved, the stage is skipped: "the charge record cannot be saved:
+  automatic charging is off". Otherwise it is skipped for the
   rest of that play, and the journal and every screen's status say so
   once, for example
   "Fuel already charged: the Fuel stage was skipped (no double charge)."
