@@ -861,10 +861,23 @@ he triggers it."
 - **What it is.** One DMX channel on the flame universe (channel 100, on
   at 255), not a flame: no safety channel, no hold to arm. flamesafe
   writes the on value itself; the show file never drives it.
+- **On the screen.** Interface 2.0, the SHOW tab, the Fuel pump row
+  under the hazers: the pump's state ("Off", "Pump on: 4:12 left", or
+  "Waiting for flamesafe", or "flamesafe has it on" when flamesafe still
+  passes it with LTC Player off: press Pump off), the run time field, **Fuel pump: On** and
+  **Pump off**. Type the run time, then tap Fuel pump: On. When On cannot
+  be pressed it is greyed and says why in a few words. Pump off is never
+  greyed. The row is there only when `flamesafe.json` lists a pump.
+  When On cannot be pressed, the line under the row says why in full.
+  Interface 1.0 and the Stream Deck have no pump control. Every Abort
+  turns the pump off, and so does every Stop that is carried out (the
+  Stream Deck's Stop always is); a Stop that is refused, such as 1.0's
+  plain Stop during a live show, leaves the pump as it was.
 - **Run time.** The default is **5:00**: unless you set another time
   before you turn it on, the pump runs 5 minutes and turns off by itself.
   To run it longer or shorter, set the time first, in minutes and
-  seconds. The ceiling is **60:00**: a longer time is refused and says
+  seconds (4:30) or whole minutes (5). The field goes back to 5:00 each
+  time the pump turns off. The ceiling is **60:00**: a longer time is refused and says
   so (an admin can change the ceiling, `pump_max_s` in
   `ltcplay_remote.json`, up to 4 hours). Turning it on while it runs is
   refused, and never adds time: press Pump off, then start it again with
