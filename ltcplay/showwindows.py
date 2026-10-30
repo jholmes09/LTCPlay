@@ -76,6 +76,8 @@ APP_SETTLE_S = 60.0       # after a BEYOND/MadMapper window appears
 OPENED_S = 10.0           # an Open BEYOND press this long before it came up
 MAX_RAISES = 5            # per covering window, then said once and left
 INPUT_QUIET_S = 5.0       # no foreground taken this soon after any input
+FOREGROUND_IN_USE_S = 60.0   # the window in front, used this recently: kept
+TASKBAR = ("Shell_TrayWnd", "Shell_SecondaryTrayWnd")
 OPENED_FILE = "beyond-opened"   # written by the engine's Open BEYOND
 
 # What a person does in MadMapper to turn the output on, for the alert,
@@ -306,6 +308,13 @@ class Win32:
                  [W.HANDLE, W.DWORD, W.LPWSTR, ctypes.POINTER(W.DWORD)]),
                 (self.k.CloseHandle, W.BOOL, [W.HANDLE]),
                 (self.k.GetCurrentThreadId, W.DWORD, []),
+                (self.u.GetClassNameW, ctypes.c_int,
+                 [W.HWND, W.LPWSTR, ctypes.c_int]),
+                (self.u.GetShellWindow, W.HWND, []),
+                (self.k.GetProcessTimes, W.BOOL,
+                 [W.HANDLE] + [ctypes.POINTER(W.FILETIME)] * 4),
+                (self.k.GetSystemTimeAsFileTime, None,
+                 [ctypes.POINTER(W.FILETIME)]),
                 (self.k.GetTickCount, W.DWORD, [])):
             fn.restype = res
             fn.argtypes = args
@@ -364,20 +373,25 @@ class Win32:
         u.GetWindowTextW(hwnd, buf, 512)
         style = int(u.GetWindowLongW(hwnd, -16)) & 0xFFFFFFFF
         ex = int(u.GetWindowLongW(hwnd, -20)) & 0xFFFFFFFF
-        return {"seethrough": self._seethrough(hwnd, ex),"hwnd": int(hwnd), "pid": pid, "thread": thread,
+        cbuf = c.create_unicode_buffer(256)
+        u.GetClassNameW(hwnd, cbuf, 256)
+        frame = self._frame(hwnd)
+        return {"hwnd": int(hwnd), "pid": pid, "thread": thread,
+                "seethrough": self._seethrough(hwnd, ex),
+                "cls": cbuf.value,
                 "image": images[pid], "title": buf.value,
-                "rect": (rc.left, rc.top, rc.right, rc.bottom),
+                # The visible frame (DWM), not the window's invisible
+                # resize borders, where it can be read (review B round 4).
+                "rect": frame or (rc.left, rc.top, rc.right, rc.bottom),
                 "visible": True, "minimized": bool(u.IsIconic(hwnd)),
                 "caption": (style & WS_CAPTION) == WS_CAPTION,
                 "owner": int(u.GetWindow(hwnd, 4) or 0)}
 
     def _seethrough(self, hwnd, ex):
         """A window the eye sees through or clicks through (a game
-        overlay, a notification layer): WS_EX_TRANSPARENT, a layered window
-        at zero alpha, or a topmost tool window. It hides nothing."""
+        overlay): WS_EX_TRANSPARENT, or a layered window at zero alpha. It
+        hides nothing. (An opaque topmost tool window does hide.)"""
         if ex & 0x20:                                # WS_EX_TRANSPARENT
-            return True
-        if ex & 0x80 and ex & 0x8:                   # TOOLWINDOW + TOPMOST
             return True
         if ex & 0x80000:                             # WS_EX_LAYERED
             try:
@@ -391,6 +405,51 @@ class Win32:
             except (OSError, AttributeError):
                 pass
         return False
+
+    def _frame(self, hwnd):
+        try:
+            if not hasattr(self, "_dwm"):
+                self._dwm = self._c.WinDLL("dwmapi")
+            r = self._w.RECT()
+            old = self._dpi()
+            try:
+                ok = self._dwm.DwmGetWindowAttribute(
+                    self._w.HWND(hwnd), 9, self._c.byref(r),
+                    self._c.sizeof(r)) == 0
+            finally:
+                self._undpi(old)
+            if ok and r.right > r.left and r.bottom > r.top:
+                return (r.left, r.top, r.right, r.bottom)
+        except (OSError, AttributeError):
+            pass
+        return None
+
+    def session_age_s(self):
+        """Seconds since this sign-in's shell (explorer.exe, the desktop
+        window's process) started, or None."""
+        c, W = self._c, self._w
+        self.u.GetShellWindow.restype = W.HWND
+        hwnd = self.u.GetShellWindow()
+        if not hwnd:
+            return None
+        pid = W.DWORD(0)
+        self.u.GetWindowThreadProcessId(hwnd, c.byref(pid))
+        h = self.k.OpenProcess(0x1000, False, pid.value)
+        if not h:
+            return None
+        try:
+            ct, et, kt, ut = (W.FILETIME() for _ in range(4))
+            if not self.k.GetProcessTimes(h, c.byref(ct), c.byref(et),
+                                          c.byref(kt), c.byref(ut)):
+                return None
+            now = W.FILETIME()
+            self.k.GetSystemTimeAsFileTime(c.byref(now))
+
+            def v(f):
+                return (f.dwHighDateTime << 32) | f.dwLowDateTime
+            return (v(now) - v(ct)) / 1e7
+        finally:
+            self.k.CloseHandle(h)
 
     def uptime_s(self):
         """Seconds since Windows started (GetTickCount64)."""
@@ -628,6 +687,10 @@ def inset(rect, px=16):
     return (l + px, t + px, r - px, b - px)
 
 
+def is_taskbar(w):
+    return w.get("cls") in TASKBAR
+
+
 def is_app(w):
     return image_is(w.get("image"), MADMAPPER) or \
         image_is(w.get("image"), BEYOND)
@@ -664,6 +727,7 @@ class RackKeeper:
         self.fg_since = {}       # hwnd -> when it became the foreground
         self.chosen = set()      # app windows a person brought forward
         self.raises = {}         # covering hwnd -> raises for it
+        self._described = set()  # app windows already logged
         self._said = {}
 
     def _say(self, key, text):
@@ -738,14 +802,16 @@ class RackKeeper:
             return "none"
         self._say("rack", "rack screen keeper: the rack screen's window is "
                           f"found (\"{rack.get('title', '')}\")")
-        # The boot settle counts from Windows' start when it can be read,
-        # so a later restart of LTC Player never re-enters it (review B
-        # round 3); else from this keeper's start.
+        # The boot settle counts from the sign-in (the shell's start,
+        # which Windows Fast Startup does not carry over, unlike its
+        # uptime; reviews A and B round 4), so a later restart of LTC
+        # Player never re-enters it; else from this keeper's start.
         try:
-            up = self.api.uptime_s()
+            sess = self.api.session_age_s()
         except Exception:                        # noqa: BLE001
-            up = None
-        boot = (up < self.boot_settle_s) if isinstance(up, (int, float)) \
+            sess = None
+        boot = (sess < self.boot_settle_s) \
+            if isinstance(sess, (int, float)) and sess >= 0 \
             else (now - self.started < self.boot_settle_s)
         if rack["minimized"]:
             # Left minimized (review A of #176): where it would come back
@@ -776,24 +842,23 @@ class RackKeeper:
                                 "is never raised over it")
             return "left"
         idx = wins.index(rack)
+        # What is over the rack screen: not its own pop-ups (owned by it:
+        # a raise brings them along), not the taskbar, not see-through
+        # overlays.
         above = [w for w in wins[:idx] if not w.get("minimized")
-                 and not w.get("seethrough")
+                 and not w.get("seethrough") and not is_taskbar(w)
+                 and w.get("owner") != rack["hwnd"]
                  and overlap(w["rect"], area) > 0]
-        # A dialog (an owned window: missing media, a licence) over the
-        # rack screen, any other program's window over it (a person's
-        # Notepad), or a window a person has in front that is not a BEYOND
-        # or MadMapper main window: nothing is raised, since the raise
-        # would bury it too (review B round 3).
-        fg_now = self.api.foreground()
-        busy = [w for w in above if w.get("owner") or not is_app(w) or
-                (w["hwnd"] == fg_now and w["hwnd"] in outs)]
-        if busy:
-            b = busy[0]
-            self._say("dialog", f"rack screen keeper: \"{b.get('title', '')}"
-                                f"\" is in front and in use; the rack screen "
-                                f"is not raised over it")
-            return "left"
-        self._say("dialog", "")
+        for w in above:
+            if is_app(w) and w["hwnd"] not in self._described:
+                # What BEYOND's and MadMapper's windows look like, once
+                # each, for the bench (review B round 4).
+                self._described.add(w["hwnd"])
+                self.log(f"rack screen keeper: {app_name(w)} window "
+                         f"\"{w.get('title', '')}\" class "
+                         f"{w.get('cls', '?')}, owner {w.get('owner', 0)}, "
+                         f"title bar {bool(w.get('caption'))}, at "
+                         f"{tuple(w['rect'])}")
         # An owned window (a dialog: missing media, a licence, the
         # preferences) is never buried (review B of #176, S4), and an
         # output window is never a cover (review A).
@@ -806,6 +871,34 @@ class RackKeeper:
         if not cover:
             return "none"
         c = cover[0]
+        # Never bury (reviews A and B round 4): a dialog of BEYOND or
+        # MadMapper (owned, or another window of the covering program),
+        # or the window a person has in front and used in the last
+        # FOREGROUND_IN_USE_S. Other windows nobody is using do not stop
+        # the rack screen coming back.
+        fg_now = self.api.foreground()
+        try:
+            age = self.api.input_age_s()
+        except Exception:                        # noqa: BLE001
+            age = None
+        why = ""
+        for w in above:
+            if w is c:
+                continue
+            if is_app(w) and (w.get("owner") or w.get("pid") == c.get("pid")):
+                why = (f"{app_name(w)}'s dialog \"{w.get('title', '')}\" is "
+                       f"open over it")
+                break
+            if w["hwnd"] == fg_now and (age is None or
+                                        age < FOREGROUND_IN_USE_S):
+                why = (f"\"{w.get('title', '')}\" is in front and was used "
+                       f"{'just now' if age is None else f'{age:.0f} s ago'}")
+                break
+        if why:
+            self._say("dialog", f"rack screen keeper: {why}; the rack screen "
+                                f"is not raised over it")
+            return "left"
+        self._say("dialog", "")
         n = self.raises.get(c["hwnd"], 0)
         if n >= MAX_RAISES:
             self._say(("gave up", c["hwnd"]),
@@ -813,10 +906,6 @@ class RackKeeper:
                       f"over the rack screen after {MAX_RAISES} tries; left "
                       f"as it is (is it set to stay on top?)")
             return "left"
-        try:
-            age = self.api.input_age_s()
-        except Exception:                        # noqa: BLE001
-            age = None
         if age is None or age < INPUT_QUIET_S:
             # Someone is typing or touching (review A of #176): their keys
             # never land in the rack page. Tried again once it is quiet.
@@ -877,8 +966,14 @@ class OutputWatch:
 
     def __init__(self, api, monitor=0, log=None, alert=None, clear=None,
                  clock=time.monotonic, settle_s=180.0, debounce_s=10.0,
-                 retry_s=30.0, rack=None, epoch=None):
+                 retry_s=30.0, rack=None, epoch=None, config=None):
         self.api = api
+        # config() -> (check, monitor, why_no_alert), read on every look
+        # (review B round 4: a changed ltcplay_fire_ice.json and Reload
+        # engine apply without restarting LTC Player). None: as given.
+        self.config = config
+        self._config = None
+        self.quiet = ""
         # epoch() -> the engine's start count: a new engine has lost the
         # alert, so it is raised again (review B round 2 of #176).
         self.epoch = epoch or (lambda: 0)
@@ -926,6 +1021,31 @@ class OutputWatch:
 
     def _tick(self):
         now = self._clock()
+        if self.config is not None:
+            try:
+                cfg = tuple(self.config())
+            except Exception:                    # noqa: BLE001
+                cfg = self._config
+            if cfg is not None and cfg != self._config:
+                chk, mon, quiet = cfg
+                if self._config is not None:
+                    self.log(f"MadMapper output watch: the settings changed: "
+                             f"madmapper_output_check "
+                             f"{'true' if chk else 'false'}, "
+                             f"madmapper_output_monitor {mon}"
+                             + (f"; no alert: {quiet}" if quiet else ""))
+                self._config = cfg
+                self.monitor, self.quiet = mon, quiet
+            if self._config is not None and not self._config[0]:
+                # Switched off: its alert goes, and nothing more.
+                if self.raised and now >= self.next_try:
+                    if self._call(self.clear):
+                        self.raised = False
+                        self._ok()
+                    else:
+                        self._fail(now)
+                self.state = "switched off"
+                return "switched off"
         try:
             ep = self.epoch()
         except Exception:                        # noqa: BLE001
@@ -988,6 +1108,9 @@ class OutputWatch:
         if self.state != "off" and due:
             self.log(f"MadMapper output: OFF. {why}. {ENABLE_STEPS}")
             self.state = "off"
+        if due and not self.alerted and self.quiet:
+            self.log(f"MadMapper output: no alert raised, {self.quiet}")
+            self.alerted = True
         if due and not self.alerted and now >= self.next_try:
             if self.raised:
                 # The last spell's alert is still open (its clear never

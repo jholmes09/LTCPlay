@@ -392,6 +392,12 @@ class Control:
             raise SessionError("This show file has no preshow sequence, so "
                                "there is no look to hold. Set \"idle\" in the "
                                "show file to a .fseq in the show folder.")
+        # A show start's hand-over still waiting for its first frame
+        # (fire_ice pixels_for_show) ends: a look set now stands, even the
+        # same black the start held (review B of PR #171).
+        cancel = getattr(s.player, "cancel_show_handoff", None)
+        if cancel is not None:
+            cancel()
         s.player.override = None if what in (None, "", "auto") else what
         if s.log:
             s.log.event("override", f"operator set output to "
@@ -1100,9 +1106,33 @@ class Handler(BaseHTTPRequestHandler):
             return False
         try:
             who = self._acting_user(body)
+            fault = None
             role = who.get("role") if who else None
             if users.may(role, perm):
                 return False
+        except Exception as e:                   # noqa: BLE001
+            # The check could not be made: refused (fail closed), and said
+            # so below.
+            who, fault = None, e
+        ended = False
+        try:
+            # A purge press while a timed purge runs is a second press: it
+            # ends it, whoever is signed in (re-review of #172, B2), and
+            # is refused for everything else as before.
+            rm = getattr(self.server, "remote", None)
+            m = getattr(rm, "morning", None)
+            if route in ("/api/remote/purge-fire",
+                         "/api/remote/purge-timed") and m is not None and \
+                    m.purge.timed_running():
+                ended = rm.timed_purge_cut(
+                    f"a second purge press on the {self._ctx().screen} "
+                    f"({(who or {}).get('name') or 'signed out'})",
+                    (who or {}).get("name") or "", self._ctx().screen)
+        except Exception:                        # noqa: BLE001
+            pass
+        try:
+            if fault is not None:
+                raise fault
             name = (who or {}).get("name")
             why = (f"{name} ({role}) may not do this: "
                    if name else "Nobody is signed in on this screen, and "
@@ -1115,7 +1145,11 @@ class Handler(BaseHTTPRequestHandler):
                    f", so this was refused: {users_mod.perm_label(perm)}. "
                    f"Abort, Hold, Stop and every disarm always work. Nothing "
                    f"was changed.")
-        self._send(403, {"error": why, "role_refused": True})
+        if ended:
+            why = ("The timed purge was ended (a second purge press stops "
+                   "it, signed in or not); nothing else was done. " + why)
+        self._send(403, {"error": why, "role_refused": True,
+                         "ended": bool(ended)})
         return True
 
     # Presses repeated many times a second while a finger is down (or a
@@ -1651,6 +1685,14 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/check":
                 return self._send(200, c.check(body.get("timeline", "")))
             if route == "/api/start":
+                # Run ends a timed purge at once (morning.py), refused or
+                # not: it only takes risk away.
+                _rm0 = getattr(self.server, "remote", None)
+                if _rm0 is not None and hasattr(_rm0, "timed_purge_cut"):
+                    _rm0.timed_purge_cut("Run was pressed on the " +
+                                         str(self._ctx().screen),
+                                         self._ctx().user or "unsigned",
+                                         self._ctx().screen)
                 # Never while a Stop's halt is under way (re-review of
                 # #144, N2): a Run from another screen would bring the rig
                 # back in the middle of the Stop.
@@ -2809,6 +2851,9 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                 laser_blank=_laser_blank, night_state=_night_state,
                 audit=getattr(httpd.remote, "audit", None))
             httpd.remote.morning = httpd.morning
+            # The timed purge's engine checks (a Hold, Run, the flame link,
+            # the starter's sign-in): without them no timed purge starts.
+            httpd.morning.timed_blockers = httpd.remote.timed_purge_blockers
             # The laser arm (Jeff, 2026-10-22): the conductor's laser gate,
             # its Abort and Hold disarm and the Blanking's unblank all ask
             # it from here on. Without it the lasers stay dark.

@@ -29,9 +29,10 @@ const CASES = process.env.ONLY_CASES ? JSON.parse(process.env.ONLY_CASES) : [
   ["armed_groups", "show"], ["locked", "show"], ["announcing", "show"], ["alert_hold", "show"],
   ["live_flame", "show"], ["getting_started", "show"], ["stale", "show"], ["admin", "show"],
   ["running", "show", "stop_confirm"], ["running", "show", "abort_first_tap"], ["running", "show", "help"], ["idle_operator", "show", "coach"],
-  ["rig_checking", "show"], ["rig_failed", "show"], ["rig_continued", "show"], ["cleaning", "show"],
+  ["rig_checking", "show"], ["rig_failed", "show"], ["rig_continued", "show"], ["cleaning", "show"], ["timed_purge", "show"], ["timed_purge", "day"],
   ["all_live", "show"], ["hazers_on", "show"], ["hazers_held", "show"], ["hazers_on", "show", "hazer_sheet"], ["flames_unknown", "show"], ["rehearsal", "show"], ["cleaning", "day"], ["running", "schedule"],
   ["idle_operator", "day"], ["idle_operator", "schedule"], ["admin", "settings"], ["signed_out", "show", "signin"],
+  ["ipad", "show"], ["long_name", "show"], ["long_name_out", "show"], ["no_logo", "show"], ["long_name", "day"],
 ];
 const CASES_1 = [
   ["idle_operator", "show"], ["signed_out", "show"], ["show_pending", "show"], ["running", "show"],
@@ -206,7 +207,8 @@ const MEASURE = () => {
     }
     const fs = parseFloat(cs.fontSize);
     const minFs = onShow && !e.closest("#sheet") ? 20 : 16;
-    if(fs < minFs) issue("small_font", e, `${fs}px (min ${minFs})`, {own: own.slice(0, 120)});
+    // The brand's kicker is decoration (its words are the logo's alt text).
+    if(fs < minFs && !e.closest("[data-brand]")) issue("small_font", e, `${fs}px (min ${minFs})`, {own: own.slice(0, 120)});
     const fg = (cs.color.match(/rgba?\(([^)]+)\)/) || [0, "0,0,0"])[1].split(",").map(Number);
     const alpha = fg.length > 3 ? fg[3] : 1;
     const op = Number(cs.opacity);

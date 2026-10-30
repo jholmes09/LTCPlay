@@ -478,7 +478,7 @@ it skipped and why, such as one locked out; it is green when all of the
 group is armed, amber with the count and the reason when only part is,
 and while any of it is armed, clicking it again takes the whole group off;
 let go and it stops; nothing fires while a show is live or an Abort
-stands); lock out of any one machine or laser (the L button on it: one tap
+stands); the timed purge (below); lock out of any one machine or laser (the L button on it: one tap
 locks it out, one tap on a locked one unlocks it, with no pop-up either
 way; a line under the machine map, or under the lasers, says what was
 done, with Undo for 5 seconds; a tap does what the screen showed when you
@@ -499,6 +499,27 @@ While the page is open the Stream Deck's Start key is FIRE and reads
 PURGE ARMED on an armed group's key; it goes back to normal when you
 leave the page. MORNING.md says how it all works and where every setting
 lives.
+
+**The timed purge (Startup page, Jeff, 2026-10-29).** For a longer test,
+say to check a DMX problem, without holding Space. Select the machines
+exactly as for the purge and wait for their groups to read armed. Pick the
+seconds: 2, 5, 10, 20 or 30, or type Other (whole seconds; this show PC
+allows up to 30 unless an admin has set `purge_timed_max_s` in
+`ltcplay_remote.json`, never more than 120). Then hold the button that
+says "Hold to purge (the machines) for (the seconds)", the same as a Hold
+to arm: a tap does nothing, let go too soon and nothing fires. Once it
+says it started you can let go: the machines fire for those seconds and
+stop by themselves, even if the page or the iPad is closed. The rack
+screen, every screen's banner, 2.0's top line and the Stream Deck's key 0
+(PURGING and the seconds) count down. To end it early press Stop purge
+(on the Startup page or the banner, from any screen, signed in or
+not), or Stop, Hold or Abort; Start now, Run, a disarm of one of
+its groups, a lock, signing out and any other purge press (Space, the
+deck's FIRE, the button again) also end it at once. Only one purge at a
+time; the Fireball page, the cleaning and live flame programming wait for
+it. The journal says when it started (the machines, the seconds, who and
+where) and when and why it ended. The seconds you start are this show PC's
+default next time.
 
 **The Fireball page (Fire & Ice, when flamesafe's config has a group named
 fireball).** The header's Fireball button opens one big button per Fireball
@@ -908,6 +929,79 @@ While a Stop is still disarming and fading to dark, Start now and Run on
 any screen are refused until it has finished, and say so. Only the show's own audio counts: a
 slow or broken intermission file never holds the show back.
 
+## The pixels at the end of a show, and at the next start
+
+Jeff's report, 2026-10-29: after a show that finished by itself, the next
+show had no pixels, a show started with Start now ended on black, and the
+pixels blinked dark just before a show began. Now:
+
+What each end leaves on the pixels:
+
+| How the show ended | The pixels after it |
+| --- | --- |
+| A scheduled show ends by itself, more shows to come | the idle look (intermission) |
+| The night's last scheduled show ends by itself | black (the closing) |
+| A Start now show ends by itself | the idle look, even with nothing else tonight |
+| Programming's Play reaches the end of the cue | the idle look |
+| Stop | black, and Run is off |
+| Abort during a show | black, latched until Reset; dark after Reset until a show starts |
+| Abort during Programming playback | the idle look; nothing latches |
+| A show that started and then failed | black |
+| A start refused before anything went out (Auto start off, an Abort standing, the show audio not ready) | left as they were |
+
+After a Start now show ends by itself with nothing else tonight, the
+night closes and the pixels stay on the idle look all through the closed
+night, until the next show starts. Abort then still disarms every flame
+group, blanks and disarms the lasers, turns the hazers off, lets go of
+any hold to arm and clears the purge selection and laser tests, but there
+is no show to stop: the screen says "No show was stopped", nothing
+latches, and the pixels stay on the idle look. Stop is a complete halt (the journal says "held
+Stop on the ...: a complete halt"); with no show running it ends no show,
+but it turns Run off, and turning Run off sends black to the pixels.
+
+**Every start clears it.** Start now, a scheduled start and Programming's
+Play from all clear the pixels for the show in the same one place,
+whatever ended the show before:
+
+- the show conductor's black (the closing, a stopped or failed show, an
+  Abort since Reset), and a stale record of it;
+- on Start now and a scheduled start, also a black or preshow look put
+  on the pixel output before the start. The Fire & Ice screens have no
+  Black or Preshow button; only the engine's override can set one. On
+  the Programming screen such a look stays through Play from. To clear
+  it in 1.0: press Stop on the "Show file, on this machine" card, then
+  Run (Run starts with no look on the pixels). That card is only on the
+  show machine's own screen. 2.0 has no Show file card: use Open in 1.0.
+  The Programming card's "Follow timecode again" button does not clear a
+  look, and while the show audio is the playhead it reads "Stop the show
+  audio" and stops playback.
+
+Nothing goes dark for it: the look that is up (the idle look, a Preshow,
+the closing black) stays until the show's first frame, and the show takes
+over on that very frame. A Hold, an Abort or a Stop after the start is
+not touched and holds, and so does a look set through the engine's
+override. That includes a Hold, an Abort, a Stop or
+a failed start before the show's first frame, or in the moment between
+that frame and the show being confirmed: the pixels go black, never the
+show, whatever ended the show before (a Stop, an Abort and Reset). The pre-roll blacks MadMapper's surfaces,
+never the pixels.
+
+The journal says it at every start, in the same words, for example "Show 4
+start: the pixel output is cleared for the show (the show conductor's
+black from between shows). The black stays up until the first show frame
+goes out, and the show takes over on that frame. A Hold, an Abort or a
+Stop after this start still holds." and then "Show 4: the
+first show frame went out on the pixels 0.21 s after the start was sent."
+
+**If the pixels are ever on a look while a show plays** (anything but a
+Hold's or an Abort's own fade), after 1.5 s the rack screen and the Stream
+Deck show it as a flame cues fault: "CUES FAULT: pixels show black, not
+the show. Programming: Show file card, Stop, then Run. On 2.0, Open in
+1.0 first. Scheduled show: tell Jeff." That Stop is the one on the "Show
+file, on this machine" card (it ends playback and turns Run off), not
+"Stop the show audio". 2.0 shows it as "Flame cues are off" with the
+full text behind a tap. It is display only.
+
 ## The rig check before each show (pre-roll)
 
 Jeff, 2026-10-28: "the show starts with an immediate announcement so if
@@ -995,8 +1089,10 @@ windows after a reboot (showpc.json `rack_screen_keep_in_front`, true).
 It never raises the rack screen over MadMapper's output, never takes the
 keyboard from someone typing in another program, never covers a dialog or
 a window a person has in front, and leaves a minimized rack screen
-minimized. Its five minutes count from when Windows started, so stopping
-and starting LTC Player later does not bring them back. For 2 s after the
+minimized. Its five minutes count from the sign-in, so stopping and starting
+LTC Player later does not bring them back. A dialog of BEYOND or MadMapper
+over the rack screen, or a window someone used in the last minute, stops
+it; a window nobody is using does not. For 2 s after the
 rack screen comes to the front with no touch in it, a key that would
 start or arm something is ignored (it was typed for another program);
 Abort, Hold, Stop and every Disarm or Off key always work.
@@ -1014,9 +1110,10 @@ projector displays and `madmapper_output_monitor` 0, ONE uncovered output
 on any of them reads on: the check is for one projector display, so set
 the number when there are more. The alert is raised only for a show whose
 MadMapper runs on this PC (and not when ltcplay_fire_ice.json cannot be
-read); the watch still reads and logs the windows. These settings
-are read when LTC Player starts: after changing them, stop and start LTC
-Player. The output alert holds a show at its time like any fault but does
+read); the watch still reads and logs the windows. The supervisor
+reads these settings again every few seconds, so a change (and Reload
+engine) applies without restarting LTC Player; the engine's rig check and
+lamp read them when the engine starts. The output alert holds a show at its time like any fault but does
 not play Delayed on the PA by itself, on purpose: a real output fault also
 fails the rig check, whose alert announces.
 

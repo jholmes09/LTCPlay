@@ -1404,7 +1404,19 @@ def post_alert(port, kind, text=None):
         return False
 
 
-def output_settings(settings):
+_OUT_SAID = set()
+
+
+def _say_once(quiet, text):
+    """log(text), once per text when `quiet` (the watch reads the file on
+    every look)."""
+    if quiet and text in _OUT_SAID:
+        return
+    _OUT_SAID.add(text)
+    log(text)
+
+
+def output_settings(settings, quiet_log=False):
     """(check, monitor, why_no_alert) for MadMapper's output watch, from
     ltcplay_fire_ice.json beside the schedule (madmapper_output_check,
     madmapper_output_monitor): the same file and keys the engine's rig
@@ -1435,13 +1447,15 @@ def output_settings(settings):
     chk = doc.get("madmapper_output_check", True)
     mon = doc.get("madmapper_output_monitor", 0)
     if chk is not True and chk is not False:
-        log(f"ltcplay_fire_ice.json madmapper_output_check is {chk!r}, not "
-            f"true or false: the output is watched")
+        _say_once(quiet_log, f"ltcplay_fire_ice.json madmapper_output_check "
+                             f"is {chk!r}, not true or false: the output is "
+                             f"watched")
         chk = True
     if isinstance(mon, bool) or not isinstance(mon, int) or \
             not 0 <= mon <= 8:
-        log(f"ltcplay_fire_ice.json madmapper_output_monitor is {mon!r}, "
-            f"not 0 to 8: any display but the rack screen's counts")
+        _say_once(quiet_log, f"ltcplay_fire_ice.json madmapper_output_monitor "
+                             f"is {mon!r}, not 0 to 8: any display but the "
+                             f"rack screen's counts")
         mon = 0
     return chk, mon, quiet
 
@@ -1499,20 +1513,18 @@ def start_window_watch(settings, port, api=None):
         log("rack screen keeper: OFF (showpc.json "
             "\"rack_screen_keep_in_front\": false)")
     chk, mon, quiet = output_settings(settings)
+    page = settings.get("page_monitor", 1)
+    # Always made: it reads ltcplay_fire_ice.json again on every look, so
+    # switching it on or off (and Reload engine) needs no restart of LTC
+    # Player (review B round 4).
+    out[2] = showwindows.OutputWatch(
+        api, monitor=mon, log=log, rack=page if isinstance(page, int)
+        else 1,
+        alert=lambda text: output_alert(settings, port, text),
+        clear=lambda: post_alert(port, "output"),
+        epoch=lambda: ENGINE_STARTS[0],
+        config=lambda: output_settings(settings, quiet_log=True))
     if chk:
-        page = settings.get("page_monitor", 1)
-
-        def alert(text):
-            if quiet:
-                log(f"MadMapper output: no alert raised, {quiet}")
-                return True
-            return output_alert(settings, port, text)
-        out[2] = showwindows.OutputWatch(
-            api, monitor=mon, log=log, rack=page if isinstance(page, int)
-            else 1,
-            alert=alert,
-            clear=lambda: post_alert(port, "output"),
-            epoch=lambda: ENGINE_STARTS[0])
         try:
             n = len(api.monitors())
         except Exception:

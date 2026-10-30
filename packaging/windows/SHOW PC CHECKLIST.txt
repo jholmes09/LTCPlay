@@ -119,6 +119,10 @@ SHOW NETWORK, AUDIO, CLOCK AND MEMORY (from the 2026-10-21 soak)
     "madmapper_output_monitor": the projector's display number (0, the
     default: any display but the rack screen's); an output that is not a
     full-screen window: "madmapper_output_check": false.
+[ ] Windows Fast Startup off (recommended): Control Panel, Power
+    Options, Choose what the power buttons do, Change settings that are
+    currently unavailable, untick "Turn on fast startup". With it on, a
+    shut down is not a real restart, so programs come back as they were.
 [ ] Restart the PC once and watch: the rack screen ends in front of BEYOND
     and MadMapper on its display (the supervisor raises it again for five
     minutes after start, and when either program opens a new window), and

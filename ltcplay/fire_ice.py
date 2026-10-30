@@ -54,6 +54,7 @@ import atexit
 import json
 import os
 import threading
+import time
 
 from . import benchhooks
 from . import conductor as C
@@ -486,8 +487,14 @@ class FireIceShow(C.ShowOutputs):
             return C.failed("Pixels to black was not sent: nothing is "
                             "running. Press Run first.")
         with self._lock:
+            # A show start's hand-over still waiting for its first frame
+            # (pixels_for_show) ends here: this black stands, and what it
+            # gives back later is the show, never the look held at the
+            # start (a Hold before the first frame, then Resume).
+            cancel = getattr(p, "cancel_show_handoff", None)
+            waiting = cancel() if cancel is not None else False
             if not self._pix_ours:
-                self._pix_prev = p.override
+                self._pix_prev = None if waiting else p.override
                 self._pix_ours = True
             p.override = "blackout"
         if s.log:
@@ -524,6 +531,86 @@ class FireIceShow(C.ShowOutputs):
             s.log.event("override", f"show conductor set output to "
                                     f"{p.override or 'auto'}")
         return C.done("Pixels back.")
+
+    # -- every show start (Jeff's report, 2026-10-29) ------------------------
+    LOOK_NAMES = {"blackout": "Blackout", "preshow": "Preshow"}
+
+    def pixels_for_show(self, what, programming=False):
+        """THE one place a show start clears the pixel output: Start now, a
+        scheduled start (ShowRunner.start_show) and the Programming
+        screen's Play (playhead.ShowAudioPlayhead). Called before the show
+        cue is played, whatever ended the show before it. Writes the same
+        journal line every time and returns it ("" with nothing running).
+
+        Every start clears:
+          the show conductor's black (closing, a stopped or failed show, an
+            Abort since Reset, a Hold), and what it had saved under it;
+          a stale record of that black with nothing over the output.
+        A scheduled start and Start now also clear a look the page put up
+        before the start (Blackout, Preshow; PR #43 fix round 2, E: the
+        page is locked during the show, so it could not be undone). On the
+        Programming screen, which is not locked, the page's own look stays.
+
+        Nothing goes dark for it: the look that is up (the idle look, a
+        Preshow, a black) stays until the first show frame and the show
+        takes over on that frame (Player.hold_until_show). A Hold, an
+        Abort or a look pressed after the start is not touched and holds."""
+        s, p = self._player()
+        if p is None:
+            return ""
+        with self._lock:
+            ours, under = self._pix_ours, self._pix_prev
+            self._pix_ours, self._pix_prev = False, None
+            look = p.override
+            keep = None
+            if programming:
+                keep = (under if look == "blackout" else look) if ours \
+                    else look
+            if keep is not None:
+                # A hand-over still waiting from an earlier start never
+                # lifts this look on later timecode (review of PR #171).
+                cancel = getattr(p, "cancel_show_handoff", None)
+                if cancel is not None:
+                    cancel()
+                if p.override != keep:
+                    p.override = keep
+                held = None
+            else:
+                hold = getattr(p, "hold_until_show", None)
+                if hold is not None:
+                    held = hold()
+                else:
+                    if look is not None:
+                        p.override = None
+                    held = None
+        name = self.LOOK_NAMES.get(look, look)
+        if ours and look == "blackout":
+            cleared = "the show conductor's black from between shows"
+        elif ours and look is None:
+            cleared = ("a stale record of the show conductor's black, with "
+                       "the idle look up")
+        elif ours:
+            cleared = f"the page's {name} look over the show conductor's black"
+        elif look is not None and keep is None:
+            cleared = f"the page's {name} look"
+        else:
+            cleared = "nothing was over it"
+        if keep is not None:
+            rest = (f" The page's {self.LOOK_NAMES.get(keep, keep)} look "
+                    f"stays: on the Programming screen it is the operator's; "
+                    f"press Stop on the Show file card (1.0, on the show "
+                    f"machine), then Run, to give the pixels to the "
+                    f"show.")
+        else:
+            first = {None: "The idle look", "blackout": "The black",
+                     "preshow": "The Preshow look"}.get(held, "The look")
+            rest = (f" {first} stays up until the first show frame goes "
+                    f"out, and the show takes over on that frame.")
+        text = (f"{what}: the pixel output is cleared for the show "
+                f"({cleared}).{rest} A Hold, an Abort or a Stop after this "
+                f"start still holds.")
+        self._note(text, action="pixels", outcome="cleared_for_show")
+        return text
 
     # -- flames ---------------------------------------------------------------
     def flames_zero(self):
@@ -1119,6 +1206,27 @@ def show_folder_render_faults(folder):
 # fault depends on it: past the end the output is zero either way.
 RENDER_END_TOLERANCE_FRAMES = 2
 
+# A show playing with the pixel output on a look (Jeff's report,
+# 2026-10-29: the closing black stayed over two whole shows and only the
+# journal said so): once it has lasted this long it is a CUES FAULT on the
+# rack screen and the Stream Deck, not a quiet zero. Display only. Never a
+# Hold's or an Abort's own fade (the music is pausing or stopping then),
+# nor the look a start holds until the first show frame.
+LOOK_IN_SHOW_FAULT_S = 1.5
+# Rack screen words: short as a whole (1.0 shows it as one message, 2.0
+# in a sheet behind "Flame cues are off"), no sentence over eight words.
+# The Fire & Ice screens have no Black or Preshow button (those are the
+# GPL page's). In 1.0 what clears a look in Programming is Stop on the
+# "Show file, on this machine" card (it ends Run and sends black), then
+# Run (a new player, no look); that card is on the show machine only.
+# 2.0 has no Show file card: it sends you to 1.0 ("Open in 1.0").
+LOOK_IN_SHOW = ("CUES FAULT: pixels show {look}, not the show. "
+                "Programming: Show file card, Stop, then Run. "
+                "On 2.0, Open in 1.0 first. "
+                "Scheduled show: tell Jeff.")
+# The look in plain words.
+LOOK_BUTTONS = {"blackout": "black", "preshow": "preshow"}
+
 RENDER_OLDER_THAN_LAYOUT = (
     "the show's render is older than xlights_networks.xml: the layout was "
     "changed after the show was rendered, so which channels are the flames "
@@ -1282,6 +1390,10 @@ class FlameCues:
         self._total = None       # the map's channel count, for the render
         self._problem = ""
         self._why = ""
+        # Since when a playing show has had a look over its pixels (see
+        # LOOK_IN_SHOW_FAULT_S), or None.
+        self._look_since = None
+        self._mono = time.monotonic
         # The refusal now in force that is a FAULT (review of PR #43, P1-3:
         # a render that does not fit the layout, a timecode past its end, a
         # render that cannot be read, a render older than the layout or
@@ -1598,19 +1710,37 @@ class FlameCues:
     def __call__(self, tc):
         s = getattr(self.control, "session", None)
         if s is None or not getattr(s, "running", False):
+            self._look_since = None
             return self._zero("")
         clk = getattr(s, "clock", None)
         cue = getattr(clk, "_cue", None)
         if getattr(clk, "source", None) != "audio_master" or not cue or \
                 getattr(clk, "paused", True):
+            # No show playing: a look held over the last one never counts
+            # toward the next one's CUES FAULT.
+            self._look_since = None
             return self._zero("")
         p = getattr(s, "player", None)
         if p is None:
+            self._look_since = None
             return self._zero("")
         look = getattr(p, "override", None)
-        if look is not None:
-            return self._zero(f"the pixel output is on {look}, not the "
-                              f"show")
+        if look is None:
+            self._look_since = None
+        else:
+            plain = f"the pixel output is on {look}, not the show"
+            if getattr(p, "show_handoff", None) is not None or \
+                    getattr(clk, "_halting", False) or \
+                    getattr(clk, "_pause_req", False):
+                self._look_since = None
+                return self._zero(plain)
+            now = self._mono()
+            if self._look_since is None:
+                self._look_since = now
+            if now - self._look_since < LOOK_IN_SHOW_FAULT_S:
+                return self._zero(plain)
+            return self._zero(LOOK_IN_SHOW.format(
+                look=LOOK_BUTTONS.get(look, look)), fault=True)
         if getattr(p, "freerun_epoch", None) is not None:
             return self._zero("the show was moved by hand (GO), so the "
                               "pixels are not following the show audio")
@@ -2077,6 +2207,7 @@ class ShowRunner:
         self._cue = None    # {"show", "clock", "played", "confirmed",
                             #  "failed"}
         self._closing_reported = False
+        self._seen_state = None
         self._stop = threading.Event()
         self._thread = None
         # Continue anyway (Service.continue_anyway): (outputs off, who), for
@@ -2230,7 +2361,17 @@ class ShowRunner:
             with self._lock:
                 self._cue = {"show": n, "failed": why, "nothing_sent": True}
             return C.failed(f"Show {n} was not started: {why}.")
-        self._clear_look(s, n)
+        pix = self._clear_look(s, n)
+        # This start's own hand-over (one slot on the player): what poll()
+        # may later cancel, never a newer start's.
+        hand = getattr(pix, "show_handoff", None)
+        if pix is None and self.conductor.latched:
+            # An Abort landed just before the hand-over: its black stands
+            # and nothing goes out.
+            why = self.LATCHED
+            with self._lock:
+                self._cue = {"show": n, "failed": why, "nothing_sent": True}
+            return C.failed(f"Show {n} was not started: {why}.")
         off = self._outputs_off(clk, n, cont)
         if self.mm is not None and "video" not in off:
             try:
@@ -2239,6 +2380,7 @@ class ShowRunner:
                 self._note(f"Selecting the MadMapper show bank failed: {e}",
                            fault=True, action="video", outcome="failed")
             follow_show_bank(self.mm, self._note)
+        sent = self._mono()
         try:
             pick = s.clock_play(self.cfg.show_cue)
         except Exception as e:
@@ -2246,6 +2388,7 @@ class ShowRunner:
             # 2026-10-28): "still loading" says to wait.
             why = self._refusal(s, clk) or self.SHOW_START_ERROR.format(
                 why=_full_stop(e))
+            self._start_undone()
             with self._lock:
                 self._cue = {"show": n, "failed": why}
             return C.failed(f"Show {n} was not started: {why}.")
@@ -2260,6 +2403,7 @@ class ShowRunner:
             # may have run before the cue began: stop the music here too.
             why = "it was aborted while it was starting"
             self.show.music_halt(C.ABORT_FADE_S)
+            self._start_undone()
             with self._lock:
                 self._cue = {"show": n, "failed": why}
             return C.failed(f"Show {n} was not started: {why}; the music "
@@ -2267,7 +2411,8 @@ class ShowRunner:
         with self._lock:
             self._cue = {"show": n, "clock": clk,
                          "played": clk.cues_played, "confirmed": False,
-                         "failed": None}
+                         "failed": None, "pix": pix, "sent": sent,
+                         "hand": hand}
         return C.done(f"Show {n}: {pick.name} started on the show audio.")
 
     def _degraded_over(self, off_seq):
@@ -2326,44 +2471,49 @@ class ShowRunner:
         return frozenset(off)
 
     def _clear_look(self, s, n):
-        """A look the page chose before the show (Preshow, Blackout, any
-        override) does not stay on through the scheduled show: the 409 gate
-        then keeps anyone from clearing it, and the flame cues stay zero
-        all show (PR #43 fix round 2, E). The show conductor's own black
-        (between shows) is its to lift on SHOW_CONFIRMED; only what was
-        under it is forgotten."""
-        p = getattr(s, "player", None)
-        if p is None:
-            return
-        show = self.show
-        look = getattr(p, "override", None)
-        if getattr(show, "_pix_ours", False):
-            # The conductor's black: it stays until SHOW_CONFIRMED lifts it,
-            # and the look under it is forgotten. A look the page put over
-            # it is taken back to that black.
-            show._pix_prev = None
-            if look == "blackout":
-                return
-            p.override = "blackout"
-        elif look is None:
-            return
-        else:
-            p.override = None
-        self._note(f"Show {n}: the page's {look} look was cleared so the "
-                   f"show plays as rendered.", action="pixels",
-                   outcome="look_cleared")
+        """Every look that is not the show is cleared for it, in the one
+        place every start does it (FireIceShow.pixels_for_show), whatever
+        ended the show before: never left to that show's own end (Jeff's
+        report, 2026-10-29: after a show that finished on its own, the
+        closing black stayed on all of the next show). Returns the player
+        whose hand-over poll() watches for the first show frame, or None
+        when an Abort latched first (its black stands; nothing handed
+        over). The conductor's pixels record goes UNKNOWN in the same step
+        (Conductor.pixels_to_show), so a Hold, an Abort or a Stop after
+        it sends its black (review of PR #171)."""
+        what = f"Show {n} start"
+        to_show = getattr(self.conductor, "pixels_to_show", None)
+        if to_show is None:
+            self.show.pixels_for_show(what)
+        elif to_show(lambda: self.show.pixels_for_show(what)) is None:
+            return None
+        return getattr(s, "player", None)
+
+    def _start_undone(self):
+        """A start that did not happen (the clock refused it, an Abort
+        landed while it was starting): the hand-over it armed ends and the
+        pixels are black, never the show nor the look held at the start
+        (review of PR #171). The conductor's dark sequence for the failed
+        start or the Abort sends its black again. Never raises."""
+        try:
+            self.show.pixels_fade_out(0)
+        except Exception:                        # noqa: BLE001
+            pass
 
     def poll(self):
         with self._lock:
             off_seq = self._off_seq
         sch = self.svc.machine
         state = sch.state if sch is not None else None
+        # The state the last poll saw: a closing straight out of a show is
+        # that show's own end (_close).
+        was, self._seen_state = self._seen_state, state
         with self._lock:
             cue = self._cue
         if state == "CLOSING":
             if not self._closing_reported:
                 self._closing_reported = True
-                self._close()
+                self._close(after_show=was in ("SHOW", "PAUSED"))
             return
         self._closing_reported = False
         if state not in ("SHOW", "PAUSED"):
@@ -2385,6 +2535,7 @@ class ShowRunner:
                 self.svc.report("SHOW_FAILED", cue["failed"], show=n,
                                 nothing_sent=cue.get("nothing_sent") is True)
             return
+        self._first_frame(cue)
         clk = cue["clock"]
         mine = clk.playing and clk.cues_played == cue["played"]
         if not cue["confirmed"] and mine and \
@@ -2398,12 +2549,71 @@ class ShowRunner:
                 if self._cue is cue:
                     self._cue = None
             how = getattr(clk, "last_ended", "") or "the cue stopped"
+            self._handoff_over(cue)
             if not cue["confirmed"]:
                 how = self.NEVER_CONFIRMED.format(how=how)
             self.svc.report("SHOW_ENDED" if cue["confirmed"]
                             else "SHOW_FAILED", how, show=n)
 
-    def _close(self):
+    @staticmethod
+    def _handoff_over(cue):
+        """The show this start was for failed or ended: its hand-over, if
+        still waiting for a first frame, never lifts the look on later
+        timecode (review B of PR #171: a show that never confirmed and
+        ended late, then an Abort refused as "nothing is playing", left it
+        armed). Never raises."""
+        hand = cue.get("hand")
+        cancel = getattr(cue.get("pix"), "cancel_show_handoff", None)
+        if cancel is not None and hand is not None:
+            try:
+                # Only this start's own hand-over: a new start may have
+                # armed the player's one slot since poll() read this cue.
+                cancel(hand)
+            except Exception:                    # noqa: BLE001
+                pass
+
+    @staticmethod
+    def _mono():
+        from . import player as player_mod
+        return player_mod._now()
+
+    def _first_frame(self, cue):
+        """Once: when the show's first frame went out on the pixels, in
+        the journal (Jeff's report, 2026-10-29, the blink at the start)."""
+        p = cue.get("pix")
+        done = getattr(p, "show_handoff_done", None) if p is not None \
+            else None
+        if done is None or cue.get("pix_said"):
+            return
+        cue["pix_said"] = True
+        look, at = done
+        took = max(0.0, at - cue.get("sent", at))
+        was = {None: "the idle look", "blackout": "black",
+               "preshow": "the Preshow look"}.get(look, look)
+        self._note(f"Show {cue['show']}: the first show frame went out on "
+                   f"the pixels {took:.2f} s after the start was sent. The "
+                   f"pixels went from {was} to the show on that frame, with "
+                   f"no dark frame between.", action="pixels",
+                   outcome="first_show_frame", show=cue["show"])
+
+    def _operator_show_ended(self):
+        """The show that ended last was an operator's extra show (Start
+        now) and it ended on its own. Never raises."""
+        try:
+            m = self.svc.machine
+            ended = [x for x in m.slots if x.ended_at is not None]
+            if not ended:
+                return None
+            last = max(ended, key=lambda x: x.ended_at)
+            if last.origin == "operator" and \
+                    str(last.reason).startswith("DONE") and \
+                    m.last_end == last.ended_at:
+                return last.n
+        except Exception:                        # noqa: BLE001
+            pass
+        return None
+
+    def _close(self, after_show=False):
         if self.show._session() is None:
             # Run is not pressed: the closing sends nothing to the rig.
             self._note("Closing: Run has not been pressed, so nothing was "
@@ -2414,7 +2624,19 @@ class ShowRunner:
             if not r.ok:
                 self._note(f"Closing: {r.sentence}", fault=True,
                            action="closing", outcome="failed")
-            self.show.pixels_fade_out(1.0)
+            extra = self._operator_show_ended() if after_show else None
+            if extra is None:
+                self.show.pixels_fade_out(1.0)
+            else:
+                # Jeff's report, 2026-10-29: a show started with Start now
+                # ends on the idle look like a scheduled show that has
+                # another after it, not on the closing black.
+                self._note(f"Closing: the pixels stay on the idle look. "
+                           f"Show {extra} was started with Start now and "
+                           f"ended on its own, so it ends like a scheduled "
+                           f"show, not on black. Flame cues are zero and "
+                           f"the lasers are dark.", action="closing",
+                           outcome="idle_look", show=extra)
         self._note("Closing: the MadMapper stop is not performed in this "
                    "build.", action="closing", outcome="not performed")
         self.svc.report("CLOSING_DONE",

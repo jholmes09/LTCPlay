@@ -844,6 +844,23 @@ class Conductor:
         with self._lock:
             self._set("music", MUSIC_PLAYING)
 
+    def pixels_to_show(self, clear):
+        """A fact, like music_started(): a show start is handing the pixel
+        output to the show's first frame. `clear` (FireIceShow.
+        pixels_for_show) runs here, under this lock, and the pixels record
+        goes UNKNOWN in the same step, so a Hold, an Abort, a Stop or a
+        failed start after it always sends its black and ends the hand-over
+        (review of PR #171: the record still said BLACK from the Stop
+        before, the pixels step was skipped, and the show played under a
+        latched Abort). While an Abort is latched nothing is handed over:
+        its black stands and None is returned. Otherwise returns what
+        `clear` returns."""
+        with self._lock:
+            if self._latched:
+                return None
+            self._set("pixels", UNKNOWN)
+            return clear()
+
     def intermission(self, who="", screen=""):
         """The show has been left (intermission, preshow, closing): flame
         cues to zero and the lasers blanked with a real command, so "no

@@ -77,6 +77,15 @@ function baseStatus(){
 const SCENARIOS = {
   idle_operator: s => s,
   signed_out: s => { s.me = me(null, null); },
+  // The brand at its worst: a 40 character show name (admin, so the
+  // header has its most tabs; signed out, so the top line carries it), and
+  // a missing logo.
+  long_name: s => { s.me = me("Jeff", "admin"); },
+  long_name_out: s => { s.me = me(null, null); },
+  no_logo: s => s,
+  // An operator on an iPad (not the show PC), screen arming off: the
+  // announcements and a hazer's arm are refused there, so they say why.
+  ipad: s => { s.me.local = false; s.me.device = "iPad"; s.arming = Object.assign({}, s.arming || {}, {enabled: false}); },
   admin: s => { s.me = me("Jeff", "admin"); },
   show_pending: s => { s.show = Object.assign({}, s.show, {running: true});  s.schedule.next = {show: 4, start: "19:30", in_s: 45, in_s_exact: 45}; s.countdown = {kind: "next", label: "Next show", s: 45, running: true};
     s.flames.groups.forEach(g => g.armed = "armed"); s.subsystems[3].word = "armed"; },
@@ -126,6 +135,9 @@ const SCENARIOS = {
   flames_unknown: s => { s.flames.connected = false; s.flames.why = "flamesafe is not connected."; s.show = Object.assign({}, s.show, {running: true}); },
   rehearsal: s => { SCENARIOS.programming(s); },
   cleaning: s => { s.cleaning = {available: true, state: "phase1", text: "Phase 1 of 2: firing the wave flamers"}; },
+  // A timed purge running (morning.py, 2026-10-29): the engine's countdown.
+  timed_purge: s => { s.morning.timed = {left_s: 17.4, seconds: 30, elapsed_s: 12.6, machines: ["front row 1", "front row 2", "front row 3", "cat-walk 1"],
+    device: "iPad at 10.20.0.44", who: "Dallen"}; s.flames.groups[0].armed = "armed"; s.flames.groups[1].armed = "armed"; },
   // The Stream Deck program reads the engine but does not act on a group's
   // Disarm: the engine forces the flame link's disarm_all (2026-10-29).
   deck_not_answering: s => { s.flames.groups[0].armed = "armed"; s.flames.groups[0].wanted = true; },
@@ -138,6 +150,13 @@ function routesFor(name, st){
   r["/api/remote/setup"] = FX("real_setup");
   const mo = name === "locked" ? (() => { const m = FX("morning"); m.lockout = {machines: {m8: {by: "Andy", at: 0}}, lasers: {}}; return m; })()
            : name === "purge" ? FX("morning_firing") : FX("morning");
+  // The timed purge's numbers, as the engine sends them (2026-10-29), and
+  // one running in the timed_purge scenario.
+  mo.timed_settings = {presets: [2, 5, 10, 20, 30], default_s: 5, max_s: 30, min_s: 1, limit_s: 120, hold_s: 1.0, error: ""};
+  const tm = st.morning && st.morning.timed;
+  mo.timed = Object.assign({running: !!tm, left_s: null, seconds: null, elapsed_s: null, machines: [], firing: [], waiting: [], device: null,
+    who: "", holding: false, holder: null, mine: false, held_s: null, hold_s: 1.0, last: ""}, tm ? Object.assign({running: true}, tm) : {});
+  if(tm){ mo.purge_state = Object.assign({}, mo.purge_state, {timed: true, firing: true, selected: ["m1", "m2", "m3", "m4"]}); }
   r["/api/remote/morning"] = mo;
   const fu = FX("fuel");
   if(!st.me.user){ fu.may_refill = false; fu.may_undo = false; fu.refill_why = "Sign in as an operator or admin to log a refill (the user chip at the top)."; }
@@ -154,7 +173,7 @@ function routesFor(name, st){
   r["/api/timelines"] = {folder: "C:\\Users\\show\\Documents\\LTC Shows", timelines: [{file: "fireice_timeline.json"}, {file: "fireice_rehearsal.json"}]};
   r["/api/remote/network"] = {address: "10.20.0.5", choices: ["10.20.0.5", "192.168.1.20"]};
   r["/api/schedule/operator"] = {current: "Dallen", operators: ["Andy", "Dallen", "Dave", "Jared", "Jeff"]};
-  r["/api/brand"] = {};
+  r["/api/brand"] = /^long_name/.test(name) ? {show: "The Grand Winter Fire and Ice Spectacle"} : {show: "Fire and Ice"};
   return r;
 }
 
@@ -251,6 +270,7 @@ class FakeEngine {
         if(sch.state !== "SHOW") sch.held = true; return ok("Playing."); }
       case "/api/remote/preroll-continue": if(body.phase === "done"){ s.preroll.continued = {by: s.me.user, off: ["video"], failed: "Video"}; delete s.preroll.show_check; s.alert_hold = {held: false}; s.alerts = []; } return ok("Continuing.");
       case "/api/remote/cleaning-stop": s.cleaning = {available: true, state: "idle", text: ""}; return ok("Stopped.");
+      case "/api/remote/purge-stop": if(s.morning) s.morning.timed = null; return ok("Timed purge stopped: everything it fired is back to zero.");
       case "/api/remote/announce-stop": s.announce.playing = null; return ok("Stopped.");
       case "/api/remote/laser-arm": (s.laser_arm.lasers || []).forEach(l => { if(body.all || (body.lasers || []).includes(l.id)) l.armed = !!body.on; }); return ok("Done.");
       default: return ok();
@@ -272,6 +292,7 @@ class FakeEngine {
       if(p === "/remote-logic.js") return route.fulfill({status: 200, contentType: "application/javascript; charset=utf-8", body: this.logic});
       if(p === "/api/remote/ui-default") return route.fulfill({status: 200, contentType: "application/json", body: JSON.stringify({default: this.uiDefault})});
       if(p.startsWith("/brand/") && process.env.NOFONT) return route.fulfill({status: 404, body: "{}"});
+      if(p.startsWith("/brand/logo") && this.name === "no_logo") return route.fulfill({status: 404, body: "{}"});
       if(p.startsWith("/brand/")){
         const f = path.join(REPO, "ltcplay", "web", "brand", path.basename(p));
         if(fs.existsSync(f)) return route.fulfill({status: 200, body: fs.readFileSync(f),
