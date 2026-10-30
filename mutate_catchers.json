@@ -2021,6 +2021,8 @@
 "review180: a Programming Run gives no warning that the show will not start": "test_schedule_run_warning_says_only_what_is_true",
 "review180: a closed night is written as format 3": "test_schedule_save_never_reopens_an_operator_closed_night",
 "review180: a kept list on restart forgets the show that was running": "test_schedule_save_review_a_cases",
+"review180: a save drops the Delay of a show whose time is still in the schedule": "test_schedule_save_keeps_tonights_delays_when_times_unchanged",
+"review180: a kept Delay goes back to the show's planned time": "test_schedule_save_keeps_tonights_delays_when_times_unchanged",
 "review180: a new time in the schedule still keeps tonight's list": "test_schedule_save_keeps_tonights_delays_when_times_unchanged",
 "review180: a rebuild forgets an operator's close": "test_schedule_save_never_reopens_an_operator_closed_night",
 "review180: a rebuild on restart forgets the show that was running": "test_schedule_save_review_a_cases",

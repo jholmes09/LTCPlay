@@ -18979,6 +18979,16 @@ def build():
   "        return _carried(fresh, saved, saved.slots, saved.running), []",
   "        return _carried(fresh, saved, saved.slots, 0), []"),
 
+ ("review180: a save drops the Delay of a show whose time is still in the schedule",
+  "ltcplay/schedule.py",
+  "            if sl.planned is not None and planned in fresh_times:",
+  "            if False:"),
+
+ ("review180: a kept Delay goes back to the show's planned time",
+  "ltcplay/schedule.py",
+  "                sl = replace(sl, start=was.start, planned=was.planned)",
+  "                sl = replace(sl, planned=was.planned)"),
+
  ("review180: the answer to a save on Hold does not say the Hold stands",
   "ltcplay/schedule_service.py",
   "            text += \" The schedule is on Hold: nothing starts until Resume.\"\n",
