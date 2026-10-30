@@ -614,8 +614,9 @@ def load_settings(folder=None):
     # this file, never more than morning.TIMED_MAX_LIMIT_S; purge_timed_s
     # the duration last started here, the page's default.
     # pump_max_s (Jeff, 2026-10-30, the fuel pump): the longest run time,
-    # 60 minutes unless an admin sets it, never more than
-    # fuelpump.MAX_LIMIT_S. The default run is always 5 minutes.
+    # 10 minutes unless an admin sets it lower; never more than
+    # fuelpump.MAX_LIMIT_S (600 s), read and written. The default run is
+    # always 5 minutes.
     out = {"show_network_address": None, "flamesafe_config": None,
            "screen_arming": False, "purge_arming": True, "booth_alert": None,
            "alert_pixels": None, "ui_default": 1,
@@ -680,13 +681,16 @@ def settings_from_doc(doc, path, out=None):
         if k not in doc:
             continue
         v = doc[k]
-        if isinstance(v, bool) or not isinstance(v, int) or \
-                not PUMP_MIN_S <= v <= PUMP_MAX_LIMIT_S:
-            # Never unlimited, never a guess: a wrong value is refused.
+        if isinstance(v, bool) or not isinstance(v, int) or v < PUMP_MIN_S:
+            # Never a guess: a value that is not a run time is refused.
             raise ValueError(f"{path}: {k} must be a whole number of "
-                             f"seconds from {PUMP_MIN_S} to "
-                             f"{PUMP_MAX_LIMIT_S}.")
-        out[k] = v
+                             f"seconds, at least {PUMP_MIN_S}; above "
+                             f"{PUMP_MAX_LIMIT_S} it is read and saved as "
+                             f"{PUMP_MAX_LIMIT_S} (ten minutes).")
+        # Jeff (2026-10-30): never more than 10 minutes. A larger one, from
+        # before this ceiling, is read as the ceiling, never refused, so
+        # the settings file still loads.
+        out[k] = min(v, PUMP_MAX_LIMIT_S)
     if doc.get("booth_alert") is not None:
         # Checked by boothaudio.parse_config, which owns the shape; a bad
         # block is refused here, at load, never at show time.
@@ -747,6 +751,12 @@ def save_settings(folder, **changes):
     doc = dict(doc)
     doc.update(changes)
     settings_from_doc(doc, path)            # ValueError: nothing written
+    # The fuel pump's longest run is never written above 600 s (Jeff,
+    # 2026-10-30), as it is never read above it.
+    v = doc.get("pump_max_s")
+    if isinstance(v, int) and not isinstance(v, bool) and \
+            v > PUMP_MAX_LIMIT_S:
+        doc["pump_max_s"] = PUMP_MAX_LIMIT_S
     if os.path.exists(path):
         import shutil
         shutil.copyfile(path, path + ".bak")
@@ -1625,6 +1635,7 @@ class Remote:
         # fuelpump.FuelPump, set by web.serve when flamesafe's config has a
         # fuel pump (2026-10-30).
         self.pump = None
+        self._pump_users_busy = {}
         self.live_flame = None       # flameprog.LiveFlame, set by web.serve
         self.clock = clock
         self.wall = wall
@@ -2376,6 +2387,11 @@ class Remote:
                 self.timed_purge_cut(f"{_who} signed out on the {ctx.device}",
                                      ctx.user, ctx.device,
                                      token=getattr(ctx, "token", "") or "")
+                # The fuel pump too (Jeff, 2026-10-30: signing out stops
+                # the pump); its timer's own check is the belt.
+                self.pump_after_signout(
+                    f"{_who} signed out on the {ctx.device}", ctx.user,
+                    ctx.device, getattr(ctx, "token", "") or "")
             if ended:
                 # Only this device's own hold (a hold belongs to the device
                 # it came from), and only when a sign-in really ended: a
@@ -4803,6 +4819,89 @@ class Remote:
         except Exception:                        # noqa: BLE001
             return False
 
+    def pump_signout(self, why, who, screen, token):
+        """Sign out: the fuel pump run this sign-in started turns off now.
+        Never raises."""
+        pm = self.pump
+        if pm is None or not token:
+            return False
+        try:
+            return pm.end_for_token(token, why, who=who, screen=screen)
+        except Exception:                        # noqa: BLE001
+            return False
+
+    PUMP_USERS_BUSY_S = 3.0
+
+    def pump_signed_out(self, token, who):
+        """For the pump: why the sign-in that started (or is starting) a
+        run no longer lets it run, or "". Only while there are users
+        (users.py); no sign-in at all is "signed out", as for a timed
+        purge. Never waits on the users lock (a password hash runs under
+        it): a busy lock is read as "still signed in" for up to
+        PUMP_USERS_BUSY_S, then ends it. A users file that cannot be read
+        is said as that, never as a sign-out. A role that may no longer
+        arm (a demotion) ends it too. Never raises."""
+        u = getattr(self, "users", None)
+        if u is None:
+            return ""
+        nobody = who or "the person who started it"
+        try:
+            state, s = u.session_check(token)
+        except Exception:                        # noqa: BLE001
+            state, s = "broken", None
+        if state == "off":
+            return ""
+        if state == "busy":
+            now = self.clock()
+            since = self._pump_users_busy.setdefault(token, now)
+            if now - since > self.PUMP_USERS_BUSY_S:
+                return ("could not confirm the sign-in (the users file was "
+                        "busy too long); pump turned off")
+            return ""
+        self._pump_users_busy.pop(token, None)
+        if not token and state != "broken":
+            return f"{nobody} signed out"
+        if state == "broken":
+            return ("could not confirm the sign-in (users file unreadable); "
+                    "pump turned off")
+        if state != "ok" or s is None:
+            return f"{nobody} signed out"
+        role = s.get("role")
+        try:
+            may = self.users.may(role, "arm")
+        except Exception:                        # noqa: BLE001
+            may = False
+        if not may:
+            return (f"{nobody} may no longer turn the fuel pump on (their "
+                    f"role is now {role or 'none'})")
+        return ""
+
+    def pump_after_signout(self, why, who, screen, token):
+        """A Sign out was carried out: the pump's run ends now if it was
+        this sign-in's, or if its own sign-in has just ended with it (a
+        sign-out on the show PC ends every sign-in made there), naming the
+        person who signed out. Never raises."""
+        pm = self.pump
+        if pm is None:
+            return False
+        try:
+            if token and pm.end_for_token(token, why, who=who,
+                                          screen=screen):
+                return True
+            run = pm._live_run()
+            if run is None or not run.get("token"):
+                return False
+            state, _s = self.users.session_check(run["token"])
+            if state == "gone":
+                starter = run.get("who") or "the person who started it"
+                return pm.end_for_token(
+                    run["token"], f"{why}, which ended {starter}'s "
+                    f"sign-in too" if starter != who else why,
+                    who=who, screen=screen)
+        except Exception:                        # noqa: BLE001
+            pass
+        return False
+
     def pump_settings(self):
         """The fuel pump's run times on this show machine: the screens'
         default (always 5:00, capped by the longest), the longest, the
@@ -4846,6 +4945,16 @@ class Remote:
                           f"{who or 'Someone'}'s fuel pump ON from the "
                           f"{device} was refused. {why}")
             return 403, {"error": why}
+        # A sign-in on this screen (cold review A of #195, 3): the run is
+        # tied to it, and signing out stops it. With users, an ON from no
+        # sign-in (the Stream Deck, a page with no session) is refused.
+        if self.users_active() and not (getattr(ctx, "token", "") or ""):
+            why = ("Turning the fuel pump on needs a sign-in on this screen "
+                   "(signing out stops it). Sign in, then press again.")
+            self._journal(who, device, "fuel-pump", "refused",
+                          f"{who or 'Someone'}'s fuel pump ON from the "
+                          f"{device} was refused. {why}")
+            return 403, {"error": why}
         # The press's own age (final delta review of #189): an ON sent from
         # a status more than ARM_FRESH_S old (or none) is refused, as an
         # arm hold is, so a request that stalled on weak Wi-Fi and lands
@@ -4871,7 +4980,8 @@ class Remote:
                                   f"{ps['error']}"}
         ok, text = pm.set(True, who=who, screen=device,
                           seconds=body.get("seconds"), run=body.get("run"),
-                          max_s=ps["max_s"])
+                          max_s=ps["max_s"],
+                          token=getattr(ctx, "token", "") or "")
         if not ok:
             return 409, {"error": text}
         return 200, {"ok": True, "text": text}

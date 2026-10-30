@@ -877,16 +877,22 @@ he triggers it."
   before you turn it on, the pump runs 5 minutes and turns off by itself.
   To run it longer or shorter, set the time first, in minutes and
   seconds (4:30) or whole minutes (5). The field goes back to 5:00 each
-  time the pump turns off. The ceiling is **60:00**: a longer time is refused and says
-  so (an admin can change the ceiling, `pump_max_s` in
-  `ltcplay_remote.json`, up to 4 hours). Turning it on while it runs is
+  time the pump turns off. The ceiling is **10:00** (Jeff, 2026-10-30):
+  a longer time is refused and the screen says so in words. An admin can
+  set a lower ceiling (`pump_max_s` in `ltcplay_remote.json`), never a
+  higher one; a setting above 600 s is read as 10:00. Turning it on while it runs is
   refused, and never adds time: press Pump off, then start it again with
   the time you want.
 - **When.** Any time: during a show, between shows, in Programming.
 - **Who.** Turning it on needs the same sign-in as arming a flame group
   (the arm row of the role matrix), and from an iPad needs arming from a
   screen switched on. Pump off works for everyone, always.
-- **What turns it off.** Its time up, Pump off, Stop, Abort, the night
+- **Signing out turns it off** (Jeff, 2026-10-30), as it ends a timed
+  purge: the person who turned it on signing out on that screen, or that
+  sign-in ending any other way (idle sign out, sign out after the last
+  show, a sign-out on the show PC, which ends every sign-in made there).
+  Someone else signing out on another screen leaves it running.
+- **What turns it off.** Its time up, Pump off, signing out (above), Stop, Abort, the night
   closing (and the night being over, for a run started before), flamesafe
   not answering for a second, the flame link not sending, flamesafe not
   passing it for a second and a half (press Fuel pump: On again), and a
