@@ -84,6 +84,19 @@ import housekeeping
 import ltcwin
 import updater
 
+try:
+    # ltcplay/showwindows.py, carried as a module of its own like audit.py
+    # (this program does not bundle the ltcplay package).
+    import showwindows
+except ImportError:
+    try:
+        # The soak program imports this file and carries the package.
+        from ltcplay import showwindows
+    except ImportError:
+        sys.path.append(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))), "ltcplay"))
+        import showwindows
+
 # Global\, not the session's own namespace (locked decision 21): a second
 # supervisor started in another Windows session (a second sign-in, Remote
 # Desktop, a task running as another user) must see the first one too, or two
@@ -169,6 +182,13 @@ def load_settings():
         # for a window that still reaches under the taskbar (0: none; the
         # page also measures it by itself, 2026-10-26).
         "page_bottom_pad": 0,
+        # Jeff's field report, 2026-10-29 (showwindows.py): after a reboot
+        # BEYOND came up over the rack screen. The rack screen is raised
+        # again when a BEYOND or MadMapper window covers it (false: never).
+        # MadMapper's output watch reads its switches from
+        # ltcplay_fire_ice.json (output_settings), the engine's own file,
+        # so the two never disagree.
+        "rack_screen_keep_in_front": True,
         "show_mode": "fire_ice",
         "schedule": os.path.join(appdata_dir(), "ltcplay_schedule.json"),
     }
@@ -1342,6 +1362,229 @@ def show_refusal_page(page):
         os.startfile(page)
 
 
+WINDOWS_EVERY_S = 2.0
+
+
+def post_alert(port, kind, text=None):
+    """The engine's alert of `kind` raised with `text`, or cleared when
+    `text` is None (its alert API, from this machine). True once the engine
+    took it (a clear with nothing open counts as done); a failure is
+    logged."""
+    body = {"raise": kind, "text": text} if text is not None else \
+        {"clear": kind}
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/remote/alert",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return 200 <= r.status < 300
+    except urllib.error.HTTPError as e:
+        if text is None and e.code == 409:
+            return True                # nothing open to clear
+        log(f"the engine refused the {kind} alert "
+            f"{'raise' if text is not None else 'clear'} (HTTP {e.code})")
+        return False
+    except urllib.error.URLError as e:
+        # Not connected (refused, or the connect itself timed out): it
+        # never reached the engine, so it is sent again later.
+        log(f"the {kind} alert {'raise' if text is not None else 'clear'} "
+            f"did not reach the engine ({e.reason})")
+        return False
+    except TimeoutError:
+        # Sent, and no answer in time (review B of #176): the engine may
+        # have taken it, so it is never sent again and an Acknowledge is
+        # never undone. Said in the log.
+        log(f"the {kind} alert {'raise' if text is not None else 'clear'} "
+            f"was sent but got no answer within 3 s; it is not sent again")
+        return True
+    except Exception as e:
+        log(f"the {kind} alert {'raise' if text is not None else 'clear'} "
+            f"did not reach the engine ({type(e).__name__}: {e})")
+        return False
+
+
+_OUT_SAID = set()
+
+
+def _say_once(quiet, text):
+    """log(text), once per text when `quiet` (the watch reads the file on
+    every look)."""
+    if quiet and text in _OUT_SAID:
+        return
+    _OUT_SAID.add(text)
+    log(text)
+
+
+def output_settings(settings, quiet_log=False):
+    """(check, monitor, why_no_alert) for MadMapper's output watch, from
+    ltcplay_fire_ice.json beside the schedule (madmapper_output_check,
+    madmapper_output_monitor): the same file and keys the engine's rig
+    check reads. Missing or wrong: (True, 0, ""), said in the log.
+    why_no_alert is a sentence when the show's MadMapper is not on this PC
+    (no madmapper block, or another host, review B round 2 of #176): the
+    watch then reads and logs, and never raises an alert nothing would
+    clear."""
+    try:
+        fi = os.path.join(os.path.dirname(settings["schedule"]),
+                          "ltcplay_fire_ice.json")
+        with open(fi, encoding="utf-8-sig") as fh:
+            doc = json.load(fh)
+    except Exception:
+        # Not readable: whether the show's MadMapper is here is not known,
+        # so the watch reads and logs but raises nothing (review B round 3).
+        return True, 0, "ltcplay_fire_ice.json could not be read"
+    if not isinstance(doc, dict):
+        return True, 0, "ltcplay_fire_ice.json could not be read"
+    mm = doc.get("madmapper")
+    quiet = ""
+    if not isinstance(mm, dict):
+        quiet = ("the show has no MadMapper (no madmapper block in "
+                 "ltcplay_fire_ice.json)")
+    elif not showwindows.on_this_pc(mm.get("host", "127.0.0.1")):
+        quiet = (f"the show's MadMapper is on another machine "
+                 f"({mm.get('host')})")
+    chk = doc.get("madmapper_output_check", True)
+    mon = doc.get("madmapper_output_monitor", 0)
+    if chk is not True and chk is not False:
+        _say_once(quiet_log, f"ltcplay_fire_ice.json madmapper_output_check "
+                             f"is {chk!r}, not true or false: the output is "
+                             f"watched")
+        chk = True
+    if isinstance(mon, bool) or not isinstance(mon, int) or \
+            not 0 <= mon <= 8:
+        _say_once(quiet_log, f"ltcplay_fire_ice.json madmapper_output_monitor "
+                             f"is {mon!r}, not 0 to 8: any display but the "
+                             f"rack screen's counts")
+        mon = 0
+    return chk, mon, quiet
+
+
+def soak_kit(settings):
+    """True when ltcplay_fire_ice.json beside the schedule is a soak kit's
+    (soak.py writes "soak_only": true, with the rig check off): the bench
+    soak's shows are never held by the MadMapper output alert."""
+    try:
+        fi = os.path.join(os.path.dirname(settings["schedule"]),
+                          "ltcplay_fire_ice.json")
+        with open(fi, encoding="utf-8-sig") as fh:
+            return json.load(fh).get("soak_only") is True
+    except Exception:
+        return False
+
+
+def output_alert(settings, port, text):
+    """OutputWatch's alert: the engine's video alert, except under a soak
+    kit (said in the log instead). True once done."""
+    if soak_kit(settings):
+        log("MadMapper output: OFF, no alert raised (a soak kit's "
+            "ltcplay_fire_ice.json is in use)")
+        return True
+    return post_alert(port, "output", text)
+
+
+def start_window_watch(settings, port, api=None):
+    """[True, RackKeeper or None, OutputWatch or None] (showwindows.py),
+    as showpc.json says, each said in the log. Windows only; never
+    raises."""
+    out = [True, None, None]
+    if not ltcwin.WINDOWS and api is None:
+        return out
+    try:
+        api = api or showwindows.Win32()
+    except Exception as e:
+        log(f"the show PC's windows cannot be read ({type(e).__name__}: "
+            f"{e}): the rack screen keeper and the MadMapper output watch "
+            f"are off")
+        return out
+    if settings.get("rack_screen_keep_in_front", True) is not False:
+        out[1] = showwindows.RackKeeper(
+            api, monitor=settings.get("page_monitor", 1), log=log,
+            opened=lambda: showwindows.opened_at(appdata_dir()))
+        log(f"rack screen keeper: ON (display "
+            f"{settings.get('page_monitor', 1)}): the rack screen is raised "
+            f"again when a BEYOND or MadMapper window covers it (any, for "
+            f"{showwindows.BOOT_SETTLE_S:g} s after start; then only one "
+            f"that appeared in the last {showwindows.APP_SETTLE_S:g} s), "
+            f"never over MadMapper's output or a window a person brought "
+            f"forward (showpc.json \"rack_screen_keep_in_front\": false "
+            f"turns it off)")
+    else:
+        log("rack screen keeper: OFF (showpc.json "
+            "\"rack_screen_keep_in_front\": false)")
+    chk, mon, quiet = output_settings(settings)
+    page = settings.get("page_monitor", 1)
+    # Always made: it reads ltcplay_fire_ice.json again on every look, so
+    # switching it on or off (and Reload engine) needs no restart of LTC
+    # Player (review B round 4).
+    out[2] = showwindows.OutputWatch(
+        api, monitor=mon, log=log, rack=page if isinstance(page, int)
+        else 1,
+        alert=lambda text: output_alert(settings, port, text),
+        clear=lambda: post_alert(port, "output"),
+        epoch=lambda: ENGINE_STARTS[0],
+        config=lambda: output_settings(settings, quiet_log=True))
+    if chk:
+        try:
+            n = len(api.monitors())
+        except Exception:
+            n = 0
+        if mon and n and mon > n:
+            log(f"MadMapper output watch: madmapper_output_monitor is {mon} "
+                f"but this PC has {n} display(s); the output reads as not "
+                f"known until it is set right (ltcplay_fire_ice.json)")
+        log(f"MadMapper output watch: ON, "
+            + (f"display {mon}" if mon else "any display but the rack "
+               "screen's") + f" (read now, at start: madmapper_output_check "
+            f"true, madmapper_output_monitor {mon}, page_monitor {page}; "
+            "ltcplay_fire_ice.json "
+            "\"madmapper_output_check\": false turns it off). Read from "
+            "the window list only; nothing is sent to MadMapper."
+            + (f" It raises no alert: {quiet}." if quiet else ""))
+    else:
+        log("MadMapper output watch: OFF (ltcplay_fire_ice.json "
+            "\"madmapper_output_check\": false)")
+    return out
+
+
+# How many times this supervisor started the engine: a new engine has no
+# alerts, so the MadMapper output watch raises its alert again.
+ENGINE_STARTS = [0]
+
+
+def start_window_thread(settings, port):
+    """start_window_watch, ticked every WINDOWS_EVERY_S on a daemon thread
+    of its own until Windows ends the session. Never raises."""
+    def loop():
+        try:
+            ws = start_window_watch(settings, port)
+        except Exception as e:
+            log(f"the window watches could not start ({type(e).__name__}: "
+                f"{e})")
+            return
+        while not ENDING.is_set():
+            for w in ws[1:]:
+                if w is None:
+                    continue
+                try:
+                    if isinstance(w, showwindows.RackKeeper) and \
+                            RACK_WINDOW[0] is not None:
+                        w.rack_pid = getattr(RACK_WINDOW[0], "pid", None)
+                    w.tick()
+                except Exception as e:
+                    log(f"window watch: {type(e).__name__}: {e}")
+            ENDING.wait(WINDOWS_EVERY_S)
+    try:
+        import threading
+        t = threading.Thread(target=loop, daemon=True,
+                             name="ltcplay-window-watch")
+        t.start()
+        return t
+    except Exception as e:
+        log(f"the window watches could not start ({type(e).__name__}: {e})")
+        return False
+
+
 def run_loop(open_page=False):
     if not take_mutex():
         log("another LTC Player supervisor is already running; leaving it")
@@ -1368,6 +1611,7 @@ def run_loop(open_page=False):
     next_contain = 0.0
     mm_priority = start_madmapper_priority(settings)
     next_mm = 0.0
+    windows = None
     mm_failed = ""
     me_started = time.time()
     progs = {n: Program(n) for n in PROGRAMS}
@@ -1523,6 +1767,8 @@ def run_loop(open_page=False):
             if now >= p.next_try and not ENDING.is_set():
                 try:
                     p.start(args, settings)
+                    if n == "engine":
+                        ENGINE_STARTS[0] += 1
                     audit_event("program-start", EXE[n])
                     note = restart_note(n, progs,
                                         settings.get("flamesafe_config"))
@@ -1537,6 +1783,10 @@ def run_loop(open_page=False):
         if not page_opened and engine_answers(port):
             page_opened = True
             open_page_now(port)
+        if windows is None:
+            # On a thread of its own (review A of #176): a window call or
+            # an alert POST never holds up this loop.
+            windows = start_window_thread(settings, port)
         time.sleep(POLL_S)
 
 
@@ -2243,6 +2493,8 @@ def self_check():
         raise RuntimeError("the rack screen's fallbacks are wrong")
     yield ("the page opens as the rack screen (/remote), an ordinary app "
            "window maximized on the show monitor, never a kiosk")
+    for line in showwindows.self_test():
+        yield line
     for line in housekeeping.self_test():
         yield line
     for line in diagnostics.self_test():

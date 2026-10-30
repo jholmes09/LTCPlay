@@ -113,7 +113,8 @@ PERMS = (
     ("arm", "Arm flames and lasers: hold to arm, the Stream Deck's arm "
             "keys, a purge (momentary or timed), the Fireball page's "
             "channels, the wave flamer "
-            "cleaning, arming a laser, arming a hazer, the hazer levels"),
+            "cleaning, arming a laser, arming a hazer, the hazer levels, "
+            "turning the fuel pump on"),
     ("unlock", "Unlock a machine, turn a laser test on"),
     ("checklist", "Tick the Morning and Shutdown checklists"),
     ("show_files", "Show files and setup: the show folder, the schedule, "
@@ -132,7 +133,8 @@ SAFETY_ROWS = ("Abort, Hold, Stop, Disarm (one group or every group, "
                "letting go of a hold, stopping or clearing a purge, "
                "locking a machine, a laser test off, live flame "
                "programming off, "
-               "a hazer disarm, Hazers off, Acknowledge, signing "
+               "a hazer disarm, Hazers off, the fuel pump off, "
+               "Acknowledge, signing "
                "in and out: always, for everyone, signed in or not")
 
 # The defaults (Jeff decides; USERS.md). Signed out is view only (Jeff's
@@ -224,6 +226,9 @@ REMOTE_ROUTES = {
     # The hazers (hazers.py): Hazers off only takes something away; a
     # hazer ON is an arm press, OFF safety (classify).
     "hazers-off": "safety", "hazer": "arm", "hazer-level": "arm",
+    # The fuel pump (fuelpump.py, 2026-10-30): ON is an arm press, OFF
+    # safety (classify).
+    "fuel-pump": "arm",
     # These depend on the body: see classify().
     "fireball-beat": "arm", "cleaning-beat": "arm",
     "purge-select": "arm", "purge-fire": "arm", "laser-test": "unlock",
@@ -296,6 +301,10 @@ def classify(route, body=None):
             # other body is a release, which only stops it.
             return "arm" if body.get("hold") is True else "safety"
         if name == "laser-test" and body.get("on") is not True:
+            return "safety"
+        if name == "fuel-pump" and body.get("on") is not True:
+            # Anything but the JSON word true turns the pump off at the
+            # engine (remote.pump_post): it only takes something away.
             return "safety"
         if name == "hazer" and body.get("on") is not True:
             # A hazer disarm (anything but the JSON word true disarms at

@@ -110,6 +110,9 @@ from . import users as users_mod
 from . import version as version_mod
 from .morning import (TIMED_DEFAULT_S, TIMED_MAX_DEFAULT_S,
                       TIMED_MAX_LIMIT_S, TIMED_MIN_S, TIMED_PRESETS_S)
+from .fuelpump import (DEFAULT_S as PUMP_DEFAULT_S,
+                       MAX_DEFAULT_S as PUMP_MAX_DEFAULT_S,
+                       MAX_LIMIT_S as PUMP_MAX_LIMIT_S, MIN_S as PUMP_MIN_S)
 from .playhead import ShowAudioPlayhead
 
 FIXED_PORT = 7878
@@ -210,6 +213,11 @@ CLEANING_POST_ROUTES = ("cleaning-beat", "cleaning-stop")
 # and from the show network need screen_arming; a disarm and Hazers off
 # never.
 HAZER_POST_ROUTES = ("hazer", "hazers-off", "hazer-level")
+# The fireball's fuel pump (fuelpump.py, Jeff 2026-10-30): read by anyone in
+# the status; {"on": true} is an arm press (users.classify) and from the
+# show network needs screen_arming; anything else turns it off, never
+# refused.
+PUMP_POST_ROUTES = ("fuel-pump",)
 GET_ROUTES = ("whoami", "status", "network", "deck-input",
               "announce-outputs") + \
     MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES + \
@@ -220,7 +228,7 @@ POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     "network", "screen-arming", "alert", "live-flame",
     "announce-output", "announce-test-tone") + \
     MORNING_POST_ROUTES + FUEL_POST_ROUTES + FIREBALL_POST_ROUTES + \
-    CLEANING_POST_ROUTES + HAZER_POST_ROUTES
+    CLEANING_POST_ROUTES + HAZER_POST_ROUTES + PUMP_POST_ROUTES
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
 # on the show machine itself (and the role matrix's Settings, users.py), with
 # a confirm; OFF from any surface, signed in or not: it only takes risk away.
@@ -604,11 +612,16 @@ def load_settings(folder=None):
     # timed purge this show machine allows, 30 s unless an admin sets it in
     # this file, never more than morning.TIMED_MAX_LIMIT_S; purge_timed_s
     # the duration last started here, the page's default.
+    # pump_max_s (Jeff, 2026-10-30, the fuel pump): the longest run time,
+    # 60 minutes unless an admin sets it, never more than
+    # fuelpump.MAX_LIMIT_S. The default run is always 5 minutes.
     out = {"show_network_address": None, "flamesafe_config": None,
            "screen_arming": False, "purge_arming": True, "booth_alert": None,
            "alert_pixels": None, "ui_default": 1,
            "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
-           "purge_timed_s": TIMED_DEFAULT_S, "path": path}
+           "purge_timed_s": TIMED_DEFAULT_S,
+           "pump_max_s": PUMP_MAX_DEFAULT_S,
+           "path": path}
     if not os.path.exists(path):
         return out
     try:
@@ -628,7 +641,9 @@ def settings_from_doc(doc, path, out=None):
                "screen_arming": False, "purge_arming": True,
                "booth_alert": None, "alert_pixels": None,
                "ui_default": 1, "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
-               "purge_timed_s": TIMED_DEFAULT_S, "path": path}
+               "purge_timed_s": TIMED_DEFAULT_S,
+               "pump_max_s": PUMP_MAX_DEFAULT_S,
+               "path": path}
     if not isinstance(doc, dict):
         raise ValueError(f"{path} is not a settings object.")
     if doc.get("show_network_address"):
@@ -659,6 +674,17 @@ def settings_from_doc(doc, path, out=None):
             # Never unlimited, never a guess: a wrong value is refused.
             raise ValueError(f"{path}: {k} must be a whole number of "
                              f"seconds from {lo} to {TIMED_MAX_LIMIT_S}.")
+        out[k] = v
+    for k in ("pump_max_s",):
+        if k not in doc:
+            continue
+        v = doc[k]
+        if isinstance(v, bool) or not isinstance(v, int) or \
+                not PUMP_MIN_S <= v <= PUMP_MAX_LIMIT_S:
+            # Never unlimited, never a guess: a wrong value is refused.
+            raise ValueError(f"{path}: {k} must be a whole number of "
+                             f"seconds from {PUMP_MIN_S} to "
+                             f"{PUMP_MAX_LIMIT_S}.")
         out[k] = v
     if doc.get("booth_alert") is not None:
         # Checked by boothaudio.parse_config, which owns the shape; a bad
@@ -1224,8 +1250,15 @@ class FlameStatus:
                 "groups": groups,
                 # The hazers as flamesafe reports them (2026-10-29), None
                 # while stale or from an older flamesafe.
+                # Each entry's kind (2026-10-30): "hazer", or "switch" for
+                # the fuel pump with its on value; an entry from a
+                # flamesafe that says no kind is a hazer.
                 "passthrough": ([
                     {"name": str(p.get("name", "")),
+                     "kind": str(p.get("kind") or "hazer"),
+                     "on": (p.get("on") if isinstance(p.get("on"), int)
+                            and not isinstance(p.get("on"), bool)
+                            else None),
                      "slots": _ints(p.get("slots")) or [],
                      "asked": bool(p.get("asked")),
                      "enabled": bool(p.get("enabled")),
@@ -1557,6 +1590,10 @@ class Remote:
         # the call that brings its window forward (a fake in the selftest).
         self.beyond_host = None
         self.open_beyond_fn = None
+        # MadMapper's video output (showwindows.OutputLook), or None with
+        # the reason it is not checked (web._attach_mm_output).
+        self.mm_output = None
+        self.mm_output_why = ""
         # The last show seen ended ({"night", "ended"}), kept so a night
         # that closes at its 02:00 reset before the sign-out is due still
         # gets it (review of PR #125, P2-8).
@@ -1582,6 +1619,9 @@ class Remote:
         self._hz_said = None
         self._hz_alert_id = None
         self._hz_lock = threading.Lock()
+        # fuelpump.FuelPump, set by web.serve when flamesafe's config has a
+        # fuel pump (2026-10-30).
+        self.pump = None
         self.live_flame = None       # flameprog.LiveFlame, set by web.serve
         self.clock = clock
         self.wall = wall
@@ -1972,6 +2012,8 @@ class Remote:
             return (*self.announce_post(name, body, ctx),) + ({},)
         if name in HAZER_POST_ROUTES:
             return (*self.hazer_post(name, body, ctx),) + ({},)
+        if name in PUMP_POST_ROUTES:
+            return (*self.pump_post(body, ctx),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
             return (*self.press(name, body, ctx),) + ({},)
         if name == "arm-hold":
@@ -1992,20 +2034,50 @@ class Remote:
         if pr is None:
             return None
         try:
-            return pr.view()
+            v = pr.view()
         except Exception as e:                   # noqa: BLE001
             return {"state": "idle", "items": [], "text": "",
                     "error": f"{type(e).__name__}: {e}"}
+        if v.get("cleared"):
+            # A failure a later check cleared (Jeff's field report,
+            # 2026-10-29): what to press now, in the same words on every
+            # screen. Nothing starts by itself.
+            v["cleared"]["say"] = self._cleared_say(v["cleared"])
+        return v
+
+    def _cleared_say(self, cleared=None):
+        m = getattr(self.schedule, "machine", None)
+        st = getattr(m, "state", None)
+        held = (cleared or {}).get("shows", 1)
+        if m is not None and m.delayed() is not None:
+            # A delayed show waits for Start now, held or not (review A
+            # round 2 of #176): Resume does not start it.
+            return (f"Rig check passed. Press Start now for show "
+                    f"{m.delayed().n}.")
+        if st == "HOLD" and held:
+            # Resume releases the show it cleared, which is then checked
+            # again. A cleared alert alone ("could not run") leaves no show
+            # for Resume to release (review 2 of #176): Start now, below.
+            return "Rig check passed. Press Resume."
+        # Not held: the show it failed for is never started by itself
+        # after a failure, so Start now (it checks again).
+        return "Rig check passed. Press Start now to start the show."
+
 
     PRECHECK_CLEAR_S = 60.0
 
     def preroll_check(self, body, ctx):
-        """Pre-check (the rack screen, an admin: the role matrix's
-        Settings row, web.py): the same checks a show's pre-roll makes,
-        with nothing started and no alert raised or cleared. Only between
+        """Pre-check, and Check again after a failure (the rack screen, an
+        admin: the role matrix's Settings row, web.py): the same checks a
+        show's pre-roll makes, with nothing started. It raises no alert of
+        its own; a pass clears a failure in force (and its preroll alert),
+        and a failure while one is in force refreshes it
+        (preroll.PreRoll._clear_failure, _refresh_failure). Only between
         shows, with Run pressed, never in the minute before a show (its
-        own pre-roll runs then). Returns at once; the result is in the
-        status's "preroll"."""
+        own pre-roll runs then) unless a failure is in force: a failed
+        show is never checked again by itself (preroll.PreRoll.claim), so
+        Check again is let through then. Returns at once; the result is
+        in the status's "preroll"."""
         pr = self.preroll
         who = ctx.user or "unsigned"
         if pr is None:
@@ -2028,7 +2100,8 @@ class Remote:
             why = "a Stop is under way"
         elif m is not None and m.next_slot() is not None:
             left = (m.next_slot().start - svc.clock()).total_seconds()
-            if 0 <= left < self.PRECHECK_CLEAR_S + pr.window_s:
+            if 0 <= left < self.PRECHECK_CLEAR_S + pr.window_s and \
+                    not pr.failure_in_force():
                 why = (f"show {m.next_slot().n} is due in {left:.0f} s and "
                        f"its own rig check runs by itself")
         if why:
@@ -2039,7 +2112,8 @@ class Remote:
         threading.Thread(target=pr.run, daemon=True,
                          name="ltcplay-precheck",
                          args=(key, f"a Pre-check by {who}"),
-                         kwargs={"alerts": False, "manual": True}).start()
+                         kwargs={"alerts": False, "manual": True,
+                                 "by": f"Check again by {who}"}).start()
         return 200, {"ok": True, "text": "Checking the rig. Nothing is "
                                          "started, nothing is armed and "
                                          "nothing is played; the screens "
@@ -3179,6 +3253,10 @@ class Remote:
             # the link already; this is the belt, and the journal line.
             self.hazers_cut(f"{who or 'someone'} pressed Abort on the "
                             f"{screen}", who, screen)
+            # The fuel pump OFF at the press too (Jeff, 2026-10-30), the
+            # same way: the link's disarm_all did it already; the belt.
+            self.pump_cut(f"{who or 'someone'} pressed Abort on the "
+                          f"{screen}", who, screen)
         if name in ("abort", "hold"):
             # Every laser disarmed at the press too (Jeff, 2026-10-22,
             # ruling 3), from every surface, before the confirm check and
@@ -4233,6 +4311,14 @@ class Remote:
         if pg is not None and pg.selected:
             return ("machines are selected for a purge on the Morning and "
                     "Shutdown page; clear the purge selection first")
+        # The fuel pump (re-review A of #188, N1): at the start only (the
+        # mode not yet on; begin() asks this after marking itself
+        # starting), never on a watch pass, so a pump can never end a
+        # running session (and with it, by its disarm, the pump).
+        if lf is None or not getattr(lf, "on", False):
+            why = self.live_flame_pump_refusal()
+            if why:
+                return why
         return ""
 
     def live_flame_armed_groups(self):
@@ -4347,6 +4433,22 @@ class Remote:
             return 403, {"error": "Live flame programming is turned on on "
                                   "the show machine itself, not from here. "
                                   "Nothing was changed."}
+        # The fuel pump (2026-10-30, review B of #188, F3): live flame
+        # programming ends with a disarm to every flame group, which turns
+        # the pump off too; a Hold or Start now ends it. So it does not
+        # start while the pump runs: Hold must never end the pump (Jeff:
+        # "Off on Stop, NOT Hold"). This is the early, plain answer; the
+        # check that decides is live_flame_blockers, run inside begin()
+        # after it is marked starting, and pump_blocker refuses the pump
+        # while live flame programming is on OR starting, with the pump's
+        # run reserved before that look (re-review A of #188, N1): one of
+        # the two always sees the other.
+        why = self.live_flame_pump_refusal()
+        if why:
+            self._journal(who or "unsigned", screen, "live flame", "refused",
+                          f"Live flame programming ON on the {screen} was "
+                          f"refused: {why}")
+            return 409, {"error": why}
         if body.get("confirmed") is not True:
             return 400, {"error": "Confirm it on the page first. Nothing "
                                   "was changed."}
@@ -4493,6 +4595,114 @@ class Remote:
             return 409, {"error": text}
         return 200, {"ok": True, "text": text}
 
+    # -- the fuel pump (fuelpump.py) ------------------------------------------
+    def pump_cut(self, reason, who="", screen=""):
+        """Stop or Abort: the fuel pump OFF at the flame link now, the
+        journal and audit lines on a thread of their own. Never raises,
+        never waits."""
+        pm = self.pump
+        if pm is None:
+            return False
+        try:
+            was = pm.cut()
+            threading.Thread(target=pm.off, args=(reason,),
+                             kwargs={"who": who, "screen": screen,
+                                     "system": not who, "was": was},
+                             daemon=True, name="ltcplay-pump-off").start()
+            return True
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def pump_settings(self):
+        """The fuel pump's run times on this show machine: the screens'
+        default (always 5:00, capped by the longest), the longest, the
+        shortest and
+        the most an admin may set, from ltcplay_remote.json; "error" when
+        that file cannot be read (then the pump is not turned on)."""
+        out = {"default_s": PUMP_DEFAULT_S, "max_s": PUMP_MAX_DEFAULT_S,
+               "min_s": PUMP_MIN_S, "limit_s": PUMP_MAX_LIMIT_S,
+               "error": ""}
+        try:
+            rs = load_settings(self.folder)
+        except (ValueError, OSError) as e:
+            out["error"] = str(e)
+            return out
+        out["max_s"] = rs["pump_max_s"]
+        # Jeff (2026-10-30): 5 minutes unless Andy sets another run time
+        # before he turns it on; never a remembered one.
+        out["default_s"] = min(PUMP_DEFAULT_S, rs["pump_max_s"])
+        return out
+
+    def pump_post(self, body, ctx):
+        """POST fuel-pump {"on": true, "seconds": N, "run": "<press id>"}
+        or {"on": false}. ON is an arm press (users.classify, checked by
+        web.py first) and, from the show network, needs screen_arming
+        (may_act_from); anything but the JSON word true turns it OFF, is
+        never refused and never starts it. (code, body)."""
+        pm = self.pump
+        if pm is None:
+            return 404, {"error": "There is no fuel pump in this engine."}
+        who, device, _surface = self._actor(ctx, body)
+        on = body.get("on") is True
+        if not on:
+            ok, text = pm.set(False, who=who, screen=device)
+            return 200, {"ok": True, "text": text}
+        if not self.may_act_from(ctx.local):
+            why = ("Turning the fuel pump on from a device on the show "
+                   "network needs screen_arming (on the show machine "
+                   "itself: Programming, Arming from a screen, Turn on). "
+                   "Nothing was changed.")
+            self._journal(who, device, "fuel-pump", "refused",
+                          f"{who or 'Someone'}'s fuel pump ON from the "
+                          f"{device} was refused. {why}")
+            return 403, {"error": why}
+        # The press's own age (final delta review of #189): an ON sent from
+        # a status more than ARM_FRESH_S old (or none) is refused, as an
+        # arm hold is, so a request that stalled on weak Wi-Fi and lands
+        # after a Pump off or a Stop can never start the pump then.
+        try:
+            seen = float(body.get("seen"))
+        except (TypeError, ValueError):
+            seen = None
+        if seen is None or seen != seen or \
+                abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:
+            why = ("The fuel pump was not turned on: the press came from a "
+                   "screen whose status was more than 1 s old (or said "
+                   "nothing of its age), so it may be from before a Pump "
+                   "off or a Stop. Wait for the screen to be live, then "
+                   "press again.")
+            self._journal(who, device, "fuel-pump", "refused",
+                          f"{who or 'Someone'}'s fuel pump ON from the "
+                          f"{device} was refused. {why}")
+            return 409, {"error": why}
+        ps = self.pump_settings()
+        if ps["error"]:
+            return 409, {"error": f"The fuel pump was not turned on: "
+                                  f"{ps['error']}"}
+        ok, text = pm.set(True, who=who, screen=device,
+                          seconds=body.get("seconds"), run=body.get("run"),
+                          max_s=ps["max_s"])
+        if not ok:
+            return 409, {"error": text}
+        return 200, {"ok": True, "text": text}
+
+    def pump_view(self, fl):
+        """The status's "pump": fuelpump.FuelPump.view with this show
+        machine's run times, or None with no pump in this engine. Never
+        raises."""
+        pm = self.pump
+        if pm is None:
+            return None
+        try:
+            v = pm.view(fl)
+            ps = self.pump_settings()
+            v.update(default_s=ps["default_s"], max_s=ps["max_s"],
+                     min_s=ps["min_s"], settings_error=ps["error"])
+            return v
+        except Exception as e:                   # noqa: BLE001
+            return {"available": False,
+                    "down": f"{type(e).__name__}: {e}"}
+
     def hazers_view(self, fl):
         """The status's "hazers": hazers.Hazers.view, and the display only
         "hazers" alert while flamesafe's list and this engine's differ.
@@ -4539,6 +4749,52 @@ class Remote:
         if lf is not None and getattr(lf, "on", False):
             return ("live flame programming is on, and turning it off "
                     "disarms every hazer. Turn it off first.")
+        return ""
+
+    def pump_night_state(self):
+        """The scheduler's state for the fuel pump's end of night
+        (fuelpump.NIGHT_CLOSING and NIGHT_OVER), or None. Never raises."""
+        try:
+            return getattr(getattr(self.schedule, "machine", None), "state",
+                           None)
+        except Exception:                        # noqa: BLE001
+            return None
+
+    def live_flame_pump_refusal(self):
+        """Why live flame programming may not start because of the fuel
+        pump, or "": the pump is on (its end, or a Hold or Start now ending
+        it, would turn the pump off). Fails closed. Never raises."""
+        pm = self.pump
+        if pm is None:
+            return ""
+        try:
+            on = pm.run is not None or pm.on()
+        except Exception:                        # noqa: BLE001
+            on = True
+        if on:
+            return ("The fuel pump is on, and live flame programming ends "
+                    "with a disarm that turns the pump off (a Hold would "
+                    "end it too). Press Pump off first, or wait for its "
+                    "time to end. Nothing was changed.")
+        return ""
+
+    def pump_blocker(self):
+        """Why the fuel pump may not be turned ON now beyond fuelpump.py's
+        own checks, or "": live flame programming on, or being turned on
+        (its end sends the Abort's disarm to flamesafe, which turns the
+        pump off; re-review A of #188, N1). Asked again by fuelpump.py with
+        its run already reserved, so a begin() racing it is always seen by
+        one side or the other."""
+        lf = getattr(self, "live_flame", None)
+        programming = lf is not None and (getattr(lf, "on", False) or
+                                          getattr(lf, "_starting", False))
+        if programming and not getattr(lf, "on", False):
+            return ("live flame programming is starting, and turning it "
+                    "off turns the fuel pump off. Turn it off first, or "
+                    "wait for it to start and turn it off.")
+        if programming:
+            return ("live flame programming is on, and turning it off "
+                    "turns the fuel pump off. Turn it off first.")
         return ""
 
     @staticmethod
@@ -4679,6 +4935,11 @@ class Remote:
             # (review of PR #125, P2-2).
             from . import windowfront
             fn = windowfront.OPENER
+            # The supervisor's rack screen keeper leaves BEYOND in front
+            # after this press (showwindows.RackKeeper).
+            from . import appdata, showwindows
+            if appdata.WINDOWS:
+                showwindows.stamp_opened(appdata.folder())
         try:
             ok, text = fn(self.beyond_host)
         except Exception as e:                   # noqa: BLE001
@@ -5201,6 +5462,10 @@ class Remote:
             # halt). The flame link's disarm_all in step 1 did it at the
             # link already; this is the belt, and the journal line.
             self.hazers_cut(why, who, screen)
+            # The fuel pump OFF too (Jeff, 2026-10-30: "it should be
+            # affected by the stop button"); step 1's disarm_all did it at
+            # the link already.
+            self.pump_cut(why, who, screen)
             # 3. Every laser: disarmed on the arm, and blanked at once.
             fn = getattr(m, "lasers_disarm_now", None)
             if fn is not None:
@@ -6957,6 +7222,18 @@ class Remote:
                 add("Laser arm", "bad", "not known")
         link = self.beyond_link()
         self._video_lamp(add, out, cond, snap, cs)
+        mo = getattr(self, "mm_output", None)
+        if mo is not None:
+            # MadMapper's video output (showwindows.py, Jeff's field
+            # report 2026-10-29): its full-screen window on the projector
+            # display, read from Windows. Display only.
+            try:
+                st, why = mo.state()
+            except Exception as e:               # noqa: BLE001
+                st, why = "unknown", f"not known: {type(e).__name__}"
+            add("MadMapper output", {"on": "ok", "off": "bad"}.get(
+                st, "warn"), {"on": "on", "off": "OFF"}.get(st, "not known"))
+            out[-1]["title"] = why
         for name, key in (("Lasers", "lasers"),):
             v = applied.get(key)
             if key == "lasers" and laser_fault:
@@ -7173,6 +7450,9 @@ class Remote:
         hzv = self.hazers_view(out["flames"])
         if hzv is not None:
             out["hazers"] = hzv
+        pmv = self.pump_view(out["flames"])
+        if pmv is not None:
+            out["pump"] = pmv
         out["beyond_link"] = self.beyond_link()
         try:
             _snap = self.schedule.conductor.snapshot() or {}

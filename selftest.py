@@ -20269,7 +20269,7 @@ def test_nothing_plays_on_the_pa_without_an_operator_press():
           f"every engine name is reserved: {sorted(A.ENGINE_NAMES)} "
           f"{U.RESERVED}")
     for nm in ("Engine", "Scheduler", "LTC Player", "ltcplay", "System",
-               "  ltc   player "):
+               "  ltc   player ", "Deck"):
         try:
             U.check_name(nm)
             check(False, f"an account may be named {nm!r}")
@@ -43894,7 +43894,8 @@ def test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender():
     print("  ok")
 
 
-def _fi_cut_show(work, ncues=1, frames=300, sparse=True, corrupt_block=None):
+def _fi_cut_show(work, ncues=1, frames=300, sparse=True, corrupt_block=None,
+                  compression="zlib", cut_tail_frames=0):
     """A show folder for the cut-ahead tests: Pixels A 1-510, Flames
     511-1022; `ncues` renders of `frames` frames (zlib, 37 frames a
     block), each frame its own byte ((i * 7 + 3) & 255), sparse by default
@@ -43912,12 +43913,21 @@ def _fi_cut_show(work, ncues=1, frames=300, sparse=True, corrupt_block=None):
     for k in range(ncues):
         p = os.path.join(show, f"c{k}.fseq")
         _fx.write_fseq(p, frame_count=frames, step_ms=25,
-                       compression="zlib", block_frames=37,
+                       compression=compression, block_frames=37,
                        **({"sparse_ranges": [(0, 100), (600, 200)]}
                           if sparse else {"channel_count": 1022}),
                        fill=lambda i: (i * 7 + 3) & 0xFF)
         paths.append(p)
         cues.append(types.SimpleNamespace(name=f"c{k}", path=p))
+    if cut_tail_frames:
+        # A render whose last frames are missing (cut short on disk).
+        from ltcplay import fseq as FS
+        f = FS.FSEQ(paths[0])
+        cc = f.channel_count
+        f.close()
+        with open(paths[0], "r+b") as fh:
+            fh.seek(0, 2)
+            fh.truncate(fh.tell() - cut_tail_frames * cc - cc // 2)
     if corrupt_block is not None:
         from ltcplay import fseq as FS
         f = FS.FSEQ(paths[0])
@@ -43944,6 +43954,19 @@ def _fi_at(clk, n, label=None):
     if label is not None:
         clk._cue = {"label": label, "position_s": 0.0}
     return f"00:{m:02d}:{s:02d}:{f:02d}"
+
+
+def _fi_settled(bg, tc):
+    """bg(tc) once its CUT_FAULT_AFTER_S grace is over (a fake clock): what
+    a frame that stays uncut finally says."""
+    mono = [5000.0]
+    bg._mono = lambda: mono[0]
+    bg(tc)
+    mono[0] += 2.0
+    got = bg(tc)
+    import time as _t
+    bg._mono = _t.monotonic
+    return got
 
 
 def test_fire_ice_flame_cues_cut_ahead_match_and_never_decompress():
@@ -44002,24 +44025,50 @@ def test_fire_ice_flame_cues_cut_ahead_match_and_never_decompress():
         other.__dict__.update(cut.__dict__)
         other.span = (cut.span[0] + 1, cut.span[1])
         bg._cuts = {paths[0]: other}
-        check(bg(_fi_at(clk, 100)) is None and bg.fault == F.CUES_LOADING,
+        check(_fi_settled(bg, _fi_at(clk, 100)) is None and
+              bg.fault == F.CUES_LOADING,
               f"a cut for another span: zero and a CUES FAULT: {bg.fault!r}")
         other.span = cut.span
         other.f = FS.FSEQ(paths[0])
-        check(bg(_fi_at(clk, 100)) is None and bg.fault == F.CUES_LOADING,
+        check(_fi_settled(bg, _fi_at(clk, 100)) is None and
+              bg.fault == F.CUES_LOADING,
               "a cut of another FSEQ of the same render: never used")
         other.f.close()
         bg._cuts = {paths[0]: cut}
         check(bg(_fi_at(clk, 100)) == want and bg.fault == "",
               "its own cut again: the cues")
-        # Not cut yet while the show plays: a CUES FAULT at once, then the
-        # cues once the reading thread has cut it.
+        # Not cut yet while the show plays: zero, a CUES FAULT only once it
+        # has stayed so for CUT_FAULT_AFTER_S (no journal line, no blink, for
+        # a move that is cut in time), then the cues once it is cut.
         far = 290 * 30 // 40
-        cut.blocks.pop(cut._block(289))       # as if not cut yet
+        check(cut._block(289) in cut.blocks, "the far block was cut ahead")
+        cut.blocks.pop(cut._block(289), None)     # as if not cut yet
+        mono = [1000.0]
+        bg._mono = lambda: mono[0]
+        lines = []
+        bg._journal = lambda t, **k: lines.append((t, k))
         got = bg(_fi_at(clk, far))
-        check(got is None and bg.fault == F.CUES_LOADING,
-              f"a block not cut yet: a CUES FAULT, not a silent zero: "
-              f"{bg.fault!r}")
+        check(got is None and bg.fault == "" and not lines,
+              f"a block not cut yet: zero, no fault and no line at first: "
+              f"{bg.fault!r} {lines}")
+        mono[0] += F.CUT_FAULT_AFTER_S - 0.1
+        check(bg(_fi_at(clk, far)) is None and bg.fault == "",
+              "still inside the grace: no fault")
+        mono[0] += 0.2
+        got = bg(_fi_at(clk, far))
+        check(got is None and bg.fault == F.CUES_LOADING and
+              len([1 for _t, k in lines if k.get("fault")]) == 1,
+              f"still not cut after {F.CUT_FAULT_AFTER_S} s: a CUES FAULT, "
+              f"never a silent zero: {bg.fault!r}")
+        # A cutting thread that could not be started again: the fault at
+        # once, and it says the cues will not follow.
+        bg._start_failed.add("_cutter")
+        mono[0] += 5
+        check(bg(_fi_at(clk, far)) is None and
+              bg.fault == F.CUES_CUTTER_DEAD and
+              "restart LTC Player" in bg.fault,
+              f"the cutter gone: the fault says so: {bg.fault!r}")
+        bg._start_failed.clear()
         bg._cut_ahead()
         check(bg(_fi_at(clk, far)) == direct(_fi_at(clk, far)) and
               bg.fault == "", "cut by the next pass: the cues")
@@ -44062,7 +44111,7 @@ def test_fire_ice_flame_cut_guards():
         bg._data[paths[0]] = (FS.FSEQ(alt), alt_data)
         bg._cuts = {}
         bg._refresh_once()
-        got = bg(_fi_at(clk, 10))
+        got = _fi_settled(bg, _fi_at(clk, 10))
         check(paths[0] not in bg._cuts and got is None and
               bg.fault == F.CUES_LOADING,
               f"bytes that are another render's: not cut, a CUES FAULT, "
@@ -44109,9 +44158,11 @@ def test_fire_ice_flame_cut_guards():
             ok.append(bool(got) and sp.fault == "")
         check(all(ok), f"12 cues of 2000 frames: every cue's start ready "
                        f"after one pass ({took:.2f} s): {ok}")
-        check(all(len(c.blocks) <= 4 for c in sp._cuts.values()),
-              f"and only their start is cut, not whole renders: "
-              f"{[len(c.blocks) for c in sp._cuts.values()]}")
+        nb = [len(sp._cuts[p].blocks) for p in paths]
+        check(all(n <= 4 for n in nb[1:]) and nb[0] < len(
+            sp._cuts[paths[0]].firsts),
+              f"only each cue's start is cut (the playing one ahead of its "
+              f"timecode), never whole renders: {nb}")
         sp.close()
         # A block that cannot be cut: the frames before it as they are, then
         # a CUES FAULT with the render's own error, the block tried once.
@@ -44146,6 +44197,1447 @@ def test_fire_ice_flame_cut_guards():
                                    f"{tried.count(4)}")
         bg.close()
     finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_cut_followups_of_174():
+    section("fire & ice (review of #174): the cutting has a thread of its "
+            "own, so a stalled read cannot starve the playing cue; a thread "
+            "that dies is started again and journaled; an uncompressed "
+            "render is cut in pieces straight from memory, never copied "
+            "whole, and one missing its tail plays every frame it has; a "
+            "compressed block's channel data is not kept")
+    import shutil
+    import tempfile
+    import threading
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    try:
+        # A stalled reading thread: the cutting thread still cuts ahead.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "s"), frames=1200)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg.start()
+        for _ in range(250):
+            if bg(_fi_at(clk, 5)):
+                break
+            time.sleep(0.02)
+        stalled, release = threading.Event(), threading.Event()
+        real_check = bg._check_renders_once
+
+        def stuck():
+            if threading.current_thread().name == "ltcplay-flame-cues-read":
+                stalled.set()
+                release.wait(10)
+            return real_check()
+        bg._check_renders_once = stuck
+        check(stalled.wait(3), "setup: the reading thread is stalled")
+        far = 25 * 30                       # 25 s on: never cut before
+        cut = bg._cuts[paths[0]]
+        n_far = int(25 * 1000 // 25)
+        check(cut._block(n_far) not in cut.blocks, "setup: 25 s is not cut")
+        got = None
+        for _ in range(100):
+            got = bg(_fi_at(clk, far))
+            if got:
+                break
+            time.sleep(0.02)
+        check(got is not None and bg.fault == "" and stalled.is_set()
+              and not release.is_set(),
+              f"with the reading thread stalled, the cutting thread cut the "
+              f"playing cue ahead: {bg.fault!r}")
+        release.set()
+        # A thread that dies is started again on the next frame, said once.
+        lines = []
+        bg._journal = lambda t, **k: lines.append((t, k))
+
+        class Die(BaseException):
+            pass
+        real_cut = bg._cut_ahead
+        killed = threading.Event()
+
+        def die():
+            if not killed.is_set():
+                killed.set()
+                raise Die("killed by the test")
+            return real_cut()
+        old_t = bg._cutter
+        bg._cut_ahead = die
+        old_t.join(3)
+        check(not old_t.is_alive(), "setup: the cutting thread died")
+        bg(_fi_at(clk, far))
+        new_t = bg._cutter
+        check(new_t is not old_t and new_t.is_alive() and
+              any("ltcplay-flame-cues-cut stopped (Die: killed by the "
+                  "test)" in t and k.get("fault") for t, k in lines),
+              f"started again on the next frame, journaled as a fault: "
+              f"{[t for t, _k in lines]}")
+        bg.close()
+        # Uncompressed, the last 3 frames (and a half) missing: no copy of
+        # the render, every frame it has equal to the direct read, the
+        # missing ones the render's own fault.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "u"), frames=600,
+                                       compression="none",
+                                       cut_tail_frames=3)
+        direct = F.FlameCues(ctl, "Flames")
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        real_load = FS.FSEQ._load_block
+        loads = []
+
+        def spy_load(self, idx):
+            if any(self is c.g for c in list(bg._cuts.values())):
+                loads.append(idx)
+            return real_load(self, idx)
+        FS.FSEQ._load_block = spy_load
+        try:
+            bg._check_renders_once()
+            bg._refresh_once()
+            cut = bg._cuts[paths[0]]
+            cut.ensure(0, 599)
+        finally:
+            FS.FSEQ._load_block = real_load
+        check(cut.whole and not loads and len(cut.blocks) == 3,
+              f"an uncompressed render is cut in pieces straight from "
+              f"memory: {len(cut.blocks)} pieces, block loads {loads}")
+        bad = []
+        for k in range(0, 595):
+            n = int(k * 1000 // 25)
+            tc = _fi_at(clk, int(k * 25 * 30 // 1000))
+            a, b = _fi_settled(bg, tc), direct(tc)
+            if a != b:
+                bad.append(k)
+        check(not bad, f"every frame it has, as the direct read: {bad[:4]}")
+        tc = _fi_at(clk, int(599 * 25 * 30 // 1000))
+        got = bg(tc)
+        check(got is None and bg.fault.startswith(
+            "the show's render could not be read"),
+              f"a missing frame: the render's own fault: {bg.fault!r}")
+        bg.close()
+        direct.close()
+        # Compressed: the block's channel data is not kept after its cut.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "z"), frames=300)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.ensure(0, 299)
+        check(len(cut.blocks) == len(cut.firsts) and cut.g._cache == b"",
+              f"every block cut, no block's channel data kept: "
+              f"{len(cut.g._cache)} bytes")
+        bg.close()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_cut_round2_of_177():
+    section("fire & ice (review of #177): a cue that stays uncut while it "
+            "plays on across blocks is a CUES FAULT after 1 s, never silent "
+            "zeros; a new episode after a served row has its grace again; "
+            "the playing cue is cut far ahead, before its render is "
+            "published; a thread that keeps dying is restarted later each "
+            "time and becomes a fault on the screens; close() joins both "
+            "threads; a render's first missing frame is exact")
+    import shutil
+    import tempfile
+    import threading
+    import types
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    try:
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "a"), frames=1200)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()                    # no thread: driven by hand
+        bg._check_renders_once()
+        _fi_at(clk, 10 * 30)              # the show at 10 s
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        check(bg(_fi_at(clk, 10 * 30)) is not None and bg.fault == "",
+              "the playing cue is cut where it is before its render is "
+              "published")
+        check(F.CUT_AHEAD_S >= 10 and
+              cut._block(int(22 * 1000 // 25)) in cut.blocks,
+              f"and far ahead of it ({F.CUT_AHEAD_S} s): 22 s is cut")
+        # Playing on across uncut blocks (37 frames, under 1 s each) with
+        # nothing cutting: one episode, a CUES FAULT after 1 s.
+        mono = [100.0]
+        bg._mono = lambda: mono[0]
+        for b in list(cut.blocks):
+            if b >= cut._block(int(23 * 1000 // 25)):
+                cut.blocks.pop(b, None)
+        start = 23 * 30
+        silent, first_fault = 0, None
+        for k in range(90):               # 3 s of show at 30 frames a second
+            got = bg(_fi_at(clk, start + k))
+            if got is None and bg.fault == "":
+                silent += 1
+            if bg.fault == F.CUES_LOADING and first_fault is None:
+                first_fault = k / 30.0
+            mono[0] += 1 / 30.0
+        check(first_fault is not None and first_fault <= F.CUT_FAULT_AFTER_S
+              + 0.05 and silent <= 31,
+              f"uncut across blocks: a CUES FAULT after {first_fault} s, "
+              f"{silent} silent zero frames")
+        # A served row ends the episode: the next one has its grace again.
+        cut.ensure(int(start / 30 * 40), int((start + 200) / 30 * 40))
+        mono[0] += 1.0
+        check(bg(_fi_at(clk, start + 95)) is not None, "setup: served")
+        cut.blocks.pop(cut._block(int(28 * 1000 // 25)), None)
+        mono[0] += 0.5
+        got = bg(_fi_at(clk, 28 * 30))
+        check(got is None and bg.fault == "",
+              f"a new uncut moment after a served row: its own grace: "
+              f"{bg.fault!r}")
+        # A cutting thread that could not be started is cleared once it is.
+        bg._start_failed.add("_cutter")
+        bg._stop.clear()
+        bg._cutter = types.SimpleNamespace(is_alive=lambda: False)
+        bg._restarts["_cutter"] = (0, None, mono[0])
+        bg.start()
+        check(not bg._start_failed and bg._cutter.is_alive(),
+              "started again: no longer said to be gone")
+        # close() joins both threads, even a busy cutter.
+        bg._cut_ahead = lambda *a, **k: time.sleep(0.3)
+        time.sleep(0.1)
+        cutter = bg._cutter
+        bg.close()
+        check(not cutter.is_alive() and not (bg._thread and
+                                             bg._thread.is_alive()),
+              "close() joined the cutting and the reading thread")
+        # The cutting thread looks every CUT_EVERY_S.
+        waits = []
+
+        class Stop:
+            def wait(self, t):
+                waits.append(t)
+                return len(waits) > 2
+        c2 = F.FlameCues(ctl, "Flames", background=True)
+        c2._stop = Stop()
+        c2._cut_ahead = lambda: None
+        c2._cutting()
+        check(F.CUT_EVERY_S <= 0.1 and waits and
+              all(w == F.CUT_EVERY_S for w in waits),
+              f"the cutting thread looks every {F.CUT_EVERY_S} s: {waits}")
+        # A thread that dies on every pass: restarted later each time, a
+        # line each restart, a screen fault after RESTART_FAULT_AFTER.
+        c3 = F.FlameCues(ctl, "Flames", background=True)
+        lines = []
+        c3._journal = lambda t, **k: lines.append(t)
+        m3 = [0.0]
+        c3._mono = lambda: m3[0]
+
+        def dies():
+            raise RuntimeError("dies every pass")
+        c3._cutting = dies
+        starts = 0
+        for step in range(400):           # 40 s, a frame every 0.1 s
+            before = c3._cutter
+            c3.start()
+            if c3._cutter is not before:
+                starts += 1
+                c3._cutter.join(1)
+            m3[0] += 0.1
+        restarted = [t for t in lines if "ltcplay-flame-cues-cut stopped"
+                     in t]
+        check(5 <= len(restarted) <= 7 and starts == len(restarted) + 1,
+              f"backed off: {len(restarted)} restarts in 40 s (1, 2, 5, 10, "
+              f"30 s apart): {starts} starts")
+        # faults_now() first: it may clear thread_fault, and reading
+        # thread_fault before it hid a faults_now() that always clears it.
+        shown = c3.faults_now()
+        check("keeps stopping" in shown and "restart LTC Player" in shown
+              and shown == c3.thread_fault,
+              f"and a fault on the screens: {shown!r}")
+        c3.close()
+        # A render missing its tail: each frame up to the last whole one,
+        # then the first missing one raises, exactly.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "u"), frames=600,
+                                       compression="none",
+                                       cut_tail_frames=3)
+        c4 = F.FlameCues(ctl, "Flames", background=True)
+        c4._stop.set()
+        c4._check_renders_once()
+        c4._refresh_once()
+        cut4 = c4._cuts[paths[0]]
+        cut4.ensure(0, 599)
+        f = FS.FSEQ(paths[0])
+        bad = []
+        for i in range(560, 600):
+            try:
+                want = F.FlameCues._cut(f.frame(i), cut4.spans, cut4.span)
+            except Exception:
+                want = None
+            try:
+                got = cut4.row(i)
+            except Exception:
+                got = None
+            if got != want or (want is not None and len(got) != 512):
+                bad.append((i, got and len(got), want and len(want)))
+        f.close()
+        check(not bad, f"frame by frame to the first missing one: {bad[:4]}")
+        c4.close()
+        # Review B of #177. A render whose tail is missing across several
+        # pieces: one journal line for it, not one a piece.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "t"), frames=900,
+                                       compression="none",
+                                       cut_tail_frames=500)
+        c5 = F.FlameCues(ctl, "Flames", background=True)
+        c5._stop.set()
+        c5._check_renders_once()
+        c5._refresh_once()
+        lines = []
+        c5._journal = lambda t, **k: lines.append((t, k.get("fault")))
+        c5._cuts[paths[0]].ensure(0, 899)
+        for k in range(0, 900, 7):
+            c5(_fi_at(clk, int(k * 25 * 30 // 1000)))
+        bad_lines = [t for t, f in lines if f and "could not be read" in t]
+        check(len(bad_lines) == 1,
+              f"a render missing its tail: one line for it: {bad_lines}")
+        c5.close()
+        # A block that fails for a reason that is not the render's bytes
+        # (memory): uncut, tried again later, then cut. A corrupt block
+        # stays for good (test_fire_ice_flame_cut_guards).
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "m"), frames=300)
+        c6 = F.FlameCues(ctl, "Flames", background=True)
+        c6._stop.set()
+        c6._check_renders_once()
+        c6._refresh_once()
+        cut6 = c6._cuts[paths[0]]
+        cut6.blocks.pop(3, None)
+        tick = [500.0]
+        cut6.clock = lambda: tick[0]
+        real_load = FS.FSEQ._load_block
+        boom = [True]
+
+        def flaky(self, idx):
+            if idx == 3 and boom[0]:
+                boom[0] = False
+                raise MemoryError("for a moment")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = flaky
+        try:
+            cut6.ensure(cut6.firsts[3], cut6.firsts[3])
+            uncut = 3 not in cut6.blocks and 3 not in cut6.errors
+            cut6.ensure(cut6.firsts[3], cut6.firsts[3])
+            waited = 3 not in cut6.blocks
+            tick[0] += 1.0
+            cut6.ensure(cut6.firsts[3], cut6.firsts[3])
+        finally:
+            FS.FSEQ._load_block = real_load
+        check(uncut and waited and 3 in cut6.blocks and not cut6.errors,
+              f"a MemoryError: the block uncut, not before its retry, then "
+              f"cut: {uncut} {waited} {sorted(cut6.blocks)} {cut6.errors}")
+        c6.close()
+        # A render still being read while the show plays: zero, and the
+        # CUES FAULT after 1 s, never silent zeros for as long as it lasts.
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, "r"), frames=300)
+        c7 = F.FlameCues(ctl, "Flames", background=True)
+        c7._stop.set()                     # nothing reads: stalled at Run
+        m7 = [10.0]
+        c7._mono = lambda: m7[0]
+        got = c7(_fi_at(clk, 30))
+        quiet = got is None and c7.fault == ""
+        m7[0] += F.CUT_FAULT_AFTER_S + 0.1
+        got = c7(_fi_at(clk, 31))
+        check(quiet and got is None and "still being read" in c7.fault,
+              f"a reader stalled at Run: a CUES FAULT after 1 s: "
+              f"{c7.fault!r}")
+        c7.close()
+        # Six first start()s at once (the sender and the screens' threads):
+        # one reading and one cutting thread, never more.
+        c8 = F.FlameCues(ctl, "Flames", background=True)
+        real_mono = c8._mono
+
+        def slow_mono():
+            time.sleep(0.01)              # widen the window a race needs
+            return real_mono()
+        c8._mono = slow_mono
+        go = threading.Event()
+
+        def hit():
+            go.wait()
+            c8.start()
+        ts = [threading.Thread(target=hit) for _ in range(6)]
+        for t in ts:
+            t.start()
+        go.set()
+        for t in ts:
+            t.join(5)
+        n = sum(1 for t in threading.enumerate()
+                if t.name.startswith("ltcplay-flame-cues") and t.is_alive())
+        check(n == 2, f"six start()s at once: {n} threads (2 wanted)")
+        c8.close()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def _fi_one_block_render(path, header_frames, body_frames, entry_len=None,
+                         trailing=b""):
+    """An uncompressed FSEQ v2 render with a ONE-entry block table (sparse:
+    channels 1 to 100 and 601 to 800, each frame its own byte as
+    _fi_cut_show's). `entry_len` is the block's length in the table (the
+    channel data's own length when None); `trailing` follows the frames."""
+    import struct
+    sparse = [(0, 100), (600, 200)]
+    cc = sum(n for _s, n in sparse)
+    body = b"".join(bytes(((i * 7 + 3) & 0xFF,)) * cc
+                    for i in range(body_frames)) + trailing
+    tbl = struct.pack("<II", 0, len(body) if entry_len is None
+                      else entry_len)
+    sp = b"".join(struct.pack("<I", s)[:3] + struct.pack("<I", n)[:3]
+                  for s, n in sparse)
+    off = 32 + len(tbl) + len(sp)
+    head = bytearray(32)
+    head[0:4] = b"PSEQ"
+    struct.pack_into("<H", head, 4, off)
+    head[6], head[7] = 2, 2
+    struct.pack_into("<H", head, 8, off)
+    struct.pack_into("<I", head, 10, cc)
+    struct.pack_into("<I", head, 14, header_frames)
+    head[18] = 25
+    head[20], head[21], head[22] = 0, 1, len(sparse)   # none, 1 block
+    with open(path, "wb") as fh:
+        fh.write(bytes(head) + tbl + sp + body)
+    return cc
+
+
+def test_fire_ice_flame_cut_round3_of_177():
+    section("fire & ice (review 3 of #177): an uncompressed render with one "
+            "block is cut only to that block's end, faulting where the "
+            "direct read does; a cut that keeps failing for any reason is "
+            "named after its retries, and a block failing to cut is a fault "
+            "at once; a thread that keeps stopping outranks 'they follow'; "
+            "the restart back-off counts the time a thread ran; the grace "
+            "ends at a pause, a stop, a new session or cue; a restart is "
+            "journaled only once it runs")
+    import shutil
+    import tempfile
+    import threading
+    import types
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+
+    def cut_of(name, **kw):
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, name), **kw)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()                    # no thread: driven by hand
+        return ctl, clk, paths, bg
+
+    def as_direct(cut, path, n):
+        """Frames whose cut differs from the direct read (a value, or one
+        raising and the other not), and the two errors at frame 0."""
+        f = FS.FSEQ(path)
+        bad, first = [], None
+        for i in range(n):
+            try:
+                want, werr = F.FlameCues._cut(f.frame(i), cut.spans,
+                                              cut.span), None
+            except Exception as e:
+                want, werr = None, e
+            try:
+                got, gerr = cut.row(i), None
+            except Exception as e:
+                got, gerr = None, e
+            if i == 0:
+                first = (werr, gerr)
+            if got != want or (werr is None) != (gerr is None) or \
+                    (got is None and gerr is None):
+                bad.append(i)
+        f.close()
+        return bad, first
+    try:
+        # A. One-block uncompressed renders, cut only to the block's end.
+        cases = (
+            ("trailing", dict(header_frames=340, body_frames=300,
+                              entry_len=300 * 300,
+                              trailing=b"\xff" * (40 * 300)), 340),
+            ("short entry", dict(header_frames=300, body_frames=300,
+                                 entry_len=290 * 300), 300),
+            ("truncated", dict(header_frames=300, body_frames=250,
+                               entry_len=300 * 300), 300))
+        for k, (what, kw, n) in enumerate(cases):
+            ctl, clk, paths, bg = cut_of(f"a{k}", frames=300)
+            _fi_one_block_render(paths[0], **kw)
+            bg._check_renders_once()
+            bg._refresh_once()
+            cut = bg._cuts[paths[0]]
+            cut.ensure(0, n - 1)
+            bad, (werr, gerr) = as_direct(cut, paths[0], n)
+            check(cut.whole and not bad,
+                  f"one block, {what}: every frame as the direct read, a "
+                  f"value or a fault: {bad[:4]} of {len(bad)}")
+            if what == "truncated":
+                check(isinstance(gerr, FS.FSEQError) and
+                      str(gerr) == str(werr),
+                      f"truncated: the direct read's own error: {gerr!r} "
+                      f"{werr!r}")
+            last = int((n - 1) * 25 * 30 // 1000)
+            got = _fi_settled(bg, _fi_at(clk, last))
+            check(got is None and bg.fault.startswith(
+                "the show's render could not be read"),
+                  f"one block, {what}: its last frame is a CUES FAULT, never "
+                  f"junk: {got and got[90:92]} {bg.fault!r}")
+            bg.close()
+        # B. A cut that fails for a reason that is not the render's bytes
+        # (a missing zstandard): a CUES FAULT naming it at once while it
+        # waits for its retry, then, after CUT_RETRIES retries, for good,
+        # journaled once.
+        ctl, clk, paths, bg = cut_of("b", frames=300)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.blocks.pop(3, None)           # frames 111 to 147
+        tick = [0.0]
+        cut.clock = lambda: tick[0]
+        lines = []
+        bg._journal = lambda t, **k: lines.append(t)
+        mono = [100.0]
+        bg._mono = lambda: mono[0]
+        real_load = FS.FSEQ._load_block
+        calls = []
+
+        def nomod(self, idx):
+            if idx == 3:
+                calls.append(idx)
+                raise ModuleNotFoundError("No module named 'zstandard'")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = nomod
+        try:
+            cut.ensure(cut.firsts[3], cut.firsts[3])
+            served = bg(_fi_at(clk, 75)) is not None      # frame 100
+            got = bg(_fi_at(clk, 90))                      # frame 120
+            check(served and got is None and
+                  "ModuleNotFoundError" in bg.fault,
+                  f"a block failing to cut between served rows: a CUES "
+                  f"FAULT naming it at once, never a silent grace: "
+                  f"{bg.fault!r}")
+            for _ in range(10):            # 25 s: before any slow retry
+                tick[0] += 2.5
+                cut.ensure(cut.firsts[3], cut.firsts[3])
+        finally:
+            FS.FSEQ._load_block = real_load
+        check(len(calls) == F.CUT_RETRIES + 1 and isinstance(
+            cut.errors.get(3), ModuleNotFoundError) and 3 not in cut.retry,
+              f"tried {len(calls)} times ({F.CUT_RETRIES} retries), then "
+              f"for good: {cut.errors.get(3)!r}")
+        for k in range(20):
+            got = bg(_fi_at(clk, 90 + k % 5))
+        named = [t for t in lines if "could not be cut from its render "
+                 "(ModuleNotFoundError" in t]
+        check(got is None and "ModuleNotFoundError: No module named" in
+              bg.fault and "tried again every 30 s" in bg.fault and
+              "could not be read" not in bg.fault and len(named) == 1,
+              f"for good: the screens and one journal line name it: "
+              f"{bg.fault!r} {named}")
+        bg.close()
+        # B. Each retry waits longer: 0.5, 1 then 2 s.
+        ctl, clk, paths, bg = cut_of("r", frames=300)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.blocks.pop(4, None)
+        tick = [0.0]
+        cut.clock = lambda: tick[0]
+        calls = []
+
+        def nomem(self, idx):
+            if idx == 4:
+                calls.append(tick[0])
+                raise MemoryError("again")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = nomem
+        try:
+            for t in (0.0, 0.6, 1.2, 1.7, 3.0, 3.8):
+                tick[0] = t
+                cut.ensure(cut.firsts[4], cut.firsts[4])
+        finally:
+            FS.FSEQ._load_block = real_load
+        check(calls == [0.0, 0.6, 1.7, 3.8] and
+              isinstance(cut.errors.get(4), MemoryError),
+              f"retried after 0.5, 1 and 2 s, then for good: {calls} "
+              f"{cut.errors.get(4)!r}")
+        bg.close()
+        # C. A thread that keeps stopping outranks 'they follow'.
+        ctl, clk, paths, bg = cut_of("c", frames=600)
+        bg._check_renders_once()
+        bg._refresh_once()
+        keeps = ("the thread that cuts the show's flame cues from its "
+                 "renders keeps stopping (3 restarts, the last: X); restart "
+                 "LTC Player")
+        bg.thread_fault = keeps
+        bg.fault = F.CUES_LOADING
+        shown = bg.faults_now()
+        bg.fault = F.RENDER_OLDER_THAN_LAYOUT
+        refused = bg.faults_now()
+        check(shown == keeps and refused == F.RENDER_OLDER_THAN_LAYOUT,
+              f"a thread that keeps stopping outranks the loading fault, "
+              f"never a refusal: {shown!r} {refused!r}")
+        bg.thread_fault, bg.fault = "", ""
+        # C. A cutter waiting out its back-off promises nothing.
+        cut = bg._cuts[paths[0]]
+        for b in list(cut.blocks):
+            if b >= 5:
+                cut.blocks.pop(b)
+        bg._stop.clear()
+        bg.start = lambda: bg             # nothing started by hand here
+        bg._cutter = types.SimpleNamespace(is_alive=lambda: False)
+        got = _fi_settled(bg, _fi_at(clk, 165))       # frame 220
+        waiting = bg.fault
+        bg.thread_fault = keeps
+        _fi_settled(bg, _fi_at(clk, 166))
+        check(got is None and waiting == F.CUES_CUTTER_WAITING and
+              "within a second" not in waiting and bg.fault == keeps,
+              f"a stopped cutter: no promise of a second, and one that "
+              f"keeps stopping says so: {waiting!r} {bg.fault!r}")
+        bg._cutter = None
+        bg._stop.set()
+        bg.close()
+        # D. The back-off counts the time a thread RAN.
+        ctl, clk, paths, c = cut_of("d", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        lines = []
+        c._journal = lambda t, **k: lines.append(t)
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+        gate = threading.Event()
+        mode = ["short"]
+
+        def body():
+            if mode[0] == "long":
+                gate.wait(5)
+            raise RuntimeError("dies")
+        c._cutting = body
+
+        def step():
+            before = c._cutter
+            c.start()
+            if c._cutter is not before:
+                c._cutter.join(5)
+                return True
+            return False
+        restarts = 0
+        for _ in range(3000):
+            if step() and c._restarts["_cutter"][0] >= 6:
+                break
+            m[0] += 0.1
+        n6 = c._restarts["_cutter"][0]
+        m[0] += 200.0                     # nobody asks for 200 s
+        again = step()
+        m[0] += 1.0
+        soon = step()
+        check(n6 == 6 and again and "(restart 7)" in lines[-1] and
+              not soon,
+              f"200 s with no start() call is not a thread that ran: "
+              f"restart 7, then 60 s apart: {n6} {lines[-1:]} {soon}")
+        mode[0] = "long"
+        m[0] += 61.0
+        before = c._cutter
+        c.start()
+        long_t = c._cutter
+        m[0] += 61.0                      # it runs 61 s, then dies
+        gate.set()
+        long_t.join(5)
+        restarts = step()
+        check(long_t is not before and restarts and
+              "(restart 1)" in lines[-1],
+              f"a thread that ran 61 s before it died starts the count "
+              f"again: {lines[-1:]}")
+        c._stop.set()
+        c._thread = None
+        c.close()
+        # E. The grace ends at a pause, a stop, a new cue or session.
+        ctl, clk, paths, c = cut_of("e", frames=600, ncues=2)
+        c._check_renders_once()
+        c._refresh_once()
+        for p in paths:
+            cut = c._cuts[p]
+            for b in list(cut.blocks):
+                if b >= 5:
+                    cut.blocks.pop(b)
+        m = [10.0]
+        c._mono = lambda: m[0]
+        s = ctl.session
+        for what in ("paused", "stopped"):
+            c(_fi_at(clk, 165, label="c0"))
+            m[0] += 0.9
+            if what == "paused":
+                clk.paused = True
+            else:
+                s.running = False
+            c(_fi_at(clk, 165))
+            m[0] += 5.0
+            clk.paused, s.running = False, True
+            got = c(_fi_at(clk, 166))
+            check(got is None and c.fault == "",
+                  f"{what} on an uncut frame, then on again: a grace of its "
+                  f"own: {c.fault!r}")
+            m[0] += 2.0
+            c(_fi_at(clk, 167))
+        c._uncut = None
+        c(_fi_at(clk, 165, label="c0"))
+        m[0] += 0.9
+        c(_fi_at(clk, 166))
+        m[0] += 0.2
+        got = c(_fi_at(clk, 167, label="c1"))
+        check(got is None and c.fault == "",
+              f"another cue, uncut: a grace of its own: {c.fault!r}")
+        c.close()
+        # E. A new session still being read: a grace of its own; and a
+        # fault left from before never shows while it lasts.
+        ctl, clk, paths, c = cut_of("s", frames=300)
+        m = [10.0]
+        c._mono = lambda: m[0]
+        c.fault = "a fault from before"
+        c(_fi_at(clk, 30))
+        quiet = c.fault == ""
+        m[0] += 0.9
+        c(_fi_at(clk, 31))
+        ctl.session = types.SimpleNamespace(**vars(ctl.session))
+        m[0] += 0.2
+        got = c(_fi_at(clk, 32))
+        check(quiet and got is None and c.fault == "",
+              f"a fault from before is cleared in the grace, and a new "
+              f"session has a grace of its own: {quiet} {c.fault!r}")
+        c.close()
+        # F. A thread that cannot be started: said so, never 'started
+        # again'; once it starts, then said.
+        ctl, clk, paths, c = cut_of("f", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        lines = []
+        c._journal = lambda t, **k: lines.append(t)
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+        dead = types.SimpleNamespace(is_alive=lambda: False)
+        c._cutter = dead
+        c._cutting = lambda: c._stop.wait(5)
+        real_thread = F.threading.Thread
+
+        class NoStart(real_thread):
+            def start(self):
+                raise RuntimeError("can't start new thread")
+        F.threading.Thread = NoStart
+        try:
+            c.start()
+        finally:
+            F.threading.Thread = real_thread
+        failed = list(lines)
+        m[0] += 2.0
+        c.start()
+        check(any("could not be started (RuntimeError" in t for t in failed)
+              and not any("started again" in t for t in failed) and
+              c._cutter is not dead and c._cutter.is_alive() and
+              "was started again" in lines[-1],
+              f"a failed start is said as one, a restart only once it "
+              f"runs: {failed} {lines[-1:]}")
+        c._stop.set()
+        c._thread = None
+        c.close()
+        # F. close() while a start() waits for the lock: nothing started.
+        ctl, clk, paths, c = cut_of("g", frames=300)
+        c._stop.clear()
+        c._start_lock.acquire()
+        t = threading.Thread(target=c.start)
+        t.start()
+        time.sleep(0.1)
+        c._stop.set()
+        c._start_lock.release()
+        t.join(5)
+        check(c._thread is None and c._cutter is None,
+              "a start() that waited out a close() starts nothing")
+        c.close()
+        # G. A thread fault stays on the screens until both threads have
+        # run RESTART_RESET_S since their last start, then clears.
+        ctl, clk, paths, c = cut_of("h", frames=300)
+        alive = types.SimpleNamespace(is_alive=lambda: True)
+        c._thread = c._cutter = alive
+        c._restarts = {"_thread": (0, 0.0, 0.0), "_cutter": (3, 0.0, 0.0)}
+        m = [30.0]
+        c._mono = lambda: m[0]
+        c.thread_fault = keeps
+        early = c.faults_now()
+        m[0] = 61.0
+        later = c.faults_now()
+        check(early == keeps and later == "" and c.thread_fault == "",
+              f"the thread fault holds until both ran 60 s, then clears: "
+              f"{early!r} {later!r}")
+        c._thread = c._cutter = None
+        c.close()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_cut_round4_of_177():
+    section("fire & ice (round 2 review of #177): a cut fault that is not "
+            "the render's bytes is tried again every 30 s, never kept for "
+            "every later show; a look ends the uncut grace; the back-off "
+            "counts from a death; a retry set meanwhile is seen under the "
+            "lock; a first start that fails is backed off and its recovery "
+            "said; a render whose sparse ranges disagree with its channel "
+            "count is refused in both paths; a garbage frame count lists no "
+            "pieces; a thread that dies at once keeps its reason")
+    import shutil
+    import struct
+    import tempfile
+    import threading
+    import tracemalloc
+    import types
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+
+    def cut_of(name, **kw):
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, name), **kw)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        return ctl, clk, paths, bg
+    real_load = FS.FSEQ._load_block
+    try:
+        # A1. MemoryError on block 5 at Run for longer than its retries:
+        # named for good, then tried again every CUT_RETRY_SLOW_S, so a
+        # later Run plays it.
+        ctl, clk, paths, bg = cut_of("a1", frames=600)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        for b in list(cut.blocks):
+            if b >= 5:
+                cut.blocks.pop(b)
+        tick = [0.0]
+        cut.clock = lambda: tick[0]
+        bad = [True]
+        calls = []
+
+        def nomem(self, idx):
+            if idx >= 5:
+                calls.append(idx)
+                if bad[0]:
+                    raise MemoryError("at Run")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = nomem
+        try:
+            for _ in range(8):
+                cut.ensure(cut.firsts[5], cut.firsts[5])
+                tick[0] += 3.0
+            named = isinstance(cut.errors.get(5), MemoryError)
+            got = _fi_settled(bg, _fi_at(clk, 150))       # frame 200
+            faulted = got is None and "MemoryError" in bg.fault
+            bad[0] = False                # the memory came back
+            n = len(calls)
+            tick[0] += 5.0
+            cut.ensure(cut.firsts[5], cut.firsts[5])
+            early = len(calls) == n
+            ctl.session.running = False   # Stop, then Run again
+            bg(_fi_at(clk, 150))
+            ctl.session.running = True
+            tick[0] += F.CUT_RETRY_SLOW_S
+            bg._refresh_once()
+            _fi_at(clk, 150)
+            bg._cut_ahead()
+            got = bg(_fi_at(clk, 150))
+        finally:
+            FS.FSEQ._load_block = real_load
+        check(named and faulted and early and got is not None and
+              bg.fault == "" and 5 not in cut.errors,
+              f"a passing error kept as a fault is tried again every "
+              f"{F.CUT_RETRY_SLOW_S:g} s, and a later Run plays it: "
+              f"{named} {faulted} {early} {bg.fault!r}")
+        bg.close()
+        # A2. A look ends the uncut grace.
+        ctl, clk, paths, bg = cut_of("a2", frames=600)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        for b in list(cut.blocks):
+            if b >= 5:
+                cut.blocks.pop(b)
+        m = [10.0]
+        bg._mono = lambda: m[0]
+        bg(_fi_at(clk, 165))
+        m[0] += 0.9
+        ctl.session.player.override = "blackout"
+        bg(_fi_at(clk, 165))
+        m[0] += 0.5
+        ctl.session.player.override = None
+        got = bg(_fi_at(clk, 166))
+        check(got is None and bg.fault == "",
+              f"a look on an uncut frame, then the show: a grace of its "
+              f"own: {bg.fault!r}")
+        bg.close()
+        # A2. The back-off counts from when the thread died, not from when
+        # it was started.
+        ctl, clk, paths, c = cut_of("a3", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+        gate = threading.Event()
+
+        def body():
+            gate.wait(5)
+            raise RuntimeError("dies")
+        c._cutting = body
+        c.start()                         # first start at 0
+        first = c._cutter
+        gate.set()
+        first.join(5)
+        gate.clear()
+        c.start()                         # restart 1 at once, at 0
+        r1 = c._cutter
+        m[0] = 30.0                       # it runs 30 s, then dies
+        gate.set()
+        r1.join(5)
+        gate.clear()
+        m[0] = 30.2
+        c.start()
+        soon = c._cutter is not r1
+        m[0] = 31.1
+        c.start()
+        later = c._cutter is not r1
+        check(not soon and later,
+              f"restart 2 waits 1 s from the death, not from the start: "
+              f"{soon} {later}")
+        gate.set()
+        c._stop.set()
+        c._thread = None
+        c.close()
+        # A4. A retry set by the other cutting thread while this one waited
+        # for the lock is seen under the lock: not cut again at once.
+        ctl, clk, paths, bg = cut_of("a4", frames=300)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.blocks.pop(4, None)
+        cuts = []
+        real_cb = cut._cut_block
+
+        def spy(b):
+            cuts.append(b)
+            return real_cb(b)
+        cut._cut_block = spy
+        cut.lock.acquire()
+        t = threading.Thread(target=cut.ensure,
+                             args=(cut.firsts[4], cut.firsts[4]))
+        t.start()
+        time.sleep(0.2)
+        cut.retry[4] = (1, cut.clock() + 100.0, MemoryError("other"))
+        cut.lock.release()
+        t.join(5)
+        check(cuts == [], f"a retry set meanwhile is honoured: {cuts}")
+        bg.close()
+        # A5. A first start that fails: backed off, and the recovery said.
+        ctl, clk, paths, c = cut_of("a5", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        lines = []
+        c._journal = lambda t, **k: lines.append(t)
+        tries = []
+        real_thread = F.threading.Thread
+
+        class NoStart(real_thread):
+            def start(self):
+                tries.append(self.name)
+                raise RuntimeError("can't start new thread")
+        c._cutting = lambda: c._stop.wait(5)
+        c._refresher = lambda: c._stop.wait(5)
+        F.threading.Thread = NoStart
+        try:
+            c.start()
+            c.start()
+            m[0] += 0.5
+            c.start()
+        finally:
+            F.threading.Thread = real_thread
+        n_tries = len(tries)
+        m[0] += 1.0
+        c.start()
+        check(n_tries == 2 and c._cutter is not None and
+              c._cutter.is_alive() and not c._start_failed and
+              any("is running now, after it could not be started" in t
+                  for t in lines),
+              f"a failed first start is backed off ({n_tries} tries, 2 "
+              f"wanted) and its recovery journaled: {lines[-2:]}")
+        c._stop.set()
+        c.close()
+        # B1. Sparse ranges that cover more than the channel count: refused
+        # in the direct path and the cut one, never shifted bytes.
+        ctl, clk, paths, bg = cut_of("b1", frames=300)
+        with open(paths[0], "r+b") as fh:
+            head = bytearray(fh.read(32))
+            n_blocks = ((head[20] & 0xF0) << 4) | head[21]
+            fh.seek(32 + n_blocks * 8 + 6)            # the second range
+            fh.write(struct.pack("<I", 600)[:3] + struct.pack("<I", 250)[:3])
+        direct = F.FlameCues(ctl, "Flames")
+        bg._check_renders_once()
+        bg._refresh_once()
+        tc = _fi_at(clk, 30)
+        a, b = direct(tc), _fi_settled(bg, tc)
+        check(a is None and b is None and
+              direct.fault.startswith("the show's render has 300 channels "
+                                      "but its sparse ranges cover 350") and
+              bg.fault == direct.fault,
+              f"ranges past the channels: refused in both paths: "
+              f"{direct.fault!r} {bg.fault!r}")
+        try:
+            F.FlameCues._cut(bytes(300), [(0, 0, 100), (600, 100, 250)],
+                             (511, 512))
+            check(False, "a cut past the frame's bytes was made")
+        except FS.FSEQError:
+            check(True, "a cut past the frame's bytes raises")
+        direct.close()
+        bg.close()
+        # B2. A garbage frame count lists no pieces.
+        ctl, clk, paths, bg = cut_of("b2", frames=300)
+        _fi_one_block_render(paths[0], header_frames=200_000_000,
+                             body_frames=300)
+        bg._check_renders_once()
+        tracemalloc.start()
+        try:
+            bg._refresh_once()
+            _cur, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        cut = bg._cuts.get(paths[0])
+        check(cut is not None and cut.whole and peak < 8_000_000 and
+              cut.row(10) is not None,
+              f"200 million frames in the header: {peak / 1e6:.1f} MB at "
+              f"Run, the frames it has cut")
+        bg.close()
+        # B4. A thread that dies at once keeps its own reason.
+        ctl, clk, paths, c = cut_of("b4", frames=300)
+        c._stop.clear()
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+        c._cutter = types.SimpleNamespace(is_alive=lambda: False)
+        c._died["_cutter"] = "RuntimeError: the first death"
+
+        def dies_at_once():
+            raise RuntimeError("the second death")
+        c._cutting = dies_at_once
+
+        class JoinOnStart(real_thread):
+            def start(self):
+                super().start()
+                self.join(5)
+        F.threading.Thread = JoinOnStart
+        try:
+            c.start()
+        finally:
+            F.threading.Thread = real_thread
+        check(c._died.get("_cutter") == "RuntimeError: the second death",
+              f"a death during the start keeps its reason: "
+              f"{c._died.get('_cutter')!r}")
+        c._stop.set()
+        c._thread = c._cutter = None
+        c.close()
+    finally:
+        FS.FSEQ._load_block = real_load
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_cut_round5_of_177():
+    section("fire & ice (round 3 review of #177): a cut that could not be "
+            "set up for a passing reason is set up again every 30 s, a "
+            "damaged render never; failed starts are not restarts; a kept "
+            "error carries no traceback; a passing fault says it is tried "
+            "again and is journaled once per cause; ranges covering fewer "
+            "channels than the header are refused; a stale death reason is "
+            "never repeated; a failed slow retry waits 30 s again; a data "
+            "error is never retried; zstd out of memory may pass")
+    import shutil
+    import struct
+    import sys as _sys
+    import tempfile
+    import types
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+
+    def cut_of(name, **kw):
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, name), **kw)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        return ctl, clk, paths, bg
+    real_init = F._FlameCut.__init__
+    real_load = FS.FSEQ._load_block
+    real_thread = F.threading.Thread
+    try:
+        # A1. The set-up fails once with a MemoryError: a fault saying it
+        # is tried again, kept (not set up on every pass) until 30 s, then
+        # set up again and played. A damaged render's set-up is for good.
+        for kind, err in (("passing", MemoryError("set up")),
+                          ("damaged", ValueError("bad table"))):
+            ctl, clk, paths, bg = cut_of("a1" + kind, frames=300)
+            lines = []
+            bg._journal = lambda t, **k: lines.append(t)
+            inits = []
+
+            def flaky(self, *a, **k):
+                inits.append(1)
+                if len(inits) == 1:
+                    raise err
+                return real_init(self, *a, **k)
+            F._FlameCut.__init__ = flaky
+            try:
+                bg._check_renders_once()
+                bg._refresh_once()
+                first = bg._cuts[paths[0]]
+                for k in range(10):
+                    got = _fi_settled(bg, _fi_at(clk, 30 + k))
+                fault = bg.fault
+                bg._refresh_once()
+                kept = bg._cuts[paths[0]] is first and len(inits) == 1
+                first.clock = lambda: F._FlameCut.clock() + 31.0
+                bg._refresh_once()
+                got = bg(_fi_at(clk, 30))
+            finally:
+                F._FlameCut.__init__ = real_init
+            said = [t for t in lines if "could not be" in t]
+            if kind == "passing":
+                check(kept and "MemoryError: set up" in fault and
+                      "tried again every 30 s" in fault and
+                      len(said) == 1 and len(inits) == 2 and
+                      got is not None and bg.fault == "",
+                      f"a passing set-up failure: said once as tried "
+                      f"again, kept for 30 s, then set up and played: "
+                      f"{fault!r} {said} {len(inits)} {bg.fault!r}")
+            else:
+                check(kept and fault.startswith(
+                    "the show's render could not be read (ValueError") and
+                      len(inits) == 1 and got is None,
+                      f"a damaged render's set-up is for good: {fault!r} "
+                      f"{len(inits)}")
+            bg.close()
+        # A2. Five failed starts of a dead thread are not five restarts.
+        ctl, clk, paths, c = cut_of("a2", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        lines = []
+        c._journal = lambda t, **k: lines.append(t)
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+        c._cutter = types.SimpleNamespace(is_alive=lambda: False)
+
+        def dies():
+            raise RuntimeError("dies")
+        c._cutting = dies
+
+        class NoStart(real_thread):
+            def start(self):
+                raise RuntimeError("can't start new thread")
+        F.threading.Thread = NoStart
+        try:
+            for _ in range(5):
+                c.start()
+                m[0] += 61.0
+        finally:
+            F.threading.Thread = real_thread
+        c.start()
+        first = lines[-1]
+        c._cutter.join(5)
+        m[0] += 1.1
+        before = c._cutter
+        c.start()
+        check("(restart 1)" in first and c.thread_fault == "" and
+              c._cutter is not before,
+              f"failed starts are not restarts: {first!r}, and the next "
+              f"death waits 1 s: {c.thread_fault!r}")
+        c._stop.set()
+        c._cutter.join(5)
+        c._thread = None
+        c.close()
+        # A3. A kept error carries no traceback (it would pin the frames
+        # and the decompressed block).
+        ctl, clk, paths, bg = cut_of("a3", frames=300, corrupt_block=4)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.blocks.pop(2, None)
+        cut.blocks.pop(3, None)
+
+        def nomem(self, idx):
+            if idx in (2, 3):
+                raise MemoryError(f"block {idx}")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = nomem
+        try:
+            cut.ensure(cut.firsts[2], cut.firsts[4])
+        finally:
+            FS.FSEQ._load_block = real_load
+        kept = [cut.errors.get(4)] + [r[2] for r in cut.retry.values()]
+        check(len(kept) == 3 and all(e is not None and e.__traceback__ is None
+                                     for e in kept),
+              f"kept errors carry no traceback: "
+              f"{[e is not None and e.__traceback__ for e in kept]}")
+        failed = F._FlameCut.failed(cut.f, cut.span, MemoryError("x"))
+        try:
+            raise MemoryError("with a traceback")
+        except MemoryError as e:
+            failed2 = F._FlameCut.failed(cut.f, cut.span, e)
+        check(failed2.errors[0].__traceback__ is None and failed is not None,
+              "a failed set-up keeps its error with no traceback")
+        bg.close()
+        # B-2. Two blocks failing with their own words: one journal line.
+        ctl, clk, paths, bg = cut_of("b2", frames=300)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.blocks.pop(2, None)
+        cut.blocks.pop(3, None)
+        lines = []
+        bg._journal = lambda t, **k: lines.append(t)
+        FS.FSEQ._load_block = nomem
+        try:
+            cut.ensure(cut.firsts[2], cut.firsts[3])
+        finally:
+            FS.FSEQ._load_block = real_load
+        for n in (60, 61, 90, 91, 60, 90):    # frames 80, 81, 120, 121
+            bg(_fi_at(clk, n))
+        said = [t for t in lines if "could not be cut here" in t]
+        check(len(said) == 1 and "MemoryError" in bg.fault,
+              f"one line per cause, not per block: {said}")
+        bg.close()
+        # A5. Ranges covering FEWER channels than the header: refused too.
+        ctl, clk, paths, bg = cut_of("a5", frames=300)
+        with open(paths[0], "r+b") as fh:
+            head = bytearray(fh.read(32))
+            n_blocks = ((head[20] & 0xF0) << 4) | head[21]
+            fh.seek(32 + n_blocks * 8 + 6)
+            fh.write(struct.pack("<I", 600)[:3] + struct.pack("<I", 150)[:3])
+        direct = F.FlameCues(ctl, "Flames")
+        got = direct(_fi_at(clk, 30))
+        check(got is None and "sparse ranges cover 250" in direct.fault,
+              f"ranges under the header's count: refused: {direct.fault!r}")
+        direct.close()
+        bg.close()
+        # A5. A thread that died with a reason, then ended with none: the
+        # next restart says it ended, never the old reason.
+        ctl, clk, paths, c = cut_of("a6", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        lines = []
+        c._journal = lambda t, **k: lines.append(t)
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+        mode = ["raise"]
+
+        def body():
+            if mode[0] == "raise":
+                raise RuntimeError("the old reason")
+        c._cutting = body
+        c.start()
+        c._cutter.join(5)
+        mode[0] = "return"
+        c.start()                         # restart 1: says the old reason
+        c._cutter.join(5)
+        m[0] += 1.1
+        c.start()                         # restart 2: it just ended
+        check("the old reason" in lines[-2] and "(it ended)" in lines[-1],
+              f"a stale reason is never repeated: {lines[-2:]}")
+        c._stop.set()
+        c._thread = None
+        c.close()
+        # A5. A slow retry that fails waits 30 s again; a data error is
+        # never tried again.
+        ctl, clk, paths, bg = cut_of("a7", frames=300, corrupt_block=4)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        cut.blocks.pop(2, None)
+        cut.errors.pop(4, None)           # its first failure, on this clock
+        cut.slow.pop(4, None)
+        tick = [0.0]
+        cut.clock = lambda: tick[0]
+        tries = []
+        real_cb = cut._cut_block
+
+        def spy(b):
+            tries.append((b, tick[0]))
+            if b == 2:
+                raise MemoryError("again")
+            return real_cb(b)
+        cut._cut_block = spy
+        for t in (0.0, 1.0, 3.0, 6.0, 37.0, 38.0, 50.0, 68.0):
+            tick[0] = t
+            cut.ensure(cut.firsts[2], cut.firsts[2])
+            cut.ensure(cut.firsts[4], cut.firsts[4])
+        t2 = [t for b, t in tries if b == 2]
+        t4 = [t for b, t in tries if b == 4]
+        check(t2 == [0.0, 1.0, 3.0, 6.0, 37.0, 68.0],
+              f"a slow retry that fails waits 30 s again: {t2}")
+        check(t4 == [0.0] and 4 in cut.errors,
+              f"a data error is never tried again: {t4}")
+        bg.close()
+        # B-3. zstd: out of memory may pass, bad data is for good.
+        fake = types.ModuleType("zstandard")
+
+        class ZstdError(Exception):
+            pass
+        fake.ZstdError = ZstdError
+        saved = _sys.modules.get("zstandard")
+        _sys.modules["zstandard"] = fake
+        try:
+            oom = F._cut_data_error(ZstdError(
+                "decompression error: Allocation error : not enough memory"))
+            bad = F._cut_data_error(ZstdError(
+                "decompression error: Unknown frame descriptor"))
+        finally:
+            if saved is None:
+                _sys.modules.pop("zstandard", None)
+            else:
+                _sys.modules["zstandard"] = saved
+        check(not oom and bad, f"zstd out of memory may pass, bad data does "
+                               f"not: {oom} {bad}")
+    finally:
+        F._FlameCut.__init__ = real_init
+        FS.FSEQ._load_block = real_load
+        F.threading.Thread = real_thread
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_cut_final_of_177():
+    section("fire & ice (final review of #177): a render file that cannot be "
+            "opened is a render that could not be read, never a cut tried "
+            "again; a kept error raised on every frame never grows a "
+            "traceback; a start that works ends its failed-start count; one "
+            "journal line per cue, not per kind of fault")
+    import shutil
+    import tempfile
+    import types
+    from ltcplay import fseq as FS
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+
+    def cut_of(name, **kw):
+        ctl, clk, paths = _fi_cut_show(os.path.join(work, name), **kw)
+        bg = F.FlameCues(ctl, "Flames", background=True)
+        bg._stop.set()
+        return ctl, clk, paths, bg
+    real_load = FS.FSEQ._load_block
+    real_thread = F.threading.Thread
+    try:
+        # (1) The render deleted: could not be read, FileNotFoundError.
+        ctl, clk, paths, bg = cut_of("open", frames=300)
+        os.remove(paths[0])
+        bg._check_renders_once()
+        bg._refresh_once()
+        got = _fi_settled(bg, _fi_at(clk, 30))
+        check(got is None and bg.fault.startswith(
+            "the show's render could not be read (FileNotFoundError") and
+              "tried again" not in bg.fault,
+              f"a render that cannot be opened: could not be read: "
+              f"{bg.fault!r}")
+        bg.close()
+        # (2) A kept error, a short render's too, raised on 200 frames:
+        # its traceback stays short.
+        ctl, clk, paths, bg = cut_of("tb", frames=300, corrupt_block=4)
+        bg._check_renders_once()
+        bg._refresh_once()
+        cut = bg._cuts[paths[0]]
+        n4 = int(cut.firsts[4] * 25 * 30 // 1000) + 1
+        for _ in range(200):
+            bg(_fi_at(clk, n4))
+        ctl2, clk2, paths2, bg2 = cut_of("tbs", frames=600,
+                                         compression="none",
+                                         cut_tail_frames=3)
+        bg2._check_renders_once()
+        bg2._refresh_once()
+        cut2 = bg2._cuts[paths2[0]]
+        cut2.ensure(0, 599)
+        for _ in range(200):
+            bg2(_fi_at(clk2, int(599 * 25 * 30 // 1000)))
+
+        def depth(e):
+            n, tb = 0, e.__traceback__ if e is not None else None
+            while tb is not None:
+                n, tb = n + 1, tb.tb_next
+            return n
+        kept = cut.errors.get(4)
+        short = next(iter(cut2.short.values()))[1]
+        check(kept is not None and depth(kept) <= 3 and depth(short) <= 3
+              and "could not be read" in bg.fault and
+              "could not be read" in bg2.fault,
+              f"raised 200 times, a kept error's traceback stays short: "
+              f"{depth(kept)} {depth(short)} entries")
+        bg.close()
+        bg2.close()
+        # (3) A start that works ends the failed-start count: a later
+        # failed start is backed off from 1 s again, not 2.
+        ctl, clk, paths, c = cut_of("tries", frames=300)
+        c._stop.clear()
+        m = [0.0]
+        c._mono = lambda: m[0]
+        c._journal = lambda t, **k: None
+        c._thread = types.SimpleNamespace(is_alive=lambda: True)
+
+        def dies():
+            raise RuntimeError("dies")
+        c._cutting = dies
+        tries = []
+
+        class NoStart(real_thread):
+            def start(self):
+                tries.append(m[0])
+                raise RuntimeError("can't start new thread")
+        F.threading.Thread = NoStart
+        try:
+            c.start()                     # a failed first start, at 0
+        finally:
+            F.threading.Thread = real_thread
+        m[0] = 1.1
+        c.start()                         # it works, and dies
+        c._cutter.join(5)
+        tries.clear()
+        F.threading.Thread = NoStart
+        try:
+            m[0] = 2.0
+            c.start()                     # fails: the first of a new count
+            m[0] = 3.2
+            c.start()                     # 1.2 s on: tried again
+        finally:
+            F.threading.Thread = real_thread
+        check(tries == [2.0, 3.2],
+              f"a start that works ends the failed-start count: {tries}")
+        c._stop.set()
+        c._thread = c._cutter = None
+        c.close()
+        # (4) The same fault on two cues: a journal line for each cue.
+        ctl, clk, paths, bg = cut_of("cues", frames=300, ncues=2)
+        bg._check_renders_once()
+        bg._refresh_once()
+        lines = []
+        bg._journal = lambda t, **k: lines.append(t)
+
+        def nomem(self, idx):
+            if idx == 2:
+                raise MemoryError("again")
+            return real_load(self, idx)
+        FS.FSEQ._load_block = nomem
+        try:
+            for p in paths:
+                cut = bg._cuts[p]
+                cut.blocks.pop(2, None)
+                cut.ensure(cut.firsts[2], cut.firsts[2])
+        finally:
+            FS.FSEQ._load_block = real_load
+        bg(_fi_at(clk, 60, label="c0"))
+        bg(_fi_at(clk, 60, label="c1"))
+        said = [t for t in lines if "could not be cut here" in t]
+        check(len(said) == 2, f"one line for each cue: {said}")
+        bg.close()
+    finally:
+        FS.FSEQ._load_block = real_load
+        F.threading.Thread = real_thread
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")
 
@@ -47856,9 +49348,9 @@ def test_flame_frame_timing_alert_and_systems_line():
     check(r and r["state"] == "warn" and
           r["word"] == "1 frame(s) late in the last hour, worst 178 ms",
           f"and the Systems line: {r}")
-    first = al[0].id
-    rm.alerts.clear(id=first, who="Andy", action="Acknowledge",
-                    screen="rack")
+    if al:
+        rm.alerts.clear(id=al[0].id, who="Andy", action="Acknowledge",
+                        screen="rack")
     rm._frame_timing_work()
     check(not rm.alerts.open(), "acknowledged, and no new late frame: it "
                                 "stays cleared")
@@ -63656,6 +65148,1435 @@ def test_hazers_end_to_end_against_the_real_flamesafe():
         check(got and got[0][:2] == [40, 41],
               f"disarmed by the Abort, armed again at the engine: Hazer 1 "
               f"runs again: {got}")
+    finally:
+        stop.set()
+        link.stop()
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        node.close()
+        status_rx.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+# ------------------------------------------------------- the fuel pump ----
+# Jeff, 2026-10-30: "Somewhere in the fire controls, we need a toggle for a
+# fuel pump. This is something for Andy to manually control as needed. It
+# does not need to be armed or disarmed but it should be affected by the
+# stop button." flamesafe's passthrough switch {"name", "switch", "on"}
+# (flamesafe/CONTRACT.md, "A switch"); the engine's ON/OFF
+# (ltcplay/fuelpump.py) on the flame link (ltcplay/flamelink.py).
+
+_PM = ("Fireball Fuel Pump", 100, 255)
+
+
+def _pm_doc(pump=True, hazers=True):
+    """flamesafe.example.json with the fuel pump at 100, ON 255."""
+    import json as _j
+    here = os.path.dirname(os.path.abspath(__file__))
+    ex = _j.load(open(os.path.join(here, "flamesafe",
+                                   "flamesafe.example.json"),
+                      encoding="utf-8"))
+    pt = list(ex["passthrough"]) if hazers else []
+    if pump:
+        pt.append({"name": _PM[0], "switch": _PM[1], "on": _PM[2]})
+    ex["passthrough"] = pt
+    return ex
+
+
+def _pm_values(pump=7, fire=0):
+    """A show frame with stray data on the pump's slot (the FSEQ must never
+    drive it) and on every hazer slot, and `fire` on front row's 411."""
+    v = _hz_values(fire=fire)
+    v[_PM[1] - 1] = pump
+    return v
+
+
+def _pm_link(folder, cues=None, pump=True, hazers=True, live=True):
+    """_hz_link's FlameLink, read from a flamesafe.json in `folder` that is
+    the example with the fuel pump added."""
+    import json as _j
+    from ltcplay import flamelink as fl
+    path = os.path.join(folder, "flamesafe.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        _j.dump(_pm_doc(pump, hazers), fh)
+    cfg = fl.FlameLinkConfig.from_flamesafe_config(path)
+    t = [100.0]
+    state = {"live": live}
+
+    def show():
+        t[0] += 0.04
+        n = int(t[0] * 30)
+        return (f"00:{n // 1800 % 60:02d}:{n // 30 % 60:02d}:{n % 30:02d}",
+                state["live"])
+    link = _flk_unguarded(cfg, cues=cues or (lambda tc: _pm_values()),
+                          show_state=show, clock=lambda: t[0])
+    link._sock = _FlSock()
+    link.release()
+    link.state = state
+    link.haze_gate = lambda: True
+    return link
+
+
+def _pm_on(link, seconds=300.0):
+    """The pump ON at the link for `seconds`, as the engine's timer starts
+    it (pump_start with the current Abort count)."""
+    return link.pump_start(seconds, link.pump_gen())
+
+
+def test_pump_flame_link():
+    section("fuel pump at the flame link (Jeff, 2026-10-30): read from "
+            "flamesafe's passthrough as flamesafe reads it, and refused as "
+            "flamesafe refuses it; OFF at start; switched by name in "
+            "hazers_on with no show gate; its slot is ZERO in every frame "
+            "(flamesafe writes its on value), whatever the FSEQ or xLights "
+            "carries; ON only through pump_start, with a hard end and a "
+            "beat on the link's own clock, past either OFF for good; Hold "
+            "(zero) leaves it on; Abort and Stop switch it off before the "
+            "first copy and end any start or beat that read the count "
+            "before them; ON is refused while the Abort repeats")
+    import json as _j
+    import shutil
+    import tempfile
+    from ltcplay import flamelink as fl
+    ex = _pm_doc()
+    check(fl.pump_of(ex) == _PM and
+          [(n, list(sl)) for n, sl in fl.hazers_of(ex)] == _HZ,
+          f"the engine reads the pump, and the hazers beside it as before: "
+          f"{fl.pump_of(ex)} {fl.hazers_of(ex)}")
+    check(fl.pump_of(_pm_doc(pump=False)) is None and
+          fl.pump_of({"groups": []}) is None,
+          "no switch entry: no pump (and no button)")
+    check(fl.pump_of(_pm_doc(hazers=False)) == _PM and
+          fl.hazers_of(_pm_doc(hazers=False)) == (),
+          "a pump and no hazers")
+    pump = {"name": _PM[0], "switch": 100, "on": 255}
+    for bad, why in (
+            (dict(pump, on=0), "on 0"), (dict(pump, on=256), "on 256"),
+            (dict(pump, on=True), "on true"), (dict(pump, on="255"),
+                                                "on a string"),
+            (dict(pump, on=1.5), "on a decimal"),
+            ({"name": _PM[0], "switch": 100}, "no on"),
+            (dict(pump, switch=0), "slot 0"), (dict(pump, switch=513),
+                                               "slot 513"),
+            (dict(pump, switch=True), "slot true"),
+            (dict(pump, switch=401), "a group's safety slot"),
+            (dict(pump, switch=411), "a group's fire slot"),
+            (dict(pump, switch=12), "a wave flamer safety"),
+            (dict(pump, switch=80), "a hazer's slot"),
+            (dict(pump, haze=99), "an extra key"),
+            (dict(pump, name="Hazer 1"), "a hazer's name")):
+        d = _pm_doc(pump=False)
+        d["passthrough"].append(bad)
+        try:
+            fl.pump_of(d)
+            check(False, f"the engine accepted {why}")
+        except fl.FlameLinkConfigError as e:
+            check("flamesafe refuses this file too" in str(e) and
+                  "—" not in str(e) and "–" not in str(e),
+                  f"the engine refuses {why}: {e}")
+    d = _pm_doc()
+    d["passthrough"].append({"name": "Pump 2", "switch": 101, "on": 255})
+    try:
+        fl.pump_of(d)
+        check(False, "the engine accepted a second switch")
+    except fl.FlameLinkConfigError as e:
+        check("second switch" in str(e), f"a second switch is refused: {e}")
+    d = _pm_doc()
+    d["passthrough"].append({"name": "Hazer 4", "haze": 100, "fan": 101})
+    try:
+        fl.hazers_of(d)
+        check(False, "the engine accepted a hazer on the pump's slot")
+    except fl.FlameLinkConfigError as e:
+        check("flamesafe refuses this file too" in str(e),
+              f"a hazer on the pump's slot is refused: {e}")
+
+    work = tempfile.mkdtemp()
+    try:
+        seen = []
+        link = _pm_link(work, cues=lambda tc: _pm_values(pump=255))
+        link.observer = lambda tc, v, ok: seen.append(bytes(v))
+        check(link.pump_name() == _PM[0] and link.cfg.pump == _PM and
+              not link.pump_on, "OFF at start")
+        link.send_frame()
+        o = _hz_last(link)
+        check(o["hazers_on"] == [] and o["values"][99] == 0,
+              f"OFF: the frame says so, and the FSEQ's 255 on the pump's "
+              f"slot is zeroed: {o['hazers_on']} {o['values'][99]}")
+        check(link.pump_set(True) is False and not link.pump_on,
+              "pump_set(True) never turns it on: only pump_start, which "
+              "needs an end")
+        for bad in (0, -1, float("nan"), float("inf"), "300", None):
+            check(link.pump_start(bad, link.pump_gen()) is False and
+                  not link.pump_on, f"pump_start({bad!r}) is refused")
+        check(link.pump_start(300, link.pump_gen() - 1) is False and
+              not link.pump_on,
+              "pump_start with an Abort count read before a Stop is "
+              "refused (the zero-count race)")
+        check(_pm_on(link) is True and link.pump_on, "pump_start: ON")
+        link.state["live"] = False
+        link.send_frame()
+        o = _hz_last(link)
+        check(o["hazers_on"] == [_PM[0]] and o["values"][99] == 0,
+              f"ON with no show playing (no show gate): its name in "
+              f"hazers_on, its slot still zero (flamesafe writes the on "
+              f"value): {o['hazers_on']} {o['values'][99]}")
+        link.state["live"] = True
+        link.hazers_set(["Hazer 2"])
+        link.pump_beat(link.pump_gen())
+        link.send_frame()
+        o = _hz_last(link)
+        check(o["hazers_on"] == sorted(["Hazer 2", _PM[0]]) and
+              o["values"][99] == 0, f"beside a hazer: {o['hazers_on']}")
+        check(seen and all(b[99] == 0 for b in seen),
+              "the fuel tracker is never told a value on the pump's slot")
+        link.cues = lambda tc: _pm_values(pump=255, fire=0)
+        link.hazers_set([])
+        link.pump_beat(link.pump_gen())
+        link.send_frame()
+        check(not link.last_values_nonzero,
+              "a frame with only the pump on is not 'firing'")
+        link.pump_beat(link.pump_gen())
+        link.zero()
+        link.send_frame()
+        check(link.pump_on and _hz_last(link)["hazers_on"] == [_PM[0]],
+              "a zero (Hold, a show's end) leaves the pump ON (Jeff: Off "
+              "on Stop, NOT Hold)")
+        link.release()
+        check(link.snapshot()["pump_on"] is True, "the snapshot says ON")
+        # The beat: PUMP_HOLD_S without one and it is OFF for good.
+        t = link._clock
+        clock = [t()]
+        link._clock = lambda: clock[0]
+        check(link.pump_beat(link.pump_gen()), "a beat")
+        clock[0] += fl.PUMP_HOLD_S - 0.01
+        check(link.pump_on, "a beat within PUMP_HOLD_S keeps it on")
+        clock[0] += 0.02
+        check(not link.pump_on and "stalled" in link.pump_ended(),
+              f"no beat for longer: OFF at the link by itself: "
+              f"{link.pump_ended()}")
+        check(link.pump_beat(link.pump_gen()) is False and
+              not link.pump_on, "a late beat never relights it")
+        # The hard end: beats keep coming, it still ends.
+        link.pump_start(1.0, link.pump_gen())
+        for _ in range(9):
+            clock[0] += 0.1
+            check(link.pump_beat(link.pump_gen()), "beating")
+        clock[0] += 0.11
+        check(link.pump_beat(link.pump_gen()) is False and
+              not link.pump_on and link.pump_ended() == "its time was up",
+              f"past its hard end: OFF though the beats carry on: "
+              f"{link.pump_ended()}")
+        link.send_frame()
+        check(_hz_last(link)["hazers_on"] == [], "and the frame says OFF")
+        # A caller's deadline: the end is never later than it.
+        mine = [500.0]
+        link.pump_start(300, link.pump_gen(), deadline=mine[0] + 2.0,
+                        clock=lambda: mine[0])
+        check(abs(link._pump_until - (clock[0] + 2.0)) < 1e-6,
+              "with the engine's deadline 2 s away the link's end is 2 s "
+              "away, not 300")
+        check(link.pump_start(300, link.pump_gen(), deadline=mine[0] - 1,
+                              clock=lambda: mine[0]) is False,
+              "a deadline already past starts nothing")
+        link._clock = t
+        _pm_on(link)
+        gen = link.pump_gen()
+        n0 = len(link._sock.sent)
+        link.disarm_all("Stop from the rack screen")
+        after = [_j.loads(d) for d, _a in link._sock.sent[n0:]]
+        check(after and after[0]["t"] == "flame" and
+              after[0]["hazers_on"] == [] and not link.pump_on,
+              f"Stop and Abort (disarm_all): the zero frame already says "
+              f"the pump OFF: {[(x['t'], x.get('hazers_on')) for x in after]}")
+        link.release()
+        check(link.pump_beat(gen) is False and not link.pump_on,
+              "a beat carrying the count from before the Stop is refused")
+        check(link.abort_repeating() and _pm_on(link) is False and
+              not link.pump_on,
+              "ON is refused while the Stop or Abort is being repeated")
+        link._abort_repeat = None
+        check(_pm_on(link) is True, "after it: ON again")
+        check(link.pump_beat(gen) is False and not link.pump_on,
+              "a late beat from the run before the Stop (its old count) "
+              "ends the new run too: an old timer never keeps it on")
+        check(_pm_on(link) is True, "ON again")
+        check(link.pump_set("true") is not True and not link.pump_on,
+              "anything but True through pump_set is OFF")
+        _pm_on(link)
+        link.pump_stop()
+        check(not link.pump_on, "pump_stop: OFF")
+        _pm_on(link)
+        link.state["live"] = False
+        s = link.program_begin()
+        link.program_set(bytes(_pm_values(pump=255, fire=230)), s)
+        link.send_frame()
+        o = _hz_last(link)
+        check(o["values"][99] == 0 and o["values"][410] == 230,
+              f"live xLights: its data on the pump's slot is zeroed: "
+              f"{o['values'][99]}")
+        link.program_end()
+        nohz = _pm_link(work, hazers=False)
+        nohz.send_frame()
+        check(_hz_last(nohz)["hazers_on"] == [],
+              "a pump and no hazers: the frame still carries hazers_on")
+        _pm_on(nohz)
+        nohz.send_frame()
+        check(_hz_last(nohz)["hazers_on"] == [_PM[0]], "and names it ON")
+        none = _pm_link(work, pump=False, hazers=False)
+        none.send_frame()
+        check("hazers_on" not in _hz_last(none) and
+              _pm_on(none) is False and none.pump_name() is None,
+              "no pump and no hazers: the frame is the one before either "
+              "existed, and ON does nothing")
+        again = _pm_link(work)
+        check(not again.pump_on, "a new engine: OFF")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def _pm_rig(S):
+    """_hz_rig with the fuel pump: the FlameLink read from the example
+    with the pump at 100, flamesafe's status carrying it as a switch
+    (passing whenever the link has it ON), and fuelpump.FuelPump built as
+    web.serve builds it on the rig's clock, no timer thread."""
+    import json as _j
+    import shutil
+    import tempfile
+    from ltcplay import fuelpump as FP
+    from ltcplay import hazers as HZ
+    R = _hz_rig(S)
+    R.pm_work = tempfile.mkdtemp()
+    R.link = _pm_link(R.pm_work)
+    R.remote.hazers = HZ.Hazers(
+        link_get=lambda: R.link,
+        flames_get=lambda: R.remote.flame_status.view(),
+        abort_standing=lambda: R.aborted[0] or R.remote._abort_standing(),
+        show_state=lambda: R.show[0], blocker=R.remote.hazer_blocker,
+        folder=R.work, clock=lambda: R.mono[0], threaded=False)
+    R.pm = {"name": _PM[0], "kind": "switch", "slots": [_PM[1]],
+            "switch": _PM[1], "on": _PM[2], "asked": False,
+            "enabled": False, "passing": False, "locked": [False],
+            "sent": [0], "why": "switched off in the show program"}
+    R.pm_lag = False
+
+    def feed():
+        on = R.link.hazers_on
+        for p in R.pt:
+            p["kind"] = "hazer"
+            p["asked"] = p["enabled"] = p["passing"] = p["name"] in on
+        if not R.pm_lag:
+            R.pm["asked"] = R.pm["enabled"] = R.pm["passing"] = \
+                R.link.pump_on
+        R.pm["sent"] = [_PM[2] if R.pm["passing"] else 0]
+        R.remote.flame_status.note(_j.dumps({
+            "t": "status", "k": "k" * 20, "fault": "", "groups": R.groups,
+            "passthrough": R.pt + [R.pm]}).encode())
+    R.feed = feed
+    feed()
+    R.remote.pump = FP.FuelPump(
+        link_get=lambda: R.link,
+        flames_get=lambda: R.remote.flame_status.view(),
+        abort_standing=lambda: R.aborted[0] or R.remote._abort_standing(),
+        blocker=R.remote.pump_blocker,
+        journal=lambda who, screen, outcome, text, fault=False:
+        R.remote._journal(who or "system", screen or "engine", "fuel-pump",
+                          outcome, text, fault=fault),
+        clock=lambda: R.mono[0], threaded=False,
+        night_state=lambda: R.night[0])
+    R.night = [None]
+    close = R.close
+
+    def close_all():
+        try:
+            close()
+        finally:
+            shutil.rmtree(R.pm_work, ignore_errors=True)
+    R.close = close_all
+    return R
+
+
+def test_pump_at_the_engine():
+    section("fuel pump at the engine (fuelpump.py, Jeff 2026-10-30): OFF at "
+            "start; ON for a run time chosen first (always 5:00 unless "
+            "chosen, pump_max_s the longest, a longer one "
+            "refused in words); it ends by itself on the engine's timer, "
+            "and on a stall between passes or inside one, and on a Stop "
+            "landing during a pass; a replayed or repeated ON starts "
+            "nothing and never adds time; the arm row and screen_arming "
+            "for ON, OFF never refused; refused with an Abort standing, "
+            "within 0.75 s of a Stop or Abort, live flame programming on, "
+            "flamesafe stale, its pump different or not reported, its slot "
+            "locked; Hold leaves it on; Abort and Stop (both routes) turn "
+            "it off, journaled; the countdown and the state on the "
+            "screens; the hazers are not confused by it")
+    S = _sched()
+    if S is None:
+        return
+    import itertools
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import fuelpump as FP
+    check("fuel-pump" in RM.POST_ROUTES and
+          RM.PUMP_POST_ROUTES == ("fuel-pump",), "the route exists")
+    check(U.REMOTE_ROUTES.get("fuel-pump") == "arm" and
+          U.classify("/api/remote/fuel-pump", {"on": True}) == "arm" and
+          all(U.classify("/api/remote/fuel-pump", b) == "safety"
+              for b in ({"on": False}, {"on": "true"}, {"on": 1}, {},
+                        None, [True], {"on": False, "seconds": 300})),
+          "the role matrix: ON is an arm press, anything else safety")
+    check("turning the fuel pump on" in dict(U.PERMS)["arm"] and
+          "the fuel pump off" in U.SAFETY_ROWS, "the matrix rows say so")
+    from ltcplay import flamelink as FL
+    check(FP.BEAT_STALE_S == FL.PUMP_HOLD_S,
+          "the engine's stall and the link's beat are the same 0.5 s")
+    check(FP.DEFAULT_S == 300 and FP.MAX_DEFAULT_S == 3600 and
+          FP.clock_text(300) == "5:00" and FP.clock_text(252) == "4:12" and
+          FP.clock_text(3725) == "62:05",
+          "5 minutes by default, 60 the longest unless an admin says, m:ss")
+    for v in (300, 1, 3600):
+        check(FP.pump_seconds(v) == (v, ""), f"{v} s is taken")
+    for v in (0, -5, 3601, 1.5, "300", True, None, float("nan")):
+        secs, why = FP.pump_seconds(v)
+        check(secs is None and why and "—" not in why,
+              f"{v!r} is refused in words: {why}")
+    check("pump_max_s" in FP.pump_seconds(3601)[1] and
+          "can raise" in FP.pump_seconds(3601)[1],
+          "a run time over the longest names pump_max_s and says an admin "
+          "can raise it")
+    loop, ipad = ("127.0.0.1", 5000), ("10.20.0.44", 50000)
+    R = _pm_rig(S)
+    link = R.link
+    pm = R.remote.pump
+    ids = itertools.count(1)
+
+    def tap(on, client=loop, seconds=300, run=None, **kw):
+        body = {"on": on, "seen": R.seen()}
+        if on is True:
+            body.update(seconds=seconds,
+                        run=run if run is not None else f"p{next(ids)}")
+        return R.ask("POST", "/api/remote/fuel-pump", body, client=client,
+                     **kw)
+
+    def view():
+        R.feed()
+        _st, _h, s = R.ask("GET", "/api/remote/status", client=loop)
+        return s.get("pump") or {}
+
+    def said(text):
+        end = time.monotonic() + 2.0
+        while time.monotonic() < end:
+            if pm.last_off and text in pm.last_off.get("reason", ""):
+                return True
+            time.sleep(0.01)
+        return False
+
+    def off():
+        tap(False)
+        link._abort_repeat = None
+        R.feed()
+    try:
+        v = view()
+        check(v.get("available") and v["name"] == _PM[0] and
+              v["slot"] == 100 and v["on_value"] == 255 and
+              v["on"] is False and v["state"] == "off" and
+              v["refusal"] == "" and v["agree"] is True and
+              v["default_s"] == 300 and v["max_s"] == 3600 and
+              v["left_s"] is None,
+              f"every screen's status: the pump, OFF, ON would be taken, "
+              f"5:00 the default, 60:00 the longest: {v}")
+        hv = R.remote.hazers_view(R.remote.flame_status.view())
+        check(hv.get("agree") is True and
+              not [a for a in R.remote.alerts.open() if a.kind == "hazers"],
+              f"flamesafe reporting the pump does not make the hazers "
+              f"differ: {hv.get('agree')}")
+        st, _h, out = tap(True, seconds=240)
+        check(st == 200 and link.pump_on and "4:00" in out["text"],
+              f"a tap on the rack screen: ON for 4:00: {st} {out}")
+        check("pump_s" not in RM.load_settings(R.work) and
+              view()["default_s"] == 300,
+              "the default stays 5:00 after another run time was started "
+              "(Jeff: 5 minutes unless Andy sets another first)")
+        R.mono[0] += 0.1
+        check(pm.pump_send() == "" and link.pump_on, "the timer beats it")
+        R.mono[0] += 0.1
+        pm.pump_send()
+        v = view()
+        check(v["state"] == "on" and v["left_s"] == 239.8 and
+              v["seconds"] == 240,
+              f"the countdown on the engine's clock: {v['left_s']}")
+        st, _h, out = tap(True, seconds=3000)
+        check(st == 409 and "already on" in out["error"] and
+              pm.run["seconds"] == 240,
+              f"a second ON never adds time: {out}")
+        rid = "replayed-press"
+        off()
+        st, _h, out = tap(True, run=rid)
+        check(st == 200 and link.pump_on, "setup: ON")
+        off()
+        st, _h, out = tap(True, run=rid)
+        check(st == 409 and "already used" in out["error"] and
+              not link.pump_on,
+              f"the same press again (a replayed request) starts nothing: "
+              f"{out}")
+        st, _h, out = tap(True, run="")
+        check(st == 409 and not link.pump_on, f"a press with no id: {out}")
+        for bad in (0, 3601, 1.5, "300", None):
+            st, _h, out = tap(True, seconds=bad)
+            check(st == 409 and not link.pump_on and
+                  "not turned on" in out["error"],
+                  f"run time {bad!r}: refused: {out['error']}")
+        RM.save_settings(R.work, pump_max_s=600)
+        st, _h, out = tap(True, seconds=601)
+        check(st == 409 and "10:00" in out["error"] and
+              "pump_max_s" in out["error"] and not link.pump_on,
+              f"an admin's pump_max_s of 600: 601 s refused: {out}")
+        check(view()["max_s"] == 600 and view()["default_s"] == 300,
+              "and the screens are told the longest")
+        for badv in (0, 14401, "600", True, 1.5):
+            try:
+                RM.save_settings(R.work, pump_max_s=badv)
+                check(False, f"pump_max_s {badv!r} was saved")
+            except ValueError as e:
+                check("pump_max_s" in str(e), f"pump_max_s {badv!r} is "
+                                              f"refused: {e}")
+        RM.save_settings(R.work, pump_max_s=3600)
+        # Its own end on the engine's timer.
+        st, _h, out = tap(True, seconds=1)
+        for _ in range(9):
+            R.mono[0] += 0.1
+            check(pm.pump_send() == "", "running")
+        R.mono[0] += 0.11
+        check(pm.pump_send() == "its 0:01 were up" and not link.pump_on and
+              pm.run is None and said("were up"),
+              f"its time up: OFF by itself, said: {pm.last_off}")
+        R.feed()
+        # A stall between passes.
+        off()
+        tap(True)
+        R.mono[0] += FP.BEAT_STALE_S + 0.05
+        check("stalled" in pm.pump_send() and not link.pump_on,
+              "the timer stalled between passes: OFF, never relit")
+        R.mono[0] -= FP.BEAT_STALE_S + 0.05
+        R.feed()
+        # A stall that outlasts the run is said as a stall, not as its
+        # time being up: the gap is judged first.
+        off()
+        tap(True, seconds=1)
+        R.mono[0] += 1.2
+        why = pm.pump_send()
+        check("stalled" in why and not link.pump_on,
+              f"a stall past the end is said as a stall: {why}")
+        R.mono[0] -= 1.2
+        R.feed()
+        # A stall inside a pass: the clock jumps during the checks.
+        off()
+        tap(True)
+        real_down = pm.down
+
+        def slow_down():
+            R.mono[0] += FP.BEAT_STALE_S + 0.05
+            return real_down()
+        pm.down = slow_down
+        why = pm.pump_send()
+        pm.down = real_down
+        check("stalled" in why and not link.pump_on,
+              f"a stall inside a pass (fresh clock reading): OFF: {why}")
+        R.feed()
+        # A Stop landing during a pass, before and after the beat.
+        for where in ("before", "after"):
+            off()
+            tap(True)
+            real_beat = link.pump_beat
+
+            def racing(gen, where=where, real_beat=real_beat):
+                if where == "before":
+                    link.disarm_all("Stop racing the pump's timer")
+                    return real_beat(gen)
+                ok = real_beat(gen)
+                link.disarm_all("Stop racing the pump's timer")
+                return ok
+            link.pump_beat = racing
+            why = pm.pump_send()
+            del link.pump_beat
+            check(why and not link.pump_on and pm.run is None,
+                  f"a Stop landing {where} the beat inside a pass: OFF: "
+                  f"{why}")
+            link.release()
+        off()
+        # The link's own hard end, whatever the engine's timer thinks.
+        tap(True, seconds=300)
+        link._pump_until = link._clock() - 0.01
+        why = pm.pump_send()
+        check("flame link turned it off" in why and "time was up" in why and
+              not link.pump_on,
+              f"the link's hard end passed: OFF, the engine follows: {why}")
+        R.feed()
+        off()
+        st, _h, out = tap(True)
+        R.pm_lag = True
+        check(view()["state"] == "waiting",
+              "ON here, flamesafe not yet passing it: 'waiting'")
+        R.pm_lag = False
+        check(view()["state"] == "on", "flamesafe passing it: 'on'")
+        R.show[0] = "playing"
+        off()
+        tap(True)
+        check(link.pump_on, "during a show: ON (Jeff: it may run then)")
+        R.ask("POST", "/api/remote/hold", {"seen": R.seen()}, client=loop)
+        pm.pump_send()
+        check(link.pump_on and pm.run is not None,
+              "Hold leaves the pump ON (Jeff: Off on Stop, NOT Hold)")
+        R.show[0] = "idle"
+        off()
+        RM.save_settings(R.work, screen_arming=False)
+        st, _h, out = tap(True, client=ipad)
+        check(st == 403 and "screen_arming" in out["error"] and
+              not link.pump_on,
+              f"ON from the show network without screen_arming: refused: "
+              f"{st} {out}")
+        tap(True)
+        st, _h, out = tap(False, client=ipad)
+        check(st == 200 and not link.pump_on,
+              f"OFF from there is never refused: {st} {out}")
+        RM.save_settings(R.work, screen_arming=True)
+        st, _h, out = tap(True, client=ipad)
+        check(st == 200 and link.pump_on,
+              f"with screen_arming on, ON from the show network: {st} {out}")
+        off()
+        # Refusals.
+        R.aborted[0] = True
+        st, _h, out = tap(True)
+        check(st == 409 and "Abort is standing" in out["error"] and
+              not link.pump_on, f"an Abort standing: refused: {out}")
+        check(view()["refusal"].startswith("an Abort is standing"),
+              "and the status says why, for the button")
+        R.aborted[0] = False
+
+        class _LF:
+            on = True
+        R.remote.live_flame = _LF()
+        st, _h, out = tap(True)
+        check(st == 409 and "live flame programming" in out["error"] and
+              not link.pump_on, f"live flame programming on: {out}")
+        R.remote.live_flame = None
+        R.mono[0] += 1.5
+        st, _h, out = tap(True)
+        check(st == 409 and "has not reported" in out["error"] and
+              not link.pump_on, f"flamesafe's status 1.5 s old: {out}")
+        R.feed()
+        R.pm["on"] = 200
+        R.feed()
+        st, _h, out = tap(True)
+        check(st == 409 and "differ" in out["error"] and not link.pump_on,
+              f"flamesafe's pump at another on value: refused: {out}")
+        R.pm["on"] = 255
+        R.pm["slots"] = [101]
+        R.feed()
+        st, _h, out = tap(True)
+        check(st == 409 and "differ" in out["error"] and not link.pump_on,
+              f"flamesafe's pump on another slot: refused: {out}")
+        check(view()["agree"] is False, "and the status says they differ")
+        R.pm["slots"] = [100]
+        R.pm["kind"] = "hazer"
+        R.feed()
+        st, _h, out = tap(True)
+        check(st == 409 and "does not report a fuel pump" in out["error"]
+              and not link.pump_on,
+              f"a flamesafe that reports no switch (an older one): "
+              f"refused: {out}")
+        R.pm["kind"] = "switch"
+        R.feed()
+        link.set_locked_channels([100])
+        st, _h, out = tap(True)
+        check(st == 409 and "lockout file" in out["error"] and
+              not link.pump_on, f"its slot locked: refused: {out}")
+        link.set_locked_channels([])
+        link.disarm_all("Stop from the selftest")
+        st, _h, out = tap(True)
+        check(st == 409 and "still being sent" in out["error"] and
+              not link.pump_on,
+              f"a Stop still being sent to flamesafe (0.75 s): refused: "
+              f"{out}")
+        link._abort_repeat = None
+        link.release()
+
+        class _NoArm:
+            def may(self, role, perm):
+                return perm != "arm"
+
+            def machine_user(self):
+                return None
+
+            def active(self):
+                return True
+        tap(True)
+        R.remote.users = _NoArm()
+        st, _h, out = tap(False)
+        check(st == 200 and not link.pump_on,
+              f"may not arm: OFF still works: {st} {out}")
+        st, _h, out = tap(True)
+        check(st == 403 and out.get("role_refused") and not link.pump_on,
+              f"may not arm: ON is refused: {st} {out}")
+        R.remote.users = None
+        # flamesafe going quiet ends it on the next pass.
+        tap(True)
+        R.feed()
+        check(pm.pump_send() == "" and link.pump_on, "fresh: it runs")
+        R.mono[0] += 1.5
+        check(pm.pump_send() and not link.pump_on,
+              "flamesafe silent for 1.5 s: the timer turns it off")
+        R.feed()
+        # Abort, Stop (the deck's halt and the plain /api/stop).
+        tap(True)
+        R.ask("POST", "/api/remote/abort", {"seen": R.seen(),
+                                            "confirmed": True}, client=loop)
+        check(not link.pump_on and pm.run is None and said("Abort"),
+              f"Abort: OFF at the press, said: {pm.last_off}")
+        R.ask("POST", "/api/remote/reset", {"seen": R.seen()}, client=loop)
+        R.settle()
+        R.feed()
+        pm.last_off = None
+        link._abort_repeat = None
+        st, _h, out = tap(True)
+        check(st == 200 and link.pump_on, f"setup: ON again: {out}")
+        R.remote.halt("Ollie", "Rack screen")
+        check(not link.pump_on and pm.run is None and said("Stop"),
+              f"Stop (the deck's halt): OFF, said: {pm.last_off}")
+        R.feed()
+        pm.last_off = None
+        link._abort_repeat = None
+        tap(True)
+        check(link.pump_on, "setup: ON again")
+        st, _h, out = R.ask("POST", "/api/stop", {}, client=loop)
+        check(not link.pump_on and pm.run is None and said("Stop"),
+              f"Stop (the plain /api/stop): OFF: {st} {pm.last_off}")
+        R.feed()
+        link._abort_repeat = None
+        tap(True)
+        R.ask("POST", "/api/remote/abort", {"seen": R.seen()}, client=loop)
+        check(not link.pump_on,
+              "an unconfirmed Abort still turns it off (it only takes "
+              "something away)")
+        lines = [r.get("text", "") for r in R.lines_for("fuel-pump")]
+        check(any("turned the fuel pump" in t and "for 4:00" in t
+                  for t in lines) and
+              any("Fuel pump off" in t for t in lines) and
+              any("refused" in t for t in lines) and
+              not any("—" in t or "–" in t for t in lines),
+              f"the journal says each on, off and refusal: {lines[-4:]}")
+        R.remote.pump = None
+        st, _h, out = tap(True)
+        check(st == 404, f"no pump in this engine: 404: {st}")
+        _st, _h, s = R.ask("GET", "/api/remote/status", client=loop)
+        check("pump" not in s, "and no pump in the status (no button)")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_pump_review_fixes():
+    section("fuel pump, the reviews of #188: live flame programming does "
+            "not start while the pump runs (a Hold would end both); the "
+            "status answers while the flame link's lock is held; two "
+            "presses at once start one run; on 1 or \"true\" is OFF, signed "
+            "out too; a disarm to every group names its own cause; the "
+            "link not sending, an Abort standing and cut() each end it; "
+            "flamesafe not passing it ends the run; flamesafe passing it "
+            "while the engine has it off is said; the night closing or "
+            "over ends it")
+    S = _sched()
+    if S is None:
+        return
+    import threading
+    import itertools
+    from ltcplay import fuelpump as FP
+    loop = ("127.0.0.1", 5000)
+    R = _pm_rig(S)
+    link = R.link
+    pm = R.remote.pump
+    ids = itertools.count(1)
+
+    def tap(on, client=loop, seconds=300, run=None, **kw):
+        body = {"on": on, "seen": R.seen()}
+        if on is True:
+            body.update(seconds=seconds,
+                        run=run if run is not None else f"r{next(ids)}")
+        return R.ask("POST", "/api/remote/fuel-pump", body, client=client,
+                     **kw)
+
+    def off():
+        tap(False)
+        link._abort_repeat = None
+        link.release()
+        R.feed()
+    try:
+        # F3: live flame programming does not start while the pump runs.
+        class _LF:
+            on = False
+            begun = 0
+
+            def begin(self, who, screen):
+                self.begun += 1
+                return True, "Live flame programming is ON."
+        lf = _LF()
+        R.remote.live_flame = lf
+        tap(True)
+        check(link.pump_on, "setup: the pump runs")
+        st, _h, out = R.ask("POST", "/api/remote/live-flame",
+                            {"on": True, "confirmed": True,
+                             "seen": R.seen()}, client=loop)
+        check(st == 409 and "fuel pump is on" in out.get("error", "") and
+              lf.begun == 0 and link.pump_on,
+              f"live flame programming ON while the pump runs: refused, "
+              f"the pump untouched: {st} {out}")
+        off()
+        st, _h, out = R.ask("POST", "/api/remote/live-flame",
+                            {"on": True, "confirmed": True,
+                             "seen": R.seen()}, client=loop)
+        check(st == 200 and lf.begun == 1,
+              f"with the pump off it starts: {st} {out}")
+        R.remote.live_flame = None
+        # N1 (re-review A): live flame programming being turned on (its
+        # begin() under way) refuses the pump; the pump's run is reserved
+        # before it asks again, so a begin() racing the press refuses
+        # itself; and the begin()'s own check sees the pump.
+        lf2 = _LF()
+        lf2._starting = True
+        R.remote.live_flame = lf2
+        st, _h, out = tap(True)
+        check(st == 409 and "live flame programming" in out["error"] and
+              pm.run is None and not link.pump_on,
+              f"ON while live flame programming is being turned on: "
+              f"refused: {out}")
+        lf2._starting = False
+        real_ref = pm.refusal
+
+        def starts_meanwhile():
+            why = real_ref()
+            lf2._starting = True      # a begin() marks itself now
+            return why
+        pm.refusal = starts_meanwhile
+        st, _h, out = tap(True)
+        pm.refusal = real_ref
+        check(st == 409 and "live flame programming" in out["error"] and
+              pm.run is None and not link.pump_on,
+              f"a begin() marking itself after the pump's checks but before "
+              f"its reservation: the pump is refused: {out}")
+        lf2._starting = False
+        pm.run = {"id": "reserved", "reserved": True}
+        why = R.remote.live_flame_blockers()
+        pm.run = None
+        check("fuel pump is on" in why,
+              f"a begin()'s own check sees a reserved pump run: {why!r}")
+        lf2.on = True
+        pm.run = {"id": "reserved", "reserved": True}
+        why = R.remote.live_flame_blockers()
+        pm.run = None
+        check("fuel pump" not in why,
+              f"but a running session's watch pass never ends it over the "
+              f"pump: {why!r}")
+        R.remote.live_flame = None
+        # Review B, 1: a Pump off landing while an ON is being checked wins.
+        def off_meanwhile():
+            why = real_ref()
+            pm.set(False, who="B", screen="iPad")
+            return why
+        pm.refusal = off_meanwhile
+        st, _h, out = tap(True)
+        pm.refusal = real_ref
+        check(st == 409 and "Pump off" in out["error"] and pm.run is None
+              and not link.pump_on,
+              f"Pump off pressed while an ON was being checked: nothing "
+              f"starts after it: {out}")
+        R.feed()
+        # Delta review 3: a Stop's cut() (not only Pump off) landing while
+        # an ON is being checked wins too.
+        def cut_meanwhile():
+            why = real_ref()
+            pm.cut()
+            return why
+        pm.refusal = cut_meanwhile
+        st, _h, out = tap(True)
+        pm.refusal = real_ref
+        check(st == 409 and "Pump off" in out["error"] and pm.run is None
+              and not link.pump_on,
+              f"a Stop's cut while an ON was being checked: nothing starts "
+              f"after it: {out}")
+        R.feed()
+        # Delta review 3: the run is reserved before the second look, so
+        # a live flame programming start check made then sees it.
+        seen_lf = []
+        real_blk = pm._blocker
+
+        def look_from_lf():
+            seen_lf.append(R.remote.live_flame_pump_refusal())
+            return real_blk()
+        pm._blocker = look_from_lf
+        st, _h, out = tap(True)
+        pm._blocker = real_blk
+        check(st == 200 and any(seen_lf),
+              f"while the ON makes its second look its run is already "
+              f"reserved, so live flame programming starting then is "
+              f"refused: {seen_lf}")
+        off()
+        # Delta review 1: a reservation is never a run on the screens.
+        pm.run = {"id": "x", "reserved": True}
+        real_live = link.pump_live_now
+        link.pump_live_now = lambda: True
+        check(pm.on() is False,
+              "on() never reads a reservation as a run")
+        pm.on = lambda: True       # the race: an ON finishing mid-view
+        v = pm.view(R.remote.flame_status.view())
+        del pm.on
+        link.pump_live_now = real_live
+        pm.run = None
+        check(v.get("available") is True and v.get("left_s") is None,
+              f"view() with a reservation where a run was read: still "
+              f"available, no KeyError: {v}")
+        # Final delta review: an ON from a stale or ageless screen is
+        # refused (a stalled request landing after a Pump off or a Stop);
+        # Pump off never is.
+        for label, seen in (("15 s old", R.seen() - 15000),
+                            ("120 s old", R.seen() - 120000),
+                            ("missing", None), ("not a number", "x")):
+            body = {"on": True, "seconds": 300, "run": f"stale-{label}"}
+            if seen is not None:
+                body["seen"] = seen
+            st, _h, out = R.ask("POST", "/api/remote/fuel-pump", body,
+                                client=loop)
+            check(st == 409 and "more than 1 s old" in out.get("error", "")
+                  and pm.run is None and not link.pump_on,
+                  f"an ON whose screen status is {label}: refused: {st} "
+                  f"{out}")
+        st, _h, out = R.ask("POST", "/api/remote/fuel-pump",
+                            {"on": False, "seen": R.seen() - 120000},
+                            client=loop)
+        check(st == 200, f"Pump off from a stale screen still works: {st}")
+        st, _h, out = tap(True)
+        check(st == 200 and link.pump_on,
+              f"an ON from a live screen is taken: {st} {out}")
+        off()
+        # The audit, on the second look's refusal and on a failed start.
+        audited = []
+
+        class _Audit:
+            def event(self, **kw):
+                audited.append(kw)
+        pm.audit = _Audit()
+        lf4 = _LF()
+        real_blk2 = pm._blocker
+
+        def starts_now():
+            # The first look (refusal()) passes; the second, with the run
+            # reserved, sees live flame programming starting.
+            if pm.run is not None:
+                lf4._starting = True
+            return real_blk2()
+        pm._blocker = starts_now
+        R.remote.live_flame = lf4
+        st, _h, out = tap(True)
+        pm._blocker = real_blk2
+        R.remote.live_flame = None
+        check(st == 409 and any(a.get("result") == "refused" and
+                                "starting" in str(a.get("reason"))
+                                for a in audited),
+              f"the second look's refusal is audited: {audited[-1:]}")
+        audited.clear()
+        # Delta review 2: a start that raises never wedges the pump.
+        real_gen = link.pump_gen
+
+        def broken_gen():
+            raise KeyError("broken")
+        link.pump_gen = broken_gen
+        st, _h, out = tap(True)
+        link.pump_gen = real_gen
+        check(st == 409 and "starting it failed" in out["error"] and
+              pm.run is None and not link.pump_on,
+              f"a start that raised: refused in words, no reservation "
+              f"left: {out}")
+        check(any(a.get("result") == "refused" and
+                  "starting it failed" in str(a.get("reason"))
+                  for a in audited),
+              f"and audited: {audited[-1:]}")
+        # One that raises after the link took it: the link is told OFF.
+        real_start = link.pump_start
+
+        def start_then_raise(*a, **k):
+            real_start(*a, **k)
+            raise RuntimeError("after the link took it")
+        link.pump_start = start_then_raise
+        st, _h, out = tap(True)
+        link.pump_start = real_start
+        check(st == 409 and pm.run is None and not link.pump_on,
+              f"a start that raised after the link took it: the link "
+              f"names no pump: {out} {link.pump_on}")
+        pm.audit = None
+        st, _h, out = tap(True)
+        check(st == 200 and link.pump_on,
+              f"and the next ON works (not wedged): {st} {out}")
+        from ltcplay import fuelpump as FP2
+        other = FP2.FuelPump(link_get=lambda: link, flames_get=lambda: None,
+                             abort_standing=lambda: False, threaded=False)
+        check(pm.view(R.remote.flame_status.view()).get("boot") == pm.boot
+              and other.boot != pm.boot,
+              "the screens get this engine's boot id, new at every start, so "
+              "a screen left open across a restart resets its run time")
+        n_before = (pm.last_off or {}).get("n", 0)
+        off()
+        tap(True)
+        off()
+        lo = pm.last_off or {}
+        check(lo.get("n", 0) >= n_before + 2,
+              f"every OFF said carries a new count, so a screen sees two "
+              f"ends for the same reason: {lo}")
+        pm.run = {"id": "x", "reserved": True}
+        lines0 = len(R.lines_for("fuel-pump"))
+        pm.stop("Pump off on a reservation", who="A", screen="iPad")
+        check(pm.run is None and len(R.lines_for("fuel-pump")) == lines0,
+              "Pump off on a pump that never ran clears it and journals "
+              "nothing")
+        # Delta review 4: the second look's refusal is audited too, and
+        # live flame programming starting is said as starting.
+        lf3 = _LF()
+        lf3._starting = True
+        R.remote.live_flame = lf3
+        st, _h, out = tap(True)
+        R.remote.live_flame = None
+        check(st == 409 and "live flame programming is starting" in
+              out["error"], f"said as starting: {out}")
+        # F5: the status answers while the sender holds the link's lock.
+        tap(True)
+        held, release = threading.Event(), threading.Event()
+
+        def hold_lock():
+            with link._lock:
+                held.set()
+                release.wait(10)
+        th = threading.Thread(target=hold_lock, daemon=True)
+        th.start()
+        held.wait(5)
+        got = {}
+
+        def ask():
+            got["r"] = R.ask("GET", "/api/remote/status", client=loop)
+        t2 = threading.Thread(target=ask, daemon=True)
+        t0 = time.monotonic()
+        t2.start()
+        t2.join(3.0)
+        took = time.monotonic() - t0
+        release.set()
+        th.join(5)
+        check("r" in got and got["r"][0] == 200 and
+              got["r"][2].get("pump", {}).get("on") is True and took < 3.0,
+              f"the status answers with the link's lock held by a stuck "
+              f"sender ({took:.2f} s): {got.get('r', ('no answer',))[0]}")
+        off()
+        # F1: a second press arriving while the first is being checked.
+        inner = {}
+        real = pm.refusal
+
+        def racing():
+            pm.refusal = real
+            inner["r"] = pm.set(True, seconds=60, run="second",
+                                who="B", screen="iPad")
+            return real()
+        pm.refusal = racing
+        first = pm.set(True, seconds=600, run="first", who="A",
+                       screen="Rack screen")
+        pm.refusal = real
+        check(inner["r"][0] is True and first[0] is False and
+              "already on" in first[1] and pm.run["id"] == "second" and
+              pm.run["seconds"] == 60,
+              f"two presses at once: one run, the other refused and never "
+              f"replacing or extending it: {inner['r']} {first} "
+              f"{pm.run and pm.run['id']}")
+        off()
+        # F4: on 1 or "true" is OFF, signed out too, with a run and seconds.
+        class _Out:
+            def may(self, role, perm):
+                return False
+
+            def machine_user(self):
+                return None
+
+            def active(self):
+                return True
+        R.remote.users = _Out()
+        for bad in (1, "true"):
+            st, _h, out = R.ask("POST", "/api/remote/fuel-pump",
+                                {"on": bad, "seconds": 300,
+                                 "run": f"x{bad}", "seen": R.seen()},
+                                client=loop)
+            check(st == 200 and not link.pump_on and pm.run is None and
+                  "OFF" in out.get("text", ""),
+                  f"on {bad!r} with a run and seconds, signed out: OFF, "
+                  f"nothing started, no permission needed: {st} {out}")
+        st, _h, out = tap(True)
+        check(st == 403 and not link.pump_on,
+              f"and on true signed out is refused: {st} {out}")
+        R.remote.users = None
+        # F6: a disarm to every group names its own cause.
+        tap(True)
+        link.disarm_all("Disarm all flame groups forced on the Rack screen")
+        why = pm.pump_send()
+        check("Disarm all flame groups forced" in why and
+              "Stop or Abort" not in why and not link.pump_on,
+              f"the journal names the real cause: {why}")
+        off()
+        # Each guard ends a run on its own.
+        tap(True)
+        real_snap = link.snapshot
+        link.snapshot = lambda: dict(real_snap(), sending_ok=False)
+        why = pm.pump_send()
+        link.snapshot = real_snap
+        check("not sending" in why and not link.pump_on,
+              f"the flame link not sending ends it: {why}")
+        R.feed()
+        link.snapshot = lambda: dict(real_snap(), sending_ok=False)
+        st, _h, out = tap(True)
+        link.snapshot = real_snap
+        check(st == 409 and "not sending" in out["error"],
+              f"and refuses ON: {out}")
+        R.feed()
+        tap(True)
+        R.aborted[0] = True
+        why = pm.pump_send()
+        R.aborted[0] = False
+        check(why == "an Abort is standing" and not link.pump_on,
+              f"an Abort standing ends it: {why}")
+        off()
+        tap(True)
+        was = pm.cut()
+        check(was is True and not link.pump_on and pm.run is None,
+              "cut() alone switches it off at the link, before any journal "
+              "thread runs")
+        off()
+        # Item 5: flamesafe not passing it ends the run after a grace.
+        tap(True)
+        R.pm_lag = True
+        R.pm["passing"] = R.pm["enabled"] = False
+        R.pm["why"] = "the show program link is not fresh"
+        ended = ""
+        for _ in range(25):
+            R.mono[0] += 0.1
+            R.feed()
+            ended = pm.pump_send()
+            if ended:
+                break
+        check("did not pass it" in ended and "not fresh" in ended and
+              not link.pump_on and pm.run is None,
+              f"flamesafe not passing it for {FP.NOT_PASSING_S:g} s ends "
+              f"the run, so a new ON works: {ended}")
+        # Item 7: flamesafe passing it while the engine has it off.
+        R.pm["passing"] = R.pm["enabled"] = True
+        R.feed()
+        _st, _h, s = R.ask("GET", "/api/remote/status", client=loop)
+        check(s["pump"]["state"] == "flamesafe_on" and not s["pump"]["on"],
+              f"flamesafe passing it with the engine off is said: "
+              f"{s['pump']['state']}")
+        R.pm_lag = False
+        off()
+        # The night: closing and over.
+        tap(True)
+        R.night[0] = "CLOSING"
+        why = pm.pump_send()
+        check(why == "the night is closing" and not link.pump_on,
+              f"the night closing ends it: {why}")
+        R.feed()
+        st, _h, out = tap(True)
+        check(st == 409 and "night is closing" in out["error"] and
+              "was not turned on" in out["error"] and pm.run is None,
+              f"and refuses ON while it closes, before it starts: {out}")
+        R.night[0] = "SHOW"
+        off()
+        tap(True)
+        R.night[0] = "OFF"
+        why = pm.pump_send()
+        check(why == "the night is over" and not link.pump_on,
+              f"the night over ends a run begun before it: {why}")
+        off()
+        st, _h, out = tap(True)
+        check(st == 200 and link.pump_on and pm.pump_send() == "",
+              f"a run begun after the night is over (the morning) runs: "
+              f"{out}")
+        R.night[0] = None
+        off()
+        m = getattr(R.remote.schedule, "machine", None)
+        check(R.remote.pump_night_state() == getattr(m, "state", None),
+              f"the engine's night state is the scheduler's: "
+              f"{R.remote.pump_night_state()!r}")
+        import ast as _ast
+        src = open(os.path.join(os.path.dirname(os.path.abspath(
+            __file__)), "ltcplay", "web.py"), encoding="utf-8").read()
+        check("night_state=remote.pump_night_state)" in src,
+              "web.serve gives the pump the scheduler's night state")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_pump_timer_thread_ends_it():
+    section("fuel pump timer (fuelpump.py): the real timer thread keeps it "
+            "on and ends it by itself at its time; with the thread wrecked "
+            "the flame link stops naming it within PUMP_HOLD_S")
+    import shutil
+    import tempfile
+    from ltcplay import flamelink as fl
+    from ltcplay import fuelpump as FP
+    work = tempfile.mkdtemp()
+    try:
+        link = _pm_link(work)
+        link._clock = time.monotonic
+        fresh = {"connected": True, "stale": False, "age_ms": 10,
+                 "passthrough": [{"name": _PM[0], "kind": "switch",
+                                  "slots": [_PM[1]], "on": _PM[2],
+                                  "passing": True}]}
+        link.snapshot = lambda: {"open": True, "sending_ok": True,
+                                 "locked_channels": []}
+        pm = FP.FuelPump(link_get=lambda: link, flames_get=lambda: fresh,
+                         abort_standing=lambda: False)
+        ok, text = pm.set(True, seconds=1, run="t1")
+        check(ok and link.pump_on, f"ON for 0:01: {text}")
+        time.sleep(0.6)
+        check(link.pump_on, "past PUMP_HOLD_S the timer still beats it")
+        end = time.monotonic() + 2.0
+        while (link.pump_on or pm.run is not None) and \
+                time.monotonic() < end:
+            time.sleep(0.02)
+        check(not link.pump_on and pm.run is None and
+              "up" in (pm.last_off or {}).get("reason", ""),
+              f"its time up: OFF by itself: {pm.last_off}")
+        ok, _t = pm.set(True, seconds=60, run="t2")
+        check(ok and link.pump_on, "ON for 1:00")
+        pm.pump_send = lambda now=None: ""     # a timer that does nothing
+        pm.run = dict(pm.run)                  # its thread loses its run
+        time.sleep(fl.PUMP_HOLD_S + 0.2)
+        check(not link.pump_on and "stalled" in link.pump_ended(),
+              f"a wrecked timer: the link stops naming it by itself: "
+              f"{link.pump_ended()}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_pump_end_to_end_against_the_real_flamesafe():
+    section("fuel pump end to end: the real flamesafe in its own process, "
+            "the real FlameLink, over loopback UDP: OFF at start whatever "
+            "the FSEQ carries on 100; ON puts flamesafe's own 255 on the "
+            "node with the frame carrying 0 there; Hold leaves it on; its "
+            "hard end and a stopped timer zero it; Stop and Abort "
+            "(disarm_all) zero it and it stays off until started again; a "
+            "foreign keyed sender cannot turn it on; the engine dying zeroes "
+            "it within flamesafe's frame_stale_ms")
+    import json as _j
+    import socket as _so
+    import subprocess
+    import threading
+    from ltcplay import flamelink as fl
+    from ltcplay import flameprog as fp
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+
+    def free_port():
+        s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+    node = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    node.bind(("127.0.0.1", 0))
+    node.settimeout(0.05)
+    status_rx = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    status_rx.bind(("127.0.0.1", 0))
+    status_rx.settimeout(0.2)
+    listen = free_port()
+    work = tempfile.mkdtemp()
+    cfg_path = os.path.join(work, "flamesafe.json")
+    _j.dump({
+        "flamesafe_config": 1, "confirmed": False, "note": "selftest",
+        "universe": 1,
+        "destination": {"ip": "127.0.0.1", "port": node.getsockname()[1]},
+        "link": {"listen_ip": "127.0.0.1", "listen_port": listen,
+                 "status_ip": "127.0.0.1",
+                 "status_port": status_rx.getsockname()[1], "key": key},
+        "gflame_range": "30-50%", "arm_value": 78,
+        "accept_unsourced_risk": False, "min_arm_dwell_ms": 1000,
+        "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
+        "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
+        "groups": [{"name": "front row", "safety": 401, "fire": [411, 412]}],
+        "passthrough": [{"name": n, "haze": sl[0], "fan": sl[1]}
+                        for n, sl in _HZ] +
+        [{"name": _PM[0], "switch": _PM[1], "on": _PM[2]}]},
+        open(cfg_path, "w"))
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "flamesafe",
+                             cfg_path], cwd=here, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    said = []
+    threading.Thread(target=lambda: [said.append(l) for l in proc.stdout],
+                     daemon=True).start()
+    stop = threading.Event()
+    last = {"st": None}
+
+    def read_status():
+        while not stop.is_set():
+            try:
+                d, _a = status_rx.recvfrom(65535)
+            except (_so.timeout, OSError):
+                continue
+            o = fl.decode_status(d, key)
+            if o is not None:
+                last["st"] = o
+    threading.Thread(target=read_status, daemon=True).start()
+    t0 = time.perf_counter()
+
+    def show_tc():
+        n = int((time.perf_counter() - t0) * 30)
+        return f"00:{n // 1800 % 60:02d}:{n // 30 % 60:02d}:{n % 30:02d}"
+    cfg = fl.FlameLinkConfig.from_flamesafe_config(cfg_path)
+    feed = {"pump": 7}
+    link = _flk_unguarded(cfg,
+                          cues=lambda tc: _pm_values(pump=feed["pump"]),
+                          show_state=lambda: (show_tc(), True))
+    link.release()
+    link.haze_gate = lambda: True
+    beating = {"gen": None}
+
+    def beat():
+        # The engine's timer, as fuelpump.FuelPump runs it.
+        while not stop.is_set():
+            g = beating["gen"]
+            if g is not None:
+                link.pump_beat(g)
+            time.sleep(0.1)
+    threading.Thread(target=beat, daemon=True).start()
+
+    def start(seconds=300.0):
+        g = link.pump_gen()
+        ok = link.pump_start(seconds, g)
+        beating["gen"] = g if ok else None
+        return ok
+
+    def pump(seconds=0.4):
+        """Slot 100 on the node's last packet after `seconds`."""
+        end = time.monotonic() + seconds
+        got = None
+        while time.monotonic() < end:
+            try:
+                data, _a = node.recvfrom(2048)
+            except _so.timeout:
+                continue
+            got = fp.parse_e131(data).values
+        return None if got is None else got[_PM[1] - 1]
+
+    def first_zero(limit):
+        """Seconds until the node first shows 0 on slot 100, or None."""
+        t1 = time.monotonic()
+        while time.monotonic() - t1 < limit:
+            try:
+                data, _a = node.recvfrom(2048)
+            except _so.timeout:
+                continue
+            if fp.parse_e131(data).values[_PM[1] - 1] == 0:
+                return time.monotonic() - t1
+        return None
+
+    def entry():
+        for p in (last["st"] or {}).get("passthrough") or []:
+            if p.get("name") == _PM[0]:
+                return p
+        return None
+    try:
+        check(cfg.pump == _PM, f"the engine reads the pump: {cfg.pump}")
+        link.start()
+        first = pump(3.0)
+        if not check(first is not None, "flamesafe sends to the node: " +
+                     "".join(said)[-400:]):
+            return
+        check(any(f"{_PM[0]} switch 100 at 255" in l for l in said),
+              "flamesafe's start line names the pump")
+        check(first == 0, f"OFF at start: zero on the node though the FSEQ "
+                          f"carries 7 on 100: {first}")
+        feed["pump"] = 0
+        start()
+        got = pump(0.6)
+        check(got == 255, f"ON: flamesafe's own 255 on the node, the frame "
+                          f"carrying 0 there: {got}")
+        e = entry()
+        check(e and e.get("kind") == "switch" and e.get("passing") and
+              e.get("sent") == [255],
+              f"flamesafe's status says the switch passes: {e}")
+        link.zero()
+        got = pump(0.5)
+        check(got == 255, f"Hold (zero): still ON on the node: {got}")
+        link.release()
+        # Its hard end: the timer keeps beating, the link still ends it.
+        beating["gen"] = None
+        time.sleep(0.2)
+        start(1.0)
+        got = pump(0.5)
+        check(got == 255, f"setup: ON for 1 s: {got}")
+        got = pump(1.0)
+        check(got == 0, f"past its hard end: zero on the node though the "
+                        f"timer still beats: {got}")
+        # A timer that stops: the link drops it within PUMP_HOLD_S.
+        start()
+        check(pump(0.5) == 255, "setup: ON")
+        beating["gen"] = None
+        dt = first_zero(2.0)
+        check(dt is not None and dt < fl.PUMP_HOLD_S + 0.4,
+              f"the engine's timer stopped: zero on the node in {dt} s")
+        start()
+        check(pump(0.5) == 255, "setup: ON")
+        link.disarm_all("Stop from the selftest")
+        got = pump(0.3)
+        check(got == 0, f"Stop (disarm_all): zero on the node: {got}")
+        link.release()
+        check(link.abort_repeating() and link.pump_start(
+            300, link.pump_gen()) is False,
+              "while the Stop is still being repeated it cannot go on")
+        time.sleep(link.cfg.abort_repeat_s + 0.1)
+        got = pump(0.4)
+        check(got == 0, f"after the Stop it stays off: {got}")
+        start()
+        got = pump(1.5)
+        check(got == 255,
+              f"started again at the engine (its frames said OFF since the "
+              f"Stop, then ON): 255 again: {got}")
+        link.disarm_all("Abort from the selftest")
+        got = pump(0.3)
+        check(got == 0, f"Abort: zero on the node: {got}")
+        link.release()
+        time.sleep(link.cfg.abort_repeat_s + 0.1)
+        # A foreign keyed sender saying the pump ON, with 255 on its slot.
+        rogue = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        vals = [0] * 512
+        vals[_PM[1] - 1] = 255
+        for i in range(10):
+            rogue.sendto(_j.dumps({
+                "v": 2, "k": key, "t": "flame", "seq": 10 ** 12 + i,
+                "tc": None, "mono": 10.0 ** 6 + i, "universe": 1,
+                "values": vals, "hazers_on": [_PM[0]]}).encode(),
+                ("127.0.0.1", listen))
+            time.sleep(0.02)
+        got = pump()
+        check(got == 0, f"a foreign keyed sender cannot turn it on: {got}")
+        rogue.close()
+        time.sleep(0.6)                   # its foreign-sender window passes
+        # The engine dies with the pump on: no more frames at all.
+        start()
+        got = pump(1.5)
+        check(got == 255, f"setup: ON before the engine dies: {got}")
+        link.stop()
+        dt = first_zero(3.0)
+        check(dt is not None and dt <= 0.5 + 0.3,
+              f"the engine gone: flamesafe zeroes the pump within its "
+              f"frame_stale_ms (500 ms): {dt} s")
     finally:
         stop.set()
         link.stop()
@@ -90964,9 +93885,9 @@ def _pr_night(results=None, window=10, hold_until=None,
     n.svc.showtime_gate = hold.gate
     pr = P.PreRoll([(x, True, mk(x)) for x in names],
                    window_s=window, alert=al.raise_,
-                   clear_alert=lambda k: al.clear(kind=k, action="Confirm",
-                                                  who="LTC Player",
-                                                  screen="engine"),
+                   clear_alert=lambda k, id=None: al.clear(
+                       kind=k, id=id, action="Confirm", who="LTC Player",
+                       screen="engine"),
                    open_alert=lambda: any(a.kind == "preroll"
                                           for a in al.open()))
     n.svc.preroll = pr
@@ -92001,6 +94922,2089 @@ def test_preroll_wiring_in_the_engine():
     rig.baseline = None
     check("10.0.1.2" in [ip for _l, ip in W._preroll_hosts(h, cfg)],
           "before the first sweep: every pixel controller")
+def _pr_notes(n):
+    """The pre-roll's own journal lines, collected (the engine's go to the
+    schedule journal; _pr_night's PreRoll has none)."""
+    notes = []
+    n.pr._journal = lambda text, **kw: notes.append((text, kw))
+    return notes
+
+
+def test_preroll_a_pass_clears_the_failure_and_keeps_the_hold():
+    section("rig check failure cleared (Jeff's field report, 2026-10-29: "
+            "'I fixed the issue and then hit Check Again. It said it passed "
+            "but the main page still says it failed'): fail at showtime, "
+            "held; fixed; Check again passes: the failed verdict and the "
+            "preroll alert are cleared, journaled with who, every screen "
+            "and the Stream Deck say so, the show stays HELD and nothing "
+            "starts by itself; Resume checks it again and starts it; Start "
+            "now runs a normal check; Continue anyway is gone with the "
+            "failure")
+    n = _pr_night({"Video": (False, "MadMapper did not answer the "
+                                    "timecode")})
+    if n is None:
+        return
+    from ltcplay import alerthold as AH, streamdeck as SD
+    S, svc, c = n.S, n.svc, n.c
+    notes = _pr_notes(n)
+    svc.tick()
+    _settle(svc, c)
+    n.now[0] = _den(S, 17, 59, 50)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 15),
+          "the show's own check failed")
+    n.now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.HOLD and
+          [a.kind for a in n.al.open()] == ["preroll"],
+          f"held at its time, the preroll alert open: {svc.machine.state}")
+    sk = SD.ScreenKeys("http://127.0.0.1:1", fetcher=lambda u: {})
+    sk._last = ({"alerts": n.al.view()}, sk._clock())
+    check([a["kind"] for a in sk.alerts()] == ["preroll"],
+          "the Stream Deck shows the alert (ACK)")
+    other = n.al.raise_("deck", "Stream Deck unplugged")
+    # Fixed. Check again (a Pre-check) passes on a fresh run.
+    n.results["Video"] = (True, "")
+    ran0 = n.ran.count("Video")
+    r = n.pr.run(("pre-check", 1), "a Pre-check by Andy", alerts=False,
+                 manual=True, by="Check again by Andy")
+    check(r["state"] == "passed" and n.ran.count("Video") == ran0 + 1,
+          f"Check again ran every check afresh and passed: {r['state']}")
+    check(n.pr.verdict(_pr_key(n)) == "cleared",
+          f"the failed verdict is cleared: {n.pr.verdict(_pr_key(n))}")
+    check([a.kind for a in n.al.open()] == ["deck"] and
+          n.al.open()[0].id == other.id,
+          f"the preroll alert is cleared, the other kind is not: "
+          f"{n.al.view()}")
+    hold = AH.AlertHold(n.al, svc)
+    n.al.clear(kind="deck", action="Acknowledge", who="Andy",
+               screen="Rack screen")
+    check(hold.gate() is None, "nothing holds the show for an alert now")
+    sk._last = ({"alerts": n.al.view()}, sk._clock())
+    check(sk.alerts() == (), "the Stream Deck's ACK goes out with it")
+    lines = [t for t, _kw in notes if "failure cleared" in t]
+    check(lines and "Rig check passed, failure cleared (Check again by "
+          "Andy)" in lines[-1], f"journaled with who: {lines[-1:]}")
+    _no_dashes(" ".join(lines), "the failure cleared line")
+    v = n.pr.view()
+    check("show_check" not in v and v.get("cleared", {}).get("by") ==
+          "Check again by Andy" and n.pr.last_failed() is None,
+          f"the screens: no failed check, the clearing said: {v}")
+    rc = svc.continue_anyway("Andy", "Rack screen")
+    check(rc["ok"] is False and "no failed rig check" in rc["text"],
+          f"Continue anyway is gone with the failure: {rc}")
+    # Never started unattended: held, then still held, nothing played.
+    import dataclasses
+    svc.machine = dataclasses.replace(svc.machine, late_grace_s=30)
+    for sec in (2, 5):
+        n.now[0] = _den(S, 18, 0, sec)
+        svc.tick()
+        _settle(svc, c)
+    check(svc.machine.state == S.HOLD and not _pr_audio_started(n),
+          f"the show stays held after the pass: {svc.machine.state}")
+    # Resume: the show is checked again, then starts.
+    ran1 = n.ran.count("Video")
+    rr = svc.operator_press("resume", "Andy", "Rack screen")
+    check(rr["ok"] and n.pr.verdict(_pr_key(n)) is None and
+          n.pr.view().get("cleared") is None,
+          f"Resume released the cleared show: {rr}")
+    n.now[0] = _den(S, 18, 0, 6)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "passed", 15),
+          f"Resume: the show is checked again first: {n.pr.view()}")
+    n.now[0] = _den(S, 18, 0, 7)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.SHOW and n.ran.count("Video") == ran1 + 1
+          and len(_pr_audio_started(n)) == 1,
+          f"then started, late, on its own fresh check: "
+          f"{svc.machine.state}")
+    rows = [x for x in svc.journal if x.get("outcome") == "released"]
+    check(rows and "Andy" in rows[-1]["text"],
+          f"the release is journaled: {rows[-1:]}")
+    c.close()
+    n.link.close()
+    # No alert hold at all (nothing holds it at showtime): a cleared show
+    # is still never started by the scheduler; Start now checks and starts.
+    n = _pr_night({"Video": (False, "x")})
+    S, svc, c = n.S, n.svc, n.c
+    svc.showtime_gate = None
+    svc.tick()
+    n.now[0] = _den(S, 17, 59, 55)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 15),
+          "failed")
+    n.results["Video"] = (True, "")
+    n.pr.run(("pre-check", 1), "a Pre-check", alerts=False, manual=True,
+             by="Check again by Andy")
+    check(n.pr.verdict(_pr_key(n)) == "cleared", "cleared before its time")
+    for sec in (0, 1, 3):
+        n.now[0] = _den(S, 18, 0, sec)
+        svc.tick()
+        _settle(svc, c)
+    # A start under way can take a moment to show (a slow machine): give
+    # it the chance to, so a wrong start is never missed.
+    wait_for(lambda: svc.machine.state == S.SHOW or
+             bool(_pr_audio_started(n)), 2)
+    check(svc.machine.state != S.SHOW and not _pr_audio_started(n),
+          f"unattended, a cleared show never starts: {svc.machine.state}")
+    check(not [x for x in svc.journal if "could not finish before its "
+               "time" in str(x.get("text"))],
+          "a cleared show at its time is never journaled as a late check")
+    from ltcplay import remote as RM
+    rm = RM.Remote.__new__(RM.Remote)
+    rm.preroll, rm.schedule = n.pr, svc
+    check(rm.preroll_view()["cleared"]["say"] ==
+          "Rig check passed. Press Start now to start the show.",
+          f"the screens say Start now: {rm.preroll_view().get('cleared')}")
+    got = svc.operator_press("start-now", "Andy", "Rack screen")
+    _settle(svc, c)
+    check(got["ok"] and svc.machine.state == S.SHOW,
+          f"Start now checks and starts it: {got}")
+    c.close()
+    n.link.close()
+    # Past its time: the show waits as delayed; the screens say Start now,
+    # and Start now runs a normal check before it starts.
+    n = _pr_night({"Audio": (False, "the show audio interface is not "
+                                    "open")})
+    S, svc, c = n.S, n.svc, n.c
+    svc.tick()
+    n.now[0] = _den(S, 17, 59, 50)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 15),
+          "failed")
+    for t in ((18, 0), (18, 2)):
+        n.now[0] = _den(S, *t)
+        svc.tick()
+        _settle(svc, c)
+    n.results["Audio"] = (True, "")
+    n.pr.run(("pre-check", 1), "a Pre-check", alerts=False, manual=True,
+             by="Check again by Jeff")
+    check(not n.al.open() and svc.machine.state == S.HOLD,
+          "cleared, still held")
+    svc.operator_press("resume", "Jeff", "Rack screen")
+    n.now[0] = _den(S, 18, 2, 5)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state != S.SHOW and svc.machine.delayed() is not None
+          and not _pr_audio_started(n),
+          f"after its time, Resume starts nothing: delayed: "
+          f"{svc.machine.state}")
+    ran2 = n.ran.count("Audio")
+    got = svc.operator_press("start-now", "Jeff", "Rack screen")
+    _settle(svc, c)
+    check(got["ok"] and svc.machine.state == S.SHOW and
+          n.ran.count("Audio") == ran2 + 1,
+          f"Start now ran a normal check and started: {got}")
+    c.close()
+    n.link.close()
+    print("  ok")
+
+
+def test_preroll_a_pass_never_clears_a_newer_or_other_failure():
+    section("rig check failure cleared: a check that FAILS again keeps the "
+            "failure with the new reasons (the alert's words, what Continue "
+            "anyway leaves off); a failure raised after a passing check "
+            "began is never cleared by it (the order of events and the "
+            "alert's id); a Pre-check failing with no failure in force "
+            "raises nothing; Start now's own pass clears it too; only an "
+            "admin may press Check again, as before")
+    from ltcplay import preroll as P, users as U
+    n = _pr_night({"Video": (False, "MadMapper did not answer the "
+                                    "timecode")})
+    if n is None:
+        return
+    S, svc, c = n.S, n.svc, n.c
+    notes = _pr_notes(n)
+    svc.tick()
+    n.now[0] = _den(S, 17, 59, 50)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 15),
+          "failed")
+    n.now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    # Fails again, for a different reason: the failure stays and says so.
+    n.results["Video"] = (True, "")
+    n.results["Lasers"] = (False, "BEYOND is not running")
+    r = n.pr.run(("pre-check", 1), "a Pre-check by Andy", alerts=False,
+                 manual=True, by="Check again by Andy")
+    al = n.al.open()
+    check(r["state"] == "failed" and n.pr.verdict(_pr_key(n)) == "failed"
+          and al and al[0].kind == "preroll" and
+          "BEYOND is not running" in al[0].text,
+          f"failed again: the failure stays, with the new reason: "
+          f"{n.al.view()}")
+    lf = n.pr.last_failed()
+    check(lf is not None and P.outputs_off(lf["items"]) ==
+          frozenset({"lasers"}),
+          f"Continue anyway now leaves off what fails now: "
+          f"{lf and P.outputs_off(lf['items'])}")
+    check(any("failed again" in kw.get("outcome", "") for _t, kw in notes),
+          "journaled: failed again")
+    # A failure raised while a passing check runs is never cleared by it.
+    n.results["Lasers"] = (True, "")
+    gate = threading.Event()
+    n.pr.checks = [(x, True, (lambda p, _x=x: (gate.wait(30) or True,
+                                               "")))
+                   for x in ("Audio", "Video", "Lasers")]
+    box = {}
+    t = threading.Thread(target=lambda: box.update(r=n.pr.run(
+        ("pre-check", 2), "a Pre-check by Andy", alerts=False,
+        manual=True, by="Check again by Andy")))
+    t.start()
+    check(wait_for(n.pr.checking, 10), "the check is under way")
+    n.pr.raise_alert("The rig check before show 1 FAILED: Audio FAILED: "
+                     "the interface went away.")
+    gate.set()
+    t.join(30)
+    check(box.get("r", {}).get("state") == "passed" and
+          n.pr.verdict(_pr_key(n)) == "failed" and
+          [a.kind for a in n.al.open()] == ["preroll"] and
+          "the interface went away" in n.al.open()[0].text,
+          f"a newer failure stays after the pass: {n.al.view()}")
+    check(any(kw.get("outcome") == "not cleared" for _t, kw in notes),
+          "journaled: the newer failure stays")
+    # A preroll alert opened from elsewhere during the check (a new id).
+    aid = [None]
+    n.pr._alert_id = lambda: next((a.id for a in n.al.open()
+                                   if a.kind == "preroll"), None)
+    n.al.clear(kind="preroll", action="Acknowledge", who="Andy",
+               screen="Rack screen")
+    gate.clear()
+    t = threading.Thread(target=lambda: box.update(r=n.pr.run(
+        ("pre-check", 3), "x", alerts=False, manual=True, by="Andy")))
+    t.start()
+    check(wait_for(n.pr.checking, 10), "the check is under way")
+    aid[0] = n.al.raise_("preroll", "The rig check could not run.").id
+    gate.set()
+    t.join(30)
+    check([a.id for a in n.al.open()] == [aid[0]] and
+          n.pr.verdict(_pr_key(n)) == "failed",
+          f"an alert opened after the check began stays: {n.al.view()}")
+    # The same alert, open from before the check: cleared, by its id.
+    r = n.pr.run(("pre-check", 4), "x", alerts=False, manual=True,
+                 by="Andy")
+    check(r["state"] == "passed" and not n.al.open() and
+          n.pr.verdict(_pr_key(n)) == "cleared",
+          f"an older alert is cleared by a later pass: {n.al.view()}")
+    c.close()
+    n.link.close()
+    # No failure in force: a failed Pre-check raises nothing, as before,
+    # and a pass after it says nothing was cleared.
+    m = _pr_night({"Video": (False, "x")})
+    notes = _pr_notes(m)
+    m.pr.run(("pre-check", 1), "a Pre-check", alerts=False, manual=True)
+    check(not m.al.open() and not m.pr.failure_in_force(),
+          "a Pre-check's failure alone raises nothing")
+    m.results["Video"] = (True, "")
+    m.pr.run(("pre-check", 2), "a Pre-check", alerts=False, manual=True)
+    check(not any("failure cleared" in t for t, _kw in notes),
+          "nothing to clear: nothing said")
+    m.c.close()
+    m.link.close()
+    # Start now's own check passing clears it too (and starts the show).
+    k = _pr_night({"Video": (False, "x")})
+    S, svc, c = k.S, k.svc, k.c
+    svc.tick()
+    k.now[0] = _den(S, 17, 59, 50)
+    svc.tick()
+    check(wait_for(lambda: k.pr.verdict(_pr_key(k)) == "failed", 15),
+          "failed")
+    k.results["Video"] = (True, "")
+    got = svc.operator_press("start-now", "Andy", "Rack screen")
+    _settle(svc, c)
+    check(got["ok"] and svc.machine.state == S.SHOW and not k.al.open(),
+          f"Start now's pass: the alert cleared, the show started: {got}")
+    c.close()
+    k.link.close()
+    check(U.classify("/api/remote/preroll-check") == "settings",
+          "Check again needs the Settings row (an admin), as before")
+    # A cleared Start now check is not a show (review A of #176): Resume
+    # says nothing about "show 7".
+    j = _pr_night()
+    j.svc.tick()
+    j.pr._runs[("start now", 7)] = {"key": ("start now", 7),
+                                    "state": "cleared", "items": []}
+    j.svc._preroll_release("Andy", "Rack screen")
+    check(not [x for x in j.svc.journal if x.get("outcome") == "released"],
+          "Start now's key is not journaled as a show")
+    j.c.close()
+    j.link.close()
+    print("  ok")
+
+
+def _pr_failed_at_showtime(n):
+    """_pr_night run to its show's time with the check failing: held, the
+    preroll alert open. The scheduler's alert sink wired as Remote wires
+    it. Returns (S, svc, c)."""
+    S, svc, c = n.S, n.svc, n.c
+    svc.alert_sink = n.al.raise_
+    svc.tick()
+    _settle(svc, c)
+    n.now[0] = _den(S, 17, 59, 50)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 15),
+          "the show's own check failed")
+    n.now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.HOLD and
+          [a.kind for a in n.al.open()] == ["preroll"],
+          f"held, the preroll alert open: {svc.machine.state}")
+    return S, svc, c
+
+
+def test_preroll_a_clear_never_meets_a_newer_raise_or_a_deadlock():
+    section("rig check failure cleared, two threads at once (reviews 1 and "
+            "2 of #176): the scheduler's 'could not run' raised while a "
+            "passing Check again clears is never cleared by it (the alert "
+            "is raised again in place, same id); a raise under the "
+            "service's lock while a pass clears never deadlocks (the "
+            "alerts' pulse hook takes that lock); the wiring is web.serve's "
+            "own (preroll.alert_hooks)")
+    from ltcplay import preroll as P, alerts as AL
+    # 1) The 'could not run' alert lands between the pass's decision and
+    # its clear: the pass reads the open alert, then the scheduler raises.
+    n = _pr_night({"Video": (False, "MadMapper did not answer the "
+                                    "timecode")})
+    if n is None:
+        return
+    hooks = P.alert_hooks(n.al)
+    for k, v in hooks.items():
+        setattr(n.pr, "_" + k, v)
+    S, svc, c = _pr_failed_at_showtime(n)
+    n.results["Video"] = (True, "")
+    reads = [0]
+    real_id = hooks["alert_id"]
+
+    def alert_id():
+        tok = real_id()
+        reads[0] += 1
+        if reads[0] == 2:
+            # The pass's own read, before its clear: the scheduler's rig
+            # check breaks now (Service._preroll_broken, the real path).
+            svc._preroll_broken("the show list could not be read")
+        return tok
+    n.pr._alert_id = alert_id
+    r = n.pr.run(("pre-check", 1), "a Pre-check by Andy", alerts=False,
+                 manual=True, by="Check again by Andy")
+    al = n.al.open()
+    check(r["state"] == "passed" and reads[0] >= 2 and al and
+          al[0].kind == "preroll" and "could not run" in al[0].text,
+          f"the newer 'could not run' alert stays open: {n.al.view()}")
+    check(n.pr.view().get("cleared") is None,
+          "the screens say nothing was cleared")
+    c.close()
+    n.link.close()
+    # 1b) Right after the pass reads the alert: the open alert is raised
+    # again in place by another path (the local alert API: not numbered).
+    # Or, the alert acknowledged and the failed verdict standing, a preroll
+    # alert is raised by another path, or the scheduler's check breaks with
+    # no alert sink (numbered, no alert). None is cleared, and the failed
+    # verdict stays.
+    for how in ("in place", "another path", "no sink"):
+        n = _pr_night({"Video": (False, "x")})
+        for k, v in P.alert_hooks(n.al).items():
+            setattr(n.pr, "_" + k, v)
+        S, svc, c = _pr_failed_at_showtime(n)
+        if how != "in place":
+            n.al.clear(kind="preroll", action="Acknowledge", who="Andy",
+                       screen="Rack screen")
+        n.results["Video"] = (True, "")
+        reads = [0]
+        real_id = n.pr._alert_id
+
+        def alert_id(how=how, svc=svc, n=n, reads=reads, real_id=real_id):
+            tok = real_id()
+            reads[0] += 1
+            if reads[0] == 2:
+                if how != "no sink":
+                    n.al.raise_("preroll", "The rig check could not run.")
+                else:
+                    svc.alert_sink = None
+                    svc._preroll_broken("the show list could not be read")
+            return tok
+        n.pr._alert_id = alert_id
+        r = n.pr.run(("pre-check", 1), "a Pre-check", alerts=False,
+                     manual=True, by="Check again by Andy")
+        check(r["state"] == "passed" and reads[0] >= 2 and
+              n.pr.verdict(_pr_key(n)) == "failed" and
+              n.pr.view().get("cleared") is None and
+              [a.kind for a in n.al.open()] ==
+              (["preroll"] if how != "no sink" else []),
+              f"{how}: the newer failure stays: "
+              f"{n.pr.verdict(_pr_key(n))} {n.al.view()}")
+        c.close()
+        n.link.close()
+    # 2) Lock order: the pass clears (the alerts' on_change takes the
+    # service's lock, as Remote._apply_pulse does through state_view)
+    # while the scheduler, holding that lock, raises (as
+    # _preroll_before_gate does). Forced: the clear waits until the
+    # scheduler holds its lock and is raising.
+    n = _pr_night({"Video": (False, "x")})
+    S, svc, c = _pr_failed_at_showtime(n)
+    live = AL.Alerts(on_change=lambda: svc.state_view())
+    hooks = P.alert_hooks(live)
+    in_clear, raising = threading.Event(), threading.Event()
+    real_clear = hooks["clear_alert"]
+
+    def clear_alert(kind, tok=None):
+        in_clear.set()
+        raising.wait(5)
+        time.sleep(0.05)
+        return real_clear(kind, tok)
+    hooks["clear_alert"] = clear_alert
+    for k, v in hooks.items():
+        setattr(n.pr, "_" + k, v)
+    n.pr.raise_alert(n.pr.failure_text(_pr_key(n)))
+    n.results["Video"] = (True, "")
+    done = {}
+
+    def check_again():
+        done["a"] = n.pr.run(("pre-check", 2), "a Pre-check", alerts=False,
+                             manual=True, by="Check again by Andy")["state"]
+
+    def scheduler():
+        with svc.lock:
+            in_clear.wait(10)
+            raising.set()
+            n.pr.raise_alert("The rig check before show 1 FAILED: Audio "
+                             "FAILED: the interface went away.")
+            done["b"] = True
+    ta = threading.Thread(target=check_again, daemon=True)
+    tb = threading.Thread(target=scheduler, daemon=True)
+    tb.start()
+    ta.start()
+    ta.join(20)
+    tb.join(20)
+    check(done.get("a") == "passed" and done.get("b") is True,
+          f"no deadlock: both finished: {done}")
+    check([a.kind for a in live.open()] == ["preroll"] and
+          "went away" in live.open()[0].text,
+          f"and the raise made under the lock stays open: {live.view()}")
+    if not ta.is_alive() and not tb.is_alive():
+        c.close()
+        n.link.close()
+    print("  ok")
+
+
+def test_preroll_resume_and_clear_guards():
+    section("rig check failure cleared, the guards (review 1 of #176): Resume "
+            "on a show whose check still stands failed starts nothing (Start "
+            "now does, after its check); a 'could not run' alert alone is a "
+            "failure in force, cleared by a pass, raised again if it breaks "
+            "again, and the screens then say Start now; a new failure ends "
+            "the 'cleared' note; a failed Pre-check refreshes the failure's "
+            "age for Continue anyway; Resume after a clear gives the show "
+            "its late allowance; a show's own check ends the 'cleared' "
+            "note; Check again is let through in the minute before a show "
+            "once a failure is in force")
+    import types
+    from ltcplay import preroll as P, remote as RM
+    # Resume with the failure still standing (the rig fixed, no check yet):
+    # the show is never started by the scheduler.
+    n = _pr_night({"Video": (False, "MadMapper did not answer")})
+    if n is None:
+        return
+    S, svc, c = _pr_failed_at_showtime(n)
+    n.results["Video"] = (True, "")
+    rr = svc.operator_press("resume", "Andy", "Rack screen")
+    for sec in (2, 4, 6, 8):
+        n.now[0] = _den(S, 18, 0, sec)
+        svc.tick()
+        _settle(svc, c)
+    check(rr["ok"] and svc.machine.state != S.SHOW and
+          n.pr.verdict(_pr_key(n)) == "failed" and not _pr_audio_started(n),
+          f"Resume on a still failed show: not started, still failed: "
+          f"{svc.machine.state} {n.pr.verdict(_pr_key(n))}")
+    got = svc.operator_press("start-now", "Andy", "Rack screen")
+    _settle(svc, c)
+    check(got["ok"] and svc.machine.state == S.SHOW,
+          f"Start now checks and starts it: {got}")
+    c.close()
+    n.link.close()
+    # The scheduler's 'could not run' alone: in force, cleared by a pass,
+    # raised again for the same reason after that, and a new failure ends
+    # the 'cleared' note.
+    n = _pr_night()
+    S, svc, c = n.S, n.svc, n.c
+    for k, v in P.alert_hooks(n.al).items():
+        setattr(n.pr, "_" + k, v)
+    svc.alert_sink = n.al.raise_
+    svc.tick()
+    svc._preroll_broken("the show list could not be read")
+    check([a.kind for a in n.al.open()] == ["preroll"] and
+          n.pr.failure_in_force(), "a 'could not run' alert is in force")
+    r = n.pr.run(("pre-check", 1), "a Pre-check", alerts=False, manual=True,
+                 by="Check again by Andy")
+    check(r["state"] == "passed" and not n.al.open() and
+          n.pr.view().get("cleared", {}).get("shows") == 0,
+          f"a pass clears it: {n.al.view()}")
+    rm = RM.Remote.__new__(RM.Remote)
+    rm.preroll = n.pr
+    rm.schedule = types.SimpleNamespace(machine=types.SimpleNamespace(
+        state="HOLD", delayed=lambda: None))
+    check(rm.preroll_view()["cleared"]["say"] ==
+          "Rig check passed. Press Start now to start the show.",
+          f"held, no show for Resume to release: Start now: "
+          f"{rm.preroll_view()['cleared']}")
+    svc._preroll_broken("the show list could not be read")
+    check([a.kind for a in n.al.open()] == ["preroll"] and
+          n.pr.view().get("cleared") is None,
+          f"still broken: raised again, the 'cleared' note gone: "
+          f"{n.al.view()} {n.pr.view().get('cleared')}")
+    c.close()
+    n.link.close()
+    # A failed Pre-check while a failure is in force refreshes its age:
+    # Continue anyway is about what fails NOW, not a check from long ago.
+    n = _pr_night({"Video": (False, "x")})
+    off = [0.0]
+    n.pr._clock = lambda: time.monotonic() + off[0]
+    S, svc, c = _pr_failed_at_showtime(n)
+    off[0] += P.CONTINUE_MAX_AGE_S + 60
+    check(n.pr.last_failed() is None, "the failure is too old to continue "
+                                      "past")
+    n.pr.run(("pre-check", 1), "a Pre-check", alerts=False, manual=True)
+    check(n.pr.last_failed() is not None and
+          n.pr.verdict(_pr_key(n)) == "failed",
+          "failed again just now: Continue anyway answers it again")
+    c.close()
+    n.link.close()
+    # Resume after a clear: the show is checked again and starts within
+    # its late allowance, past the schedule's own grace (3 s here).
+    import dataclasses
+    n = _pr_night({"Video": (False, "x")})
+    S, svc, c = _pr_failed_at_showtime(n)
+    svc.machine = dataclasses.replace(svc.machine, late_grace_s=3)
+    n.results["Video"] = (True, "")
+    n.now[0] = _den(S, 18, 0, 1)
+    n.pr.run(("pre-check", 1), "a Pre-check", alerts=False, manual=True,
+             by="Check again by Andy")
+    check(n.pr.verdict(_pr_key(n)) == "cleared", "cleared")
+    n.now[0] = _den(S, 18, 0, 2)
+    svc.operator_press("resume", "Andy", "Rack screen")
+    for sec in (4, 5, 6, 7):
+        n.now[0] = _den(S, 18, 0, sec)
+        svc.tick()
+        _settle(svc, c)
+        if svc.machine.state == S.SHOW:
+            break
+        wait_for(lambda: n.pr.verdict(_pr_key(n)) != "checking", 15)
+    check(svc.machine.state == S.SHOW and len(_pr_audio_started(n)) == 1,
+          f"Resume: checked again and started inside its late allowance: "
+          f"{svc.machine.state}")
+    c.close()
+    n.link.close()
+    # A show's own check (Start now's) ends the 'cleared' note.
+    n = _pr_night({"Video": (False, "x")})
+    S, svc, c = n.S, n.svc, n.c
+    svc.showtime_gate = None
+    svc.tick()
+    n.now[0] = _den(S, 17, 59, 55)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 15),
+          "failed")
+    n.results["Video"] = (True, "")
+    n.pr.run(("pre-check", 1), "a Pre-check", alerts=False, manual=True,
+             by="Check again by Andy")
+    check(n.pr.view().get("cleared") is not None, "the 'cleared' note")
+    got = svc.operator_press("start-now", "Andy", "Rack screen")
+    _settle(svc, c)
+    check(got["ok"] and svc.machine.state == S.SHOW and
+          n.pr.view().get("cleared") is None,
+          f"Start now's own check ended the note: "
+          f"{n.pr.view().get('cleared')}")
+    c.close()
+    n.link.close()
+    # Check again in the minute before a show: refused while nothing has
+    # failed (its own check runs by itself), let through after a failure
+    # (a failed show is never checked again by itself).
+    n = _pr_night({"Video": (False, "x")})
+    S, svc, c = n.S, n.svc, n.c
+    svc.tick()
+    _settle(svc, c)
+    rm = RM.Remote.__new__(RM.Remote)
+    rm.preroll, rm.schedule = n.pr, svc
+    rm.control = types.SimpleNamespace(session=object())
+    rm.programming_playback_refusal = lambda: ""
+    ctx = types.SimpleNamespace(user="Andy")
+    n.now[0] = _den(S, 17, 59, 30)
+    code, body = rm.preroll_check({}, ctx)
+    check(code == 409 and "runs by itself" in body["error"],
+          f"30 s before, nothing failed: refused: {body}")
+    n.pr.raise_alert("The rig check before show 1 FAILED: Video FAILED: x.")
+    code, body = rm.preroll_check({}, ctx)
+    check(code == 200, f"30 s before, a failure in force: let through: "
+                       f"{body}")
+    wait_for(lambda: not n.pr.checking(), 15)
+    c.close()
+    n.link.close()
+    # Review B round 2, B1: the show's own check passed, then the rig
+    # broke and Start now's check failed (the alert opens), Resume: at its
+    # time the show is checked again, never started on the older pass.
+    n = _pr_night()
+    S, svc, c = n.S, n.svc, n.c
+    svc.alert_sink = n.al.raise_
+
+    def q():
+        wait_for(lambda: not n.pr.checking(), 10)
+        _settle(svc, c)
+    svc.tick()
+    q()
+    n.now[0] = _den(S, 17, 59, 50)
+    svc.tick()
+    q()
+    check(n.pr.verdict(_pr_key(n)) == "passed", "the show's own check passed")
+    svc.operator_press("hold", "Andy", "Rack screen")
+    q()
+    n.results["Video"] = (False, "broken")
+    g = svc.operator_press("start-now", "Andy", "Rack screen")
+    q()
+    check(not g["ok"] and "broken" in g["text"] and
+          n.pr.verdict(_pr_key(n)) is None,
+          f"Start now failed its check: the show's older pass no longer "
+          f"counts: {g['text']} {n.pr.verdict(_pr_key(n))}")
+    svc.operator_press("resume", "Andy", "Rack screen")
+    q()
+    for t in ((17, 59, 55), (17, 59, 59), (18, 0, 0), (18, 0, 1)):
+        n.now[0] = _den(S, *t)
+        svc.tick()
+        q()
+    check(svc.machine.state != S.SHOW and not _pr_audio_started(n) and
+          n.pr.verdict(_pr_key(n)) == "failed",
+          f"at its time: checked again, failed, not started: "
+          f"{svc.machine.state} {n.pr.verdict(_pr_key(n))}")
+    c.close()
+    n.link.close()
+    # Review A round 2: a cleared show past its time waits for Start now,
+    # held or not, and the screens and the Resume line say so.
+    n = _pr_night({"Video": (False, "x")})
+    S, svc, c = _pr_failed_at_showtime(n)
+    for sec in (2, 4):
+        n.now[0] = _den(S, 18, 5, sec)
+        svc.tick()
+        _settle(svc, c)
+    n.results["Video"] = (True, "")
+    n.pr.run(("pre-check", 1), "a Pre-check", alerts=False, manual=True,
+             by="Check again by Andy")
+    rm = RM.Remote.__new__(RM.Remote)
+    rm.preroll, rm.schedule = n.pr, svc
+    check(svc.machine.state == S.HOLD and svc.machine.delayed() is not None
+          and rm.preroll_view()["cleared"]["say"] ==
+          "Rig check passed. Press Start now for show 1.",
+          f"held, but delayed: Start now: {rm.preroll_view()['cleared']}")
+    for sec in (6, 8):
+        n.now[0] = _den(S, 18, 5, sec)
+        svc.tick()
+        _settle(svc, c)
+    svc.operator_press("resume", "Andy", "Rack screen")
+    rows = [x for x in svc.journal if x.get("outcome") == "released"]
+    check(rows and "waits for Start now" in rows[-1]["text"] and
+          "checked again" not in rows[-1]["text"],
+          f"the Resume line says it waits for Start now: {rows[-1:]}")
+    _no_dashes(rows[-1]["text"] if rows else "", "the Resume line")
+    c.close()
+    n.link.close()
+    # Review A round 2: Continue anyway after a failed MadMapper output
+    # check says it stays failed and nothing is switched off for it.
+    n = _pr_night({"MadMapper output": (False, "MadMapper's video output "
+                                               "is OFF")},
+                  names=("Audio", "Video", "MadMapper output"))
+    S, svc, c = _pr_failed_at_showtime(n)
+    r = svc.continue_anyway("Andy", "Rack screen")
+    _settle(svc, c)
+    rows = [x for x in svc.journal if x.get("action") == "continue anyway"]
+    check(r["ok"] and rows and "The MadMapper output check failed and "
+          "stays failed; nothing is switched off for it" in rows[-1]["text"]
+          and "no output's check failed" not in rows[-1]["text"],
+          f"Continue anyway's line: {rows[-1:]}")
+    _no_dashes(rows[-1]["text"] if rows else "", "Continue anyway's line")
+    c.close()
+    n.link.close()
+    print("  ok")
+
+
+def test_preroll_failure_cleared_on_both_screens():
+    section("rig check failure cleared, on the screens: 1.0's box and 2.0's "
+            "status line and alert slot say 'Rig check passed. Press "
+            "Resume.' (or Start now for a delayed show), with no Continue "
+            "anyway and no Check again; the engine's words follow the "
+            "schedule's state")
+    import types
+    from ltcplay import remote as RM, preroll as P
+    pr = P.PreRoll([("Video", True, lambda p: (False, "x"))], window_s=3)
+    pr.run(("s", 1), "show 1")
+    pr.checks = [("Video", True, lambda p: (True, ""))]
+    pr.run(("p", 1), "a Pre-check", alerts=False, manual=True, by="Andy")
+    rm = RM.Remote.__new__(RM.Remote)
+    rm.preroll = pr
+    held = types.SimpleNamespace(state="HOLD", delayed=lambda: None)
+    rm.schedule = types.SimpleNamespace(machine=held)
+    v = rm.preroll_view()
+    check(v["cleared"]["say"] == "Rig check passed. Press Resume.",
+          f"held: Press Resume: {v.get('cleared')}")
+    d = types.SimpleNamespace(state="STANDBY",
+                              delayed=lambda: types.SimpleNamespace(n=2))
+    rm.schedule = types.SimpleNamespace(machine=d)
+    check(rm.preroll_view()["cleared"]["say"] ==
+          "Rig check passed. Press Start now for show 2.",
+          "delayed: Press Start now")
+    _no_dashes(json.dumps(rm.preroll_view()), "the cleared view")
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    p2 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ltcplay", "web", "remote2.html"),
+              encoding="utf-8").read()
+    check('pch && pch.cleared' in p2 and 'key:"pr-cleared"' in p2,
+          "2.0 reads the same rule for its status line and alert slot")
+    import shutil as _sh
+    node = _sh.which("node")
+    if node:
+        js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const cl = {state:"passed", manual:true, cleared:{by:"Check again by Andy", say:"Rig check passed. Press Resume."}};
+const a = prerollChoice(cl, {state:"HOLD"});
+t(a && a.cleared === true && /^Rig check passed\. Press Resume\./.test(a.text) && /Check again by Andy/.test(a.text), "cleared: " + JSON.stringify(a));
+t(prerollChoice(cl, {state:"SHOW"}) === null, "during a show: nothing");
+const f = prerollChoice({state:"passed", manual:true, show_check:{label:"show 1", items:[{name:"Video", ok:false, text:"x"}], off:["video"]}}, {state:"HOLD"});
+t(f && !f.cleared && /FAILED/.test(f.text), "a standing failure still reads failed: " + JSON.stringify(f));
+console.log(JSON.stringify(out));
+"""
+        r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+        try:
+            bad = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            bad = [f"node said: {r.stdout[-300:]} {r.stderr[-300:]}"]
+        check(not bad, f"the pages' cleared words: {bad}")
+    print("  ok")
+
+
+def _key_safe_scan(page):
+    """([buttons that stop, disarm, turn off, hold or abort without
+    data-safe], [ids of the data-safe buttons]) of a rack page's source,
+    its JavaScript templates included."""
+    import re as _re
+    want = _re.compile(r"\b(stop|disarm|turn off|all off|calibration off|"
+                       r"hazers off|abort)\b|^hold$", _re.I)
+    skip = _re.compile(r'id="(hz-same|abort-said-ok)"|data-ann=|data-lz=|'
+                       r'data-hzb=')
+    lacking, ids = [], []
+    listed = _re.search(r"const KEY_SAFE_IDS = \[([^\]]*)\];", page)
+    listed = set(_re.findall(r'"([^"]+)"', listed.group(1))) if listed \
+        else set()
+    for m in _re.finditer(r"<button\b([^>]*)>(.*?)</button>", page, _re.S):
+        attrs, inner = m.group(1), m.group(2)
+        label = _re.sub(r"<[^>]+>", " ", inner)
+        label = _re.sub(r'\$\{icon\("([a-z]+)"\)\}', r" \1 ", label)
+        label = _re.sub(r"\s+", " ", label).strip()
+        if skip.search(attrs):
+            continue
+        mid = _re.search(r'\bid="([^"$]+)"', attrs)
+        safe = "data-safe" in attrs or bool(mid and mid.group(1) in listed)
+        if safe and mid:
+            ids.append(mid.group(1))
+        if (want.search(label) or _re.search(r'id="(b-abort|b-hold|m-hold)"',
+                                             attrs)) and not safe:
+            lacking.append((attrs.strip()[:40], label[:30]))
+    return lacking, sorted(set(ids))
+
+
+def test_rack_page_key_guard_never_holds_back_the_safe_buttons():
+    section("both pages' key guard (review A of #176, rounds 2 and 3): for 2 s "
+            "after the window comes to the front with no touch in it, a "
+            "key that would start or arm is dropped; Abort, Hold, Stop, every "
+            "Disarm and every Off or Stop button, a two-way button while it "
+            "stops or disarms, and the release of a key whose press got "
+            "through are never held back")
+    import shutil as _sh
+    node = _sh.which("node")
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name in ("remote.html", "remote2.html"):
+        page = open(os.path.join(here, "ltcplay", "web", name),
+                    encoding="utf-8").read()
+        a = page.find("// Keys that arrive just after this window")
+        b = page.find("}, true);\n", page.find('window.addEventListener("keyup"', a))
+        check(a > 0 and b > a, f"{name}: the key guard is there")
+        if not node or a < 0 or b < 0:
+            continue
+        guard = page[a:b + len("}, true);\n")]
+        # Every button that stops, disarms, turns off or holds carries
+        # data-safe (review B round 4): derived from the page, so a new
+        # one cannot be forgotten.
+        lacking, safe_ids = _key_safe_scan(page)
+        check(not lacking, f"{name}: stop, disarm, off or Hold buttons "
+                           f"without data-safe: {lacking}")
+        check(len(safe_ids) >= 8, f"{name}: the safe buttons: {safe_ids}")
+        js = r"""
+let NOW = 0; const performance = {now: () => NOW};
+const H = {};
+const window = {addEventListener: (t, f) => { (H[t] = H[t] || []).push(f); }};
+""" + guard + r"""
+function btn(id, mode, cls, safe){ const d = {mode: mode || ""}; if(safe) d.safe = "";
+  const b = {id: id, dataset: d,
+  classList: {contains: c => (cls || []).includes(c)}}; b.closest = () => b; return b; }
+function key(type, t, code){ const e = {target: t, code: code, dropped: false,
+  preventDefault(){ this.dropped = true; }, stopImmediatePropagation(){}};
+  (H[type] || []).forEach(f => f(e)); return !e.dropped; }
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+function focusNow(){ NOW += 10000; (H.focus || []).forEach(f => f({})); }
+for(const id of __SAFE_IDS__){
+  focusNow();
+  t(key("keydown", btn(id, "", [], true), "Enter") && key("keyup", btn(id, "", [], true), "Enter"), id + " Enter held back");
+  focusNow();
+  t(key("keydown", btn(id, "", [], true), "Space") && key("keyup", btn(id, "", [], true), "Space"), id + " Space held back");
+}
+for(const id of KEY_SAFE_IDS){
+  focusNow();
+  t(key("keydown", btn(id), "Enter"), id + " (listed, its markup pinned elsewhere) held back");
+}
+focusNow();
+t(!key("keydown", btn("b-hold"), "Enter"), "a button without data-safe: held back (the attribute decides)");
+// Keys held when the window lost focus are forgotten.
+NOW += 10000; key("keydown", btn("x"), "Space"); (H.blur || []).forEach(f => f({})); focusNow();
+t(!key("keyup", btn("b-start", "start", ["go"]), "Space"), "a key held across a blur: its release is not let through");
+focusNow();
+t(key("keydown", btn("b-start", "stop", ["stopnow"]), "Enter") &&
+  key("keyup", btn("b-start", "stop", ["stopnow"]), "Enter"), "Start now while it is Stop: held back");
+focusNow();
+t(key("keydown", btn("g3", "disarm"), "Space") && key("keyup", btn("g3", "disarm"), "Space"),
+  "a group button while it disarms: held back");
+focusNow();
+t(!key("keydown", btn("b-start", "start", ["go"]), "Enter"), "Start now: dropped right after focus");
+t(!key("keydown", btn("g3", "hold"), "Space") && !key("keyup", btn("g3", "hold"), "Space"),
+  "Hold to arm: dropped right after focus");
+NOW += 2500;
+t(key("keydown", btn("b-start", "start"), "Enter"), "after 2 s keys work again");
+// A purge held on Space before the window changed: its release always ends it.
+NOW += 10000;
+t(key("keydown", btn("mo-fire"), "Space"), "the purge's press, before");
+focusNow();
+t(key("keyup", btn("mo-fire"), "Space"), "the purge's release right after focus: let through");
+// A touch in the page lifts the guard.
+focusNow(); (H.pointerdown || []).forEach(f => f({}));
+t(key("keydown", btn("b-start", "start"), "Enter"), "after a touch: keys work");
+console.log(JSON.stringify(out));
+""".replace("__SAFE_IDS__", json.dumps(safe_ids))
+        r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+        try:
+            bad = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            bad = [f"node said: {r.stdout[-300:]} {r.stderr[-300:]}"]
+        check(not bad, f"{name}: the key guard: {bad}")
+    # The Startup page's purge key obeys the guard (review B round 4): a
+    # Space just after the window came forward never starts a fire, on any
+    # button; and a Start or Stop key decides from its keydown's mode.
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    i = page.find('if((location.hash || "").replace("#", "") !== "morning") return;')
+    j = page.find("fireStart();", i)
+    check(i > 0 and 0 < page.find("if(keyFresh() || keySafe(e.target)){", i) < j,
+          "the purge's Space handler returns while the key guard is fresh, "
+          "before fireStart")
+    page2 = open(os.path.join(here, "ltcplay", "web", "remote2.html"),
+                 encoding="utf-8").read()
+    i2 = page2.find('if(TAB !== "day" || DAY_STEP !== "purge") return;')
+    j2 = page2.find("fireStart();", i2)
+    check(i2 > 0 and 0 < page2.find("if(keyFresh() || keySafe(e.target)) "
+                                     "return;", i2) < j2,
+          "2.0's DAY purge Space obeys the key guard before fireStart")
+    check('el.addEventListener("keydown", e => { if(!e.repeat && (e.key === '
+          '"Enter" || e.key === " ")) DOWN_MODE[id] = el.dataset.mode; });'
+          in page, "Start now / Stop decides from the keydown's mode")
+    print("  ok")
+
+
+class _FakeWins:
+    """showwindows.Win32 for the selftest: a window list (top first), the
+    displays, the foreground, the last input, and what was raised."""
+
+    def __init__(self, wins, mons=((0, 0, 1920, 1080), (1920, 0, 3840, 1080))):
+        self.wins = [dict(w) for w in wins]
+        self.mons = [tuple(m) for m in mons]
+        self.fg = self.wins[0]["hwnd"] if self.wins else 0
+        self.input_age = 600.0
+        self.raised = []
+        self.fail = False
+
+    def windows(self):
+        if self.fail:
+            raise OSError("no")
+        return [w["hwnd"] for w in self.wins]
+
+    def info(self, hwnd, images):
+        for w in self.wins:
+            if w["hwnd"] == hwnd:
+                d = {"pid": hwnd, "thread": 1, "title": "",
+                     "minimized": False,
+                     "caption": True, "owner": 0, "visible": True}
+                d.update(w)
+                return d
+        return None
+
+    def monitors(self):
+        return list(self.mons)
+
+    def foreground(self):
+        return self.fg
+
+    def input_age_s(self):
+        return self.input_age
+
+    def hung(self, hwnd):
+        return False
+
+    def raise_only(self, hwnd):
+        self.ordered = getattr(self, "ordered", []) + [hwnd]
+        w = next(x for x in self.wins if x["hwnd"] == hwnd)
+        self.wins.remove(w)
+        self.wins.insert(0, w)
+
+    def bring_to_front(self, hwnd, thread):
+        self.raised.append(hwnd)
+        w = next(x for x in self.wins if x["hwnd"] == hwnd)
+        self.wins.remove(w)
+        w["minimized"] = False
+        self.wins.insert(0, w)
+        self.fg = hwnd
+        return True
+
+
+_RACK = {"hwnd": 10, "image": r"C:\Program Files (x86)\Microsoft\Edge"
+         r"\Application\msedge.exe", "title": "Fire and Ice remote",
+         "rect": (-8, -8, 1928, 1040), "caption": True}
+_BEYOND = {"hwnd": 20, "image": r"C:\BEYOND\BEYOND.exe",
+           "title": "BEYOND Ultimate", "rect": (100, 100, 1500, 900)}
+_MM_UI = {"hwnd": 30, "image": r"C:\Program Files\MadMapper\MadMapper.exe",
+          "title": "MadMapper - Fire and Ice.mad",
+          "rect": (0, 0, 1920, 1040)}
+_MM_OUT = {"hwnd": 31, "image": r"C:\Program Files\MadMapper\MadMapper.exe",
+           "title": "", "rect": (1920, 0, 3840, 1080), "caption": False}
+
+
+def test_madmapper_output_window_is_read_from_windows():
+    section("MadMapper's video output (Jeff's field report, 2026-10-29: "
+            "after a reboot it was off and the projectors showed the "
+            "Windows desktop): on only with a full-screen MadMapper window "
+            "with no title bar on a display; its control window, a "
+            "minimized or windowed output, another program's full-screen "
+            "window or the wrong display are OFF; an unreadable list is not "
+            "known; nothing is ever sent to MadMapper")
+    from ltcplay import showwindows as SW
+    mons = [(0, 0, 1920, 1080), (1920, 0, 3840, 1080)]
+
+    def st(wins, monitor=0):
+        api = _FakeWins(wins, mons)
+        return SW.look(api, monitor)
+    got = st([_MM_UI, _MM_OUT])
+    check(got[0] == "on" and "display 2 (1920x1080)" in got[1],
+          f"the output window on display 2: on: {got}")
+    got = st([_MM_UI])
+    check(got[0] == "off" and "Windows desktop" in got[1],
+          f"only MadMapper's control window: OFF: {got}")
+    _no_dashes(got[1] + " " + SW.ENABLE_STEPS, "the output OFF sentence")
+    check(st([_MM_UI, dict(_MM_OUT, minimized=True)])[0] == "off",
+          "a minimized output window: OFF")
+    check(st([_MM_UI, dict(_MM_OUT, caption=True)])[0] == "off",
+          "a window with a title bar (a desktop window, not full screen): "
+          "OFF")
+    check(st([_MM_UI, dict(_MM_OUT, rect=(1920, 0, 3000, 1080))])[0] ==
+          "off", "a window that does not fill the display: OFF")
+    check(st([_MM_UI, dict(_MM_OUT, image="vlc.exe")])[0] == "off",
+          "another program's full-screen window does not count")
+    check(st([_MM_UI, _MM_OUT], monitor=2)[0] == "on" and
+          st([_MM_UI, _MM_OUT], monitor=1)[0] == "off",
+          "madmapper_output_monitor: only that display counts")
+    check(st([])[0] == "off" and "not running" in st([])[1],
+          "MadMapper not running: OFF, said so")
+    # Review B of #176, S1/S7: the output over the rack screen's own
+    # display while the projector shows the desktop is not on.
+    out1 = dict(_MM_OUT, rect=(0, 0, 1920, 1080))
+    got = st([out1, _MM_UI])
+    check(got[0] == "off" and "rack screen" in got[1],
+          f"full screen on the rack screen's display only: OFF: {got}")
+    got = st([out1, dict(_RACK, rect=(1912, -8, 3848, 1040)), _MM_UI])
+    check(got[0] == "on" and "display 1" in got[1],
+          f"the rack screen on display 2: display 1 is the projector's: "
+          f"{got}")
+    check(SW.output_state([out1, _MM_UI], mons, rack=2)[0] == "on",
+          "the rack window not seen: page_monitor's display is left out")
+    rk2 = dict(_RACK, rect=(1912, -8, 3848, 1040))
+    check(SW.output_state([out1, rk2, _MM_UI], mons, rack=1)[0] == "on",
+          "where the rack window IS wins over page_monitor (displays "
+          "renumbered, Edge's remembered spot): review A round 2")
+    # Review B round 2: ONE rule. The rack window under the output on the
+    # projector's display does not make that display the rack's.
+    rk2 = dict(_RACK, rect=(1912, -8, 3848, 1040))
+    for page in (1, 3):
+        got = SW.output_state([_MM_OUT, rk2, _MM_UI], mons, rack=page)
+        check(got[0] == "on", f"rack window under the output on display 2, "
+                              f"page_monitor {page}: on: {got}")
+    # The rack screen (or BEYOND) in FRONT of the output on the projector:
+    # the audience sees it, so not on.
+    got = SW.output_state([rk2, _MM_OUT, _MM_UI], mons, rack=1)
+    check(got[0] == "off" and "hidden by another window" in got[1] and
+          "msedge.exe" in got[1], f"the rack screen over the output: {got}")
+    bey = dict(_BEYOND, rect=(1912, -8, 3848, 1088))
+    got = SW.output_state([bey, _MM_OUT, _RACK, _MM_UI], mons)
+    check(got[0] == "off" and "BEYOND" in got[1],
+          f"BEYOND maximized over the output: {got}")
+    ov = {"hwnd": 61, "image": "NVIDIA Share.exe", "title": "overlay",
+          "rect": (1920, 0, 3840, 1080), "seethrough": True}
+    check(SW.output_state([ov, _MM_OUT, _RACK, _MM_UI], mons)[0] == "on",
+          "a see-through overlay over the output hides nothing (review A "
+          "and B round 3)")
+    tb = {"hwnd": 60, "image": "explorer.exe", "title": "",
+          "rect": (1920, 1032, 3840, 1080)}
+    check(SW.output_state([tb, _MM_OUT, _RACK, _MM_UI], mons)[0] == "on",
+          "a taskbar strip over the output: still on")
+    _no_dashes(got[1], "the hidden output sentence")
+    # The engine's look and the supervisor's watch agree, snapshot for
+    # snapshot (review B round 2).
+    from ltcplay import showwindows as _S
+    snaps = [[_MM_OUT, rk2, _MM_UI], [out1, _RACK, _MM_UI],
+             [out1, rk2, _MM_UI], [_MM_OUT, _RACK, _MM_UI],
+             [out1, dict(_RACK, rect=(-32000, -32000, -31840, -31972),
+                         minimized=True), _MM_UI], [rk2, _MM_OUT, _MM_UI]]
+    for i, sn in enumerate(snaps):
+        for page in (1, 2):
+            api = _FakeWins(sn, mons)
+            eng = _S.OutputLook(api_factory=lambda api=api: api, rack=page)
+            e = eng.now()[0]
+            ow = _S.OutputWatch(_FakeWins(sn, mons), rack=page,
+                                clock=lambda: 0.0)
+            ow.raised = False
+            ow.tick()
+            sup_state = "on" if ow.state == "on" else "off"
+            check((e == "on") == (sup_state == "on"),
+                  f"snapshot {i}, page_monitor {page}: engine {e}, "
+                  f"supervisor {ow.state}")
+    rkm = dict(_RACK, rect=(-32000, -32000, -31840, -31972), minimized=True)
+    check(SW.output_state([out1, rkm, _MM_UI], mons, rack=2)[0] == "on",
+          "the rack screen minimized: page_monitor's display is its")
+    got = SW.look(_FakeWins([out1, _MM_UI], [mons[0]]))
+    check(got[0] == "off" and "only one display" in got[1],
+          f"one display only: OFF, the projector not detected: {got}")
+    got = st([_MM_UI, _MM_OUT], monitor=3)
+    check(got[0] == "unknown" and "2 displays" in got[1],
+          f"a monitor past the displays: not known, said why: {got}")
+    _no_dashes(got[1], "the monitor setting sentence")
+    bad = _FakeWins([_MM_UI], mons)
+    bad.fail = True
+    check(SW.look(bad)[0] == "unknown", "an unreadable list: not known")
+    check(SW.output_state([_MM_UI], [])[0] == "unknown",
+          "no displays read: not known")
+    check(SW.image_is(r"C:\x\MadMapperDemo.exe", SW.MADMAPPER) and
+          not SW.image_is("madmapperx.dll", SW.MADMAPPER),
+          "MadMapper's program names, as the MadMapper watch's")
+    from ltcplay import madmapperwatch as MW, beyondwatch as BW
+    check(SW.MADMAPPER == MW.IMAGES and SW.BEYOND == BW.IMAGES,
+          "the same program names as the watches")
+    src = open(SW.__file__, encoding="utf-8").read()
+    check("PostMessage" not in src.replace("PostMessage to", "") and
+          "SendInput" not in src and "keybd_event" not in src and
+          "SendMessage" not in src,
+          "nothing here sends MadMapper or BEYOND a key or a message")
+    rel = [ln.strip() for ln in src.splitlines()
+           if ln.strip().startswith("from .")]
+    check(rel == ["from . import thispc as _thispc"] and
+          "import thispc as _thispc" in src and "import ltcplay" not in src,
+          "stdlib only: the supervisor carries it as a module of its own")
+    print("  ok")
+
+
+def test_preroll_madmapper_output_check_and_lamp():
+    section("the rig check's MadMapper output item: on passes; OFF fails "
+            "with what to do; not known fails (unknown is failure); not "
+            "checked (no MadMapper here, another machine, switched off) "
+            "counts as not used; Continue anyway leaves nothing off for it "
+            "until the rule is bench-proven; a real passing rig check that "
+            "saw it on clears the output alert; the rack screen lamp says "
+            "on, OFF or not known; the settings and the engine wiring")
+    import types
+    from ltcplay import preroll as P, showwindows as SW, web as W
+    from ltcplay import remote as RM
+    F = _fi_mod()
+    pr = types.SimpleNamespace()
+    ok, why = P.check_madmapper_output(pr, lambda: ("on", "fills display "
+                                                          "2"))
+    check(ok is True, f"on: passes: {why}")
+    ok, why = P.check_madmapper_output(pr, lambda: (
+        "off", "MadMapper's video output is OFF"))
+    check(ok is False and "Output menu, Fullscreen" in why,
+          f"OFF: fails with what to do: {why}")
+    _no_dashes(why, "the rig check's MadMapper output sentence")
+    ok, why = P.check_madmapper_output(pr, lambda: ("unknown", "not known"))
+    check(ok is False, "not known: fails")
+    ok, why = P.check_madmapper_output(pr, lambda: 1 / 0)
+    check(ok is False, "a look that raises: fails")
+    ok, why = P.check_madmapper_output(pr, None, "not checked: MadMapper "
+                                                 "is on another machine")
+    check(ok is None and "another machine" in why,
+          "not checked here: not used, said why")
+    ok, why = P.check_madmapper_output(pr, None, "not known: the output "
+                                                 "check could not start")
+    check(ok is False, "a check that could not be set up: fails")
+    check("MadMapper output" in P.NAMES and
+          P.NAMES.index("MadMapper output") == P.NAMES.index("Video") + 1,
+          "listed after Video")
+    # Review 2 of #176: the rule is not yet proven on a real MadMapper 6
+    # (BENCH.md), so a failed output item never blacks the video by
+    # Continue anyway. Read from a real failed run's items.
+    bad = P.PreRoll([("MadMapper output", True,
+                      lambda p: P.check_madmapper_output(p, lambda: (
+                          "off", "MadMapper's video output is OFF")))],
+                    window_s=3).run(("x", 1), "show 1")
+    check(bad["state"] == "failed" and P.outputs_off(bad["items"]) ==
+          frozenset(),
+          f"Continue anyway leaves nothing off for a failed output item: "
+          f"{P.outputs_off(bad['items'])}")
+    # Settings.
+    c = F.FireIceConfig.parse({})
+    check(c.madmapper_output_check is True and
+          c.madmapper_output_monitor == 0,
+          "defaults: checked, any display")
+    c = F.FireIceConfig.parse({"madmapper_output_check": False,
+                               "madmapper_output_monitor": 2})
+    check(c.madmapper_output_check is False and
+          c.madmapper_output_monitor == 2, "the off switch and a display")
+    for k, bad in (("madmapper_output_check", "yes"),
+                   ("madmapper_output_monitor", -1),
+                   ("madmapper_output_monitor", 9),
+                   ("madmapper_output_monitor", True)):
+        try:
+            F.FireIceConfig.parse({k: bad})
+            check(False, f"{k} {bad!r} should be refused")
+        except F.FireIceConfigError as e:
+            _no_dashes(str(e), f"{k} refusal")
+    # The engine wiring: why it is not checked, or a look.
+    rem = types.SimpleNamespace(mm_output=None, mm_output_why="")
+    closed = []
+    httpd = types.SimpleNamespace(remote=rem,
+                                  server_close=lambda: closed.append(1))
+    mm = types.SimpleNamespace(host="127.0.0.1")
+    check(W._attach_mm_output(httpd, F.FireIceConfig(), mm, windows=False)
+          is None and "not the Windows show PC" in rem.mm_output_why,
+          f"not Windows: not checked: {rem.mm_output_why}")
+    W._attach_mm_output(httpd, F.FireIceConfig(),
+                        types.SimpleNamespace(host="10.0.0.9"), windows=True)
+    check(rem.mm_output is None and "another machine" in rem.mm_output_why,
+          "MadMapper elsewhere: not checked")
+    W._attach_mm_output(httpd, F.FireIceConfig(madmapper_output_check=False),
+                        mm, windows=True)
+    check(rem.mm_output is None and "false" in rem.mm_output_why,
+          "switched off: not checked, said so")
+    dpm = tempfile.mkdtemp()
+    with open(os.path.join(dpm, "showpc.json"), "w") as fh:
+        json.dump({"page_monitor": 2}, fh)
+    check(W._page_monitor(dpm) == 2 and W._page_monitor(
+        os.path.join(dpm, "nope")) == 1, "showpc.json's page_monitor, or 1")
+    was_lad = os.environ.get("LOCALAPPDATA")
+    os.environ["LOCALAPPDATA"] = dpm
+    import shutil as _shp
+    try:
+        from ltcplay import appdata as _ad
+        with open(os.path.join(_ad.folder(), "showpc.json"), "w") as fh:
+            json.dump({"page_monitor": 2}, fh)
+        look = W._attach_mm_output(httpd, F.FireIceConfig(
+            madmapper_output_monitor=2), mm, windows=True)
+    finally:
+        if was_lad is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = was_lad
+        _shp.rmtree(dpm, ignore_errors=True)
+    check(look is not None and look.rack == 2,
+          "the engine's rack display fallback is showpc.json's page_monitor")
+    check(isinstance(look, SW.OutputLook) and rem.mm_output is look and
+          look.monitor == 2 and rem.mm_output_why == "",
+          "on the show PC: a look, its display")
+    if sys.platform != "win32":
+        check(look.now()[0] == "unknown" and P.check_madmapper_output(
+            pr, look.now)[0] is False,
+              "where the windows cannot be read: not known, the check fails")
+    httpd.server_close()
+    check(closed == [1] and look._stop.is_set(), "stopped with the server")
+    # A passing rig check that SAW the output on clears the output alert
+    # raised before it began (review B of #176), never a newer one. Real
+    # runs of the real check, wired as web.serve wires on_pass (review 1
+    # of #176: a passing item always carries a note, so the backstop read
+    # the wrong field and never cleared).
+    from ltcplay import alerts as AL
+    al = AL.Alerts()
+    al.raise_("output", "MadMapper's video output is OFF")
+    al.raise_("video", "MadMapper is not running")
+    time.sleep(0.02)
+    look = [("on", "MadMapper's output fills display 2")]
+    why_not = [""]
+    during = []
+
+    after = []
+
+    def mm_check(p):
+        for f in during:
+            f()
+        res = P.check_madmapper_output(
+            p, (lambda: look[0]) if why_not[0] == "" else None, why_not[0])
+        for f in after:
+            f()
+        return res
+    # The engine's own look (showwindows.OutputLook.now), read again when
+    # the pass ends, as web.serve wires it.
+    engine_look = types.SimpleNamespace(now=lambda: look[0])
+    got = []
+    run_pr = P.PreRoll([("MadMapper output", True, mm_check)], window_s=3,
+                       on_pass=lambda r: got.append(
+                           W._output_seen_on(al, r, engine_look)),
+                       **P.alert_hooks(al))
+    r = run_pr.run(("pre-check", 1), "a Pre-check", alerts=False,
+                   manual=True)
+    check(r["state"] == "passed" and got == [True] and
+          [a.kind for a in al.open()] == ["video"],
+          f"a real pass that saw it on: the output alert cleared, the video "
+          f"alert kept: {r['items']} {[a.kind for a in al.open()]}")
+    # Not checked here (MadMapper on another PC): the item passes as not
+    # used, saw nothing, clears nothing.
+    al.raise_("output", "MadMapper's video output is OFF")
+    time.sleep(0.02)
+    why_not[0] = "not checked: MadMapper is on another machine"
+    r = run_pr.run(("pre-check", 2), "a Pre-check", alerts=False,
+                   manual=True)
+    check(r["state"] == "passed" and got[-1] is False and
+          [a.kind for a in al.open()] == ["video", "output"],
+          f"a pass that did not look: the output alert kept: "
+          f"{r['items']}")
+    # An output alert raised while the check runs is newer: kept.
+    why_not[0] = ""
+    al.clear(kind="output", action="Acknowledge", who="t", screen="t")
+    during.append(lambda: al.raise_("output", "MadMapper's video output "
+                                              "is OFF"))
+    r = run_pr.run(("pre-check", 3), "a Pre-check", alerts=False,
+                   manual=True)
+    check(r["state"] == "passed" and got[-1] is False and
+          [a.kind for a in al.open()] == ["video", "output"],
+          "an output alert newer than the check: kept")
+    # Review B round 2: seen on during the check, OFF again when it ends:
+    # the old alert is kept (the supervisor's watch would not raise it
+    # again for that off spell).
+    during.clear()
+    al.clear(kind="output", action="Acknowledge", who="t", screen="t")
+    al.raise_("output", "MadMapper's video output is OFF")
+    time.sleep(0.02)
+    after.append(lambda: look.__setitem__(0, (
+        "off", "MadMapper's video output is OFF")))
+    r = run_pr.run(("pre-check", 4), "a Pre-check", alerts=False,
+                   manual=True)
+    check(r["state"] == "passed" and got[-1] is False and
+          [a.kind for a in al.open()] == ["video", "output"],
+          "seen on, then off again as the check ends: the alert kept")
+    after.clear()
+    look[0] = ("on", "MadMapper's output fills display 2")
+    r = run_pr.run(("pre-check", 5), "a Pre-check", alerts=False,
+                   manual=True)
+    check(r["state"] == "passed" and got[-1] is True and
+          [a.kind for a in al.open()] == ["video"],
+          "on through the end: cleared")
+    # The lamp.
+    d = tempfile.mkdtemp()
+    try:
+        r = RM.Remote(None, folder=d)
+        check(not [x for x in r.subsystems({})
+                   if x["name"] == "MadMapper output"],
+              "no output look: no lamp")
+        for st, state, word in (("on", "ok", "on"), ("off", "bad", "OFF"),
+                                ("unknown", "warn", "not known")):
+            r.mm_output = types.SimpleNamespace(
+                state=lambda st=st: (st, "why " + st))
+            got = [x for x in r.subsystems({})
+                   if x["name"] == "MadMapper output"]
+            check(got and got[0]["state"] == state and
+                  got[0]["word"] == word and got[0]["title"] == "why " + st,
+                  f"the lamp, {st}: {got}")
+    finally:
+        import shutil as _sh
+        _sh.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def test_rack_screen_keeper_raises_over_beyond_and_madmapper_only():
+    section("the rack screen in front (Jeff's field report, 2026-10-29: "
+            "after a reboot BEYOND was in front of the rack screen): during "
+            "the boot settle a BEYOND or MadMapper window over it is undone; "
+            "later only a window that just appeared; never over a window a "
+            "person brought forward (a touch since, or Open BEYOND), never "
+            "over MadMapper's output on the rack screen's own display, a "
+            "minimized rack screen is left minimized after the settle, at "
+            "most a few tries per window, and every move logged")
+    from ltcplay import showwindows as SW
+    t = [1000.0]
+    wall = [5000.0]
+    logs = []
+
+    def keeper(api, **kw):
+        return SW.RackKeeper(api, monitor=1, log=logs.append,
+                             clock=lambda: t[0], wall=lambda: wall[0], **kw)
+    # Boot: BEYOND comes up over the rack screen; MadMapper's output on
+    # the projector display is left alone.
+    api = _FakeWins([_BEYOND, _MM_OUT, _RACK, _MM_UI])
+    k = keeper(api)
+    check(k.tick() == "raised" and api.raised == [10] and
+          api.wins[0]["hwnd"] == 10,
+          f"boot: BEYOND over the rack screen: raised: {api.raised}")
+    check(any("BEYOND" in x and "covered" in x for x in logs),
+          f"logged with why: {logs[-1:]}")
+    check(k.tick() == "none", "in front now: nothing more")
+    check(not [h for h in api.raised if h == 31],
+          "MadMapper's output window is never moved")
+    # A window on the other display, not over the rack screen: nothing.
+    api = _FakeWins([dict(_BEYOND, rect=(2000, 0, 3000, 800)), _RACK])
+    check(keeper(api).tick() == "none" and not api.raised,
+          "a window on the other display: left alone")
+    # After the boot settle: an old BEYOND window a person put in front
+    # stays; a NEW one (BEYOND restarted) is undone.
+    api = _FakeWins([_RACK, _BEYOND])
+    k = keeper(api)
+    k.tick()
+    t[0] += SW.BOOT_SETTLE_S + 1
+    api.wins = [api.wins[1], api.wins[0]]
+    api.fg = 20
+    check(k.tick() == "none" and not api.raised,
+          "after the settle, an old BEYOND window in front: left")
+    api.wins.insert(0, dict(_BEYOND, hwnd=21))
+    api.fg = 21
+    t[0] += 1
+    check(k.tick() == "raised" and api.raised == [10],
+          "a BEYOND window that just appeared: raised over")
+    # A person brought BEYOND forward: a touch since it came forward.
+    api = _FakeWins([_RACK, _BEYOND])
+    k = keeper(api)
+    k.tick()
+    api.wins = [api.wins[1], api.wins[0]]
+    api.fg = 20
+    api.input_age = 0.0
+    t[0] += 3
+    check(k.tick() == "none" and not api.raised and 20 in k.chosen,
+          "a person's choice (touched since it came forward): left")
+    check(any("person's choice" in x for x in logs), "said in the log")
+    # The click that brought BEYOND forward came just before this look saw
+    # it (up to one tick): still a person's choice (review B round 2).
+    api = _FakeWins([_RACK, _BEYOND])
+    k = keeper(api)
+    k.tick()
+    api.wins = [api.wins[1], api.wins[0]]
+    api.fg = 20
+    api.input_age = 1.5
+    t[0] += 2
+    k.tick()
+    api.input_age = 11.5
+    t[0] += 10
+    check(k.tick() == "none" and not api.raised and 20 in k.chosen,
+          "a click a moment before the look: a person's choice")
+    # Open BEYOND pressed just before BEYOND came forward.
+    api = _FakeWins([_RACK, _BEYOND])
+    k = keeper(api, opened=lambda: wall[0] - 1.0)
+    k.tick()
+    api.wins = [api.wins[1], api.wins[0]]
+    api.fg = 20
+    api.input_age = 600.0
+    check(k.tick() == "none" and not api.raised,
+          "Open BEYOND: BEYOND left in front")
+    # The sign-in typing long before BEYOND came up is not a choice.
+    api = _FakeWins([_RACK])
+    k = keeper(api, opened=lambda: wall[0] - 3600)
+    k.tick()
+    api.wins.insert(0, dict(_BEYOND))
+    api.fg = 20
+    api.input_age = 30.0
+    t[0] += 2
+    check(k.tick() == "raised", "BEYOND popping up by itself: raised over")
+    # MadMapper's output on the rack screen's own display: never covered.
+    api = _FakeWins([_BEYOND, dict(_MM_OUT, rect=(0, 0, 1920, 1080)),
+                     _RACK])
+    check(keeper(api).tick() == "left" and not api.raised,
+          "the projection on the rack display always wins")
+    # Minimized: left minimized, even during the boot settle (review A of
+    # #176: where it would come back is not known).
+    api = _FakeWins([_BEYOND, dict(_RACK, minimized=True)])
+    k = keeper(api)
+    for _ in range(5):
+        k.tick()
+    check(not api.raised and not getattr(api, "ordered", None),
+          "minimized: left minimized")
+    check(sum("minimized" in x for x in logs) >= 1, "said in the log")
+    # Review A of #176, A1: the rack screen on the PROJECTOR's display
+    # (dragged there, a remembered spot, displays renumbered, page_monitor
+    # wrong): never raised over the output there, whatever page_monitor.
+    for mon in (1, 2, 3):
+        api = _FakeWins([_BEYOND, _MM_OUT,
+                         dict(_RACK, rect=(1912, -8, 3848, 1040))])
+        k = SW.RackKeeper(api, monitor=mon, log=logs.append,
+                          clock=lambda: t[0])
+        check(k.tick() == "left" and not api.raised and
+              not getattr(api, "ordered", None),
+              f"page_monitor {mon}: never over the projection")
+    # Review A round 2: the displays unreadable, or an output window that
+    # does not fill its display exactly (a resolution change): nothing is
+    # raised, never onto the projection.
+    api = _FakeWins([_BEYOND, _MM_OUT,
+                     dict(_RACK, rect=(1912, -8, 3848, 1040))], mons=[])
+    check(keeper(api).tick() == "left" and not api.raised and
+          not getattr(api, "ordered", None),
+          "the displays cannot be read: nothing moved")
+    api = _FakeWins([_BEYOND, _RACK], mons=[])
+    check(keeper(api).tick() == "left" and not api.raised and
+          not getattr(api, "ordered", None),
+          "the displays cannot be read: not even over BEYOND")
+    api = _FakeWins([dict(_MM_OUT, rect=(1930, 10, 3830, 1070)),
+                     dict(_RACK, rect=(1912, -8, 3848, 1040))])
+    check(keeper(api).tick() == "left" and not api.raised,
+          "a MadMapper window with no title bar not filling the display: "
+          "never a cover, never raised over")
+    # The rack screen's maximized borders reaching 8 px onto the projector
+    # display are not an overlap.
+    api = _FakeWins([_BEYOND, _MM_OUT, _RACK])
+    check(keeper(api).tick() == "raised", "output next door: still raised")
+    # Review A of #176, A2: a person working in another program keeps the
+    # keyboard. Typing now: nothing; quiet: the window order only.
+    sd = {"hwnd": 50, "image": "StreamDeck.exe", "title": "Stream Deck",
+          "rect": (2000, 0, 2600, 600)}
+    api = _FakeWins([_BEYOND, _RACK, sd])
+    api.fg = 50
+    api.input_age = 0.0
+    k = keeper(api)
+    check(k.tick() == "waiting" and not api.raised and
+          not getattr(api, "ordered", None) and api.fg == 50,
+          "someone typing: the rack screen waits")
+    api.input_age = SW.INPUT_QUIET_S + 1
+    check(k.tick() == "raised" and not api.raised and
+          api.ordered == [10] and api.fg == 50,
+          "quiet, another program in front: raised in the window order "
+          "only, the keyboard left where it was")
+    api = _FakeWins([_BEYOND, _RACK])
+    api.input_age = 1.0
+    check(keeper(api).tick() in ("waiting", "none") and not api.raised,
+          "even BEYOND in front: never within a few seconds of input")
+    # A dialog (an owned window: missing media, a licence) is never buried.
+    api = _FakeWins([dict(_BEYOND, hwnd=22, owner=20), _RACK, _BEYOND])
+    check(keeper(api).tick() in ("none", "left") and not api.raised,
+          "an owned dialog over the rack screen: left in front")
+    # Review B round 3: a raise would bury a dialog too (an owned window
+    # stays above its own owner only). BEYOND's dialog in front of BEYOND,
+    # MadMapper's Missing media over its window: nothing is raised.
+    for dlg, main in ((dict(_BEYOND, hwnd=22, owner=20,
+                            rect=(600, 300, 1200, 700)), _BEYOND),
+                      (dict(_MM_UI, hwnd=32, owner=30, title="Missing media",
+                            rect=(600, 300, 1200, 700)), _MM_UI)):
+        api = _FakeWins([dlg, main, _RACK])
+        api.fg = dlg["hwnd"]
+        got = keeper(api).tick()
+        check(got == "left" and not api.raised and
+              not getattr(api, "ordered", None) and
+              [w["hwnd"] for w in api.wins][0] == dlg["hwnd"],
+              f"{dlg['title']}: the dialog stays on top: {got}")
+    # A person's own window (Notepad) in front over the rack screen: left.
+    note = {"hwnd": 70, "image": "notepad.exe", "title": "notes",
+            "rect": (200, 200, 900, 700)}
+    api = _FakeWins([note, _BEYOND, _RACK])
+    api.fg = 70
+    api.input_age = 30.0
+    check(keeper(api).tick() == "left" and not api.raised and
+          not getattr(api, "ordered", None),
+          "a person's window in front, used 30 s ago: never raised over")
+    # Review A round 4: a window nobody is using does not stop the rack
+    # screen coming back (an Explorer window left between BEYOND and it).
+    api = _FakeWins([_BEYOND, note, _RACK])
+    api.fg = 20
+    check(keeper(api).tick() == "raised",
+          "a window nobody uses, between BEYOND and the rack: raised")
+    api = _FakeWins([note, _BEYOND, _RACK])
+    api.fg = 70
+    check(keeper(api).tick() == "raised" and not api.raised and
+          api.ordered == [10],
+          "a window in front nobody used for minutes: the window order "
+          "only, the keyboard stays")
+    # Another window of the covering program (a dialog with no owner, a
+    # parentless MessageBox) is a dialog too: never buried.
+    api = _FakeWins([dict(_BEYOND, hwnd=23, pid=20, title="BEYOND error",
+                          rect=(600, 300, 1200, 700)),
+                     dict(_BEYOND, pid=20), _RACK])
+    check(keeper(api).tick() == "left" and not api.raised,
+          "an unowned dialog of the covering program: left in front")
+    # The rack screen's own pop-up (Edge's 'Restore pages?') comes along
+    # with it, and the taskbar is not a window over it (review B round 4).
+    pop = {"hwnd": 11, "image": _RACK["image"], "title": "Restore pages?",
+           "rect": (1400, 50, 1900, 300), "owner": 10}
+    bar = {"hwnd": 12, "image": "explorer.exe", "title": "",
+           "cls": "Shell_TrayWnd", "rect": (0, 1000, 1920, 1080)}
+    for front in (pop, bar):
+        api = _FakeWins([_BEYOND, pop, bar, _RACK])
+        api.fg = front["hwnd"]
+        api.input_age = 10.0
+        check(keeper(api).tick() == "raised",
+              f"{front['title'] or 'the taskbar'} in front, used 10 s ago: "
+              f"never stops it")
+    # The boot settle counts from the sign-in (the shell's start), which
+    # Windows Fast Startup does not carry over (reviews A and B round 4): a
+    # restart of LTC Player long after sign-in never re-enters it.
+    api = _FakeWins([_RACK, _BEYOND])
+    api.session_age_s = lambda: 3600.0
+    k = keeper(api)
+    k.tick()
+    api.wins = [api.wins[1], api.wins[0]]
+    api.fg = 20
+    t[0] += 120
+    check(k.tick() == "none" and not api.raised,
+          "an hour after Windows started: an old BEYOND window is left")
+    api = _FakeWins([_BEYOND, _RACK])
+    api.session_age_s = lambda: 40.0
+    api.uptime_s = lambda: 1e6            # Fast Startup: days of uptime
+    check(keeper(api).tick() == "raised",
+          "40 s after sign-in, whatever the uptime: the boot settle "
+          "applies")
+    # A click a little over one tick before the look still counts
+    # (review B round 3: the loop period is 2 s plus its work).
+    api = _FakeWins([_RACK, _BEYOND])
+    k = keeper(api)
+    k.tick()
+    api.wins = [api.wins[1], api.wins[0]]
+    api.fg = 20
+    api.input_age = 4.2
+    t[0] += 2
+    k.tick()
+    api.input_age = 14.2
+    t[0] += 10
+    check(k.tick() == "none" and 20 in k.chosen,
+          "a click 4.2 s before the look (one tick plus work): a choice")
+    nl = []
+    SW.RackKeeper(_FakeWins([_BEYOND]), log=nl.append).tick()
+    check(any("not found" in x for x in nl), "no rack screen: said once")
+    # A window that stays on top: a few tries, then said and left.
+    api = _FakeWins([_BEYOND, _RACK])
+    api.bring_to_front = lambda h, th: api.raised.append(h) or False
+    k = keeper(api)
+    for _ in range(SW.MAX_RAISES + 3):
+        k.tick()
+    check(len(api.raised) == SW.MAX_RAISES and
+          any("still over the rack screen" in x for x in logs),
+          f"at most {SW.MAX_RAISES} tries: {len(api.raised)}")
+    # No rack screen window: nothing; an Explorer window over it: nothing.
+    check(keeper(_FakeWins([_BEYOND])).tick() == "none", "no rack screen")
+    api = _FakeWins([{"hwnd": 40, "image": "explorer.exe", "title": "Shows",
+                      "rect": (0, 0, 800, 600)}, _RACK])
+    check(keeper(api).tick() in ("none", "left") and not api.raised and
+          not getattr(api, "ordered", None),
+          "a folder window a person opened is never covered")
+    # The rack screen found by the Edge process the supervisor started.
+    check(not SW.is_rack(dict(_RACK, title="Something else", pid=77),
+                         pid=77) and
+          SW.is_rack(dict(_RACK, pid=77), pid=77) and
+          not SW.is_rack(dict(_RACK, pid=78), pid=77) and
+          SW.find_rack([dict(_RACK, pid=78, hwnd=11),
+                        dict(_RACK, pid=77)], pid=77)["hwnd"] == 10 and
+          SW.find_rack([dict(_RACK, pid=78)], pid=77)["hwnd"] == 10 and
+          not SW.is_rack(dict(_RACK, title="Something else")) and
+          SW.is_rack(dict(_RACK, title="Show remote 2.0")) and
+          SW.is_rack(dict(_RACK, title="Fire remote - Microsoft Edge")) and
+          not SW.is_rack(dict(_RACK, title="remote control docs - Google")) and
+          not SW.is_rack(dict(_BEYOND, title="Show remote")),
+          "the rack screen: its title, or the Edge the supervisor opened")
+    bad = _FakeWins([_RACK])
+    bad.fail = True
+    check(keeper(bad).tick() == "none", "an unreadable list: nothing")
+    _no_dashes(" ".join(logs), "the keeper's log lines")
+    print("  ok")
+
+
+def test_rack_screen_keeper_never_buries_a_dialog_or_a_window_in_use():
+    section("the rack screen keeper (reviews 1 and 2 of #176): a dialog box "
+            "of BEYOND or MadMapper with no owner (Windows' #32770 class, a "
+            "parentless MessageBox) is never covered and never buried, "
+            "alone or under another program's window; after LTC Player "
+            "restarts, the windows already open are old (never raised over "
+            "for 'just appearing'), and the window in front that was used "
+            "in the last minute is left; a rack screen that is not "
+            "responding is never moved")
+    from ltcplay import showwindows as SW
+    t = [1000.0]
+    logs = []
+
+    def keeper(api, **kw):
+        return SW.RackKeeper(api, monitor=1, log=logs.append,
+                             clock=lambda: t[0], wall=lambda: 5000.0, **kw)
+    # The fields as Win32.info reads them for a MessageBox: class #32770,
+    # no owner, a title bar.
+    box = dict(_BEYOND, hwnd=23, pid=20, title="BEYOND: No FB4 devices found",
+               cls=SW.DIALOG_CLASS, owner=0, caption=True,
+               rect=(700, 400, 1200, 600))
+    # 1) BEYOND's message box alone over the rack screen at boot (its main
+    # window not up yet): never covered, and its keyboard never taken.
+    api = _FakeWins([box, _RACK])
+    api.fg = 23
+    api.session_age_s = lambda: 30.0
+    k = keeper(api)
+    for _ in range(3):
+        got = k.tick()
+    check(got in ("none", "left") and not api.raised and
+          not getattr(api, "ordered", None) and api.wins[0]["hwnd"] == 23,
+          f"a lone parentless BEYOND message box: left on top: {got}")
+    # 2) MadMapper's main window over the rack screen, BEYOND's message box
+    # (another program) over it or under it: the raise would bury it.
+    mm = dict(_MM_UI, pid=30)
+    for order, fg in (([mm, box, _RACK], 30), ([box, mm, _RACK], 23)):
+        api = _FakeWins(order)
+        api.fg = fg
+        api.session_age_s = lambda: 30.0
+        got = keeper(api).tick()
+        check(got == "left" and not api.raised and
+              not getattr(api, "ordered", None),
+              f"MadMapper's window over the rack screen and BEYOND's "
+              f"message box ({[w['hwnd'] for w in order]}): nothing buried: "
+              f"{got}")
+    check(any("BEYOND's dialog" in x for x in logs), "said why in the log")
+    # The same message box with BEYOND's main window minimized: left.
+    api = _FakeWins([box, dict(_BEYOND, pid=20, minimized=True), _RACK])
+    api.fg = 23
+    api.session_age_s = lambda: 30.0
+    check(keeper(api).tick() in ("none", "left") and not api.raised,
+          "BEYOND minimized, its message box up: left")
+    # 3) LTC Player restarted two hours after the sign-in: BEYOND's window
+    # was over the rack screen before this keeper's first look. It is old,
+    # not "just appeared": left, the keyboard untouched.
+    api = _FakeWins([_BEYOND, _RACK])
+    api.fg = 20
+    api.input_age = 120.0
+    api.session_age_s = lambda: 7200.0
+    k = keeper(api)
+    got = [k.tick() for _ in range(3)]
+    check(got == ["none"] * 3 and not api.raised and
+          not getattr(api, "ordered", None),
+          f"restarted after the settle: an old window is left: {got}")
+    # A window that appears after that first look is new, as before.
+    api.wins.insert(0, dict(_MM_UI, hwnd=33, pid=33))
+    api.fg = 33
+    t[0] += 2
+    check(k.tick() == "raised" and api.raised == [10],
+          "a window that appears after the restart: raised over")
+    # 4) Restarted during the boot settle (or with the sign-in time not
+    # readable): BEYOND in front since before the first look and used 10 s
+    # ago is a person's; left. Not used for minutes: raised.
+    for sess in (100.0, None):
+        api = _FakeWins([_BEYOND, _RACK])
+        api.fg = 20
+        api.input_age = 10.0
+        api.session_age_s = lambda s=sess: s
+        got = keeper(api).tick()
+        check(got == "left" and not api.raised and
+              not getattr(api, "ordered", None),
+              f"in front since before the first look, used 10 s ago "
+              f"(sign-in {sess}): left: {got}")
+        api.input_age = SW.FOREGROUND_IN_USE_S + 30
+        k = keeper(api)
+        check(k.tick() == "raised" and api.raised == [10],
+              f"in front, nobody used it for minutes (sign-in {sess}): "
+              f"raised")
+    # 5) A rack screen that is not responding is never moved (the input
+    # attach could wait on it).
+    api = _FakeWins([_BEYOND, _RACK])
+    api.session_age_s = lambda: 30.0
+    api.hung = lambda h: h == 10
+    got = keeper(api).tick()
+    check(got == "left" and not api.raised and
+          not getattr(api, "ordered", None) and
+          any("not responding" in x for x in logs),
+          f"a hung rack screen: not moved: {got}")
+    # Review B round 2, B2: any program's dialog box (Explorer's, LTC
+    # Player's own) over the rack screen is never buried, in front or not.
+    xdlg = {"hwnd": 50, "image": r"C:\Windows\explorer.exe",
+            "title": "Location is not available", "cls": SW.DIALOG_CLASS,
+            "owner": 0, "caption": True, "rect": (700, 400, 1200, 600)}
+    for fg in (50, 20):
+        api = _FakeWins([xdlg, _BEYOND, _RACK])
+        api.fg = fg
+        api.session_age_s = lambda: 30.0
+        got = keeper(api).tick()
+        check(got == "left" and not api.raised and
+              not getattr(api, "ordered", None) and
+              api.wins[0]["hwnd"] == 50,
+              f"Explorer's message box over BEYOND and the rack screen "
+              f"(in front: {fg}): left on top: {got}")
+    # B3: BEYOND in front and used, then the lock screen, then unlocked by
+    # Windows Hello (no key): BEYOND, used 50 s ago while it was open, is
+    # left; the keyboard is not taken.
+    lock = {"hwnd": 90, "image": r"C:\Windows\SystemApps\Microsoft."
+            r"LockApp_cw5n1h2txyewy\LockApp.exe", "title": "Windows "
+            "Default Lock Screen", "cls": "Windows.UI.Core.CoreWindow",
+            "rect": (0, 0, 1920, 1080), "caption": False}
+    api = _FakeWins([_BEYOND, _RACK])
+    api.fg = 20
+    api.input_age = 30.0
+    api.session_age_s = lambda: 30.0
+    k = keeper(api)
+    check(k.tick() == "left", "BEYOND in front, used 30 s ago: left")
+    api.wins.insert(0, lock)
+    api.fg = 90
+    t[0] += 10
+    api.input_age = 40.0
+    k.tick()
+    api.wins.remove(lock)
+    api.fg = 20
+    t[0] += 10
+    api.input_age = 50.0
+    got = k.tick()
+    check(got == "left" and not api.raised and
+          not getattr(api, "ordered", None) and api.fg == 20,
+          f"back from the lock screen, used 50 s ago: left, the keyboard "
+          f"kept: {got}")
+    _no_dashes(" ".join(logs), "the keeper's log lines")
+    print("  ok")
+
+
+def test_supervisor_watches_madmapper_output_after_it_starts():
+    section("the supervisor's MadMapper output watch: once MadMapper runs it "
+            "gets a bounded settle to come on; still OFF then: logged with "
+            "what to do and one video alert (sent again until the engine "
+            "takes it); on: logged; off again later: one more alert; "
+            "showpc.json switches both watches off; logged at start")
+    from ltcplay import showwindows as SW
+    t = [0.0]
+    logs, alerts = [], []
+    took = [False]
+
+    def alert(text):
+        alerts.append(text)
+        return took[0]
+    clears = []
+    cleared_ok = [False]
+
+    def clear():
+        clears.append(t[0])
+        return cleared_ok[0]
+    api = _FakeWins([])
+    w = SW.OutputWatch(api, log=logs.append, alert=alert, clear=clear,
+                       clock=lambda: t[0], settle_s=120, debounce_s=10)
+    check(w.raised is True, "at start an earlier supervisor's alert may be "
+                            "open: it is cleared once the output is on")
+    w.raised = False                 # nothing open, for the steps below
+    check(SW.OutputWatch(api).settle_s >= 180,
+          "a slow project load gets at least 3 minutes by default")
+    check(w.tick() == "not running", "MadMapper not running")
+    api.wins = [dict(_MM_UI)]
+    check(w.tick() == "waiting" and not alerts, "started: waiting")
+    t[0] = 119
+    check(w.tick() == "waiting" and not alerts, "inside the settle: waiting")
+    t[0] = 121
+    check(w.tick() == "off" and len(alerts) == 1 and
+          "Fullscreen" in alerts[0] and "Windows desktop" in alerts[0],
+          f"after the settle, still OFF: one alert with what to do: "
+          f"{alerts}")
+    _no_dashes(alerts[0], "the output alert")
+    t[0] = 123
+    w.tick()
+    check(len(alerts) == 1, "the engine did not take it: not every tick")
+    t[0] = 152
+    w.tick()
+    check(len(alerts) == 2, "the engine did not take it: sent again later")
+    t[0] = 183
+    w.tick()
+    check(len(alerts) == 2, "refused again: it backs off (60 s, then "
+                            "longer, at most 10 minutes)")
+    took[0] = True
+    t[0] = 213
+    w.tick()
+    t[0] = 215
+    w.tick()
+    check(len(alerts) == 3, "once taken: not again")
+    check(any("OFF" in x and "Output menu" in x for x in logs),
+          "logged loudly with the click path")
+    api.wins.append(dict(_MM_OUT))
+    t[0] = 220
+    check(w.tick() == "on" and any("MadMapper output: on" in x
+                                   for x in logs), "on: logged")
+    check(clears == [220], f"on again: the alert it raised is cleared: "
+                           f"{clears}")
+    t[0] = 222
+    w.tick()
+    check(clears == [220], "the engine did not take the clear: not every "
+                           "tick")
+    cleared_ok[0] = True
+    t[0] = 251
+    w.tick()
+    t[0] = 260
+    w.tick()
+    check(clears == [220, 251] and any("alert is cleared" in x
+                                       for x in logs),
+          f"cleared once the engine takes it, then left alone: {clears}")
+    api.wins = [dict(_MM_UI)]
+    t[0] = 265
+    check(w.tick() == "waiting", "off again: debounced")
+    t[0] = 276
+    check(w.tick() == "off" and len(alerts) == 4, "off again: one more alert")
+    # The engine started again (its alerts are empty): raised again.
+    ep = [1]
+    w.epoch = lambda: ep[0]
+    w._epoch = 1
+    t[0] = 280
+    w.tick()
+    ep[0] = 2
+    t[0] = 282
+    w.tick()
+    check(len(alerts) == 5 and any("engine started again" in x
+                                   for x in logs),
+          "a new engine: the output alert raised again (review B round 2)")
+    # Review B of #176, S2: the project loads slowly, the output comes on
+    # by itself after the alert: the alert goes again, nothing stale holds
+    # the next show.
+    t2 = [0.0]
+    got = []
+    api2 = _FakeWins([dict(_MM_UI)])
+    w2 = SW.OutputWatch(api2, alert=lambda x: got.append("raise") or True,
+                        clear=lambda: got.append("clear") or True,
+                        clock=lambda: t2[0])
+    for sec in range(0, 260, 2):
+        t2[0] = sec
+        if sec == 200:
+            api2.wins.insert(0, dict(_MM_OUT))
+        w2.tick()
+    check(got == ["clear", "raise", "clear"],
+          f"raised after the settle (any old one cleared first), cleared "
+          f"when it came on: {got}")
+    # Review A round 2: an alert whose clear never landed is cleared before
+    # the next off spell raises, so that spell's alert is new.
+    t4 = [0.0]
+    seq = []
+    ok_clear = [False]
+    api4 = _FakeWins([dict(_MM_UI)])
+    w4 = SW.OutputWatch(api4, alert=lambda x: seq.append("raise") or True,
+                        clear=lambda: seq.append("clear") or ok_clear[0],
+                        clock=lambda: t4[0], settle_s=10, debounce_s=0,
+                        retry_s=30)
+    w4.raised = False
+    w4.tick()
+    t4[0] = 11
+    w4.tick()
+    api4.wins.insert(0, dict(_MM_OUT))
+    t4[0] = 12
+    w4.tick()
+    api4.wins.pop(0)
+    t4[0] = 50
+    w4.tick()
+    check(seq == ["raise", "clear", "clear"] and w4.raised,
+          f"a stale alert that cannot be cleared: no new raise on it: {seq}")
+    ok_clear[0] = True
+    t4[0] = 111
+    w4.tick()
+    check(seq[-2:] == ["clear", "raise"],
+          f"cleared first, then the new spell's alert: {seq}")
+    never = []
+    api3 = _FakeWins([dict(_MM_UI), dict(_MM_OUT)])
+    w3 = SW.OutputWatch(api3, clear=lambda: never.append(1) or True,
+                        clock=lambda: 0.0)
+    w3.tick()
+    w3.tick()
+    check(never == [1], "at start, on: one clear of the output kind only "
+                        "(an earlier supervisor's alert), then none")
+    # The settings read on every look (review B round 4): switched off,
+    # the alert it raised goes; quiet, no alert at all.
+    cfg = [(True, 0, "")]
+    acts = []
+    w5 = SW.OutputWatch(_FakeWins([dict(_MM_UI)]), clock=lambda: 500.0,
+                        settle_s=0, debounce_s=0, config=lambda: cfg[0],
+                        alert=lambda x: acts.append("raise") or True,
+                        clear=lambda: acts.append("clear") or True)
+    w5.raised = False
+    w5.tick()
+    check(acts == ["raise"], f"on: raised: {acts}")
+    cfg[0] = (False, 0, "")
+    check(w5.tick() == "switched off" and acts == ["raise", "clear"],
+          f"switched off in the file: its alert cleared: {acts}")
+    cfg[0] = (True, 0, "the show has no MadMapper")
+    w5.alerted = False
+    w5.tick()
+    check(acts == ["raise", "clear"],
+          f"quiet (no MadMapper in the show): no alert: {acts}")
+    bad = _FakeWins([])
+    bad.fail = True
+    check(SW.OutputWatch(bad, log=logs.append).tick() == "unknown",
+          "an unreadable list: not known, no alert")
+    # The supervisor reads showpc.json for both, and says it.
+    _w, sup, done = _winpkg()
+    try:
+        said = []
+        was = sup.log
+        sup.log = said.append
+        try:
+            ws = sup.start_window_watch({"page_monitor": 2}, 7878,
+                                        api=_FakeWins([]))
+            check(isinstance(ws[1], sup.showwindows.RackKeeper) and
+                  ws[1].monitor == 2 and
+                  isinstance(ws[2], sup.showwindows.OutputWatch),
+                  f"on by default, on the page's display: {ws}")
+            dd = tempfile.mkdtemp()
+            with open(os.path.join(dd, "ltcplay_fire_ice.json"), "w") as fh:
+                json.dump({"madmapper_output_check": False}, fh)
+            ws = sup.start_window_watch(
+                {"rack_screen_keep_in_front": False,
+                 "schedule": os.path.join(dd, "s.json")}, 7878,
+                api=_FakeWins([]))
+            check(ws[1] is None and ws[2].tick() == "switched off" and
+                  any("keeper: OFF" in x for x in said) and
+                  any("watch: OFF" in x for x in said),
+                  f"the off switches: {said[-2:]}")
+            # Switched on in the file later (Reload engine): the watch
+            # follows without a restart, and says so (review B round 4).
+            with open(os.path.join(dd, "ltcplay_fire_ice.json"), "w") as fh:
+                json.dump({"madmapper": {"host": "127.0.0.1"}}, fh)
+            check(ws[2].tick() != "switched off" and
+                  any("settings changed" in x for x in said),
+                  "switched on again in the file: followed at once")
+            with open(os.path.join(dd, "ltcplay_fire_ice.json"), "w") as fh:
+                json.dump({"madmapper_output_check": False}, fh)
+            check(ws[2].tick() == "switched off",
+                  "switched off again in the file: followed at once")
+            # One setting, one file: the supervisor reads the engine's.
+            with open(os.path.join(dd, "ltcplay_fire_ice.json"), "w") as fh:
+                json.dump({"madmapper_output_monitor": 3,
+                           "madmapper": {"host": "127.0.0.1"}}, fh)
+            ws = sup.start_window_watch(
+                {"page_monitor": 1, "schedule": os.path.join(dd, "s.json")},
+                7878, api=_FakeWins([]))
+            check(ws[2].monitor == 3 and ws[2].rack == 1 and
+                  any("has 2 display" in x for x in said),
+                  f"ltcplay_fire_ice.json's monitor, checked against the "
+                  f"displays: {said[-2:]}")
+            with open(os.path.join(dd, "ltcplay_fire_ice.json"), "w") as fh:
+                json.dump({"madmapper_output_monitor": "two",
+                           "madmapper": {"host": "127.0.0.1"}}, fh)
+            check(sup.output_settings({"schedule": os.path.join(
+                dd, "s.json")}) == (True, 0, ""), "a wrong value: the default")
+            got = sup.output_settings({"schedule": os.path.join(
+                dd, "nope", "s.json")})
+            check(got[0] is True and "could not be read" in got[2],
+                  f"ltcplay_fire_ice.json unreadable: watched, but quiet "
+                  f"(review B round 3): {got}")
+            # Review B round 2: only for a show whose MadMapper is here.
+            for doc, why in (({}, "no MadMapper in the show"),
+                             ({"madmapper": {"host": "10.0.0.9"}},
+                              "MadMapper on another PC")):
+                with open(os.path.join(dd, "ltcplay_fire_ice.json"),
+                          "w") as fh:
+                    json.dump(doc, fh)
+                got = sup.output_settings({"schedule": os.path.join(
+                    dd, "s.json")})
+                check(got[0] is True and got[2],
+                      f"{why}: watched and logged, but quiet: {got}")
+                posted = []
+                was_post = sup.post_alert
+                sup.post_alert = lambda *a: posted.append(a) or True
+                try:
+                    ws = sup.start_window_watch(
+                        {"schedule": os.path.join(dd, "s.json")}, 7878,
+                        api=_FakeWins([dict(_MM_UI)]))
+                    check(any("watch: ON" in x and "raises no alert" in x
+                              for x in said),
+                          f"{why}: the log says ON, and why no alert")
+                    ws[2].settle_s = ws[2].debounce_s = 0
+                    ws[2].raised = False
+                    ws[2].tick()
+                    ws[2].tick()
+                    check(ws[2].state == "off" and
+                          not [a for a in posted if a[1] == "output"
+                               and len(a) > 2],
+                          f"{why}: a stray MadMapper here never raises the "
+                          f"alert nothing would clear")
+                finally:
+                    sup.post_alert = was_post
+            import socket as _so
+            _sk = _so.socket()
+            _sk.bind(("127.0.0.1", 0))
+            _free = _sk.getsockname()[1]
+            _sk.close()
+            check(sup.post_alert(_free, "output", "x") is False and
+                  any("did not reach the engine" in x for x in said),
+                  "an alert that never reached the engine is sent again "
+                  "later, and said")
+            from ltcplay import madmapperwatch as _MW
+            for h in ("127.0.0.1", "localhost", "127.0.0.2", "10.0.0.9", "",
+                      None, "x"):
+                check(sup.showwindows.on_this_pc(h) == _MW.on_this_pc(h),
+                      f"the same 'on this PC' as the engine: {h!r}")
+            # #178: this PC's own interface addresses (a Windows loopback
+            # adapter's 10.x) are this PC for the supervisor's watch too:
+            # one helper, thispc.on_this_pc, for both.
+            from ltcplay import thispc as _TP
+            mods = {id(m): m for m in (_TP, sys.modules.get("thispc"))
+                    if m is not None}
+            saved = {k: m.addresses for k, m in mods.items()}
+            try:
+                for m in mods.values():
+                    m.addresses = lambda: ("10.77.0.5",)
+                check(sup.showwindows.on_this_pc("10.77.0.5") and
+                      _MW.on_this_pc("10.77.0.5") and
+                      not sup.showwindows.on_this_pc("10.77.0.6"),
+                      "this PC's own adapter address: on this PC for both")
+                with open(os.path.join(dd, "ltcplay_fire_ice.json"),
+                          "w") as fh:
+                    json.dump({"madmapper": {"host": "10.77.0.5"}}, fh)
+                check(sup.output_settings({"schedule": os.path.join(
+                    dd, "s.json")})[2] == "",
+                      "a MadMapper on this PC's own adapter address: the "
+                      "output alert is raised for it, as the engine checks")
+            finally:
+                for k, m in mods.items():
+                    m.addresses = saved[k]
+            check('"madmapper_output_check": True' not in open(
+                sup.__file__, encoding="utf-8").read(),
+                  "not a showpc.json setting any more")
+            import shutil as _sh2
+            _sh2.rmtree(dd, ignore_errors=True)
+        finally:
+            sup.log = was
+        d = tempfile.mkdtemp()
+        try:
+            sched = os.path.join(d, "ltcplay_schedule.json")
+            check(sup.soak_kit({"schedule": sched}) is False,
+                  "no ltcplay_fire_ice.json: not a soak kit")
+            with open(os.path.join(d, "ltcplay_fire_ice.json"), "w") as fh:
+                json.dump({"soak_only": True, "preroll_s": 0}, fh)
+            said = []
+            sup.log = said.append
+            posted = []
+            was_post = sup.post_alert
+            sup.post_alert = lambda *a: posted.append(a) or True
+            try:
+                check(sup.output_alert({"schedule": sched}, 7878, "x") and
+                      not posted and "soak kit" in said[-1],
+                      "a soak kit's shows are never held by the alert")
+                with open(os.path.join(d, "ltcplay_fire_ice.json"),
+                          "w") as fh:
+                    json.dump({}, fh)
+                check(sup.output_alert({"schedule": sched}, 7878, "x") and
+                      posted == [(7878, "output", "x")],
+                      "a show's: the engine's output alert")
+            finally:
+                sup.post_alert = was_post
+                sup.log = was
+        finally:
+            import shutil as _sh
+            _sh.rmtree(d, ignore_errors=True)
+        check(sup.load_settings.__doc__ is not None and
+              "rack_screen_keep_in_front" in open(
+                  sup.__file__, encoding="utf-8").read(),
+              "the switches are in showpc.json's defaults")
+        _no_dashes(" ".join(said), "the supervisor's window watch lines")
+        lines = list(sup.showwindows.self_test())
+        check(lines and "MadMapper output" in lines[0],
+              "the supervisor's --self-check runs the window rules")
+    finally:
+        done()
+    print("  ok")
+
+
 # ------------------------------------------- interface 2.0 (the SHOW tab) --
 
 def _ui2_pages():
@@ -94673,6 +99677,17 @@ if __name__ == "__main__":
         test_preroll_continue_anyway_starts_now_with_failed_outputs_off,
         test_preroll_continue_anyway_needs_a_signed_in_hold,
         test_preroll_wiring_in_the_engine,
+        test_preroll_a_pass_clears_the_failure_and_keeps_the_hold,
+        test_preroll_a_pass_never_clears_a_newer_or_other_failure,
+        test_preroll_a_clear_never_meets_a_newer_raise_or_a_deadlock,
+        test_preroll_resume_and_clear_guards,
+        test_preroll_failure_cleared_on_both_screens,
+        test_madmapper_output_window_is_read_from_windows,
+        test_preroll_madmapper_output_check_and_lamp,
+        test_rack_screen_keeper_raises_over_beyond_and_madmapper_only,
+        test_rack_screen_keeper_never_buries_a_dialog_or_a_window_in_use,
+        test_supervisor_watches_madmapper_output_after_it_starts,
+        test_rack_page_key_guard_never_holds_back_the_safe_buttons,
         test_preroll_announcements_is_only_a_warning,
         test_alert_booth_keeps_sounding_while_held,
         test_alert_hold_resume_covers_only_its_own_show,
@@ -94888,6 +99903,12 @@ if __name__ == "__main__":
         test_fire_ice_flame_link_from_flamesafe_config,
         test_fire_ice_flame_cues_cut_ahead_match_and_never_decompress,
         test_fire_ice_flame_cut_guards,
+        test_fire_ice_flame_cut_followups_of_174,
+        test_fire_ice_flame_cut_round2_of_177,
+        test_fire_ice_flame_cut_round3_of_177,
+        test_fire_ice_flame_cut_round4_of_177,
+        test_fire_ice_flame_cut_round5_of_177,
+        test_fire_ice_flame_cut_final_of_177,
         test_onlyone_named_lock_sees_a_copy_in_another_folder,
         test_onlyone_named_lock_is_machine_wide_or_says_so,
         test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender,
@@ -95029,6 +100050,11 @@ if __name__ == "__main__":
         test_hazers_flame_link,
         test_hazers_at_the_engine,
         test_hazers_end_to_end_against_the_real_flamesafe,
+        test_pump_flame_link,
+        test_pump_at_the_engine,
+        test_pump_review_fixes,
+        test_pump_timer_thread_ends_it,
+        test_pump_end_to_end_against_the_real_flamesafe,
         test_hazers_on_the_rack_screens,
         test_streamdeck_hazers_page,
         test_aim_slots_are_seen_on_the_rack_screen,

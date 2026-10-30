@@ -1045,6 +1045,15 @@ class Handler(BaseHTTPRequestHandler):
                 fn(reason, who, screen)
             except Exception:                    # noqa: BLE001
                 pass
+        # The fuel pump OFF (fuelpump.py, Jeff 2026-10-30: "it should be
+        # affected by the stop button"); the disarm_all below does it at
+        # the link too.
+        fn = getattr(rm, "pump_cut", None)
+        if fn is not None:
+            try:
+                fn(reason, who, screen)
+            except Exception:                    # noqa: BLE001
+                pass
         # The wave flamer cleaning (cleaning.py): Stop ends it, from the
         # rack screen, an iPad or the Stream Deck.
         cl = getattr(rm, "cleaning", None)
@@ -2024,6 +2033,100 @@ def _preroll_hosts(httpd, fire_ice):
     return out
 
 
+def _page_monitor(folder=None):
+    """showpc.json's page_monitor (the supervisor's settings, in this PC's
+    settings folder): the rack screen's display when its window cannot be
+    seen. 1 when it cannot be read."""
+    try:
+        from . import appdata
+        with open(os.path.join(folder or appdata.folder(), "showpc.json"),
+                  encoding="utf-8-sig") as fh:
+            v = json.load(fh).get("page_monitor", 1)
+        return v if isinstance(v, int) and not isinstance(v, bool) and \
+            v >= 1 else 1
+    except Exception:                                # noqa: BLE001
+        return 1
+
+
+def _attach_mm_output(httpd, fire_ice, mm_cfg, windows=None):
+    """MadMapper's video output, on or OFF (showwindows.py; Jeff's field
+    report, 2026-10-29): read from this PC's window list on a thread of its
+    own, for the rack screen's lamp and the rig check. Only with MadMapper
+    on this Windows PC and madmapper_output_check on; otherwise the reason
+    it is not checked. Never raises."""
+    remote = httpd.remote
+    try:
+        import sys
+        from . import madmapperwatch as mmw
+        from . import showwindows
+        if windows is None:
+            windows = sys.platform == "win32"
+        host = getattr(mm_cfg, "host", None)
+        why = ""
+        if not getattr(fire_ice, "madmapper_output_check", True):
+            why = ("not checked: madmapper_output_check is false in "
+                   "ltcplay_fire_ice.json")
+        elif not mmw.on_this_pc(host):
+            why = (f"not checked: MadMapper is on another machine ({host}), "
+                   f"so its output window cannot be seen from here")
+        elif not windows:
+            why = "not checked: this is not the Windows show PC"
+        remote.mm_output_why = why
+        if why:
+            remote.mm_output = None
+            return None
+        look = showwindows.OutputLook(
+            monitor=getattr(fire_ice, "madmapper_output_monitor", 0),
+            rack=_page_monitor()).start()
+        remote.mm_output = look
+        before = httpd.server_close
+
+        def _close():
+            try:
+                look.stop()
+            finally:
+                before()
+        httpd.server_close = _close
+        return look
+    except Exception as e:                           # noqa: BLE001
+        remote.mm_output = None
+        remote.mm_output_why = (f"not known: the output check could not "
+                                f"start ({type(e).__name__}: {e})")
+        return None
+
+
+def _output_seen_on(alerts, r, look=None):
+    """A passed rig check whose MadMapper output item passed (seen on, not
+    just not used) clears the "output" alert (showwindows.OutputWatch's)
+    raised before the check began (review B of #176: a stale one held a
+    healthy show). Never one raised after, and never while the engine's
+    own look (`look`, showwindows.OutputLook) reads it off again now: the
+    supervisor's watch still thinks its alert is up for that off spell and
+    would not raise it again (review B round 2). Returns whether it
+    cleared."""
+    # "used": the check looked and saw it on. "note" is no guide: a pass
+    # that says what it saw carries one too (review 1 of #176).
+    seen = [i for i in r.get("items") or ()
+            if i.get("name") == "MadMapper output" and i.get("ok")
+            and i.get("used")]
+    began = r.get("wall_at")
+    if not seen or began is None or look is None:
+        return False
+    try:
+        if look.now()[0] != "on":
+            return False
+    except Exception:                                # noqa: BLE001
+        return False
+    for a in alerts.open():
+        if a.kind == "output" and a.since < began:
+            ok, _t = alerts.clear(id=a.id, action="Confirm",
+                                  who="LTC Player (the rig check saw "
+                                      "MadMapper's output on)",
+                                  screen="engine")
+            return ok
+    return False
+
+
 def _attach_preroll(httpd, fire_ice, fstatus):
     """The pre-roll (preroll.py, Jeff 2026-10-28): the rig checked before
     every show the scheduler starts and before Start now, on the schedule
@@ -2092,6 +2195,12 @@ def _attach_preroll(httpd, fire_ice, fstatus):
                 mm[1] if mm and hb is not None else None, clk(),
                 wiring.conductor, mm_running,
                 fire_ice.preroll_video_unconfirmed_ok)),
+            ("MadMapper output", True, lambda p: P.check_madmapper_output(
+                p, getattr(getattr(remote, "mm_output", None), "now", None),
+                getattr(remote, "mm_output_why", "") or (
+                    "no MadMapper in this show"
+                    if getattr(fire_ice, "madmapper", None) is None else
+                    "not known: MadMapper's output check did not start"))),
             ("Flame link", True, lambda p: P.check_flame_link(
                 p, fstatus, wiring.flame_link, remote.deck_chip
                 if fstatus is not None else None)),
@@ -2112,13 +2221,9 @@ def _attach_preroll(httpd, fire_ice, fstatus):
             return "Programming" if remote.programming()[0] else ""
         pr = P.PreRoll(
             checks, window_s=fire_ice.preroll_s, journal=note,
-            alert=remote.alerts.raise_,
-            clear_alert=lambda kind: remote.alerts.clear(
-                kind=kind, action="Confirm", who="LTC Player (a later rig "
-                "check passed)", screen="engine"),
-            open_alert=lambda: any(a.kind == P.KIND
-                                   for a in remote.alerts.open()),
-            skip=skip)
+            on_pass=lambda r: _output_seen_on(
+                remote.alerts, r, getattr(remote, "mm_output", None)),
+            skip=skip, **P.alert_hooks(remote.alerts))
         svc.preroll = pr
         remote.preroll = pr
         return pr
@@ -2244,6 +2349,40 @@ def _attach_hazers(httpd):
             + f" read from {getattr(link, 'flamesafe_path', '')}. Every "
               f"hazer is DISARMED until armed; it runs at its levels only "
               f"while a show plays.", action="flame_link", outcome="hazers")
+
+
+def _attach_pump(httpd):
+    """The fireball's fuel pump (fuelpump.py, Jeff 2026-10-30): built for
+    the Fire & Ice engine with a flame link whose flamesafe config lists
+    one. OFF at start. A failure leaves it unavailable (OFF, its slot
+    zero) and is said once; the show is never held back."""
+    from . import fuelpump as fuelpump_mod
+    remote = httpd.remote
+    link = getattr(httpd.fire_ice, "flame_link", None)
+    if link is None or link.pump_name() is None:
+        return
+    try:
+        def _journal(who, screen, outcome, text, fault=False):
+            remote._journal(who or "system", screen or "engine",
+                            "fuel-pump", outcome, text, fault=fault)
+        fs = remote.flame_status
+        remote.pump = fuelpump_mod.FuelPump(
+            link_get=lambda: getattr(httpd.fire_ice, "flame_link", None),
+            flames_get=lambda: fs.view() if fs is not None else None,
+            abort_standing=remote._abort_standing,
+            blocker=remote.pump_blocker,
+            journal=_journal, audit=getattr(remote, "audit", None),
+            night_state=remote.pump_night_state)
+    except Exception as e:                       # noqa: BLE001
+        print(f"The fuel pump could not be set up: {type(e).__name__}: {e}")
+        return
+    say = getattr(link, "journal_line", None)
+    if say is not None:
+        n, slot, on = link.cfg.pump
+        say(f"Flame link: fuel pump {n} on channel {slot} at {on}, read from "
+            f"{getattr(link, 'flamesafe_path', '')}. It is OFF until turned "
+            f"on; Stop and Abort turn it off.", action="flame_link",
+            outcome="fuel pump")
 
 
 def _attach_fuel(httpd):
@@ -2795,6 +2934,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     if fire_ice is not None and \
             getattr(httpd.fire_ice, "flame_link", None) is not None:
         _attach_hazers(httpd)
+        _attach_pump(httpd)
     if httpd.morning is not None:
         _attach_fuel(httpd)
         if fire_ice is not None and \
@@ -2858,6 +2998,9 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         except Exception as e:                       # noqa: BLE001
             print(f"The MadMapper watch could not start: "
                   f"{type(e).__name__}: {e}")
+        # MadMapper's output (showwindows.py): wired whether or not the
+        # watch above started (review A of #176).
+        _attach_mm_output(httpd, fire_ice, _mm_cfg)
     if fire_ice is not None and fstatus is not None and \
             getattr(httpd.fire_ice, "flame_link", None) is not None:
         # flamesafe's status_mirror_port (PR #39): the remote page's copy of
