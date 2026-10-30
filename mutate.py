@@ -2741,8 +2741,18 @@ MUTATIONS = [
 
  ("ui 2.0: the screen never goes calm",
   "ltcplay/web/remote2.html",
-  "  document.body.classList.toggle(\"inactive\", inactiveNow(ST, isSt));",
+  "  document.body.classList.toggle(\"inactive\", calm);",
   "  document.body.classList.toggle(\"inactive\", false);"),
+
+ ("ui2 day: the quiet DAY tone dims a Stop or a Disarm",
+  "ltcplay/web/remote2.html",
+  "body.noact #d-ctl .b:not(.red):not(.redline):not(.safe):not(.amber):not([data-mode=\"disarm\"]){filter:saturate(.3)}",
+  "body.noact #d-ctl .b, body.noact #m-disf, body.noact #m-hold{filter:saturate(.3)}"),
+
+ ("ui2 day: DAY goes quiet with Run off",
+  "ltcplay/web/remote2.html",
+  "  document.body.classList.toggle(\"noact\", calm && (!ST || isSt || !!(ST.me && ST.me.view_only)));",
+  "  document.body.classList.toggle(\"noact\", calm);"),
 
  ("ui 2.0: the calm tone dims Hold and Disarm flames",
   "ltcplay/web/remote2.html",
@@ -2756,13 +2766,13 @@ MUTATIONS = [
 
  ("ui 2.0: a live hazard reads calm once contact is lost",
   "ltcplay/web/remote2.html",
-  "  if(st && pinItems(st).length) return false;\n  if(!st || isStaleNow) return true;",
-  "  if(!st || isStaleNow) return true;\n  if(st && pinItems(st).length) return false;"),
+  "  if(st && pinItems(st).length) return false;\n",
+  "  if(st && isStaleNow) return true;\n  if(st && pinItems(st).length) return false;\n"),
 
  ("ui 2.0: a show playing reads calm when signed out",
   "ltcplay/web/remote2.html",
-  "  if(isLive(st)) return false;\n  if(st.me && st.me.view_only) return true;",
-  "  if(st.me && st.me.view_only) return true;"),
+  "  if(st && isLive(st)) return false;\n",
+  ""),
 
  ("ui 2.0: the calm tone mutes the state pill",
   "ltcplay/web/remote2.html",
@@ -2782,8 +2792,8 @@ MUTATIONS = [
 
  ("ui 2.0: the page title is not the show's",
   "ltcplay/web/remote2.html",
-  "    document.title = title + \" remote\";\n    $(\"brand\").title = title;",
-  "    $(\"brand\").title = title;"),
+  "    document.title = SHOW_NAME ? SHOW_NAME + \" remote\" : \"Show remote\";\n",
+  ""),
 
  ("ui 2.0: arming a hazer from an iPad is live while arming from screens is off",
   "ltcplay/web/remote2.html",
@@ -18080,6 +18090,105 @@ def build():
  ("ui2 page: the copied hold beats faster than 1.0's", "ltcplay/web/remote2.html",
   "    p.timer = setTimeout(() => armBeat(h, p), 100);",
   "    p.timer = setTimeout(() => armBeat(h, p), 50);"),
+
+ ("ui2 page: one system to check is not named", "ltcplay/web/remote2.html",
+  "  const text = probs.length === 1 ?",
+  "  const text = false ?"),
+
+ ("ui2 page: a system not set up here reads Check", "ltcplay/web/remote2.html",
+  "  if(state !== \"bad\" && SYS_OFF.test(w.trim())) state = \"off\";\n",
+  ""),
+
+ ("ui2 day: Space fires the purge on any DAY step", "ltcplay/web/remote2.html",
+  "  if(TAB !== \"day\" || DAY_STEP !== \"purge\") return;",
+  "  if(TAB !== \"day\") return;"),
+
+ ("ui2 day: letting go of the cleaning hold keeps it going", "ltcplay/web/remote2.html",
+  "      $(\"wc-hold\").addEventListener(ev, () => { if(WC_HOLD) wcLetGo(\"you let go before the hold was complete\"); });\n    }\n    $(\"wc-hold\").addEventListener(\"contextmenu\", e => e.preventDefault());\n    $(\"wc-stop\")",
+  "      $(\"wc-hold\").addEventListener(ev, () => { if(false) wcLetGo(\"you let go before the hold was complete\"); });\n    }\n    $(\"wc-hold\").addEventListener(\"contextmenu\", e => e.preventDefault());\n    $(\"wc-stop\")"),
+
+ ("ui2 day: leaving DAY keeps this screen's purge selection", "ltcplay/web/remote2.html",
+  "    MO_OPEN = false; clearTimeout(MO_TIMER); fireStop(\"the page was left\");\n    purgeDrop();\n  }",
+  "    MO_OPEN = false; clearTimeout(MO_TIMER); fireStop(\"the page was left\");\n  }"),
+
+ ("ui2 day: leaving the Purge step keeps this screen's selection", "ltcplay/web/remote2.html",
+  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); purgeDrop(); }",
+  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); }"),
+
+ ("ui2 day: a double tap on Tick ticks twice", "ltcplay/web/remote2.html",
+  "      if(DAY_TICK_BUSY || monoNow() - DAY_TICK_AT < DAY_TICK_QUIET_MS) return;\n",
+  ""),
+
+ ("ui2 day: Space on a focused group button presses it instead of firing",
+  "ltcplay/web/remote2.html",
+  "  if(fireKeyNotOurs(e)) return;\n  e.preventDefault();",
+  "  if(fireKeyNotOurs(e) || (e.target && e.target.closest && e.target.closest(\"button\"))) return;\n  e.preventDefault();"),
+
+ ("ui2 day: letting go of Space presses the focused group button",
+  "ltcplay/web/remote2.html",
+  "  if(TAB === \"day\" && DAY_STEP === \"purge\" && !fireKeyNotOurs(e)) e.preventDefault();",
+  "  if(false) e.preventDefault();"),
+
+ ("ui2 day: the Purge step dropping out keeps this screen's selection",
+  "ltcplay/web/remote2.html",
+  "    if(DAY_STEP === \"purge\"){ fireStop(\"the Purge step went\"); purgeDrop(); }",
+  "    if(DAY_STEP === \"purge\"){ fireStop(\"the Purge step went\"); }"),
+
+ ("ui2 page: Programming playback firing flames is not pinned",
+  "ltcplay/web/remote2.html",
+  "  if(pf.on === true) out.push({key:\"pf\",",
+  "  if(false) out.push({key:\"pf\","),
+
+ ("ui2 page: the Programming flames pin's Stop sends nothing",
+  "ltcplay/web/remote2.html",
+  "    try{ const j = await post(\"/api/remote/hold\", actor(undefined)); say(\"Held: Programming paused.\", j.text || \"\", \"ok\"); }",
+  "    try{ const j = {}; say(\"Held: Programming paused.\", j.text || \"\", \"ok\"); }"),
+
+ ("ui2 day: Space on a focused Abort fires the purge",
+  "ltcplay/web/remote2.html",
+  "  return !!(t && t.closest && t.closest(FIRE_KEY_NEVER));",
+  "  return false;"),
+
+ ("ui2 page: a refused Programming pin Stop is only said",
+  "ltcplay/web/remote2.html",
+  "    catch(e2){ say(\"NOT held.\", e2.message, \"bad\"); disarmFailed(\"Programming NOT paused. Abort or Disarm flames.\", e2.message); }",
+  "    catch(e2){ say(\"NOT held.\", e2.message, \"bad\"); }"),
+
+ ("ui2 page: two pins both say just Stop",
+  "ltcplay/web/remote2.html",
+  "  if(out.length > 1) out.forEach(p => { if(p.key === \"pf\") p.btn = \"Stop Programming\"; });\n",
+  ""),
+
+ ("ui2 day: leaving the Purge step clears a timed purge's selection",
+  "ltcplay/web/remote2.html",
+  "MO.purge_state.owner === MO.me && !MO.purge_state.timed)",
+  "MO.purge_state.owner === MO.me)"),
+
+ ("ui2 day: a timed purge does not show on the Purge step",
+  "ltcplay/web/remote2.html",
+  "state: p.firing || p.timed ? \"live\" :",
+  "state: p.firing ? \"live\" :"),
+
+ ("ui2 day: Space fires the purge over an open sheet",
+  "ltcplay/web/remote2.html",
+  "  if(SHEET_DONE || !$(\"sheet\").hidden) return true;\n",
+  ""),
+
+ ("ui2 day: Next marks Purge done after a look", "ltcplay/web/remote2.html",
+  "[\"fuel\", \"lasers\", \"locks\", \"locks-shut\"].includes(cur.key)",
+  "[\"fuel\", \"purge\", \"lasers\", \"locks\", \"locks-shut\"].includes(cur.key)"),
+
+ ("ui2 page: announcements with no output picked read Off", "ltcplay/web/remote2.html",
+  "const SYS_OFF = /^(none|none set up|not set up|stopped|",
+  "const SYS_OFF = /^(none|none set up|not set up|pick an output|stopped|"),
+
+ ("ui2 day: the copied purge fire beats faster than 1.0's", "ltcplay/web/remote2.html",
+  "    f.timer = setTimeout(() => fireBeat(f), 100);",
+  "    f.timer = setTimeout(() => fireBeat(f), 50);"),
+
+ ("ui2 day: a tick goes in without a name", "ltcplay/web/remote2.html",
+  "      if(!dayWho(MO.checklists)){ $(\"mo-cmsg\").textContent = \"Pick who is ticking first.\"; return; }",
+  "      dayWho(MO.checklists);"),
 
  ("ui2: 2.0 is served without 1.0's rules written in", "ltcplay/web.py",
   "    if logic is not None and LOGIC_TAG in page:\n",

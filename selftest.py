@@ -50512,7 +50512,8 @@ def _run_browser(cmd, limit, env):
 
 def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
                              tries=None, measure_js=None, head_js="",
-                             frag="", routes=None, budget_ms=6000):
+                             frag="", routes=None, budget_ms=6000,
+                             posts=None):
     """Draw `page` (remote.html's text) in headless `chrome` (a path, or a
     command as a list) at each (width, height) in `sizes`, its engine a
     stub answering `status`, and return {(w, h): [measure, ...]} (see
@@ -50522,7 +50523,8 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
     script (it must leave <pre id="rack-measure"> with JSON in it),
     `head_js` runs before the page's own script (an emulated screen),
     `frag` is added to the URL ("?q=1#morning") and `routes` maps more GET
-    paths to the JSON they answer (/api/remote/morning)."""
+    paths to the JSON they answer (/api/remote/morning); `posts` maps POST
+    paths to their JSON answer (the rest answer {})."""
     import http.server
     import shutil
     import subprocess as _sp
@@ -50569,6 +50571,9 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
         def do_POST(self):
             n = int(self.headers.get("Content-Length") or 0)
             self.rfile.read(n)
+            p = self.path.split("?")[0]
+            if posts and p in posts:
+                return self._out(200, json.dumps(posts[p]))
             return self._out(200, "{}")
 
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
@@ -89641,7 +89646,7 @@ def test_ui2_page_makes_only_1_0_presses():
     for n in ("isStale", "armState", "armButtonMode", "clickAction",
               "allButtonMode", "armAllPlan", "armAllRefusal",
               "pressDecision", "stopWords",
-              "refusedWords", "announceLook", "laserPill", "wxBlock",
+              "refusedWords", "announceLook", "wxBlock",
               "countdownAnchor", "rearmLeftMs", "holdRefusalWords",
               "bottomPad", "mayRow", "lampClass"):
         check(n in rules and re.search(r"\b" + n + r"\(", two),
@@ -89770,7 +89775,8 @@ def test_ui2_page_makes_only_1_0_presses():
     check("isLive(ST)" in tour and '"armed"' in tour and "stale()" in tour,
           f"the tour never starts over a live show: {tour[:200]!r}")
     # 1.0: one tap to 2.0, nothing else of it changed.
-    check(one.count("/ui?v=2") == 1 and two.count("/ui?v=1") == 1,
+    check(one.count("/ui?v=2") == 1 and two.count("/ui?v=1") == 1 and
+          'aria-label="Back to 1.0"' in two,
           "Try 2.0 on 1.0 and Back to 1.0 on 2.0, once each")
     import shutil
     node = shutil.which("node")
@@ -89788,6 +89794,12 @@ def test_ui2_page_makes_only_1_0_presses():
         m = re.search(r"^const " + c + r" = \{.*?\};$", two, re.M | re.S)
         fns += "\n" + (m.group(0) if m else "")
     fns += ("\nlet ABORT_SAID = null, STOP_SAID = null, DISARM_FAIL = null;")
+    # The systems badge's words.
+    for c in ("SYS_LABEL", "SYS_SHORT", "SYS_OFF", "SYS_SAY"):
+        m = re.search(r"^const " + c + r" = .*?;$", two, re.M | re.S)
+        fns += "\n" + (m.group(0) if m else "")
+    fns += "\n" + "\n".join(_js_function(two, n) or "" for n in (
+        "short8", "sysItem", "sysLook"))
     js = lo + "\nlet CD = null; const monoNow = () => 0;\n" + fns + r"""
 const out = [];
 const t = (c, m) => { if(!c) out.push(m); };
@@ -89844,6 +89856,26 @@ for(const x of states) for(const st of [false, true]) for(const local of [true, 
 }
 t(/Abort, Hold, Stop/.test(nextStep(base(), true, true, []).text), "no contact says Abort, Hold and Stop still work");
 t(/Run show/.test(nextStep(states[6], false, true, []).text), "Run off says press Run show");
+// The systems badge names what to check (Jeff, 2026-10-29).
+const okSubs = [{name:"Deck", state:"ok", word:"ok"}, {name:"Flamesafe", state:"ok", word:"linked"}];
+let L = sysLook(okSubs.concat([{name:"Deck", state:"warn", word:"USB slow 0.9 s"}]).slice(1), false);
+t(L.text === "Deck: check" && /^First: Stream Deck\. /.test(L.first), "one to check is named: " + L.text + " / " + L.first);
+L = sysLook([{name:"Lasers", state:"bad", word:"LINK LOST"}], false);
+t(L.text === "Lasers: fault" && /BEYOND not answering/.test(L.first) && L.cls === "bad", "one fault is named, with what to do: " + L.first);
+L = sysLook([{name:"Deck", state:"warn", word:"late 1.2 s"}, {name:"Pixels", state:"bad", word:"not sending"}], false);
+t(L.text === "2 to check" && /^First: Pixels\./.test(L.first), "several: the count, and the worst first: " + L.first);
+L = sysLook([{name:"Announcements", state:"warn", word:"pick an output"}, {name:"Laser arm", state:"warn", word:"ARMED"}, {name:"Deck", state:"off", word:"not heard"}], false);
+t(L.text === "Announce: check" && L.items.map(i => i.state).join(",") === "warn,on,off" && /Pick one in Settings/.test(L.first),
+  "announcements with no output picked are a problem, all armed reads On, not set up reads Off: " + L.text + " " + L.items.map(i => i.state));
+t(sysLook([{name:"Disk", state:"bad", word:"critical"}], true).text === "No contact", "no contact: said");
+for(const [n, w] of [["Video", "not set up"], ["Show audio", "none"], ["Pixels", "stopped"], ["Flamesafe", "not connected"]])
+  t(sysItem({name:n, state:"warn", word:w}).state === "off", "a warn that is only not set up here reads Off: " + n + " " + w);
+for(const w of ["not heard", "missing", "late 1.2 s", "USB slow 2.0 s", "default keys: ltcplay_deck.json not used", "USB 3 write(s) failed", "not known", "no status", "fault",
+                "not attached", "lost", "show audio not open", "output not attached", "pick one output", "file problem", "low", "critical", "not writing", "2 of 4 armed",
+                "LINK LOST", "blanking not set up", "BEYOND restarted: dark until lit again", "lit? link unknown", "not sending", "a long engine sentence with many words in it here"])
+  for(const n of ["Deck", "Flamesafe", "Show audio", "Announcements", "Disk", "Audit", "Laser arm", "Lasers", "Pixels", "Video", "Timecode", "Somethingnew"])
+    for(const stt of ["warn", "bad"]){ const it = sysItem({name:n, state:stt, word:w});
+      t(it.say.split(/\s+/).length <= 8, "a system's words are 8 or fewer: " + n + " " + w + ": " + it.say); }
 // A live mode is pinned, said first and never READY (safety review B2).
 for(const [f, word] of [[x => x.cleaning = {state:"phase2", text:"bursts"}, "CLEANING"], [x => x.cleaning = {state:"unknown"}, "CLEANING"],
                         [x => x.live_flame = {on:true}, "LIVE FLAME"]]){
@@ -89857,6 +89889,16 @@ for(const [f, word] of [[x => x.cleaning = {state:"phase2", text:"bursts"}, "CLE
 // engine's scrub_flames is never pinned, and no button posts its route.
 s = base(); s.scrub_flames = {on:true};
 t(pinItems(s).length === 0, "an old scrub_flames is not pinned");
+// Programming playback playing the flame cues (#173): pinned, said first,
+// its Stop 1.0's Hold.
+s = base(); s.programming_flames = {available:true, follows:true, on:false};
+t(pinItems(s).length === 0, "Programming flames not playing: nothing pinned");
+s.programming_flames.on = true;
+{ const pf = pinItems(s)[0], n = nextStep(s, false, true, alertItems(s)), p = pillLook(s, false, alertItems(s));
+  t(pf && pf.key === "pf" && pf.btn === "Stop" && n.text === "Flames can fire from Programming." && n.tone === "bad" && p.text === "FLAMES LIVE",
+    "Programming flames playing: pinned in the top line with Stop: " + n.text + " / " + p.text); }
+s.cleaning = {state:"phase1"};
+t(pinItems(s).map(x => x.btn).join("|") === "Stop cleaning|Stop Programming", "two pins: each Stop names what it stops: " + pinItems(s).map(x => x.btn));
 s = base(); s.cleaning = {state:"phase1"};
 t(/^Cleaning running\. Stop when done\.$/.test(nextStep(s, false, true, alertItems(s)).text), "cleaning: Cleaning running. Stop when done.");
 s.schedule.state = "SHOW";
@@ -90204,6 +90246,20 @@ async function inact(){
     window.__fail = null;
     out.pf_refused = document.getElementById("al-what").textContent;
   }
+  if(/dayc=1/.test(location.search)){
+    // DAY when this screen cannot act: the steps go quiet, never Abort or
+    // the strip's Hold, Stop show and Disarms; Run off is DAY's own state.
+    document.querySelector('.tab[data-tab="day"]').click(); await wait(900);
+    const st0 = document.querySelector("#d-steps .st");
+    const fl = id => { const e = document.getElementById(id); return e && shown(e) ? (filtOf(e) ? filtOf(e).f : "none") : "hidden"; };
+    out.day = {noact:document.body.classList.contains("noact"), steps:document.querySelectorAll("#d-steps .st").length,
+      step_filter:st0 ? (filtOf(st0) ? filtOf(st0).f : "none") : "none",
+      emerg:Object.fromEntries(["b-abort", "m-hold", "m-stop", "m-disf", "m-disl"].map(id => [id, fl(id)])),
+      safe_ctl:[...document.querySelectorAll("#d-ctl .b.red, #d-ctl .b.safe, #d-ctl .b.redline")].filter(shown).map(e => filtOf(e) ? filtOf(e).f : "none")};
+    // Text under the quiet tone keeps 4.5:1.
+    out.day.lowc = inactSnap().lowc;
+    document.querySelector('.tab[data-tab="show"]').click(); await wait(400);
+  }
   if(/ipad=1/.test(location.search)){
     ME.local = false; await wait(700);
     out.ipad = inactSnap(); out.ipad_taps = await tapDisabled();
@@ -90225,6 +90281,23 @@ async function go(){
   if(/inact=1/.test(location.search)) res.inact = await inact();
   if(/prhold=1/.test(location.search)) res.pr = await prPresses();
   if(/fd=1/.test(location.search)) res.fd = await fdPresses();
+  if(/pfpin=1/.test(location.search)){
+    // Programming playback playing the flame cues (#173): pinned, and its
+    // Stop is 1.0's Hold.
+    const pb = document.querySelector('#pins [data-pin="pf"]');
+    res.pf = {shown:!!pb && shown(pb), label:pb ? pb.textContent.trim() : "", dis:pb ? pb.disabled : null,
+              next:document.getElementById("next-t").textContent, pill:document.getElementById("pill-t").textContent};
+    posts.length = 0;
+    if(pb) pb.click();
+    await wait(400);
+    res.pf.posts = posts.map(p => [p.u, JSON.parse(p.b || "{}")]);
+    // Refused: kept in the alert slot until seen, as the other pins'.
+    window.__fail = /\/api\/remote\/hold/;
+    if(pb) pb.click();
+    await wait(500);
+    window.__fail = null;
+    res.pf.refused = document.getElementById("al-what").textContent;
+  }
   const pre = document.createElement("pre"); pre.id = "rack-measure";
   pre.textContent = JSON.stringify(res);
   document.body.appendChild(pre);
@@ -90233,6 +90306,17 @@ go();
 })();
 </script>
 """
+
+
+def _ui2_status_pf():
+    """Programming playback playing with the show's flame cues following
+    it (#173's programming_flames.on)."""
+    st = _ui2_status_running()
+    st["schedule"].update({"state": "STANDBY", "running": None})
+    st["transport"] = {"programming": True}
+    st["programming_flames"] = {"available": True, "follows": True,
+                                "on": True, "line": ""}
+    return st
 
 
 def _ui2_status_running():
@@ -90400,7 +90484,8 @@ def test_ui2_calm_screens_and_brand():
     check('<img id="brand-logo" src="/brand/logo_small.png" alt="Jeff '
           'Holmes Presents"' in two and 'onerror="this.hidden=true' in two
           and 'getJSON("/api/brand", 3000)' in two and
-          'document.title = title + " remote";' in two and
+          'document.title = SHOW_NAME ? SHOW_NAME + " remote" : "Show remote";'
+          in two and
           "/api/brand" in one,
           "2.0 shows 1.0's logo (its alt text, hidden if missing) and the "
           "show's name from 1.0's /api/brand, the page title like 1.0's")
@@ -90421,6 +90506,12 @@ def test_ui2_calm_screens_and_brand():
         print("  ok")
         return
     brand = {"/api/brand": {"show": "Fire and Ice"}}
+    day_routes = {"/api/remote/morning": _morning_view_pico(selected=()),
+                  "/api/remote/cleaning": {"available": True, "problem": "",
+                                           "state": "idle", "running": False,
+                                           "mine": False,
+                                           "armed": "disarmed",
+                                           "settings": {}}}
     longb = {"/api/brand": {"show": "The Grand Winter Fire and Ice "
                                     "Spectacle"}}
     sizes = UI2_NO_SCROLL + ((390, 844),)
@@ -90434,8 +90525,12 @@ def test_ui2_calm_screens_and_brand():
              "?inact=1&tour=0", brand),
             ("Programming flames playing", "pf", ((1366, 768),),
              "?inact=1&pf=1&dead=1&tour=0", brand),
+            ("DAY signed out", "signed out", ((1366, 768),),
+             "?inact=1&dayc=1&tour=0", dict(brand, **day_routes)),
+            ("DAY with Run off", "run off", ((1366, 768),),
+             "?inact=1&dayc=1&tour=0", dict(brand, **day_routes)),
             ("a show playing, signed out", "running out", ((1366, 768),),
-             "?inact=1&tour=0", brand),
+             "?inact=1&dead=1&tour=0", brand),
             ("signed in, may press nothing", "viewer", ((1366, 768),),
              "?inact=1&tour=0", brand),
             ("Programming flames playing, signed out", "pf out",
@@ -90491,10 +90586,31 @@ def test_ui2_calm_screens_and_brand():
                 check(a["brand"] == "Fire and Ice",
                       f"{where}: the header names the show: "
                       f"{a['brand']!r}")
+            if "day" in r:
+                d = r["day"]
+                emerg_ok = all(v in ("none", "hidden") or "saturate" not in v
+                               for v in d["emerg"].values()) and \
+                    d["emerg"]["b-abort"] != "hidden" and \
+                    all("saturate" not in v for v in d["safe_ctl"])
+                if kind == "signed out":
+                    check(d["noact"] and d["steps"] and
+                          "saturate" in d["step_filter"] and emerg_ok and
+                          not d["lowc"],
+                          f"{where}: DAY signed out: the steps go quiet "
+                          f"(4.5:1 kept), never Abort, Hold, Stop show or a "
+                          f"Disarm: {d}")
+                else:
+                    check(not d["noact"] and d["steps"] and
+                          "saturate" not in d["step_filter"] and emerg_ok,
+                          f"{where}: DAY with Run off (its normal state) is "
+                          f"not quietened: {d}")
+                continue
             if kind == "running out":
-                check(not a["inactive"],
+                check(not a["inactive"] and not r["stale"]["inactive"],
                       f"{where}: a show playing is never calm, signed out "
-                      f"or not: {a['inactive']} {a['next']!r}")
+                      f"or not, nor once contact is lost (review of #175): "
+                      f"{a['inactive']} {r['stale']['inactive']} "
+                      f"{a['next']!r}")
                 continue
             if kind == "viewer":
                 check(a["inactive"] and a["note"] == "View only" and
@@ -90649,7 +90765,9 @@ def test_ui2_show_tab_in_a_browser():
             ("rig check pressed", _ui2_status_rigcheck(), ((1024, 768),),
              "?prhold=1&tour=0"),
             ("finger down", _rack_status_pico(), ((1366, 768),),
-             "?fd=1&tour=0")]
+             "?fd=1&tour=0"),
+            ("Programming flames playing", _ui2_status_pf(), ((1366, 768),),
+             "?pfpin=1&tour=0")]
     for what, status, sz, frag in runs:
         if not frag:
             frag = "?tour=0"
@@ -90703,6 +90821,18 @@ def test_ui2_show_tab_in_a_browser():
                       pr["wc_pill"] == "CLEANING" and not pr["wc_in_slot"],
                       f"{where}: a running cleaning is pinned with its "
                       f"Stop, never paged, and never READY: {pr}")
+            pf = res.get("pf")
+            if frag.startswith("?pfpin"):
+                check(pf and pf["shown"] and pf["label"] == "Stop" and
+                      not pf["dis"] and
+                      pf["next"] == "Flames can fire from Programming." and
+                      pf["pill"] == "FLAMES LIVE" and
+                      [u for u, _ in pf["posts"]] == ["/api/remote/hold"] and
+                      pf["refused"] ==
+                      "Programming NOT paused. Abort or Disarm flames.",
+                      f"{where}: Programming playback firing flames is "
+                      f"pinned with Stop, which is 1.0's Hold; refused, it "
+                      f"stays in the alert slot: {pf}")
             fd = res.get("fd")
             if frag.startswith("?fd"):
                 check(fd and fd["act"] == "ack" and fd["n"] >= 2 and
@@ -90711,9 +90841,11 @@ def test_ui2_show_tab_in_a_browser():
                       fd["same"] == 1,
                       f"{where}: the slot's button acts only on the alert "
                       f"shown at finger-down: {fd}")
+                # (DAY beats as 1.0's Startup page does while it shows.)
                 check(fd and all(fd["mini"]) and fd["next_shown"] and
-                      fd["mini_routes"] == ["/api/remote/hold",
-                                            "/api/remote/disarm-all"],
+                      [r for r in fd["mini_routes"]
+                       if r != "/api/remote/morning-open"] ==
+                      ["/api/remote/hold", "/api/remote/disarm-all"],
                       f"{where}: off the SHOW tab, Hold, Stop show and "
                       f"Disarm flames are one tap, with Abort: {fd}")
                 check(fd and fd["fail_slot"] == "Disarm NOT done." and
@@ -90805,6 +90937,414 @@ def test_ui2_show_tab_in_a_browser():
               res.get("on_top") and res.get("size") == [96, 96],
               f"{where}: Abort still works: nothing on the first tap, "
               f"1.0's Abort on the second, never covered: {res!r}")
+    print("  ok")
+
+
+# The DAY tab's copies of 1.0's Startup page code: purge selection, open
+# beats, lock and unlock, the fire key, the cleaning's holds.
+UI2_DAY_COPIES = ("moActor", "openBeatBody", "groupAnySelected",
+                  "groupButtonDisabled", "groupClick", "moPress",
+                  "lockClick", "lockBody", "lockUndoOffer", "lockUndoGone",
+                  "lockUndo", "fireStart", "fireBeat", "fireStop",
+                  "morningPoll", "cleaningView", "wcPoll", "wcNow",
+                  "wcLetGo", "wcStart", "wcBeat", "wcStopPress")
+
+
+def _ui2_press_keys(src):
+    """{route: {sorted body keys, ...}} of every moPress, fuPress and
+    post("/api/remote/...", ...) call with an object body in `src`."""
+    out = {}
+    for m in re.finditer(r'(?:moPress|fuPress)\("([a-z-]+)", \{([^}]*)\}',
+                         src):
+        keys = tuple(sorted(re.findall(r'(\w+)\s*:', m.group(2))))
+        out.setdefault(m.group(1), set()).add(keys)
+    return out
+
+
+def test_ui2_day_makes_only_1_0_presses():
+    section("interface 2.0's DAY tab presses exactly what 1.0's Startup, "
+            "Fuel and Shutdown pages press: the purge, open beats, fire "
+            "key, lock and cleaning code is 1.0's own, every route and "
+            "body is 1.0's, Space fires only on the Purge step; and in "
+            "node, the steps that apply now, in 8 words or fewer")
+    one, two = _ui2_pages()
+    for n in UI2_DAY_COPIES:
+        f1, f2 = _js_function(one, n), _js_function(two, n)
+        check(f1 and f2 and _js_same(f1) == _js_same(f2),
+              f"2.0's {n} is 1.0's own code: {(f2 or 'missing')[:160]!r}")
+    k1, k2 = _ui2_press_keys(one), _ui2_press_keys(two)
+    check(k2 and all(r in k1 and keys <= k1[r] for r, keys in k2.items()),
+          f"every DAY press is a 1.0 press, body keys and all: "
+          f"{ {r: sorted(k) for r, k in k2.items() if r not in k1 or not k <= k1[r]} }")
+    for need in ('fuPress("fuel-refill", {all:true, confirm:true, '
+                 'units:(FU && FU.unit_ids) || []});',
+                 'fuPress("fuel-refill", {unit:u.id});',
+                 'moPress("laser-test", {all:true, on:true}, "mo-lmsg")',
+                 'moPress("laser-test", {all:true, on:false}, "mo-lmsg")',
+                 'moPress("open-beyond", {}, "mo-lmsg")',
+                 'moPress("purge-clear", {})',
+                 'post("/api/remote/purge-clear", moActor({}))'):
+        check(need in one and need in two, f"1.0 and DAY both press: {need}")
+    check(re.search(r'moPress\("checklist-tick", \{checklist:\w+\.id, '
+                    r'step:s\.id, done: !s\.done, who:MO_NAME\}, '
+                    r'"mo-cmsg"\)', one) and
+          re.search(r'moPress\("checklist-tick", \{checklist:\w+\.id, '
+                    r'step:s\.id, done: !s\.done, who:MO_NAME\}, '
+                    r'"mo-cmsg"\)', two),
+          "a tick is 1.0's: the list, the step, done or not, who")
+    check('if(TAB !== "day" || DAY_STEP !== "purge") return;' in two,
+          "Space fires the purge on DAY's Purge step only")
+    check('$("d-hz-open").addEventListener("click", openHazerSheet); '
+          '$("d-hz-off").addEventListener("click", hazersOff);' in two and
+          two.count("function openHazerSheet(") == 1,
+          "DAY's hazer step is #168's own sheet and Hazers off, not a copy")
+    check("touch" not in (_js_function(two, "dayBuild") or "x") and
+          '"purge-fire"' not in two.rsplit("// END OF THE COPY.", 1)[1],
+          "nothing on DAY fires a purge but 1.0's own fire key code")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    lo = one[one.find("// LOGIC BEGIN"):one.find("// LOGIC END")]
+    fns = "\n".join(_js_function(two, n) or "" for n in (
+        "isLive", "short8", "dayList", "daySteps", "dayIcon",
+        "dayDefaultPart"))
+    js = lo + "\n" + fns + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const mo = () => ({checks:[{title:"a", level:"ok"}], groups:{"front row":["m1"]}, purge_state:{selected:[]}, purge_enabled:true,
+  machines:[{id:"m1", name:"front row 1"}], lasers:[{id:"L1", name:"Laser 1"}], lockout:{machines:{}, lasers:{}},
+  checklists:{checklists:[{id:"startup", done:1, total:3, steps:[]}, {id:"shutdown", done:0, total:2, steps:[]}], names:["Andy"]}});
+const st = (u) => ({me:{users_active:true, user:u || null}, schedule:{attached:true, next:{show:4}}});
+const keys = xs => xs.map(x => x.key).join(",");
+let s = daySteps("start", {st:st(), mo:mo(), seen:() => false});
+t(keys(s) === "signin,checks,startlist,purge,lasers,locks", "signed out: sign in first: " + keys(s));
+s = daySteps("start", {st:st("Andy"), mo:mo(), seen:() => false});
+t(!keys(s).includes("signin"), "signed in: no sign in step");
+s = daySteps("shut", {st:st("Andy"), mo:mo(), wc:{available:true, state:"idle"}, seen:() => false});
+t(keys(s) === "shutlist,clean,locks-shut,signout", "shutdown: list, cleaning, locks, sign out: " + keys(s));
+const m2 = mo(); m2.purge_state = {selected:["m1"], firing:true};
+s = daySteps("start", {st:st("Andy"), mo:m2, seen:() => false});
+t(s.find(x => x.key === "purge").state === "live", "a purge firing is live");
+s = daySteps("shut", {st:st("Andy"), mo:mo(), wc:{available:true, state:"paused"}, seen:() => false});
+t(s.find(x => x.key === "clean").state === "live", "a cleaning waiting is live");
+s = daySteps("shut", {st:st("Andy"), mo:mo(), wc:{available:false, problem:"There is no wave flamer group."}, seen:() => false});
+t(s.find(x => x.key === "clean").state === "blocked", "no cleaning here: blocked, said");
+const m3 = mo(); m3.checks = [{title:"x", level:"bad"}];
+t(daySteps("start", {st:st("Andy"), mo:m3, seen:() => false}).find(x => x.key === "checks").state === "blocked", "a bad check blocks");
+t(daySteps("start", {st:st("Andy"), mo:mo(), seen:k => k === "purge"}).find(x => x.key === "purge").state === "done", "a purge looked at is done");
+const sh = st("Andy"); sh.hazers = {available:true, hazers:[{name:"Hazer 1", armed:true}, {name:"Hazer 2", armed:false}]};
+s = daySteps("start", {st:sh, mo:mo(), seen:() => false});
+t(keys(s) === "checks,startlist,purge,lasers,hazers,locks" && s.find(x => x.key === "hazers").why === "1 of 2 armed.", "hazers (#168): a step with its own sheet: " + keys(s));
+t(!keys(daySteps("shut", {st:sh, mo:mo(), seen:() => false})).includes("hazers"), "hazers are a startup step");
+// Every why, for many states: 8 words or fewer.
+for(const part of ["start", "shut"]) for(const m of [mo(), m2, m3]) for(const wc of [null, {available:true, state:"idle"}, {available:true, state:"phase2"}, {available:false, problem:"There is no wave flamer group in this engine at all."}])
+  for(const u of [null, "Andy"]) for(const x of daySteps(part, {st:st(u), mo:m, wc:wc, fu:{units:[{refill_soon:true}]}, seen:() => false}))
+    t(String(x.why).split(/\s+/).length <= 8 && String(x.title).split(/\s+/).length <= 3, "short: " + x.title + " / " + x.why);
+// Startup until the shows are over and the startup list is done.
+const m4 = mo(); m4.checklists.checklists[0].done = 3;
+t(dayDefaultPart(st("Andy"), m4) === "start", "shows to come: Startup");
+const s5 = st("Andy"); s5.schedule.next = null;
+t(dayDefaultPart(s5, m4) === "shut" && dayDefaultPart(s5, mo()) === "start", "the night over and the list done: Shutdown");
+console.log(JSON.stringify(out));
+"""
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        bad = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        bad = None
+    check(r.returncode == 0 and bad == [],
+          f"DAY's steps, in node: {r.stdout[-900:]!r} {r.stderr[-600:]!r}")
+    print("  ok")
+
+
+_UI2_DAY_JS = r"""
+<script>
+(function(){
+const posts = [];
+const realFetch = window.fetch;
+window.fetch = function(u, o){
+  if(o && o.method === "POST") posts.push({u:String(u), b:String(o.body || "")});
+  return realFetch.apply(this, arguments);
+};
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const q = id => document.getElementById(id);
+const of = r => posts.filter(p => p.u === "/api/remote/" + r).map(p => JSON.parse(p.b));
+const key = (code, type, repeat) => document.dispatchEvent(new KeyboardEvent(type, {code:code, key:" ", bubbles:true, repeat:!!repeat}));
+async function go(){
+  for(let i = 0; i < 60 && !document.querySelector("#d-steps .st"); i++) await wait(100);
+  await wait(400);
+  const res = {};
+  const main = document.querySelector("main");
+  res.excess = main.scrollHeight - main.clientHeight;
+  res.steps = [...document.querySelectorAll("#d-steps .st")].map(b => b.dataset.step);
+  res.small = [...document.querySelectorAll("#t-day button, #t-day a")].filter(b => b.getClientRects().length).filter(b => { const r = b.getBoundingClientRect(); return r.height < 55.5; }).map(b => b.id || b.textContent.trim().slice(0, 20));
+  // Purge: a group, then Space held (with the key's repeats), then let go.
+  document.querySelector('[data-step="purge"]').click(); await wait(300);
+  posts.length = 0;
+  document.querySelector('#mo-groups [data-grp="cat-walk"]').click(); await wait(300);
+  res.select = of("purge-select");
+  // A group with a member already armed: its tap takes the whole group off.
+  posts.length = 0;
+  document.querySelector('#mo-groups [data-grp="front row"]').click(); await wait(300);
+  res.select_part = of("purge-select");
+  posts.length = 0;
+  key("Space", "keydown"); for(let i = 0; i < 4; i++){ await wait(90); key("Space", "keydown", true); }
+  res.fire_held = of("purge-fire");
+  key("Space", "keyup"); await wait(300);
+  res.fire_after = of("purge-fire").length; res.stop = of("purge-stop").length;
+  // Space over an open sheet presses the sheet's button and never fires
+  // (review of #169, 3).
+  posts.length = 0;
+  q("d-q").click(); await wait(300);
+  const sb = document.querySelector("#sheet button");
+  res.sheet_open = !q("sheet").hidden;
+  if(sb){ sb.focus(); sb.dispatchEvent(new KeyboardEvent("keydown", {code:"Space", key:" ", bubbles:true})); }
+  key("Space", "keydown"); await wait(300); key("Space", "keyup");
+  document.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true})); await wait(200);
+  res.fire_sheet = of("purge-fire").length;
+  // A tapped group button keeps the focus (second review of #169, 1):
+  // Space on it still fires, and its default is stopped down and up, so
+  // the browser never presses the button (which would drop the group).
+  posts.length = 0;
+  const gb = document.querySelector('#mo-groups [data-grp="cat-walk"]');
+  gb.focus(); res.focus_is_btn = document.activeElement === gb;
+  const kopt = r => ({code:"Space", key:" ", bubbles:true, cancelable:true, repeat:!!r});
+  const kd = new KeyboardEvent("keydown", kopt(false)); gb.dispatchEvent(kd);
+  for(let i = 0; i < 4; i++){ await wait(90); gb.dispatchEvent(new KeyboardEvent("keydown", kopt(true))); }
+  res.fire_focused = of("purge-fire").length;
+  const ku = new KeyboardEvent("keyup", kopt(false)); gb.dispatchEvent(ku); await wait(300);
+  res.prevented = [kd.defaultPrevented, ku.defaultPrevented];
+  res.sel_after_focus = of("purge-select").length + of("purge-clear").length;
+  gb.blur();
+  // Space on a focused Abort or Disarm flames presses it and never fires
+  // (third review of #169): its default is left alone, no purge beat goes.
+  res.emerg = {};
+  for(const id of ["b-abort", "m-disf"]){
+    posts.length = 0;
+    const eb = q(id); eb.focus();
+    const ed = new KeyboardEvent("keydown", kopt(false)); eb.dispatchEvent(ed); await wait(300);
+    const eu = new KeyboardEvent("keyup", kopt(false)); eb.dispatchEvent(eu); await wait(200);
+    res.emerg[id] = {focused:document.activeElement === eb, fire:of("purge-fire").length, prevented:[ed.defaultPrevented, eu.defaultPrevented]};
+    eb.blur();
+  }
+  // Next on Purge moves on and leaves it to do (a look is not a purge),
+  // with nothing selected (a selection keeps it to do regardless).
+  MO.purge_state = Object.assign({}, MO.purge_state || {}, {selected:[]});
+  q("d-next").click(); await wait(100);
+  res.purge_after_next = document.querySelector('[data-step="purge"]').className;
+  // Leaving the Purge step drops this screen's selection (review of #169, 1).
+  document.querySelector('[data-step="purge"]').click(); await wait(300);
+  posts.length = 0;
+  document.querySelector('[data-step="locks"]').click(); await wait(300);
+  res.clear_on_step = of("purge-clear").length;
+  // The Purge step dropping out on a redraw (no purge groups now) goes as
+  // if left: this screen's selection with it.
+  document.querySelector('[data-step="purge"]').click(); await wait(300);
+  posts.length = 0;
+  const g0 = MO.groups; MO.groups = {}; renderMorning(); await wait(300);
+  res.clear_on_drop = of("purge-clear").length;
+  MO.groups = g0; renderMorning(); await wait(100);
+  document.querySelector('[data-step="locks"]').click(); await wait(300);
+  // Space on another step fires nothing.
+  posts.length = 0;
+  key("Space", "keydown"); await wait(300); key("Space", "keyup"); await wait(100);
+  res.fire_elsewhere = of("purge-fire").length;
+  // A lock: a fresh read of the lockout, then 1.0's body.
+  posts.length = 0;
+  document.querySelector('#d-locks [data-lock="m2"]').click(); await wait(500);
+  res.lock = of("lock");
+  // The startup list: who, then a tick (a step's first second is quiet).
+  document.querySelector('[data-step="startlist"]').click(); await wait(1200);
+  posts.length = 0;
+  q("d-tick").click(); await wait(300);
+  res.tick_noname = of("checklist-tick").length;
+  res.noname_msg = q("mo-cmsg").textContent;
+  const who = document.querySelector('#d-ck-who [data-who="Andy"]'); if(who) who.click(); await wait(200);
+  posts.length = 0;
+  q("d-tick").click(); await wait(300);
+  res.tick = of("checklist-tick");
+  // A double tap is one tick, of the step drawn (review of #169, 2): the
+  // second tap comes inside the quiet second; after it a tap counts again.
+  await wait(1100);
+  posts.length = 0;
+  res.tick_step = q("d-tick").dataset.step;
+  q("d-tick").click(); await wait(40); q("d-tick").click(); await wait(400);
+  res.double = of("checklist-tick").map(b => b.step);
+  await wait(1100);
+  q("d-tick").click(); await wait(300);
+  res.after_quiet = of("checklist-tick").length;
+  // Switching Startup and Shutdown on the Purge step drops it too.
+  document.querySelector('[data-step="purge"]').click(); await wait(300);
+  posts.length = 0;
+  document.querySelector('#d-seg [data-part="shut"]').click(); await wait(300);
+  res.clear_on_part = of("purge-clear").length;
+  document.querySelector('#d-seg [data-part="start"]').click(); await wait(300);
+  document.querySelector('[data-step="startlist"]').click(); await wait(300);
+  // Next: to the next step not done.
+  const before = document.querySelector("#d-steps .st.on").dataset.step;
+  q("d-next").click(); await wait(300);
+  res.next = [before, document.querySelector("#d-steps .st.on").dataset.step];
+  // Shutdown: the cleaning's hold beats while held, lets go on release.
+  document.querySelector('#d-seg [data-part="shut"]').click(); await wait(300);
+  document.querySelector('[data-step="clean"]').click(); await wait(400);
+  posts.length = 0;
+  const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:5};
+  q("wc-hold").dispatchEvent(new PointerEvent("pointerdown", o)); await wait(450);
+  res.beats_held = of("cleaning-beat").map(b => b.hold);
+  q("wc-hold").dispatchEvent(new PointerEvent("pointerup", o)); await wait(300);
+  res.beats_after = of("cleaning-beat").map(b => b.hold);
+  q("wc-stop").click(); await wait(200);
+  res.cstop = of("cleaning-stop").length;
+  // A timed purge running (#172): the Purge step is live with the
+  // engine's countdown, and leaving the step never clears it.
+  document.querySelector('#d-seg [data-part="start"]').click(); await wait(300);
+  document.querySelector('[data-step="purge"]').click(); await wait(300);
+  MO.purge_state = Object.assign({}, MO.purge_state || {}, {selected:["m1"], owner:MO.me, firing:false, timed:true});
+  MO.timed = {left_s:12.2, seconds:30, elapsed_s:17.8, machines:["front row 1"]};
+  renderMorning(); await wait(150);
+  res.tp_key = q("mo-key").textContent;
+  res.tp_step = document.querySelector('[data-step="purge"]').className;
+  posts.length = 0;
+  document.querySelector('[data-step="locks"]').click(); await wait(300);
+  res.tp_clear = of("purge-clear").length;
+  MO.purge_state = Object.assign({}, MO.purge_state, {timed:false}); MO.timed = null;
+  // Leaving DAY drops this screen's own purge selection.
+  posts.length = 0;
+  document.querySelector('.tab[data-tab="show"]').click(); await wait(300);
+  res.left = posts.map(p => p.u);
+  const pre = document.createElement("pre"); pre.id = "rack-measure";
+  pre.textContent = JSON.stringify(res);
+  document.body.appendChild(pre);
+}
+go();
+})();
+</script>
+"""
+
+
+def test_ui2_day_tab_in_a_browser():
+    section("interface 2.0's DAY tab in a real browser: no scroll, targets "
+            "56 px; a group tap is 1.0's purge select, Space held beats "
+            "1.0's purge fire and its release stops it, Space elsewhere "
+            "fires nothing, a lock reads the lockout first and sends 1.0's "
+            "body, a tick is 1.0's, Next goes on, the cleaning's hold beats "
+            "while held and lets go on release, and leaving DAY drops this "
+            "screen's purge selection")
+    one, two = _ui2_pages()
+    lo = one[one.find('<script id="remote-logic">') +
+             len('<script id="remote-logic">'):]
+    lo = lo[:lo.find("</script>")]
+    page = two.replace('<script src="/remote-logic.js"></script>',
+                       "<script>" + lo + "</script>", 1)
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    mo = _morning_view_pico(selected=("m1",))
+    st = _ui2_status_running()
+    st["schedule"].update({"state": "STANDBY", "running": None})
+    wc = {"available": True, "problem": "", "state": "idle",
+          "running": False, "mine": False, "armed": "disarmed",
+          "settings": {}}
+    got = _rack_screen_in_chromium(
+        chrome, page, st, ((1366, 768),), measure_js=_UI2_DAY_JS,
+        frag="?tour=0#day", budget_ms=20000,
+        routes={"/api/remote/morning": mo, "/api/remote/cleaning": wc},
+        posts={"/api/remote/cleaning-beat": dict(wc, state="starting",
+                                                 mine=True),
+               "/api/remote/purge-fire": {"fire_id": 7,
+                                          "firing": ["cat-walk 1"]}})
+    for (w, h), res in got.items():
+        where = f"2.0 DAY, {w}x{h}"
+        if not check(isinstance(res, dict) and "steps" in res,
+                     f"{where}: drawn and measured: {res!r}"):
+            continue
+        check(res["excess"] <= 1 and not res["small"],
+              f"{where}: no scroll, nothing under 56 px: {res['excess']} "
+              f"{res['small']}")
+        sel = res["select"]
+        check(len(sel) == 1 and sel[0].get("machines") == ["m4", "m5", "m6"]
+              and sel[0].get("group") == "cat-walk" and
+              sel[0].get("on") is True and "seen" in sel[0],
+              f"{where}: a group tap is 1.0's purge select: {sel}")
+        sp = res["select_part"]
+        check(len(sp) == 1 and sp[0].get("machines") == ["m1", "m2", "m3"]
+              and sp[0].get("on") is False,
+              f"{where}: a group with a member armed comes off whole: {sp}")
+        fh = res["fire_held"]
+        check(len(fh) >= 2 and all(b.get("on") is True for b in fh) and
+              fh[1].get("fire_id") == 7,
+              f"{where}: Space held beats 1.0's purge fire: {fh}")
+        check(res["stop"] >= 1 and res["fire_after"] == len(fh),
+              f"{where}: letting go of Space stops it, no beat after: "
+              f"{res}")
+        check(res["sheet_open"] and res["fire_sheet"] == 0,
+              f"{where}: Space over an open sheet never fires (review of "
+              f"#169, 3): {res['fire_sheet']}")
+        check(res["focus_is_btn"] and res["fire_focused"] >= 2 and
+              res["prevented"] == [True, True] and
+              res["sel_after_focus"] == 0,
+              f"{where}: Space on a focused group button fires as 1.0's "
+              f"does and never presses the button (second review of #169, "
+              f"1): {res['fire_focused']} {res['prevented']} "
+              f"{res['sel_after_focus']}")
+        em = res.get("emerg") or {}
+        check(set(em) == {"b-abort", "m-disf"} and
+              all(v["focused"] and v["fire"] == 0 and
+                  v["prevented"] == [False, False] for v in em.values()),
+              f"{where}: Space on a focused Abort or Disarm flames presses "
+              f"it and never fires the purge (third review of #169): {em}")
+        check(res["clear_on_step"] >= 1 and res["clear_on_part"] >= 1 and
+              res["clear_on_drop"] >= 1,
+              f"{where}: leaving the Purge step or switching Startup and "
+              f"Shutdown drops this screen's purge selection (review of "
+              f"#169, 1), or when the step drops out: "
+              f"{res['clear_on_step']} {res['clear_on_part']} "
+              f"{res['clear_on_drop']}")
+        check("done" not in res["purge_after_next"].split(),
+              f"{where}: Next on Purge leaves it to do: "
+              f"{res['purge_after_next']}")
+        check(res["double"] == [res["tick_step"]] and
+              res["tick_step"] == "s1" and res["after_quiet"] == 2,
+              f"{where}: a double tap on Tick is one tick, of the step "
+              f"drawn; a tap after the quiet second counts (review of "
+              f"#169, 2): {res['double']} {res['tick_step']} "
+              f"{res['after_quiet']}")
+        check(res["fire_elsewhere"] == 0,
+              f"{where}: Space on another step fires nothing: {res}")
+        check(res["lock"] == [dict(res["lock"][0], kind="machine", id="m2",
+                                   on=True)] if res["lock"] else False,
+              f"{where}: a lock is 1.0's body: {res['lock']}")
+        check(res["tick_noname"] == 0 and
+              res["noname_msg"].startswith("Pick who"),
+              f"{where}: no tick goes in without a name: {res}")
+        tk = res["tick"]
+        check(len(tk) == 1 and tk[0].get("checklist") == "startup" and
+              tk[0].get("step") == "s1" and tk[0].get("done") is True and
+              tk[0].get("who") == "Andy",
+              f"{where}: a tick is 1.0's: {tk}")
+        check(res["next"][0] != res["next"][1],
+              f"{where}: Next goes to the next step: {res['next']}")
+        check(len(res["beats_held"]) >= 2 and
+              all(b is True for b in res["beats_held"]) and
+              res["beats_after"][-1] is False and res["cstop"] == 1,
+              f"{where}: the cleaning's hold beats while held, lets go on "
+              f"release, Stop is 1.0's: {res}")
+        check(res.get("tp_key") == "TIMED PURGE: 13 s left" and
+              "live" in res.get("tp_step", "").split() and
+              res.get("tp_clear") == 0,
+              f"{where}: a timed purge (#172): the Purge step is live with "
+              f"the engine's countdown, and leaving it does not clear it: "
+              f"{res.get('tp_key')!r} {res.get('tp_step')!r} "
+              f"{res.get('tp_clear')}")
+        check("/api/remote/purge-clear" in res["left"],
+              f"{where}: leaving DAY drops this screen's own purge "
+              f"selection: {res['left']}")
     print("  ok")
 
 
@@ -91584,6 +92124,8 @@ if __name__ == "__main__":
         test_ui2_pages_served_and_switched,
         test_ui2_page_makes_only_1_0_presses,
         test_ui2_show_tab_in_a_browser,
+        test_ui2_day_makes_only_1_0_presses,
+        test_ui2_day_tab_in_a_browser,
         test_ui2_calm_screens_and_brand,
         test_config_watch_supervisor_and_rack_screen_note,
     ]

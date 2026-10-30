@@ -1586,6 +1586,17 @@ the same 1.0 button sends, with the same holds, confirms and refusals.
   runs. When it fails, the alert slot says so and its button is 1.0's
   "Hold: continue anyway" (a hold; a tap does nothing). On the show PC the
   alert's details have Check again.
+- DAY tab: the day as steps. Startup (sign in, rig checks, the startup
+  list, fuel, purge, laser test, locks) or Shutdown (the shutdown list,
+  wave flamer cleaning, locks, sign out); only the steps that apply now,
+  each with its mark, and one big Next. Every press is the 1.0 Startup,
+  Fuel and Shutdown pages' own: a purge fires only with the Stream Deck's
+  FIRE key or Space held, the cleaning starts only with its two holds,
+  and Lock is one tap per machine with Undo. "Map in 1.0" opens the
+  machine map, Arrange, the checklist PDF and the rest of 1.0's page.
+- The systems badge in the header names a single problem ("Stream Deck:
+  check"); one tap opens the list, which starts with what to do first.
+  Something not set up here reads Off.
 - Help (header): the tour again, and a quick card to print. Each "?" says
   what the buttons near it do, in one sentence each.
 
