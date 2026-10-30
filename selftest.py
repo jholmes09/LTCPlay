@@ -12801,6 +12801,22 @@ def test_schedule_shows_after_midnight():
           f"after Resume the 02:30 show runs: {_starts(svc)}")
     svc.stop()
 
+    # A Stop's Hold (#191) at 01:50 stands across 2 AM on Thursday's night
+    # too, until Resume, and the 02:30 show then runs.
+    svc, now = run(rule(), at(1, 40), at(1, 49))
+    svc._apply(_op(S, S.HOLD_ON, detail="pressed Stop"))
+    run(None, None, at(2, 10), svc=svc, now=now)
+    check(svc.machine.date == date(*THU) and svc.machine.state == S.HOLD
+          and svc.machine.stop_hold,
+          f"a Stop's Hold across 2 AM: {svc.machine.date} "
+          f"{svc.machine.state}")
+    svc._apply(_op(S, S.RESUME))
+    run(None, None, at(2, 31), svc=svc, now=now)
+    check(8 in _starts(svc) and 7 not in _starts(svc),
+          f"after Resume the 02:30 show runs, the 02:00 one waits: "
+          f"{_starts(svc)}")
+    svc.stop()
+
     # The Run gate: with Run off nothing starts after midnight either, and
     # the warning is red (the first show time has gone by).
     svc, now = run(rule(), at(0, 10), at(0, 21), gate=lambda: False)
