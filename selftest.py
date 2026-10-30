@@ -99959,12 +99959,10 @@ def test_fireball_timeline_end_to_end_real_flamesafe():
                             "sent_fire": g.get("sent_fire")}
                            for g in st.get("groups") or []]}
     tracker = FC.ChargeTracker(work, flames_get=flames)
-    # No record yet: both NOT KNOWN; Andy confirms them empty, as on the
-    # first night (Tanks are empty).
-    check(tracker.state("fuel") == "unknown" and
-          tracker.confirm_empty("Andy", "Rack screen")[0] and
-          tracker.state("fuel") == "empty",
-          "no record: NOT KNOWN until confirmed empty")
+    # No record yet: both tanks start EMPTY (Jeff, 2026-10-30).
+    check(tracker.state("fuel") == "empty" and
+          tracker.state("air") == "empty",
+          "no record: both tanks start EMPTY")
     link.observer = tracker.observe
     cues.fireball = FQ.FireballCues(store, charge_get=lambda: tracker)
     link.start()
