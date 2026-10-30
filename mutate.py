@@ -7579,8 +7579,8 @@ def build():
 
  ("flame cues: a first start that fails is tried on every call",
   "ltcplay/fire_ice.py",
-  "        again = t is not None or attr in self._start_failed",
-  "        again = t is not None"),
+  "        if tried is not None and now - tried[1] < self.RESTART_BACKOFF_S[",
+  "        if False and now - tried[1] < self.RESTART_BACKOFF_S["),
 
  ("flame cues: a first start's recovery is not said",
   "ltcplay/fire_ice.py",
@@ -7609,6 +7609,72 @@ def build():
   "        setattr(self, attr, nt)\n        self._start_failed.discard(attr)",
   "        setattr(self, attr, nt)\n        self._died.pop(attr, None)\n"
   "        self._start_failed.discard(attr)"),
+
+ # -- round 3 review of #177 (2026-10-30)
+ ("flame cues: a cut set-up that failed for a passing reason is kept",
+  "ltcplay/fire_ice.py",
+  "                    cut.span != tuple(span) or cut.stale():",
+  "                    cut.span != tuple(span):"),
+
+ ("flame cues: a damaged render's set-up is made again",
+  "ltcplay/fire_ice.py",
+  "        c.rebuild_at = None if _cut_data_error(error) else \\",
+  "        c.rebuild_at = None if False else \\"),
+
+ ("flame cues: failed starts count as restarts",
+  "ltcplay/fire_ice.py",
+  "            self._start_tries[attr] = ((tried[0] if tried else 0) + 1, now)",
+  "            self._start_tries[attr] = ((tried[0] if tried else 0) + 1, now)\n"
+  "            self._restarts[attr] = (n, now, None)"),
+
+ ("flame cues: a kept block error pins its traceback",
+  "ltcplay/fire_ice.py",
+  "                    e = _bare(e)\n",
+  "                    pass\n"),
+
+ ("flame cues: a failed set-up's error pins its traceback",
+  "ltcplay/fire_ice.py",
+  "        c.blocks, c.errors, c.short = {}, {0: _bare(error)}, {}",
+  "        c.blocks, c.errors, c.short = {}, {0: error}, {}"),
+
+ ("flame cues: a passing cut fault is said as a damaged render",
+  "ltcplay/fire_ice.py",
+  "            if self._bg and not _cut_data_error(e):",
+  "            if False:"),
+
+ ("flame cues: a fault is journaled for each block's own words",
+  "ltcplay/fire_ice.py",
+  "        key = why if cause is None else cause",
+  "        key = why"),
+
+ ("flame cues: ranges under the header's channel count are read",
+  "ltcplay/fire_ice.py",
+  "            if covered != f.channel_count:",
+  "            if covered > f.channel_count:"),
+
+ ("flame cues: a thread's old death reason is said again",
+  "ltcplay/fire_ice.py",
+  "        why = self._died.pop(attr, \"it ended\")",
+  "        why = self._died.get(attr, \"it ended\")"),
+
+ ("flame cues: a failed slow retry is retried fast",
+  "ltcplay/fire_ice.py",
+  "                    elif n > CUT_RETRIES or b in self.errors:",
+  "                    elif n > CUT_RETRIES:"),
+
+ ("flame cues: a data error is tried again every 30 s",
+  "ltcplay/fire_ice.py",
+  "                        self.errors[b] = e\n"
+  "                        self.retry.pop(b, None)\n"
+  "                        self.slow.pop(b, None)\n",
+  "                        self.errors[b] = e\n"
+  "                        self.retry.pop(b, None)\n"
+  "                        self.slow[b] = self.clock() + CUT_RETRY_SLOW_S\n"),
+
+ ("flame cues: zstd out of memory is a damaged render",
+  "ltcplay/fire_ice.py",
+  "            return not (\"memory\" in text or \"allocat\" in text)",
+  "            return True"),
 
  ("flame cues: nothing is cut ahead of the show timecode",
   "ltcplay/fire_ice.py",
@@ -9666,8 +9732,8 @@ def build():
 
  ('review43: a render that cannot be read is a quiet zero',
   'ltcplay/fire_ice.py',
-  '                              f"({type(e).__name__}: {e})", fault=True)',
-  '                              f"({type(e).__name__}: {e})")'),
+  '                              f"({name}: {e})", fault=True,',
+  '                              f"({name}: {e})",'),
 
  ('review43: /api/conductor leaves out the flame cue fault',
   'ltcplay/web.py',
