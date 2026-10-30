@@ -3013,6 +3013,12 @@ class Controller:
         # The latch as tick() last saw it (an Abort or Reset from a screen
         # starts every group's re-arm refractory window).
         self._was_latched = False
+        # flamesafe's disarm_all count and id as this deck last read them
+        # (its status "disarm_all"), None before the first fresh read: a
+        # new one is a Stop (or Abort) from any screen, an iPad or this
+        # deck, and starts every group's re-arm refractory (Jeff,
+        # 2026-10-30: Stop takes over what the Abort latch's edge did).
+        self._disarm_all_seen = None
         # The frames draw() composes, numbered, and the newest one the deck
         # has been fully written (frame_shown; DisplayWorker, run_forever's
         # threaded mode). Display bookkeeping only since the deck's Hold and
@@ -3269,6 +3275,21 @@ class Controller:
                          f"not latched.", fault=True)
                 return False
         return self._latched
+
+    def _disarm_all_now(self):
+        """(accepted, last_id) of flamesafe's disarm_all from its last
+        fresh status, or None (stale, never read, or not reported).
+        Never raises."""
+        try:
+            st = self.status.last
+            if st is None or self.status.stale(self._clock):
+                return None
+            d = st.get("disarm_all")
+            if not isinstance(d, dict):
+                return None
+            return (d.get("accepted"), d.get("last_id"))
+        except Exception:                        # noqa: BLE001
+            return None
 
     def _disarm_all_groups(self, why):
         """Every flame group's wanted goes false on the arm link at once,
@@ -4295,6 +4316,19 @@ class Controller:
             # press right after either cannot quietly re-arm.
             self._was_latched = latched
             self._disarmed_at = [now] * len(self.names)
+        seen = self._disarm_all_now()
+        if seen is not None:
+            if self._disarm_all_seen is not None and \
+                    seen != self._disarm_all_seen:
+                # A disarm_all flamesafe took since the last look: a Stop
+                # (or an Abort) from a screen, an iPad or this deck. Every
+                # group's re-arm refractory window starts, as the Abort
+                # latch's edge started it (above), so a reflexive "make
+                # sure" press right after a screen's Stop cannot quietly
+                # re-arm. Read from flamesafe's status only: nothing new
+                # is asked of flamesafe.
+                self._disarmed_at = [now] * len(self.names)
+            self._disarm_all_seen = seen
         if self._prev_keys[TOP_START] and self._key0_fire and \
                 self._stop_wins():
             # Key 0 went down as FIRE, is still held, and now a show or run
