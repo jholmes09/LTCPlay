@@ -92901,6 +92901,7 @@ def test_fireball_timeline_store():
         def boom(doc):
             raise OSError(28, "No space left on device")
         store._write = boom
+        hist0 = store.history()
         ok, text, _e = store.save(show, "Show", 60.0, "fseq", [], rev)
         store._write = real
         check(not ok and "could not be written" in text and
@@ -92908,8 +92909,42 @@ def test_fireball_timeline_store():
               lines[-1][1].get("fault") is True and
               events[-1]["result"] == "error",
               f"a failed write: nothing changed, a fault: {text}")
-        # A file that cannot be read: no timeline for any show, said; a
-        # save on revision 0 replaces it, the broken one kept.
+        check(store.history() == hist0,
+              "a save that failed leaves no history copy behind")
+        # The replace refused (Windows: the file held by an indexer): no
+        # temporary file, no history copy, the file as it was.
+        real_replace = os.replace
+
+        def held(a, b):
+            if str(b) == store.path:
+                raise PermissionError(13, "Access is denied")
+            return real_replace(a, b)
+        os.replace = held
+        try:
+            ok, text, _e = store.save(show, "Show", 60.0, "fseq", [], rev)
+        finally:
+            os.replace = real_replace
+        check(not ok and open(store.path, "rb").read() == before and
+              store.history() == hist0 and
+              not [n for n in os.listdir(work) if n.endswith(".tmp")],
+              f"a replace refused: no .tmp, no history, nothing changed: "
+              f"{text} {os.listdir(work)}")
+        # Every read is under the store's lock (a save's replace never
+        # meets this program's own reader holding the file).
+        import threading as _th
+        got = []
+        with store._lock:
+            rd = _th.Thread(target=lambda: got.append(store.load()))
+            rd.start()
+            rd.join(0.3)
+            check(rd.is_alive() and not got,
+                  "a read waits while a save holds the store")
+        rd.join(2)
+        check(got and got[0][1] == "", "and reads once it is done")
+        # A file that cannot be read: no timeline for any show, said;
+        # every save refused (it has no revision, and saving would drop
+        # every other show's entry: review of #184), whatever revision it
+        # names, until an admin replaces it; the broken one kept.
         for broken in ("{not json", '{"fireball_timeline_format": 1, '
                        '"rev": 1, "shows": {}, "x": 1}'):
             with open(store.path, "w", encoding="utf-8") as fh:
@@ -92917,20 +92952,43 @@ def test_fireball_timeline_store():
             d, err = store.load()
             check(d["shows"] == {} and d["rev"] == 0 and
                   "could not be read" in err and
-                  "no show fires its fireball from a timeline" in err and
+                  "no show fires its fireball" in err and
                   _cfg_dashes(err), f"a broken file: {err}")
             check(store.view(show)["entry"]["source"] == "fseq" and
                   store.view(show)["error"] == err,
                   "and the view says so")
+        for base in (0, 1, rev):
+            ok, text, entry = store.save("Other.json", "Show", 60.0,
+                                         "timeline", stg(), base,
+                                         who="Andy")
+            check(not ok and "could not be read" in text and
+                  "every other show's timeline in it would be lost" in text
+                  and open(store.path, encoding="utf-8").read() ==
+                  '{"fireball_timeline_format": 1, "rev": 1, "shows": {}, '
+                  '"x": 1}', f"a save over a broken file (revision {base}) "
+                             f"is refused, nothing written: {text}")
         wall[0] += 1
         ok, text, entry = store.save(show, "Show", 60.0, "timeline", stg(),
-                                     0, who="Andy")
+                                     0, who="Andy", replace_unreadable=True)
         h = store.history()
         check(ok and entry["rev"] == 1 and h[0].endswith(
             "-rev0-unreadable.json") and open(os.path.join(
                 store.history_dir(), h[0]), encoding="utf-8").read() ==
               '{"fireball_timeline_format": 1, "rev": 1, "shows": {}, '
               '"x": 1}', f"saved over a broken file, which is kept: {h[:1]}")
+        # A file that was saved and is now missing: not "nothing saved
+        # yet" (an FSEQ fallback): a fault, saves refused until replaced.
+        os.remove(store.path)
+        d, err = store.load()
+        check("is missing although it was saved before" in err and
+              d["shows"] == {}, f"a missing file once saved: {err}")
+        ok, text, _e = store.save(show, "Show", 60.0, "timeline", stg(), 0,
+                                  who="Andy")
+        check(not ok and not os.path.exists(store.path),
+              f"and a save over it is refused: {text}")
+        ok, text, entry = store.save(show, "Show", 60.0, "timeline", stg(),
+                                     0, who="Andy", replace_unreadable=True)
+        check(ok and store.load()[1] == "", f"replaced by an admin: {text}")
         # A UTF-8 BOM (Notepad) reads.
         raw = open(store.path, encoding="utf-8").read()
         with open(store.path, "w", encoding="utf-8-sig") as fh:
@@ -92995,6 +93053,8 @@ def test_fireball_timeline_routes():
         active=lambda: True, matrix=lambda: matrix,
         may=lambda role, perm: U.allowed(matrix, role, perm))
     info = {"Show.json": ("Show", 120.0, "")}
+    for f_ in ("Show.json", "Other.json"):
+        open(os.path.join(work, f_), "w").close()
     opened = []
 
     def fake_info(show):
@@ -93106,6 +93166,28 @@ def test_fireball_timeline_routes():
         check(out["rev"] == 2 and out["entry"]["source"] == "fseq" and
               len(out["entry"]["stages"]) == 2,
               "switched back to the FSEQ, the stages kept for later")
+        # Another spelling of the same file (a case-blind Windows or macOS
+        # folder): saved under the folder's own spelling, the name the
+        # playing session has (review of #187).
+        rev_now = rm.fireball_timeline_store().load()[0]["rev"]
+        code, out, _h = save(dict(good, show="SHOW.JSON", rev=rev_now),
+                             ctx("admin"))
+        doc_ = rm.fireball_timeline_store().load()[0]
+        check(code == 200 and "Show.json" in doc_["shows"] and
+              "SHOW.JSON" not in doc_["shows"] and
+              opened[-1] == "Show.json",
+              f"SHOW.JSON is saved as Show.json: {code} {out} "
+              f"{sorted(doc_['shows'])}")
+        _c, v_ = rm.get("/api/remote/fireball-timeline", ctx(None),
+                        "show=SHOW.JSON")
+        check(v_.get("show") == "Show.json",
+              f"and read as Show.json: {v_.get('show')}")
+        # Two files that differ only by case: refused, said.
+        open(os.path.join(work, "OTHER.json"), "w").close()
+        code, out, _h = save(dict(good, show="other.JSON", rev=rev_now + 1),
+                             ctx("admin"))
+        check(code == 409 and "more than one show file" in out["error"],
+              f"two spellings in the folder: refused: {out}")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")
@@ -93149,6 +93231,8 @@ def test_fireball_timeline_docs_in_plain_words():
                  "Igniter is independent", "**FSEQ**", "**Timeline**",
                  "Settings row", "never by when", "during a show",
                  "never falls back to its FSEQ",
+                 "every save is refused", "replaces it on purpose",
+                 "show folder's own spelling", "differ only by case",
                  "ltcplay_fireball_timeline.json",
                  "fireball_timeline_history"):
         check(" ".join(need.split()) in " ".join(o.split()),

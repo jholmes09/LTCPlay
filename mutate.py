@@ -18821,7 +18821,7 @@ def build():
 
  ("fireball timeline: the version before a save is not kept",
   "ltcplay/fireball_timeline.py",
-  "                self._keep_history(doc[\"rev\"], bool(err))",
+  "                self._keep_history(doc[\"rev\"], bool(err), old)",
   "                pass"),
 
  ("fireball timeline: a save is not audited",
@@ -18846,13 +18846,53 @@ def build():
 
  ("fireball timeline: the page's own show length is trusted",
   "ltcplay/remote.py",
-  "        ok, text, entry = st.save(show, cue, length, body.get(\"source\"),",
-  "        ok, text, entry = st.save(show, cue, body.get(\"show_len_s\") or length, body.get(\"source\"),"),
+  "            show, cue, length, body.get(\"source\"), body.get(\"stages\"),",
+  "            show, cue, body.get(\"show_len_s\") or length, body.get(\"source\"), body.get(\"stages\"),"),
 
  ("fireball timeline: a save is not a Settings press",
   "ltcplay/users.py",
   "    \"fireball-timeline-save\": \"settings\",",
   "    \"fireball-timeline-save\": None,"),
+
+ ("fireball timeline: a save over an unreadable file is taken",
+  "ltcplay/fireball_timeline.py",
+  "            if err and replace_unreadable is not True:",
+  "            if False:"),
+
+ ("fireball timeline: a missing file once saved reads as never saved",
+  "ltcplay/fireball_timeline.py",
+  "                if self.path and os.path.isdir(self.history_dir()):",
+  "                if False:"),
+
+ ("fireball timeline: the history copy is written before the save is in place",
+  "ltcplay/fireball_timeline.py",
+  "                old = self._read_bytes()\n                self._write(new)\n                # Only once the new file is in place: a save that failed\n                # leaves no history copy behind.\n                self._keep_history(doc[\"rev\"], bool(err), old)",
+  "                old = self._read_bytes()\n                self._keep_history(doc[\"rev\"], bool(err), old)\n                self._write(new)"),
+
+ ("fireball timeline: a refused replace leaves its temporary file",
+  "ltcplay/fireball_timeline.py",
+  "            try:\n                os.remove(tmp)\n            except OSError:\n                pass\n            raise",
+  "            raise"),
+
+ ("fireball timeline: a read is not under the store's lock",
+  "ltcplay/fireball_timeline.py",
+  "        with self._lock:\n            if not self.path or not os.path.exists(self.path):",
+  "        if True:\n            if not self.path or not os.path.exists(self.path):"),
+
+ ("fireball timeline: a save keeps the spelling it was given",
+  "ltcplay/remote.py",
+  "        show = real\n        cue, length, why = self.fireball_show_info(show)",
+  "        cue, length, why = self.fireball_show_info(show)"),
+
+ ("fireball timeline: show names are compared case for case",
+  "ltcplay/fireball_timeline.py",
+  "    return str(name).rstrip(\" .\").casefold()",
+  "    return str(name)"),
+
+ ("fireball timeline: two spellings of one show are taken",
+  "ltcplay/remote.py",
+  "        if len(same) == 1:\n            return same[0], \"\"",
+  "        if len(same) >= 1:\n            return same[0], \"\""),
 
  # -- the fireball's charge state (fireball_charge.py, Jeff 2026-10-30) ----
  ("fireball charge: zeros (Stop, Hold, a show's end) empty the tanks",

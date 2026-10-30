@@ -888,8 +888,15 @@ that long. The stages, in this order:
   and save again), keeps the version before it in
   `fireball_timeline_history` (the last 50), and writes one journal line
   and one audit line: who, which screen, and what changed, stage by
-  stage. If the file cannot be read, no show fires its fireball from a
-  timeline: a show set to Timeline never falls back to its FSEQ.
+  stage. If the file cannot be read, or it is missing after it was saved
+  once, no show fires its fireball from a timeline (a show set to Timeline
+  never falls back to its FSEQ), and every save is refused, because saving
+  over it would lose every other show's timeline. An admin either repairs
+  the file or replaces it on purpose (the broken one is kept in
+  `fireball_timeline_history`). A show is saved under the show folder's
+  own spelling of its name ("show.json" typed on a Mac or Windows PC is
+  saved as "Show.json"); two files whose names differ only by case are
+  refused: rename one.
 - **Where.** The editor is on Interface 2.0 (a later update). Until it is
   there, nothing sends from the timeline either.
 
