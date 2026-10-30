@@ -1041,21 +1041,25 @@ class Service:
         "now, as a restart would rebuild it. " + REBUILT_WHAT +
         " Nothing is started by the rebuild.")
     # Tonight's times did not change (sch.keeps_tonight): nothing undone.
+    # Only the times still to come are compared: a time taken out that had
+    # already run or been skipped stays on tonight's list (review of PR
+    # #180: "did not change" was not true then).
     KEPT_TIMES = (
-        "Tonight's show times did not change, so tonight's list is kept as "
-        "it is, with every change made to it tonight (delays, moves, shows "
-        "added, taken off or skipped).")
+        "No show still to come tonight changed its time, so tonight's list "
+        "is kept as it is, with every change made to it tonight (delays, "
+        "moves, shows added, taken off or skipped).")
     KEPT_RESTART = ("The schedule file changed after tonight's list was "
                     "saved. " + KEPT_TIMES)
     KEPT_SAVED = "The schedule file was saved. " + KEPT_TIMES
 
-    def _rebuild_tonight(self, m, now, saved, dropped=None):
+    def _rebuild_tonight(self, m, now, saved, dropped=None,
+                         past=sch.SAVED_PAST):
         """The one rebuild for a changed schedule, a restart's and a save's
         (`saved`) (sch.follow_rule, which uses sch.rebuild_night): the
         Outcome, with every change said in the journal. `dropped` gets each
         change made tonight that the rebuild undid. Lock held."""
         kept = sch.keeps_tonight(self.rule, m)
-        out, notes = sch.follow_rule(self.rule, m, now, dropped)
+        out, notes = sch.follow_rule(self.rule, m, now, dropped, past)
         if kept:
             why = self.KEPT_SAVED if saved else self.KEPT_RESTART
         else:
@@ -1068,7 +1072,7 @@ class Service:
                                outcome=outcome)
         return out, kept
 
-    def _follow_rule(self, now):
+    def _follow_rule(self, now, deferred=False):
         """Tonight follows the schedule file the scheduler has loaded: once
         it was saved, tonight's list is rebuilt at once (reload) or, while
         a show runs or the night is closing, on the first tick after that
@@ -1090,12 +1094,21 @@ class Service:
             return False
         self._follow_said = None
         dropped = []
-        out, kept = self._rebuild_tonight(m, now, True, dropped)
+        # A save followed only now, after the show or closing it waited
+        # for, misses a time gone by for that reason, not "when saved".
+        out, kept = self._rebuild_tonight(
+            m, now, True, dropped,
+            sch.FOLLOWED_PAST if deferred else sch.SAVED_PAST)
         self._save_said = ([self.KEPT_TIMES] if kept else
                            [f"This save undid tonight's changes: "
                             f"{' '.join(dropped)}"] if dropped else [])
         self.machine = out.machine
         self._record(out, now)
+        if out.machine.state == sch.BOOT:
+            # A night that never opened (sch.follow_rule): it starts as a
+            # restart starts it, through BOOT_DONE and its usual effects,
+            # held back like any the scheduler decides while Run is off.
+            self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
         self._save_tonight()
         self._journal_line("system", self._tonight_words(now),
                            action="load tonight", outcome="planned")
@@ -1180,6 +1193,11 @@ class Service:
         if m.state in (sch.OFF, sch.CLOSING):
             why += (" The scheduler is off until tomorrow; Start now still "
                     "works.")
+        elif m.state in (sch.IDLE, sch.STANDBY) and m.delayed() is None:
+            # Review of PR #180, F2: the next tick closes the night.
+            why += (" So the night closes now: flame cues to zero, "
+                    "MadMapper stopped, pixels faded, blackout. Start now "
+                    "still works.")
         return why
 
     def _run_warning(self, now):
@@ -1223,6 +1241,25 @@ class Service:
             need.append("Resume")
         return (f"Run is off: the {m.hm(nxt.start)} show (show {nxt.n}) will "
                 f"NOT start. Press {', then '.join(need)}.")
+
+    def _run_warning_urgent(self, now):
+        """True once the next show is within the pre-roll window (the rig
+        check's, or preroll.DEFAULT_S with none): the Run warning is then a
+        fault, red. Before that it is said in amber, not as a fault, so it
+        is not red all day in IDLE (review of PR #180). Lock held."""
+        m = self.machine
+        nxt = m.next_slot() if m is not None else None
+        if nxt is None:
+            return False
+        pr = self.preroll
+        try:
+            window = float(pr.window_s) if pr is not None else None
+        except (AttributeError, TypeError, ValueError):
+            window = None
+        if window is None:
+            from . import preroll as _preroll
+            window = float(_preroll.DEFAULT_S)
+        return (nxt.start - sch._utc(now)).total_seconds() <= window
 
     def _programming_run(self):
         """A sentence while a Programming Run is in force (the pre-roll's
@@ -2619,7 +2656,7 @@ class Service:
                                       show=m.running), now)
             # A schedule saved during a show or a closing: tonight follows
             # it once that is over, before this tick looks at the list.
-            self._follow_rule(now)
+            self._follow_rule(now, deferred=True)
             ev = self._tick_event()
             self._preroll_lookahead(now)
             self._preroll_before_gate(now, ev)
@@ -3450,6 +3487,8 @@ class Service:
             # Run off with a show to come (an engine restart leaves it
             # off): said on every screen, never pressed for anyone.
             out["run_warning"] = self._run_warning(now)
+            out["run_warning_urgent"] = bool(
+                out["run_warning"] and self._run_warning_urgent(now))
         # What Start now would be refused with now (the rack screen's
         # Loading state and its reason), read off this service's lock.
         out["start_blocked"] = self.start_blocked()

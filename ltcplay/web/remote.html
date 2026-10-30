@@ -2657,7 +2657,9 @@ function render(){
   // Run off with a show to come (an engine restart leaves it off, Jeff,
   // Pico, 2026-10-29): a fault banner on the show screen and the Schedule
   // screen, the engine's own sentence. Display only: nothing presses Run.
-  LOCAL_FAULT["run-warn"] = !!sch.run_warning;
+  // A fault (red) only within the pre-roll window of that show; amber
+  // before it, so it is not red all day in IDLE (review of PR #180).
+  LOCAL_FAULT["run-warn"] = !!sch.run_warning && !!sch.run_warning_urgent;
   LOCAL_LABEL["run-warn"] = "Run is off";
   setWarn("run-warn", sch.run_warning || "");
   setWarn("tn-run-warn", sch.run_warning || "");

@@ -95,6 +95,7 @@ address (web.wrong_host_page); the Host check is not loosened.
 import contextlib
 import hmac
 import ipaddress
+import itertools
 import json
 import math
 import os
@@ -522,16 +523,34 @@ def judge_pc_clock(offset_s, service):
                                if service == "running" else "."))
 
 
+# Each write has a temp file of its own: two threads of this process
+# writing the same file never share one (review of PR #180: two saves at
+# once could interleave in "<path>.<pid>.tmp").
+_TMP_SEQ = itertools.count(1)
+
+
 def _write_json(path, doc, private=False):
-    tmp = f"{path}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(doc, fh, indent=2)
-        fh.write("\n")
-        fh.flush()
-        os.fsync(fh.fileno())
-    if private and os.name != "nt":
-        os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    tmp = (f"{path}.{os.getpid()}.{threading.get_ident()}."
+           f"{next(_TMP_SEQ)}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        if private and os.name != "nt":
+            os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+# Held by Remote.save_schedule_file from the check to the answer.
+_SCHEDULE_SAVE_LOCK = threading.Lock()
 
 
 # --------------------------------------------------------- the network --
@@ -6390,6 +6409,12 @@ class Remote:
             # file for it.
             return 409, {"error": "There is no scheduler in this engine, so "
                                   "there is no schedule to edit here."}
+        # One save at a time, written, loaded and answered whole: two
+        # screens saving at once never interleave (review of PR #180).
+        with _SCHEDULE_SAVE_LOCK:
+            return self._save_schedule_file(doc)
+
+    def _save_schedule_file(self, doc):
         if self._show_live():
             return 409, {"error": "A show is live. Save the schedule between "
                                   "shows. Nothing was changed."}
@@ -7110,6 +7135,7 @@ class Remote:
                     "dry_run": st.get("dry_run"),
                     "start_blocked": st.get("start_blocked"),
                     "run_warning": st.get("run_warning"),
+                    "run_warning_urgent": st.get("run_warning_urgent"),
                     "slots": tn.get("slots", [])}
             except Exception as e:
                 out["schedule"] = {"attached": True, "ok": False,

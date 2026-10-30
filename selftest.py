@@ -13119,8 +13119,9 @@ def test_schedule_saved_keeps_show_hold_and_abort():
           f"{[(s.n, m.hm(s.start), s.status) for s in m.slots][:4]}")
     svc.stop()
 
-    # The pure rebuild: a time still to come keeps its show's number when
-    # an earlier time is dropped, and a show that ran keeps its own.
+    # The pure rebuild: a show that ran (or an extra show) keeps its
+    # number; the times still to come are numbered in time order from the
+    # lowest number free (review of PR #180).
     from dataclasses import replace
     from datetime import date
     a = S.parse_rule(rule())
@@ -13129,11 +13130,12 @@ def test_schedule_saved_keeps_show_hold_and_abort():
         S.Slot(n=99, start=_den(S, 17, 5), status=S.DONE, origin="operator",
                fired_at=_den(S, 17, 5), ended_at=_den(S, 17, 6)),))
     back, _notes = S.rebuild_night(S.parse_rule(rule(first="18:20")), night)
-    check(back.slot(1) is None and back.slot(99).origin == "operator" and
+    check(back.slot(99).origin == "operator" and
           back.slot(99).status == S.DONE and
-          back.hm(back.slot(2).start) == "18:20" and
-          back.hm(back.slot(3).start) == "18:40",
-          f"numbers are kept: {[(x.n, back.hm(x.start)) for x in back.slots][:5]}")
+          back.hm(back.slot(1).start) == "18:20" and
+          back.hm(back.slot(2).start) == "18:40",
+          f"the extra show keeps its number, the rest in time order: "
+          f"{[(x.n, back.hm(x.start)) for x in back.slots][:5]}")
 
     # On Hold: still on Hold, nothing starts, a passed slot is DELAYED.
     work = tempfile.mkdtemp()
@@ -13196,7 +13198,7 @@ def test_schedule_saved_keeps_show_hold_and_abort():
     m = svc.machine
     late = [s for s in m.slots if m.hm(s.start) == "20:10"]
     check(m.state == S.OFF and late and late[0].status == S.SKIPPED and
-          late[0].reason == S.CLOSED_BY_OPERATOR,
+          late[0].reason == S.CLOSED_SAVED,
           f"the new 20:10 show is skipped: tonight was closed by an "
           f"operator: {m.state} {late}")
     check("tonight was closed with Close for the night" in
@@ -13300,7 +13302,8 @@ def test_schedule_save_never_reopens_an_operator_closed_night():
     m = svc.machine
     later = [s for s in m.slots if s.start >= _den(S, 19, 0)]
     check(m.state == S.OFF and later and
-          all(s.status == S.SKIPPED and s.reason == S.CLOSED_BY_OPERATOR
+          all(s.status == S.SKIPPED and s.reason in (S.CLOSED_BY_OPERATOR,
+                                                     S.CLOSED_SAVED)
               for s in later),
           f"the save does not open the night; every later time is skipped: "
           f"{m.state} {[(s.n, m.hm(s.start), s.status) for s in later]}")
@@ -13488,11 +13491,11 @@ def test_schedule_save_never_starts_a_show_whose_time_has_gone_by():
     now[0] = _den(S, 18, 0, 6)
     b.tick()
     s1 = [s for s in b.machine.slots if b.machine.hm(s.start) == "18:00"][0]
-    check(s1.status == S.MISSED and s1.reason == S.SAVED_PAST and
+    check(s1.status == S.MISSED and s1.reason == S.RESTART_PAST and
           not _starts(b),
-          f"after a restart the new past time is missed: {s1.status} "
-          f"{_starts(b)}")
-    check(any(S.SAVED_PAST in r["text"] for r in b.journal),
+          f"after a restart the new past time is missed, said as found at "
+          f"the restart: {s1.status} {s1.reason} {_starts(b)}")
+    check(any(S.RESTART_PAST in r["text"] for r in b.journal),
           "and the journal says so")
     b.stop()
     print("  ok")
@@ -13759,14 +13762,40 @@ def _save_fuzz_once(S, seed, viol):
             if m.state in S.FOLLOW_LATER:
                 continue
             before = m
+            rebuilt = not S.keeps_tonight(new, m)
             out, _notes = S.follow_rule(new, m, t)
             m = out.machine
             if out.effects:
                 bad("effects", out.effects)
+            opened = m.state == S.BOOT
+            if opened:
+                # A night that never opened starts as a restart starts it
+                # (review of PR #180, B1): BOOT_DONE, as the service sends.
+                if before.state != S.OFF or not before.never_opened:
+                    bad("BOOT from a night that had opened", before.state)
+                o = S.step(m, S.Event(S.BOOT_DONE, "system",
+                                      latched=latched), t)
+                if any(e.kind == S.START_SHOW for e in o.effects):
+                    bad("BOOT_DONE started a show", seed)
+                m = o.machine
             ns = [s.n for s in m.slots]
             if len(ns) != len(set(ns)):
                 bad("a number twice", ns)
+            # A rebuilt list never holds two shows still to come that
+            # cannot both run (review of PR #180, B2), and numbers the
+            # shows still to come in time order.
+            pend = m.pending()
+            need = timedelta(seconds=m.show_len_s + m.guard_s)
+            if rebuilt and any(b.start < a.start + need
+                               for a, b in zip(pend, pend[1:])):
+                bad("two shows too close", [(x.n, m.hm(x.start))
+                                            for x in pend])
+            if rebuilt and [x.n for x in pend] != sorted(x.n for x in pend):
+                bad("numbers out of time order", [(x.n, m.hm(x.start))
+                                                  for x in pend])
             for s in before.slots:
+                if s.reason == S.CLOSED_SAVED:
+                    continue
                 if s.status not in (S.PENDING, S.DELAYED) and \
                         m.slot(s.n) != s:
                     bad("a show that happened changed", (s, m.slot(s.n)))
@@ -13783,7 +13812,8 @@ def _save_fuzz_once(S, seed, viol):
                                           m.dark != before.dark or
                                           m.held_from != before.held_from):
                 bad("the state changed", (before.state, m.state))
-            if before.state == S.OFF and m.state not in (S.OFF, S.STANDBY):
+            if before.state == S.OFF and not opened and \
+                    m.state not in (S.OFF, S.STANDBY):
                 bad("a closed night opened into", m.state)
             if before.state == S.OFF and m.state == S.STANDBY and closed:
                 bad("an operator's close was opened", seed)
@@ -13915,7 +13945,7 @@ def test_schedule_save_review_a_cases():
     check(m.guard_s == 90 and m.hm(m.slot(1).start) == "18:30",
           f"a new guard keeps tonight's list, on the new guard: "
           f"{m.guard_s} {m.hm(m.slot(1).start)}")
-    SV.save_rule(svc.path, rule(guard=90, interval_min=25))
+    SV.save_rule(svc.path, rule(guard=90, interval_min=40))
     svc.reload()
     m = svc.machine
     check(m.hm(m.slot(1).start) == "18:30" and
@@ -14087,12 +14117,24 @@ def test_schedule_run_off_says_the_next_show_will_not_start():
     if n.S is None:
         return
     S, svc = n.S, n.svc
+    from datetime import timedelta
     sv = svc.state_view()
     check(sv.get("run_warning") == "Run is off: the 18:00 show (show 1) "
                                    "will NOT start. Press Run.",
           f"Run off with show 1 to come: {sv.get('run_warning')!r}")
     _no_dashes(sv.get("run_warning"), "run warning")
     check(not svc._run_pressed(), "and nothing pressed Run")
+    # Amber until the pre-roll window of that show, then a fault (review of
+    # PR #180: red all day in IDLE).
+    check(sv.get("run_warning_urgent") is False,
+          f"at 17:55 the 18:00 show is not yet within the pre-roll "
+          f"window: not a fault yet: {sv.get('run_warning_urgent')!r}")
+    win = svc.preroll.window_s if svc.preroll is not None else 10
+    was = n.now[0]
+    n.now[0] = _den(S, 18, 0) - timedelta(seconds=win)
+    check(svc.state_view().get("run_warning_urgent") is True,
+          "within the pre-roll window it is a fault")
+    n.now[0] = was
     check("Run is off: the 18:00 show (show 1) will NOT start" in
           svc.tonight_words(), "the answer to a save says it too")
     # On Hold, Run alone would not start it: the warning names Resume too
@@ -14139,13 +14181,15 @@ def test_schedule_run_off_says_the_next_show_will_not_start():
     with open(os.path.join(here, "remote2.html"), encoding="utf-8") as fh:
         two = fh.read()
     check('id="run-warn"' in one and 'id="tn-run-warn"' in one and
-          'LOCAL_FAULT["run-warn"] = !!sch.run_warning;' in one and
+          'LOCAL_FAULT["run-warn"] = !!sch.run_warning && '
+          '!!sch.run_warning_urgent;' in one and
           'setWarn("run-warn", sch.run_warning || "");' in one and
           'setWarn("tn-run-warn", sch.run_warning || "");' in one and
           '["run-warn", "lock-banner"' in one,
           "1.0 shows the warning as a fault on the show and Schedule screens")
-    check('if(sch.run_warning) items.push({key:"run", tone:"bad"' in two,
-          "2.0 shows it as a fault in the alert slot")
+    check('if(sch.run_warning) items.push({key:"run", tone:'
+          'sch.run_warning_urgent ? "bad" : "warn"' in two,
+          "2.0 shows it in the alert slot, a fault only when urgent")
     check('do:(sch.run_warning.split("will NOT start. ")[1] || "Press '
           'Run.")' in two and 'what:sch.run_warning.split(":")[0]' in two,
           "2.0 takes its headline and its press from the engine's sentence "
