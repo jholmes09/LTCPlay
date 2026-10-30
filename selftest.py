@@ -95609,15 +95609,26 @@ def test_play_from_cue_routes():
         rm2 = RM.Remote(ctl, _Svc(), folder=work, log=lambda t_: None)
         stores = []
         gate = threading.Barrier(8)
+        real_store = PF.Store
+
+        class _SlowStore(real_store):
+            # Made slowly, so eight first requests overlap for certain.
+            def __init__(self, *a, **k):
+                time.sleep(0.05)
+                super().__init__(*a, **k)
 
         def first():
             gate.wait()
             stores.append(rm2.play_from_store())
-        ts = [threading.Thread(target=first) for _ in range(8)]
-        for t_ in ts:
-            t_.start()
-        for t_ in ts:
-            t_.join(5)
+        PF.Store = _SlowStore
+        try:
+            ts = [threading.Thread(target=first) for _ in range(8)]
+            for t_ in ts:
+                t_.start()
+            for t_ in ts:
+                t_.join(5)
+        finally:
+            PF.Store = real_store
         rm2.audit = _Audit()
         check(len(stores) == 8 and len({id(x) for x in stores}) == 1 and
               rm2.play_from_store() is stores[0] and
