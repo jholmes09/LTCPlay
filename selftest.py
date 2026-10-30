@@ -40657,12 +40657,18 @@ _STOP_CLICK_JS = r"""<script>
   setTimeout(() => {
    const out = {mode:b.dataset.mode, label:b.querySelector(".lbl").textContent,
      disabled:b.disabled, off:b.classList.contains("signin-off")};
+   // Stop is a double tap (Jeff, 2026-10-30): the first tap sends
+   // nothing and opens no confirm box; the second, within 2 s, sends.
    b.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true}));
    b.click();
    setTimeout(() => {
-    const y = document.getElementById("m-yes");
-    if(!document.getElementById("modal").hidden) y.click();
+    out.first_posts = window.__posts.slice();
+    out.first_label = b.querySelector(".lbl").textContent;
+    out.first_modal = !document.getElementById("modal").hidden;
+    b.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true}));
+    b.click();
     setTimeout(() => {
+     out.modal = !document.getElementById("modal").hidden;
      out.posts = window.__posts.slice();
      out.said = document.getElementById("@MSG@").textContent;
      const pre = document.createElement("pre"); pre.id = "rack-measure";
@@ -40692,15 +40698,37 @@ def test_rack_screen_stop_in_place_of_start_now():
           "every refused press shows the engine's own words")
     for f in ("function startLook", "function runLook", "function stopWords",
               "function refusedWords", "function pressDecision",
-              "const STOP_CONFIRM"):
+              "const STOP_TITLE", "function stopShows",
+              "function stopTapStep", "function stopTapKind",
+              "const RUN_OFF_CONFIRM"):
         check(f in logic, f"{f} is pure page logic")
+    # Stop is a double tap with no confirm box (Jeff, 2026-10-30), with
+    # exactly the Abort sign's tap rule.
+    check("const STOP_CONFIRM" not in page and
+          'confirmBox("Stop the show?"' not in page,
+          "Stop asks nothing: no confirm box, no STOP_CONFIRM")
+    import re as _re
+    _ab = _re.search(r"function abortTapStep\(prev, nowMs, kind, enlarged\)"
+                     r"\{(.*?)\n\}", logic, _re.S)
+    _sp = _re.search(r"function stopTapStep\(prev, nowMs, kind, enlarged\)"
+                     r"\{(.*?)\n\}", logic, _re.S)
+    check(_ab is not None and _sp is not None and
+          _ab.group(1).replace("ABORT_TAP_MS", "T") ==
+          _sp.group(1).replace("STOP_TAP_MS", "T") and
+          "const STOP_TAP_MS = 2000;" in logic,
+          "Stop's double tap is the Abort sign's, renamed (2 s)")
     check('id="b-stoprun"' not in page and "b-stoprun" not in page,
           "the separate Stop beside Run is gone: Run becomes Stop")
     for need in ('fetch("/api/remote/stop", ',
+                 'fetch("/api/remote/run-off", ',
                  'const d = decide("b-start", lk.mode);',
-                 'if(d.act === "stop") return pressStop("ctl-msg");',
+                 'if(d.act === "stop") return stopTap("b-start", ev, '
+                 '"ctl-msg");',
                  'const d = decide("b-run", runLook(ST).mode);',
-                 'if(d.act === "stop") return pressStop("run-msg");',
+                 'if(d.act === "stop") return stopTap("b-run", ev, '
+                 '"run-msg");',
+                 'return pressStop("run-msg", "run-off");',
+                 'confirmBox("Turn Run off?", RUN_OFF_CONFIRM',
                  'drawStart(stale);',
                  '"Yes, start now", "start", null, true)',
                  'el.addEventListener("pointerdown", () => '
@@ -40709,7 +40737,7 @@ def test_rack_screen_stop_in_place_of_start_now():
                  'flipLocked("b-start"))',
                  '"Stop was refused: " + refusedWords(j, '):
         check(need in page, f"the page has {need!r}")
-    _no_dashes(page[page.find("const STOP_CONFIRM"):
+    _no_dashes(page[page.find("const STOP_TITLE"):
                     page.find("function runLook")], "Stop's words")
     node = _sh.which("node")
     if node:
@@ -40731,13 +40759,35 @@ t(startLook({schedule:{attached:false}, show:{running:false, starting:true}}, fa
 const ld = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"the show audio is still loading", loading:true}}, show:{running:true}}, false, false);
 t(ld.label === "Start now" && ld.disabled === false && /starts when ready/.test(ld.sub) && ld.why === "", "loading: Start now still works and waits: " + JSON.stringify(ld));
 const wt = startLook({schedule:{attached:true, state:"STANDBY", start_waiting:true}, show:{running:true}}, false, false);
-t(wt.label === "Loading" && wt.disabled === true && /starting when ready/.test(wt.sub), "waiting: Loading, starting when ready: " + JSON.stringify(wt));
-t(startLook({schedule:{attached:true, state:"STANDBY"}, show:{running:true}}, false, true).label === "Loading", "this page's own wait reads Loading too");
+t(wt.mode === "stop" && wt.label === "Stop" && wt.disabled === false && /starting when ready/.test(wt.sub), "waiting for the audio: a show is about to play, so Stop, starting when ready: " + JSON.stringify(wt));
+t(startLook({schedule:{attached:true, state:"STANDBY"}, show:{running:true}}, false, true).label === "Loading", "this page's own wait reads Loading");
 const off = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"Run has not been pressed, so nothing may reach the rig; press Run", loading:false}}, show:{running:false}}, false, false);
 t(off.mode === "start" && off.sub === "Run is off" && /^Run has not been pressed/.test(off.why), "Run off: says so, and the why: " + JSON.stringify(off));
-t(runLook({show:{running:true}}).mode === "stop" && runLook({show:{running:false}}).mode === "run" && runLook(null).label === "Run", "Run becomes Stop while Run is in force");
-t(runLook({show:{running:false, starting:true}}).mode === "stop", "and while Run is starting (F4)");
-t(/^Stopped\. The show ended/.test(stopWords({stopped:true, show:{ok:true}, flames:{disarmed:true}, lasers:{disarmed:true}})) && /Run is off/.test(stopWords({stopped:true})), "Stop's answer: the show ended, Run is off");
+// Run becomes Stop while Run is in force and there is something to stop;
+// with nothing to stop it is Run off (Stop no longer turns Run off).
+const att = (st, show, extra) => Object.assign({schedule:{attached:true, state:st}, show:show}, extra || {});
+t(runLook(att("SHOW", {running:true})).mode === "stop" && runLook(att("STANDBY", {running:false})).mode === "run" && runLook(null).label === "Run", "Run becomes Stop while a show is live");
+t(runLook(att("STANDBY", {running:true})).mode === "runoff" && runLook(att("STANDBY", {running:true})).label === "Run off", "Run in force, nothing to stop: Run off");
+t(runLook(att("HOLD", {running:false, starting:true})).mode === "runoff", "Run starting with nothing to stop: Run off (F4 now)");
+t(runLook({schedule:{attached:false}, show:{running:true}}).mode === "stop" && runLook({schedule:{attached:false}, show:{running:false, starting:true}}).mode === "stop", "no scheduler: Run playing or starting is the show, so Stop");
+t(runLook(att("STANDBY", {running:true}, {transport:{programming:true, playhead:"show_audio", playing:true}})).mode === "stop", "Programming playback on: Stop");
+// Where Stop is drawn (Jeff, 2026-10-30: if nothing is playing there is no
+// Stop button).
+t(stopShows(att("SHOW", {})) && stopShows(att("PAUSED", {})), "a show live or paused: Stop");
+t(!stopShows(att("IDLE", {running:true})) && !stopShows(att("STANDBY", {running:true})) && !stopShows(att("HOLD", {running:true})) && !stopShows(att("CLOSING", {})) && !stopShows(null), "nothing playing: no Stop");
+t(stopShows(att("STANDBY", {}, {preroll:{state:"checking"}})) && stopShows(att("STANDBY", {}, {preroll:{state:"queued"}})), "the rig check before a show: Stop");
+t(stopShows({schedule:{attached:true, state:"STANDBY", start_waiting:true}}), "Start now waiting for the audio: Stop");
+t(stopShows(att("STANDBY", {}, {transport:{programming:true, playhead:"show_audio", playing:true}})) && !stopShows(att("STANDBY", {}, {transport:{programming:true, playhead:"show_audio", playing:false}})), "Programming playback playing: Stop; stopped: none");
+t(startLook(att("STANDBY", {running:true}, {transport:{programming:true, playhead:"show_audio", playing:true}}), false, false).mode === "stop", "Start now is Stop while Programming playback plays");
+// The double tap: Abort's rule.
+t(stopTapStep(null, 1000, "touch", false).fire === false && stopTapStep({at:1000, kind:"touch"}, 2500, "touch", false).fire === true, "a second tap within 2 s fires");
+t(stopTapStep({at:1000, kind:"touch"}, 3500, "touch", false).fire === false && stopTapStep({at:1000, kind:"touch"}, 3500, "touch", true).fire === true, "later only while still showing Tap again");
+t(stopTapStep({at:1000, kind:"mouse"}, 1500, "touch", false).fire === false, "a different pointer kind is a first tap");
+t(stopTapKind({pointerType:"pen"}) === "pen" && stopTapKind({detail:0}) === "key", "the tap's kind as the Abort sign reads it");
+t(/^Stopped\. The show ended/.test(stopWords({stopped:true, show:{ok:true}, flames:{disarmed:true}, lasers:{disarmed:true}})) && /Run is off/.test(stopWords({stopped:true, run_on:false})), "Run off's answer: the show ended, Run is off");
+const held = stopWords({stopped:true, run_on:true, show:{ok:true}, hold:{ok:true, text:""}, flames:{disarmed:true}});
+t(/^Stopped\. The show ended/.test(held) && /on Hold/.test(held) && /Resume/.test(held) && !/Run is off/.test(held), "Stop's answer: the show ended, the schedule is on Hold, Run stays on: " + held);
+t(/Run is still on/.test(stopWords({stopped:true, run_on:true})), "a Stop with nothing to hold says Run is still on");
 t(/did NOT work: show/.test(stopWords({stopped:true, failed:["show"], flames:{disarmed:true}})), "a failed step is named");
 t(/did NOT work: playback stop/.test(stopWords({stopped:false, failed:["playback stop"]})), "a failed playback stop is named");
 t(/^Stopped\. /.test(stopWords({stopped:false, failed:[]})), "nothing was playing: still Stopped, no false failure");
@@ -40825,8 +40875,12 @@ console.log(JSON.stringify(out));
     prog_st = json.loads(json.dumps(out_st))
     prog_st["schedule"] = dict(prog_st["schedule"], state="STANDBY",
                                running=None, held=False)
-    prog_st["show"] = {"running": False, "starting": True,
+    prog_st["show"] = {"running": True, "starting": False,
                        "timecode": None}
+    # Programming playback on the show audio: something for Stop to stop
+    # (Jeff, 2026-10-30), so the Run card's button is Stop.
+    prog_st["transport"] = {"programming": True, "playhead": "show_audio",
+                            "playing": True, "paused": False}
     for frag, status, bid, msg in (("", out_st, "b-start", "ctl-msg"),
                                    ("#programming", prog_st, "b-run",
                                     "run-msg")):
@@ -40841,10 +40895,14 @@ console.log(JSON.stringify(out));
                   not m["disabled"] and not m["off"],
                   f"signed out {frag or 'show screen'}: Stop is enabled, "
                   f"never locked for signing in: {m}")
-            check("/api/remote/stop" in m["posts"] and
+            check(m["first_posts"] == [] and not m["first_modal"] and
+                  m["first_label"] == "Tap again",
+                  f"signed out {frag or 'show screen'}: the first tap sends "
+                  f"nothing, asks nothing and reads Tap again: {m}")
+            check("/api/remote/stop" in m["posts"] and not m["modal"] and
                   m["said"].startswith("Stopped."),
-                  f"signed out {frag or 'show screen'}: pressing it posts "
-                  f"the complete halt and says Stopped: {m['posts']} "
+                  f"signed out {frag or 'show screen'}: the second tap "
+                  f"posts the complete halt and says Stopped: {m['posts']} "
                   f"{m['said']!r}")
     # Loading: the Start now button says so before the show.
     st2 = _rack_status_pico()
@@ -40858,7 +40916,8 @@ console.log(JSON.stringify(out));
     m = got[(1366, 544)]
     if check(isinstance(m, dict), f"loading: drawn: {m!r}"):
         check(m["label"] == "Start now" and
-              "starts when ready" in m["small"] and m["runLabel"] == "Stop",
+              "starts when ready" in m["small"] and
+              m["runLabel"] == "Run off" and m["runMode"] == "runoff",
               f"loading: Start now works, and says it starts when the audio "
               f"is ready: {m}")
     print("  ok")
@@ -89392,7 +89451,7 @@ const t = (c, m) => { if(!c) out.push(m); };
 const ck = prerollLook({state:"checking", label:"show 2 (18:00)", items:[]});
 t(ck.checking && ck.word === "Checking" && /^Checking the rig before show 2/.test(ck.label), "checking: " + JSON.stringify(ck));
 const sl = startLook({schedule:{attached:true, state:"STANDBY"}, show:{running:true}, preroll:{state:"checking"}}, false, false);
-t(sl.label === "Checking" && sl.disabled === true && sl.sub === "checking the rig", "Start now reads Checking: " + JSON.stringify(sl));
+t(sl.mode === "stop" && sl.label === "Stop" && sl.disabled === false && sl.sub === "checking the rig", "a show is about to play, so Start now is Stop (Jeff, 2026-10-30), checking the rig: " + JSON.stringify(sl));
 const fl = prerollLook({state:"failed", label:"show 2", age_s:3, items:[{name:"Audio", ok:true}, {name:"Video", ok:false, text:"MadMapper did not answer the timecode"}]});
 t(/Video FAILED: MadMapper did not answer the timecode/.test(fl.trouble) && !/Audio/.test(fl.trouble), "the failure line: " + JSON.stringify(fl));
 t(prerollLook({state:"failed", manual:true, age_s:3, items:[]}).trouble === "", "a Pre-check's failure is no rack line");
@@ -90264,7 +90323,7 @@ s = base(); s.schedule.start_blocked = {text:"The show audio is missing."};
 t(goLook(s, false, true).blocked === "The show audio is missing.", "a start the engine would refuse says why");
 s = base(); s.preroll = {state:"checking", label:"Show 4"};
 t(goLook(s, false, true).mode === "checking" && goLook(s, false, true).off, "the rig being checked: nothing to start (1.0's Checking)");
-t(goLook(s, false, true).mode === startLook(s, false, false).label.toLowerCase(), "the rig check: 1.0 says Checking too");
+t(goLook(s, false, true).mode === "checking" && startLook(s, false, false).mode === "stop" && stopShows(s), "the rig check: 2.0's big button says Checking, and Stop is drawn (1.0's Start now is Stop then, Jeff 2026-10-30)");
 t(/Checking the rig/.test(nextStep(s, false, true, []).text) && pillLook(s, false).text === "CHECKING RIG", "the rig check is said");
 s = base(); s.preroll = {state:"failed", label:"Show 4", age_s:5, show_check:{label:"Show 4", items:[{name:"Video", ok:false, text:"no"}], off:["video"]}};
 t(/Rig check failed/.test(nextStep(s, false, true, []).text), "a failed rig check: the next step says so");
@@ -90383,6 +90442,13 @@ const posts = [];
 const realFetch = window.fetch;
 window.fetch = function(u, o){
   if(window.__dead && /\/api\/remote\/status/.test(String(u))) return Promise.reject(new Error("no contact"));
+  // A show live, as the engine would say it (Stop is drawn only then).
+  if(window.__live && /\/api\/remote\/status/.test(String(u)))
+    return realFetch.apply(this, arguments).then(r => r.json()).then(j => {
+      j.schedule = Object.assign({}, j.schedule, {state:"SHOW", running:1});
+      j.show = Object.assign({}, j.show, {running:true});
+      return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}});
+    });
   if(o && o.method === "POST") posts.push({u:String(u), b:String(o.body || "")});
   if(window.__fail && o && o.method === "POST" && window.__fail.test(String(u)))
     return Promise.resolve(new Response(JSON.stringify({error:"Refused for the test."}), {status:409, headers:{"Content-Type":"application/json"}}));
@@ -90485,13 +90551,23 @@ async function presses(){
   await wait(2500);
   document.getElementById("b-hold").click(); await wait(300);
   res.hold = n("/api/remote/hold");
-  document.getElementById("b-stop").click(); await wait(300);
-  res.stop_before_yes = n("/api/remote/stop");
+  // Stop show (Jeff, 2026-10-30): not there with nothing playing; with a
+  // show live, a double tap with no sheet: the first tap sends nothing.
+  const sb = document.getElementById("b-stop");
+  res.stop_calm_shown = shown(sb);
+  sb.click(); await wait(300);
+  res.stop_calm_posts = n("/api/remote/stop");
+  window.__live = true; await wait(1600);
+  res.stop_live_shown = shown(sb) && !sb.disabled;
+  res.stop_live_red = sb.className.split(" ").includes("red") && !sb.className.includes("redline");
+  sb.click(); await wait(300);
+  res.stop_after_one = n("/api/remote/stop");
+  res.stop_label_one = document.getElementById("stop-l").textContent;
   res.sheet = !document.getElementById("sheet").hidden;
-  const yes = document.querySelector('#sh-row [data-i="1"]');
-  if(yes) yes.click();
-  await wait(400);
-  res.stop_after_yes = n("/api/remote/stop");
+  sb.click(); await wait(400);
+  res.stop_after_two = n("/api/remote/stop");
+  res.sheet_after = !document.getElementById("sheet").hidden;
+  window.__live = false; await wait(2600);
   const arm = document.querySelector('[data-arm="0"]');
   const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:1};
   arm.dispatchEvent(new PointerEvent("pointerdown", o)); await wait(450);
@@ -90627,7 +90703,11 @@ function inactSnap(){
   s.hz = [...document.querySelectorAll("#hazers [data-hzb]")].map(b => ({dis:b.disabled, w:b.querySelector(".hw").textContent}));
   s.safe = ["b-abort", "b-hold", "b-stop", "b-disall"].map(id => {
     let op = 1; for(let p = q(id); p; p = p.parentElement) op *= Number(getComputedStyle(p).opacity);
-    return {id:id, dis:q(id).disabled, filt:filtOf(q(id)) ? filtOf(q(id)).f : "none", op:op};
+    // Stop show is drawn only with something to stop, or no contact
+    // (Jeff, 2026-10-30); otherwise its place is empty.
+    const want = id !== "b-stop" || stopShows(ST) || stale();
+    return {id:id, dis:q(id).disabled, filt:filtOf(q(id)) ? filtOf(q(id)).f : "none", op:op,
+            want:want, vis:getComputedStyle(q(id)).visibility};
   });
   // Text under the calm tone keeps 4.5:1 (the filter applied to both).
   s.lowc = [];
@@ -90972,8 +91052,10 @@ def test_ui2_calm_screens_and_brand():
     # three groups, lasers and hazers are 5 px over at 1366x768 in this
     # browser on bench-build too; the hazers' own test draws their row.
     layout = ("a long show name", "a long show name, running")
-    safe_ok = lambda sn: all(not x["dis"] and "saturate" not in x["filt"]
-                             and x["op"] == 1 for x in sn["safe"])
+    safe_ok = lambda sn: all(
+        (not x["dis"] and "saturate" not in x["filt"] and x["op"] == 1
+         and x.get("vis") != "hidden") if x.get("want", True) else
+        (x["dis"] and x.get("vis") == "hidden") for x in sn["safe"])
     for what, kind, sz, frag, routes in runs:
         got = _rack_screen_in_chromium(chrome, page,
                                        _ui2_status_inactive(
@@ -91163,7 +91245,8 @@ def test_ui2_show_tab_in_a_browser():
             "nothing under it; controls 56 px (the header 44), text "
             "20 px, nothing cut or overlapping (a 390x844 phone too, whose "
             "pane may scroll); and pressed: Abort fires on "
-            "the second tap only, Stop only after its Yes, a hold to arm "
+            "the second tap only, Stop (drawn only with something to stop) on "
+            "its second tap with no sheet, a hold to arm "
             "beats while held and lets go on release")
     one, two = _ui2_pages()
     lo = one[one.find('<script id="remote-logic">') +
@@ -91271,7 +91354,10 @@ def test_ui2_show_tab_in_a_browser():
                       f"{where}: the slot's button acts only on the alert "
                       f"shown at finger-down: {fd}")
                 # (DAY beats as 1.0's Startup page does while it shows.)
-                check(fd and all(fd["mini"]) and fd["next_shown"] and
+                # Stop show is not drawn with nothing playing (Jeff,
+                # 2026-10-30); its place stays empty.
+                check(fd and fd["mini"] == [True, False, True] and
+                      fd["next_shown"] and
                       [r for r in fd["mini_routes"]
                        if r != "/api/remote/morning-open"] ==
                       ["/api/remote/hold", "/api/remote/disarm-all"],
@@ -91293,9 +91379,17 @@ def test_ui2_show_tab_in_a_browser():
                       f"{where}: Abort's first tap sends nothing, its "
                       f"second sends 1.0's Abort: {p}")
                 check(p and p["hold"] == 1, f"{where}: Hold is one tap")
-                check(p and p["sheet"] and p["stop_before_yes"] == 0 and
-                      p["stop_after_yes"] == 1,
-                      f"{where}: Stop asks first, then sends: {p}")
+                check(p and not p["stop_calm_shown"] and
+                      p["stop_calm_posts"] == 0,
+                      f"{where}: with nothing playing there is no Stop, "
+                      f"and a tap where it was sends nothing: {p}")
+                check(p and p["stop_live_shown"] and p["stop_live_red"] and
+                      p["stop_after_one"] == 0 and not p["sheet"] and
+                      p["stop_label_one"] == "Tap again" and
+                      p["stop_after_two"] == 1 and not p["sheet_after"],
+                      f"{where}: with a show live Stop is solid red, its "
+                      f"first tap sends nothing and asks nothing, its "
+                      f"second sends Stop: {p}")
                 check(p and p["arm_beats"] >= 2 and
                       p["arm_released_while_held"] == 0 and
                       p["arm_released"] >= 1 and

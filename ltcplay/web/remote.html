@@ -2024,7 +2024,8 @@ function stopWords(j){
 // playing there is no Stop button")? A scheduled show live (playing, or
 // paused on Hold), the rig check before a show or a Start now waiting for
 // the show audio (a show about to play), Programming playback on the show
-// audio, or, with no scheduler in this engine, Run playing or starting.
+// audio or flames following Programming, or, with no scheduler in this
+// engine, Run playing or starting.
 // Every screen draws its Stop only then (and while its own Stop answers).
 function stopShows(st){
   const sch = (st && st.schedule) || {}, show = (st && st.show) || {};
@@ -2033,6 +2034,7 @@ function stopShows(st){
   if(sch.start_waiting === true) return true;
   if(pr.state === "checking" || pr.state === "queued") return true;
   if(tr.programming && tr.playhead === "show_audio" && tr.playing) return true;
+  if(st && st.programming_flames && st.programming_flames.on === true) return true;
   return !sch.attached && !!(show.running || show.starting);
 }
 // A refused press's words: the engine's own sentence, whichever key it
@@ -2069,6 +2071,9 @@ function startLook(st, stale, waiting){
             title:"Start now is waiting for the show audio to load. Hold or Stop cancels it. " + STOP_TITLE, why:""};
   if(stopShows(st))
     return {mode:"stop", label:"Stop", sub:"end the show, rig dark", disabled:false, title:STOP_TITLE, why:""};
+  // No contact: what is playing is not known, so Stop is there.
+  if(stale && st)
+    return {mode:"stop", label:"Stop", sub:"no contact", disabled:false, title:STOP_TITLE, why:""};
   const b = sch.start_blocked;
   const fresh = !stale && !!st && !!sch.attached;
   if(waiting)
@@ -3989,7 +3994,9 @@ function stopTapWords(id, mode, label, sub){
   if(mode === "stop" && STOP_TAPS[id]) return ["Tap again", "to stop"];
   return [label, sub];
 }
+function nowStale(){ return isStale(Date.now(), LAST_OK, FRESH_S); }
 function drawStart(stale){
+  stale = stale || nowStale();
   const el = $("b-start");
   const lk = startLook(ST, stale, START_WAITING);
   const w = stopTapWords("b-start", lk.mode, lk.label, lk.sub);
@@ -4071,7 +4078,10 @@ async function pressStop(msgId, route){
   try{ drawStart(false); }catch(e){}
   let r = null, j = {};
   try{
-    r = await fetch("/api/remote/" + (route || "stop"), {method:"POST", credentials:"same-origin", cache:"no-store",
+    const opts = {method:"POST", credentials:"same-origin", cache:"no-store",
+      headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(actor({}))};
+    r = route === "run-off" ? await fetch("/api/remote/run-off", opts)
+                            : await fetch("/api/remote/stop", {method:"POST", credentials:"same-origin", cache:"no-store",
       headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(actor({}))});
     j = await r.json().catch(() => ({}));
     el.textContent = (r.ok || (j && j.failed)) ? stopWords(j) :
@@ -4087,7 +4097,7 @@ async function pressStop(msgId, route){
   }
 }
 $("b-start").addEventListener("click", async ev => {
-  const lk = startLook(ST, false, START_WAITING);
+  const lk = startLook(ST, nowStale(), START_WAITING);
   const d = decide("b-start", lk.mode);
   if(d.act === "none"){ $("ctl-msg").textContent = d.say; $("ctl-msg").title = d.say; return; }
   if(d.act === "stop") return stopTap("b-start", ev, "ctl-msg");
