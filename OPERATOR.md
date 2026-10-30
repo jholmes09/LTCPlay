@@ -884,22 +884,27 @@ until the engine was restarted. Now:
   it is, with every change made tonight: Delay next, Delay the rest, a
   moved show, a show added, taken off or skipped. The answer says so. A new
   show length, guard or late grace applies to the kept list, and every
-  start is still checked against it.
+  start is still checked against it. If a longer show or guard leaves a
+  show too close to one you delayed, that show is skipped ("too close to
+  the delayed show N") and the answer says so instead of "kept as it is".
 - **Tonight's times changed: tonight is rebuilt.** Shows that already ran
   keep their number and status, and an extra show (Start now) keeps its
   number. The shows still to come are numbered in time order, each taking
   the lowest number no show that already ran has, so they always run in
-  number order; the journal says when a show's number changed. A show
-  taken off tonight's list or skipped stays skipped. A Delay next, Delay
-  the rest or move of a show still to come is kept as long as that show's
-  own time is still in the new schedule and it still leaves room (show
-  length plus guard) before and after it, the same check a Delay press
-  makes. If a new time is too close to a delayed show, the new schedule
-  wins: the Delay is dropped and the show goes back to its own time. A
-  move of a show whose time is no longer in the schedule, and shows added
-  tonight, are dropped too. The answer to the save says each one ("This
-  save undid tonight's changes: ..."), and its count of shows still to
-  come never includes two shows that cannot both run.
+  number order; the journal says when a show's number changed (a delayed
+  show can get a new number too). A show whose number changed is checked
+  by the rig check again before it starts. A show taken off tonight's list
+  or skipped stays skipped.
+- **A save never moves a show earlier than you delayed it, and never
+  drops a Delay.** A Delay next, Delay the rest or move of a show still to
+  come is always kept at its time, even if the time it was planned for is
+  gone from the new file. A time from the file that is too close to a
+  delayed show (show length plus guard, before or after it) is SKIPPED
+  instead, "too close to the delayed show N", and the answer and journal
+  say so. A time already gone by is left out of that check: it is missed,
+  as below. Shows added tonight are dropped, and the answer says so ("This
+  save undid tonight's changes: ..."). The count of shows still to come
+  never includes two shows that cannot both run.
 - **The answer says what tonight now holds.** For example "tonight now has
   4 shows still to come, next show 4 at 22:35", or "Saved, but there are
   no more shows tonight:" and the reason (every show has gone by, the
@@ -958,8 +963,8 @@ until the engine was restarted. Now:
 and LTC Player never presses it for you (no show starts unattended). While
 Run is off and a show is still to come, the rack screen says so: "Run is
 off: the 22:50 show (show 5) will NOT start. Press Run." It is amber until
-that show is within the pre-roll window (the rig check's, 10 seconds
-unless set otherwise), then red, a fault. On a Hold
+30 minutes before that show, then red, a fault. Once the night's first
+show time has gone by it is red at once. On a Hold
 it says "Press Run, then Resume.", and after an Abort nobody has Reset it
 says Reset first ("Press Reset, then Run."). During a Programming Run
 (Run reads as pressed, but the schedule starts nothing over a rehearsal)

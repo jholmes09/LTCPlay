@@ -12844,19 +12844,22 @@ def test_schedule_rule_change_rebuilds_tonight():
           f"{[r['text'] for r in b.journal if r['outcome'] == 'kept']}")
 
     # The times themselves change: history stays, nothing passed fires,
-    # and tonight's move of show 3 is dropped, said in a sentence.
+    # and tonight's move of show 3 is kept though 18:40 left the file
+    # (review of PR #180, round 3: a save never drops a Delay or move),
+    # said in a sentence.
     SV.save_rule(os.path.join(work, SV.RULE_FILE), rule(first="18:05"))
     now[0] = _den(S, 18, 16)
     c = _svc(S, work, now).start(thread=False)
     m = c.machine
     texts = [r["text"] for r in c.journal if r["outcome"] == "rebuilt"]
     check(any("move of the 18:40 show to 18:45 (a Delay or a move) is "
-              "dropped" in t for t in texts)
+              "kept, though" in t for t in texts)
           and any("Show 1 at 18:00 keeps its status, DONE" in t
                   for t in texts),
           f"each change is a sentence: {texts}")
     kept = sorted((m.hm(s.start), s.status) for s in m.slots
-                  if s.status in (S.DONE, S.SKIPPED))
+                  if s.status in (S.DONE, S.SKIPPED) and
+                  not s.reason.startswith(S.TOO_CLOSE_HEAD))
     check(kept == [("18:00", S.DONE), ("18:20", S.SKIPPED)],
           f"shows that happened on the old times stay on the list: {kept}")
     for t in ((18, 16, 1), (18, 20), (18, 24, 59)):
@@ -13613,8 +13616,9 @@ def test_schedule_save_keeps_tonights_delays_when_times_unchanged():
     check(_starts(svc) == [1], f"show 1 starts at 18:05: {_starts(svc)}")
     svc.stop()
 
-    # A move of a show whose time left the schedule is dropped, and the
-    # answer says so.
+    # A Delay of a show whose time left the schedule is kept too (review
+    # of PR #180, round 3): the new 18:10 is too close to it and skipped,
+    # said in the answer.
     work = tempfile.mkdtemp()
     now = [_den(S, 17, 40)]
     svc = _svc(S, work, now, rule=rule())
@@ -13625,13 +13629,15 @@ def test_schedule_save_keeps_tonights_delays_when_times_unchanged():
     svc.reload()
     m = svc.machine
     words = svc.tonight_words()
-    check("This save undid tonight's changes: Tonight's move of the 18:00 "
-          "show to 18:05 (a Delay or a move) is dropped" in words and
-          "no longer in the schedule" in words,
-          f"the answer says the delay was undone: {words!r}")
-    check(m.hm(m.next_slot().start) == "18:10",
-          f"the next show is the new 18:10: {m.hm(m.next_slot().start)}")
-    _no_dashes(words, "undone answer")
+    first = m.next_slot()
+    check("undid" not in words and "too close to show" in words and
+          m.hm(first.start) == "18:05" and m.hm(first.planned) == "18:00",
+          f"the Delay is kept and the 18:10 show skipped: {words!r}")
+    ten = [x for x in m.slots if m.hm(x.start) == "18:10"]
+    check(ten and ten[0].status == S.SKIPPED and
+          ten[0].reason.startswith(S.TOO_CLOSE_HEAD),
+          f"the new 18:10 is skipped for the delayed show: {ten}")
+    _no_dashes(words, "kept delay answer")
     svc.stop()
 
     # Every show still to come taken off tonight's list: the answer does not
@@ -13793,8 +13799,23 @@ def _save_fuzz_once(S, seed, viol):
             if rebuilt and [x.n for x in pend] != sorted(x.n for x in pend):
                 bad("numbers out of time order", [(x.n, m.hm(x.start))
                                                   for x in pend])
+            # A save never moves a delayed show earlier (review of PR #180,
+            # round 3): it keeps its time, or its time left the file.
+            for s in before.pending():
+                if s.planned is None or s.start <= t:
+                    continue
+                now_s = [x for x in m.slots if x.planned == s.planned]
+                if now_s and now_s[0].status == S.PENDING and \
+                        now_s[0].start < s.start:
+                    bad("a delayed show moved earlier",
+                        (s.n, m.hm(s.start), m.hm(now_s[0].start)))
+                if now_s and now_s[0].status != S.PENDING and \
+                        now_s[0].reason != S.SAVED_PAST and \
+                        not closed:
+                    bad("a delayed show was dropped", (s, now_s[0]))
             for s in before.slots:
-                if s.reason == S.CLOSED_SAVED:
+                if s.reason == S.CLOSED_SAVED or \
+                        s.reason.startswith(S.TOO_CLOSE_HEAD):
                     continue
                 if s.status not in (S.PENDING, S.DELAYED) and \
                         m.slot(s.n) != s:
@@ -13957,10 +13978,12 @@ def test_schedule_save_review_a_cases():
     svc.reload()
     words = svc.tonight_words()
     m = svc.machine
-    check(m.hm(m.next_slot().start) == "18:01" and
-          "This save undid tonight's changes: Tonight's move of the 18:00 "
-          "show to 18:30" in words,
-          f"new times rebuild tonight and say what was undone: {words!r}")
+    moved = [x for x in m.pending() if x.planned is not None]
+    check(m.hm(m.next_slot().start) == "18:01" and moved and
+          m.hm(moved[0].start) == "18:30" and "undid" not in words and
+          "too close to show" in words,
+          f"new times keep the move, though 18:00 left the file, and skip "
+          f"a time too close to it: {words!r}")
     svc.stop()
 
     # Two quick saves at 18:30:07: the new 18:30 show is never started.
@@ -14148,13 +14171,16 @@ def test_schedule_save_review_round_4():
           f"{svc.machine.state} {svc.machine.dark}")
     svc.stop()
 
-    # B2: Delay next +5 (18:00 to 18:05), then a save with a 10 minute
-    # interval: the new 18:10 show is too close for both to run, so the
-    # new schedule wins and the Delay is dropped, said in the answer.
+    # B2, round 3: Delay next +5 (18:00 to 18:05) or Delay the rest +10,
+    # then a save with a 10 minute interval. A save never moves a delayed
+    # show earlier and never drops the Delay: a new time too close to it is
+    # SKIPPED, "too close to the delayed show N", said in the answer.
     for press, minutes in ((S.DELAY_NEXT, 5), (S.DELAY_REST, 10)):
         svc, now = started(rule(interval_min=15, last_end="20:00"),
                            _den(S, 17, 40))
         svc._apply(_op(S, press, minutes=minutes))
+        delayed = {s.planned: s.start for s in svc.machine.pending()
+                   if s.planned is not None}
         now[0] = _den(S, 17, 41)
         SV.save_rule(svc.path, rule(interval_min=10, last_end="20:00"))
         svc.reload()
@@ -14163,23 +14189,132 @@ def test_schedule_save_review_round_4():
         need = timedelta(seconds=m.show_len_s + m.guard_s)
         close = [(a.n, m.hm(a.start), b.n, m.hm(b.start))
                  for a, b in zip(pend, pend[1:]) if b.start < a.start + need]
+        kept = {s.planned: s.start for s in pend if s.planned is not None}
         words = svc.tonight_words()
-        check(not close, f"{press}: no two shows still to come are too "
-                         f"close to both run: {close}")
-        check("too close" in words and
-              f"tonight now has {len(pend)} shows still to come" in words,
-              f"{press}: the answer says the Delay was dropped and counts "
-              f"only shows that can run: {words!r}")
+        check(kept == delayed and m.slot(1).start == delayed[_den(S, 18, 0)],
+              f"{press}: every Delay is kept, even one whose planned time "
+              f"left the file: {len(kept)} of {len(delayed)}, show 1 at "
+              f"{m.hm(m.slot(1).start)}")
+        skipped = [s for s in m.slots
+                   if s.reason.startswith(S.TOO_CLOSE_HEAD)]
+        check(not close and skipped and
+              all(s.status == S.SKIPPED for s in skipped),
+              f"{press}: the new times too close are skipped, none left "
+              f"too close: {close} {[(s.n, m.hm(s.start)) for s in skipped]}")
+        check("too close to show 1" in words and
+              f"tonight now has {len(pend)} shows still to come" in words
+              and "undid" not in words,
+              f"{press}: the answer says what was skipped and counts only "
+              f"shows that can run: {words!r}")
         _no_dashes(words, "spacing answer")
         for mi in range(0, 140, 1):
             now[0] = _den(S, 17, 42) + timedelta(minutes=mi)
             svc.tick()
         bad = [(s.n, s.reason) for s in svc.machine.slots
                if s.status == S.MISSED]
-        check(not bad and len(_starts(svc)) == len(pend),
-              f"{press}: every show still to come then runs, none missed "
-              f"behind another: {bad} {_starts(svc)}")
+        check(not bad and len(_starts(svc)) == len(pend) and
+              _starts(svc)[0] == 1,
+              f"{press}: show 1 runs first at its delayed time and every "
+              f"show still to come runs: {bad} {_starts(svc)}")
         svc.stop()
+
+    # Blocker 1, round 3: Delay the rest +15 (18:00 to 18:15), then at
+    # 18:12 a save of 18:00 every 10 minutes to 18:20. The new 18:00 and
+    # 18:10 have gone by: they are missed, never weighed against the
+    # delayed show, which still runs at 18:15.
+    svc, now = started(rule(interval_min=20, last_end="20:00"),
+                       _den(S, 17, 40))
+    svc._apply(_op(S, S.DELAY_REST, minutes=10))
+    svc._apply(_op(S, S.DELAY_REST, minutes=5))
+    check(svc.machine.hm(svc.machine.slot(1).start) == "18:15",
+          "setup: show 1 delayed to 18:15")
+    now[0] = _den(S, 18, 12)
+    svc.tick()
+    SV.save_rule(svc.path, rule(interval_min=10, last_end="18:20"))
+    svc.reload()
+    m = svc.machine
+    held = [x for x in m.slots if x.planned == _den(S, 18, 0)]
+    ten = [x for x in m.slots if m.hm(x.start) == "18:10"]
+    check(ten and ten[0].status == S.MISSED and
+          ten[0].reason == S.SAVED_PAST,
+          f"the new 18:10, gone by, is missed, not weighed against the "
+          f"delayed show: {[(x.status, x.reason) for x in ten]}")
+    check(held and held[0].status == S.PENDING and
+          m.hm(held[0].start) == "18:15",
+          f"the delayed 18:00 show still waits for 18:15: "
+          f"{[(s.n, m.hm(s.start), s.status, s.reason) for s in m.slots]}")
+    for t in ((18, 13), (18, 15), (18, 16)):
+        now[0] = _den(S, *t)
+        svc.tick()
+    check(held and _starts(svc) == [held[0].n],
+          f"it starts at 18:15: {_starts(svc)}")
+    svc.stop()
+
+    # Blocker 2, round 3: Delay the rest +10 at 17:58 (18:00 to 18:10);
+    # a save with a 10 minute interval at 17:59:30 never starts show 1 at
+    # 18:00, 30 seconds after the save.
+    svc, now = started(rule(interval_min=15, last_end="20:00"),
+                       _den(S, 17, 40))
+    now[0] = _den(S, 17, 58)
+    svc._apply(_op(S, S.DELAY_REST, minutes=10))
+    now[0] = _den(S, 17, 59, 30)
+    SV.save_rule(svc.path, rule(interval_min=10, last_end="20:00"))
+    svc.reload()
+    for t in ((18, 0), (18, 0, 10), (18, 5), (18, 9, 55)):
+        now[0] = _den(S, *t)
+        svc.tick()
+    check(not _starts(svc), f"nothing starts before 18:10: {_starts(svc)}")
+    now[0] = _den(S, 18, 10)
+    svc.tick()
+    check(_starts(svc) == [1], f"show 1 starts at 18:10: {_starts(svc)}")
+    svc.stop()
+
+    # Should-fix 3, round 3: the same times with a longer show (600 s)
+    # after Delay next +5: show 2 now too close to the delayed show 1 is
+    # skipped and said, never MISSED behind it while the answer says the
+    # list is kept as it is.
+    svc, now = started(rule(interval_min=15, last_end="20:00"),
+                       _den(S, 17, 40))
+    svc._apply(_op(S, S.DELAY_NEXT, minutes=5))
+    now[0] = _den(S, 17, 41)
+    longer = rule(interval_min=15, last_end="20:00")
+    longer["show_len_s"] = 600
+    SV.save_rule(svc.path, longer)
+    svc.reload()
+    m = svc.machine
+    words = svc.tonight_words()
+    check(m.slot(2).status == S.SKIPPED and
+          m.slot(2).reason == S.TOO_CLOSE_HEAD + "1)" and
+          SV.Service.KEPT_BUT in words and SV.Service.KEPT_TIMES not in
+          words and "too close to show 1" in words,
+          f"show 2 is skipped for the delayed show 1, and the answer says "
+          f"so: {m.slot(2).status} {words!r}")
+    for mi in range(0, 60):
+        now[0] = _den(S, 17, 42) + timedelta(minutes=mi)
+        svc.tick()
+    check(not [s for s in svc.machine.slots if s.status == S.MISSED] and
+          _starts(svc)[:2] == [1, 3],
+          f"show 1 runs, then show 3; nothing missed: {_starts(svc)}")
+    svc.stop()
+
+    # Gap 6, round 3: a dark night, a save whose times have all gone by
+    # (it stays OFF), then a save with a later time: it still opens as a
+    # restart would, never dark with "The night had closed".
+    svc, now = started(rule(night="thu"), _den(S, 19, 0))
+    SV.save_rule(svc.path, rule(last_end="18:50"))
+    svc.reload()
+    check(svc.machine.state == S.OFF and svc.machine.never_opened,
+          f"setup: every time gone by, still OFF and never opened: "
+          f"{svc.machine.state}")
+    SV.save_rule(svc.path, rule(last_end="22:00"))
+    svc.reload()
+    texts = " ".join(r["text"] for r in svc.journal)
+    check(svc.machine.state == S.STANDBY and not svc.machine.dark and
+          "The night had closed" not in texts and
+          "Tonight started from the schedule just saved" in texts,
+          f"the later save opens it as a restart would: "
+          f"{svc.machine.state} dark={svc.machine.dark}")
+    svc.stop()
 
     # Numbers: a save at 17:00 changing 18:00 every 20 minutes to 16:40
     # every 40: the shows still to come run in number order.
@@ -14193,6 +14328,22 @@ def test_schedule_save_review_round_4():
           f"{[(s.n, m.hm(s.start)) for s in m.slots]}")
     check(m.slot(1).reason == S.SAVED_PAST, "the 16:40 show is missed, "
           "its time gone by when saved")
+    texts = [r["text"] for r in svc.journal]
+    check(not any("at 18:00 is new in the schedule" in t for t in texts) and
+          any("at 17:20 is new in the schedule" in t for t in texts),
+          f"a time the old list had is not said to be new: "
+          f"{[t for t in texts if 'new in the schedule' in t]}")
+    svc.stop()
+    # A show added tonight is dropped when the times change, and the
+    # answer says what the save undid.
+    svc, now = started(rule(), _den(S, 17, 40))
+    svc._apply(_op(S, S.EDIT_ADD, at="18:50"))
+    SV.save_rule(svc.path, rule(interval_min=30))
+    svc.reload()
+    words = svc.tonight_words()
+    check("This save undid tonight's changes: The show added tonight at "
+          "18:50 is dropped" in words,
+          f"the answer says the added show was dropped: {words!r}")
     svc.stop()
     # A save in IDLE that puts a time in the past keeps the look: the
     # next show is still more than the preshow lead away.
@@ -14306,16 +14457,35 @@ def test_schedule_run_off_says_the_next_show_will_not_start():
           f"Run off with show 1 to come: {sv.get('run_warning')!r}")
     _no_dashes(sv.get("run_warning"), "run warning")
     check(not svc._run_pressed(), "and nothing pressed Run")
-    # Amber until the pre-roll window of that show, then a fault (review of
-    # PR #180: red all day in IDLE).
-    check(sv.get("run_warning_urgent") is False,
-          f"at 17:55 the 18:00 show is not yet within the pre-roll "
-          f"window: not a fault yet: {sv.get('run_warning_urgent')!r}")
-    win = svc.preroll.window_s if svc.preroll is not None else 10
+    # Amber until 30 minutes before that show, then a fault (review of PR
+    # #180: red all day in IDLE; round 3: the 10 s pre-roll window was too
+    # late to act on). Once the first show time has gone by, red at once.
     was = n.now[0]
-    n.now[0] = _den(S, 18, 0) - timedelta(seconds=win)
+    check(sv.get("run_warning_urgent") is True,
+          f"at 17:55, 5 minutes before the 18:00 show, it is a fault: "
+          f"{sv.get('run_warning_urgent')!r}")
+    n.now[0] = _den(S, 17, 29)
+    check(svc.state_view().get("run_warning_urgent") is False,
+          "31 minutes before the show it is amber, not a fault")
+    n.now[0] = _den(S, 17, 30)
     check(svc.state_view().get("run_warning_urgent") is True,
-          "within the pre-roll window it is a fault")
+          "30 minutes before the show it is a fault")
+    from dataclasses import replace as _rp
+    m0 = svc.machine
+    svc.machine = _rp(m0, slots=tuple(
+        _rp(x, start=_den(S, 17, 0)) if x.n == 1 else x for x in m0.slots)
+        + (S.Slot(n=99, start=_den(S, 21, 0)),))
+    svc.machine = _rp(svc.machine, slots=tuple(
+        _rp(x, status=S.MISSED) if x.n == 1 else x
+        for x in svc.machine.slots))
+    n.now[0] = _den(S, 17, 1)
+    nxt = svc.machine.next_slot()
+    check(nxt is not None and
+          (nxt.start - _den(S, 17, 1)).total_seconds() > 1800 and
+          svc.state_view().get("run_warning_urgent") is True,
+          "once the night's first show time has gone by it is a fault, "
+          "however far the next show is")
+    svc.machine = m0
     n.now[0] = was
     check("Run is off: the 18:00 show (show 1) will NOT start" in
           svc.tonight_words(), "the answer to a save says it too")

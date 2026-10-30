@@ -1022,17 +1022,17 @@ class Service:
 
     # -- a schedule saved while running (Jeff, Pico, 2026-10-29) -----------
     # What a rebuild keeps and drops (sch.rebuild_night), said once at its
-    # head. A show taken off tonight's list or skipped stays SKIPPED, and a
-    # Delay or move is kept while the show's time is in the schedule; only
-    # a move of a show whose time left the schedule, and shows added
-    # tonight, are dropped, each in a sentence of its own.
+    # head. A show taken off tonight's list or skipped stays SKIPPED, a
+    # Delay or move is always kept (a save never moves a show earlier than
+    # an operator put it), and a time from the file too close to a delayed
+    # show is skipped; only shows added tonight are dropped. Each change is
+    # a sentence of its own.
     REBUILT_WHAT = (
         "Shows that already happened keep their status and their numbers, "
         "and a show taken off tonight's list or skipped stays skipped. A "
-        "Delay or move of a show still to come is kept while that show's "
-        "time is still in the schedule. A move of a show whose time is no "
-        "longer in the schedule, and shows added tonight, are dropped; "
-        "each one is said below.")
+        "Delay or move of a show still to come is kept, and a time from the "
+        "file too close to a delayed show is skipped. Shows added tonight "
+        "are dropped. Each change is said below.")
     REBUILT_RESTART = (
         "The schedule file changed after tonight's list was saved, so "
         "tonight is rebuilt from the new schedule. " + REBUILT_WHAT)
@@ -1048,19 +1048,33 @@ class Service:
         "No show still to come tonight changed its time, so tonight's list "
         "is kept as it is, with every change made to it tonight (delays, "
         "moves, shows added, taken off or skipped).")
+    # The same, when the new show length or guard leaves a show too close
+    # to one an operator delayed: that show is skipped, said next.
+    KEPT_BUT = (
+        "No show still to come tonight changed its time, so tonight's list "
+        "is kept with every change made to it tonight, except a show now "
+        "too close to a delayed one, which is skipped:")
     KEPT_RESTART = ("The schedule file changed after tonight's list was "
                     "saved. " + KEPT_TIMES)
     KEPT_SAVED = "The schedule file was saved. " + KEPT_TIMES
 
     def _rebuild_tonight(self, m, now, saved, dropped=None,
-                         past=sch.SAVED_PAST):
+                         past=sch.SAVED_PAST, skipped=None):
         """The one rebuild for a changed schedule, a restart's and a save's
         (`saved`) (sch.follow_rule, which uses sch.rebuild_night): the
         Outcome, with every change said in the journal. `dropped` gets each
-        change made tonight that the rebuild undid. Lock held."""
+        change made tonight that the rebuild undid, `skipped` each time
+        from the file skipped for a delayed show. Lock held."""
         kept = sch.keeps_tonight(self.rule, m)
-        out, notes = sch.follow_rule(self.rule, m, now, dropped, past)
-        if kept:
+        skipped = [] if skipped is None else skipped
+        out, notes = sch.follow_rule(self.rule, m, now, dropped, past,
+                                     skipped)
+        if kept and skipped:
+            # Not "kept as it is": a show was skipped for a delayed show
+            # (review of PR #180, round 3, a new show length).
+            why = ((self.KEPT_SAVED if saved else self.KEPT_RESTART)
+                   .replace(self.KEPT_TIMES, self.KEPT_BUT))
+        elif kept:
             why = self.KEPT_SAVED if saved else self.KEPT_RESTART
         else:
             why = self.REBUILT_SAVED if saved else self.REBUILT_RESTART
@@ -1093,23 +1107,25 @@ class Service:
                     action="load tonight", outcome="waiting")
             return False
         self._follow_said = None
-        dropped = []
+        dropped, skipped = [], []
         # A save followed only now, after the show or closing it waited
         # for, misses a time gone by for that reason, not "when saved".
         out, kept = self._rebuild_tonight(
             m, now, True, dropped,
-            sch.FOLLOWED_PAST if deferred else sch.SAVED_PAST)
+            sch.FOLLOWED_PAST if deferred else sch.SAVED_PAST, skipped)
         self._save_said_on = m.date
-        self._save_said = ([self.KEPT_TIMES] if kept else
-                           [f"This save undid tonight's changes: "
-                            f"{' '.join(dropped)}"] if dropped else [])
+        self._save_said = (
+            ([self.KEPT_BUT if skipped else self.KEPT_TIMES] if kept else
+             [f"This save undid tonight's changes: {' '.join(dropped)}"]
+             if dropped else []) + list(skipped))
         self.machine = out.machine
         self._record(out, now)
         if out.machine.state == sch.BOOT:
             # A night that never opened (sch.follow_rule): it starts as a
             # restart starts it, through BOOT_DONE and its usual effects,
             # held back like any the scheduler decides while Run is off.
-            self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
+            self._apply(sch.Event(sch.BOOT_DONE, "system",
+                                  detail=sch.SAVED_START), now)
         self._save_tonight()
         self._journal_line("system", self._tonight_words(now),
                            action="load tonight", outcome="planned")
@@ -1247,24 +1263,24 @@ class Service:
         return (f"Run is off: the {m.hm(nxt.start)} show (show {nxt.n}) will "
                 f"NOT start. Press {', then '.join(need)}.")
 
+    # The Run warning turns red (a fault) this long before the next show
+    # (review of PR #180, round 3: the pre-roll window, 10 s, was too late
+    # to act on).
+    RUN_WARNING_RED_S = 30 * 60
+
     def _run_warning_urgent(self, now):
-        """True once the next show is within the pre-roll window (the rig
-        check's, or preroll.DEFAULT_S with none): the Run warning is then a
+        """True when the next show is within RUN_WARNING_RED_S, or once the
+        night's first show time has gone by: the Run warning is then a
         fault, red. Before that it is said in amber, not as a fault, so it
-        is not red all day in IDLE (review of PR #180). Lock held."""
+        is not red all day in IDLE. Lock held."""
         m = self.machine
         nxt = m.next_slot() if m is not None else None
         if nxt is None:
             return False
-        pr = self.preroll
-        try:
-            window = float(pr.window_s) if pr is not None else None
-        except (AttributeError, TypeError, ValueError):
-            window = None
-        if window is None:
-            from . import preroll as _preroll
-            window = float(_preroll.DEFAULT_S)
-        return (nxt.start - sch._utc(now)).total_seconds() <= window
+        now = sch._utc(now)
+        if any(s.start <= now for s in m.slots):
+            return True
+        return (nxt.start - now).total_seconds() <= self.RUN_WARNING_RED_S
 
     def _programming_run(self):
         """A sentence while a Programming Run is in force (the pre-roll's

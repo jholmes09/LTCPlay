@@ -18840,8 +18840,8 @@ def build():
 
  ("saved schedule: the rebuilt list is not saved, so a restart rebuilds again",
   "ltcplay/schedule_service.py",
-  "            self._apply(sch.Event(sch.BOOT_DONE, \"system\"), now)\n        self._save_tonight()\n        self._journal_line(\"system\", self._tonight_words(now),",
-  "            self._apply(sch.Event(sch.BOOT_DONE, \"system\"), now)\n        self._journal_line(\"system\", self._tonight_words(now),"),
+  "                                  detail=sch.SAVED_START), now)\n        self._save_tonight()\n        self._journal_line(\"system\", self._tonight_words(now),",
+  "                                  detail=sch.SAVED_START), now)\n        self._journal_line(\"system\", self._tonight_words(now),"),
 
  ("saved schedule: an extra show is renumbered by a rebuild",
   "ltcplay/schedule.py",
@@ -18850,8 +18850,8 @@ def build():
 
  ("saved schedule: a time still to come loses its show's number",
   "ltcplay/schedule.py",
-  "            to_come.setdefault(planned, sl.n)\n",
-  "            pass\n"),
+  "            to_come.setdefault(planned, sl.n)\n            if sl.planned is not None and planned in fresh_times:",
+  "            if sl.planned is not None and planned in fresh_times:"),
 
  ("saved schedule: a save rebuilds tonight under a running show",
   "ltcplay/schedule.py",
@@ -18997,8 +18997,8 @@ def build():
 
  ("review180: a save with tonight's times unchanged still rebuilds tonight",
   "ltcplay/schedule.py",
-  "    if keeps_tonight(rule, saved):\n        return _carried(",
-  "    if False:\n        return _carried("),
+  "    if keeps_tonight(rule, saved):\n        notes = []",
+  "    if False:\n        notes = []"),
 
  ("review180: a time no longer in the schedule still keeps tonight's list",
   "ltcplay/schedule.py",
@@ -19012,13 +19012,13 @@ def build():
 
  ("review180: the answer does not say what the save undid",
   "ltcplay/schedule_service.py",
-  "                            f\"{' '.join(dropped)}\"] if dropped else [])",
-  "                            f\"{' '.join(dropped)}\"] if False else [])"),
+  "             [f\"This save undid tonight's changes: {' '.join(dropped)}\"]\n             if dropped else []) + list(skipped))",
+  "             [f\"This save undid tonight's changes: {' '.join(dropped)}\"]\n             if False else []) + list(skipped))"),
 
  ("review180: the answer does not say tonight's list was kept",
   "ltcplay/schedule_service.py",
-  "        self._save_said = ([self.KEPT_TIMES] if kept else",
-  "        self._save_said = ([] if kept else"),
+  "            ([self.KEPT_BUT if skipped else self.KEPT_TIMES] if kept else",
+  "            ([] if kept else"),
 
  ("review180: a show's records go by its number alone",
   "ltcplay/schedule_service.py",
@@ -19064,8 +19064,8 @@ def build():
 
  ("review180: a kept list on restart forgets the show that was running",
   "ltcplay/schedule.py",
-  "        return _carried(fresh, saved, saved.slots, saved.running), []",
-  "        return _carried(fresh, saved, saved.slots, 0), []"),
+  "        m = _carried(fresh, saved, saved.slots, saved.running)\n        return _room_for_delays(",
+  "        m = _carried(fresh, saved, saved.slots, 0)\n        return _room_for_delays("),
 
  ("review180: a save drops the Delay of a show whose time is still in the schedule",
   "ltcplay/schedule.py",
@@ -19097,15 +19097,45 @@ def build():
   "        tx.m = replace(tx.m, never_opened=True)",
   "        pass"),
 
- ("review180 r4: a kept Delay is not spaced against the new times",
+ ("review180 r5: a time too close to a delayed show is not skipped",
   "ltcplay/schedule.py",
-  "            if _spacing_problem(m, m.slots, {n}, _LONG_AGO) is None:",
-  "            if True:"),
+  "            if a.planned is not None and b.planned is None:\n                hit = (b, a)\n            elif b.planned is not None and a.planned is None:\n                hit = (a, b)",
+  "            pass"),
+
+ ("review180 r5: a time gone by is weighed against a delayed show",
+  "ltcplay/schedule.py",
+  "    cut = _LONG_AGO if now is None else _utc(_aware(now))",
+  "    cut = _LONG_AGO"),
+
+ ("review180 r5: a save drops a Delay whose planned time left the file",
+  "ltcplay/schedule.py",
+  "                orphans.append(sl)\n",
+  "                pass\n"),
+
+ ("review180 r5: the kept list is not checked for a delayed show",
+  "ltcplay/schedule.py",
+  "        return _room_for_delays(m, now, notes, skipped), notes\n    hm = fresh.hm",
+  "        return m, notes\n    hm = fresh.hm"),
+
+ ("review180 r5: the Run warning is amber after the first show time",
+  "ltcplay/schedule_service.py",
+  "        if any(s.start <= now for s in m.slots):\n            return True\n",
+  ""),
+
+ ("review180 r5: a rebuild forgets the night never opened",
+  "ltcplay/schedule.py",
+  "                   never_opened=saved.never_opened)",
+  "                   never_opened=False)"),
+
+ ("review180 r5: a save on a dark night says the scheduler started",
+  "ltcplay/schedule.py",
+  "            if was else \"Tonight started from the schedule just saved\"\n            if ev.detail == SAVED_START else \"The scheduler started\")",
+  "            if was else \"The scheduler started\")"),
 
  ("review180 r4: shows still to come are numbered against time order",
   "ltcplay/schedule.py",
-  "    for sl in sorted(left, key=lambda x: x.start):",
-  "    for sl in sorted(left, key=lambda x: -x.start.timestamp()):"),
+  "    for sl in sorted(left, key=lambda x: (at(x), x.start)):",
+  "    for sl in sorted(left, key=lambda x: (-at(x).timestamp(), x.start)):"),
 
  ("review180 r4: a time a save put in the past moves IDLE to STANDBY",
   "ltcplay/schedule.py",
@@ -19119,8 +19149,8 @@ def build():
 
  ("review180 r4: a save followed after a show says it went by when saved",
   "ltcplay/schedule_service.py",
-  "            sch.FOLLOWED_PAST if deferred else sch.SAVED_PAST)",
-  "            sch.SAVED_PAST)"),
+  "            sch.FOLLOWED_PAST if deferred else sch.SAVED_PAST, skipped)",
+  "            sch.SAVED_PAST, skipped)"),
 
  ("review180 r4: a save leaving nothing to come does not say the night closes now",
   "ltcplay/schedule_service.py",
@@ -19134,7 +19164,7 @@ def build():
 
  ("review180 r4: the Run warning is a fault all day",
   "ltcplay/schedule_service.py",
-  "        return (nxt.start - sch._utc(now)).total_seconds() <= window",
+  "        return (nxt.start - now).total_seconds() <= self.RUN_WARNING_RED_S",
   "        return True"),
 
  ("review180 r4: two schedule saves at once are not one at a time",
@@ -19149,8 +19179,8 @@ def build():
 
  ("review180 r4: the kept answer says tonight's times did not change",
   "ltcplay/schedule_service.py",
-  "        \"No show still to come tonight changed its time, so tonight's list \"",
-  "        \"Tonight's show times did not change, so tonight's list \""),
+  "        \"No show still to come tonight changed its time, so tonight's list \"\n        \"is kept as it is,",
+  "        \"Tonight's show times did not change, so tonight's list \"\n        \"is kept as it is,"),
 
  ("review180: the answer to a save on Hold does not say the Hold stands",
   "ltcplay/schedule_service.py",
