@@ -1124,11 +1124,18 @@ def _enter(tx, state, show=0, after_stop=False, resume=False):
         tx.m = replace(tx.m, dark=dark)
 
 
-def _after_show(tx, abort=False, stopped=False):
+def _after_show(tx, abort=False, stopped=False, hold=False):
     """Where a show that has just finished, or been stopped, leaves the
-    night. `stopped` is a show cut short (Abort, a failed start)."""
+    night. `stopped` is a show cut short (Abort, a failed start). `hold`
+    is an operator's Stop (Jeff, 2026-10-30): with a show still to come it
+    leaves the schedule on HOLD, dark, so nothing starts by itself until
+    Resume (or an explicit Start now); with none left it leaves the night
+    as an Abort does (STANDBY, and the next tick closes it)."""
     m = tx.m
-    if abort or m.waiting():
+    if hold and m.waiting():
+        tx.m = replace(tx.m, held_from=STANDBY)
+        _enter(tx, HOLD, after_stop=stopped)
+    elif abort or m.waiting():
         # Abort stays in STANDBY even when no show is left; the next tick
         # closes the night if so.
         _enter(tx, STANDBY, after_stop=stopped)
@@ -1440,7 +1447,7 @@ def _pause_so_far(tx):
 
 
 def _show_stopped(m, ev, now, status, reason, text, effects, abort=False,
-                  stopped=None):
+                  stopped=None, hold=False):
     tx = _Tx(m, ev, now)
     n = m.running
     s = m.slot(n)
@@ -1452,7 +1459,8 @@ def _show_stopped(m, ev, now, status, reason, text, effects, abort=False,
         tx.m = replace(tx.m, faults=tx.m.faults + (text,))
     tx.effects.extend(effects)
     _after_show(tx, abort=abort,
-                stopped=bool(effects) if stopped is None else stopped)
+                stopped=bool(effects) if stopped is None else stopped,
+                hold=hold)
     tx.note(ev.kind, status.lower(), reason, text, show=n)
     return tx.done()
 
@@ -1853,14 +1861,16 @@ def _abort(m, ev, now):
 
 
 def _stop_show(m, ev, now):
-    """Stop during a show (the Stream Deck's Stop held; Jeff, 2026-10-26):
-    the show ends now, faded to dark as an Abort is, and the night carries
-    on exactly as after an Abort: STANDBY and dark, and after the last show
-    of the night the next tick closes the night (review of #130, 2). But
-    nothing is latched: no Reset is needed, and with Run no longer pressed
-    no later show starts. The engine disarms the flame groups and lasers
-    itself before this and journals how that went, so this line claims
-    only what the scheduler does."""
+    """Stop during a show (every Stop: a screen's double tap, an iPad, the
+    Stream Deck's Stop held): the show ends now, faded to dark as an Abort
+    is, and nothing is latched. Stop also holds (Jeff, 2026-10-30): with a
+    show still to come the schedule goes on HOLD, dark (held_from STANDBY),
+    so no later show starts by itself until Resume; Run is left alone.
+    After the last show of the night it leaves the night as an Abort does
+    (STANDBY and dark, and the next tick closes it; review of #130, 2).
+    The engine disarms the flame groups and lasers itself before this and
+    journals how that went, so this line claims only what the scheduler
+    does. Reset's end of a paused show (RESET_DETAIL) does not hold."""
     n = m.running
     if ev.detail == RESET_DETAIL:
         return _show_stopped(
@@ -1873,17 +1883,21 @@ def _stop_show(m, ev, now):
             f"rig stays dark until Start now or the next show's time, and "
             f"only while Run is pressed.",
             _abort_effects(n), abort=True)
+    held = m.waiting()
     return _show_stopped(
         m, ev, now, ABORTED, "STOPPED (operator Stop)",
         f"{_pressed(ev, 'Stop')} during show {n}. Flame cues zeroed and "
         f"lasers blanked; music, video and pixels fading to black over "
         f"{ABORT_FADE_S:g} s, then MadMapper stopped. Nothing is latched: "
-        f"no Reset is needed, and no show starts until Run is pressed "
-        f"again.",
-        # As an Abort leaves the night: STANDBY, never straight to closing
-        # (the latch is not set here; only an Abort's conductor call sets
-        # it, schedule_service).
-        _abort_effects(n), abort=True)
+        f"no Reset is needed. "
+        + (f"The schedule is on Hold: no show starts by itself until "
+           f"Resume; a show whose time passes meanwhile is delayed and "
+           f"waits for Start now." if held else
+           f"There are no more shows tonight, so the night closes."),
+        # As an Abort leaves the night (never straight to closing; the
+        # latch is not set here, only an Abort's conductor call sets it,
+        # schedule_service), but on HOLD while a show is still to come.
+        _abort_effects(n), abort=True, hold=True)
 
 
 def _end_night(m, ev, now):

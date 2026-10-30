@@ -577,7 +577,8 @@ class _ConductorCalls:
     is slow (its lock is held across a device call) holds up only the
     requests behind it, never a tick or a status poll.
 
-    With ONE exception: an Abort never waits more than URGENT_WAIT_S behind
+    With ONE exception: an Abort, or a Stop (Jeff, 2026-10-30: Stop has
+    every guarantee Abort had), never waits more than URGENT_WAIT_S behind
     another request. If the line has not reached it by then (the request
     in front of it is stuck, or the line's thread has died), it is taken
     out of the line and made at once on a thread of its own. The requests
@@ -586,20 +587,28 @@ class _ConductorCalls:
     this Abort and must not clear it) are not sent at all; intermission and
     show_stopped stay in the line (they only ever take the rig dark, and
     the conductor ignores them while latched; failed_start too, for the
-    same reason). Requests decided after the
-    Abort stay in the line, in order.
+    same reason). A Stop supersedes the same, except a Reset
+    (SUPERSEDED_BY_STOP). Requests decided after the Abort or Stop stay
+    in the line, in order.
 
     The thread starts with the first request, so a Service with no
     conductor never has one."""
 
     URGENT_WAIT_S = 0.25
-    # What a Stop (STOP_SHOW, the Stream Deck's halt) takes out of the line
-    # if it is still waiting there: a show start, so the music and video
-    # never start only to fade (review of #130, second pass, 4). Never a
-    # Reset, Hold or Resume: Stop is not an Abort, and latches nothing.
-    STOP_DROPS = ("show_starting", "start_show")
+    # What a Stop (STOP_SHOW, every Stop: the screens' double tap and the
+    # Stream Deck's halt) takes out of the line if it is still waiting
+    # there, decided before it: a show start, so the music and video never
+    # start only to fade (review of #130, second pass, 4), and a Hold or
+    # Resume, so nothing pressed before the Stop runs after it (Jeff,
+    # 2026-10-30: Stop has every guarantee Abort had). Never a Reset: Stop
+    # latches nothing, so a Reset has nothing of the Stop's to clear.
+    STOP_DROPS = ("hold", "resume", "show_starting", "start_show")
     SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting",
                            "start_show")
+    SUPERSEDED_BY_STOP = STOP_DROPS
+    # The conductor requests that never wait more than URGENT_WAIT_S
+    # behind the line: an Abort, and a Stop (Conductor.stop).
+    URGENT = ("abort", "stop")
 
     def __init__(self, run_one, overtaken=None, clock=None):
         self._run_one = run_one
@@ -619,11 +628,11 @@ class _ConductorCalls:
             if self._thread is None:
                 self._start()
             self._cv.notify_all()
-            urgent = call.method == "abort" and (
+            urgent = call.method in self.URGENT and (
                 self._busy or len(self._q) > 1 or not self._alive())
         if urgent:
             threading.Thread(target=self._mind, args=(call,), daemon=True,
-                             name="ltcplay-conductor-abort").start()
+                             name=f"ltcplay-conductor-{call.method}").start()
 
     def _start(self):
         self._thread = threading.Thread(
@@ -654,8 +663,8 @@ class _ConductorCalls:
                     self._cv.notify_all()
 
     def _mind(self, call):
-        """An Abort that found the line busy: give the line URGENT_WAIT_S to
-        reach it, then make it here instead."""
+        """An Abort or a Stop that found the line busy: give the line
+        URGENT_WAIT_S to reach it, then make it here instead."""
         with self._cv:
             if self._cv.wait_for(lambda: call not in self._q,
                                  self.URGENT_WAIT_S):
@@ -663,8 +672,10 @@ class _ConductorCalls:
             self._q.remove(call)
             ahead = self._current
             age = (self._clock() - self._since) if ahead is not None else 0.0
+            gone = (self.SUPERSEDED_BY_ABORT if call.method == "abort"
+                    else self.SUPERSEDED_BY_STOP)
             dropped = [c for c in self._q if c.seq < call.seq and
-                       c.method in self.SUPERSEDED_BY_ABORT]
+                       c.method in gone]
             for c in dropped:
                 self._q.remove(c)
             self._side[call] = self._clock()
@@ -717,10 +728,11 @@ class _ConductorCalls:
     def drop(self, methods, before_seq):
         """Take the requests still waiting in the line whose method is in
         `methods` and that were decided before `before_seq` out of it, and
-        return them: they are not sent. For Stop (STOP_DROPS): a show start
-        still waiting is not sent once the show has been stopped. Nothing
-        else: no latch, and the request the line is making now is left
-        alone."""
+        return them: they are not sent. For Stop (STOP_DROPS): a Hold, a
+        Resume or a show start still waiting is not sent once the show has
+        been stopped. Nothing else: no latch, and the request the line is
+        making now is left alone (an urgent Stop goes beside it after
+        URGENT_WAIT_S)."""
         with self._cv:
             gone = [c for c in self._q
                     if c.method in methods and c.seq < before_seq]
@@ -1137,6 +1149,13 @@ class Service:
         elif kinds >= self._ABORT_EFFECTS:
             if ev.kind == sch.ABORT:
                 plan.append(("Abort", "abort", self._ABORT_EFFECTS))
+            elif ev.kind == sch.STOP_SHOW and \
+                    ev.detail != sch.RESET_DETAIL:
+                # Every operator's Stop (Jeff, 2026-10-30): Abort's whole
+                # sequence at the conductor, urgent in the line, with no
+                # latch (Conductor.stop). Reset's end of a paused show
+                # stays the plain dark of show_stopped.
+                plan.append(("Stop", "stop", self._ABORT_EFFECTS))
             elif ev.kind == sch.SHOW_FAILED:
                 plan.append(("Failed start", "failed_start",
                              self._ABORT_EFFECTS))
@@ -1308,6 +1327,12 @@ class Service:
                      "blanked, video, pixels and music down. This does not "
                      "disarm anything; an Abort not yet Reset stays latched "
                      "here until Reset."),
+        "stop": (" An operator's Stop: flame cues zeroed and every flame "
+                 "group sent a disarm at once, the lasers blanked at once "
+                 "and again after the fade, video, pixels and music faded "
+                 "to black, the video stopped. Nothing is latched; with a "
+                 "show still to come the schedule is on Hold until "
+                 "Resume."),
         "show_stopped": (" The rig goes dark and stays dark until an "
                          "operator presses Start now or the next show "
                          "starts. No flame group is disarmed and nothing "
@@ -1376,9 +1401,10 @@ class Service:
         return _ConductorCall(label, method, who, screen, self._call_seq)
 
     def _abort_overtook(self, call, ahead, age, dropped):
-        """On the Abort's own thread: it was sent ahead of a request that
-        had not answered, and the requests in `dropped`, decided before it
-        and superseded by it, are not sent at all."""
+        """On the Abort's (or the Stop's) own thread: it was sent ahead of a
+        request that had not answered, and the requests in `dropped`,
+        decided before it and superseded by it, are not sent at all."""
+        what_kind = "a Stop" if call.method == "stop" else "an Abort"
         with self._locked():
             what = (f"{ahead.label}, which had not answered for {age:.1f} s"
                     if ahead is not None else
@@ -1386,14 +1412,15 @@ class Service:
                     "requests to the show conductor was not moving")
             others = [c.label for c in dropped if c.method != "reset"]
             self._journal_line(
-                "system", f"Abort was sent to the show conductor at once, "
-                f"ahead of {what}."
-                + (f" Not sent, because the Abort supersedes them: "
+                "system", f"{call.label} was sent to the show conductor at "
+                f"once, ahead of {what}."
+                + (f" Not sent, because the {call.label} supersedes them: "
                    f"{', '.join(others)}." if others else ""),
                 action="conductor", outcome="sent ahead")
             for r in dropped:
                 r.ok = False
-                r.sentence = f"{r.label} was not sent: an Abort overtook it."
+                r.sentence = (f"{r.label} was not sent: {what_kind} "
+                              f"overtook it.")
                 if r.method == "reset":
                     r.sentence = ("Reset was not sent: an Abort was pressed "
                                   "after it. Press Reset again once the rig "
@@ -3465,7 +3492,11 @@ class Service:
                "resume": sch.RESUME, "abort": sch.ABORT,
                # The engine's own Stop during a show (web.py, the Stream
                # Deck's Stop held; Jeff, 2026-10-26): never a remote route.
-               "stop-show": sch.STOP_SHOW}
+               "stop-show": sch.STOP_SHOW,
+               # The engine's own Stop between shows (Remote.halt; Jeff,
+               # 2026-10-30: Stop also holds): the schedule's Hold, said
+               # as the Stop it was. Never a remote route either.
+               "stop-hold": sch.HOLD_ON}
     # The states in which a refused Hold or Resume found nothing to do:
     # nothing can start by itself (on hold, paused, the night over), or
     # nothing is held. BOOT is not among them: there the scheduler has not
@@ -3475,7 +3506,8 @@ class Service:
                                 sch.CLOSING, sch.OFF))
 
     def operator_press(self, what, who, screen, confirmed=False,
-                       pressed=None, surface=False, preroll=True):
+                       pressed=None, surface=False, preroll=True,
+                       detail=""):
         """One operator press from a screen: Start now, Hold, Resume or
         Abort. `who` must be on the operator list and `screen` on the
         screen list; anything else is refused in the journal and raised as
@@ -3517,6 +3549,16 @@ class Service:
             # A Start now waiting for the show audio never outlives these.
             self.cancel_start_wait(f"{what} was pressed")
         gen = None
+        if kind == sch.RESUME and self.halting():
+            # A Resume never lands in the middle of a Stop (Jeff,
+            # 2026-10-30: Stop holds the schedule, and has every guarantee
+            # an Abort had; this is the Stop's analogue of a Reset pressed
+            # before an Abort landed).
+            sentence = (f"Resume was refused: {self.HALTING}. Nothing was "
+                        f"resumed.")
+            self.journal_press(who, screen, "resume", "refused",
+                               f"{who}'s Resume was refused. {sentence}")
+            return {"ok": False, "text": sentence, "halting": True}
         if kind == sch.START_NOW and self.halting():
             sentence = (f"Start now was refused: {self.HALTING}. Nothing "
                         f"was started.")
@@ -3569,7 +3611,8 @@ class Service:
                 out = self._apply(sch.Event(kind, "operator", who=who,
                                             screen=screen,
                                             confirmed=bool(confirmed),
-                                            surface=bool(surface)))
+                                            surface=bool(surface),
+                                            detail=str(detail or "")))
             finally:
                 self._press_stamp = None
         if out.refused:

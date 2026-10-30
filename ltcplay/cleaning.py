@@ -974,13 +974,13 @@ class CleaningPanel:
         return 200, {"ok": True, "text": "The wave flamer cleaning is "
                                          "stopped."}
 
-    def on_abort(self, who="", screen=""):
+    def on_abort(self, who="", screen="", what="Abort"):
         """Abort (Morning.on_abort, before the Abort's own flame disarm):
         never waits (review of #159, 4). The purge frame is dropped at once
         and the run marked aborted, so a beat or the watcher holding the
         panel's lock stops at its next look; the stop and its disarm run
         on a thread of their own, after the lock is free."""
-        why = f"Abort pressed by {who or screen or 'someone'}"
+        why = f"{what} pressed by {who or screen or 'someone'}"
         if self._run is None:
             return
         self._aborted = why

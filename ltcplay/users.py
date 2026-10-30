@@ -176,6 +176,10 @@ REMOTE_ROUTES = {
     # something away and is never restricted.
     "announce-stop": "safety", "announce-play": "show",
     "start-now": "show", "resume": "show", "reset": "show",
+    # Run off (2026-10-30): Stop no longer turns Run off, so the
+    # Programming Run card's Run off does (the Stop, then playback
+    # stops). Run itself is a show press (/api/start), and so is this.
+    "run-off": "show",
     "play-from": "show", "jump": "show", "pause": "show",
     "continue": "show", "mark-a": "show", "mark-b": "show",
     "loop": "show", "follow": "show",
