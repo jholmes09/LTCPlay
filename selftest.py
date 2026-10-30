@@ -57153,6 +57153,28 @@ def test_stop_holds_the_schedule_and_leaves_run_on():
               f"{o3.machine.state}")
     finally:
         R.close()
+    # The Stop's Hold survives a restart (tonight's file): back on HOLD,
+    # dark, and the next show's time does not start it.
+    rule = _one_night_rule(S)
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    n.tick(_den(S, 18, 0))
+    n.op(S.STOP_SHOW, _den(S, 18, 2), confirmed=True)
+    check(n.m.state == S.HOLD and n.m.dark, f"setup: on the Stop's Hold: "
+                                            f"{n.m.state} {n.m.dark}")
+    doc = json.loads(json.dumps(S.machine_to_doc(n.m)))
+    back = S.machine_from_doc(doc, rule, n.m.date, _den(S, 18, 5))
+    o = S.step(back, S.Event(S.BOOT_DONE, "system"), _den(S, 18, 5))
+    check(doc.get("state") == S.HOLD and doc.get("dark") is True and
+          o.machine.state == S.HOLD and o.machine.dark and
+          S.INTERMISSION not in [e.kind for e in o.effects],
+          f"a restart keeps the Stop's Hold, dark: {doc.get('state')} "
+          f"{o.machine.state} {[e.kind for e in o.effects]}")
+    o2 = S.step(o.machine, S.Event(S.TICK, "scheduler"), _den(S, 18, 21))
+    check(o2.machine.running == 0 and o2.machine.state == S.HOLD and
+          o2.machine.delayed() is not None,
+          f"and the next show's time does not start it: "
+          f"{o2.machine.state} {o2.machine.running}")
     print("  ok")
 
 
