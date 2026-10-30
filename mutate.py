@@ -7813,8 +7813,8 @@ def build():
 
  ("scheduler fix round 2: the Abort latch is never read back",
   "ltcplay/schedule.py",
-  "        abort_latched=doc.get(\"abort_latched\", False))",
-  "        abort_latched=False)"),
+  "        abort_latched=doc.get(\"abort_latched\", False),",
+  "        abort_latched=False,"),
 
  ("scheduler fix round 2: the scheduler ignores its own saved Abort latch",
   "ltcplay/schedule_service.py",
@@ -8091,8 +8091,8 @@ def build():
 
  ("scheduler fix round 3: R309 a schedule change rebuild drops the latch",
   "ltcplay/schedule.py",
-  "                abort_latched=saved.abort_latched)",
-  "                abort_latched=False)"),
+  "                   abort_latched=saved.abort_latched,",
+  "                   abort_latched=False,"),
 
  ("scheduler fix round 3: R312 a hung conductor request is a fault only "
   "after 30 s",
@@ -18722,8 +18722,8 @@ def build():
 
  ("saved schedule: a closed night stays closed though a show is still to come",
   "ltcplay/schedule.py",
-  "    elif tx.m.waiting():\n        tx.m = replace(tx.m, held_from=\"\")",
-  "    elif False:\n        tx.m = replace(tx.m, held_from=\"\")"),
+  "    if was == OFF and tx.m.waiting() and not closed_by_operator(tx.m):",
+  "    if False:"),
 
  ("saved schedule: a reopened night brings a look back instead of staying dark",
   "ltcplay/schedule.py",
@@ -18762,18 +18762,18 @@ def build():
 
  ("saved schedule: a save on Hold ends the Hold",
   "ltcplay/schedule.py",
-  "        tx.m = replace(tx.m, state=was, held_from=m.held_from, dark=m.dark)",
-  "        tx.m = replace(tx.m, state=STANDBY if was == HOLD else was, held_from=m.held_from, dark=m.dark)"),
+  "    tx.m = replace(rebuilt, state=was, running=0, paused_at=None,",
+  "    tx.m = replace(rebuilt, state=STANDBY if was == HOLD else was, running=0, paused_at=None,"),
 
  ("saved schedule: a show made due during a Hold is missed, not delayed",
   "ltcplay/schedule.py",
-  "    _sweep(tx, held=(was == HOLD))\n    if was != OFF:",
-  "    _sweep(tx, held=False)\n    if was != OFF:"),
+  "    _settle_saved_past(tx, m, held=(was == HOLD))",
+  "    _settle_saved_past(tx, m, held=False)"),
 
  ("saved schedule: a night closed with Close for the night opens again",
   "ltcplay/schedule.py",
-  "            if closed:\n                sl = replace(sl, status=SKIPPED, reason=CLOSED_BY_OPERATOR)",
-  "            if False:\n                sl = replace(sl, status=SKIPPED, reason=CLOSED_BY_OPERATOR)"),
+  "        if closed:\n            sl = replace(sl, status=SKIPPED, reason=CLOSED_BY_OPERATOR)",
+  "        if False:\n            sl = replace(sl, status=SKIPPED, reason=CLOSED_BY_OPERATOR)"),
 
  ("saved schedule: no more shows tonight gives no reason from the schedule",
   "ltcplay/schedule_service.py",
@@ -18787,13 +18787,13 @@ def build():
 
  ("Run off: no warning that the next show will not start",
   "ltcplay/schedule_service.py",
-  "        if nxt is None or self._run_pressed():\n            return None\n        return (f\"Run is off:",
-  "        if True:\n            return None\n        return (f\"Run is off:"),
+  "        nxt = m.next_slot()\n        if nxt is None:\n            return None\n        if self._run_pressed():",
+  "        nxt = m.next_slot()\n        if True:\n            return None\n        if self._run_pressed():"),
 
  ("Run off: the warning stays after Run is pressed",
   "ltcplay/schedule_service.py",
-  "        if nxt is None or self._run_pressed():\n            return None\n        return (f\"Run is off:",
-  "        if nxt is None:\n            return None\n        return (f\"Run is off:"),
+  "        if self._run_pressed():\n            # Run reads as pressed",
+  "        if False:\n            # Run reads as pressed"),
 
  ("Run off: the warning says a show will not start with auto_start off",
   "ltcplay/schedule_service.py",
@@ -18822,8 +18822,167 @@ def build():
 
  ("Run off: rack screen 2.0 does not show the warning",
   "ltcplay/web/remote2.html",
-  "  if(sch.run_warning) items.push({key:\"run\", tone:\"bad\", what:\"Run is off.\", do:\"Press Run.\", full:sch.run_warning});\n",
+  "  if(sch.run_warning) items.push({key:\"run\", tone:\"bad\", what:sch.run_warning.split(\":\")[0] + \".\", do:(sch.run_warning.split(\"will NOT start. \")[1] || \"Press Run.\"), full:sch.run_warning});\n",
   ""),
+
+ # Review of PR #180 (reviewer B): an operator's close, a show whose time
+ # had gone by, and tonight's delays across a save.
+ ("review180: Close for the night is not kept on the machine",
+  "ltcplay/schedule.py",
+  "    tx.m = replace(tx.m, held_from=\"\", closed_by_operator=True)",
+  "    tx.m = replace(tx.m, held_from=\"\")"),
+
+ ("review180: an operator's close is read only from the shows it skipped",
+  "ltcplay/schedule.py",
+  "    return m.closed_by_operator or any(s.reason == CLOSED_BY_OPERATOR",
+  "    return any(s.reason == CLOSED_BY_OPERATOR"),
+
+ ("review180: tonight's file drops an operator's close",
+  "ltcplay/schedule.py",
+  "    if m.closed_by_operator:\n        doc[\"closed_by_operator\"] = True",
+  "    if False:\n        doc[\"closed_by_operator\"] = True"),
+
+ ("review180: a closed night is written as format 3",
+  "ltcplay/schedule.py",
+  "    marked = m.dark or m.abort_latched or m.closed_by_operator\n",
+  "    marked = m.dark or m.abort_latched\n"),
+
+ ("review180: an operator's close is not read back after a restart",
+  "ltcplay/schedule.py",
+  "        closed_by_operator=doc.get(\"closed_by_operator\", False))",
+  "        closed_by_operator=False)"),
+
+ ("review180: a rebuild forgets an operator's close",
+  "ltcplay/schedule.py",
+  "                   closed_by_operator=saved.closed_by_operator)",
+  "                   closed_by_operator=False)"),
+
+ ("review180: a save leaves a show whose time had gone by to start late",
+  "ltcplay/schedule.py",
+  "            continue\n        late.append(s)\n",
+  "            continue\n"),
+
+ ("review180: any show waiting under the same number counts as unchanged",
+  "ltcplay/schedule.py",
+  "        if old is not None and old.status == PENDING and \\\n                old.start == s.start:",
+  "        if old is not None and old.status == PENDING:"),
+
+ ("review180: a save misses a show still waiting for its own time",
+  "ltcplay/schedule.py",
+  "                old.start == s.start:\n            continue\n",
+  "                old.start == s.start and False:\n            continue\n"),
+
+ ("review180: a restart after a save starts a show whose time had gone by",
+  "ltcplay/schedule.py",
+  "        _settle_saved_past(tx, m, held=(m.resumed_from == HOLD))\n",
+  "        pass\n"),
+
+ ("review180: on Hold a save misses the show already waiting",
+  "ltcplay/schedule.py",
+  "    wait = late[-1] if held and late and tx.m.delayed() is None else None",
+  "    wait = late[-1] if held and late else None"),
+
+ ("review180: the answer to a save ticks the scheduler",
+  "ltcplay/schedule_service.py",
+  "            text = self._tonight_words(self.clock())\n",
+  "            self.tick()\n            text = self._tonight_words(self.clock())\n"),
+
+ ("review180: a save with tonight's times unchanged still rebuilds tonight",
+  "ltcplay/schedule.py",
+  "    if keeps_tonight(rule, saved):\n        return _carried(",
+  "    if False:\n        return _carried("),
+
+ ("review180: a time no longer in the schedule still keeps tonight's list",
+  "ltcplay/schedule.py",
+  "    return new <= planned and to_come <= new\n",
+  "    return new <= planned\n"),
+
+ ("review180: a new time in the schedule still keeps tonight's list",
+  "ltcplay/schedule.py",
+  "    return new <= planned and to_come <= new\n",
+  "    return to_come <= new\n"),
+
+ ("review180: the answer does not say what the save undid",
+  "ltcplay/schedule_service.py",
+  "                            f\"{' '.join(dropped)}\"] if dropped else [])",
+  "                            f\"{' '.join(dropped)}\"] if False else [])"),
+
+ ("review180: the answer does not say tonight's list was kept",
+  "ltcplay/schedule_service.py",
+  "        self._save_said = ([self.KEPT_TIMES] if kept else",
+  "        self._save_said = ([] if kept else"),
+
+ ("review180: a show's records go by its number alone",
+  "ltcplay/schedule_service.py",
+  "        return (str(m.date), n, at.isoformat() if at is not None else \"\")",
+  "        return (str(m.date), n)"),
+
+ ("review180: a show moved tonight loses its records",
+  "ltcplay/schedule_service.py",
+  "        at = (s.planned or s.start) if s is not None else None",
+  "        at = s.start if s is not None else None"),
+
+ ("review180: after an Abort the Run warning does not say Reset first",
+  "ltcplay/schedule_service.py",
+  "        if self._aborted():\n            need.insert(0, \"Reset\")",
+  "        if False:\n            need.insert(0, \"Reset\")"),
+
+ ("review180: on Hold the Run warning does not say Resume",
+  "ltcplay/schedule_service.py",
+  "        if m.state == sch.HOLD:\n            need.append(\"Resume\")",
+  "        if False:\n            need.append(\"Resume\")"),
+
+ # Review A of PR #180: the start, close and reopen decisions its own
+ # mutations found unpinned.
+ ("review180: a save sweeps tonight in the live state and starts a due show",
+  "ltcplay/schedule.py",
+  "    _settle_saved_past(tx, m, held=(was == HOLD))\n    if was == OFF",
+  "    _settle_saved_past(tx, m, held=(was == HOLD))\n    _sweep(tx)\n    if was == OFF"),
+
+ ("review180: a save during the closing is followed at once",
+  "ltcplay/schedule.py",
+  "FOLLOW_LATER = frozenset((SHOW, PAUSED, CLOSING))",
+  "FOLLOW_LATER = frozenset((SHOW, PAUSED))"),
+
+ ("review180: a save after the nightly reset rebuilds the earlier night",
+  "ltcplay/schedule_service.py",
+  "        if m.date != self._tonight(now):\n",
+  "        if False:\n"),
+
+ ("review180: a rebuild on restart forgets the show that was running",
+  "ltcplay/schedule.py",
+  "            running = sl.n\n",
+  "            running = 0\n"),
+
+ ("review180: a kept list on restart forgets the show that was running",
+  "ltcplay/schedule.py",
+  "        return _carried(fresh, saved, saved.slots, saved.running), []",
+  "        return _carried(fresh, saved, saved.slots, 0), []"),
+
+ ("review180: the answer to a save on Hold does not say the Hold stands",
+  "ltcplay/schedule_service.py",
+  "            text += \" The schedule is on Hold: nothing starts until Resume.\"\n",
+  "            pass\n"),
+
+ ("review180: the Run warning is shown in OFF",
+  "ltcplay/schedule_service.py",
+  "        if m.state in (sch.SHOW, sch.PAUSED, sch.CLOSING, sch.OFF,\n",
+  "        if m.state in (sch.SHOW, sch.PAUSED, sch.CLOSING,\n"),
+
+ ("review180: the Run warning is shown in a dry run",
+  "ltcplay/schedule_service.py",
+  "        if m is None or self.run_gate is None or self.dry_run or \\\n",
+  "        if m is None or self.run_gate is None or \\\n"),
+
+ ("review180: a Programming Run gives no warning that the show will not start",
+  "ltcplay/schedule_service.py",
+  "            if not why:\n                return None\n",
+  "            if True:\n                return None\n"),
+
+ ("review180: rack screen 2.0 says only Press Run, whatever the warning asks",
+  "ltcplay/web/remote2.html",
+  "do:(sch.run_warning.split(\"will NOT start. \")[1] || \"Press Run.\")",
+  "do:\"Press Run.\""),
 
 ]
 

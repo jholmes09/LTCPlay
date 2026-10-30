@@ -12829,22 +12829,32 @@ def test_schedule_rule_change_rebuilds_tonight():
     check(m.guard_s == 90, "the new guard applies")
     check(m.slot(1).status == S.DONE and m.slot(2).status == S.SKIPPED,
           "what already happened keeps its status")
-    check(m.slot(3).status == S.PENDING and m.hm(m.slot(3).start) == "18:40"
-          and m.slot(3).planned is None,
-          f"tonight's move of show 3 is dropped: {m.hm(m.slot(3).start)}")
+    # The same show times (review of PR #180): tonight's list is kept with
+    # tonight's changes, the move of show 3 included, and the journal says
+    # so instead of a rebuild.
+    check(m.slot(3).status == S.PENDING and m.hm(m.slot(3).start) == "18:45"
+          and m.hm(m.slot(3).planned) == "18:40",
+          f"with tonight's times unchanged the move of show 3 is kept: "
+          f"{m.hm(m.slot(3).start)}")
     check(m.last_end is not None, "when the last show ended is kept")
-    texts = [r["text"] for r in b.journal if r["outcome"] == "rebuilt"]
-    check(any("move of the 18:40 show to 18:45 is dropped" in t
-              for t in texts)
-          and any("Show 1 at 18:00 keeps its status, DONE" in t
-                  for t in texts),
-          f"each change is a sentence: {texts}")
+    check(not any(r["outcome"] == "rebuilt" for r in b.journal) and
+          any(r["outcome"] == "kept" and SV.Service.KEPT_TIMES in r["text"]
+              for r in b.journal),
+          f"the journal says tonight's list was kept: "
+          f"{[r['text'] for r in b.journal if r['outcome'] == 'kept']}")
 
-    # The times themselves change: history stays, nothing passed fires.
+    # The times themselves change: history stays, nothing passed fires,
+    # and tonight's move of show 3 is dropped, said in a sentence.
     SV.save_rule(os.path.join(work, SV.RULE_FILE), rule(first="18:05"))
     now[0] = _den(S, 18, 16)
     c = _svc(S, work, now).start(thread=False)
     m = c.machine
+    texts = [r["text"] for r in c.journal if r["outcome"] == "rebuilt"]
+    check(any("move of the 18:40 show to 18:45 (a Delay or a move) is "
+              "dropped" in t for t in texts)
+          and any("Show 1 at 18:00 keeps its status, DONE" in t
+                  for t in texts),
+          f"each change is a sentence: {texts}")
     kept = sorted((m.hm(s.start), s.status) for s in m.slots
                   if s.status in (S.DONE, S.SKIPPED))
     check(kept == [("18:00", S.DONE), ("18:20", S.SKIPPED)],
@@ -13162,7 +13172,7 @@ def test_schedule_saved_keeps_show_hold_and_abort():
     svc.reload()
     m = svc.machine
     s0 = [s for s in m.slots if m.hm(s.start) == "17:40"][0]
-    check(s0.status == S.MISSED and s0.reason.startswith("MISSED (late by")
+    check(s0.status == S.MISSED and s0.reason == S.SAVED_PAST
           and m.state == S.IDLE and not _starts(svc),
           f"a slot made due in the past is MISSED, the state kept, nothing "
           f"started: {s0.status} {s0.reason!r} {m.state}")
@@ -13239,6 +13249,763 @@ def test_schedule_saved_after_an_abort_starts_nothing():
     print("  ok")
 
 
+def test_schedule_save_never_reopens_an_operator_closed_night():
+    section("scheduler (review of PR #180): a night closed with Close for "
+            "the night stays closed when a schedule is saved, even when "
+            "nothing was left to skip when it was pressed; the close is on "
+            "the machine, in tonight's file and across a restart")
+    S = _sched()
+    if S is None:
+        return
+    import json
+    import tempfile
+    from datetime import date, timedelta
+    from ltcplay import schedule_service as SV
+
+    def rule(last="18:30"):
+        return _sched_doc(weekly={"sat": {"first_start": "18:00",
+                                          "interval_min": 20,
+                                          "last_end": last}},
+                          exceptions={})
+    # The reviewer's night: show 1 runs, Hold, Skip next on the last show,
+    # Close for the night with nothing left to skip.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 50)]
+    svc = _svc(S, work, now, rule=rule())
+    svc.start(thread=False)
+    for t in ((18, 0), (18, 8)):
+        now[0] = _den(S, *t)
+        svc.tick()
+    now[0] = _den(S, 18, 10)
+    check(not svc._apply(_op(S, S.HOLD_ON)).refused and
+          not svc._apply(_op(S, S.SKIP_NEXT)).refused and
+          not svc.machine.waiting(), "setup: on Hold, nothing left to come")
+    svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+    now[0] = _den(S, 18, 11)
+    svc.tick()
+    m = svc.machine
+    check(m.state == S.OFF and m.closed_by_operator and
+          not any(s.reason == S.CLOSED_BY_OPERATOR for s in m.slots),
+          f"closed by the operator with no show marked for it, and the "
+          f"machine says so: {m.state} {m.closed_by_operator}")
+    doc = json.load(open(SV.tonight_path(m.date, work), encoding="utf-8"))
+    check(doc.get("closed_by_operator") is True and
+          doc["format"] == S.TONIGHT_FORMAT,
+          f"tonight's file keeps the close: {doc.get('closed_by_operator')} "
+          f"format {doc['format']}")
+    # 19:00: a file with later times is saved. The night stays OFF.
+    now[0] = _den(S, 19, 0)
+    SV.save_rule(svc.path, rule(last="20:00"))
+    svc.reload()
+    m = svc.machine
+    later = [s for s in m.slots if s.start >= _den(S, 19, 0)]
+    check(m.state == S.OFF and later and
+          all(s.status == S.SKIPPED and s.reason == S.CLOSED_BY_OPERATOR
+              for s in later),
+          f"the save does not open the night; every later time is skipped: "
+          f"{m.state} {[(s.n, m.hm(s.start), s.status) for s in later]}")
+    words = svc.tonight_words()
+    check("never opens a night an operator closed" in words and
+          "Start now still works" in words and "has loaded it" not in words,
+          f"the answer says it stays closed and what still works: {words!r}")
+    _no_dashes(words, "closed night answer")
+    t = _den(S, 19, 0)
+    while t < _den(S, 19, 45):
+        t += timedelta(seconds=5)
+        now[0] = t
+        svc.tick()
+    check(_starts(svc) == [1] and svc.machine.state == S.OFF,
+          f"no show starts after the save: {_starts(svc)} "
+          f"{svc.machine.state}")
+    # A restart after the file changed again keeps it closed.
+    SV.save_rule(svc.path, rule(last="21:00"))
+    now[0] = _den(S, 19, 46)
+    b = _svc(S, work, now)
+    b.start(thread=False)
+    for t in ((19, 46, 1), (20, 0, 1), (20, 20, 1)):
+        now[0] = _den(S, *t)
+        b.tick()
+    check(b.machine.state == S.OFF and b.machine.closed_by_operator and
+          not b.machine.waiting() and not _starts(b),
+          f"after a restart the night is still closed and starts nothing: "
+          f"{b.machine.state} {_starts(b)}")
+    # The way back tonight is Start now, one extra show at a time; the
+    # night closes again after it and stays closed.
+    r = b.operator_press("start-now", "Andy", "Rack screen")
+    check(r["ok"] and b.machine.state == S.SHOW, f"Start now works: {r}")
+    now[0] = _den(S, 20, 28)
+    b.tick()
+    now[0] = _den(S, 20, 28, 1)
+    b.tick()
+    check(b.machine.state == S.OFF and b.machine.closed_by_operator,
+          f"after the extra show the night is closed again: "
+          f"{b.machine.state}")
+    b.stop()
+    svc.stop()
+    # Pure: the flag goes through the file, through a rebuild, and only a
+    # new night starts without it.
+    a = S.parse_rule(rule())
+    n = _Night(S, a)
+    n.boot(_den(S, 17, 50))
+    o = n.do(S.END_NIGHT, "operator", _den(S, 17, 51), confirmed=True)
+    check(o.machine.closed_by_operator, "Close for the night sets the flag")
+    back = S.machine_from_doc(S.machine_to_doc(o.machine), a,
+                              o.machine.date, _den(S, 17, 52))
+    check(back.closed_by_operator, "and the file keeps it")
+    re_m, _n = S.rebuild_night(S.parse_rule(rule(last="21:00")), back)
+    check(re_m.closed_by_operator and not re_m.waiting(),
+          "and a rebuild keeps it, with nothing to come")
+    check(not S.new_night(a, date(2026, 11, 15)).closed_by_operator,
+          "a new night starts open")
+    plain = S.machine_to_doc(S.new_night(a, date(2026, 11, 14)))
+    check("closed_by_operator" not in plain and
+          plain["format"] == S.TONIGHT_PLAIN_FORMAT,
+          "a night not closed is still written as format 3")
+    print("  ok")
+
+
+def test_schedule_save_never_starts_a_show_whose_time_has_gone_by():
+    section("scheduler (review of PR #180): a saved schedule never starts a "
+            "show whose time had gone by, not even inside the late grace; "
+            "the answer to a save changes nothing; a show already waiting "
+            "for its time is left as it was; on Hold the show already "
+            "waiting stays the one that waits")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from ltcplay import schedule_service as SV
+
+    def rule(first="18:00", last="22:00", grace=15):
+        return _sched_doc(weekly={"sat": {"first_start": first,
+                                          "interval_min": 20,
+                                          "last_end": last}},
+                          exceptions={}, late_grace_s=grace)
+    # The reviewer's case: the file says 18:10; at 18:00:10 18:00 is saved.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 40)]
+    svc = _svc(S, work, now, rule=rule(first="18:10"))
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0, 10)
+    SV.save_rule(svc.path, rule())
+    svc.reload()
+    m = svc.machine
+    s1 = [s for s in m.slots if m.hm(s.start) == "18:00"][0]
+    check(s1.status == S.MISSED and s1.reason == S.SAVED_PAST,
+          f"the 18:00 show the save put in the past is MISSED: {s1}")
+    # The answer reads, never ticks: nothing changes while it is given.
+    before, lines = svc.machine, len(svc.journal)
+
+    def no_tick(*a, **k):
+        raise AssertionError("tonight_words ticked")
+    svc.tick, real_tick = no_tick, svc.tick
+    try:
+        words = svc.tonight_words()
+    except AssertionError as e:
+        words = str(e)
+    svc.tick = real_tick
+    check(svc.machine is before and len(svc.journal) == lines and
+          "next show 2 at 18:20" in words,
+          f"the answer changes nothing and says what is next: {words!r}")
+    now[0] = _den(S, 18, 0, 11)
+    svc.tick()
+    check(not _starts(svc), f"no show starts after the save: {_starts(svc)}")
+    now[0] = _den(S, 18, 20, 1)
+    svc.tick()
+    check(_starts(svc) == [2], f"18:20 starts on time: {_starts(svc)}")
+    svc.stop()
+
+    # A show already waiting for that same time is not missed by a save:
+    # with 18:00 on both files, a save at 18:00:05 that changes only the
+    # later shows leaves 18:00 to the tick, which starts it in its grace.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 40)]
+    svc = _svc(S, work, now, rule=rule())
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0, 5)
+    SV.save_rule(svc.path, rule(last="21:00"))
+    svc.reload()
+    check(svc.machine.slot(1).status == S.PENDING,
+          f"show 1 still waits for its time: {svc.machine.slot(1)}")
+    now[0] = _den(S, 18, 0, 6)
+    svc.tick()
+    check(_starts(svc) == [1], f"and starts inside its grace, as it would "
+                               f"have with no save: {_starts(svc)}")
+    svc.stop()
+
+    # On Hold: show 1 waits (DELAYED); a save with a new time already past
+    # misses the new time and keeps show 1 the one waiting.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 40)]
+    svc = _svc(S, work, now, rule=rule())
+    svc.start(thread=False)
+    svc._apply(_op(S, S.HOLD_ON))
+    now[0] = _den(S, 18, 1)
+    svc.tick()
+    check(svc.machine.slot(1).status == S.DELAYED, "setup: show 1 waits")
+    now[0] = _den(S, 18, 12)
+    SV.save_rule(svc.path, rule(first="18:10", last="21:00"))
+    svc.reload()
+    m = svc.machine
+    new = [s for s in m.slots if m.hm(s.start) == "18:10"][0]
+    check(m.state == S.HOLD and m.slot(1).status == S.DELAYED and
+          new.status == S.MISSED and new.reason == S.SAVED_PAST,
+          f"show 1 still waits and the new past time is missed: "
+          f"{m.slot(1).status} {new.status} {new.reason!r}")
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    check(r["ok"] and svc.machine.running == 1,
+          f"Start now starts the show that was waiting: {r} "
+          f"{svc.machine.running}")
+    svc.stop()
+
+    # On Hold with nothing waiting, the new past time waits, as any show
+    # whose time passes during a Hold.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 40)]
+    svc = _svc(S, work, now, rule=rule(first="18:30"))
+    svc.start(thread=False)
+    svc._apply(_op(S, S.HOLD_ON))
+    now[0] = _den(S, 18, 12)
+    SV.save_rule(svc.path, rule(first="18:10"))
+    svc.reload()
+    m = svc.machine
+    new = [s for s in m.slots if m.hm(s.start) == "18:10"][0]
+    check(new.status == S.DELAYED and m.state == S.HOLD and not _starts(svc),
+          f"it waits for Start now: {new.status} {m.state}")
+    svc.stop()
+
+    # The restart path: the file changed while LTC Player was down, with a
+    # new time 5 s ago, inside the grace. It is missed, never started.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 40)]
+    a = _svc(S, work, now, rule=rule(first="18:10"))
+    a.start(thread=False)
+    a.stop()
+    SV.save_rule(os.path.join(work, SV.RULE_FILE), rule())
+    now[0] = _den(S, 18, 0, 5)
+    b = _svc(S, work, now)
+    b.start(thread=False)
+    now[0] = _den(S, 18, 0, 6)
+    b.tick()
+    s1 = [s for s in b.machine.slots if b.machine.hm(s.start) == "18:00"][0]
+    check(s1.status == S.MISSED and s1.reason == S.SAVED_PAST and
+          not _starts(b),
+          f"after a restart the new past time is missed: {s1.status} "
+          f"{_starts(b)}")
+    check(any(S.SAVED_PAST in r["text"] for r in b.journal),
+          "and the journal says so")
+    b.stop()
+    print("  ok")
+
+
+def test_schedule_save_keeps_tonights_delays_when_times_unchanged():
+    section("scheduler (review of PR #180): a save that leaves tonight's "
+            "times alone keeps every Delay, move, added and removed show; "
+            "one that changes them says plainly what it undid; a restart "
+            "does the same")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from ltcplay import schedule_service as SV
+    sat = {"first_start": "18:00", "interval_min": 20, "last_end": "22:00"}
+
+    def rule(fri=None, **night):
+        weekly = {"sat": dict(sat, **night)}
+        if fri:
+            weekly["fri"] = {"first_start": fri, "interval_min": 20,
+                             "last_end": "21:00"}
+        return _sched_doc(weekly=weekly, exceptions={}, late_grace_s=15)
+    # Delay the rest +10 at 17:50, then Friday's hours saved at 17:55.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 40)]
+    svc = _svc(S, work, now, rule=rule())
+    svc.start(thread=False)
+    now[0] = _den(S, 17, 50)
+    check(not svc._apply(_op(S, S.DELAY_REST, minutes=10)).refused,
+          "setup: Delay the rest +10")
+    svc._apply(_op(S, S.EDIT_REMOVE, show=3))
+    now[0] = _den(S, 17, 55)
+    SV.save_rule(svc.path, rule(fri="19:00"))
+    svc.reload()
+    m = svc.machine
+    check(m.hm(m.slot(1).start) == "18:10" and m.hm(m.slot(2).start) ==
+          "18:30" and m.slot(3).status == S.SKIPPED,
+          f"tonight's delay and removal are kept: "
+          f"{[(s.n, m.hm(s.start), s.status) for s in m.slots[:3]]}")
+    words = svc.tonight_words()
+    check(SV.Service.KEPT_TIMES in words and "next show 1 at 18:10" in words,
+          f"the answer says tonight's list was kept: {words!r}")
+    for t in ((18, 0), (18, 0, 10), (18, 5)):
+        now[0] = _den(S, *t)
+        svc.tick()
+    check(not _starts(svc), f"show 1 does not start at 18:00: {_starts(svc)}")
+    now[0] = _den(S, 18, 10)
+    svc.tick()
+    check(_starts(svc) == [1], f"it starts at 18:10: {_starts(svc)}")
+    svc.stop()
+
+    # Delay next moves 18:00 to 18:05; a save at 18:00:10 changes nothing
+    # tonight, so show 1 still waits for 18:05.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 40)]
+    svc = _svc(S, work, now, rule=rule())
+    svc.start(thread=False)
+    now[0] = _den(S, 17, 59)
+    svc._apply(_op(S, S.DELAY_NEXT, minutes=5))
+    now[0] = _den(S, 18, 0, 10)
+    SV.save_rule(svc.path, rule(fri="19:00"))
+    svc.reload()
+    now[0] = _den(S, 18, 0, 11)
+    svc.tick()
+    check(not _starts(svc) and svc.machine.hm(svc.machine.slot(1).start) ==
+          "18:05", f"show 1 still waits for 18:05: {_starts(svc)}")
+    svc.stop()
+
+    # A save that changes tonight's times drops the delay, and says so in
+    # its answer; the removed show stays SKIPPED.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 40)]
+    svc = _svc(S, work, now, rule=rule())
+    svc.start(thread=False)
+    now[0] = _den(S, 17, 45)
+    svc._apply(_op(S, S.DELAY_NEXT, minutes=5))
+    svc._apply(_op(S, S.EDIT_REMOVE, show=2))
+    SV.save_rule(svc.path, rule(last_end="21:00"))
+    svc.reload()
+    m = svc.machine
+    words = svc.tonight_words()
+    check("This save undid tonight's changes: Tonight's move of the 18:00 "
+          "show to 18:05 (a Delay or a move) is dropped" in words,
+          f"the answer says the delay was undone: {words!r}")
+    check(m.hm(m.slot(1).start) == "18:00" and
+          m.slot(2).status == S.SKIPPED,
+          f"show 1 is back at 18:00 and show 2 stays taken off: "
+          f"{[(s.n, m.hm(s.start), s.status) for s in m.slots[:2]]}")
+    _no_dashes(words, "undone answer")
+    svc.stop()
+
+    # The restart path: Delay the rest, then the file changed only for
+    # Friday while LTC Player was down.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 40)]
+    a = _svc(S, work, now, rule=rule())
+    a.start(thread=False)
+    a._apply(_op(S, S.DELAY_REST, minutes=10))
+    a.stop()
+    SV.save_rule(os.path.join(work, SV.RULE_FILE), rule(fri="19:00"))
+    now[0] = _den(S, 17, 55)
+    b = _svc(S, work, now)
+    b.start(thread=False)
+    m = b.machine
+    check(m.hm(m.slot(1).start) == "18:10" and
+          not any(r["outcome"] == "rebuilt" for r in b.journal) and
+          any(r["outcome"] == "kept" for r in b.journal),
+          f"after a restart the delay is kept: {m.hm(m.slot(1).start)}")
+    b.stop()
+    # Pure: keeps_tonight is about tonight's times only.
+    from datetime import date
+    base = S.parse_rule(rule())
+    night = S.new_night(base, date(2026, 11, 14))
+    check(S.keeps_tonight(S.parse_rule(rule(fri="19:00")), night) and
+          not S.keeps_tonight(S.parse_rule(rule(last_end="21:00")), night)
+          and not S.keeps_tonight(S.parse_rule(rule(first_start="17:40")),
+                                  night),
+          "the same times keep tonight; a time gone or added rebuilds it")
+    print("  ok")
+
+
+def test_schedule_save_records_go_by_the_show_not_its_number():
+    section("scheduler (review of PR #180): the pre-roll, its late "
+            "allowance and the alert hold are kept for a show by its night, "
+            "number and planned time, so a number a save gives to a new "
+            "time inherits none of them")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from ltcplay import schedule_service as SV
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 40)]
+    svc = _svc(S, work, now)
+    svc.start(thread=False)
+    m = svc.machine
+    old = svc._show_key(m, 2)
+    svc._alert_held[old] = [frozenset({"a1"})]
+    svc._preroll_late[old] = 30
+    SV.save_rule(svc.path, _sched_doc(weekly={"sat": {
+        "first_start": "18:05", "interval_min": 20, "last_end": "22:00"}},
+        exceptions={}))
+    svc.reload()
+    m = svc.machine
+    new = svc._show_key(m, 2)
+    check(m.slot(2) is not None and new != old and new[:2] == old[:2],
+          f"show 2 at a new time has a key of its own: {old} {new}")
+    check(not svc._alert_handled(new, {"a1"}),
+          "a Resume given with alerts open for the old show 2 does not let "
+          "the new show 2 past the alert hold")
+    check(svc._preroll_late.get(new) is None,
+          "and the old show 2's late allowance is not the new one's")
+    moved = svc.machine
+    svc._apply(_op(S, S.DELAY_NEXT, minutes=5))
+    check(svc._show_key(svc.machine, 1) == svc._show_key(moved, 1),
+          "a show moved tonight keeps its key (its planned time)")
+    svc.stop()
+    print("  ok")
+
+
+def _save_fuzz_once(S, seed, viol):
+    """One night of the reviewers' random walk (fuzz_pure.py, review of PR
+    #180): presses, ticks and saved schedules, with the save's promises
+    checked each time."""
+    import random
+    from datetime import timedelta, date
+    rng = random.Random(seed)
+
+    def rdoc():
+        grace = rng.choice([0, 15])
+        if rng.random() < 0.1:
+            return _sched_doc(weekly={"fri": {"first_start": "18:00",
+                                              "interval_min": 20,
+                                              "last_end": "22:00"}},
+                              exceptions={}, late_grace_s=grace)
+        h = rng.randint(17, 21)
+        mi = rng.choice([0, 5, 10, 15, 20, 40, 50])
+        iv = rng.choice([15, 20, 25, 30])
+        le = min(23, h + rng.randint(1, 3))
+        return _sched_doc(weekly={"sat": {
+            "first_start": f"{h}:{mi:02d}", "interval_min": iv,
+            "last_end": f"{le}:{rng.choice([0, 30]):02d}"}},
+            exceptions={}, late_grace_s=grace)
+    ops = [S.HOLD_ON, S.RESUME, S.START_NOW, S.SKIP_NEXT, S.DELAY_NEXT,
+           S.DELAY_REST, S.ABORT, S.STOP_SHOW, S.END_NIGHT, S.EDIT_MOVE,
+           S.EDIT_ADD, S.EDIT_REMOVE, S.SHOW_ENDED, S.SHOW_FAILED]
+
+    def bad(k, what):
+        viol.setdefault(k, (seed, what))
+    rule = S.parse_rule(rdoc())
+    t = _den(S, 16, rng.randint(0, 59))
+    m = S.new_night(rule, date(2026, 11, 14))
+    m = S.step(m, S.Event(S.BOOT_DONE, "system"), t).machine
+    latched = closed = False
+    while t < _den(S, 23, 59):
+        t += timedelta(seconds=rng.choice([1, 5, 10, 30, 60, 120]))
+        r = rng.random()
+        if r < 0.05:
+            new = S.parse_rule(rdoc())
+            if m.state in S.FOLLOW_LATER:
+                continue
+            before = m
+            out, _notes = S.follow_rule(new, m, t)
+            m = out.machine
+            if out.effects:
+                bad("effects", out.effects)
+            ns = [s.n for s in m.slots]
+            if len(ns) != len(set(ns)):
+                bad("a number twice", ns)
+            for s in before.slots:
+                if s.status not in (S.PENDING, S.DELAYED) and \
+                        m.slot(s.n) != s:
+                    bad("a show that happened changed", (s, m.slot(s.n)))
+                if s.status == S.DELAYED and (
+                        m.slot(s.n) is None or
+                        m.slot(s.n).status != S.DELAYED):
+                    bad("the waiting show changed", (s, m.slot(s.n)))
+            for f in ("abort_latched", "faults", "shows_started",
+                      "closed_by_operator"):
+                if getattr(before, f) != getattr(m, f):
+                    bad(f"{f} changed", (getattr(before, f),
+                                         getattr(m, f)))
+            if before.state != S.OFF and (m.state != before.state or
+                                          m.dark != before.dark or
+                                          m.held_from != before.held_from):
+                bad("the state changed", (before.state, m.state))
+            if before.state == S.OFF and m.state not in (S.OFF, S.STANDBY):
+                bad("a closed night opened into", m.state)
+            if before.state == S.OFF and m.state == S.STANDBY and closed:
+                bad("an operator's close was opened", seed)
+            back = S.machine_from_doc(S.machine_to_doc(m), new, m.date, t,
+                                      [])
+            if back.slots != m.slots or \
+                    back.closed_by_operator != m.closed_by_operator:
+                bad("tonight's file lost something", seed)
+            o = S.step(m, S.Event(S.TICK, "scheduler", latched=latched),
+                       t + timedelta(seconds=1))
+            for e in o.effects:
+                if e.kind != S.START_SHOW:
+                    continue
+                s, pre = m.slot(e.show), before.slot(e.show)
+                if s.start <= t and not (pre and pre.status == S.PENDING and
+                                         pre.start == s.start):
+                    bad("a show whose time had gone by started",
+                        (m.hm(s.start), m.hm(t)))
+            continue
+        if r < 0.15:
+            k = rng.choice(ops)
+            kw = dict(who="Andy", screen="rack", confirmed=True)
+            if k in (S.DELAY_NEXT, S.DELAY_REST):
+                kw["minutes"] = rng.choice([5, 10])
+            if k in (S.EDIT_MOVE, S.EDIT_REMOVE):
+                kw["show"] = rng.choice([s.n for s in m.slots] or [1])
+            if k in (S.EDIT_MOVE, S.EDIT_ADD):
+                lt = (t + timedelta(minutes=rng.randint(1, 60))).astimezone(
+                    m.tz)
+                kw["at"] = f"{lt.hour}:{lt.minute:02d}"
+            if k in (S.SHOW_ENDED, S.SHOW_FAILED):
+                ev = S.Event(k, "system", show=m.running)
+            else:
+                ev = S.Event(k, "operator", **kw)
+            o = S.step(m, ev, t)
+            if not o.refused:
+                closed = closed or k == S.END_NIGHT
+                latched = (latched or k == S.ABORT) and not (
+                    k == S.RESUME and rng.random() < 0.3)
+            m = o.machine
+            continue
+        m = S.step(m, S.Event(S.TICK, "scheduler", latched=latched),
+                   t).machine
+        if m.state == S.SHOW and m.running and rng.random() < 0.02:
+            m = S.step(m, S.Event(S.SHOW_ENDED, "system", show=m.running),
+                       t).machine
+        if m.state == S.SHOW and t >= m.expected_end(t):
+            m = S.step(m, S.Event(S.SHOW_ENDED, "system", show=m.running),
+                       t).machine
+        if m.state == S.CLOSING:
+            m = S.step(m, S.Event(S.CLOSING_DONE, "system"), t).machine
+
+
+# The reviewers' seeds that broke the save before the fix (closed by the
+# operator and opened again: 6, 59, 126, 184; the waiting show missed on
+# Hold: 0, 8, 12), and the first 24 nights besides.
+SAVE_FUZZ_SEEDS = tuple(sorted(set(range(24)) | {59, 126, 184, 196}))
+
+
+def test_schedule_save_random_nights():
+    section("scheduler (review of PR #180): saved schedules on random "
+            "nights never start a past show, never open an operator's "
+            "close, never change what happened or the show waiting, and "
+            "send nothing")
+    S = _sched()
+    if S is None:
+        return
+    viol = {}
+    for seed in SAVE_FUZZ_SEEDS:
+        _save_fuzz_once(S, seed, viol)
+    check(not viol, f"{len(SAVE_FUZZ_SEEDS)} random nights keep every "
+                    f"promise of a save: {viol}")
+    print("  ok")
+
+
+def test_schedule_save_review_a_cases():
+    section("scheduler (review A of PR #180): a save that only adds an "
+            "exception keeps tonight's move and added show; a change of "
+            "guard rebuilds and says what it undid; two quick saves never "
+            "start a show; a save during a closing waits for it; an earlier "
+            "night still open is left alone; a restart during a show with "
+            "a changed file still cuts the show off as a FAULT")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from dataclasses import replace
+    from datetime import timedelta
+    from ltcplay import schedule_service as SV
+
+    def rule(guard=120, exc=None, **night):
+        sat = {"first_start": "18:00", "interval_min": 20,
+               "last_end": "22:00"}
+        sat.update(night)
+        return _sched_doc(weekly={"sat": sat}, exceptions=exc or {},
+                          guard_s=guard, late_grace_s=15)
+    # A move and an added show, then a save that adds only Dec 25.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 40)]
+    svc = _svc(S, work, now, rule=rule())
+    svc.start(thread=False)
+    svc._apply(_op(S, S.EDIT_MOVE, show=1, at="18:30"))
+    svc._apply(_op(S, S.EDIT_ADD, at="17:50"))
+    added = max(s.n for s in svc.machine.slots)
+    now[0] = _den(S, 17, 41)
+    SV.save_rule(svc.path, rule(exc={"2026-12-25": None}))
+    svc.reload()
+    m = svc.machine
+    words = svc.tonight_words()
+    check(m.hm(m.slot(1).start) == "18:30" and
+          m.slot(added).origin == "edit" and
+          m.slot(added).status == S.PENDING and
+          "next show " + str(added) + " at 17:50" in words,
+          f"an exception for another date keeps tonight's move and added "
+          f"show: {[(s.n, m.hm(s.start)) for s in m.slots[:3]]} {words!r}")
+    for t in ((17, 50, 1), (17, 58), (18, 0), (18, 0, 10)):
+        now[0] = _den(S, *t)
+        svc.tick()
+    check(_starts(svc) == [added],
+          f"the added 17:50 show runs and show 1 does not start at 18:00: "
+          f"{_starts(svc)}")
+    # The same times with a new guard: tonight's list is kept, on the new
+    # guard (a restart could not tell the old one, so a save does not
+    # either); a change of tonight's times undoes the move and says so.
+    SV.save_rule(svc.path, rule(guard=90, exc={"2026-12-25": None}))
+    svc.reload()
+    m = svc.machine
+    check(m.guard_s == 90 and m.hm(m.slot(1).start) == "18:30",
+          f"a new guard keeps tonight's list, on the new guard: "
+          f"{m.guard_s} {m.hm(m.slot(1).start)}")
+    SV.save_rule(svc.path, rule(guard=90, interval_min=25))
+    svc.reload()
+    words = svc.tonight_words()
+    m = svc.machine
+    check(m.hm(m.slot(1).start) == "18:00" and
+          "This save undid tonight's changes: Tonight's move of the 18:00 "
+          "show to 18:30" in words,
+          f"new times rebuild tonight and say what was undone: {words!r}")
+    svc.stop()
+
+    # Two quick saves at 18:30:07: the new 18:30 show is never started.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 29)]
+    svc = _svc(S, work, now, rule=rule(first_start="18:45"))
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 30, 7)
+    SV.save_rule(svc.path, rule(first_start="18:05", interval_min=25))
+    svc.reload()
+    first = svc.tonight_words()
+    SV.save_rule(svc.path, rule(first_start="18:00", interval_min=30))
+    svc.reload()
+    second = svc.tonight_words()
+    m = svc.machine
+    s30 = [s for s in m.slots if m.hm(s.start) == "18:30"][0]
+    check(m.running == 0 and s30.status == S.MISSED and
+          s30.reason == S.SAVED_PAST and not _starts(svc) and
+          "next show" in first and "next show" in second,
+          f"nothing runs after two quick saves: {m.state} {s30} "
+          f"{_starts(svc)}")
+    now[0] = _den(S, 18, 30, 8)
+    svc.tick()
+    check(not _starts(svc), f"not on the next tick either: {_starts(svc)}")
+    svc.stop()
+
+    # A save on Hold: the answer says the Hold stands.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 40)]
+    svc = _svc(S, work, now, rule=rule())
+    svc.start(thread=False)
+    svc._apply(_op(S, S.HOLD_ON))
+    SV.save_rule(svc.path, rule(first_start="18:10"))
+    svc.reload()
+    check("The schedule is on Hold: nothing starts until Resume." in
+          svc.tonight_words(), f"the answer on Hold says so: "
+                               f"{svc.tonight_words()!r}")
+    svc.stop()
+
+    # During a real closing: the save waits for it, then the night opens.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 50)]
+    svc = _svc(S, work, now, rule=rule(last_end="20:00"))
+    svc.start(thread=False)
+    svc.machine = replace(svc.machine, state=S.CLOSING)
+    SV.save_rule(svc.path, rule(first_start="22:10", last_end="23:00"))
+    svc.reload()
+    waits = [r["text"] for r in svc.journal if r["outcome"] == "waiting"]
+    check(svc.machine.state == S.CLOSING and len(waits) == 1 and
+          "while the night was closing" in waits[0] and
+          not svc.machine.waiting(),
+          f"a save during the closing waits for it: {svc.machine.state} "
+          f"{waits}")
+    check("as soon as the closing has finished" in svc.tonight_words(),
+          "and the answer says so")
+    svc._apply(S.Event(S.CLOSING_DONE, "system"))
+    now[0] = _den(S, 21, 50, 1)
+    svc.tick()
+    m = svc.machine
+    check(m.state == S.STANDBY and m.dark and m.next_slot() is not None and
+          m.hm(m.next_slot().start) == "22:10" and not _starts(svc),
+          f"once the closing has finished the night opens again, dark, "
+          f"starting nothing: {m.state} {m.dark}")
+    svc.stop()
+
+    # An earlier night still open (a show delayed past midnight): a save
+    # after the nightly reset leaves that night's list alone.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 25)]
+    svc = _svc(S, work, now, rule=rule())
+    svc.start(thread=False)
+    now[0] = _den(S, 21, 30)
+    svc._apply(_op(S, S.HOLD_ON))
+    now[0] = _den(S, 21, 41)
+    svc.tick()
+    old = svc.machine
+    check(old.delayed() is not None, "setup: a show waits after the Hold")
+    now[0] = _den(S, 21, 41) + timedelta(hours=4, minutes=20)
+    SV.save_rule(svc.path, rule(first_start="18:10"))
+    svc.reload()
+    check(svc.machine.slots == old.slots and svc.machine.date == old.date
+          and not any(r["outcome"] in ("rebuilt", "kept")
+                      for r in svc.journal),
+          f"the earlier night's list is not rebuilt from the new file: "
+          f"{svc.machine.date}")
+    svc.stop()
+
+    # A restart during a show, with the file changed while LTC Player was
+    # down: the show is still cut off (FAULT, the rig made safe), whether
+    # tonight's list is kept or rebuilt.
+    for new_rule, how in ((rule(exc={"2026-12-25": None}), "kept"),
+                          (rule(interval_min=25), "rebuilt")):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 17, 55)]
+        a = _svc(S, work, now, rule=rule())
+        a.start(thread=False)
+        now[0] = _den(S, 18, 0)
+        a.tick()
+        check(a.machine.running == 1, f"setup ({how}): show 1 runs")
+        SV.save_rule(os.path.join(work, SV.RULE_FILE), new_rule)
+        now[0] = _den(S, 18, 2)
+        b = _svc(S, work, now)
+        b.start(thread=False)
+        s1 = b.machine.slot(1)
+        check(s1.status == S.FAULT and "restarted during the show" in
+              s1.reason and b.machine.running == 0 and b.machine.fault,
+              f"({how}) the show cut off by the restart is a FAULT: {s1}")
+        a.stop()
+        b.stop()
+    print("  ok")
+
+
+def test_schedule_run_warning_says_only_what_is_true():
+    section("scheduler (review A of PR #180): the Run warning is not shown "
+            "in OFF or in a dry run, and during a Programming Run (when Run "
+            "reads as pressed) it says the schedule will not start a show")
+    n = _fi_night(session=False, armed=False)
+    if n.S is None:
+        return
+    import types
+    from dataclasses import replace
+    S, svc = n.S, n.svc
+    now = n.now[0]
+    svc.state_view()
+    check(svc._run_warning(now) is not None, "setup: Run off, a warning")
+    m = svc.machine
+    svc.machine = replace(m, state=S.OFF)
+    check(svc._run_warning(now) is None, "none in OFF")
+    svc.machine = m
+    svc.dry_run = True
+    check(svc._run_warning(now) is None, "none in a dry run")
+    svc.dry_run = False
+    gate, pre = svc.run_gate, svc.preroll
+    svc.run_gate = lambda: True
+    svc.preroll = types.SimpleNamespace(skip=lambda: "Programming Run")
+    w = svc._run_warning(now)
+    check(w == "A Programming Run is in force: the 18:00 show (show 1) "
+              "will NOT start. Press Stop, choose Show, then Run.",
+          f"a Programming Run says the show will not start: {w!r}")
+    _no_dashes(w, "programming run warning")
+    svc.preroll = types.SimpleNamespace(skip=lambda: "")
+    check(svc._run_warning(now) is None,
+          "Run pressed, no Programming Run: no warning")
+    svc.run_gate, svc.preroll = gate, pre
+    print("  ok")
+
+
 def test_schedule_run_off_says_the_next_show_will_not_start():
     section("scheduler (Jeff, Pico, 2026-10-29): with Run off after an "
             "engine restart, the status says the next show will NOT start "
@@ -13256,6 +14023,23 @@ def test_schedule_run_off_says_the_next_show_will_not_start():
     check(not svc._run_pressed(), "and nothing pressed Run")
     check("Run is off: the 18:00 show (show 1) will NOT start" in
           svc.tonight_words(), "the answer to a save says it too")
+    # On Hold, Run alone would not start it: the warning names Resume too
+    # (review of PR #180), from what stands, not from a fixed sentence.
+    svc._apply(_op(S, S.HOLD_ON))
+    check(svc.state_view().get("run_warning") ==
+          "Run is off: the 18:00 show (show 1) will NOT start. Press Run, "
+          "then Resume.", f"on Hold it says Resume as well: "
+                          f"{svc.state_view().get('run_warning')!r}")
+    # After an Abort nobody has Reset, Reset comes first, as every other
+    # refusal in the engine says it ("press Reset first").
+    from dataclasses import replace
+    held = svc.machine
+    svc.machine = replace(held, abort_latched=True)
+    check(svc._aborted() and svc.state_view().get("run_warning") ==
+          "Run is off: the 18:00 show (show 1) will NOT start. Press Reset, "
+          "then Run, then Resume.", f"after an Abort it says Reset first: "
+                                    f"{svc.state_view().get('run_warning')!r}")
+    svc.machine = held
     # Run pressed: no warning.
     on = _fi_night(session=True, armed=False)
     check(on.svc.state_view().get("run_warning") is None,
@@ -13290,6 +14074,10 @@ def test_schedule_run_off_says_the_next_show_will_not_start():
           "1.0 shows the warning as a fault on the show and Schedule screens")
     check('if(sch.run_warning) items.push({key:"run", tone:"bad"' in two,
           "2.0 shows it as a fault in the alert slot")
+    check('do:(sch.run_warning.split("will NOT start. ")[1] || "Press '
+          'Run.")' in two and 'what:sch.run_warning.split(":")[0]' in two,
+          "2.0 takes its headline and its press from the engine's sentence "
+          "(Resume on a Hold, a Programming Run), not fixed words")
     from ltcplay import remote as RM
     src = open(RM.__file__, encoding="utf-8").read()
     check('"run_warning": st.get("run_warning")' in src,
@@ -89125,7 +89913,9 @@ def _pr_night(results=None, window=10, hold_until=None,
 
 
 def _pr_key(n, show=1):
-    return (str(n.svc.machine.date), show)
+    # The service's own key for a show: night, number and planned time
+    # (review of PR #180).
+    return n.svc._show_key(n.svc.machine, show)
 
 
 def _pr_audio_started(n):
@@ -92197,6 +92987,13 @@ if __name__ == "__main__":
         test_schedule_saved_after_an_abort_starts_nothing,
         test_schedule_run_off_says_the_next_show_will_not_start,
         test_remote_schedule_save_says_what_tonight_holds,
+        test_schedule_save_never_reopens_an_operator_closed_night,
+        test_schedule_save_never_starts_a_show_whose_time_has_gone_by,
+        test_schedule_save_keeps_tonights_delays_when_times_unchanged,
+        test_schedule_save_records_go_by_the_show_not_its_number,
+        test_schedule_save_random_nights,
+        test_schedule_save_review_a_cases,
+        test_schedule_run_warning_says_only_what_is_true,
         test_schedule_late_failed_start_is_a_fault,
         test_schedule_after_a_stopped_show_is_one_choice,
         test_schedule_contract_for_the_transport,
