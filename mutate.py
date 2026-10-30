@@ -8427,16 +8427,13 @@ def build():
  # the 2 AM nightly reset; see the "2 AM reset" mutations at the end).
  ("scheduler fix round: a delayed night never closes at the 2 AM reset",
   "ltcplay/schedule_service.py",
-  "        if now < sch.night_reset(m.date, m.tz):\n"
-  "            return None",
-  "        if True:\n"
-  "            return None"),
+  "        if now < ends:\n            return None",
+  "        if True:\n            return None"),
 
- ("scheduler fix round: the delayed show is not missed when its night "
-  "closes at the reset",
+ ("scheduler fix round: the delayed show is not missed when its night closes at the reset",
   "ltcplay/schedule.py",
-  "    tx.set_slot(d.n, status=MISSED, reason=RESET_MISSED)",
-  "    pass"),
+  "    tx.set_slot(d.n, status=MISSED, reason=why)\n    tx.m = replace(tx.m, faults=tx.m.faults + (text,))",
+  "    tx.m = replace(tx.m, faults=tx.m.faults + (text,))"),
 
  ("scheduler fix round: a start after midnight never picks up last night",
   "ltcplay/schedule_service.py",
@@ -8449,11 +8446,10 @@ def build():
   "                       if st == sch.RUNNING and back == 1]",
   "                       if False]"),
 
- ("scheduler fix round: the 2 AM reset miss is written quietly, not as a "
-  "fault",
+ ("scheduler fix round: the 2 AM reset miss is written quietly, not as a fault",
   "ltcplay/schedule.py",
-  "    tx.note(\"miss\", \"fault\", RESET_MISSED, text, show=d.n,",
-  "    tx.note(\"miss\", \"done\", RESET_MISSED, text, show=d.n,"),
+  "    tx.note(\"miss\", \"fault\", why, text, show=d.n,",
+  "    tx.note(\"miss\", \"done\", why, text, show=d.n,"),
 
  # Item 5: a restart after a stopped show stays dark.
  ("scheduler fix round: a restart after a stopped show brings the "
@@ -8689,12 +8685,10 @@ def build():
   "        if faded:\n            self._pause(gen, fade)\n"
   "        self._step(gen, \"video\", STOPPED, \"video bank stopped\""),
 
- ("scheduler fix round 2: the 2 AM reset miss is not on the night's fault "
-  "list",
+ ("scheduler fix round 2: the 2 AM reset miss is not on the night's fault list",
   "ltcplay/schedule.py",
-  "    tx.m = replace(tx.m, faults=tx.m.faults + (text,))\n"
-  "    tx.note(\"miss\", \"fault\", RESET_MISSED",
-  "    tx.note(\"miss\", \"fault\", RESET_MISSED"),
+  "    tx.m = replace(tx.m, faults=tx.m.faults + (text,))\n    tx.note(\"miss\", \"fault\", why",
+  "    tx.note(\"miss\", \"fault\", why"),
 
  ("scheduler fix round 2: every conductor call is made as the scheduler",
   "ltcplay/schedule_service.py",
@@ -8884,24 +8878,73 @@ def build():
 
  ("scheduler 2 AM reset: the night is read on UTC, not the local clock",
   "ltcplay/schedule.py",
-  "    local = _utc(_aware(now)).astimezone(tz)",
-  "    local = _utc(_aware(now))"),
+  "    local = now.astimezone(tz)\n    if rule is None:",
+  "    local = now\n    if rule is None:"),
 
- ("scheduler 2 AM reset: a night ends at its own date's reset, not the "
-  "next day's",
+ ("scheduler 2 AM reset: a night ends at its own date's reset, not the next day's",
   "ltcplay/schedule.py",
-  "    return _utc(datetime.combine(d + timedelta(days=1), NIGHT_RESET,",
-  "    return _utc(datetime.combine(d, NIGHT_RESET,"),
+  "    base = _utc(datetime.combine(d + timedelta(days=1), NIGHT_RESET,",
+  "    base = _utc(datetime.combine(d, NIGHT_RESET,"),
 
  ("scheduler 2 AM reset: the service moves on at midnight (calendar date)",
   "ltcplay/schedule_service.py",
-  "        return sch.night_of(now, self.rule.tz)",
+  "        return sch.night_of(now, self.rule.tz, self.rule, self.machine)",
   "        return now.astimezone(self.rule.tz).date()"),
 
- ("scheduler 2 AM reset: a first show before 2 AM is accepted",
+ ("after midnight: a night past midnight ends at midnight",
   "ltcplay/schedule.py",
-  "    if first < NIGHT_RESET:",
-  "    if False:"),
+  "    on = d + timedelta(days=1) if n.last_end <= n.first_start else d",
+  "    on = d"),
+
+ ("after midnight: the night hands over at 2 AM with a show still to come",
+  "ltcplay/schedule.py",
+  "    r = base if end is None else max(base, end)",
+  "    r = base"),
+
+ ("after midnight: the next night's early first show waits for 2 AM",
+  "ltcplay/schedule.py",
+  "        r = min(r, opens if end is None else max(end, opens))",
+  "        pass"),
+
+ ("after midnight: the hand over ignores the machine's moved shows",
+  "ltcplay/schedule.py",
+  "        live = m if m is not None and m.date == y else None",
+  "        live = None"),
+
+ ("after midnight: a small hours time typed tonight is not after midnight",
+  "ltcplay/schedule.py",
+  "        return later\n",
+  "        return when\n"),
+
+ ("after midnight: tonight's file refuses a show after midnight",
+  "ltcplay/schedule.py",
+  "    end_of_day = _utc(datetime.combine(d + timedelta(days=2), time(0),",
+  "    end_of_day = _utc(datetime.combine(d + timedelta(days=1), time(0),"),
+
+ ("after midnight: the save answer leaves out the warnings",
+  "ltcplay/remote.py",
+  "        warned = (\" Warnings, saved anyway: \" + \" \".join(warns)) \\\n            if warns else \"\"",
+  "        warned = \"\""),
+
+ ("after midnight: nights that run into each other are not warned about",
+  "ltcplay/schedule.py",
+  "    out += clash\n",
+  "    pass\n"),
+
+ ("after midnight: an exception outside the season is not used",
+  "ltcplay/schedule.py",
+  "    if d not in rule.exceptions and \\\n            not (rule.first_date <= d <= rule.last_date):",
+  "    if not (rule.first_date <= d <= rule.last_date):"),
+
+ ("after midnight: a later hand over is said as the 2 AM reset",
+  "ltcplay/schedule.py",
+  "    why = RESET_MISSED if at_default else HANDOVER_MISSED",
+  "    why = RESET_MISSED"),
+
+ ("after midnight: spacing that does not fit is not warned about",
+  "ltcplay/schedule.py",
+  "        if n.interval_min * 60 < need:",
+  "        if False:"),
 
  ("scheduler 2 AM reset: a show running at the reset is cut by it",
   "ltcplay/schedule_service.py",
@@ -19934,8 +19977,8 @@ def build():
  # (Jeff, Pico, 2026-10-29).
  ("saved schedule: a save waits for a restart to plan tonight again",
   "ltcplay/schedule_service.py",
-  "            else:\n                self._follow_rule(self.clock())\n            return self.rule",
-  "            return self.rule"),
+  "                self._journal_rule_warnings()\n                self._follow_rule(self.clock())\n            return self.rule",
+  "                self._journal_rule_warnings()\n            return self.rule"),
 
  ("saved schedule: a closed night stays closed though a show is still to come",
   "ltcplay/schedule.py",

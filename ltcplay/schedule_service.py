@@ -925,6 +925,8 @@ class Service:
                   night=self._night())
         if failed:
             self._journal_rule_error()
+        else:
+            self._journal_rule_warnings()
         if why:
             self._journal_line("system", why, action="operators")
         if why_screens:
@@ -1003,6 +1005,7 @@ class Service:
             if self._load_rule():
                 self._journal_rule_error()
             else:
+                self._journal_rule_warnings()
                 self._follow_rule(self.clock())
             return self.rule
 
@@ -1293,6 +1296,17 @@ class Service:
             return str(pr.skip() or "")
         except Exception:                        # noqa: BLE001
             return ""
+
+    def _journal_rule_warnings(self):
+        """What the schedule file has that an operator should know (it is
+        used as it is: sch.rule_warnings). Never raises."""
+        try:
+            warns = sch.rule_warnings(self.rule)
+        except Exception:                        # noqa: BLE001
+            return
+        for text in warns:
+            self._journal_line("system", text, action="schedule file",
+                               outcome="warning")
 
     def _journal_rule_error(self):
         self._journal_line("system", "The schedule file was not loaded, so "
@@ -2400,7 +2414,7 @@ class Service:
         """The night `now` belongs to: the local date from the nightly
         reset on, the day before until then (sch.night_of, Jeff,
         2026-10-03)."""
-        return sch.night_of(now, self.rule.tz)
+        return sch.night_of(now, self.rule.tz, self.rule, self.machine)
 
     # How many days back a start looks for a night left open (a delayed
     # show waiting, or a show running) to close it, see _open_night_before.
@@ -2590,18 +2604,24 @@ class Service:
         if m.state in (sch.SHOW, sch.PAUSED):
             return None
         words = sch.reset_words()
+        ends = sch.night_reset(m.date, m.tz, self.rule, m)
+        default = ends == sch.night_reset(m.date, m.tz)
+        if not default:
+            words = f"{m.hm(ends)} hand over to the next night"
         if m.delayed() is None:
-            return (f"written at the {words} nightly reset; the night was "
-                    f"never closed")
-        if now < sch.night_reset(m.date, m.tz):
+            return (f"written at the {words}" +
+                    (" nightly reset" if default else "") +
+                    "; the night was never closed")
+        if now < ends:
             return None
         n = m.delayed().n
-        out = sch.close_at_reset(m, now)
+        out = sch.close_at_reset(m, now, at_default=default)
         self.machine = out.machine
         self._record(out, now)
         self._save_tonight()
-        return (f"closed at the {words} nightly reset; the delayed show {n} "
-                f"never started")
+        return (f"closed at the {words}" +
+                (" nightly reset" if default else "") +
+                f"; the delayed show {n} never started")
 
     def _open_night_before(self, d, now):
         """The most recent night saved before `d`, picked up again if it

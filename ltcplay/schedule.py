@@ -365,6 +365,13 @@ def _date(text, name):
                          f"not {text!r}.")
 
 
+# Weekdays as an operator may write them: "thu", "Thu", "Thursday".
+WEEKDAY_NAMES = {w: w for w in WEEKDAYS}
+WEEKDAY_NAMES.update({full: w for w, full in zip(WEEKDAYS, (
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday"))})
+
+
 def _night(doc, where, show_len_s, guard_s, problems):
     if not isinstance(doc, dict):
         problems.append(f"{where} has to be a block with first_start, "
@@ -390,39 +397,10 @@ def _night(doc, where, show_len_s, guard_s, problems):
     if why:
         problems.append(why)
         return None
-    if last <= first:
-        problems.append(f"{where}: last_end {_hm(last)} is not after "
-                        f"first_start {_hm(first)}. A night cannot run past "
-                        f"midnight.")
-        return None
-    if first < NIGHT_RESET:
-        # Every night closes at the nightly reset, and from it on the shows
-        # belong to that day's night, so a show before it could never run
-        # (Jeff, 2026-10-03).
-        problems.append(f"{where}: first_start {_hm(first)} is before "
-                        f"{_hm(NIGHT_RESET)}, the {reset_words()} nightly "
-                        f"reset. A night's shows run from {_hm(NIGHT_RESET)} "
-                        f"to midnight, so a show before {reset_words()} "
-                        f"could never run.")
-        return None
-    if show_len_s is None or guard_s is None:
-        return NightRule(first, interval, last)
-    need = show_len_s + guard_s
-    if interval * 60 < need:
-        problems.append(
-            f"{where}: interval_min is {interval}, but a show takes "
-            f"{show_len_s} s and the guard after it is {guard_s} s, so shows "
-            f"would run into each other. The interval has to be at least "
-            f"{-(-need // 60)} minutes.")
-        return None
-    span = (datetime.combine(date(2000, 1, 3), last)
-            - datetime.combine(date(2000, 1, 3), first)).total_seconds()
-    if span < need:
-        problems.append(
-            f"{where}: from {_hm(first)} to {_hm(last)} there is not room for "
-            f"one show, which needs {show_len_s} s plus the {guard_s} s guard "
-            f"before last_end.")
-        return None
+    # Jeff, 2026-10-30: "Don't restrict the schedule in any way." A night
+    # may start at any time of day and run past midnight (last_end at or
+    # before first_start is on the next day); spacing that does not fit is
+    # warned about (rule_warnings), never refused.
     return NightRule(first, interval, last)
 
 
@@ -507,9 +485,8 @@ def parse_rule(doc, where=""):
             except ValueError as e:
                 problems.append(str(e))
                 first_date = last_date = None
-            if first_date and last_date and last_date < first_date:
-                problems.append(f"The season ends on {last_date} before it "
-                                f"starts on {first_date}.")
+            # A season that ends before it starts is warned about
+            # (rule_warnings): only the date exceptions then have shows.
 
     weekly = {}
     if "weekly" in doc:
@@ -517,7 +494,8 @@ def parse_rule(doc, where=""):
             problems.append("weekly has to be a block of weekdays, such as "
                             "\"thu\", \"fri\" and \"sat\".")
         else:
-            for k, v in doc["weekly"].items():
+            for k0, v in doc["weekly"].items():
+                k = WEEKDAY_NAMES.get(str(k0).strip().lower(), k0)
                 if k not in WEEKDAYS:
                     problems.append(f"weekly: {k!r} is not a weekday. Use "
                                     f"{', '.join(WEEKDAYS)}.")
@@ -537,11 +515,8 @@ def parse_rule(doc, where=""):
         except ValueError as e:
             problems.append(str(e))
             continue
-        if first_date and last_date and not (first_date <= d <= last_date):
-            problems.append(f"The exception for {d} is outside the season "
-                            f"({first_date} to {last_date}), so it would never "
-                            f"be used.")
-            continue
+        # An exception outside the season is used anyway: its date runs its
+        # own hours (rule_warnings says so).
         if v is None:
             exceptions[d] = None
             continue
@@ -602,13 +577,26 @@ def _wall(d, t, tz):
         .astimezone(tz)
 
 
+def night_window(n, d, tz):
+    """(first_start, last_end) of one night rule on date `d`, in UTC. A
+    last_end at or before first_start is on the next day: the night runs
+    past midnight (Jeff, 2026-10-30). Pure."""
+    start = datetime.combine(d, n.first_start, tzinfo=tz).astimezone(
+        timezone.utc)
+    on = d + timedelta(days=1) if n.last_end <= n.first_start else d
+    end = datetime.combine(on, n.last_end, tzinfo=tz).astimezone(
+        timezone.utc)
+    return start, end
+
+
 def expand(rule, d):
     """The shows for one date. No I/O; the answer depends only on the rule and
     the date. Slots are first_start, then every interval_min in real elapsed
     time, and one is kept only if start + show_len_s + guard_s <= last_end,
     because last_end is when the last show must be finished."""
     wd = WEEKDAYS[d.weekday()]
-    if not (rule.first_date <= d <= rule.last_date):
+    if d not in rule.exceptions and \
+            not (rule.first_date <= d <= rule.last_date):
         return Plan(d, "off-season", None, (),
                     f"{d} is outside the season, so there are no shows.")
     if d in rule.exceptions:
@@ -624,9 +612,7 @@ def expand(rule, d):
         return Plan(d, "dark", None, (),
                     f"{d} is a {wd}, which is a dark night.")
     tz = rule.tz or zone(rule.timezone)
-    start = datetime.combine(d, n.first_start, tzinfo=tz).astimezone(
-        timezone.utc)
-    end = datetime.combine(d, n.last_end, tzinfo=tz).astimezone(timezone.utc)
+    start, end = night_window(n, d, tz)
     step = timedelta(minutes=n.interval_min)
     need = timedelta(seconds=rule.show_len_s + rule.guard_s)
     out = []
@@ -643,6 +629,83 @@ def expand_season(rule):
     while d <= rule.last_date:
         out.append(expand(rule, d))
         d += timedelta(days=1)
+    return out
+
+
+def _night_span(rule, d):
+    """(first show start, end of the last show and its guard) of the
+    night of `d` from the rule, UTC; (None, None) with no shows. Pure."""
+    plan = expand(rule, d)
+    if not plan.starts:
+        return None, None
+    return (_utc(plan.starts[0]), _utc(plan.starts[-1]) +
+            timedelta(seconds=rule.show_len_s + rule.guard_s))
+
+
+def rule_warnings(rule, most=6):
+    """Sentences for a schedule that is saved and used as it is, but has
+    something an operator should know (Jeff, 2026-10-30: "Don't restrict
+    the schedule in any way": what was refused is now said here). Pure."""
+    out = []
+    need = rule.show_len_s + rule.guard_s
+    nights = [(f"weekly {k}", rule.weekly[k]) for k in WEEKDAYS
+              if k in rule.weekly]
+    nights += [(f"exception {d}", n) for d, n in sorted(
+        rule.exceptions.items()) if n is not None]
+    for where, n in nights:
+        if n.interval_min * 60 < need:
+            out.append(
+                f"{where}: shows are {n.interval_min} minutes apart, but a "
+                f"show takes {rule.show_len_s} s and the guard after it is "
+                f"{rule.guard_s} s, so they overlap: a show whose time comes "
+                f"while the one before it is still running, or inside its "
+                f"guard, is missed. Saved as it is.")
+        start, end = night_window(n, date(2000, 1, 3), timezone.utc)
+        if (end - start).total_seconds() < need:
+            out.append(
+                f"{where}: from {_hm(n.first_start)} to {_hm(n.last_end)} "
+                f"there is not room for one show ({rule.show_len_s} s plus "
+                f"the {rule.guard_s} s guard), so that night has no shows. "
+                f"Saved as it is.")
+    if rule.last_date < rule.first_date:
+        out.append(f"The season ends on {rule.last_date} before it starts "
+                   f"on {rule.first_date}, so only the date exceptions have "
+                   f"shows. Saved as it is.")
+    for d, n in sorted(rule.exceptions.items()):
+        if not (rule.first_date <= d <= rule.last_date):
+            out.append(f"The exception for {d} is outside the season "
+                       f"({rule.first_date} to {rule.last_date}). "
+                       + ("It runs its own hours on that date anyway."
+                          if n is not None else
+                          "That date has no shows anyway."))
+    # One night's last show running into the next night's first show.
+    dates = set(rule.exceptions)
+    lo, hi = sorted((rule.first_date, rule.last_date))
+    d = lo - timedelta(days=1)
+    while d <= hi:
+        dates.add(d)
+        d += timedelta(days=1)
+    seen, clash = set(), []
+    for d in sorted(dates):
+        _f, end = _night_span(rule, d)
+        first, _e = _night_span(rule, d + timedelta(days=1))
+        if end is None or first is None or end <= first:
+            continue
+        key = (expand(rule, d).source, WEEKDAYS[d.weekday()])
+        if key in seen:
+            continue
+        seen.add(key)
+        tz = rule.tz or zone(rule.timezone)
+        clash.append(
+            f"The night of {d} ({WEEKDAYS[d.weekday()]}) has a show "
+            f"finishing at {_hm(end.astimezone(tz).timetz())} with its "
+            f"guard, after the next night's first show at "
+            f"{_hm(first.astimezone(tz).timetz())}: the earlier night "
+            f"finishes first, and a show of the next night whose time has "
+            f"gone by then is missed. Saved as it is.")
+    out += clash
+    if len(out) > most:
+        out = out[:most] + [f"And {len(out) - most} more like these."]
     return out
 
 
@@ -899,7 +962,7 @@ def new_night(rule, d):
     slots = tuple(Slot(n=i + 1, start=_utc(s))
                   for i, s in enumerate(plan.starts))
     tz = rule.tz or zone(rule.timezone)
-    end = (_utc(datetime.combine(d, plan.night.last_end, tzinfo=tz))
+    end = (night_window(plan.night, d, tz)[1]
            if plan.night is not None else None)
     return Machine(date=d, tz=tz, show_len_s=rule.show_len_s,
                    guard_s=rule.guard_s, late_grace_s=rule.late_grace_s,
@@ -1764,11 +1827,9 @@ def _spacing_problem(m, slots, moved, now):
         if s.n in moved and s.start <= now:
             return (f"Show {s.n} would be at {clock(_local(m, s.start))}, "
                     f"which has already passed.")
-        if s.n in moved and s.start + length > midnight(m):
-            return (f"Show {s.n} would start at {clock(_local(m, s.start))} "
-                    f"and finish at {clock(_local(m, s.start + length))}, "
-                    f"after midnight. Tonight's list cannot run into "
-                    f"tomorrow; Start now still works.")
+        # A show may be moved or added past midnight (Jeff, 2026-10-30:
+        # "Don't restrict the schedule in any way"); the night stays open
+        # until it has run (night_reset with the machine).
     seq = sorted((s for s in slots if s.status in (PENDING, RUNNING)),
                  key=lambda s: (s.start if s.status == PENDING
                                 else s.fired_at, s.n))
@@ -1942,27 +2003,76 @@ def _end_night(m, ev, now):
 RESET_MISSED = f"MISSED (still waiting at the {reset_words()} nightly reset)"
 
 
-def night_of(now, tz):
+def night_of(now, tz, rule=None, m=None):
     """Which night `now` belongs to: its local calendar date from the
     nightly reset on, the day before until then (Jeff, 2026-10-03). Read on
     the local wall clock, so on a night the clocks change the reset is still
     the first instant the wall clock reads NIGHT_RESET or later (in the
-    spring gap, the first instant after it). Pure."""
-    local = _utc(_aware(now)).astimezone(tz)
-    if local.time() < NIGHT_RESET:
-        return local.date() - timedelta(days=1)
+    spring gap, the first instant after it). Pure.
+
+    With the `rule` (and the machine `m` on the scheduler, when it is one
+    of those nights) the hand over is night_reset's: the night before runs
+    on past 2 AM while one of its shows still has to run, and the next
+    night begins earlier when its first show is earlier (Jeff,
+    2026-10-30: shows between midnight and 2 AM)."""
+    now = _utc(_aware(now))
+    local = now.astimezone(tz)
+    if rule is None:
+        if local.time() < NIGHT_RESET:
+            return local.date() - timedelta(days=1)
+        return local.date()
+    for back in (2, 1):
+        y = local.date() - timedelta(days=back)
+        live = m if m is not None and m.date == y else None
+        if now < night_reset(y, tz, rule, live):
+            return y
     return local.date()
 
 
-def night_reset(d, tz):
+def night_reset(d, tz, rule=None, m=None):
     """The instant the night of `d` closes: NIGHT_RESET, local, on the next
     calendar day. A reset inside the spring gap comes out as the first
-    instant after it, the same instant night_of moves on at. Pure."""
-    return _utc(datetime.combine(d + timedelta(days=1), NIGHT_RESET,
+    instant after it, the same instant night_of moves on at. Pure.
+
+    With the `rule` it is where the night of `d` hands over to the next
+    (Jeff, 2026-10-30, replacing the fixed reset): 2 AM as before, later
+    while a show of the night still has to run (the end of its last show
+    and guard, from the rule, and from the machine `m` when given: a show
+    delayed or moved still to come, or running), and earlier when the
+    next night's first show is earlier (its preshow, PRESHOW_LEAD_S before
+    it), but never before this night's own shows have run. It never drops
+    a planned show of the night and never starts one early."""
+    base = _utc(datetime.combine(d + timedelta(days=1), NIGHT_RESET,
                                  tzinfo=tz))
+    if rule is None:
+        return base
+    _first, end = _night_span(rule, d)
+    if m is not None:
+        need = timedelta(seconds=m.show_len_s + m.guard_s)
+        for s in m.slots:
+            if s.status == PENDING:
+                e = s.start + need
+            elif s.status == RUNNING and m.running == s.n:
+                e = m.expected_end(s.fired_at or s.start) + \
+                    timedelta(seconds=m.guard_s)
+            else:
+                continue
+            end = e if end is None else max(end, e)
+    r = base if end is None else max(base, end)
+    nxt, _e = _night_span(rule, d + timedelta(days=1))
+    if nxt is not None:
+        opens = nxt - timedelta(seconds=PRESHOW_LEAD_S)
+        r = min(r, opens if end is None else max(end, opens))
+    return r
 
 
-def close_at_reset(m, now):
+# The same, when the night handed over at another time than 2 AM (a show
+# still to run after 2 AM, or the next night's first show before it).
+HANDOVER_MISSED = ("MISSED (still waiting when the night ended, as the "
+                   "next night began)")
+
+
+def close_at_reset(m, now, at_default=True):
     """A night kept open past midnight by a delayed show (Jeff, 2026-10-01)
     closes at the nightly reset (Jeff, 2026-10-03): the delayed show becomes
     MISSED, out loud, as a fault line naming it and why, and it goes on the
@@ -1975,22 +2085,41 @@ def close_at_reset(m, now):
     if d is None:
         return Outcome(m)
     tx = _Tx(m, Event(TICK, "scheduler"), now)
+    why = RESET_MISSED if at_default else HANDOVER_MISSED
+    when = (f"at the {reset_words()} nightly reset on "
+            f"{m.date + timedelta(days=1)}" if at_default else
+            f"when the night ended at {clock(_local(m, now))}, as the next "
+            f"night began")
     text = (f"Show {d.n}, planned for {clock(_local(m, d.start))} on "
             f"{m.date} and delayed since, never started: it was still "
-            f"waiting at the {reset_words()} nightly reset on "
-            f"{m.date + timedelta(days=1)}, and nobody had pressed Start now "
+            f"waiting {when}, and nobody had pressed Start now "
             f"or Close for the night. The night of {m.date} is closed and "
-            f"show {d.n} is {RESET_MISSED}.")
-    tx.set_slot(d.n, status=MISSED, reason=RESET_MISSED)
+            f"show {d.n} is {why}.")
+    tx.set_slot(d.n, status=MISSED, reason=why)
     tx.m = replace(tx.m, faults=tx.m.faults + (text,))
-    tx.note("miss", "fault", RESET_MISSED, text, show=d.n,
+    tx.note("miss", "fault", why, text, show=d.n,
             actor="scheduler")
     return tx.done()
 
 
 def _edit_time(m, ev):
+    """The time an operator typed for tonight's list. A time earlier in the
+    day than tonight's first show is after midnight, on the next day
+    (Jeff, 2026-10-30: shows between midnight and 2 AM)."""
     t = parse_time(ev.at, "The new time")
-    return _utc(_wall(m.date, t, m.tz))
+    when = _utc(_wall(m.date, t, m.tz))
+    times = [(s.planned or s.start) for s in m.slots]
+    if not times:
+        return when
+    first, last = min(times), max(times)
+    later = _utc(_wall(m.date + timedelta(days=1), t, m.tz))
+    # Earlier in the day than tonight's first show, and within 12 hours
+    # after its last one: the small hours of tonight, not tomorrow
+    # afternoon (a time that has passed is then refused as passed).
+    if t < _local(m, first).time() and \
+            later - last <= timedelta(hours=12):
+        return later
+    return when
 
 
 def _edit_move(m, ev, now):
@@ -2263,7 +2392,10 @@ def machine_from_doc(doc, rule, d, now, notes=None):
     base = new_night(rule, d)
     tz = base.tz
     start_of_day = _utc(datetime.combine(d, time(0), tzinfo=tz))
-    end_of_day = midnight(base)
+    # A night may run past midnight (Jeff, 2026-10-30): its shows are on
+    # its date or the next one.
+    end_of_day = _utc(datetime.combine(d + timedelta(days=2), time(0),
+                                       tzinfo=tz))
 
     def when(v, what, optional=True):
         if v is None:
@@ -2288,7 +2420,8 @@ def machine_from_doc(doc, rule, d, now, notes=None):
         except (TypeError, ValueError):
             raise ValueError(f"{what} is not a time: {v!r}.")
         if not (start_of_day <= dt < end_of_day):
-            raise ValueError(f"{what} is not on {d} in {rule.timezone}.")
+            raise ValueError(f"{what} is not on the night of {d} in "
+                             f"{rule.timezone}.")
         return dt
 
     if not isinstance(doc, dict):
@@ -2350,9 +2483,6 @@ def machine_from_doc(doc, rule, d, now, notes=None):
         if x["origin"] not in ORIGINS or not isinstance(x["reason"], str):
             raise ValueError(f"Show {n} has origin {x['origin']!r}.")
         start = tonight(x["start"], f"Show {n}'s start")
-        if start + timedelta(seconds=rule.show_len_s) > end_of_day \
-                and x["origin"] != "operator":
-            raise ValueError(f"Show {n} would finish after midnight.")
         sl = Slot(n=n, start=start, status=status, reason=x["reason"],
                   origin=x["origin"],
                   planned=(tonight(x["planned"], f"Show {n}'s planned start")

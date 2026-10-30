@@ -6657,7 +6657,7 @@ class Remote:
                                   "shows. Nothing was changed."}
         try:
             from . import schedule as sch
-            sch.parse_rule(doc)
+            rule = sch.parse_rule(doc)
         except Exception as e:                   # RuleError and kin
             problems = getattr(e, "problems", None)
             why = "; ".join(str(p) for p in problems) if problems else str(e)
@@ -6690,11 +6690,19 @@ class Remote:
         if cw is not None and svc is not None and hasattr(svc, "reload"):
             # Read again just now: what is on disk is the engine's copy.
             cw.refresh(path)
+        # Jeff, 2026-10-30: "Don't restrict the schedule in any way." What
+        # used to refuse a save is said here, and the save stands.
+        try:
+            warns = list(sch.rule_warnings(rule))
+        except Exception:                        # noqa: BLE001
+            warns = []
+        warned = (" Warnings, saved anyway: " + " ".join(warns)) \
+            if warns else ""
         self._journal("", "Rack screen", "schedule file", "saved",
                       f"The schedule file {path} was saved from the "
-                      f"Programming screen.{loaded}")
-        return 200, {"ok": True, "text": f"Saved to {path}.{loaded}",
-                     "doc": doc, "path": path}
+                      f"Programming screen.{loaded}{warned}")
+        return 200, {"ok": True, "text": f"Saved to {path}.{loaded}{warned}",
+                     "doc": doc, "path": path, "warnings": warns}
 
     def open_folder(self, body):
         """POST open-folder {"which": "show" | "settings"}: the folder
