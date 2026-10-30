@@ -869,7 +869,9 @@ html.setupafter #setup,html.setupafter #setup-below{order:9}
 .fb-armed.on{color:var(--red)}
 .fb-top button{flex:0 0 auto;min-height:48px}
 #fb-note{font-size:14px;margin-top:6px}
-#fb-charge{font-size:14px;margin-top:6px}
+#fb-charge{font-size:14px;margin-top:6px;flex:1 1 12em;min-width:0}
+.fb-cline{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.fb-cline button{flex:0 0 auto;min-height:48px}
 #fb-charge:empty,button.fb-pad .fb-tk:empty{display:none}
 #fb-pads{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:10px}
 button.fb-pad{min-height:clamp(96px,14vh,200px);display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -1124,11 +1126,14 @@ button.fb-pad.na{opacity:.45}
     <section class="card" id="fb-head">
       <div class="fb-top"><h2>Fireball</h2><span class="fb-armed" id="fb-armed">Not known yet</span>
         <button class="ghost" id="fb-alloff" title="Turns every Fireball channel off. Always works.">All off</button>
-        <button class="ghost" id="fb-empty" hidden title="Fuel or Air is not known: the timeline charges nothing until a shot, a Purge, or an admin confirms both tanks are empty. Only if they are known to be empty. Admins.">Tanks are empty</button>
         <button class="disarm" id="fb-disarm" title="Disarms the Fireball group. Always works. Arm it again with its hold to arm.">Disarm Fireball</button></div>
       <div class="warnbox open" id="fb-block" hidden></div>
       <div class="dim" id="fb-note"></div>
-      <div class="kv" id="fb-charge"></div>
+      <!-- The charge record, and (a tank NOT KNOWN) Tanks are empty
+           beside it: one line, so the pads keep their room on an iPad. -->
+      <div class="fb-cline"><div class="kv" id="fb-charge"></div>
+        <button class="ghost" id="fb-empty" hidden title="Fuel or Air is not known: the timeline charges nothing until a shot, a Purge, or an admin confirms both tanks are empty. Only if they are known to be empty. Admins.">Tanks are empty</button>
+      </div>
       <div class="toast" id="fb-msg"></div>
     </section>
     <div id="fb-pads"></div>
