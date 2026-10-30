@@ -19625,6 +19625,31 @@ def build():
   "                if old is None or old[\"s0\"] != w[\"s0\"]:",
   "                if True:"),
 
+ ("fireball cues: a gap with no frame asked keeps the stage carrying on",
+  "ltcplay/fireball_cues.py",
+  "        if run.last_call is not None and now - run.last_call > GAP_S:\n            run.prev_on = set()",
+  "        if False:\n            run.prev_on = set()"),
+
+ ("fireball cues: carrying on is judged from the composed frame",
+  "ltcplay/fireball_cues.py",
+  "        if self._sent_get is not None:\n            try:\n                v = self._sent_get()",
+  "        if False:\n            try:\n                v = self._sent_get()"),
+
+ ("fireball cues: an FSEQ charge the FSEQ turned off rides on",
+  "ltcplay/fireball_cues.py",
+  "                run.sent_at.pop(tank, None)\n                run.sent_tanks.discard(tank)\n                continue",
+  "                continue"),
+
+ ("fireball cues: a fireball group off 55 to 59 is not checked",
+  "ltcplay/fireball_cues.py",
+  "        if group is not None and group != list(SLOTS):",
+  "        if False:"),
+
+ ("fireball cues: the engine never names flamesafe's fireball group",
+  "ltcplay/web.py",
+  "            journal=say, group_get=fireball_slots)",
+  "            journal=say)"),
+
 ]
 
 

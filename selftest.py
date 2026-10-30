@@ -95410,6 +95410,8 @@ def test_fireball_timeline_docs_in_plain_words():
                  "same charge rule as the timeline",
                  "the FSEQ's Fuel Charge was skipped",
                  "the next charge in the FSEQ goes out again",
+                 "A charge the FSEQ itself turns off has ended",
+                 "The fireball must be on 55 to 59",
                  "exactly as before"):
         check(" ".join(need.split()) in " ".join(ev.split()),
               f"OPERATOR.md's every-show rule says {need!r}")
@@ -96484,6 +96486,133 @@ def test_fireball_cues_rules():
             check([x for x in lines_ if x == "double_charge"] == want,
                   f"an edge after a gap, carrying on told {told_}: "
                   f"{lines_}")
+        # Third review, D-F1: a gap of more than GAP_S with no frame asked
+        # (Hold, a look over the show, a stalled timecode) and Andy's own
+        # Fuel on the wire meanwhile: the stage does NOT come back as if
+        # carrying on (stale prev_on), it is cut short.
+        R = _fbq_rig([_st("fuel", "00:00:01:00", 3)])
+        rigs.append(R)
+        for f in range(25, 40):
+            if R.frame(f)[54]:
+                R.tank.tanks["fuel"] = "charged"
+        R.clk[0] += 1.0                      # no frame asked for a second
+        andy = bytearray(512)
+        andy[54] = 255                       # Andy's top-off on the wire
+        R.tank.last_sent = bytes(andy)
+        out_ = R.fq.apply([0] * 512, R.session, "Show", 41 / 30.0,
+                          R.cue_obj)
+        got = [out_[54]] + [R.frame(f)[54] for f in range(42, 100)]
+        check(not any(got) and "cut short" in R.fq.messages[-1],
+              f"after a gap, Andy's Fuel on the wire is not the show's "
+              f"charge carrying on: {got[:3]} {R.fq.messages}")
+        # ... and "carrying on" is judged from the SHOW path's own sent
+        # values (sent_get), never the composed frame with Andy's in it:
+        # the show's 55 held off on the wire for longer than GAP_S while
+        # Andy holds 55 is cut, not carried on for ever.
+        R = _fbq_rig([_st("fuel", "00:00:01:00", 3)])
+        rigs.append(R)
+        show_sent = [bytes(512)]
+        R.fq._sent_get = lambda: show_sent[0]
+        for f in range(25, 40):
+            g = R.frame(f)
+            show_sent[0] = bytes(g)
+            if g[54]:
+                R.tank.tanks["fuel"] = "charged"
+        ons = []
+        for f in range(40, 60):
+            g = R.frame(f)                   # composed: tank.last_sent = g
+            R.tank.last_sent = bytes(andy)   # Andy's 255 on the wire
+            show_sent[0] = bytes(512)        # the show's own 55: held off
+            ons.append(g[54])
+        check(ons[:5] == [255] * 5 and not any(ons[10:]) and
+              any("cut short" in m for m in R.fq.messages),
+              f"the show's own charge held off on the wire for more than "
+              f"0.25 s is cut, whatever Andy holds: {ons}")
+        # Review C-2: an FSEQ show's own gap is the end of its charge: a
+        # second fuel cue 0.2 s after the first, or a strobe, never charges
+        # a charged tank again.
+        for pattern, what in (
+                (lambda f: 45 <= f < 75 or 81 <= f < 105, "two cues 0.2 s "
+                                                          "apart"),
+                (lambda f: f >= 45 and (f - 45) % 9 < 4, "a 0.15 s strobe")):
+            R = _fbq_rig(None)
+            rigs.append(R)
+            R.session.timeline_path = "Plain.json"
+            seq = []
+            for f in range(0, 160):
+                base = [0] * 512
+                if pattern(f):
+                    base[54] = 255
+                g = R.frame(f, base=base)
+                seq.append(f if g[54] else None)
+                if g[54]:
+                    R.tank.tanks["fuel"] = "charged"
+            on = [f for f in seq if f is not None]
+            check(on == list(range(45, 75 if "two" in what else 49)),
+                  f"an FSEQ show, {what}: only the first charge goes out: "
+                  f"{on[:6]}..{on[-3:]}")
+        # An FSEQ charge held off by a Hold, the tank emptied by a shot
+        # meanwhile: the FSEQ's charge still on after the Resume is a new
+        # charge of an EMPTY tank, and goes out.
+        R = _fbq_rig(None)
+        rigs.append(R)
+        R.session.timeline_path = "Plain.json"
+        for f in range(0, 20):
+            base = [0] * 512
+            base[54] = 255
+            if R.frame(f, base=base)[54]:
+                R.tank.tanks["fuel"] = "charged"
+        R.clk[0] += 2.0                       # a Hold
+        R.tank.last_sent = bytes(512)
+        R.tank.tanks["fuel"] = "empty"        # the shot, meanwhile
+        base = [0] * 512
+        base[54] = 255
+        check(R.frame(21, base=base)[54] == 255,
+              "an FSEQ charge after a Hold, the tank emptied meanwhile: "
+              "a new charge, it goes out")
+        # ... while a frame the engine did not read or send (not the
+        # FSEQ's own gap) still rides through, and the charge state is
+        # told so its edge is no double charge.
+        R = _fbq_rig(None)
+        rigs.append(R)
+        R.session.timeline_path = "Plain.json"
+        told = []
+        R.tank.note_continuing = told.append
+        on = []
+        for f in range(0, 90):
+            base = [0] * 512
+            base[54] = 255
+            if f == 40:
+                R.clk[0] += 1 / 30            # the cues could not be read
+                R.tank.last_sent = bytes(512)
+                continue
+            g = R.frame(f, base=base)
+            on.append(g[54])
+            if g[54]:
+                R.tank.tanks["fuel"] = "charged"
+        check(all(on) and told == ["fuel"],
+              f"an FSEQ charge rides a frame the engine missed: "
+              f"{on.count(0)} zero frames, told {told}")
+        # Review C-4: flamesafe's fireball group not on 55 to 59: a fault,
+        # the group's own slots zero from every show, 55 to 59 untouched.
+        R = _fbq_rig([_st("fuel", "00:00:01:00", 1)])
+        rigs.append(R)
+        R.fq._group_get = lambda: [451, 452, 453, 454, 455]
+        R.fq.refresh()
+        base = [0] * 512
+        for s in (55, 56, 57, 58, 59, 451, 455):
+            base[s - 1] = 200
+        g = R.frame(40, base=base)
+        check(g[450] == 0 and g[454] == 0 and g[54] == 200 and
+              g[58] == 200 and "not 55 to 59" in R.fq.fault,
+              f"the fireball elsewhere: its own slots zero, a fault, 55 to "
+              f"59 as read: {R.fq.fault}")
+        R.fq._group_get = lambda: [59, 58, 57, 56, 55]
+        R.fq.refresh()
+        R.cue_obj = {"label": "Show"}
+        g = R.frame(40, base=base)
+        check(not R.fq.fault and g[54] == 255 and g[55] == 0,
+              f"on 55 to 59 (any order): the timeline runs: {R.fq.fault}")
         # Valve Open and the Igniter: no charge guard, independent.
         R = _fbq_rig([_st("igniter", "00:00:01:00", 1),
                       _st("valve", "00:00:05:00", 1)],
@@ -96704,7 +96833,9 @@ def test_fireball_cues_wiring():
     cues = F.FlameCues(types.SimpleNamespace(session=None), "Flames")
     link = types.SimpleNamespace(cues=cues, journal_line=None)
     httpd = types.SimpleNamespace(remote=rm, fire_ice=types.SimpleNamespace(
-        flame_link=link))
+        flame_link=link), morning=types.SimpleNamespace(groups=[
+            {"name": "fireball", "safeties": [77],
+             "fire": [59, 58, 57, 56, 55]}]))
     try:
         W._attach_fireball_timeline(httpd)
         check(isinstance(cues.fireball, FQ.FireballCues) and
@@ -96712,6 +96843,15 @@ def test_fireball_cues_wiring():
               cues.fireball._plan is not None and
               cues.fireball._plan[1] == "",
               "built, read, and on the flame cues")
+        check(cues.fireball._group == [55, 56, 57, 58, 59],
+              f"it reads flamesafe's fireball group from the Startup page "
+              f"(review C-4): {cues.fireball._group}")
+        httpd.morning.groups[0]["fire"] = [451, 452, 453, 454, 455]
+        cues.fireball.refresh()
+        check(cues.fireball._group == [451, 452, 453, 454, 455],
+              "and again on every read")
+        httpd.morning.groups[0]["fire"] = [55, 56, 57, 58, 59]
+        cues.fireball.refresh()
         st = rm.fireball_timeline_store()
         ok, _t, _e = st.save("S.json", "Show", 60.0, "timeline",
                              [_st("fuel", "00:00:01:00", 1)], 0)

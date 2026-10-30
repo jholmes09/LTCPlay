@@ -85,6 +85,7 @@ class _Run:
         self.prev_on = set()     # slots this provider set ON last frame
         self.sent_tanks = set()  # tanks whose charge went out in this play
         self.sent_at = {}        # tank -> clock when last seen on the wire
+        self.last_call = None    # clock of the last frame asked of us
         self.fseq_on = {}        # FSEQ show: tank -> its charge allowed
         self.adopt(entry, rev, None)
 
@@ -129,11 +130,21 @@ class FireballCues:
     journal     (text, **fields), the flame cues' own (off the sender)"""
 
     def __init__(self, store, charge_get=lambda: None, journal=None,
-                 clock=time.monotonic):
+                 clock=time.monotonic, sent_get=None, group_get=None):
         self.store = store
         self._charge_get = charge_get
         self._journal = journal
         self._clock = clock
+        # What the SHOW path last sent (512 values), before anything else
+        # is merged into the frame (the Fireball page's own frame, later).
+        # "Carrying on its own charge" is judged from this alone (review
+        # D-F1: Andy's top-off on the composed frame read as the show's
+        # charge still on). None: the charge state's last frame.
+        self._sent_get = sent_get
+        # flamesafe's fireball group's fire slots (off the sender, read in
+        # refresh): the channels this module drives must be them.
+        self._group_get = group_get
+        self._group = None
         self._plan = None         # (rev, error, shows) published
         self._run = None
         self._lock = threading.Lock()
@@ -147,6 +158,12 @@ class FireballCues:
     def refresh(self):
         """Read the file and publish it (the flame cues' reading thread,
         and a save). Never raises."""
+        if self._group_get is not None:
+            try:
+                g = self._group_get()
+                self._group = sorted(g) if g is not None else None
+            except Exception:                    # noqa: BLE001
+                self._group = None
         try:
             doc, err = self.store.load()
             plan = (doc["rev"], err, dict(doc["shows"]))
@@ -196,7 +213,41 @@ class FireballCues:
             self._said_fault = text
             self._note(f"Fireball timeline: {text}.", fault=True)
 
+    def _sent(self, tr):
+        """The show path's last sent values (see __init__)."""
+        if self._sent_get is not None:
+            try:
+                v = self._sent_get()
+                return bytes(v) if v is not None else b""
+            except Exception:                    # noqa: BLE001
+                return b""
+        return getattr(tr, "last_sent", b"") if tr is not None else b""
+
+    def _gap_check(self, run):
+        """Asked again after more than GAP_S (a Hold, a look over the
+        show, a stalled timecode, a read fault): nothing of ours was on
+        meanwhile, so nothing carries on (review D-F1)."""
+        now = self._clock()
+        if run.last_call is not None and now - run.last_call > GAP_S:
+            run.prev_on = set()
+        run.last_call = now
+
     def _apply(self, out, session, label, rel, cue_obj):
+        group = self._group
+        if group is not None and group != list(SLOTS):
+            # flamesafe's fireball is not on 55 to 59 (review C-4): what
+            # this module would drive is not the fireball. Fail closed:
+            # the fireball group's own slots are zero from every show.
+            self._fault(f"flamesafe's fireball group is on {group}, not "
+                        f"55 to 59, so no show fires its fireball until it "
+                        f"is (MORNING.md, The fireball)")
+            if out is None:
+                return None
+            out = list(out)
+            for s in group:
+                if 1 <= s <= len(out):
+                    out[s - 1] = 0
+            return out
         plan = self._plan
         if plan is None or plan[1]:
             self._fault(plan[1] if plan else "the fireball timeline is not "
@@ -227,6 +278,7 @@ class FireballCues:
         if run is None or run.cue_obj is not cue_obj or run.label != label:
             run = self._run = _Run(cue_obj, label, entry, rev)
             self.messages = []
+        self._gap_check(run)
         if run.source != "timeline":
             return self._fseq_guarded(out, run)
         out = self._masked(out)
@@ -240,7 +292,7 @@ class FireballCues:
                 self._say(f"{fbtl.STAGE_WORD[k]} was moved into the past by "
                           f"an edit: not fired in this play of the show.")
         tr = self._charge_get()
-        last = getattr(tr, "last_sent", b"") if tr is not None else b""
+        last = self._sent(tr)
         now = self._clock()
         for k, tank in CHARGE_STAGES.items():
             w = run.stages.get(k)
@@ -281,7 +333,7 @@ class FireballCues:
         if tr is None:
             return (f"{word}: the charge state is not running in this engine,"
                     f" so {what} was skipped (no double charge).")
-        last = getattr(tr, "last_sent", b"")
+        last = self._sent(tr)
         carrying_on = slot in run.prev_on and len(last) >= slot and \
             last[slot - 1] > 0
         if carrying_on:
@@ -325,7 +377,7 @@ class FireballCues:
         out = list(out)
         out[PURGE_SLOT - 1] = 0
         tr = self._charge_get()
-        last = getattr(tr, "last_sent", b"") if tr is not None else b""
+        last = self._sent(tr)
         now = self._clock()
         on_now = set()
         for tank, slot in CHARGE_SLOT.items():
@@ -334,7 +386,13 @@ class FireballCues:
                 run.sent_tanks.add(tank)
                 run.sent_at[tank] = now
             if out[slot - 1] <= 0:
+                # The FSEQ itself turned this charge off (review C-2): it
+                # has ended. Only frames the engine failed to read or send
+                # ride through a short gap; a new FSEQ charge is judged by
+                # the tank alone (EMPTY again after a shot or a Purge).
                 run.fseq_on.pop(tank, None)
+                run.sent_at.pop(tank, None)
+                run.sent_tanks.discard(tank)
                 continue
             word = fbtl.STAGE_WORD[tank]
             why = self._charge_refusal(tr, tank, slot, run,

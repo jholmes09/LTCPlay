@@ -2416,10 +2416,19 @@ def _attach_fireball_timeline(httpd):
         return
     say = getattr(link, "journal_line", None)
     try:
+        def fireball_slots():
+            # flamesafe's fireball group's fire slots, as the Fireball page
+            # reads them (the Startup page's reading of flamesafe's
+            # config), or None when there is none to compare.
+            from . import fireball as fireball_mod
+            g, _why = fireball_mod.find_group(
+                getattr(getattr(httpd, "morning", None), "groups", None)
+                or [])
+            return g["fire"] if g else None
         fb = fbc_mod.FireballCues(
             remote.fireball_timeline_store(),
             charge_get=lambda: getattr(remote, "fireball_charge", None),
-            journal=say)
+            journal=say, group_get=fireball_slots)
         fb.refresh()
     except Exception as e:                       # noqa: BLE001
         fb = fbc_mod.FireballCues(None, journal=say)

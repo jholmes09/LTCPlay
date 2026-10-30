@@ -931,6 +931,11 @@ FSEQ:
   journal and the screens say so once ("Fuel already charged: the FSEQ's
   Fuel Charge was skipped (no double charge)."). After a shot or a Purge
   empties the tank, the next charge in the FSEQ goes out again.
+  A charge the FSEQ itself turns off has ended: a second Fuel cue a
+  moment later, or a flicker effect, never charges a charged tank again.
+- **The fireball must be on 55 to 59.** If flamesafe's fireball group is
+  on other channels, no show fires its fireball (its own channels are held
+  at zero) and the screens say why, until the group is on 55 to 59.
 - Valve Open (57), the Igniter (58) and every other channel of an FSEQ
   show are exactly as before.
 
