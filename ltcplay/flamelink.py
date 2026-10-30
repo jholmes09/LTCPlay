@@ -254,6 +254,10 @@ HAZER_NAME_MAX = 64
 # LTC Player knows one switch, the fuel pump; flamesafe's file may list at
 # most one.
 PUMP_HOLD_S = 0.5
+# Jeff (2026-10-30): the pump never runs more than 10 minutes. The engine
+# refuses a longer run time (fuelpump.MAX_LIMIT_S, the same number, held
+# equal by the selftest); this link's own hard end is never later either.
+PUMP_MAX_S = 600
 SWITCH_KEYS = frozenset(("name", "switch", "on"))
 SWITCH_ON_MIN, SWITCH_ON_MAX = 1, 255
 LOCK_ALARM_S = 1.0         # CONTRACT.md: "for more than 1 s"
@@ -1978,6 +1982,7 @@ class FlameLink:
                         s = left
                     if not s > 0:
                         return False
+                s = min(s, PUMP_MAX_S)
                 self._pump_until = mine + s
                 self._pump_beat = mine
                 self._pump_ended = ""

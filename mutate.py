@@ -2686,6 +2686,87 @@ MUTATIONS = [
   "            hz.cut()\n            was = []"),
 
  # the fuel pump (Jeff, 2026-10-30): flamesafe's switch, run by the engine
+ # the fuel pump: Jeff's ceiling of 10:00 and sign-out stops it
+ ("ui 2.0: the run time field takes more than 10:00",
+  "ltcplay/web/remote2.html",
+  "  if(secs > Math.min(v.max_s || PUMP_MAX_S, PUMP_MAX_S)) return",
+  "  if(v.max_s && secs > v.max_s) return"),
+
+ ("pump: a run may be longer than 10:00",
+  "ltcplay/fuelpump.py",
+  "    max_s = min(max_s, MAX_LIMIT_S)\n",
+  ""),
+
+ ("pump: a pump_max_s above 600 is taken as it is",
+  "ltcplay/remote.py",
+  "        out[k] = min(v, PUMP_MAX_LIMIT_S)",
+  "        out[k] = v"),
+
+ ("pump: signing out leaves the pump on",
+  "ltcplay/remote.py",
+  "                self.pump_after_signout(\n",
+  "                (\n"),
+
+ ("pump: the timer never checks its starter is still signed in",
+  "ltcplay/fuelpump.py",
+  "        gone = self._sign_in_gone(r.get(\"token\", \"\"), r.get(\"who\", \"\"))",
+  "        gone = \"\""),
+
+ ("pump: an ON whose sign-in ended on its way still starts",
+  "ltcplay/fuelpump.py",
+  "            gone = self._sign_in_gone(token, who)\n            if gone:\n                why = f\"The fuel pump was not turned on: {gone}.\"",
+  "            gone = \"\"\n            if gone:\n                why = f\"The fuel pump was not turned on: {gone}.\""),
+
+ ("pump: the reservation does not check the sign-in again",
+  "ltcplay/fuelpump.py",
+  "            gone = self._sign_in_gone(token, who)\n            if gone:\n                raise _NotStarted(gone)",
+  "            gone = \"\"\n            if gone:\n                raise _NotStarted(gone)"),
+
+ ("pump: an ON with no sign-in is taken while there are users",
+  "ltcplay/remote.py",
+  "        if self.users_active() and not (getattr(ctx, \"token\", \"\") or \"\"):",
+  "        if False:"),
+
+ ("pump: an unreadable users file reads as a sign-out",
+  "ltcplay/remote.py",
+  "        if state == \"broken\":\n            return (\"could not confirm the sign-in (users file unreadable); \"",
+  "        if False:\n            return (\"could not confirm the sign-in (users file unreadable); \""),
+
+ ("pump: a busy users lock is waited on",
+  "ltcplay/users.py",
+  "        if not self._lock.acquire(blocking=False):\n            return \"busy\", None",
+  "        if not self._lock.acquire():\n            return \"busy\", None"),
+
+ ("pump: a demotion leaves the run on",
+  "ltcplay/remote.py",
+  "        if not may:\n            return (f\"{nobody} may no longer turn the fuel pump on (their \"",
+  "        if False:\n            return (f\"{nobody} may no longer turn the fuel pump on (their \""),
+
+ ("pump: a show-PC sign-out leaves another's ended sign-in's run to the timer",
+  "ltcplay/remote.py",
+  "            if state == \"gone\":\n                starter = run.get(\"who\") or \"the person who started it\"",
+  "            if False:\n                starter = run.get(\"who\") or \"the person who started it\""),
+
+ ("pump: the link's own hard end may be past 10:00",
+  "ltcplay/flamelink.py",
+  "                s = min(s, PUMP_MAX_S)\n",
+  ""),
+
+ ("pump: a pump_max_s above 600 is written to the file",
+  "ltcplay/remote.py",
+  "            v > PUMP_MAX_LIMIT_S:\n        doc[\"pump_max_s\"] = PUMP_MAX_LIMIT_S",
+  "            v > PUMP_MAX_LIMIT_S:\n        pass"),
+
+ ("pump: another person's sign-out stops the pump",
+  "ltcplay/fuelpump.py",
+  "                mine = run is not None and token and run.get(\"token\") == token",
+  "                mine = run is not None"),
+
+ ("pump: a run keeps no sign-in",
+  "ltcplay/fuelpump.py",
+  "                 \"night\": self._night(), \"token\": token or \"\"}",
+  "                 \"night\": self._night(), \"token\": \"\"}"),
+
  ("pump: the FSEQ's data on the pump's slot reaches it",
   "ltcplay/flamelink.py",
   "        if self._pump_chan is not None:\n            out[self._pump_chan] = 0\n",
@@ -2733,8 +2814,8 @@ MUTATIONS = [
 
  ("pump: the engine's deadline is not carried to the link",
   "ltcplay/flamelink.py",
-  "                    if left < s:\n                        s = left\n                    if not s > 0:\n                        return False\n                self._pump_until = mine + s",
-  "                    if not s > 0:\n                        return False\n                self._pump_until = mine + s"),
+  "                    if left < s:\n                        s = left\n                    if not s > 0:\n                        return False\n                s = min(s, PUMP_MAX_S)",
+  "                    if not s > 0:\n                        return False\n                s = min(s, PUMP_MAX_S)"),
 
  ("pump: the engine reads a switch whose on is outside 1 to 255",
   "ltcplay/flamelink.py",
@@ -2993,8 +3074,8 @@ MUTATIONS = [
 
  ("pump: a pump_max_s past its limit is read",
   "ltcplay/remote.py",
-  "                not PUMP_MIN_S <= v <= PUMP_MAX_LIMIT_S:",
-  "                False:"),
+  "        if isinstance(v, bool) or not isinstance(v, int) or v < PUMP_MIN_S:",
+  "        if False:"),
 
  # the fuel pump on interface 2.0 (2026-10-30)
  ("ui 2.0: Pump off is disabled with no contact",

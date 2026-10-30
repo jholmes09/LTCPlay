@@ -770,6 +770,26 @@ class Users:
             s = dict(s, role=u.get("role"))
             return s
 
+    def session_check(self, token):
+        """For a watcher that must never wait on this lock (the fuel pump's
+        timer: a password hash runs under it): ("ok", session), ("gone",
+        None), ("broken", None) while the users file cannot be used, ("off",
+        None) while there are no users at all, or ("busy", None) when the
+        lock is held right now. Never raises."""
+        if not self._lock.acquire(blocking=False):
+            return "busy", None
+        try:
+            if self._load().get("broken"):
+                return "broken", None
+            if not self.active():
+                return "off", None
+            s = self.session(token)
+            return ("ok", s) if s is not None else ("gone", None)
+        except Exception:
+            return "broken", None
+        finally:
+            self._lock.release()
+
     def touch(self, token):
         """A command from this session: it is not idle."""
         with self._lock:
