@@ -62395,8 +62395,9 @@ def test_morning_multi_safety_machines_pair_by_layout():
 
 
 def test_morning_fireball_is_never_purged():
-    """Jeff's fireball (2026-10-26): Fuel Charge 55, Air Charge 56, Valve
-    Open 57, Ignite 58, safety 99. The purge writes one value to every
+    """Jeff's fireball (2026-10-26, channels revised 2026-10-30): Fuel
+    Charge 55, Air Charge 56, Valve Open 57, Igniter 58, Purge 59, All
+    Fireball Safety 77. The purge writes one value to every
     fire slot at once, which is not a fireball sequence and could be
     dangerous, so a fireball is never purged: refused on a click (its
     group is never armed for a purge), never listed for the deck, never
@@ -62434,8 +62435,8 @@ def test_morning_fireball_is_never_purged():
               {"name": "wave flamer", "safety": [6, 12, 18],
                "safeties": [6, 12, 18],
                "fire": [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17]},
-              {"name": "fireball", "safety": 99, "safeties": [99],
-               "fire": [55, 56, 57, 58]}]
+              {"name": "fireball", "safety": 77, "safeties": [77],
+               "fire": [55, 56, 57, 58, 59]}]
     names = [g["name"] for g in groups]
     # The flamesafe group and the machine, exactly as MORNING.md gives them.
     here = os.path.dirname(os.path.abspath(__file__))
@@ -62454,14 +62455,14 @@ def test_morning_fireball_is_never_purged():
     fs_group = [b for b in blocks if b.get("name") == "fireball"
                 and "safety" in b]
     machine = [b for b in blocks if b.get("kind") == "fireball"]
-    check(fs_group == [{"name": "fireball", "safety": 99,
-                        "fire": [55, 56, 57, 58]}] and len(machine) == 1,
+    check(fs_group == [{"name": "fireball", "safety": 77,
+                        "fire": [55, 56, 57, 58, 59]}] and len(machine) == 1,
           f"MORNING.md carries the fireball group and machine: {blocks}")
     machines = MO.parse_machines(machine, "MORNING.md", groups)
     m = machines[0]
     check(m.kind == "fireball" and m.group == "fireball" and
-          m.fire == [55, 56, 57, 58] and m.safety is None and
-          m.channels() == {55, 56, 57, 58},
+          m.fire == [55, 56, 57, 58, 59] and m.safety is None and
+          m.channels() == {55, 56, 57, 58, 59},
           f"parse_machines accepts it against the four groups: {m.view()}")
     cfg = MO.MorningConfig.parse({"machines": [
         {"id": "g1", "name": "Ground 1", "kind": "gflame",
@@ -62470,8 +62471,8 @@ def test_morning_fireball_is_never_purged():
     check(cfg.banks["Fireball"] == ["fireball"] and
           cfg.purge["fireball"]["fire"] == 200,
           "it sits in the Fireball group; an old purge.fireball still loads")
-    for bad, why in (([55, 56, 57, 58, 99], "its safety slot as fire"),
-                     ([55, 56, 57, 59], "a slot that is not the group's")):
+    for bad, why in (([55, 56, 57, 58, 59, 77], "its safety slot as fire"),
+                     ([55, 56, 57, 60], "a slot that is not the group's")):
         try:
             MO.parse_machines([dict(machine[0], fire=bad)], "x", groups)
             check(False, f"parse_machines accepted {why}")
@@ -62482,7 +62483,7 @@ def test_morning_fireball_is_never_purged():
     dflt = MO.MorningConfig.parse({}, "x", groups)
     fb = [x for x in dflt.machines if x.group == "fireball"]
     check(len(fb) == 1 and fb[0].id == "fireball" and
-          fb[0].fire == [55, 56, 57, 58] and fb[0].kind == "fireball" and
+          fb[0].fire == [55, 56, 57, 58, 59] and fb[0].kind == "fireball" and
           fb[0].notes == f"Never purged: {reason}." and
           dflt.banks["Fireball"] == ["fireball"],
           f"the default is one fireball machine, its notes say why: "
@@ -62525,7 +62526,7 @@ def test_morning_fireball_is_never_purged():
     v = link.frames[-1] if link.frames else b""
     check(code == 200 and out["firing"] == ["Ground 1"] and
           v[410] == cfg.purge["gflame_fire"] and
-          all(v[s - 1] == 0 for s in (55, 56, 57, 58, 99)),
+          all(v[s - 1] == 0 for s in (55, 56, 57, 58, 59, 77)),
           f"the G-Flame fires, every fireball slot stays zero: {code} {out}")
     p.stop("test")
     print("  ok")
@@ -92071,6 +92072,59 @@ def test_fireball_timeline_routes():
     print("  ok")
 
 
+def _fb_doc_part(name, start, end):
+    """The text of a .md file from `start` up to `end` (or its end)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    doc = open(os.path.join(here, name), encoding="utf-8").read()
+    a = doc.index(start)
+    b = doc.find(end, a + len(start)) if end else -1
+    return doc[a:b if b > 0 else len(doc)]
+
+
+def test_fireball_timeline_docs_in_plain_words():
+    section("the fireball timeline docs: MORNING.md's fireball has Jeff's "
+            "five channels 55 to 59 and safety 77 (not four and 99), and "
+            "OPERATOR.md says the stages, who may edit, the source, that "
+            "Purge is by hand only, in plain words")
+    m = _fb_doc_part("MORNING.md", "### The fireball (", "### ")
+    for need in ('"safety": 77', '"fire": [55, 56, 57, 58, 59]',
+                 "Fuel Charge 55", "Air Charge 56", "Valve Open 57",
+                 "Igniter 58", "Purge 59", "All Fireball Safety 77",
+                 "five fire slots"):
+        check(" ".join(need.split()) in " ".join(m.split()),
+              f"MORNING.md's fireball section says {need!r}")
+    check("99" not in m and "four channels" not in m and
+          "[55, 56, 57, 58]" not in m,
+          "MORNING.md's fireball section no longer says safety 99 or four "
+          "channels")
+    whole = _fb_doc_part("MORNING.md", "# ", None)
+    check('"safety": 99' not in whole and "slot 99" not in whole,
+          "MORNING.md names the fireball safety 99 nowhere")
+    o = _fb_doc_part("OPERATOR.md", "## The fireball timeline", "\n## ")
+    for need in ("| Fuel (Fuel Charge) | 55 |", "| Air (Air Charge) | 56 |",
+                 "| Igniter (Fireball Igniter) | 58 |",
+                 "| Valve Open (Fireball Valve Open) | 57 |",
+                 "Purge (59) is never a stage", "by hand only",
+                 "All Fireball Safety (77)", "HH:MM:SS:FF",
+                 "30 frames a second", "no longest duration",
+                 "Igniter is independent", "**FSEQ**", "**Timeline**",
+                 "Settings row", "never by when", "during a show",
+                 "never falls back to its FSEQ",
+                 "ltcplay_fireball_timeline.json",
+                 "fireball_timeline_history"):
+        check(" ".join(need.split()) in " ".join(o.split()),
+              f"OPERATOR.md's fireball timeline section says {need!r}")
+    order = [o.index(w) for w in ("| Fuel (", "| Air (", "| Igniter (",
+                                  "| Valve Open (")]
+    check(order == sorted(order),
+          "OPERATOR.md lists the stages in Jeff's order: Fuel, Air, "
+          "Igniter, Valve Open")
+    for name, part in (("MORNING.md", m), ("OPERATOR.md", o)):
+        check("\u2014" not in part and "\u2013" not in part,
+              f"{name}'s fireball text has no em or en dashes")
+    print("  ok")
+
+
 def test_fireball_timeline_show_info_from_a_real_show_file():
     section("fireball timeline: the show's own cue and length come from the "
             "show file opened as the Check button opens it (nothing sent, "
@@ -93278,6 +93332,7 @@ if __name__ == "__main__":
         test_fireball_timeline_store,
         test_fireball_timeline_routes,
         test_fireball_timeline_show_info_from_a_real_show_file,
+        test_fireball_timeline_docs_in_plain_words,
         test_fireball_charge_state,
         test_fireball_charge_wiring,
     ]
