@@ -1024,8 +1024,9 @@ class Conductor:
                 self._flames_cut("Stop")
                 self._disarm_lasers("Stop", who, screen)
             if not latched and not again:
-                self._video_cancel()
                 blanked = threading.Event()
+                # A running video fade stops where it is (finding C).
+                self._video_cancel()
                 line = self._accept("Stop", STOPPED_DARK, who, screen,
                                     fade_s=ABORT_FADE_S, blanked=blanked,
                                     quiet=True, halt=True)
@@ -1037,7 +1038,10 @@ class Conductor:
             return done(f"Already stopping: flames zeroed and a disarm "
                         f"sent again. {self._reblank('Stop')}")
         try:
-            r = self._call("lasers blanked", self.devices.lasers_blank)
+            # The lasers on this thread, at once, outside the lock (as
+            # abort(), finding D), before the executor starts any fade.
+            r = self._call("lasers blanked at the Stop",
+                           self.devices.lasers_blank)
             with self._lock:
                 if self._ver["lasers"] == ver:
                     self._set("lasers", BLACK if r.ok else UNKNOWN)

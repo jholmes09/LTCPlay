@@ -897,8 +897,8 @@ MUTATIONS = [
   "        if False:"),
 
  ("remote: an arm route appears", "ltcplay/remote.py",
-  "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n                  \"disarm-all\", \"stop\")",
-  "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n                  \"disarm-all\", \"stop\", \"arm\")"),
+  "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n                  \"disarm-all\", \"stop\", \"run-off\")",
+  "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n                  \"disarm-all\", \"stop\", \"run-off\", \"arm\")"),
 
  ("remote: half a request is acted on", "ltcplay/web.py",
   "            return None if \"/api/remote/\" in self.path else {}",
@@ -7912,14 +7912,13 @@ def build():
 
  ("scheduler fix round 2: Abort waits behind a hung conductor request",
   "ltcplay/schedule_service.py",
-  "            urgent = call.method == \"abort\" and (",
-  "            urgent = False and ("),
+  "            urgent = call.method in self.URGENT and (",
+  "            urgent = call.method == \"stop\" and ("),
 
  ("scheduler fix round 2: requests an Abort supersedes still go out after it",
   "ltcplay/schedule_service.py",
-  "            dropped = [c for c in self._q if c.seq < call.seq and\n"
-  "                       c.method in self.SUPERSEDED_BY_ABORT]",
-  "            dropped = []"),
+  "            gone = (self.SUPERSEDED_BY_ABORT if call.method == \"abort\"",
+  "            gone = (() if call.method == \"abort\""),
 
  ("scheduler fix round 2: an Abort that goes ahead drops later Resets too",
   "ltcplay/schedule_service.py",
@@ -14605,8 +14604,8 @@ def build():
 
  ("rack screen: a finger then the mouse aborts",
   "ltcplay/web/remote.html",
-  '  if(prev && prev.kind === kind && nowMs >= prev.at){',
-  '  if(prev && nowMs >= prev.at){'),
+  'function abortTapStep(prev, nowMs, kind, enlarged){\n  if(prev && prev.kind === kind && nowMs >= prev.at){',
+  'function abortTapStep(prev, nowMs, kind, enlarged){\n  if(prev && nowMs >= prev.at){'),
 
  ("rack screen: the Abort sign's first tap shows nothing",
   "ltcplay/web/remote.html",
@@ -14702,8 +14701,8 @@ def build():
 
  ("rack screen: a fast double tap on the Abort sign waits for a third",
   'ltcplay/web/remote.html',
-  '  if(prev && prev.kind === kind && nowMs >= prev.at){',
-  '  if(prev && prev.kind === kind && nowMs >= prev.at && nowMs - prev.at >= 150){'),
+  'function abortTapStep(prev, nowMs, kind, enlarged){\n  if(prev && prev.kind === kind && nowMs >= prev.at){',
+  'function abortTapStep(prev, nowMs, kind, enlarged){\n  if(prev && prev.kind === kind && nowMs >= prev.at && nowMs - prev.at >= 150){'),
 
  ("rack screen: a held Enter on the Abort sign counts again and again",
   "ltcplay/web/remote.html",
@@ -15957,8 +15956,8 @@ def build():
 
  ("Rack screen: the Stop confirm does not say it disarms the flames",
   "ltcplay/web/remote.html",
-  "\"Stop playback and disarm every flame group. Every laser",
-  "\"Stop playback. Every laser"),
+  "\"Tap twice. Disarms every flame group and every laser,",
+  "\"Tap twice. Disarms every laser,"),
 
  ("deck: a failed Stop disarm is a quiet done",
   "ltcplay/streamdeck.py",
@@ -16045,7 +16044,7 @@ def build():
 
  ("halt: a halt during a show does not end the show",
   "ltcplay/remote.py",
-  "            if svc is not None and state in (\"SHOW\", \"PAUSED\"):\n                try:\n                    r = svc.operator_press(\"stop-show\"",
+  "            if state in self.HALT_LIVE:\n                try:\n                    r = svc.operator_press(\"stop-show\"",
   "            if False:\n                try:\n                    r = svc.operator_press(\"stop-show\""),
 
  ("halt: a halt ends the show with the scheduler's Abort",
@@ -16059,8 +16058,8 @@ def build():
   "            fn = None\n            if fn is not None:\n                try:\n                    r = fn(f\"Stop held"),
 
  ("halt: playback stops before the scheduler ends the show", "ltcplay/web.py",
-  "        out = self._halt(body)\n        try:\n            out[\"stopped\"] = c.stop()\n",
-  "        _s = c.stop()\n        out = self._halt(body)\n        try:\n            out[\"stopped\"] = _s\n"),
+  "        out = self._halt(body)\n        if getattr(self.server, \"schedule\", None) is not None and \\\n",
+  "        _s0 = (c.stop() if getattr(self.server, \"schedule\", None) is None\n               else None)\n        out = self._halt(body)\n        if getattr(self.server, \"schedule\", None) is not None and \\\n"),
 
  ("halt: the scheduler's Stop latches like an Abort",
   "ltcplay/schedule_service.py",
@@ -16117,8 +16116,8 @@ def build():
 
  ("halt: the laser arm is not told a press is under way",
   "ltcplay/remote.py",
-  "        if arm is not None:\n            try:\n                arm.press_begin()\n            except Exception:                    # noqa: BLE001\n                arm = None\n        try:\n            # 1. The flames first",
-  "        if arm is not None:\n            try:\n                pass\n            except Exception:                    # noqa: BLE001\n                arm = None\n        try:\n            # 1. The flames first"),
+  "        if arm is not None:\n            try:\n                arm.press_begin()\n            except Exception:                    # noqa: BLE001\n                arm = None\n        try:\n            # A Start now waiting for the show audio never outlives a Stop",
+  "        if arm is not None:\n            try:\n                pass\n            except Exception:                    # noqa: BLE001\n                arm = None\n        try:\n            # A Start now waiting for the show audio never outlives a Stop"),
 
  ("halt: screen arm holds survive a halt",
   "ltcplay/remote.py",
@@ -16127,7 +16126,7 @@ def build():
 
  ("halt: the purge selection and laser tests survive a halt",
   "ltcplay/remote.py",
-  "                    if fn is not None:\n                        fn(arg)\n",
+  "                    if fn is not None:\n                        fn(*args)\n",
   "                    pass\n"),
 
  ("halt: a step that raises stops the rest",
@@ -16137,7 +16136,7 @@ def build():
 
  ("halt: a show that ended by itself is a failure (review of #130, 8)",
   "ltcplay/remote.py",
-  "                if not s_ok and now_state not in (\"SHOW\", \"PAUSED\"):",
+  "                if not s_ok and now_state not in self.HALT_LIVE:",
   "                if False:"),
 
  ("halt: the journal line hides a failed step (review of #130, 4)",
@@ -16152,8 +16151,8 @@ def build():
 
  ("halt: Stop on the last show goes straight to closing (review of #130, 2)",
   "ltcplay/schedule.py",
-  "        _abort_effects(n), abort=True)\n\n\ndef _end_night",
-  "        _abort_effects(n))\n\n\ndef _end_night"),
+  "        _abort_effects(n), abort=True, hold=True)\n\n\ndef _end_night",
+  "        _abort_effects(n), hold=True)\n\n\ndef _end_night"),
 
  ("deck: only the first failed Stop step is said (review of #130, 3)",
   "ltcplay/streamdeck.py",
@@ -16262,10 +16261,189 @@ def build():
   "        if ev.kind == sch.STOP_SHOW and calls:\n            # Stop: a show start",
   "        if False:\n            # Stop: a show start"),
 
- ("conductor: Stop drops a Hold too, like an Abort",
+ # Stop meets every Abort guarantee (Jeff, 2026-10-30; PR-A of the Abort
+ # removal): the Stop twins of the Abort's guarantees, and the new rules.
+ ("conductor: Stop's flame cut waits for the executor",
+  "ltcplay/conductor.py",
+  '                self._flames_cut("Stop")\n',
+  ''),
+
+ ("conductor: Stop sends no laser blank of its own",
+  "ltcplay/conductor.py",
+  '            r = self._call("lasers blanked at the Stop",\n'
+  '                           self.devices.lasers_blank)',
+  '            r = done("lasers left to the executor")'),
+
+ ("conductor: Stop does not stop a running video fade at the press",
+  "ltcplay/conductor.py",
+  '                self._video_cancel()\n'
+  '                line = self._accept("Stop", STOPPED_DARK,',
+  '                line = self._accept("Stop", STOPPED_DARK,'),
+
+ ("conductor: Stop runs a stopped show's plain dark, not Abort's sequence",
+  "ltcplay/conductor.py",
+  '            if look == ABORTED or want.get("halt") is True:',
+  '            if look == ABORTED:'),
+
+ ("conductor: Stop latches like an Abort",
+  "ltcplay/conductor.py",
+  '                line = self._accept("Stop", STOPPED_DARK, who, screen,',
+  '                self._latched = True\n'
+  '                line = self._accept("Stop", STOPPED_DARK, who, screen,'),
+
+ ("conductor: a second Stop starts a new fade",
+  "ltcplay/conductor.py",
+  '            again = (not latched and self._want is not None and',
+  '            again = (False and self._want is not None and'),
+
+ ("conductor: Stop never disarms the lasers at the conductor",
+  "ltcplay/conductor.py",
+  '                self._flames_cut("Stop")\n'
+  '                self._disarm_lasers("Stop", who, screen)',
+  '                self._flames_cut("Stop")'),
+
+ ("scheduler: a Stop asks the conductor for a stopped show's plain dark",
   "ltcplay/schedule_service.py",
-  "    STOP_DROPS = (\"show_starting\", \"start_show\")",
-  "    STOP_DROPS = (\"show_starting\", \"start_show\", \"hold\")"),
+  "            elif ev.kind == sch.STOP_SHOW and \\\n"
+  "                    ev.detail != sch.RESET_DETAIL:",
+  "            elif False:"),
+
+ ("scheduler line: a Stop waits behind a hung conductor request",
+  "ltcplay/schedule_service.py",
+  '    URGENT = ("abort", "stop")',
+  '    URGENT = ("abort",)'),
+
+ ("scheduler line: requests a Stop supersedes still go out after it",
+  "ltcplay/schedule_service.py",
+  "                    else self.SUPERSEDED_BY_STOP)",
+  "                    else ())"),
+
+ ("scheduler line: a Stop that goes ahead drops a waiting Reset",
+  "ltcplay/schedule_service.py",
+  '    SUPERSEDED_BY_STOP = STOP_DROPS',
+  '    SUPERSEDED_BY_STOP = STOP_DROPS + ("reset",)'),
+
+ ("scheduler: Stop during a show does not hold the schedule",
+  "ltcplay/schedule.py",
+  "        _abort_effects(n), abort=True, hold=True)\n\n\ndef _end_night",
+  "        _abort_effects(n), abort=True)\n\n\ndef _end_night"),
+
+ ("scheduler: a Stop's Hold brings the intermission back",
+  "ltcplay/schedule.py",
+  "        tx.m = replace(tx.m, held_from=STANDBY)\n"
+  "        _enter(tx, HOLD, after_stop=stopped)",
+  "        tx.m = replace(tx.m, held_from=STANDBY)\n"
+  "        _enter(tx, HOLD)"),
+
+ ("scheduler: Resume lands in the middle of a Stop",
+  "ltcplay/schedule_service.py",
+  "        if kind == sch.RESUME and self.halting():",
+  "        if False:"),
+
+ ("halt: Stop between shows does not hold the schedule",
+  "ltcplay/remote.py",
+  "            if state in self.HALT_HOLDS:",
+  "            if False:"),
+
+ ("halt: a screen's Stop turns Run off again",
+  "ltcplay/remote.py",
+  "            return self._stop_press(who, screen, run_off=svc is None)",
+  "            return self._stop_press(who, screen, run_off=True)"),
+
+ ("halt: the Stream Deck's Stop turns Run off again",
+  "ltcplay/web.py",
+  '        if getattr(self.server, "schedule", None) is not None and \\\n'
+  '                not isinstance(self.server.schedule, _NoSchedule):',
+  '        if False and \\\n'
+  '                not isinstance(self.server.schedule, _NoSchedule):'),
+
+ ("halt: Run off leaves playback running",
+  "ltcplay/remote.py",
+  "            return self._stop_press(who, screen, run_off=True)\n"
+  "        finally:",
+  "            return self._stop_press(who, screen, run_off=False)\n"
+  "        finally:"),
+
+ ("halt: Stop leaves Programming playback running",
+  "ltcplay/remote.py",
+  "            self._halt_programming(out, who, screen)\n",
+  ""),
+
+ ("halt: Stop leaves the fireball and the cleaning to their watchers",
+  "ltcplay/remote.py",
+  '                    (m, "stop_hooks", (who, screen)),\n',
+  ""),
+
+ ("halt: a screen's Stop tells the laser arm only inside the halt",
+  "ltcplay/remote.py",
+  '            if name in ("abort", "hold", "stop", "run-off") else None',
+  '            if name in ("abort", "hold") else None'),
+
+ ("morning: Stop's hooks run nothing",
+  "ltcplay/morning.py",
+  '                hook(who, screen, what="Stop")',
+  '                pass'),
+
+ ("deck: a screen's Stop never starts the re-arm refractory",
+  "ltcplay/streamdeck.py",
+  "                self._disarmed_at = [now] * len(self.names)\n"
+  "            self._disarm_all_seen = seen",
+  "                pass\n"
+  "            self._disarm_all_seen = seen"),
+
+ ("deck: a stale flamesafe status starts the refractory on old news",
+  "ltcplay/streamdeck.py",
+  "            if st is None or self.status.stale(self._clock):\n"
+  "                return None\n"
+  "            d = st.get(\"disarm_all\")",
+  "            if st is None:\n"
+  "                return None\n"
+  "            d = st.get(\"disarm_all\")"),
+
+ ("Rack screen: Stop fires on its first tap",
+  "ltcplay/web/remote.html",
+  '  if(!step.fire){\n    if(t) clearTimeout(t.timer);\n    STOP_TAPS[id] =',
+  '  if(false){\n    if(t) clearTimeout(t.timer);\n    STOP_TAPS[id] ='),
+
+ ("Rack screen: Stop's late second tap is a first tap again",
+  "ltcplay/web/remote.html",
+  '    if(nowMs - prev.at <= STOP_TAP_MS || enlarged) return {fire:true, next:null};',
+  '    if(nowMs - prev.at <= STOP_TAP_MS) return {fire:true, next:null};'),
+
+ ("Rack screen: Stop is drawn with nothing playing",
+  "ltcplay/web/remote.html",
+  '  return !sch.attached && !!(show.running || show.starting);\n}',
+  '  return true;\n}'),
+
+ ("Rack screen: no Stop during the rig check before a show",
+  "ltcplay/web/remote.html",
+  '  if(pr.state === "checking" || pr.state === "queued") return true;',
+  ''),
+
+ ("Rack screen: no Stop while Programming playback plays",
+  "ltcplay/web/remote.html",
+  '  if(tr.programming && tr.playhead === "show_audio" && tr.playing) return true;',
+  ''),
+
+ ("Rack screen: Stop's answer says Run is off when it is on",
+  "ltcplay/web/remote.html",
+  '  if(j && j.run_on === true){',
+  '  if(false){'),
+
+ ("ui2 page: Stop show is drawn with nothing playing",
+  "ltcplay/web/remote2.html",
+  "  const id = b.id, can = stopShows(ST) || !!isSt;",
+  "  const id = b.id, can = true;"),
+
+ ("ui2 page: Stop show is hidden with no contact",
+  "ltcplay/web/remote2.html",
+  "  const id = b.id, can = stopShows(ST) || !!isSt;",
+  "  const id = b.id, can = stopShows(ST);"),
+
+ ("conductor: Stop leaves a Hold decided before it in the line",
+  "ltcplay/schedule_service.py",
+  "    STOP_DROPS = (\"hold\", \"resume\", \"show_starting\", \"start_show\")",
+  "    STOP_DROPS = (\"resume\", \"show_starting\", \"start_show\")"),
 
  ("conductor: Stop's drop takes calls decided after it",
   "ltcplay/schedule_service.py",
@@ -16982,11 +17160,11 @@ def build():
 
  ("Rack screen: Start now never becomes Stop during a show",
   "ltcplay/web/remote.html",
-  'const live = sch.state === "SHOW" || sch.state === "PAUSED" ||',
-  'const live = false ||'),
+  '  if(sch.state === "SHOW" || sch.state === "PAUSED") return true;\n  if(sch.start_waiting === true) return true;',
+  '  if(false) return true;\n  if(sch.start_waiting === true) return true;'),
 
  ("Rack screen: Stop is not the complete halt", "ltcplay/web/remote.html",
-  'r = await fetch("/api/remote/stop", ', 'r = await fetch("/api/stop", '),
+  ': await fetch("/api/remote/stop", ', ': await fetch("/api/stop", '),
 
  ("Stop from a screen does not disarm or end the show", "ltcplay/remote.py",
   "        h = self.halt(who, screen)\n        out = {k: h[k]",
@@ -17025,8 +17203,8 @@ def build():
 
  ("Rack screen: Run never becomes Stop while Run is starting",
   "ltcplay/web/remote.html",
-  "  return (show.running || show.starting) ? {mode:\"stop\"",
-  "  return show.running ? {mode:\"stop\""),
+  "  if(!(show.running || show.starting)) return {mode:\"run\"",
+  "  if(!show.running) return {mode:\"run\""),
 
  ("Rack screen: a press is not decided by what was seen at touch-down",
   "ltcplay/web/remote.html",
@@ -17083,7 +17261,7 @@ def build():
   ""),
 
  ("Rack screen: Run never becomes Stop", "ltcplay/web/remote.html",
-  'return (show.running || show.starting) ? {mode:"stop"',
+  'return stopShows(st) ? {mode:"stop"',
   'return false ? {mode:"stop"'),
 
  ("Rack screen: a scheduler refusal reads Conflict again",
@@ -18170,9 +18348,9 @@ def build():
   "  const step = abortTapStep2(ABORT_TAP, monoNow(), kind, $(\"abortbar\").classList.contains(\"tap1\"));\n  if(!step.fire){",
   "  const step = abortTapStep2(ABORT_TAP, monoNow(), kind, $(\"abortbar\").classList.contains(\"tap1\"));\n  if(false){"),
 
- ("ui2 page: Stop is sent with no confirm", "ltcplay/web/remote2.html",
-  '  if(!(await confirmBox("Stop the show?",',
-  '  if(false && !(await confirmBox("Stop the show?",'),
+ ("ui2 page: Stop show is sent on its first tap", "ltcplay/web/remote2.html",
+  '  if(!step.fire){\n    if(t) clearTimeout(t.timer);\n    STOP_TAPS2[id]',
+  '  if(false){\n    if(t) clearTimeout(t.timer);\n    STOP_TAPS2[id]'),
 
  ("ui2 page: lifting the finger does not let go of a hold to arm", "ltcplay/web/remote2.html",
   '        b.addEventListener(ev, () => { if(holding(i) && !HOLD.all) armStop("let go"); }));',
