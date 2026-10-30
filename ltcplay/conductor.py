@@ -732,6 +732,14 @@ class Conductor:
         self._look = None          # the look it asked for
         self._latched = False
         self._latch_who = ""
+        # Every Stop asked of this conductor, counted (fire_ice's show start
+        # re-checks it after the cue starts, as it does the Abort latch).
+        self.stops = 0
+        self._accepted_at = None
+        # A Stop came after the music last started (music_started): a show
+        # start asked for before that Stop is refused (cold review of #191
+        # round 2, blocker 2), as an Abort's latch refuses it.
+        self._stopped_since_music = False
         self._mode = PRODUCTION
         self._announcing = None    # an announcement not yet started
         self._applied = {"flames": UNKNOWN, "lasers": UNKNOWN,
@@ -816,13 +824,24 @@ class Conductor:
             return done("Resume: the music fades back in; lasers and flame "
                         "cues come back once the timecode is moving.")
 
-    def show_starting(self, who="", screen=""):
+    def show_starting(self, who="", screen="", stops=None):
         """A show cue has just started: bring back whatever a previous Abort
         or announcement left dark (lasers only through the gate)."""
         with self._lock:
             refused = self._refuse_if_latched("Show start")
             if refused:
                 return refused
+            # `stops`: the Stop count when the scheduler decided this
+            # start (its ordered line). Without it, a Stop since the music
+            # last started (music_started) decides.
+            if (stops is not None and stops != self.stops) or \
+                    (stops is None and self._stopped_since_music):
+                # This start was asked for before a Stop that has landed
+                # since (a start still in the line when an urgent Stop went
+                # beside it): the Stop stands, nothing comes back up.
+                return self._refused("Show start", "Stop was pressed after "
+                                     "this show started, so the rig stays "
+                                     "dark.")
             if not self._playing():
                 return self._refused("Show start", "no show cue is playing.")
             # A fact, not a command: the caller has just started the cue, so
@@ -843,6 +862,7 @@ class Conductor:
         stopped). Starts nothing and changes no look."""
         with self._lock:
             self._set("music", MUSIC_PLAYING)
+            self._stopped_since_music = False
 
     def pixels_to_show(self, clear):
         """A fact, like music_started(): a show start is handing the pixel
@@ -997,6 +1017,70 @@ class Conductor:
                     f"pixels and music fade to black over {ABORT_FADE_S:g} "
                     f"s. Press Reset to carry on.")
 
+    def stop(self, who="", screen="", force_new=False):
+        """An operator's Stop (Jeff, 2026-10-30: Stop has every guarantee
+        Abort had, and Abort is going): abort() without the latch. At the
+        call, on this thread, inside the lock, before anything is asked
+        about the show: flame cues zeroed and every flame group sent a
+        disarm, every laser disarmed, a running video fade stopped where
+        it is, and a new generation that makes every older step stale;
+        then the lasers blanked on this thread, outside the lock. The
+        executor then runs Abort's sequence (_run_abort: the video fade
+        forced from wherever it is, pixels and music faded, the laser
+        blank sent AGAIN once the press's blank has returned, the video
+        stopped). The look is STOPPED_DARK, as a stopped show's: nothing
+        is latched and no Reset is needed. Unlike abort() it does not need
+        a show playing (a Stop always takes the rig dark). A Stop while an
+        earlier Stop's sequence is still running starts nothing new and
+        sends the laser blank again (as a second Abort does). While an
+        Abort is latched it changes nothing but that blank. `force_new`
+        (a show start that began under the Stop and must be taken dark
+        again) always starts the whole sequence afresh."""
+        with self._lock:
+            self.stops += 1
+            self._stopped_since_music = True
+            latched = self._latched
+            again = (not latched and not force_new and
+                     self._want is not None and
+                     self._want.get("halt") is True and
+                     self._done_gen != self._gen)
+            if not latched:
+                # The flames first, here, inside the lock (as abort()).
+                self._flames_cut("Stop")
+                self._disarm_lasers("Stop", who, screen)
+            if not latched and not again:
+                blanked = threading.Event()
+                # A running video fade stops where it is (finding C).
+                self._video_cancel()
+                line = self._accept("Stop", STOPPED_DARK, who, screen,
+                                    fade_s=ABORT_FADE_S, blanked=blanked,
+                                    quiet=True, halt=True)
+                ver = self._ver["lasers"]
+        if latched:
+            return done(f"Already aborted: the rig is dark. "
+                        f"{self._reblank('Stop')}")
+        if again:
+            return done(f"Already stopping: flames zeroed and a disarm "
+                        f"sent again. {self._reblank('Stop')}")
+        try:
+            # The lasers on this thread, at once, outside the lock (as
+            # abort(), finding D), before the executor starts any fade.
+            r = self._call("lasers blanked at the Stop",
+                           self.devices.lasers_blank)
+            with self._lock:
+                if self._ver["lasers"] == ver:
+                    self._set("lasers", BLACK if r.ok else UNKNOWN)
+        finally:
+            with self._lock:
+                blanked.set()
+                self._cv.notify_all()
+        self._note(*line[0], **line[1])
+        lasers = ("lasers blanked" if r.ok else "the laser blank did NOT "
+                  "get out and is being tried again")
+        return done(f"Stop: flames zeroed, disarm sent, {lasers}; video, "
+                    f"pixels and music fade to black over {ABORT_FADE_S:g} "
+                    f"s. Nothing is latched.")
+
     def lasers_armed(self, who="", screen=""):
         """Every laser has just been armed (laserarm.LaserArm's
         on_permitted). After a Hold and its Resume, or an Abort and its
@@ -1112,8 +1196,12 @@ class Conductor:
 
     def snapshot(self):
         with self._lock:
+            busy = self._done_gen != self._gen
             return {"look": self._look, "latched": self._latched,
-                    "busy": self._done_gen != self._gen,
+                    "busy": busy,
+                    # How long the latest request has been running.
+                    "busy_s": (time.monotonic() - self._accepted_at)
+                    if busy and self._accepted_at is not None else 0.0,
                     "mode": self._mode, "applied": dict(self._applied),
                     "devices_wired": self.wired, "faults": self.faults,
                     "lines": list(self.lines[-20:])}
@@ -1185,6 +1273,7 @@ class Conductor:
                        outcome="cancelled")
             self._announcing = None
         self._gen += 1
+        self._accepted_at = time.monotonic()
         want = {"label": label, "look": look, "who": who, "screen": screen}
         want.update(params)
         self._want = want
@@ -1319,7 +1408,8 @@ class Conductor:
         progress = []
         try:
             look = want["look"]
-            if look == ABORTED:
+            if look == ABORTED or want.get("halt") is True:
+                # An Abort, or a Stop (stop(): Abort's sequence, no latch).
                 self._run_abort(gen, want, progress)
             elif look == STOPPED_DARK:
                 self._run_stopped(gen, want, progress)
@@ -1483,7 +1573,10 @@ class Conductor:
             self._pause(gen, fade)
         self._step(gen, "video", STOPPED, "video stopped", progress,
                    self.devices.video_stop, force=True)
-        if progress:
+        if progress and want.get("halt") is True:
+            self._note(f"Stop finished: {', '.join(progress)}. Nothing is "
+                       f"latched.", action="stop", outcome="done")
+        elif progress:
             with self._lock:
                 latched = self._latched
             self._note(f"Abort finished: {', '.join(progress)}."
