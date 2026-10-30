@@ -432,14 +432,16 @@ plain words. Disarm all flame groups does not disarm, blank or switch
 off the lasers (it still ends a laser calibration test, as it always
 has), and the Stream Deck has no laser key.
 
-**WIND on the show screen (Fire & Ice).** Under the lasers. Advisory only:
-it never arms, holds or stops anything; the on-site wind check decides.
+**WIND on the show screen (Fire & Ice).** Under the lasers. It never
+arms, holds or stops anything. Each line says when it was last updated, as
+a date and time in the show's time zone ("Last updated Oct 30, 2:14 PM";
+the forecast also "NWS issued Oct 30, 1:50 PM"), or "No reading yet".
 The measured line shows the highest usable reading from UTALP (the I-15
 Point of the Mountain station) and the backup airports (Provo, Salt Lake
 City). A backup reading is amber and says "backup station", the airport,
 how far away it is and why UTALP was not used ("UTALP (Iowa mesonet)
-stopped reporting at 3:40 AM, last reading 3 h 12 min ago") or what UTALP
-reads. If the highest reading is STALE it is still shown, amber and
+stopped reporting, last updated Oct 30, 3:40 AM") or what UTALP reads.
+If the highest reading is STALE it is still shown, amber and
 marked STALE, with the current ones beside it. NO CURRENT DATA, use
 on-site wind check, with no number, means no
 source has a usable reading (UTALP over 45 min old, an airport over 2 h);
