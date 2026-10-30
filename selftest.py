@@ -59520,7 +59520,9 @@ def test_stop_round2_conductor_and_marks():
         R.ask("POST", "/api/remote/resume", {"seen": R.seen()})
         R.settle()
         check(R.svc.machine.state in (S.IDLE, S.STANDBY) and
-              not R.svc.machine.dark, "Resume brings the look back")
+              not R.svc.machine.dark,
+              "Resume releases the Hold and its dark flag (the rig stays "
+              "dark until the next show starts)")
         # A Stop on an operator's own Hold marks it as the Stop's.
         R.ask("POST", "/api/remote/hold", {"seen": R.seen()})
         R.settle()
@@ -60606,14 +60608,19 @@ def test_stop_halt_second_review_of_130():
             return True
 
     class _RmW:
+        schedule = _SvcW()
+
         def halt(self, who, screen):
             return {"flames": None, "lasers": None, "lasers_blank": None,
                     "show": {"ok": True, "text": ""}, "show_ended": True,
                     "failed": []}
 
+        # The remote's one-deadline wait (final review of #191, G2).
+        wait_stop_window = RM.Remote.wait_stop_window
+
     class _Srv:
         remote = _RmW()
-        schedule = _SvcW()
+        schedule = _RmW.schedule
 
     class _H:
         server = _Srv()
@@ -60621,8 +60628,8 @@ def test_stop_halt_second_review_of_130():
         def _who_where(self, body):
             return "", "Stream Deck"
     out = web_mod.Handler._halt(_H(), {})
-    check(waits == [("flush", web_mod.HALT_FADE_WAIT_S),
-                    ("idle", web_mod.HALT_FADE_WAIT_S)] and
+    check([w[0] for w in waits] == ["flush", "idle"] and
+          all(0 < w[1] <= web_mod.HALT_FADE_WAIT_S for w in waits) and
           out.get("show", {}).get("ok"),
           f"a show ended: the conductor's calls flushed and its fade "
           f"waited for, before playback stops: {waits}")

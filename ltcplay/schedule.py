@@ -1648,7 +1648,8 @@ def _hold(m, ev, now):
     # is that act). Before 2026-10-02 it brought the intermission loop back.
     # A Stop's Hold is dark too (cold review of #191 round 2, item 5): no
     # look is asked for; the engine takes the idle look down with the
-    # conductor's Stop. Resume brings the look back.
+    # conductor's Stop. Resume clears the dark flag (the rig stays dark
+    # until the next show starts: nothing brings the intermission back).
     _enter(tx, HOLD, after_stop=ev.latched or stop)
     if ev.detail:
         text = (f"{_operator_name(ev)} {ev.detail}. No show starts by "

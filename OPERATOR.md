@@ -973,7 +973,10 @@ stop:
   file, so a restart keeps it too. If that file cannot be written, the
   fault flag says so and it is tried again on every tick until it is; a
   file that cannot be read counts as a Stop's Hold. When the Hold comes
-  back after a Start now's show, the look goes dark again. Every screen says **Held after Stop:
+  back after a Start now's show, the look goes dark again (it never
+  comes back while an operator's Start now is starting its show; a Start
+  now pressed while the rig is still being taken dark waits up to 3 s for
+  it, and is refused with what to do if a device is slower than that). Every screen says **Held after Stop:
   press Resume**. Only **Resume** ends it (pressed with nothing held, it
   just releases it); **Reset does not** (it can still clear the fault
   flag), and neither does Continue anyway. A show whose time comes during
@@ -982,7 +985,8 @@ stop:
   show, and the Hold comes back when that show ends. Every Stop takes
   whatever look is still up down to dark, whatever the schedule was
   doing (a show, the idle or intermission look, on Hold, while closing);
-  the Hold is dark, and Resume brings the look back. After a Stop on the
+  the Hold is dark. Resume releases the Hold but does not bring a look
+  back: the rig stays dark until the next show starts. After a Stop on the
   night's last show (or once nothing is left tonight) the night closes
   as usual, fading to black, and the Stop's Hold waits for the next
   night with shows. A second Stop disarms everything again and stays on

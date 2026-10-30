@@ -973,34 +973,17 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:                   # noqa: BLE001
             return {"failed": ["halt"],
                     "error": f"{type(e).__name__}: {e}"}
-        done = h.get("_cond_done") if isinstance(h, dict) else None
-        if done is not None:
-            # The halt stays open until the conductor has taken the Stop,
-            # and its fade is over (cold review of #191 round 3, F4).
-            done.wait(HALT_FADE_WAIT_S)
-            cond = getattr(getattr(self.server, "schedule", None),
-                           "conductor", None)
-            if cond is not None and getattr(cond, "threaded", False):
-                try:
-                    cond.wait_idle(HALT_FADE_WAIT_S)
-                except Exception:                # noqa: BLE001
-                    pass
+        # One deadline for the whole window (final review of #191, G2):
+        # the conductor taking the Stop, the scheduler's calls, its fade.
+        if isinstance(h, dict):
+            try:
+                rm.wait_stop_window(h, HALT_FADE_WAIT_S)
+            except Exception:                    # noqa: BLE001
+                pass
         out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show",
                                  "hold", "programming")
                if h.get(k) is not None}
         out["failed"] = list(h.get("failed") or [])
-        if h.get("show_ended"):
-            svc = getattr(self.server, "schedule", None)
-            try:
-                svc.flush_conductor(HALT_FADE_WAIT_S)
-            except Exception:                    # noqa: BLE001
-                pass
-            cond = getattr(svc, "conductor", None)
-            if cond is not None and getattr(cond, "threaded", False):
-                try:
-                    cond.wait_idle(HALT_FADE_WAIT_S)
-                except Exception:                # noqa: BLE001
-                    pass
         return out
 
     def _halt_stop(self, body, c):

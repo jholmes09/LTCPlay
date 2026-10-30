@@ -1358,11 +1358,13 @@ class LocalSchedule:
 
 
 ENGINE_POST_TIMEOUT_S = 3.0
-# Stop's halt (/api/stop) waits for a live show's fade to finish before
-# playback stops (web.HALT_FADE_WAIT_S, twice at most, 6 s, plus the
-# scheduler's lock and the stop itself), so its post waits longer than a
-# press (review of #130, 5). A Stop that times out reads CHECK RACK, never
-# ENGINE FAULT: the engine took it and may still be working on it.
+# Stop's halt (/api/stop) answers once the show conductor has taken the
+# Stop and its fade is over, within ONE window of web.HALT_FADE_WAIT_S (3 s)
+# after the halt itself (final review of #191, G2), plus the halt's own
+# steps (the flames, the lasers, the scheduler's lock), so its post waits
+# longer than a press (review of #130, 5). A Stop that times out reads
+# CHECK RACK, never ENGINE FAULT: the engine took it and may still be
+# working on it.
 STOP_POST_TIMEOUT_S = 15.0
 ENGINE_QUEUE_MAX = 50
 

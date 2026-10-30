@@ -735,6 +735,7 @@ class Conductor:
         # Every Stop asked of this conductor, counted (fire_ice's show start
         # re-checks it after the cue starts, as it does the Abort latch).
         self.stops = 0
+        self._accepted_at = None
         # A Stop came after the music last started (music_started): a show
         # start asked for before that Stop is refused (cold review of #191
         # round 2, blocker 2), as an Abort's latch refuses it.
@@ -1195,8 +1196,12 @@ class Conductor:
 
     def snapshot(self):
         with self._lock:
+            busy = self._done_gen != self._gen
             return {"look": self._look, "latched": self._latched,
-                    "busy": self._done_gen != self._gen,
+                    "busy": busy,
+                    # How long the latest request has been running.
+                    "busy_s": (time.monotonic() - self._accepted_at)
+                    if busy and self._accepted_at is not None else 0.0,
                     "mode": self._mode, "applied": dict(self._applied),
                     "devices_wired": self.wired, "faults": self.faults,
                     "lines": list(self.lines[-20:])}
@@ -1268,6 +1273,7 @@ class Conductor:
                        outcome="cancelled")
             self._announcing = None
         self._gen += 1
+        self._accepted_at = time.monotonic()
         want = {"label": label, "look": look, "who": who, "screen": screen}
         want.update(params)
         self._want = want

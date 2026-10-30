@@ -820,6 +820,8 @@ class Service:
         self._stop_carry = None
         self._stop_carry_dirty = False
         self._stop_carry_failing = False
+        self._stop_fade_faulted = False
+        self._start_press_tick = False
         self._halt_count_lock = threading.Lock()
         # Whether the operator has pressed Run (a show file is running), set
         # by fire_ice.attach() with the conductor. While it says no, nothing
@@ -2403,6 +2405,49 @@ class Service:
             action="stop hold", outcome="released")
         return True
 
+    # A Start now waits this long for a Stop's (or the dark's) fade to end
+    # before it is refused (final review of #191, G2); one still running
+    # this long is a fault.
+    STOP_FADE_WAIT_S = 3.0
+    STOP_FADE_FAULT_S = 10.0
+    STOP_STILL_FADING = ("the rig is still being taken dark after the Stop "
+                         "(a device is slow to answer); press Start now "
+                         "again once it has finished. Nothing was started.")
+
+    def _stop_still_fading(self):
+        """Before a Start now, outside the lock: while the conductor is
+        still running a dark sequence (a Stop's, or the dark of a Stop's
+        Hold coming back), wait for it (STOP_FADE_WAIT_S at most), so its
+        music step never fades out the show being started. Still running:
+        the sentence to refuse with (and, past STOP_FADE_FAULT_S, the fault
+        flag once). "" otherwise. Never raises."""
+        cond = self.conductor
+        if cond is None or not getattr(cond, "threaded", False):
+            return ""
+        try:
+            snap = cond.snapshot()
+            if not snap.get("busy") or snap.get("look") != "STOPPED_DARK":
+                return ""
+            cond.wait_idle(self.STOP_FADE_WAIT_S)
+            snap = cond.snapshot()
+            if not snap.get("busy") or snap.get("look") != "STOPPED_DARK":
+                return ""
+            if snap.get("busy_s", 0.0) >= self.STOP_FADE_FAULT_S and \
+                    not self._stop_fade_faulted:
+                self._stop_fade_faulted = True
+                with self._locked():
+                    if self.machine is not None:
+                        self._apply(sch.Event(
+                            sch.FAULT_RAISED, "system",
+                            detail=f"The show conductor has been taking the "
+                                   f"rig dark for {snap['busy_s']:.0f} s "
+                                   f"after a Stop: a device is not "
+                                   f"answering. Start now is refused until "
+                                   f"it has finished."))
+            return self.STOP_STILL_FADING
+        except Exception:                        # noqa: BLE001
+            return ""
+
     def stop_held(self):
         """True while a Stop's Hold stands (set, not yet Resumed)."""
         m = self.machine
@@ -2435,6 +2480,12 @@ class Service:
             # Nothing left tonight: the tick closes the night as it would
             # (cold review of #191 round 3, F2); the Stop's Hold stands
             # for the next state a show could start from.
+            return
+        if self._start_waiters > 0 or self._start_press_tick:
+            # An operator's Start now is waiting (for the show audio): its
+            # one show starts first, and the Hold comes back once that
+            # show ends (final review of #191, G1). Never a dark request
+            # in the middle of a start.
             return
         night = self._stop_carry.get("night")
         ev = sch.Event(
@@ -3956,6 +4007,14 @@ class Service:
             self.journal_press(who, screen, "resume", "refused",
                                f"{who}'s Resume was refused. {sentence}")
             return {"ok": False, "text": sentence, "halting": True}
+        if kind == sch.START_NOW:
+            why = self._stop_still_fading()
+            if why:
+                sentence = f"Start now was refused: {why}"
+                self.journal_press(who, screen, "start-now", "refused",
+                                   f"{who}'s Start now was refused. "
+                                   f"{sentence}")
+                return {"ok": False, "text": sentence, "halting": True}
         if kind == sch.START_NOW and self.halting():
             sentence = (f"Start now was refused: {self.HALTING}. Nothing "
                         f"was started.")
@@ -3971,7 +4030,14 @@ class Service:
         with self._locked():
             # The tick first: a Hold it takes (the engine's own at
             # showtime for an open alert) cancels the start below (C1).
-            self.tick()
+            # A Stop's Hold is not put back by a Start now's own tick: the
+            # Start now starts its one show and the Hold comes back once
+            # that show ends (final review of #191, G1).
+            self._start_press_tick = kind == sch.START_NOW
+            try:
+                self.tick()
+            finally:
+                self._start_press_tick = False
             if gen is not None and (self._start_cancel[0] != gen or
                                     self.halting()):
                 # A Stop, Hold or Abort landed after the wait ended and

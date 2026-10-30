@@ -5676,37 +5676,11 @@ class Remote:
     def _stop_press(self, who, screen, run_off=False):
         # A screen's Stop is a double tap (pressed); the deck's is held.
         h = self.halt(who, screen, how="pressed")
-        # The halt (and with it the refusal of Start now, Resume and Run)
-        # stays open until the conductor has taken the Stop (cold review
-        # of #191 round 3, F4).
-        done = h.get("_cond_done")
-        if done is not None:
-            done.wait(STOP_FADE_WAIT_S)
-            # And until its fade is over, so a Start now pressed right
-            # after the Stop is never faded out by the Stop's own music
-            # step (a threaded conductor; STOP_FADE_WAIT_S at most).
-            cond = getattr(self.schedule, "conductor", None)
-            if cond is not None and getattr(cond, "threaded", False):
-                try:
-                    cond.wait_idle(STOP_FADE_WAIT_S)
-                except Exception:                # noqa: BLE001
-                    pass
+        self.wait_stop_window(h, STOP_FADE_WAIT_S)
         out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show",
                                  "hold", "programming")
                if h.get(k) is not None}
         out["failed"] = list(h.get("failed") or [])
-        if h.get("show_ended"):
-            svc = self.schedule
-            try:
-                svc.flush_conductor(STOP_FADE_WAIT_S)
-            except Exception:                    # noqa: BLE001
-                pass
-            cond = getattr(svc, "conductor", None)
-            if cond is not None and getattr(cond, "threaded", False):
-                try:
-                    cond.wait_idle(STOP_FADE_WAIT_S)
-                except Exception:                # noqa: BLE001
-                    pass
         if run_off:
             try:
                 out["stopped"] = bool(self.control.stop())
@@ -5886,6 +5860,34 @@ class Remote:
                       + (f" These did NOT work: {bad}." if bad else ""),
                       fault=bool(bad))
         return out
+
+    def wait_stop_window(self, h, total_s):
+        """After the halt, inside its halt_begin/halt_end (so Start now,
+        Resume and Run stay refused): ONE deadline of `total_s` for
+        everything (final review of #191, G2): the conductor taking the
+        Stop, the scheduler's conductor calls made (a live show ended), and
+        a threaded conductor's fade over. Past the deadline the press
+        answers anyway; a Start now then still waits for the fade, or is
+        refused while it runs (Service._stop_still_fading). Never raises."""
+        end = time.monotonic() + total_s
+
+        def left():
+            return max(0.0, end - time.monotonic())
+        done = h.get("_cond_done") if isinstance(h, dict) else None
+        try:
+            if done is not None:
+                done.wait(left())
+            svc = self.schedule
+            if isinstance(h, dict) and h.get("show_ended") and \
+                    svc is not None:
+                svc.flush_conductor(left())
+            cond = getattr(svc, "conductor", None)
+            if (done is not None or (isinstance(h, dict) and
+                                     h.get("show_ended"))) and \
+                    cond is not None and getattr(cond, "threaded", False):
+                cond.wait_idle(left())
+        except Exception:                        # noqa: BLE001
+            pass
 
     # How long the press waits for the conductor to take its Stop before
     # carrying on (the scheduler's urgent line uses the same 0.25 s).
