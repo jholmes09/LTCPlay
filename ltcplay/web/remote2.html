@@ -366,6 +366,23 @@ body:not([data-tab="show"]) #foot-l > .ann{display:none}
 .card .t b{display:block}
 .card .t span{color:var(--muted)}
 .seg{display:flex;gap:6px}
+/* Play-from cues (Settings): the cue list per show file. */
+.card.col{flex-direction:column;align-items:stretch}
+.pfbar{display:flex;gap:var(--gap);flex-wrap:wrap}
+.pfbar select.f{flex:1 1 220px;width:auto}
+select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2px solid var(--line);
+  background:#0e0b08;color:var(--cream)}
+/* The Time column is never narrower than a whole HH:MM:SS:FF. */
+.pfrow{display:grid;grid-template-columns:minmax(0,2fr) minmax(172px,1.3fr) minmax(64px,.7fr) minmax(0,2fr) auto;gap:6px;align-items:start}
+.pfrow input[data-k="tc"]{font-variant-numeric:tabular-nums;padding:0 10px}
+.pfrow.head{color:var(--muted)}
+.pfrow.head span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pfrow .bad{color:var(--red-hi);grid-column:1 / -1}
+.pfrow input.f.no{border-color:var(--red)}
+#pf-msg.bad{color:var(--red-hi)}
+#pf-rows .dim{color:var(--muted)}
+#pf-msg.ok{color:var(--green)}
+@media (max-width:700px){ .pfrow{grid-template-columns:minmax(0,1fr) minmax(172px,1fr)} .pfrow.head{display:none} }
 .seg .b.on{border-color:var(--gold);background:#3a2c10}
 
 /* ---- sheets (confirm, details, help, sign in) over everything but Abort ---- */
@@ -613,6 +630,15 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <div class="cards">
       <div class="card" id="set-ui"><div class="t"><b>Default interface</b><span id="set-ui-t">For screens that have not chosen.</span></div>
         <div class="seg"><button class="b" id="set-ui-1" data-v="1">1.0</button><button class="b" id="set-ui-2" data-v="2">2.0</button></div></div>
+      <div class="card col" id="set-pf"><div class="t"><b>Play-from cues</b><span id="pf-t">Named points in a show to play it from. Saving sends nothing to the rig.</span></div>
+        <div class="pfbar"><select class="f" id="pf-show" aria-label="Show file"></select>
+          <button class="b" id="pf-add"><svg class="i"><use href="#i-list"/></svg>Add cue</button>
+          <button class="b green" id="pf-save"><svg class="i"><use href="#i-check"/></svg>Save</button>
+          <button class="b" id="pf-reload"><svg class="i"><use href="#i-reset"/></svg>Reload</button>
+          <button class="b blue" id="pf-restore" hidden><svg class="i"><use href="#i-back"/></svg>Restore the last saved copy</button>
+          <button class="b redline" id="pf-replace" hidden><svg class="i"><use href="#i-warn"/></svg>Replace the file</button></div>
+        <div id="pf-rows"></div>
+        <div id="pf-msg" role="status"></div></div>
       <div class="card"><div class="t"><b>Programming</b><span>Show file, rehearsal, schedule rules.</span></div><a class="b blue" href="/remote1#programming"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
       <div class="card"><div class="t"><b>Users</b><span>People, roles, audit log.</span></div><a class="b blue" href="/remote1#users"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
     </div>
@@ -906,7 +932,7 @@ function showTab(t){
   try{ dayView(t === "day"); }catch(e){}
   TABS.forEach(k => { $("t-" + k).hidden = k !== t; });
   document.querySelectorAll(".tab").forEach(b => { b.classList.toggle("on", b.dataset.tab === t); b.setAttribute("aria-selected", b.dataset.tab === t ? "true" : "false"); });
-  if(t === "settings") loadUiDefault();
+  if(t === "settings"){ loadUiDefault(); loadPlayFrom(); }
   if(t === "show") layoutGroups();
   $("mini").hidden = t === "show";
 }
@@ -1947,6 +1973,7 @@ let PUMP_TYPED = false, PUMP_WAS_ON = false, PUMP_OFF_SEEN = "", PUMP_BUSY = fal
 // after none came (delta review of #189, 3), and how long it waits.
 let PUMP_NOTE = "", PUMP_NOTE_AT = 0, PUMP_BOOT = "";
 const PUMP_ANSWER_MS = 10000;
+const PUMP_MAX_S = 600;     // Jeff: never more than 10:00
 function pumpReset(v){
   // The run time back to the default (5:00): after a run is started, a
   // run ends, Pump off or a Stop.
@@ -1958,6 +1985,7 @@ function pumpWhyFull(s, v, secs, why){
   // row: the engine's own sentence when it refuses, else the short one.
   if(!why) return "";
   if(why === "Pump is on") return "The pump is on. To change the run time, press Pump off, then start it again.";
+  if(/^Longest is /.test(why)) return "The fuel pump runs " + why.slice(11) + " at most" + (why.slice(11) === "10:00" ? " (ten minutes)" : "") + ". Set a shorter run time, then press Fuel pump: On.";
   if(v.refusal && why === short8(v.refusal, "Not now: see below")) return "Fuel pump: On cannot be pressed now: " + v.refusal;
   return "Fuel pump: On cannot be pressed now: " + why + ".";
 }
@@ -1987,7 +2015,9 @@ function pumpWhy(s, v, secs){
   if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return "Arming off here";
   if(secs === null) return "Run time as m:ss";
   if(secs < (v.min_s || 1)) return "Run time too short";
-  if(v.max_s && secs > v.max_s) return "Longest is " + pumpClock(v.max_s);
+  // Jeff (2026-10-30): ten minutes at most, whatever the engine's
+  // pump_max_s says; a lower one is kept.
+  if(secs > Math.min(v.max_s || PUMP_MAX_S, PUMP_MAX_S)) return "Longest is " + pumpClock(Math.min(v.max_s || PUMP_MAX_S, PUMP_MAX_S));
   if(v.settings_error) return "Settings file unreadable";
   if(v.refusal) return short8(v.refusal, "Not now: see below");
   return "";
@@ -3315,6 +3345,200 @@ async function loadUiDefault(){
   catch(e){ say("Not changed.", e.message, "bad"); }
   loadUiDefault();
 }));
+
+// ---- Settings: play-from cues (admin edits; anyone signed in reads) ----
+// The cue list per show file (play_from.py): a name, a time from the top
+// of the show cue, a lead-in and a note. Saving sends nothing to the rig
+// and starts nothing; the engine checks every rule again.
+const PF_DASH = /[\u2013\u2014]/;
+// PF_REPLACE: an admin chose to replace a file the engine cannot read.
+// PF_STALE: a save was refused because someone saved first; nothing more
+// is saved from this copy until Reload reads the list again.
+let PF = null, PF_DIRTY = false, PF_REPLACE = false, PF_STALE = false;
+const PF_STALE_WORDS = "since this screen read them";     // play_from.STALE_WORDS
+const PF_REPLACE_WORDS = "Replace the file";              // play_from.REPLACE_WORDS
+function pfFrames(tc){
+  const m = /^(\d{2}):(\d{2}):(\d{2}):(\d{2})$/.exec(String(tc || "").trim());
+  if(!m) return null;
+  const h = +m[1], mi = +m[2], s = +m[3], f = +m[4];
+  if(mi > 59 || s > 59 || f > 29) return null;
+  return ((h * 60 + mi) * 60 + s) * 30 + f;
+}
+function pfTc(fr){
+  const f = fr % 30, s = Math.floor(fr / 30), p = n => String(n).padStart(2, "0");
+  return p(Math.floor(s / 3600)) + ":" + p(Math.floor(s / 60) % 60) + ":" + p(s % 60) + ":" + p(f);
+}
+// One problem list per cue (empty when it is fine), the engine's rules.
+function pfCheck(cues, audioLen, rules){
+  const r = rules || {}, minL = r.lead_in_min_s || 1, maxL = r.lead_in_max_s || 30;
+  const seen = {};
+  // The engine's key: NFC and case folded (play_from.name_key).
+  const key = n => n.normalize("NFC").toLowerCase();
+  cues.forEach(c => { const k = key(String(c.name || "").trim().replace(/\s+/g, " ")); if(k) seen[k] = (seen[k] || 0) + 1; });
+  return cues.map(c => {
+    const out = [], name = String(c.name || "").trim().replace(/\s+/g, " ");
+    if(!name) out.push("Give it a name.");
+    else if(name.length > (r.max_name || 40)) out.push("Name too long.");
+    else if(PF_DASH.test(name)) out.push("No long dashes in the name.");
+    else if(seen[key(name)] > 1) out.push("Name used twice.");
+    const fr = pfFrames(c.tc);
+    const lead = String(c.lead_in_s === undefined || c.lead_in_s === null ? "" : c.lead_in_s).trim();
+    const ln = lead === "" ? (r.lead_in_default_s || 2) : Number(lead);
+    if(fr === null) out.push("Time is HH:MM:SS:FF.");
+    else if(audioLen && fr / 30 >= audioLen) out.push("Past the audio end (" + pfTc(Math.floor(audioLen * 30)) + ").");
+    if(!Number.isInteger(ln) || ln < minL || ln > maxL) out.push("Lead-in " + minL + " to " + maxL + " s.");
+    else if(fr !== null && !(audioLen && fr / 30 >= audioLen) && fr < ln * 30) out.push("Lead-in starts before the top.");
+    if(String(c.note || "").trim().length > (r.max_note || 200)) out.push("Note too long.");
+    return out;
+  });
+}
+// What Save sends: each cue as typed, trimmed, with the id it was read
+// with (none for a new cue), so a rename or a retime stays the same cue.
+function pfBody(cues){
+  return cues.map(c => {
+    const o = {name:String(c.name || "").trim(), tc:String(c.tc || "").trim(), note:String(c.note || "").trim()};
+    const l = String(c.lead_in_s === null || c.lead_in_s === undefined ? "" : c.lead_in_s).trim();
+    o.lead_in_s = l === "" ? null : Number(l);
+    if(c.id) o.id = c.id;
+    return o;
+  });
+}
+function pfMsg(text, cls){ const m = $("pf-msg"); setText(m, text || ""); m.className = cls || ""; }
+function pfDraw(){
+  const rows = $("pf-rows"), may = pfMayEdit();
+  $("pf-add").hidden = $("pf-save").hidden = !may;
+  $("pf-replace").hidden = !(PF && PF.may_edit && PF.error && !PF_REPLACE);
+  $("pf-restore").hidden = !(PF && PF.may_edit && PF.error && PF.restore_from && !PF_REPLACE);
+  if(!PF || !PF.entry){ rows.innerHTML = ""; return; }
+  const cues = PF.entry.cues;
+  const bad = pfCheck(cues, PF.audio_len_s, PF);
+  const dis = may ? "" : " disabled";
+  rows.innerHTML = (cues.length ? `<div class="pfrow head"><span>Name</span><span>Time</span><span title="Lead-in, seconds">Lead-in</span><span>Note</span><span></span></div>` : `<div class="dim">No cues for this show yet.</div>`) +
+    cues.map((c, i) => `<div class="pfrow" data-i="${i}">` +
+      `<input class="f${bad[i].length ? " no" : ""}" data-k="name" value="${esc(c.name)}" placeholder="Name" maxlength="${PF.max_name || 40}"${dis}>` +
+      `<input class="f" data-k="tc" value="${esc(c.tc)}" placeholder="HH:MM:SS:FF" inputmode="numeric"${dis}>` +
+      `<input class="f" data-k="lead_in_s" value="${esc(c.lead_in_s === null || c.lead_in_s === undefined ? "" : c.lead_in_s)}" inputmode="numeric"${dis}>` +
+      `<input class="f" data-k="note" value="${esc(c.note || "")}" placeholder="Note" maxlength="${PF.max_note || 200}"${dis}>` +
+      (may ? `<button class="b" data-del="${i}" aria-label="Delete ${esc(c.name)}">${icon("x")}Delete</button>` : "<span></span>") +
+      `<span class="bad"${bad[i].length ? "" : " hidden"}>${esc(bad[i].join(" "))}</span></div>`).join("");
+  $("pf-save").disabled = !pfSaveOk(bad);
+}
+// Editing and saving: an admin's, never on a copy a save found stale, and
+// never over a file the engine cannot read unless Replace was chosen.
+function pfMayEdit(){
+  return !!(PF && PF.may_edit && !PF_STALE && (!PF.error || PF_REPLACE));
+}
+function pfSaveOk(bad){
+  return pfMayEdit() && PF_DIRTY && !bad.some(b => b.length);
+}
+// A refused save: when someone saved first, this copy is locked (nothing
+// more is saved from it) until Reload reads the list again.
+function pfRefused(message){
+  if(String(message).includes(PF_STALE_WORDS)) PF_STALE = true;
+  // The file broke or went missing after this page read it: no Save over
+  // it; Restore, Replace and Reload are offered instead.
+  else if(PF && String(message).includes(PF_REPLACE_WORDS)){ PF.error = String(message); PF_REPLACE = false; }
+  return String(message) + (PF_STALE ? " Tap Reload." : "");
+}
+// The marks again after an edit, in place: the rows are not drawn again,
+// so the field being typed in keeps its place.
+function pfMark(){
+  if(!PF || !PF.entry) return;
+  const bad = pfCheck(PF.entry.cues, PF.audio_len_s, PF);
+  $("pf-rows").querySelectorAll(".pfrow[data-i]").forEach(row => {
+    const b = bad[Number(row.dataset.i)] || [];
+    row.querySelector('[data-k="name"]').classList.toggle("no", b.length > 0);
+    const sp = row.querySelector(".bad");
+    setText(sp, b.join(" ")); sp.hidden = !b.length;
+  });
+  $("pf-save").disabled = !pfSaveOk(bad);
+}
+function pfSay(){
+  if(!PF) return;
+  const len = PF.audio_len_s ? " Show audio " + pfTc(Math.floor(PF.audio_len_s * 30)) + "." : "";
+  const head = PF.show_problem || PF.error || PF.audio_note || "";
+  const gone = (PF.missing || []).length ? " No show file now for: " + PF.missing.join(", ") + "." : "";
+  const why = PF.may_edit ? "" : " " + (PF.edit_why || "Read only here.");
+  setText($("pf-t"), (head ? head : ("Named points in " + (PF.show || "the show") + " to play from. Saving sends nothing to the rig." + len)) + gone + why);
+}
+async function loadPlayFrom(force){
+  if(PF_DIRTY && !force) return;
+  const sel = $("pf-show");
+  try{
+    const j = await getJSON("/api/timelines", 3000);
+    const files = (j.timelines || []).filter(t => !t.error).map(t => t.file);
+    let want = sel.value || (ST && ST.selected_show) || "";
+    if(!files.includes(want)) want = files[0] || "";
+    sel.innerHTML = files.map(f => `<option${f === want ? " selected" : ""}>${esc(f)}</option>`).join("");
+    if(!want){ PF = null; pfDraw(); pfMsg("No show file in the show folder."); return; }
+    pfMsg("Reading...");
+    PF = await getJSON("/api/remote/play-from-cues?show=" + encodeURIComponent(want), 20000);
+    PF.entry.cues = PF.entry.cues.map(c => Object.assign({}, c));
+    PF_DIRTY = false; PF_STALE = false; PF_REPLACE = false;
+    pfSay(); pfDraw(); pfMsg("");
+  }catch(e){ PF = null; pfDraw(); pfMsg(short8(e.message, "Not readable here."), "bad"); }
+}
+$("pf-show").addEventListener("change", async () => {
+  if(PF_DIRTY && !(await confirmBox("Discard the changes?", "The cues you changed for " + (PF && PF.show) + " are not saved.", "Discard", "red"))){
+    $("pf-show").value = PF.show; return;
+  }
+  PF_DIRTY = false; loadPlayFrom(true);
+});
+// Reload: the list as the engine has it now; changes not saved are dropped.
+$("pf-reload").addEventListener("click", async () => {
+  if(PF_DIRTY && !PF_STALE && !(await confirmBox("Discard the changes?", "Reload reads the list again. The cues you changed are not saved.", "Discard", "red"))) return;
+  PF_DIRTY = false; await loadPlayFrom(true);
+});
+// Restore the last saved copy: every show's list as it was last saved, put
+// back while the file is missing or cannot be read.
+$("pf-restore").addEventListener("click", async () => {
+  if(!PF || !PF.error || !PF.restore_from) return;
+  if(!(await confirmBox("Restore the last saved copy?", "Puts back " + PF.restore_from + ", with the lists of: " + (PF.restore_shows || []).join(", ") + ". A broken file is kept in play_from_history.", "Restore", "green"))) return;
+  try{
+    const j = await post("/api/remote/play-from-cues-save", {restore:true, rev:PF.rev});
+    PF_DIRTY = false; await loadPlayFrom(true); pfMsg(j.text || "Restored.", "ok");
+  }catch(e){ pfMsg(pfRefused(e.message), "bad"); pfSay(); pfDraw(); }
+});
+// Replace the file: only when the engine cannot read it, an admin's choice.
+$("pf-replace").addEventListener("click", async () => {
+  if(!PF || !PF.error) return;
+  if(!(await confirmBox("Replace the play-from file?", PF.error + " Saving starts the file again with only this show's list: the lists of other shows in it are gone. The broken file is kept in play_from_history.", "Replace on save", "red"))) return;
+  PF_REPLACE = true; pfDraw(); pfMsg("Make this show's list, then Save.");
+});
+$("pf-rows").addEventListener("input", e => {
+  const row = e.target.closest(".pfrow"), k = e.target.dataset.k;
+  if(!PF || !row || !k) return;
+  PF.entry.cues[Number(row.dataset.i)][k] = e.target.value;
+  PF_DIRTY = true; pfMsg("Not saved yet."); pfMark();
+});
+$("pf-rows").addEventListener("click", e => {
+  const b = e.target.closest("[data-del]");
+  if(!b || !PF) return;
+  PF.entry.cues.splice(Number(b.dataset.del), 1);
+  PF_DIRTY = true; pfMsg("Not saved yet."); pfDraw();
+});
+$("pf-add").addEventListener("click", () => {
+  if(!PF || !PF.entry) return;
+  if(PF.entry.cues.length >= (PF.max_cues || 50)){ pfMsg("At most " + (PF.max_cues || 50) + " cues.", "bad"); return; }
+  PF.entry.cues.push({name:"", tc:"", lead_in_s:PF.lead_in_default_s || 2, note:""});
+  PF_DIRTY = true; pfDraw();
+  const r = $("pf-rows").querySelectorAll(".pfrow:not(.head)");
+  const n = r.length && r[r.length - 1].querySelector("input");
+  if(n) n.focus();
+});
+$("pf-save").addEventListener("click", async () => {
+  if(!PF || !PF.entry) return;
+  if(pfCheck(PF.entry.cues, PF.audio_len_s, PF).some(b => b.length)){ pfDraw(); pfMsg("Fix the marked cues first.", "bad"); return; }
+  const cues = pfBody(PF.entry.cues);
+  try{
+    const body = {show:PF.show, rev:PF.rev, cues:cues};
+    if(PF.error && PF_REPLACE) body.replace = true;
+    const j = await post("/api/remote/play-from-cues-save", body);
+    PF_DIRTY = false;
+    await loadPlayFrom(true);
+    pfMsg(j.text || "Saved.", "ok");
+  }catch(e){ pfMsg(pfRefused(e.message), "bad"); pfSay(); pfDraw(); }
+});
 
 // ---- The brand (1.0's loadBrand): the show's name from the settings, the
 // page fine without it. The one GET 1.0 already makes; never a write.
