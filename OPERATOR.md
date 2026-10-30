@@ -1619,15 +1619,26 @@ the same 1.0 button sends, with the same holds, confirms and refusals.
     before the top of the show cue;
   - a note, optional, up to 200 characters.
   A cue that breaks a rule is marked in red and Save waits until it is
-  fixed; the engine checks every rule again and says what it refused. If
-  someone else saved the list since this screen read it, the save is
-  refused: the card reads it again, check and save again. The list is
-  `ltcplay_play_from.json` in the settings folder, one list per show file;
-  the version before each save is kept in `play_from_history` (the last
-  50), and every save and every refusal is in the journal and the audit
-  log. When the show audio is rendered again at another length, the card
-  says so and names any cue now past its end. Anyone signed in can read
-  the list; saving it from an iPad also needs Arming from a screen on.
+  fixed; the engine checks every rule again and says what it refused.
+  Names and notes are one line of plain text: a control or invisible
+  character is refused. If someone else saved the list since this screen
+  read it, the save is refused and nothing is overwritten: tap Reload to
+  read the list again (changes not saved are dropped), then make them
+  again and save. The list is `ltcplay_play_from.json` in the settings
+  folder, one list per show file, under the show file's name exactly as
+  the show folder spells it; the version before each save is kept in
+  `play_from_history` (the last 50), and every save and every refusal is
+  in the journal and the audit log. When the file cannot be read (damaged
+  by hand, or written by a newer LTC Player), the card says so and
+  nothing can be saved over it: fix the file, or an admin taps Replace the
+  file, then makes this show's list and saves. That starts the file again
+  with only this show's list (the other shows' lists in it are gone); the
+  broken file is kept in `play_from_history`. When the show audio is
+  rendered again at another length, the card says so and names any cue
+  now past its end; a list whose show file is no longer in the show folder
+  is named too. Anyone signed in can read the list; saving it from an
+  iPad also needs Arming from a screen on. With no users set up, the show
+  PC reads the list but nobody can save it until an admin exists.
   This card and Default interface are 2.0's own: 1.0 has no button for
   them.
 - The 2.0 SHOW screen, top to bottom: one line that says what to do next;

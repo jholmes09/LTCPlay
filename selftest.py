@@ -92673,6 +92673,42 @@ def test_play_from_cue_model():
     except PF.CueError as e:
         check(str(e).count(";") == 2 and "A:" in str(e) and
               "used twice" in str(e), f"every problem at once: {e}")
+    # Review of #192: a lead-in too big for a float, other scripts'
+    # digits, control and invisible characters, and two spellings of one
+    # name are all refused in words, never raised.
+    for v in (10 ** 400, -10 ** 400, 1e300, float("inf")):
+        try:
+            PF.parse_lead_in(v)
+            check(False, f"a lead-in of {str(v)[:12]} is refused")
+        except PF.CueError as e:
+            check(_cfg_dashes(str(e)), f"{str(v)[:12]}: {e}")
+        except Exception as e:                   # noqa: BLE001
+            check(False, f"a lead-in of {str(v)[:12]} raised "
+                         f"{type(e).__name__}, not a refusal")
+    check(PF.parse_lead_in(2.0) == 2 and PF.parse_lead_in(30) == 30,
+          "2.0 and 30 are good lead-ins")
+    for cues, why in (
+            ([{"name": "Q", "tc": "\u0660\u0660:\u0660\u0661:\u0663\u0660:"
+                                  "\u0660\u0660"}], "not a time"),
+            ([{"name": "A\x00", "tc": "00:00:05:00"}], "control or invisible"),
+            ([{"name": "A\u202e", "tc": "00:00:05:00"}],
+             "control or invisible"),
+            ([{"name": "\u200b", "tc": "00:00:05:00"}], "control or invisible"),
+            ([{"name": "A", "tc": "00:00:05:00", "note": "x\ny"}],
+             "control or invisible"),
+            ([{"name": "A", "tc": "00:00:05:00", "note": "\x1b[31mred"}],
+             "control or invisible"),
+            ([{"name": "Cafe\u0301", "tc": "00:00:05:00"},
+              {"name": "Caf\u00e9", "tc": "00:00:06:00"}], "used twice"),
+            ([{"name": "\uff26inale", "tc": "00:00:05:00"},
+              {"name": "Finale", "tc": "00:00:06:00"}], "used twice")):
+        try:
+            PF.check_cues(cues, 120.0)
+            check(False, f"refused ({why}): {cues!r:.80}")
+        except PF.CueError as e:
+            check(why in str(e) and _cfg_dashes(str(e)), f"{why}: {e}")
+    got = PF.check_cues([{"name": "Cafe\u0301", "tc": "00:00:05:00"}], 120.0)
+    check(got[0]["name"] == "Caf\u00e9", "a name is kept in NFC form")
     # The file: strict, every cue carries an id.
     doc = {"play_from_format": 1, "rev": 3, "shows": {"Show.json": {
         "cue": "Show", "audio_len_s": 120.0,
@@ -92694,7 +92730,11 @@ def test_play_from_cue_model():
             (lambda d: d["shows"]["Show.json"]["cues"][0].update(
                 tc="00:02:00:00"), "not inside the show audio"),
             (lambda d: d["shows"].update({"../x.json": {}}),
-             "not a show file name")):
+             "not a show file name"),
+            (lambda d: d["shows"]["Show.json"].update(next_id=2),
+             "next_id"),
+            (lambda d: d["shows"]["Show.json"].update(next_id="9"),
+             "next_id")):
         d = json.loads(json.dumps(doc))
         change(d)
         try:
@@ -92707,12 +92747,18 @@ def test_play_from_cue_model():
                "lead_in_s": 3, "note": ""},
               {"id": "c7", "name": "Top", "tc": "00:00:10:00",
                "lead_in_s": 2, "note": ""}]
-    after = PF.give_ids(before, PF.check_cues(
+    after, nxt = PF.give_ids(before, PF.check_cues(
         [{"id": "c2", "name": "Big finale", "tc": "00:01:41:00",
           "lead_in_s": 3}, {"name": "New", "tc": "00:00:20:00"},
          {"name": "Newer", "tc": "00:00:21:00"}], 120.0))
-    check([c["id"] for c in after] == ["c8", "c9", "c2"],
+    check([c["id"] for c in after] == ["c8", "c9", "c2"] and nxt == 10,
           f"a new cue gets the next id; a kept one its own: {after}")
+    # The high-water mark: an id a deleted cue had is never given again.
+    again, nxt2 = PF.give_ids(before[:1], PF.check_cues(
+        [{"id": "c2", "name": "Finale", "tc": "00:01:40:00"},
+         {"name": "New", "tc": "00:00:20:00"}], 120.0), next_id=10)
+    check([c["id"] for c in again] == ["c10", "c2"] and nxt2 == 11,
+          f"after c7 was deleted (next 10) a new cue is c10: {again}")
     try:
         PF.give_ids(before, PF.check_cues([{"id": "c9", "name": "X",
                                             "tc": "00:00:20:00"}], 120.0))
@@ -92896,27 +92942,33 @@ def test_play_from_cue_store():
               lines[-1][1].get("fault") is True and
               events[-1]["result"] == "error",
               f"a failed write: nothing changed, a fault: {text}")
-        # A file that cannot be read: no cues for any show, said; a save on
-        # revision 0 replaces it, the broken one kept.
+        # A file that cannot be read: no cues for any show, said, and its
+        # revision is never below the highest one ever had.
+        high = store.load()[0]["rev"]
         for broken in ("{not json", '{"play_from_format": 1, "rev": 1, '
                        '"shows": {}, "x": 1}'):
             with open(store.path, "w", encoding="utf-8") as fh:
                 fh.write(broken)
             d, err = store.load()
-            check(d["shows"] == {} and d["rev"] == 0 and
+            check(d["shows"] == {} and d["rev"] == high and
                   "could not be read" in err and
                   "no show has play-from cues" in err and _cfg_dashes(err),
-                  f"a broken file: {err}")
+                  f"a broken file, still revision {high}: {d['rev']} {err}")
             check(store.view(show)["entry"]["cues"] == [] and
-                  store.view(show)["error"] == err, "and the view says so")
+                  store.view(show)["error"] == err and
+                  store.view(show)["replace_needed"] is True,
+                  "and the view says so")
+        # (test_play_from_cue_file_is_never_lost proves a save is refused
+        # here; an admin's replace saves over it, the broken one kept.)
         wall[0] += 1
-        ok, text, entry = store.save(show, "Show", 60.0, cues, 0, who="Jeff")
+        ok, text, entry = store.save(show, "Show", 60.0, cues, high,
+                                     who="Jeff", replace=True)
         h = store.history()
-        check(ok and entry["rev"] == 1 and h and h[0].endswith(
-            "-rev0-unreadable.json") and open(os.path.join(
+        check(ok and entry["rev"] == high + 1 and h and h[0].endswith(
+            f"-rev{high}-unreadable.json") and open(os.path.join(
                 store.history_dir(), h[0]), encoding="utf-8").read() ==
               '{"play_from_format": 1, "rev": 1, "shows": {}, "x": 1}',
-              f"saved over a broken file, which is kept: {h[:1]}")
+              f"replaced on purpose, the broken file kept: {text} {h[:1]}")
         raw = open(store.path, encoding="utf-8").read()
         with open(store.path, "w", encoding="utf-8-sig") as fh:
             fh.write(raw)
@@ -92925,6 +92977,163 @@ def test_play_from_cue_store():
         check(nf.load() == (PF.empty_doc(), ""), "no folder: empty")
     finally:
         PF.HISTORY_KEEP = keep
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_play_from_cue_file_is_never_lost():
+    section("play-from cues (review of #192): a file the engine cannot read "
+            "(damaged, a newer format, a number too big, nested too deep) "
+            "is never saved over unless an admin asks to replace it; the "
+            "revision never goes backwards, so an old page cannot pass the "
+            "stale check; the version before is kept only once the new file "
+            "is in place; a read never meets a save half way, and a file "
+            "held open for a moment (Windows) is tried again")
+    import builtins
+    import shutil
+    from ltcplay import play_from as PF
+    work = tempfile.mkdtemp()
+    lines, events = [], []
+
+    class _Audit:
+        def event(self, **kw):
+            events.append(kw)
+    store = PF.Store(work, journal=lambda *a, **k: lines.append((a, k)),
+                     audit=_Audit())
+    one = [{"name": "Finale", "tc": "00:00:50:00"}]
+
+    def rev():
+        return store.load()[0]["rev"]
+
+    def body():
+        with open(store.path, "rb") as fh:
+            return fh.read()
+    real_replace, real_open = os.replace, getattr(PF, "open", None)
+    try:
+        ok1 = store.save("A.json", "Show", 60.0, one, 0, who="Jeff")[0]
+        ok2 = store.save("B.json", "Show", 60.0, one, 1, who="Jeff")[0]
+        check(ok1 and ok2 and rev() == 2, "two shows' lists, revision 2")
+        for broken, what in (
+                ("{not json", "bad JSON"),
+                ('{"play_from_format": 2, "rev": 9, "shows": {}}',
+                 "a newer format"),
+                ('{"play_from_format": 1, "rev": 3, "shows": {"A.json": '
+                 '{"cue": "Show", "audio_len_s": 60, "cues": [{"id": "c1", '
+                 '"name": "x", "tc": "00:00:05:00", "lead_in_s": 1' +
+                 "0" * 400 + ', "note": ""}]}}}', "a number too big"),
+                ("[" * 100000, "nesting too deep")):
+            with open(store.path, "w", encoding="utf-8") as fh:
+                fh.write(broken)
+            try:
+                d, err = store.load()
+                v = store.view("A.json")
+            except Exception as e:               # noqa: BLE001
+                check(False, f"{what}: load or view raised "
+                             f"{type(e).__name__}")
+                continue
+            check(err and v["error"] == err and v["replace_needed"] and
+                  d["rev"] >= 2 and _cfg_dashes(err),
+                  f"{what}: read as broken, revision {d['rev']}: {err[:90]}")
+            n = len(events)
+            ok, text, _e = store.save("A.json", "Show", 60.0, one, d["rev"],
+                                      who="Andy", screen="iPad")
+            check(not ok and PF.REPLACE_WORDS in text and
+                  "every show" in text and body() == broken.encode() and
+                  events[n:] and events[-1]["result"] == "refused" and
+                  lines[-1][0][2] == "refused",
+                  f"{what}: a save is refused, the file untouched, "
+                  f"journaled and audited: {text}")
+        check(rev() >= 9, f"a newer file's revision 9 is not forgotten: "
+                          f"{rev()}")
+        # An old page (revision 0, read before anything was saved) cannot
+        # replace it either: the revision never goes back to 0.
+        ok, text, _e = store.save("A.json", "Show", 60.0, one, 0,
+                                  replace=True)
+        check(not ok and PF.STALE_WORDS in text,
+              f"an old page's revision is stale even over a broken file: "
+              f"{text}")
+        # An admin replaces it on purpose: B's list goes, the broken file
+        # is kept, the revision goes on up.
+        r = rev()
+        n_hist = len(store.history())
+        ok, text, entry = store.save("A.json", "Show", 60.0, one, r,
+                                     who="Jeff", replace=True)
+        h = store.history()
+        check(ok and entry["rev"] == r + 1 and
+              "replaced the file that could not be read" in text and
+              len(h) == n_hist + 1 and "-unreadable" in h[0] and
+              open(os.path.join(store.history_dir(), h[0]), "rb").read() ==
+              b"[" * 100000 and list(store.load()[0]["shows"]) ==
+              ["A.json"], f"replaced on purpose: {text} {h[:1]}")
+        # Deleted, or put back from an old copy by hand: the revision is
+        # still the highest one, and a page that read it before is stale.
+        top = rev()
+        os.remove(store.path)
+        check(rev() == top, f"the file deleted: still revision {top}")
+        ok, text, _e = store.save("A.json", "Show", 60.0, one, 0)
+        check(not ok and PF.STALE_WORDS in text,
+              "a page from before cannot save over a deleted file")
+        with open(store.path, "w", encoding="utf-8") as fh:
+            json.dump({"play_from_format": 1, "rev": 1, "shows": {}}, fh)
+        store2 = PF.Store(work)          # a restart: from the history
+        check(store2.load()[0]["rev"] >= top and store2.load()[1] == "",
+              f"an old copy put back, after a restart: revision "
+              f"{store2.load()[0]['rev']}, not 1")
+        ok, text, _e = store2.save("A.json", "Show", 60.0, one, 1)
+        check(not ok and PF.STALE_WORDS in text,
+              "a page that read revision 1 is stale")
+        # The version before is kept only once the new file is in place.
+        r = rev()
+        before, n_hist = body(), len(store.history())
+
+        def no_space(doc):
+            raise OSError(28, "No space left on device")
+        real_write = store._write
+        store._write = no_space
+        ok, text, _e = store.save("A.json", "Show", 60.0, one, r)
+        store._write = real_write
+        check(not ok and body() == before and
+              len(store.history()) == n_hist,
+              f"a failed write keeps no history copy: {store.history()[:2]}")
+        # Windows: a replace that meets the file held open is tried again.
+        tries = []
+
+        def busy_replace(src, dst):
+            if dst == store.path and len(tries) < 2:
+                tries.append(dst)
+                raise PermissionError(13, "in use")
+            return real_replace(src, dst)
+        os.replace = busy_replace
+        ok, text, _e = store.save("A.json", "Show", 60.0, one, r)
+        os.replace = real_replace
+        check(ok and len(tries) == 2, f"a busy file is replaced on the "
+                                      f"third try: {text}")
+        reads = []
+
+        def busy_open(path, *a, **k):
+            if path == store.path and len(reads) < 2:
+                reads.append(path)
+                raise PermissionError(13, "in use")
+            return builtins.open(path, *a, **k)
+        PF.open = busy_open
+        d, err = store.load()
+        del PF.open
+        check(err == "" and len(reads) == 2 and d["shows"],
+              f"a busy file is read on the third try: {err}")
+        # A read never meets a save half way: it waits for the lock.
+        got = []
+        store._lock.acquire()
+        t = threading.Thread(target=lambda: got.append(store.load()))
+        t.start()
+        t.join(0.2)
+        waited = not got
+        store._lock.release()
+        t.join(5)
+        check(waited and got, "a read waits while a save holds the file")
+    finally:
+        os.replace = real_replace
+        if real_open is None and hasattr(PF, "open"):
+            del PF.open
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")
 
@@ -94102,6 +94311,7 @@ if __name__ == "__main__":
         test_config_watch_supervisor_and_rack_screen_note,
         test_play_from_cue_model,
         test_play_from_cue_store,
+        test_play_from_cue_file_is_never_lost,
         test_play_from_cue_routes,
         test_play_from_cue_audio_length_from_a_real_show_file,
         test_play_from_cue_card_in_2_0,

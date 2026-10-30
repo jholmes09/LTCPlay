@@ -4511,9 +4511,12 @@ class Remote:
         name = os.path.basename(str(show or ""))
         if not folder or not name or name != show:
             return None, None, f"{show!r} is not a show file"
-        path = os.path.join(folder, name)
-        if not os.path.isfile(path):
+        # Spelled exactly as the folder lists it: on a disk that does not
+        # tell case apart (Windows, macOS) "show.json" would open
+        # "Show.json" too and make a second list for the same show.
+        if name not in self.play_from_show_files():
             return None, None, f"{name} is not in the show folder"
+        path = os.path.join(folder, name)
         from . import clock as clock_mod
         from .session import Session
         kw = dict(getattr(ctl, "defaults", None) or {})
@@ -4541,16 +4544,31 @@ class Remote:
                                 f"from")
         return cue, float(got["audio_s"]), ""
 
+    def play_from_show_files(self):
+        """The file names in the show folder, exactly as it lists them
+        (a set; empty when there is no folder)."""
+        folder = getattr(self.control, "folder", None)
+        try:
+            return {n for n in os.listdir(folder)
+                    if os.path.isfile(os.path.join(folder, n))} \
+                if folder else set()
+        except OSError:
+            return set()
+
     def play_from_get(self, query, ctx):
         """GET play-from-cues[?show=<file>]: the file's revision, its error
-        and the rules, and with ?show= that show's cues, its own cue and
-        audio length, a note when the audio changed since the save, and
-        whether this person may save. Anyone signed in may read. (code,
+        and the rules, the lists whose show file is gone, and with ?show=
+        that show's cues, its own cue and audio length, a note when the
+        audio changed since the save, and whether this person may save
+        (and why not). Anyone signed in may read; with no users set up, the
+        show machine itself reads it, as the other Settings do. (code,
         body)."""
         import urllib.parse
         me = getattr(ctx, "session", None) or {}
         u = self.users
-        if u is None or not u.active() or not me.get("name"):
+        no_users = u is None or not u.active()
+        if not (me.get("name") and not no_users) and \
+                not (no_users and ctx.local):
             return 403, {"error": "Sign in to read the play-from cues."}
         show = (urllib.parse.parse_qs(query or "").get("show") or [None])[0]
         from . import play_from as pf_mod
@@ -4559,8 +4577,22 @@ class Remote:
         except Exception as e:                       # noqa: BLE001
             return 500, {"error": f"The play-from cues could not be read "
                                   f"({type(e).__name__})."}
-        out["may_edit"] = bool(u.may(me.get("role"), "settings") and
-                               self.may_act_from(ctx.local))
+        if no_users:
+            out["may_edit"] = False
+            out["edit_why"] = ("Saving needs a signed-in admin. Set up "
+                               "users first (Users, in 1.0).")
+        elif not u.may(me.get("role"), "settings"):
+            out["may_edit"] = False
+            out["edit_why"] = (f"Only someone with Settings (admins) "
+                               f"saves; {me.get('name')} reads only.")
+        elif not self.may_act_from(ctx.local):
+            out["may_edit"] = False
+            out["edit_why"] = ("Saving from the show network needs Arming "
+                               "from a screen on.")
+        else:
+            out["may_edit"], out["edit_why"] = True, ""
+        here = self.play_from_show_files()
+        out["missing"] = [n for n in out["shows"] if n not in here]
         if show is not None:
             cue, length, why = self.play_from_show_info(show)
             out.update(cue=cue, audio_len_s=length, show_problem=why,
@@ -4577,6 +4609,7 @@ class Remote:
         history, a journal line and an audit event. Sends nothing, starts
         nothing. (code, body)."""
         from . import users as users_mod
+        from . import play_from as pf_mod
         body = body if isinstance(body, dict) else {}
         who, device, _surface = self._actor(ctx, body)
         me = getattr(ctx, "session", None) or {}
@@ -4605,9 +4638,12 @@ class Remote:
         if why:
             return refused(409, why[0].upper() + why[1:] + ".")
         ok, text, entry = st.save(show, cue, length, body.get("cues"),
-                                  body.get("rev"), who=who, screen=device)
+                                  body.get("rev"), who=who, screen=device,
+                                  replace=body.get("replace") is True)
         if not ok:
-            return 409, {"error": text + " Nothing was changed."}
+            return 409, {"error": text + " Nothing was changed.",
+                         "stale": pf_mod.STALE_WORDS in text,
+                         "replace_needed": pf_mod.REPLACE_WORDS in text}
         return 200, {"ok": True, "text": text, "entry": entry}
 
     def hazers_view(self, fl):

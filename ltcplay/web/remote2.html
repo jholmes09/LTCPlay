@@ -356,14 +356,17 @@ body:not([data-tab="show"]) #foot-l > .ann{display:none}
 .pfbar select.f{flex:1 1 220px;width:auto}
 select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2px solid var(--line);
   background:#0e0b08;color:var(--cream)}
-.pfrow{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1.4fr) minmax(0,.8fr) minmax(0,2fr) auto;gap:6px;align-items:start}
+/* The Time column is never narrower than a whole HH:MM:SS:FF. */
+.pfrow{display:grid;grid-template-columns:minmax(0,2fr) minmax(172px,1.3fr) minmax(64px,.7fr) minmax(0,2fr) auto;gap:6px;align-items:start}
+.pfrow input[data-k="tc"]{font-variant-numeric:tabular-nums;padding:0 10px}
 .pfrow.head{color:var(--muted)}
+.pfrow.head span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pfrow .bad{color:var(--red-hi);grid-column:1 / -1}
 .pfrow input.f.no{border-color:var(--red)}
 #pf-msg.bad{color:var(--red-hi)}
 #pf-rows .dim{color:var(--muted)}
 #pf-msg.ok{color:var(--green)}
-@media (max-width:700px){ .pfrow{grid-template-columns:minmax(0,1fr) minmax(0,1fr)} .pfrow.head{display:none} }
+@media (max-width:700px){ .pfrow{grid-template-columns:minmax(0,1fr) minmax(172px,1fr)} .pfrow.head{display:none} }
 .seg .b.on{border-color:var(--gold);background:#3a2c10}
 
 /* ---- sheets (confirm, details, help, sign in) over everything but Abort ---- */
@@ -600,7 +603,9 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
       <div class="card col" id="set-pf"><div class="t"><b>Play-from cues</b><span id="pf-t">Named points in a show to play it from. Saving sends nothing to the rig.</span></div>
         <div class="pfbar"><select class="f" id="pf-show" aria-label="Show file"></select>
           <button class="b" id="pf-add"><svg class="i"><use href="#i-list"/></svg>Add cue</button>
-          <button class="b green" id="pf-save"><svg class="i"><use href="#i-check"/></svg>Save</button></div>
+          <button class="b green" id="pf-save"><svg class="i"><use href="#i-check"/></svg>Save</button>
+          <button class="b" id="pf-reload"><svg class="i"><use href="#i-reset"/></svg>Reload</button>
+          <button class="b redline" id="pf-replace" hidden><svg class="i"><use href="#i-warn"/></svg>Replace the file</button></div>
         <div id="pf-rows"></div>
         <div id="pf-msg" role="status"></div></div>
       <div class="card"><div class="t"><b>Programming</b><span>Show file, rehearsal, schedule rules.</span></div><a class="b blue" href="/remote1#programming"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
@@ -3108,7 +3113,10 @@ async function loadUiDefault(){
 // of the show cue, a lead-in and a note. Saving sends nothing to the rig
 // and starts nothing; the engine checks every rule again.
 const PF_DASH = /[\u2013\u2014]/;
-let PF = null, PF_DIRTY = false;
+// PF_REPLACE: an admin chose to replace a file the engine cannot read.
+// PF_STALE: a save was refused because someone saved first; nothing more
+// is saved from this copy until Reload reads the list again.
+let PF = null, PF_DIRTY = false, PF_REPLACE = false, PF_STALE = false;
 function pfFrames(tc){
   const m = /^(\d{2}):(\d{2}):(\d{2}):(\d{2})$/.exec(String(tc || "").trim());
   if(!m) return null;
@@ -3155,13 +3163,14 @@ function pfBody(cues){
 }
 function pfMsg(text, cls){ const m = $("pf-msg"); setText(m, text || ""); m.className = cls || ""; }
 function pfDraw(){
-  const rows = $("pf-rows"), may = !!(PF && PF.may_edit);
+  const rows = $("pf-rows"), may = pfMayEdit();
   $("pf-add").hidden = $("pf-save").hidden = !may;
+  $("pf-replace").hidden = !(PF && PF.may_edit && PF.error && !PF_REPLACE);
   if(!PF || !PF.entry){ rows.innerHTML = ""; return; }
   const cues = PF.entry.cues;
   const bad = pfCheck(cues, PF.audio_len_s, PF);
   const dis = may ? "" : " disabled";
-  rows.innerHTML = (cues.length ? `<div class="pfrow head"><span>Name</span><span>Time</span><span>Lead-in s</span><span>Note</span><span></span></div>` : `<div class="dim">No cues for this show yet.</div>`) +
+  rows.innerHTML = (cues.length ? `<div class="pfrow head"><span>Name</span><span>Time</span><span title="Lead-in, seconds">Lead-in</span><span>Note</span><span></span></div>` : `<div class="dim">No cues for this show yet.</div>`) +
     cues.map((c, i) => `<div class="pfrow" data-i="${i}">` +
       `<input class="f${bad[i].length ? " no" : ""}" data-k="name" value="${esc(c.name)}" placeholder="Name" maxlength="${PF.max_name || 40}"${dis}>` +
       `<input class="f" data-k="tc" value="${esc(c.tc)}" placeholder="HH:MM:SS:FF" inputmode="numeric"${dis}>` +
@@ -3169,7 +3178,15 @@ function pfDraw(){
       `<input class="f" data-k="note" value="${esc(c.note || "")}" placeholder="Note" maxlength="${PF.max_note || 200}"${dis}>` +
       (may ? `<button class="b" data-del="${i}" aria-label="Delete ${esc(c.name)}">${icon("x")}Delete</button>` : "<span></span>") +
       `<span class="bad"${bad[i].length ? "" : " hidden"}>${esc(bad[i].join(" "))}</span></div>`).join("");
-  $("pf-save").disabled = !PF_DIRTY || bad.some(b => b.length);
+  $("pf-save").disabled = !pfSaveOk(bad);
+}
+// Editing and saving: an admin's, never on a copy a save found stale, and
+// never over a file the engine cannot read unless Replace was chosen.
+function pfMayEdit(){
+  return !!(PF && PF.may_edit && !PF_STALE && (!PF.error || PF_REPLACE));
+}
+function pfSaveOk(bad){
+  return pfMayEdit() && PF_DIRTY && !bad.some(b => b.length);
 }
 // The marks again after an edit, in place: the rows are not drawn again,
 // so the field being typed in keeps its place.
@@ -3182,13 +3199,15 @@ function pfMark(){
     const sp = row.querySelector(".bad");
     setText(sp, b.join(" ")); sp.hidden = !b.length;
   });
-  $("pf-save").disabled = !PF_DIRTY || bad.some(b => b.length);
+  $("pf-save").disabled = !pfSaveOk(bad);
 }
 function pfSay(){
   if(!PF) return;
   const len = PF.audio_len_s ? " Show audio " + pfTc(Math.floor(PF.audio_len_s * 30)) + "." : "";
   const head = PF.show_problem || PF.error || PF.audio_note || "";
-  setText($("pf-t"), head ? head : ("Named points in " + (PF.show || "the show") + " to play from. Saving sends nothing to the rig." + len));
+  const gone = (PF.missing || []).length ? " No show file now for: " + PF.missing.join(", ") + "." : "";
+  const why = PF.may_edit ? "" : " " + (PF.edit_why || "Read only here.");
+  setText($("pf-t"), (head ? head : ("Named points in " + (PF.show || "the show") + " to play from. Saving sends nothing to the rig." + len)) + gone + why);
 }
 async function loadPlayFrom(force){
   if(PF_DIRTY && !force) return;
@@ -3203,7 +3222,7 @@ async function loadPlayFrom(force){
     pfMsg("Reading...");
     PF = await getJSON("/api/remote/play-from-cues?show=" + encodeURIComponent(want), 20000);
     PF.entry.cues = PF.entry.cues.map(c => Object.assign({}, c));
-    PF_DIRTY = false;
+    PF_DIRTY = false; PF_STALE = false; PF_REPLACE = false;
     pfSay(); pfDraw(); pfMsg("");
   }catch(e){ PF = null; pfDraw(); pfMsg(short8(e.message, "Not readable here."), "bad"); }
 }
@@ -3212,6 +3231,17 @@ $("pf-show").addEventListener("change", async () => {
     $("pf-show").value = PF.show; return;
   }
   PF_DIRTY = false; loadPlayFrom(true);
+});
+// Reload: the list as the engine has it now; changes not saved are dropped.
+$("pf-reload").addEventListener("click", async () => {
+  if(PF_DIRTY && !PF_STALE && !(await confirmBox("Discard the changes?", "Reload reads the list again. The cues you changed are not saved.", "Discard", "red"))) return;
+  PF_DIRTY = false; await loadPlayFrom(true);
+});
+// Replace the file: only when the engine cannot read it, an admin's choice.
+$("pf-replace").addEventListener("click", async () => {
+  if(!PF || !PF.error) return;
+  if(!(await confirmBox("Replace the play-from file?", PF.error + " Saving starts the file again with only this show's list: the lists of other shows in it are gone. The broken file is kept in play_from_history.", "Replace on save", "red"))) return;
+  PF_REPLACE = true; pfDraw(); pfMsg("Make this show's list, then Save.");
 });
 $("pf-rows").addEventListener("input", e => {
   const row = e.target.closest(".pfrow"), k = e.target.dataset.k;
@@ -3239,11 +3269,17 @@ $("pf-save").addEventListener("click", async () => {
   if(pfCheck(PF.entry.cues, PF.audio_len_s, PF).some(b => b.length)){ pfDraw(); pfMsg("Fix the marked cues first.", "bad"); return; }
   const cues = pfBody(PF.entry.cues);
   try{
-    const j = await post("/api/remote/play-from-cues-save", {show:PF.show, rev:PF.rev, cues:cues});
+    const body = {show:PF.show, rev:PF.rev, cues:cues};
+    if(PF.error && PF_REPLACE) body.replace = true;
+    const j = await post("/api/remote/play-from-cues-save", body);
     PF_DIRTY = false;
     await loadPlayFrom(true);
     pfMsg(j.text || "Saved.", "ok");
-  }catch(e){ pfMsg(e.message, "bad"); }
+  }catch(e){
+    // Someone saved first: this copy is not saved over; Reload reads it again.
+    if(String(e.message).includes("since this screen read them")){ PF_STALE = true; pfDraw(); }
+    pfMsg(e.message + (PF_STALE ? " Tap Reload." : ""), "bad");
+  }
 });
 
 // ---- The brand (1.0's loadBrand): the show's name from the settings, the

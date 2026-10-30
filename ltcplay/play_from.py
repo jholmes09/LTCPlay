@@ -57,6 +57,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 
 NAME = "Play-from cues"
 FILE = "ltcplay_play_from.json"
@@ -73,13 +74,23 @@ MAX_NOTE = 200
 MAX_TEXT = 200
 MAX_SHOWS = 500
 
-_TC = re.compile(r"(\d{2}):(\d{2}):(\d{2}):(\d{2})")
+# ASCII digits only: \d would take other scripts' digits too.
+_TC = re.compile(r"([0-9]{2}):([0-9]{2}):([0-9]{2}):([0-9]{2})")
 _ID = re.compile(r"c[1-9]\d{0,5}")
 _DOC_KEYS = {"play_from_format", "rev", "shows"}
-_ENTRY_KEYS = {"cue", "audio_len_s", "cues", "edited_by", "edited_at",
+_ENTRY_KEYS = {"cue", "audio_len_s", "cues", "next_id", "edited_by",
+               "edited_at",
                "screen"}
 _CUE_KEYS = {"id", "name", "tc", "lead_in_s", "note"}
 _DASHES = ("\u2013", "\u2014")
+_HIST_REV = re.compile(r"-rev([0-9]{1,12})(?:-unreadable)?\.json$")
+# A read or a replace that meets the file held open (Windows): tried again.
+RETRIES = 5
+# The words of the two refusals a page acts on (remote.play_from_save
+# tells the page which one it met): a stale page, and a broken file.
+STALE_WORDS = "since this screen read them"
+REPLACE_WORDS = "Replace the file"
+RETRY_S = 0.05
 
 
 class CueError(ValueError):
@@ -117,14 +128,22 @@ def tc_text(frames):
 
 def parse_lead_in(v):
     """A lead-in in whole seconds, LEAD_IN_MIN_S to LEAD_IN_MAX_S; None (not
-    given) is LEAD_IN_DEFAULT_S. CueError otherwise."""
+    given) is LEAD_IN_DEFAULT_S. CueError otherwise, never another error
+    (a number too big for a float is refused like any other)."""
     if v is None:
         return LEAD_IN_DEFAULT_S
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or \
-            not math.isfinite(v) or float(v) != int(v):
-        raise CueError(f"the lead-in is a whole number of seconds, "
-                       f"{LEAD_IN_MIN_S} to {LEAD_IN_MAX_S}")
-    v = int(v)
+    words = (f"the lead-in is a whole number of seconds, {LEAD_IN_MIN_S} "
+             f"to {LEAD_IN_MAX_S}")
+    if isinstance(v, bool):
+        raise CueError(words)
+    if isinstance(v, float):
+        if not math.isfinite(v) or not v.is_integer():
+            raise CueError(words)
+        if abs(v) > 1e6:
+            raise CueError(f"the lead-in is at most {LEAD_IN_MAX_S} s")
+        v = int(v)
+    if not isinstance(v, int):
+        raise CueError(words)
     if v < LEAD_IN_MIN_S:
         raise CueError(f"the lead-in is at least {LEAD_IN_MIN_S} s, so a "
                        f"cue right on a flame hit is not cut by the landing "
@@ -134,10 +153,24 @@ def parse_lead_in(v):
     return v
 
 
+def _clean(v, what):
+    """`v` NFKC-normalised (a name typed with a combining accent and one
+    typed precomposed are the same name), refused with a control or an
+    invisible formatting character in it (Cc, Cf: a new line, an escape,
+    a zero-width space, a right-to-left override)."""
+    v = unicodedata.normalize("NFKC", v)
+    if any(unicodedata.category(ch) in ("Cc", "Cf") for ch in v):
+        raise CueError(f"the {what} has a control or invisible character "
+                       f"in it; type it again")
+    return v
+
+
 def _name(v):
     if not isinstance(v, str) or not v.strip():
         raise CueError("a cue needs a name")
-    v = " ".join(v.split())
+    v = " ".join(_clean(v, "name").split())
+    if not v:
+        raise CueError("a cue needs a name")
     if len(v) > MAX_NAME:
         raise CueError(f"the name {v[:MAX_NAME]!r}... is longer than "
                        f"{MAX_NAME} characters")
@@ -152,7 +185,7 @@ def _note(v):
         return ""
     if not isinstance(v, str):
         raise CueError("the note is text")
-    v = v.strip()
+    v = _clean(v, "note").strip()
     if len(v) > MAX_NOTE:
         raise CueError(f"the note is longer than {MAX_NOTE} characters")
     return v
@@ -268,8 +301,14 @@ def check_entry(show, entry):
                 len(cue) > MAX_TEXT:
             raise CueError("it names no show cue")
         ln = _audio_len(entry.get("audio_len_s"))
-        out = {"cue": cue, "audio_len_s": ln,
-               "cues": check_cues(entry.get("cues"), ln, need_ids=True)}
+        cues = check_cues(entry.get("cues"), ln, need_ids=True)
+        # The next id to give: never one a deleted cue had.
+        top = max((int(c["id"][1:]) for c in cues), default=0) + 1
+        nxt = entry.get("next_id", top)
+        if isinstance(nxt, bool) or not isinstance(nxt, int) or \
+                not top <= nxt <= 10 ** 6:
+            raise CueError("next_id is not a number above every cue id")
+        out = {"cue": cue, "audio_len_s": ln, "cues": cues, "next_id": nxt}
         for k in ("edited_by", "edited_at", "screen"):
             out[k] = _text(entry.get(k, ""), k)
         return out
@@ -318,29 +357,31 @@ def entry_of(doc, show):
     got = (doc or {}).get("shows", {}).get(show)
     if got is not None:
         return got
-    return {"cue": "", "audio_len_s": None, "cues": [], "edited_by": "",
+    return {"cue": "", "audio_len_s": None, "cues": [], "next_id": 1,
+            "edited_by": "",
             "edited_at": "", "screen": ""}
 
 
-def give_ids(before, cues):
-    """`cues` (checked) with an id for each new one: ids the show's list
-    already uses (in `before`) are kept; an id not in `before` is refused
-    (a page cannot claim a cue it did not read); a new cue gets the next
-    free number."""
+def give_ids(before, cues, next_id=1):
+    """(`cues` (checked) with an id for each new one, the next id to give):
+    ids the show's list already uses (in `before`) are kept; an id not in
+    `before` is refused (a page cannot claim a cue it did not read); a new
+    cue gets the next number never given in this show (`next_id`, the
+    entry's high-water mark), so a deleted cue's id is never reused."""
     known = {c["id"] for c in before}
     used = [int(c["id"][1:]) for c in before]
     for c in cues:
         if c["id"] is not None and c["id"] not in known:
             raise CueError(f"{c['name']}: the id {c['id']} is not a cue in "
                            f"this list; reload it")
-    nxt = max(used, default=0) + 1
+    nxt = max(max(used, default=0) + 1, int(next_id or 1))
     out = []
     for c in cues:
         if c["id"] is None:
             c = dict(c, id=f"c{nxt}")
             nxt += 1
         out.append(c)
-    return out
+    return out, nxt
 
 
 def describe_change(before, after):
@@ -416,7 +457,9 @@ class Store:
         self._journal = journal
         self.audit = audit
         self._wall = wall
-        self._lock = threading.Lock()
+        # Re-entrant: save() reads under the same lock (load takes it too).
+        self._lock = threading.RLock()
+        self._high = 0
 
     def _note(self, who, screen, outcome, text, fault=False):
         if self._journal is None:
@@ -446,27 +489,79 @@ class Store:
                    f"on the {screen or 'unknown screen'} was refused. {text}")
         self._audit(who, screen, str(show)[:MAX_TEXT], "refused", text)
 
+    def _high_water(self, file_rev=None):
+        """The highest revision this file has ever had, as far as can be
+        known: the file's own (when it says one), one above every kept
+        version's, and the last this store wrote. A revision never goes
+        backwards, so a page that read an older file (or a file that was
+        replaced, deleted or broken by hand) cannot pass the stale check."""
+        top = self._high
+        if isinstance(file_rev, int) and not isinstance(file_rev, bool) \
+                and 0 <= file_rev <= 10 ** 12:
+            top = max(top, file_rev)
+        for n in self.history():
+            m = _HIST_REV.search(n)
+            if m:
+                top = max(top, int(m.group(1)) + 1)
+        # Remembered: a revision once seen (a newer program's file read
+        # before it broke) is never handed out again.
+        self._high = top
+        return top
+
+    def _read_raw(self):
+        """The file's bytes, or None when it is not there. A read that
+        meets the file mid-replace (Windows) is tried again."""
+        for i in range(RETRIES):
+            try:
+                with open(self.path, "rb") as fh:
+                    return fh.read()
+            except FileNotFoundError:
+                return None
+            except PermissionError:
+                if i == RETRIES - 1:
+                    raise
+                time.sleep(RETRY_S)
+        return None
+
     def load(self):
-        """(doc, error): the file read strictly. A missing file is an
-        empty doc (rev 0) and no error. A file that cannot be read is an
-        empty doc (rev 0) and the error in a sentence. Never raises."""
-        if not self.path or not os.path.exists(self.path):
-            return empty_doc(), ""
-        try:
-            with open(self.path, encoding="utf-8-sig") as fh:
-                doc = json.load(fh)
-            return read_doc(doc), ""
-        except (OSError, ValueError) as e:
-            return empty_doc(), (f"{FILE} could not be read ({e}), so no "
-                                 f"show has play-from cues until the list "
-                                 f"is saved again")
+        """(doc, error): the file read strictly, under the store's lock (a
+        read never meets a save half way). A missing file is an empty doc
+        and no error. A file that cannot be read, of any kind (bad JSON,
+        a future format, a number too big, nesting too deep), is an empty
+        doc and the error in a sentence. The doc's "rev" is the high-water
+        revision (_high_water) either way. Never raises."""
+        with self._lock:
+            if not self.path:
+                return empty_doc(), ""
+            raw_rev = None
+            try:
+                raw = self._read_raw()
+                if raw is None:
+                    return dict(empty_doc(), rev=self._high_water()), ""
+                doc = json.loads(raw.decode("utf-8-sig"))
+                if isinstance(doc, dict):
+                    raw_rev = doc.get("rev")
+                got = read_doc(doc)
+                got["rev"] = self._high_water(got["rev"])
+                return got, ""
+            except Exception as e:               # noqa: BLE001
+                what = str(e) if isinstance(e, (CueError, ValueError,
+                                                OSError)) \
+                    else type(e).__name__
+                return (dict(empty_doc(), rev=self._high_water(raw_rev)),
+                        f"{FILE} could not be read ({what[:200]}), so no "
+                        f"show has play-from cues. Saving is refused until "
+                        f"the file is fixed or replaced on purpose")
 
     def save(self, show, cue, audio_len_s, cues, base_rev, who="",
-             screen=""):
+             screen="", replace=False):
         """Save one show's cue list: (ok, sentence, the new entry with its
         revision, or None). Checked first, then refused unless `base_rev`
-        is the file's revision now (a broken or missing file is revision
-        0). Nothing is written on any refusal."""
+        is the high-water revision now. While the file cannot be read,
+        refused unless `replace` (an admin who chose to replace it): a save
+        would otherwise wipe every show's list. Nothing is written on any
+        refusal. The version before is kept in HISTORY_DIR only once the
+        new file is in place."""
         with self._lock:
             doc, err = self.load()
             try:
@@ -475,20 +570,27 @@ class Store:
                     raise CueError("the show's own cue is not known")
                 ln = _audio_len(audio_len_s, "the show audio's length")
                 new_cues = check_cues(cues, ln)
+                if err and replace is not True:
+                    raise CueError(
+                        f"{FILE} could not be read, and a save would replace "
+                        f"the cue lists of every show in it. Fix the file, "
+                        f"or choose {REPLACE_WORDS} on 2.0 Settings (the "
+                        f"broken file is kept in {HISTORY_DIR})")
                 if isinstance(base_rev, bool) or \
                         not isinstance(base_rev, int) or \
                         base_rev != doc["rev"]:
                     raise CueError(
-                        "someone saved the play-from cues since this screen "
-                        "read them. Reload, check the cues, and save again")
+                        f"someone saved the play-from cues {STALE_WORDS}. "
+                        f"Reload, check the cues, and save again")
                 before = entry_of(doc, show)
-                new_cues = give_ids(before["cues"], new_cues)
+                new_cues, nxt = give_ids(before["cues"], new_cues,
+                                         before.get("next_id", 1))
             except CueError as e:
                 text = f"Not saved: {e}".rstrip(".") + "."
                 self.refused(who, screen, show, text)
                 return False, text, None
             after = {"cue": cue.strip(), "audio_len_s": ln,
-                     "cues": new_cues,
+                     "cues": new_cues, "next_id": nxt,
                      "edited_by": str(who or "")[:MAX_TEXT],
                      "edited_at": _utc(self._wall()),
                      "screen": str(screen or "")[:MAX_TEXT]}
@@ -498,14 +600,26 @@ class Store:
             new["shows"][show] = after
             try:
                 read_doc(new)          # never writes what it would refuse
-                self._keep_history(doc["rev"], bool(err))
+                old = self._read_raw()
                 self._write(new)
             except (OSError, CueError) as e:
                 text = f"Not saved: the file could not be written ({e})."
                 self._note(who, screen, "save_failed", text, fault=True)
                 self._audit(who, screen, show, "error", text)
                 return False, text, None
+            self._high = max(self._high, new["rev"])
+            if old is not None:
+                try:
+                    self._keep_history(old, doc["rev"], bool(err))
+                except OSError as e:
+                    self._note(who, screen, "history_failed",
+                               f"The play-from cues were saved (revision "
+                               f"{new['rev']}), but the version before could "
+                               f"not be kept in {HISTORY_DIR} ({e}).",
+                               fault=True)
             what = change or "nothing changed"
+            if err:
+                what = f"replaced the file that could not be read; {what}"
             text = (f"{who or 'Someone'} saved the play-from cues for "
                     f"{show} on the {screen or 'unknown screen'} "
                     f"(revision {new['rev']}): {what}.")
@@ -513,37 +627,53 @@ class Store:
             self._audit(who, screen, show, "accepted", what)
             return True, f"Saved: {what}.", dict(after, rev=new["rev"])
 
+    def _replace(self, src, dst):
+        """os.replace, tried again a few times: on Windows a file another
+        program has open (a reader, a virus scanner) cannot be replaced for
+        a moment."""
+        for i in range(RETRIES):
+            try:
+                os.replace(src, dst)
+                return
+            except PermissionError:
+                if i == RETRIES - 1:
+                    raise
+                time.sleep(RETRY_S)
+
     def _write(self, doc):
         tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(doc, fh, indent=1, sort_keys=True)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, self.path)
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(doc, fh, indent=1, sort_keys=True)
+                fh.flush()
+                os.fsync(fh.fileno())
+            self._replace(tmp, self.path)
+        except OSError:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
 
     def history_dir(self):
         return os.path.join(self.folder, HISTORY_DIR)
 
-    def _keep_history(self, rev, unreadable):
-        """The file as it is now, copied into HISTORY_DIR before it is
-        replaced, and the oldest beyond HISTORY_KEEP removed. Nothing for
-        a file that is not there."""
-        if not self.path or not os.path.exists(self.path):
-            return
+    def _keep_history(self, data, rev, unreadable):
+        """The file as it was before a save (`data`, its bytes), written
+        into HISTORY_DIR once the new file is in place, and the oldest
+        beyond HISTORY_KEEP removed."""
         d = self.history_dir()
         os.makedirs(d, exist_ok=True)
         stamp = datetime.datetime.fromtimestamp(
             self._wall(), datetime.timezone.utc).strftime(
                 "%Y%m%dT%H%M%S%fZ")
         name = f"{stamp}-rev{rev}{'-unreadable' if unreadable else ''}.json"
-        with open(self.path, "rb") as src:
-            data = src.read()
         tmp = os.path.join(d, name + ".tmp")
         with open(tmp, "wb") as fh:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, os.path.join(d, name))
+        self._replace(tmp, os.path.join(d, name))
         kept = sorted(n for n in os.listdir(d) if n.endswith(".json"))
         for old in kept[:-HISTORY_KEEP]:
             try:
@@ -553,6 +683,8 @@ class Store:
 
     def history(self):
         """The kept versions, newest first: [file name]."""
+        if not self.folder:
+            return []
         try:
             return sorted((n for n in os.listdir(self.history_dir())
                            if n.endswith(".json")), reverse=True)
@@ -564,7 +696,8 @@ class Store:
         rules, and with `show` that show's entry (an empty one when the
         file does not name it)."""
         doc, err = self.load()
-        out = {"rev": doc["rev"], "error": err, "fps": FPS,
+        out = {"rev": doc["rev"], "error": err, "replace_needed": bool(err),
+               "fps": FPS,
                "lead_in_default_s": LEAD_IN_DEFAULT_S,
                "lead_in_min_s": LEAD_IN_MIN_S,
                "lead_in_max_s": LEAD_IN_MAX_S, "max_cues": MAX_CUES,
