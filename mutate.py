@@ -19012,9 +19012,9 @@ def build():
   '        if rack["minimized"]:\n            # Left minimized',
   '        if rack["minimized"] and False:\n            # Left minimized'),
 
- ('rig check cleared: Resume journals a Start now key as a show', 'ltcplay/schedule_service.py',
-  '                        key[0] != night or not isinstance(key[1], int):',
-  '                        not isinstance(key[1], int):'),
+ ("rig check cleared: Resume journals a Start now key as a show", "ltcplay/schedule_service.py",
+  "                if not isinstance(key, tuple) or len(key) != 3 or \\\n                        key[0] != night or not isinstance(key[1], int) or \\\n                        m is None or key != self._show_key(m, key[1]):",
+  "                if not isinstance(key, tuple) or not isinstance(key[1], int):"),
 
  ('rack keeper: moves the rack screen when the displays cannot be read', 'ltcplay/showwindows.py',
   '        if not mons:\n            # The displays cannot be read',

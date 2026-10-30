@@ -2974,10 +2974,13 @@ class Service:
             m = self.machine
             night = str(m.date) if m is not None else None
             for key in keys:
-                # A scheduled show's key is (night, show); Start now's and
-                # a Pre-check's are not shows (review A of #176).
-                if not isinstance(key, tuple) or len(key) != 2 or \
-                        key[0] != night or not isinstance(key[1], int):
+                # A scheduled show's key is _show_key's (night, show,
+                # planned time; PR #180); Start now's and a Pre-check's are
+                # not shows (review A of #176). A key for a number a saved
+                # schedule has since given another time is not this show.
+                if not isinstance(key, tuple) or len(key) != 3 or \
+                        key[0] != night or not isinstance(key[1], int) or \
+                        m is None or key != self._show_key(m, key[1]):
                     continue
                 self._preroll_late[key] = pr.late_ok_s()
                 d = m.delayed() if m is not None else None
