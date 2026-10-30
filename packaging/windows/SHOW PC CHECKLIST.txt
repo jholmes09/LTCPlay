@@ -1,0 +1,210 @@
+LTC Player: show PC checklist
+Jeff Holmes Presents
+
+Do this once on the show PC, then again after any big Windows update.
+Each line is a setting you change by hand. LTC Player cannot change them.
+
+
+THE ACCOUNT
+
+[ ] Give the show PC one Windows account that is only for the show.
+    Install LTC Player while signed in to THAT account. LTC Player starts
+    by itself only when that account signs in.
+
+[ ] Make that account sign in by itself when the PC turns on.
+    Press Windows+R, type  netplwiz  and press Enter. Untick "Users must
+    enter a user name and password". Type the password twice. Restart to
+    check that it signs in with no one touching it.
+    (If that box is missing: Settings, Accounts, Sign-in options, turn off
+    "For improved security, only allow Windows Hello sign-in", then try
+    again.)
+
+
+NO SLEEP, NO SCREEN OFF
+
+[ ] Settings, System, Power: set "Screen", "Sleep" and "Hibernate" to
+    Never, both on battery and plugged in. (Hibernate is easy to miss: if
+    it is listed there at all, set it to Never too.)
+[ ] Settings, System, Power, Power mode: Best performance.
+[ ] On a laptop: Control Panel, Power Options, "Choose what closing the
+    lid does": Do nothing.
+[ ] Settings, Personalization, Lock screen, Screen saver: None.
+    (LTC Player also keeps the PC awake while it runs. These are the belt
+    with the braces.)
+
+
+WINDOWS UPDATE
+
+[ ] Settings, Windows Update, Advanced options, Active hours: set them to
+    cover every show and rehearsal time (up to 18 hours a day).
+[ ] Settings, Windows Update: "Pause updates" for the show weeks. Unpause
+    and update on a dark day, then restart and check the show once.
+[ ] Settings, Windows Update, Advanced options: turn OFF "Get me up to
+    date" (it restarts as soon as it can).
+
+
+LTC PLAYER'S OWN FILES
+
+[ ] Put the show files in Documents\LTC Shows (made for you at first
+    start). To use another folder, open Start menu, "Settings and logs",
+    open showpc.json in Notepad and change "show_folder". LTC Player
+    restarts the engine with it once no show is running. The Programming
+    screen's "Show folder" card says which folder the engine serves; the
+    rack screen says it in red while showpc.json names another.
+[ ] After any change to xlights_networks.xml, render the show again. A
+    render older than xlights_networks.xml gets NO flame cues: the rack
+    screen, the Stream Deck and the Morning page say CUES FAULT and name
+    the files. If the change moved no channel, saving the renders again
+    (so they are newer) also clears it.
+[ ] Live flame programming (xLights driving the flames while you program):
+    in xLights the flame controller is E1.31, IP 127.0.0.1 only (never
+    Multicast, never the flame node's address), "xLights Only", never
+    Active, with the same universes and channel counts. flamesafe's
+    destination is never 127.0.0.1 port 5568. Never use xLights' Test
+    tools while a group is armed. First test with the gas off and Andy
+    there. LIVE_FLAME_PROGRAMMING.md has the steps.
+[ ] Put the confirmed flamesafe config in that same "Settings and logs"
+    folder, named flamesafe.json. Until it is there, flamesafe and the
+    Stream Deck program do not start (the engine and show page still do).
+    flamesafe.example.json in the program folder shows the layout.
+[ ] Put the night's schedule in the same folder, named
+    ltcplay_schedule.json, and beside it ltcplay_fire_ice.json. In
+    ltcplay_fire_ice.json, "flamesafe_config" is the full path of
+    flamesafe.json above, and "flame_controller" is the flame controller's
+    name exactly as xLights spells it (capitals and spaces included). Until
+    the schedule is there, the show page says no show is scheduled.
+[ ] Also in ltcplay_fire_ice.json: "show_name": "Ignite the Night" and
+    "venue": "Thanksgiving Point" (the rack screen's title), and
+    "beyond_blank": how the lasers are kept dark. "osc" is the default
+    (BEYOND's brightness over OSC, through the "beyond" block's host and
+    port, so that block must be there). "timecode" (BEYOND Essentials has
+    no OSC input) or "both" can still be chosen.
+[ ] Only with "timecode" or "both", timecode blanking: BEYOND gets its own Art-Net timecode (the show
+    file's node named BEYOND). Whenever the lasers must be dark it is sent
+    to hour 23, running. In the BEYOND show, Andy leaves hour 23 EMPTY (no
+    laser cues there), and BEYOND's "keep running when timecode stops" is
+    OFF.
+
+
+SHOW NETWORK, AUDIO, CLOCK AND MEMORY (from the 2026-10-21 soak)
+
+[ ] Every program on this PC that receives Art-Net needs its own address.
+    MadMapper counts twice: its timeline sync AND its DMX input are each a
+    receiver. Two receivers on one address starve one of them (in the
+    soak, BEYOND never chased timecode). What worked: two Windows
+    loopback adapters, "ShowNet MadMapper" at 10.250.1.1 and "ShowNet
+    BEYOND" at 10.250.2.1 (mask 255.255.255.0), and in the show file
+    "clock": "artnet": "nodes": "MadMapper": "10.250.1.1" and "BEYOND":
+    "10.250.2.1". To add one: Device Manager, Action, Add legacy
+    hardware, Network adapters, Microsoft, "Microsoft KM-TEST Loopback
+    Adapter". Then set its address and rename it in Network Connections.
+    LTC Player says it on the rack screen and the Morning page when two
+    receivers share an address or a node address is not on this PC.
+[ ] MadMapper: after opening the show project, check its Sync Source is
+    Art-Net. It can come back empty after a reopen. Set it to Art-Net and
+    save the project.
+[ ] The audio interface runs at 48 kHz. Set it in its own control app
+    (PreSonus Universal Control). At any other rate the engine refuses
+    Run with "will not play N output(s) at 48000 Hz".
+[ ] Windows Time service: running, Startup type Automatic. Windows+R,
+    services.msc, Windows Time. With it stopped the clock was 2.7 s
+    behind, and shows start by this clock. The Morning page's Engine
+    checks says it loudly when the clock is off by more than 0.5 s and
+    the service is stopped.
+[ ] Pagefile: System managed (Windows+R, sysdm.cpl, Advanced,
+    Performance Settings, Advanced, Virtual memory, Change, tick
+    "Automatically manage"), or at least 16 GB. The PC has 15.8 GB; the
+    engine keeps the show audio in memory (1.0 to 1.5 GB) and MadMapper
+    takes about 3.4 GB. With a 2 GB pagefile about 84% of what Windows
+    can hand out was in use.
+
+
+CHANGING THE FLAME GROUPS (at tech)
+
+[ ] The flame groups are a settings change only, in flamesafe.json under
+    "groups": each group has a "name", one "safety" channel and its "fire"
+    channels. The Stream Deck and the rack screen read the names from
+    there; nothing else needs changing.
+[ ] At most 3 groups (the Stream Deck has 3 arm keys). A channel belongs
+    to one group only. Every channel must exist on the flame controller in
+    the show's xLights layout.
+[ ] Stop LTC Player, save the file, start LTC Player. If the edit breaks
+    a rule, LTC Player does not start the show program and its log says
+    which rule, in a sentence. Fix it and start again.
+[ ] Check the new names on the Stream Deck keys and the rack screen, then
+    arm and disarm each group once.
+[ ] In showpc.json, "show_mode" is "fire_ice" (it is, unless someone
+    changed it). That runs the scheduler, the show conductor and the flame
+    link, and starts the Stream Deck program on the engine's own address,
+    so the deck's Stop reaches the show and the deck shows an Abort from
+    any screen (the deck has no Hold or Abort key since 2026-10-26: those
+    are the Rack screen's). With
+    "plain", the Stream Deck program is not started at all.
+[ ] The rack screen page opens maximized on the show monitor, with
+    Minimize, Maximize and Close in its title bar. If it
+    opens on the wrong monitor, set "page_monitor" in showpc.json: 1 is the
+    main display, 2 the next. Alt+F4 closes it; Start menu, LTC Player opens
+    it again.
+[ ] Check it: the rack screen shows tonight's shows. On the Stream Deck,
+    the Start key does not say ENGINE FAULT.
+[ ] Users: press the user button at the top right ("Signed out"). Jeff,
+    Andy, Dallen, Dave and Jared each sign in once and choose their own
+    password (no password is shipped). Sign in on the rack screen before
+    a show so the audit log names who pressed what. Nobody needs to be
+    signed in for Abort, Hold, Stop or a disarm.
+[ ] Audit upload (when Jeff's server is ready): Users screen, Audit log:
+    server address (https://), token, time (03:30), tick "Send ... every
+    night", Save, then "Send now" and check "Last upload".
+
+
+OTHER
+
+[ ] Settings, Privacy and security, Windows Security, App and browser
+    control, Smart App Control: Off. Otherwise Windows may refuse to start
+    LTC Player, which is not signed yet. (Once off, it stays off.)
+[ ] The first time you run "LTC Player Setup", Windows says "Windows
+    protected your PC". Click "More info", then "Run anyway".
+[ ] Plug the Stream Deck and the audio interface into the same USB ports
+    every time.
+
+
+EVERY DAY
+
+- LTC Player starts by itself when the PC signs in, and opens the rack
+  screen page maximized on the show monitor. If any of its three programs stops, it is started again within
+  seconds. If LTC Player itself stops, it is back within a minute.
+- Start menu, LTC Player: starts it if needed and opens the rack screen.
+- Start menu, Stop LTC Player: stops everything the safe way, so the
+  flame safety program sends its safe zeros. It refuses while a show is
+  running. Stopped stays stopped until you press LTC Player again or
+  restart the PC.
+- NEVER use Task Manager's "End task" on flamesafe, ltcplay or LTC Player.
+  End task stops the flame safety program without its safe zeros.
+
+
+TESTING THE PC
+
+- Start menu, "LTC Player bench soak test": with NOTHING connected to
+  lasers, flames or lights, it runs the real programs on a loop for 1, 8
+  or 24 hours and writes a report on the Desktop. It stops LTC Player
+  first (refused while a show is running) and starts it again after.
+
+
+UPDATING AND GOING BACK
+
+- To update: download the new "LTC Player Setup" from GitHub Releases,
+  with no show running, and double-click it. It stops LTC Player the safe
+  way, installs, and starts it again. It refuses while a show is running.
+  Or: Start menu, "Check for an update", which finds the newest release,
+  downloads it, checks its SHA-256 and runs it for you.
+- The rack screen's header names the version that is running. It must
+  read the same as the release you installed.
+- To go back: Start menu, "Roll back to the previous version". It runs
+  the installer for the version you had before.
+- Your settings, logs and show files are kept through updates, rollbacks
+  and uninstalls. Settings and logs: Start menu, "Settings and logs".
+- Something wrong: Start menu, "Diagnostics bundle (send this to Jeff)"
+  writes one zip on the Desktop (logs, settings, journals, versions; no
+  show files, media or keys). Send that file.
+- The one page on all of this: Start menu, "How to install, update and
+  go back" (INSTALL.md in the program folder).

@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stress PASS/FAIL sheets</title>
+<meta name="description" content="One printable PASS/FAIL sheet per stage of the LTC Player Windows stress test, stages 1 to 5.">
+<style>
+:root { --ink: #1a1a1a; --rule: #888; --soft: #f1f1f1; --warn: #9a1b1b; --bg: #ffffff; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --ink: #e8e8e8; --rule: #777; --soft: #1e1e1e; --warn: #ff8a8a; --bg: #121212; } }
+:root[data-theme="dark"] { --ink: #e8e8e8; --rule: #777; --soft: #1e1e1e; --warn: #ff8a8a; --bg: #121212; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font: 12.5px/1.35 Georgia, "Times New Roman", serif; }
+.sheet { max-width: 820px; margin: 0 auto; padding: 18px 16px; page-break-after: always; break-after: page; }
+.sheet:last-child { page-break-after: auto; break-after: auto; }
+h1 { font-size: 20px; margin: 0 0 2px; }
+.sub { color: var(--rule); margin: 0 0 10px; font-size: 12px; }
+.head { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px 16px; margin: 8px 0 10px; }
+.head div { border-bottom: 1px solid var(--rule); padding: 2px 0 1px; min-height: 22px; }
+.head span { color: var(--rule); font-size: 11px; display: block; }
+table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; }
+th, td { border: 1px solid var(--rule); padding: 4px 6px; vertical-align: top; text-align: left; }
+th { background: var(--soft); font-weight: 600; font-size: 11.5px; }
+td.pf { width: 74px; white-space: nowrap; font-family: ui-monospace, Menlo, Consolas, monospace; }
+td.ev { width: 30%; }
+.box { display: inline-block; width: 11px; height: 11px; border: 1px solid var(--ink); vertical-align: -1px; margin-right: 3px; }
+.verdict { border: 2px solid var(--ink); padding: 8px 10px; margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; }
+.verdict b { font-size: 14px; }
+.stop { color: var(--warn); font-weight: 600; }
+.note { font-size: 11px; color: var(--rule); margin: 4px 0 0; }
+@media print { body { font-size: 11px; } .sheet { padding: 8mm 6mm; max-width: none; } @page { margin: 10mm; } }
+@media (max-width: 600px) { .head, .verdict { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<section class="sheet">
+<h1>Stage 1: the 48 hour soak</h1>
+<p class="sub">LTC Player Windows stress test. BENCH ONLY: flame hardware DISCONNECTED, gas off. Read the soak summary (soak_summary.py) and tick each line.</p>
+<div class="head"><div><span>Build installed (rack screen header)</span></div><div><span>Started (date, time)</span></div><div><span>Ended (date, time)</span></div><div><span>Hardware disconnected, confirmed by</span></div><div><span>Audio: interface name, or FAKE (who allowed it, when)</span></div><div><span>Soak folder</span></div><div><span>MadMapper version; restart_cmd kept / blanked as stale / none</span></div><div><span>BEYOND present? (no: laser listener; fault "blanking not set up" EXPECTED)</span></div></div>
+<table><tr><th>Criterion</th><th>Evidence (write the number)</th><th>PASS / FAIL</th></tr>
+<tr><td>Pre-flight: a REAL audio interface in every block ("Show audio" names it; never "NO interface found"). A -FakeAudio run is written as AUDIO WAS FAKE here and on the summary: it proves the engine, scheduler, flame link, timecode, Art-Net and the witness, NOT the real audio path, and is not a show-night soak</td><td class="ev">interface: &nbsp;&nbsp; fake? &nbsp;&nbsp; shows played:</td><td class="pf"><span class="box"></span>PASS <span class="box"></span>FAIL <span class="box"></span>FAKE</td></tr>
+<tr><td>Every block PASSED; none crashed or needed a recovery</td><td class="ev">blocks: &nbsp;&nbsp; failed: &nbsp;&nbsp; crashed:</td><td class="pf"><span class="box"></span>PASS <span class="box"></span>FAIL</td></tr>
+<tr><td>Zero flame violations (flame-violations.txt empty in every block)</td><td class="ev">violations:</td><td class="pf"><span class="box"></span>PASS <span class="box"></span>FAIL</td></tr>
+<tr><td>Flat memory: no program over 10 MB per hour in any block</td><td class="ev">worst slope: &nbsp;&nbsp; program:</td><td class="pf"><span class="box"></span>PASS <span class="box"></span>FAIL</td></tr>
+<tr><td>Timecode, pixel and flame link gaps inside the limits; no engine stall item failed</td><td class="ev">worst timecode gap: &nbsp;&nbsp; stalls:</td><td class="pf"><span class="box"></span>PASS <span class="box"></span>FAIL</td></tr>
+<tr><td>Containment ON (unattended.json and every block report)</td><td class="ev"></td><td class="pf"><span class="box"></span>PASS <span class="box"></span>FAIL</td></tr>
+<tr><td>At least 48 h soaked (one block of slack); free disk never under 5 GB</td><td class="ev">hours: &nbsp;&nbsp; free GB:</td><td class="pf"><span class="box"></span>PASS <span class="box"></span>FAIL</td></tr>
+<tr><td>Witness companion run: procs.csv shows no program's working set climbing across blocks; disk.csv flat</td><td class="ev"></td><td class="pf"><span class="box"></span>PASS <span class="box"></span>FAIL</td></tr>
+<tr><td>flamesafe's journal in every block: no fault, no overrun, link lost only when the soak stopped the engine</td><td class="ev">faults: &nbsp; overruns:</td><td class="pf"><span class="box"></span>PASS <span class="box"></span>FAIL</td></tr>
+<tr><td>Faults in the engine's journal: none other than the standing <b>Lasers: blanking not set up</b> line (EXPECTED while this PC has no BEYOND; it is not a FAIL). Any other fault line is written here and is a FAIL</td><td class="ev">other faults: &nbsp;&nbsp; first one:</td><td class="pf"><span class="box"></span>PASS <span class="box"></span>FAIL</td></tr>
+</table>
+<div class="verdict"><div><b>Stage 1 verdict:</b> <span class="box"></span>PASS &nbsp; <span class="box"></span>FAIL</div><div><b>Signed:</b> ______________________ date ________</div></div>
+<p class="note">Any FAIL stops the plan here. Save the Desktop summary and the diagnostics bundle before anything is changed. The wire judge for this stage is the soak's own listener; the independent witness judges stages 2 to 4. The laser listener is NOT running in this stage: the soak holds BEYOND's port 8100 itself and refuses it (write the REFUSED line it printed here: ______________________).</p>
+</section>
+
+<section class="sheet">
+<h1>Stage 2: break-it</h1>
+<p class="sub">Each fault caused by breakit.ps1 with the wire witness and the laser listener running. Judge every row against BREAK-IT TABLE.md: flames off, banner, journal line, recovery. Nothing is armed in this stage, so any nonzero slot in the witness is a FAIL. The laser listener stands where BEYOND would (no BEYOND on this PC): its laser.log must show only what the table allows.</p>
+<div class="head"><div><span>Build installed</span></div><div><span>Date, time</span></div><div><span>Witness run folder</span></div><div><span>Hardware disconnected, confirmed by</span></div><div><span>Morning page build installed? (steps 8 to 13)</span></div><div><span>Laser listener: listening on (or REFUSED by whom)</span></div><div><span>beyond block in ltcplay_fire_ice.json? (none: blanking not set up, EXPECTED)</span></div><div><span>Operator</span></div></div>
+<table><tr><th>#</th><th>Fault</th><th>Flames off</th><th>Banner</th><th>Journal</th><th>Recovered in</th><th>PASS / FAIL</th></tr>
+<tr><td>1</td><td>Kill the engine</td><td><span class="box"></span></td><td><span class="box"></span></td><td><span class="box"></span></td><td>____ s</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>2</td><td>Kill flamesafe (witness: STREAM STOPPED, never WITH NONZERO)</td><td><span class="box"></span></td><td><span class="box"></span></td><td><span class="box"></span></td><td>____ s</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>3</td><td>Kill the deck program</td><td><span class="box"></span></td><td><span class="box"></span></td><td><span class="box"></span></td><td>____ s</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>4</td><td>Unplug the Stream Deck (groups stay as they were)</td><td><span class="box"></span></td><td><span class="box"></span></td><td><span class="box"></span></td><td>____ s</td><td class="pf"><span class="box"></span>P <span class="box"></span>F <span class="box"></span>skip</td></tr>
+<tr><td>5</td><td>Remove the audio interface</td><td><span class="box"></span></td><td><span class="box"></span></td><td><span class="box"></span></td><td>____ s</td><td class="pf"><span class="box"></span>P <span class="box"></span>F <span class="box"></span>skip</td></tr>
+<tr><td>6</td><td>Drop the network adapter</td><td><span class="box"></span></td><td><span class="box"></span></td><td><span class="box"></span></td><td>____ s</td><td class="pf"><span class="box"></span>P <span class="box"></span>F <span class="box"></span>skip</td></tr>
+<tr><td>7</td><td>Fill the disk (low; critical)</td><td><span class="box"></span></td><td><span class="box"></span></td><td><span class="box"></span></td><td>____ s</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>8</td><td>Delete the lockout file (locks stand)</td><td><span class="box"></span></td><td><span class="box"></span></td><td><span class="box"></span></td><td>____ s</td><td class="pf"><span class="box"></span>P <span class="box"></span>F <span class="box"></span>skip</td></tr>
+<tr><td>9</td><td>Corrupt the lockout file (everything refused)</td><td><span class="box"></span></td><td><span class="box"></span></td><td><span class="box"></span></td><td>____ s</td><td class="pf"><span class="box"></span>P <span class="box"></span>F <span class="box"></span>skip</td></tr>
+<tr><td>10</td><td>Corrupt the morning config</td><td><span class="box"></span></td><td><span class="box"></span></td><td><span class="box"></span></td><td>____ s</td><td class="pf"><span class="box"></span>P <span class="box"></span>F <span class="box"></span>skip</td></tr>
+<tr><td>11</td><td>Close the page mid-purge (fire to 0 within 0.25 s)</td><td><span class="box"></span></td><td><span class="box"></span></td><td><span class="box"></span></td><td>____ ms</td><td class="pf"><span class="box"></span>P <span class="box"></span>F <span class="box"></span>skip</td></tr>
+<tr><td>12</td><td>Start a show while a purge is held (purge cleared)</td><td><span class="box"></span></td><td><span class="box"></span></td><td><span class="box"></span></td><td>____ ms</td><td class="pf"><span class="box"></span>P <span class="box"></span>F <span class="box"></span>skip</td></tr>
+<tr><td>13</td><td>Laser test ON, Start now, Abort: laser.log TEST ON at the switch, TEST OFF (or BLANK) within 2 s of Start now, BLANK within 2 s of the Abort when a beyond block is set, nothing lit while the Abort stands</td><td><span class="box"></span></td><td><span class="box"></span></td><td><span class="box"></span></td><td>off ____ ms, blank ____ ms</td><td class="pf"><span class="box"></span>P <span class="box"></span>F <span class="box"></span>skip</td></tr>
+<tr><td></td><td>Checker on the witness run after -Undo: PASS, the only stall is step 2's; laser rules PASS or UNVERIFIED only for "blanking not set up" (EXPECTED); no UNKNOWN LASER MESSAGE; faults other than the standing laser fault are only the ones the steps caused</td><td colspan="4">report: check_report.txt &nbsp; other faults: ____</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+</table>
+<div class="verdict"><div><b>Stage 2 verdict:</b> <span class="box"></span>PASS &nbsp; <span class="box"></span>FAIL</div><div><b>Signed:</b> ______________________ date ________</div></div>
+<p class="note">Run breakit.ps1 -Undo before leaving. A skipped row is not a FAIL; write why (no device, no Morning build, no laser listener). The laser listener proves a command left LTC Player at the right moment; it cannot prove what real BEYOND would do with it.</p>
+</section>
+
+<section class="sheet">
+<h1>Stage 3: purge and lockout hammering, witnessed</h1>
+<p class="sub">Morning page build installed. Witness running in normal mode, the laser listener beside it. Hardware DISCONNECTED. Each exercise repeated the number of times written; the checker then judges the whole run with --locked-slots and the machine log.</p>
+<div class="head"><div><span>Build installed</span></div><div><span>Date, time</span></div><div><span>Witness run folder</span></div><div><span>Locked slots used</span></div><div><span>Operators (page, deck)</span></div><div><span>Hardware disconnected, confirmed by</span></div><div><span>Laser listener: listening on (or REFUSED by whom)</span></div><div><span>Lasers with mechanism osc (name, on message)</span></div></div>
+<table><tr><th>Exercise</th><th>Times</th><th>What the witness and journal must show</th><th>PASS / FAIL</th></tr>
+<tr><td>Purge one machine: hold Space (page) 3 s, release</td><td>20</td><td>fire slot RISE within 0.3 s of the hold and fall to 0 within 0.25 s of release, every time; purge lines in the journal; safety slot at the arm value throughout</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Purge a group from the deck FIRE key, release</td><td>20</td><td>same; deck lines name the operator</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Rapid tap, tap, tap on Space (chatter)</td><td>5 bursts</td><td>no fire slot stays up after the last release; nothing refused that should fire, nothing fired that was not held</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Purge held, then switch windows (blur) / hide the page</td><td>5</td><td>fire to 0 within 0.25 s each time</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Purge held, then Abort from the deck</td><td>5</td><td>fire to 0 at once; every group disarmed (safety slots to 0); flamesafe disarm-all line; Reset needed</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Lock one machine, try to purge it</td><td>10</td><td>refused with a sentence; its fire slot never nonzero (checker: no LOCKED SLOT episode)</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Lock every machine of a group, try to arm the group</td><td>5</td><td>group cannot arm: its safety slot stays 0; LOCKED on the deck key</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Lock during a held purge</td><td>5</td><td>that machine's fire slot to 0 at once; the rest of the group unchanged</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Restart LTC Player with locks set</td><td>3</td><td>locks still shown and still enforced after the restart (persistent file)</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Unlock (one confirm), purge again</td><td>5</td><td>works again; journal has the unlock with the name</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Laser test ON, then Abort; ON, then lock that laser</td><td>3 each</td><td>laser.log: TEST ON &lt;laser&gt; at the switch and nothing else (the configured address and low value); within 2 s of the Abort and of the lock its TEST OFF (or LOCK, or a BLANK); a locked laser's test is refused in words and NO TEST ON line appears; checker: no LASER TEST ON LOCKED LASER, no LASER TEST OFF MISSING, no LASER TEST WITHOUT RECORD</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Laser test ON, then Start now</td><td>3</td><td>laser.log: TEST OFF (or BLANK) within 2 s of the start; journal "Laser tests turned off: the show is going live"; a test asked for while the show is live is refused (no TEST ON line)</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Checker on the whole run (--nights, --flamesafe-log, --locked-slots)</td><td>1</td><td>PASS; every FIRE episode inside a purge window or SHOW; no LOCKED SLOT, no WHILE ABORT LATCHED; no LASER episode; no UNKNOWN LASER MESSAGE; the only UNVERIFIED laser line, if any, is "blanking not set up" (EXPECTED)</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+</table>
+<div class="verdict"><div><b>Stage 3 verdict:</b> <span class="box"></span>PASS &nbsp; <span class="box"></span>FAIL</div><div><b>Signed:</b> ______________________ date ________</div></div>
+<p class="note">The checker's purge windows come from the journal's purge lines (best effort until MORNING.md's exact wording is confirmed); read every FIRE OUTSIDE SHOW episode against the witness.log RISE and fall times before calling it.</p>
+</section>
+
+<section class="sheet">
+<h1>Stage 4: 20+ back-to-back dress rehearsals with random Aborts</h1>
+<p class="sub">rehearsals.ps1 writes a back-to-back schedule, a person presses Run, the scheduler runs every show, the script Aborts at random and Resets. Witness and laser listener running. Hardware DISCONNECTED.</p>
+<div class="head"><div><span>Build installed</span></div><div><span>Date, time</span></div><div><span>Witness run folder</span></div><div><span>Shows run / Aborts / Resets</span></div><div><span>Arming on? (-Arm)</span></div><div><span>Hardware disconnected, confirmed by</span></div><div><span>Laser listener: listening on (or REFUSED by whom)</span></div><div><span>beyond block set? (none: blank rows below read UNVERIFIED, EXPECTED)</span></div></div>
+<table><tr><th>Criterion</th><th>Evidence</th><th>PASS / FAIL</th></tr>
+<tr><td>At least 20 shows started by the scheduler, each on its minute (late_grace 15 s)</td><td class="ev">shows: &nbsp;&nbsp; late:</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Every Abort: fire to 0 and every group disarmed within 0.25 s (witness fall times against rehearsals.csv abort times); lasers blanked; video, pixels, music faded</td><td class="ev">worst delay: ____ ms</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Every Abort: the laser listener heard BEYOND's brightness 0 within 2 s (laser.log BLANK lines against rehearsals.csv abort times; checker: no LASER BLANK MISSING, no LASER BLANK NOT HEARD, no LASER SILENCE)</td><td class="ev">worst blank delay: ____ ms</td><td class="pf"><span class="box"></span>P <span class="box"></span>F <span class="box"></span>unverified</td></tr>
+<tr><td>Lasers restored (UNBLANK) only inside SHOW, never while an Abort stood, and only the brightness address was ever sent (checker: no LASER LIT OUTSIDE SHOW, no LASER LIT WHILE ABORT LATCHED, no UNKNOWN LASER MESSAGE)</td><td class="ev">unblanks: ____ unknown: ____</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Nothing nonzero while an Abort stood (checker: no WHILE ABORT LATCHED)</td><td class="ev"></td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Every Reset accepted; the next show started normally; groups needed a fresh arm</td><td class="ev">resets refused:</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Fire only in SHOW, only with the safety slot at the arm value (checker: no FIRE OUTSIDE SHOW, no FIRE WITHOUT ARM)</td><td class="ev"></td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Every armed slot backed by a press on record (no ARMED WITHOUT PRESS)</td><td class="ev"></td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>No gap over 250 ms, no stall in flamesafe's stream across the whole run</td><td class="ev">worst gap: ____ ms</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Night journal: every Abort and Reset has who and screen; no fault lines other than the standing "Lasers: blanking not set up" (EXPECTED while BEYOND is absent)</td><td class="ev">other faults:</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Memory flat across the run (witness procs.csv)</td><td class="ev"></td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Schedule file restored at the end (-Restore ran)</td><td class="ev"></td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+</table>
+<div class="verdict"><div><b>Stage 4 verdict:</b> <span class="box"></span>PASS &nbsp; <span class="box"></span>FAIL</div><div><b>Signed:</b> ______________________ date ________</div></div>
+<p class="note">The scheduler takes an Abort only in SHOW or PAUSED; an Abort that lands between shows is refused but still disarms every group (that is correct, not a FAIL).</p>
+</section>
+
+<section class="sheet">
+<h1>Stage 5: staged real hardware with Andy, gas OFF first</h1>
+<p class="sub">Only after stages 1 to 4 PASS. Andy at the rig. Gas OFF for every line of this sheet until the last block. The witness listens on the show PC; the flame node is the real destination now, so the witness hears it only through the PC's own address: the node's indicator and Andy's eyes are the judge of the wire.</p>
+<div class="head"><div><span>Build installed</span></div><div><span>Date, time</span></div><div><span>Andy present</span></div><div><span>flamesafe.json confirmed = true? key replaced? destination = node</span></div><div><span>Gas state at start</span></div><div><span>Lockout state</span></div></div>
+<table><tr><th>Step (gas OFF)</th><th>Must be seen</th><th>PASS / FAIL</th></tr>
+<tr><td>Data cable to the flame node connected; LTC Player started; nothing armed</td><td>node shows the universe live, every channel 0; rack screen flames chip green, no banner</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Arm one group from the deck (hold), Andy watches the safety channel on the node</td><td>safety channel reads the arm value (78) and nothing else moves; G-Flame shows ARMED (no fire)</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Disarm from the deck</td><td>safety channel to 0 at once; re-arm refused for 1 s (dwell)</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Arm, then Abort from the deck</td><td>every safety channel to 0 at once; Reset needed; journal and flamesafe disarm-all</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Arm, then pull the show PC's network cable</td><td>node times out to 0 within its own hold time; on reconnect nothing re-arms by itself</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Arm, then Stop LTC Player from the Start menu</td><td>flamesafe's safe zeros then stream terminated; node shows 0; node drops the source</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Lock one machine, arm its group, purge (Morning build)</td><td>the locked channel never leaves 0 on the node; the others purge on hold only</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>One full show, gas OFF, groups armed</td><td>fire channels follow the cues only while the timecode runs; 0 in Hold; 0 after Abort</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>Andy's e-stop during an armed show</td><td>the hardware layer stops everything regardless of the PC; the PC reports the link as it sees it</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+</table>
+<table><tr><th>Only now, gas ON (Andy decides)</th><th>Must be seen</th><th>PASS / FAIL</th></tr>
+<tr><td>One group, one short purge, Andy's hand on the e-stop</td><td>the head fires only while held; off within 0.25 s of release</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+<tr><td>One show with one group live, Abort once mid-show</td><td>fire stops at once on Abort; nothing fires until re-armed after Reset</td><td class="pf"><span class="box"></span>P <span class="box"></span>F</td></tr>
+</table>
+<div class="verdict"><div><b>Stage 5 verdict:</b> <span class="box"></span>PASS &nbsp; <span class="box"></span>FAIL</div><div><b>Signed (Jeff):</b> ______________ <b>Signed (Andy):</b> ______________ date ______</div></div>
+<p class="note"><span class="stop">Stop on the first surprise.</span> Gas back OFF, save the diagnostics bundle, do not change settings on the spot. Stages 1 to 4 prove the software on this PC; this stage is the only one that proves the wire to the rig, and only with Andy.</p>
+</section>
+
+</body>
+</html>

@@ -2,29 +2,28 @@
 
 For Jeff and for whoever works on this next. What runs when, how long it
 takes, what a failure means, and how to run the whole thing on demand.
-Written 2026-10-06, after the audit that simplified it; reworked
-2026-10-15 after the second audit (the one that found the suite sound
-and the mutation sweep too expensive to run every night).
+Written 2026-10-06, after the audit that simplified it.
 
 ## The three layers
 
-1. **selftest.py** is the suite: 362 tests, about 3,300 checks of the
-   program, from LTC decoding to the show conductor's Abort. It runs in
-   about 2.5 minutes on a laptop and 3 to 4 minutes on a CI runner.
-   Every PR runs it on ubuntu and on windows (the show PC's OS).
-   `python3 selftest.py` runs it by hand; its last line is "all checks
-   passed in N s" or a count of failures, each with a sentence, followed
-   by "failed tests: ..." naming the test functions they were in.
-   `python3 selftest.py --only test_a,test_b` runs just those.
+1. **selftest.py** is the suite: 377 checks of the program, from LTC
+   decoding to the show conductor's Abort. It runs in about 3.5 minutes on
+   a laptop and 4 to 6 minutes on a CI runner. Every PR runs it on ubuntu
+   and on windows (the show PC's OS). `python3 selftest.py` runs it by
+   hand; its last line is "all checks passed in N s" or a count of
+   failures, each with a sentence.
 
 2. **mutate.py** is the proof that the suite is honest. It breaks the
-   program on purpose, one line at a time (861 breakages, each a real
+   program on purpose, one line at a time (973 breakages, each a real
    show-night failure: "Abort's flame cut waits for the executor", "a new
    socket for every frame"), and requires the suite to fail under each.
    A mutation the suite does not notice is a guarantee nobody is testing.
-   A caught mutation costs one run of the suite plus a second look at the
-   tests that failed (seconds), so the whole list is about 35 hours of
-   runner time, split 32 ways.
+   A mutation is caught only when the suite fails under it twice. The
+   baseline (nothing mutated) runs every test in file order; a mutated run
+   stops after its first failing test, and runs first the test that caught
+   that mutation last time (`mutate_catchers.json`), so most mutations
+   take seconds, not two whole suites. Ubuntu runs three mutations at once
+   (`--jobs 3`), each in its own copy of the tree with its own baseline.
 
 3. **The bench soak** (`packaging/windows/soak.py`, the bench build)
    runs the whole Fire & Ice stack on the show PC for hours with nothing
@@ -37,12 +36,12 @@ and the mutation sweep too expensive to run every night).
 
 | When | What | How long | Required to merge |
 |---|---|---|---|
-| Every push to a PR | selftest on ubuntu and windows | 3 to 4 min | yes, through `ci` |
-| A PR marked ready for review, and every push to it after | the mutate shards, each running only the mutations this PR can have changed the result of (below); as many shards as that needs, 32 at most, none at all for a doc or UI change | nothing for a doc; 40 min for a change to one file; about 1.5 h for a change to a safety file | yes, through `ci` |
+| Every push to a PR | selftest on ubuntu and windows | 5 to 7 min | yes, through `ci` |
+| A PR marked ready for review, and every push to it after | the mutate shards, each running only the mutations this PR can have changed the result of (below); as many shards as that needs, 32 at most, none at all for a doc or UI change | nothing for a doc; 10 to 90 min for a change to a safety file | yes, through `ci` |
 | A push to main | the same, against the previous main | as above | not applicable |
-| A release tag (`gpl-...` or a tech build) | every mutation, ubuntu and windows, 32 shards each | 2 to 4 hours | the tag is not cut until it is green |
-| Every Sunday, 03:12 Eastern | every mutation on main, ubuntu, plus the Windows-only code on a windows runner (`weekly mutate` workflow) | 2 to 4 hours | a red sweep opens an issue; it is fixed before the next merge |
-| On demand | the same, from the Actions tab: `weekly mutate`, Run workflow, pick ubuntu, windows or both | 2 to 4 hours | before any tech build |
+| A release tag (`gpl-...` or a tech build) | every mutation, ubuntu and windows | 4 to 6 hours | the tag is not cut until it is green |
+| Every Sunday, 03:12 Eastern | every mutation on main, ubuntu (`weekly mutate` workflow) | 15 to 19 hours (8 shards at a time) | a red sweep opens an issue; it is fixed before the next merge |
+| On demand | the same, from the Actions tab: `weekly mutate`, Run workflow, pick ubuntu, windows or both | 15 to 19 hours | before any tech build |
 
 **One required check.** Branch protection on main requires the `ci` job
 of the selftest workflow and nothing else. `ci` is green only when the
@@ -50,10 +49,7 @@ suite passed on both OSes, the `changes` job decided what to run, and
 every mutate shard that had to run passed (or none had to). It is red
 when any of those failed or was cancelled. The shards are not named in
 the protection, so their number can follow the work: a doc change starts
-no shard job at all, a one-file change starts one or two, a release tag
-starts 64. (Before 2026-10-15 the 32 shard names were each required, so
-a doc PR had to spin up 32 jobs that did nothing, and the shard count
-could never change.)
+no shard job at all.
 
 Draft PRs run only the selftest. The mutate shards, and `ci`, start when
 the PR is marked ready for review.
@@ -66,50 +62,38 @@ every run. A mutation runs when:
 
 - the file it breaks is in the diff;
 - any safety file is in the diff (anything under `flamesafe/`, the
-  conductor, the flame link, the Stream Deck, the scheduler, BEYOND,
+  conductor, the flame link, the Stream Deck, the scheduler, BEYOND, the laser arm,
   MadMapper, the devices, the trigger, the output, the player, the
   session, the clock, the announcements, the show audio, the one-copy
-  guard): then every flamesafe, conductor and flame link mutation runs,
-  about 290 of them, whatever else changed;
+  guard, the rig check before a show): then every flamesafe, conductor and flame link mutation runs,
+  about 300 of them, whatever else changed;
 - the mutation itself is new or edited in mutate.py;
 - its line in `mutate_expected_misses.txt` changed;
-- the test that caught it in the last weekly sweep was deleted or
-  changed. The weekly sweep writes a **catchers file** (which test caught
-  each mutation, the `catchers` artifact, kept 90 days) and the `changes`
-  job reads the newest one, so a changed test re-runs exactly the
-  mutations it guarded, in whatever file they break, and a mutation no
-  sweep has recorded a catcher for (a new one) runs too. Without a
-  catchers file (none written yet, or expired) a deleted test means the
-  whole list runs, and a changed test re-runs only the mutations of the
-  files in the diff, as before.
+- the test that caught it last time was deleted or changed, when a
+  catchers file (`--catchers`) says which test that was. Without one, a
+  deleted test means the whole list runs.
+
+A change to only a test's body, with no source file of its own in the
+diff, does NOT re-run the mutations of other files. That is the one
+place the per-PR gate is deliberately incomplete, and the weekly sweep
+exists to close it within the week: a test weakened without being renamed,
+or a change in one file that quietly silenced a test of another, shows
+up there, and a release tag runs everything regardless.
 
 Everything else (docs, launchers, the brand, installers, this file, the
-workflow) selects nothing, and no shard job is started: `ci` goes green
-on the selftest alone.
-
-The shard count is about one for every 12 selected mutations, so a
-shard is about 40 minutes with its baseline, and 32 at most.
-
-## How a mutation is confirmed
-
-The suite is run once with the line broken. If it stays green the
-mutation is NOT CAUGHT. If it goes red, the failure has to reproduce
-before it counts: the tests that failed are run again on their own
-(`selftest.py --only ...`), under the same mutation, and must fail with
-a FAIL line in common with the first run (seconds); if they do not, the
-whole suite is run again and must fail (minutes), the rule the sweep had
-from the start. A test that fails for the runner's reasons passes one of
-those and the mutation reads NOT CAUGHT (flaky), with the first failure
-printed, never "caught".
+workflow) selects nothing, and the 32 shards report success at once so
+the PR can merge.
 
 ## What a failure means
 
 **selftest (ubuntu) or selftest (windows) red.** A check failed; the job's
-annotations carry the sentence, and the job summary names the test. Read
-the sentence first: it says what the program did and what it should have
-done. The suite's real-time tests run on a virtual clock (below), so a
-sentence that names a time is from one of the few rate measurements,
-and those judge the machine first; a red one twice running is real.
+annotations carry the sentence. Read the sentence first: it says what the
+program did and what it should have done. If it names a time ("took 0.34
+s") it is one of the few remaining real-time checks; those are written so
+that only a wait on the thing they forbid can fail them (the bound is half
+the deliberate stall), so a red one is a real wait, not a slow runner. If
+it still looks like the runner, re-run once; if it is red twice it is
+real.
 
 **Where to read why, without the job log.** Every red job says so three
 ways: its annotations (the Checks tab, or the API's check-run
@@ -135,14 +119,17 @@ forces every way it can end red and checks the sentence is there.
   what it proved).
 - `The suite FAILS with nothing mutated`: the baseline is red on that
   runner; see the selftest job, the shard measured nothing.
-- `shard N/M TIMED OUT`: the shard ran out of its 300 minutes. Not a
-  miss; re-run the shard.
+- `INFRASTRUCTURE FAILURE`: the suite with nothing mutated did not finish
+  inside 30 minutes, twice (it is run once more by itself after the first
+  time). The runner, not the code: no mutation ran and none was missed;
+  re-run the shard. A mutant's own suite is stopped at three times that
+  shard's measured baseline, never under 300 s or over 30 minutes; a
+  mutant stopped there counts as caught (it made the suite hang), and the
+  job summary's "baseline time / mutant limit" column gives both numbers.
+- `shard N/32 TIMED OUT`: the shard ran out of its 340 minutes (the
+  step's limit; the job's is 355). Not a miss; re-run the shard.
 - `THE TREE IS NOT CLEAN`: a restore did not land. Should never happen;
   the shard's tree is thrown away, but say so.
-- `windows only ... skipped on this OS`: not a failure. A mutation of
-  Windows-only code (the one-copy lock through msvcrt) that only a
-  windows runner can see break; the weekly sweep and every tag run it
-  there.
 
 **The weekly sweep red.** The same as a shard, on main. Its `report` job
 opens an issue labelled `mutate-sweep` naming the red shards with a link
@@ -153,8 +140,7 @@ closes the issue by itself.
 
 ## Running things by hand
 
-- The suite: `python3 selftest.py`. A few tests: `python3 selftest.py
-  --only test_flame_link_unit,test_conductor_abort_cuts_flames_at_once_and_fades_the_rest`.
+- The suite: `python3 selftest.py`.
 - One mutation or a few: `python3 mutate.py abort` runs every mutation
   whose name contains "abort".
 - What a change would run: `python3 mutate.py --changed origin/main
@@ -163,10 +149,23 @@ closes the issue by itself.
 - The affected mutations of a change, for real: `python3 mutate.py
   --changed origin/main`.
 - Everything, locally: `python3 mutate.py` (plan on most of a day; a
-  shard of it is `--shard 3/32`). The Windows-only subset, on the show
-  PC: `python mutate.py --windows`.
+  shard of it is `--shard 3/32`).
 - Everything, in CI: Actions tab, `weekly mutate`, Run workflow. Choose
   `both` before a tech build.
+- The catcher hints: `python3 mutate.py --write-catchers
+  mutate_catchers.json` adds the test each caught mutation stopped in. A
+  stale or missing hint costs time, never a verdict: a hinted run counts
+  only when it failed in that test, after that test passed run first with
+  nothing mutated; anything else runs again in file order. A hinted catch
+  is always confirmed by a second run in plain file order with no hint;
+  green there is NOT CAUGHT (flaky), never caught. Refresh the file
+  when a sweep gets slow.
+- The rack screen drawn in a real browser (2026-10-24): the suite finds
+  Chromium, Chrome or Edge by itself (set `LTCPLAY_CHROME` to one to
+  choose), draws remote.html headless at seven window sizes with five
+  banners and measures every flame group's Hold to arm and Disarm. With
+  no browser it says so and skips; on the ubuntu CI runner a missing
+  browser is a failure.
 
 While mutate.py runs, the working tree is deliberately broken (a
 `.mutating` file marks it). Do not build, soak or run a show from that
@@ -174,35 +173,17 @@ tree until it says "tree restored byte for byte".
 
 ## Real time in the suite
 
-The conductor's real-time tests (the review of PR #29: Abort never held
-up by a slow BEYOND, a hung laser gate or an announcement's file read; a
-press mid fade never lets the video rise; a stalled MadMapper sender is
-a fault) run on REAL threads, the conductor's executor, MadMapper's
-worker, BEYOND's helpers, and a VIRTUAL clock (`_VClock` in selftest.py):
-every thread reads the same fake perf_counter and nobody sleeps on the
-wall clock. A thread that sleeps blocks until the test moves the clock
-past its deadline, and the test moves it in exactly the steps the
-sleepers are waiting for, so a press "30 ms into a fade" lands exactly
-there, and what used to be a bound in milliseconds ("the flame cut went
-out within 75 ms") is an order of events ("the flame cut went out while
-BEYOND's packet was still stuck"), which no runner's scheduling can
-blur. The 1 s fades take no real time; those four tests went from 38 s
-to about 1 s together, and they cannot flake on a slow runner.
-
-A handful of checks still read the real clock, because what they prove
-is a rate or a thread handoff through two real processes: the pixel
-thread's frame interval, the Art-Net clock under load, the flame link
-end to end against the real flamesafe over loopback UDP. They are
-written one way: a stall is a thread really blocked, the bound is half
-the stall or wider, and the rate checks judge the machine first, over
-the same second, and only apply their bounds on a machine that could
-keep a 25 ms sleep at the time. The numbers are always printed; the
-ones that matter are the soak's, on the show PC.
-
-flamesafe's own suite (`flamesafe/test_flamesafe.py`, on a fake clock
-throughout) runs in its own process, started first thing so its 15 to
-20 s of CPU overlap the rest of the run, and is read where it always
-was.
+A handful of checks still read the clock, because what they prove is a
+thread handoff: Abort does not wait behind a slow BEYOND, a hung
+announcement, a stuck disk. They are written one way: the test stalls
+the thing that must not be waited on (300 ms to 3 s, or until the test
+lets it go), and the bound is half that stall or less. A wait on the
+stall fails by a wide margin; a slow runner cannot reach the bound. The
+few that measure a rate (the pixel thread, the flame link's 40 Hz, the
+Art-Net clock under load) judge the machine first, over the same second,
+and only apply their bounds on a machine that could keep a 25 ms sleep
+at the time. The numbers are always printed; the ones that matter are
+the soak's, on the show PC.
 
 ## The bench soak
 

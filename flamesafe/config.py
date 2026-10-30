@@ -23,11 +23,100 @@ TOP_KEYS = {"flamesafe_config", "confirmed", "note", "universe",
             "destination", "link", "gflame_range", "arm_value",
             "accept_unsourced_risk", "min_arm_dwell_ms", "arm_stale_ms",
             "frame_stale_ms", "fire_hold_ms", "tick_hz", "overrun_ms",
-            "log_dir", "groups"}
+            "log_dir", "groups", "lockout_file", "passthrough"}
 DESTINATION_KEYS = {"ip", "port"}
 LINK_KEYS = {"listen_ip", "listen_port", "status_ip", "status_port", "key",
-             "arm_ip", "arm_port"}
-GROUP_KEYS = {"name", "safety", "fire", "arm_value"}
+             "arm_ip", "arm_port", "status_mirror_port"}
+GROUP_KEYS = {"name", "safety", "fire", "arm_value", "safety_profile",
+              "aim"}
+# A group's safety_profile (Jeff, 2026-10-26, the wave flamer): arm_value is
+# required, the rest are optional guards.  Nothing else is allowed.  See
+# _safety_profile.
+PROFILE_KEYS = ("arm_value", "enable_lo", "enable_hi", "fire_at")
+# A passthrough entry (Jeff, 2026-10-29, the hazers): a device on the flame
+# universe that is not a flame.  Nothing else is allowed in one.
+PASSTHROUGH_KEYS = {"name", "haze", "fan"}
+# At most this many passthrough entries (the flame frame's hazers_on list
+# is refused longer than this, link.HAZERS_MAX).
+PASSTHROUGH_MAX = 16
+
+
+def _aim(g, name, fire, safeties, profile):
+    """A group's "aim" list: the fire slots that only point a head (the
+    Showven's angle channel) and never light it.  Optional.  Each must be
+    one of the group's own fire slots, listed once, and at least one fire
+    slot must stay out of it, or the group would arm with no edge check at
+    all."""
+    if "aim" not in g:
+        return []
+    if profile is None:
+        raise ConfigError(f"{name}: aim is only for a group with a "
+                          f"safety_profile (the wave flamer's angle, "
+                          f"channel 1). A G-Flame or Showven group has no "
+                          f"aim slot.")
+    aim = g.get("aim")
+    if not isinstance(aim, list):
+        raise ConfigError(f"{name}: aim must be a list of slots.")
+    for a in aim:
+        if isinstance(a, bool) or not isinstance(a, int) or a not in fire:
+            raise ConfigError(f"{name}: aim slot {a!r} is not one of this "
+                              f"group's fire slots.")
+    if len(set(aim)) != len(aim):
+        raise ConfigError(f"{name}: an aim slot is listed twice.")
+    if len(set(aim)) >= len(set(fire)):
+        raise ConfigError(f"{name}: every fire slot is an aim slot. At "
+                          f"least one slot has to light the flame, or the "
+                          f"rising-edge check would cover nothing.")
+    _aim_per_fixture(name, aim, fire, safeties, profile)
+    return aim
+
+
+def _aim_per_fixture(name, aim, fire, safeties, profile):
+    """A typo in "aim" must not free a fuel slot (review, 2026-10-28):
+    "aim": [2, 7, 13] would arm the wave flamer with slot 2 at 255.  So
+    each fixture has at most one aim slot, every aim slot sits at the same
+    distance from its own fixture's safety slot, and that is channel 1 of
+    the fixture, its angle: 5 below its safety slot (channel 6), with the
+    fixture's fire slots exactly that slot and the 4 after it.  Only a
+    group with a safety_profile (the wave flamer) gets here.  A fixture's
+    slots are the group's fire slots after the previous safety slot, up to
+    its own; a group with one safety slot is one fixture holding every
+    fire slot."""
+    saf = sorted(safeties)
+    block = {}
+    for a in aim:
+        if len(saf) == 1:
+            k = 0
+        else:
+            k = next((i for i, s in enumerate(saf) if a < s), None)
+            if k is None:
+                raise ConfigError(f"{name}: aim slot {a} is after the last "
+                                  f"safety slot, in no fixture of this "
+                                  f"group.")
+        if k in block:
+            raise ConfigError(f"{name}: aim slots {block[k]} and {a} are in "
+                              f"one fixture. A fixture has one angle "
+                              f"channel; the other is a flame channel.")
+        block[k] = a
+    if len({a - saf[k] for k, a in block.items()}) > 1:
+        raise ConfigError(f"{name}: the aim slots {sorted(aim)} are not the "
+                          f"same channel of each fixture. Each fixture's "
+                          f"angle is the same channel.")
+    for k, a in block.items():
+        # The wave flamer: 6 channels, channel 6 the safety slot, so
+        # channel 1 (the angle) is 5 below it (CONTRACT.md's table).
+        if a != saf[k] - 5:
+            raise ConfigError(f"{name}: aim slot {a} is not channel 1 "
+                              f"of its fixture (slot {saf[k] - 5}). On "
+                              f"the wave flamer only channel 1, the "
+                              f"angle, may be an aim slot.")
+        lo = saf[k - 1] if k else 0
+        mine = {f for f in fire if len(saf) == 1 or lo < f < saf[k]}
+        if mine != set(range(a, a + 5)):
+            raise ConfigError(f"{name}: the fixture with safety slot "
+                              f"{saf[k]} is not one 6 channel block: its "
+                              f"fire slots are {sorted(mine)}, not {a} to "
+                              f"{a + 4}.")
 
 
 def _only_known(d, allowed, where):
@@ -57,24 +146,78 @@ class ConfigError(Exception):
 
 
 class Group:
-    """One arm group: a safety slot and the fire slots it governs.
+    """One arm group: its safety slot(s) and the fire slots it governs.
 
     There is no offset.  Every slot is stated explicitly because rev 1
     invented one and it was wrong for every real unit.  Slots are 1..512
     inside the flame universe.
+
+    Multi-safety (Jeff, 2026-10-26, the wave flamer): one arm group may
+    drive several fixtures, each with a safety channel of its own.
+    `safeties` is every safety slot of the group, in config order; a group
+    written with one integer has a list of one and behaves exactly as
+    before.  `safety` is the first of them, kept for the status frame's
+    `safety_slot` and for code that only ever knew one; everything that
+    writes or checks a safety slot uses `safeties`.
     """
 
-    __slots__ = ("name", "safety", "fire", "arm_value")
+    __slots__ = ("name", "safety", "safeties", "fire", "arm_value",
+                 "profile", "aim")
 
-    def __init__(self, name, safety, fire, arm_value):
+    def __init__(self, name, safety, fire, arm_value, profile=None,
+                 aim=()):
         self.name = str(name)
-        self.safety = int(safety)
+        if isinstance(safety, (list, tuple)):
+            self.safeties = [int(s) for s in safety]
+        else:
+            self.safeties = [int(safety)]
+        if not self.safeties:
+            raise ValueError("a group needs at least one safety slot")
+        self.safety = self.safeties[0]
         self.fire = [int(f) for f in fire]
         self.arm_value = int(arm_value)
+        # The validated safety_profile, or None for a G-Flame/Showven group.
+        # The composer reads only arm_value; this is kept for the report.
+        self.profile = dict(profile) if profile else None
+        # Aim slots (Jeff, 2026-10-28, the wave flamer's angle channel):
+        # fire slots that only point the head and never light it.  Still
+        # sent only while the group is armed, like every fire slot, but
+        # left out of the rising-edge check and the edge-quiet window,
+        # because a nozzle resting at straight up (128) is not a flame.
+        self.aim = frozenset(int(a) for a in aim)
+
+    @property
+    def multi_safety(self):
+        return len(self.safeties) > 1
 
     def __repr__(self):
-        return (f"<Group {self.name!r} safety={self.safety} fire={self.fire} "
+        saf = self.safeties if self.multi_safety else self.safety
+        return (f"<Group {self.name!r} safety={saf} fire={self.fire} "
                 f"arm={self.arm_value}>")
+
+
+class Passthrough:
+    """One passthrough entry (Jeff, 2026-10-29): a hazer on the flame
+    universe.  Its slots carry ltcplay's values only while the show program
+    has it switched on (the flame frame's hazers_on), the link is fresh and
+    no Abort has stood since; else zero.  It never arms, never fires and
+    never touches a group's slots: the config refuses any overlap."""
+
+    __slots__ = ("name", "haze", "fan", "slots")
+
+    def __init__(self, name, haze, fan):
+        self.name = str(name)
+        # The hazer's two channels by role (Jeff, 2026-10-29: the haze
+        # output and the fan). flamesafe treats them alike; the role is
+        # for the engine and the screens. Swap them in the config if a
+        # fixture is the other way round.
+        self.haze = int(haze)
+        self.fan = int(fan)
+        self.slots = [self.haze, self.fan]
+
+    def __repr__(self):
+        return (f"<Passthrough {self.name!r} haze={self.haze} "
+                f"fan={self.fan}>")
 
 
 class Config:
@@ -83,11 +226,12 @@ class Config:
     __slots__ = ("universe", "destination_ip", "destination_port",
                  "link_listen_ip", "link_listen_port", "link_status_ip",
                  "link_status_port", "link_arm_ip", "link_arm_port",
+                 "link_status_mirror_port",
                  "link_key", "gflame_range", "arm_value",
                  "accept_unsourced_risk", "min_arm_dwell_ms", "arm_stale_ms",
                  "frame_stale_ms", "fire_hold_ms", "tick_hz", "overrun_ms",
                  "groups", "confirmed", "note", "log_dir",
-                 "lights_warning_led")
+                 "lights_warning_led", "lockout_file", "passthrough")
 
     def test_only_override_dwell_ms(self, ms):
         """FOR TESTS ONLY.  The file loader floors the dwell at 1000 ms; the
@@ -104,7 +248,7 @@ class Config:
         return 1.0 / self.tick_hz
 
     def all_slots(self):
-        return ([g.safety for g in self.groups]
+        return ([s for g in self.groups for s in g.safeties]
                 + [f for g in self.groups for f in g.fire])
 
 
@@ -201,6 +345,105 @@ def _validate_arm_value(arm_value, gflame_range, accept_unsourced_risk, who):
             f"{derived} for the G-Flame range {gflame_range}.")
 
 
+def _safety_profile(g, name):
+    """A group's safety_profile (Jeff, 2026-10-26): the arm value for a
+    fixture that is neither a G-Flame nor a Showven (the wave flamer), which
+    Jeff tunes in the file.  For that group only it REPLACES the G-Flame and
+    Showven checks in _validate_arm_value; every other group, and the
+    file's own arm_value, is checked exactly as before.
+
+    Every number is Jeff's.  The profile is the deliberate statement, so it
+    does not need accept_unsourced_risk and does not read it (that flag is
+    file-wide and would also let 157 through on every G-Flame group).  The
+    optional keys are guards that compare only the numbers written here:
+
+      arm_value (required): a whole number 1..255.  0 is the disarm value.
+      enable_lo, enable_hi (optional, both or neither; null is left out):
+        the fixture's enable window.  enable_lo is at least 1, so the
+        disarm value 0 reads as not enabled, and the arm value lies inside
+        the window.
+      fire_at (optional; null is left out): the lowest safety value that
+        fires the fixture.  The arm value is below it and no single-bit flip
+        of the arm value reaches it (the guard rule 1 keeps against the
+        G-Flame threshold, kept here against this number only).  Left out,
+        there is no fire guard; flamesafe says so in one line at start.
+    """
+    p = g["safety_profile"]
+    if not isinstance(p, dict):
+        raise ConfigError(f"{name}: safety_profile must be an object with at "
+                          f"least arm_value.")
+    unknown = sorted(k for k in p if k not in PROFILE_KEYS)
+    if unknown:
+        raise ConfigError(f"{name}: safety_profile has a key this program "
+                          f"does not know: {', '.join(unknown)}. A "
+                          f"safety_profile takes {', '.join(PROFILE_KEYS)} "
+                          f"(flamesafe/CONTRACT.md, safety_profile).")
+    if "arm_value" not in p:
+        raise ConfigError(f"{name}: safety_profile has no arm_value; it is "
+                          f"the one number a profile must give.")
+    arm = _int(p, "arm_value", rules.DISARM_VALUE + 1, 255,
+               f"{name}: safety_profile arm_value")
+    lo = hi = None
+    # null is the same as leaving a key out, as for fire_at.
+    has_lo = p.get("enable_lo") is not None
+    has_hi = p.get("enable_hi") is not None
+    if has_lo != has_hi:
+        raise ConfigError(f"{name}: safety_profile has one of enable_lo and "
+                          f"enable_hi; give both or neither.")
+    if has_lo:
+        lo = _int(p, "enable_lo", 0, 255, f"{name}: safety_profile enable_lo")
+        hi = _int(p, "enable_hi", 0, 255, f"{name}: safety_profile enable_hi")
+        if lo <= rules.DISARM_VALUE:
+            raise ConfigError(f"{name}: safety_profile enable_lo is {lo}; the "
+                              f"disarm value {rules.DISARM_VALUE} would read "
+                              f"as enabled, so it must be at least "
+                              f"{rules.DISARM_VALUE + 1}.")
+        if not (lo <= arm <= hi):
+            raise ConfigError(f"{name}: safety_profile arm_value {arm} is "
+                              f"outside the enable window {lo}-{hi}; the "
+                              f"fixture would never arm.")
+    fire_at = None
+    if p.get("fire_at") is not None:
+        fire_at = _int(p, "fire_at", 0, 255,
+                       f"{name}: safety_profile fire_at")
+        if arm >= fire_at:
+            raise ConfigError(f"{name}: safety_profile arm_value {arm} is at "
+                              f"or above fire_at {fire_at}; arming would "
+                              f"fire the fixture.")
+        for bit in range(8):
+            neighbour = arm ^ (1 << bit)
+            if neighbour >= fire_at:
+                raise ConfigError(
+                    f"{name}: a single-bit flip of the safety_profile "
+                    f"arm_value ({arm} -> {neighbour}, bit {bit}) reaches "
+                    f"fire_at {fire_at}.")
+    return {"arm_value": arm, "enable_lo": lo, "enable_hi": hi,
+            "fire_at": fire_at}
+
+
+def _safeties(g, name):
+    """A group's safety slot(s), as a list.  One whole number is today's
+    form and is read exactly as before.  A list (multi-safety, 2026-10-26:
+    one arm group driving several fixtures, each with a safety channel of
+    its own) holds one or more distinct slots 1..512; a list of one is the
+    same group as that one number."""
+    raw = g.get("safety")
+    if not isinstance(raw, list):
+        return [_int(g, "safety", 1, rules.UNIVERSE_SIZE,
+                     f"{name}: safety slot")]
+    if not raw:
+        raise ConfigError(f"{name}: safety is an empty list. Give the safety "
+                          f"slot, or a list of every fixture's safety slot.")
+    for s in raw:
+        if isinstance(s, bool) or not isinstance(s, int) \
+                or not (1 <= s <= rules.UNIVERSE_SIZE):
+            raise ConfigError(f"{name}: safety slot {s!r} is not a slot "
+                              f"between 1 and {rules.UNIVERSE_SIZE}.")
+    if len(set(raw)) != len(raw):
+        raise ConfigError(f"{name}: a safety slot is listed twice.")
+    return list(raw)
+
+
 def from_dict(d, source="config"):
     """Validate a parsed config.  Raises ConfigError with one sentence."""
     if not isinstance(d, dict):
@@ -260,9 +503,30 @@ def from_dict(d, source="config"):
     else:
         c.link_arm_ip = None
         c.link_arm_port = None
+    # A second copy of every status frame, for ltcplay's engine (the remote
+    # page's flame lamps) while the Stream Deck process holds status_port.
+    # Optional, loopback (status_ip), display only: the same keyed frame,
+    # and nothing ever comes back on it. A port of its own, never one that
+    # already means something else.
+    if "status_mirror_port" in link:
+        c.link_status_mirror_port = _int(link, "status_mirror_port",
+                                         PORT_MIN, PORT_MAX,
+                                         "link status_mirror_port")
+        for other_ip, other_port, other_name in (
+                (c.link_listen_ip, c.link_listen_port, "listen_port"),
+                (c.link_status_ip, c.link_status_port, "status_port"),
+                (c.link_arm_ip, c.link_arm_port, "arm_port")):
+            if c.link_status_ip == other_ip and \
+                    c.link_status_mirror_port == other_port:
+                raise ConfigError(f"link status_mirror_port is the same as "
+                                  f"{other_name}; set it to a port of its "
+                                  f"own.")
+    else:
+        c.link_status_mirror_port = None
     if ipaddress.ip_address(c.destination_ip).is_loopback and \
             c.destination_port in (c.link_listen_port, c.link_status_port,
-                                   c.link_arm_port):
+                                   c.link_arm_port,
+                                   c.link_status_mirror_port):
         raise ConfigError(f"destination port {c.destination_port} is one of "
                           f"the link ports; the flame universe would land on "
                           f"the link.")
@@ -316,6 +580,37 @@ def from_dict(d, source="config"):
     c.note = str(d.get("note", ""))
     log_dir = d.get("log_dir")
     c.log_dir = str(log_dir) if log_dir else None
+    # The lockout file (Jeff, 2026-10-17, the Morning and Shutdown page):
+    # written by ltcplay's engine, the one writer, and read here, the one
+    # writer of the flame universe. A locked fire slot is zero on every
+    # packet whatever is armed or commanded (composer.note_locked_slots).
+    # Optional; a relative path is beside this config file. Absent, nothing
+    # is ever locked out from here.
+    # Left out: ltcplay_lockout.json BESIDE this config file, which is where
+    # the show PC keeps both (review of PR #68, P2-2: the lock is enforced
+    # here with nothing to set up; a missing file locks nothing). false
+    # switches it off on purpose. A relative path is beside the config
+    # file; with no file to sit beside it is refused rather than guessed.
+    lockout = d.get("lockout_file")
+    if lockout is None:
+        lockout = "ltcplay_lockout.json" if source != "config" else None
+    elif lockout is False:
+        lockout = None
+    if lockout is not None:
+        if not isinstance(lockout, str) or not lockout.strip():
+            raise ConfigError("lockout_file is the path of the lockout file "
+                              "ltcplay writes (ltcplay_lockout.json), false "
+                              "to switch the lockout off, or left out (the "
+                              "file beside this one).")
+        lockout = lockout.strip()
+        if not Path(lockout).is_absolute():
+            if source == "config":
+                raise ConfigError("lockout_file has to be an absolute path "
+                                  "when the config does not come from a file "
+                                  "(there is nothing for a relative path to "
+                                  "sit beside).")
+            lockout = str(Path(source).resolve().parent / lockout)
+    c.lockout_file = lockout
 
     groups = d.get("groups")
     if not isinstance(groups, list) or not groups:
@@ -331,8 +626,7 @@ def from_dict(d, source="config"):
         if len(name) > NAME_MAX:
             raise ConfigError(f"group {i + 1}: the name is longer than "
                               f"{NAME_MAX} characters.")
-        safety = _int(g, "safety", 1, rules.UNIVERSE_SIZE,
-                      f"{name}: safety slot")
+        safeties = _safeties(g, name)
         fire = g.get("fire")
         if not isinstance(fire, list):
             raise ConfigError(f"{name}: fire must be a list of slots.")
@@ -345,7 +639,7 @@ def from_dict(d, source="config"):
                     or not (1 <= f <= rules.UNIVERSE_SIZE):
                 raise ConfigError(f"{name}: fire slot {f!r} is not a slot "
                                   f"between 1 and {rules.UNIVERSE_SIZE}.")
-            if f == safety:
+            if f in safeties:
                 raise ConfigError(
                     f"{name}: fire slot {f} is also its safety slot. The "
                     f"G-Flame manual forbids this outright ('Identical DMX "
@@ -353,11 +647,27 @@ def from_dict(d, source="config"):
         if len(set(fire)) != len(fire):
             raise ConfigError(f"{name}: a fire slot is listed twice.")
         arm_value = c.arm_value
-        if "arm_value" in g:
+        profile = None
+        if "safety_profile" in g:
+            # The profile replaces the G-Flame/Showven checks for this group
+            # only.  A group arm_value beside it is refused unless it says
+            # the same number: two different arm values for one group is a
+            # config nobody can read the intent of.
+            profile = _safety_profile(g, name)
+            arm_value = profile["arm_value"]
+            if "arm_value" in g:
+                other = _int(g, "arm_value", 0, 255, f"{name}: arm_value")
+                if other != arm_value:
+                    raise ConfigError(
+                        f"{name}: arm_value {other} and safety_profile "
+                        f"arm_value {arm_value} disagree; give the arm value "
+                        f"once, in the safety_profile.")
+        elif "arm_value" in g:
             arm_value = _int(g, "arm_value", 0, 255, f"{name}: arm_value")
             _validate_arm_value(arm_value, c.gflame_range,
                                 c.accept_unsourced_risk, name)
-        c.groups.append(Group(name, safety, fire, arm_value))
+        aim = _aim(g, name, fire, safeties, profile)
+        c.groups.append(Group(name, safeties, fire, arm_value, profile, aim))
 
     names = {}
     seen = {}
@@ -365,10 +675,11 @@ def from_dict(d, source="config"):
         if g.name in names:
             raise ConfigError(f"two groups are both named {g.name!r}.")
         names[g.name] = True
-        if g.safety in seen:
-            raise ConfigError(f"{g.name} and {seen[g.safety]} share safety "
-                              f"slot {g.safety}.")
-        seen[g.safety] = g.name
+        for s in g.safeties:
+            if s in seen:
+                raise ConfigError(f"{g.name} and {seen[s]} share safety "
+                                  f"slot {s}.")
+            seen[s] = g.name
 
     # Two groups must not share a fire slot.  This program zeros a group's
     # fire slots through its arming edge, so a shared slot means one group
@@ -385,13 +696,77 @@ def from_dict(d, source="config"):
 
     # A fire slot of one group must not be the safety slot of another, or
     # arming group A would be gated on group B's content and vice versa.
-    safeties = {g.safety for g in c.groups}
+    safeties = {s for g in c.groups for s in g.safeties}
     for g in c.groups:
-        clash = (safeties - {g.safety}).intersection(g.fire)
+        clash = (safeties - set(g.safeties)).intersection(g.fire)
         if clash:
             raise ConfigError(f"{g.name}: fire slot(s) {sorted(clash)} are "
                               f"safety slots of another group.")
+    c.passthrough = _passthrough(d, c.groups)
     return c
+
+
+def _passthrough(d, groups):
+    """The "passthrough" list (Jeff, 2026-10-29, the hazers): optional, one
+    entry per hazer, each {"name": text, "haze": slot, "fan": slot}, slots
+    1..512.  Refused unless both slots are given, are different, and are
+    slots of no group (safety, fire or aim) and of no other entry, and
+    every name is its own (no other entry and no group has it).  Left out,
+    there is none and every slot that belongs to no group is zero, as
+    before."""
+    raw = d.get("passthrough", [])
+    if not isinstance(raw, list):
+        raise ConfigError("passthrough must be a list of {\"name\", "
+                          "\"haze\", \"fan\"} entries, one per hazer.")
+    if len(raw) > PASSTHROUGH_MAX:
+        raise ConfigError(f"passthrough has {len(raw)} entries; at most "
+                          f"{PASSTHROUGH_MAX}.")
+    group_slots = {}
+    for g in groups:
+        for s in g.safeties:
+            group_slots[s] = f"a safety slot of {g.name}"
+        for f in g.fire:
+            group_slots[f] = (f"an aim slot of {g.name}" if f in g.aim
+                              else f"a fire slot of {g.name}")
+    names = {g.name for g in groups}
+    owner = {}
+    out = []
+    for i, e in enumerate(raw):
+        if not isinstance(e, dict):
+            raise ConfigError(f"passthrough entry {i + 1} is not an object.")
+        _only_known(e, PASSTHROUGH_KEYS, f"passthrough entry {i + 1}")
+        name = e.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ConfigError(f"passthrough entry {i + 1} has no name.")
+        if NAME_MAX < len(name):
+            raise ConfigError(f"passthrough entry {i + 1}: the name is longer "
+                              f"than {NAME_MAX} characters.")
+        if name in names:
+            raise ConfigError(f"passthrough {name!r}: that name is already "
+                              f"used by a group or another passthrough "
+                              f"entry.")
+        names.add(name)
+        for role in ("haze", "fan"):
+            if role not in e:
+                raise ConfigError(f"passthrough {name!r}: {role} is missing; "
+                                  f"give the {role} channel's slot.")
+        slots = [e.get("haze"), e.get("fan")]
+        for s in slots:
+            if isinstance(s, bool) or not isinstance(s, int) \
+                    or not (1 <= s <= rules.UNIVERSE_SIZE):
+                raise ConfigError(f"passthrough {name!r}: slot {s!r} is not a "
+                                  f"slot between 1 and "
+                                  f"{rules.UNIVERSE_SIZE}.")
+            if s in group_slots:
+                raise ConfigError(f"passthrough {name!r}: slot {s} is "
+                                  f"{group_slots[s]}. A passthrough slot is "
+                                  f"never a flame group's slot.")
+            if s in owner:
+                raise ConfigError(f"passthrough {name!r}: slot {s} is "
+                                  f"already a slot of {owner[s]!r}.")
+            owner[s] = name
+        out.append(Passthrough(name, slots[0], slots[1]))
+    return out
 
 
 def load(path):

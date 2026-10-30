@@ -27,7 +27,10 @@ two guards:
    frames only from the (ip, port) of the first accepted sender; a frame
    from anywhere else is rejected with the reason `another sender`. Once the
    link is stale (`frame_stale_ms` without an accepted frame) the lock is
-   released, so a restarted ltcplay on a new port takes it.
+   released, so a restarted ltcplay on a new port takes it. Since
+   2026-10-03 a second keyed sender on the link, or the lock changing
+   hands, also disarms every group and stops any arm cycle counting for a
+   while (see "Second copies" below).
 
 Neither is secrecy in the cryptographic sense; the key lives in two config
 files on one machine. Together they mean that firing a head from this
@@ -47,6 +50,107 @@ What ltcplay must do for the lock to mean anything:
 - A config marked `confirmed` is refused while `link.key` is still the
   example key from the repo.
 
+## Second copies: what was decided and built (Jeff, 2026-10-03)
+
+PR #34's open question 10 (review probe p2 s5): while ltcplay restarted, a
+second sender with the key took the flame link's sender lock; the real
+ltcplay came back and was refused as "another sender"; the operator cycled
+the arm on the Stream Deck and the groups armed, with the other sender
+supplying the fire values and the screen Abort refused.
+
+**Decision.** The show machines are dedicated hardware with nothing else
+installed, and every link binds 127.0.0.1 only. So the realistic second
+sender is a second copy of ltcplay or of `ltc deck` itself: a launcher
+double-clicked twice, autostart plus a manual launch, an old copy still
+running after a restart. Protecting the key (a separate Windows user, a
+config only that user can read) was considered and is **not** built. Two
+cheap guards are:
+
+1. **Flame-link checks in flamesafe** (fix round 1 of PR #40 made the
+   first one a disarm, on Jeff's direction):
+   - **A second sender disarms every group.** When a well-formed, keyed
+     flame frame or disarm_all arrives from any (ip, port) other than the
+     live, locked sender, it is refused as `another sender` AND every
+     group's latch and pending down edge is cleared on the tick it arrives
+     in: every armed group comes off the wire. With one copy of ltcplay per
+     machine (point 2), two keyed senders at once means something is wrong.
+     This can only ever take arm away. The sender counts as present for
+     `frame_stale_ms` after its LAST datagram (`frames.foreign_senders`),
+     and while it does no arm cycle counts. The journal gets one plain line
+     per episode (`second-sender`), naming both senders and the groups it
+     disarmed.
+   - **A change of hands disarms and waits.** When the lock is taken by a
+     sender other than the one that held it before, every latch is cleared
+     and no arm cycle counts for `frame_stale_ms` (`frames.new_sender`).
+     Every normal ltcplay restart does this (a new socket is a new port),
+     after link loss has already disarmed every group, so after every
+     restart the Stream Deck's group keys read OTHER SENDER for about half
+     a second and a cycle in that half second does not count. The first
+     sender flamesafe ever sees, and the same sender coming back, are not a
+     change.
+   - **A flood blocks consent.** More than 50 datagrams, or more than
+     256 KiB, waiting on the flame link in one tick, keyed or not, is a
+     flood (`frames.flooded`); no arm cycle counts for `frame_stale_ms`
+     after the last one, and it is journaled once per episode. It does not
+     disarm by itself. This is the arm link's flood rule; an honest ltcplay
+     sends about one 2 KB frame per tick.
+
+   While any of these holds, the lamp of a group the deck asks for is held,
+   steady amber: `Another sender is on the show program link, or it just
+   changed hands: every group is disarmed and a cycle cannot arm until that
+   has settled. Cycle the arm again once it has.` (the deck key reads OTHER
+   SENDER). Afterwards nothing re-arms by itself: a group needs a genuine
+   off-then-on from the Stream Deck, as after the arm link's veto.
+
+   Measured with the review probes (real flamesafe, real ltcplay
+   `FlameLink`, real Stream Deck controller, the actual universe read off
+   the wire):
+   - p2 s5 (a second sender takes the flame link in an ltcplay restart gap,
+     ltcplay comes back and is refused, the operator cycles): before PR
+     #40 groups 0 and 1 armed and fired; now nothing arms and nothing
+     fires.
+   - Review s8 (a group armed while the second sender was the only one on
+     the link, then ltcplay comes back): before fix round 1 it stayed armed
+     and the second sender's fire reached the wire; now it is disarmed the
+     moment ltcplay's first frame arrives.
+   - Review s7 (a keyed second sender holds the link by flooding, with junk
+     floods from other ports crowding ltcplay's frames out): nothing armed
+     in any run, and the flood flag kept the check on in every status
+     sample.
+
+   **What the flame-link checks do not do.** They do not stop a second
+   sender TAKING the flame link. A flood, or an ltcplay restart gap, still
+   hands the lock to whoever has the key and sends next; ltcplay's own
+   frames, fire values and screen Abort are then refused for as long as the
+   other sender keeps the lock. So the show's flames stop (nothing is armed,
+   nothing fires) rather than going wrong.
+2. **One copy per machine** (ltcplay side, `ltcplay/onlyone.py`). The show
+   program (`ltc run` and `ltc serve`, one lock between them) and `ltc
+   deck` each take an exclusive lock on a file in ltcplay's state folder
+   for their whole life (`ltcplay_show.lock`, `ltcplay_deck.lock`, beside
+   `ltcplay_output.lock`) and refuse to start while another copy holds it,
+   printing what the running copy says about itself (its process id, the
+   command, the show folder or config, when it started) and how to stop
+   it. The lock is a flock on a Mac and a byte-range lock on Windows; the
+   operating system drops it when the holder dies however it dies, so a
+   crashed or killed copy never blocks a restart. A rehearsal (`ltc run
+   --no-output`, Rehearse in the menu) is a copy too: it is refused while
+   the app, the autostart engine or a Run or Web window is running.
+
+**What remains, stated plainly.** A program that is NOT ltcplay or `ltc
+deck`, running on the show machine and holding the key, can still:
+- take the arm link while the deck process is down and arm a group with an
+  off-then-on of its own (the deck residual under "The arm link" below);
+- take the flame link while ltcplay is down, and once it has been the only
+  sender for `frame_stale_ms`, supply the fire values to any group the
+  operator then cycles on the Stream Deck. That lasts until ltcplay comes
+  back, which disarms every group;
+- hold the flame link against a running ltcplay (by a flood, or by getting
+  in during a restart gap), so that no group can be armed and the show has
+  no flames until it stops.
+Jeff accepts that: on a dedicated show machine there is no such program,
+and a second copy of ltcplay or `ltc deck` refuses to start.
+
 ## Ports and addresses
 
 From the flamesafe config (`flamesafe.example.json`):
@@ -55,6 +159,18 @@ From the flamesafe config (`flamesafe.example.json`):
 |---|---|---|
 | ltcplay to flamesafe, flame frames | 127.0.0.1, `link.listen_port` (example 5571) | flamesafe binds it |
 | flamesafe to ltcplay, status frames | 127.0.0.1, `link.status_port` (example 5572) | ltcplay binds it |
+| flamesafe to ltcplay's engine, a copy of every status frame | `link.status_ip`, `link.status_mirror_port` (optional, absent by default) | ltcplay's engine binds it, for the remote page |
+
+`link.status_mirror_port` (added 2026-10-03 for the iPad remote): when set,
+every status frame is sent a second time, byte for byte, to this port as
+well. The Stream Deck process binds `status_port`, so the engine needs its
+own copy to show flamesafe's real armed state on the remote page. It is
+display only, exactly like `status_port`: nothing is ever read from it by
+flamesafe, and a failed send there is counted (`mirror_errors` on the
+service) but is never a fault, because neither the wire nor the deck's own
+status is affected. It must be a port of its own; the config refuses one
+that equals `listen_port`, `status_port`, `arm_port` or a loopback
+destination port.
 | flamesafe to the flame node, sACN | `destination.ip`, `destination.port` (5568) | unicast, priority 200 |
 
 The link addresses must be loopback; the config refuses anything else, and
@@ -88,6 +204,7 @@ reason.
 | `mono` | number | the sender's own `time.perf_counter()` at the frame, seconds; must not go backwards while the link is live |
 | `universe` | integer | must equal flamesafe's configured flame universe |
 | `values` | list of exactly 512 integers, each 0 to 255 | the whole flame universe, slot 1 first |
+| `hazers_on` | optional list of strings | the passthrough entries (the hazers) the show program has switched ON, by name: at most 16, distinct, each 1 to 64 characters. Left out is the empty list: every hazer off. ltcplay sends it (`[]` for none ON) only while flamesafe's config lists hazers; with none, its frame is exactly the frame before this field existed. Added 2026-10-29; see "Passthrough: the hazers" |
 
 **ltcplay's side: when values may be non-zero.** ltcplay sends non-zero
 values only while a show is released, live, and its timecode is moving
@@ -102,7 +219,9 @@ not JSON, not an object, longer than 16384 bytes, wrong `v`, wrong or
 missing `k`, wrong `t`, any field missing or of the wrong type, a `seq` at
 or below the last accepted one, a `mono` below the last accepted one, a
 `values` list that is not exactly 512 integers 0 to 255, a `universe` that
-is not the flame universe, a sender other than the locked one.
+is not the flame universe, a `hazers_on` that is present and not a list of
+at most 16 distinct names of 1 to 64 characters (checked after the key, so a
+wrong key is still "wrong key"), a sender other than the locked one.
 
 **Rejections are journaled once per episode (2026-10-02).** Before this
 date a rejected flame frame was counted and shown in `last_reject` but
@@ -169,7 +288,9 @@ what is in it.
  "stats": {"...": "counters, for the journal"},
  "groups": [
    {"name": "front row", "safety_slot": 401,
-    "fire_slots": [411, 412, 413, 414, 415],
+    "safety_slots": [401], "safeties_up": [true],
+    "safeties_locked": [false],
+    "fire_slots": [411, 412, 413, 414, 415], "aim_slots": [],
     "wanted": true, "armed": "armed", "reason": "", "amber": "",
     "dwell_s": 0, "sent_safety": 78,
     "sent_fire": [0, 0, 0, 0, 0], "commanded_fire": [0, 0, 0, 0, 0]}
@@ -183,8 +304,8 @@ Top level:
 | `k` | the key. ltcplay rejects a status frame without its own key |
 | `heartbeat` | flamesafe's tick counter. The corner flame and the deck marquee step on this |
 | `tick_ms` | the tick period |
-| `universe`, `priority`, `arm_value` | what flamesafe is configured to send. `priority` is always 200 |
-| `confirmed` | false until the config's numbers are confirmed by Andy. Show it |
+| `universe`, `priority`, `arm_value` | what flamesafe is configured to send. `priority` is always 200. `arm_value` here is the FILE's arm value, the default for every group without a `safety_profile`; a group with one arms at its own value, and the per-group `arm_value` is the truth for that group |
+| `confirmed` | false until the config's numbers are confirmed by Andy. Show it, quietly: ltcplay journals it (the Stream Deck once, when it first sees it) and carries it in the engine's status for the rack screen's Info popup. It is never drawn on a Stream Deck key (the amber corner mark went 2026-10-19) and never changes what any key reads |
 | `fault` | empty, or one sentence: an overrun, a compose fault, a failed sACN send, a failed status send. `fault_age_ms` says how long ago. **A non-empty fault is red for ltcplay**: an armed group is not "fine" while the wire is not being written. A fault clears itself after 5 s of clean ticks and clean sends (the journal records both the fault and its clearing), so one failed send is not red all night; the cumulative counts (`sacn.errors`, `sacn.status_errors`, `stats.overruns`, `stats.compose_faults`, `stats.faults_noted`, `stats.faults_cleared`, `stats.journal_dropped`) never reset, and ltcplay shows them in health |
 | `arm_input.state` | `never`, `live` or `stale`. Stale means every group is disarmed |
 | `arm_input.foreign_senders` | how many OTHER senders are currently sending on the arm link besides the locked one (added round 3 of the safety review, 2026-10-02). Zero almost always. A non-zero count means a second local process is talking to this port right now. Its `wanted` bits can only ever CLEAR a group's bit, never set one, while it is not the locked sender. It CAN become the locked sender: the lock goes to whoever sends next once the locked sender has been quiet for `arm_stale_ms`, and a flood that crowds the real deck's frames out of the receive buffer makes the real deck look quiet (the round-4 review did this). Once that has happened the real deck, still sending, is the one counted here. That is why, as of round 4, no consent edge counts while this is non-zero (see the arm link section): whoever holds the lock, nobody can arm a group while anyone else is on the link. ltcplay must alarm on this alone; the clearing can leave `wanted` looking exactly like what the deck itself expects, with nothing else to notice |
@@ -192,6 +313,10 @@ Top level:
 | `frames.state` | `never`, `fresh` or `stale` (by `frame_stale_ms`). `stale` or `never` means every group is disarmed and needs a cycle once the link is back |
 | `frames.fire` | `passing` while the last frame is younger than `fire_hold_ms`, else `zeroed`: every fire slot is zero |
 | `frames.last_reject` | why the last rejected datagram was rejected (a refused disarm_all's reason starts `disarm_all:`) |
+| `frames.foreign_senders` | how many OTHER senders had a keyed, well-formed flame frame or disarm_all refused as `another sender` inside the last `frame_stale_ms` (added 2026-10-03, the second-copy guard). Zero almost always. The first such datagram of an episode disarms every group; while non-zero, no consent edge counts (see "Second copies" above) |
+| `frames.new_sender` | true for `frame_stale_ms` after the flame link's lock passed to a different sender (added 2026-10-03). The change itself disarms every group; no consent edge counts while it is true. True for about half a second after every normal ltcplay restart |
+| `frames.flooded` | true for `frame_stale_ms` after a tick that found more than 50 datagrams, or more than 256 KiB, waiting on the flame link (added 2026-10-03, fix round 1 of PR #40). No consent edge counts while it is true |
+| `passthrough` | the hazers (added 2026-10-29): one entry per config `passthrough` entry, `[]` for none. See "Passthrough: the hazers" |
 | `disarm_all` | what the show program's Abort did: `accepted` (disarm_all datagrams taken, cumulative), `last_id`, `last_reason`, `age_ms` (null before the first). Added 2026-10-02, see "Disarm every group" below |
 | `sacn.sent`, `sacn.errors`, `sacn.status_errors` | packets sent to the node, sends that failed, status sends that failed. Cumulative, never reset; shown in health. A failed send also sets `fault` for 5 s, which is the red |
 | `stats.journal_dropped` | journal lines lost while the console was blocked, cumulative. When the backlog drains the journal writes how many were lost |
@@ -202,12 +327,177 @@ Per group, the two lamps of section 8 panel 5:
 |---|---|
 | `wanted` | what the arm input is asking for |
 | `armed` | the ARMED lamp: `disarmed` (dim blue), `armed` (green: the safety slot carries the arm value), `held` (amber: arm asked for and refused) |
-| `reason` | why held, in words: `cycle the arm`, `dirty edge`, `re-arm dwell`, `chatter`, `arm input stale`, `arm input has never asserted`, `safety program fault`, `Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back.`, `Show program has not answered yet: disarmed. Cycle the arm once it is running.`, `Another sender is on the arm link: a cycle cannot arm until it stops. Cycle the arm again once it has gone.` (round 4: shown instead of `cycle the arm` while `arm_input.foreign_senders` is non-zero or `arm_input.flooded` is true, and also instead of the Abort sentence), `Disarmed by the show's Abort. Cycle the arm to re-arm.` (2026-10-02, disarm_all) |
-| `amber` | `flashing` when cycling the arm is the fix (`cycle the arm`, `dirty edge`, the Abort sentence); `steady` when cycling would only restart the wait or fix nothing (`re-arm dwell`, `chatter`, and every veto). Empty unless held |
+| `reason` | why held, in words: `cycle the arm`, `dirty edge`, `re-arm dwell`, `chatter`, `arm input stale`, `arm input has never asserted`, `safety program fault`, `Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back.`, `Show program has not answered yet: disarmed. Cycle the arm once it is running.`, `Another sender is on the arm link: a cycle cannot arm until it stops. Cycle the arm again once it has gone.` (round 4: shown instead of `cycle the arm` while `arm_input.foreign_senders` is non-zero or `arm_input.flooded` is true, and also instead of the Abort sentence), `Another sender is on the show program link, or it just changed hands: every group is disarmed and a cycle cannot arm until that has settled. Cycle the arm again once it has.` (2026-10-03, the second-copy guard: shown the same way while `frames.foreign_senders` is non-zero, `frames.new_sender` is true or `frames.flooded` is true; the arm link's sentence wins when both apply), `Disarmed by the show's Abort. Cycle the arm to re-arm.` (2026-10-02, disarm_all) |
+| `amber` | `flashing` when cycling the arm is the fix (`cycle the arm`, `dirty edge`, the Abort sentence); `steady` when cycling would only restart the wait or fix nothing (`re-arm dwell`, `chatter`, and every veto, the flame link's included). Empty unless held |
 | `dwell_s` | whole seconds left in the re-arm dwell, 1 or more while held for it, else 0. The lamp shows this number; the screen never counts down on its own |
-| `sent_safety` | the SENT safety value this tick: 0 or the arm value |
+| `arm_value` | the value this group raises its safety slots to: the file's `arm_value`, or its `safety_profile`'s (added 2026-10-26). The rack screen shows it as the group name's tooltip, "Arms at N on its safety slots" |
+| `sent_safety` | the SENT safety value this tick: 0 or the group's `arm_value` |
+| `safety_slot` | the group's safety slot; for a multi-safety group, the first of `safety_slots` |
+| `safety_slots` | every safety slot of the group, in config order (added 2026-10-26, multi-safety). One entry for a group whose config `safety` is one number |
+| `safeties_up` | one per safety slot: true when that slot carries the arm value in this frame (added 2026-10-26). `armed` stays the one state of the whole group; this list is for the rack screen's "2 of 3 safeties up" line |
+| `safeties_locked` | one per safety slot: true when that slot is in the lockout file and so held at zero and left out of the arm (added 2026-10-26). Always false for a one-safety group |
+| `aim_slots` | the group's aim slots as this program read them at start, sorted; `[]` for a group without `aim` (added 2026-10-28). Display only: ltcplay compares them with its own list (a display only "aim" alert while they differ) and the rack screen's aim line shows them with `commanded_fire` and `sent_fire` on those slots. An older ltcplay ignores it |
 | `sent_fire` | the SENT fire values this tick, one per fire slot |
 | `commanded_fire` | what ltcplay asked for on those slots this tick (COMMANDED). Not a lamp; for the journal and the amber row flag (armed, commanded fire, sent none, for more than 3 frames) |
+
+### Multi-safety groups (added 2026-10-26)
+
+A group's `safety` in the config is one slot (as before, behaviour
+unchanged) or a list of distinct slots: one arm group driving several
+fixtures, each with a safety channel of its own (the wave flamer: three
+6-channel fixtures, channels 1 to 5 fire slots and channel 6 that fixture's
+safety). A list of one is the same group as that one number. Every slot
+rule applies to every safety slot: 1 to 512, never one of any group's fire
+slots, never shared with another group. Such a group is still one arm
+group: one Stream Deck key, one rack screen card, one hold to arm, one
+disarm, one `armed` state.
+
+- Arming raises every unlocked safety slot of the group in the same frame.
+  Disarming, an Abort, a lost link or any other disarm lowers all of them
+  in the same frame.
+- A safety slot named in the lockout file stays at zero under any command
+  and is left out of "every safety up": the group arms on its other
+  safeties. With every safety slot locked the group is held (steady amber,
+  "Every safety slot of this group is locked out: it cannot arm until one
+  is unlocked."). Fire slots follow the lockout file exactly as before.
+- After composing each frame flamesafe confirms that every unlocked safety
+  slot of every raised group carries its arm value. If one does not (it
+  dropped, was overwritten, or was unlocked while the group was up, so its
+  rising edge was never checked), the whole group comes down in that same
+  frame: every safety slot and every fire slot zero, the latch cleared, a
+  journal line, `stats.safety_unconfirmed` counted, and the lamp reads
+  "Not every unlocked safety slot of this group was up: it was disarmed.
+  Cycle the arm to re-arm." (flashing amber). A valid config cannot trip
+  this; it is the fail safe.
+- Nothing from the show program's frame (show data, xLights live, the
+  purge) ever reaches a safety slot, exactly as for a one-safety group:
+  flamesafe writes safety slots from its own arm state only.
+- A safety slot in the lockout file of a ONE-safety group is ignored, as
+  it always was (only that group's fire slots are zeroed by the lockout).
+
+### A group's own arm value: safety_profile (added 2026-10-26)
+
+The wave flamer is not a G-Flame, so the G-Flame and Showven rules that fix
+the file's `arm_value` (78 validated for 30-50%, 157 for 60-80% with
+`accept_unsourced_risk`, everything else refused) do not describe it. Jeff
+tunes its arm value in the config, as often as the fixtures need:
+
+```json
+{"name": "wave flamer", "safety": [6, 12, 18],
+ "safety_profile": {"arm_value": 178},
+ "fire": [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17]}
+```
+
+A profile takes four keys; any other key is refused. Every number is Jeff's,
+and the optional keys are guards that compare only the numbers written in
+the profile, never the G-Flame or Showven ones:
+
+| Key | Rule |
+|---|---|
+| `arm_value` | required. A whole number 1 to 255. 0 is the disarm value and is refused; 255 is allowed |
+| `enable_lo`, `enable_hi` | optional, both or neither (null is the same as left out). `enable_lo` is at least 1, so the disarm value 0 reads as not enabled, and `arm_value` lies inside the window |
+| `fire_at` | optional (null is the same as left out): the lowest safety value that fires the fixture. `arm_value` is below it, and no single-bit flip of `arm_value` reaches it (178 with `fire_at` 242 is refused, because 178 with bit 6 flipped is 242; 243 loads). Left out, there is no fire guard: the config loads and flamesafe writes one line at start saying that group has no fire guard |
+
+- A profile replaces the G-Flame and Showven checks for that group only. It
+  needs no `accept_unsourced_risk`: the profile is the deliberate
+  statement. Every group without a profile, and the file's own
+  `arm_value`, is checked exactly as before (178 there is still refused).
+- A group `arm_value` beside a profile that says a different number is
+  refused; the same number is allowed.
+- Arming raises every safety slot of the group (one or a list) to the
+  profile's value; any disarm writes 0 on all of them. Every other rule
+  (the sole writer, the Abort latch, the link key and lock, hold to arm,
+  `arm_stale_ms`, one copy per machine, the lockout, the edge gate, the
+  dwell) is unchanged.
+- The config is read at start, as before: a changed value takes effect on
+  the next restart of flamesafe.
+
+### Aim slots: a head's angle is not a flame (added 2026-10-28)
+
+The wave flamer's channel 1 points the nozzle (0 is -105 degrees, 128 is
+straight up, 255 is +105 degrees). It lights nothing, and xLights rests it
+at 128. Two rules written for flame channels held it at zero: this
+program's rising-edge check (every fire slot below 15) and ltcplay's
+zero-first hold (a slot waits to be seen at zero after a landing). The
+nozzle sat at its end stop for the whole show while the preview swept it
+(Jeff, 2026-10-28). A group may list such slots as `aim`:
+
+```json
+{"name": "wave flamer", "safety": [6, 12, 18],
+ "safety_profile": {"arm_value": 178},
+ "fire": [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17],
+ "aim": [1, 7, 13]}
+```
+
+The wave flamer's channels, per fixture (6 channels: slots 1 to 6, 7 to
+12 and 13 to 18 in the example). Source: Jeff, from the Showven xLights
+model (2026-10-28); there is no Showven DMX chart in this repo.
+
+| Channel | Role | Values | Written by |
+| --- | --- | --- | --- |
+| 1 | Angle (the only `aim` slot) | 0 = -105 deg, 128 = 0 deg (straight up), 255 = +105 deg; 15 steps of 15 deg, e.g. 54 = -60 deg | xLights |
+| 2 | Speed | 0 and 255 = max speed; 1 to 254 slower to faster; xLights sends 255 while moving | xLights |
+| 3 | Ignition | 0 to 253 off, 254 to 255 on | xLights |
+| 4 | Duration | 0 and 255 = fires while ch3 is on (10 s limit); 1 to 254 = value x 10 ms; xLights sends 0 | xLights |
+| 5 | Preset | 0 to 2 none; 3 to 255 = preset N, value = 2 + N x 2.55 (a preset can run a programmed sequence: fire-capable) | xLights |
+| 6 | Pressure / arm (safety slot) | 0 to 49 relief (e-stop), 50 to 200 armed, 201 to 255 relief | flamesafe only (arms at 178) |
+
+Only channel 1 is aim. Channel 2 (speed) lights nothing but stays a fire
+slot under every rule: xLights sends 255 on it while the head moves, so a
+group armed mid-movement is held by the rising-edge check, as before.
+
+- Optional. Each aim slot must be one of the group's own fire slots, listed
+  once, and at least one fire slot must stay out of `aim`; anything else is
+  refused at start.
+- `aim` is only for a group with a `safety_profile` (the wave flamer); in
+  a G-Flame or Showven group, or a wave flamer whose profile was deleted,
+  it is refused at start.
+- A typo must not free a fuel channel, so `aim` is also refused at start
+  unless: each fixture has at most one aim slot (a fixture's slots are the
+  group's fire slots after the previous safety slot, up to its own; a group
+  with one safety slot is one fixture holding every fire slot), in a group
+  with several safety slots no aim slot lies after the last one, and each
+  aim slot is channel 1 of its fixture: 5 below that fixture's safety slot
+  (channel 6), with the fixture's fire slots exactly that slot and the 4
+  after it. `[1, 7, 13]` is taken; `[1, 7, 14]`, `[2, 7, 13]`,
+  `[2, 8, 14]` and `[2, 3, 4, 5]` are refused, by flamesafe (it does not
+  start) and by ltcplay's reader (`ltc serve` does not start).
+- What this cannot catch: a whole layout moved consistently (safety, fire
+  and aim all shifted by the same amount). Channel 1 is measured from the
+  safety slot the operator writes; only the patch Andy confirms says where
+  each fixture really starts.
+- Restart BOTH flamesafe and ltcplay after editing `aim`: each reads the
+  list once, at start. Deploy and restart them together, from the same
+  release. A flamesafe from before #146 refuses the `aim` key as unknown
+  and does not start (fail closed); the one in #146 accepts `aim` without
+  the per fixture rules above.
+- On every disarm, abort, stale input or lost link the angle goes to 0,
+  like every fire slot, so the head slams to its -105 degree end stop. On
+  a re-arm the flame slots are free after the 3 tick edge-quiet hold while
+  the head may still be swinging back from that end stop.
+- An aim slot is still a fire slot everywhere else: it goes out only while
+  the group is armed, it is zero when the group is disarmed, locked out,
+  aborted or stale, and the lockout file zeros it like any fire slot.
+- It is left out of the rising-edge check (a nozzle at 128 does not hold
+  the group disarmed) and is not held at zero through the edge-quiet
+  window (zero would swing the head to its end stop for those ticks).
+  Every other fire slot of the group keeps both rules exactly as before.
+- ltcplay reads the same lists from this file and leaves aim slots out of
+  its zero-first hold, in show playback (Programming playback included)
+  and live flame programming.
+- Seeing them (2026-10-28). flamesafe journals one start line, `aim slots:
+  wave flamer 1, 7, 13 (...), read from <full path of its config>` (or
+  `aim slots: none in <path>`), and every status frame carries each
+  group's `aim_slots`. ltcplay journals its own list and the file it read
+  when the flame link starts (`Flame link: aim slots 1, 7, 13 ... read
+  from <path>`). While the two lists differ (ltcplay started before the
+  edit, or the two read different files) the rack screen raises an alert
+  of its own kind, "aim", saying both lists, the file ltcplay read and what
+  to do; it clears itself once they agree. Display only: it never holds a
+  show at showtime, plays no announcement, sounds no booth note and
+  changes nothing on the Stream Deck, it
+  never blocks Stop, Hold, Abort or a disarm, and nothing in it reaches a
+  flame frame or the arm link.
 
 What ltcplay does with it: display, journal, the amber row flag. There is no
 path from a status frame to flame output, because ltcplay never writes the
@@ -216,6 +506,114 @@ flame universe.
 If no status frame arrives for 1 s, ltcplay shows red for the safety
 program and keeps running the rest of the show. It never takes over the
 flame universe. There is no fallback path, deliberately.
+
+## Passthrough: the hazers (added 2026-10-29)
+
+Jeff, 2026-10-29: three haze machines join the flame universe. "Abort
+turns off the hazers. Hazers don't have an arm/disarm channel." And: "I
+want haze control to be in LTC Play, not the FSEQ. I want Andy to be able
+to set the show levels of both Haze and Fan, in addition to arming which
+ones run during the show." Before this every slot in no group was zero. A
+haze machine is not a flame: it gets no safety slot, no edge check and no
+dwell. It gets an arm that only the show program can set, and that
+everything uncertain clears; the show program writes its levels.
+
+The config's optional top-level `passthrough`, one entry per hazer, its
+haze channel and its fan channel by role (swap the two numbers if a
+fixture is the other way round):
+
+```json
+"passthrough": [
+  {"name": "Hazer 1", "haze": 80, "fan": 81},
+  {"name": "Hazer 2", "haze": 82, "fan": 83},
+  {"name": "Hazer 3", "haze": 84, "fan": 85}
+]
+```
+
+Refused at start (flamesafe does not start) unless: a list of at most 16
+objects with exactly `name`, `haze` and `fan`; each name 1 to 64
+characters and used by no other entry and no group; `haze` and `fan` each
+a whole number 1 to 512, two different slots; no slot listed by another
+entry; and no slot that is any group's safety, fire or aim slot. Left out,
+there is none and every slot in no group is zero, exactly as before. An
+entry's two slots pass and zero together; flamesafe never looks at the
+roles, which are for the show program and the screens.
+
+**The rule.** An entry's slots carry the values of the last accepted flame
+frame only while ALL of these hold; otherwise they are zero:
+
+1. the flame link is fresh (`frame_stale_ms`; stale or never is zero). The
+   hold is `frame_stale_ms`, not `fire_hold_ms`: haze is not a flame;
+2. the last accepted frame from the locked sender lists the entry in
+   `hazers_on`;
+3. since the last thing that took it away, an accepted frame from the
+   locked sender has listed it OFF (left it out of `hazers_on`). What takes
+   it away: flamesafe starting, the link going stale, the link's lock
+   changing hands, a panic tick (an overrun or a compose fault, after
+   which every group needs a fresh cycle too), and an accepted
+   `disarm_all` (the show's Abort). So an
+   Abort zeroes every hazer on the tick it arrives in, and a hazer stays
+   zero, whatever later frames ask, until the show program has sent it
+   OFF and then ON again. A frame still asking ON after an Abort (an
+   engine that did not switch its hazers off) is not enough;
+4. the slot is not in the lockout file (zero whatever else holds, the
+   safe side; the engine's lockout names flame machines, so this is only
+   ever a guard).
+
+Only the locked flame-link sender can arm one: `hazers_on` rides on
+the flame frame, after the key, the sender lock, the sequence and the
+sender's clock. A foreign keyed frame is refused as `another sender` before
+its `hazers_on` is used (and disarms every group as before). A refused
+`disarm_all` (another sender, no live link) changes no hazer, by design:
+only the locked sender's own frames and its accepted `disarm_all` decide
+them; an older
+ltcplay that sends no `hazers_on` switches every hazer off. A name this
+config does not have is ignored.
+
+**What it never does.** It never reads or writes any group's state: no
+latch, no consent edge, no dwell, no safety or fire slot, no confirmation
+step. Its slots are written before the groups', and the config refuses any
+overlap, so a group's slot can never hold a hazer value. Arming never
+depends on it and it never depends on arming. A panic tick (overrun,
+compose fault) is all zeros, hazers included. Every other slot in no group
+is still zero.
+
+**Seeing it.** The status frame's top-level `passthrough` lists every
+entry: `name`, `slots` (haze then fan), `haze`, `fan`, `asked` (in the last accepted frame's
+`hazers_on`), `enabled` (switched on here: asked and not taken away),
+`passing` (its slots carry the show's values on this tick), `locked` (one
+per slot: true for a slot in the lockout file, which is zero whatever
+else holds, and then `why` says so), `sent` (the
+values on its slots this tick) and `why` (empty while passing, else one of:
+`switched off in the show program`, `the show program link is not fresh`,
+`not yet seen switched off by the show program since this program started:
+switch it off and on again`, `zeroed by the show's Abort: switch it off
+and on again in the show program`, `the show program link changed hands:
+switch it off and on again in the show program`, `the safety program
+faulted (an overrun or a compose fault): ...`, `a slot of it is in the
+lockout file: held at zero`). A Composer also refuses, when it is built,
+a passthrough slot that is any group's slot, however its Config was made.
+flamesafe journals one
+start line, `passthrough: Hazer 1 80, 81; ... read from <path>` (or
+`passthrough: none in <path>`), and one line when an Abort switches off a
+hazer that was on.
+
+**ltcplay's side** (`ltcplay/hazers.py`, `ltcplay/flamelink.py`). The
+engine reads the same `passthrough` list from this file and holds, per
+hazer, ARMED or DISARMED and a Haze and a Fan level (0 to 255, set in
+percent on the rack screen, kept in `ltcplay_hazers.json` in its settings
+folder). The hazer slots never carry show data: the engine zeroes them in
+whatever the FSEQ, xLights or the Programming transport carries, and
+writes an ARMED hazer's two levels there only while a show is playing (the
+show audio playing a cue and the scheduled show in SHOW; not on Hold, not
+between shows, not in Programming). Every flame frame carries `hazers_on`,
+the names ARMED, whenever this file lists hazers. DISARMED at start, after
+Abort, after Stop (both send `disarm_all`, which disarms them at the link
+before its first copy), when live flame programming ends (it sends
+`disarm_all` too; arming a hazer is refused while it is on), and while it
+has no fresh status from flamesafe. While the engine's list and the
+status frame's differ, the rack screen raises a display only alert of
+kind "hazers".
 
 ## The arm link (build step 7b, landed 2026-10-01)
 
@@ -365,7 +763,13 @@ lock goes to whoever sends next once the locked sender has been quiet for
   residual, not something the link prevents: the key lives in a file that
   any process running as the same user can read. Only when the show
   program itself dies does the show link go too, and link loss disarms
-  every group (section above).
+  every group (section above). **Decided 2026-10-03 (Jeff):** the show
+  machines are dedicated and run nothing else, so the realistic process
+  "holding the key" is a second copy of `ltc deck` or ltcplay. A second
+  `ltc deck` now refuses to start while one is running, and a crashed one
+  never blocks a restart (see "Second copies" above). Protecting the key
+  with a separate user is not built. The residual stands only for a program
+  that is neither, which a dedicated show machine does not have.
 - *The flood.* About 300,000 valid frames in 2 s crowd the real deck's
   frames out of the receive buffer; the deck looks quiet for
   `arm_stale_ms`, the arm input goes stale (every group disarms), and the
@@ -465,7 +869,8 @@ same as a crashed or frozen test driver: silence is silence. The show link
 stays up in that case, and the arm lock lapses after `arm_stale_ms`, so a
 local process holding the key can then take the lock with nothing to
 compete against; it still needs a genuine low then high of its own to arm
-anything (the residual stated under round 4 above). **Reconnecting never re-arms anything by
+anything (the residual stated under round 4 above, and what was decided
+about it on 2026-10-03). **Reconnecting never re-arms anything by
 itself** (rule 6, consent): the deck's own `seq` restarts at 0 on every
 connect and reconnect (rule 3 below), so even a deck that remembered its
 last button states and resent them immediately would fail consent, which
@@ -475,6 +880,113 @@ never tries to remember pre-disconnect state: on open (first connect, or a
 reconnect after the hardware was lost) it starts every group `wanted`
 false, so the operator sees every key read OFF and re-arms by pressing it,
 matching what the lamp already says ("cycle the arm").
+
+## Arming from a screen (added 2026-10-03)
+
+Jeff approved arming from the rack touch screen and from an iPad on the
+same consent rules as the Stream Deck. Since 2026-10-07 there are no PINs or
+sign-ins: screen arming needs only a listed address plus the hold. **Nothing in flamesafe changed for it, and no rule was
+loosened.** This section says why, and how.
+
+**The design: a screen hold is a remote press of the deck's own key.** The
+page never sends anything to flamesafe. A screen's "hold to
+arm" goes to ltcplay's engine (`ltcplay/remote.py`, `arm-hold`, repeated
+every 100 ms while the finger is down). The Stream Deck process
+(`ltcplay/streamdeck.py`, `ScreenKeys`, read 20 times a second from the
+engine's `deck-input`, loopback only) treats a live screen hold exactly as
+a finger on that group's key: the deck's own hold timer, re-arm
+refractory window, latched refusal and operator gate all apply, and when
+the hold completes the deck sets that group's `wanted` bit on its own arm
+socket, the same as for its own key. A per-group Disarm on the page is an
+instant tap of that key. The engine answers it only once it is known
+(2026-10-29, the same rule as Disarm all flame groups): "confirmed" when
+flamesafe's own status, received after the deck read the Disarm, reports
+the group disarmed and not wanted within 1 s; when the deck has not read
+the engine in the last 0.5 s, flamesafe's status is not reaching the
+engine, or that word does not come, the engine sends the flame link's
+`disarm_all` (below; there is no one-group disarm on the link, so every
+group needs a fresh cycle, every hazer goes off and the show's flames stay
+at zero until Hold then Resume or a new run), raises a flames alert and
+says "forced" and exactly that. Nothing new reaches flamesafe: the plain disarm is still the
+deck's tap, and the forced one is the Abort's `disarm_all`. So:
+
+- There is still exactly **one sender on the arm link**, the deck process.
+  The sender lock, the round-2 AND, the forced-edge rule, the round-4 veto
+  (no consent while `foreign_senders` is non-zero or `flooded`), the
+  post-Abort window after a `disarm_all`, the second-copy guard and
+  `arm_stale_ms` all see the same single stream they always have and work
+  unchanged. flamesafe cannot tell, and does not need to tell, whether a
+  bit was set by a finger on the deck or on a screen.
+- There is **one `wanted` latch per group**, the deck's. The deck's own
+  Abort (all false) disarms a group the screen armed, the deck's tap on
+  that group's key disarms it, and the deck's keys draw it, because it is
+  the deck's own bit.
+
+**Why not a second sender on the arm link.** Three reasons, each enough on
+its own:
+
+1. The round-4 veto refuses every consent edge while another sender is on
+   the link, and the deck process sends at 20 Hz all the time, unplugged or
+   not. A second arm sender could never arm anything while the deck runs,
+   and lifting the veto for it would reopen exactly the takeover the
+   round-4 review proved.
+2. Two senders would mean two `wanted` latches. A group armed from the
+   screen would be one the deck's own bit says is off: the deck's Abort
+   (all false) would leave it armed, and the deck's key could not disarm
+   it without the deck changing anyway.
+3. A second port with its own lock and merge rules would be a new consent
+   path inside flamesafe to review and get right; this design adds none.
+
+**What the screen hold must prove, at the engine** (all re-checked on
+every heartbeat; any failure lets the hold go and is journaled):
+
+- a listed address: the engine listens only on the one listed
+  show-network address and on 127.0.0.1, and refuses anything proxied,
+  cross-site or misaddressed (no PIN or sign-in since 2026-10-07);
+- `screen_arming` on in `ltcplay_remote.json`: **off by default** since the
+  review of PR #43 (2026-10-05, P0-4), until PR #41's own safety review
+  decides; only the JSON word `true` turns it on, and a broken file reads as
+  off. It is set on the show machine itself (2026-10-22: the rack screen's
+  Programming, "Arming from a screen"; route `screen-arming`, loopback only,
+  the role matrix's Settings to turn it on, anyone to turn it off). While it
+  is off the engine refuses every `arm-hold` before looking at anything
+  else, and says how to turn it on, refuses a screen's per-group Disarm
+  (Disarm every flame group and the Stream Deck still work), and `ltc deck`
+  takes no screen hold (the engine answers `enabled` false);
+- no Abort standing, the Stream Deck program heard within 2 s, this device
+  not in Arrange mode on the Morning page, and not every machine of the
+  group locked out (2026-10-22): each is refused by the deck or flamesafe
+  anyway, and the engine says it by name before a hold fills its bar. What
+  only the deck knows (its re-arm wait, its latch, its operator gate) it
+  reports back on its next `deck-input` read (`refused=<hold id>.<code>`),
+  and the hold's next heartbeat says it. A hold is credited with arming
+  a group only when the deck reports it took THAT hold (`taken=<hold id>`).
+  Reporting only: nothing the deck or flamesafe decides changed;
+- the page's own status no older than 1 s, and flamesafe's status (the
+  `status_mirror_port` copy) no older than 1 s, so the page is showing
+  flamesafe's real state, not a cached one;
+- the group not already armed or wanted;
+- one hold per group at a time: a second browser holding the same group is
+  refused; a Disarm from anyone cancels every hold on that group, and an
+  Abort or Disarm every flame group cancels every hold.
+
+**Connection loss never completes an arm.** The engine lets a hold go 0.25
+s after its last heartbeat, and a heartbeat for a hold that was let go is
+refused ("lift your finger and hold again"): an interrupted hold never
+carries on. The deck lets a screen hold go the moment the engine stops
+reporting it fresh, or the moment it has not heard from the engine for 0.3
+s. And the deck fires a screen hold only when BOTH its own `ARM_HOLD_S`
+has run since it saw the press AND the engine reports `held_s` of at least
+1 s, where `held_s` is measured to the last heartbeat the engine actually
+received. So a hold whose page drops before 1 s of heartbeats has arrived
+can never complete, whatever the timing of the deck's polls.
+
+**What it cannot do.** The physical key switch on Andy's flame system sits
+outside all of this: with it off nothing fires, whatever any software
+says. With the deck unplugged, the deck process holds every group off
+(round 4) and does not run screen holds, so nothing arms from a screen
+either. If the deck process is not running, nothing reads the screen
+holds and nothing arms.
 
 ## Disarm every group: the show program's Abort (added 2026-10-02)
 
@@ -509,10 +1021,14 @@ accepted one and `mono` must not go backwards. With the flame link not
 live (`never` or `stale`) it is refused as `no live flame link to accept it
 from`: there is no locked sender to take it from, and nothing is armed
 anyway, because link loss already disarmed every group. A refused
-disarm_all changes nothing, is counted (`stats.disarm_all_rejected`), sets
+disarm_all is never taken as the show's Abort (it does not set the Abort
+words or `disarm_all.last_id`), is counted (`stats.disarm_all_rejected`), sets
 `frames.last_reject` (prefixed `disarm_all:`) and is journaled once per
 episode (above). It does not take the sender lock, refresh the link's
-liveness or carry any fire values: only flame frames do those.
+liveness or carry any fire values: only flame frames do those. One refused
+as `another sender` is a second keyed sender on the flame link, and since
+fix round 1 of PR #40 that disarms every group ("Second copies" above);
+any other refusal changes nothing.
 
 **What it does, and all it does.** On the tick it arrives in (the service
 drains the flame link before it composes): every group's latch is cleared,
@@ -615,7 +1131,8 @@ its rules belong here because they are what the consent rule rests on:
 flamesafe sends the whole flame universe as one ANSI E1.31 data packet per
 tick, priority 200, to the configured unicast destination, with its own
 CID (a uuid5 of `flamesafe.jeffholmespresents`) and source name
-`flamesafe`. Every channel that belongs to no group is always zero. A
+`flamesafe`. Every channel that belongs to no group is always zero, except
+a passthrough entry's slots while it is switched on (2026-10-29, above). A
 group's safety slot is 0 or the arm value. A group's fire slots carry
 ltcplay's values only while that group's safety slot carries the arm value
 on the same packet and the edge-quiet window (3 ticks from the rise) has
@@ -697,8 +1214,9 @@ to clear it (streamdeck.py only, no wire change); a latched Stream Deck
 screen no longer paints a flat OFF over a group flamesafe is still
 actually reporting armed, nor hides the spoof/divergence alarm, while
 latched; a `confirmed: false` config now shows the real per-group state
-with an added caveat instead of blanking it (CONTRACT.md's own "show it"
-was always about an overlay, never a replacement).
+instead of blanking it (CONTRACT.md's own "show it" was never "show it
+instead of the real state"). The small amber corner mark this round added
+to each key for it was removed again on 2026-10-19 (below).
 
 Version 2, 2026-10-02 (round-4 independent review of PR #31): the
 status frame gains `arm_input.flooded` and one new `reason` sentence
@@ -734,3 +1252,83 @@ post-Abort window's real length and its edge, and of what "timecode
 moving" means; on ltcplay's side, its copy of `frame_stale_ms` is
 required (read from flamesafe's own config) and a stuck sender reports
 itself. No wire change.
+
+Version 2, 2026-10-03 (the second-copy guard, PR #34's open question 10):
+no consent edge counts while another keyed sender is on the flame link or
+the flame link's lock has just changed hands (see "Second copies" above).
+The status frame gains `frames.foreign_senders` and `frames.new_sender`
+and one new `reason` sentence; no existing field's name, type or meaning
+changed. On ltcplay's side the show program and `ltc deck` each refuse to
+start while another copy is running.
+
+Version 2, 2026-10-03 (fix round 1 of PR #40, Jeff's direction): a second
+keyed sender on the flame link while the lock holder is live now DISARMS
+every group instead of only blocking new arming, and a flood on the flame
+link blocks consent. The status frame gains `frames.flooded`; the held
+reason's words say every group is disarmed. No existing field's name or
+type changed.
+
+Version 2, 2026-10-17 (the Morning and Shutdown page, MORNING.md): the
+config gains `lockout_file`, the path of a JSON file written by ltcplay's
+engine (the one writer) naming `flame_channels` to hold at zero. Left out,
+it is `ltcplay_lockout.json` beside the config file (where the show PC
+keeps both); `false` switches it off on purpose; a relative path is beside
+the config file. flamesafe polls it twice a second: a locked fire slot is
+zero on every packet whatever is armed or commanded, and a group with every
+fire slot locked is held (steady amber, "Every machine in this group is
+locked out"). An unreadable file keeps the last lock set; a file that held
+locks and disappears keeps them too (`missing_kept`, the engine never
+deletes the file, it rewrites it) until the engine writes it again; a file
+that never held locks and is missing locks nothing. The status frame gains
+a top-level `lockout` object (`slots`, `state`: none, read, missing,
+missing_kept or unreadable) and per group `locked_fire`; no existing
+field's name, type or meaning changed. ltcplay's side also sends a PURGE frame on the flame link
+(flamelink.purge_set): an ordinary flame frame, carrying fire values only
+while no show cue is playing and for 0.25 s after the page's last
+heartbeat, which flamesafe treats exactly like any cue frame (fire values
+pass only for an armed group). Nothing on this link's wire changed for it.
+
+Version 2, 2026-10-19 (Jeff: "Kill the little orange dot"): the Stream Deck
+no longer draws the amber corner mark on its group keys for `confirmed:
+false`; a key reads the group's real state and nothing else, exactly as it
+does for a confirmed config. The unconfirmed config is still said, where it
+can be read at leisure and never in the way: flamesafe's own journal at
+startup (unchanged), one line in the Stream Deck's journal the first time a
+fresh status frame says `confirmed: false` (and one more if it later says
+true), `flames.confirmed` in the engine's `/api/remote/status`, and one line
+in the rack screen's Info popup. Display only: `confirmed` never changed
+what the deck sends, and no field on any wire changed.
+
+Version 2, 2026-10-26 (multi-safety, the wave flamer): a group's `safety`
+may be a list of distinct slots, one per fixture, armed as one group (see
+"Multi-safety groups" under the status frame). The status frame gains per
+group `safety_slots`, `safeties_up` and `safeties_locked`, and `stats`
+gains `safety_lock_blocks` and `safety_unconfirmed`. A group whose
+`safety` is one number behaves exactly as before; no existing field's name,
+type or meaning changed (`safety_slot` is the first of the list for a
+multi-safety group).
+
+Version 2, 2026-10-26 (safety_profile, the wave flamer at 178): a group may
+carry a `safety_profile` with its own arm value (see "A group's own arm
+value" under the status frame). The status frame gains a per group
+`arm_value`. The top-level `arm_value` keeps its name and meaning, the
+file's arm value; no existing field's name, type or meaning changed.
+
+Version 2, 2026-10-28 (aim slots): a group may carry `aim`, the fire slots
+that only point a head (see "Aim slots" under the status frame). No field
+on any wire changed.
+
+Version 2, 2026-10-29 (passthrough, the hazers): the config gains
+`passthrough` (name, haze, fan); the flame frame gains an optional
+`hazers_on`; the status frame gains a top-level `passthrough`. No existing field's name, type or
+meaning changed: a frame without `hazers_on` is read as before (every
+hazer off), and a flamesafe from before this date ignores the field, so its
+hazers stay zero (fail closed). A flamesafe from before this date refuses a
+config with `passthrough` as an unknown key and does not start. Deploy and
+restart flamesafe and ltcplay together.
+
+Version 2, 2026-10-28 (aim slots seen): the status frame gains a per group
+`aim_slots`, and flamesafe journals one `aim slots:` line at start naming
+its config file. No existing field's name, type or meaning changed, the
+key, the lock and every rule are unchanged, and an older ltcplay reads the
+frame as before.

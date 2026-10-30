@@ -17,6 +17,7 @@ Everything it decides goes to the night journal and the machine log
 kept in memory for the page.
 """
 import collections
+import itertools
 import json
 import os
 import socket
@@ -29,6 +30,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from . import appdata
+from . import benchhooks
 from . import journal
 from . import schedule as sch
 from . import settings as settings_mod
@@ -44,7 +46,9 @@ CURRENT_OPERATOR_FILE = "ltcplay_current_operator.json"
 # Which screens an operator can press things from. Beside the operator list,
 # and checked the same way, so the journal never names a screen nobody has.
 SCREENS_FILE = "ltcplay_screens.json"
-DEFAULT_SCREENS = ("Rack screen", "Stream Deck", "Phone")
+# "iPad": the show-network remote page (ltcplay/remote.py) signs a device in
+# under one of these names, so a list written fresh already has it.
+DEFAULT_SCREENS = ("Rack screen", "Stream Deck", "Phone", "iPad")
 NTP_SERVER = "pool.ntp.org"
 # The whole clock check, name lookup included, gets this long. It runs on its
 # own thread, so even this never holds up a show.
@@ -66,6 +70,15 @@ DRY_RUN = True
 DRY_RUN_NOTE = ("This build decides but does not act. No show is started, "
                 "stopped or faded by the scheduler; the MadMapper link "
                 "arrives in a later update.")
+# The one way out of the dry run, per Service, never this module's constant:
+# fire_ice.py sets Service.dry_run False, and attaches the performer that
+# then has to report what the dry run used to make up (a show ending, the
+# closing finishing), only when the Fire & Ice config says
+# "scheduler_performs": true. Every other Service, and the GPL path, which
+# never builds one, keeps DRY_RUN.
+PERFORMING_NOTE = ("The scheduler performs: it starts the show cue on "
+                   "schedule (only once Run has been pressed), and the "
+                   "show ends when its audio does.")
 
 
 # ------------------------------------------------------------ where --
@@ -330,9 +343,22 @@ def save_current_operator(folder, name):
 
 # ------------------------------------------------------------ the file --
 
-def load_rule(path):
+SOAK_ONLY_REFUSED = (
+    "This schedule was written by the soak test (\"soak_only\": true) and "
+    "only the soak's own engine may use it, so no show is scheduled from "
+    "it and nothing is started, faded or stopped. Put the show's own "
+    "schedule file back, then quit and start LTC Player again.")
+
+
+def load_rule(path, env=None, ppid=None):
     """Read and validate the rule file. Every failure is one sentence (or a
-    list of them) naming the file."""
+    list of them) naming the file.
+
+    A schedule marked "soak_only" (the soak kit's, packaging/windows/
+    soak.py) is refused unless the soak itself started this engine
+    (benchhooks.soak_started): a soak schedule left behind on a show PC
+    must never start anything unattended (Pico, 2026-10-23). `env` and
+    `ppid` are the selftest's."""
     try:
         # utf-8-sig: Notepad on Windows puts a byte order mark at the front of
         # a UTF-8 file, and plain utf-8 reads that as garbage before the {.
@@ -343,7 +369,11 @@ def load_rule(path):
     except OSError as e:
         raise sch.RuleError([f"The schedule file {path} cannot be read: "
                              f"{e.strerror or e}."])
-    return sch.parse_rule(text, where=path)
+    rule = sch.parse_rule(text, where=path)
+    if json.loads(text).get("soak_only") is True and \
+            not benchhooks.soak_started(env, ppid):
+        raise sch.RuleError([SOAK_ONLY_REFUSED], where=path)
+    return rule
 
 
 def _replace(src, dst, replace_fn, sleep_fn, tries):
@@ -533,6 +563,7 @@ class _ConductorCall:
         self.label, self.method = label, method
         self.who, self.screen = who, screen
         self.seq = seq
+        self.show = 0       # start_show only: which show
         self.ok, self.sentence = None, ""
         self.done = threading.Event()
 
@@ -562,7 +593,13 @@ class _ConductorCalls:
     conductor never has one."""
 
     URGENT_WAIT_S = 0.25
-    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting")
+    # What a Stop (STOP_SHOW, the Stream Deck's halt) takes out of the line
+    # if it is still waiting there: a show start, so the music and video
+    # never start only to fade (review of #130, second pass, 4). Never a
+    # Reset, Hold or Resume: Stop is not an Abort, and latches nothing.
+    STOP_DROPS = ("show_starting", "start_show")
+    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting",
+                           "start_show")
 
     def __init__(self, run_one, overtaken=None, clock=None):
         self._run_one = run_one
@@ -677,6 +714,23 @@ class _ConductorCalls:
             self._cv.notify_all()
             return True
 
+    def drop(self, methods, before_seq):
+        """Take the requests still waiting in the line whose method is in
+        `methods` and that were decided before `before_seq` out of it, and
+        return them: they are not sent. For Stop (STOP_DROPS): a show start
+        still waiting is not sent once the show has been stopped. Nothing
+        else: no latch, and the request the line is making now is left
+        alone."""
+        with self._cv:
+            gone = [c for c in self._q
+                    if c.method in methods and c.seq < before_seq]
+            for c in gone:
+                self._q.remove(c)
+                c.ok, c.sentence = False, "not sent: Stop came first"
+                c.done.set()
+            self._cv.notify_all()
+            return gone
+
     def flush(self, timeout):
         with self._cv:
             return self._cv.wait_for(
@@ -715,9 +769,72 @@ class Service:
         # whether an Abort was decided after it was pressed.
         self._call_seq = 0
         self._abort_seq = 0
+        # Press order across every way in (review of #46/#48: the screen
+        # Abort now does work of its own before it reaches this service, so
+        # the order presses reach the lock is not the order they were
+        # pressed in). stamp_press() is taken the moment a press arrives;
+        # a Reset stamped before the latest Abort never ends it.
+        self._press_counter = itertools.count(1)
+        self._press_stamp = None
+        self._abort_pressed = 0
         # A stuck or dead line of conductor requests, once it has been
         # journaled as a fault: {"key", "text"}. See _watch_conductor.
         self._conductor_trouble = None
+        # Dry run or not, for THIS service (see PERFORMING_NOTE), and what
+        # starts a show cue and reports back once it is not. Both are set
+        # together by fire_ice.attach() and nothing else; a performer is
+        # only ever asked for anything while dry_run is False.
+        self.dry_run = DRY_RUN
+        self.performer = None
+        # Start now waiting for the show audio (_start_now_refusal): how
+        # many wait now, and (number, why) bumped by cancel_start_wait.
+        self._start_waiters = 0
+        self._start_cancel = (0, "")
+        # () -> a sentence that refuses Start now, or "": the Programming
+        # playhead's (remote.programming_playback_refusal, set by the
+        # remote). Asked under this lock after the tick, so a Play from
+        # that landed while a Start now waited is never started over.
+        self.start_veto = None
+        # Stops under way (halt_begin / halt_end).
+        self._halts = 0
+        self._halt_count_lock = threading.Lock()
+        # Whether the operator has pressed Run (a show file is running), set
+        # by fire_ice.attach() with the conductor. While it says no, nothing
+        # the scheduler decides by itself reaches the show conductor, so no
+        # fade, blank, MadMapper or BEYOND command and no flame cue goes out
+        # unattended (Jeff's standing rule: no auto-Run; Pico, 2026-10-23).
+        # Only the show start itself is still handed on, to be refused by
+        # the performer, which checks Run on its own. None (no conductor,
+        # or one built without fire_ice) gates nothing, as before.
+        self.run_gate = None
+        # alerts.Alerts.raise_(kind, text), set by remote.Remote: a failed
+        # start raises a "start" alert for the rack screen and the booth
+        # (Jeff, 2026-10-12: the groups are left as they are, so a person
+        # has to be told). None: journaled only, as before.
+        self.alert_sink = None
+        # () -> a sentence naming the open alerts, or None, set by
+        # remote.Remote (alerthold.py): at showtime, with an alert open,
+        # the schedule Holds instead of starting the show (Jeff,
+        # 2026-10-26). A running show is never touched. `on_alert_hold`
+        # (epoch, why) is told after such a Hold, outside the lock.
+        # showtime_gate returns None or (sentence, the open alerts' ids).
+        self.showtime_gate = None
+        self.on_alert_hold = None
+        # (night, show) -> the open alert id sets it was held for, or that
+        # an operator Resumed it with (_alert_handled).
+        self._alert_held = {}
+        # Called after every tick of the running scheduler, outside the
+        # lock (_run): remote.Remote._alert_tick.
+        self.tick_hooks = []
+        # The pre-roll (preroll.PreRoll, Jeff 2026-10-28), set by web.serve
+        # for a Fire & Ice engine whose scheduler performs: the rig is
+        # checked PreRoll.window_s before a show's time, and before Start
+        # now. None: no pre-roll, every start exactly as before.
+        self.preroll = None
+        # (night, show) -> late_ok_s, for a show whose pre-roll could only
+        # run at its time: it starts late rather than unchecked.
+        self._preroll_late = {}
+        self._preroll_seq = 0
         self.ntp_query = ntp_query
         # Injected so a test can move the wall clock and perf_counter apart
         # on purpose, deterministically, with nothing asleep and no real
@@ -993,7 +1110,7 @@ class Service:
         exceptions that the kinds alone cannot tell apart:
           - the Abort bundle is an Abort only when the operator pressed
             Abort. A failed start fades the same way but goes to
-            failed_start(): dark, every flame group disarmed, no latch
+            failed_start(): dark, the flame groups left as they are, no latch
             (Jeff, 2026-10-03). A show cut by a restart goes to
             show_stopped(): dark, no disarm, no latch.
           - START_SHOW is NOT the conductor's: it brings the rig up only
@@ -1043,25 +1160,120 @@ class Service:
             # before the conductor call ran), and a fresh conductor knows
             # nothing of it. So it is always sent again.
             plan.append((self.DARK_AGAIN, "show_stopped", frozenset()))
+        if sch.START_SHOW in kinds and not self.dry_run and \
+                self.performer is not None:
+            # Fire & Ice, scheduler performing (fire_ice.ShowRunner): the
+            # show cue is started on the show audio, as one request in the
+            # same ordered line as every conductor request, off the
+            # scheduler's lock, after tonight is saved. The conductor is
+            # NOT told a show started here: that stays on SHOW_CONFIRMED,
+            # once the runner has seen the timecode moving (above). A start
+            # the runner refuses (Run not pressed, the conductor latched,
+            # no show audio) is its to report as SHOW_FAILED, which brings
+            # failed_start(). An Abort decided before it ran supersedes it
+            # (_ConductorCalls.SUPERSEDED_BY_ABORT). The scheduler itself
+            # never even gets here while its Abort latch is set: a show
+            # that comes due then is MISSED.
+            shows = [e.show for e in out.effects if e.kind == sch.START_SHOW]
+            plan.append(("Start the show", "start_show",
+                         frozenset((sch.START_SHOW,)), shows[0]))
         return plan
 
-    def _record(self, out, now, plan=()):
+    RUN_NOT_PRESSED = ("Run has not been pressed, so the scheduler sends "
+                       "nothing to the rig: no fade, no blank, no MadMapper "
+                       "or BEYOND command and no flame cue.")
+
+    def _run_pressed(self):
+        """True while the operator's Run is in force, or when this service
+        has no Run to wait for (run_gate None). A gate that raises counts as
+        not pressed: nothing goes out on a guess."""
+        gate = self.run_gate
+        if gate is None:
+            return True
+        try:
+            return gate() is True
+        except Exception:      # noqa: BLE001  never the scheduler
+            return False
+
+    def _hold_back_unattended(self, plan, ev):
+        """(sent, held back): what the scheduler decided BY ITSELF (every
+        event but an operator's press) is not sent to the show conductor
+        while Run is not pressed. The show start alone still goes, to the
+        performer, which refuses it with nothing sent (and reports that as
+        a failed start that sent nothing)."""
+        if not plan or ev.actor == "operator" or self._run_pressed():
+            return plan, []
+        return ([p for p in plan if p[1] == "start_show"],
+                [p for p in plan if p[1] != "start_show"])
+
+    def _reworded(self, le):
+        """A log event as this engine says it: with a show conductor
+        attached, the engine's "nothing was disarmed" sentence is replaced
+        by what the conductor does (it disarms)."""
+        if self.conductor is not None and le.action == sch.ABORT and \
+                sch.NOTHING_DISARMED in le.text:
+            # The engine never disarms; the conductor's abort() does.
+            le = replace(le, text=le.text.replace(
+                sch.NOTHING_DISARMED, self.CONDUCTOR_DISARMS))
+        # A failed start's line is the same with or without a conductor
+        # (ruling 1, 2026-10-12): neither disarms a flame group.
+        return le
+
+    FAILED_START_ALERT = ("The rig is dark and every flame group stays as "
+                          "it was. Press Acknowledge once you have seen it; "
+                          "Start now or the next show brings the rig back.")
+
+    REFUSED_START_ALERT = ("Nothing was sent to the rig for it: no fade, no "
+                           "MadMapper or BEYOND command, and every flame "
+                           "group stays as it was. Press Acknowledge once "
+                           "you have seen it.")
+
+    @staticmethod
+    def start_alert(show, why, tail):
+        """A failed or refused start's alert (Jeff's field report,
+        2026-10-28): which show, the real reason in plain words with what
+        to press (the runner's own sentence, the same one the slot's FAULT
+        reason carries), then what was or was not sent. Never only "The
+        show did not start"."""
+        why = str(why or "").strip().rstrip(".")
+        if not why:
+            why = ("no reason was given; the journal has the lines around "
+                   "it")
+        head = f"Show {show}" if show else "The show"
+        return f"{head} did not start: {why}. {tail}"
+
+    def _record(self, out, now, plan=(), held=(), ev=None):
         for le in out.log:
-            if self.conductor is not None and le.action == sch.ABORT and \
-                    sch.NOTHING_DISARMED in le.text:
-                # The engine never disarms; the conductor's abort() does.
-                le = replace(le, text=le.text.replace(
-                    sch.NOTHING_DISARMED, self.CONDUCTOR_DISARMS))
-            if self.conductor is not None and \
-                    le.action == sch.SHOW_FAILED and \
-                    sch.FAILED_START_NOT_DISARMED in le.text:
-                # Jeff, 2026-10-03: the conductor's failed_start() disarms.
-                le = replace(le, text=le.text.replace(
-                    sch.FAILED_START_NOT_DISARMED,
-                    self.CONDUCTOR_DISARMS_FAILED_START))
-            self._record_logevent(le)
+            self._record_logevent(self._reworded(le))
+            # A failure reported too late to be a failed start is a fault
+            # with the show still running (schedule._show_failed): it is no
+            # "did not start" alert (review of #144, F8).
+            if le.action == sch.SHOW_FAILED and \
+                    le.outcome != "recorded as a fault" and \
+                    self.alert_sink is not None:
+                tail = (self.REFUSED_START_ALERT
+                        if ev is not None and ev.nothing_sent and
+                        not out.effects else self.FAILED_START_ALERT)
+                alert = self.start_alert(
+                    le.show or (ev.show if ev is not None else 0),
+                    ev.detail if ev is not None else "", tail)
+                try:
+                    self.alert_sink("start", alert)
+                except Exception as e:   # noqa: BLE001  never the scheduler
+                    self._journal_line(
+                        "system", f"The failed-start alert could not be "
+                                  f"raised ({type(e).__name__}: {e}); the "
+                                  f"journal line above is the only notice.",
+                        action="alert", outcome="not raised", fault=True)
+        for entry in held:
+            self._journal_line(
+                "system", f"Not sent to the show conductor, {entry[0]}: "
+                          f"{self.RUN_NOT_PRESSED}",
+                action="conductor", outcome="held back",
+                reason=f"{entry[1]} held back, Run not pressed")
         claimed = set()
-        for label, method, kinds in plan:
+        for entry in plan:
+            label, method, kinds = entry[:3]
             mine = [e for e in out.effects if e.kind in kinds]
             claimed |= set(kinds)
             what = (f": {', '.join(self._desc(e) for e in mine)}"
@@ -1077,18 +1289,17 @@ class Service:
             if eff.kind in claimed:
                 continue
             self._journal_line(
-                "system", f"Not performed, dry run: {self._desc(eff)}.",
+                "system",
+                f"Not performed, dry run: {self._desc(eff)}." if self.dry_run
+                else f"Not performed: nothing in this build carries out "
+                     f"{self._desc(eff)}.",
                 action=eff.kind, outcome="not performed",
-                reason="dry run, no transport in this build",
+                reason="dry run, no transport in this build" if self.dry_run
+                else "no performer for this effect in this build",
                 show=eff.show or None)
 
     CONDUCTOR_DISARMS = ("The show conductor also sends a disarm to every "
                          "flame group; its own line says whether it went.")
-    CONDUCTOR_DISARMS_FAILED_START = (
-        "The flames are disarmed because the show failed to start: the show "
-        "conductor sends a disarm to every flame group, and its own line "
-        "says whether it went. Each group has to be armed again by hand "
-        "(off, then on) before flames can fire.")
     DARK_AGAIN = "Dark again after the start"
     CONDUCTOR_SAYS = {
         DARK_AGAIN: (" ltcplay started while the rig was meant to be dark "
@@ -1101,13 +1312,12 @@ class Service:
                          "operator presses Start now or the next show "
                          "starts. No flame group is disarmed and nothing "
                          "is latched, so no Reset is needed."),
-        "failed_start": (" The show failed to start, so every flame group "
-                         "is disarmed while it is looked at (Jeff, "
-                         "2026-10-03), and the rig goes dark until an "
-                         "operator presses Start now or the next show "
-                         "starts. Nothing is latched, so no Reset is "
-                         "needed; each flame group has to be armed again "
-                         "by hand (off, then on) before flames can fire."),
+        "failed_start": (" The show failed to start: the rig goes dark "
+                         "until an operator presses Start now or the next "
+                         "show starts, and every flame group is left as it "
+                         "was (Jeff, 2026-10-12). Nothing is latched, so no "
+                         "Reset is needed. An alert on the rack screen "
+                         "waits for an Acknowledge."),
         "intermission": (" Out of the show: flame cues to zero and the "
                          "lasers blanked."),
     }
@@ -1118,17 +1328,48 @@ class Service:
             (f" over {eff.seconds:g} s" if eff.seconds else "")
 
     # -- the show conductor's calls, in order, off the scheduler's lock -------
-    def _queue_conductor(self, plan, ev):
+    def _decide_conductor(self, plan, ev):
+        """The conductor requests a step decided, numbered now, in the order
+        they will be sent (_queue_conductor sends them, after the save). An
+        Abort among them is stamped here, in the same locked instant _apply
+        sets the Abort latch: from that instant every Reset numbered or
+        pressed before it is older than it (_after_reset, reset_conductor).
+        The stamps used to be set only when the Abort was queued, after
+        tonight's save, so a Reset the conductor answered during a slow
+        save (0.2 s of fsync on a shared CI runner) found the latch set
+        but the Abort not yet numbered, and cleared it (#46's Windows run,
+        2026-10-08)."""
+        calls = []
         if not plan:
-            return
+            return calls
         op = ev.actor == "operator"
         who = ev.who if op else "the scheduler"
         screen = ev.screen if op else ""
-        for label, method, _kinds in plan:
+        for entry in plan:
+            label, method = entry[0], entry[1]
             call = self._new_call(label, method, who, screen)
+            if len(entry) > 3:
+                call.show = entry[3]
             if method == "abort":
                 self._abort_seq = call.seq
+                self._abort_pressed = (self._press_stamp
+                                       if self._press_stamp is not None
+                                       else self.stamp_press())
+            calls.append(call)
+        return calls
+
+    def _queue_conductor(self, plan, ev, calls=None):
+        if not plan:
+            return
+        if calls is None:
+            calls = self._decide_conductor(plan, ev)
+        for call in calls:
             self._calls.put(call)
+
+    def stamp_press(self):
+        """A number for a press, taken the moment it arrives, before any
+        lock or other work: later presses get larger numbers."""
+        return next(self._press_counter)
 
     def _new_call(self, label, method, who, screen):
         self._call_seq += 1
@@ -1170,8 +1411,28 @@ class Service:
         """On _ConductorCalls' thread. One conductor request, whatever it
         does or raises, then one journal line for it. Anything but a good
         Result is a fault, raised on the scheduler so the page shows it."""
+        if call.who == "the scheduler" and call.method != "start_show" and \
+                not self._run_pressed():
+            # Decided while Run was in force, but it no longer is (Stop
+            # was pressed before this call's turn): still nothing goes out.
+            call.ok = False
+            call.sentence = f"{call.label} was not sent: " \
+                            f"{self.RUN_NOT_PRESSED}"
+            with self._locked():
+                self._journal_line(
+                    "system", f"Not sent to the show conductor, "
+                              f"{call.label}: {self.RUN_NOT_PRESSED}",
+                    action="conductor", outcome="held back",
+                    reason=f"{call.method} held back, Run not pressed")
+            return
         try:
-            r = getattr(self.conductor, call.method)(call.who, call.screen)
+            if call.method == "start_show":
+                # The Fire & Ice show runner, not the conductor (see
+                # _drive_conductor).
+                r = self.performer.start_show(call.show, who=call.who)
+            else:
+                r = getattr(self.conductor, call.method)(call.who,
+                                                         call.screen)
             ok = getattr(r, "ok", None) is True
             said = str(getattr(r, "sentence", "") or "")
             if not hasattr(r, "ok"):
@@ -1191,6 +1452,19 @@ class Service:
                                f"{call.screen}. {said}".strip(),
                           state=self._state_name(), night=self._night(),
                           who=call.who, screen=call.screen)
+            elif call.method == "start_show":
+                # A refused start is the runner's to report, as SHOW_FAILED
+                # (one report, from one place); this only says what happened.
+                # An automatic start is always journaled, done or not.
+                what = ("Automatic show start" if call.who ==
+                        "the scheduler" else f"Start now by {call.who}")
+                self._journal_line(
+                    "system", f"{what}, show {call.show}: {said}".strip(),
+                    action="automatic start" if call.who == "the scheduler"
+                    else "start now",
+                    outcome="done" if ok else "refused",
+                    reason=said or ("done" if ok else "refused"),
+                    show=call.show or None, fault=not ok)
             elif ok:
                 self._journal_line(
                     "system", f"Show conductor, {call.label}: {said}".strip(),
@@ -1229,7 +1503,9 @@ class Service:
             still = True
         if not ok and still:
             return ok, said             # e.g. the Abort is still fading
-        if call.seq < self._abort_seq:
+        pressed = getattr(call, "pressed", None)
+        if call.seq < self._abort_seq or (
+                pressed is not None and pressed < self._abort_pressed):
             return False, ("Reset was pressed before the latest Abort, so "
                            "that Abort is still in force. Press Reset "
                            "again.")
@@ -1291,7 +1567,8 @@ class Service:
         journaled. For tests, and for stop()."""
         return self._calls.flush(timeout)
 
-    def reset_conductor(self, who, screen, wait_s=2.0):
+    def reset_conductor(self, who, screen, wait_s=2.0, pressed=None,
+                        surface=False):
         """The operator's Reset, for the Abort latch: the same
         Conductor.reset() an operator's own Reset press calls, queued
         behind every conductor call already decided, so it can never land
@@ -1305,6 +1582,7 @@ class Service:
         a sentence, written to the journal as a refused press like every
         other press's refusal, when no conductor is attached or the
         operator or screen is blank or not on its list."""
+        stamp = self.stamp_press()
         who = str(who or "").strip()
         screen = str(screen or "").strip()
         if self.conductor is None:
@@ -1315,20 +1593,105 @@ class Service:
                                "and which screen it came from. Nothing was "
                                "reset.")
         names = {n.lower(): n for n in self.operators}
+        if surface:
+            # The remote page's Reset: `who` is the surface (see
+            # operator_press).
+            names[who.lower()] = who
         if who.lower() not in names:
             self._refuse_reset(who, screen, f"{who!r} is not on the operator "
                                f"list ({', '.join(self.operators)}). Nothing "
                                f"was reset.")
         screen = self._check_screen(screen, who, "reset", "Reset")
+        when = pressed if pressed is not None else stamp
         with self._locked():
-            call = self._new_call("Reset", "reset", names[who.lower()],
-                                  screen)
-            self._calls.put(call)
+            late = when < self._abort_pressed
+            if not late:
+                call = self._new_call("Reset", "reset", names[who.lower()],
+                                      screen)
+                call.pressed = when
+                self._calls.put(call)
+        if late:
+            # An Abort pressed after this Reset has already been decided
+            # (it reached the scheduler first): the Reset is never sent, so
+            # it can neither end that Abort nor reset the conductor behind
+            # its back.
+            self._refuse_reset(who, screen, "Reset was pressed before the "
+                               "latest Abort, so that Abort is still in "
+                               "force. Press Reset again.")
         if not call.done.wait(wait_s):
-            return {"ok": False, "text": "Reset is queued behind the show "
-                                         "conductor's earlier work and has "
-                                         "not answered yet."}
-        return {"ok": call.ok, "text": call.sentence}
+            out = {"ok": False, "text": "Reset is queued behind the show "
+                                        "conductor's earlier work and has "
+                                        "not answered yet."}
+        else:
+            out = {"ok": call.ok, "text": call.sentence}
+        return out
+
+    def reset_hold(self, who, screen, surface=False):
+        """The rack screen's Reset while the schedule is on Hold or has a
+        fault flag up and no Abort stands (Jeff's field report, 2026-10-28:
+        "I play the show, press Hold, and Reset does nothing"). The remote
+        route asks this first and reset_conductor only when this returns
+        None, so while an Abort stands Reset is the Abort's alone, exactly
+        as before (a second Reset then ends a Hold). The scheduler's own
+        events, each journaled with who and where:
+
+          PAUSED  the paused show ends: STOP_SHOW, faded to dark like a
+                  Stop, nothing latched and no flame group disarmed;
+          HOLD    the Hold between shows ends: RESUME, back to waiting;
+          faults  the fault flag is cleared: CLEAR_FAULT.
+
+        Reset never starts or continues a show by itself (a delayed show
+        still waits for Start now). {"ok", "text"}, or None when there was
+        nothing of these to do. Raises ValueError, journaled, for a blank
+        or unknown operator or screen, as reset_conductor does."""
+        m = self.machine
+        if m is None or self._aborted() or not (
+                m.state in (sch.PAUSED, sch.HOLD) or m.faults):
+            return None
+        who = str(who or "").strip()
+        screen = str(screen or "").strip()
+        if not who or not screen:
+            self._refuse_reset(who, screen, "Reset has to say who pressed it "
+                               "and which screen it came from. Nothing was "
+                               "reset.")
+        names = {n.lower(): n for n in self.operators}
+        if surface:
+            names[who.lower()] = who
+        if who.lower() not in names:
+            self._refuse_reset(who, screen, f"{who!r} is not on the operator "
+                               f"list ({', '.join(self.operators)}). Nothing "
+                               f"was reset.")
+        who = names[who.lower()]
+        screen = self._check_screen(screen, who, "reset", "Reset")
+        texts, ok = [], True
+        with self._locked():
+            self.tick()
+            m = self.machine
+            if m is None or self._aborted():
+                # An Abort decided meanwhile: Reset is its, with its own
+                # ordering rules (reset_conductor).
+                return None
+            kinds = []
+            if m.state == sch.PAUSED:
+                kinds.append(sch.STOP_SHOW)
+            elif m.state == sch.HOLD:
+                kinds.append(sch.RESUME)
+            if m.faults:
+                kinds.append(sch.CLEAR_FAULT)
+            if not kinds:
+                return None
+            for kind in kinds:
+                out = self._apply(sch.Event(
+                    kind, "operator", who=who, screen=screen,
+                    confirmed=True, surface=bool(surface),
+                    detail=sch.RESET_DETAIL))
+                if out.refused:
+                    ok = False
+                    texts.append(out.refused)
+                else:
+                    texts.append(" ".join(self._reworded(le).text
+                                          for le in out.log if le.text))
+        return {"ok": ok, "text": " ".join(t for t in texts if t)}
 
     def _refuse_reset(self, who, screen, sentence):
         with self._locked():
@@ -1362,6 +1725,17 @@ class Service:
                     sch.RESUME)
 
     def _apply(self, ev, now=None):
+        # Every caller already holds the lock; this makes it so for any
+        # that does not (the selftest steps the machine directly), because
+        # the Abort latch, the Abort's number and the save that records
+        # them have to be one step to a Reset answered on the conductor's
+        # thread (_after_reset runs under the same lock). The lock is
+        # reentrant and _locked() counts depth, so nothing changes for a
+        # caller inside it.
+        with self._locked():
+            return self._apply_locked(ev, now)
+
+    def _apply_locked(self, ev, now=None):
         now = now or self.clock()
         before = self.machine
         if ev.kind in self.LATCH_EVENTS and self._aborted():
@@ -1371,16 +1745,53 @@ class Service:
             # until then.
             ev = replace(ev, latched=True)
         out = sch.step(self.machine, ev, now)
+        if not out.refused and ev.kind in (sch.HOLD_ON, sch.ABORT,
+                                          sch.STOP_SHOW):
+            # Any Hold that is taken (an operator's, an announcement's, the
+            # engine's own at showtime for an open alert), an Abort or a
+            # Stop ends a Start now waiting for the show audio: it is
+            # refused under this lock before it can start a show over the
+            # Hold (re-review of #144, N1).
+            self.cancel_start_wait(
+                "the schedule was put on Hold" if ev.kind == sch.HOLD_ON
+                else "the show was aborted" if ev.kind == sch.ABORT
+                else "Stop was pressed")
         self.machine = out.machine
-        plan = self._drive_conductor(out, ev)
-        if any(p[1] == "abort" for p in plan):
+        plan, held = self._hold_back_unattended(
+            self._drive_conductor(out, ev), ev)
+        # Numbered (and an Abort stamped) now, with the latch, not when
+        # they are sent after the save: see _decide_conductor.
+        calls = self._decide_conductor(plan, ev)
+        if ev.kind == sch.STOP_SHOW and calls:
+            # Stop: a show start still waiting in the conductor's line is
+            # not sent (review of #130, second pass, 4). No latch.
+            gone = self._calls.drop(_ConductorCalls.STOP_DROPS,
+                                    calls[0].seq)
+            for c in gone:
+                self._journal_line(
+                    "system", f"Not sent to the show conductor, {c.label}: "
+                              f"Stop was pressed first.",
+                    action="conductor", outcome="not sent",
+                    reason=f"{c.method} dropped by Stop")
+        if any(c.method == "abort" for c in calls):
             # The latch is saved with the Abort itself, before the conductor
             # is asked, so a restart in between still knows (and only a
             # Reset clears it, see _after_reset).
             self.machine = replace(self.machine, abort_latched=True)
             self._marker_clear_pending = False
-        self._record(out, now, plan)
-        if DRY_RUN and self.machine.state == sch.CLOSING:
+        self._record(out, now, plan, held, ev)
+        if ev.kind == sch.RESUME and ev.actor == "operator" and \
+                ev.detail != sch.RESET_DETAIL and \
+                not out.refused and before is not None and \
+                before.state == sch.HOLD:
+            # Reset's end of a Hold is not the deliberate Resume: it starts
+            # nothing, so it speaks for no show (review of #144, F1).
+            # Only a Resume of a schedule Hold (the operator's or the
+            # engine's) speaks for the next show; a Resume of a paused,
+            # running show says nothing about the one after it (review of
+            # PR #133).
+            self._note_resumed_at_showtime(now)
+        if self.dry_run and self.machine.state == sch.CLOSING:
             # Nothing to wait for: nothing was faded.
             out2 = sch.step(self.machine,
                             sch.Event(sch.CLOSING_DONE, "system"), now)
@@ -1392,7 +1803,7 @@ class Service:
         # anything: a conductor that raises or hangs can no longer lose
         # the save or the "Show N started" line, which is what keeps a
         # restart inside the grace from starting the same show twice.
-        self._queue_conductor(plan, ev)
+        self._queue_conductor(plan, ev, calls)
         # A latch file created by this save is made to survive a power cut
         # only now, once the conductor has the Abort (fix round 3).
         self._sync_latch_marker()
@@ -1754,7 +2165,12 @@ class Service:
             return True
         # A new day. Settle yesterday first: a show still on its list
         # (the machine was asleep across it) is marked MISSED in the
-        # journal rather than dropped without a word.
+        # journal rather than dropped without a word. This tick never
+        # starts a show, so it needs no alert gate: a night cannot run past
+        # midnight (schedule.parse_rule refuses it) and the reset is at
+        # NIGHT_RESET (2 AM), so every slot on yesterday's list is long
+        # past by now; BOOT_DONE below starts nothing either, and the next
+        # TICK goes through the gate (review of PR #133, 7 and 8).
         self._apply(sch.Event(sch.TICK, "scheduler"), now)
         how = self._still_open(now, d)
         if how is None:
@@ -1973,16 +2389,374 @@ class Service:
             m = self.machine
             # Dry run: nothing was started, so the show "ends" when it would
             # have, which a pause moves later. A paused show never ends.
-            if DRY_RUN and m.state == sch.SHOW and \
+            if self.dry_run and m.state == sch.SHOW and \
                     now >= m.expected_end(now):
                 self._apply(sch.Event(sch.SHOW_ENDED, "system",
                                       detail="dry run, nothing was started",
                                       show=m.running), now)
-            self._apply(sch.Event(sch.TICK, "scheduler"), now)
+            ev = self._tick_event()
+            self._preroll_lookahead(now)
+            self._preroll_before_gate(now, ev)
+            self._hold_at_showtime_for_alerts(now, ev)
+            if not self._preroll_defers(now, ev):
+                self._apply(ev, now)
             self._sync_latch_marker()
             m = self.machine
         self._after_tick()
         return m
+
+    def _alert_handled(self, key, ids):
+        """True when the open alerts are all among a set this showtime was
+        already held for, or Resumed with: an Acknowledge that leaves a
+        subset open never re-holds it (final review of PR #133)."""
+        ids = frozenset(ids)
+        return any(ids <= rec for rec in self._alert_held.get(key, ()))
+
+    def _note_resumed_at_showtime(self, now):
+        """An operator's Resume (from any Hold, theirs or the engine's)
+        while alerts are open is the operator's choice (Jeff): the show the
+        next tick would start, AND the next pending show of the night
+        (a Resume pressed before showtime, or a guard running out inside
+        the grace window), are recorded as handled for those alerts, so
+        the gate never holds them again for them. Never raises."""
+        gate = self.showtime_gate
+        m = self.machine
+        if gate is None or m is None:
+            return
+        try:
+            got = gate()
+            if not got:
+                return
+            probe = sch.step(m, self._tick_event(), now)
+            shows = [e.show for e in probe.effects
+                     if e.kind == sch.START_SHOW][:1]
+            if not shows and m.delayed() is None:
+                # Nothing starts now and no delayed show waits for Start
+                # now: the Resume is for the next show (one pressed before
+                # showtime, or a guard running out inside the grace). With
+                # a delayed show waiting, the Resume is for THAT one, and
+                # never covers a show beyond it (review of PR #133).
+                pending = m.pending()
+                if pending:
+                    shows = [pending[0].n]
+        except Exception:                        # noqa: BLE001
+            return
+        for n in set(shows):
+            self._alert_held.setdefault((str(m.date), n), []).append(
+                frozenset(got[1]))
+
+    # The states a show can START from on a tick; a running (SHOW) or
+    # paused show, or one already held, is never touched here.
+    SHOWTIME_FROM = (sch.IDLE, sch.STANDBY)
+
+    def _hold_at_showtime_for_alerts(self, now, ev=None):
+        """With the lock held, just before the tick: if this tick would
+        start a show and an alert is open (showtime_gate), the schedule
+        Holds instead, as the engine's own system action, and the show
+        waits for an operator's Resume (Jeff, 2026-10-26). sch.step is
+        pure, so the tick is tried on the side first. Never mid-show:
+        only from IDLE or STANDBY. Never raises."""
+        gate = self.showtime_gate
+        m = self.machine
+        if gate is None or m is None or m.state not in self.SHOWTIME_FROM:
+            return
+        try:
+            probe = sch.step(m, ev or sch.Event(sch.TICK, "scheduler"), now)
+            shows = [e.show for e in probe.effects
+                     if e.kind == sch.START_SHOW]
+            if not shows:
+                return
+            got = gate()
+        except Exception:                        # noqa: BLE001
+            return
+        if not got:
+            return
+        why, ids = got
+        # Once this showtime was held for these alerts, or an operator
+        # Resumed it with these alerts open, it is never held again for
+        # them (review of PR #133): the Resume was the choice. A NEW alert
+        # at the same showtime holds again.
+        key = (str(m.date), shows[0])
+        if self._alert_handled(key, ids):
+            return
+        out = self._apply(sch.Event(
+            sch.HOLD_ON, "system", who="LTC Player", screen="engine",
+            detail=f"held the schedule at showtime because an alert is "
+                   f"open ({why})"), now)
+        if out.refused or self.machine.state != sch.HOLD:
+            return
+        self._alert_held.setdefault(key, []).append(frozenset(ids))
+        hook = self.on_alert_hold
+        if hook is not None:
+            epoch = self.hold_epoch
+            self._pending_hooks.append(lambda: hook(epoch, why))
+
+    # -- the pre-roll (preroll.py, Jeff 2026-10-28) -------------------------
+    def _tick_event(self):
+        """The scheduler's TICK, with the late allowance (late_ok_s) for
+        the next show when its pre-roll could only run at its time."""
+        ev = sch.Event(sch.TICK, "scheduler")
+        m = self.machine
+        if self._preroll_late and m is not None:
+            nxt = m.next_slot()
+            if nxt is not None:
+                late = self._preroll_late.get((str(m.date), nxt.n))
+                if late:
+                    ev = replace(ev, late_show=nxt.n, late_ok_s=late)
+        return ev
+
+    def _preroll_applies(self):
+        """A pre-roll is attached, the scheduler performs, Run is pressed,
+        no Abort stands and no Stop is under way. Programming does not
+        skip it (review of #162): only Programming's own Play from, which
+        never comes here, runs unchecked. Never raises."""
+        pr = self.preroll
+        if pr is None or self.dry_run or self.performer is None:
+            return False
+        return not (self.halting() or self._aborted() or
+                    not self._run_pressed())
+
+    def _preroll_scheduled(self):
+        """The pre-roll before a show the scheduler starts by itself: only
+        from IDLE or STANDBY, and only when it starts shows by itself
+        (auto_start). Lock held."""
+        m = self.machine
+        if m is None or m.state not in self.SHOWTIME_FROM:
+            return False
+        cfg = getattr(self.performer, "cfg", None)
+        if getattr(cfg, "auto_start", "when_run_pressed") == "off":
+            return False
+        return self._preroll_applies()
+
+    @staticmethod
+    def _starts(probe):
+        shows = [e.show for e in probe.effects if e.kind == sch.START_SHOW]
+        return shows[0] if shows else 0
+
+    def _preroll_kick(self, n):
+        """Queue the pre-roll for show `n` (lock held): it runs on a
+        thread of its own once the lock is free, never under it."""
+        m, pr = self.machine, self.preroll
+        key = (str(m.date), n)
+        slot = m.slot(n)
+        label = f"show {n}" + (f" ({m.hm(slot.start)})" if slot else "")
+        if pr.claim(key, label):
+            self._pending_hooks.append(
+                lambda: pr.run(key, label, show=n))
+
+    def _preroll_lookahead(self, now):
+        """With the lock held, before the tick: a show the scheduler will
+        start within the pre-roll window has its pre-roll begun now, so a
+        healthy rig still starts it at its time. Never raises."""
+        try:
+            if not self._preroll_scheduled() or self.preroll.skip():
+                return
+            m = self.machine
+            nxt = m.next_slot()
+            if nxt is None or (nxt.start - now).total_seconds() > \
+                    self.preroll.window_s:
+                return
+            # Would the scheduler start it at its time (no guard, nothing
+            # in the way)? Asked of the pure machine at that instant.
+            n = self._starts(sch.step(m, sch.Event(sch.TICK, "scheduler"),
+                                      max(now, nxt.start)))
+            if n:
+                self._preroll_kick(n)
+        except Exception:                        # noqa: BLE001
+            return
+
+    def _preroll_before_gate(self, now, ev):
+        """At showtime, a failed pre-roll's alert is open, so the alert
+        hold (showtime_gate) holds the show: raised again if someone
+        acknowledged it before the time. Never raises."""
+        try:
+            if not self._preroll_scheduled():
+                return
+            n = self._starts(sch.step(self.machine, ev, now))
+            if not n:
+                return
+            pr = self.preroll
+            key = (str(self.machine.date), n)
+            if pr.verdict(key) == "failed" and not pr.alert_open():
+                pr.raise_alert(pr.failure_text(key))
+        except Exception:                        # noqa: BLE001
+            return
+
+    def _preroll_defers(self, now, ev):
+        """True when this tick must NOT start the show that is due: its
+        pre-roll is still running, never ran (it is started now: the show
+        starts late, said once), or failed. A failed check is never
+        started by the scheduler, not even after an operator's Resume:
+        only Start now (which checks again) or Continue anyway (failed
+        outputs left off) goes on (Jeff, 2026-10-28). A passed pre-roll
+        starts it.
+        Lock held. Never raises (a fault here defers nothing: the start
+        then goes as before, to the performer's own checks)."""
+        try:
+            if not self._preroll_scheduled():
+                return False
+            m, pr = self.machine, self.preroll
+            n = self._starts(sch.step(m, ev, now))
+            if not n:
+                return False
+            key = (str(m.date), n)
+            if pr.skip():
+                # A Programming Run: the scheduler never starts a show
+                # unchecked or over a rehearsal (review of #162).
+                if key not in self._preroll_late:
+                    self._preroll_late[key] = 0
+                    self._journal_line(
+                        "system", f"Show {n} is not started: a Programming "
+                                  f"Run is in force. Press Stop, choose Show, "
+                                  f"then Run, and Start now.",
+                        action="pre-roll", outcome="programming", show=n)
+                return True
+            v = pr.verdict(key)
+            if v == "passed":
+                return False
+            if v == "failed":
+                return True
+            if key not in self._preroll_late:
+                self._preroll_late[key] = pr.late_ok_s()
+                self._journal_line(
+                    "system", f"The rig check (pre-roll) for show {n} could "
+                              f"not finish before its time, so show {n} "
+                              f"starts late, as soon as the rig is checked "
+                              f"(at most {pr.late_ok_s()} s late). Checks "
+                              f"are never skipped.",
+                    action="pre-roll", outcome="late", show=n)
+            if v is None:
+                self._preroll_kick(n)
+            return True
+        except Exception as e:                   # noqa: BLE001
+            # Fail closed (review of #162): a rig check that cannot even be
+            # asked never lets the show start. Its alert holds it.
+            self._preroll_broken(f"{type(e).__name__}: {e}")
+            return True
+
+    def _preroll_broken(self, why):
+        """The rig check itself could not run: journaled and alerted once
+        per reason (the alert hold then holds the show). Never raises."""
+        if getattr(self, "_preroll_broke", None) == why:
+            return
+        self._preroll_broke = why
+        text = (f"The rig check before the show could not run ({why}), so "
+                f"the show does not start by itself. Press Start now to try "
+                f"again; the journal has the details.")
+        try:
+            self._journal_line("system", text, action="pre-roll",
+                               outcome="error", fault=True)
+            if self.alert_sink is not None:
+                self.alert_sink("preroll", text)
+        except Exception:                        # noqa: BLE001
+            pass
+
+    def _preroll_for_start_now(self, who, screen, gen):
+        """Start now: the rig is checked first, on the pressing thread,
+        outside this service's lock (at most the pre-roll's budget). A
+        Stop, Hold or Abort meanwhile cancels it. Returns a refusal or
+        None. A failure is never started past here: Continue anyway (a
+        signed-in hold, failed outputs left off) is the only way on."""
+        if not self._preroll_applies():
+            return None
+        pr = self.preroll
+        self._preroll_seq += 1
+        who_ = who or "someone"
+        r = pr.run(("start now", self._preroll_seq), f"Start now by {who_}",
+                   cancelled=lambda: (self._start_cancel[0] != gen or
+                                      self.halting()))
+        if r["state"] == "passed":
+            return None
+        if r["state"] == "cancelled":
+            said = self._start_cancel[1] or "it was cancelled"
+            sentence = (f"Start now was refused: {said} while the rig was "
+                        f"being checked. Nothing was started.")
+            self.journal_press(who, screen, "start-now", "refused",
+                               f"{who_}'s Start now was refused. {sentence}")
+            return {"ok": False, "text": sentence, "cancelled": True}
+        bad = "; ".join(f"{i['name']}: {i['text']}" for i in r["items"]
+                        if i["required"] and not i["ok"])
+        sentence = (f"Start now was refused: the rig check failed ({bad}). "
+                    f"Nothing was started. Fix it and press Start now "
+                    f"again, or hold Continue anyway to start without what "
+                    f"failed.")
+        self.journal_press(who, screen, "start-now", "refused",
+                           f"{who_}'s Start now was refused. {sentence}",
+                           fault=True)
+        return {"ok": False, "text": sentence, "preroll": True}
+
+    def continue_anyway(self, who, screen, on_continue=None):
+        """Continue anyway (Jeff, 2026-10-28): after a failed rig check, a
+        signed-in person with the run permission held the button (the
+        remote checks both). Starts the show NOW (late, and said so), with
+        every output whose check failed left off for this show only
+        (preroll.outputs_off, fire_ice.ShowRunner._outputs_off): it never
+        arms, enables or lights anything. Never past an Abort, a Stop
+        under way or a live show; Resume first when the schedule is held
+        (that Hold's Delayed is then not played: on_continue() stops its
+        countdown, and a Delayed the hold already started). Journaled with
+        who, when and the failed checks. Returns {"ok", "text"}."""
+        pr = self.preroll
+        r = pr.last_failed() if pr is not None else None
+        who_ = who or "someone"
+        if pr is not None and pr.continued is not None:
+            # Once per failed check (review of #162, B2): never replayed by
+            # a stale page or a second POST for a later start.
+            r = None
+        if r is None or self.performer is None or self.dry_run:
+            return {"ok": False, "text": "Continue anyway was refused: there "
+                                         "is no failed rig check to continue "
+                                         "past. Nothing was changed."}
+        m = self.machine
+        why = ""
+        if m is None:
+            why = "there is no schedule loaded"
+        elif m.state in (sch.SHOW, sch.PAUSED):
+            why = "a show is live"
+        elif self._aborted():
+            why = "the show is aborted; press Reset first"
+        elif self.halting():
+            why = self.HALTING
+        elif not self._run_pressed():
+            why = "Run has not been pressed"
+        if why:
+            return {"ok": False, "text": f"Continue anyway was refused: "
+                                         f"{why}. Nothing was changed."}
+        from .preroll import outputs_off
+        off = outputs_off(r["items"])
+        failed = "; ".join(f"{i['name']}: {i['text']}" for i in r["items"]
+                           if i["required"] and not i["ok"])
+        self.journal_press(
+            who, screen, "continue anyway", "chosen",
+            f"{who_} chose Continue anyway on the {screen or 'screen'} after "
+            f"the rig check failed ({failed}). The show starts now, late, "
+            f"with " + (", ".join(sorted(off)) + " left off for this show"
+                        if off else "nothing left off (no output's check "
+                                    "failed)") + ".", fault=True)
+        self.performer.continue_off = (off, who_)
+        if m.state == sch.HOLD:
+            got = self.operator_press("resume", who, screen, surface=True)
+            if not got.get("ok"):
+                self.performer.continue_off = None
+                return got
+        got = self.operator_press("start-now", who, screen, surface=True,
+                                  preroll=False)
+        if self.machine is not None and self.machine.state == sch.SHOW:
+            pr.consume(r)
+            pr.continued = {"label": r.get("label", ""), "by": who_,
+                            "at": self.clock().isoformat(timespec="seconds"),
+                            "off": off, "failed": failed}
+            # The Delayed countdown ends only once the start is accepted.
+            if on_continue is not None:
+                try:
+                    on_continue()
+                except Exception:                # noqa: BLE001
+                    pass
+            return {"ok": True, "text": f"Continue anyway: the show starts "
+                                        f"now, late. Left off for this show: "
+                                        f"{', '.join(sorted(off)) or 'nothing'}."}
+        self.performer.continue_off = None
+        return got
 
     # A conductor request with no answer after this long is a fault: they
     # are meant to return at once (the conductor does its fades on its own
@@ -2313,6 +3087,14 @@ class Service:
     def _run(self):
         while not self._stop.is_set():
             self._safe_tick()
+            # After the tick, outside the lock: the alert thread's work
+            # (remote.Remote._alert_tick: the booth re-sound and the alert
+            # hold's countdown). A hook that raises never stops the ticks.
+            for hook in list(self.tick_hooks):
+                try:
+                    hook()
+                except Exception:                # noqa: BLE001
+                    pass
             self._stop.wait(self.TICK_S)
 
     def halt(self):
@@ -2410,7 +3192,9 @@ class Service:
             now = self.clock()
             out = {"ok": self.machine is not None,
                    "error": self.error or None,
-                   "dry_run": DRY_RUN, "note": DRY_RUN_NOTE,
+                   "dry_run": self.dry_run,
+                   "note": (DRY_RUN_NOTE if self.dry_run
+                            else PERFORMING_NOTE),
                    "now": now.astimezone(
                        self.rule.tz if self.rule else timezone.utc)
                    .isoformat(timespec="seconds"),
@@ -2424,7 +3208,11 @@ class Service:
                    "journal": list(self.journal)[-int(journal):][::-1]}
             if self.machine is not None:
                 out.update(sch.machine_view(self.machine, now))
-            return out
+        # What Start now would be refused with now (the rack screen's
+        # Loading state and its reason), read off this service's lock.
+        out["start_blocked"] = self.start_blocked()
+        out["start_waiting"] = self.start_waiting()
+        return out
 
     def edit_tonight(self, body):
         """Move, add or remove one of tonight's shows. Tonight only."""
@@ -2457,6 +3245,29 @@ class Service:
                 raise ValueError(out.refused)
         return self.tonight_view()
 
+    # What a performer may report back (schedule.py's "Contract for PR 3",
+    # items 4 to 8). Operator presses never come this way.
+    REPORTS = frozenset((sch.SHOW_CONFIRMED, sch.SHOW_ENDED,
+                         sch.SHOW_FAILED, sch.FAULT_RAISED,
+                         sch.CLOSING_DONE))
+
+    def report(self, kind, detail="", show=0, nothing_sent=False):
+        """A performer's report (fire_ice.ShowRunner): applied as a
+        "system" event exactly like the dry run's own made-up SHOW_ENDED
+        and CLOSING_DONE, journaled, refused with a sentence when the state
+        does not take it. Only while not dry_run: in a dry run nothing was
+        started, so nothing can report on it, and nothing does."""
+        if kind not in self.REPORTS:
+            raise ValueError(f"{kind} is not something a performer reports.")
+        with self._locked():
+            if self.dry_run or self.machine is None:
+                return None
+            ev = sch.Event(kind, "system", detail=detail, show=show,
+                           nothing_sent=(nothing_sent is True and
+                                         kind == "SHOW_FAILED"))
+            self._apply(ev)
+            return None
+
     def hold_for_announcement(self, who, screen, detail=None):
         """Put the scheduler on Hold exactly as the operator's own Hold
         does, `who` and `screen` carried through so the journal attributes
@@ -2486,6 +3297,13 @@ class Service:
                 return self.error or "There is no schedule loaded.", \
                     self.hold_epoch
             if self.machine.state in (sch.HOLD, sch.PAUSED):
+                return None, self.hold_epoch
+            if self.machine.state == sch.SHOW:
+                # A show is running, possibly one this very tick just
+                # started (an announcement pressed at showtime): it is
+                # never paused by an announcement (Jeff, 2026-10-26). No
+                # Hold; the caller reads the state again and plays over
+                # the show (announce.AnnounceService.play).
                 return None, self.hold_epoch
             out = self._apply(sch.Event(sch.HOLD_ON, "operator", who=who,
                                         screen=screen, detail=detail or ""))
@@ -2562,7 +3380,7 @@ class Service:
                 "tonight": sch.machine_to_doc(m) if m else None,
                 "tonight_file": (tonight_path(m.date, self.state_dir)
                                  if m else None),
-                "dry_run": DRY_RUN, "state_dir": self.state_dir,
+                "dry_run": self.dry_run, "state_dir": self.state_dir,
                 "screens": list(self.screens),
                 "log_folder": self.logbook.folder,
                 "clock_check": self.clock_check}
@@ -2624,15 +3442,298 @@ class Service:
                 raise ValueError(f"The current operator could not be saved: "
                                  f"{e}. Nothing was changed.") from None
             self.current_operator = name
+            # The reason used to be "", which the journal refuses (a reason
+            # is never blank), so this line was lost and only a "could not
+            # be written" fault was journaled. Found by the remote's tests.
+            text = (f"{self._who_text(screen)} chose {name} as the "
+                    f"operator." if name else
+                    f"{self._who_text(screen)} cleared the operator "
+                    f"selection.")
             self._log(self.logbook.record, actor="operator", action="operator",
-                      outcome="done", reason="",
-                      text=(f"{self._who_text(screen)} chose {name} as the "
-                            f"operator." if name else
-                            f"{self._who_text(screen)} cleared the operator "
-                            f"selection."),
+                      outcome="done", reason=text, text=text,
                       state=self._state_name(), night=self._night(),
-                      who=name or "unnamed operator", screen=screen)
+                      who=name or "unnamed operator",
+                      screen=screen or "unnamed screen")
         return self.operator_view()
+
+    # The operator presses the remote page sends (ltcplay/remote.py), by its
+    # route name. These are the engine's own operator events: the same
+    # schedule.step every other press goes through, journaled by the engine
+    # with who and which screen, the Abort latch saved before the conductor
+    # is asked (see _apply). Reset is reset_conductor, under its own name.
+    PRESSES = {"start-now": sch.START_NOW, "hold": sch.HOLD_ON,
+               "resume": sch.RESUME, "abort": sch.ABORT,
+               # The engine's own Stop during a show (web.py, the Stream
+               # Deck's Stop held; Jeff, 2026-10-26): never a remote route.
+               "stop-show": sch.STOP_SHOW}
+    # The states in which a refused Hold or Resume found nothing to do:
+    # nothing can start by itself (on hold, paused, the night over), or
+    # nothing is held. BOOT is not among them: there the scheduler has not
+    # worked out tonight yet, a real refusal.
+    HOLD_ALREADY = frozenset((sch.HOLD, sch.PAUSED, sch.CLOSING, sch.OFF))
+    RESUME_ALREADY = frozenset((sch.IDLE, sch.STANDBY, sch.SHOW,
+                                sch.CLOSING, sch.OFF))
+
+    def operator_press(self, what, who, screen, confirmed=False,
+                       pressed=None, surface=False, preroll=True):
+        """One operator press from a screen: Start now, Hold, Resume or
+        Abort. `who` must be on the operator list and `screen` on the
+        screen list; anything else is refused in the journal and raised as
+        ValueError with the sentence. Abort needs confirmed=True (the
+        engine refuses it otherwise, as it always has). Returns {"ok",
+        "text"}: ok False with the engine's own refusal sentence.
+        surface=True: the remote page's press, where `who` names the
+        surface it came from (Jeff, 2026-10-07: no sign-in), so it is not
+        looked up on the operator list; the screen still is."""
+        kind = self.PRESSES.get(what)
+        if kind is None:
+            raise ValueError(f"{what!r} is not a press this program knows. "
+                             f"Nothing was changed.")
+        who = str(who or "").strip()
+        screen = str(screen or "").strip()
+        names = {n.lower(): n for n in self.operators}
+        always = kind in sch.ALWAYS_TAKEN
+        if always and who.lower() not in names:
+            # Abort and Hold are never refused for who pressed them (PR #43
+            # fix round 1): no operator chosen, or a name not on the list,
+            # still stops the show; the journal says which (schedule.step).
+            names[who.lower()] = who
+        if surface and who:
+            names[who.lower()] = who
+        if who.lower() not in names:
+            sentence = (f"{who or 'Nobody'!r} is not on the operator list "
+                        f"({', '.join(self.operators)}). Nothing was "
+                        f"changed.")
+            self.journal_press(who, screen, what, "refused",
+                               f"{what} was refused. {sentence}")
+            raise ValueError(sentence)
+        who = names[who.lower()]
+        if always:
+            screen = {x.lower(): x for x in self.screens}.get(
+                screen.lower(), screen)
+        else:
+            screen = self._check_screen(screen, who, what, what)
+        if kind in (sch.HOLD_ON, sch.ABORT, sch.STOP_SHOW):
+            # A Start now waiting for the show audio never outlives these.
+            self.cancel_start_wait(f"{what} was pressed")
+        gen = None
+        if kind == sch.START_NOW and self.halting():
+            sentence = (f"Start now was refused: {self.HALTING}. Nothing "
+                        f"was started.")
+            self.journal_press(who, screen, "start-now", "refused",
+                               f"{who}'s Start now was refused. {sentence}")
+            return {"ok": False, "text": sentence, "halting": True}
+        if kind == sch.START_NOW:
+            # Outside this service's lock: the performer's check reads the
+            # show's clock (start_blocked), and it may wait for the audio.
+            refused, gen = self._start_now_refusal(who, screen, preroll)
+            if refused is not None:
+                return refused
+        with self._locked():
+            # The tick first: a Hold it takes (the engine's own at
+            # showtime for an open alert) cancels the start below (C1).
+            self.tick()
+            if gen is not None and (self._start_cancel[0] != gen or
+                                    self.halting()):
+                # A Stop, Hold or Abort landed after the wait ended and
+                # before this: the start is not made.
+                why = self._start_cancel[1] or "it was cancelled"
+                sentence = (f"Start now was refused: {why} just before it "
+                            f"started. Nothing was started.")
+                self.journal_press(who, screen, "start-now", "refused",
+                                   f"{who}'s Start now was refused. "
+                                   f"{sentence}")
+                return {"ok": False, "text": sentence, "cancelled": True}
+            veto = ""
+            if kind == sch.START_NOW and self.start_veto is not None:
+                try:
+                    veto = str(self.start_veto() or "")
+                except Exception:                    # noqa: BLE001
+                    veto = ""
+            if veto:
+                sentence = f"Start now was refused: {veto}"
+                self.journal_press(who, screen, "start-now", "refused",
+                                   f"{who}'s Start now was refused. "
+                                   f"{sentence}")
+                return {"ok": False, "text": sentence}
+            if self.machine is None:
+                sentence = (self.error or "There is no schedule loaded, so "
+                            "there is no show to press anything on.")
+                self.journal_press(who, screen, what, "refused",
+                                   f"{who}'s {what} was refused. {sentence}")
+                return {"ok": False, "text": sentence}
+            self._press_stamp = (pressed if pressed is not None
+                                 else self.stamp_press())
+            before = self.machine.state
+            try:
+                out = self._apply(sch.Event(kind, "operator", who=who,
+                                            screen=screen,
+                                            confirmed=bool(confirmed),
+                                            surface=bool(surface)))
+            finally:
+                self._press_stamp = None
+        if out.refused:
+            # nothing_to_do: what the press asks for is already so (a Hold
+            # with the schedule on hold, a show paused or the night over;
+            # a Resume with nothing held). Still refused and journaled as
+            # before; the Stream Deck reads the flag so a press that found
+            # the rig as asked is not drawn as ENGINE FAULT (2026-10-21).
+            done = ((kind == sch.HOLD_ON and before in self.HOLD_ALREADY) or
+                    (kind == sch.RESUME and before in self.RESUME_ALREADY))
+            return {"ok": False, "text": out.refused,
+                    "nothing_to_do": bool(done)}
+        # The answer the page, the iPad and the deck see says what the
+        # journal says (fix round 2, E: it said "nothing was disarmed"
+        # while the conductor did disarm).
+        text = " ".join(self._reworded(le).text for le in out.log if le.text)
+        return {"ok": True, "text": text or "Done."}
+
+    def start_blocked(self):
+        """What would stop an operator's Start now before anything is
+        decided, as {"text", "loading"}, or None: the performer's own check
+        (fire_ice.ShowRunner.start_blocked: Run not pressed, the show audio
+        still loading or not loaded, its interface missing). None with no
+        performer or in a dry run, where nothing is started anyway. Takes
+        no lock of this service. Never raises."""
+        perf = self.performer
+        fn = getattr(perf, "start_blocked", None)
+        if fn is None or self.dry_run:
+            return None
+        try:
+            got = fn()
+        except Exception:                        # noqa: BLE001
+            return None
+        if not isinstance(got, dict) or not got.get("text"):
+            return None
+        return {"text": str(got["text"]), "loading": got.get("loading") is
+                True}
+
+    # Start now while the show audio loads waits for it, this long at most
+    # (review of #144, F2), checking every START_WAIT_POLL_S. A Stop, Hold
+    # or Abort pressed meanwhile ends the wait: nothing starts.
+    START_WAIT_S = 20.0
+    START_WAIT_POLL_S = 0.1
+
+    def cancel_start_wait(self, why):
+        """End any Start now waiting for the show audio (a Stop, Hold or
+        Abort was pressed): it is refused, saying `why`, and starts
+        nothing. Any pre-roll under way stops too. Cheap, takes no lock,
+        never raises."""
+        self._start_cancel = (self._start_cancel[0] + 1, str(why or ""))
+        pr = self.preroll
+        if pr is not None:
+            pr.cancel(why)
+        perf = self.performer
+        if perf is not None and getattr(perf, "continue_off", None):
+            # A Continue anyway whose start a Stop, Hold or Abort cut off
+            # never carries to a later start (review of #162).
+            perf.continue_off = None
+
+    def halt_begin(self):
+        """A Stop's complete halt is under way (Remote.stop_press, web.py's
+        /api/stop with "halt"): until halt_end, Start now is refused, and
+        so is Run (re-review of #144, N2). Also ends any waiting Start
+        now. Never raises."""
+        with self._halt_count_lock:
+            self._halts += 1
+        self.cancel_start_wait("Stop was pressed")
+
+    def halt_end(self):
+        with self._halt_count_lock:
+            self._halts = max(0, self._halts - 1)
+
+    def halting(self):
+        """True while a Stop's halt is under way (halt_begin)."""
+        return self._halts > 0
+
+    HALTING = ("a Stop is under way (the rig is being disarmed and faded "
+               "to dark); wait until it has finished, then press it again")
+
+    def start_waiting(self):
+        """True while a Start now waits for the show audio to load."""
+        return self._start_waiters > 0
+
+    def _start_now_refusal(self, who, screen, preroll=True):
+        """Start now that cannot work, said up front with the real reason
+        and what to press (Jeff's field report, 2026-10-28: Start now with
+        Run off was "refused" only by a FAULT slot and an alert that said
+        "The show did not start"). While the show audio is still loading it
+        waits for it instead (review of #144, F2), at most START_WAIT_S,
+        and a Stop, Hold or Abort pressed meanwhile (cancel_start_wait)
+        ends the wait with nothing started. Only while the scheduler would
+        take a Start now at all; its own refusals (a show running, an Abort
+        not Reset) keep their own sentences. A refusal is journaled.
+        Returns (refusal or None, the cancel number the start must still
+        match under the lock)."""
+        gen = self._start_cancel[0]
+        m = self.machine
+        if m is None or m.state not in sch.ALLOWED[sch.START_NOW]:
+            return None, gen
+        blocked = self.start_blocked()
+        if blocked is not None and blocked["loading"]:
+            with self._locked():
+                self._journal_line(
+                    "system", f"Start now by {who or 'someone'} is "
+                              f"waiting for the show audio to load (at most "
+                              f"{self.START_WAIT_S:g} s); Stop, Hold or "
+                              f"Abort cancels it.",
+                    action="start now", outcome="waiting",
+                    reason="show audio loading")
+            self._start_waiters += 1
+            try:
+                end = _time.monotonic() + self.START_WAIT_S
+                while True:
+                    if self._start_cancel[0] != gen:
+                        said = self._start_cancel[1] or "it was cancelled"
+                        blocked = {"text": f"{said} while it waited for the "
+                                           f"show audio", "loading": False,
+                                   "cancelled": True}
+                        break
+                    blocked = self.start_blocked()
+                    if blocked is None or not blocked["loading"]:
+                        break
+                    if _time.monotonic() >= end:
+                        blocked = {"text": f"the show audio was still loading "
+                                           f"after {self.START_WAIT_S:g} s; "
+                                           f"check the show audio files and "
+                                           f"the journal, then press Start "
+                                           f"now again", "loading": True}
+                        break
+                    _time.sleep(self.START_WAIT_POLL_S)
+            finally:
+                self._start_waiters -= 1
+        if blocked is None:
+            if not preroll:
+                # Continue anyway: the person has just seen the failed
+                # check and chosen; it is not run again.
+                return None, gen
+            return self._preroll_for_start_now(who, screen, gen), gen
+        why = blocked["text"].rstrip(".")
+        sentence = (f"Start now was refused: {why}. Nothing was started and "
+                    f"nothing was sent to the rig.")
+        self.journal_press(who, screen, "start-now", "refused",
+                           f"{who or 'Someone'}'s Start now was refused. "
+                           f"{sentence}")
+        return {"ok": False, "text": sentence,
+                "loading": blocked["loading"],
+                "cancelled": bool(blocked.get("cancelled"))}, gen
+
+    def journal_press(self, who, screen, action, outcome, text,
+                      fault=False):
+        """One journal line for a press that is not a schedule event (the
+        remote page's disarm-all, a sign-in), with who and which screen."""
+        if fault:
+            return self._log(self.logbook.fault, "operator", text,
+                             action=action, outcome=outcome,
+                             state=self._state_name(), night=self._night(),
+                             who=who or "unnamed operator",
+                             screen=screen or "unnamed screen")
+        return self._log(self.logbook.record, actor="operator",
+                         action=action, outcome=outcome, reason=text,
+                         text=text, state=self._state_name(),
+                         night=self._night(),
+                         who=who or "unnamed operator",
+                         screen=screen or "unnamed screen")
 
     @staticmethod
     def _who_text(screen):

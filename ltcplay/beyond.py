@@ -32,14 +32,10 @@ devices.py, alongside this module, composes blank()/unblank() with
 madmapper.py's own primitives into on_hold()/on_resume()/on_abort() --
 plain synchronous functions with the handoff's ordering already built in,
 ready for that future conductor to call directly without re-deriving it.
-Notably, on_abort() blanks BEYOND at once rather than ramping its
-brightness down over the same 1 s as the video/audio fade: the handoff's
-own words for Abort ("lasers by a BEYOND brightness ramp, not an instant
-blank") call for a ramp, but this module's allow-list (S5, below) only
-ever permits the two exact values 0.0 and 100.0 -- loosening that for an
-Abort ramp is a laser-safety-relevant change this task did not make
-unreviewed. See devices.py's own module docstring for the full reasoning
-and the flag for Andy/Jeff.
+Abort blanks BEYOND at once, before the video and audio fade (Jeff and
+Andy, 2026-10-04): this module's allow-list (S5, below) permits only the
+two exact values 0.0 and 100.0, and that is the design, not a gap. There
+is no laser ramp anywhere.
 
 The facts that shape this module:
 
@@ -93,6 +89,25 @@ The facts that shape this module:
     doing when it arrived (bench: "beams frozen") -- a static beam, the
     exact hazard a blank exists to prevent, not achieve.
 
+  Laser output on and off (Jeff's ruling 1, 2026-10-22): the allow-list
+  was extended, deliberately and by exactly two addresses, for the laser
+  arm (laserarm.py). `/beyond/general/EnableLaserOutput` and
+  `/beyond/general/DisableLaserOutput`, each with NO argument at all (an
+  OSC message whose type tag string is a bare ","). Both are on Pangolin's
+  OSC list and both were accepted by BEYOND 5.5 in the bench (B8.3, the
+  OSC Monitor); with no laser hardware attached the bench could not see
+  what they do to a projector, and EnableLaserOutput did NOT undo a
+  BlackOut. They are GLOBAL: BEYOND's own laser output switch, every
+  projector and zone at once. No per-projector or per-zone enable,
+  disable or brightness address is verified anywhere in this repo, so
+  none is allowed here; laserarm.py says what that means for one laser
+  disarmed while another is armed. Nothing else changed: brightness still
+  takes only 0.0 and 100.0, BlackOut and MasterPause are still refused by
+  name, and enable_output() needs an explicit armed=True, the same
+  strictness unblank()'s in_show has. disable_output() cuts short an
+  enable_output() under way on another thread, the way a blank cuts an
+  unblank.
+
   "Keep running even though timecode stops" MUST be OFF in BEYOND's own
   Settings > Configuration > Timecode In (bench B8.2): the default, ON,
   keeps the lasers moving straight through a frozen or lost timecode feed.
@@ -131,6 +146,15 @@ BRIGHTNESS_ADDR = "/beyond/master/livecontrol/brightness"
 BLANK_VALUE = 0.0
 UNBLANK_VALUE = 100.0
 ALLOWED_VALUES = (BLANK_VALUE, UNBLANK_VALUE)
+# BEYOND's own laser output switch, on and off (Jeff's ruling 1,
+# 2026-10-22). GLOBAL, and sent with NO argument: `value` is None for
+# these two and nothing else. See the module docstring.
+ENABLE_OUTPUT_ADDR = "/beyond/general/EnableLaserOutput"
+DISABLE_OUTPUT_ADDR = "/beyond/general/DisableLaserOutput"
+OUTPUT_ADDRESSES = frozenset((ENABLE_OUTPUT_ADDR, DISABLE_OUTPUT_ADDR))
+# The whole allow-list, for the selftest to hold exactly: these three
+# addresses and nothing else ever leave this module.
+ALLOWED_ADDRESSES = frozenset((BRIGHTNESS_ADDR,)) | OUTPUT_ADDRESSES
 
 # OSC pattern-matching special characters (the OSC 1.0 spec's own address
 # pattern syntax) plus the bundle marker: none of these can ever appear in
@@ -235,8 +259,10 @@ class BeyondConfig:
 
 
 def _allowed(address, value):
-    """S5's allow-list: the ONLY thing this module may ever send is the
-    brightness address, with the value exactly 0.0 or 100.0. Checked at
+    """S5's allow-list: the ONLY things this module may ever send are the
+    brightness address, with the value exactly 0.0 or 100.0, and BEYOND's
+    EnableLaserOutput and DisableLaserOutput, with no argument at all
+    (value None; Jeff's ruling 1, 2026-10-22). Checked at
     BOTH _send() and _Socket.send() (see each) -- an audit (R6) found a
     deny list alone let a wrong-case address, a trailing slash, a doubled
     slash, an OSC wildcard/range/alternation pattern and a direct call
@@ -249,6 +275,10 @@ def _allowed(address, value):
         return False
     if address.startswith("#"):
         return False
+    if address in OUTPUT_ADDRESSES:
+        # Exactly one of the two output switches, and no argument: a
+        # value of any kind (0, 1, "on", 0.0) is refused.
+        return value is None
     if any(c in _SPECIAL_CHARS for c in address):
         return False
     if address != BRIGHTNESS_ADDR:
@@ -282,6 +312,24 @@ def _encode_float(address, value):
                          f"{address!r}")
     return (_pad(address.encode("utf-8")) + _pad(b",f")
            + struct.pack(">f", float(value)))
+
+
+def _encode_no_args(address):
+    """One OSC message with NO argument: the address, then a type tag
+    string that is a bare "," (OSC 1.0), padded. All EnableLaserOutput and
+    DisableLaserOutput ever carry."""
+    if not isinstance(address, str) or not address.startswith("/"):
+        raise ValueError(f"an OSC address has to start with /, not "
+                         f"{address!r}")
+    return _pad(address.encode("utf-8")) + _pad(b",")
+
+
+def _encode(address, value):
+    """The packet for one allowed message: no argument for the two output
+    switches, one float for brightness."""
+    if value is None:
+        return _encode_no_args(address)
+    return _encode_float(address, value)
 
 
 class _Socket:
@@ -354,12 +402,14 @@ class _Socket:
             raise BeyondConfigError(
                 f"beyond.py's socket layer refuses to send {address!r} "
                 f"with value {value!r}: only the brightness address, "
-                f"with 0.0 or 100.0, is ever allowed off this module (S5).")
+                f"with 0.0 or 100.0, and EnableLaserOutput or "
+                f"DisableLaserOutput with no argument, are ever allowed "
+                f"off this module (S5).")
         now = self._clock()
         sock = self._ensure(now, force=force)
         if sock is None:
             return False
-        pkt = _encode_float(address, value)
+        pkt = _encode(address, value)
         try:
             sock.sendto(pkt, (self.host, self.port))
         except OSError as e:
@@ -436,8 +486,11 @@ class Beyond:
                             clock=clock, on_fail=self._on_send_fail)
         self._lock = threading.Lock()
         self._blank_epoch = 0
+        self._disable_epoch = 0
         self.last_command = None       # "blank" or "unblank"
         self.last_result = None        # "ok", "failed", "refused" or "cut"
+        self.output_command = None     # "enable" or "disable"
+        self.output_result = None      # "ok", "failed", "refused" or "cut"
 
     def _on_send_fail(self, msg):
         self._note(f"A BEYOND command failed: {msg}.", action="command",
@@ -459,8 +512,9 @@ class Beyond:
             raise BeyondConfigError(
                 f"beyond.py refuses to send {address!r} with value "
                 f"{value!r}: only the brightness address, with 0.0 or "
-                f"100.0, is ever allowed (S5), and BlackOut/MasterPause "
-                f"are refused by name as well (BlackOut restarts BEYOND's "
+                f"100.0, and EnableLaserOutput or DisableLaserOutput with "
+                f"no argument, are ever allowed (S5), and "
+                f"BlackOut/MasterPause are refused by name as well (BlackOut restarts BEYOND's "
                 f"own core and needs a manual recovery; MasterPause "
                 f"freezes the beams, a static-beam hazard).")
         return self._osc.send(address, value, force=force)
@@ -603,12 +657,113 @@ class Beyond:
                 fault=True)
         return ok
 
+    # -- BEYOND's laser output switch (Jeff's ruling 1, 2026-10-22) -------
+    def _send_output_retried(self, address):
+        ok = False
+        for i in range(RETRY_COUNT):
+            if self._send(address, None, force=True):
+                ok = True
+            if i < RETRY_COUNT - 1:
+                self._sleep(RETRY_INTERVAL_S)
+        return ok
+
+    def disable_output(self, show=None):
+        """BEYOND's laser output OFF: /beyond/general/DisableLaserOutput,
+        no argument, 3 times about 20 ms apart. GLOBAL (every projector).
+        Stops an enable_output() under way on another thread before its
+        next packet, and one already on its way out is followed by the
+        disable again. Returns True if at least one packet got out."""
+        with self._lock:
+            self._disable_epoch += 1
+        ok = self._send_output_retried(DISABLE_OUTPUT_ADDR)
+        self.output_command = "disable"
+        self.output_result = "ok" if ok else "failed"
+        if ok:
+            self._note(f"BEYOND laser output disabled{_for_show(show)} "
+                       f"(DisableLaserOutput).", action="laser_output",
+                       outcome="disabled", show=show)
+        else:
+            self._note(
+                f"BEYOND laser output could NOT be disabled"
+                f"{_for_show(show)}: no DisableLaserOutput packet got out "
+                f"after {RETRY_COUNT} tries. The laser output may still be "
+                f"on.", action="laser_output", outcome="failed", show=show,
+                fault=True)
+        return ok
+
+    def enable_output(self, show=None, *, armed, still_wanted=None):
+        """BEYOND's laser output ON: /beyond/general/EnableLaserOutput, no
+        argument, 3 times about 20 ms apart, but ONLY when `armed` is the
+        real bool True (no default; anything else raises TypeError before
+        anything is sent, as unblank()'s in_show does). GLOBAL: it turns
+        on BEYOND's output for every projector at once, so the caller
+        (laserarm.py) sends it only when every laser is armed and none is
+        locked out. `still_wanted` is asked before every packet, the first
+        included, and a disable on another thread cuts it short: a cut or
+        refused enable never sends another packet, and returns False."""
+        if not isinstance(armed, bool):
+            raise TypeError(
+                f"enable_output() needs armed=True or armed=False, not "
+                f"{armed!r}: whether BEYOND's laser output may come on is "
+                f"never guessed from a truthy value.")
+        if armed is not True:
+            self.output_command = "enable"
+            self.output_result = "refused"
+            self._note(f"BEYOND laser output stays off{_for_show(show)}: "
+                       f"enable_output() was called with armed=False.",
+                       action="laser_output", outcome="refused", show=show)
+            return False
+        with self._lock:
+            epoch = self._disable_epoch
+        ok = False
+        cut = False
+        for i in range(RETRY_COUNT):
+            with self._lock:
+                if self._disable_epoch != epoch or \
+                        not self._wanted(still_wanted):
+                    cut = True
+                    break
+            if self._send(ENABLE_OUTPUT_ADDR, None, force=True):
+                ok = True
+            with self._lock:
+                late = self._disable_epoch != epoch
+            if late:
+                # A disable began while this enable was on its way out:
+                # the disable again, after it, so BEYOND's last word is off.
+                self._send_output_retried(DISABLE_OUTPUT_ADDR)
+                cut = True
+                break
+            if i < RETRY_COUNT - 1:
+                self._sleep(RETRY_INTERVAL_S)
+        self.output_command = "enable"
+        if cut:
+            self.output_result = "cut"
+            self._note(f"BEYOND laser output enable{_for_show(show)} "
+                       f"stopped part way: a disable or a disarm came in "
+                       f"first.", action="laser_output", outcome="cut",
+                       show=show)
+            return False
+        self.output_result = "ok" if ok else "failed"
+        if ok:
+            self._note(f"BEYOND laser output enabled{_for_show(show)} "
+                       f"(EnableLaserOutput).", action="laser_output",
+                       outcome="enabled", show=show)
+        else:
+            self._note(f"BEYOND laser output could not be enabled"
+                       f"{_for_show(show)}: no EnableLaserOutput packet got "
+                       f"out after {RETRY_COUNT} tries. The lasers stay "
+                       f"dark.", action="laser_output", outcome="failed",
+                       show=show, fault=True)
+        return ok
+
     def health(self):
         """No liveness claim -- BEYOND sends no feedback at all (bench
         B8), so this says only that a command was sent, what happened
         trying, and how many packets actually went out."""
         return {"last_command": self.last_command,
                 "last_result": self.last_result,
+                "output_command": self.output_command,
+                "output_result": self.output_result,
                 "packets_sent": self._osc.packets_sent,
                 "last_sent_at": self._osc.last_ok_at}
 

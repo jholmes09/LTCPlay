@@ -65,8 +65,11 @@ Whatever drives this engine and carries out its effects must:
 4. Send SHOW_CONFIRMED as soon as timecode is seen advancing after a
    START_SHOW. Until then the show counts as not yet started.
 5. Send SHOW_FAILED only for a show that did not start: never confirmed,
-   and within CONFIRM_WINDOW_S of the start. A later SHOW_FAILED is not a
-   show failure and is recorded as a fault with the show left running.
+   and within CONFIRM_WINDOW_S of the start. With nothing_sent when the
+   start was refused before anything went to the rig: it then has no
+   effects at all, so nothing is faded or stopped for it. A later
+   SHOW_FAILED is not a show failure and is recorded as a fault with the
+   show left running.
 6. Never send SHOW_FAILED for a fault during a show. Send FAULT_RAISED,
    which sets the FAULT flag and leaves the show running: a show that loses
    MadMapper midway free runs to its end.
@@ -207,6 +210,20 @@ DELAY_NEXT = "DELAY_NEXT"
 DELAY_REST = "DELAY_REST"
 ABORT = "ABORT"
 END_NIGHT = "END_NIGHT"
+# The Stream Deck's Stop held during a scheduled show (Jeff, 2026-10-26:
+# Stop is a complete halt of everything, the show ends): the show is cut
+# short and faded to dark like an Abort, but NOTHING is latched, so no
+# Reset is needed; Run brings the rig back. The engine disarms every flame
+# group and laser itself before it sends this.
+STOP_SHOW = "STOP_SHOW"
+# Reset pressed while the schedule is on Hold (Jeff's field report,
+# 2026-10-28: "I play the show, press Hold, and Reset does nothing"). The
+# service sends the scheduler's own events with this as their detail: a
+# paused show ends (STOP_SHOW, faded to dark, nothing latched) and a Hold
+# between shows ends (RESUME); the fault flag is cleared (CLEAR_FAULT).
+# Reset never starts or continues a show itself: a delayed show still
+# waits for Start now. Only the journal's words differ.
+RESET_DETAIL = "reset"
 EDIT_MOVE = "EDIT_MOVE"
 EDIT_ADD = "EDIT_ADD"
 EDIT_REMOVE = "EDIT_REMOVE"
@@ -222,13 +239,16 @@ EVENT_ACTORS = {
     CLEAR_FAULT: ("operator", "system"),
     CLOSING_DONE: ("system",),
     START_NOW: ("operator",),
-    HOLD_ON: ("operator",),
+    # "system": the engine's own Hold at showtime while an alert is open
+    # (Jeff, 2026-10-26; schedule_service.Service.tick, alerthold.py).
+    HOLD_ON: ("operator", "system"),
     RESUME: ("operator",),
     SKIP_NEXT: ("operator",),
     DELAY_NEXT: ("operator",),
     DELAY_REST: ("operator",),
     ABORT: ("operator",),
     END_NIGHT: ("operator",),
+    STOP_SHOW: ("operator",),
     EDIT_MOVE: ("operator",),
     EDIT_ADD: ("operator",),
     EDIT_REMOVE: ("operator",),
@@ -263,7 +283,8 @@ class RuleError(ValueError):
 
 WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 RULE_KEYS = frozenset(("timezone", "season", "weekly", "exceptions",
-                       "show_len_s", "guard_s", "late_grace_s", "version"))
+                       "show_len_s", "guard_s", "late_grace_s", "version",
+                       "soak_only"))
 SEASON_KEYS = frozenset(("first_date", "last_date"))
 NIGHT_KEYS = frozenset(("first_start", "interval_min", "last_end"))
 
@@ -425,6 +446,12 @@ def parse_rule(doc, where=""):
     for k in ("timezone", "season", "weekly", "show_len_s", "guard_s"):
         if k not in doc:
             problems.append(f"The schedule is missing {k}.")
+    soak_only = doc.get("soak_only", False)
+    if soak_only is not True and soak_only is not False:
+        # Written by the soak test only (schedule_service.load_rule refuses
+        # it anywhere else). Only the JSON words true and false.
+        problems.append(f"'soak_only' has to be true or false, not "
+                        f"{soak_only!r}.")
 
     tz = None
     if "timezone" in doc:
@@ -690,6 +717,12 @@ class Slot:
     paused_s: float = 0.0    # time spent paused, which moves its end later
 
 
+# The presses that are taken whoever pressed them and wherever: see step().
+# Stop (STOP_SHOW) is a halt like them: the deck's Stop with no operator
+# chosen still stops the show.
+ALWAYS_TAKEN = frozenset((ABORT, HOLD_ON, STOP_SHOW))
+
+
 @dataclass(frozen=True)
 class Event:
     kind: str
@@ -701,10 +734,28 @@ class Event:
     at: str = ""             # a wall clock time for an edit, "18:25"
     screen: str = ""         # operator events: which screen, from config
     who: str = ""            # operator events: the operator's name
+    # A press from the remote page (Jeff, 2026-10-07: no sign-in): `who`
+    # names the surface ("Rack screen", "iPad at 10.20.0.44"), not a person
+    # on the operator list, so the list check is not asked of it. Every
+    # other rule (state, confirm, the screen named) applies as before.
+    surface: bool = False
     # TICK, BOOT_DONE, START_NOW, HOLD_ON and RESUME: the show conductor is
     # latched after an Abort and nobody has pressed Reset. Filled in by the
     # service, never by an operator; always False without a conductor.
     latched: bool = False
+    # SHOW_FAILED only: the performer refused the start before it sent
+    # anything to the rig (Run not pressed, auto_start off, the conductor
+    # latched). Nothing started, so nothing is faded or stopped: the
+    # failed start has no effects (Pico, 2026-10-23: a leftover schedule
+    # with Run never pressed faded MadMapper every 15 minutes overnight).
+    nothing_sent: bool = False
+    # TICK only, filled in by the service (preroll.py, Jeff 2026-10-28):
+    # show `late_show` may still start up to `late_ok_s` seconds past its
+    # late grace, because its pre-roll could only run at its time (Run
+    # pressed late, LTC Player started inside the window). It starts late
+    # rather than without the check. Every other show keeps the grace.
+    late_show: int = 0
+    late_ok_s: int = 0
 
 
 @dataclass(frozen=True)
@@ -925,6 +976,14 @@ def _operator_name(ev):
     return ev.who or "The operator"
 
 
+def _pressed(ev, what):
+    """"Andy pressed Abort on the Rack screen", or, with no operator chosen,
+    "Abort pressed on the Rack screen with no operator chosen"."""
+    if ev.who.strip():
+        return f"{ev.who.strip()} pressed {what}{_screen(ev)}"
+    return f"{what} pressed{_screen(ev)} with no operator chosen"
+
+
 def _refuse(m, ev, now, sentence):
     op = ev.actor == "operator"
     le = LogEvent(at=_local(m, now), state=m.state, to_state=m.state,
@@ -954,6 +1013,7 @@ def _verb(ev):
         DELAY_NEXT: f"Delay next +{ev.minutes}",
         DELAY_REST: f"Delay the rest of the night +{ev.minutes}",
         ABORT: "Abort show", END_NIGHT: "Close for the night",
+        STOP_SHOW: "Stop",
         EDIT_MOVE: "move of a show", EDIT_ADD: "added show",
         EDIT_REMOVE: "removal of a show",
     }[ev.kind]
@@ -1203,7 +1263,10 @@ def _sweep(tx, held=None):
         if late < 0:
             break
         state = tx.m.state
-        if late > tx.m.late_grace_s:
+        grace = tx.m.late_grace_s
+        if tx.ev.late_show and tx.ev.late_show == s.n:
+            grace += max(0, int(tx.ev.late_ok_s))
+        if late > grace:
             if held:
                 _hold_back(tx, s)
                 continue
@@ -1376,7 +1439,8 @@ def _pause_so_far(tx):
     return raw
 
 
-def _show_stopped(m, ev, now, status, reason, text, effects, abort=False):
+def _show_stopped(m, ev, now, status, reason, text, effects, abort=False,
+                  stopped=None):
     tx = _Tx(m, ev, now)
     n = m.running
     s = m.slot(n)
@@ -1387,7 +1451,8 @@ def _show_stopped(m, ev, now, status, reason, text, effects, abort=False):
     if status == FAULT:
         tx.m = replace(tx.m, faults=tx.m.faults + (text,))
     tx.effects.extend(effects)
-    _after_show(tx, abort=abort, stopped=bool(effects))
+    _after_show(tx, abort=abort,
+                stopped=bool(effects) if stopped is None else stopped)
     tx.note(ev.kind, status.lower(), reason, text, show=n)
     return tx.done()
 
@@ -1450,6 +1515,16 @@ def _show_failed(m, ev, now):
                 f"too late for a failed start: {what}",
                 f"{sentence} {ev.actor} said: {what}.", show=s.n)
         return tx.done()
+    if ev.nothing_sent:
+        # Refused before anything went out: no effects at all, and the
+        # night waits as it does after any failed start (no look of its
+        # own), so nothing is sent for it either.
+        return _show_stopped(
+            m, ev, now, FAULT, f"FAULT ({what})",
+            f"Show {m.running} did not start: {what}. Reported by "
+            f"{ev.actor}. Slot marked FAULT. {NOTHING_SENT_TO_RIG} Nothing "
+            f"is latched: Start now works at once, and the next show is "
+            f"still attempted.", [], stopped=True)
     return _show_stopped(
         m, ev, now, FAULT, f"FAULT ({what})",
         f"Show {m.running} did not start: {what}. Reported by {ev.actor}. "
@@ -1540,7 +1615,7 @@ def _hold(m, ev, now):
                     f"for it: flame cues zeroed, lasers blanked, music "
                     f"fading out. Resume carries on from there.")
         else:
-            text = (f"{_operator_name(ev)} pressed Hold{_screen(ev)} during "
+            text = (f"{_pressed(ev, 'Hold')} during "
                     f"show {n}. The show is paused at its current frame: "
                     f"flame cues zeroed, lasers blanked, music fading out. "
                     f"Resume carries on from there.")
@@ -1557,7 +1632,7 @@ def _hold(m, ev, now):
                 f"itself until Resume; a show whose time passes meanwhile "
                 f"is delayed and waits for Start now.")
     else:
-        text = (f"{_operator_name(ev)} pressed Hold{_screen(ev)}. No show "
+        text = (f"{_pressed(ev, 'Hold')}. No show "
                 f"starts by itself until Resume; a show whose time passes "
                 f"meanwhile is delayed and waits for Start now.")
     if ev.latched:
@@ -1592,11 +1667,24 @@ def _resume(m, ev, now):
         # Still aborted and not Reset: back to waiting, dark (IDLE is the
         # preshow look, which never stays dark).
         back = STANDBY
+    reset = ev.detail == RESET_DETAIL
+    if reset:
+        # Reset never starts a show (Jeff's field report, 2026-10-28;
+        # review of #144, F1): a show whose time has come, even one still
+        # inside the late grace that the next tick would start, waits as a
+        # delayed show for Start now, exactly as if the Hold were still on.
+        for s in list(tx.m.pending()):
+            if lateness_s(s.start, now) < 0:
+                break
+            _hold_back(tx, s)
     tx.m = replace(tx.m, held_from="")
     _enter(tx, back, after_stop=ev.latched)
     nxt, d = tx.m.next_slot(), tx.m.delayed()
     tx.note(RESUME, "done", "schedule resumed",
-            f"{_operator_name(ev)} pressed Resume{_screen(ev)}."
+            f"{_operator_name(ev)} pressed "
+            f"{'Reset' if reset else 'Resume'}{_screen(ev)}."
+            + (" The schedule is no longer on hold. Reset starts nothing "
+               "by itself." if reset else "")
             + (f" The delayed show {d.n} still waits for Start now."
                if d else "")
             + (f" Next on the schedule is show {nxt.n} at "
@@ -1735,16 +1823,20 @@ def _delay(m, ev, now, rest):
 NOTHING_DISARMED = ("Every flame group is to be disarmed at once as well; "
                     "the show conductor does that, and none is attached "
                     "here, so nothing was disarmed.")
-# Jeff, 2026-10-03: a show that fails to start also disarms every flame
-# group, the same disarm-all an Abort sends ("disarm the flame units while
-# we are troubleshooting"), but latches nothing: Start now stays allowed,
-# and each group is re-armed by hand (off, then on) before flames can fire.
-# As with NOTHING_DISARMED, schedule_service.py replaces this sentence when
-# a show conductor is attached.
+# Jeff's ruling 1, 2026-10-12: a show that fails to start leaves every
+# flame group AS IT IS (no disarm; this reverses 2026-10-03's "disarm the
+# flame units while we are troubleshooting"), and latches nothing: Start
+# now stays allowed. The engine raises an alert (alerts.py) so a person is
+# told. The same sentence with or without a show conductor: neither
+# disarms.
 FAILED_START_NOT_DISARMED = (
-    "Every flame group is to be disarmed as well, because the show failed "
-    "to start; the show conductor does that, and none is attached here, so "
-    "nothing was disarmed.")
+    "No flame group is disarmed: every group stays as it was (Jeff, "
+    "2026-10-12), and the alert on the rack screen waits for an "
+    "Acknowledge.")
+NOTHING_SENT_TO_RIG = (
+    "Nothing was sent to the rig for it: no fade, no blank, no MadMapper "
+    "or BEYOND command and no flame cue, and every flame group stays as it "
+    "was.")
 ABORT_CONFIRM_DISARM = ("Every flame cue goes to zero and every flame group "
                         "is disarmed at once.")
 
@@ -1753,10 +1845,44 @@ def _abort(m, ev, now):
     n = m.running
     return _show_stopped(
         m, ev, now, ABORTED, "ABORTED (operator)",
-        f"{_operator_name(ev)} pressed Abort{_screen(ev)} during show {n}. "
+        f"{_pressed(ev, 'Abort')} during show {n}. "
         f"Flame cues zeroed and lasers blanked; music, video and pixels "
         f"fading to black over {ABORT_FADE_S:g} s, then MadMapper stopped. "
         f"{NOTHING_DISARMED}",
+        _abort_effects(n), abort=True)
+
+
+def _stop_show(m, ev, now):
+    """Stop during a show (the Stream Deck's Stop held; Jeff, 2026-10-26):
+    the show ends now, faded to dark as an Abort is, and the night carries
+    on exactly as after an Abort: STANDBY and dark, and after the last show
+    of the night the next tick closes the night (review of #130, 2). But
+    nothing is latched: no Reset is needed, and with Run no longer pressed
+    no later show starts. The engine disarms the flame groups and lasers
+    itself before this and journals how that went, so this line claims
+    only what the scheduler does."""
+    n = m.running
+    if ev.detail == RESET_DETAIL:
+        return _show_stopped(
+            m, ev, now, ABORTED, "ENDED (Reset during Hold)",
+            f"{_pressed(ev, 'Reset')} while show {n} was paused on Hold. "
+            f"Show {n} has ended: flame cues zeroed and lasers blanked; "
+            f"music, video and pixels fading to black over "
+            f"{ABORT_FADE_S:g} s, then MadMapper stopped. No flame group is "
+            f"disarmed and nothing is latched. Reset starts nothing: the "
+            f"rig stays dark until Start now or the next show's time, and "
+            f"only while Run is pressed.",
+            _abort_effects(n), abort=True)
+    return _show_stopped(
+        m, ev, now, ABORTED, "STOPPED (operator Stop)",
+        f"{_pressed(ev, 'Stop')} during show {n}. Flame cues zeroed and "
+        f"lasers blanked; music, video and pixels fading to black over "
+        f"{ABORT_FADE_S:g} s, then MadMapper stopped. Nothing is latched: "
+        f"no Reset is needed, and no show starts until Run is pressed "
+        f"again.",
+        # As an Abort leaves the night: STANDBY, never straight to closing
+        # (the latch is not set here; only an Abort's conductor call sets
+        # it, schedule_service).
         _abort_effects(n), abort=True)
 
 
@@ -1923,6 +2049,7 @@ ALLOWED = {
     DELAY_REST: _LIVE,
     ABORT: frozenset((SHOW, PAUSED)),
     END_NIGHT: frozenset((IDLE, STANDBY, HOLD)),
+    STOP_SHOW: frozenset((SHOW, PAUSED)),
     EDIT_MOVE: _LIVE,
     EDIT_ADD: _LIVE,
     EDIT_REMOVE: _LIVE,
@@ -1936,7 +2063,7 @@ _HANDLERS = {
     START_NOW: _start_now, HOLD_ON: _hold, RESUME: _resume,
     SKIP_NEXT: _skip_next, DELAY_NEXT: lambda m, e, n: _delay(m, e, n, False),
     DELAY_REST: lambda m, e, n: _delay(m, e, n, True), ABORT: _abort,
-    END_NIGHT: _end_night, EDIT_MOVE: _edit_move, EDIT_ADD: _edit_add,
+    END_NIGHT: _end_night, STOP_SHOW: _stop_show, EDIT_MOVE: _edit_move, EDIT_ADD: _edit_add,
     EDIT_REMOVE: _edit_remove,
 }
 
@@ -1952,7 +2079,7 @@ def _why_not(m, ev):
     if st == PAUSED and k in (SHOW_ENDED, SHOW_FAILED):
         return (f"Show {m.running} is paused, so it has neither ended nor "
                 f"failed to start. Resume or Abort it first.")
-    if k in (SHOW_CONFIRMED, SHOW_ENDED, SHOW_FAILED, ABORT):
+    if k in (SHOW_CONFIRMED, SHOW_ENDED, SHOW_FAILED, ABORT, STOP_SHOW):
         return f"No show is running; the scheduler is in {st}."
     if k == CLOSING_DONE:
         return f"The scheduler is not closing; it is in {st}."
@@ -1990,7 +2117,15 @@ def step(m, ev, now):
     log line, and the machine unchanged."""
     _check_event(ev)
     now = _utc(_aware(now))
-    if ev.actor == "operator" and not (ev.who.strip() and ev.screen.strip()):
+    # Abort and Hold are never refused for who pressed them or where (the
+    # coordinator for Jeff, 2026-10-03, PR #43 fix round 1): no operator
+    # chosen, a blank screen or a name not on the list still stops the
+    # show, and the journal says so. Start now, Resume, Reset and every
+    # edit still name someone on the list and a screen.
+    if ev.actor == "operator" and ev.kind in ALWAYS_TAKEN:
+        pass
+    elif ev.actor == "operator" and not (ev.who.strip() and
+                                         ev.screen.strip()):
         missing = " and ".join(x for x, v in (("who pressed it", ev.who),
                                              ("which screen it came from",
                                               ev.screen)) if not v.strip())
@@ -2000,15 +2135,16 @@ def step(m, ev, now):
                        f"action names the operator and the screen, so the "
                        f"night journal can say who did what. Nothing was "
                        f"changed.")
-    if ev.actor == "operator" and ev.who.strip().lower() not in \
-            {n.lower() for n in m.operators}:
+    if ev.actor == "operator" and ev.kind not in ALWAYS_TAKEN and \
+            not ev.surface and \
+            ev.who.strip().lower() not in {n.lower() for n in m.operators}:
         return _refuse(m, ev, now,
                        f"{ev.who.strip()!r} is not on the operator list "
                        f"({', '.join(m.operators) or 'empty'}). Pick a name "
                        f"from the list. Nothing was changed.")
     if m.state not in ALLOWED[ev.kind]:
         return _refuse(m, ev, now, _why_not(m, ev))
-    if ev.kind in (ABORT, END_NIGHT) and not ev.confirmed:
+    if ev.kind in (ABORT, END_NIGHT, STOP_SHOW) and not ev.confirmed:
         return _refuse(m, ev, now, f"{_verb(ev)} has to be confirmed first. "
                                    f"Nothing was changed.")
     if ev.kind == CLEAR_FAULT and not m.faults:
@@ -2417,9 +2553,16 @@ def machine_view(m, now=None):
         "runs_late": bool(late_warnings(m)),
         "warnings": late_warnings(m),
         "last_end": m.hm(m.night_end) if m.night_end else None,
+        # in_s is whole seconds, rounded down, for the journal and the
+        # deck; in_s_exact is the same to the millisecond, for the rack
+        # screen's countdown, which counts down smoothly from it (soak
+        # 2026-10-21: aging whole seconds made its last digit flicker).
         "next": ({"show": nxt.n, "start": clock(_local(m, nxt.start)),
                   "in_s": (int((nxt.start - now) // ONE_SECOND)
-                           if now is not None else None)} if nxt else None),
+                           if now is not None else None),
+                  "in_s_exact": (round((nxt.start - now).total_seconds(), 3)
+                                 if now is not None else None)}
+                 if nxt else None),
         "guard_left_s": (int(-(-_guard_left(m, now) // 1))
                          if now is not None else None),
         "actions": actions_for(m),

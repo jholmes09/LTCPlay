@@ -1,26 +1,29 @@
 name: weekly mutate
 
-# The whole mutation list, once a week, on main: ubuntu for every mutation,
-# and a windows runner for the Windows-only code (the one-copy lock's msvcrt
-# path) and the Windows clock and audio choices (mutate.py --windows), which
-# the show PC runs and no ubuntu runner can see break. The per-PR gate
+# The whole mutation list, once a week, on main. The per-PR gate
 # (selftest.yml) runs only the mutations a diff can have changed the result
-# of; this is the sweep that proves the rest is still caught, and it writes
-# the catchers file (which test caught each mutation) the per-PR gate uses
-# to re-run exactly what a changed test guarded. A release tag runs the
-# whole list on both OSes as well (selftest.yml).
+# of; this is the sweep that proves the rest is still caught, so a test
+# weakened without being renamed, or a change in one file that silenced a
+# test of another, shows here within the week and never reaches a release
+# tag unseen (a tag runs the whole list too, on ubuntu and windows).
 #
 # Run it by hand from the Actions tab (Run workflow) before a tech build or
-# whenever a full proof is wanted, choosing the OS. Each shard takes 1 to 2
-# hours; the account runs about 20 jobs at once, so a sweep takes 2 to 4
-# hours of wall time. A red sweep is never silent: the report job opens an
-# issue labelled `mutate-sweep` (or adds to the open one) naming the red
-# shards with links, and closes it when a later sweep is green. A failure is
-# a NOT CAUGHT mutation (the suite stayed green with that line broken:
-# strengthen the test), an UNEXPECTED MISS or NOW CAUGHT against
-# mutate_expected_misses.txt, a SETUP FAIL (the mutation's text no longer
-# matches the code: refresh it), or a shard that ran out of time (re-run
-# it). TESTING.md has the longer version.
+# whenever a full proof is wanted, choosing the OS. Each shard takes 3.5 to
+# 4.5 hours. The account runs at most 20 jobs at once, shared with every
+# PR's selftest and installer, so the sweep runs at most 8 shards at a time
+# (max-parallel below) and leaves 12 slots for PRs: every one of the 32
+# shards still runs, in about 4 waves, so a ubuntu sweep takes 15 to 19
+# hours of wall time (both OSes, about twice that). Starting the workflow
+# again while a sweep runs cancels the older sweep, on any branch: a new
+# start means the old one's result is no longer wanted, and two sweeps at
+# once would take 16 slots. A red sweep is never silent: the report job
+# opens an issue labelled `mutate-sweep` (or adds to the open one) naming
+# the red shards with links, and closes it when a later sweep is green. A
+# failure here is a NOT CAUGHT mutation (the suite stayed green with that
+# line broken: strengthen the test), an UNEXPECTED MISS or NOW CAUGHT
+# against mutate_expected_misses.txt, a SETUP FAIL (the mutation's text no
+# longer matches the code: refresh it), or a shard that ran out of time
+# (re-run it). TESTING.md has the longer version.
 on:
   schedule:
     # Sundays 07:12 UTC, 03:12 Eastern: after the week's merges, before the
@@ -29,7 +32,7 @@ on:
   workflow_dispatch:
     inputs:
       os:
-        description: "Where to run the whole list (the Windows-only subset runs on windows either way)"
+        description: "Where to run the whole list"
         type: choice
         default: ubuntu-latest
         options: [ubuntu-latest, windows-latest, both]
@@ -37,125 +40,136 @@ on:
 permissions:
   contents: read
 
+# One sweep at a time for the whole repository (not per branch), so the
+# sweep can never hold more than 8 job slots. A newer start cancels the
+# running one; scheduled starts (only ever on the default branch) do the
+# same, so a sweep that overruns a week gives way to the next one.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
 jobs:
-  # The shard matrix: 32 ubuntu shards of everything (or 32 windows ones,
-  # or both, on demand), plus one windows shard of the Windows-only subset
-  # unless windows is already running everything.
   plan:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
-      matrix: ${{ steps.pick.outputs.matrix }}
+      oses: ${{ steps.pick.outputs.oses }}
     steps:
       - id: pick
         shell: bash
         env:
           CHOICE: ${{ inputs.os || 'ubuntu-latest' }}
         run: |
-          python3 - "$CHOICE" <<'PY'
-          import json, os, sys
-
-          choice = sys.argv[1]
-          rows = []
-          full = {"ubuntu-latest": ["ubuntu-latest"],
-                  "windows-latest": ["windows-latest"],
-                  "both": ["ubuntu-latest", "windows-latest"]}[choice]
-          for os_ in full:
-              rows += [{"os": os_, "shard": i, "n": 32, "args": "",
-                        "label": f"{os_} {i}/32"} for i in range(32)]
-          if "windows-latest" not in full:
-              rows.append({"os": "windows-latest", "shard": 0, "n": 1,
-                           "args": "--windows", "label": "windows-only code"})
-          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
-              fh.write("matrix=" + json.dumps({"include": rows}) + "\n")
-          print(f"{len(rows)} shards: {choice}, plus the Windows-only subset "
-                f"on windows" if "windows-latest" not in full else
-                f"{len(rows)} shards: {choice}")
-          PY
+          case "$CHOICE" in
+            both) echo 'oses=["ubuntu-latest","windows-latest"]' >> "$GITHUB_OUTPUT" ;;
+            *)    echo "oses=[\"$CHOICE\"]" >> "$GITHUB_OUTPUT" ;;
+          esac
 
   sweep:
     needs: plan
-    name: sweep (${{ matrix.label }})
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+      # 8 of the account's 20 job slots at most, whatever the OS choice:
+      # max-parallel counts every combination of the matrix.
+      max-parallel: 8
+      matrix:
+        os: ${{ fromJSON(needs.plan.outputs.oses) }}
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 300
+    # The same limits as selftest.yml's mutate job (the reason is there).
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      # pillow too, the same list as the selftest job: without it the
-      # Stream Deck pixel tests skip themselves and the deck mutations in
-      # streamdeck.py read NOT CAUGHT in every sweep here while any box
-      # with Pillow catches them (PR #43, #46 and #49, shards 14 and 15).
+          cache: pip
+          cache-dependency-path: .github/workflows/weekly-mutate.yml
       - run: python -m pip install numpy zstandard tzdata pillow
       - id: sweep
         shell: bash
-        timeout-minutes: 285
-        run: python -u mutate.py --shard ${{ matrix.shard }}/${{ matrix.n }} --expected mutate_expected_misses.txt ${{ matrix.args }} --catchers-out "$RUNNER_TEMP/catchers-shard.json" 2>&1 | tee "$RUNNER_TEMP/mutate.log"
+        timeout-minutes: 340
+        run: python -u mutate.py --shard ${{ matrix.shard }}/32 --expected mutate_expected_misses.txt --hints mutate_catchers.json --jobs ${{ matrix.os == 'ubuntu-latest' && 3 || 1 }} 2>&1 | tee "$RUNNER_TEMP/mutate.log"
       - name: Report a shard that ran out of time
         if: always() && steps.sweep.outcome != 'success'
         shell: bash
-        run: python mutate.py --unfinished "$RUNNER_TEMP/mutate.log" --shard ${{ matrix.shard }}/${{ matrix.n }} ${{ matrix.args }}
+        env:
+          SHARD: ${{ matrix.shard }}
+          LOG: ${{ runner.temp }}/mutate.log
+        run: |
+          python - <<'PY'
+          import ast, os
+
+          shard, total = int(os.environ["SHARD"]), 32
+          log = []
+          try:
+              with open(os.environ["LOG"], encoding="utf-8", errors="replace") as fh:
+                  log = [l.rstrip("\r\n") for l in fh]
+          except OSError:
+              pass
+          if any(l.startswith("caught ") and ", missed " in l for l in log):
+              print("the sweep finished; any failure is in its own lines above")
+              raise SystemExit(0)
+          if any("The suite FAILS with nothing mutated" in l for l in log):
+              print("the baseline failed; that is not a timeout")
+              raise SystemExit(0)
+          if any(l.startswith("INFRASTRUCTURE FAILURE") for l in log):
+              print("the unmutated suite did not finish, twice: an infrastructure failure, said above")
+              raise SystemExit(0)
+          tree = ast.parse(open("mutate.py", encoding="utf-8").read(), "mutate.py")
+          names = None
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Assign) and any(
+                      isinstance(t, ast.Name) and t.id == "MUTATIONS" for t in node.targets):
+                  names = [e.elts[0].value for e in node.value.elts]
+          mine = [n for i, n in enumerate(names) if i % total == shard]
+          done = set()
+          for l in log:
+              for pre in ("  caught      ", "  NOT CAUGHT  "):
+                  if l.startswith(pre):
+                      done.add(l[len(pre):])
+              if l.startswith("  SETUP FAIL  "):
+                  done.add(l[len("  SETUP FAIL  "):].split(" (pattern", 1)[0])
+          todo = [n for n in mine if n not in done]
+          if not todo:
+              print("no mutation is missing a result; the shard stopped some other way")
+              raise SystemExit(0)
+          head = (f"shard {shard}/{total} TIMED OUT, it did not finish: "
+                  f"{len(todo)} of its {len(mine)} mutations did not run to a result. "
+                  "This is a timeout, not a missed mutation; re-run the shard.")
+          esc = lambda s: s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print("::error title=mutate shard timed out::" + esc(head + " Not run: " + " | ".join(todo))[:3500])
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as fh:
+                  fh.write("### " + head + "\n\n" + "\n".join("- " + n for n in todo) + "\n")
+          print(head)
+          for n in todo:
+              print("  did not run  " + n)
+          raise SystemExit(1)
+          PY
       # The whole shard log, kept a week, on the run page under Artifacts.
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: mutate-log-${{ matrix.os }}-shard-${{ matrix.shard }}${{ matrix.args && '-windows-only' || '' }}
+          name: mutate-log-${{ matrix.os }}-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/mutate.log
-          retention-days: 7
-          if-no-files-found: ignore
-      # Which test caught each mutation in this shard: merged by the report
-      # job into the catchers file the per-PR gate reads.
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: catchers-shard-${{ matrix.os }}-${{ matrix.shard }}${{ matrix.args && '-windows-only' || '' }}
-          path: ${{ runner.temp }}/catchers-shard.json
           retention-days: 7
           if-no-files-found: ignore
 
   # Which shards are red, with a link to each, in the run's summary and in
   # an issue (opened, or added to) so a red sweep is never silent; a green
-  # sweep closes the issue. Also merges the shards' catchers into one file.
+  # sweep closes the issue.
   report:
     needs: sweep
     if: always() && needs.sweep.result != 'skipped' && needs.sweep.result != 'cancelled'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       actions: read
       issues: write
       contents: read
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: catchers-shard-*
-          path: ${{ runner.temp }}/catchers
-          merge-multiple: false
-      - name: Merge the catchers
-        shell: bash
-        run: |
-          python3 - "$RUNNER_TEMP/catchers" "$RUNNER_TEMP/catchers.json" <<'PY'
-          import glob, json, os, sys
-
-          merged = {}
-          for p in sorted(glob.glob(os.path.join(sys.argv[1], "*", "catchers-shard.json"))):
-              # ubuntu first (sorted), windows after: a mutation caught on
-              # both keeps the ubuntu catcher; one caught only on windows
-              # keeps that one.
-              with open(p, encoding="utf-8") as fh:
-                  for k, v in json.load(fh).items():
-                      merged.setdefault(k, v)
-          with open(sys.argv[2], "w", encoding="utf-8") as fh:
-              json.dump(merged, fh, indent=1, sort_keys=True)
-          print(f"{len(merged)} catchers merged")
-          PY
-      - uses: actions/upload-artifact@v4
-        with:
-          name: catchers
-          path: ${{ runner.temp }}/catchers.json
-          retention-days: 90
       - name: Say which shards are red, in the summary and in an issue
         shell: bash
         env:

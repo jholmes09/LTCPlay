@@ -102,6 +102,10 @@ DEFAULT_FADE_S = 1.0
 DEFAULT_RAMP_STEPS = 31          # bench B2, B4: 31 steps over 1 s was smooth
 DEFAULT_TIMEOUT_S = 3.0          # handoff section 4: no pulse for 3 s = fault
 DEFAULT_DRIFT_MS = 100.0         # handoff section 4: configurable, default 100
+# Jeff's field report, 2026-10-28: the show's timecode moving this long
+# with no heartbeat from MadMapper is the rack screen's "MadMapper is not
+# following timecode" alert (madmapperwatch.FollowCheck). Display only.
+DEFAULT_FOLLOW_S = 5.0
 AUDIO_ADDR = "/master/master_audio_level"
 # Bench B9: MadMapper's re-sent value at bank select is 1.0 (the end of
 # whatever it last showed), not anywhere near a real show's start. A real
@@ -325,12 +329,12 @@ class HeartbeatConfig:
     judges it (handoff section 4; bench B3)."""
 
     KEYS = frozenset(("bind", "port", "address", "show_len_s", "timeout_s",
-                      "drift_ms", "allow_non_loopback_bind"))
+                      "drift_ms", "allow_non_loopback_bind", "follow_s"))
 
     def __init__(self, bind=DEFAULT_HEARTBEAT_BIND, port=DEFAULT_HEARTBEAT_PORT,
                  address=DEFAULT_HEARTBEAT_ADDRESS, show_len_s=None,
                  timeout_s=DEFAULT_TIMEOUT_S, drift_ms=DEFAULT_DRIFT_MS,
-                 allow_non_loopback_bind=False):
+                 allow_non_loopback_bind=False, follow_s=DEFAULT_FOLLOW_S):
         self.bind = bind
         self.port = port
         self.address = address
@@ -338,6 +342,7 @@ class HeartbeatConfig:
         self.timeout_s = timeout_s
         self.drift_ms = drift_ms
         self.allow_non_loopback_bind = allow_non_loopback_bind
+        self.follow_s = follow_s
 
     @classmethod
     def parse(cls, doc, where):
@@ -381,8 +386,9 @@ class HeartbeatConfig:
                 f"length.")
         timeout_s = _positive(doc, "timeout_s", where, what, DEFAULT_TIMEOUT_S)
         drift_ms = _positive(doc, "drift_ms", where, what, DEFAULT_DRIFT_MS)
+        follow_s = _positive(doc, "follow_s", where, what, DEFAULT_FOLLOW_S)
         return cls(bind, port, address, show_len_s, timeout_s, drift_ms,
-                   allow_non_loopback)
+                   allow_non_loopback, follow_s)
 
 
 class MadMapperConfig:
@@ -903,6 +909,14 @@ class Watchdog:
     ignore the alarm."""
 
     DRIFT_SETTLE_PACKETS = 1
+    # Measuring MadMapper's heartbeat track length (track_len_s): only from
+    # packets in the middle of the track, at least TRACK_MIN_S into the
+    # show, against a position noted no more than TRACK_FRESH_S before.
+    TRACK_SAMPLES = 15
+    TRACK_MIN_SAMPLES = 3
+    TRACK_MIN_S = 60.0
+    TRACK_FRESH_S = 1.5
+    TRACK_VALUES = (0.02, 0.98)
 
     def __init__(self, cfg=None, clock=time.perf_counter, sleep=time.sleep,
                 socket_factory=None, journal=None, poll_s=0.1):
@@ -925,9 +939,21 @@ class Watchdog:
         self._armed_at = None
         self._last_packet_at = None
         self._last_value = None
+        self._heard_at = None          # any packet, armed or not
+        self._heard_value = None
+        self._heard_count = 0
         self._alarmed = False
         self.packets_in = 0
         self._ltcplay_pos = None       # (seconds, at) from note_position()
+        # The show's real length, when the running show says it
+        # (follow_show_length): it outranks cfg.show_len_s, so the heartbeat
+        # is read against the show that is really playing (Jeff's field
+        # report, 2026-10-28, item 14).
+        self._show_len_real = None
+        # MadMapper's own heartbeat track length as measured: ltcplay's
+        # position divided by the value at the same moment, one per packet
+        # (TRACK_SAMPLES kept). Any packet counts, armed or not.
+        self._track_samples = []
         self.last_drift_ms = None
         self.drift_flagged = False
         self.bind_error = None
@@ -1022,9 +1048,18 @@ class Watchdog:
         drift_note = None
         skip_drift = False
         with self._lock:
+            # MadMapper's track length, measured from any packet, armed or
+            # not (track_len_s).
+            self._measure_track(value, now)
+            # Heard at all, armed or not: the rack screen's Video lamp
+            # (madmapperwatch.py) and the pre-roll's video test
+            # (preroll.check_video, heard()) only. Never a position here.
+            self._heard_at = now
+            self._heard_value = value
+            self._heard_count += 1
             if not self.armed:
                 return
-            show_len_s = self.cfg.show_len_s
+            show_len_s = self._show_len_locked()
             if self._awaiting_start:
                 near_start = (show_len_s is not None
                              and isinstance(value, (int, float))
@@ -1080,10 +1115,64 @@ class Watchdog:
     def note_position(self, seconds, at=None):
         """ltcplay's own timecode position, for the drift check. Nothing
         in this module calls this itself -- see the class docstring; it
-        is fed in by whoever also owns the real clock."""
+        is fed in by whoever also owns the real clock. None: no moving
+        position (nothing playing, or held)."""
         with self._lock:
-            self._ltcplay_pos = (seconds, self._clock() if at is None
-                                else at)
+            self._ltcplay_pos = None if seconds is None else (
+                seconds, self._clock() if at is None else at)
+
+    # -- the heartbeat track's length (Jeff, 2026-10-28, item 14) ----------
+    def follow_show_length(self, seconds):
+        """The running show's real length (clock.show_len_of), or None to
+        go back to cfg.show_len_s. The track measurements stay: they are
+        of MadMapper's own track, whatever the show says."""
+        v = None
+        if isinstance(seconds, (int, float)) and \
+                not isinstance(seconds, bool) and seconds > 0 and \
+                math.isfinite(seconds):
+            v = float(seconds)
+        with self._lock:
+            self._show_len_real = v
+
+    def _show_len_locked(self):
+        return self._show_len_real if self._show_len_real is not None \
+            else self.cfg.show_len_s
+
+    def show_len_s(self):
+        """The show length the heartbeat is read against: the running
+        show's real length, else the configured one."""
+        with self._lock:
+            return self._show_len_locked()
+
+    def _measure_track(self, value, now):
+        """One measurement of MadMapper's heartbeat track length from this
+        packet. Lock held."""
+        pos = self._ltcplay_pos
+        if pos is None or not isinstance(value, (int, float)) or \
+                isinstance(value, bool) or math.isnan(value):
+            return
+        lo, hi = self.TRACK_VALUES
+        if not lo <= value <= hi:
+            return
+        ltc_s, ltc_at = pos
+        if not 0 <= now - ltc_at <= self.TRACK_FRESH_S:
+            return
+        t = ltc_s + (now - ltc_at)
+        if t < self.TRACK_MIN_S:
+            return
+        self._track_samples.append(t / value)
+        del self._track_samples[:-self.TRACK_SAMPLES]
+
+    def track_len_s(self):
+        """MadMapper's heartbeat track length as measured (the median of
+        the recent measurements), or None until there are enough. The
+        track's value runs 0 to 1 over its length, so with ltcplay at t s
+        and the value v, the track is t / v s long."""
+        with self._lock:
+            got = sorted(self._track_samples)
+        if len(got) < self.TRACK_MIN_SAMPLES:
+            return None
+        return got[len(got) // 2]
 
     def arm(self, show=None):
         with self._lock:
@@ -1133,6 +1222,23 @@ class Watchdog:
                 self.journal(text, **extra)
             except Exception:
                 pass
+
+    def heard_age_s(self):
+        """Seconds since any heartbeat packet arrived, armed or not, or
+        None if none has since this listener started. Display only (the
+        rack screen's Video lamp): it never arms, alarms or counts."""
+        with self._lock:
+            at = self._heard_at
+            return None if at is None else self._clock() - at
+
+    def heard(self):
+        """(packets heard since this listener started, armed or not; the
+        last value; when it came; now), the last two on this watchdog's
+        clock. Read only, for the pre-roll's video test (preroll.py): it
+        never arms, alarms or counts toward the show's own tracking."""
+        with self._lock:
+            return (self._heard_count, self._heard_value, self._heard_at,
+                    self._clock())
 
     def health(self):
         with self._lock:

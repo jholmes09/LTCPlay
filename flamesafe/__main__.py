@@ -17,6 +17,7 @@ leaves on the wire.
 
 from __future__ import annotations
 
+import os
 import signal
 import sys
 import threading
@@ -25,6 +26,48 @@ from . import config as config_mod
 from .arminput import NullArmInput, SocketArmInput
 from .journal import Journal
 from .service import Service
+
+
+def profile_line(g):
+    """The start line for a group with a safety_profile."""
+    p = g.profile
+    window = ("" if p["enable_lo"] is None else
+              f", enable window {p['enable_lo']} to {p['enable_hi']}")
+    guard = ("it has no fire guard (no fire_at in its safety_profile)"
+             if p["fire_at"] is None else
+             f"fire guard: below {p['fire_at']}, every single-bit flip too")
+    return (f"{g.name}: arms at {g.arm_value} from its safety_profile"
+            f"{window}; {guard}")
+
+
+def aim_line(groups, path):
+    """The start line for the aim slots (2026-10-28): every group's aim
+    slots, or that there are none, and the file they were read from, so a
+    journal shows in one line whether the wave flamer's angles are loaded
+    and from which flamesafe.json. Display only."""
+    where = os.path.abspath(str(path))
+    parts = [f"{g.name} {', '.join(str(a) for a in sorted(g.aim))}"
+             for g in groups if g.aim]
+    if not parts:
+        return (f"aim slots: none in {where}. Every fire slot counts as a "
+                f"flame, a wave flamer's angle too.")
+    return (f"aim slots: {'; '.join(parts)} (the angle, sent only while "
+            f"the group is armed), read from {where}")
+
+
+def passthrough_line(entries, path):
+    """The start line for the passthrough entries (2026-10-29, the hazers):
+    each name and its slots, or that there are none, and the file. Display
+    only."""
+    where = os.path.abspath(str(path))
+    if not entries:
+        return (f"passthrough: none in {where}. Every slot that belongs to "
+                f"no group is zero.")
+    parts = [f"{p.name} haze {p.haze}, fan {p.fan}" for p in entries]
+    return (f"passthrough: {'; '.join(parts)} (the show's values only while "
+            f"the show program has it switched on, the link is fresh and no "
+            f"Abort has stood since; else zero; off at start), read from "
+            f"{where}")
 
 
 def main(argv=None):
@@ -43,6 +86,13 @@ def main(argv=None):
                                 "group map and the arm value in this config "
                                 "have not been confirmed by Andy. "
                                 + (cfg.note or ""))
+    # safety_profile (2026-10-26): one plain line per group that arms at a
+    # value of its own, and whether that value has a fire guard.
+    for g in cfg.groups:
+        if g.profile is not None:
+            journal.event("config", profile_line(g))
+    journal.event("config", aim_line(cfg.groups, argv[0]))
+    journal.event("config", passthrough_line(cfg.passthrough, argv[0]))
     if cfg.link_arm_port is not None:
         arm_input = SocketArmInput(cfg.link_arm_ip, cfg.link_arm_port,
                                    cfg.link_key, cfg.n, log=journal,
@@ -57,6 +107,16 @@ def main(argv=None):
                                 "not set): every group stays disarmed and "
                                 "the flame universe is all zeros")
     svc = Service(cfg, arm_input, log=journal)
+    if cfg.lockout_file:
+        journal.event("config", f"lockout: fire slots named in "
+                                f"{cfg.lockout_file} (written by ltcplay's "
+                                f"engine) are held at zero on every packet, "
+                                f"and a group with every slot locked cannot "
+                                f"arm")
+    else:
+        journal.event("config", "no lockout_file is set: nothing can be "
+                                "locked out from the Morning and Shutdown "
+                                "page")
     stop = threading.Event()
 
     def _stop(*_a):

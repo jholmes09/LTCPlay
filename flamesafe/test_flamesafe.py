@@ -32,6 +32,7 @@ if ROOT not in sys.path:
 from flamesafe import rules, config, composer, link, sacn, arminput  # noqa: E402
 from flamesafe.composer import Composer  # noqa: E402
 from flamesafe.service import Service  # noqa: E402
+from flamesafe import __main__ as fsmain  # noqa: E402
 
 FAILS = []
 RAN = set()
@@ -64,6 +65,15 @@ def make_config(**over):
 ARM = 78
 FRONT_SAFETY, FRONT_FIRE = 401, [411, 412, 413, 414, 415]
 N_GROUPS = 6
+# The example's wave flamer (2026-10-26): three 6-channel fixtures armed as
+# one group, channels 1 to 5 fire and channel 6 the fixture's own safety.
+# Slots 1 to 18 of universe 1, as Jeff gave them on 2026-10-26.
+WAVE = 2
+WAVE_SAFETIES = [6, 12, 18]
+WAVE_FIRE = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17]
+# The wave flamer is not a G-Flame: its safety_profile (2026-10-26) arms it
+# at 178, the value its channel 6 takes, not at the file's 78.
+WAVE_ARM = 178
 KEY = example_dict()["link"]["key"]
 NAMES = [g["name"] for g in example_dict()["groups"]]
 SENDER = ("127.0.0.1", 40001)
@@ -101,6 +111,8 @@ class Rig:
         # disarms every group and nothing could arm in a rig without one.
         self.link_alive = True
         self.cue = {}
+        # The hazers the rig's ltcplay says ON in every frame (2026-10-29).
+        self.hazers = ()
         self.mono_floor = 0.0
 
     def step(self, dt=None, n=1):
@@ -139,7 +151,8 @@ class Rig:
         f = link.FlameFrame(self.seq, "00:00:01:00",
                             max(self.t, self.mono_floor) if mono is None
                             else mono,
-                            self.cfg.universe, bytes(vals))
+                            self.cfg.universe, bytes(vals),
+                            frozenset(self.hazers))
         why = self.c.ingest_frame(f, sender=sender)
         if why and seq is not None and seq > before:
             # a rejected explicit seq must not move the rig's own counter
@@ -403,9 +416,13 @@ def test_rule8_config_refuses_every_bad_table():
 def test_example_config_loads_and_is_marked_unconfirmed():
     section("the example config is the rev 6 fixture table, unconfirmed")
     c = config.load(os.path.join(HERE, "flamesafe.example.json"))
-    check(c.n == 6 and [g.safety for g in c.groups] == [401, 402, 403, 404,
-                                                        405, 406],
-          "six groups on safety slots 401 to 406")
+    check(c.n == 6 and [g.safeties for g in c.groups]
+          == [[401], [402], WAVE_SAFETIES, [404], [405], [406]],
+          f"six groups: five on one safety slot each, the wave flamer on "
+          f"three: {[g.safeties for g in c.groups]}")
+    check(c.groups[2].fire == WAVE_FIRE and "wave flamer" in c.note,
+          "the wave flamer is three 6-channel fixtures, 15 fire slots, and "
+          "the note says so")
     check(c.groups[1].fire == [421, 422, 423, 424, 425, 426],
           "cat-walk has its six fire slots")
     check(c.arm_value == 78 and c.gflame_range == "30-50%",
@@ -1012,6 +1029,50 @@ def test_ltcplay_stale_zeros_fire_then_disarms():
     r.step()
     check(r.out.status["frames"]["fire"] == "passing" and r.fire(0)[0] == 0,
           "its frames pass, but nothing fires: the group is disarmed")
+
+
+def test_fire_hold_250_holds_a_late_frame_then_zeros():
+    section("liveness at fire_hold_ms 250 (Jeff is raising it, 2026-10-29): "
+            "a frame 200 ms late keeps the fire value through the gap; "
+            "silence zeros it inside 250 ms plus a tick, with the link "
+            "still fresh, and disarms at frame_stale_ms")
+    tick = 0.025 + 1e-9
+    r = armed_rig(fire_hold_ms=250)
+    r.run(4, {411: 255})
+    check(r.fire(0)[0] == 255, "firing at fire_hold_ms 250")
+    # A late frame: 200 ms with no frame, then the next one. The fire value
+    # never drops in the gap (at 100 it would have, after 100 ms).
+    t_last = r.t
+    r.frame({411: 255})
+    dropped = None
+    while r.t - t_last < 0.2:
+        r.step()
+        if dropped is None and r.fire(0)[0] == 0:
+            dropped = r.t - t_last
+    check(dropped is None, f"a 200 ms gap at fire_hold_ms 250: the fire "
+                           f"value held through it (dropped at {dropped})")
+    r.run(2, {411: 255})
+    check(r.fire(0)[0] == 255 and r.out.status["frames"]["fire"] == "passing",
+          "and the next frame carries on firing")
+    # Silence: zero inside fire_hold_ms (plus a tick) with the link still
+    # fresh, then the disarm at frame_stale_ms.
+    r.link_alive = False
+    t_last = r.t
+    r.frame({411: 255})
+    zero_at = None
+    while r.t - t_last < 2.0:
+        r.step()
+        if zero_at is None and r.fire(0)[0] == 0:
+            zero_at = r.t - t_last
+            check(r.out.status["frames"]["state"] == "fresh",
+                  "fire zeroed while the link is still fresh")
+        if r.safety(0) == 0:
+            break
+    check(zero_at is not None and 0.25 - tick <= zero_at <= 0.25 + tick,
+          f"silence: the fire slot is zero after {zero_at} s (fire_hold_ms "
+          f"250)")
+    check(r.safety(0) == 0 and r.t - t_last <= 0.5 + tick,
+          f"and the group disarmed at frame_stale_ms: {r.t - t_last:.3f} s")
 
 
 # =========================================================================
@@ -1851,7 +1912,20 @@ def test_round3_foreign_forced_edge_is_not_consent_end_to_end():
         deck_send(want0); keep_flame_alive(); tick()
         for _ in range(dwell_ticks):
             deck_send(want0); keep_flame_alive(); tick()
+        # The clock is the test's own but the arm link is real loopback
+        # UDP: on a busy Windows runner a datagram can land a tick or more
+        # late, so the down edge (and with it the re-arm dwell) is counted
+        # from a later tick than the one it was sent on (CI, 2026-10-28:
+        # held, re-arm dwell, 1 s left). Keep the deck asking, a bounded
+        # number of ticks more, until the dwell has run out; it must then
+        # be armed.
         s = status()
+        for _ in range(4 * dwell_ticks):
+            if s["groups"][0]["armed"] == "armed" or \
+                    s["groups"][0]["reason"] != "re-arm dwell":
+                break
+            deck_send(want0); keep_flame_alive(); tick()
+            s = status()
         check(s["groups"][0]["armed"] == "armed",
               f"a REAL cycle from the locked sender itself still arms the "
               f"group afterwards -- the fix only refuses a FORCED edge, "
@@ -2662,7 +2736,12 @@ def test_property_a_disarmed_group_never_fires():
                     if prev_safety[i] == 0:
                         quiet_left[i] = rules.EDGE_QUIET_FRAMES + 1
                     if quiet_left[i] > 0:
-                        ok &= check(fire == [0] * len(fire),
+                        # An aim slot (2026-10-28) points a head and is
+                        # not held through the window; every other fire
+                        # slot is.
+                        ok &= check(all(v == 0 if f not in g.aim else
+                                        v in (0, commanded[f - 1])
+                                        for f, v in zip(g.fire, fire)),
                                     f"case {case} step {step}: {g.name} "
                                     f"fired inside the edge-quiet window")
                         quiet_left[i] -= 1
@@ -2846,18 +2925,27 @@ def test_service_over_loopback():
               and s["frames"]["last_reject"] == "another sender",
               f"wrong key and another sender rejected: {s['frames']}")
         rogue.close()
+        # Second-copy guard (2026-10-03): the rogue counts as on the link
+        # for frame_stale_ms after its datagram, and no cycle counts while
+        # it does.  Let it go first, with ltcplay still sending.
+        for k in range(2, 2 + int(0.6 / cfg.tick_period_s)):
+            send(k, {})
+            tick()
+        # Read what came meanwhile: undrained, a socket's receive buffer
+        # fills and the newest status frames are the ones dropped.
+        _drain(ltc_status)
         # arm group 0 with consent, clean edge: the counter must be seen
         # advancing, then a down edge on a live counter, then the request
         tick()
-        send(2, {})
+        send(102, {})
         tick()
         tick()
         inp.set(0)
-        send(3, {})
+        send(103, {})
         tick()
         p = _drain(node)[-1]
         check(p[126 + 400] == 78, "the safety slot carries 78 on the wire")
-        for k in range(4, 8):
+        for k in range(104, 108):
             send(k, {411: 200})
             tick()
         p = _drain(node)[-1]
@@ -2871,7 +2959,7 @@ def test_service_over_loopback():
         # rubbish and wrong-universe frames are rejected and change nothing
         ltc_tx.sendto(b"\x00\xff garbage", ("127.0.0.1", lp))
         ltc_tx.sendto(b'{"v":2,"t":"flame"}', ("127.0.0.1", lp))
-        send(8, {411: 0}, universe=2)
+        send(108, {411: 0}, universe=2)
         time.sleep(0.02)
         tick()
         p = _drain(node)[-1]
@@ -2907,19 +2995,19 @@ def test_service_over_loopback():
         # has something to zero: ltcplay first (the link must be live before
         # a cycle counts), then the cycle
         inp.silent = False
-        for k in range(9, 14):
+        for k in range(109, 114):
             send(k, {411: 0})
             tick()
         inp.set(0, on=False)
-        send(14, {411: 0})
+        send(114, {411: 0})
         tick()
-        send(15, {411: 0})
+        send(115, {411: 0})
         tick()
         inp.set(0)
-        for k in range(16, 60):
+        for k in range(116, 160):
             send(k, {411: 0})
             tick()
-        for k in range(60, 66):
+        for k in range(160, 166):
             send(k, {411: 200})
             tick()
         p = _drain(node)[-1]
@@ -3613,7 +3701,8 @@ def test_link_loss_disarms_every_group():
     r.step()
     r.inp.set_all(True)
     r.wait(1.25)
-    check(all(r.safety(i) == ARM for i in range(N_GROUPS)),
+    check(all(r.safety(i) == r.cfg.groups[i].arm_value
+              for i in range(N_GROUPS)),
           "a cycle with the show program answering arms every group asked")
 
 
@@ -3917,7 +4006,7 @@ def test_disarm_all_dwell_and_pending_edges():
     r.wait(1.1)
     r.inp.set(2)
     r.step(n=2)
-    check(r.safety(2) == ARM,
+    check(r.safety(2) == r.cfg.groups[2].arm_value,
           f"a press after the window arms as usual: {r.group(2)}")
     # Fix round 2 of PR #34, item 3: every repeat copy of an Abort restarts
     # the window (ltcplay repeats one Abort after every frame for
@@ -4016,8 +4105,7 @@ def test_disarm_all_rejections():
             "sender, in order; a refused one changes nothing and is "
             "journaled once per episode")
     r = _two_armed()
-    for label, kw in (("another sender", {"sender": ("127.0.0.1", 40999)}),
-                      ("out of order", {"seq": 1}),
+    for label, kw in (("out of order", {"seq": 1}),
                       ("clock went backwards", {"mono": -5.0})):
         before = r.c.stats["disarm_all"]
         why = _disarm(r, **kw)
@@ -4027,6 +4115,19 @@ def test_disarm_all_rejections():
               f"{label}: refused ({why!r}), both groups still armed")
         check(r.out.status["frames"]["last_reject"] == why,
               "and the reason is in the status frame")
+    # From another sender it is refused as a disarm_all (never counted as
+    # the show's Abort), but a second keyed sender on the flame link
+    # disarms every group (fix round 1 of PR #40, the second-copy guard).
+    before = r.c.stats["disarm_all"]
+    why = _disarm(r, sender=("127.0.0.1", 40999))
+    r.step()
+    check("another sender" in why and r.c.stats["disarm_all"] == before
+          and r.safety(0) != ARM and r.safety(1) != ARM
+          and r.group(0)["reason"] == composer.FLAME_OTHER_SENDER,
+          f"another sender: refused as a disarm_all ({why!r}), and every "
+          f"group disarmed as a second sender: {r.group(0)}")
+    check(r.out.status["frames"]["last_reject"] == why,
+          "and the reason is in the status frame")
     check(r.c.stats["disarm_all_rejected"] == 3, "every refusal is counted")
     why = r.c.disarm_all("not a message", sender=SENDER)
     check(why and r.c.stats["disarm_all_rejected"] == 4,
@@ -4050,7 +4151,9 @@ def test_disarm_all_rejections():
     check(len(rej) == 2 and "stopped after 50" in rej[1]
           and "50 distinct source addresses" in rej[1],
           f"and one more when it stops, with the count: {rej}")
-    check(r.safety(0) == ARM, "the flood disarmed nothing")
+    check(r.safety(0) != ARM and r.c.stats["disarm_all"] == 0,
+          "the foreign flood was never taken as the show's Abort, and "
+          "(second-copy guard) left nothing armed")
     # With the flame link stale, there is no sender to take it from.
     r.link_alive = False
     r.wait(0.7)
@@ -4190,15 +4293,21 @@ def test_disarm_all_over_loopback():
         out = tick()
         check(out.universe[400] == ARM and out.universe[401] == ARM,
               "setup: two groups armed through a real Service")
-        rogue.sendto(link.encode_disarm_all(10 ** 6, t[0], 1, "Abort", KEY),
-                     ("127.0.0.1", lp))
         ltc.sendto(link.encode_disarm_all(nxt(), t[0], 1, "Abort",
                                           "wrong-key-wrong-key-x"),
                    ("127.0.0.1", lp))
         out = tick()
         check(out.universe[400] == ARM and out.universe[401] == ARM,
-              "a disarm_all from another socket, or with the wrong key from "
-              "the right one, disarms nothing")
+              "a disarm_all with the wrong key from the right socket "
+              "disarms nothing")
+        rogue.sendto(link.encode_disarm_all(10 ** 6, t[0], 1, "Abort", KEY),
+                     ("127.0.0.1", lp))
+        out = tick()
+        check(out.universe[400] == 0 and out.universe[401] == 0
+              and svc.composer.stats["disarm_all"] == 0,
+              "a keyed disarm_all from another socket is refused as the "
+              "show's Abort, but a second keyed sender on the flame link "
+              "disarms every group (second-copy guard, fix round 1 of #40)")
         check(svc.composer.stats["disarm_all_rejected"] == 1
               and svc.composer.stats["frames_rejected"] >= 1,
               f"both refused and counted: {svc.composer.stats}")
@@ -4206,6 +4315,20 @@ def test_disarm_all_over_loopback():
         check(any("another sender" in m for m in kinds)
               and any("wrong key" in m for m in kinds),
               f"both journaled: {kinds}")
+        # Let the other socket go (frame_stale_ms), then cycle both groups
+        # again so the real Abort below has something to take off.
+        for _ in range(int(0.6 / cfg.tick_period_s)):
+            out = tick()
+        inp.set(0, 1, on=False)
+        for _ in range(3):
+            tick()
+        inp.set(0, 1)
+        for _ in range(int((cfg.min_arm_dwell_ms / 1000.0 + 0.3)
+                           / cfg.tick_period_s)):
+            out = tick()
+        check(out.universe[400] == ARM and out.universe[401] == ARM,
+              "re-armed by a fresh cycle once the other socket has gone")
+        _drain(ltc_status)
         ltc.sendto(link.encode_disarm_all(nxt(), t[0], 1, "Abort", KEY),
                    ("127.0.0.1", lp))
         time.sleep(0.01)
@@ -4225,6 +4348,475 @@ def test_disarm_all_over_loopback():
         rogue.close()
         node.close()
         ltc_status.close()
+
+
+# =========================================================================
+# Second-copy guard (Jeff, 2026-10-03; PR #34 open question 10, probe p2 s5)
+# =========================================================================
+
+OTHER = ("127.0.0.1", 40777)
+
+
+def _step_both(r, first, second=None, n=1):
+    """n ticks with `first` sending a frame every tick and, if given,
+    `second` sending one right after it (refused while `first` holds the
+    lock).  The arm input is polled exactly as Rig.step does."""
+    for _ in range(n):
+        r.t += r.period
+        r.frame(r.cue, sender=first)
+        if second is not None:
+            r.frame({}, sender=second)
+        a = r.inp.poll()
+        if a is not None:
+            r.c.assert_arm(a.wanted, a.seq, names=a.names, forced=a.forced)
+        r.out = r.c.tick()
+    return r.out
+
+
+def test_second_copy_another_flame_sender_blocks_consent():
+    section("second-copy guard: while another sender with the key is on the "
+            "flame link no cycle counts, a down edge from before it cannot "
+            "be finished, and once it has gone a genuine off-then-on arms "
+            "(the arm link's round-4 veto, on the flame link)")
+    stale = make_config().frame_stale_ms / 1000.0
+    r = Rig()
+    r.prove_alive()                      # a pending genuine down edge
+    r.link_alive = False                 # this test sends the frames itself
+    _step_both(r, SENDER, OTHER)         # a second copy turns up
+    r.inp.set(0)
+    _step_both(r, SENDER, OTHER, n=3)
+    g = r.group(0)
+    check(r.safety(0) != ARM,
+          f"a cycle finished while another sender is on the flame link does "
+          f"not arm: {g}")
+    check(g["armed"] == "held" and g["reason"] == composer.FLAME_OTHER_SENDER
+          and g["amber"] == "steady",
+          f"held, saying why, steady: {g}")
+    f = r.out.status["frames"]
+    check(f["foreign_senders"] == 1 and f["new_sender"] is False
+          and f["state"] == "fresh",
+          f"the status frame counts the other sender: {f}")
+    r.inp.set(0, on=False)
+    _step_both(r, SENDER, OTHER, n=3)
+    r.inp.set(0)
+    _step_both(r, SENDER, OTHER, n=int(1.5 / r.period))
+    check(r.safety(0) != ARM,
+          f"a fresh cycle made while it is still there does not count "
+          f"either: {r.group(0)}")
+    # It stops.  Within frame_stale_ms it still counts as there.
+    _step_both(r, SENDER, n=int(stale / r.period) - 2)
+    check(r.out.status["frames"]["foreign_senders"] == 1,
+          f"inside frame_stale_ms of its last datagram it still counts: "
+          f"{r.out.status['frames']}")
+    _step_both(r, SENDER, n=int(1.0 / r.period))
+    g = r.group(0)
+    check(r.out.status["frames"]["foreign_senders"] == 0,
+          f"after frame_stale_ms quiet it is gone: {r.out.status['frames']}")
+    check(r.safety(0) != ARM and g["reason"] == "cycle the arm",
+          f"and the group does NOT arm by itself: {g}")
+    r.inp.set(0, on=False)
+    _step_both(r, SENDER, n=2)
+    r.inp.set(0)
+    _step_both(r, SENDER, n=int((r.cfg.min_arm_dwell_ms / 1000.0 + 0.5)
+                                / r.period))
+    check(r.safety(0) == ARM,
+          f"a genuine off-then-on afterwards arms it: {r.group(0)}")
+    msgs = [m for k, m in r.log.events if k == "link-reject"]
+    check(any("another sender" in m and "newly armed" in m for m in msgs),
+          f"the journal line says no group can be newly armed: {msgs[:2]}")
+    # Fix round 1 of PR #40 (Jeff): a second sender turning up while the
+    # lock holder is live DISARMS every group, on the tick it arrives.
+    r.log.events.clear()
+    _step_both(r, SENDER, OTHER)
+    g = r.group(0)
+    check(r.safety(0) != ARM and g["reason"] == composer.FLAME_OTHER_SENDER,
+          f"a group armed before the other sender came is disarmed on the "
+          f"tick its first datagram arrives: {g}")
+    lines = [m for k, m in r.log.events if k == "second-sender"]
+    check(len(lines) == 1 and "every group disarmed (disarmed: front row"
+          in lines[0] and "127.0.0.1:40777" in lines[0],
+          f"journaled plainly, once, naming the sender and the groups: "
+          f"{lines}")
+    # A keyed disarm_all from another sender is a second sender too.
+    r2 = Rig()
+    r2.prove_alive()
+    r2.c.disarm_all(link.DisarmAll(10 ** 6, r2.t, 7, "x"), sender=OTHER)
+    r2.inp.set(0)
+    r2.step(n=2)
+    check(r2.safety(0) != ARM
+          and r2.group(0)["reason"] == composer.FLAME_OTHER_SENDER,
+          f"a refused disarm_all from another socket blocks consent too: "
+          f"{r2.group(0)}")
+
+
+def test_second_copy_flame_lock_changing_hands_blocks_consent():
+    section("second-copy guard: when the flame link's lock passes to a "
+            "different sender, no cycle counts until the newcomer has been "
+            "the only sender for frame_stale_ms; the same sender coming "
+            "back is not a change")
+    r = Rig()
+    r.prove_alive()
+    r.link_alive = False
+    r.wait(0.6)                          # the link goes stale
+    r.inp.set(0, on=False)
+    _step_both(r, OTHER)                 # a different sender takes the lock
+    f = r.out.status["frames"]
+    check(f["state"] == "fresh" and f["new_sender"] is True
+          and f["foreign_senders"] == 0,
+          f"the status frame says the lock just changed hands: {f}")
+    check(any(k == "link" and "taken by 127.0.0.1:40777" in m
+              and "newly armed" in m for k, m in r.log.events),
+          f"journaled once, naming both: {r.log.events[-3:]}")
+    _step_both(r, OTHER, n=3)
+    r.inp.set(0)
+    _step_both(r, OTHER, n=3)
+    g = r.group(0)
+    check(r.safety(0) != ARM and g["reason"] == composer.FLAME_OTHER_SENDER,
+          f"a cycle inside frame_stale_ms of the change does not arm: {g}")
+    _step_both(r, OTHER, n=int(1.0 / r.period))
+    check(r.safety(0) != ARM and r.out.status["frames"]["new_sender"] is False,
+          f"nor by itself once it has settled: {r.group(0)}")
+    r.inp.set(0, on=False)
+    _step_both(r, OTHER, n=2)
+    r.inp.set(0)
+    _step_both(r, OTHER, n=int((r.cfg.min_arm_dwell_ms / 1000.0 + 0.5)
+                               / r.period))
+    check(r.safety(0) == ARM,
+          f"a genuine off-then-on after it has settled arms: {r.group(0)}")
+    # A change of hands inside one tick: the link goes stale just after a
+    # tick and the newcomer's frame arrives before the next one, so no tick
+    # ever saw the link lost.  The change itself must disarm.
+    r = armed_rig()
+    r.link_alive = False
+    t0 = r.t                             # the last frame was on this tick
+    stale = r.cfg.frame_stale_ms / 1000.0
+    while r.t + r.period <= t0 + stale:
+        r.step()
+    check(r.safety(0) == ARM and r.out.status["frames"]["state"] == "fresh",
+          f"setup: still armed on the last tick inside frame_stale_ms: "
+          f"{r.out.status['frames']}")
+    r.t = t0 + stale + 0.002             # stale now, before the next tick
+    check(r.frame({}, sender=OTHER) == "", "the newcomer takes the lock")
+    r.t = t0 + stale + 0.010
+    a = r.inp.poll()
+    r.c.assert_arm(a.wanted, a.seq, names=a.names, forced=a.forced)
+    r.out = r.c.tick()
+    check(r.out.status["frames"]["state"] == "fresh" and r.safety(0) != ARM,
+          f"a group armed under the old sender is disarmed by the change of "
+          f"hands even though no tick saw the link lost: {r.group(0)}")
+    # The same sender back after a gap: no change of hands.
+    r = Rig()
+    r.prove_alive()
+    r.link_alive = False
+    r.wait(0.6)
+    r.link_alive = True
+    r.step()
+    check(r.out.status["frames"]["new_sender"] is False,
+          f"the same sender taking the lock back is not a change: "
+          f"{r.out.status['frames']}")
+    # The first sender ever is not a change either.
+    r = Rig()
+    r.step()
+    check(r.out.status["frames"]["new_sender"] is False,
+          f"the first sender ever is not a change: {r.out.status['frames']}")
+
+
+def test_second_copy_a_sustained_second_sender_never_lets_a_cycle_through():
+    section("second-copy guard, fix round 1 of PR #40: a second sender that "
+            "keeps sending for well over frame_stale_ms keeps counting for as "
+            "long as it sends (its LAST datagram, not its first), so cycles "
+            "at 0.25 s, 0.75 s and 1.25 s never arm, not even for one tick, "
+            "and the episode is journaled once")
+    r = Rig()
+    r.prove_alive()
+    r.link_alive = False
+    _step_both(r, SENDER)
+    r.log.events.clear()
+    t0 = r.t
+    armed_ticks = 0
+    counts = set()
+    for at in (0.25, 0.75, 1.25):
+        while r.t < t0 + at - 0.15:
+            _step_both(r, SENDER, OTHER)
+            armed_ticks += r.safety(0) == ARM
+            counts.add(r.out.status["frames"]["foreign_senders"])
+        r.inp.set(0, on=False)
+        _step_both(r, SENDER, OTHER, n=2)
+        r.inp.set(0)
+        for _ in range(int(0.12 / r.period)):
+            _step_both(r, SENDER, OTHER)
+            armed_ticks += r.safety(0) == ARM
+            counts.add(r.out.status["frames"]["foreign_senders"])
+    check(armed_ticks == 0,
+          f"no cycle armed group 0 for even one tick while the second "
+          f"sender kept sending: {armed_ticks} armed ticks")
+    check(counts == {1},
+          f"the status counted it on every tick it was sending: {counts}")
+    lines = [m for k, m in r.log.events if k == "second-sender"]
+    check(len(lines) == 1,
+          f"one journal line for the whole episode, not one every "
+          f"frame_stale_ms: {len(lines)}")
+
+
+def test_second_copy_a_flood_blocks_consent_and_clears_a_pending_edge():
+    section("second-copy guard, fix round 1 of PR #40: a flood on the flame "
+            "link blocks consent for frame_stale_ms (the arm link's rule), "
+            "and a down edge seen before it cannot be finished by a key "
+            "still held high when it lifts")
+    r = Rig()
+    r.prove_alive()                      # a pending genuine down edge
+    r.c.note_flame_link_flooded(True, 300, 600000)
+    r.inp.set(0)
+    r.step(n=3)
+    g = r.group(0)
+    check(r.safety(0) != ARM and g["reason"] == composer.FLAME_OTHER_SENDER
+          and r.out.status["frames"]["flooded"] is True,
+          f"a cycle finished during a flood does not arm, and the lamp and "
+          f"status say why: {g} {r.out.status['frames']}")
+    check(sum(1 for k, _ in r.log.events if k == "flame-flood") == 1,
+          f"the flood is journaled: {r.log.events[-3:]}")
+    r.wait(r.cfg.frame_stale_ms / 1000.0 + r.cfg.min_arm_dwell_ms / 1000.0)
+    g = r.group(0)
+    check(r.out.status["frames"]["flooded"] is False
+          and r.safety(0) != ARM and g["reason"] == "cycle the arm",
+          f"once it has stopped the held key does NOT arm by itself: the "
+          f"down edge from before the flood was cleared: {g}")
+    r.inp.set(0, on=False)
+    r.step(n=2)
+    r.inp.set(0)
+    r.wait(r.cfg.min_arm_dwell_ms / 1000.0 + 0.5)
+    check(r.safety(0) == ARM, f"a genuine cycle afterwards arms: "
+                              f"{r.group(0)}")
+    # The service flags a flood from what is waiting in one tick.
+    node = _udp()
+    ltc_status = _udp()
+    lp_sock = _udp()
+    lp = lp_sock.getsockname()[1]
+    lp_sock.close()
+    cfg = make_config(destination={"ip": "127.0.0.1",
+                                   "port": node.getsockname()[1]},
+                      link={"listen_ip": "127.0.0.1", "listen_port": lp,
+                            "status_ip": "127.0.0.1",
+                            "status_port": ltc_status.getsockname()[1],
+                            "key": KEY})
+    t = [0.0]
+    svc = Service(cfg, arminput.ScriptedArmInput(cfg.n, names=NAMES),
+                  clock=lambda: t[0], log=Log())
+    svc.open()
+    junk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        for _ in range(composer.FLAME_FLOOD_DATAGRAMS_PER_TICK - 5):
+            junk.sendto(b"x", ("127.0.0.1", lp))
+        time.sleep(0.05)
+        t[0] += cfg.tick_period_s
+        out = svc.run_once()
+        check(out.status["frames"]["flooded"] is False,
+              "fewer datagrams than the threshold in one tick: no flood")
+        for _ in range(composer.FLAME_FLOOD_DATAGRAMS_PER_TICK + 5):
+            junk.sendto(b"x", ("127.0.0.1", lp))
+        time.sleep(0.05)
+        t[0] += cfg.tick_period_s
+        out = svc.run_once()
+        check(out.status["frames"]["flooded"] is True,
+              "more than the threshold, keyed or not: a flood")
+    finally:
+        svc.close()
+        junk.close()
+        node.close()
+        ltc_status.close()
+
+
+def test_second_copy_armed_in_a_restart_gap_disarms_when_ltcplay_returns():
+    section("second-copy guard, fix round 1 of PR #40 (review s8): a group "
+            "armed while a second sender was the only one on the flame link "
+            "is disarmed the moment the real ltcplay comes back")
+    r = Rig()
+    r.prove_alive()
+    r.link_alive = False
+    r.wait(0.6)                          # ltcplay restarts; the link is lost
+    _step_both(r, OTHER, n=int(0.7 / r.period))   # the other one settles in
+    r.inp.set(0, on=False)
+    _step_both(r, OTHER, n=2)
+    r.inp.set(0)
+    _step_both(r, OTHER, n=int((r.cfg.min_arm_dwell_ms / 1000.0 + 0.3)
+                               / r.period))
+    check(r.safety(0) == ARM,
+          f"setup (the accepted residual): a cycle under the only sender "
+          f"arms: {r.group(0)}")
+    _step_both(r, OTHER, ("127.0.0.1", 40888))   # ltcplay back, new port
+    check(r.safety(0) != ARM
+          and r.group(0)["reason"] == composer.FLAME_OTHER_SENDER,
+          f"disarmed on the tick the real ltcplay's first frame arrives: "
+          f"{r.group(0)}")
+
+
+def test_second_copy_restart_gap_takeover_over_loopback():
+    section("second-copy guard, end to end over real UDP (probe p2 s5): a "
+            "second sender with the key takes the flame link in an ltcplay "
+            "restart gap; the real ltcplay comes back and is refused; the "
+            "operator cycles the arm; nothing arms and none of the second "
+            "sender's fire values reach the wire")
+    node = _udp()
+    ltc_status = _udp()
+    lp_sock = _udp()
+    lp = lp_sock.getsockname()[1]
+    lp_sock.close()
+    cfg = make_config(destination={"ip": "127.0.0.1",
+                                   "port": node.getsockname()[1]},
+                      link={"listen_ip": "127.0.0.1", "listen_port": lp,
+                            "status_ip": "127.0.0.1",
+                            "status_port": ltc_status.getsockname()[1],
+                            "key": KEY})
+    t = [0.0]
+    log = Log()
+    inp = arminput.ScriptedArmInput(cfg.n, names=NAMES)
+    svc = Service(cfg, inp, clock=lambda: t[0], log=log)
+    svc.open()
+    socks = {"ltc": socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
+             "rogue": socket.socket(socket.AF_INET, socket.SOCK_DGRAM)}
+    seqs = {"ltc": 0, "rogue": 0}
+    fire = [0] * 512
+    for s in FRONT_FIRE:
+        fire[s - 1] = 255
+
+    def send(who, values=None):
+        seqs[who] += 1
+        socks[who].sendto(link.encode_flame(seqs[who], "00:00:01:00", t[0],
+                                            1, values or [0] * 512, KEY),
+                          ("127.0.0.1", lp))
+
+    def tick(*who, values=None):
+        t[0] += cfg.tick_period_s
+        for w in who:
+            send(w, values if w == "rogue" else None)
+        time.sleep(0.003)
+        return svc.run_once()
+
+    try:
+        for _ in range(3):
+            tick("ltc")
+        inp.set(0)
+        out = tick("ltc")
+        check(out.universe[FRONT_SAFETY - 1] == ARM,
+              "setup: group 0 armed through a real Service")
+        # ltcplay restarts: nothing for 0.6 s, so the link is lost
+        for _ in range(int(0.6 / cfg.tick_period_s)):
+            out = tick()
+        check(out.universe[FRONT_SAFETY - 1] == 0, "link lost: disarmed")
+        # the second sender gets in first; ltcplay comes back on a new port
+        tick("rogue")
+        socks["ltc"].close()
+        socks["ltc"] = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        for _ in range(10):
+            out = tick("rogue", "ltc")
+        check("another sender" in out.status["frames"]["last_reject"],
+              f"the real ltcplay is refused: {out.status['frames']}")
+        # the operator cycles the arm, as the lamp asked, more than once
+        armed = False
+        for _ in range(3):
+            inp.set(0, on=False)
+            for _ in range(int(1.2 / cfg.tick_period_s)):
+                out = tick("rogue", "ltc")
+                armed |= out.universe[FRONT_SAFETY - 1] == ARM
+            inp.set(0)
+            for _ in range(int(1.2 / cfg.tick_period_s)):
+                out = tick("rogue", "ltc", values=fire)
+                armed |= out.universe[FRONT_SAFETY - 1] == ARM
+                armed |= any(out.universe[s - 1] for s in FRONT_FIRE)
+        check(not armed,
+              "nothing armed and no fire on the wire while both are sending")
+        g = out.status["groups"][0]
+        check(g["armed"] == "held"
+              and g["reason"] == composer.FLAME_OTHER_SENDER
+              and out.status["frames"]["foreign_senders"] == 1,
+              f"held, saying another sender is on the show program link: "
+              f"{g['reason']!r} {out.status['frames']}")
+    finally:
+        svc.close()
+        for s in socks.values():
+            s.close()
+        node.close()
+        ltc_status.close()
+def _free_udp_port():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("127.0.0.1", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+def test_status_mirror_port():
+    section("status_mirror_port (2026-10-03, the iPad remote): optional, a "
+            "byte-for-byte copy of every status frame, display only, never "
+            "a fault, never on a port that means something else")
+    doc = example_dict()
+    check("status_mirror_port" not in doc["link"],
+          "the example config has no mirror: off unless configured")
+    check(config.from_dict(doc).link_status_mirror_port is None,
+          "absent means none")
+    a = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    b = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    a.bind(("127.0.0.1", 0))
+    b.bind(("127.0.0.1", 0))
+    a.settimeout(2)
+    b.settimeout(2)
+    try:
+        d = copy.deepcopy(doc)
+        d["link"]["status_port"] = a.getsockname()[1]
+        d["link"]["status_mirror_port"] = b.getsockname()[1]
+        d["link"]["listen_port"] = _free_udp_port()
+        d["link"]["arm_port"] = _free_udp_port()
+        d["link"]["key"] = "test-mirror-key-0123456"
+        cfg = config.from_dict(d)
+        check(cfg.link_status_mirror_port == b.getsockname()[1],
+              "the mirror port is read")
+        for clash in ("status_port", "listen_port", "arm_port"):
+            bad = copy.deepcopy(d)
+            bad["link"]["status_mirror_port"] = bad["link"][clash]
+            try:
+                config.from_dict(bad)
+                check(False, f"a mirror on {clash} was accepted")
+            except config.ConfigError as e:
+                check("status_mirror_port" in str(e), f"{clash}: {e}")
+        bad = copy.deepcopy(d)
+        bad["destination"] = {"ip": "127.0.0.1",
+                              "port": d["link"]["status_mirror_port"]}
+        try:
+            config.from_dict(bad)
+            check(False, "a loopback destination on the mirror was accepted")
+        except config.ConfigError:
+            pass
+        svc = Service(cfg, arminput.NullArmInput())
+        svc.open()
+        try:
+            svc.run_once()
+            one = a.recv(65535)
+            two = b.recv(65535)
+            check(one == two and b'"status"' in one,
+                  "the mirror gets the same keyed status frame")
+            b.close()
+            svc.cfg.link_status_mirror_port = 9   # nothing listens there
+            for _ in range(3):
+                svc.run_once()
+            last = None
+            a.settimeout(0.2)
+            try:
+                while True:
+                    last = a.recv(65535)
+            except OSError:
+                pass
+            st = json.loads(last.decode()) if last else {}
+            check(svc.status_errors == 0 and st.get("fault") == "",
+                  f"a mirror that is not there is never a status error or "
+                  f"a fault: {svc.status_errors} {st.get('fault')!r}")
+        finally:
+            svc.close()
+    finally:
+        a.close()
+        try:
+            b.close()
+        except OSError:
+            pass
 
 
 def test_the_wall_from_this_side():
@@ -4250,6 +4842,1555 @@ def test_the_wall_from_this_side():
               f"{name} names no ltcplay module by dotted path")
 
 
+def test_lockout_zeroes_locked_slots_and_blocks_a_locked_group():
+    section("lockout (Jeff, 2026-10-17): a locked fire slot is zero on "
+            "every packet, armed and commanded or not; a group with every "
+            "slot locked cannot arm and an armed one comes down; the "
+            "status frame says which slots; a lock set that cannot be read "
+            "locks everything")
+    r = armed_rig()
+    r.step(n=rules.EDGE_QUIET_FRAMES + 1)
+    r.run(2, {411: 200, 412: 200})
+    check(r.fire(0)[:2] == [200, 200], "setup: group 0 armed and firing")
+    # Lock one slot of an armed, firing group: that slot alone goes to
+    # zero on the very next packet; the group stays armed.
+    r.c.note_locked_slots({411})
+    r.step()
+    check(r.fire(0)[:2] == [0, 200] and r.safety(0) == ARM,
+          f"slot 411 locked: zero at once, 412 still fires, group armed: "
+          f"{r.fire(0)} safety {r.safety(0)}")
+    check(r.group(0)["locked_fire"] == [True, False, False, False, False],
+          f"the status frame marks the locked slot: "
+          f"{r.group(0)['locked_fire']}")
+    check(r.out.status["lockout"] == {"slots": [411], "state": "read"},
+          f"the status frame names the locked slots: "
+          f"{r.out.status['lockout']}")
+    check(r.c.stats["lockout_zeroed"] >= 1, "the zeroing is counted")
+    check(("lockout", "locked out fire slots: [411] (in front row). A locked "
+           "slot is zero on every packet; a group with every fire slot "
+           "locked cannot arm.") in r.log.events,
+          f"the lock is journaled once: "
+          f"{[m for k, m in r.log.events if k == 'lockout']}")
+    n_lines = len([k for k in r.log.kinds() if k == "lockout"])
+    r.step(n=5)
+    check(len([k for k in r.log.kinds() if k == "lockout"]) == n_lines,
+          "and not again on every tick")
+    # Lock every slot of the armed group: the arm value comes off the wire
+    # on this tick, the lamp says why, steady amber.
+    r.c.note_locked_slots(set(FRONT_FIRE))
+    r.step()
+    check(r.safety(0) == 0 and r.fire(0) == [0] * 5,
+          f"every slot locked: the group comes down: safety {r.safety(0)} "
+          f"fire {r.fire(0)}")
+    g = r.group(0)
+    check(g["armed"] == "held" and g["reason"] == composer.LOCKED_OUT
+          and g["amber"] == "steady",
+          f"held, steady amber, with the lockout sentence: {g}")
+    check(r.c.stats["lockout_blocks"] >= 1, "the block is counted")
+    # Unlock: the group does not come back by itself (its latch is still
+    # set, so it rises again on the next clean tick, like any held group
+    # whose hold ends) and the fire values follow.
+    r.c.note_locked_slots(set())
+    r.run(2, {})                 # rule 2: the rise needs the cue quiet
+    r.run(rules.EDGE_QUIET_FRAMES + 2, {411: 200, 412: 200})
+    check(r.safety(0) == ARM and r.fire(0)[:2] == [200, 200],
+          f"unlocked: armed and firing again: {r.safety(0)} {r.fire(0)}")
+    check(r.out.status["lockout"] == {"slots": [], "state": "read"},
+          "the status frame says nothing is locked")
+    # A fresh rig: a group every slot of which is locked never arms from
+    # a genuine cycle, and the fire values commanded for it never go out.
+    r2 = Rig()
+    r2.c.note_locked_slots(set(FRONT_FIRE))
+    r2.prove_alive()
+    r2.inp.set(0)
+    r2.run(rules.EDGE_QUIET_FRAMES + 3, {411: 255})
+    check(r2.safety(0) == 0 and r2.fire(0) == [0] * 5
+          and r2.group(0)["reason"] == composer.LOCKED_OUT,
+          f"a fully locked group never arms: {r2.group(0)}")
+    r2.inp.set(1)
+    r2.run(2, {})
+    r2.run(rules.EDGE_QUIET_FRAMES + 3, {421: 255})
+    check(r2.safety(1) == ARM and r2.fire(1)[0] == 255,
+          f"another group is untouched by it: {r2.safety(1)} {r2.fire(1)}")
+    # Rubbish handed to the composer locks the whole universe (the safe
+    # side) and says so.
+    r2.c.note_locked_slots(None)
+    r2.step()
+    check(r2.safety(1) == 0 and r2.fire(1) == [0] * 6
+          and r2.out.status["lockout"]["state"] == "unreadable"
+          and len(r2.out.status["lockout"]["slots"]) == 512,
+          f"an unreadable lock set locks everything: "
+          f"{r2.out.status['lockout']['state']}, {r2.safety(1)}")
+    # The file reader: the format, a missing file, an unreadable one.
+    import flamesafe.service as service_mod
+    d = tempfile.mkdtemp()
+    try:
+        path = os.path.join(d, "ltcplay_lockout.json")
+        log = Log()
+        t = [0.0]
+        rd = service_mod.LockoutFile(path, log=log, clock=lambda: t[0])
+        check(rd.poll() == (frozenset(), "missing"),
+              "no file: nothing locked")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"lockout_format": 1, "flame_channels": [411, 431],
+                       "machines": {"m1": {"since": "x"}}}, fh)
+        t[0] += service_mod.LOCKOUT_POLL_S
+        check(rd.poll() == (frozenset({411, 431}), "read"),
+              f"the file's channels are read: {rd.poll()}")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("{ not json")
+        os.utime(path, (1, 1))
+        t[0] += service_mod.LOCKOUT_POLL_S
+        check(rd.poll() == (frozenset({411, 431}), "unreadable"),
+              f"an unreadable file keeps the last set: {rd.poll()}")
+        check(any(k == "lockout" and "could not be read" in m
+                  for k, m in log.events), "and says so once")
+        n = len(log.events)
+        t[0] += service_mod.LOCKOUT_POLL_S
+        rd.poll()
+        check(len(log.events) == n, "not every poll")
+        for bad in ({"lockout_format": 2, "flame_channels": [1]},
+                    {"lockout_format": 1, "flame_channels": [0]},
+                    {"lockout_format": 1, "flame_channels": [513]},
+                    {"lockout_format": 1, "flame_channels": [True]},
+                    {"lockout_format": 1, "flame_channels": "411"},
+                    [411]):
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(bad, fh)
+            os.utime(path, (2 + len(str(bad)), 2))
+            t[0] += service_mod.LOCKOUT_POLL_S
+            check(rd.poll()[1] == "unreadable",
+                  f"{bad!r} is refused as a lock file, last set kept")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"lockout_format": 1, "flame_channels": []}, fh)
+        os.utime(path, (999, 999))
+        t[0] += service_mod.LOCKOUT_POLL_S
+        check(rd.poll() == (frozenset(), "read"), "an empty list unlocks")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"lockout_format": 1, "flame_channels": [412]}, fh)
+        os.utime(path, (1000, 1000))
+        t[0] += service_mod.LOCKOUT_POLL_S
+        check(rd.poll()[0] == frozenset({412}), "a new set is read")
+        os.remove(path)
+        t[0] += service_mod.LOCKOUT_POLL_S
+        check(rd.poll() == (frozenset({412}), "missing_kept") and
+              any("is gone" in m and "keeping the last lock set" in m
+                  for k, m in log.events if k == "lockout"),
+              "a file that held locks and goes away KEEPS the last set "
+              "(review of PR #68, P2-3: the engine never deletes it) and is "
+              "journaled")
+        n = len(log.events)
+        t[0] += service_mod.LOCKOUT_POLL_S
+        check(rd.poll() == (frozenset({412}), "missing_kept") and
+              len(log.events) == n, "and not on every poll")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"lockout_format": 1, "flame_channels": []}, fh)
+        os.utime(path, (2000, 2000))
+        t[0] += service_mod.LOCKOUT_POLL_S
+        check(rd.poll() == (frozenset(), "read"),
+              "the engine writing the file again (empty) unlocks")
+        os.remove(path)
+        t[0] += service_mod.LOCKOUT_POLL_S
+        check(rd.poll() == (frozenset(), "missing"),
+              "a file that held no locks and goes away reads as missing")
+        # The service reads it before composing: a lock written by the
+        # engine reaches the wire on the next tick after the poll.
+        cfg = make_config(lockout_file=path)
+        check(cfg.lockout_file == path, "the config carries the path")
+        rel = config.from_dict(dict(example_dict(),
+                                    lockout_file="ltcplay_lockout.json"),
+                               source=os.path.join(d, "flamesafe.json"))
+        check(rel.lockout_file == os.path.join(
+            os.path.realpath(d), "ltcplay_lockout.json"),
+            f"a relative path is beside the config file: {rel.lockout_file}")
+        dflt = config.from_dict(example_dict(),
+                                source=os.path.join(d, "flamesafe.json"))
+        check(dflt.lockout_file == os.path.join(
+            os.path.realpath(d), "ltcplay_lockout.json"),
+            f"left out, the lockout file is ltcplay_lockout.json beside the "
+            f"config (review of PR #68, P2-2): {dflt.lockout_file}")
+        check(config.load(os.path.join(HERE, "flamesafe.example.json"))
+              .lockout_file == os.path.join(os.path.realpath(HERE),
+                                            "ltcplay_lockout.json"),
+              "the shipped example reads the file beside it")
+        check(make_config().lockout_file is None,
+              "a config with no file to sit beside has no default")
+        check(make_config(lockout_file=False).lockout_file is None,
+              "false switches the lockout off on purpose")
+        for bad_path in ("", "ltcplay_lockout.json", 7):
+            try:
+                make_config(lockout_file=bad_path)
+                check(False, f"lockout_file {bad_path!r} was accepted with no "
+                             f"config file to sit beside")
+            except config.ConfigError:
+                check(True, f"lockout_file {bad_path!r} is refused with no "
+                            f"config file to sit beside")
+        tt = [0.0]
+        svc = Service(cfg, arminput.ScriptedArmInput(cfg.n, names=NAMES),
+                      clock=lambda: tt[0], log=Log(), sleep=lambda s: None)
+        svc.lockout = service_mod.LockoutFile(path, log=svc._log,
+                                              clock=lambda: tt[0])
+        svc._send_universe = lambda *a, **k: None    # no sockets opened
+        svc._send_status = lambda *a, **k: None
+        inp = svc.arm_input
+        for _ in range(3):
+            tt[0] += cfg.tick_period_s
+            svc.composer.ingest_frame(link.FlameFrame(
+                int(tt[0] * 1000), None, tt[0], cfg.universe,
+                bytes(512)), sender=SENDER)
+            svc.run_once()
+        inp.set(0)
+        for _ in range(2):           # the rise, on a quiet cue (rule 2)
+            tt[0] += cfg.tick_period_s
+            svc.composer.ingest_frame(link.FlameFrame(
+                int(tt[0] * 1000), None, tt[0], cfg.universe,
+                bytes(512)), sender=SENDER)
+            svc.run_once()
+        for _ in range(rules.EDGE_QUIET_FRAMES + 3):
+            tt[0] += cfg.tick_period_s
+            svc.composer.ingest_frame(link.FlameFrame(
+                int(tt[0] * 1000), None, tt[0], cfg.universe,
+                bytes([0] * 410 + [200] + [0] * 101)), sender=SENDER)
+            out = svc.run_once()
+        check(out.universe[410] == 200, "setup: slot 411 fires")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"lockout_format": 1, "flame_channels": [411]}, fh)
+        for _ in range(int(service_mod.LOCKOUT_POLL_S / cfg.tick_period_s)
+                       + 2):
+            tt[0] += cfg.tick_period_s
+            svc.composer.ingest_frame(link.FlameFrame(
+                int(tt[0] * 1000), None, tt[0], cfg.universe,
+                bytes([0] * 410 + [200] + [0] * 101)), sender=SENDER)
+            out = svc.run_once()
+        check(out.universe[410] == 0 and out.universe[400] == ARM,
+              f"the service reads the lock and zeroes the slot within "
+              f"{service_mod.LOCKOUT_POLL_S} s, group still armed: "
+              f"{out.universe[410]} {out.universe[400]}")
+        check(out.status["lockout"]["slots"] == [411],
+              "and the status frame says so")
+    finally:
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
+
+
+# =========================================================================
+# multi-safety groups (Jeff, 2026-10-26): one arm group, several fixtures,
+# each with a safety slot of its own
+# =========================================================================
+
+def _groups_with(i, **over):
+    d = example_dict()
+    d["groups"][i].update(over)
+    return d
+
+
+def _refused(msg, d, says=""):
+    try:
+        config.from_dict(d)
+    except config.ConfigError as e:
+        check(str(e).strip().endswith(".") and "\n" not in str(e),
+              f"the refusal is one plain sentence: {e}")
+        return check(says in str(e), f"{msg}, saying {says!r}: {e}")
+    return check(False, f"NOT refused: {msg}")
+
+
+def safeties_on_wire(r, i=WAVE):
+    return [r.out.universe[s - 1] for s in r.cfg.groups[i].safeties]
+
+
+def armed_wave(**over):
+    r = Rig(**over)
+    r.prove_alive()
+    r.inp.set(WAVE)
+    r.step()
+    assert safeties_on_wire(r) == [WAVE_ARM] * 3, "the fixture could not arm"
+    return r
+
+
+def test_multi_safety_config():
+    section("multi-safety config: safety is one slot (unchanged) or a list "
+            "of distinct slots; every slot rule applies to every safety")
+    c = make_config()
+    front = c.groups[0]
+    check(front.safety == 401 and front.safeties == [401]
+          and not front.multi_safety,
+          f"an integer safety reads exactly as before: {front!r}")
+    w = c.groups[WAVE]
+    check(w.safeties == WAVE_SAFETIES and w.safety == WAVE_SAFETIES[0]
+          and w.multi_safety and w.fire == WAVE_FIRE,
+          f"a list safety keeps every slot in order: {w!r}")
+    check(sorted(c.all_slots()) == sorted(
+        [s for g in c.groups for s in g.safeties]
+        + [f for g in c.groups for f in g.fire]),
+          "all_slots lists every safety slot of every group")
+    one = config.from_dict(_groups_with(0, safety=[401]))
+    check(one.groups[0].safeties == [401] and one.groups[0].safety == 401
+          and not one.groups[0].multi_safety,
+          "a list of one is the same group as that one number")
+    _refused("an empty safety list",
+             _groups_with(WAVE, safety=[]))
+    _refused("a safety slot listed twice",
+             _groups_with(WAVE, safety=[6, 12, 6]), says="listed twice")
+    _refused("a safety slot that is one of the group's own fire slots",
+             _groups_with(WAVE, safety=[6, 12, 1]))
+    _refused("a safety slot that is another group's safety slot",
+             _groups_with(WAVE, safety=[6, 12, 401]))
+    _refused("a safety slot that is another group's fire slot",
+             _groups_with(WAVE, safety=[6, 12, 411]))
+    for bad in (0, 513, -1, "476", True, 47.6, None):
+        _refused(f"a safety slot {bad!r} out of range or not a number",
+                 _groups_with(WAVE, safety=[6, 12, bad]))
+    _refused("a fire slot of another group that is one of this group's "
+             "safety slots",
+             _groups_with(0, fire=[411, 18]))
+    _refused("another group's safety equal to one of the list",
+             _groups_with(3, safety=12))
+    d = _groups_with(WAVE, fire=[])
+    _refused("an empty fire list with a list safety", d)
+    _refused("a fire slot listed twice with a list safety",
+             _groups_with(WAVE, fire=WAVE_FIRE + [1]))
+    d = _groups_with(WAVE, arm_value=157)
+    _refused("a per-group arm value is validated for a list safety too", d)
+    _refused("an integer safety out of range is still refused as before",
+             _groups_with(0, safety=513))
+
+
+def test_multi_safety_single_safety_unchanged():
+    section("multi-safety: a one-safety group composes byte for byte as "
+            "before, written as a number or a list of one, and a locked "
+            "slot that is its safety does not change it")
+    def run(groups_over):
+        d = example_dict()
+        d["groups"][0].update(groups_over)
+        r = Rig(groups=d["groups"])
+        out = []
+        r.prove_alive()
+        out.append(r.out.universe)
+        r.inp.set(0)
+        for v in (0, 0, 200, 200, 0):
+            r.run(1, {411: v} if v else {})
+            out.append(r.out.universe)
+        r.run(rules.EDGE_QUIET_FRAMES + 2, {411: 200, 415: 9})
+        out.append(r.out.universe)
+        r.inp.set(0, on=False)
+        r.step()
+        out.append(r.out.universe)
+        return out, r
+    a, ra = run({})
+    b, rb = run({"safety": [401]})
+    check(a == b, "the integer and the one-element list compose the same "
+                  "frames")
+    check(ra.group(0)["safety_slots"] == [401]
+          and ra.group(0)["safety_slot"] == 401,
+          f"the status frame of a one-safety group: "
+          f"{ra.group(0)['safety_slot']} {ra.group(0)['safety_slots']}")
+    r = Rig()
+    r.c.note_locked_slots({401})
+    r.prove_alive()
+    r.inp.set(0)
+    r.step()
+    check(r.safety(0) == ARM and r.group(0)["armed"] == "armed",
+          f"a one-safety group is not held by a lock on its safety slot, "
+          f"exactly as before: {r.group(0)}")
+
+
+def test_multi_safety_arms_and_disarms_as_one():
+    section("multi-safety: one cycle raises every safety slot in the same "
+            "tick, fire reaches every fire slot only while armed, a disarm "
+            "or an Abort lowers every safety at once")
+    r = Rig()
+    r.prove_alive()
+    r.inp.set(WAVE)
+    r.cue = {}
+    pre = r.out
+    check([pre.universe[s - 1] for s in WAVE_SAFETIES] == [0, 0, 0],
+          "before the cycle every safety is zero")
+    r.step()
+    check(safeties_on_wire(r) == [WAVE_ARM, WAVE_ARM, WAVE_ARM],
+          f"every safety slot rises on the one tick: {safeties_on_wire(r)}")
+    g = r.group(WAVE)
+    check(g["armed"] == "armed" and g["safeties_up"] == [True] * 3
+          and g["safety_slots"] == WAVE_SAFETIES
+          and g["sent_safety"] == WAVE_ARM and g["arm_value"] == WAVE_ARM
+          and g["safety_slot"] == WAVE_SAFETIES[0],
+          f"one state, armed, every safety up: {g}")
+    cue = {f: 200 for f in WAVE_FIRE}
+    r.run(rules.EDGE_QUIET_FRAMES + 2, cue)
+    check(r.fire(WAVE) == [200] * 15
+          and safeties_on_wire(r) == [WAVE_ARM] * 3,
+          f"fire reaches all 15 fire slots while armed: {r.fire(WAVE)}")
+    r.inp.set(WAVE, on=False)
+    r.step()
+    check(safeties_on_wire(r) == [0, 0, 0] and r.fire(WAVE) == [0] * 15
+          and r.group(WAVE)["armed"] == "disarmed"
+          and r.group(WAVE)["safeties_up"] == [False] * 3,
+          f"a disarm lowers every safety and zeroes every fire slot in one "
+          f"tick: {safeties_on_wire(r)} {r.fire(WAVE)}")
+    r2 = armed_wave()
+    r2.step(n=rules.EDGE_QUIET_FRAMES + 1)
+    check(_disarm(r2) == "", "setup: the Abort is accepted")
+    r2.step()
+    check(safeties_on_wire(r2) == [0, 0, 0] and r2.fire(WAVE) == [0] * 15
+          and r2.group(WAVE)["reason"] == composer.ABORT_DISARMED,
+          f"the show's Abort lowers every safety: {r2.group(WAVE)}")
+    # The rising-edge gate looks at every one of the 15 fire slots.
+    r3 = Rig()
+    r3.prove_alive()
+    r3.inp.set(WAVE)
+    r3.run(3, {WAVE_FIRE[-1]: rules.GFLAME_EDGE_BELOW})
+    check(safeties_on_wire(r3) == [0, 0, 0]
+          and r3.group(WAVE)["reason"] == "dirty edge",
+          f"a held fire slot on the last fixture blocks the rise of every "
+          f"safety: {safeties_on_wire(r3)} {r3.group(WAVE)['reason']}")
+
+
+def test_multi_safety_show_data_never_writes_a_safety():
+    section("multi-safety: no value from the show program's frame (show "
+            "data, xLights live, purge) ever reaches a safety slot")
+    r = Rig()
+    r.prove_alive()
+    loud = {s: 255 for s in WAVE_SAFETIES}
+    loud.update({s: 200 for s in (401, 402)})
+    r.run(5, loud)
+    check(safeties_on_wire(r) == [0, 0, 0],
+          f"disarmed: the frame's 255 on every safety slot never goes out: "
+          f"{safeties_on_wire(r)}")
+    r.inp.set(WAVE)
+    r.run(rules.EDGE_QUIET_FRAMES + 3, loud)
+    check(safeties_on_wire(r) == [WAVE_ARM] * 3,
+          f"armed: every safety carries the arm value and nothing else: "
+          f"{safeties_on_wire(r)}")
+    check(r.safety(0) == 0 and r.safety(1) == 0,
+          "and no other group's safety moves either")
+
+
+def test_multi_safety_a_locked_safety_is_left_out():
+    section("multi-safety: a locked safety slot stays at zero and is left "
+            "out of the arm; the group arms on every unlocked safety; with "
+            "every safety locked it cannot arm")
+    # One fixture locked out for the night: the others still arm.
+    r = Rig()
+    r.c.note_locked_slots({12})
+    r.prove_alive()
+    r.inp.set(WAVE)
+    r.step()
+    check(safeties_on_wire(r) == [WAVE_ARM, 0, WAVE_ARM],
+          f"one safety locked: the other two rise, the locked one stays "
+          f"zero: {safeties_on_wire(r)}")
+    g = r.group(WAVE)
+    check(g["armed"] == "armed" and g["safeties_up"] == [True, False, True]
+          and g["safeties_locked"] == [False, True, False],
+          f"armed, and the status says which safety is locked: {g}")
+    check(any(k == "lockout" and "Safety slot 12 of wave flamer" in m
+              for k, m in r.log.events),
+          "the lock of a safety slot is journaled")
+    r.run(rules.EDGE_QUIET_FRAMES + 2, {f: 200 for f in WAVE_FIRE})
+    check(r.fire(WAVE) == [200] * 15,
+          "fire slots follow the lockout file exactly as today: none of "
+          "them is locked, so all fire")
+    # Every safety locked: no arm.
+    r = Rig()
+    r.c.note_locked_slots(set(WAVE_SAFETIES))
+    r.prove_alive()
+    r.inp.set(WAVE)
+    r.run(rules.EDGE_QUIET_FRAMES + 3, {f: 200 for f in WAVE_FIRE})
+    g = r.group(WAVE)
+    check(safeties_on_wire(r) == [0, 0, 0] and r.fire(WAVE) == [0] * 15,
+          f"every safety locked: nothing rises, no fire: "
+          f"{safeties_on_wire(r)} {r.fire(WAVE)}")
+    check(g["armed"] == "held" and g["reason"] == composer.SAFETIES_LOCKED
+          and g["amber"] == "steady" and g["safeties_locked"] == [True] * 3,
+          f"held, steady, saying why: {g}")
+    check(r.c.stats["safety_lock_blocks"] >= 1, "the block is counted")
+    r.c.note_locked_slots({6, 18})
+    r.run(2, {})
+    check(safeties_on_wire(r) == [0, WAVE_ARM, 0],
+          f"one unlocked: the group rises on it alone: {safeties_on_wire(r)}")
+    # A lock landing on an armed, firing group: that safety drops to zero,
+    # the rest stay up and keep firing.
+    r = armed_wave()
+    r.run(rules.EDGE_QUIET_FRAMES + 2, {f: 200 for f in WAVE_FIRE})
+    r.c.note_locked_slots({18, 13, 14, 15, 16, 17})
+    r.step()
+    check(safeties_on_wire(r) == [WAVE_ARM, WAVE_ARM, 0]
+          and r.fire(WAVE) == [200] * 10 + [0] * 5
+          and r.group(WAVE)["armed"] == "armed",
+          f"a machine locked on an armed group: its safety and fire slots "
+          f"to zero on that tick, the others keep going: "
+          f"{safeties_on_wire(r)} {r.fire(WAVE)}")
+    # Unlocking it while the group is up does not raise it without its
+    # edge checked: the group is not confirmed and comes down.
+    r.c.note_locked_slots(set())
+    r.step()
+    check(safeties_on_wire(r) == [0, 0, 0] and r.fire(WAVE) == [0] * 15
+          and r.group(WAVE)["reason"] == composer.SAFETY_UNCONFIRMED,
+          f"a safety unlocked under an armed group: the whole group "
+          f"disarms, fire zeroed: {safeties_on_wire(r)} {r.group(WAVE)}")
+
+
+def test_multi_safety_a_locked_safety_never_rises():
+    section("multi-safety: a locked safety slot never carries the arm "
+            "value, whatever is commanded or armed")
+    rng = random.Random(26)
+    r = Rig()
+    r.c.note_locked_slots({6})
+    r.prove_alive()
+    bad = []
+    for n in range(600):
+        if n % 37 == 0:
+            r.inp.set(WAVE, on=rng.random() < 0.7)
+        cue = {s: rng.choice((0, 78, 200, 255)) for s in WAVE_SAFETIES}
+        if rng.random() < 0.5:
+            cue.update({f: rng.choice((0, 0, 200)) for f in WAVE_FIRE})
+        if n == 300:
+            _disarm(r)
+        r.run(1, cue)
+        if r.out.universe[5] != 0:
+            bad.append((n, r.out.universe[5]))
+    check(not bad and r.c.stats["ticks_armed"] > 0,
+          f"600 ticks of random commands, arms and an Abort: slot 6 never "
+          f"left zero ({bad[:3]}), and the group did arm "
+          f"({r.c.stats['ticks_armed']} armed ticks)")
+
+
+def test_multi_safety_a_dropped_safety_disarms_the_group():
+    section("multi-safety: an unlocked safety slot not at the arm value in "
+            "the frame composed takes the whole group down that tick, fire "
+            "zeroed, a fresh cycle needed")
+    r = armed_wave()
+    r.run(rules.EDGE_QUIET_FRAMES + 2, {f: 200 for f in WAVE_FIRE})
+    check(r.fire(WAVE) == [200] * 15, "setup: armed and firing")
+    # Something overwrites one safety slot (only a config the loader would
+    # refuse can do it: the spare's fire slot on the wave flamer's safety).
+    r.cfg.groups[5].fire = [12]
+    r.step()
+    check(safeties_on_wire(r) == [0, 0, 0] and r.fire(WAVE) == [0] * 15,
+          f"one safety overwritten: every safety and every fire slot zero "
+          f"on that tick: {safeties_on_wire(r)} {r.fire(WAVE)}")
+    g = r.group(WAVE)
+    check(g["armed"] != "armed" and g["safeties_up"] == [False] * 3
+          and g["reason"] == composer.SAFETY_UNCONFIRMED,
+          f"the group says it was disarmed for it: {g}")
+    check(r.c.stats["safety_unconfirmed"] == 1
+          and "safety-unconfirmed" in r.log.kinds(),
+          "counted and journaled once")
+    r.cfg.groups[5].fire = [461]
+    r.run(rules.EDGE_QUIET_FRAMES + 3, {})
+    check(safeties_on_wire(r) == [0, 0, 0]
+          and r.group(WAVE)["reason"] == composer.SAFETY_UNCONFIRMED,
+          f"it does not come back by itself: {r.group(WAVE)}")
+    r.inp.set(WAVE, on=False)
+    r.step(n=int(r.cfg.min_arm_dwell_ms / 1000.0 / r.period) + 2)
+    r.inp.set(WAVE)
+    r.step()
+    check(safeties_on_wire(r) == [WAVE_ARM] * 3,
+          f"a fresh cycle arms it again: {safeties_on_wire(r)}")
+    # With one safety locked, an UNLOCKED one dropping still takes the
+    # group down.
+    r = Rig()
+    r.c.note_locked_slots({6})
+    r.prove_alive()
+    r.inp.set(WAVE)
+    r.step()
+    check(safeties_on_wire(r) == [0, WAVE_ARM, WAVE_ARM],
+          "setup: armed on two")
+    r.cfg.groups[5].fire = [18]
+    r.step()
+    check(safeties_on_wire(r) == [0, 0, 0] and r.fire(WAVE) == [0] * 15
+          and r.group(WAVE)["armed"] != "armed",
+          f"an unlocked safety overwritten with one locked: the group "
+          f"disarms: {safeties_on_wire(r)}")
+
+
+# =========================================================================
+# safety_profile (Jeff, 2026-10-26): the wave flamer arms at 178
+# =========================================================================
+
+def _profile(**prof):
+    """The example with the wave flamer's safety_profile replaced by
+    exactly `prof` (arm_value 178 unless given)."""
+    d = example_dict()
+    d["groups"][WAVE]["safety_profile"] = dict({"arm_value": 178}, **prof)
+    return d
+
+
+def _loads(msg, d):
+    try:
+        c = config.from_dict(d)
+    except config.ConfigError as e:
+        check(False, f"{msg}: refused: {e}")
+        return None
+    check(True, msg)
+    return c
+
+
+def _plain(**over):
+    """The example with no safety_profile anywhere (as before 2026-10-26)."""
+    d = example_dict()
+    d["groups"][WAVE].pop("safety_profile")
+    d["groups"][WAVE].pop("aim")   # aim needs a profile (review of #147)
+    d["groups"][WAVE].update(over)
+    return d
+
+
+def test_safety_profile_config():
+    section("safety_profile (2026-10-26): a group may arm at Jeff's own "
+            "number; 178 loads for the wave flamer, every optional guard "
+            "refuses only against his numbers, every other group is checked "
+            "as before")
+    c = config.load(os.path.join(HERE, "flamesafe.example.json"))
+    check([g.arm_value for g in c.groups] == [78, 78, 178, 78, 78, 78]
+          and c.arm_value == 78 and not c.accept_unsourced_risk,
+          f"the example loads: the wave flamer arms at 178 from its "
+          f"profile, every other group at the file's 78, no "
+          f"accept_unsourced_risk: {[g.arm_value for g in c.groups]}")
+    check(c.groups[WAVE].profile == {"arm_value": 178, "enable_lo": None,
+                                     "enable_hi": None, "fire_at": None}
+          and all(g.profile is None for i, g in enumerate(c.groups)
+                  if i != WAVE),
+          f"only the wave flamer carries a profile, arm_value alone: "
+          f"{c.groups[WAVE].profile}")
+    check(fsmain.profile_line(c.groups[WAVE]) ==
+          "wave flamer: arms at 178 from its safety_profile; it has no fire "
+          "guard (no fire_at in its safety_profile)",
+          f"the one start line says there is no fire guard: "
+          f"{fsmain.profile_line(c.groups[WAVE])}")
+    _loads("arm_value 178 and no other key loads", _profile())
+    _loads("fire_at null is the same as no fire_at", _profile(fire_at=None))
+    c = _loads("255 loads (Jeff's call)", _profile(arm_value=255))
+    check(c and c.groups[WAVE].arm_value == 255, "and arms at 255")
+    _loads("1 loads", _profile(arm_value=1))
+
+    # arm_value itself.
+    _refused("arm_value 0, the disarm value", _profile(arm_value=0),
+             "between 1 and 255")
+    _refused("arm_value 300", _profile(arm_value=300), "between 1 and 255")
+    _refused("arm_value -1", _profile(arm_value=-1), "between 1 and 255")
+    _refused("arm_value as text", _profile(arm_value="178"), "whole number")
+    _refused("arm_value 178.0", _profile(arm_value=178.0), "whole number")
+    _refused("arm_value true", _profile(arm_value=True), "whole number")
+    d = _profile()
+    del d["groups"][WAVE]["safety_profile"]["arm_value"]
+    d["groups"][WAVE]["safety_profile"]["fire_at"] = 243
+    _refused("a profile without arm_value", d, "no arm_value")
+    d = example_dict()
+    d["groups"][WAVE]["safety_profile"] = 178
+    _refused("a profile that is not an object", d, "must be an object")
+    _refused("an unknown key in the profile", _profile(fire_below=229),
+             "takes arm_value, enable_lo, enable_hi, fire_at")
+
+    # The enable window: optional, both or neither.
+    c = _loads("178 in the window 153..204 loads",
+               _profile(enable_lo=153, enable_hi=204))
+    check(c and c.groups[WAVE].profile["enable_lo"] == 153
+          and c.groups[WAVE].profile["enable_hi"] == 204, "the window is kept")
+    _refused("enable_lo 0: a disarm would read as enabled",
+             _profile(enable_lo=0, enable_hi=204), "disarm value 0")
+    _loads("enable_lo 1 loads", _profile(enable_lo=1, enable_hi=204))
+    _refused("arm below the window", _profile(enable_lo=179, enable_hi=204),
+             "outside the enable window")
+    _refused("arm above the window", _profile(enable_lo=153, enable_hi=177),
+             "outside the enable window")
+    _loads("arm on both edges of the window loads",
+           _profile(enable_lo=178, enable_hi=178))
+    _refused("a window written upside down",
+             _profile(enable_lo=204, enable_hi=153),
+             "outside the enable window")
+    _refused("enable_lo without enable_hi", _profile(enable_lo=153),
+             "both or neither")
+    _refused("enable_hi without enable_lo", _profile(enable_hi=204),
+             "both or neither")
+    _refused("enable_hi 256", _profile(enable_lo=153, enable_hi=256),
+             "between 0 and 255")
+    c = _loads("enable_lo and enable_hi null are left out",
+               _profile(enable_lo=None, enable_hi=None))
+    check(c and c.groups[WAVE].profile["enable_lo"] is None
+          and c.groups[WAVE].profile["enable_hi"] is None,
+          "no window is kept")
+    _refused("enable_lo given, enable_hi null",
+             _profile(enable_lo=153, enable_hi=None), "both or neither")
+    _refused("enable_lo null, enable_hi given",
+             _profile(enable_lo=None, enable_hi=204), "both or neither")
+
+    # fire_at, and the single-bit-flip guard against it alone.  178 is
+    # 1011 0010; its neighbours are computed here, not typed in.
+    flips = sorted(178 ^ (1 << b) for b in range(8))
+    top = flips[-1]
+    check(top == 242 and 178 ^ 64 == 242,
+          f"the highest single-bit neighbour of 178 is 178 ^ 64 = {top}: "
+          f"{flips}")
+    _refused("window 153..204 with fire_at 229: 178 -> 242 reaches it",
+             _profile(enable_lo=153, enable_hi=204, fire_at=229),
+             "(178 -> 242, bit 6) reaches fire_at 229")
+    _refused("fire_at 242: 178 -> 242 reaches it exactly",
+             _profile(fire_at=top), "(178 -> 242, bit 6) reaches fire_at 242")
+    c = _loads("fire_at 243: no single-bit flip of 178 reaches it",
+               _profile(fire_at=top + 1))
+    check(c and c.groups[WAVE].profile["fire_at"] == 243,
+          "fire_at 243 is kept")
+    c = _loads("the window 153..204 with fire_at 243 loads",
+               _profile(enable_lo=153, enable_hi=204, fire_at=243))
+    check(c and fsmain.profile_line(c.groups[WAVE]) ==
+          "wave flamer: arms at 178 from its safety_profile, enable window "
+          "153 to 204; fire guard: below 243, every single-bit flip too",
+          f"the start line names the guard: "
+          f"{c and fsmain.profile_line(c.groups[WAVE])}")
+    # A value whose top neighbour is its bit 7 flip, both sides: 100 ->
+    # 228.
+    check(max(100 ^ (1 << b) for b in range(8)) == 228, "100 -> 228")
+    _refused("100 with fire_at 228: 100 -> 228 reaches it",
+             _profile(arm_value=100, fire_at=228), "(100 -> 228, bit 7)")
+    _loads("100 with fire_at 229 loads", _profile(arm_value=100, fire_at=229))
+    # 255 has no neighbour above it: only arm < fire_at refuses it.
+    _refused("arm equal to fire_at", _profile(arm_value=255, fire_at=255),
+             "at or above fire_at")
+    _refused("arm above fire_at", _profile(fire_at=170),
+             "at or above fire_at")
+    _refused("fire_at as text", _profile(fire_at="243"), "whole number")
+    _refused("fire_at 256", _profile(fire_at=256), "between 0 and 255")
+
+    # The group's legacy arm_value beside a profile.
+    d = _profile()
+    d["groups"][WAVE]["arm_value"] = 78
+    _refused("a group arm_value that differs from its profile's", d,
+             "disagree")
+    d = _profile()
+    d["groups"][WAVE]["arm_value"] = 178
+    c = _loads("a group arm_value equal to its profile's loads", d)
+    check(c and c.groups[WAVE].arm_value == 178, "and arms at 178")
+
+    # A group without a profile: exactly as before.
+    c = _loads("without a profile the wave flamer is checked as before",
+               _plain())
+    check(c and c.groups[WAVE].arm_value == 78
+          and c.groups[WAVE].profile is None, "at the file's 78")
+    _loads("78 on the group loads", _plain(arm_value=78))
+    _refused("178 on a group without a profile", _plain(arm_value=178),
+             "outside the G-Flame")
+    d = _plain(arm_value=178)
+    d.update(gflame_range="60-80%", arm_value=157,
+             accept_unsourced_risk=True)
+    _refused("178 on a group without a profile, under 60-80% with the "
+             "risk acknowledged", d, "single-bit flip")
+    d = _plain()
+    d.update(gflame_range="60-80%", arm_value=157)
+    _refused("157 without a profile needs accept_unsourced_risk", d,
+             "accept_unsourced_risk")
+    d["accept_unsourced_risk"] = True
+    c = _loads("157 with the risk acknowledged loads", d)
+    check(c and c.groups[WAVE].arm_value == 157, "at 157")
+    d = _profile()
+    d["arm_value"] = 178
+    _refused("178 as the file's arm_value is still refused", d,
+             "outside the G-Flame")
+
+    # Other groups in a config with a profile keep the file's rules.
+    d = _profile()
+    d["groups"][0]["arm_value"] = 178
+    _refused("another group's 178 is refused beside the profile", d,
+             "front row")
+    d = _profile()
+    d["groups"][1]["arm_value"] = 157
+    _refused("another group's 157 without the risk acknowledged", d,
+             "cat-walk")
+    d = _profile()
+    d.update(gflame_range="60-80%", arm_value=157)
+    _refused("a profile does not stand in for accept_unsourced_risk on the "
+             "file's 157", d, "accept_unsourced_risk")
+    d["accept_unsourced_risk"] = True
+    c = _loads("a profile under 60-80% with the risk acknowledged", d)
+    check(c and [g.arm_value for g in c.groups] == [157, 157, 178, 157,
+                                                     157, 157],
+          f"every other group follows the file, the wave flamer its "
+          f"profile: {c and [g.arm_value for g in c.groups]}")
+
+
+def test_safety_profile_composes():
+    section("safety_profile: the composer raises every safety slot of the "
+            "group to the profile's value, 0 on a disarm and an Abort, every "
+            "other group at the file's value, and the gates are unchanged")
+    for prof in ({}, {"enable_lo": 153, "enable_hi": 204, "fire_at": 243}):
+        fire_at = prof.get("fire_at")
+        d = _profile(**prof)
+        r = Rig(groups=d["groups"])
+        r.prove_alive()
+        r.inp.set(0, WAVE)
+        r.step()
+        check(safeties_on_wire(r) == [178, 178, 178]
+              and r.safety(0) == ARM
+              and r.group(WAVE)["armed"] == "armed"
+              and r.group(WAVE)["arm_value"] == 178
+              and r.group(WAVE)["sent_safety"] == 178
+              and r.group(0)["arm_value"] == ARM,
+              f"fire_at {fire_at}: 178 on slots 6, 12 and 18, 78 on the "
+              f"front row, the status says each: {safeties_on_wire(r)} "
+              f"{r.safety(0)}")
+        r.run(rules.EDGE_QUIET_FRAMES + 2, {f: 200 for f in WAVE_FIRE})
+        check(r.fire(WAVE) == [200] * 15
+              and safeties_on_wire(r) == [178] * 3,
+              f"fire_at {fire_at}: fire passes while armed at 178")
+        r.inp.set(WAVE, on=False)
+        r.step()
+        check(safeties_on_wire(r) == [0, 0, 0] and r.fire(WAVE) == [0] * 15
+              and r.safety(0) == ARM,
+              f"fire_at {fire_at}: a disarm writes 0 on every safety slot "
+              f"and fire, the other group stays up: {safeties_on_wire(r)}")
+    # A profile on a group whose safety is one whole number.
+    d = example_dict()
+    d["groups"][0]["safety_profile"] = {"arm_value": 178}
+    c = _loads("a profile on a one-safety group loads", d)
+    check(c and [g.arm_value for g in c.groups] == [178, 78, 178, 78, 78, 78]
+          and c.groups[0].safeties == [401],
+          f"front row arms at 178: {c and [g.arm_value for g in c.groups]}")
+    r = Rig(groups=d["groups"])
+    r.prove_alive()
+    r.inp.set(0)
+    r.step()
+    check(r.safety(0) == 178 and r.group(0)["arm_value"] == 178
+          and r.group(0)["sent_safety"] == 178
+          and r.group(1)["arm_value"] == ARM
+          and r.out.status["arm_value"] == ARM,
+          f"slot 401 carries 178, the group's status says 178, the "
+          f"top-level arm_value stays the file's default: {r.group(0)}")
+    r.inp.set(0, on=False)
+    r.step()
+    check(r.safety(0) == 0, f"a disarm writes 0 on slot 401: {r.safety(0)}")
+    r = armed_wave()
+    r.step(n=rules.EDGE_QUIET_FRAMES + 1)
+    check(_disarm(r) == "", "setup: the Abort is accepted")
+    r.step()
+    check(safeties_on_wire(r) == [0, 0, 0]
+          and r.group(WAVE)["reason"] == composer.ABORT_DISARMED,
+          f"the Abort lowers the profile group to 0: {r.group(WAVE)}")
+    # The edge gate is the same for a profile group: a fire slot high on
+    # the rising edge holds the arm. Slot 2 (speed): slot 1 is the angle,
+    # an aim slot the gate leaves out (2026-10-28).
+    r = Rig()
+    r.prove_alive()
+    r.run(2, {2: 200})
+    r.inp.set(WAVE)
+    r.run(3, {2: 200})
+    check(safeties_on_wire(r) == [0, 0, 0]
+          and r.group(WAVE)["armed"] == "held",
+          f"a fire slot high on the edge still holds the profile group: "
+          f"{r.group(WAVE)}")
+
+
+# The example's wave flamer angle channels (2026-10-28).
+WAVE_AIM = [1, 7, 13]
+WAVE_FLAME = [f for f in WAVE_FIRE if f not in WAVE_AIM]
+
+
+def test_aim_slots_point_the_head_and_never_hold_the_arm():
+    section("aim slots (2026-10-28): the wave flamer's angle at 128 neither "
+            "holds the arm nor is zeroed through the edge-quiet window; "
+            "every flame slot keeps both rules")
+    cfg = make_config()
+    w = cfg.groups[WAVE]
+    check(w.aim == frozenset(WAVE_AIM),
+          f"the example lists the three angle channels as aim: {w.aim}")
+    check(all(not g.aim for i, g in enumerate(cfg.groups) if i != WAVE),
+          "no other example group has aim slots")
+
+    def refused(aim, want):
+        d = example_dict()
+        d["groups"][WAVE]["aim"] = aim
+        try:
+            config.from_dict(d)
+        except config.ConfigError as e:
+            return check(want in str(e), f"aim {aim!r} refused for the "
+                                         f"right reason: {e}")
+        return check(False, f"aim {aim!r} was accepted")
+
+    refused(6, "must be a list")
+    refused([401], "not one of this group's fire slots")
+    refused([6], "not one of this group's fire slots")
+    refused([True], "not one of this group's fire slots")
+    refused([1, 1], "listed twice")
+    refused(list(WAVE_FIRE), "every fire slot is an aim slot")
+    # A typo must not free a fuel slot (review, 2026-10-28): one aim slot
+    # per fixture, the same channel of each, and with a safety_profile only
+    # each fixture's first channel (the angle).
+    refused([2, 3, 4, 5], "are in one fixture")
+    refused([1, 2], "are in one fixture")
+    refused([1, 7, 14], "not the same channel of each fixture")
+    refused([2, 7, 13], "not the same channel of each fixture")
+    refused([2, 8, 14], "not channel 1 of its fixture (slot 1)")
+    refused([5], "not channel 1 of its fixture (slot 1)")
+    # Channel 1 is pinned by the safety slot, not by the fire list: with
+    # slot 1 left out of fire, the speed channels are still refused.
+    d = example_dict()
+    d["groups"][WAVE].update(aim=[2, 8, 14],
+                             fire=[f for f in WAVE_FIRE if f not in WAVE_AIM])
+    try:
+        config.from_dict(d)
+        check(False, "aim on the speed channels was accepted")
+    except config.ConfigError as e:
+        check("not channel 1 of its fixture" in str(e),
+              f"aim on the speed channels is refused: {e}")
+    d = example_dict()
+    d["groups"][WAVE].update(safety=[6, 12], aim=[1, 13],
+                             fire=[1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13])
+    try:
+        config.from_dict(d)
+        check(False, "an aim slot after the last safety slot was accepted")
+    except config.ConfigError as e:
+        check("in no fixture" in str(e), f"an aim slot after the last "
+                                         f"safety slot is refused: {e}")
+    # aim exists only for a safety_profile group (review of #147): a
+    # G-Flame's fuel slot, or the wave flamer with its profile deleted,
+    # is refused.
+    for gname, aim, upd in (("front row", [413], {}),
+                            ("cat-walk", [423], {}),
+                            ("wave flamer", [3, 9, 15],
+                             {"safety_profile": None})):
+        d = example_dict()
+        g = next(x for x in d["groups"] if x["name"] == gname)
+        g["aim"] = aim
+        for k, v in upd.items():
+            g.pop(k)
+        try:
+            config.from_dict(d)
+            check(False, f"{gname} aim {aim} was accepted")
+        except config.ConfigError as e:
+            check("only for a group with a safety_profile" in str(e),
+                  f"{gname} aim {aim} is refused: {e}")
+    # Each aimed fixture is one 6 channel block: a safety slot typo with
+    # the aim moved to match is refused.
+    d = example_dict()
+    d["groups"][WAVE].update(safety=[8, 14, 20], aim=[3, 9, 15],
+                             fire=[1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13,
+                                   15, 16, 17, 18, 19])
+    try:
+        config.from_dict(d)
+        check(False, "a fixture that is not one 6 channel block was taken")
+    except config.ConfigError as e:
+        check("is not one 6 channel block" in str(e),
+              f"a fixture that is not one 6 channel block is refused: {e}")
+    for ok in ([1, 7, 13], [1, 7], [13]):
+        d = example_dict()
+        d["groups"][WAVE]["aim"] = ok
+        check(config.from_dict(d).groups[WAVE].aim == frozenset(ok),
+              f"aim {ok} (angle channels only) is accepted")
+    d = example_dict()
+    del d["groups"][WAVE]["aim"]
+    check(config.from_dict(d).groups[WAVE].aim == frozenset(),
+          "a group without aim has none, and behaves as before")
+
+    # Arming with every angle at straight up (128) and every flame slot at
+    # zero: the rise happens.
+    straight_up = {a: 128 for a in WAVE_AIM}
+    r = Rig()
+    r.prove_alive()
+    r.run(2, straight_up)
+    r.inp.set(WAVE)
+    r.run(1, straight_up)
+    check(safeties_on_wire(r) == [WAVE_ARM] * 3
+          and r.group(WAVE)["armed"] == "armed",
+          f"the angles at 128 do not hold the arm: {safeties_on_wire(r)} "
+          f"{r.group(WAVE)['reason']}")
+    # Inside the edge-quiet window: the angles go out, a flame slot does
+    # not.
+    cue = dict(straight_up)
+    cue[3] = 255
+    r.run(1, cue)
+    u = r.out.universe
+    check([u[a - 1] for a in WAVE_AIM] == [128] * 3 and u[3 - 1] == 0,
+          f"in the edge-quiet window the angles are sent and the fire "
+          f"channel is held: {[u[a - 1] for a in WAVE_AIM]} {u[2]}")
+    r.run(rules.EDGE_QUIET_FRAMES + 1, cue)
+    u = r.out.universe
+    check(u[3 - 1] == 255 and u[1 - 1] == 128,
+          f"after the window the fire channel goes out too: {u[2]} {u[0]}")
+    # The head follows the angle while armed.
+    for v in (54, 201, 0, 255):
+        cue[1] = v
+        r.run(1, cue)
+        check(r.out.universe[0] == v,
+              f"the angle follows the show: {v} -> {r.out.universe[0]}")
+    # Disarmed, the angle is zero like every fire slot.
+    r.inp.set(WAVE, on=False)
+    r.step()
+    check(safeties_on_wire(r) == [0, 0, 0] and r.fire(WAVE) == [0] * 15,
+          f"a disarm zeroes the angles too: {r.fire(WAVE)}")
+    # Every real flame slot still holds the arm when high on the edge.
+    for f in WAVE_FLAME:
+        r = Rig()
+        r.prove_alive()
+        hot = dict(straight_up)
+        hot[f] = rules.GFLAME_EDGE_BELOW
+        r.run(2, hot)
+        r.inp.set(WAVE)
+        r.run(3, hot)
+        check(safeties_on_wire(r) == [0, 0, 0]
+              and r.group(WAVE)["reason"] == "dirty edge",
+              f"flame slot {f} high on the edge still holds the arm: "
+              f"{r.group(WAVE)['reason']}")
+    # A locked out angle is zero, like any locked fire slot.
+    r = armed_wave()
+    r.c.note_locked_slots({1})
+    r.run(rules.EDGE_QUIET_FRAMES + 2, straight_up)
+    check(r.out.universe[0] == 0 and r.out.universe[6] == 128,
+          f"a locked out aim slot stays zero: {r.out.universe[0]} "
+          f"{r.out.universe[6]}")
+
+
+def test_aim_slots_are_reported_at_start_and_in_status():
+    section("aim slots are said (2026-10-28): the start line and every "
+            "status frame name each group's aim slots, so a look shows "
+            "whether the wave flamer's angles are loaded")
+    r = armed_wave()
+    gs = r.out.status["groups"]
+    check(gs[WAVE]["aim_slots"] == WAVE_AIM,
+          f"the wave flamer's status carries its aim slots: "
+          f"{gs[WAVE].get('aim_slots')}")
+    check(all(g["aim_slots"] == [] for i, g in enumerate(gs) if i != WAVE),
+          "a group without aim reports an empty list")
+    check(json.loads(link.encode_status(r.out.status, KEY).decode())
+          ["groups"][WAVE]["aim_slots"] == WAVE_AIM,
+          "the aim slots survive the wire")
+    line = fsmain.aim_line(r.cfg.groups, "some/flamesafe.json")
+    check(line.startswith(f"aim slots: {r.cfg.groups[WAVE].name} 1, 7, 13 ")
+          and os.path.abspath("some/flamesafe.json") in line,
+          f"the start line names the group, its slots and the file: {line}")
+    d = example_dict()
+    del d["groups"][WAVE]["aim"]
+    line = fsmain.aim_line(config.from_dict(d).groups, "x.json")
+    check(line.startswith("aim slots: none in ")
+          and os.path.abspath("x.json") in line,
+          f"no aim is said too, with the file: {line}")
+    check("\u2013" not in line and "\u2014" not in line, "no dashes")
+    src = open(os.path.join(HERE, "__main__.py"), encoding="utf-8").read()
+    check('journal.event("config", aim_line(cfg.groups, argv[0]))' in src,
+          "python -m flamesafe journals the aim line at start")
+# =========================================================================
+# Passthrough: the hazers (Jeff, 2026-10-29). Three 2-channel hazers on the
+# flame universe at slots 80 to 85, in no group. Their slots carry the show
+# program's values only while it has that hazer switched ON (hazers_on), the
+# link is fresh and nothing has taken it away since it was last seen OFF.
+# =========================================================================
+
+HAZERS = [("Hazer 1", [80, 81]), ("Hazer 2", [82, 83]), ("Hazer 3", [84, 85])]
+HAZE = {80: 200, 81: 120, 82: 201, 83: 121, 84: 202, 85: 122}
+# Jeff's live flamesafe.json groups (2026-10-29), none touching 78 to 85.
+JEFF_GROUPS = [
+    {"name": "front row", "safety": 33, "fire": [21, 22, 23, 24, 25, 26]},
+    {"name": "cat-walk", "safety": 66, "fire": [41, 42, 43, 44, 45]},
+    {"name": "wave flamer", "safety": [6, 12, 18],
+     "safety_profile": {"arm_value": 178},
+     "fire": [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17],
+     "aim": [1, 7, 13]},
+    {"name": "fireball", "safety": 77, "fire": [55, 56, 57, 58, 59]},
+]
+
+
+def _haze(r):
+    return [r.out.universe[s - 1] for s in range(80, 86)]
+
+
+def _pt(r, i=0):
+    return r.out.status["passthrough"][i]
+
+
+def test_passthrough_config():
+    section("passthrough config (2026-10-29): the example's three hazers "
+            "load; Jeff's live group layout plus the hazers loads; every "
+            "overlap, bad slot and bad name is refused")
+    cfg = make_config()
+    check([(p.name, p.slots) for p in cfg.passthrough] == HAZERS and
+          [(p.haze, p.fan) for p in cfg.passthrough] == [(80, 81), (82, 83),
+                                                        (84, 85)],
+          f"the example lists the three hazers at 80 to 85: "
+          f"{cfg.passthrough}")
+    d = example_dict()
+    d.pop("passthrough")
+    check(config.from_dict(d).passthrough == [],
+          "a config without passthrough has none")
+    jeff = make_config(groups=copy.deepcopy(JEFF_GROUPS),
+                       gflame_range="60-80%", arm_value=157,
+                       accept_unsourced_risk=True)
+    check([(p.name, p.slots) for p in jeff.passthrough] == HAZERS,
+          "Jeff's live layout (front row 33/21-26, cat-walk 66/41-45, wave "
+          "flamer 6,12,18/1-17 aim 1,7,13, fireball 77/55-59) with the "
+          "three hazers at 80 to 85 validates")
+
+    def refused(pt, want, **over):
+        d = example_dict()
+        d.update(over)
+        d["passthrough"] = pt
+        try:
+            config.from_dict(d)
+        except config.ConfigError as e:
+            return check(want in str(e), f"{pt!r} refused for {want!r}: {e}")
+        return check(False, f"passthrough {pt!r} was accepted")
+
+    one = lambda haze, fan=81, name="Hazer 1": [{"name": name, "haze": haze,
+                                                "fan": fan}]
+    refused(one(401), "a safety slot of front row")
+    refused(one(411), "a fire slot of front row")
+    refused(one(1), "an aim slot of wave flamer")
+    refused(one(12), "a safety slot of wave flamer")
+    refused(one(80, fan=2), "a fire slot of wave flamer")
+    refused(one(80, fan=461), "a fire slot of spare")
+    refused([{"name": "Hazer 1", "haze": 80, "fan": 81},
+             {"name": "Hazer 2", "haze": 81, "fan": 82}], "already a slot of")
+    refused(one(80, fan=80), "already a slot of")
+    refused(one(0), "not a slot between 1 and 512")
+    refused(one(80, fan=513), "not a slot between 1 and 512")
+    refused(one(True), "not a slot between 1 and 512")
+    refused(one("80"), "not a slot between 1 and 512")
+    refused(one(None), "not a slot between 1 and 512")
+    refused([{"name": "Hazer 1", "haze": 80}], "fan is missing")
+    refused([{"name": "Hazer 1", "fan": 81}], "haze is missing")
+    refused([{"name": "Hazer 1", "slots": [80, 81]}],
+            "a key this program does not know")
+    refused(one(80, name=""), "has no name")
+    refused(one(80, name="x" * 65), "longer than")
+    refused(one(80, name="front row"), "already used")
+    refused([{"name": "Hazer 1", "haze": 80, "fan": 81},
+             {"name": "Hazer 1", "haze": 82, "fan": 83}], "already used")
+    refused([{"name": "Hazer 1", "haze": 80, "fan": 81, "arm": 1}],
+            "a key this program does not know")
+    refused(["Hazer 1"], "is not an object")
+    refused({"name": "Hazer 1", "haze": 80, "fan": 81}, "must be a list")
+    refused([{"name": f"H{i}", "haze": 100 + 2 * i, "fan": 101 + 2 * i}
+             for i in range(17)], "at most 16")
+    swapped = example_dict()
+    swapped["passthrough"][0] = {"name": "Hazer 1", "haze": 81, "fan": 80}
+    p0 = config.from_dict(swapped).passthrough[0]
+    check(p0.haze == 81 and p0.fan == 80 and p0.slots == [81, 80],
+          "the roles are whatever the config says: swapped, they swap")
+    for bad in (dict(groups=copy.deepcopy(JEFF_GROUPS) + [
+            {"name": "spare", "safety": 80, "fire": [90]}]),
+                dict(groups=copy.deepcopy(JEFF_GROUPS) + [
+            {"name": "spare", "safety": 91, "fire": [85]}])):
+        d = example_dict()
+        d.update(bad, gflame_range="60-80%", arm_value=157,
+                 accept_unsourced_risk=True)
+        try:
+            config.from_dict(d)
+            check(False, "a group on a hazer slot was accepted")
+        except config.ConfigError as e:
+            check("never a flame group's slot" in str(e),
+                  f"a group on a hazer slot is refused: {e}")
+
+
+def test_passthrough_link_decoding():
+    section("passthrough on the wire (2026-10-29): hazers_on is optional, a "
+            "list of distinct names; absent is every hazer off; anything "
+            "else refuses the whole frame, after the key")
+    vals = [0] * 512
+    f = link.decode_flame(link.encode_flame(5, None, 1.0, 1, vals, KEY), 1,
+                          KEY)
+    check(f.hazers_on == frozenset(), "absent hazers_on is every hazer off")
+    f = link.decode_flame(link.encode_flame(5, None, 1.0, 1, vals, KEY,
+                                            hazers_on=["Hazer 1", "Hazer 3"]),
+                          1, KEY)
+    check(f.hazers_on == {"Hazer 1", "Hazer 3"}, f"names read: {f.hazers_on}")
+
+    def frame(h, key=KEY):
+        return json.dumps({"v": 2, "k": key, "t": "flame", "seq": 5,
+                           "tc": None, "mono": 1.0, "universe": 1,
+                           "values": vals, "hazers_on": h}).encode()
+
+    for bad in ("Hazer 1", ["Hazer 1", "Hazer 1"], [1], [""], ["x" * 65],
+                [None], {"Hazer 1": True}, 7, [f"h{i}" for i in range(17)],
+                True):
+        try:
+            link.decode_from_ltcplay(frame(bad), 1, KEY)
+            check(False, f"hazers_on {bad!r} was accepted")
+        except link.LinkError as e:
+            check(str(e).startswith("hazers_on is not"),
+                  f"hazers_on {bad!r} refused: {e}")
+    try:
+        link.decode_from_ltcplay(frame(7, key="y" * 20), 1, KEY)
+        check(False, "a wrong key with bad hazers_on was accepted")
+    except link.LinkError as e:
+        check(str(e) == "wrong key", f"the key is checked first: {e}")
+    check(composer._flame_reason("hazers_on is not a list of at most 16 "
+                                 "distinct hazer names") == "hazers_on is not",
+          "a bad hazers_on is journaled under its own fixed reason")
+
+
+def test_passthrough_passes_only_while_on_and_fresh():
+    section("passthrough (2026-10-29): a hazer's slots carry the show's "
+            "values only while it is switched ON and the link is fresh; off "
+            "at start until seen OFF; every other unlisted slot stays zero")
+    r = Rig()
+    r.hazers = ("Hazer 1",)
+    cue = dict(HAZE)
+    cue.update({79: 255, 86: 255, 300: 255, 512: 255})
+    r.run(4, cue)
+    check(_haze(r) == [0] * 6 and not _pt(r)["enabled"],
+          f"ON in the very first frames is not enough: off at start until "
+          f"seen OFF: {_haze(r)}")
+    check(_pt(r)["why"] == composer.PT_START, f"and says so: {_pt(r)}")
+    r.hazers = ()
+    r.run(2, cue)
+    check(_haze(r) == [0] * 6 and _pt(r)["why"] == composer.PT_OFF,
+          f"OFF is zero, said: {_pt(r)}")
+    r.hazers = ("Hazer 1",)
+    r.run(1, cue)
+    check(_haze(r) == [200, 120, 0, 0, 0, 0],
+          f"Hazer 1 switched ON: its two slots carry the show's values, the "
+          f"other hazers stay zero: {_haze(r)}")
+    st = _pt(r)
+    check(st["asked"] and st["enabled"] and st["passing"] and st["why"] == ""
+          and st["sent"] == [200, 120] and st["slots"] == [80, 81],
+          f"the status says it: {st}")
+    check(all(r.out.universe[s - 1] == 0 for s in (79, 86, 300, 512)),
+          "every other slot in no group stays zero")
+    r.hazers = ("Hazer 1", "Hazer 2", "Hazer 3")
+    r.run(1, cue)
+    check(_haze(r) == [200, 120, 201, 121, 202, 122],
+          f"Hazers 2 and 3, seen OFF in the frames before, pass once ON: "
+          f"{_haze(r)}")
+    r.hazers = ("Hazer 1", "Hazer 3", "a hazer this config has not got")
+    r.run(1, cue)
+    check(_haze(r) == [200, 120, 0, 0, 202, 122],
+          f"switching one off zeroes it at once; an unknown name does "
+          f"nothing: {_haze(r)}")
+    # The link: a frame older than fire_hold_ms still passes (haze is not
+    # a flame), one older than frame_stale_ms does not, and the link back
+    # with the hazer still asked ON is not enough.
+    r.link_alive = False
+    r.wait(r.cfg.fire_hold_ms / 1000.0 + 0.05)
+    check(_haze(r)[0] == 200, "past fire_hold_ms the hazer still passes")
+    r.wait(r.cfg.frame_stale_ms / 1000.0)
+    check(_haze(r) == [0] * 6 and _pt(r)["why"] == composer.PT_LINK,
+          f"a stale link zeroes every hazer: {_pt(r)}")
+    r.c._pt_on = [True] * 3
+    r.out = r.c.tick()
+    check(_haze(r) == [0] * 6 and not any(r.c._pt_on),
+          "every stale tick switches the hazers off again")
+    r.link_alive = True
+    r.run(3, cue)
+    check(_haze(r) == [0] * 6 and _pt(r)["why"] == composer.PT_LINK,
+          f"the link back with ON still asked is not enough: {_pt(r)}")
+    r.hazers = ()
+    r.run(1, cue)
+    r.hazers = ("Hazer 1",)
+    r.run(1, cue)
+    check(_haze(r)[:2] == [200, 120], "OFF then ON after the link is back")
+    r.c.note_locked_slots({80})
+    r.run(1, cue)
+    check(_haze(r)[:2] == [0, 120],
+          f"a slot in the lockout file is zero whatever else holds: "
+          f"{_haze(r)}")
+    check(_pt(r)["locked"] == [True, False] and
+          _pt(r)["why"] == composer.PT_LOCKED,
+          f"and the status says so (reviewer A, 2): {_pt(r)}")
+    r.c.note_locked_slots(set())
+    # An overrun (a panic tick): all zeros, and every hazer off until the
+    # show program says it off and on again (reviewer A, 3).
+    r.run(1, cue)
+    check(_haze(r)[:2] == [200, 120], "setup: Hazer 1 passing")
+    r.step(dt=(r.cfg.overrun_ms + 50) / 1000.0)
+    check(_haze(r) == [0] * 6 and r.out.universe == bytes(512),
+          "an overrun tick is all zeros")
+    r.run(3, cue)
+    check(_haze(r) == [0] * 6 and _pt(r)["why"] == composer.PT_FAULT,
+          f"after it, still zero though asked: {_pt(r)}")
+    r.hazers = ()
+    r.run(1, cue)
+    r.hazers = ("Hazer 1",)
+    r.run(1, cue)
+    check(_haze(r)[:2] == [200, 120], "off then on: passing again")
+
+
+def test_passthrough_abort_and_senders():
+    section("passthrough (2026-10-29): the show's Abort zeroes every hazer "
+            "on its tick and they stay zero until switched OFF and ON again; "
+            "a foreign sender or a new sender can never switch one on")
+    r = Rig()
+    r.run(2, HAZE)
+    r.hazers = ("Hazer 1", "Hazer 2")
+    r.run(1, HAZE)
+    check(_haze(r)[:4] == [200, 120, 201, 121], "two hazers running")
+    check(_disarm(r) == "", "the Abort is accepted")
+    r.out = r.c.tick()
+    check(_haze(r) == [0] * 6 and _pt(r)["why"] == composer.PT_ABORT,
+          f"zero on the Abort's own tick: {_pt(r)}")
+    check(any(k == "passthrough" and "Hazer 1, Hazer 2" in m
+              for k, m in r.log.events),
+          "the journal says the Abort switched them off")
+    r.run(5, HAZE)
+    check(_haze(r) == [0] * 6,
+          "frames still asking ON after the Abort keep them zero")
+    r.hazers = ()
+    r.run(1, HAZE)
+    r.hazers = ("Hazer 2",)
+    r.run(1, HAZE)
+    check(_haze(r) == [0, 0, 201, 121, 0, 0],
+          f"OFF then ON after the Abort brings that hazer back: {_haze(r)}")
+
+    OTHER = ("127.0.0.1", 40999)
+    r.hazers = ()
+    r.run(1, HAZE)
+    vals = bytearray(512)
+    for k, v in HAZE.items():
+        vals[k - 1] = v
+    why = r.c.ingest_frame(link.FlameFrame(10 ** 6, None, r.t + 1, 1,
+                                           bytes(vals),
+                                           frozenset(["Hazer 1", "Hazer 2",
+                                                      "Hazer 3"])),
+                           sender=OTHER)
+    check(why == "another sender", f"a foreign frame is refused: {why}")
+    r.out = r.c.tick()
+    check(_haze(r) == [0] * 6,
+          "a foreign sender saying every hazer ON switches none on")
+    # A new sender after the link went stale: must be seen OFF first.
+    r.link_alive = False
+    r.wait(r.cfg.frame_stale_ms / 1000.0 + 0.1)
+    r.hazers = ()
+    r.frame(HAZE)
+    r.hazers = ("Hazer 1",)
+    r.link_alive = True
+    r.run(1, HAZE)
+    check(_haze(r)[:2] == [200, 120], "the same sender back: OFF then ON")
+    r.link_alive = False
+    r.wait(r.cfg.frame_stale_ms / 1000.0 + 0.1)
+    r.frame(HAZE, sender=OTHER)
+    r.out = r.c.tick()
+    check(_haze(r) == [0] * 6 and _pt(r)["why"] == composer.PT_NEW_SENDER,
+          f"a different sender taking the link asking ON is zero: {_pt(r)}")
+
+
+def test_passthrough_is_refused_on_a_group_slot_and_written_first():
+    section("passthrough (reviewer A of #168, 1): a Composer refuses a "
+            "passthrough slot that is a group slot however its Config was "
+            "built, and the hazer block is written before the groups, so "
+            "even a hazer forced onto a group slot never changes it")
+    cfg = make_config()
+    cfg.passthrough = [config.Passthrough("x", 411, 412)]
+    try:
+        Composer(cfg)
+        check(False, "a Composer took a passthrough on front row's fire slots")
+    except ValueError as e:
+        check("411" in str(e), f"refused: {e}")
+    r = Rig()
+    r.c.pt = [config.Passthrough("x", 411, 412)]
+    r.c._pt_asked, r.c._pt_on = [False], [False]
+    r.c._pt_block = [composer.PT_START]
+    r.run(2, {411: 200, 412: 201})
+    r.hazers = ("x",)
+    r.run(3, {411: 200, 412: 201})
+    check(r.c._pt_on == [True] and r.out.universe[410] == 0 and
+          r.out.universe[411] == 0 and r.group(0)["armed"] == "disarmed",
+          f"forced onto a disarmed group's fire slots, the group's zero "
+          f"wins: {r.out.universe[410:412]}")
+
+
+def test_passthrough_never_touches_a_group():
+    section("passthrough (2026-10-29): hazers switched on and off, and an "
+            "Abort's hazer reset, change no group's arming, edges or "
+            "outputs: every non-hazer slot is identical with and without")
+    script = [((), {}), (("Hazer 1",), {411: 200}), ((), {80: 255, 411: 0}),
+              (("Hazer 1", "Hazer 2"), {80: 255, 82: 40, 412: 230}),
+              (("Hazer 2",), {83: 1})]
+    outs = []
+    for with_haze in (False, True):
+        r = Rig()
+        r.prove_alive()
+        r.inp.set(0, 2)
+        seen = []
+        for hz, cue in script * 3:
+            r.hazers = hz if with_haze else ()
+            c = dict(HAZE) if with_haze else {}
+            c.update(cue)
+            r.run(4, c)
+            seen.append((bytes(b for i, b in enumerate(r.out.universe)
+                               if not 80 <= i + 1 <= 85),
+                         [(g["armed"], g["reason"]) for g in
+                          r.out.status["groups"]]))
+        outs.append(seen)
+        if with_haze:
+            check(any(_haze(r)), "the hazers did pass in this run")
+    check(outs[0] == outs[1], "every group's arming and every non-hazer "
+                              "slot are identical with the hazers running")
+    r = armed_rig()
+    r.hazers = ()
+    r.run(1)
+    r.hazers = ("Hazer 1",)
+    r.run(3, {80: 255, 81: 255})
+    check(r.safety(0) == ARM and r.group(0)["armed"] == "armed",
+          "a hazer at 255 does not hold or drop an armed group")
+    check(set(r.out.universe[s - 1] for s in range(1, 513)
+              if s not in (80, 81) and s not in r.cfg.all_slots()) == {0},
+          "nothing outside the groups and the hazer's own slots is non-zero")
+
+
+def test_passthrough_status_and_start_line():
+    section("passthrough is said (2026-10-29): the status frame carries "
+            "every hazer, and flamesafe journals one start line")
+    r = Rig()
+    r.run(2)
+    pt = r.out.status["passthrough"]
+    check([(p["name"], p["slots"]) for p in pt] == HAZERS,
+          f"one status entry per hazer: {pt}")
+    check(all(set(p) == {"name", "slots", "haze", "fan", "asked", "enabled",
+                         "passing", "locked", "sent", "why"} for p in pt) and
+          (pt[0]["haze"], pt[0]["fan"]) == (80, 81), f"its fields: {pt[0]}")
+    check(json.loads(link.encode_status(r.out.status, KEY).decode())
+          ["passthrough"] == pt, "it survives the wire")
+    d = example_dict()
+    d.pop("passthrough")
+    r2 = Rig(**{})
+    r2.c = Composer(config.from_dict(d), clock=lambda: r2.t, log=r2.log)
+    check(r2.c.tick().status["passthrough"] == [],
+          "a config without passthrough reports an empty list")
+    line = fsmain.passthrough_line(r.cfg.passthrough, "some/flamesafe.json")
+    check(line.startswith("passthrough: Hazer 1 haze 80, fan 81; Hazer 2 "
+                          "haze 82, fan 83; Hazer 3 haze 84, fan 85 ")
+          and os.path.abspath("some/flamesafe.json") in line,
+          f"the start line: {line}")
+    check(fsmain.passthrough_line([], "x.json").startswith(
+        "passthrough: none in "), "none is said too")
+    check("–" not in line and "—" not in line, "no dashes")
+    src = open(os.path.join(HERE, "__main__.py"), encoding="utf-8").read()
+    check('journal.event("config", passthrough_line(cfg.passthrough, '
+          'argv[0]))' in src, "python -m flamesafe journals it at start")
+    r.c._pt_on[0] = True
+    out = r.c._panic()
+    check(not out.status["passthrough"][0]["passing"]
+          and out.universe == bytes(512),
+          "a panic tick is all zeros, hazers included")
+
+
+# =========================================================================
+# The Fireball page (Jeff, 2026-10-28): Jeff's fireball group as the Pico's
+# flamesafe.json has it. Its Valve Open (slot 57) is not a G-Flame channel,
+# so nothing on the head itself holds it: flamesafe must.
+# =========================================================================
+
+FB_SAFETY, FB_FIRE = 77, [55, 56, 57, 58, 59]
+
+
+def fireball_rig():
+    d = example_dict()
+    groups = d["groups"]
+    i = next(k for k, g in enumerate(groups) if g["name"] == "fireball")
+    groups[i] = {"name": "fireball", "safety": FB_SAFETY, "fire": FB_FIRE}
+    r = Rig(gflame_range="60-80%", arm_value=157, accept_unsourced_risk=True,
+            groups=groups)
+    return r, i
+
+
+def test_fireball_fire_slots_are_zero_unless_armed():
+    section("the fireball group (safety 77 at 157, fire 55 to 59): every "
+            "fire slot, the Valve Open (57) included, is zero on the wire "
+            "unless the group is armed; it never arms while a fire slot is "
+            "15 or more; a disarm zeroes them at once")
+    r, i = fireball_rig()
+    r.prove_alive()
+    hot = {s: 255 for s in FB_FIRE}
+    r.run(5, hot)
+    check([r.out.universe[s - 1] for s in FB_FIRE] == [0] * 5 and
+          r.safety(i) == 0,
+          f"disarmed: 255 on every fireball slot from ltcplay is zero on "
+          f"the wire: {[r.out.universe[s - 1] for s in FB_FIRE]}")
+    check(r.out.universe[57 - 1] == 0, "the Valve Open is zero disarmed")
+    for slot in FB_FIRE:
+        r2, i2 = fireball_rig()
+        r2.prove_alive()
+        r2.run(2, {slot: rules.GFLAME_EDGE_BELOW})
+        r2.inp.set(i2)
+        r2.run(4, {slot: rules.GFLAME_EDGE_BELOW})
+        g = r2.group(i2)
+        check(r2.safety(i2) == 0 and g["armed"] == "held" and
+              g["reason"] == "dirty edge",
+              f"slot {slot} at 15 on the arm tick: the fireball does not arm "
+              f"({g['armed']}, {g['reason']})")
+        check(all(r2.out.universe[s - 1] == 0 for s in FB_FIRE),
+              f"and slot {slot} stays zero on the wire")
+    # Clean edge: everything zero, then arm, then the valve.
+    r.run(3, {})
+    r.inp.set(i)
+    r.run(rules.EDGE_QUIET_FRAMES + 2, {})
+    check(r.safety(i) == 157 and r.group(i)["armed"] == "armed",
+          f"everything zero: the fireball arms at 157: {r.group(i)['armed']}")
+    r.run(2, {57: 255})
+    check(r.out.universe[57 - 1] == 255,
+          "armed: the Valve Open passes through")
+    r.inp.set(i, on=False)
+    r.step()
+    check(r.out.universe[57 - 1] == 0 and r.safety(i) == 0,
+          "a disarm: the Valve Open is zero on the very next tick")
+
+
+# =========================================================================
+# Wave flamer cleaning (Andy's design, 2026-10-28; ltcplay/cleaning.py): the
+# whole sequence through the composer on the example's wave flamer. Each
+# fixture's angle and ignition are worked out from its safety slot (angle
+# 5 below, ignition 3 below), the same rule ltcplay uses.
+# =========================================================================
+
+def test_wave_cleaning_sequence_through_the_composer():
+    section("wave flamer cleaning: armed 3 s and disarmed 3 s, three times, "
+            "then armed with the heads straight up and the ignition 1 s on "
+            "and 1 s off; every re-arm after the 3 s gap rises cleanly (no "
+            "re-arm dwell, no chatter hold); the ignition reaches the wire "
+            "only while armed and is zero on the tick after a disarm")
+    r = Rig()
+    r.prove_alive()
+    angles = [s - 5 for s in WAVE_SAFETIES]
+    ignitions = [s - 3 for s in WAVE_SAFETIES]
+    check(angles == WAVE_AIM and all(i in WAVE_FLAME for i in ignitions),
+          f"each fixture's angle is its aim slot and its ignition a flame "
+          f"slot: {angles} {ignitions}")
+    ticks_s = int(round(1 / r.period))
+    for cycle in range(1, 4):
+        r.inp.set(WAVE)
+        r.run(2, {})
+        check(safeties_on_wire(r) == [WAVE_ARM] * 3 and
+              r.group(WAVE)["armed"] == "armed",
+              f"cycle {cycle}: the wave flamer arms with every slot at zero "
+              f"after the gap: {r.group(WAVE)['armed']} "
+              f"{r.group(WAVE)['reason']}")
+        r.run(3 * ticks_s, {})
+        r.inp.set(WAVE, on=False)
+        r.step()
+        check(safeties_on_wire(r) == [0, 0, 0],
+              f"cycle {cycle}: the disarm drops every safety at once")
+        r.run(3 * ticks_s, {})
+    check(r.c.stats["chatter_holds"] == 0 and r.c.stats["dwell_blocks"] == 0,
+          f"three cycles 3 s apart: never a chatter hold or a dwell block: "
+          f"{r.c.stats['chatter_holds']} {r.c.stats['dwell_blocks']}")
+    # Phase 2: nothing on the wire until armed; then the angles; then the
+    # bursts.
+    up = {a: 128 for a in angles}
+    burst = dict(up)
+    burst.update({i: 255 for i in ignitions})
+    r.inp.set(WAVE)
+    r.run(2, {})
+    check(r.group(WAVE)["armed"] == "armed", "phase 2: armed again")
+    r.run(1 * ticks_s, up)
+    u = r.out.universe
+    check([u[a - 1] for a in angles] == [128] * 3 and
+          all(u[i - 1] == 0 for i in ignitions),
+          "the heads straight up, no ignition yet")
+    for n in range(3):
+        r.run(1 * ticks_s, burst)
+        u = r.out.universe
+        check(all(u[i - 1] == 255 for i in ignitions) and
+              safeties_on_wire(r) == [WAVE_ARM] * 3,
+              f"burst {n + 1}: ignition 255 on every fixture, armed")
+        r.run(1 * ticks_s, up)
+        check(all(r.out.universe[i - 1] == 0 for i in ignitions),
+              f"burst {n + 1} off: ignition 0")
+    r.run(5, burst)
+    r.inp.set(WAVE, on=False)
+    r.step()
+    check(all(r.out.universe[i - 1] == 0 for i in ignitions) and
+          safeties_on_wire(r) == [0, 0, 0] and
+          all(r.out.universe[a - 1] == 0 for a in angles),
+          "a stop mid-burst: ignition, angle and safety zero on the next tick")
+    # Disarmed, the burst frame never reaches the wire.
+    r.run(10, burst)
+    check(all(r.out.universe[i - 1] == 0 for i in ignitions),
+          "disarmed: a burst frame from ltcplay is zero on the wire")
+
+
 if __name__ == "__main__":
     t0 = time.perf_counter()
     test_rule1_arm_value_is_derived()
@@ -4260,11 +6401,14 @@ if __name__ == "__main__":
     test_rule6_consent()
     test_rule2_dirty_edge_holds_the_arm()
     test_rule3_edge_quiet_frames()
+    test_aim_slots_point_the_head_and_never_hold_the_arm()
+    test_aim_slots_are_reported_at_start_and_in_status()
     test_rule4_dwell()
     test_rule5_chatter()
     test_rule7_interruptions_clear_the_latches()
     test_liveness_loss_zeros_within_a_bounded_time()
     test_ltcplay_stale_zeros_fire_then_disarms()
+    test_fire_hold_250_holds_a_late_frame_then_zeros()
     test_link_rejects_malformed_datagrams()
     test_arm_link_rejects_malformed_datagrams_and_round_trips()
     test_socket_arm_input_is_the_real_build_step_7b_driver()
@@ -4322,6 +6466,32 @@ if __name__ == "__main__":
     test_disarm_all_duplicates_journal_once()
     test_flame_link_rejections_journal_once_per_episode()
     test_disarm_all_over_loopback()
+    test_second_copy_another_flame_sender_blocks_consent()
+    test_second_copy_flame_lock_changing_hands_blocks_consent()
+    test_second_copy_a_sustained_second_sender_never_lets_a_cycle_through()
+    test_second_copy_a_flood_blocks_consent_and_clears_a_pending_edge()
+    test_second_copy_armed_in_a_restart_gap_disarms_when_ltcplay_returns()
+    test_second_copy_restart_gap_takeover_over_loopback()
+    test_status_mirror_port()
+    test_lockout_zeroes_locked_slots_and_blocks_a_locked_group()
+    test_multi_safety_config()
+    test_multi_safety_single_safety_unchanged()
+    test_multi_safety_arms_and_disarms_as_one()
+    test_multi_safety_show_data_never_writes_a_safety()
+    test_multi_safety_a_locked_safety_is_left_out()
+    test_multi_safety_a_locked_safety_never_rises()
+    test_multi_safety_a_dropped_safety_disarms_the_group()
+    test_safety_profile_config()
+    test_safety_profile_composes()
+    test_fireball_fire_slots_are_zero_unless_armed()
+    test_wave_cleaning_sequence_through_the_composer()
+    test_passthrough_config()
+    test_passthrough_link_decoding()
+    test_passthrough_passes_only_while_on_and_fresh()
+    test_passthrough_abort_and_senders()
+    test_passthrough_is_refused_on_a_group_slot_and_written_first()
+    test_passthrough_never_touches_a_group()
+    test_passthrough_status_and_start_line()
     test_the_wall_from_this_side()
     defined = {n for n, v in list(globals().items())
                if n.startswith("test_") and callable(v)}

@@ -94,9 +94,14 @@ if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:$PORT -sTCP:LISTEN >/dev/nu
   read -r -p "Press return once it is closed. " _
 fi
 if [ "$1" = "--network" ] || [ "$1" = "network" ]; then
-  BIND=0.0.0.0
-  echo "Serving on the whole network so a phone or iPad can reach it."
-  echo "A token is required; it is in the link below."
+  # The show network only: the one address saved on the page under Show
+  # network, port 7878, plus this machine itself. Every operator signs in on
+  # the iPad with their own PIN. Never add remote access software, a tunnel
+  # or a port forward to this machine: the engine trusts anything that
+  # seems to come from the machine itself.
+  echo "Serving on the show network so an iPad can reach it."
+  echo "Each operator signs in with their own PIN."
   echo
+  exec ./ltc serve --network
 fi
 exec ./ltc serve --port "$PORT" --bind "$BIND"

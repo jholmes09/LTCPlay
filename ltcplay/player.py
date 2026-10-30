@@ -59,6 +59,18 @@ LOST, FREEWHEEL, LOCKED, PARKED = "LOST", "FREEWHEEL", "LOCKED", "PARKED"
 FREERUN = "FREERUN"
 SHOW, IDLE, HOLD, BLACK = "show", "preshow", "hold", "black"
 
+# The alert pulse (Jeff, 2026-10-07): blue, 0.5 s up and 0.5 s down,
+# repeating, a 1 s cycle.
+PULSE_PERIOD_S = 1.0
+
+
+def pulse_level(elapsed):
+    """0 to 255 and back over PULSE_PERIOD_S: a triangle, 0 at the start of
+    each cycle, 255 half way through."""
+    phase = (elapsed % PULSE_PERIOD_S) / PULSE_PERIOD_S
+    up = phase * 2.0 if phase < 0.5 else (1.0 - phase) * 2.0
+    return int(round(255.0 * up))
+
 
 class Player:
     def __init__(self, timeline, netmap, sender,
@@ -133,6 +145,26 @@ class Player:
         # button you want at 6pm when the generator is running timecode from
         # yesterday's rehearsal and you just need the preshow on the trees.
         self.override = None
+        # A show start's hand-over (fire_ice.FireIceShow.pixels_for_show;
+        # Jeff's report, 2026-10-29: a dark blink between the idle look and
+        # the show): (the look that was up at the start, ltc_frames_in then)
+        # while that look is held until the first frame of the new show's
+        # timecode. The tick that first has it drops the look and renders
+        # that show frame, so nothing goes out between the two. Anyone
+        # else's look (a Hold's or an Abort's black, the page) cancels it.
+        # None otherwise; nothing on the GPL path ever sets it.
+        self.show_handoff = None
+        # (the look it ended, _now()) once a hand-over is done, for the
+        # journal's "the first show frame went out" line.
+        self.show_handoff_done = None
+        # The blue floor-pixel pulse for an open alert (alerts.py, Jeff
+        # 2026-10-07): a flag the alert service sets, read on this
+        # player's own tick (no extra thread), painted over the configured
+        # floor range by _alert_mix after the look is decided. A blackout
+        # override wins: Hold's black stays black.
+        self.alert_pulse = False
+        self.alert_pixels = None      # (start0, count, order) or None
+        self._pulse_epoch = None
         # Free run: play the show off this machine's own clock, ignoring the
         # timecode feed entirely. Every show controller has a GO and this did
         # not: if the LTC line dies for good ten minutes before the set -- a
@@ -140,6 +172,31 @@ class Player:
         # come back -- the alternative was a preshow loop for thirty minutes
         # in front of an audience. Added after the 2026-09-13 design audit.
         self.freerun_epoch = None
+        # Programming-session transport on a free run (the remote page,
+        # 2026-10-03): a paused free run holds this show time, and a loop
+        # (a, b) jumps back to a whenever the free run reaches b. Both are
+        # only ever set by freerun_pause / set_loop, and cleared by GO and
+        # release, so a show following timecode never sees either.
+        self.freerun_paused_at = None
+        self.loop = None
+        # Fire flames while scrubbing (scrubflames.py, review of #117): who
+        # started the free run ("operator": GO, Play from and the rest of
+        # the transport; "lost": on_lost freerun when the feed died; None),
+        # and a count bumped by EVERY move of the position (each transport
+        # command, a loop wrap, a release), so the flame link can treat
+        # each one as a landing however small the move.
+        self.freerun_by = None
+        # A seqlock (third review of #117): every move bumps the count
+        # BEFORE it writes the position and again AFTER (_move_mark), so
+        # the count is odd while a move is under way and changes across
+        # every move. The tick writes (position, count) as ONE value only
+        # when the count it read before the position is even and the same
+        # after it; else None. scrubflames.py takes the pair only while its
+        # count is the current one, so a position is never paired with a
+        # count from before the move that put it there.
+        self.transport_moves = 0
+        self._moves_lock = threading.Lock()
+        self.transport_at = None
         # The FEED's own state while a free run is on; the show's
         # state is FREERUN. Kept apart so the display can tell the
         # truth about the feed without logging a flip per frame.
@@ -162,9 +219,6 @@ class Player:
         self.thread_restarts = 0
         self.render_errors = 0
         self._render_bad_since = None
-        # Set by stop(): the supervisor's half-second nap ends at once, so a
-        # Stop never waits for it.
-        self._stopping = threading.Event()
 
         # (mtime, size) each render had when it was opened, and the readers
         # a reload has replaced but not yet closed.
@@ -469,6 +523,51 @@ class Player:
         with self._lock:
             self._hard_parked = bool(active)
 
+    def hold_until_show(self):
+        """A show is being started on the show clock: keep whatever look is
+        up now (the idle look, a Preshow, a black) until the first frame of
+        its timecode, then switch to the show on that same tick (see
+        show_handoff). Returns the look held (None: the idle look)."""
+        with self._lock:
+            self.show_handoff = (self.override, self.ltc_frames_in)
+            self.show_handoff_done = None
+            return self.override
+
+    def cancel_show_handoff(self, hand=None):
+        """Someone else set the look (a Hold's or an Abort's black): no
+        hand-over to the show. Returns True if one was waiting. `hand`,
+        when given, is the hand-over the caller means (show_handoff as its
+        start armed it): a newer start's is never cancelled for an older
+        one (review of PR #171)."""
+        with self._lock:
+            if hand is not None and self.show_handoff is not hand:
+                return False
+            had = self.show_handoff is not None
+            self.show_handoff = None
+        return had
+
+    def _take_handoff(self, hand, epoch, fed, now):
+        """The hand-over's one step, on the tick: once the new show's first
+        timecode frame is in, the look held at the start is dropped here,
+        before the tick reads the override, so this tick renders the show
+        frame. Until then the held look keeps going out."""
+        look, armed = hand
+        with self._lock:
+            if self.show_handoff is not hand:
+                return
+            if self.override != look:
+                # A look set since the start: theirs stands.
+                self.show_handoff = None
+                return
+            if epoch is None or fed == armed:
+                return
+            self.show_handoff = None
+            self.override = None
+            self.show_handoff_done = (look, now)
+        self._event("override", f"the show took over from "
+                                f"{look or 'the idle look'} on its first "
+                                f"frame")
+
     def drop_clock(self):
         """The show clock stopped on purpose: hand the rig to the idle look.
 
@@ -484,7 +583,15 @@ class Player:
             self._park_since = None
             self._hard_parked = False
             self._last_tc_value = None
+            self._move_mark()
             self.freerun_epoch = None
+            self.freerun_paused_at = None
+            self.loop = None
+            self.freerun_by = None
+            self._move_mark()
+            # A show start's hand-over still waiting (a start that failed)
+            # never lifts its look on later timecode (review of PR #171).
+            self.show_handoff = None
         self._event("clock", "the show clock stopped; back to the idle look")
 
     def _now_tc(self):
@@ -589,6 +696,38 @@ class Player:
             self.source = SHOW
         return self._buf
 
+    def _alert_mix(self, frame, now=None):
+        """The alert pulse over the frame the look decided on: the floor
+        range (alert_pixels) replaced by blue at pulse_level, the rest of
+        the frame untouched. Nothing happens without the flag or a range.
+        A blackout override wins (the frame stays black, so a Hold's dark
+        is never lit); every other look, the preshow loop or the show
+        frame, carries the pulse. An empty frame (no preshow look loaded)
+        becomes a dark frame with only the pulse on it."""
+        if not self.alert_pulse or self.alert_pixels is None:
+            self._pulse_epoch = None
+            return frame
+        if self.override == "blackout":
+            return frame
+        if now is None:
+            now = _now()
+        if self._pulse_epoch is None:
+            self._pulse_epoch = now
+        level = pulse_level(now - self._pulse_epoch)
+        start, count, order = self.alert_pixels
+        total = len(self._buf)
+        out = bytearray(frame or b"")
+        if len(out) < total:
+            out.extend(bytes(total - len(out)))
+        blue = order.upper().index("B")
+        for p in range(count):
+            base = start + 3 * p
+            if base + 2 >= len(out):
+                break
+            out[base] = out[base + 1] = out[base + 2] = 0
+            out[base + blue] = level
+        return bytes(out)
+
     def _idle_frame(self):
         """The preshow look, free-running and looped off the wall clock."""
         cue = self.idle_cue
@@ -624,6 +763,10 @@ class Player:
         with self._lock:
             epoch = self._epoch
             last = self._last_lock
+            hand = self.show_handoff
+            fed = self.ltc_frames_in
+        if hand is not None:
+            self._take_handoff(hand, epoch, fed, now)
 
         prev_state, prev_cue, prev_source = self.state, self.current_cue, self.source
 
@@ -643,7 +786,25 @@ class Player:
             # visibly counting.
             self.feed_state = self.state
             self.state = FREERUN
-            self.tc_seconds = now - self.freerun_epoch
+            moves = self.transport_moves
+            paused = self.freerun_paused_at
+            if paused is not None:
+                self.tc_seconds = paused
+            else:
+                self.tc_seconds = now - self.freerun_epoch
+                loop = self.loop
+                if loop is not None and self.tc_seconds >= loop[1]:
+                    # The loop wraps: back to A on the same clock. A jump
+                    # like any other locate, so the flame link sees it as
+                    # one (flamelink's seek guard).
+                    self._move_mark()
+                    self.freerun_epoch = now - loop[0]
+                    self.tc_seconds = loop[0]
+                    self._move_mark()
+            after = self.transport_moves
+            self.transport_at = ((self.tc_seconds, moves)
+                                 if after == moves and moves % 2 == 0
+                                 else None)
             return self._play_at(self.tc_seconds, prev_state, prev_cue,
                                  prev_source)
 
@@ -708,7 +869,10 @@ class Player:
                     and self.freerun_epoch is None:
                 # Start from where the feed actually was, not from now: the
                 # hold window has already elapsed, and the music did not wait.
+                self._move_mark()
                 self.freerun_epoch = last - self.last_ltc_seconds
+                self.freerun_by = "lost"
+                self._move_mark()
                 self._event("freerun",
                             f"timecode lost; running the rest of the set on "
                             f"this Mac's clock from "
@@ -814,6 +978,12 @@ class Player:
         return self.timeline.next_cue(seen)
 
     # -- free run ---------------------------------------------------------
+    def _move_mark(self):
+        """One half of a move's seqlock: called once before a move writes
+        the position and once after (see transport_moves)."""
+        with self._moves_lock:
+            self.transport_moves += 1
+
     def go(self, tc_seconds):
         """Run the show from this point on our own clock. GO.
 
@@ -823,7 +993,11 @@ class Player:
         if tc_seconds is None or tc_seconds < 0:
             raise ValueError("a free run has to start somewhere on the "
                              "show clock")
+        self._move_mark()
         self.freerun_epoch = _now() - tc_seconds
+        self.freerun_paused_at = None
+        self.freerun_by = "operator"
+        self._move_mark()
         self.override = None
         self._event("freerun", f"GO from {tc_seconds:.3f}s on this machine's "
                                f"own clock; the timecode feed is being "
@@ -842,10 +1016,64 @@ class Player:
             raise ValueError("The show is following timecode, so this Mac "
                              "cannot move it. Skipping only applies to a free "
                              "run: press GO first.")
-        at = max(0.0, (_now() - self.freerun_epoch) + float(seconds))
+        here = (self.freerun_paused_at if self.freerun_paused_at is not None
+                else _now() - self.freerun_epoch)
+        self._move_mark()
+        at = max(0.0, here + float(seconds))
         self.freerun_epoch = _now() - at
+        if self.freerun_paused_at is not None:
+            self.freerun_paused_at = at
+        self._move_mark()
         self._event("freerun", f"skipped {float(seconds):+.1f}s to {at:.3f}s")
         return at
+
+    def freerun_pause(self, on):
+        """Pause a free run on the frame it is at, or carry on from it.
+        Programming sessions only (the remote page refuses it otherwise).
+        Returns the show time it paused or continued at. Every call is a
+        move (the seqlock: transport_moves)."""
+        if self.freerun_epoch is None:
+            raise ValueError("The show is following timecode, so this Mac "
+                             "cannot pause it. Pause only applies to a free "
+                             "run: play from a timecode first.")
+        self._move_mark()
+        try:
+            if on:
+                if self.freerun_paused_at is None:
+                    self.freerun_paused_at = max(
+                        0.0, _now() - self.freerun_epoch)
+                    self._event("freerun", f"paused at "
+                                           f"{self.freerun_paused_at:.3f}s")
+                return self.freerun_paused_at
+            at = self.freerun_paused_at
+            if at is None:
+                return _now() - self.freerun_epoch
+            self.freerun_epoch = _now() - at
+            self.freerun_paused_at = None
+        finally:
+            self._move_mark()
+        self._event("freerun", f"continued from {at:.3f}s")
+        return at
+
+    def set_loop(self, a, b):
+        """Loop the free run between show times a and b (b after a), or
+        clear the loop with a = b = None."""
+        if a is None and b is None:
+            self._move_mark()
+            self.loop = None
+            self._move_mark()
+            self._event("freerun", "loop off")
+            return None
+        a, b = float(a), float(b)
+        if not (0.0 <= a < b):
+            raise ValueError("A loop needs mark B after mark A.")
+        if b - a < 1.0:
+            raise ValueError("A loop has to be at least 1 second long.")
+        self._move_mark()
+        self.loop = (a, b)
+        self._move_mark()
+        self._event("freerun", f"looping {a:.3f}s to {b:.3f}s")
+        return self.loop
 
     def go_to_cue(self, step):
         """Jump a free run to the previous or next cue, or restart this one.
@@ -861,7 +1089,8 @@ class Player:
         cues = self.timeline.cues
         if not cues:
             raise ValueError("This show has no cues to skip between.")
-        at = _now() - self.freerun_epoch
+        at = (self.freerun_paused_at if self.freerun_paused_at is not None
+              else _now() - self.freerun_epoch)
         here = self.timeline._index_at(at)
         if step == 0:
             # The top of the current cue -- unless we are only just into it,
@@ -877,7 +1106,11 @@ class Player:
         else:
             i = min(len(cues) - 1, (here + 1) if here >= 0 else 0)
         target = cues[i]
+        self._move_mark()
         self.freerun_epoch = _now() - target.tc_seconds
+        if self.freerun_paused_at is not None:
+            self.freerun_paused_at = target.tc_seconds
+        self._move_mark()
         self._event("freerun", f"skipped to {target.name} at "
                                f"{target.tc_text}")
         return target
@@ -886,8 +1119,13 @@ class Player:
         """Hand the show back to the timecode."""
         if self.freerun_epoch is None:
             return False
+        self._move_mark()
         self.freerun_epoch = None
+        self.freerun_paused_at = None
+        self.loop = None
         live = self.feed_state == LOCKED
+        self.freerun_by = None
+        self._move_mark()
         self._event("freerun", "released; the show is following timecode "
                                "again" if live else
                                "released while NO timecode was arriving, so "
@@ -1038,7 +1276,7 @@ class Player:
             # for why the epsilon matters at a large clock reading.
             n = max(int((now - t0) / period + 1e-9), n_next)
             try:
-                frame = self._tick()
+                frame = self._alert_mix(self._tick())
                 self.sender.send_frame(frame if frame is not None else b"")
                 self.frames_sent += 1
                 # After the frame, never before: a trigger is a consequence of
@@ -1068,7 +1306,7 @@ class Player:
         cost of being wrong about that is a show that stops, and the cost of
         carrying it is a thread that wakes twice a second."""
         while self._running:
-            self._stopping.wait(0.5)
+            time.sleep(0.5)
             t = self._thread
             if self._running and (t is None or not t.is_alive()):
                 self.thread_restarts += 1
@@ -1151,7 +1389,6 @@ class Player:
         self.step_ms = step_ms
         self._idle_epoch = _now()
         self._running = True
-        self._stopping.clear()
         self._spawn()
         self._super = threading.Thread(target=self._supervise, daemon=True,
                                        name="ltcplay-supervisor")
@@ -1160,7 +1397,6 @@ class Player:
 
     def stop(self):
         self._running = False
-        self._stopping.set()
         if self._thread:
             self._thread.join(timeout=2.0)
         if self._super:

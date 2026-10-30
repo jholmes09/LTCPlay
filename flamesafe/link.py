@@ -56,15 +56,28 @@ class LinkError(ValueError):
 
 
 class FlameFrame:
-    """One decoded flame frame from ltcplay."""
-    __slots__ = ("seq", "timecode", "mono", "universe", "values")
+    """One decoded flame frame from ltcplay.
 
-    def __init__(self, seq, timecode, mono, universe, values):
+    `hazers_on` (2026-10-29): the passthrough entries (the hazers) the show
+    program has switched ON, by name, a frozenset.  Absent on the wire, or
+    an older ltcplay, is the empty set: every hazer off."""
+    __slots__ = ("seq", "timecode", "mono", "universe", "values",
+                 "hazers_on")
+
+    def __init__(self, seq, timecode, mono, universe, values,
+                 hazers_on=frozenset()):
         self.seq = seq
         self.timecode = timecode
         self.mono = mono
         self.universe = universe
         self.values = values
+        self.hazers_on = frozenset(hazers_on)
+
+
+# The flame frame's optional "hazers_on" (2026-10-29): a list of at most
+# HAZERS_MAX distinct names, each 1 to HAZER_NAME_MAX characters.
+HAZERS_MAX = 16
+HAZER_NAME_MAX = 64
 
 
 def _is_int(v):
@@ -118,17 +131,29 @@ def decode_flame(data, expect_universe, key):
     for v in values:
         if not _is_int(v) or not (0 <= v <= 255):
             raise LinkError("a channel value is not a whole number 0 to 255")
-    return FlameFrame(seq, tc, float(mono), universe, bytes(values))
+    hazers = obj.get("hazers_on", [])
+    if not isinstance(hazers, list) or len(hazers) > HAZERS_MAX \
+            or any(not isinstance(h, str) or not 1 <= len(h) <= HAZER_NAME_MAX
+                   for h in hazers) or len(set(hazers)) != len(hazers):
+        raise LinkError(f"hazers_on is not a list of at most {HAZERS_MAX} "
+                        f"distinct hazer names")
+    return FlameFrame(seq, tc, float(mono), universe, bytes(values),
+                      frozenset(hazers))
 
 
-def encode_flame(seq, timecode, mono, universe, values, key):
+def encode_flame(seq, timecode, mono, universe, values, key,
+                 hazers_on=None):
     """A flame frame as ltcplay would send it.  Used by the tests and by
-    the test driver only; ltcplay writes its own encoder from CONTRACT.md."""
-    return json.dumps({
+    the test driver only; ltcplay writes its own encoder from CONTRACT.md.
+    `hazers_on` None leaves the field out (an older ltcplay)."""
+    obj = {
         "v": CONTRACT_VERSION, "k": key, "t": "flame", "seq": int(seq),
         "tc": timecode, "mono": float(mono), "universe": int(universe),
         "values": [int(v) for v in values],
-    }, separators=(",", ":")).encode("utf-8")
+    }
+    if hazers_on is not None:
+        obj["hazers_on"] = [str(h) for h in hazers_on]
+    return json.dumps(obj, separators=(",", ":")).encode("utf-8")
 
 
 class DisarmAll:

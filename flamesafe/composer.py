@@ -35,10 +35,45 @@ OTHER_SENDER = ("Another sender is on the arm link: a cycle cannot arm "
                 "until it stops. Cycle the arm again once it has gone.")
 LINK_NEVER = ("Show program has not answered yet: disarmed. Cycle the arm "
               "once it is running.")
+# Second-copy guard (Jeff, 2026-10-03): why a group is disarmed and a
+# cycle is not being accepted while a second sender is on the FLAME link,
+# the flame link has just changed hands, or it has been flooded.  Steady
+# amber: cycling now would not count.
+FLAME_OTHER_SENDER = ("Another sender is on the show program link, or it "
+                      "just changed hands: every group is disarmed and a "
+                      "cycle cannot arm until that has settled. Cycle the "
+                      "arm again once it has.")
+# More datagrams than this, or more bytes, waiting on the flame link in one
+# tick is a flood (fix round 1 of PR #40, the arm link's own rule).  An
+# honest ltcplay sends one frame per 25 ms, about 2 KB each, plus a few
+# disarm_all copies after an Abort.
+FLAME_FLOOD_DATAGRAMS_PER_TICK = 50
+FLAME_FLOOD_BYTES_PER_TICK = 256 * 1024
 # The words on the ARMED lamp of a group the show program's Abort disarmed
 # (disarm_all, CONTRACT.md).  Flashing amber: cycling the arm IS the fix,
 # and the only one.  Shown until that group latches again.
 ABORT_DISARMED = "Disarmed by the show's Abort. Cycle the arm to re-arm."
+# Lockout (Jeff, 2026-10-17): the words on the ARMED lamp of a group every
+# one of whose fire slots is locked out.  Steady amber: cycling fixes
+# nothing; unlocking a machine on the Morning and Shutdown page does.
+LOCKED_OUT = ("Every machine in this group is locked out: it cannot arm "
+              "until one is unlocked.")
+# Multi-safety (Jeff, 2026-10-26): a group with more than one safety slot
+# drives one fixture per safety slot.  Jeff locks single machines out for
+# the night through the lockout file, and a locked machine must not block
+# the others: a safety slot named in the lockout file is held at zero and
+# left out of "every safety up".  The words on the ARMED lamp when every
+# safety slot of such a group is locked.  Steady amber: cycling fixes
+# nothing, unlocking a machine does.
+SAFETIES_LOCKED = ("Every safety slot of this group is locked out: it "
+                   "cannot arm until one is unlocked.")
+# Multi-safety: the words when a raised group's unlocked safety slots were
+# not all at its arm value in the frame composed (one dropped, was
+# overwritten, or was unlocked while the group was up and so never had its
+# rising edge checked).  The whole group came down on that tick with its
+# fire slots zeroed, and a fresh cycle is needed.
+SAFETY_UNCONFIRMED = ("Not every unlocked safety slot of this group was up: "
+                      "it was disarmed. Cycle the arm to re-arm.")
 # Rejections on the flame link are journaled exactly as the arm link's are
 # (arminput._RejectJournal, round 4 of #31's safety review, item C): one
 # line per REASON when an episode starts, one closing line with the count
@@ -48,6 +83,21 @@ ABORT_DISARMED = "Disarmed by the show's Abort. Cycle the arm to re-arm."
 # text and numbers the SENDER chose, and a sender varying them must not get
 # a fresh episode, and a fresh line, every datagram.  A refused disarm_all
 # is throttled under its own "disarm_all: <reason>" keys.
+# Passthrough (Jeff, 2026-10-29, the hazers): why a passthrough entry's
+# slots are zero, in the status frame's per entry "why".  Each is set by
+# something that can only take a hazer away; only a frame from the locked
+# sender that first says it OFF and then ON brings it back.
+PT_OFF = "switched off in the show program"
+PT_LINK = "the show program link is not fresh"
+PT_START = ("not yet seen switched off by the show program since this "
+            "program started: switch it off and on again")
+PT_ABORT = ("zeroed by the show's Abort: switch it off and on again in the "
+            "show program")
+PT_NEW_SENDER = ("the show program link changed hands: switch it off and on "
+                 "again in the show program")
+PT_FAULT = ("the safety program faulted (an overrun or a compose fault): "
+            "switch it off and on again in the show program")
+PT_LOCKED = "a slot of it is in the lockout file: held at zero"
 _FLAME_REASONS = ("not bytes", "datagram too long", "not valid JSON",
                   "not a JSON object", "wrong contract version",
                   "wrong key", "wrong message type", "seq is not",
@@ -57,6 +107,7 @@ _FLAME_REASONS = ("not bytes", "datagram too long", "not valid JSON",
                   "another sender", "out of order",
                   "sender clock went backwards",
                   "no live flame link", "wrong length", "not a FlameFrame",
+                  "hazers_on is not",
                   "not a DisarmAll")
 
 
@@ -120,6 +171,25 @@ class Composer:
         self._frame_mono = None
         self._frame_tc = None
         self._frame_sender = None       # (ip, port) locked while live
+        # Second-copy guard (Jeff, 2026-10-03; PR #34 open question 10,
+        # review probe p2 s5), the flame link's own copy of the arm link's
+        # round-4 consent veto.  A second sender with the key on the flame
+        # link (a second copy of ltcplay, or an old one still running) means
+        # every group is disarmed (fix round 1 of PR #40) and nobody can newly
+        # arm one, whichever of the two holds the lock:
+        #   _flame_foreign   {sender: our clock} for every keyed, well-formed
+        #                    datagram refused as "another sender"; a sender
+        #                    counts until it has been quiet frame_stale_ms.
+        #   _flame_changed_at  our clock when the lock last passed to a
+        #                    sender other than the one that held it before;
+        #                    for frame_stale_ms after that the newcomer has
+        #                    not yet proved it is the only sender.
+        self._flame_foreign = {}
+        self._flame_changed_at = None
+        # Fix round 1 of PR #40: our clock at the last tick that found a
+        # flood on the flame link (Service._drain).  No cycle counts for
+        # frame_stale_ms after it.
+        self._flame_flood_at = None
         self._last_reject = ""
         # Rejection journaling, the arm link's own throttle (see
         # _FLAME_REASONS).  Written as kind "link-reject".
@@ -151,6 +221,43 @@ class Composer:
         self._rise_times = [[] for _ in range(self.n)]
         self._held = [("", "")] * self.n   # (reason, amber mode) per group
         self._fire_refused = [False] * self.n
+        # Lockout (Jeff, 2026-10-17): the fire slots locked out right now,
+        # as the service read them from the lockout file ltcplay's engine
+        # writes.  A locked slot is zero on every packet, armed or not,
+        # commanded or not; a group with every fire slot locked cannot arm.
+        # Empty until note_locked_slots says otherwise.
+        self._locked = frozenset()
+        self._lockout_state = "none"
+        self._lockout_refused = [False] * self.n
+        self._safety_lock_refused = [False] * self.n
+        # Multi-safety: the safety slots raised on the group's rising edge
+        # (every unlocked one), less any locked since.  Only these carry
+        # the arm value: a slot unlocked while the group is up never rises
+        # on its own without its edge being checked; it is not up, so the
+        # group is not confirmed and comes down (tick, step 6).
+        self._raised = [frozenset()] * self.n
+        # Multi-safety: like _aborted, only the WORDS on a group the
+        # confirmation step (tick, step 6) took down; read by nothing that
+        # decides a safety value.  Cleared when the group latches again.
+        self._unconfirmed = [False] * self.n
+        # Passthrough (Jeff, 2026-10-29, the hazers): one entry per device
+        # on the flame universe that is not a flame.  _pt_on[i] is True only
+        # while the last accepted frame from the locked sender asked for it
+        # AND it was seen asked OFF since the last thing that took it away
+        # (_pt_block[i] empty): this program's start, a lost link, a change
+        # of sender, an Abort.  It never reads or writes any group state.
+        self.pt = list(getattr(config, "passthrough", None) or [])
+        # The config loader refuses this already; refused again here, so a
+        # Config built any other way can never put a hazer on a group's
+        # slot (reviewer A of #168, 1).
+        overlap = sorted({s for p in self.pt for s in p.slots}
+                         & set(config.all_slots()))
+        if overlap:
+            raise ValueError(f"passthrough slots {overlap} are flame group "
+                             f"slots")
+        self._pt_asked = [False] * len(self.pt)
+        self._pt_on = [False] * len(self.pt)
+        self._pt_block = [PT_START] * len(self.pt)
         self._name_mismatch_logging = False   # item 10: once per episode
         self._name_mismatch_count = 0
         self._last_tick = None
@@ -164,6 +271,9 @@ class Composer:
             "edge_blocks", "latch_resets", "dwell_blocks", "chatter_holds",
             "fire_slots_quieted", "fire_refused", "arm_input_stale",
             "link_lost", "disarm_all", "disarm_all_rejected",
+            "second_sender_disarms", "flame_link_floods",
+            "lockout_zeroed", "lockout_blocks",
+            "safety_lock_blocks", "safety_unconfirmed",
             "faults_noted", "faults_cleared")}
 
     # ------------------------------------------------------------ arm input
@@ -308,8 +418,17 @@ class Composer:
         # The cost: a genuine cycle made while another sender is on the
         # link does not count, and the operator cycles again once it has
         # gone (CONTRACT.md, the arm link).
+        #
+        # Second-copy guard (2026-10-03): and nobody else is on the FLAME
+        # link, and the flame link has not just changed hands.  Probe p2 s5:
+        # a second sender with the key took the flame link in an ltcplay
+        # restart gap, the real ltcplay came back and was refused, and the
+        # deck re-armed every group while the other sender supplied the fire
+        # values.  Now the real ltcplay, still sending, is the other sender,
+        # so no cycle counts for as long as both are running.
         disturbed = (self._foreign_arm_senders != 0
-                     or self._arm_link_flooded)
+                     or self._arm_link_flooded
+                     or self._flame_link_disturbed(t))
         consent_ok = advanced and was_live and not disturbed
         # Fix round 1 of PR #34, item 2: inside min_arm_dwell_ms of an
         # accepted disarm_all, a low that was already going on at the Abort
@@ -363,6 +482,7 @@ class Composer:
             elif self._seen_down[i] and consent_ok:
                 self._latched[i] = True
                 self._aborted[i] = False
+                self._unconfirmed[i] = False
             self._wanted[i] = w[i]
         return True
 
@@ -379,6 +499,53 @@ class Composer:
             self._foreign_arm_senders = max(0, int(count))
         except (TypeError, ValueError):
             pass
+
+    def note_locked_slots(self, slots, state="read"):
+        """The fire slots locked out right now (Jeff, 2026-10-17), from the
+        lockout file ltcplay's engine writes (service.LockoutFile).  Called
+        by the service every tick, before tick().  `state` is the file's
+        state for the status frame: "none" (no file configured), "read",
+        "missing" or "unreadable" (the last good set is kept).  Never
+        raises: anything that is not a set of slots 1 to 512 is read as
+        the whole universe locked, the safe side."""
+        try:
+            got = frozenset(int(s) for s in slots)
+            if any(isinstance(s, bool) for s in slots) or \
+                    any(not 1 <= s <= rules.UNIVERSE_SIZE for s in got):
+                raise ValueError("slot out of range")
+        except Exception:                               # noqa: BLE001
+            got = frozenset(range(1, rules.UNIVERSE_SIZE + 1))
+            state = "unreadable"
+        if got != self._locked:
+            names = [g.name for g in self.groups
+                     if any(f in got for f in g.fire)]
+            saf = [(g.name, s) for g in self.groups if g.multi_safety
+                   for s in g.safeties if s in got]
+            self._event("lockout",
+                        f"locked out fire slots: {sorted(got) or 'none'}"
+                        + (f" (in {', '.join(names)})" if names else "")
+                        + ". A locked slot is zero on every packet; a group "
+                          "with every fire slot locked cannot arm."
+                        + ("".join(f" Safety slot {s} of {n} is locked out: "
+                                   f"it stays at zero and its fixture is left "
+                                   f"out of the group's arm." for n, s in saf)
+                           if saf else ""))
+        self._locked = got
+        self._lockout_state = str(state)
+
+    def _locked_safeties(self, g):
+        """Multi-safety (2026-10-26): the safety slots of `g` that are
+        locked out.  Each stays at zero and is left out of "every safety
+        up"; a group with every one locked cannot arm.  Always empty for a
+        one-safety group: its behaviour is exactly what it was before."""
+        if not g.multi_safety:
+            return frozenset()
+        return frozenset(s for s in g.safeties if s in self._locked)
+
+    def _group_locked_out(self, g):
+        """True when every fire slot of `g` is locked out: nothing in it
+        may fire, so it is not raised either."""
+        return bool(g.fire) and all(f in self._locked for f in g.fire)
 
     def note_arm_link_flooded(self, flooded):
         """Whether the arm input has seen a flood inside its own stale_ms
@@ -418,6 +585,7 @@ class Composer:
             fresh = self._frame_is_fresh(t)
             if fresh:
                 if sender != self._frame_sender:
+                    self._second_sender(sender, t)
                     raise ValueError("another sender")
                 # While the link is live, frames must arrive in order and the
                 # sender's own clock must not go backwards.  Once the link
@@ -427,6 +595,23 @@ class Composer:
                                      f"{self._frame_seq}")
                 if frame.mono < self._frame_mono:
                     raise ValueError("sender clock went backwards")
+            elif self._frame_sender is not None and \
+                    sender != self._frame_sender:
+                # The lock passes to a different sender (second-copy guard,
+                # 2026-10-03).  Every ltcplay restart does this too (a new
+                # socket is a new port), and link loss has already disarmed
+                # every group; the newcomer must now be the only sender for
+                # frame_stale_ms before any cycle counts.
+                self._flame_changed_at = t
+                self._reset_latches("show program link changed sender")
+                self._pt_reset(PT_NEW_SENDER)
+                self._event("link",
+                            f"show program link taken by "
+                            f"{_addr(sender)}, which is not "
+                            f"{_addr(self._frame_sender)} that held it "
+                            f"before: no group can be newly armed until it "
+                            f"has been the only sender for "
+                            f"{self.cfg.frame_stale_ms} ms")
             self._frame = bytes(frame.values)
             self._frame_at = t
             self._frame_seq = frame.seq
@@ -434,12 +619,33 @@ class Composer:
             self._frame_tc = frame.timecode
             self._frame_sender = sender
             self.stats["frames_accepted"] += 1
+            self._pt_ingest(getattr(frame, "hazers_on", frozenset()))
             return ""
         except Exception as e:                          # noqa: BLE001
             self.stats["frames_rejected"] += 1
             self._last_reject = str(e) or type(e).__name__
             self._note_reject(self._last_reject, sender)
             return self._last_reject
+
+    def _pt_reset(self, why):
+        """Every passthrough entry off, and off until a frame says it OFF
+        and then ON again.  Can only take a hazer away."""
+        for i in range(len(self.pt)):
+            self._pt_on[i] = False
+            self._pt_block[i] = why
+
+    def _pt_ingest(self, asked):
+        """An accepted frame's hazers_on.  OFF clears the block; ON enables
+        only an entry with no block (seen OFF since it was taken away).  A
+        name this config does not have is ignored."""
+        for i, p in enumerate(self.pt):
+            on = p.name in asked
+            self._pt_asked[i] = on
+            if not on:
+                self._pt_block[i] = ""
+                self._pt_on[i] = False
+            else:
+                self._pt_on[i] = self._pt_block[i] == ""
 
     def reject_frame(self, why, sender=None):
         """The link layer could not even decode a datagram."""
@@ -487,6 +693,9 @@ class Composer:
             if not self._frame_is_fresh(t):
                 raise ValueError("no live flame link to accept it from")
             if sender != self._frame_sender:
+                # A keyed disarm_all from a second sender is a second
+                # sender on the link (second-copy guard, 2026-10-03).
+                self._second_sender(sender, t)
                 raise ValueError("another sender")
             if msg.seq <= self._frame_seq:
                 raise ValueError(f"out of order: seq {msg.seq} after "
@@ -510,6 +719,15 @@ class Composer:
         self.stats["disarm_all"] += 1
         self._disarm_count += 1
         self._low_predates_abort = [True] * self.n
+        # Passthrough (2026-10-29): the Abort switches every hazer off,
+        # and off until the show program says it OFF and then ON again.
+        pt_was_on = [p.name for p, on in zip(self.pt, self._pt_on) if on]
+        self._pt_reset(PT_ABORT)
+        if pt_was_on:
+            self._event("passthrough",
+                        f"the show program's Abort switched off "
+                        f"{', '.join(pt_was_on)}: zero until the show "
+                        f"program switches each off and on again")
         # Fix round 1 of PR #34, item 4: a new Abort is a new (id, sender)
         # pair.  ltcplay's abort ids now start at a random number per run,
         # and a restarted ltcplay is a new sender too, so a second run's
@@ -545,8 +763,11 @@ class Composer:
                      else "")
             if len(why) > 200:          # sender-chosen text, kept short
                 why = why[:200] + "..."
+            more = (" No group can be newly armed while it is on the link."
+                    if reason.endswith("another sender") else "")
             self._rejects.note(reason, self._clock(), sender,
-                               f"flame link datagram rejected{where}: {why}.")
+                               f"flame link datagram rejected{where}: "
+                               f"{why}.{more}")
         except Exception:                               # noqa: BLE001
             pass
 
@@ -575,6 +796,85 @@ class Composer:
     def _fire_is_live(self, t):
         return (self._frame_at is not None and
                 (t - self._frame_at) * 1000.0 <= self.cfg.fire_hold_ms)
+
+    def _second_sender(self, sender, t):
+        """A keyed, well-formed datagram from a sender other than the
+        flame link's live, locked one (second-copy guard).
+
+        Fix round 1 of PR #40 (Jeff, 2026-10-03): this DISARMS every group,
+        on the tick it arrives in, not only blocks new arming.  With one
+        copy of ltcplay per machine (ltcplay/onlyone.py), two keyed senders
+        at once means something is wrong.  It can only ever take arm away:
+        every latch and every pending consent edge is cleared, nothing is
+        set.  The sender is remembered for frame_stale_ms (refreshed by
+        every datagram it sends), and while it is, no cycle counts.
+        Journaled once per episode."""
+        first = self._flame_foreign_count(t) == 0
+        self._flame_foreign[sender] = t
+        up = [g.name for i, g in enumerate(self.groups)
+              if self._latched[i] or self._last_sent[i] != DISARM]
+        self._latched = [False] * self.n
+        self._seen_down = [False] * self.n
+        if first:
+            self.stats["second_sender_disarms"] += 1
+            armed = ("disarmed: " + ", ".join(up)) if up \
+                else "none was armed"
+            self._event("second-sender",
+                        f"a second sender ({_addr(sender)}) is on the show "
+                        f"program link while {_addr(self._frame_sender)} "
+                        f"holds it: every group disarmed ({armed}). No "
+                        f"group can be armed again until only one sender "
+                        f"has been on the link for "
+                        f"{self.cfg.frame_stale_ms} ms; then cycle the arm. "
+                        f"Only one copy of ltcplay should ever be running.")
+
+    def note_flame_link_flooded(self, flooded, count=0, size=0):
+        """Whether Service._drain found a flood on the flame link this tick
+        (fix round 1 of PR #40).  Blocks consent for frame_stale_ms, like the
+        arm link's flood flag.  Never raises."""
+        try:
+            if not flooded:
+                return
+            t = self._clock()
+            if not self._flame_flooded(t):
+                self.stats["flame_link_floods"] += 1
+                self._event("flame-flood",
+                            f"show program link flooded: {count} datagrams "
+                            f"({size} bytes) waiting in one tick. No group "
+                            f"can be newly armed until it has stopped for "
+                            f"{self.cfg.frame_stale_ms} ms.")
+            self._flame_flood_at = t
+        except Exception:                               # noqa: BLE001
+            self._flame_flood_at = self._clock()
+
+    def _flame_flooded(self, t):
+        return (self._flame_flood_at is not None and
+                (t - self._flame_flood_at) * 1000.0
+                <= self.cfg.frame_stale_ms)
+
+    def _flame_foreign_count(self, t):
+        """How many OTHER keyed senders have been refused on the flame link
+        inside the last frame_stale_ms (second-copy guard, 2026-10-03).
+        Older entries are dropped here."""
+        win = self.cfg.frame_stale_ms
+        for s in [s for s, at in self._flame_foreign.items()
+                  if (t - at) * 1000.0 > win]:
+            del self._flame_foreign[s]
+        return len(self._flame_foreign)
+
+    def _flame_new_sender(self, t):
+        """True for frame_stale_ms after the flame link's lock passed to a
+        different sender: the newcomer has not yet been the only sender for
+        that long."""
+        return (self._flame_changed_at is not None and
+                (t - self._flame_changed_at) * 1000.0
+                <= self.cfg.frame_stale_ms)
+
+    def _flame_link_disturbed(self, t):
+        """No cycle counts while this is True (assert_arm)."""
+        return (self._flame_foreign_count(t) != 0
+                or self._flame_new_sender(t)
+                or self._flame_flooded(t))
 
     def _arm_is_live(self, t):
         return (self._arm_fresh_at is not None and
@@ -673,6 +973,10 @@ class Composer:
                                 "group stays disarmed until a cycle")
             self._link_lost_at = None
         if not link_live:
+            # Passthrough: off with the link, and off until the show
+            # program, back, has said it OFF and then ON again.
+            self._pt_reset(PT_LINK)
+        if not link_live:
             # Every stale tick clears, but only the first one is journaled
             # and counted: the deck re-reports its OFF keys every tick, so
             # there is always a down edge to forget, and one line per tick
@@ -682,6 +986,7 @@ class Composer:
         self._link_live = link_live
 
         # 4. The safety slots.
+        flame_disturbed = self._flame_link_disturbed(t)
         want = [live and link_live and self._wanted[i] and self._latched[i]
                 for i in range(self.n)]
         values = []
@@ -690,8 +995,41 @@ class Composer:
             prev = self._last_sent[i]
             if not want[i]:
                 values.append(DISARM)
-                held.append(self._why_not(i, live, link_live))
+                held.append(self._why_not(i, live, link_live,
+                                          flame_disturbed))
                 continue
+            if self._group_locked_out(g):
+                # Lockout (Jeff, 2026-10-17): every fire slot of this group
+                # is locked out, so there is nothing it may fire; it is not
+                # raised, and an established arm comes down.  Steady amber:
+                # cycling fixes nothing, unlocking a machine does.  Checked
+                # before "already up", so a lock landing on an armed group
+                # takes its arm value off the wire on this tick.
+                values.append(DISARM)
+                held.append((LOCKED_OUT, "steady"))
+                self.stats["lockout_blocks"] += 1
+                if not self._lockout_refused[i]:
+                    self._lockout_refused[i] = True
+                    self._event("lockout", f"{g.name}: held disarmed, every "
+                                           f"fire slot in it is locked out")
+                continue
+            self._lockout_refused[i] = False
+            locked_saf = self._locked_safeties(g)
+            if g.multi_safety and len(locked_saf) == len(g.safeties):
+                # Multi-safety (2026-10-26): every safety slot locked out,
+                # so no fixture of the group may arm; an established arm
+                # comes down with every fire slot zeroed on this tick.
+                # Checked before "already up", like the lockout above.
+                values.append(DISARM)
+                held.append((SAFETIES_LOCKED, "steady"))
+                self.stats["safety_lock_blocks"] += 1
+                if not self._safety_lock_refused[i]:
+                    self._safety_lock_refused[i] = True
+                    self._event("lockout",
+                                f"{g.name}: held disarmed, every safety slot "
+                                f"in it is locked out")
+                continue
+            self._safety_lock_refused[i] = False
             if prev != DISARM:
                 # Already up.  Holding an established arm is not a rising
                 # edge, so the precondition does not re-apply.
@@ -740,6 +1078,9 @@ class Composer:
                 rt.append(t)
                 values.append(g.arm_value)
                 held.append(("", ""))
+                # The safety slots this rise raises: every one not locked
+                # (step 5 takes the locked ones out, this tick and after).
+                self._raised[i] = frozenset(g.safeties)
                 # +1 because this tick consumes one count and this tick is
                 # clean by construction; the count is about the ticks AFTER
                 # the rise.
@@ -755,13 +1096,41 @@ class Composer:
                                           f"{rules.GFLAME_EDGE_BELOW}")
 
         # 5. The universe.  Zeros everywhere, then our slots.  Every channel
-        # that belongs to no group is always zero: Galaxis require an
-        # exclusive universe with zeros on unused channels.
+        # that belongs to no group is always zero (Galaxis require an
+        # exclusive universe with zeros on unused channels), except a
+        # passthrough entry's slots while it is switched on (2026-10-29).
         buf = bytearray(rules.UNIVERSE_SIZE)
+        # Passthrough (Jeff, 2026-10-29, the hazers), written BEFORE every
+        # group, so a group's slot could never be left holding a hazer's
+        # value even if a config somehow named it twice (the loader refuses
+        # that).  The show program's value on an entry's slots only while
+        # it is switched on (_pt_on, which step 3 cleared on this very tick
+        # if the link is not fresh); a slot in the lockout file is zero
+        # whatever else holds.  Never armed, never a fire slot, never part
+        # of any group's edge or confirmation.
+        pt_passing = []
+        for i, p in enumerate(self.pt):
+            passing = self._pt_on[i] and self._frame is not None
+            pt_passing.append(passing)
+            if passing:
+                for sl in p.slots:
+                    if sl not in self._locked:
+                        buf[sl - 1] = self._frame[sl - 1]
         sent_fire = []
         commanded_fire = []
         for i, g in enumerate(self.groups):
-            buf[g.safety - 1] = values[i]
+            # Every safety slot of the group, in this one frame: a group
+            # with several (multi-safety) raises and lowers them together.
+            # A locked one (multi-safety only) stays at zero whatever else
+            # holds, and leaves the raised set for good: unlocking it later
+            # does not raise it without a fresh rising edge.
+            locked_saf = self._locked_safeties(g)
+            if values[i] == DISARM:
+                self._raised[i] = frozenset()
+            else:
+                self._raised[i] = self._raised[i] - locked_saf
+            for s in g.safeties:
+                buf[s - 1] = values[i] if s in self._raised[i] else DISARM
             quiet = self._edge_quiet[i] > 0
             if quiet:
                 self._edge_quiet[i] -= 1
@@ -772,8 +1141,16 @@ class Composer:
             for f, v in zip(g.fire, cf):
                 # A fire value goes out only while this group's safety slot
                 # carries the arm value on this same frame and the edge-quiet
-                # window has passed.  Everything else is zero.
-                if armed_now and not quiet:
+                # window has passed.  Everything else is zero.  A locked out
+                # slot (Jeff, 2026-10-17) is zero whatever else holds.
+                if f in self._locked:
+                    out = 0
+                    if v != 0:
+                        self.stats["lockout_zeroed"] += 1
+                elif armed_now and (not quiet or f in g.aim):
+                    # An aim slot is not held at zero through the edge-
+                    # quiet window: zero would swing the head to its end
+                    # stop for those frames, and it lights nothing.
                     out = v
                 elif armed_now and quiet and v != 0:
                     out = 0
@@ -796,6 +1173,45 @@ class Composer:
             sent_fire.append(sf)
             commanded_fire.append(cf)
 
+        # 6. Every raised group is confirmed: each of its safety slots carries
+        # its arm value in the frame about to go out.  One that does not
+        # (dropped, or overwritten by another slot) takes the whole group
+        # down on this tick: every safety slot and every fire slot of it to
+        # zero, the latch cleared, a fresh cycle needed.  A valid config can
+        # never trip this (no slot belongs to two groups); it is the fail
+        # safe for multi-safety groups, where "armed" means every safety up.
+        for i, g in enumerate(self.groups):
+            if values[i] == DISARM:
+                continue
+            locked_saf = self._locked_safeties(g)
+            down = [s for s in g.safeties
+                    if s not in locked_saf and buf[s - 1] != g.arm_value]
+            if not down and len(locked_saf) < len(g.safeties):
+                continue
+            self._raised[i] = frozenset()
+            for s in g.safeties:
+                buf[s - 1] = DISARM
+            for f in g.fire:
+                buf[f - 1] = 0
+            values[i] = DISARM
+            sent_fire[i] = [0] * len(g.fire)
+            held[i] = ((SAFETY_UNCONFIRMED, "flashing") if self._wanted[i]
+                       else ("", ""))
+            self._latched[i] = False
+            self._seen_down[i] = False
+            self._edge_quiet[i] = 0
+            self._unconfirmed[i] = True
+            self.stats["safety_unconfirmed"] += 1
+            self._event("safety-unconfirmed",
+                        f"{g.name}: safety slot "
+                        f"{', '.join(str(s) for s in down)} was not at the "
+                        f"arm value in the frame composed; the whole group "
+                        f"was disarmed and its fire slots zeroed")
+        ups = [[values[i] != DISARM and buf[s - 1] == g.arm_value
+                for s in g.safeties] for i, g in enumerate(self.groups)]
+        locks = [[s in self._locked_safeties(g) for s in g.safeties]
+                 for g in self.groups]
+
         self._last_sent = values
         self._held = held
         if any(v != DISARM for v in values):
@@ -804,10 +1220,11 @@ class Composer:
             self._fault = fault
             self._fault_at = t
         status = self._status(t, values, sent_fire, commanded_fire, held,
-                              live, frame_fresh, fire_live)
+                              live, frame_fresh, fire_live, ups, locks,
+                              pt_passing, buf)
         return Output(bytes(buf), status, fault)
 
-    def _why_not(self, i, live, link_live):
+    def _why_not(self, i, live, link_live, flame_disturbed=False):
         """Why a group the input wants armed is not: (reason, amber mode).
         Flashing amber means cycling the arm is the fix.  Steady amber means
         wait, or fix something else; cycling would only restart the dwell."""
@@ -827,9 +1244,14 @@ class Composer:
             # of flashing "cycle the arm" at an operator whose cycle is
             # being refused.
             return (OTHER_SENDER, "steady")
+        if not self._latched[i] and flame_disturbed:
+            # Second-copy guard (2026-10-03): the same, for the flame link.
+            return (FLAME_OTHER_SENDER, "steady")
         if not self._latched[i]:
             if self._aborted[i]:
                 return (ABORT_DISARMED, "flashing")
+            if self._unconfirmed[i]:
+                return (SAFETY_UNCONFIRMED, "flashing")
             return ("cycle the arm", "flashing")
         return ("not composing", "steady")
 
@@ -840,6 +1262,9 @@ class Composer:
         if commanded is None:
             return True
         for f in g.fire:
+            if f in g.aim:
+                # An aim slot points the head; it never lights it.
+                continue
             if commanded[f - 1] >= rules.GFLAME_EDGE_BELOW:
                 return False
         return True
@@ -848,8 +1273,12 @@ class Composer:
         """All zeros, every latch cleared, every established arm forgotten
         so the next tick sees a rising edge and checks it."""
         try:
+            # Every hazer off too, and off until switched off and on again
+            # (reviewer A of #168, 3), as every group needs a fresh cycle.
+            self._pt_reset(PT_FAULT)
             self._last_sent = [DISARM] * self.n
             self._edge_quiet = [0] * self.n
+            self._raised = [frozenset()] * self.n
             self._reset_latches("panic")
             self._held = [("safety program fault", "steady")
                           if self._wanted[i] else ("", "")
@@ -862,7 +1291,12 @@ class Composer:
                                   [[0] * len(g.fire) for g in self.groups],
                                   [[0] * len(g.fire) for g in self.groups],
                                   self._held, self._arm_is_live(t),
-                                  self._frame_is_fresh(t), False)
+                                  self._frame_is_fresh(t), False,
+                                  [[False] * len(g.safeties)
+                                   for g in self.groups],
+                                  [[s in self._locked_safeties(g)
+                                    for s in g.safeties]
+                                   for g in self.groups])
         except Exception:                               # noqa: BLE001
             status = {"v": CONTRACT_VERSION, "t": "status",
                       "heartbeat": self.heartbeat, "fault": self._fault,
@@ -880,8 +1314,40 @@ class Composer:
             return 0
         return int(math.ceil(left_ms / 1000.0))
 
+    def _pt_status(self, frame_fresh, passing, buf):
+        """The status frame's "passthrough" list: per entry what the show
+        program asked, whether this program has it enabled, whether its
+        values are on the wire this tick, the values sent, and why not."""
+        out = []
+        for i, p in enumerate(self.pt):
+            ok = bool(passing[i]) if passing else False
+            locked = [sl in self._locked for sl in p.slots]
+            if ok and any(locked):
+                why = PT_LOCKED
+            elif ok:
+                why = ""
+            elif not frame_fresh:
+                why = PT_LINK
+            elif self._pt_block[i]:
+                why = self._pt_block[i]
+            elif not self._pt_asked[i]:
+                why = PT_OFF
+            else:
+                why = "safety program fault"
+            out.append({"name": p.name, "slots": list(p.slots),
+                        "haze": p.haze, "fan": p.fan,
+                        "asked": self._pt_asked[i],
+                        "enabled": self._pt_on[i],
+                        "passing": ok,
+                        "locked": locked,
+                        "sent": [buf[sl - 1] if buf is not None else 0
+                                 for sl in p.slots],
+                        "why": why})
+        return out
+
     def _status(self, t, values, sent_fire, commanded_fire, held, live,
-                frame_fresh, fire_live):
+                frame_fresh, fire_live, ups, locks, pt_passing=None,
+                buf=None):
         groups = []
         for i, g in enumerate(self.groups):
             reason, amber = held[i]
@@ -897,7 +1363,23 @@ class Composer:
             groups.append({
                 "name": g.name,
                 "safety_slot": g.safety,
+                # Multi-safety (2026-10-26): every safety slot of the group,
+                # whether each carries the arm value in this frame, and
+                # whether each is locked out (held at zero and left out of
+                # the arm).  One entry for a one-safety group, never
+                # locked.  `armed` stays the one state of the whole group.
+                "safety_slots": list(g.safeties),
+                # The value this group raises its safety slots to: the
+                # file's arm_value, or its safety_profile's (2026-10-26).
+                "arm_value": g.arm_value,
+                "safeties_up": list(ups[i]),
+                "safeties_locked": list(locks[i]),
                 "fire_slots": list(g.fire),
+                # Aim slots (2026-10-28): the fire slots that only point a
+                # head, as this program read them at start. ltcplay
+                # compares them with its own list and shows them on the
+                # rack screen. Display only; an older ltcplay ignores it.
+                "aim_slots": sorted(g.aim),
                 "wanted": self._wanted[i],
                 "armed": state,
                 "reason": reason,
@@ -906,6 +1388,7 @@ class Composer:
                 "sent_safety": values[i],
                 "sent_fire": list(sent_fire[i]),
                 "commanded_fire": list(commanded_fire[i]),
+                "locked_fire": [f in self._locked for f in g.fire],
             })
         arm_age = (None if self._arm_fresh_at is None
                    else int((t - self._arm_fresh_at) * 1000))
@@ -918,6 +1401,9 @@ class Composer:
             "tick_ms": round(1000.0 / self.cfg.tick_hz, 3),
             "universe": self.cfg.universe,
             "priority": rules.SACN_PRIORITY,
+            # The FILE's arm_value, the default for a group without a
+            # safety_profile.  A group with one arms at its own value: each
+            # group's "arm_value" below is the truth for that group.
             "arm_value": self.cfg.arm_value,
             "confirmed": self.cfg.confirmed,
             "fault": self._fault,
@@ -941,7 +1427,18 @@ class Composer:
                 "accepted": self.stats["frames_accepted"],
                 "rejected": self.stats["frames_rejected"],
                 "last_reject": self._last_reject,
+                # Second-copy guard (2026-10-03): other keyed senders refused
+                # inside frame_stale_ms, and whether the lock changed hands
+                # inside frame_stale_ms.  Either one: no cycle counts.
+                "foreign_senders": self._flame_foreign_count(t),
+                "new_sender": self._flame_new_sender(t),
+                "flooded": self._flame_flooded(t),
             },
+            # Lockout (2026-10-17): the fire slots this program is holding
+            # at zero, and how the lockout file read.  The rack screen
+            # compares these slots with the ones it asked for.
+            "lockout": {"slots": sorted(self._locked),
+                        "state": self._lockout_state},
             "disarm_all": {
                 "accepted": self._disarm_count,
                 "last_id": self._disarm_last_id,
@@ -953,6 +1450,9 @@ class Composer:
                           journal_dropped=int(getattr(self._log, "dropped",
                                                       0) or 0)),
             "groups": groups,
+            # Passthrough (2026-10-29): the hazers, per entry.  [] for a
+            # config without any.  An older ltcplay ignores it.
+            "passthrough": self._pt_status(frame_fresh, pt_passing, buf),
         }
 
     def _event(self, kind, msg):
@@ -962,6 +1462,13 @@ class Composer:
             self._log.event(kind, msg)
         except Exception:                               # noqa: BLE001
             pass
+
+
+def _addr(sender):
+    """(ip, port) as ip:port for the journal; anything else as it is."""
+    if isinstance(sender, tuple) and len(sender) == 2:
+        return f"{sender[0]}:{sender[1]}"
+    return str(sender)
 
 
 def _flame_reason(why):

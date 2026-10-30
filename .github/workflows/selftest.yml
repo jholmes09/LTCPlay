@@ -4,13 +4,26 @@ name: selftest
 # is written up in TESTING.md; the short version:
 #
 #   selftest   every PR, every push to main, every tag: the whole suite on
-#              ubuntu and windows, about 4 minutes each
+#              ubuntu and windows, about 5 minutes each
 #   changes    works out which mutations the diff can have changed the
-#              result of (mutate.py --changed), and how many shards that
-#              needs: none for a doc, a launcher or this workflow; a few for
-#              one file; 32 for a release tag or a change with no base
-#   mutate     those shards, ubuntu (a release tag: ubuntu and windows).
-#              This job does not exist at all when there is nothing to run.
+#              result of (mutate.py --changed: the mutations of the files
+#              the diff touches, every flamesafe, conductor and flame link
+#              mutation when a safety file is touched, new or edited
+#              mutations, and whatever a deleted test guarded) and how many
+#              shards that needs: none for a doc, a launcher, the packaging
+#              or this workflow; about 25 mutations a shard otherwise, 32 at
+#              most; 32 for a release tag or a change with no base.
+#   mutate     those shards, ubuntu (a release tag: ubuntu and windows). No
+#              shard job is started at all when there is nothing to run.
+#              They start only once both selftest jobs are green (a red
+#              suite makes every mutation look caught, so the shards would
+#              measure nothing), and at most 10 run at once, so a PR never
+#              takes the whole account's 20 job slots. On a PR into
+#              bench-build they are not required to merge: the required
+#              checks are selftest (ubuntu-latest), selftest
+#              (windows-latest), changes and installer (windows-app.yml).
+#              The whole list also runs every Sunday and on demand
+#              (weekly-mutate.yml).
 #   ci         the ONE required check on main: green when selftest, changes
 #              and every mutate shard are green, or when mutate had nothing
 #              to run. Branch protection names this job, not the shards, so
@@ -31,8 +44,10 @@ permissions:
   contents: read
 
 # A newer push to the same PR makes the older run pointless, so it is
-# cancelled. Every push to main and every tag gets a group of its own: they
-# are never cancelled, and never queue behind mutate.py either.
+# cancelled, shards and all (the group is the workflow and the PR's ref,
+# refs/pull/N/merge, so it never touches another PR). Every push to main and
+# every tag gets a group of its own: they are never cancelled, and never
+# queue behind mutate.py either.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -47,12 +62,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 35 || 20 }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .github/workflows/selftest.yml
       # pillow: the Stream Deck's key drawing (ltcplay/streamdeck.py), so
       # its pixel test runs here too. The suite also passes without it.
       - run: python -m pip install numpy zstandard tzdata pillow
@@ -72,67 +89,33 @@ jobs:
           if-no-files-found: ignore
 
   # Decides what the mutate shards do:
-  #   mode=full      a release tag: every mutation, ubuntu and windows, 32
-  #                  shards each
+  #   mode=full      a release tag: every mutation, ubuntu and windows
   #   mode=affected  a PR or a push to main with a base to diff against:
   #                  each shard runs `mutate.py --changed BASE`, which picks
   #                  the mutations the diff can have changed the result of
   #                  (the rules are in mutate.py, select_affected(), and
   #                  TESTING.md), so the list of files to watch can never
-  #                  drift from the list of files mutate.py breaks. The
-  #                  shard count follows the selection: about 12 mutations
-  #                  a shard (40 minutes), 32 at most
+  #                  drift from the list of files mutate.py breaks
+  #                  The shard count follows the selection: about 25
+  #                  mutations a shard (about 75 minutes on ubuntu with
+  #                  --jobs 3), 32 at most
   #   mode=none      that selection is empty (a doc, a launcher, the brand,
   #                  this workflow): no shard job is started at all
   # A push with no usable base (a first push, a rewritten one) runs
   # everything rather than guess.
-  #
-  # The newest catchers file (which test caught each mutation, written by
-  # the weekly sweep) is fetched when there is one, so a changed or deleted
-  # test re-runs exactly the mutations it guarded instead of everything, or
-  # nothing. Without one, a deleted test still means the whole list.
   changes:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: read
     outputs:
       mode: ${{ steps.decide.outputs.mode }}
       base: ${{ steps.decide.outputs.base }}
       oses: ${{ steps.decide.outputs.oses }}
       shards: ${{ steps.decide.outputs.shards }}
       nshards: ${{ steps.decide.outputs.nshards }}
-      catchers: ${{ steps.catchers.outputs.id }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      # The artifact's id is passed to the shards so every job in this run
-      # reads the same file, even if a weekly sweep finishes meanwhile.
-      - id: catchers
-        name: Fetch the newest catchers file from the weekly sweep
-        shell: bash
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -u
-          id=$(gh api "repos/$REPO/actions/artifacts?name=catchers&per_page=1" \
-                 --jq '.artifacts[] | select(.expired == false) | .id' | head -1)
-          if [[ -z "$id" ]]; then
-            echo "no catchers artifact yet: a changed test is judged without one"
-            exit 0
-          fi
-          gh api "repos/$REPO/actions/artifacts/$id/zip" > "$RUNNER_TEMP/catchers.zip"
-          mkdir -p "$RUNNER_TEMP/catchers"
-          unzip -o -q "$RUNNER_TEMP/catchers.zip" -d "$RUNNER_TEMP/catchers"
-          if [[ -f "$RUNNER_TEMP/catchers/catchers.json" ]]; then
-            python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d), 'catchers from artifact', sys.argv[2])" \
-              "$RUNNER_TEMP/catchers/catchers.json" "$id"
-            echo "path=$RUNNER_TEMP/catchers/catchers.json" >> "$GITHUB_OUTPUT"
-            echo "id=$id" >> "$GITHUB_OUTPUT"
-          fi
       - id: decide
         shell: bash
         env:
@@ -140,7 +123,6 @@ jobs:
           REF: ${{ github.ref }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           BEFORE: ${{ github.event.before }}
-          CATCHERS: ${{ steps.catchers.outputs.path }}
         run: |
           set -u
           shards_json() {    # 0..N-1 as a JSON list
@@ -162,9 +144,7 @@ jobs:
           # mutate.py --list needs no numpy: it stops before the baseline.
           # Exit 0 with "nothing to run" means the selection is empty.
           out="$RUNNER_TEMP/selection.txt"
-          narrow=()
-          if [[ -n "$CATCHERS" ]]; then narrow=(--catchers "$CATCHERS"); fi
-          if ! python3 mutate.py --changed "$base" "${narrow[@]}" --list > "$out"; then
+          if ! python3 mutate.py --changed "$base" --list > "$out"; then
             cat "$out"
             echo "::error::mutate.py could not work out what this change affects"
             exit 1
@@ -175,33 +155,48 @@ jobs:
           if grep -q 'nothing to run' "$out"; then
             say "nothing this change can have broken is mutated: no shard runs" none "$base" '["ubuntu-latest"]' 1
           fi
-          # About 12 mutations a shard: one suite run each plus a short
-          # second look, about 40 minutes a shard with the baseline.
-          k=$(( (n + 11) / 12 )); if (( k < 1 )); then k=1; fi; if (( k > 32 )); then k=32; fi
+          # About 25 mutations a shard: on ubuntu with --jobs 3 a mutation
+          # costs about 3 minutes of a shard (81 took 221 to 280 minutes in
+          # nightly run 40469889985), so about 75 minutes plus the baseline.
+          # The shards split the full list by index (mutate.py --shard I/N
+          # keeps index % N == I), so 0..N-1 always cover every selected one.
+          k=$(( (n + 24) / 25 )); if (( k < 1 )); then k=1; fi; if (( k > 32 )); then k=32; fi
           say "the $n affected mutations, ubuntu, $k shard(s)" affected "$base" '["ubuntu-latest"]' "$k"
 
-  # Thirty-two shards of a full sweep on every push to a draft PR is real
-  # money spent on a diff that is still being written: the mutate jobs are
-  # skipped while the PR is a draft and run for the first time when it is
-  # marked ready for review; selftest itself still runs on every push,
-  # drafts included. With nothing to run (mode none) there is no job here at
-  # all, not 32 empty ones.
+  # The account runs at most 20 jobs at once, shared by every workflow and
+  # every PR. So the shards (2026-10-29, the congestion of 10-26 to 10-28):
+  #   - start only for a change that has something to mutate (no job at
+  #     all for mode none, not 32 empty ones), as many as the selection
+  #     needs (the changes job), never more than 32;
+  #   - start only after both selftest jobs are green. On a PR into
+  #     bench-build that is the fast lane: the required checks (selftest
+  #     on ubuntu and windows, changes, installer) finish first and are
+  #     never queued behind shards; the shards follow and are not
+  #     required to merge;
+  #   - run at most 10 at once (max-parallel), leaving the other 10 slots
+  #     for other PRs' selftest and installer jobs;
+  #   - are skipped while the PR is a draft and run for the first time
+  #     when it is marked ready for review; selftest itself still runs on
+  #     every push, drafts included.
   mutate:
-    needs: changes
+    needs: [changes, selftest]
     if: needs.changes.outputs.mode != 'none' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     strategy:
       fail-fast: false
+      max-parallel: 10
       matrix:
         os: ${{ fromJSON(needs.changes.outputs.oses) }}
         shard: ${{ fromJSON(needs.changes.outputs.shards) }}
     runs-on: ${{ matrix.os }}
-    # Sized for a full sweep of about 860 mutations in 32 shards: 27 a
-    # shard, each one suite run (130 to 200 s) plus a second look at the
-    # failing tests alone (seconds), plus the baseline: 60 to 100 minutes.
-    # 300 leaves room for a shard where every second look falls back to a
-    # whole second run. The sweep step stops itself 15 minutes before this
-    # limit so the job is never killed from outside with nothing said.
-    timeout-minutes: 300
+    # Sized for a full sweep: about 2600 mutations in 32 shards, 81 a
+    # shard. With fail fast, catcher hints and --jobs 3 a shard took 221 to
+    # 280 minutes on ubuntu in nightly run 40469889985, when only 460
+    # mutations had a hint (two shards ran out at 285 with 1 and 3 left).
+    # 355 is under GitHub's 360 cap and leaves room over that. An affected
+    # run is a fraction of it. The sweep step stops itself 15 minutes
+    # before this limit so the job is never killed from outside with
+    # nothing said.
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v5
         with:
@@ -211,55 +206,111 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      # pillow too, the same list as the selftest job: without it the
-      # Stream Deck pixel tests skip themselves and the deck mutations in
-      # streamdeck.py read NOT CAUGHT in every sweep here while any box
-      # with Pillow catches them (PR #43, #46 and #49, shards 14 and 15).
+          cache: pip
+          cache-dependency-path: .github/workflows/selftest.yml
+      # The same packages as the selftest job, pillow included: without it
+      # the Stream Deck pixel tests skip themselves, and the three "Deck
+      # latched" mutations in streamdeck.py were NOT CAUGHT in every sweep
+      # here while they were caught on any box with Pillow (PR #43, #46 and
+      # #49, shards 14 and 15). selftest.py now fails in CI when Pillow is
+      # missing, so this line cannot drift from the one above again.
       - run: python -m pip install numpy zstandard tzdata pillow
-      - name: Fetch the catchers file the changes job used
-        if: needs.changes.outputs.catchers != ''
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          ID: ${{ needs.changes.outputs.catchers }}
-        run: |
-          gh api "repos/$REPO/actions/artifacts/$ID/zip" > "$RUNNER_TEMP/catchers.zip"
-          mkdir -p "$RUNNER_TEMP/catchers"
-          unzip -o -q "$RUNNER_TEMP/catchers.zip" -d "$RUNNER_TEMP/catchers"
-          test -f "$RUNNER_TEMP/catchers/catchers.json"
       # The expected-miss list is the mutations only the real show folder
       # can catch. Any other miss, any listed one that is now caught, and any
-      # SETUP FAIL fails the job. The step has its own limit, 15 minutes
+      # SETUP FAIL fails the job. Each mutated run stops after its first
+      # failing test, and runs the test that caught that mutation last time
+      # first (--hints; mutate.py says when such a run counts). Ubuntu runs
+      # three mutations at once (--jobs 3), each in its own copy of the tree
+      # that first runs its own whole baseline; Windows runs one at a time.
+      # The step has its own limit, 15 minutes
       # under the job's, so that when a shard runs out of time the step
       # after it still runs and can say so. pipefail (bash's default in
       # Actions) keeps mutate.py's exit code through tee.
       - id: sweep
         shell: bash
-        timeout-minutes: 285
+        timeout-minutes: 340
         env:
           MODE: ${{ needs.changes.outputs.mode }}
           BASE: ${{ needs.changes.outputs.base }}
           N: ${{ needs.changes.outputs.nshards }}
-          CATCHERS: ${{ needs.changes.outputs.catchers }}
         run: |
           narrow=()
-          if [[ "$MODE" == affected ]]; then
-            narrow=(--changed "$BASE")
-            if [[ -n "$CATCHERS" && -f "$RUNNER_TEMP/catchers/catchers.json" ]]; then
-              narrow+=(--catchers "$RUNNER_TEMP/catchers/catchers.json")
-            fi
-          fi
-          python -u mutate.py --shard ${{ matrix.shard }}/$N --expected mutate_expected_misses.txt "${narrow[@]}" 2>&1 | tee "$RUNNER_TEMP/mutate.log"
-      # Tells a shard that ran out of time apart from a missed mutation:
-      # mutate.py --unfinished names every mutation of the shard with no
-      # result in the log, as an annotation and in the job summary.
+          if [[ "$MODE" == affected ]]; then narrow=(--changed "$BASE"); fi
+          python -u mutate.py --shard ${{ matrix.shard }}/$N --expected mutate_expected_misses.txt --hints mutate_catchers.json --jobs ${{ matrix.os == 'ubuntu-latest' && 3 || 1 }} "${narrow[@]}" 2>&1 | tee "$RUNNER_TEMP/mutate.log"
+      # Tells a shard that ran out of time apart from a missed mutation. A
+      # miss prints NOT CAUGHT or UNEXPECTED MISS and the sweep reaches its
+      # "caught N, missed M" line. A shard that ran out of time never reaches
+      # that line, so this names every mutation of the shard that has no
+      # result in the log. The mutation being run when the clock stopped is
+      # one of them: its result is unknown, not "caught".
       - name: Report a shard that ran out of time
         if: always() && steps.sweep.outcome != 'success' && steps.sweep.outcome != 'skipped'
         shell: bash
         env:
+          SHARD: ${{ matrix.shard }}
           N: ${{ needs.changes.outputs.nshards }}
-        run: python mutate.py --unfinished "$RUNNER_TEMP/mutate.log" --shard ${{ matrix.shard }}/$N
+          LOG: ${{ runner.temp }}/mutate.log
+        run: |
+          python - <<'PY'
+          import ast, os
+
+          shard, total = int(os.environ["SHARD"]), int(os.environ["N"])
+          log = []
+          try:
+              with open(os.environ["LOG"], encoding="utf-8", errors="replace") as fh:
+                  log = [l.rstrip("\r\n") for l in fh]
+          except OSError:
+              pass
+          if any(l.startswith("caught ") and ", missed " in l for l in log):
+              print("the sweep finished; any failure is in its own lines above")
+              raise SystemExit(0)
+          if any("The suite FAILS with nothing mutated" in l for l in log):
+              print("the baseline failed; that is not a timeout")
+              raise SystemExit(0)
+          if any(l.startswith("INFRASTRUCTURE FAILURE") for l in log):
+              print("the unmutated suite did not finish, twice: an infrastructure failure, said above")
+              raise SystemExit(0)
+          if any("nothing to run" in l or "cannot read the diff" in l for l in log):
+              print("the shard stopped before any mutation ran; see its own lines above")
+              raise SystemExit(0)
+          tree = ast.parse(open("mutate.py", encoding="utf-8").read(), "mutate.py")
+          names = None
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Assign) and any(
+                      isinstance(t, ast.Name) and t.id == "MUTATIONS" for t in node.targets):
+                  names = [e.elts[0].value for e in node.value.elts]
+          mine = [n for i, n in enumerate(names) if i % total == shard]
+          # In an affected run only part of the shard was due; the sweep
+          # says which ("would run" is --list's word, "to run" the sweep's).
+          due = None
+          for l in log:
+              if l.startswith("shard ") and " mutations to run" in l:
+                  due = int(l.split(":")[1].split()[0])
+          done = set()
+          for l in log:
+              for pre in ("  caught      ", "  NOT CAUGHT  "):
+                  if l.startswith(pre):
+                      done.add(l[len(pre):])
+              if l.startswith("  SETUP FAIL  "):
+                  done.add(l[len("  SETUP FAIL  "):].split(" (pattern", 1)[0])
+          todo = [n for n in mine if n not in done]
+          if not todo or (due is not None and len(done) >= due):
+              print("no mutation is missing a result; the shard stopped some other way")
+              raise SystemExit(0)
+          head = (f"shard {shard}/{total} TIMED OUT, it did not finish: "
+                  f"{len(done)} of its {due if due is not None else len(mine)} mutations ran to a result. "
+                  "This is a timeout, not a missed mutation; re-run the shard.")
+          esc = lambda s: s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print("::error title=mutate shard timed out::" + esc(head + " Not run: " + " | ".join(todo))[:3500])
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as fh:
+                  fh.write("### " + head + "\n\n" + "\n".join("- " + n for n in todo) + "\n")
+          print(head)
+          for n in todo:
+              print("  did not run  " + n)
+          raise SystemExit(1)
+          PY
       # The whole shard log, kept a week, for the run page's Artifacts
       # list; the job log cannot always be fetched from a cloud session.
       - uses: actions/upload-artifact@v4
@@ -271,11 +322,11 @@ jobs:
           if-no-files-found: ignore
 
   # One place that says which shards are red, with a link to each, in the
-  # run's summary, so nobody opens the jobs one by one to find the one that
-  # failed. Each red shard's own summary says why (the kind of failure and
-  # the mutation), its annotations carry the same, and its log is the
-  # artifact named after it. Nothing is posted to the PR, and this job is
-  # green whatever it finds: the required check is `ci`, below.
+  # run's summary, so nobody opens the jobs one by one to find the one that failed.
+  # Each red shard's own summary says why (the kind of failure and the
+  # mutation), its annotations carry the same, and its log is the artifact
+  # named after it. Nothing is posted to the PR, and this job is green
+  # whatever it finds: the required check on main is `ci`, below.
   mutate-report:
     needs: [changes, mutate]
     if: always() && needs.mutate.result != 'skipped' && needs.mutate.result != 'cancelled'
@@ -308,7 +359,9 @@ jobs:
           if not shards:
               out.append("### mutate: no shard jobs were found in this run")
           elif not red:
-              out.append(f"### mutate: all {len(shards)} shards green")
+              out.append(f"### mutate: all {len(shards)} shards green"
+                         + (" (nothing this change can have broken is mutated)"
+                            if mode == "none" else ""))
           else:
               out += [f"### mutate: {len(red)} of {len(shards)} shards red", "",
                       "| shard | result | job |", "|---|---|---|"]
@@ -324,15 +377,17 @@ jobs:
               fh.write(text)
           PY
 
-  # The one required check. Green only when the suite passed on both OSes,
-  # the changes job decided, and every mutate shard that had to run passed;
-  # red when any of them failed, was cancelled, or did not run when it
-  # should have. Skipped on a draft PR, like the shards (a draft cannot be
-  # merged; marking it ready starts a fresh run with the shards in it).
+  # The one required check on main. Green only when the suite passed on
+  # both OSes, the changes job decided, and every mutate shard that had to
+  # run passed; red when any of them failed, was cancelled, or did not run
+  # when it should have. Skipped on a draft PR, like the shards (a draft
+  # cannot be merged; marking it ready starts a fresh run with the shards in
+  # it).
   ci:
     needs: [selftest, changes, mutate]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
       issues: read

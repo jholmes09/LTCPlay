@@ -673,9 +673,165 @@ class _WavSource:
 
 
 # ----------------------------------------------------------------- init ---
+# What `ltc init` and the Programming screen's "Make a show file from this
+# folder" start a show file with: every render back to back from 01:00:00:00
+# with no gap, at 30 fps unless the renders say otherwise (renders_rate).
+INIT_FPS = 30
+INIT_START = "01:00:00:00"
+INIT_GAP_S = 0.0
+
+
+def starter_base(show_dir):
+    """The show file's name, from the folder's: `<folder>_timeline`."""
+    name = os.path.basename(os.path.normpath(show_dir)) or "show"
+    return "".join(c if (c.isalnum() or c in "-_ ") else "_" for c in name)
+
+
+def write_new_show_file(dest, base, doc):
+    """Write `doc` as a NEW show file in `dest` and return its path:
+    `<base>_timeline.json`, or `<base>_timeline_2.json`, `_3`, ... when that
+    name is taken. An existing file is never replaced, not even one that
+    appears between the look and the write: the file is written whole
+    beside it first, then linked in under a name nobody has (os.link
+    refuses an existing name), so a crash leaves no half-written show file
+    either. The temporary name is short (13 characters, shorter than any
+    final name), so a long folder name cannot fail on it first, and it is
+    always removed."""
+    data = json.dumps(doc, indent=2) + "\n"
+    tmp = os.path.join(dest, f"~{os.urandom(4).hex()}.new")
+    try:
+        with open(tmp, "x", encoding="utf-8") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        for n in range(1, 1000):
+            out = os.path.join(dest, f"{base}_timeline.json" if n == 1
+                               else f"{base}_timeline_{n}.json")
+            if os.path.lexists(out):
+                continue
+            try:
+                os.link(tmp, out)
+                return out
+            except FileExistsError:
+                continue
+            except (OSError, NotImplementedError, AttributeError):
+                pass
+            # No hard links on this disk: create the name exclusively.
+            try:
+                fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                             getattr(os, "O_BINARY", 0), 0o644)
+            except FileExistsError:
+                continue
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(data)
+            except BaseException:
+                try:
+                    os.unlink(out)
+                except OSError:
+                    pass
+                raise
+            return out
+        raise OSError(f"{dest} already holds 999 show files named "
+                      f"{base}_timeline")
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+# Said with every new show file, whatever its rate: a guess is never
+# presented as the show's timecode rate.
+FPS_CHECK = ("29.97 and 30 look identical but drift about 2 seconds over a "
+             "half hour; set \"fps\" (and \"drop\": true for 29.97 "
+             "drop-frame) to the rate the timecode really runs at.")
+
+
+def renders_rate(show_dir):
+    """(fps, reason) for a new show file. The show file's fps is the
+    TIMECODE rate, which no render records: an FSEQ's frame time is the
+    render's own. It is used only when every render agrees and it is a
+    timecode rate (40 ms is 25 fps); otherwise INIT_FPS. The reason says
+    which, and the caller always asks the operator to check it."""
+    from .fseq import FSEQ
+    from .tc import normalize_rate
+    steps = set()
+    for n in timeline_mod.fseq_names(show_dir):
+        try:
+            with FSEQ(os.path.join(show_dir, n)) as f:
+                steps.add(int(f.step_time_ms))
+        except Exception:                        # noqa: BLE001
+            continue
+    if len(steps) == 1:
+        step = steps.pop()
+        try:
+            fps = normalize_rate(1000.0 / step)
+            return fps, (f"every render runs at {step} ms a frame "
+                         f"({fps:g} frames a second), and a render's frame "
+                         f"time is not the show's timecode rate")
+        except (ValueError, ZeroDivisionError):
+            return INIT_FPS, (f"that is the usual rate; the renders run at "
+                              f"{1000.0 / step:g} frames a second, which is "
+                              f"not a timecode rate")
+    if steps:
+        return INIT_FPS, ("that is the usual rate; the renders do not all "
+                          "run at the same frame rate")
+    return INIT_FPS, "that is the usual rate"
+
+
+def make_show_file(show_dir, dest, fps=None, start=INIT_START,
+                   gap_seconds=INIT_GAP_S, before_write=None):
+    """A starter show file for the renders in `show_dir`, written as a NEW
+    file in `dest` (the folder the show files are listed from). Never
+    replaces a file. Raises ValueError with a sentence when there is
+    nothing to write: the folder missing, or no .fseq that reads.
+    `before_write()`, when given, is called just before the write and may
+    raise to stop it.
+
+    {"path", "file", "folder", "cues", "fps", "rate_note", "skipped",
+     "map"}; rate_note always asks for the rate to be checked."""
+    folder = os.path.abspath(os.path.expanduser(show_dir or ""))
+    if not show_dir or not os.path.isdir(folder):
+        raise ValueError(f"The show folder {folder} does not exist on this "
+                         f"machine, so there are no renders to list. "
+                         f"Nothing was written.")
+    found = timeline_mod.fseq_names(folder)
+    if not found:
+        raise ValueError(f"{folder} holds no .fseq files, so there is "
+                         f"nothing to put in a show file. Render the "
+                         f"sequences in xLights into this folder first. "
+                         f"Nothing was written.")
+    if fps is None:
+        fps, why = renders_rate(folder)
+    else:
+        why = "it was asked for"
+    doc = timeline_mod.starter(folder, fps=fps, start=start,
+                               gap_seconds=gap_seconds)
+    used = {c["fseq"] for c in doc["cues"]}
+    skipped = [n for n in found if n not in used]
+    if not doc["cues"]:
+        raise ValueError(f"None of the {len(found)} .fseq files in {folder} "
+                         f"could be read ({', '.join(skipped[:3])}"
+                         f"{', ...' if len(skipped) > 3 else ''}). Render "
+                         f"them again in xLights. Nothing was written.")
+    if before_write is not None:
+        before_write()
+    out = write_new_show_file(dest, starter_base(folder), doc)
+    note = (f"Check the frame rate: it was set to {doc['fps']:g} fps "
+            f"because {why}. {FPS_CHECK}")
+    return {"path": out, "file": os.path.basename(out), "folder": folder,
+            "cues": len(doc["cues"]), "fps": doc["fps"],
+            "rate_note": note, "skipped": skipped,
+            "map": os.path.isfile(os.path.join(folder,
+                                               "xlights_networks.xml"))}
+
+
 def cmd_init(args):
-    doc = timeline_mod.starter(args.show_dir, fps=args.fps, start=args.start,
-                               gap_seconds=args.gap)
+    asked = getattr(args, "fps", None)
+    doc = timeline_mod.starter(args.show_dir,
+                               fps=INIT_FPS if asked is None else asked,
+                               start=args.start, gap_seconds=args.gap)
     if not doc["cues"]:
         return _err(f"no .fseq files found in {args.show_dir}")
     # Beside the launcher, not inside the show folder. The Run menu and the
@@ -684,20 +840,23 @@ def cmd_init(args):
     # reach it. Round 3 of the audit, 2026-09-13.
     if args.out:
         out = args.out
+        with open(out, "w") as fh:
+            json.dump(doc, fh, indent=2)
     else:
-        name = os.path.basename(os.path.normpath(args.show_dir)) or "show"
-        safe = "".join(c if (c.isalnum() or c in "-_ ") else "_" for c in name)
-        out = os.path.join(settings_mod.folder(), f"{safe}_timeline.json")
-        n = 2
-        while os.path.exists(out):
-            out = os.path.join(settings_mod.folder(),
-                               f"{safe}_timeline_{n}.json")
-            n += 1
-    with open(out, "w") as fh:
-        json.dump(doc, fh, indent=2)
-    print(f"Wrote {out} with {len(doc['cues'])} cues at {args.fps} fps.")
-    print("It is beside the launcher, so it appears in the Run menu and on "
-          "the web page.")
+        # Never over an existing show file: the next free _2, _3 name.
+        out = write_new_show_file(settings_mod.folder(),
+                                  starter_base(args.show_dir), doc)
+    fps = doc["fps"]
+    why = "it was asked for" if args.fps is not None else "that is the default"
+    print(f"Wrote {out} with {len(doc['cues'])} cues at {fps:g} fps.")
+    print(f"Check the frame rate: it was set to {fps:g} fps because {why}. "
+          f"{FPS_CHECK}")
+    if args.out:
+        print("The Run menu and the web page list the show files in the "
+              "folder they serve; move it there if it is not.")
+    else:
+        print("It is beside the launcher, so it appears in the Run menu and "
+              "on the web page.")
     print("Edit the 'tc' values to your real running order before using it.")
     return 0
 
@@ -919,7 +1078,36 @@ def _ltc_seconds(fr, tl):
     return tc_to_frames(fr.h, fr.m, fr.s, fr.f, tl.count, tl.drop) / tl.fps
 
 
+def _take_only_copy(lockname, note):
+    """(lock, None) when this is the only copy, else (None, the refusal).
+    Second-copy guard, 2026-10-03: see onlyone.py."""
+    from . import onlyone
+    try:
+        return onlyone.only_copy(lockname, note), None
+    except onlyone.AlreadyRunning as e:
+        return None, onlyone.refusal(lockname, e.holder)
+
+
+def _started():
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def cmd_run(args):
+    """`ltc run`: refuses to start while another copy of the show program
+    (`ltc run` or `ltc serve`) is running on this machine."""
+    from . import onlyone
+    lock, refused = _take_only_copy(
+        onlyone.SHOW_LOCK,
+        f"ltc run {os.path.basename(args.timeline)}, started {_started()}")
+    if refused:
+        return _err(refused)
+    try:
+        return _cmd_run(args)
+    finally:
+        lock.release()
+
+
+def _cmd_run(args):
     from .session import Session, SessionError
     try:
         sess = Session(
@@ -1209,6 +1397,23 @@ def cmd_bundle(args):
 
 
 def cmd_serve(args):
+    """`ltc serve`: refuses to start while another copy of the show program
+    (`ltc run` or `ltc serve`) is running on this machine."""
+    from . import onlyone
+    folder = os.path.abspath(args.folder or settings_mod.folder())
+    lock, refused = _take_only_copy(
+        onlyone.SHOW_LOCK,
+        f"ltc serve on port {args.port}, show folder {folder}, started "
+        f"{_started()}")
+    if refused:
+        return _err(refused)
+    try:
+        return _cmd_serve(args)
+    finally:
+        lock.release()
+
+
+def _cmd_serve(args):
     """Run the engine and serve the page onto it.
 
     The page is a window. The engine lives in this process, so closing the
@@ -1217,6 +1422,10 @@ def cmd_serve(args):
     import webbrowser
     from . import web as web_mod
     _hold_the_mac_awake()
+    if os.environ.get("LTC_TRACEMALLOC") == "1":
+        # Opt-in memory diagnostic; unset, not even imported.
+        from . import memtrace, remote as _remote_mod
+        memtrace.start(_remote_mod.settings_folder())
     folder = os.path.abspath(args.folder or settings_mod.folder())
     schedule = None
     if getattr(args, "schedule", None) is not None:
@@ -1225,6 +1434,48 @@ def cmd_serve(args):
         from . import schedule_service
         schedule = os.path.abspath(os.path.expanduser(
             args.schedule or schedule_service.default_rule_path()))
+    # Settings changed on disk since this engine read them (configwatch.py,
+    # Jeff 2026-10-28): each file is noted BEFORE it is read, so an edit
+    # that lands while the engine starts counts as changed, never missed.
+    cfg_watch = _config_watch_at_start(args, schedule)
+    fire_ice = None
+    if schedule is not None:
+        # A schedule is what makes this Fire & Ice (the GPL launchers never
+        # pass one), so only here is the real show conductor built, from
+        # ltcplay_fire_ice.json beside the rule file. No file: no lasers or
+        # video, and the scheduler stays a dry run. See fire_ice.py.
+        from . import fire_ice as fire_ice_mod
+        try:
+            fire_ice = fire_ice_mod.FireIceConfig.load(
+                fire_ice_mod.config_path_for(schedule))
+            _watch_flamesafe(cfg_watch, fire_ice.flamesafe_config)
+            _soak_why = fire_ice_mod.soak_refusal(fire_ice)
+            if _soak_why:
+                # The soak kit's settings, left behind: refused where the
+                # rack screen can see it, before anything is built.
+                _say_refused(_soak_why)
+                return _err(_soak_why)
+            fire_ice_mod.flame_link_config(fire_ice)
+            # The alert pulse's floor pixels (ltcplay_remote.json) must not
+            # be the flame controller's channels; a settings file that
+            # cannot be read is refused where it is used (web.serve).
+            try:
+                from . import remote as _remote_mod
+                _alert_pixels = _remote_mod.load_settings().get("alert_pixels")
+            except ValueError:
+                _alert_pixels = None
+            fire_ice_mod.check_flame_controllers(
+                os.path.abspath(args.folder or settings_mod.folder()),
+                fire_ice, alert_pixels=_alert_pixels)
+            fire_ice_mod.check_flame_groups(
+                os.path.abspath(args.folder or settings_mod.folder()),
+                fire_ice)
+            for _line in fire_ice_mod.check_beyond_timecode_routes(
+                    os.path.abspath(args.folder or settings_mod.folder()),
+                    fire_ice):
+                print(f"Lasers: {_line}")
+        except ValueError as e:
+            return _err(str(e))
     announce = None
     if getattr(args, "announce", None) is not None:
         # Same rule as the scheduler: only here, and only when asked for,
@@ -1233,10 +1484,42 @@ def cmd_serve(args):
         from . import announce as announce_mod
         announce = os.path.abspath(os.path.expanduser(
             args.announce or announce_mod.default_config_path()))
+    flamesafe_config, why = _one_flamesafe_config(args, fire_ice)
+    if why:
+        _say_refused(why)
+        return _err(why)
+    _say_refused(None)
+    if getattr(args, "network", False):
+        # The show network: one address, saved on the page (Show network),
+        # on the fixed port. Never every interface.
+        from . import remote as remote_mod
+        try:
+            rs = remote_mod.load_settings()
+        except ValueError as e:
+            return _err(str(e))
+        if not rs["show_network_address"]:
+            return _err("The show network address is not set yet. Start Web "
+                        "ltcplay normally, open the page on this machine, "
+                        "set it under Show network, then start it on the "
+                        "show network again.")
+        args.bind = rs["show_network_address"]
+        args.port = remote_mod.FIXED_PORT
+        flamesafe_config = flamesafe_config or rs["flamesafe_config"]
+    network_fallback, network_note = _network_if_saved(args)
+    if flamesafe_config is None and fire_ice is not None:
+        # Fire & Ice: the flame link's own flamesafe config also feeds the
+        # remote page's flame lamps, and (through its status_mirror_port)
+        # the flame link's disarm confirmation and lock alarm.
+        flamesafe_config = fire_ice.flamesafe_config
+    _watch_flamesafe(cfg_watch, flamesafe_config)
     try:
         httpd = web_mod.serve(folder, port=args.port, bind=args.bind,
                               token=args.token, schedule=schedule,
-                              announce=announce)
+                              announce=announce, fire_ice=fire_ice,
+                              flamesafe_config=flamesafe_config,
+                              accounts=True, config_watch=cfg_watch,
+                              network_fallback=network_fallback,
+                              network_note=network_note)
     except OSError as e:
         return _err(f"Could not listen on {args.bind}:{args.port}: {e}\n"
                     f"Something else may already be using that port. Try "
@@ -1246,13 +1529,13 @@ def cmd_serve(args):
         # and found shorter (Jeff, 2026-09-26): nothing was bound or
         # started. See web.serve and clock.derive_show_length_in_folder.
         return _err(str(e))
-    token = httpd.token
-    host = "127.0.0.1" if args.bind in web_mod.LOOPBACK else args.bind
-    if host in ("0.0.0.0", "::"):
-        # "serve on every interface" is not an address anybody can open.
-        # Print the one the phone has to type. Round 3, 2026-09-13.
-        host = _lan_address() or host
-    url = f"http://{host}:{args.port}/" + (f"?t={token}" if token else "")
+    # Where it really listens: a saved address this PC does not have now
+    # falls back to this PC only (--network-if-saved).
+    bound = getattr(httpd, "bind_address", None) or args.bind
+    host = "127.0.0.1" if bound in web_mod.LOOPBACK else bound
+    if ":" in host:
+        host = f"[{host}]"
+    url = f"http://{host}:{args.port}/"
     from . import brand as brand_mod
     _b = brand_mod.load()
     print(f"{_b['product']}  {brand_mod.contact_line(_b)}\n")
@@ -1261,16 +1544,26 @@ def cmd_serve(args):
     if httpd.schedule is not None:
         sv = httpd.schedule
         print(f"Schedule: {sv.path}")
-        print("  " + (sv.error or "Loaded. It decides but does not act: no "
-                      "show is started by it in this build."))
+        print("  " + (sv.error or (
+            "Loaded. It decides but does not act: no show is started by it "
+            "in this build." if sv.dry_run else
+            "Loaded. It performs: it starts the show on schedule once Run "
+            "has been pressed.")))
+    if fire_ice is not None:
+        print(f"Fire & Ice: {fire_ice.path or 'no ltcplay_fire_ice.json'}")
+        print(f"  {fire_ice.summary()}")
     if httpd.announce is not None:
         av = httpd.announce
         print(f"Announcements: {av.config_path}")
-        print("  " + (av.error or f"Loaded, on {av.device_name}."))
-    if token:
-        print(f"\nServing on the network, so the page needs the token in that "
-              f"link.\nAnyone who can reach {host}:{args.port} and has it can "
-              f"black out the rig.")
+        print("  " + (av.error or (f"Loaded, on {av.device_name}."
+                                   if av.device_set else
+                                   f"Loaded. {av.DEVICE_NOT_SET}")))
+    if httpd.loopback is not None:
+        print(f"\nServing on the show network at {host}:{args.port}, and on "
+              f"this machine at\nhttp://127.0.0.1:{args.port}/ . Each operator "
+              f"signs in with their own PIN on an iPad.\nNever put remote "
+              f"access software, a tunnel or a port forward on this machine.")
+        url = f"http://127.0.0.1:{args.port}/"
     print("\nLeave this window open. It is the engine; the page is only a "
           "window onto it,\nso closing the browser does not stop a running "
           "show. Ctrl-C here does.")
@@ -1279,6 +1572,16 @@ def cmd_serve(args):
             webbrowser.open(url)
         except Exception:
             pass
+    _link = getattr(getattr(httpd, "fire_ice", None), "flame_link", None)
+    if _link is not None:
+        # Flame frame timing (2026-10-29): see fire_ice.
+        # keep_flame_frames_on_time. Only a real serve with a flame link.
+        from . import fire_ice as _fim
+        _line = _fim.keep_flame_frames_on_time()
+        print(_line)
+        _say = getattr(_link, "journal_line", None)
+        if _say is not None:
+            _say(_line, action="flame_link", outcome="timing_setup")
     # A closed Terminal window is a SIGHUP and a `kill` is a SIGTERM, and
     # neither used to reach this. The rig was left holding whatever frame was
     # last sent, while the page cheerfully said the show was still running.
@@ -1304,6 +1607,185 @@ def cmd_serve(args):
     return 0
 
 
+def _network_if_saved(args, load=None):
+    """--network-if-saved (the Windows supervisor): (network_fallback,
+    note). The show network address saved on the page (Show network, on
+    the show PC) becomes args.bind when there is one AND it is a private
+    IPv4 address (RFC 1918: 10/8, 172.16/12, 192.168/16), and (True, "")
+    is returned: serve's network_fallback. Anything else leaves args on
+    this PC only: (False, "") with nothing saved or the flag off, and
+    (False, the reason) for an address that is not private (public, CGNAT
+    or VPN 100.64/10, link-local 169.254, IPv6; review of #164, B1: the
+    firewall rule's LocalSubnet on a VPN adapter would let a whole VPN
+    in). A broken settings file keeps the engine on this PC only instead
+    of stopping it. The Mac's --network is not changed by this."""
+    if not getattr(args, "network_if_saved", False) or \
+            getattr(args, "network", False):
+        return False, ""
+    from . import remote as remote_mod
+    try:
+        saved = (load or remote_mod.load_settings)()["show_network_address"]
+    except ValueError as e:
+        why = f"The show network is not used: {e}"
+        print(why, flush=True)
+        return False, why
+    if not saved:
+        return False, ""
+    if not remote_mod.is_rfc1918(saved):
+        why = (f"The saved show network address {saved} is not a private "
+               f"address (10.x, 172.16 to 172.31 or 192.168.x), so the page "
+               f"is not served on it, only on this PC. Save this PC's "
+               f"address on the show network, then restart the engine.")
+        print(why, flush=True)
+        return False, why
+    args.bind = saved
+    return True, ""
+
+
+def _config_watch_at_start(args, schedule):
+    """configwatch.ConfigWatch with every settings file `ltc serve` reads
+    once at start noted before it is read: the schedule, the Fire & Ice
+    settings, the Morning settings, the operator list, the Stream Deck's
+    layout (read by the deck program only), the announcements, the
+    start-only part of ltcplay_remote.json and, when the Windows app names
+    it, flamesafe's config. Never raises: None when it cannot be made."""
+    try:
+        from . import configwatch as cw
+        from . import remote as remote_mod
+        w = cw.ConfigWatch()
+        folder = remote_mod.settings_folder()
+        if os.environ.get(FLAMESAFE_ENV):
+            _watch_flamesafe(w, os.environ.get(FLAMESAFE_ENV))
+        if getattr(args, "flamesafe_config", None):
+            _watch_flamesafe(w, args.flamesafe_config)
+        if schedule is not None:
+            from . import fire_ice as fire_ice_mod
+            from . import schedule_service
+            w.add("schedule", schedule)
+            w.add("Fire & Ice settings", fire_ice_mod.config_path_for(schedule))
+            # Missing, the scheduler writes it with its defaults at start:
+            # the same settings, so not a change.
+            w.add("operator list", schedule_service.operators_path(),
+                  digest=cw.default_hash({"operators": list(
+                      schedule_service.sch.DEFAULT_OPERATORS)}))
+            # Its "fuel" block is read again live by fuel.py.
+            w.add("Morning settings",
+                  os.path.join(folder, "ltcplay_morning.json"),
+                  digest=cw.without_hash(("fuel",)))
+            w.add("Stream Deck layout",
+                  os.path.join(folder, "ltcplay_deck.json"),
+                  engine=False, others=(cw.DECK,))
+        if getattr(args, "announce", None) is not None:
+            from . import announce as announce_mod
+            w.add("announcements", os.path.abspath(os.path.expanduser(
+                args.announce or announce_mod.default_config_path())))
+        # Only the settings read at start: the booth speaker, the alert
+        # pulse's pixels and the flamesafe config. The rest of the file
+        # is read live, or saved from the page.
+        w.add("rack screen settings",
+              os.path.join(folder, remote_mod.SETTINGS_FILE),
+              digest=cw.keys_hash(("booth_alert", "alert_pixels",
+                                   "flamesafe_config")))
+        return w
+    except Exception as e:                       # noqa: BLE001
+        print(f"The settings file watch is off: {type(e).__name__}: {e}")
+        return None
+
+
+def _watch_flamesafe(watch, path):
+    """flamesafe's config: read by this engine (the flame link, the lamps),
+    and by flamesafe and the Stream Deck program the supervisor runs."""
+    if watch is None or not path:
+        return
+    from . import configwatch as cw
+    watch.add("flamesafe config", path, others=(cw.DECK, cw.FLAMESAFE))
+
+
+# Set by the Windows app's supervisor from showpc.json: the ONE flamesafe
+# config flamesafe and the Stream Deck were started with (review of PR #38,
+# P1-4; packaging/windows/ltcwin.py FLAMESAFE_ENV).
+FLAMESAFE_ENV = "LTCPLAY_FLAMESAFE_CONFIG"
+
+
+def _one_flamesafe_config(args, fire_ice):
+    """(path or None, refusal or None). Up to four places can name
+    flamesafe's config: the Windows app (FLAMESAFE_ENV, from showpc.json),
+    --flamesafe-config, ltcplay_fire_ice.json and ltcplay_remote.json. They
+    must all name the same file, or the flame link, the flame lamps and the
+    flamesafe that is really running could be three different ones (review
+    of PR #43, P1-4): a mismatch is refused in one sentence."""
+    named = []
+    env = os.environ.get(FLAMESAFE_ENV)
+    if env:
+        named.append(("the Windows app's showpc.json", env))
+    if getattr(args, "flamesafe_config", None):
+        named.append(("--flamesafe-config", args.flamesafe_config))
+    if fire_ice is not None and fire_ice.flamesafe_config:
+        named.append((fire_ice.path or "ltcplay_fire_ice.json",
+                      fire_ice.flamesafe_config))
+    try:
+        from . import remote as remote_mod
+        rs = remote_mod.load_settings()
+        if rs.get("flamesafe_config"):
+            named.append((rs["path"], rs["flamesafe_config"]))
+    except (ValueError, OSError):
+        pass                 # read again, and refused, where it is used
+
+    def same(p):
+        return os.path.normcase(os.path.realpath(os.path.expanduser(p)))
+    if len({same(p) for _w, p in named}) > 1:
+        lines = "; ".join(f"{w} names {p}" for w, p in named)
+        return None, (f"The settings name different flamesafe configs: "
+                      f"{lines}. The flame link, the flame lamps and the "
+                      f"flamesafe that is running must all use the same one, "
+                      f"so nothing was started. Make every one of them name "
+                      f"the same file (on the show PC, the one in "
+                      f"showpc.json).")
+    return (named[0][1] if named else None), None
+
+
+REFUSED_FILE = "ltcplay_engine_refused.txt"
+
+
+def _say_refused(why):
+    """The engine's refusal to start, where the Windows supervisor (and so
+    the rack screen) can find it, not only in the engine's own log (re-review
+    of #46, P2-g): REFUSED_FILE in this machine's settings folder, first
+    line the time, then the sentence. None removes it (a start that got
+    past the check). Never raises."""
+    try:
+        from . import remote as remote_mod
+        path = os.path.join(remote_mod.settings_folder(), REFUSED_FILE)
+        if why is None:
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}\n{why}\n")
+    except Exception:
+        pass
+
+
+def _lasers_dark_first(httpd):
+    """Fire & Ice: BEYOND's timecode into the black zone, a few black frames
+    over about 100 ms, right after the show's own stop on the way out
+    (review of PR #43, P1-1). Ctrl-C, a closed console window and the Windows app's stop
+    (Ctrl-Break, and a shutdown's WM_QUERYENDSESSION) all come through
+    here. The gate sends them again when it closes."""
+    gate = getattr(getattr(getattr(getattr(httpd, "fire_ice", None),
+                                   "devices", None), "beyond", None),
+                   "gate", None)
+    if gate is None:
+        return
+    try:
+        sent = gate.black_burst()
+        print(f"Lasers: BEYOND's timecode sent to the black zone "
+              f"({sent} black frame(s)).")
+    except Exception as e:
+        print(f"Lasers: the black zone could NOT be sent on the way out "
+              f"({e}). Check the lasers are dark.")
+
+
 def _shutdown(httpd):
     """The way out, in the order that keeps the rig safe: the show's own
     stop (the blackout) first, then the announcements, then the scheduler
@@ -1317,6 +1799,10 @@ def _shutdown(httpd):
         except Exception as e:
             print(f"The scheduler did not halt cleanly: {e}")
     httpd.control.stop()
+    # Straight after the show's own stop, before anything that may wait on
+    # a disk: a failed black frame is journaled, and the blackout comes
+    # first (above).
+    _lasers_dark_first(httpd)
     announce = getattr(httpd, "announce", None)
     if announce is not None:
         try:
@@ -1328,6 +1814,13 @@ def _shutdown(httpd):
             httpd.schedule.stop()
         except Exception as e:
             print(f"The scheduler did not stop cleanly: {e}")
+    lb = getattr(httpd, "loopback", None)
+    if lb is not None:
+        try:
+            lb.shutdown()
+            lb.server_close()
+        except Exception:
+            pass
     httpd.server_close()
 
 
@@ -1591,6 +2084,49 @@ def cmd_retime(args):
     return 0
 
 
+def cmd_checklist_verify(args):
+    """`ltc checklist-verify`: walk the Morning and Shutdown checklist
+    record chain (checklist.py) and say whether it is intact. Exit 0 when
+    it is, 1 when it is not or cannot be read."""
+    from . import checklist as checklist_mod
+    from . import remote as remote_mod
+    folder = args.folder or os.path.join(remote_mod.settings_folder(), "logs",
+                                         "checklists")
+    path = os.path.join(folder, checklist_mod.RECORDS_FILE)
+    chain = checklist_mod.Chain(path)
+    ok, n, why = chain.verify()
+    if not os.path.exists(path):
+        print(f"No checklist records yet ({path}).")
+        return 0
+    if ok:
+        print(f"The checklist record chain is intact: {n} record(s) in "
+              f"{path}.")
+        if chain.records:
+            print(f"Last record: #{chain.records[-1]['seq']} "
+                  f"{chain.records[-1]['local']} "
+                  f"{chain.records[-1].get('checklist_title')} "
+                  f"{chain.records[-1].get('state')} by "
+                  f"{chain.records[-1].get('who')}, hash "
+                  f"{chain.records[-1]['hash']}")
+        return 0
+    print(f"The checklist record chain is NOT intact: {why}. {n} record(s) "
+          f"before the break are sound ({path}).")
+    return 1
+
+
+def cmd_weather(args):
+    """`ltc weather --check`: the Weather block's self check (weather.py,
+    WEATHER.md). Fetches each source once, prints what came back and says
+    pass or fail. Exit 0 when every check passed."""
+    from . import remote as remote_mod
+    from . import weather as weather_mod
+    if not args.check:
+        print("ltc weather --check fetches each weather source once and "
+              "says pass or fail (WEATHER.md).")
+        return 0
+    return weather_mod.run_check(args.folder or remote_mod.settings_folder())
+
+
 def cmd_deck(args):
     from . import streamdeck
     return streamdeck.main(["--flamesafe-config", args.flamesafe_config,
@@ -1671,9 +2207,10 @@ def main(argv=None):
 
     i = sub.add_parser("init", help="write a starter timeline for a show folder")
     i.add_argument("show_dir")
-    i.add_argument("--fps", default=30)
-    i.add_argument("--start", default="01:00:00:00")
-    i.add_argument("--gap", type=float, default=0.0)
+    i.add_argument("--fps", default=None,
+                   help=f"the timecode rate (default {INIT_FPS})")
+    i.add_argument("--start", default=INIT_START)
+    i.add_argument("--gap", type=float, default=INIT_GAP_S)
     i.add_argument("--out")
     i.set_defaults(func=cmd_init)
 
@@ -1806,9 +2343,21 @@ def main(argv=None):
                                      "(default: this folder)")
     sv.add_argument("--port", type=int, default=7878)
     sv.add_argument("--bind", default="127.0.0.1",
-                    help="0.0.0.0 to reach it from a phone or iPad on the "
-                         "same network; a token is then required")
-    sv.add_argument("--token", help="use this token instead of a generated one")
+                    help="one address of this machine to serve on besides "
+                         "loopback (never 0.0.0.0); prefer --network")
+    sv.add_argument("--token", help=argparse.SUPPRESS)
+    sv.add_argument("--network", action="store_true",
+                    help="serve on the show network address saved on the "
+                         "page (ltcplay_remote.json), port 7878; every "
+                         "operator signs in with their own PIN")
+    sv.add_argument("--network-if-saved", action="store_true",
+                    dest="network_if_saved",
+                    help="the Windows app: serve on the show network "
+                         "address saved on the page when there is one, "
+                         "else on this machine only")
+    sv.add_argument("--flamesafe-config", dest="flamesafe_config",
+                    help="flamesafe's config, for the flame lamps on the "
+                         "remote page (needs link.status_mirror_port)")
     sv.add_argument("--no-browser", action="store_true", dest="no_browser")
     sv.add_argument("--schedule", nargs="?", const="", default=None,
                     metavar="FILE",
@@ -1871,6 +2420,23 @@ def main(argv=None):
                     help="ltcplay's own local web server, for the chosen "
                     "operator and the show's state")
     dk.set_defaults(func=cmd_deck)
+    cv = sub.add_parser("checklist-verify",
+                        help="check the Morning and Shutdown checklist "
+                             "record chain (every tick is hash chained)")
+    cv.add_argument("--folder", default=None,
+                    help="the checklists folder (default: this machine's "
+                         "logs/checklists)")
+    cv.set_defaults(func=cmd_checklist_verify)
+    wx = sub.add_parser("weather", help="the rack screen's Weather block: "
+                        "--check fetches each source once and says pass or "
+                        "fail")
+    wx.add_argument("--check", action="store_true",
+                    help="fetch each weather source once and print what "
+                         "came back")
+    wx.add_argument("--folder", default=None,
+                    help="the settings folder holding ltcplay_remote.json "
+                         "(default: this machine's)")
+    wx.set_defaults(func=cmd_weather)
 
     args = ap.parse_args(argv)
     try:

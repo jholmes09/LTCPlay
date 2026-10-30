@@ -186,12 +186,43 @@ never loads any of this.
   no default and no guessing: nothing else is ever used in its place.
 - `rate` must be 48000. Every stem must be a 48 kHz WAV (16-bit, 24-bit or
   32-bit PCM, or 32-bit float). A stem at another rate is refused.
-- `channels` is how many of the interface's outputs the show uses, at most 8.
-  A cue has at most 8 stems. Each stem
+- `channels` is how many of the interface's outputs the show uses, at most 32.
+  A cue has at most 32 stems. Each stem
   lists the outputs its channels play on, counting from 1: a stereo file
-  lists two, a mono file one or more. Stems on the same output are added
-  together; anything over full scale is held at full scale and shown on the
-  page.
+  lists two, a mono file one or more, a 19-channel file nineteen (its first
+  channel plays on the first output listed, its second on the second, and
+  so on, so `[19, 18, ..., 1]`, every number written out, plays it
+  reversed). Nothing pairs outputs: 19, an odd count, is as good as 20.
+  Stems on the same output are added together; anything over full scale is
+  held at full scale and shown on the page.
+- `ltc_output` (optional) sets one output aside for a timecode (LTC) track
+  exported with the stems, either as a channel of a multi-channel file or
+  as a mono file of its own. Exactly one stem of the show audio must play
+  on it and nothing else may: anything mixed with timecode garbles it. A
+  mono stem that lists the timecode output and another output is refused.
+  Left out, nothing is set aside and the stems route exactly as listed.
+  ltcplay does not generate LTC audio itself; its own timecode goes out as
+  Art-Net.
+- The show's 19 channels in the default map (Music L, C, R on 1 to 3,
+  Music Atmo L, R on 4 and 5, Lily, Jack and Narrator L, C, R on 6 to 14,
+  Sound Effects L, C, R on 15 to 17, Sound Effects Atmo L, R on 18 and 19)
+  with LTC on 20. To send a channel to another output, change its number in
+  the list; the list is per show file:
+
+        "channels": 20, "ltc_output": 20,
+        "cues": {"show": {"cue": "Show", "stems": [
+          {"file": "audio/show19.wav",
+           "channels": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                        17, 18, 19]},
+          {"file": "audio/ltc.wav", "channels": [20]}]}}
+
+  The interface must offer 20 outputs (19 with no timecode track) through
+  the way ltcplay opens it, or Run is refused with a sentence naming how
+  many it offers. All the show audio is held in memory, 219 MB a minute
+  for 19 channels (a 7 minute show, 1.5 GB; its 24-bit file is 1.2 GB, a
+  plain WAV well under the format's 4 GB limit); a
+  show whose audio needs more than half of the computer's memory is refused
+  when the show file loads.
 - `gain_db` is -60 to +12 (0 plays the file as it is).
 - `cue` is the cue in this show file the audio goes with (its name, file or
   timecode). The cue's length is its audio's, and the audio ending ends the
@@ -199,7 +230,10 @@ never loads any of this.
 - The stems of one cue must all be the same length, or the show file says
   `"allow_different_lengths": true` for that cue.
 - A missing file, a stem at the wrong rate, stems of different lengths, an
-  output past `channels`, or an interface with fewer outputs than `channels`
+  output past `channels`, a file whose channel count is not the number of
+  outputs it lists, two stems on the timecode output, audio too big for the
+  computer's memory, or an interface with fewer outputs than `channels`
+  (Run is refused, naming how many outputs each way to the interface has)
   are each refused with a sentence, when the show file loads or when Run is
   pressed, never at showtime.
 
@@ -350,7 +384,7 @@ decode noise does not make the show stutter.
 ## The web page
 
     ./ltc serve                 open it on this Mac
-    ./ltc serve --bind 0.0.0.0  reach it from a phone or iPad on the same network
+    ./ltc serve --network       also reach it from an iPad on the show Wi-Fi
 
 Or double-click **Web ltcplay.command**.
 
@@ -367,10 +401,122 @@ Run and Stop. Run asks before it sends anything, and Validate sends nothing at
 all, which is tested by listening on the ArtNet port during a validation and
 requiring silence.
 
-Serving on `0.0.0.0` mints a token and puts it in the link, whether or not you
-asked for one: anyone who can reach that port can black out the rig, and a
-venue network is not a private one. Requests from the machine itself never need
-it.
+**The iPad remote.** `--network` serves on ONE address, this machine's address
+on the show Wi-Fi, saved on the page under "Show network" (it lands in
+`ltcplay_remote.json` in the settings folder), on port 7878, plus this machine
+itself on 127.0.0.1. Never every interface: `0.0.0.0` is refused. There is no
+sign-in, no PIN and no operator name on the page (Jeff, 2026-10-07): any
+device that can reach that address can use the remote page, so the show Wi-Fi
+itself is the lock. The network reaches only the remote page and its own
+routes, and anything that looks proxied, cross-site or addressed to another
+host name is refused (a page opened by another name gets a short page
+naming the address to use). On the Windows show PC the supervisor serves
+the saved address once it is saved (`--network-if-saved`; only a private
+RFC 1918 address, and a saved address that is not one, or that the PC
+does not have, falls back to this PC only), the installer adds one
+firewall rule for port 7878 from the PC's own subnet only, and the Show
+network card says where the engine listens, whether that rule is there and
+the address to type. The journal names the surface a press came from: "Rack
+screen" for the machine itself, "iPad at <its address>" for a device on the
+show Wi-Fi. An old `ltcplay_remote_pins.json` in the settings folder is no
+longer read.
+
+**Users and the audit log** (Jeff, 2026-10-20; USERS.md): named users with
+passwords, optional. Signing in (the user button, top right) names the
+person in the journal and the audit log; a role matrix may restrict
+settings, users, show files, unlocking, the show controls and arming, and
+never Abort, Hold, Stop or a disarm (ltcplay/users.py). Every press on
+every surface is one hash-chained line in `logs/audit` (ltcplay/audit.py),
+sent nightly to Jeff's server once switched on (ltcplay/auditsend.py,
+tools/audit_receiver.py).
+
+The remote page is one screen with no scrolling, at 1920x1080 on the rack PC
+and 1024x768 on an iPad: the show state, the timecode, the current show with
+"Left in this show" (its length minus where the engine's show clock is; it
+stands still while held, and is not shown when the length is not known),
+the next show with its countdown, Start now and Abort (each asks first),
+Hold, Resume, Reset, each flame group as flamesafe last reported it with its
+Hold to arm and Disarm, Disarm all flame groups, the big Abort bar, and a
+status strip (deck, flamesafe, audio, video, lasers, pixels). All through the
+same scheduler and conductor paths. Tonight's list is its own compact screen
+(Schedule), and everything else is on the Programming screen: the transport
+below, Run and Stop, the Stream Deck operator and the show network, the last
+three on the machine itself only. Each has a Back to the show button, and the
+Abort bar is on every screen. If the page has not heard from the engine for 2
+s a red banner says so and the controls that act on what it shows go off;
+Hold, Abort and Disarm stay on.
+
+**The Stream Deck's keys** (Jeff, 2026-10-26): key 0 is START / STOP,
+keys 1 to 4 arm and disarm the first four flame groups (Floor G, Cat-Walk G,
+Blue Flames, Fireball by default; ltcplay_deck.json can reorder and
+relabel them), key 5 is spare. The deck has no Hold and no Abort key: those
+are the Rack screen's. STOP RUN (while a run is going, and only when the
+scheduler is known to have no show live) is a half second hold: every
+flame group is turned off on the arm link at once, then the Rack screen's
+Stop route is asked with "halt", which ends live flame programming, sends
+the flame link's disarm_all (the flame half of an Abort), disarms every
+laser and stops playback; nothing latches the rig. During a scheduled show
+the key keeps saying NOW PLAYING, PAUSED or AUDIO LOST, and the same hold
+is a complete halt (Jeff, 2026-10-26): all of the above, and the show
+ends through the scheduler's Stop (faded like an Abort, no latch, no
+Reset; after the last show of the night the night closes a moment later,
+as after an Abort). The flames go first, then live flames, the lasers
+(disarmed and blanked), screen arm holds, the purge and the laser tests,
+then the show, whose fade runs to the end before playback stops. With
+the engine down the key reads STOP ALL and the hold still disarms the arm
+link first. The Rack screen's own Stop button is still refused during a
+show.
+After an Abort from any screen
+the deck border stays solid red and every key with nothing to do is
+greyed; a group that flamesafe still reports armed keeps showing ARMED (and
+a fault or a lost link still shows), and a tap on it turns it off. STOP RUN
+still works while aborted, as on the Rack screen. Reset is on the Rack
+screen; the deck starts every group's two second re-arm wait when it sees
+the Abort, and again when it sees the Reset. If the engine does not take a
+press, or cannot be reached, the Start key reads ENGINE FAULT.
+
+**The Stream Deck's three threads** (2026-10-21): the arm link to flamesafe
+is sent from a thread of its own at 20 Hz, the key images are written to the
+deck over USB from another, and the keys are read on a third. A slow or
+stalled USB write (a busy machine) only makes the keys lag; it never delays
+a key read, a hold, a disarm, Stop or the arm link. The arm link still goes
+silent, and flamesafe still disarms, if the loop that reads the keys stops.
+The rack screen's status strip shows the deck's worst USB write of the last
+minute ("Deck ok, USB 75 ms"); past 1 s the chip turns amber ("USB slow
+2.7 s") and the deck journals one fault line for that slow spell.
+A deck whose key image write is stuck is not trusted with a held key: past
+a quarter second an arm hold on the deck's own keys is dropped and a purge
+FIRE is released (let go and press again once it answers), and past 1 s the
+deck is treated as unplugged (the "deck" alert; every flame group stays as
+it was). Stop and a disarm tap never wait on any of this.
+
+**Arming from the page** (Jeff, 2026-10-03; no sign-in since 2026-10-07):
+anyone at the rack screen, or on a device that reaches the listed show
+network address, holds a group's "Hold to arm" button.
+The page never arms anything itself: the Stream Deck process reads the hold
+from the engine as a press of that group's key and arms it under every
+deck and flamesafe rule (flamesafe/CONTRACT.md, "Arming from a screen").
+It needs a page status and a flamesafe status no older than 1 s, 1 s of
+heartbeats the engine actually received, and `"screen_arming": true` in
+`ltcplay_remote.json` (off unless it says true; turned on and off on the
+show machine itself: Programming, "Arming from a screen"). The page names
+the reason whenever a hold is refused: switched off, an Abort standing, no
+Stream Deck program reading the engine, this screen in Arrange mode, every
+machine in the group locked out, or the deck's own refusal (its re-arm
+wait after a disarm, no operator); and says so when the Stream Deck took it. One hold per group at a
+time: another device, or another tab on the same one, cannot take over or
+restart a live hold. A dropped connection, a closed page, an Abort or a
+disarm lets the hold go.
+
+In a programming session (a show started with Rehearse, or in Rehearsal mode)
+the page can also play from a timecode, jump 5 or 10 s, pause and continue,
+and loop between marks A and B. Never during a scheduled show.
+
+**Never put remote access software, a tunnel or a port forward on the show
+machine.** The engine trusts anything that seems to come from the machine
+itself. Anything that looks forwarded (Forwarded, X-Forwarded-For, Via and the
+like) is refused, from anywhere, and so is a request addressed by any other
+name.
 
 One show runs at a time. A second start is refused with a reason, because two
 players on the same universes fight frame by frame and the rig looks broken.

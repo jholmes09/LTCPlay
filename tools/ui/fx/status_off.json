@@ -1,0 +1,121 @@
+{
+ "served_at": 0,
+ "fresh_s": 2.0,
+ "version": "bench test",
+ "schedule": {
+  "attached": true,
+  "ok": true,
+  "state": "STANDBY",
+  "running": null,
+  "held": false,
+  "aborted": false,
+  "conductor": true,
+  "trouble": null,
+  "next": null,
+  "delayed": null,
+  "slots": []
+ },
+ "show": {
+  "running": false,
+  "timecode": null
+ },
+ "transport": {
+  "programming": false
+ },
+ "flames": {
+  "connected": true,
+  "stale": false,
+  "age_ms": 120,
+  "fault": "",
+  "cues_fault": "",
+  "groups": [
+   {
+    "name": "front row",
+    "armed": "disarmed",
+    "wanted": false,
+    "rearm_ms": 0,
+    "purge_refused": ""
+   },
+   {
+    "name": "cat-walk",
+    "armed": "disarmed",
+    "wanted": false,
+    "rearm_ms": 0,
+    "purge_refused": ""
+   },
+   {
+    "name": "wave flamer",
+    "armed": "disarmed",
+    "wanted": false,
+    "rearm_ms": 0,
+    "purge_refused": ""
+   }
+  ]
+ },
+ "deck": {
+  "text": "",
+  "heard": true
+ },
+ "disarm_connected": true,
+ "arming": {
+  "enabled": true,
+  "needs_s": 2.0,
+  "fresh_s": 1.0,
+  "holds": []
+ },
+ "alerts": [],
+ "subsystems": [
+  {
+   "name": "Show",
+   "state": "ok",
+   "word": "ready"
+  },
+  {
+   "name": "Timecode",
+   "state": "bad",
+   "word": "fault"
+  },
+  {
+   "name": "flamesafe",
+   "state": "ok",
+   "word": "live"
+  },
+  {
+   "name": "Stream Deck",
+   "state": "bad",
+   "word": "missing"
+  },
+  {
+   "name": "Lasers",
+   "state": "ok",
+   "word": "dark"
+  },
+  {
+   "name": "Audio",
+   "state": "ok",
+   "word": "ready"
+  }
+ ],
+ "laser_arm": {
+  "lasers": [
+   {
+    "id": "L1",
+    "name": "Laser 1",
+    "armed": false
+   },
+   {
+    "id": "L2",
+    "name": "Laser 2",
+    "armed": false
+   }
+  ],
+  "groups": {
+   "All": [
+    "L1",
+    "L2"
+   ]
+  }
+ },
+ "laser_fault": "",
+ "artnet_note": ""
+}
