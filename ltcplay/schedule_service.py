@@ -2777,7 +2777,11 @@ class Service:
             v = pr.verdict(key)
             if v == "passed":
                 return False
-            if v == "failed":
+            if v in ("failed", "cleared"):
+                # Failed, or failed and then cleared by a later pass (Jeff's
+                # field report, 2026-10-29): never started unattended, and
+                # never journaled as a check that is late. Resume (a cleared
+                # show is then checked again) or Start now.
                 return True
             if key not in self._preroll_late:
                 self._preroll_late[key] = pr.late_ok_s()
@@ -2799,10 +2803,18 @@ class Service:
 
     def _preroll_broken(self, why):
         """The rig check itself could not run: journaled and alerted once
-        per reason (the alert hold then holds the show). Never raises."""
-        if getattr(self, "_preroll_broke", None) == why:
+        per reason (the alert hold then holds the show), and once more
+        after a passing check cleared it (review 1 of #176: still broken,
+        still said). Never raises."""
+        once = (why, getattr(self.preroll, "clears", 0))
+        if getattr(self, "_preroll_broke", None) == once:
             return
-        self._preroll_broke = why
+        self._preroll_broke = once
+        try:
+            # Numbered, so a check that began before it never clears it.
+            self.preroll.mark_failure()
+        except Exception:                        # noqa: BLE001
+            pass
         text = (f"The rig check before the show could not run ({why}), so "
                 f"the show does not start by itself. Press Start now to try "
                 f"again; the journal has the details.")
@@ -2813,6 +2825,44 @@ class Service:
                 self.alert_sink("preroll", text)
         except Exception:                        # noqa: BLE001
             pass
+
+    def _preroll_release(self, who, screen):
+        """Resume was pressed (lock held): a show whose rig check failed
+        and then passed on a later check (preroll.PreRoll._clear_failure)
+        is checked again now and starts when that passes, at most
+        late_ok_s late; it is never started on the old pass. Never
+        raises."""
+        pr = self.preroll
+        if pr is None:
+            return
+        try:
+            keys = pr.release_cleared()
+            m = self.machine
+            night = str(m.date) if m is not None else None
+            for key in keys:
+                # A scheduled show's key is (night, show); Start now's and
+                # a Pre-check's are not shows (review A of #176).
+                if not isinstance(key, tuple) or len(key) != 2 or \
+                        key[0] != night or not isinstance(key[1], int):
+                    continue
+                self._preroll_late[key] = pr.late_ok_s()
+                d = m.delayed() if m is not None else None
+                if d is not None and d.n == key[1]:
+                    # Its time has gone by: nothing checks it by itself
+                    # (review A round 2 of #176).
+                    then = (f"Its time has passed, so show {key[1]} waits "
+                            f"for Start now, which checks the rig first.")
+                else:
+                    then = (f"Show {key[1]} is checked again at its next "
+                            f"tick and starts only if that check passes (at "
+                            f"most {pr.late_ok_s()} s late).")
+                self._journal_line(
+                    "system", f"{who or 'Someone'} pressed Resume after the "
+                              f"rig check for show {key[1]} failed and then "
+                              f"passed. {then}",
+                    action="pre-roll", outcome="released", show=key[1])
+        except Exception:                        # noqa: BLE001
+            return
 
     def _preroll_for_start_now(self, who, screen, gen):
         """Start now: the rig is checked first, on the pressing thread,
@@ -2826,6 +2876,7 @@ class Service:
         self._preroll_seq += 1
         who_ = who or "someone"
         r = pr.run(("start now", self._preroll_seq), f"Start now by {who_}",
+                   by=f"Start now by {who_}",
                    cancelled=lambda: (self._start_cancel[0] != gen or
                                       self.halting()))
         if r["state"] == "passed":
@@ -2886,15 +2937,22 @@ class Service:
                                          f"{why}. Nothing was changed."}
         from .preroll import outputs_off
         off = outputs_off(r["items"])
-        failed = "; ".join(f"{i['name']}: {i['text']}" for i in r["items"]
-                           if i["required"] and not i["ok"])
+        bad = [i for i in r["items"] if i["required"] and not i["ok"]]
+        failed = "; ".join(f"{i['name']}: {i['text']}" for i in bad)
+        left = (", ".join(sorted(off)) + " left off for this show"
+                if off else "nothing left off")
+        if any(i["name"] == "MadMapper output" for i in bad):
+            # Not yet bench-proven, so it switches nothing off (review A
+            # round 2 of #176).
+            left += (". The MadMapper output check failed and stays "
+                     "failed; nothing is switched off for it")
+        elif not off:
+            left += " (no output's check failed)"
         self.journal_press(
             who, screen, "continue anyway", "chosen",
             f"{who_} chose Continue anyway on the {screen or 'screen'} after "
             f"the rig check failed ({failed}). The show starts now, late, "
-            f"with " + (", ".join(sorted(off)) + " left off for this show"
-                        if off else "nothing left off (no output's check "
-                                    "failed)") + ".", fault=True)
+            f"with {left}.", fault=True)
         self.performer.continue_off = (off, who_)
         if m.state == sch.HOLD:
             got = self.operator_press("resume", who, screen, surface=True)
@@ -3742,6 +3800,8 @@ class Service:
                                             confirmed=bool(confirmed),
                                             surface=bool(surface),
                                             detail=str(detail or "")))
+                if kind == sch.RESUME and not out.refused:
+                    self._preroll_release(who, screen)
             finally:
                 self._press_stamp = None
         if out.refused:
