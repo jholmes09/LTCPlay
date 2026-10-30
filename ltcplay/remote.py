@@ -209,17 +209,23 @@ CLEANING_POST_ROUTES = ("cleaning-beat", "cleaning-stop")
 # and from the show network need screen_arming; a disarm and Hazers off
 # never.
 HAZER_POST_ROUTES = ("hazer", "hazers-off", "hazer-level")
+# Play-from cues (play_from.py, the cue list per show file): read by anyone
+# signed in; a save is the role matrix's Settings row (admin by default,
+# users.py), a signed-in person, from the show network with screen_arming
+# too. They send nothing and start nothing.
+PLAY_FROM_GET_ROUTES = ("play-from-cues",)
+PLAY_FROM_POST_ROUTES = ("play-from-cues-save",)
 GET_ROUTES = ("whoami", "status", "network", "deck-input",
               "announce-outputs") + \
     MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES + \
-    CLEANING_GET_ROUTES
+    CLEANING_GET_ROUTES + PLAY_FROM_GET_ROUTES
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     "network", "screen-arming", "alert", "live-flame",
     "announce-output", "announce-test-tone") + \
     MORNING_POST_ROUTES + FUEL_POST_ROUTES + FIREBALL_POST_ROUTES + \
-    CLEANING_POST_ROUTES + HAZER_POST_ROUTES
+    CLEANING_POST_ROUTES + HAZER_POST_ROUTES + PLAY_FROM_POST_ROUTES
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
 # on the show machine itself (and the role matrix's Settings, users.py), with
 # a confirm; OFF from any surface, signed in or not: it only takes risk away.
@@ -1885,6 +1891,8 @@ class Remote:
         if name in CLEANING_GET_ROUTES:
             from . import cleaning as cleaning_mod
             return cleaning_mod.route_get(self.cleaning, ctx, self.wall)
+        if name in PLAY_FROM_GET_ROUTES:
+            return self.play_from_get(query, ctx)
         return 404, {"error": "no such thing here"}
 
     def post(self, route, body, ctx):
@@ -1956,6 +1964,8 @@ class Remote:
             return (*self.announce_post(name, body, ctx),) + ({},)
         if name in HAZER_POST_ROUTES:
             return (*self.hazer_post(name, body, ctx),) + ({},)
+        if name in PLAY_FROM_POST_ROUTES:
+            return (*self.play_from_save(body, ctx),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
             return (*self.press(name, body, ctx),) + ({},)
         if name == "arm-hold":
@@ -4501,6 +4511,132 @@ class Remote:
         if not ok:
             return 409, {"error": text}
         return 200, {"ok": True, "text": text}
+
+    # -- play-from cues (play_from.py): the cue list per show file ----------
+    def play_from_store(self):
+        """The play-from cue list's file in the settings folder (one Store
+        per engine, made on first use). Sends nothing."""
+        st = getattr(self, "_pfc_store", None)
+        if st is None or st.audit is not getattr(self, "audit", None):
+            from . import play_from as pf_mod
+
+            def _journal(who, screen, outcome, text, fault=False):
+                self._journal(who or "system", screen or "engine",
+                              "play-from cues", outcome, text, fault=fault)
+            st = self._pfc_store = pf_mod.Store(
+                self.folder, journal=_journal,
+                audit=getattr(self, "audit", None), wall=self.wall)
+        return st
+
+    def play_from_show_info(self, show):
+        """(the show's own cue, its AUDIO's length in seconds, "") for a
+        show file in the show folder, opened as the Check button opens one
+        (nothing sent, nothing played), or (None, None, why). The audio's
+        length, not the show's: the show audio clock cannot start past the
+        end of its audio, however long the lights or the video run."""
+        ctl = self.control
+        folder = getattr(ctl, "folder", None)
+        name = os.path.basename(str(show or ""))
+        if not folder or not name or name != show:
+            return None, None, f"{show!r} is not a show file"
+        path = os.path.join(folder, name)
+        if not os.path.isfile(path):
+            return None, None, f"{name} is not in the show folder"
+        from . import clock as clock_mod
+        from .session import Session
+        kw = dict(getattr(ctl, "defaults", None) or {})
+        kw.update(no_output=True, no_log=True, sd=getattr(ctl, "_sd", None))
+        s = None
+        cue = got = None
+        try:
+            s = Session(path, **kw)
+            s.open()
+            cue = clock_mod.show_cue_of(s.clock, s.tl)
+            if cue is not None:
+                got = s.clock.show_lengths(cue)
+        except Exception as e:                       # noqa: BLE001
+            return None, None, (f"{name} could not be opened "
+                                f"({type(e).__name__}: {e})")
+        finally:
+            if s is not None:
+                try:
+                    s.stop()
+                except Exception:                    # noqa: BLE001
+                    pass
+        if cue is None or not got or not got.get("audio_s"):
+            return None, None, (f"{name} does not play from the show "
+                                f"audio, so it has no show cue to play "
+                                f"from")
+        return cue, float(got["audio_s"]), ""
+
+    def play_from_get(self, query, ctx):
+        """GET play-from-cues[?show=<file>]: the file's revision, its error
+        and the rules, and with ?show= that show's cues, its own cue and
+        audio length, a note when the audio changed since the save, and
+        whether this person may save. Anyone signed in may read. (code,
+        body)."""
+        import urllib.parse
+        me = getattr(ctx, "session", None) or {}
+        u = self.users
+        if u is None or not u.active() or not me.get("name"):
+            return 403, {"error": "Sign in to read the play-from cues."}
+        show = (urllib.parse.parse_qs(query or "").get("show") or [None])[0]
+        from . import play_from as pf_mod
+        try:
+            out = self.play_from_store().view(show)
+        except Exception as e:                       # noqa: BLE001
+            return 500, {"error": f"The play-from cues could not be read "
+                                  f"({type(e).__name__})."}
+        out["may_edit"] = bool(u.may(me.get("role"), "settings") and
+                               self.may_act_from(ctx.local))
+        if show is not None:
+            cue, length, why = self.play_from_show_info(show)
+            out.update(cue=cue, audio_len_s=length, show_problem=why,
+                       audio_note=pf_mod.audio_note(out["entry"], length))
+        return 200, out
+
+    def play_from_save(self, body, ctx):
+        """POST play-from-cues-save {"show", "rev", "cues": [{"id" (kept
+        from the list read; none for a new cue), "name", "tc", "lead_in_s",
+        "note"}]}: the Settings row (users.classify, checked by web.py
+        first, and again here), a signed-in person, from the show network
+        screen_arming too. The show's own cue and audio length are worked
+        out here, never taken from the page. Saved with a revision check,
+        history, a journal line and an audit event. Sends nothing, starts
+        nothing. (code, body)."""
+        from . import users as users_mod
+        body = body if isinstance(body, dict) else {}
+        who, device, _surface = self._actor(ctx, body)
+        me = getattr(ctx, "session", None) or {}
+        u = self.users
+        st = self.play_from_store()
+        show = body.get("show")
+
+        def refused(code, why):
+            text = f"Not saved: {why} Nothing was changed."
+            st.refused(who, device, show, text)
+            return code, {"error": text}
+        if u is None or not u.active() or not me.get("name"):
+            return refused(403, "editing the play-from cues needs a "
+                                "signed-in admin.")
+        if not u.may(me.get("role"), "settings"):
+            return refused(403, f"{me.get('name')} may not: "
+                                f"{users_mod.perm_label('settings')}.")
+        if not self.may_act_from(ctx.local):
+            return refused(403, "editing the play-from cues from a device "
+                                "on the show network needs screen_arming "
+                                "(on the show machine itself: Programming, "
+                                "Arming from a screen, Turn on).")
+        if not isinstance(show, str):
+            return refused(400, "choose a show file.")
+        cue, length, why = self.play_from_show_info(show)
+        if why:
+            return refused(409, why[0].upper() + why[1:] + ".")
+        ok, text, entry = st.save(show, cue, length, body.get("cues"),
+                                  body.get("rev"), who=who, screen=device)
+        if not ok:
+            return 409, {"error": text + " Nothing was changed."}
+        return 200, {"ok": True, "text": text, "entry": entry}
 
     def hazers_view(self, fl):
         """The status's "hazers": hazers.Hazers.view, and the display only
