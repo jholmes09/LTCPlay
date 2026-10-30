@@ -2783,8 +2783,38 @@ MUTATIONS = [
 
  ("pump: a second ON adds time",
   "ltcplay/fuelpump.py",
-  "            ok = False\n            late = \"\"\n            if running is None and self._off_gen != off0:",
-  "            ok = False\n            late = \"\"\n            running = None\n            if False:"),
+  "            broke = \"\"\n            if running is None and self._off_gen != off0:",
+  "            broke = \"\"\n            running = None\n            if False:"),
+
+ ("pump: the run is not reserved before the second look",
+  "ltcplay/fuelpump.py",
+  "                self.run = {\"id\": rid, \"reserved\": True}",
+  "                pass"),
+
+ ("pump: cut() leaves an ON being checked free to start after it",
+  "ltcplay/fuelpump.py",
+  "                self._off_gen += 1\n                was, self.run",
+  "                was, self.run"),
+
+ ("pump: a start that raised leaves the reservation (the pump wedged)",
+  "ltcplay/fuelpump.py",
+  "                if isinstance(self.run, dict) and \"deadline\" not in \\\n                        self.run:\n                    self.run = None",
+  "                pass"),
+
+ ("pump: the screens read a reservation as a run",
+  "ltcplay/fuelpump.py",
+  "        r = self._live_run()",
+  "        r = self.run"),
+
+ ("pump: on() reads a reservation as a run",
+  "ltcplay/fuelpump.py",
+  "            return self._live_run() is not None and link is not None and \\",
+  "            return self.run is not None and link is not None and \\"),
+
+ ("pump: a run's last_off carries no count",
+  "ltcplay/fuelpump.py",
+  "        self.last_off = {\"reason\": why, \"who\": by, \"n\": self._offs}",
+  "        self.last_off = {\"reason\": why, \"who\": by}"),
 
  ("pump: live flame programming starts while the pump runs",
   "ltcplay/remote.py",
@@ -12376,8 +12406,8 @@ def build():
   '            if False:\n                # Only ever changed from a fresh read'),
 
  ('users: deck can be a name', 'ltcplay/users.py',
-  'RESERVED = ("unsigned", "system", "signed out", "nobody", "deck")',
-  'RESERVED = ("unsigned", "system", "signed out", "nobody")'),
+  'RESERVED = ("unsigned", "system", "signed out", "nobody", "deck", "engine",',
+  'RESERVED = ("unsigned", "system", "signed out", "nobody", "engine",'),
 
  ('users: a users file that is not UTF-8 reads as no users', 'ltcplay/users.py',
   '            with open(self.path, "rb") as fh:\n                raw = fh.read()',

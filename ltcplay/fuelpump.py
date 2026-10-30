@@ -161,7 +161,8 @@ class FuelPump:
         # #188, 1).
         self._off_gen = 0
         self._used = collections.deque(maxlen=RUN_IDS_KEPT)
-        self.last_off = None        # {"reason", "who"}
+        self.last_off = None        # {"reason", "who", "n"}
+        self._offs = 0              # last_off's "n": +1 on every OFF said
 
     # -- plumbing ---------------------------------------------------------
     def _note(self, who, screen, outcome, text, fault=False):
@@ -209,10 +210,17 @@ class FuelPump:
         on a stuck sender (review B of #188, F5)."""
         link = self.link()
         try:
-            return self.run is not None and link is not None and \
+            return self._live_run() is not None and link is not None and \
                 bool(link.pump_live_now())
         except Exception:
             return False
+
+    def _live_run(self):
+        """The run, or None while there is none or only the reservation an
+        ON makes while it checks (it has no deadline yet): read without
+        any lock, so never a half-made run (delta review of #188, 1)."""
+        r = self.run
+        return r if isinstance(r, dict) and "deadline" in r else None
 
     def _disarm_words(self, link):
         """Why the Abort count moved, in words: the flame link's own reason
@@ -374,6 +382,7 @@ class FuelPump:
             running = self.run
             ok = False
             late = ""
+            broke = ""
             if running is None and self._off_gen != off0:
                 # A Pump off (or Stop, Abort, any end) landed while this
                 # press was being checked: it wins.
@@ -393,31 +402,69 @@ class FuelPump:
                 if late:
                     self.run = None
                     running = None
-            if running is None and not late:
-                gen = link.pump_gen()
-                now = self._clock()
-                r = {"id": rid, "seconds": secs, "start": now, "beat": now,
-                     "deadline": now + secs, "gen": gen, "who": who,
-                     "screen": screen, "np": None,
-                     "night": self._night()}
-                # The hard end is the deadline itself, turned into the
-                # link's clock under the link's lock (the link reads its
-                # own clock first, this one second): a pause only tightens
-                # it.
-                ok = link.pump_start(secs, gen, deadline=r["deadline"],
-                                     clock=self._clock) is True
-                self.run = r if ok else None
+            try:
+                started = self._start_reserved(running, late, link, rid,
+                                               secs, who, screen)
+            except Exception as e:
+                # Never a wedged pump: nothing started, the link told OFF.
+                started = (False, None)
+                broke = type(e).__name__
+                try:
+                    link.pump_stop()
+                except Exception:
+                    pass
+            finally:
+                # Whatever happened in there, a reservation never outlives
+                # this press (delta review of #188, 2).
+                if isinstance(self.run, dict) and "deadline" not in \
+                        self.run:
+                    self.run = None
+            ok, r = started
         if running is None and late:
             why = f"The fuel pump was not turned on: {late}"
             self._note(who, screen, "refused",
                        f"{who or 'Someone'} asked to turn the fuel pump on "
                        f"on the {screen}; refused: {why}")
+            self._audit(who, screen, "fuel pump on", "refused", why)
             return False, why
         if running is not None:
             left = max(0.0, running["deadline"] - self._clock())
             return False, (f"The fuel pump is already on ({clock_text(left)} "
                            f"left). A second press never adds time: press "
                            f"Pump off, then start it again.")
+        if broke:
+            why = (f"The fuel pump was not turned on: starting it failed "
+                   f"({broke}). Nothing runs. Press again.")
+            self._note(who, screen, "refused",
+                       f"{who or 'Someone'} asked to turn the fuel pump on "
+                       f"on the {screen}; refused: {why}", fault=True)
+            self._audit(who, screen, "fuel pump on", "refused", why)
+            return False, why
+        return self._started(ok, r, name, secs, who, screen)
+
+    def _start_reserved(self, running, late, link, rid, secs, who, screen):
+        """Inside set()'s critical section: the run started on the link
+        from its reservation, (ok, run). Raises as anything may; set()
+        clears the reservation whatever happens."""
+        ok, r = False, None
+        if running is None and not late:
+            gen = link.pump_gen()
+            now = self._clock()
+            r = {"id": rid, "seconds": secs, "start": now, "beat": now,
+                 "deadline": now + secs, "gen": gen, "who": who,
+                 "screen": screen, "np": None,
+                 "night": self._night()}
+            # The hard end is the deadline itself, turned into the link's
+            # clock under the link's lock (the link reads its own clock
+            # first, this one second): a pause only tightens it.
+            ok = link.pump_start(secs, gen, deadline=r["deadline"],
+                                 clock=self._clock) is True
+            self.run = r if ok else None
+        return ok, r
+
+    def _started(self, ok, r, name, secs, who, screen):
+        """set()'s end, outside its lock: refused, or the run said and its
+        timer started."""
         if not ok:
             why = ("The fuel pump was not turned on: the flame link did not "
                    "take it (a Stop or Abort landed). Press again in a "
@@ -566,16 +613,20 @@ class FuelPump:
     def _said_off(self, why, who="", screen="", system=True):
         why = " ".join(str(why or "Fuel pump off").split())[:200]
         by = who or ("system" if system else "unsigned")
-        self.last_off = {"reason": why, "who": by}
+        self._offs += 1
+        self.last_off = {"reason": why, "who": by, "n": self._offs}
         self._note(by, screen or "engine", "off", f"Fuel pump off: {why}.")
         self._audit(by, screen or "engine", "fuel pump off", "accepted", why,
                     system=system and not who)
 
     def stop(self, reason, who="", screen="", system=True):
-        """The pump OFF now, for any reason. True when it was on."""
+        """The pump OFF now, for any reason. True when it was on. A run
+        that never started (a reservation) is cleared and not said."""
         with self._lock:
             self._off_gen += 1
             r = self.run
+            if r is not None and "deadline" not in r:
+                self.run = r = None
         if r is not None:
             return self._finish(r, reason, who, screen, system)
         link = self.link()
@@ -624,7 +675,7 @@ class FuelPump:
         c = self.config()
         if c is None:
             return {"available": False}
-        r = self.run
+        r = self._live_run()
         on = self.on()
         p = self._entry(fl)
         if not on and p and p.get("passing"):

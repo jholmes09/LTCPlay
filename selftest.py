@@ -18476,7 +18476,7 @@ def test_nothing_plays_on_the_pa_without_an_operator_press():
           f"every engine name is reserved: {sorted(A.ENGINE_NAMES)} "
           f"{U.RESERVED}")
     for nm in ("Engine", "Scheduler", "LTC Player", "ltcplay", "System",
-               "  ltc   player "):
+               "  ltc   player ", "Deck"):
         try:
             U.check_name(nm)
             check(False, f"an account may be named {nm!r}")
@@ -62708,6 +62708,88 @@ def test_pump_review_fixes():
               f"Pump off pressed while an ON was being checked: nothing "
               f"starts after it: {out}")
         R.feed()
+        # Delta review 3: a Stop's cut() (not only Pump off) landing while
+        # an ON is being checked wins too.
+        def cut_meanwhile():
+            why = real_ref()
+            pm.cut()
+            return why
+        pm.refusal = cut_meanwhile
+        st, _h, out = tap(True)
+        pm.refusal = real_ref
+        check(st == 409 and "Pump off" in out["error"] and pm.run is None
+              and not link.pump_on,
+              f"a Stop's cut while an ON was being checked: nothing starts "
+              f"after it: {out}")
+        R.feed()
+        # Delta review 3: the run is reserved before the second look, so
+        # a live flame programming start check made then sees it.
+        seen_lf = []
+        real_blk = pm._blocker
+
+        def look_from_lf():
+            seen_lf.append(R.remote.live_flame_pump_refusal())
+            return real_blk()
+        pm._blocker = look_from_lf
+        st, _h, out = tap(True)
+        pm._blocker = real_blk
+        check(st == 200 and any(seen_lf),
+              f"while the ON makes its second look its run is already "
+              f"reserved, so live flame programming starting then is "
+              f"refused: {seen_lf}")
+        off()
+        # Delta review 1: a reservation is never a run on the screens.
+        pm.run = {"id": "x", "reserved": True}
+        real_live = link.pump_live_now
+        link.pump_live_now = lambda: True
+        check(pm.on() is False,
+              "on() never reads a reservation as a run")
+        pm.on = lambda: True       # the race: an ON finishing mid-view
+        v = pm.view(R.remote.flame_status.view())
+        del pm.on
+        link.pump_live_now = real_live
+        pm.run = None
+        check(v.get("available") is True and v.get("left_s") is None,
+              f"view() with a reservation where a run was read: still "
+              f"available, no KeyError: {v}")
+        # Delta review 2: a start that raises never wedges the pump.
+        real_gen = link.pump_gen
+
+        def broken_gen():
+            raise KeyError("broken")
+        link.pump_gen = broken_gen
+        st, _h, out = tap(True)
+        link.pump_gen = real_gen
+        check(st == 409 and "starting it failed" in out["error"] and
+              pm.run is None and not link.pump_on,
+              f"a start that raised: refused in words, no reservation "
+              f"left: {out}")
+        st, _h, out = tap(True)
+        check(st == 200 and link.pump_on,
+              f"and the next ON works (not wedged): {st} {out}")
+        n_before = (pm.last_off or {}).get("n", 0)
+        off()
+        tap(True)
+        off()
+        lo = pm.last_off or {}
+        check(lo.get("n", 0) >= n_before + 2,
+              f"every OFF said carries a new count, so a screen sees two "
+              f"ends for the same reason: {lo}")
+        pm.run = {"id": "x", "reserved": True}
+        lines0 = len(R.lines_for("fuel-pump"))
+        pm.stop("Pump off on a reservation", who="A", screen="iPad")
+        check(pm.run is None and len(R.lines_for("fuel-pump")) == lines0,
+              "Pump off on a pump that never ran clears it and journals "
+              "nothing")
+        # Delta review 4: the second look's refusal is audited too, and
+        # live flame programming starting is said as starting.
+        lf3 = _LF()
+        lf3._starting = True
+        R.remote.live_flame = lf3
+        st, _h, out = tap(True)
+        R.remote.live_flame = None
+        check(st == 409 and "live flame programming is starting" in
+              out["error"], f"said as starting: {out}")
         # F5: the status answers while the sender holds the link's lock.
         tap(True)
         held, release = threading.Event(), threading.Event()
