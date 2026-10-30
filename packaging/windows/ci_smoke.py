@@ -933,6 +933,19 @@ def main(installer, version=""):
                    or b"").decode("utf-8", "replace")
         check("update check:" in sup_log, "the update check wrote no "
                                           "sentence to the supervisor's log")
+        # The window watches (showwindows.py, Jeff's field report
+        # 2026-10-29): on by default, and reading this PC's window list
+        # (no MadMapper on the runner: it says so, nothing is raised).
+        check("rack screen keeper: ON" in sup_log and
+              "MadMapper output watch: ON" in sup_log,
+              "the supervisor's log does not say the rack screen keeper "
+              "and the MadMapper output watch are on")
+        check("MadMapper output: MadMapper is not running" in sup_log or
+              "MadMapper output: not known" in sup_log,
+              "the MadMapper output watch never read the window list")
+        if "MadMapper output: not known" in sup_log:
+            NOTES.append("MadMapper output watch: the runner's window list "
+                         "could not be read (no desktop session)")
         NOTES.append(f"update check answered with exit {rc}")
 
         say("6. Stop LTC Player")
