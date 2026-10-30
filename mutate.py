@@ -2685,6 +2685,317 @@ MUTATIONS = [
   "            was = hz.cut()",
   "            hz.cut()\n            was = []"),
 
+ # the fuel pump (Jeff, 2026-10-30): flamesafe's switch, run by the engine
+ ("pump: the FSEQ's data on the pump's slot reaches it",
+  "ltcplay/flamelink.py",
+  "        if self._pump_chan is not None:\n            out[self._pump_chan] = 0\n",
+  ""),
+
+ ("pump: the flame frame never names the pump",
+  "ltcplay/flamelink.py",
+  "        if self._pump_live():\n            return self._hazers_on | {self._pump_name}",
+  "        if False:\n            return self._hazers_on | {self._pump_name}"),
+
+ ("pump: Stop and Abort leave the pump on at the link",
+  "ltcplay/flamelink.py",
+  "                self._pump_on = False\n                self._pump_until = None\n                self._hazers_on = frozenset()",
+  "                self._hazers_on = frozenset()"),
+
+ ("pump: Hold (a zero) turns the pump off",
+  "ltcplay/flamelink.py",
+  "            # No timed purge's hard end outlives a zero (review of #172).\n            self._purge_until = None\n            self._program = None",
+  "            # No timed purge's hard end outlives a zero (review of #172).\n            self._purge_until = None\n            self._pump_on = False\n            self._program = None"),
+
+ ("pump: ON is taken while an Abort is being repeated",
+  "ltcplay/flamelink.py",
+  "                if gen != self.abort_id or self.abort_repeating():",
+  "                if gen != self.abort_id:"),
+
+ ("pump: a start carrying a count from before a Stop is taken",
+  "ltcplay/flamelink.py",
+  "                if gen != self.abort_id or self.abort_repeating():",
+  "                if self.abort_repeating():"),
+
+ ("pump: the link's hard end never ends it",
+  "ltcplay/flamelink.py",
+  "            elif now >= until:\n                why = \"its time was up\"",
+  "            elif False:\n                why = \"its time was up\""),
+
+ ("pump: a stalled timer keeps it on at the link",
+  "ltcplay/flamelink.py",
+  "            elif now - beat > PUMP_HOLD_S or now < beat:",
+  "            elif False:"),
+
+ ("pump: a beat carrying a count from before a Stop keeps it on",
+  "ltcplay/flamelink.py",
+  "                if gen != self.abort_id:\n                    self._pump_on = False",
+  "                if False:\n                    self._pump_on = False"),
+
+ ("pump: the engine's deadline is not carried to the link",
+  "ltcplay/flamelink.py",
+  "                    if left < s:\n                        s = left\n                    if not s > 0:\n                        return False\n                self._pump_until = mine + s",
+  "                    if not s > 0:\n                        return False\n                self._pump_until = mine + s"),
+
+ ("pump: the engine reads a switch whose on is outside 1 to 255",
+  "ltcplay/flamelink.py",
+  "                    not SWITCH_ON_MIN <= on <= SWITCH_ON_MAX:",
+  "                    False:"),
+
+ ("pump: the engine reads a second switch",
+  "ltcplay/flamelink.py",
+  "            if switches:",
+  "            if False:"),
+
+ ("pump: the hazers count the pump as a hazer",
+  "ltcplay/hazers.py",
+  "                and str(p.get(\"kind\") or \"hazer\") == \"hazer\"]",
+  "                ]"),
+
+ ("pump: the engine's timer never ends it at its time",
+  "ltcplay/fuelpump.py",
+  "        if now >= r[\"deadline\"]:\n            return f\"its {clock_text(r['seconds'])} were up\"",
+  "        if False:\n            return f\"its {clock_text(r['seconds'])} were up\""),
+
+ ("pump: a stall between the timer's passes is not seen",
+  "ltcplay/fuelpump.py",
+  "        if now - r[\"beat\"] > BEAT_STALE_S or now < r[\"beat\"]:",
+  "        if False:"),
+
+ ("pump: a stall inside a pass is not seen",
+  "ltcplay/fuelpump.py",
+  "            elif fresh - r[\"beat\"] > BEAT_STALE_S or fresh < r[\"beat\"]:",
+  "            elif False:"),
+
+ ("pump: a Stop landing after the beat inside a pass is not seen",
+  "ltcplay/fuelpump.py",
+  "                lost = \"\" if link.pump_gen() == r[\"gen\"] else \\",
+  "                lost = \"\" if True else \\"),
+
+ ("pump: flamesafe going quiet leaves it on",
+  "ltcplay/fuelpump.py",
+  "        why = self.down()\n        if why:\n            return why.rstrip(\".\")",
+  "        why = \"\"\n        if why:\n            return why"),
+
+ ("pump: a replayed press starts it again",
+  "ltcplay/fuelpump.py",
+  "        if used:",
+  "        if False:"),
+
+ ("pump: a second ON adds time",
+  "ltcplay/fuelpump.py",
+  "            broke = \"\"\n            if running is None and self._off_gen != off0:",
+  "            broke = \"\"\n            running = None\n            if False:"),
+
+ ("pump: the run is not reserved before the second look",
+  "ltcplay/fuelpump.py",
+  "                self.run = {\"id\": rid, \"reserved\": True}",
+  "                pass"),
+
+ ("pump: cut() leaves an ON being checked free to start after it",
+  "ltcplay/fuelpump.py",
+  "                self._off_gen += 1\n                was, self.run",
+  "                was, self.run"),
+
+ ("pump: a start that raised leaves the reservation (the pump wedged)",
+  "ltcplay/fuelpump.py",
+  "                if isinstance(self.run, dict) and \"deadline\" not in \\\n                        self.run:\n                    self.run = None",
+  "                pass"),
+
+ ("pump: the screens read a reservation as a run",
+  "ltcplay/fuelpump.py",
+  "        r = self._live_run()",
+  "        r = self.run"),
+
+ ("pump: on() reads a reservation as a run",
+  "ltcplay/fuelpump.py",
+  "            return self._live_run() is not None and link is not None and \\",
+  "            return self.run is not None and link is not None and \\"),
+
+ ("pump: a run's last_off carries no count",
+  "ltcplay/fuelpump.py",
+  "            self.last_off = {\"reason\": why, \"who\": by, \"n\": self._offs,\n",
+  "            self.last_off = {\"reason\": why, \"who\": by,\n"),
+
+ ("pump: an ON from a stale or ageless screen is taken",
+  "ltcplay/remote.py",
+  "        if seen is None or seen != seen or \\\n                abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:\n            why = (\"The fuel pump was not turned on: the press came from a \"",
+  "        if False:\n            why = (\"The fuel pump was not turned on: the press came from a \""),
+
+ ("pump: a start that raised leaves the link naming the pump",
+  "ltcplay/fuelpump.py",
+  "                broke = type(e).__name__\n                try:\n                    link.pump_stop()\n                except Exception:\n                    pass",
+  "                broke = type(e).__name__"),
+
+ ("pump: the second look's refusal is not audited",
+  "ltcplay/fuelpump.py",
+  "            self._audit(who, screen, \"fuel pump on\", \"refused\", why)\n            return False, why\n        if running is not None:",
+  "            return False, why\n        if running is not None:"),
+
+ ("pump: a start that raised is not audited",
+  "ltcplay/fuelpump.py",
+  "                       f\"on the {screen}; refused: {why}\", fault=True)\n            self._audit(who, screen, \"fuel pump on\", \"refused\", why)",
+  "                       f\"on the {screen}; refused: {why}\", fault=True)"),
+
+ ("pump: the screens get no boot id",
+  "ltcplay/fuelpump.py",
+  "                \"last_off\": self.last_off, \"boot\": self.boot}",
+  "                \"last_off\": self.last_off}"),
+
+ ("pump: live flame programming starts while the pump runs",
+  "ltcplay/remote.py",
+  "        if on:\n            return (\"The fuel pump is on, and live flame",
+  "        if False:\n            return (\"The fuel pump is on, and live flame"),
+
+ ("pump: the status waits on the flame link's lock",
+  "ltcplay/fuelpump.py",
+  "                bool(link.pump_live_now())",
+  "                bool(link.pump_on)"),
+
+ ("pump: a disarm to every group is blamed on Stop or Abort",
+  "ltcplay/fuelpump.py",
+  "        return ended or (\"the disarm to every flame group was sent (a Stop, \"",
+  "        return (\"the disarm to every flame group was sent (a Stop, \""),
+
+ ("pump: the link not sending leaves it on",
+  "ltcplay/fuelpump.py",
+  "        if not snap.get(\"open\") or not snap.get(\"sending_ok\"):",
+  "        if not snap.get(\"open\"):"),
+
+ ("pump: cut() leaves it on at the link",
+  "ltcplay/fuelpump.py",
+  "            if link is not None:\n                link.pump_stop()\n            with self._lock:\n                self._off_gen += 1",
+  "            with self._lock:\n                self._off_gen += 1"),
+
+ ("pump: an ON whose checks began before a Pump off starts after it",
+  "ltcplay/fuelpump.py",
+  "            if running is None and self._off_gen != off0:",
+  "            if False:"),
+
+ ("pump: ON is taken while live flame programming is being turned on",
+  "ltcplay/remote.py",
+  "        programming = lf is not None and (getattr(lf, \"on\", False) or\n                                          getattr(lf, \"_starting\", False))",
+  "        programming = lf is not None and getattr(lf, \"on\", False)"),
+
+ ("pump: the blocker is not asked again with the run reserved",
+  "ltcplay/fuelpump.py",
+  "                try:\n                    late = self._blocker() or \"\"\n                except Exception:\n                    late = \"the engine's state could not be read.\"",
+  "                late = \"\""),
+
+ ("pump: live flame programming's own start check ignores the pump",
+  "ltcplay/remote.py",
+  "        if lf is None or not getattr(lf, \"on\", False):\n            why = self.live_flame_pump_refusal()",
+  "        if False:\n            why = self.live_flame_pump_refusal()"),
+
+ ("pump: an Abort standing leaves a run on",
+  "ltcplay/fuelpump.py",
+  "            if self._abort_standing():\n                return \"an Abort is standing\"",
+  "            if False:\n                return \"an Abort is standing\""),
+
+ ("pump: flamesafe not passing it never ends the run",
+  "ltcplay/fuelpump.py",
+  "            elif now - since > NOT_PASSING_S:",
+  "            elif False:"),
+
+ ("pump: flamesafe passing it with the engine off is not said",
+  "ltcplay/fuelpump.py",
+  "        if not on and p and p.get(\"passing\"):",
+  "        if False:"),
+
+ ("pump: the night closing leaves it on",
+  "ltcplay/fuelpump.py",
+  "        if night in NIGHT_CLOSING:\n            return \"the night is closing\"",
+  "        if False:\n            return \"the night is closing\""),
+
+ ("pump: the night over leaves a run on",
+  "ltcplay/fuelpump.py",
+  "        if night in NIGHT_OVER and r.get(\"night\") not in NIGHT_OVER:",
+  "        if False:"),
+
+ ("pump: ON while the night closes",
+  "ltcplay/fuelpump.py",
+  "        if self._night() in NIGHT_CLOSING:\n            return \"the night is closing.\"",
+  "        if False:\n            return \"the night is closing.\""),
+
+ ("pump: on 1 at the route turns it on",
+  "ltcplay/remote.py",
+  "        on = body.get(\"on\") is True\n        if not on:\n            ok, text = pm.set(False",
+  "        on = bool(body.get(\"on\"))\n        if not on:\n            ok, text = pm.set(False"),
+
+ ("pump: a run time over pump_max_s is taken",
+  "ltcplay/fuelpump.py",
+  "    if v > max_s:",
+  "    if False:"),
+
+ ("pump: ON with an Abort standing",
+  "ltcplay/fuelpump.py",
+  "            if self._abort_standing():\n                return (\"an Abort is standing. Press Reset, then turn it on \"",
+  "            if False:\n                return (\"an Abort is standing. Press Reset, then turn it on \""),
+
+ ("pump: ON within 0.75 s of a Stop or Abort at the engine",
+  "ltcplay/fuelpump.py",
+  "        if repeating:\n            return (\"a Stop or Abort is still being sent",
+  "        if False:\n            return (\"a Stop or Abort is still being sent"),
+
+ ("pump: ON with flamesafe's status stale",
+  "ltcplay/fuelpump.py",
+  "        if fl.get(\"stale\") or age is None or age > STATUS_FRESH_S * 1000:",
+  "        if False:"),
+
+ ("pump: ON with flamesafe's pump not the engine's",
+  "ltcplay/fuelpump.py",
+  "        if sorted(theirs) != self.mine():\n            return (\"flamesafe's fuel pump",
+  "        if False:\n            return (\"flamesafe's fuel pump"),
+
+ ("pump: ON with its slot in the lockout file",
+  "ltcplay/fuelpump.py",
+  "        if locked:",
+  "        if False:"),
+
+ ("pump: ON with live flame programming on",
+  "ltcplay/remote.py",
+  "            return (\"live flame programming is on, and turning it off \"\n                    \"turns the fuel pump off. Turn it off first.\")",
+  "            return \"\""),
+
+ ("pump: the screens say on before flamesafe has taken it",
+  "ltcplay/fuelpump.py",
+  "        elif not p or not p.get(\"passing\"):",
+  "        elif False:"),
+
+ ("pump: Stop (the halt) leaves the pump on",
+  "ltcplay/remote.py",
+  "            self.pump_cut(why, who, screen)",
+  "            pass"),
+
+ ("pump: an Abort press leaves the pump on",
+  "ltcplay/remote.py",
+  "            self.pump_cut(f\"{who or 'someone'} pressed Abort on the \"",
+  "            (f\"{who or 'someone'} pressed Abort on the \""),
+
+ ("pump: Stop on the rack screen's /api/stop leaves the pump on",
+  "ltcplay/web.py",
+  "        fn = getattr(rm, \"pump_cut\", None)",
+  "        fn = None"),
+
+ ("pump: ON from the show network without screen_arming",
+  "ltcplay/remote.py",
+  "        if not self.may_act_from(ctx.local):\n            why = (\"Turning the fuel pump on",
+  "        if False:\n            why = (\"Turning the fuel pump on"),
+
+ ("pump: ON needs no permission",
+  "ltcplay/users.py",
+  "    \"fuel-pump\": \"arm\",",
+  "    \"fuel-pump\": None,"),
+
+ ("pump: OFF needs the arm permission",
+  "ltcplay/users.py",
+  "        if name == \"fuel-pump\" and body.get(\"on\") is not True:",
+  "        if False:"),
+
+ ("pump: a pump_max_s past its limit is read",
+  "ltcplay/remote.py",
+  "                not PUMP_MIN_S <= v <= PUMP_MAX_LIMIT_S:",
+  "                False:"),
+
  ("deck: with announcements a tap of key 5 opens the hazers page",
   "ltcplay/streamdeck.py",
   "                if self.hazers_view():\n                    # Hazers too: a hold opens their page (tick), a tap",
