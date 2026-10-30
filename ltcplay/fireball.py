@@ -572,8 +572,11 @@ class FireballPanel:
             t.join(1.0)
         self.cut("the engine is stopping")
 
-    def on_abort(self, who="", screen=""):
-        self.cut(f"Abort pressed by {who or screen or 'someone'}", who=who,
+    def on_abort(self, who="", screen="", what="Abort"):
+        """An Abort or a Stop (Morning.on_abort, Morning.stop_hooks): every
+        fireball channel cut at once, not when the watcher next sees the
+        flame link's zero."""
+        self.cut(f"{what} pressed by {who or screen or 'someone'}", who=who,
                  screen=screen)
 
     # -- views -----------------------------------------------------------------

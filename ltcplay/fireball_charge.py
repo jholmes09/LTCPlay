@@ -69,6 +69,18 @@ A tank whose charge was on while the valve or the purge was open is
 CHARGED (or UNKNOWN) again when it closes, not EMPTY. NOTHING ELSE resets
 a tank: not Stop, not Hold, not the end of a show, not an engine restart.
 
+The record's states, as the screens say them: EMPTY, CHARGED, NOT KNOWN
+(UNKNOWN here), and PENDING: the record says an automatic charge may be
+going out (round-5 review, write-ahead). Before any automatic charge (a
+timeline's Fuel or Air stage, an FSEQ's guarded 55 or 56) goes out, the
+flame cues ask charge_ready(): the PENDING mark is written and on disk
+first, or the charge is not sent ("the charge record cannot be saved:
+automatic charging is off"). A restart that reads PENDING makes an EMPTY
+tank NOT KNOWN. A shot, a Purge or an admin's Tanks are empty clears it.
+The Fireball page's presses ask for the mark but never wait on it. Each
+record's revision is above the clock in milliseconds and above every
+revision seen, so a later write always outranks an earlier one.
+
 UNKNOWN: the file could not be read; the file says the valve or the purge
 was open when the engine stopped (the release may not have finished); a
 charge, valve or purge value sent while flamesafe's status was not known.
@@ -120,7 +132,8 @@ RETRY_S = 1.0
 CLOSE_S = 2.0
 QUEUE_MAX = 2000
 _TANK_KEYS = {"state", "since", "charged_at", "topoffs", "last_event", "by"}
-_DOC_KEYS = {"fireball_charge_format", "rev", "tanks", "releasing"}
+_DOC_KEYS = {"fireball_charge_format", "rev", "tanks", "releasing",
+             "pending"}
 
 
 def _utc(t):
@@ -153,8 +166,9 @@ def armed_from_status(view, group=GROUP_NAME, fresh_s=STATUS_FRESH_S):
 
 
 def read_doc(doc):
-    """FILE's contents checked strictly: (tanks, releasing). ValueError
-    otherwise."""
+    """FILE's contents checked strictly: (rev, tanks, releasing, pending).
+    ValueError otherwise. A record from before the write-ahead mark has
+    no "pending": False."""
     if not isinstance(doc, dict) or set(doc) - _DOC_KEYS or \
             doc.get("fireball_charge_format") != FORMAT:
         raise ValueError("not a fireball charge file")
@@ -177,7 +191,10 @@ def read_doc(doc):
     rel = doc.get("releasing")
     if rel not in ("", "shot", "purge"):
         raise ValueError("releasing is not right")
-    return rev, out, rel
+    pending = doc.get("pending", False)
+    if not isinstance(pending, bool):
+        raise ValueError("pending is not right")
+    return rev, out, rel, pending
 
 
 class ChargeTracker:
@@ -202,6 +219,14 @@ class ChargeTracker:
         self._events = collections.deque()
         self.dropped = 0
         self.rev = 0
+        # The write-ahead mark (round-5 review): an automatic charge may be
+        # going out, so EMPTY on this record may not be true. Written and
+        # on disk (fsync) BEFORE any automatic charge is sent; cleared by
+        # a shot, a Purge, or an admin's Tanks are empty.
+        self.pending = False
+        self._pending_rev = None    # the revision that first carried it
+        self._durable_rev = -1      # the newest revision known on disk
+        self._failed_rev = None     # the newest revision a write refused
         self.fault = ""
         self.write_fault = ""
         # flamesafe's fireball group on other channels than 55 to 59: what
@@ -274,6 +299,21 @@ class ChargeTracker:
         self._event("system", "engine", "unknown", fault, fault=True,
                     persist=False)
 
+    def _next_rev(self):
+        """The next revision: above every revision this tracker has seen
+        AND above the clock in milliseconds (round-5 review), so a later
+        write outranks any earlier one even when the other file could not
+        be read at start. A clock set back can only make an older record
+        look newer for a while: that costs at most an extra NOT KNOWN,
+        never an EMPTY that is not true, because two readable records that
+        disagree are never trusted on EMPTY (_load)."""
+        try:
+            ms = int(self._wall() * 1000)
+        except (TypeError, ValueError, OverflowError):
+            ms = 0
+        self.rev = max(self.rev, ms) + 1
+        return self.rev
+
     def _load(self):
         now = self._wall()
         if not self.path:
@@ -286,10 +326,6 @@ class ChargeTracker:
         tmp = self.path + ".tmp"
         main = self._read_file(self.path)
         got = self._read_file(tmp)
-        # Every new revision is above the highest readable one of the two
-        # files, whichever is used (round-4 review: a revision reset to 0
-        # under an unreadable .tmp let an older main file win a later
-        # restart while the tanks were charged).
         self.rev = max([x[0] for x in (main, got) if isinstance(x, tuple)]
                        or [0])
         if main is None and got is None:
@@ -307,26 +343,82 @@ class ChargeTracker:
                             f"charge runs until a shot, a Purge, or an "
                             f"admin confirms the tanks are empty.")
             return
+        if main is None:
+            # Only a .tmp, no record beside it (round-5 review, F4: the
+            # first run's write left an EMPTY .tmp it could not rename):
+            # never trusted on its own.
+            self._not_known(f"only {FILE}.tmp was found", now,
+                            f"Only {FILE}.tmp was found in {folder}, with no "
+                            f"{FILE} beside it (a write that did not "
+                            f"finish). Both tanks are NOT KNOWN; no "
+                            f"automatic charge runs until a shot, a Purge, "
+                            f"or an admin confirms the tanks are empty.")
+            return
+        if isinstance(main, Exception):
+            # Which of the two is newer cannot be told: never the .tmp
+            # alone (round-5 review, F2).
+            self._not_known(f"{FILE} could not be read", now,
+                            f"{FILE} could not be read ({main}). Both tanks "
+                            f"are UNKNOWN; no automatic charge runs until a "
+                            f"shot, a Purge, or an admin confirms the tanks "
+                            f"are empty.")
+            return
         src = main
-        if isinstance(got, tuple) and (not isinstance(main, tuple) or
-                                       got[0] > main[0]):
+        if isinstance(got, tuple) and got[0] > main[0]:
             # A write that could not finish left the newest record here
             # (review of #185: a restart read the older one and charged
-            # again). Two readable records: the NEWER revision wins.
+            # again). Two complete records: the higher revision wins.
             src = got
             self._event("system", "engine", "recovered",
                         f"Fireball charge: the newest record was in "
                         f"{FILE}.tmp (a write that could not finish, "
                         f"revision {got[0]}); it is the one used.",
                         fault=True, persist=False)
-        if isinstance(src, Exception):
-            self._not_known(f"{FILE} could not be read", now,
-                            f"{FILE} could not be read ({src}). Both tanks "
-                            f"are UNKNOWN; no automatic charge runs until a "
-                            f"shot or a purge.")
-            return
-        _rev, tanks, rel = src
+        _rev, tanks, rel, pending = src
         self.tanks, self.releasing = tanks, rel
+        self._durable_rev = _rev
+        other = main if src is got else got
+        if isinstance(other, tuple):
+            # A .tmp is only ever left by a write that failed, so two
+            # readable records that disagree are not trusted on EMPTY
+            # (round-5 review B: a purge's or a shot's EMPTY left in .tmp
+            # by a rename that failed, then a charge whose write failed
+            # outright; and a clock set back, which can rank the older
+            # record higher): a tank the one used says EMPTY and the other
+            # does not is NOT KNOWN.
+            odd = [k for k in TANK_WORD if tanks[k]["state"] == EMPTY and
+                   other[1][k]["state"] != EMPTY]
+            for k in odd:
+                self._set(k, UNKNOWN, f"{FILE} and {FILE}.tmp disagree",
+                          now)
+            if odd:
+                self.fault = (f"Fireball charge: {FILE} and {FILE}.tmp (a "
+                              f"write that did not finish) disagree on "
+                              f"{' and '.join(TANK_WORD[k] for k in odd)}: "
+                              f"NOT KNOWN; no automatic charge runs until a "
+                              f"shot, a Purge, or an admin confirms the "
+                              f"tanks are empty.")
+                self._event("system", "engine", "unknown", self.fault,
+                            fault=True, persist=True)
+        if pending:
+            # An automatic charge may have gone out after this record was
+            # written: an EMPTY tank here is not known.
+            self.pending = True
+            self._pending_rev = _rev
+            unk = [k for k in TANK_WORD if self.tanks[k]["state"] == EMPTY]
+            for k in unk:
+                self._set(k, UNKNOWN, "the engine stopped while an automatic "
+                                      "charge could have been going out",
+                          now)
+            if unk:
+                self.fault = (f"Fireball charge: the engine stopped while an "
+                              f"automatic charge could have been going out. "
+                              f"{' and '.join(TANK_WORD[k] for k in unk)} "
+                              f"NOT KNOWN; no automatic charge runs until a "
+                              f"shot, a Purge, or an admin confirms the "
+                              f"tanks are empty.")
+                self._event("system", "engine", "unknown", self.fault,
+                            fault=True, persist=True)
         if rel:
             what = "valve" if rel == "shot" else "purge"
             for k in TANK_WORD:
@@ -350,9 +442,10 @@ class ChargeTracker:
         self.tanks = {k: _new_tank(EMPTY, now, "first run: no charge "
                                    "record yet") for k in TANK_WORD}
         self.releasing = ""
-        self.rev += 1
+        self._next_rev()
         try:
             self._write(self._doc())
+            self._durable_rev = self.rev
         except OSError as e:
             self._not_known("the charge record could not be written", now,
                             f"No fireball charge record was found in "
@@ -376,7 +469,7 @@ class ChargeTracker:
     def _doc(self):
         return {"fireball_charge_format": FORMAT, "rev": self.rev,
                 "tanks": {k: dict(v) for k, v in self.tanks.items()},
-                "releasing": self.releasing}
+                "releasing": self.releasing, "pending": self.pending}
 
     def _write(self, doc):
         if not self.path:
@@ -412,7 +505,7 @@ class ChargeTracker:
         """Queue a journal line, an audit event and (with `persist`) a
         write of the file, for this module's thread. Never blocks."""
         if persist:
-            self.rev += 1
+            self._next_rev()
             doc = self._doc()
         else:
             doc = None
@@ -438,6 +531,11 @@ class ChargeTracker:
                     self._manual[k] = (who or "someone", screen, now)
                 else:
                     self._manual.pop(k, None)
+            if any(k in on_keys for k in TANK_WORD):
+                # The write-ahead mark is asked for, never waited on: the
+                # page's presses are never held back by the disk (round-5
+                # review), but a restart after this charge then finds it.
+                self.charge_ready()
         except Exception:                        # noqa: BLE001
             pass
 
@@ -518,14 +616,25 @@ class ChargeTracker:
             got = None
         bad = got != list(FIRE_SLOTS)
         text = (f"flamesafe's fireball group is on {got if got else slots}, "
-                f"not 55 to 59, so the fuel and air charge record watches "
-                f"nothing until it is: check the tanks by eye."
+                f"not 55 to 59, so the fuel and air charge record cannot "
+                f"watch the fireball: both tanks are NOT KNOWN until a "
+                f"shot, a Purge, or an admin confirms them empty."
                 if bad else "")
         if text != self.group_fault:
             self.group_fault = text
             if text:
-                self._event("system", "engine", "group_fault", text,
-                            fault=True, persist=False)
+                # Both tanks NOT KNOWN, and written (round-5 review, F3):
+                # what the page or a show did on the group's own channels
+                # meanwhile is not seen, so a group back on 55 to 59 never
+                # finds a stale EMPTY.
+                now_w = self._wall()
+                with self._lock:
+                    for k in TANK_WORD:
+                        if self.tanks[k]["state"] != UNKNOWN:
+                            self._set(k, UNKNOWN, "flamesafe's fireball "
+                                      "group was not on 55 to 59", now_w)
+                    self._event("system", "engine", "group_fault", text,
+                                fault=True, persist=True)
 
     def observe(self, tc, values, ok):
         """Called on the flame link's sender thread after each frame went
@@ -656,6 +765,35 @@ class ChargeTracker:
                         "charged", f"Fireball charge: {TANK_WORD[k]} "
                         f"CHARGED by {by} (flamesafe reported sending it).")
 
+    def charge_ready(self):
+        """Asked by the flame cues before an AUTOMATIC charge (a timeline's
+        Fuel or Air stage, an FSEQ's guarded 55 or 56) goes out (round-5
+        review, write-ahead): "ok" once a record saying "an automatic
+        charge may be going out" (pending) is on disk; "wait" while that
+        write is on its way (the first time: it is queued now); "failed"
+        when it could not be written: the automatic charge is not sent.
+        The Fireball page's presses never ask. Memory only: "ok". Cheap,
+        on the sender thread; never raises."""
+        if not self.path:
+            return "ok"
+        try:
+            with self._lock:
+                if not self.pending:
+                    self.pending = True
+                    self._event("system", "engine", "pending", None,
+                                persist=True)
+                    self._pending_rev = self.rev
+                    return "wait"
+                pr = self._pending_rev if self._pending_rev is not None \
+                    else self.rev
+                if self._durable_rev >= pr:
+                    return "ok"
+                if self._failed_rev is not None and self._failed_rev >= pr:
+                    return "failed"
+                return "wait"
+        except Exception:                        # noqa: BLE001
+            return "failed"
+
     def confirm_empty(self, who, screen=""):
         """An admin says both tanks are known to be empty (no record, or
         NOT KNOWN): those tanks become EMPTY, journaled and audited with
@@ -670,6 +808,7 @@ class ChargeTracker:
             now_w = self._wall()
             for k in unk:
                 self._set(k, EMPTY, f"confirmed empty by {who}", now_w)
+            self.pending = False
             words = " and ".join(TANK_WORD[k] for k in unk)
             text = (f"Fireball charge: {words} confirmed EMPTY by "
                     f"{who or 'someone'} on the {screen or 'engine'}.")
@@ -726,6 +865,9 @@ class ChargeTracker:
         what = "the shot was fired (Valve Open)" if rel["kind"] == "shot" \
             else "purged"
         self.releasing = ""
+        # The write-ahead mark ends with the release: the next automatic
+        # charge writes it again first.
+        self.pending = False
         for k in TANK_WORD:
             during = rel["during"].get(k)
             if during is not None:
@@ -789,6 +931,7 @@ class ChargeTracker:
                 "fault": " ".join(x for x in (self.fault, self.write_fault,
                                               self.group_fault) if x),
                 "first_run": self.first_run, "rev": self.rev,
+                "pending": self.pending,
                 # A slot for live pressure later (Jeff): never invented.
                 "psi": None}
 
@@ -831,6 +974,7 @@ class ChargeTracker:
     def _flush(self, doc):
         try:
             self._write(doc)
+            self._durable_rev = max(self._durable_rev, doc["rev"])
             self._unwritten = None
             if self.write_fault:
                 self.write_fault = ""
@@ -839,6 +983,7 @@ class ChargeTracker:
         except OSError as e:
             # Kept, and written again every RETRY_S until it is: a
             # restart must never read an older record (review of #185).
+            self._failed_rev = doc["rev"]
             self._unwritten = doc
             self._retry_at = self._clock()
             text = (f"{FILE} could not be written ({e}); the charge state "
