@@ -61888,8 +61888,8 @@ def _pm_rig(S):
 
 def test_pump_at_the_engine():
     section("fuel pump at the engine (fuelpump.py, Jeff 2026-10-30): OFF at "
-            "start; ON for a run time chosen first (5:00 unless chosen, the "
-            "last one remembered, pump_max_s the longest, a longer one "
+            "start; ON for a run time chosen first (always 5:00 unless "
+            "chosen, pump_max_s the longest, a longer one "
             "refused in words); it ends by itself on the engine's timer, "
             "and on a stall between passes or inside one, and on a Stop "
             "landing during a pass; a replayed or repeated ON starts "
@@ -62327,6 +62327,59 @@ def test_pump_review_fixes():
         check(st == 200 and lf.begun == 1,
               f"with the pump off it starts: {st} {out}")
         R.remote.live_flame = None
+        # N1 (re-review A): live flame programming being turned on (its
+        # begin() under way) refuses the pump; the pump's run is reserved
+        # before it asks again, so a begin() racing the press refuses
+        # itself; and the begin()'s own check sees the pump.
+        lf2 = _LF()
+        lf2._starting = True
+        R.remote.live_flame = lf2
+        st, _h, out = tap(True)
+        check(st == 409 and "live flame programming" in out["error"] and
+              pm.run is None and not link.pump_on,
+              f"ON while live flame programming is being turned on: "
+              f"refused: {out}")
+        lf2._starting = False
+        real_ref = pm.refusal
+
+        def starts_meanwhile():
+            why = real_ref()
+            lf2._starting = True      # a begin() marks itself now
+            return why
+        pm.refusal = starts_meanwhile
+        st, _h, out = tap(True)
+        pm.refusal = real_ref
+        check(st == 409 and "live flame programming" in out["error"] and
+              pm.run is None and not link.pump_on,
+              f"a begin() marking itself after the pump's checks but before "
+              f"its reservation: the pump is refused: {out}")
+        lf2._starting = False
+        pm.run = {"id": "reserved", "reserved": True}
+        why = R.remote.live_flame_blockers()
+        pm.run = None
+        check("fuel pump is on" in why,
+              f"a begin()'s own check sees a reserved pump run: {why!r}")
+        lf2.on = True
+        pm.run = {"id": "reserved", "reserved": True}
+        why = R.remote.live_flame_blockers()
+        pm.run = None
+        check("fuel pump" not in why,
+              f"but a running session's watch pass never ends it over the "
+              f"pump: {why!r}")
+        R.remote.live_flame = None
+        # Review B, 1: a Pump off landing while an ON is being checked wins.
+        def off_meanwhile():
+            why = real_ref()
+            pm.set(False, who="B", screen="iPad")
+            return why
+        pm.refusal = off_meanwhile
+        st, _h, out = tap(True)
+        pm.refusal = real_ref
+        check(st == 409 and "Pump off" in out["error"] and pm.run is None
+              and not link.pump_on,
+              f"Pump off pressed while an ON was being checked: nothing "
+              f"starts after it: {out}")
+        R.feed()
         # F5: the status answers while the sender holds the link's lock.
         tap(True)
         held, release = threading.Event(), threading.Event()

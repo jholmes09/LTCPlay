@@ -4284,6 +4284,14 @@ class Remote:
         if pg is not None and pg.selected:
             return ("machines are selected for a purge on the Morning and "
                     "Shutdown page; clear the purge selection first")
+        # The fuel pump (re-review A of #188, N1): at the start only (the
+        # mode not yet on; begin() asks this after marking itself
+        # starting), never on a watch pass, so a pump can never end a
+        # running session (and with it, by its disarm, the pump).
+        if lf is None or not getattr(lf, "on", False):
+            why = self.live_flame_pump_refusal()
+            if why:
+                return why
         return ""
 
     def live_flame_armed_groups(self):
@@ -4402,8 +4410,12 @@ class Remote:
         # programming ends with a disarm to every flame group, which turns
         # the pump off too; a Hold or Start now ends it. So it does not
         # start while the pump runs: Hold must never end the pump (Jeff:
-        # "Off on Stop, NOT Hold"). Only at the start: a pump that came on
-        # later is refused by pump_blocker, so none can.
+        # "Off on Stop, NOT Hold"). This is the early, plain answer; the
+        # check that decides is live_flame_blockers, run inside begin()
+        # after it is marked starting, and pump_blocker refuses the pump
+        # while live flame programming is on OR starting, with the pump's
+        # run reserved before that look (re-review A of #188, N1): one of
+        # the two always sees the other.
         why = self.live_flame_pump_refusal()
         if why:
             self._journal(who or "unsigned", screen, "live flame", "refused",
@@ -4576,7 +4588,8 @@ class Remote:
 
     def pump_settings(self):
         """The fuel pump's run times on this show machine: the screens'
-        default (the last started here), the longest, the shortest and
+        default (always 5:00, capped by the longest), the longest, the
+        shortest and
         the most an admin may set, from ltcplay_remote.json; "error" when
         that file cannot be read (then the pump is not turned on)."""
         out = {"default_s": PUMP_DEFAULT_S, "max_s": PUMP_MAX_DEFAULT_S,
@@ -4721,10 +4734,14 @@ class Remote:
 
     def pump_blocker(self):
         """Why the fuel pump may not be turned ON now beyond fuelpump.py's
-        own checks, or "": live flame programming on (its end sends the
-        Abort's disarm to flamesafe, which turns the pump off)."""
+        own checks, or "": live flame programming on, or being turned on
+        (its end sends the Abort's disarm to flamesafe, which turns the
+        pump off; re-review A of #188, N1). Asked again by fuelpump.py with
+        its run already reserved, so a begin() racing it is always seen by
+        one side or the other."""
         lf = getattr(self, "live_flame", None)
-        programming = lf is not None and getattr(lf, "on", False)
+        programming = lf is not None and (getattr(lf, "on", False) or
+                                          getattr(lf, "_starting", False))
         if programming:
             return ("live flame programming is on, and turning it off "
                     "turns the fuel pump off. Turn it off first.")

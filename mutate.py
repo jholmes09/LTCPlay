@@ -2782,8 +2782,8 @@ MUTATIONS = [
 
  ("pump: a second ON adds time",
   "ltcplay/fuelpump.py",
-  "            ok = False\n            if running is None:",
-  "            ok = False\n            running = None\n            if True:"),
+  "            ok = False\n            late = \"\"\n            if running is None and self._off_gen != off0:",
+  "            ok = False\n            late = \"\"\n            running = None\n            if False:"),
 
  ("pump: live flame programming starts while the pump runs",
   "ltcplay/remote.py",
@@ -2807,8 +2807,28 @@ MUTATIONS = [
 
  ("pump: cut() leaves it on at the link",
   "ltcplay/fuelpump.py",
-  "            if link is not None:\n                link.pump_stop()\n            with self._lock:\n                was, self.run",
-  "            with self._lock:\n                was, self.run"),
+  "            if link is not None:\n                link.pump_stop()\n            with self._lock:\n                self._off_gen += 1",
+  "            with self._lock:\n                self._off_gen += 1"),
+
+ ("pump: an ON whose checks began before a Pump off starts after it",
+  "ltcplay/fuelpump.py",
+  "            if running is None and self._off_gen != off0:",
+  "            if False:"),
+
+ ("pump: ON is taken while live flame programming is being turned on",
+  "ltcplay/remote.py",
+  "        programming = lf is not None and (getattr(lf, \"on\", False) or\n                                          getattr(lf, \"_starting\", False))",
+  "        programming = lf is not None and getattr(lf, \"on\", False)"),
+
+ ("pump: the blocker is not asked again with the run reserved",
+  "ltcplay/fuelpump.py",
+  "                try:\n                    late = self._blocker() or \"\"\n                except Exception:\n                    late = \"the engine's state could not be read.\"",
+  "                late = \"\""),
+
+ ("pump: live flame programming's own start check ignores the pump",
+  "ltcplay/remote.py",
+  "        if lf is None or not getattr(lf, \"on\", False):\n            why = self.live_flame_pump_refusal()",
+  "        if False:\n            why = self.live_flame_pump_refusal()"),
 
  ("pump: an Abort standing leaves a run on",
   "ltcplay/fuelpump.py",

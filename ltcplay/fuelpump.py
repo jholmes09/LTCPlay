@@ -156,6 +156,10 @@ class FuelPump:
         self._night_state = night_state or (lambda: None)
         self._lock = threading.RLock()
         self.run = None             # the pump's run while it is ON here
+        # +1 on every OFF (Pump off, Stop, Abort, any end): an ON whose
+        # checks began before an OFF never starts after it (review B of
+        # #188, 1).
+        self._off_gen = 0
         self._used = collections.deque(maxlen=RUN_IDS_KEPT)
         self.last_off = None        # {"reason", "who"}
 
@@ -346,6 +350,7 @@ class FuelPump:
         with self._lock:
             used = rid in self._used
             self._used.append(rid)
+            off0 = self._off_gen
         if used:
             return False, ("The fuel pump was not turned on: that press was "
                            "already used (a repeated request). Press again "
@@ -368,7 +373,27 @@ class FuelPump:
             # however close the two presses are.
             running = self.run
             ok = False
-            if running is None:
+            late = ""
+            if running is None and self._off_gen != off0:
+                # A Pump off (or Stop, Abort, any end) landed while this
+                # press was being checked: it wins.
+                late = ("Pump off (or a Stop) was pressed while this press "
+                        "was being checked, so nothing was started.")
+            elif running is None:
+                # Reserve first, then ask the blocker again (re-review A of
+                # #188, N1): a live flame programming begin() that marks
+                # itself starting before this look is refused here, and one
+                # that marks itself after it sees this run and refuses
+                # itself.
+                self.run = {"id": rid, "reserved": True}
+                try:
+                    late = self._blocker() or ""
+                except Exception:
+                    late = "the engine's state could not be read."
+                if late:
+                    self.run = None
+                    running = None
+            if running is None and not late:
                 gen = link.pump_gen()
                 now = self._clock()
                 r = {"id": rid, "seconds": secs, "start": now, "beat": now,
@@ -381,8 +406,13 @@ class FuelPump:
                 # it.
                 ok = link.pump_start(secs, gen, deadline=r["deadline"],
                                      clock=self._clock) is True
-                if ok:
-                    self.run = r
+                self.run = r if ok else None
+        if running is None and late:
+            why = f"The fuel pump was not turned on: {late}"
+            self._note(who, screen, "refused",
+                       f"{who or 'Someone'} asked to turn the fuel pump on "
+                       f"on the {screen}; refused: {why}")
+            return False, why
         if running is not None:
             left = max(0.0, running["deadline"] - self._clock())
             return False, (f"The fuel pump is already on ({clock_text(left)} "
@@ -544,6 +574,7 @@ class FuelPump:
     def stop(self, reason, who="", screen="", system=True):
         """The pump OFF now, for any reason. True when it was on."""
         with self._lock:
+            self._off_gen += 1
             r = self.run
         if r is not None:
             return self._finish(r, reason, who, screen, system)
@@ -575,6 +606,7 @@ class FuelPump:
             if link is not None:
                 link.pump_stop()
             with self._lock:
+                self._off_gen += 1
                 was, self.run = self.run is not None, None
             return was
         except Exception:
