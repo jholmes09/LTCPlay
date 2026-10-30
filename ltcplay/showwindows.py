@@ -78,6 +78,7 @@ MAX_RAISES = 5            # per covering window, then said once and left
 INPUT_QUIET_S = 5.0       # no foreground taken this soon after any input
 FOREGROUND_IN_USE_S = 60.0   # the window in front, used this recently: kept
 TASKBAR = ("Shell_TrayWnd", "Shell_SecondaryTrayWnd")
+DIALOG_CLASS = "#32770"   # Windows' dialog box class (MessageBox and the like)
 OPENED_FILE = "beyond-opened"   # written by the engine's Open BEYOND
 
 # What a person does in MadMapper to turn the output on, for the alert,
@@ -690,6 +691,12 @@ def is_taskbar(w):
     return w.get("cls") in TASKBAR
 
 
+def is_dialog(w):
+    """A dialog box (Windows' dialog class, #32770: a MessageBox, a
+    licence or missing-media prompt), owned or not."""
+    return w.get("cls") == DIALOG_CLASS
+
+
 def is_app(w):
     return image_is(w.get("image"), MADMAPPER) or \
         image_is(w.get("image"), BEYOND)
@@ -728,6 +735,10 @@ class RackKeeper:
         self.raises = {}         # covering hwnd -> raises for it
         self._described = set()  # app windows already logged
         self._said = {}
+        # The first look (review 2 of #176): what is open then was opened
+        # before this keeper (LTC Player restarted), so it is old.
+        self._looked = False
+        self._fg_first = None    # the window in front at the first look
 
     def _say(self, key, text):
         if self._said.get(key) != text:
@@ -762,9 +773,17 @@ class RackKeeper:
                 self.fg_since.pop(h, None)
                 self.chosen.discard(h)
                 self.raises.pop(h, None)
+        first = not self._looked
+        self._looked = True
         for w in apps:
-            self.seen.setdefault(w["hwnd"], now)
+            # Open at the first look: old (LTC Player restarted; reviews 1
+            # and 2 of #176). Outside the boot settle it is never raised
+            # over for having "just appeared".
+            self.seen.setdefault(w["hwnd"],
+                                 float("-inf") if first else now)
         fg = self.api.foreground()
+        if first:
+            self._fg_first = fg
         if fg in alive and fg not in self.chosen:
             self.fg_since.setdefault(fg, now)
             try:
@@ -794,6 +813,8 @@ class RackKeeper:
         for h in list(self.fg_since):
             if h != fg:
                 self.fg_since.pop(h, None)
+        if fg != self._fg_first:
+            self._fg_first = None
         rack = find_rack(wins, self.title_re, self.rack_pid)
         if rack is None:
             self._say("rack", "rack screen keeper: the rack screen's window "
@@ -859,10 +880,13 @@ class RackKeeper:
                          f"title bar {bool(w.get('caption'))}, at "
                          f"{tuple(w['rect'])}")
         # An owned window (a dialog: missing media, a licence, the
-        # preferences) is never buried (review B of #176, S4), and an
-        # output window is never a cover (review A).
+        # preferences) is never buried (review B of #176, S4), a dialog box
+        # with no owner (a parentless MessageBox, class #32770) is never a
+        # cover (reviews 1 and 2 of #176), and an output window is never a
+        # cover (review A).
         cover = [w for w in wins[:idx] if is_app(w) and not w["minimized"]
-                 and not w.get("owner") and w["hwnd"] not in outs
+                 and not w.get("owner") and not is_dialog(w)
+                 and w["hwnd"] not in outs
                  and overlap(w["rect"], area) > 0
                  and w["hwnd"] not in self.chosen
                  and (boot or now - self.seen[w["hwnd"]] <=
@@ -883,8 +907,19 @@ class RackKeeper:
         why = ""
         for w in above:
             if w is c:
+                if w["hwnd"] == fg_now and w["hwnd"] == self._fg_first \
+                        and (age is None or age < FOREGROUND_IN_USE_S):
+                    # In front since before this keeper's first look, and
+                    # used in the last minute: a person's (review 2 of
+                    # #176). One that came forward under its eye is a
+                    # person's by the touch since (self.chosen).
+                    why = (f"{app_name(w)}'s window \"{w.get('title', '')}"
+                           f"\" is in front and was used "
+                           f"{'just now' if age is None else f'{age:.0f} s ago'}")
+                    break
                 continue
-            if is_app(w) and (w.get("owner") or w.get("pid") == c.get("pid")):
+            if is_app(w) and (w.get("owner") or is_dialog(w) or
+                              w.get("pid") == c.get("pid")):
                 why = (f"{app_name(w)}'s dialog \"{w.get('title', '')}\" is "
                        f"open over it")
                 break

@@ -2641,10 +2641,13 @@ class Service:
 
     def _preroll_broken(self, why):
         """The rig check itself could not run: journaled and alerted once
-        per reason (the alert hold then holds the show). Never raises."""
-        if getattr(self, "_preroll_broke", None) == why:
+        per reason (the alert hold then holds the show), and once more
+        after a passing check cleared it (review 1 of #176: still broken,
+        still said). Never raises."""
+        once = (why, getattr(self.preroll, "clears", 0))
+        if getattr(self, "_preroll_broke", None) == once:
             return
-        self._preroll_broke = why
+        self._preroll_broke = once
         try:
             # Numbered, so a check that began before it never clears it.
             self.preroll.mark_failure()

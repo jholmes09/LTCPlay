@@ -44,6 +44,7 @@ Severity is per kind, in plain words for the strip: a "fault" is
 something broken (the deck gone, the audio gone), a "warning" is the gate
 asking before an unattended start.
 """
+import threading
 import time
 
 KINDS = ("gate", "audio", "video", "deck", "start", "flames", "link",
@@ -94,7 +95,7 @@ PULSE_DURING_SHOW = frozenset(("audio",))
 
 class Alert:
     __slots__ = ("id", "kind", "text", "since", "options", "severity",
-                 "booth", "booth_ok", "pulse")
+                 "booth", "booth_ok", "pulse", "rev")
 
     def __init__(self, id, kind, text, since, options):
         self.id = id
@@ -106,6 +107,10 @@ class Alert:
         self.booth = ""          # what happened to the booth note
         self.booth_ok = None     # True played, False could not, None quiet
         self.pulse = False
+        # Raise number: a raise of an open kind updates it in place (same
+        # id), and this number changes. clear(rev=) clears it only as it
+        # was then (preroll.alert_hooks, review 1 of #176).
+        self.rev = 0
 
     def view(self):
         text = self.text
@@ -137,6 +142,10 @@ class Alerts:
         self._sounded = {}         # kind -> clock() of the last booth note
         self._tried = {}           # kind -> clock() tick() last tried it
         self._ids = 0
+        self._revs = 0
+        # Guards _open and the numbers only; nothing is called while it is
+        # held (no journal, no booth, no on_change), so it never nests.
+        self._mu = threading.Lock()
 
     # -- raise -------------------------------------------------------------
     def raise_(self, kind, text, options=("Acknowledge",)):
@@ -157,16 +166,19 @@ class Alerts:
             # Every alert can be acknowledged (the deck's keys do only
             # that), whatever else it offers.
             opts = ("Acknowledge",) + opts
-        a = self._open.get(kind)
-        if a is not None:
-            a.text = text
-            a.options = opts
-            outcome = "updated"
-        else:
-            self._ids += 1
-            a = Alert(self._ids, kind, text, self._wall(), opts)
-            self._open[kind] = a
-            outcome = "raised"
+        with self._mu:
+            a = self._open.get(kind)
+            if a is not None:
+                a.text = text
+                a.options = opts
+                outcome = "updated"
+            else:
+                self._ids += 1
+                a = Alert(self._ids, kind, text, self._wall(), opts)
+                self._open[kind] = a
+                outcome = "raised"
+            self._revs += 1
+            a.rev = self._revs
         self._sound(a)
         self._journal(f"Alert ({a.severity}, {kind}): {text}", fault=True,
                       action="alert", outcome=outcome, who="system",
@@ -246,11 +258,12 @@ class Alerts:
 
     # -- clear -------------------------------------------------------------
     def clear(self, kind=None, id=None, action="Acknowledge", who="",
-              screen="", address=""):
+              screen="", address="", rev=None):
         """Clear by kind, by id, or (neither) every open alert: a Stream
-        Deck key acknowledges whatever is open. Only a CLEARING option
-        clears here; the others choose, and are refused with the sentence
-        the page shows. Returns (ok, sentence)."""
+        Deck key acknowledges whatever is open. With `rev`, only while the
+        alert is as it was at that raise (not raised again since). Only a
+        CLEARING option clears here; the others choose, and are refused
+        with the sentence the page shows. Returns (ok, sentence)."""
         action = str(action or "Acknowledge").strip()
         if action.lower() == "acknowledge":
             action = "Acknowledge"
@@ -259,16 +272,20 @@ class Alerts:
                            f"something, and only Acknowledge, Confirm and "
                            f"Continue clear an alert in this build.")
         picked = []
-        for a in list(self._open.values()):
-            if id is not None and a.id != id:
-                continue
-            if kind and a.kind != kind:
-                continue
-            picked.append(a)
+        with self._mu:
+            for a in list(self._open.values()):
+                if id is not None and a.id != id:
+                    continue
+                if kind and a.kind != kind:
+                    continue
+                if rev is not None and a.rev != rev:
+                    continue
+                picked.append(a)
+            for a in picked:
+                del self._open[a.kind]
         if not picked:
             return False, "There is no open alert to clear."
         for a in picked:
-            del self._open[a.kind]
             where = screen or "unknown screen"
             if address:
                 where = f"{where} at {address}"
@@ -284,7 +301,9 @@ class Alerts:
 
     # -- read --------------------------------------------------------------
     def open(self):
-        return sorted(self._open.values(), key=lambda a: a.id)
+        with self._mu:
+            got = list(self._open.values())
+        return sorted(got, key=lambda a: a.id)
 
     def pending(self):
         return bool(self._open)
@@ -298,7 +317,7 @@ class Alerts:
         except Exception:                # noqa: BLE001
             live = False
         want = False
-        for a in self._open.values():
+        for a in list(self._open.values()):
             mine = a.kind in PULSE_DURING_SHOW or a.booth_ok is False
             if live and a.kind not in PULSE_DURING_SHOW:
                 mine = False

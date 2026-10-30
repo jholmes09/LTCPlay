@@ -2091,9 +2091,11 @@ def _output_seen_on(alerts, r):
     just not used) clears the "output" alert (showwindows.OutputWatch's)
     raised before the check began (review B of #176: a stale one held a
     healthy show). Never one raised after. Returns whether it cleared."""
+    # "used": the check looked and saw it on. "note" is no guide: a pass
+    # that says what it saw carries one too (review 1 of #176).
     seen = [i for i in r.get("items") or ()
             if i.get("name") == "MadMapper output" and i.get("ok")
-            and not i.get("note")]
+            and i.get("used")]
     began = r.get("wall_at")
     if not seen or began is None:
         return False
@@ -2198,16 +2200,8 @@ def _attach_preroll(httpd, fire_ice, fstatus):
             return "Programming" if remote.programming()[0] else ""
         pr = P.PreRoll(
             checks, window_s=fire_ice.preroll_s, journal=note,
-            alert=remote.alerts.raise_,
-            clear_alert=lambda kind, id=None: remote.alerts.clear(
-                kind=kind, id=id, action="Confirm", who="LTC Player (a "
-                "later rig check passed)", screen="engine"),
-            open_alert=lambda: any(a.kind == P.KIND
-                                   for a in remote.alerts.open()),
-            alert_id=lambda: next((a.id for a in remote.alerts.open()
-                                   if a.kind == P.KIND), None),
             on_pass=lambda r: _output_seen_on(remote.alerts, r),
-            skip=skip)
+            skip=skip, **P.alert_hooks(remote.alerts))
         svc.preroll = pr
         remote.preroll = pr
         return pr

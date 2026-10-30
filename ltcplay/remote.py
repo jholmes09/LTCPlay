@@ -1988,13 +1988,17 @@ class Remote:
             # A failure a later check cleared (Jeff's field report,
             # 2026-10-29): what to press now, in the same words on every
             # screen. Nothing starts by itself.
-            v["cleared"]["say"] = self._cleared_say()
+            v["cleared"]["say"] = self._cleared_say(v["cleared"])
         return v
 
-    def _cleared_say(self):
+    def _cleared_say(self, cleared=None):
         m = getattr(self.schedule, "machine", None)
         st = getattr(m, "state", None)
-        if st == "HOLD":
+        held = (cleared or {}).get("shows", 1)
+        if st == "HOLD" and held:
+            # Resume releases the show it cleared, which is then checked
+            # again. A cleared alert alone ("could not run") leaves no show
+            # for Resume to release (review 2 of #176): Start now, below.
             return "Rig check passed. Press Resume."
         if m is not None and m.delayed() is not None:
             return (f"Rig check passed. Press Start now for show "
@@ -2007,12 +2011,17 @@ class Remote:
     PRECHECK_CLEAR_S = 60.0
 
     def preroll_check(self, body, ctx):
-        """Pre-check (the rack screen, an admin: the role matrix's
-        Settings row, web.py): the same checks a show's pre-roll makes,
-        with nothing started and no alert raised or cleared. Only between
+        """Pre-check, and Check again after a failure (the rack screen, an
+        admin: the role matrix's Settings row, web.py): the same checks a
+        show's pre-roll makes, with nothing started. It raises no alert of
+        its own; a pass clears a failure in force (and its preroll alert),
+        and a failure while one is in force refreshes it
+        (preroll.PreRoll._clear_failure, _refresh_failure). Only between
         shows, with Run pressed, never in the minute before a show (its
-        own pre-roll runs then). Returns at once; the result is in the
-        status's "preroll"."""
+        own pre-roll runs then) unless a failure is in force: a failed
+        show is never checked again by itself (preroll.PreRoll.claim), so
+        Check again is let through then. Returns at once; the result is
+        in the status's "preroll"."""
         pr = self.preroll
         who = ctx.user or "unsigned"
         if pr is None:
@@ -2035,7 +2044,8 @@ class Remote:
             why = "a Stop is under way"
         elif m is not None and m.next_slot() is not None:
             left = (m.next_slot().start - svc.clock()).total_seconds()
-            if 0 <= left < self.PRECHECK_CLEAR_S + pr.window_s:
+            if 0 <= left < self.PRECHECK_CLEAR_S + pr.window_s and \
+                    not pr.failure_in_force():
                 why = (f"show {m.next_slot().n} is due in {left:.0f} s and "
                        f"its own rig check runs by itself")
         if why:
