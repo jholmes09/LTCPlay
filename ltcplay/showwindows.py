@@ -738,7 +738,6 @@ class RackKeeper:
         # The first look (review 2 of #176): what is open then was opened
         # before this keeper (LTC Player restarted), so it is old.
         self._looked = False
-        self._fg_first = None    # the window in front at the first look
 
     def _say(self, key, text):
         if self._said.get(key) != text:
@@ -782,8 +781,6 @@ class RackKeeper:
             self.seen.setdefault(w["hwnd"],
                                  float("-inf") if first else now)
         fg = self.api.foreground()
-        if first:
-            self._fg_first = fg
         if fg in alive and fg not in self.chosen:
             self.fg_since.setdefault(fg, now)
             try:
@@ -813,8 +810,6 @@ class RackKeeper:
         for h in list(self.fg_since):
             if h != fg:
                 self.fg_since.pop(h, None)
-        if fg != self._fg_first:
-            self._fg_first = None
         rack = find_rack(wins, self.title_re, self.rack_pid)
         if rack is None:
             self._say("rack", "rack screen keeper: the rack screen's window "
@@ -907,20 +902,29 @@ class RackKeeper:
         why = ""
         for w in above:
             if w is c:
-                if w["hwnd"] == fg_now and w["hwnd"] == self._fg_first \
-                        and (age is None or age < FOREGROUND_IN_USE_S):
-                    # In front since before this keeper's first look, and
-                    # used in the last minute: a person's (review 2 of
-                    # #176). One that came forward under its eye is a
-                    # person's by the touch since (self.chosen).
+                if w["hwnd"] == fg_now and (age is None or (
+                        age < FOREGROUND_IN_USE_S and
+                        self.seen.get(w["hwnd"], now) <= now - age)):
+                    # In front, and the last key, touch or click (in the
+                    # last minute) came while this window was open: a
+                    # person's, wherever it was in front then (reviews 2
+                    # and B round 2 of #176: open before LTC Player
+                    # restarted, or back in front after the lock screen,
+                    # unlocked by Windows Hello with no key). A window that
+                    # opened after the last input (BEYOND starting up after
+                    # the sign-in typing) is not.
                     why = (f"{app_name(w)}'s window \"{w.get('title', '')}"
                            f"\" is in front and was used "
                            f"{'just now' if age is None else f'{age:.0f} s ago'}")
                     break
                 continue
-            if is_app(w) and (w.get("owner") or is_dialog(w) or
-                              w.get("pid") == c.get("pid")):
-                why = (f"{app_name(w)}'s dialog \"{w.get('title', '')}\" is "
+            if is_dialog(w) or (is_app(w) and (
+                    w.get("owner") or w.get("pid") == c.get("pid"))):
+                # Any program's dialog box (an Explorer or LTC Player
+                # message box too; review B round 2 of #176) is never
+                # buried.
+                who = app_name(w) if is_app(w) else "a program"
+                why = (f"{who}'s dialog \"{w.get('title', '')}\" is "
                        f"open over it")
                 break
             if w["hwnd"] == fg_now and (age is None or

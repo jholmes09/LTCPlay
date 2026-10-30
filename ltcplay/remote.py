@@ -1992,14 +1992,16 @@ class Remote:
         m = getattr(self.schedule, "machine", None)
         st = getattr(m, "state", None)
         held = (cleared or {}).get("shows", 1)
+        if m is not None and m.delayed() is not None:
+            # A delayed show waits for Start now, held or not (review A
+            # round 2 of #176): Resume does not start it.
+            return (f"Rig check passed. Press Start now for show "
+                    f"{m.delayed().n}.")
         if st == "HOLD" and held:
             # Resume releases the show it cleared, which is then checked
             # again. A cleared alert alone ("could not run") leaves no show
             # for Resume to release (review 2 of #176): Start now, below.
             return "Rig check passed. Press Resume."
-        if m is not None and m.delayed() is not None:
-            return (f"Rig check passed. Press Start now for show "
-                    f"{m.delayed().n}.")
         # Not held: the show it failed for is never started by itself
         # after a failure, so Start now (it checks again).
         return "Rig check passed. Press Start now to start the show."

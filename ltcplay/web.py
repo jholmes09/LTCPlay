@@ -2086,18 +2086,27 @@ def _attach_mm_output(httpd, fire_ice, mm_cfg, windows=None):
         return None
 
 
-def _output_seen_on(alerts, r):
+def _output_seen_on(alerts, r, look=None):
     """A passed rig check whose MadMapper output item passed (seen on, not
     just not used) clears the "output" alert (showwindows.OutputWatch's)
     raised before the check began (review B of #176: a stale one held a
-    healthy show). Never one raised after. Returns whether it cleared."""
+    healthy show). Never one raised after, and never while the engine's
+    own look (`look`, showwindows.OutputLook) reads it off again now: the
+    supervisor's watch still thinks its alert is up for that off spell and
+    would not raise it again (review B round 2). Returns whether it
+    cleared."""
     # "used": the check looked and saw it on. "note" is no guide: a pass
     # that says what it saw carries one too (review 1 of #176).
     seen = [i for i in r.get("items") or ()
             if i.get("name") == "MadMapper output" and i.get("ok")
             and i.get("used")]
     began = r.get("wall_at")
-    if not seen or began is None:
+    if not seen or began is None or look is None:
+        return False
+    try:
+        if look.now()[0] != "on":
+            return False
+    except Exception:                                # noqa: BLE001
         return False
     for a in alerts.open():
         if a.kind == "output" and a.since < began:
@@ -2203,7 +2212,8 @@ def _attach_preroll(httpd, fire_ice, fstatus):
             return "Programming" if remote.programming()[0] else ""
         pr = P.PreRoll(
             checks, window_s=fire_ice.preroll_s, journal=note,
-            on_pass=lambda r: _output_seen_on(remote.alerts, r),
+            on_pass=lambda r: _output_seen_on(
+                remote.alerts, r, getattr(remote, "mm_output", None)),
             skip=skip, **P.alert_hooks(remote.alerts))
         svc.preroll = pr
         remote.preroll = pr

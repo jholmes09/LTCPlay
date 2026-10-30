@@ -285,7 +285,7 @@ class PreRoll:
             if r is not None and r["state"] in ("queued", "checking"):
                 return False
             if r is not None and r["state"] == "passed" and \
-                    self._fresh(r):
+                    self._fresh(r) and not self._stale(r):
                 return False
             if r is not None and r["state"] in ("failed", "cleared"):
                 # A failure stands for its show: the alert hold decides. A
@@ -308,7 +308,11 @@ class PreRoll:
             st = r["state"]
             if st == "queued":
                 return "checking"
-            if st == "passed" and not self._fresh(r):
+            if st == "passed" and (not self._fresh(r) or self._stale(r)):
+                # A pass older than a failure recorded since (Start now's
+                # check failing after it, a Pre-check, "could not run")
+                # proves nothing now: the show is checked again (review B
+                # round 2 of #176).
                 return None
             if st == "cancelled":
                 return None
@@ -318,6 +322,11 @@ class PreRoll:
         with self._lock:
             r = self._runs.get(key)
             return (r or {}).get("alert", "")
+
+    def _stale(self, r):
+        """A pass that began before the latest failure was numbered (lock
+        held)."""
+        return r.get("seq", 0) < self._fail_seq
 
     def _fresh(self, r):
         return r["done"] is not None and \

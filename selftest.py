@@ -91337,15 +91337,23 @@ def test_preroll_madmapper_output_check_and_lamp():
     why_not = [""]
     during = []
 
+    after = []
+
     def mm_check(p):
         for f in during:
             f()
-        return P.check_madmapper_output(
+        res = P.check_madmapper_output(
             p, (lambda: look[0]) if why_not[0] == "" else None, why_not[0])
+        for f in after:
+            f()
+        return res
+    # The engine's own look (showwindows.OutputLook.now), read again when
+    # the pass ends, as web.serve wires it.
+    engine_look = types.SimpleNamespace(now=lambda: look[0])
     got = []
     run_pr = P.PreRoll([("MadMapper output", True, mm_check)], window_s=3,
                        on_pass=lambda r: got.append(
-                           W._output_seen_on(al, r)),
+                           W._output_seen_on(al, r, engine_look)),
                        **P.alert_hooks(al))
     r = run_pr.run(("pre-check", 1), "a Pre-check", alerts=False,
                    manual=True)
@@ -91374,6 +91382,27 @@ def test_preroll_madmapper_output_check_and_lamp():
     check(r["state"] == "passed" and got[-1] is False and
           [a.kind for a in al.open()] == ["video", "output"],
           "an output alert newer than the check: kept")
+    # Review B round 2: seen on during the check, OFF again when it ends:
+    # the old alert is kept (the supervisor's watch would not raise it
+    # again for that off spell).
+    during.clear()
+    al.clear(kind="output", action="Acknowledge", who="t", screen="t")
+    al.raise_("output", "MadMapper's video output is OFF")
+    time.sleep(0.02)
+    after.append(lambda: look.__setitem__(0, (
+        "off", "MadMapper's video output is OFF")))
+    r = run_pr.run(("pre-check", 4), "a Pre-check", alerts=False,
+                   manual=True)
+    check(r["state"] == "passed" and got[-1] is False and
+          [a.kind for a in al.open()] == ["video", "output"],
+          "seen on, then off again as the check ends: the alert kept")
+    after.clear()
+    look[0] = ("on", "MadMapper's output fills display 2")
+    r = run_pr.run(("pre-check", 5), "a Pre-check", alerts=False,
+                   manual=True)
+    check(r["state"] == "passed" and got[-1] is True and
+          [a.kind for a in al.open()] == ["video"],
+          "on through the end: cleared")
     # The lamp.
     d = tempfile.mkdtemp()
     try:
