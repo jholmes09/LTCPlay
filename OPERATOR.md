@@ -556,10 +556,15 @@ Fuel, Air, Purge off before arming").
 
 **Everything goes off by itself** (within a quarter of a second) on: Stop,
 Abort, Disarm Fireball, Disarm all flame groups or the Fireball's deck
-key; the Fireball locked out; the flame link lost, or a single frame to
-flamesafe that could not be sent; flamesafe not reporting; leaving the page, closing it or hiding
+key; the Fireball locked out; the flame link lost, a single frame to
+flamesafe that could not be sent, or frames stopping for more than a
+tenth of a second (flamesafe's own cut); flamesafe not reporting; leaving the page, closing it or hiding
 it; this page's status not being live; signing out (at once, at the
-engine); the connection dropping; and the All off button (any screen). Losing focus (another window
+engine: the run that sign-in started, or that person's run on that
+screen, and on the show PC every run started there; never someone
+else's run on another iPad); losing the right to arm (a role changed,
+the person removed, a password reset, the sign-out after the last
+show); the connection dropping; and the All off button (any screen). Losing focus (another window
 clicked) lets go of Valve Open and Igniter. After any of these nothing
 comes back on by itself: press again.
 

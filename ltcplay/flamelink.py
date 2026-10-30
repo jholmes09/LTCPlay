@@ -210,6 +210,11 @@ PROGRAM_HOLD_S = 0.25
 # the SHOW's values only. The lockout zeroes its slots, and flamesafe still
 # passes them only while the fireball group is ARMED.
 MANUAL_HOLD_S = 0.25
+# flamesafe zeroes a fire value no frame has renewed for this long
+# (fire_hold): a gap between frames longer than this drops the Fireball
+# page's frame, counted (manual_drops), so a held channel never comes back
+# by itself when frames resume (round-5 review B 3).
+MANUAL_STALL_S = 0.1
 # Programming playback (playhead.py, Jeff 2026-10-29: the switch "Fire
 # flames while scrubbing" is gone). The show's own flame cues follow the
 # Programming screen's transport through this link's show path, exactly as
@@ -1609,12 +1614,16 @@ class FlameLink:
         except Exception:
             self.manual_slots = frozenset()
 
-    def manual_set(self, values, gen=None):
+    def manual_set(self, values, gen=None, drops=None):
         """The Fireball page's heartbeat: `values` (512 ints 0 to 255) on
         manual_slots go out on the next frames for MANUAL_HOLD_S, live or
         not, merged with the show's own by the higher value per channel.
         With `gen`, refused (False) when a disarm_all() (Stop, Abort) has
-        happened since the caller read abort_id. True when taken."""
+        happened since the caller read abort_id, and with `drops` when a
+        frame could not be sent (or frames stalled) since the caller read
+        manual_drops (round-5 review B 4: decided under the sender's lock,
+        so a beat in flight never sets the frame again after one). True
+        when taken."""
         try:
             vals = bytes(values)
             if len(vals) != UNIVERSE_SIZE:
@@ -1623,7 +1632,8 @@ class FlameLink:
             for s in self.manual_slots:
                 keep[s - 1] = vals[s - 1]
             with self._lock:
-                if gen is not None and self.abort_id != gen:
+                if (gen is not None and self.abort_id != gen) or \
+                        (drops is not None and self.manual_drops != drops):
                     self._manual = None
                     return False
                 self._manual = (bytes(keep), self._clock(), self.abort_id)
@@ -2192,6 +2202,14 @@ class FlameLink:
         so zero() and disarm_all() never wait on them. A frame whose values
         were read before a zero() or disarm_all() that landed meanwhile
         goes out as zeros: `_zero_gen` says one did."""
+        last = self._last_frame_at
+        if last is not None and self._clock() - last > MANUAL_STALL_S:
+            # Frames stopped for longer than flamesafe's own fire hold:
+            # flamesafe has zeroed the page's channels, and they stay off
+            # until a fresh press (round-5 review B 3).
+            with self._lock:
+                self._manual = None
+                self.manual_drops += 1
         gen = self._zero_gen
         lgen = self._land_gen
         aid = self.abort_id

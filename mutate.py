@@ -18506,8 +18506,8 @@ def build():
 
  ("fireball: the watcher does not look at the rules",
   "ltcplay/fireball.py",
-  "            why = self._link_why(self._link(), r) or self.refusal()\n",
-  "            why = self._link_why(self._link(), r)\n"),
+  "            why = self._link_why(self._link(), r) or self.refusal() or \\\n",
+  "            why = self._link_why(self._link(), r) or \\\n"),
 
  ("fireball: a cut run can come back",
   "ltcplay/fireball.py",
@@ -20913,7 +20913,7 @@ def build():
 
  ("fireball manual: the page sets its frame without the zero count",
   "ltcplay/fireball.py",
-  "                took = link.manual_set(vals, r[\"gen\"])",
+  "                took = link.manual_set(vals, r[\"gen\"], r[\"drops\"]) \\\n                    if r[\"drops\"] is not None else \\\n                    link.manual_set(vals, r[\"gen\"])",
   "                took = link.manual_set(vals)"),
 
  ("fireball manual: the conductor's Abort latch does not hold the page off",
@@ -20997,6 +20997,46 @@ def build():
   "                self.fireball_signout_cut(\n",
   "                (lambda *a: None)(\n"),
 
+ ("fireball manual: a sign-out on the show machine cuts only its own screen's run (round 5, G14)",
+  "ltcplay/fireball.py",
+  "                or (local and r.get(\"local\")))",
+  "                )"),
+
+ ("fireball manual: any sign-out cuts every run (round 5, G15)",
+  "ltcplay/fireball.py",
+  "            hit = r is not None and (",
+  "            hit = r is not None or ("),
+
+ ("fireball manual: a press racing a sign-out starts a run (round 5, F6)",
+  "ltcplay/fireball.py",
+  "                gone = self._still(still)\n                if gone:",
+  "                gone = self._still(still)\n                if False:"),
+
+ ("fireball manual: the watcher never asks whether the sign-in may still arm (round 5, B2)",
+  "ltcplay/fireball.py",
+  "            why = self._link_why(self._link(), r) or self.refusal() or \\\n                self._still(r.get(\"still\"))",
+  "            why = self._link_why(self._link(), r) or self.refusal()"),
+
+ ("fireball manual: the route gives the run no sign-in check (round 5, B2)",
+  "ltcplay/fireball.py",
+  "                          local=bool(getattr(ctx, \"local\", False)),\n                          still=still)",
+  "                          local=bool(getattr(ctx, \"local\", False)),\n                          still=None)"),
+
+ ("fireball manual: a demoted sign-in may still hold a channel (round 5, B2)",
+  "ltcplay/remote.py",
+  "            return (f\"{nobody} may no longer use the Fireball controls \"",
+  "            return \"\"\n            return (f\"{nobody} may no longer use the Fireball controls \""),
+
+ ("fireball manual: frames resuming after a stall bring the page's channel back (round 5, B3)",
+  "ltcplay/flamelink.py",
+  "        if last is not None and self._clock() - last > MANUAL_STALL_S:",
+  "        if False:"),
+
+ ("fireball manual: a beat in flight sets the frame after a failed send (round 5, B4)",
+  "ltcplay/flamelink.py",
+  "                        (drops is not None and self.manual_drops != drops):",
+  "                        False:"),
+
  ("fireball manual: the timeline judges its charge from the composed frame",
   "ltcplay/web.py",
   "            sent_get=lambda: getattr(link, \"show_sent\", None))",
@@ -21038,10 +21078,8 @@ def build():
 
  ("fireball manual: a beat read before a zero is taken",
   "ltcplay/flamelink.py",
-  "                if gen is not None and self.abort_id != gen:\n"
-  "                    self._manual = None\n                    return False",
-  "                if False:\n"
-  "                    self._manual = None\n                    return False"),
+  "                if (gen is not None and self.abort_id != gen) or \\\n",
+  "                if False or \\\n"),
 
  ("fireball manual: the lockout does not apply to the page's frame",
   "ltcplay/flamelink.py",

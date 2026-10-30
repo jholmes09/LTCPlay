@@ -89255,8 +89255,10 @@ class _FakeFireballLink:
     # The Fireball page's own frame (FlameLink.manual_set, 2026-10-30):
     # the same `cur` here; refused, as the real one, when the zero count
     # moved since the caller read it.
-    def manual_set(self, values, gen=None):
-        if gen is not None and gen != self.abort_id:
+    def manual_set(self, values, gen=None, drops=None):
+        if (gen is not None and gen != self.abort_id) or (
+                drops is not None and
+                drops != getattr(self, "manual_drops", None)):
             self.cur = None
             return False
         return self.purge_set(values)
@@ -89525,6 +89527,51 @@ def test_fireball_panel_rules():
           f"a frame not sent while a beat's frame went in: cut: {code} "
           f"{fb.last_cut!r}")
     del link.manual_drops
+    # The sign-in checked again as a run starts (round-5 review F6): a
+    # press that raced a sign-out starts nothing.
+    gone = ["signed out"]
+    code, out = beat({"fuel"}, run="cu", seq=1, still=lambda: gone[0])
+    check(code == 409 and "signed out" in out["error"] and
+          not fb.active() and link.cur is None,
+          f"a press whose sign-in has ended starts nothing: {out}")
+    # Lost while the run is on: the watcher cuts it (review B 2).
+    gone[0] = ""
+    P.t[0] += 0.05
+    code, out = beat({"fuel"}, run="cv", seq=1, still=lambda: gone[0])
+    check(code == 200 and fb.active(), f"on: {out}")
+    gone[0] = "Ola may no longer arm (their role is now viewer)"
+    P.t[0] += 0.01
+    check(fb.tick() == gone[0] and not fb.active() and link.cur is None,
+          "the right to arm lost: the watcher cuts the run")
+    # Which sign-out cuts which run (round-5 review F5): that sign-in's,
+    # that user's on that screen, any run started on the show machine by
+    # a sign-out there; never someone else's on another screen.
+    def scoped(owner, who, run_token, run_local, **so):
+        P.t[0] += 0.05
+        code, out = fb.beat({"controls": {"fuel": True},
+                             "run": "s" + str(P.t[0])}, owner, who=who,
+                            screen=owner[0], token=run_token,
+                            local=run_local)
+        check(code == 200 and fb.active(), f"scoped setup: {out}")
+        return fb.cut_signed_out("signed out", **so)
+    check(not scoped(("iPad 2", "w"), "Yan", "tY", False, token="tX",
+                     user="Xi", device="iPad 1", local=False) and
+          fb.active(), "an iPad's sign-out leaves another iPad's run")
+    fb.off("reset")
+    check(scoped(("iPad 2", "w"), "Yan", "tY", False, token="tY",
+                 user="Yan", device="iPad 2", local=False) and
+          not fb.active(), "that sign-in's own run is cut")
+    check(scoped(("iPad 2", "w2"), "Yan", "tY2", False, token="tY3",
+                 user="Yan", device="iPad 2", local=False) and
+          not fb.active(), "that user's run on that screen is cut")
+    check(scoped(("Stream Deck", ""), "Jeff", "tJ", True, token="tR",
+                 user="Andy", device="Rack screen", local=True) and
+          not fb.active(), "a sign-out on the show machine cuts a run "
+                           "started there from another screen")
+    check(not scoped(("iPad 2", "w"), "Yan", "tY", False, token="tR",
+                     user="Andy", device="Rack screen", local=True) and
+          fb.active(), "but never an iPad's run by someone else")
+    fb.off("reset")
     start("c4")
     P.why[0] = "a scheduled show is live (SHOW)"
     P.t[0] += 0.05
@@ -90064,6 +90111,29 @@ def test_fireball_signed_out_is_view_only():
               "signed out" in P.fb.last_cut,
               f"signed out: the Fireball run cut at once: {st} "
               f"{P.fb.last_cut!r}")
+        # Losing the right to arm cuts it at the engine on the watcher's
+        # next look, as the fuel pump (round-5 review B 2): a demotion, a
+        # removal.
+        for how in ("demoted", "removed"):
+            st, out, h = http("/api/remote/signin", {
+                "name": "Ola", "password": "ola-pw-123"})
+            ck["Ola"] = cookie_of(h)
+            st, out, _h = http("/api/remote/fireball-beat",
+                               body({"fuel"}, "o3" + how,
+                                    20 if how == "demoted" else 30, True),
+                               cookie=ck["Ola"], window="w-aaaaaa")
+            check(st == 200 and P.fb.active(), f"Fuel on ({how}): {out}")
+            if how == "demoted":
+                rem.users.set_role("Ola", "viewer")
+            else:
+                rem.users.set_role("Ola", "operator")
+                rem.users.remove("Ola")
+            P.t[0] += 0.01
+            why = P.fb.tick()
+            check(not P.fb.active() and P.link.cur is None and why,
+                  f"Ola {how}: the run cut on the next look: {why!r}")
+            if how == "demoted":
+                rem.users.set_role("Ola", "operator")
         # The handler writes a request's audit line just after its answer
         # has gone (web.py's finally), so the last line is waited for: a
         # busy runner read the log in between (mutate shard 19 baseline,
@@ -90072,9 +90142,9 @@ def test_fireball_signed_out_is_view_only():
             rem.audit.flush(5.0)
             return [l for l in _audit_lines(rem.audit.folder)
                     if l["action"] == "fireball-beat"]
-        wait_for(lambda: len(_beats()) >= 6, timeout=5.0, step=0.05)
+        wait_for(lambda: len(_beats()) >= 8, timeout=5.0, step=0.05)
         beats = _beats()
-        check(len(beats) == 6,
+        check(len(beats) == 8,
               f"every refused press and every change is in the audit log, "
               f"not the beats between: {len(beats)}")
         check(any(l["action"] == "fireball-off"
@@ -90767,7 +90837,10 @@ def test_fireball_doc_in_plain_words():
                  "never on 77"):
         check(need in part, f"OPERATOR.md's Fireball section says {need!r}")
     for need in ("a single frame to flamesafe that could not be sent",
-                 "signing out (at once, at the engine)",
+                 "signing out (at once, at the engine",
+                 "frames stopping for more than a tenth of a second",
+                 "never someone else's run on another iPad",
+                 "losing the right to arm",
                  "Play from and Loop work with a Fireball channel on"):
         check(" ".join(need.split()) in " ".join(part.split()),
               f"OPERATOR.md's Fireball section says {need!r} (round-4 "
@@ -103206,6 +103279,7 @@ def test_fireball_manual_merged_on_the_flame_link():
     lk.observer = lambda tc, v, ok: seen_.append(bytes(v))
     R.cue = [0] * 512
     R.now()
+    lk.send_frame()             # the sender's frames come every 25 ms
     lk.manual_set(page(s55=255), lk.abort_id)
     lk.send_frame()
     check(seen_[-1][54] == 255 and lk.show_sent[54] == 0,
@@ -103257,7 +103331,22 @@ def test_fireball_manual_merged_on_the_flame_link():
     lk.zero()
     check(lk.show_sent[54] == 0, f"a zero(): the show's sent values are "
                                  f"zeros at once: {lk.show_sent[54]}")
+    # Frames stalled for longer than flamesafe's fire hold (100 ms): the
+    # page's frame is dropped and counted when they resume, never sent
+    # again by itself (round-5 review B 3); a beat in flight with the old
+    # count is refused (B 4).
     lk.release()
+    lk.send_frame()
+    d1 = getattr(lk, "manual_drops", 0)
+    lk.manual_set(page(s55=255), lk.abort_id, d1)
+    R.clk[0] += 0.15
+    lk.send_frame()
+    check(seen_[-1][54] == 0 and getattr(lk, "manual_drops", 0) == d1 + 1,
+          f"a 150 ms stall: the page's Fuel does not come back by itself: "
+          f"{seen_[-1][54]}")
+    check(lk.manual_set(page(s55=255), lk.abort_id, d1) is False and
+          lk._manual is None,
+          "a beat that read the count before the stall is refused")
     lk._sock = None
     lk.observer = None
     R.cue = [0] * 512
@@ -103310,12 +103399,12 @@ def test_fireball_page_beats_race_the_sender():
         def __getattr__(self, k):
             return getattr(real, k)
 
-        def manual_set(self, values, gen=None):
+        def manual_set(self, values, gen=None, drops=None):
             if self.zero_first:
                 real.disarm_all("Stop (selftest)")
             if self.hold_first:
                 real.zero()
-            took = real.manual_set(values, gen)
+            took = real.manual_set(values, gen, drops)
             tc, v = real.values_now()
             tr._read_armed()
             tr.observe(tc, v, True)
