@@ -65019,6 +65019,13 @@ def test_pump_flame_link():
                               clock=lambda: mine[0]) is False,
               "a deadline already past starts nothing")
         link._clock = t
+        check(fl.PUMP_MAX_S == 600, "the link's own ceiling is 10:00")
+        link.pump_start(3600, link.pump_gen())
+        left = link._pump_until - link._clock()
+        check(0 < left <= 600.0 + 1e-6,
+              f"the link's hard end is never past 10:00, whatever the "
+              f"engine asks: {left:.1f} s")
+        link.pump_stop()
         _pm_on(link)
         gen = link.pump_gen()
         n0 = len(link._sock.sent)
@@ -65123,7 +65130,8 @@ def _pm_rig(S):
         R.remote._journal(who or "system", screen or "engine", "fuel-pump",
                           outcome, text, fault=fault),
         clock=lambda: R.mono[0], threaded=False,
-        night_state=lambda: R.night[0])
+        night_state=lambda: R.night[0],
+        signed_out=lambda token, who: R.remote.pump_signed_out(token, who))
     R.night = [None]
     close = R.close
 
@@ -65170,20 +65178,22 @@ def test_pump_at_the_engine():
     from ltcplay import flamelink as FL
     check(FP.BEAT_STALE_S == FL.PUMP_HOLD_S,
           "the engine's stall and the link's beat are the same 0.5 s")
-    check(FP.DEFAULT_S == 300 and FP.MAX_DEFAULT_S == 3600 and
+    check(FP.DEFAULT_S == 300 and FP.MAX_DEFAULT_S == 600 and
+          FP.MAX_LIMIT_S == 600 and
           FP.clock_text(300) == "5:00" and FP.clock_text(252) == "4:12" and
           FP.clock_text(3725) == "62:05",
-          "5 minutes by default, 60 the longest unless an admin says, m:ss")
-    for v in (300, 1, 3600):
+          "5 minutes by default, 10 the longest (Jeff, 2026-10-30), m:ss")
+    for v in (300, 1, 600):
         check(FP.pump_seconds(v) == (v, ""), f"{v} s is taken")
-    for v in (0, -5, 3601, 1.5, "300", True, None, float("nan")):
+    for v in (0, -5, 601, 3600, 1.5, "300", True, None, float("nan")):
         secs, why = FP.pump_seconds(v)
         check(secs is None and why and "—" not in why,
               f"{v!r} is refused in words: {why}")
-    check("pump_max_s" in FP.pump_seconds(3601)[1] and
-          "can raise" in FP.pump_seconds(3601)[1],
-          "a run time over the longest names pump_max_s and says an admin "
-          "can raise it")
+    check("10:00 at most" in FP.pump_seconds(601)[1] and
+          "ten minutes" in FP.pump_seconds(601)[1] and
+          FP.pump_seconds(601, max_s=3600)[0] is None,
+          "a run time over 10:00 is refused in words, whatever a caller "
+          "passes as the longest")
     loop, ipad = ("127.0.0.1", 5000), ("10.20.0.44", 50000)
     R = _pm_rig(S)
     link = R.link
@@ -65221,10 +65231,10 @@ def test_pump_at_the_engine():
               v["slot"] == 100 and v["on_value"] == 255 and
               v["on"] is False and v["state"] == "off" and
               v["refusal"] == "" and v["agree"] is True and
-              v["default_s"] == 300 and v["max_s"] == 3600 and
+              v["default_s"] == 300 and v["max_s"] == 600 and
               v["left_s"] is None,
               f"every screen's status: the pump, OFF, ON would be taken, "
-              f"5:00 the default, 60:00 the longest: {v}")
+              f"5:00 the default, 10:00 the longest: {v}")
         hv = R.remote.hazers_view(R.remote.flame_status.view())
         check(hv.get("agree") is True and
               not [a for a in R.remote.alerts.open() if a.kind == "hazers"],
@@ -65245,7 +65255,7 @@ def test_pump_at_the_engine():
         check(v["state"] == "on" and v["left_s"] == 239.8 and
               v["seconds"] == 240,
               f"the countdown on the engine's clock: {v['left_s']}")
-        st, _h, out = tap(True, seconds=3000)
+        st, _h, out = tap(True, seconds=600)
         check(st == 409 and "already on" in out["error"] and
               pm.run["seconds"] == 240,
               f"a second ON never adds time: {out}")
@@ -65261,26 +65271,50 @@ def test_pump_at_the_engine():
               f"{out}")
         st, _h, out = tap(True, run="")
         check(st == 409 and not link.pump_on, f"a press with no id: {out}")
-        for bad in (0, 3601, 1.5, "300", None):
+        for bad in (0, 601, 3601, 1.5, "300", None):
             st, _h, out = tap(True, seconds=bad)
             check(st == 409 and not link.pump_on and
                   "not turned on" in out["error"],
                   f"run time {bad!r}: refused: {out['error']}")
-        RM.save_settings(R.work, pump_max_s=600)
+        RM.save_settings(R.work, pump_max_s=120)
+        st, _h, out = tap(True, seconds=121)
+        check(st == 409 and "2:00 at most" in out["error"] and
+              not link.pump_on,
+              f"an admin's pump_max_s of 120: 121 s refused: {out}")
+        check(view()["max_s"] == 120 and view()["default_s"] == 120,
+              "and the screens are told the longest (and the default is "
+              "never longer than it)")
+        RM.save_settings(R.work, pump_max_s=14400)
+        import json as _jj
+        sp = os.path.join(R.work, RM.SETTINGS_FILE)
+        with open(sp, encoding="utf-8") as fh:
+            sdoc = _jj.load(fh)
+        sdoc["pump_max_s"] = 14400
+        with open(sp, "w", encoding="utf-8") as fh:
+            _jj.dump(sdoc, fh)
+        check(RM.load_settings(R.work)["pump_max_s"] == 600,
+              "a file written with 14400 by hand is read as 600")
+        RM.save_settings(R.work, pump_max_s=14400)
+        on_disk = _jj.load(open(os.path.join(R.work, RM.SETTINGS_FILE),
+                                encoding="utf-8"))
+        check(on_disk.get("pump_max_s") == 600,
+              f"saving pump_max_s 14400 writes 600 (never above it on disk "
+              f"either): {on_disk.get('pump_max_s')}")
+        check(RM.load_settings(R.work)["pump_max_s"] == 600 and
+              view()["max_s"] == 600,
+              "a pump_max_s above 600 (from before the 10:00 ceiling) is "
+              "read as 600, and the file still loads")
         st, _h, out = tap(True, seconds=601)
-        check(st == 409 and "10:00" in out["error"] and
-              "pump_max_s" in out["error"] and not link.pump_on,
-              f"an admin's pump_max_s of 600: 601 s refused: {out}")
-        check(view()["max_s"] == 600 and view()["default_s"] == 300,
-              "and the screens are told the longest")
-        for badv in (0, 14401, "600", True, 1.5):
+        check(st == 409 and not link.pump_on,
+              f"so 601 s is refused even then: {out}")
+        for badv in (0, "600", True, 1.5):
             try:
                 RM.save_settings(R.work, pump_max_s=badv)
                 check(False, f"pump_max_s {badv!r} was saved")
             except ValueError as e:
                 check("pump_max_s" in str(e), f"pump_max_s {badv!r} is "
                                               f"refused: {e}")
-        RM.save_settings(R.work, pump_max_s=3600)
+        RM.save_settings(R.work, pump_max_s=600)
         # Its own end on the engine's timer.
         st, _h, out = tap(True, seconds=1)
         for _ in range(9):
@@ -65949,10 +65983,270 @@ def test_pump_review_fixes():
         import ast as _ast
         src = open(os.path.join(os.path.dirname(os.path.abspath(
             __file__)), "ltcplay", "web.py"), encoding="utf-8").read()
-        check("night_state=remote.pump_night_state)" in src,
-              "web.serve gives the pump the scheduler's night state")
+        check("night_state=remote.pump_night_state," in src and
+              "signed_out=remote.pump_signed_out)" in src,
+              "web.serve gives the pump the scheduler's night state and the "
+              "sign-in check")
     finally:
         R.close()
+    print("  ok")
+
+
+def test_pump_signout_stops_it():
+    section("fuel pump (Jeff, 2026-10-30): signing out stops it. The run "
+            "a sign-in started turns off when that sign-in signs out on "
+            "its screen, and, the timer's belt, when the sign-in ends any "
+            "other way (idle, after the last show, from another place); "
+            "another person signing out elsewhere leaves it running")
+    S = _sched()
+    if S is None:
+        return
+    import shutil
+    import tempfile
+    from ltcplay import users as U
+    loop = ("127.0.0.1", 5000)
+    R = _pm_rig(S)
+    link = R.link
+    pm = R.remote.pump
+    udir = tempfile.mkdtemp()
+    n = [0]
+
+    def tap(on, hdr):
+        n[0] += 1
+        body = {"on": on, "seen": R.seen()}
+        if on is True:
+            body.update(seconds=300, run=f"so{n[0]}")
+        return R.ask("POST", "/api/remote/fuel-pump", body, client=loop,
+                     headers=hdr)
+    try:
+        us = U.Users(udir, hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator"),
+                 ("Andy", "operator"), ("Vic", "viewer")])
+        R.remote.users = us
+        ok, _w, tok, _n = us.sign_in("Ollie", "", True, "rack",
+                                     new_password="Ollie-pw-1234")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        st, _h, out = tap(True, {})
+        check(st == 403 and not link.pump_on,
+              f"signed out cannot turn it on: {st} {out}")
+        st, _h, out = tap(True, hdr)
+        check(st == 200 and link.pump_on and pm.run["token"] == tok,
+              f"Ollie turns it on; the run keeps his sign-in: {st} {out}")
+        R.mono[0] += 0.1
+        check(pm.pump_send() == "" and link.pump_on,
+              "signed in: it runs")
+        R.ask("POST", "/api/remote/signout", {}, client=loop, headers=hdr)
+        check(not link.pump_on and pm.run is None and
+              "Ollie signed out" in (pm.last_off or {}).get("reason", ""),
+              f"Ollie signs out on his screen: the pump turns off at once, "
+              f"said: {pm.last_off}")
+        R.feed()
+        link._abort_repeat = None
+        # The belt: the sign-in ends some other way (idle, after the last
+        # show): the timer's next pass ends it.
+        ok, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True, "rack")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        st, _h, out = tap(True, hdr)
+        check(st == 200 and link.pump_on, f"setup: on again: {out}")
+        us.sign_out(tok, "rack", local=False)
+        R.mono[0] += 0.1
+        why = pm.pump_send()
+        check("Ollie signed out" in why and not link.pump_on and
+              pm.run is None,
+              f"his sign-in ended another way: the timer ends it: {why}")
+        R.feed()
+        # Another person signing out elsewhere leaves it running.
+        ok, _w, atok, _n = us.sign_in("Andy", "", True, "rack",
+                                      new_password="Andy-pw-1234")
+        us.sign_out(atok, "rack", local=False)
+        ok, _w, atok, _n = us.sign_in("Andy", "Andy-pw-1234", False,
+                                      "10.20.0.44")
+        ok, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True, "rack")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        check(ok and atok and atok != tok,
+              f"setup: Andy signed in on his iPad: {_w}")
+        st, _h, out = tap(True, hdr)
+        check(st == 200 and link.pump_on, f"setup: Ollie's run: {out}")
+        R.remote.pump_signout("Andy signed out on the iPad", "Andy",
+                              "iPad", atok)
+        us.sign_out(atok, "10.20.0.44", local=False)
+        R.mono[0] += 0.1
+        check(pm.pump_send() == "" and link.pump_on and pm.run is not None,
+              "Andy signing out on his iPad leaves Ollie's run going")
+        tap(False, hdr)
+        R.feed()
+        link._abort_repeat = None
+        ipad = ("10.20.0.44", 50000)
+
+        def tap_from(on, hdr, client):
+            n[0] += 1
+            body = {"on": on, "seen": R.seen()}
+            if on is True:
+                body.update(seconds=300, run=f"so{n[0]}")
+            return R.ask("POST", "/api/remote/fuel-pump", body,
+                         client=client, headers=hdr)
+        # The same person on two screens: signing out on one leaves the run
+        # the other started; signing out on that one stops it.
+        ok, _w, itok, _n = us.sign_in("Ollie", "Ollie-pw-1234", False,
+                                      "10.20.0.44")
+        ihdr = {"Cookie": f"{U.COOKIE}={itok}"}
+        st, _h, out = tap_from(True, ihdr, ipad)
+        check(st == 200 and link.pump_on and pm.run["token"] == itok,
+              f"Ollie turns it on from his iPad: {st} {out}")
+        us.sign_out(tok, "rack", local=False)
+        R.mono[0] += 0.1
+        check(pm.pump_send() == "" and link.pump_on,
+              "Ollie signing out on the rack screen leaves the run his "
+              "iPad started")
+        R.ask("POST", "/api/remote/signout", {}, client=ipad, headers=ihdr)
+        check(not link.pump_on and
+              "Ollie signed out" in (pm.last_off or {}).get("reason", ""),
+              f"signing out on the iPad stops it: {pm.last_off}")
+        R.feed()
+        link._abort_repeat = None
+        # The show PC signing everyone out through the real route: the
+        # journal names the person who signed out (cold review A, 1).
+        ok, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True, "rack")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        ok, _w, jtok, _n = us.sign_in("Jeff", "", True, "rack",
+                                      new_password="Jeff-pw-1234")
+        st, _h, out = tap(True, hdr)
+        check(st == 200 and link.pump_on, f"setup: Ollie's run: {out}")
+        R.ask("POST", "/api/remote/signout", {}, client=loop,
+              headers={"Cookie": f"{U.COOKIE}={jtok}"})
+        lo = pm.last_off or {}
+        check(not link.pump_on and pm.run is None and
+              "Jeff signed out" in lo.get("reason", "") and
+              "Ollie's sign-in" in lo.get("reason", "") and
+              lo.get("who") == "Jeff",
+              f"Jeff signs out at the show PC (every sign-in made there "
+              f"ends): off at once, Jeff named: {lo}")
+        R.feed()
+        link._abort_repeat = None
+        ok, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True, "rack")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        # An unreadable users file is never said as a sign-out (A2).
+        tap(True, hdr)
+        real_check = us.session_check
+        us.session_check = lambda t: ("broken", None)
+        R.mono[0] += 0.1
+        why = pm.pump_send()
+        us.session_check = real_check
+        check("users file unreadable" in why and "signed out" not in why
+              and not link.pump_on,
+              f"a users file that cannot be read: said as that: {why}")
+        R.feed()
+        link._abort_repeat = None
+        # A busy users lock is never waited on (A4): read as signed in for
+        # a while, then said.
+        tap(True, hdr)
+        held, release = threading.Event(), threading.Event()
+
+        def hold_users():
+            with us._lock:
+                held.set()
+                release.wait(10)
+        th = threading.Thread(target=hold_users, daemon=True)
+        th.start()
+        held.wait(5)
+        t0 = time.monotonic()
+        R.mono[0] += 0.1
+        why = pm.pump_send()
+        took = time.monotonic() - t0
+        check(why == "" and link.pump_on and took < 0.5,
+              f"the users lock held (a password hash): the timer does not "
+              f"wait on it ({took:.2f} s) and the run goes on: {why!r}")
+        for _ in range(40):
+            R.mono[0] += 0.1
+            R.feed()
+            why = pm.pump_send()
+            if why:
+                break
+        release.set()
+        th.join(5)
+        check("busy too long" in why and not link.pump_on,
+              f"held past {R.remote.PUMP_USERS_BUSY_S:g} s: it ends, said: "
+              f"{why}")
+        R.feed()
+        link._abort_repeat = None
+        # A demotion stops the run (B1).
+        tap(True, hdr)
+        us.set_role("Ollie", "viewer")
+        R.mono[0] += 0.1
+        why = pm.pump_send()
+        check("may no longer turn the fuel pump on" in why and
+              not link.pump_on,
+              f"Ollie made a viewer while his run goes: it ends: {why}")
+        us.set_role("Ollie", "operator")
+        R.feed()
+        link._abort_repeat = None
+        # A sign-in that ends while the ON is on its way never starts it
+        # (A3): during its first checks, and inside the reservation.
+        starts = []
+        real_start = link.pump_start
+
+        def counting(*a, **k):
+            starts.append(1)
+            return real_start(*a, **k)
+        link.pump_start = counting
+        real_ref = pm.refusal
+
+        def out_meanwhile():
+            us.sign_out(tok, "rack", local=False)
+            return real_ref()
+        pm.refusal = out_meanwhile
+        reserved = []
+        real_blk0 = pm._blocker
+
+        def seeing():
+            reserved.append(pm.run is not None)
+            return real_blk0()
+        pm._blocker = seeing
+        st, _h, out = tap(True, hdr)
+        pm.refusal = real_ref
+        pm._blocker = real_blk0
+        check(st == 409 and "signed out" in out.get("error", "") and
+              not starts and not link.pump_on and not any(reserved),
+              f"(refused before any reservation: {reserved})")
+        check(st == 409 and "signed out" in out.get("error", "") and
+              not starts and not link.pump_on,
+              f"signed out while the ON was being checked: never started: "
+              f"{st} {out}")
+        ok, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True, "rack")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        real_blk = pm._blocker
+
+        def out_in_reservation():
+            if pm.run is not None:
+                us.sign_out(tok, "rack", local=False)
+            return real_blk()
+        pm._blocker = out_in_reservation
+        st, _h, out = tap(True, hdr)
+        pm._blocker = real_blk
+        link.pump_start = real_start
+        check(st == 409 and "signed out" in out.get("error", "") and
+              not starts and not link.pump_on and pm.run is None,
+              f"signed out inside the reservation: never started: {st} "
+              f"{out}")
+        ok, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True, "rack")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        # An ON from no sign-in (the Stream Deck's screen) is refused while
+        # there are users, even with Ollie signed in on this machine.
+        import types
+        ctx = types.SimpleNamespace(local=True, token="", user="Ollie",
+                                    device="Stream Deck",
+                                    screen="Stream Deck",
+                                    source="127.0.0.1")
+        st, out = R.remote.pump_post({"on": True, "seconds": 300,
+                                      "run": "deck1", "seen": R.seen(),
+                                      "screen": "Stream Deck"}, ctx)
+        check(st == 403 and "needs a sign-in" in out.get("error", "") and
+              not link.pump_on,
+              f"an ON with no sign-in of its own: refused: {st} {out}")
+    finally:
+        R.remote.users = None
+        R.close()
+        shutil.rmtree(udir, ignore_errors=True)
     print("  ok")
 
 
@@ -97372,11 +97666,16 @@ def test_ui2_page_makes_only_1_0_presses():
             r'\b(?:press|annPress)\("([a-z-]+)"', src)}
         return out
     r1, r2 = routes(one), routes(two)
-    # The fuel pump (2026-10-30) is 2.0 only: 1.0 is being retired and
-    # gets no new controls (FIREBALL_TIMELINE_DESIGN, section 4).
-    check(r2 - r1 == {"/api/remote/ui-default", "/api/remote/fuel-pump"},
-          f"2.0 adds two routes, the default interface and the fuel pump: "
-          f"{sorted(r2 - r1)}")
+    # 2.0's own routes, which 1.0 has no button for: the default interface
+    # and the play-from cue list (Settings), and the fuel pump (2026-10-30:
+    # 1.0 is being retired and gets no new controls, FIREBALL_TIMELINE_
+    # DESIGN, section 4).
+    check(r2 - r1 == {"/api/remote/ui-default",
+                      "/api/remote/play-from-cues-save",
+                      "/api/remote/fuel-pump"} and
+          '"/api/remote/play-from-cues?show="' in two,
+          f"2.0 adds three routes, the default interface, the play-from "
+          f"cue list and the fuel pump: {sorted(r2 - r1)}")
     # The presses, body for body.
     for press in ('press("start-now", {confirmed:true})',
                   'press("disarm-all")', 'press("group-disarm", {group:i})',
@@ -98253,7 +98552,8 @@ def test_ui2_fuel_pump_row():
         return
     js = "\n".join(_js_function(two, n) for n in
                    ("pumpSeconds", "pumpClock", "pumpWhy",
-                    "pumpWords")) + r"""
+                    "pumpWords", "pumpWhyFull")) + r"""
+const PUMP_MAX_S = 600;
 let STALE = false, ME = {local: true};
 function stale(){ return STALE; }
 function mayRow(s, p){ return !!(s.may && s.may[p]); }
@@ -98269,6 +98569,10 @@ out.ready = pumpWhy(ok, v, 300);
 out.running = pumpWhy(ok, Object.assign({}, v, {on: true}), 300);
 out.bad = pumpWhy(ok, v, null);
 out.long = pumpWhy(ok, v, 3601);
+out.long601 = pumpWhy(ok, Object.assign({}, v, {max_s: 3600}), 601);
+out.long600 = pumpWhy(ok, Object.assign({}, v, {max_s: 3600}), 600);
+out.lower = pumpWhy(ok, Object.assign({}, v, {max_s: 120}), 121);
+out.full601 = pumpWhyFull(ok, v, 601, out.long601);
 out.refused = pumpWhy(ok, Object.assign({}, v, {refusal: "an Abort is standing."}), 300);
 out.signed = pumpWhy({may: {arm: false}}, v, 300);
 ME = {local: false};
@@ -98297,7 +98601,10 @@ console.log(JSON.stringify(out));
     check(o["clock"] == ["5:00", "4:12", "62:05", "0:00", "0:59"],
           f"shown as m:ss: {o['clock']}")
     check(o["ready"] == "" and o["running"] == "Pump is on" and
-          o["bad"] == "Run time as m:ss" and o["long"] == "Longest is 60:00"
+          o["bad"] == "Run time as m:ss" and o["long"] == "Longest is 10:00" and
+          o["long601"] == "Longest is 10:00" and o["long600"] == "" and
+          o["lower"] == "Longest is 2:00" and
+          "10:00 at most (ten minutes)" in o["full601"]
           and o["refused"] == "an Abort is standing." and
           o["signed"] == "Sign in" and o["ipad"] == "Arming off here" and
           o["ipad_on"] == "" and o["stale"] == "No contact",
@@ -99442,6 +99749,1233 @@ def test_ui2_day_tab_in_a_browser():
     print("  ok")
 
 
+# ------------------------------------- play-from cues, part 1: the list --
+
+def test_play_from_cue_model():
+    section("play-from cues: each cue a name (unique, case not counted, no "
+            "long dash), a time from the top of the show cue inside the "
+            "show audio, a lead-in (2 s when not given, 1 to 30 s, never "
+            "before the top) and an optional note; refused in plain "
+            "sentences; the file read strictly; ids kept across renames")
+    from ltcplay import play_from as PF
+    check(PF.FILE == "ltcplay_play_from.json" and
+          PF.LEAD_IN_DEFAULT_S == 2 and PF.LEAD_IN_MIN_S == 1,
+          "the file, and the lead-in's default and minimum")
+    check(PF.parse_tc("00:08:12:15") == (8 * 60 + 12) * 30 + 15 and
+          PF.tc_text((8 * 60 + 12) * 30 + 15) == "00:08:12:15" and
+          PF.parse_tc(" 00:00:01:00 ") == 30, "a time reads and writes")
+    for bad in ("00:00:01:30", "00:60:00:00", "00:00:60:00", "1:00:00:00",
+                "00:00:01", "", None, 5, "00:00:01:00:00"):
+        try:
+            PF.parse_tc(bad)
+            check(False, f"{bad!r} is refused as a time")
+        except PF.CueError as e:
+            check(_cfg_dashes(str(e)), f"{bad!r} refused: {e}")
+    good = [{"name": "Finale", "tc": "00:01:40:00", "lead_in_s": 3,
+             "note": "marketing cut"},
+            {"name": "  Top   of act two ", "tc": "00:00:30:10"},
+            {"name": "Edge", "tc": "00:00:01:00", "lead_in_s": 1}]
+    got = PF.check_cues(good, 120.0)
+    check([c["name"] for c in got] == ["Edge", "Top of act two", "Finale"]
+          and got[1]["lead_in_s"] == 2 and got[1]["note"] == "" and
+          got[2] == {"id": None, "name": "Finale", "tc": "00:01:40:00",
+                     "lead_in_s": 3, "note": "marketing cut"},
+          f"in time order, the lead-in 2 s when not given, spaces evened: "
+          f"{got}")
+    for cues, why in (
+            ([{"name": "A", "tc": "00:02:00:00"}], "not inside the show "
+             "audio, which is 00:02:00:00 long"),
+            ([{"name": "A", "tc": "00:01:59:29"}], None),
+            ([{"name": "A", "tc": "00:00:01:29"}], "start before the top"),
+            ([{"name": "A", "tc": "00:00:02:00"}], None),
+            ([{"name": "A", "tc": "00:00:03:00", "lead_in_s": 0}],
+             "at least 1 s"),
+            ([{"name": "A", "tc": "00:00:03:00", "lead_in_s": 31}],
+             "at most 30 s"),
+            ([{"name": "A", "tc": "00:00:40:00", "lead_in_s": 30}], None),
+            ([{"name": "A", "tc": "00:00:03:00", "lead_in_s": 1.5}],
+             "whole number"),
+            ([{"name": "A", "tc": "00:00:03:00", "lead_in_s": True}],
+             "whole number"),
+            ([{"name": "A", "tc": "00:00:03:00", "lead_in_s": "2"}],
+             "whole number"),
+            ([{"name": "Finale", "tc": "00:00:03:00"},
+              {"name": "finale", "tc": "00:00:05:00"}], "used twice"),
+            ([{"name": "", "tc": "00:00:03:00"}], "needs a name"),
+            ([{"name": "x" * 41, "tc": "00:00:03:00"}], "longer than 40"),
+            ([{"name": "x" * 40, "tc": "00:00:03:00"}], None),
+            ([{"name": "Act \u2013 two", "tc": "00:00:03:00"}],
+             "long dash"),
+            ([{"name": "A", "tc": "00:00:03:00", "note": "n" * 201}],
+             "longer than 200"),
+            ([{"name": "A", "tc": "00:00:03:00", "colour": "red"}],
+             "unknown field colour"),
+            ([{"name": "A", "tc": "00:00:03:00", "id": "k3"}],
+             "not a cue id"),
+            ([{"name": "A", "tc": "00:00:03:00", "id": "c1"},
+              {"name": "B", "tc": "00:00:04:00", "id": "c1"}],
+             "given twice"),
+            ([{"name": "A%d" % i, "tc": "00:00:03:00"} for i in range(51)],
+             "at most 50 cues"),
+            ("Finale", "a list")):
+        try:
+            PF.check_cues(cues, 120.0)
+            check(why is None, f"refused ({why}): {cues!r:.80}")
+        except PF.CueError as e:
+            check(why is not None and why in str(e) and
+                  _cfg_dashes(str(e)), f"{why}: {e}")
+    try:
+        PF.check_cues([{"name": "A", "tc": "00:00:99:00", "lead_in_s": 0},
+                       {"name": "a", "tc": "00:00:03:00"}], 120.0)
+    except PF.CueError as e:
+        check(str(e).count(";") == 2 and "A:" in str(e) and
+              "used twice" in str(e), f"every problem at once: {e}")
+    # Review of #192: a lead-in too big for a float, other scripts'
+    # digits, control and invisible characters, and two spellings of one
+    # name are all refused in words, never raised.
+    for v in (10 ** 400, -10 ** 400, 1e300, float("inf")):
+        try:
+            PF.parse_lead_in(v)
+            check(False, f"a lead-in of {str(v)[:12]} is refused")
+        except PF.CueError as e:
+            check(_cfg_dashes(str(e)), f"{str(v)[:12]}: {e}")
+        except Exception as e:                   # noqa: BLE001
+            check(False, f"a lead-in of {str(v)[:12]} raised "
+                         f"{type(e).__name__}, not a refusal")
+    check(PF.parse_lead_in(2.0) == 2 and PF.parse_lead_in(30) == 30,
+          "2.0 and 30 are good lead-ins")
+    for cues, why in (
+            ([{"name": "Q", "tc": "\u0660\u0660:\u0660\u0661:\u0663\u0660:"
+                                  "\u0660\u0660"}], "not a time"),
+            ([{"name": "A\x00", "tc": "00:00:05:00"}], "control or invisible"),
+            ([{"name": "A\u202e", "tc": "00:00:05:00"}],
+             "control or invisible"),
+            ([{"name": "\u200b", "tc": "00:00:05:00"}], "control or invisible"),
+            ([{"name": "A", "tc": "00:00:05:00", "note": "x\ny"}],
+             "control or invisible"),
+            ([{"name": "A", "tc": "00:00:05:00", "note": "\x1b[31mred"}],
+             "control or invisible"),
+            ([{"name": "Cafe\u0301", "tc": "00:00:05:00"},
+              {"name": "Caf\u00e9", "tc": "00:00:06:00"}], "used twice"),
+            ([{"name": "\u200d\u200c", "tc": "00:00:05:00"}],
+             "needs a name")):
+        try:
+            PF.check_cues(cues, 120.0)
+            check(False, f"refused ({why}): {cues!r:.80}")
+        except PF.CueError as e:
+            check(why in str(e) and _cfg_dashes(str(e)), f"{why}: {e}")
+    # Kept exactly as typed (review of #192): NFC only compares; circled
+    # digits, TM, ligatures, joiners in a word all stay.
+    typed = ["Cafe\u0301", "\u2460 \u2122 \ufb01nale", "a\u200db",
+             "\u0645\u06cc\u200c\u0634\u0648\u062f", "\uff26inale"]
+    got = PF.check_cues([{"name": n, "tc": f"00:00:{10 + i:02d}:00"}
+                         for i, n in enumerate(typed + ["Finale"])], 120.0)
+    check([c["name"] for c in got] == typed + ["Finale"],
+          f"names are kept as typed: {[c['name'] for c in got]}")
+    # The file: strict, every cue carries an id.
+    doc = {"play_from_format": 1, "rev": 3, "shows": {"Show.json": {
+        "cue": "Show", "audio_len_s": 120.0,
+        "cues": [{"id": "c2", "name": "Finale", "tc": "00:01:40:00",
+                  "lead_in_s": 3, "note": ""}],
+        "edited_by": "Jeff", "edited_at": "", "screen": "Rack screen"}}}
+    check(PF.read_doc(doc)["shows"]["Show.json"]["cues"][0]["id"] == "c2",
+          "a good file reads")
+    for change, why in (
+            (lambda d: d.update(x=1), "unknown field x"),
+            (lambda d: d.update(play_from_format=2), "play_from_format"),
+            (lambda d: d.update(rev=-1), "rev"),
+            (lambda d: d["shows"]["Show.json"]["cues"][0].pop("id"),
+             "not a cue id"),
+            (lambda d: d["shows"]["Show.json"].update(audio_len_s=0),
+             "seconds above 0"),
+            (lambda d: d["shows"]["Show.json"].update(cue=""),
+             "names no show cue"),
+            (lambda d: d["shows"]["Show.json"]["cues"][0].update(
+                tc="00:02:00:00"), "not inside the show audio"),
+            (lambda d: d["shows"].update({"../x.json": {}}),
+             "not a show file name"),
+            (lambda d: d["shows"]["Show.json"].update(next_id=2),
+             "next_id"),
+            (lambda d: d["shows"]["Show.json"].update(next_id="9"),
+             "next_id")):
+        d = json.loads(json.dumps(doc))
+        change(d)
+        try:
+            PF.read_doc(d)
+            check(False, f"the file is refused: {why}")
+        except PF.CueError as e:
+            check(why in str(e), f"the file is refused ({why}): {e}")
+    # Ids: kept, never claimed, new ones numbered on.
+    before = [{"id": "c2", "name": "Finale", "tc": "00:01:40:00",
+               "lead_in_s": 3, "note": ""},
+              {"id": "c7", "name": "Top", "tc": "00:00:10:00",
+               "lead_in_s": 2, "note": ""}]
+    after, nxt = PF.give_ids(before, PF.check_cues(
+        [{"id": "c2", "name": "Big finale", "tc": "00:01:41:00",
+          "lead_in_s": 3}, {"name": "New", "tc": "00:00:20:00"},
+         {"name": "Newer", "tc": "00:00:21:00"}], 120.0))
+    check([c["id"] for c in after] == ["c8", "c9", "c2"] and nxt == 10,
+          f"a new cue gets the next id; a kept one its own: {after}")
+    # The high-water mark: an id a deleted cue had is never given again.
+    again, nxt2 = PF.give_ids(before[:1], PF.check_cues(
+        [{"id": "c2", "name": "Finale", "tc": "00:01:40:00"},
+         {"name": "New", "tc": "00:00:20:00"}], 120.0), next_id=10)
+    check([c["id"] for c in again] == ["c10", "c2"] and nxt2 == 11,
+          f"after c7 was deleted (next 10) a new cue is c10: {again}")
+    try:
+        PF.give_ids(before, PF.check_cues([{"id": "c9", "name": "X",
+                                            "tc": "00:00:20:00"}], 120.0))
+        check(False, "an id the list does not have is refused")
+    except PF.CueError as e:
+        check("not a cue in this list" in str(e), f"a claimed id: {e}")
+    text = PF.describe_change(before, after)
+    check(text == "New added at 00:00:20:00, lead-in 2 s; Newer added at "
+                  "00:00:21:00, lead-in 2 s; Top deleted (was at "
+                  "00:00:10:00); Finale renamed to Big finale, time "
+                  "00:01:40:00 to 00:01:41:00", f"what changed: {text}")
+    c3 = [dict(before[0], lead_in_s=5, note="x")]
+    check(PF.describe_change(before[:1], c3) ==
+          "Finale lead-in 3 s to 5 s, note changed" and
+          PF.describe_change(before, before) == "",
+          "a lead-in and a note change; nothing changed")
+    # A new render at another length.
+    e = {"cues": before, "audio_len_s": 120.0}
+    check(PF.audio_note(e, 120.0 + 0.01) == "", "the same length: quiet")
+    n = PF.audio_note(e, 90.0)
+    check("00:01:30:00 long now, 00:02:00:00 when the list was saved" in n
+          and "Past its end now: Finale." in n and _cfg_dashes(n),
+          f"a shorter audio names the cue past its end: {n}")
+    check(PF.audio_note(e, 150.0).endswith("was saved."),
+          "a longer one only says so")
+    print("  ok")
+
+
+def test_play_from_cue_store():
+    section("play-from cues: saved whole and atomically, a stale revision "
+            "refused with nothing written, the version before kept (the "
+            "last 50), a file that cannot be read is no cues for any show, "
+            "a journal line and an audit event for every save and every "
+            "refusal")
+    import json as _j
+    import shutil
+    from ltcplay import play_from as PF
+    work = tempfile.mkdtemp()
+    lines, events = [], []
+    wall = [1_800_000_000.0]
+
+    class _Audit:
+        def event(self, **kw):
+            events.append(kw)
+    store = PF.Store(work, journal=lambda *a, **k: lines.append((a, k)),
+                     audit=_Audit(), wall=lambda: wall[0])
+    show = "Fire and Ice.json"
+    cues = [{"name": "Finale", "tc": "00:00:50:00", "lead_in_s": 3},
+            {"name": "Top", "tc": "00:00:05:00", "note": "act one"}]
+    keep = PF.HISTORY_KEEP
+    try:
+        d, err = store.load()
+        check(d == PF.empty_doc() and err == "",
+              "no file: no cues, revision 0, no error")
+        ok, text, entry = store.save(show, "Show", 60.0, cues, 0,
+                                     who="Jeff", screen="Rack screen")
+        check(ok and entry["rev"] == 1 and entry["edited_by"] == "Jeff" and
+              entry["cue"] == "Show" and entry["audio_len_s"] == 60.0 and
+              [(c["id"], c["name"]) for c in entry["cues"]] ==
+              [("c1", "Top"), ("c2", "Finale")],
+              f"saved, in time order, ids given: {ok} {text} {entry}")
+        check(text == "Saved: Top added at 00:00:05:00, lead-in 2 s; Finale "
+                      "added at 00:00:50:00, lead-in 3 s.", f"said: {text}")
+        check(not [n for n in os.listdir(work) if n.endswith(".tmp")],
+              "no temporary file is left behind")
+        raw = open(store.path, encoding="utf-8").read()
+        check(PF.read_doc(_j.loads(raw))["rev"] == 1,
+              "the file on disk is a good list at revision 1")
+        check(len(store.history()) == 1 and
+              store.history()[0].endswith("-rev1.json") and
+              open(os.path.join(store.history_dir(), store.history()[0]),
+                   "rb").read() == open(store.path, "rb").read(),
+              "every saved file is kept too, the first one included")
+        check(lines and lines[-1][0][2] == "saved" and
+              "Jeff saved the play-from cues for Fire and Ice.json on the "
+              "Rack screen (revision 1): Top added" in lines[-1][0][3],
+              f"the journal line names who, where and what: {lines[-1:]}")
+        check(events[-1]["user"] == "Jeff" and
+              events[-1]["action"] == "play-from cues" and
+              events[-1]["target"] == show and
+              events[-1]["result"] == "accepted" and
+              events[-1]["source"] == "Rack screen" and
+              "Finale added" in events[-1]["reason"],
+              f"the audit event: {events[-1]}")
+        # A stale editor (based on revision 0): refused, nothing written.
+        before = open(store.path, "rb").read()
+        n_lines = len(lines)
+        ok, text, entry = store.save(show, "Show", 60.0, [], 0,
+                                     who="Andy", screen="iPad")
+        check(not ok and entry is None and "someone saved" in text and
+              open(store.path, "rb").read() == before and
+              len(store.history()) == 1,
+              f"a stale revision is refused and nothing written: {text}")
+        check(events[-1]["result"] == "refused" and
+              events[-1]["user"] == "Andy" and len(lines) == n_lines + 1 and
+              lines[-1][0][2] == "refused",
+              "and journaled and audited as refused")
+        for bad_rev in (None, "1", True, 1.0, 2):
+            ok, text, _e = store.save(show, "Show", 60.0, [], bad_rev)
+            check(not ok and open(store.path, "rb").read() == before,
+                  f"revision {bad_rev!r}: refused, nothing written")
+        # A bad list: refused, nothing written.
+        for args, why in (
+                (("Show", 60.0, [{"name": "A", "tc": "00:01:00:00"}]),
+                 "not inside the show audio"),
+                (("Show", 60.0, [{"name": "A", "tc": "00:00:05:00"},
+                                 {"name": "a", "tc": "00:00:06:00"}]),
+                 "used twice"),
+                (("Show", 60.0, [{"name": "A", "tc": "00:00:05:00",
+                                  "lead_in_s": 0}]), "at least 1 s"),
+                (("", 60.0, cues), "own cue"),
+                (("Show", None, cues), "length"),
+                (("Show", 60.0, [{"id": "c9", "name": "A",
+                                  "tc": "00:00:05:00"}]),
+                 "not a cue in this list")):
+            ok, text, _e = store.save(show, *args, 1, who="Jeff")
+            check(not ok and why in text and text.startswith("Not saved:")
+                  and _cfg_dashes(text) and
+                  open(store.path, "rb").read() == before,
+                  f"refused ({why}), nothing written: {text}")
+        ok, text, _e = store.save("../evil.json", "Show", 60.0, [], 1)
+        check(not ok and "not a show file name" in text,
+              f"a path is not a show file name: {text}")
+        # Rename, retime and delete on revision 1: the version before kept.
+        wall[0] += 60
+        ok, text, entry = store.save(
+            show, "Show", 60.0,
+            [{"id": "c2", "name": "Big finale", "tc": "00:00:51:00",
+              "lead_in_s": 3}], 1, who="Jeff", screen="iPad at 10.0.0.9")
+        check(ok and entry["rev"] == 2 and text == (
+            "Saved: Top deleted (was at 00:00:05:00); Finale renamed to Big "
+            "finale, time 00:00:50:00 to 00:00:51:00.") and
+            [c["id"] for c in entry["cues"]] == ["c2"],
+            f"the second save: {text}")
+        h = store.history()
+        check(len(h) == 2 and h[0].endswith("-rev2.json") and
+              h[1].endswith("-rev1.json") and
+              open(os.path.join(store.history_dir(), h[1]), "rb").read() ==
+              before and open(os.path.join(store.history_dir(), h[0]),
+                              "rb").read() == open(store.path, "rb").read(),
+              f"the version before and the new one are kept whole: {h}")
+        # Another show beside it: the first is kept as it was.
+        ok, _t, entry = store.save("Other.json", "Show", 30.0, [], 2,
+                                   who="Jeff")
+        d, err = store.load()
+        check(ok and d["rev"] == 3 and set(d["shows"]) == {show,
+                                                          "Other.json"} and
+              d["shows"][show]["cues"][0]["name"] == "Big finale",
+              "a save for another show keeps every other show")
+        v = store.view(show)
+        check(v["rev"] == 3 and v["entry"]["cues"][0]["id"] == "c2" and
+              v["lead_in_default_s"] == 2 and v["lead_in_min_s"] == 1 and
+              v["shows"] == ["Fire and Ice.json", "Other.json"] and
+              store.view("New.json")["entry"]["cues"] == [],
+              "the view: revision, entry, rules")
+        # A new cue after a delete never reuses an old id.
+        ok, _t, entry = store.save(show, "Show", 60.0,
+                                   [{"id": "c2", "name": "Big finale",
+                                     "tc": "00:00:51:00", "lead_in_s": 3},
+                                    {"name": "Again", "tc": "00:00:05:00"}],
+                                   3)
+        check(ok and [c["id"] for c in entry["cues"]] == ["c3", "c2"],
+              f"ids go on from the highest kept: {entry and entry['cues']}")
+        # Only the last HISTORY_KEEP versions are kept.
+        PF.HISTORY_KEEP = 4
+        rev = entry["rev"]
+        for i in range(6):
+            wall[0] += 1
+            ok, _t, entry = store.save(show, "Show", 60.0, [
+                {"name": "A", "tc": f"00:00:{20 + i:02d}:00"}], rev)
+            rev = entry["rev"]
+        h = store.history()
+        check(len(h) == 4 and h[0].endswith(f"-rev{rev}.json") and
+              h[-1].endswith(f"-rev{rev - 3}.json"),
+              f"the newest {PF.HISTORY_KEEP} are kept: {h}")
+        PF.HISTORY_KEEP = keep
+        # A write that fails: nothing is changed, said as a fault.
+        before = open(store.path, "rb").read()
+        real = store._write
+
+        def boom(doc):
+            raise OSError(28, "No space left on device")
+        store._write = boom
+        ok, text, _e = store.save(show, "Show", 60.0, [], rev)
+        store._write = real
+        check(not ok and "could not be written" in text and
+              open(store.path, "rb").read() == before and
+              lines[-1][1].get("fault") is True and
+              events[-1]["result"] == "error",
+              f"a failed write: nothing changed, a fault: {text}")
+        # A file that cannot be read: no cues for any show, said, and its
+        # revision is never below the highest one ever had.
+        high = store.load()[0]["rev"]
+        for broken in ("{not json", '{"play_from_format": 1, "rev": 1, '
+                       '"shows": {}, "x": 1}'):
+            with open(store.path, "w", encoding="utf-8") as fh:
+                fh.write(broken)
+            d, err = store.load()
+            check(d["shows"] == {} and d["rev"] == high and
+                  "could not be read" in err and
+                  "no show has play-from cues" in err and _cfg_dashes(err),
+                  f"a broken file, still revision {high}: {d['rev']} {err}")
+            check(store.view(show)["entry"]["cues"] == [] and
+                  store.view(show)["error"] == err and
+                  store.view(show)["replace_needed"] is True,
+                  "and the view says so")
+        # (test_play_from_cue_file_is_never_lost proves a save is refused
+        # here; an admin's replace saves over it, the broken one kept.)
+        wall[0] += 1
+        ok, text, entry = store.save(show, "Show", 60.0, cues, high,
+                                     who="Jeff", replace=True)
+        h = store.history()
+        check(ok and entry["rev"] == high + 1 and len(h) > 1 and
+              h[0].endswith(f"-rev{high + 1}.json") and h[1].endswith(
+            f"-rev{high}-unreadable.json") and open(os.path.join(
+                store.history_dir(), h[1]), encoding="utf-8").read() ==
+              '{"play_from_format": 1, "rev": 1, "shows": {}, "x": 1}',
+              f"replaced on purpose, the broken file kept: {text} {h[:3]} {high}")
+        raw = open(store.path, encoding="utf-8").read()
+        with open(store.path, "w", encoding="utf-8-sig") as fh:
+            fh.write(raw)
+        check(store.load()[1] == "", "a file with a BOM (Notepad) reads")
+        nf = PF.Store(None)
+        check(nf.load() == (PF.empty_doc(), ""), "no folder: empty")
+    finally:
+        PF.HISTORY_KEEP = keep
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_play_from_cue_file_is_never_lost():
+    section("play-from cues (review of #192): a file the engine cannot read "
+            "(damaged, a newer format, a number too big, nested too deep) "
+            "is never saved over unless an admin asks to replace it; the "
+            "revision never goes backwards, so an old page cannot pass the "
+            "stale check; the version before is kept only once the new file "
+            "is in place; a read never meets a save half way, and a file "
+            "held open for a moment (Windows) is tried again")
+    import builtins
+    import shutil
+    from ltcplay import play_from as PF
+    work = tempfile.mkdtemp()
+    lines, events = [], []
+
+    class _Audit:
+        def event(self, **kw):
+            events.append(kw)
+    store = PF.Store(work, journal=lambda *a, **k: lines.append((a, k)),
+                     audit=_Audit())
+    one = [{"name": "Finale", "tc": "00:00:50:00"}]
+
+    def rev():
+        return store.load()[0]["rev"]
+
+    def body():
+        with open(store.path, "rb") as fh:
+            return fh.read()
+    real_replace, real_open = os.replace, getattr(PF, "open", None)
+    try:
+        ok1 = store.save("A.json", "Show", 60.0, one, 0, who="Jeff")[0]
+        ok2 = store.save("B.json", "Show", 60.0, one, 1, who="Jeff")[0]
+        check(ok1 and ok2 and rev() == 2, "two shows' lists, revision 2")
+        # The highest id deleted, then a cue added: never that id again.
+        ok, _t, e = store.save("B.json", "Show", 60.0, [
+            {"id": "c1", "name": "Finale", "tc": "00:00:50:00"},
+            {"name": "Top", "tc": "00:00:05:00"}], 2)
+        ok2, _t, e2 = store.save("B.json", "Show", 60.0, [
+            {"id": "c1", "name": "Finale", "tc": "00:00:50:00"}], 3)
+        ok3, _t, e3 = store.save("B.json", "Show", 60.0, [
+            {"id": "c1", "name": "Finale", "tc": "00:00:50:00"},
+            {"name": "New", "tc": "00:00:06:00"}], 4)
+        check(ok and ok2 and ok3 and
+              [c["id"] for c in e["cues"]] == ["c2", "c1"] and
+              e2["next_id"] == 3 and
+              [c["id"] for c in e3["cues"]] == ["c3", "c1"],
+              f"c2 deleted, the next cue is c3: {e3 and e3['cues']}")
+        ok, _t, _e = store.save("B.json", "Show", 60.0, one, 5)
+        check(ok and rev() == 6, "back to one cue, revision 6")
+        # Final review of #192: the file deleted, moved or quarantined.
+        # A save from a page that read it must not make a file of only its
+        # own show: it is refused, and the last saved copy (every show's
+        # list) is offered and restored.
+        saved = body()
+        os.remove(store.path)
+        v = store.view("A.json")
+        check(v["error"] and "missing" in v["error"] and v["replace_needed"]
+              and v["rev"] == 6 and v["restore_from"] and
+              v["restore_shows"] == ["A.json", "B.json"],
+              f"a missing file reads as missing, the last copy offered: "
+              f"{v['error'][:80]} {v.get('restore_from')}")
+        ok, text, _e = store.save("A.json", "Show", 60.0,
+                                  [{"name": "New", "tc": "00:00:30:00"}], 6,
+                                  who="Jeff")
+        check(not ok and PF.REPLACE_WORDS in text and
+              not os.path.exists(store.path),
+              f"no save over a missing file: {text}")
+        ok, text, _e = store.restore(5, who="Jeff")
+        check(not ok and PF.STALE_WORDS in text, "a stale page restores "
+                                                 "nothing")
+        ok, text, _e = store.restore(6, who="Jeff", screen="Rack screen")
+        d, err = store.load()
+        check(ok and err == "" and d["rev"] == 7 and
+              d["shows"] == json.loads(saved)["shows"] and
+              "restored the last saved copy" in text and
+              events[-1]["result"] == "accepted",
+              f"restored, every show's list, revision 7: {text}")
+        ok, text, _e = store.restore(7)
+        check(not ok and "nothing to restore" in text,
+              "a file that reads is not restored over")
+        # Replace keeps the broken bytes FIRST: when they cannot be kept,
+        # nothing is replaced.
+        with open(store.path, "w", encoding="utf-8") as fh:
+            fh.write("{broken but precious")
+        hd = store.history_dir()
+        moved = hd + ".away"
+        os.rename(hd, moved)
+        with open(hd, "w", encoding="utf-8") as fh:
+            fh.write("not a folder")
+        ok, text, _e = store.save("A.json", "Show", 60.0, one, rev(),
+                                  replace=True)
+        check(not ok and "could not be kept" in text and
+              body() == b"{broken but precious",
+              f"the broken file could not be kept, so it was not replaced: "
+              f"{text}")
+        os.remove(hd)
+        os.rename(moved, hd)
+        ok, text, _e = store.save("A.json", "Show", 60.0, one, rev(),
+                                  replace=True)
+        h = store.history()
+        check(ok and any(open(os.path.join(hd, n), "rb").read() ==
+                         b"{broken but precious" for n in h
+                         if "-unreadable" in n),
+              f"replaced, the broken bytes kept: {h[:3]}")
+        # A good file held open for a second (a sync program, a virus
+        # scanner) is waited for, never offered for replacement.
+        slow = []
+
+        def held_open(path, *a, **k):
+            if path == store.path and len(slow) < 20:
+                slow.append(path)
+                raise PermissionError(13, "in use")
+            return builtins.open(path, *a, **k)
+        PF.open = held_open
+        d, err = store.load()
+        del PF.open
+        check(err == "" and len(slow) == 20 and d["shows"],
+              f"held open for about a second: read, not broken: {err}")
+        for broken, what in (
+                ("{not json", "bad JSON"),
+                ('{"play_from_format": 2, "rev": 9, "shows": {}}',
+                 "a newer format"),
+                ('{"play_from_format": 1, "rev": 3, "shows": {"A.json": '
+                 '{"cue": "Show", "audio_len_s": 60, "cues": [{"id": "c1", '
+                 '"name": "x", "tc": "00:00:05:00", "lead_in_s": 1' +
+                 "0" * 400 + ', "note": ""}]}}}', "a number too big"),
+                ("[" * 100000, "nesting too deep")):
+            with open(store.path, "w", encoding="utf-8") as fh:
+                fh.write(broken)
+            try:
+                d, err = store.load()
+                v = store.view("A.json")
+            except Exception as e:               # noqa: BLE001
+                check(False, f"{what}: load or view raised "
+                             f"{type(e).__name__}")
+                continue
+            check(err and v["error"] == err and v["replace_needed"] and
+                  d["rev"] >= 2 and _cfg_dashes(err),
+                  f"{what}: read as broken, revision {d['rev']}: {err[:90]}")
+            n = len(events)
+            ok, text, _e = store.save("A.json", "Show", 60.0, one, d["rev"],
+                                      who="Andy", screen="iPad")
+            check(not ok and PF.REPLACE_WORDS in text and
+                  "every show" in text and body() == broken.encode() and
+                  events[n:] and events[-1]["result"] == "refused" and
+                  lines[-1][0][2] == "refused",
+                  f"{what}: a save is refused, the file untouched, "
+                  f"journaled and audited: {text}")
+        check(rev() >= 9, f"a newer file's revision 9 is not forgotten: "
+                          f"{rev()}")
+        # An old page (revision 0, read before anything was saved) cannot
+        # replace it either: the revision never goes back to 0.
+        ok, text, _e = store.save("A.json", "Show", 60.0, one, 0,
+                                  replace=True)
+        check(not ok and PF.STALE_WORDS in text,
+              f"an old page's revision is stale even over a broken file: "
+              f"{text}")
+        # An admin replaces it on purpose: B's list goes, the broken file
+        # is kept, the revision goes on up.
+        r = rev()
+        n_hist = len(store.history())
+        ok, text, entry = store.save("A.json", "Show", 60.0, one, r,
+                                     who="Jeff", replace=True)
+        h = store.history()
+        check(ok and entry["rev"] == r + 1 and
+              "replaced the file that could not be read" in text and
+              len(h) == n_hist + 2 and h[0].endswith(f"-rev{r + 1}.json")
+              and "-unreadable" in h[1] and
+              open(os.path.join(store.history_dir(), h[1]), "rb").read() ==
+              b"[" * 100000 and list(store.load()[0]["shows"]) ==
+              ["A.json"], f"replaced on purpose: {text} {h[:2]}")
+        # Deleted, or put back from an old copy by hand: the revision is
+        # still the highest one, and a page that read it before is stale.
+        top = rev()
+        os.remove(store.path)
+        check(rev() == top, f"the file deleted: still revision {top}")
+        ok, text, _e = store.save("A.json", "Show", 60.0, one, top)
+        check(not ok and PF.REPLACE_WORDS in text and "missing" in
+              store.load()[1] and not os.path.exists(store.path),
+              f"a file that was saved before and is gone now: no save over "
+              f"it, even from a page with the right revision: {text}")
+        ok, text, _e = store.save("A.json", "Show", 60.0, one, 0,
+                                  replace=True)
+        check(not ok and PF.STALE_WORDS in text,
+              "a page from before cannot replace a deleted file")
+        with open(store.path, "w", encoding="utf-8") as fh:
+            json.dump({"play_from_format": 1, "rev": 1, "shows": {}}, fh)
+        store2 = PF.Store(work)          # a restart: from the history
+        check(store2.load()[0]["rev"] >= top and store2.load()[1] == "",
+              f"an old copy put back, after a restart: revision "
+              f"{store2.load()[0]['rev']}, not 1")
+        ok, text, _e = store2.save("A.json", "Show", 60.0, one, 1)
+        check(not ok and PF.STALE_WORDS in text,
+              "a page that read revision 1 is stale")
+        # The version before is kept only once the new file is in place.
+        r = rev()
+        before, n_hist = body(), len(store.history())
+
+        def no_space(doc):
+            raise OSError(28, "No space left on device")
+        real_write = store._write
+        store._write = no_space
+        ok, text, _e = store.save("A.json", "Show", 60.0, one, r)
+        store._write = real_write
+        check(not ok and body() == before and
+              len(store.history()) == n_hist,
+              f"a failed write keeps no history copy: {store.history()[:2]}")
+        # Windows: a replace that meets the file held open is tried again.
+        tries = []
+
+        def busy_replace(src, dst):
+            if dst == store.path and len(tries) < 2:
+                tries.append(dst)
+                raise PermissionError(13, "in use")
+            return real_replace(src, dst)
+        os.replace = busy_replace
+        ok, text, _e = store.save("A.json", "Show", 60.0, one, r)
+        os.replace = real_replace
+        check(ok and len(tries) == 2, f"a busy file is replaced on the "
+                                      f"third try: {text}")
+        reads = []
+
+        def busy_open(path, *a, **k):
+            if path == store.path and len(reads) < 2:
+                reads.append(path)
+                raise PermissionError(13, "in use")
+            return builtins.open(path, *a, **k)
+        PF.open = busy_open
+        d, err = store.load()
+        del PF.open
+        check(err == "" and len(reads) == 2 and d["shows"],
+              f"a busy file is read on the third try: {err}")
+        # A read never meets a save half way: it waits for the lock.
+        got = []
+        store._lock.acquire()
+        t = threading.Thread(target=lambda: got.append(store.load()))
+        t.start()
+        t.join(0.2)
+        waited = not got
+        store._lock.release()
+        t.join(5)
+        check(waited and got, "a read waits while a save holds the file")
+        # A hand-edited revision too big is clamped, never reset to 0.
+        with open(store.path, "w", encoding="utf-8") as fh:
+            json.dump({"play_from_format": 1, "rev": 10 ** 13,
+                       "shows": {}}, fh)
+        check(rev() == PF.MAX_REV, f"a revision of 10**13 counts as "
+                                   f"{PF.MAX_REV}: {rev()}")
+        ok, _t, e = store.save("A.json", "Show", 60.0, one, PF.MAX_REV)
+        check(ok and e["rev"] == PF.MAX_REV + 1 and rev() >= PF.MAX_REV,
+              "and the next save goes on from there")
+    finally:
+        os.replace = real_replace
+        if real_open is None and hasattr(PF, "open"):
+            del PF.open
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_play_from_cue_routes():
+    section("play-from cue routes: anyone signed in reads; a save needs a "
+            "signed-in admin (the Settings row), from the show network "
+            "screen_arming too; the show's cue and audio length from the "
+            "engine, never the page; journaled and audited; nothing sent "
+            "and nothing on the start path reads the list")
+    import shutil
+    import types
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import play_from as PF
+    check("play-from-cues-save" in RM.POST_ROUTES and
+          "play-from-cues" in RM.GET_ROUTES and
+          U.REMOTE_ROUTES["play-from-cues-save"] == "settings",
+          "the routes, and a save is the Settings row")
+    for body in ({}, {"cues": []}, {"show": "x"}, None):
+        check(U.classify("/api/remote/play-from-cues-save", body) ==
+              "settings", f"whatever the body: Settings ({body!r})")
+    check(U.DEFAULT_MATRIX["admin"]["settings"] is True and
+          U.DEFAULT_MATRIX["operator"]["settings"] is False and
+          "the play-from cues" in dict(U.PERMS)["settings"],
+          "admin only by default, and the row says so")
+    here = os.path.dirname(os.path.abspath(__file__))
+    users_md = open(os.path.join(here, "USERS.md"), encoding="utf-8").read()
+    check("sign out after the last show, the play-from cues) | yes | no | "
+          "no | never |" in users_md, "USERS.md's matrix row")
+    # Sends nothing: the module imports only the standard library (and the
+    # audit log, to write an event), and nothing but the routes reads it.
+    src = open(os.path.join(here, "ltcplay", "play_from.py"),
+               encoding="utf-8").read()
+    imports = sorted(set(re.findall(r"^\s*(?:import|from)\s+([\w.]+)", src,
+                                    re.M)))
+    check(imports == [".", "datetime", "json", "math", "os", "re",
+                      "threading", "time", "unicodedata"] and
+          "from . import audit as audit_mod" in src,
+          f"play_from.py imports nothing that sends: {imports}")
+    users_of = []
+    for f in sorted(os.listdir(os.path.join(here, "ltcplay"))):
+        if f.endswith(".py") and f != "play_from.py":
+            t = open(os.path.join(here, "ltcplay", f), encoding="utf-8").read()
+            if re.search(r"import play_from\b|\bplay_from as\b|"
+                         r"\bplay_from_(?:store|get|save|show_info)\b", t):
+                users_of.append(f)
+    check(users_of == ["remote.py"],
+          f"only the routes read the cue list, never the start path: "
+          f"{users_of}")
+    rsrc = open(os.path.join(here, "ltcplay", "remote.py"),
+                encoding="utf-8").read()
+    for fn in ("play_from_get", "play_from_save", "play_from_show_info",
+               "play_from_store"):
+        body = rsrc[rsrc.find(f"    def {fn}("):]
+        body = body[:body.find("\n    def ", 10)]
+        check(body and not re.search(r"\b(?:press|start_now|operator_press|"
+                                     r"clock_play|send|arm|flame)\w*\(",
+                                     body),
+              f"{fn} presses, starts and sends nothing")
+    work = tempfile.mkdtemp()
+    journal = []
+    events = []
+
+    class _Svc:
+        conductor = None
+        machine = types.SimpleNamespace(state="IDLE")
+
+        def journal_press(self, *a, **kw):
+            journal.append(a)
+
+    class _Audit:
+        def event(self, **kw):
+            events.append(kw)
+    ctl = types.SimpleNamespace(session=None, folder=work,
+                                state=lambda: {})
+    rm = RM.Remote(ctl, _Svc(), folder=work, log=lambda t_: None)
+    rm.audit = _Audit()
+    matrix = U.normalise_matrix(None)
+
+    def users_on():
+        rm.users = types.SimpleNamespace(
+            active=lambda: True, matrix=lambda: matrix,
+            may=lambda role, perm: U.allowed(matrix, role, perm))
+    users_on()
+    info = {"Show.json": ("Show", 120.0, "")}
+    opened = []
+
+    def fake_info(show):
+        opened.append(show)
+        return info.get(show, (None, None, f"{show} is not in the show "
+                                           f"folder"))
+    rm.play_from_show_info = fake_info
+
+    def ctx(role=None, local=True, name="Jeff"):
+        return RM.Ctx(local, "127.0.0.1" if local else "10.0.0.9",
+                      session={"name": name, "role": role} if role else None)
+    good = {"show": "Show.json", "rev": 0,
+            "cues": [{"name": "Finale", "tc": "00:01:40:00", "lead_in_s": 3},
+                     {"name": "Top", "tc": "00:00:05:00", "note": "act"}]}
+    path = os.path.join(work, PF.FILE)
+
+    def save(body, c):
+        return rm.post("/api/remote/play-from-cues-save", body, c)
+
+    def read(c, q="show=Show.json"):
+        return rm.get("/api/remote/play-from-cues", c, q)
+    try:
+        # Reading: signed in, any role, from the show PC or the network.
+        for c in (ctx("viewer", False, "Vee"), ctx("operator", name="Dave"),
+                  ctx("admin")):
+            code, out = read(c)
+            check(code == 200 and out["rev"] == 0 and out["cue"] == "Show"
+                  and out["audio_len_s"] == 120.0 and
+                  out["entry"]["cues"] == [] and out["show_problem"] == ""
+                  and out["audio_note"] == "" and
+                  out["may_edit"] == (c.session["role"] == "admin"),
+                  f"{c.session['role']} reads it: {code} {out}")
+        code, out = read(ctx(None))
+        check(code == 403 and "Sign in" in out["error"],
+              f"signed out: not read: {code} {out}")
+        code, out = read(ctx("admin", local=False))
+        check(code == 200 and out["may_edit"] is False,
+              "an admin's iPad without screen_arming reads, may not edit")
+        opened.clear()
+        code, out = read(ctx("admin"), "")
+        check(code == 200 and "entry" not in out and opened == [],
+              "without ?show= no show file is opened")
+        # Who may save.
+        for c, why in ((ctx(None), "signed-in admin"),
+                       (ctx("operator", name="Dave"), "may not"),
+                       (ctx("viewer", name="Vee"), "may not"),
+                       (ctx("admin", local=False), "screen_arming")):
+            code, out, _h = save(good, c)
+            check(code == 403 and why in out["error"] and
+                  "Nothing was changed" in out["error"] and
+                  _cfg_dashes(out["error"]) and not os.path.exists(path),
+                  f"refused ({why}): {code} {out}")
+        check(events and events[-1]["result"] == "refused" and
+              events[-1]["action"] == "play-from cues" and
+              journal and journal[-1][3] == "refused",
+              "a refused save is journaled and audited")
+        rm.users = types.SimpleNamespace(active=lambda: False,
+                                         matrix=lambda: matrix,
+                                         may=lambda r, p: True)
+        code, out, _h = save(good, ctx("admin"))
+        check(code == 403 and "signed-in admin" in out["error"],
+              "with no users set up, nobody may save (admin only)")
+        # With no users file, the show PC reads it as the other Settings
+        # do (review of #192), read only, and says why; the network not.
+        code, out = read(ctx(None))
+        check(code == 200 and out["may_edit"] is False and
+              "Set up users first" in out["edit_why"] and
+              out["cue"] == "Show",
+              f"no users: the show PC reads it, read only: {code} {out}")
+        code, out = read(ctx(None, local=False))
+        check(code == 403, "no users: the show network does not read it")
+        users_on()
+        code, out, _h = save(dict(good, show="Nope.json"), ctx("admin"))
+        check(code == 409 and "Nope.json is not in the show folder" in
+              out["error"] and not os.path.exists(path),
+              f"a show that cannot be opened: {code} {out}")
+        code, out, _h = save(dict(good, show=None), ctx("admin"))
+        check(code == 400 and "choose a show file" in out["error"],
+              "no show file")
+        # Saved by an admin on the show PC; the cue and the audio length
+        # are the engine's (the page's own are ignored).
+        opened.clear()
+        code, out, _h = save(dict(good, audio_len_s=99999, cue="Fake"),
+                             ctx("admin"))
+        check(code == 200 and out["entry"]["rev"] == 1 and
+              out["entry"]["cue"] == "Show" and
+              out["entry"]["audio_len_s"] == 120.0 and
+              out["entry"]["edited_by"] == "Jeff" and
+              out["entry"]["screen"] == "Rack screen" and
+              [c["name"] for c in out["entry"]["cues"]] == ["Top", "Finale"]
+              and opened == ["Show.json"], f"saved: {code} {out}")
+        check(journal[-1][2] == "play-from cues" and
+              journal[-1][3] == "saved" and "Jeff saved the play-from cues "
+              "for Show.json on the Rack screen (revision 1)" in
+              journal[-1][4] and events[-1]["result"] == "accepted" and
+              events[-1]["user"] == "Jeff",
+              f"journaled and audited: {journal[-1]}")
+        # Past the end of the audio, by the engine's length.
+        code, out, _h = save(dict(good, rev=1, cues=[
+            {"name": "Late", "tc": "00:02:00:00"}]), ctx("admin"))
+        check(code == 409 and "not inside the show audio" in out["error"]
+              and out["error"].endswith("Nothing was changed."),
+              f"a cue past the audio's end: {out}")
+        code, out, _h = save(good, ctx("admin"))
+        check(code == 409 and "someone saved" in out["error"],
+              f"a stale page: {out}")
+        # From the network with screen_arming: allowed.
+        RM.save_settings(work, screen_arming=True)
+        code, out = read(ctx("admin", False))
+        ids = {c["name"]: c["id"] for c in out["entry"]["cues"]}
+        code, out, _h = save({"show": "Show.json", "rev": out["rev"],
+                              "cues": [{"id": ids["Finale"],
+                                        "name": "Finale",
+                                        "tc": "00:01:41:00",
+                                        "lead_in_s": 3}]},
+                             ctx("admin", local=False, name="Andy"))
+        check(code == 200 and out["entry"]["rev"] == 2 and
+              out["entry"]["screen"] == "iPad" and
+              out["text"] == "Saved: Top deleted (was at 00:00:05:00); "
+                             "Finale time 00:01:40:00 to 00:01:41:00.",
+              f"an admin's iPad with screen_arming: {out}")
+        # The audio rendered again shorter: the read says so.
+        info["Show.json"] = ("Show", 90.0, "")
+        code, out = read(ctx("viewer", False, "Vee"))
+        check(code == 200 and "Past its end now: Finale" in
+              out["audio_note"], f"a new render: {out.get('audio_note')}")
+        # Review of #192: a list whose show file is gone is named; one that
+        # is there is not.
+        check(out["missing"] == ["Show.json"],
+              f"no Show.json in the folder: named: {out['missing']}")
+        open(os.path.join(work, "Show.json"), "w").close()
+        code, out = read(ctx("viewer", False, "Vee"))
+        check(out["missing"] == [], f"Show.json there: {out['missing']}")
+        # The name exactly as the folder spells it, even on a disk that
+        # does not tell case apart (Windows, macOS): simulated here.
+        real_isfile = os.path.isfile
+        os.path.isfile = lambda p_: True if os.path.dirname(p_) == work \
+            else real_isfile(p_)
+        try:
+            got = RM.Remote.play_from_show_info(rm, "show.json")
+        finally:
+            os.path.isfile = real_isfile
+        check(got[0] is None and "show.json is not in the show folder" in
+              got[2], f"show.json is not Show.json: {got}")
+        # A broken file: the save says so (the page offers Replace), and
+        # the replace an admin asks for goes through.
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("{broken")
+        code, out = read(ctx("admin", False))
+        r = out["rev"]
+        check(out["replace_needed"] is True and r >= 2,
+              f"a broken file is read as broken: {out.get('error')}")
+        code, out, _h = save({"show": "Show.json", "rev": r, "cues": []},
+                             ctx("admin"))
+        check(code == 409 and out["replace_needed"] is True and
+              out["stale"] is False and open(path).read() == "{broken",
+              f"not saved over without replace: {out}")
+        code, out, _h = save({"show": "Show.json", "rev": r - 1,
+                              "cues": [], "replace": True}, ctx("admin"))
+        check(code == 409 and out["stale"] is True and
+              out["replace_needed"] is False, f"a stale page: {out}")
+        code, out, _h = save({"show": "Show.json", "rev": r, "cues": [],
+                              "replace": "yes"}, ctx("admin"))
+        check(code == 409 and out["replace_needed"] is True,
+              "replace is the JSON word true, nothing else")
+        code, out, _h = save({"show": "Show.json", "rev": r, "cues": [],
+                              "replace": True}, ctx("admin"))
+        check(code == 200 and out["entry"]["rev"] == r + 1 and
+              "replaced the file" in out["text"], f"replaced: {out}")
+        # Final review of #192: the file gone; the last saved copy put back
+        # through the route, an admin's Settings press like a save.
+        os.remove(path)
+        code, out = read(ctx("admin"))
+        r = out["rev"]
+        check(out["replace_needed"] and out["restore_from"],
+              f"a missing file offers the last copy: {out.get('error')}")
+        code, out, _h = save({"restore": True, "rev": r},
+                             ctx("operator", name="Dave"))
+        check(code == 403 and not os.path.exists(path),
+              "an operator restores nothing")
+        code, out, _h = save({"restore": True, "rev": r - 1}, ctx("admin"))
+        check(code == 409 and out["stale"] is True, "a stale page neither")
+        code, out, _h = save({"restore": True, "rev": r}, ctx("admin"))
+        code2, out2 = read(ctx("admin"))
+        check(code == 200 and "restored the last saved copy" in out["text"]
+              and out2["error"] == "" and out2["rev"] == r + 1 and
+              os.path.exists(path), f"restored: {out}")
+        # One store per engine, whoever asks first (two requests at once).
+        rm2 = RM.Remote(ctl, _Svc(), folder=work, log=lambda t_: None)
+        stores = []
+        gate = threading.Barrier(8)
+        real_store = PF.Store
+
+        class _SlowStore(real_store):
+            # Made slowly, so eight first requests overlap for certain.
+            def __init__(self, *a, **k):
+                time.sleep(0.05)
+                super().__init__(*a, **k)
+
+        def first():
+            gate.wait()
+            stores.append(rm2.play_from_store())
+        PF.Store = _SlowStore
+        try:
+            ts = [threading.Thread(target=first) for _ in range(8)]
+            for t_ in ts:
+                t_.start()
+            for t_ in ts:
+                t_.join(5)
+        finally:
+            PF.Store = real_store
+        rm2.audit = _Audit()
+        check(len(stores) == 8 and len({id(x) for x in stores}) == 1 and
+              rm2.play_from_store() is stores[0] and
+              stores[0].audit is rm2.audit,
+              "one store per engine, made once; a new audit log is handed "
+              "to it, never a second store")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_play_from_cue_audio_length_from_a_real_show_file():
+    section("play-from cues: the show's own cue and its AUDIO length (not "
+            "the longer lights file) come from the show file opened as the "
+            "Check button opens it (nothing sent, nothing played)")
+    import shutil
+    import types
+    from ltcplay import remote as RM
+    from ltcplay import settings as st_mod
+    import ltcplay.player as plmod
+    real_path, real_prefs = st_mod.path, st_mod.prefs_path
+    real_prepare = plmod.Player._prepare
+
+    def fake_prepare(self, cue):
+        cue.fseq = FakeFSEQ(frames=160)          # 4 s of lights
+        cue.duration = cue.fseq.duration_ms / 1000.0
+        cue._spans = [(0, 0, cue.fseq.channel_count)]
+        cue._gaps = None
+        return 0
+    work = tempfile.mkdtemp()
+    try:
+        st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+        st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+        plmod.Player._prepare = fake_prepare
+        _tl, tlp, net = _am_show(work, 2.0)       # 2 s of audio
+        ctl = types.SimpleNamespace(folder=work, defaults={"networks": net},
+                                    _sd=FakeSD(), session=None)
+        rm = RM.Remote(ctl, None, folder=work, log=lambda t_: None)
+        cue, length, why = rm.play_from_show_info(os.path.basename(tlp))
+        check(cue == "Show" and why == "" and abs(length - 2.0) < 0.05,
+              f"the show cue and its audio's length: {cue} {length} {why}")
+        for bad in ("nope.json", "../x.json", "", None):
+            cue, length, why = rm.play_from_show_info(bad)
+            check(cue is None and length is None and why and
+                  _cfg_dashes(why), f"{bad!r}: {why}")
+    finally:
+        st_mod.path, st_mod.prefs_path = real_path, real_prefs
+        plmod.Player._prepare = real_prepare
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_play_from_cue_card_in_2_0():
+    section("2.0 Settings, Play-from cues: on the Settings tab only, never "
+            "the SHOW tab; it reads and saves only the cue list routes; it "
+            "marks a cue the engine would refuse, rule for rule, and sends "
+            "the id it read, so a rename is a rename; OPERATOR.md says it "
+            "in plain words")
+    import shutil
+    import subprocess
+    from ltcplay import play_from as PF
+    one, two = _ui2_pages()
+    sec = two[two.find('<section class="pane" id="t-settings"'):]
+    sec = sec[:sec.find("</section>")]
+    show = two[two.find('<section class="pane" id="t-show"'):]
+    show = show[:show.find("</section>")]
+    check('id="set-pf"' in sec and "<b>Play-from cues</b>" in sec and
+          'id="pf-add"' in sec and 'id="pf-save"' in sec and
+          'id="pf-show"' in sec and "pf-" not in show,
+          "the card is on the Settings tab, nothing of it on SHOW")
+    check('"/api/remote/play-from-cues?show="' in two and
+          'const body = {show:PF.show, rev:PF.rev, cues:cues};' in two and
+          'post("/api/remote/play-from-cues-save", body)' in two and
+          "/api/remote/play-from-cues" not in one,
+          "it reads and saves the cue list routes, 2.0's own")
+    for n in ("pfCheck", "pfFrames", "pfTc", "pfDraw", "loadPlayFrom"):
+        f = _js_function(two, n)
+        check(f is not None and not re.search(
+            r'press\(|"/api/start"|"/api/remote/(?!play-from-cues)', f),
+            f"{n} presses nothing and starts nothing")
+    here = os.path.dirname(os.path.abspath(__file__))
+    op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
+    a = op.find('- 2.0 Settings, "Play-from cues"')
+    para = op[a:op.find("\n- ", a + 3)]
+    for words in ("sends nothing to the rig", "ltcplay_play_from.json",
+                  "play_from_history", "at least 1", "2 when left",
+                  "inside the show AUDIO", "used once", "journal",
+                  "Anyone signed in can read", "tap Reload",
+                  "Restore the last saved copy", "gone now",
+                  "Replace the", "exactly as", "nobody can save it",
+                  "control or invisible"):
+        check(a > 0 and words in para, f"OPERATOR.md says: {words}")
+    check(a > 0 and _cfg_dashes(para), "OPERATOR.md: no long dashes")
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  note: node is not here; the card's rules were checked by "
+              "reading only")
+        print("  ok")
+        return
+    # The card's rules against the engine's, cue list by cue list: the card
+    # marks a list exactly when the engine refuses it.
+    cases = [
+        [{"name": "A", "tc": "00:00:05:00", "lead_in_s": 2}],
+        [{"name": "A", "tc": "00:00:01:29", "lead_in_s": 2}],
+        [{"name": "A", "tc": "00:00:02:00", "lead_in_s": ""}],
+        [{"name": "A", "tc": "00:00:01:00", "lead_in_s": 1}],
+        [{"name": "A", "tc": "00:00:03:00", "lead_in_s": 0}],
+        [{"name": "A", "tc": "00:00:50:00", "lead_in_s": 30}],
+        [{"name": "A", "tc": "00:00:50:00", "lead_in_s": 31}],
+        [{"name": "A", "tc": "00:00:50:00", "lead_in_s": "1.5"}],
+        [{"name": "A", "tc": "00:01:59:29", "lead_in_s": 2}],
+        [{"name": "A", "tc": "00:02:00:00", "lead_in_s": 2}],
+        [{"name": "A", "tc": "00:00:05:30", "lead_in_s": 2}],
+        [{"name": "A", "tc": "00:60:05:00", "lead_in_s": 2}],
+        [{"name": "A", "tc": "0:00:05:00", "lead_in_s": 2}],
+        [{"name": "Finale", "tc": "00:00:05:00", "lead_in_s": 2},
+         {"name": " finale ", "tc": "00:00:06:00", "lead_in_s": 2}],
+        [{"name": "Cafe\u0301", "tc": "00:00:05:00", "lead_in_s": 2},
+         {"name": "CAF\u00c9", "tc": "00:00:06:00", "lead_in_s": 2}],
+        [{"name": "\uff26inale", "tc": "00:00:05:00", "lead_in_s": 2},
+         {"name": "Finale", "tc": "00:00:06:00", "lead_in_s": 2}],
+        [{"name": "Act  two", "tc": "00:00:05:00", "lead_in_s": 2},
+         {"name": "act two", "tc": "00:00:06:00", "lead_in_s": 2}],
+        [{"name": "", "tc": "00:00:05:00", "lead_in_s": 2}],
+        [{"name": "   ", "tc": "00:00:05:00", "lead_in_s": 2}],
+        [{"name": "x" * 40, "tc": "00:00:05:00", "lead_in_s": 2}],
+        [{"name": "x" * 41, "tc": "00:00:05:00", "lead_in_s": 2}],
+        [{"name": "Act \u2014 two", "tc": "00:00:05:00", "lead_in_s": 2}],
+        [{"name": "A", "tc": "00:00:05:00", "lead_in_s": 2,
+          "note": "n" * 200}],
+        [{"name": "A", "tc": "00:00:05:00", "lead_in_s": 2,
+          "note": "n" * 201}],
+    ]
+    want = []
+    for cues in cases:
+        sent = []
+        for c in cues:
+            o = dict(c)
+            l_ = str(o.get("lead_in_s", "")).strip()
+            o["lead_in_s"] = None if l_ == "" else float(l_)
+            if o["lead_in_s"] is not None and o["lead_in_s"].is_integer():
+                o["lead_in_s"] = int(o["lead_in_s"])
+            o["name"] = o["name"].strip()
+            sent.append(o)
+        try:
+            PF.check_cues(sent, 120.0)
+            want.append(False)
+        except PF.CueError:
+            want.append(True)
+    check(any(want) and not all(want), "the cases hold lists the engine "
+          "saves and lists it refuses")
+    # Review of #192: the broken file, the stale page, Reload, Replace and
+    # a Time field wide enough for HH:MM:SS:FF.
+    for need in ('id="pf-reload"', 'id="pf-replace" hidden',
+                 "Replace the file</button>"):
+        check(need in sec, f"the card has {need}")
+    check('const PF_STALE_WORDS = "' + PF.STALE_WORDS + '";' in two,
+          "the card knows the engine's stale words")
+    check(re.search(r"\.pfrow\{display:grid;grid-template-columns:"
+                    r"minmax\(0,2fr\) minmax\((1[7-9]\d|[2-9]\d\d)px,", two),
+          "the Time column is never narrower than HH:MM:SS:FF (172 px)")
+    check("if(PF.error && PF_REPLACE) body.replace = true;" in two and
+          two.count("PF_REPLACE = true") == 1,
+          "replace is sent only after Replace the file was chosen")
+    fn_r = _js_function(two, "loadPlayFrom") or ""
+    check("PF_STALE = false; PF_REPLACE = false;" in fn_r,
+          "a fresh read clears the stale lock and the replace choice")
+    flow = r"""
+let PF = null, PF_DIRTY = false, PF_REPLACE = false, PF_STALE = false;
+const PF_STALE_WORDS = "%s";
+const PF_REPLACE_WORDS = "%s";
+const out = [];
+PF = {may_edit:true, error:""}; PF_DIRTY = true;
+out.push(["edit", pfMayEdit(), pfSaveOk([[]])]);
+out.push(["bad cue", pfSaveOk([["Name used twice."]])]);
+PF = {may_edit:false, error:""};
+out.push(["viewer", pfMayEdit(), pfSaveOk([[]])]);
+PF = {may_edit:true, error:"could not be read"};
+out.push(["broken", pfMayEdit(), pfSaveOk([[]])]);
+PF_REPLACE = true;
+out.push(["broken, replace chosen", pfMayEdit(), pfSaveOk([[]])]);
+PF = {may_edit:true, error:""}; PF_REPLACE = false;
+const said = pfRefused("Not saved: the name is too long.");
+out.push(["other refusal", PF_STALE, said]);
+const said2 = pfRefused("Not saved: someone saved the play-from cues %s. Reload.");
+out.push(["stale", PF_STALE, pfMayEdit(), pfSaveOk([[]]), said2]);
+PF = {may_edit:true, error:""}; PF_STALE = false; PF_DIRTY = true;
+const said3 = pfRefused("Not saved: the file could not be read or is missing, and a save would replace the cue lists of every show in it. Restore the last saved copy, fix the file, or choose %s on 2.0 Settings.");
+out.push(["broke after read", PF_STALE, !!PF.error, pfMayEdit(), pfSaveOk([[]])]);
+console.log(JSON.stringify(out));
+""" % (PF.STALE_WORDS, PF.REPLACE_WORDS, PF.STALE_WORDS, PF.REPLACE_WORDS)
+    fns = "\n".join(_js_function(two, n) or "" for n in
+                    ("pfFrames", "pfTc", "pfCheck", "pfBody"))
+    js = ("const PF_DASH = /[\\u2013\\u2014]/;\n" + fns +
+          "\nconst rules = " + json.dumps(PF.Store(None).view()) + ";\n"
+          "const cases = " + json.dumps(cases) + ";\n"
+          "console.log(JSON.stringify(cases.map(c => "
+          "pfCheck(c, 120.0, rules))));\n"
+          "console.log(JSON.stringify(pfBody([{id:\"c2\", name:\" Big  "
+          "finale \", tc:\"00:01:41:00 \", lead_in_s:\"3\", note:\"\"}, "
+          "{name:\"New\", tc:\"00:00:20:00\", lead_in_s:\"\"}, "
+          "{name:\"Two\", tc:\"00:00:21:00\", lead_in_s:2, "
+          "note:\" x \"}])));\n")
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, "pf.js")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(js)
+        r = subprocess.run([node, p], capture_output=True, text=True,
+                           timeout=60)
+    out_lines = r.stdout.strip().splitlines()
+    try:
+        got = json.loads(out_lines[0])
+        sent = json.loads(out_lines[1])
+    except (ValueError, IndexError):
+        got = sent = None
+    check(sent == [{"name": "Big  finale", "tc": "00:01:41:00", "note": "",
+                    "lead_in_s": 3, "id": "c2"},
+                   {"name": "New", "tc": "00:00:20:00", "note": "",
+                    "lead_in_s": None},
+                   {"name": "Two", "tc": "00:00:21:00", "note": "x",
+                    "lead_in_s": 2}],
+          f"Save sends each cue with the id it was read with (none for a "
+          f"new one), trimmed, an empty lead-in as none: {sent}")
+    check(got is not None and len(got) == len(cases),
+          f"the card's rules ran: {r.stdout[:300]} {r.stderr[:600]}")
+    for i, cues in enumerate(cases if got else []):
+        marked = any(len(per) for per in got[i])
+        said = [t for per in got[i] for t in per]
+        check(marked == want[i],
+              f"the card {'marks' if marked else 'passes'} what the engine "
+              f"{'refuses' if want[i] else 'saves'}: {cues!r:.120} "
+              f"{got[i]}")
+        check(all(_cfg_dashes(t) and len(t.split()) <= 8 for t in said),
+              f"the card's words are short, no long dashes: {said}")
+    # Who may edit and save, over a broken file and after a stale save.
+    fl = "\n".join(_js_function(two, n) or "" for n in
+                    ("pfMayEdit", "pfSaveOk", "pfRefused")) + flow
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, "flow.js")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(fl)
+        r = subprocess.run([node, p], capture_output=True, text=True,
+                           timeout=60)
+    try:
+        st = {row[0]: row[1:] for row in json.loads(r.stdout)}
+    except (ValueError, TypeError):
+        st = {}
+    check(st.get("edit") == [True, True] and st.get("bad cue") == [False]
+          and st.get("viewer") == [False, False],
+          f"an admin edits and saves a good list; a viewer neither: {st} "
+          f"{r.stderr[:300]}")
+    check(st.get("broken") == [False, False] and
+          st.get("broken, replace chosen") == [True, True],
+          f"over a broken file nothing is edited or saved until Replace "
+          f"the file is chosen: {st}")
+    check(st.get("other refusal") == [False,
+                                      "Not saved: the name is too long."]
+          and (st.get("stale") or [None])[:3] == [True, False, False] and
+          str((st.get("stale") or [""])[-1]).endswith("Tap Reload."),
+          f"a stale save locks this copy until Reload: {st}")
+    check(st.get("broke after read") == [False, True, False, False],
+          f"a page that read the file before it broke: after its refused "
+          f"save, no Save; Replace (and Restore) offered: {st}")
+    check('const PF_REPLACE_WORDS = "' + PF.REPLACE_WORDS + '";' in two and
+          'id="pf-restore" hidden' in sec and
+          "Restore the last saved copy</button>" in sec and
+          'post("/api/remote/play-from-cues-save", {restore:true, '
+          'rev:PF.rev})' in two,
+          "the card offers Restore the last saved copy, an admin's press")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
@@ -100105,6 +101639,7 @@ if __name__ == "__main__":
         test_pump_flame_link,
         test_pump_at_the_engine,
         test_pump_review_fixes,
+        test_pump_signout_stops_it,
         test_pump_timer_thread_ends_it,
         test_pump_end_to_end_against_the_real_flamesafe,
         test_ui2_fuel_pump_row,
@@ -100264,6 +101799,12 @@ if __name__ == "__main__":
         test_ui2_day_tab_in_a_browser,
         test_ui2_calm_screens_and_brand,
         test_config_watch_supervisor_and_rack_screen_note,
+        test_play_from_cue_model,
+        test_play_from_cue_store,
+        test_play_from_cue_file_is_never_lost,
+        test_play_from_cue_routes,
+        test_play_from_cue_audio_length_from_a_real_show_file,
+        test_play_from_cue_card_in_2_0,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):

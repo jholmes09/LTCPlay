@@ -2393,7 +2393,8 @@ def _attach_pump(httpd):
             abort_standing=remote._abort_standing,
             blocker=remote.pump_blocker,
             journal=_journal, audit=getattr(remote, "audit", None),
-            night_state=remote.pump_night_state)
+            night_state=remote.pump_night_state,
+            signed_out=remote.pump_signed_out)
     except Exception as e:                       # noqa: BLE001
         print(f"The fuel pump could not be set up: {type(e).__name__}: {e}")
         return
