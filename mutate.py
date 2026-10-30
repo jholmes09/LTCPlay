@@ -8532,8 +8532,8 @@ def build():
 
  ('show-assembly: flame cues read while nothing is running',
   'ltcplay/fire_ice.py',
-  '        if s is None or not getattr(s, "running", False):\n            return self._zero("")',
-  '        if s is None:\n            return self._zero("")'),
+  '        if s is None or not getattr(s, "running", False):\n            self._look_since = None\n            return self._zero("")',
+  '        if s is None:\n            self._look_since = None\n            return self._zero("")'),
 
  ("show-assembly: the screen Abort's disarm skips the flame link",
   'ltcplay/fire_ice.py',
@@ -8574,8 +8574,8 @@ def build():
  # -- show-assembly fix round 1 (PR #43 independent review, 2026-10-03).
  ('fix round 1: flame cues follow Blackout, Preshow or a look',
   'ltcplay/fire_ice.py',
-  '        if look is not None:\n            return self._zero(',
-  '        if False:\n            return self._zero('),
+  '        look = getattr(p, "override", None)\n        if look is None:\n            self._look_since = None\n',
+  '        look = None\n        if look is None:\n            self._look_since = None\n'),
 
  ('fix round 1: flame cues follow a GO free run',
   'ltcplay/fire_ice.py',
@@ -8655,8 +8655,8 @@ def build():
 
  ('fix round 1: music_started records nothing',
   'ltcplay/conductor.py',
-  '            self._set("music", MUSIC_PLAYING)\n\n    def intermission',
-  '            pass\n\n    def intermission'),
+  '            self._set("music", MUSIC_PLAYING)\n\n    def pixels_to_show',
+  '            pass\n\n    def pixels_to_show'),
 
  ('fix round 1: an Abort during the start leaves the music playing',
   'ltcplay/fire_ice.py',
@@ -8773,7 +8773,7 @@ def build():
 
  ('review H12: closing reports done without zeroing flames, blanking lasers or blacking the pixels',
   'ltcplay/fire_ice.py',
-  '        if state == "CLOSING":\n            if not self._closing_reported:\n                self._closing_reported = True\n                self._close()\n            return',
+  '        if state == "CLOSING":\n            if not self._closing_reported:\n                self._closing_reported = True\n                self._close(after_show=was in ("SHOW", "PAUSED"))\n            return',
   '        if state == "CLOSING":\n            if not self._closing_reported:\n                self._closing_reported = True\n                self.svc.report("CLOSING_DONE", "x")\n            return'),
 
 
@@ -8897,10 +8897,151 @@ def build():
   '        text = " ".join(self._reworded(le).text for le in out.log if le.text)',
   '        text = " ".join(le.text for le in out.log if le.text)'),
 
+ ("pixels: a show start never takes the closing black off (Jeff's dark "
+  "shows, 2026-10-29)",
+  'ltcplay/fire_ice.py',
+  '                hold = getattr(p, "hold_until_show", None)\n',
+  '                hold = (lambda: p.override)\n'),
+
+ ("pixels: a show start leaves the conductor's black on record for the "
+  "confirmation again",
+  'ltcplay/fire_ice.py',
+  '            self._pix_ours, self._pix_prev = False, None\n            look = p.override\n',
+  '            look = p.override\n'),
+
+ ("pixels: a show start puts the idle look to black until the show is "
+  "confirmed (the blink)",
+  'ltcplay/fire_ice.py',
+  '                if hold is not None:\n                    held = hold()\n',
+  '                if hold is not None:\n                    p.override = "blackout"\n                    held = hold()\n'),
+
+ ("pixels: the held look never hands over to the show",
+  'ltcplay/player.py',
+  '        if hand is not None:\n            self._take_handoff(hand, epoch, fed, now)\n',
+  '        if False:\n            self._take_handoff(hand, epoch, fed, now)\n'),
+
+ ("pixels: a clock left from an earlier cue counts as the show's first frame",
+  'ltcplay/player.py',
+  '            if epoch is None or fed == armed:\n',
+  '            if epoch is None:\n'),
+
+ ("pixels: the hand-over lifts a look set after the start",
+  'ltcplay/player.py',
+  '            if self.override != look:\n                # A look set since the start: theirs stands.\n',
+  '            if False:\n'),
+
+ ("pixels: a Hold before the first show frame restores the start's held "
+  "look on Resume",
+  'ltcplay/fire_ice.py',
+  '                self._pix_prev = None if waiting else p.override\n',
+  '                self._pix_prev = p.override\n'),
+
+ ("pixels: a Start now show that ends on its own closes on black again",
+  'ltcplay/fire_ice.py',
+  '            extra = self._operator_show_ended() if after_show else None\n',
+  '            extra = None\n'),
+
+ ("pixels: Programming Play leaves the closing black for show_starting",
+  'ltcplay/playhead.py',
+  '        if clear is not None:\n            to_show = getattr(cond, "pixels_to_show", None)\n',
+  '        if False:\n            to_show = getattr(cond, "pixels_to_show", None)\n'),
+
+ ("pixels: a look over a playing show is a quiet zero, not a CUES FAULT",
+  'ltcplay/fire_ice.py',
+  '            return self._zero(LOOK_IN_SHOW.format(\n                look=LOOK_BUTTONS.get(look, look)), fault=True)\n',
+  '            return self._zero(plain)\n'),
+
+ ("pixels: the journal never says when the first show frame went out",
+  'ltcplay/fire_ice.py',
+  '        self._first_frame(cue)\n        clk = cue["clock"]\n',
+  '        clk = cue["clock"]\n'),
+
+ ("pixels: a show start leaves the conductor's pixels record on the Stop's "
+  "black, so a Hold, Abort or Stop before the confirmation sends none",
+  'ltcplay/conductor.py',
+  '            self._set("pixels", UNKNOWN)\n            return clear()\n',
+  '            return clear()\n'),
+
+ ("pixels: a show start hands the pixels to the show under a latched Abort",
+  'ltcplay/conductor.py',
+  '            if self._latched:\n                return None\n            self._set("pixels", UNKNOWN)\n',
+  '            self._set("pixels", UNKNOWN)\n'),
+
+ ("pixels: a start refused by an Abort just before the hand-over plays "
+  "the music anyway",
+  'ltcplay/fire_ice.py',
+  '        elif to_show(lambda: self.show.pixels_for_show(what)) is None:\n            return None\n',
+  '        else:\n            to_show(lambda: self.show.pixels_for_show(what))\n'),
+
+ ("pixels: an Abort while the cue was starting leaves the hand-over armed",
+  'ltcplay/fire_ice.py',
+  '            self.show.music_halt(C.ABORT_FADE_S)\n            self._start_undone()\n',
+  '            self.show.music_halt(C.ABORT_FADE_S)\n'),
+
+ ("pixels: a start the clock refused leaves its hand-over armed",
+  'ltcplay/fire_ice.py',
+  '                why=_full_stop(e))\n            self._start_undone()\n',
+  '                why=_full_stop(e))\n'),
+
+ ("pixels: the show clock stopping leaves a waiting hand-over",
+  'ltcplay/player.py',
+  '            self.show_handoff = None\n        self._event("clock", "the show clock stopped',
+  '        self._event("clock", "the show clock stopped'),
+
+ ("pixels: a look the Programming screen keeps leaves a stale hand-over "
+  "waiting",
+  'ltcplay/fire_ice.py',
+  '                if cancel is not None:\n                    cancel()\n                if p.override != keep:\n',
+  '                if p.override != keep:\n'),
+
+ ("pixels: Programming Play refused at the show start leaves the show on "
+  "the pixels",
+  'ltcplay/playhead.py',
+  '                        fade(0)\n',
+  '                        pass\n'),
+
+ ("pixels: a Programming Play the clock refused leaves its hand-over "
+  "waiting",
+  'ltcplay/playhead.py',
+  '            if cancel is not None:\n                cancel()\n            raise\n',
+  '            raise\n'),
+
+ ("pixels: a look between shows counts toward the next show's CUES FAULT",
+  'ltcplay/fire_ice.py',
+  "            # toward the next one's CUES FAULT.\n            self._look_since = None\n",
+  "            # toward the next one's CUES FAULT.\n"),
+
+ ("pixels: the look-in-show CUES FAULT names a button the Fire & Ice "
+  "screens do not have",
+  'ltcplay/fire_ice.py',
+  '                "Programming: Show file card, Stop, then Run. "\n',
+  '                "Programming screen: press Follow timecode. "\n'),
+
+ ("pixels: a look set through the engine during a start's hand-over is "
+  "lifted by the first show frame",
+  'ltcplay/web.py',
+  '        if cancel is not None:\n            cancel()\n        s.player.override = None if what',
+  '        s.player.override = None if what'),
+
+ ("pixels: an older show's end cancels a newer start's hand-over",
+  'ltcplay/fire_ice.py',
+  '                cancel(hand)\n',
+  '                cancel()\n'),
+
+ ("pixels: cancel_show_handoff ends whatever hand-over is waiting",
+  'ltcplay/player.py',
+  '            if hand is not None and self.show_handoff is not hand:\n                return False\n',
+  ''),
+
+ ("pixels: a show that ended unconfirmed leaves its start's hand-over armed",
+  'ltcplay/fire_ice.py',
+  '            self._handoff_over(cue)\n            if not cue["confirmed"]:\n',
+  '            if not cue["confirmed"]:\n'),
+
  ('fix round 2: a look chosen before the show stays on',
   'ltcplay/fire_ice.py',
-  '        self._clear_look(s, n)\n',
-  ''),
+  '        pix = self._clear_look(s, n)\n',
+  '        pix = None\n'),
 
  ("R2-H1 the page's Blackout/Preshow (override) is not refused during a live show",
   'ltcplay/web.py',
@@ -16587,8 +16728,8 @@ def build():
   "                pass"),
 
  ("a refused show start leaves the music playing", "ltcplay/playhead.py",
-  "                s.clock_halt()\n                self._refused(r, \"Play from\")",
-  "                self._refused(r, \"Play from\")"),
+  "                s.clock_halt()\n                # The Abort's black stands",
+  "                # The Abort's black stands"),
 
  ("Pause freezes only the clock, not the show's Hold", "ltcplay/playhead.py",
   '            self._refused(cond.hold(who, screen), "Pause")',
