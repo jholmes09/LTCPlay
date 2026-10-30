@@ -9094,8 +9094,8 @@ def build():
 
  ("after midnight: a small hours time typed tonight is not after midnight",
   "ltcplay/schedule.py",
-  "        # the small hours, after midnight.\n        pick = later",
-  "        # the small hours, after midnight.\n        pick = same"),
+  "    for c in (same, later):\n        if cut < c <= limit:",
+  "    for c in (same,):\n        if cut < c <= limit:"),
 
  ("after midnight: tonight's file refuses a show after midnight",
   "ltcplay/schedule.py",
@@ -9154,8 +9154,8 @@ def build():
 
  ("review196A: a time far after tonight's last show is guessed",
   "ltcplay/schedule.py",
-  "    if pick > last + EDIT_DAY_LIMIT:",
-  "    if False:"),
+  "    hhmm = _hm(t)\n    word = \"tomorrow\" if later > limit else \"today\"",
+  "    return later\n    hhmm = _hm(t)\n    word = \"tomorrow\" if later > limit else \"today\""),
 
  ("review196A: a time typed with tomorrow is not tomorrow",
   "ltcplay/schedule.py",
@@ -9209,13 +9209,58 @@ def build():
 
  ("review196A: a next morning time is not said as tomorrow",
   "ltcplay/schedule.py",
-  "        return clock(local) + (\" (tomorrow)\" if day == 1 else",
-  "        return clock(local) + (\"\" if day == 1 else"),
+  "            \" (tomorrow)\" if day == 1 else f\" ({local.date()})\" if day else \"\")",
+  "            \"\" if day == 1 else f\" ({local.date()})\" if day else \"\")"),
 
  ("review196A: a next morning list is written in an older format",
   "ltcplay/schedule.py",
   "    next_day = any(t is not None",
   "    next_day = False and any(t is not None"),
+
+ ("review196B: a closed night holds the hand over to the file's hours",
+  "ltcplay/schedule.py",
+  "        end = None\n        need = timedelta(seconds=m.show_len_s + m.guard_s)\n        for s in m.slots:",
+  "        need = timedelta(seconds=m.show_len_s + m.guard_s)\n        for s in m.slots:"),
+
+ ("review196B: a typed time may land a day after tonight's night",
+  "ltcplay/schedule.py",
+  "    limit = max(ends) + EDIT_DAY_LIMIT\n",
+  "    limit = max(ends) + timedelta(hours=24)\n"),
+
+ ("review196B: tomorrow's night never begins before midnight",
+  "ltcplay/schedule.py",
+  "    if now >= night_reset(today, tz, rule, live):\n        return today + timedelta(days=1)",
+  "    if False:\n        return today + timedelta(days=1)"),
+
+ ("review196B: the second 01:00 is not said as such",
+  "ltcplay/schedule.py",
+  "        head = \"the second \" if getattr(local, \"fold\", 0) else \"\"",
+  "        head = \"\""),
+
+ ("review196B: an edit in the repeated hour says nothing",
+  "ltcplay/schedule.py",
+  "    if _utc(other) == _utc(local):\n        return \"\"",
+  "    if True:\n        return \"\""),
+
+ ("review196B: a failure working out the warnings is not a warning",
+  "ltcplay/schedule.py",
+  "        return [f\"The schedule could not be checked for warnings \"",
+  "        raise\n        return [f\"The schedule could not be checked for warnings \""),
+
+ ("review196B: thousands of exceptions are not said",
+  "ltcplay/schedule.py",
+  "    if len(exc_all) > SCAN_EXCEPTIONS:",
+  "    if False:"),
+
+ ("review196B: the summary is not written again after a save on a closed night",
+  "ltcplay/schedule_service.py",
+  "        if out.machine.state == sch.OFF and out.machine.slots != m.slots \\",
+  "        if False and out.machine.state == sch.OFF and out.machine.slots != m.slots \\"),
+
+ ("review196B: a delayed show after 2 AM is said as missed at the 2 AM reset",
+  "ltcplay/schedule_service.py",
+  "        default = ends == two and not late",
+  "        default = ends == two"),
 
  ("scheduler 2 AM reset: a show running at the reset is cut by it",
   "ltcplay/schedule_service.py",

@@ -961,10 +961,15 @@ but it wouldn't allow it. Don't restrict the schedule in any way."
 - **A weekday can be written in full,** "Thursday" as well as "thu".
 - **Tonight's Delay, move and add can go past midnight.** A time typed in
   the small hours ("00:30") is tonight's, after midnight, and the list
-  shows it as "00:30 (tomorrow)". A time that would land more than 3
-  hours after tonight's last show is never guessed: typing "10:55" at
-  22:40 (meant 22:55) is refused with "type 10:55 tomorrow to confirm".
-  Add "tomorrow" or "today" to the time when that is what you mean.
+  shows it as "00:30 (tomorrow)". A time without a day is the nearest
+  one still to come inside tonight's night, which runs from the start of
+  its date to its last show end plus 3 hours. A time that has gone by,
+  near tonight's own hours, is refused as passed. Anything else is never
+  guessed: typing "10:55" at 22:40 (meant 22:55) is refused with "type
+  10:55 tomorrow to confirm". Add "tomorrow" or "today" to the time when
+  that is what you mean. On the night the clocks go back, a time in the
+  repeated hour is the first one (the journal says so), and the list says
+  "the second 01:05" for the later one.
 - **The night only moves forward.** Once a night has handed over to the
   next, saving a schedule that gives it longer hours never opens it
   again; the change is for the next time that weekday comes round.
@@ -979,18 +984,24 @@ but it wouldn't allow it. Don't restrict the schedule in any way."
 **What the 2 AM reset did, and what replaces it.** Every night used to
 end at 2 AM the next morning: a show could not be planned before 2 AM, a
 night could not run past midnight, and a show still delayed at 2 AM was
-MISSED. Now a night ends where it hands over to the next one: at 2 AM as
-before when nothing of it is left to run; later, while one of its shows
-(planned, delayed or moved) still has to run and its guard is not over;
-earlier, when the next night's first show is earlier (30 minutes before
-it, when its preshow begins), but never before this night's own shows
-have run. A show still delayed when the night hands over is MISSED, as
-before; the journal says "when the night ended, as the next night began"
-when that is not 2 AM. The hand over never drops a planned show, never
-starts a show early and never presses or releases Run. If two nights
-run into each other, the earlier one finishes first and a show of the
-next night whose time has gone by by then is missed: the save warns
-about it.
+MISSED. Now a night ends where it hands over to the next one:
+
+- at 2 AM, as before, when nothing of it is left to run by then;
+- later, while one of its shows (planned, moved or running) still has to
+  run, and as soon as none is left;
+- earlier, when the next night's first show is earlier: 30 minutes before
+  it, when its preshow begins, which can be before midnight. Never before
+  this night's own shows still to come have run;
+- a night closed with Close for the night, or with its later shows
+  skipped, has nothing left to run, so it never holds the next night back.
+
+A show still delayed when the night hands over is MISSED, as before; the
+journal says "when the night ended, as the next night began" when that
+is not 2 AM. The hand over never drops a planned show, never starts a
+show early and never presses or releases Run. The night only moves
+forward. If two nights run into each other, the earlier one finishes
+first and a show of the next night whose time has gone by by then is
+missed: the save warns about it.
 
 ## Saving the schedule during the night
 
