@@ -204,6 +204,9 @@ class ChargeTracker:
         self._sent_supported = None
         self._sent_release_at = None
         self._manual = {}       # tank -> (who, screen, at)
+        # tank -> clock: the show's own charge carrying on after a gap of
+        # one frame or so (fireball_cues.GAP_S): its edge is that charge.
+        self._continuing = {}
         self._unwritten = None  # the newest record not yet on disk
         self._retry_at = 0.0
         self.last_sent = bytes(512)
@@ -332,6 +335,15 @@ class ChargeTracker:
                     self._manual[k] = (who or "someone", screen, now)
                 else:
                     self._manual.pop(k, None)
+        except Exception:                        # noqa: BLE001
+            pass
+
+    def note_continuing(self, tank):
+        """The show's own charge of `tank` carries on after a short gap
+        (fireball_cues): the edge seen next is that same charge, not a
+        double charge. Cheap; never raises."""
+        try:
+            self._continuing[tank] = self._clock()
         except Exception:                        # noqa: BLE001
             pass
 
@@ -533,6 +545,9 @@ class ChargeTracker:
         if t["state"] == CHARGED:
             if not rising:
                 return      # the same charge, still on
+            c = self._continuing.pop(k, None)
+            if c is not None and 0 <= now - c <= MANUAL_FRESH_S:
+                return      # the show's same charge after a short gap
             if m is not None:
                 self._set(k, CHARGED, f"top-off by {m[0]}", now_w,
                           topoff=True)

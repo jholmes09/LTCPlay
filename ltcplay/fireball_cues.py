@@ -53,13 +53,21 @@ cues' reading thread (refresh) and when a save is made (publish).
 """
 import os
 import threading
+import time
 
 from . import fireball_timeline as fbtl
 
 ON_VALUE = 255          # fireball.ON_VALUE (ASSUMED, for Jeff and Andy)
 SLOTS = fbtl.FIREBALL_FIRE_SLOTS
 CHARGE_STAGES = {"fuel": "fuel", "air": "air"}   # stage -> tank
+CHARGE_SLOT = {"fuel": 55, "air": 56}            # tank -> slot
+PURGE_SLOT = fbtl.PURGE_SLOT
 MESSAGES_KEPT = 8
+# A charge that went out and then stopped for no longer than this (one
+# frame the flame cues could not read, one send that failed) carries on
+# as the same charge; a longer stop (Hold, Stop, a seek, the guard) ends
+# it for the rest of that play (review of #187).
+GAP_S = 0.25
 
 
 class _Run:
@@ -76,6 +84,8 @@ class _Run:
         self.skipped = {}        # stage -> why (said once)
         self.prev_on = set()     # slots this provider set ON last frame
         self.sent_tanks = set()  # tanks whose charge went out in this play
+        self.sent_at = {}        # tank -> clock when last seen on the wire
+        self.fseq_on = {}        # FSEQ show: tank -> its charge allowed
         self.adopt(entry, rev, None)
 
     def adopt(self, entry, rev, relf):
@@ -95,8 +105,13 @@ class _Run:
             if k in self.started or k in self.skipped:
                 continue
             if relf is not None and w["s0"] < relf:
-                self.skipped[k] = "moved into the past: not fired"
-                past.append(k)
+                old = self.stages.get(k)
+                self.skipped[k] = "behind the play position: not fired"
+                # Said as an edit only when the edit moved it (a stage
+                # behind a Play from that an unrelated edit re-read is
+                # not "moved by an edit": review of #187).
+                if old is None or old["s0"] != w["s0"]:
+                    past.append(k)
         for k in list(self.stages):
             if k not in new and k not in self.started:
                 del self.stages[k]
@@ -113,10 +128,12 @@ class FireballCues:
     charge_get  () -> fireball_charge.ChargeTracker, or None
     journal     (text, **fields), the flame cues' own (off the sender)"""
 
-    def __init__(self, store, charge_get=lambda: None, journal=None):
+    def __init__(self, store, charge_get=lambda: None, journal=None,
+                 clock=time.monotonic):
         self.store = store
         self._charge_get = charge_get
         self._journal = journal
+        self._clock = clock
         self._plan = None         # (rev, error, shows) published
         self._run = None
         self._lock = threading.Lock()
@@ -192,13 +209,26 @@ class FireballCues:
         show = os.path.basename(str(getattr(session, "timeline_path", "")
                                     or ""))
         entry = shows.get(show)
+        if entry is None:
+            # A case-blind folder (Windows, macOS): the file's entry under
+            # another spelling of the same name is this show's (review of
+            # #187: "show.json" saved, "Show.json" played, FSEQ fallback).
+            same = [k for k in shows if fbtl.show_key(k) == fbtl.show_key(
+                show)]
+            if len(same) > 1:
+                self._fault(f"{show} has a fireball timeline under more "
+                            f"than one spelling ({', '.join(sorted(same))}); "
+                            f"no fireball for it")
+                return self._masked(out)
+            if same:
+                entry = shows[same[0]]
         relf = int(round(rel * fbtl.FPS))
         run = self._run
         if run is None or run.cue_obj is not cue_obj or run.label != label:
             run = self._run = _Run(cue_obj, label, entry, rev)
             self.messages = []
         if run.source != "timeline":
-            return out
+            return self._fseq_guarded(out, run)
         out = self._masked(out)
         if label != run.cue:
             return out
@@ -211,6 +241,7 @@ class FireballCues:
                           f"an edit: not fired in this play of the show.")
         tr = self._charge_get()
         last = getattr(tr, "last_sent", b"") if tr is not None else b""
+        now = self._clock()
         for k, tank in CHARGE_STAGES.items():
             w = run.stages.get(k)
             if w is not None and w["slot"] in run.prev_on and \
@@ -219,6 +250,7 @@ class FireballCues:
                 # it counts as charged in this play, whatever the tank's
                 # record says (Jeff: never re-charge after a Resume).
                 run.sent_tanks.add(tank)
+                run.sent_at[tank] = now
         now_on = set()
         for k, w in run.stages.items():
             if k in run.skipped:
@@ -239,29 +271,84 @@ class FireballCues:
         run.prev_on = now_on
         return out
 
-    def _charge_refusal(self, tr, tank, slot, run):
-        """"" when the Fuel or Air stage may have its channel on this
-        frame, else the sentence that skips it."""
+    def _charge_refusal(self, tr, tank, slot, run, what=None):
+        """"" when the Fuel or Air stage (or, `what` given, the FSEQ's
+        own charge) may have its channel on this frame, else the sentence
+        that skips it."""
         word = fbtl.STAGE_WORD[tank]
+        fseq = what is not None
+        what = what or f"the {word} stage"
         if tr is None:
             return (f"{word}: the charge state is not running in this engine,"
-                    f" so the {word} stage was skipped (no double charge).")
+                    f" so {what} was skipped (no double charge).")
         last = getattr(tr, "last_sent", b"")
         carrying_on = slot in run.prev_on and len(last) >= slot and \
             last[slot - 1] > 0
         if carrying_on:
             return ""
         state = tr.state(tank)
+        if fseq and state == "empty":
+            # An FSEQ show may charge, fire and charge again: once the
+            # shot (or a Purge) has emptied the tank its next charge is a
+            # new one.
+            run.sent_tanks.discard(tank)
         if tank in run.sent_tanks:
-            return (f"{word} already charged in this show: the {word} stage "
-                    f"was skipped (no double charge).")
+            at = run.sent_at.get(tank)
+            if at is not None and 0 <= self._clock() - at <= GAP_S:
+                # A short gap (one frame not read or not sent): the same
+                # charge carries on; the charge state is told, so the
+                # edge is not a double charge.
+                tell = getattr(tr, "note_continuing", None)
+                if tell is not None:
+                    tell(tank)
+                return ""
+            return (f"{word} charge cut short (it stopped for more than "
+                    f"{GAP_S:g} s): {what} is not charged again in this "
+                    f"play (no double charge).")
         if state == "empty":
             return ""
         if state == "charged":
-            return (f"{word} already charged: the {word} stage was skipped "
+            return (f"{word} already charged: {what} was skipped "
                     f"(no double charge).")
-        return (f"{word} tank state not known: the {word} stage was skipped "
+        return (f"{word} tank state not known: {what} was skipped "
                 f"(no double charge). Purge or fire to reset it.")
+
+    def _fseq_guarded(self, out, run):
+        """A show on its FSEQ (review of #187; Jeff: never a double charge
+        under any circumstance, Purge by hand only): Purge (59) from the
+        FSEQ is always zero, and the FSEQ's Fuel (55) and Air (56) charges
+        go out only under the same rule as the timeline's (the tank EMPTY,
+        or carrying on the charge it started). Valve Open and Igniter, and
+        every other slot, are exactly as read."""
+        if out is None:
+            return None
+        out = list(out)
+        out[PURGE_SLOT - 1] = 0
+        tr = self._charge_get()
+        last = getattr(tr, "last_sent", b"") if tr is not None else b""
+        now = self._clock()
+        on_now = set()
+        for tank, slot in CHARGE_SLOT.items():
+            if slot in run.prev_on and len(last) >= slot and \
+                    last[slot - 1] > 0:
+                run.sent_tanks.add(tank)
+                run.sent_at[tank] = now
+            if out[slot - 1] <= 0:
+                run.fseq_on.pop(tank, None)
+                continue
+            word = fbtl.STAGE_WORD[tank]
+            why = self._charge_refusal(tr, tank, slot, run,
+                                       what=f"the FSEQ's {word} Charge")
+            if why:
+                out[slot - 1] = 0
+                if run.fseq_on.get(tank) is not False:
+                    self._say(why)
+                run.fseq_on[tank] = False
+                continue
+            run.fseq_on[tank] = True
+            on_now.add(slot)
+        run.prev_on = on_now
+        return out
 
     def view(self):
         """For the screens: the fault, and the last skips of this play."""

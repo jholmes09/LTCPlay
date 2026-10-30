@@ -19048,8 +19048,8 @@ def build():
 
  ("fireball cues: a source switch applies in the middle of a play",
   "ltcplay/fireball_cues.py",
-  "        if run.source != \"timeline\":\n            return out",
-  "        run.source = (entry or {}).get(\"source\", \"fseq\")\n        if run.source != \"timeline\":\n            return out"),
+  "        if run.source != \"timeline\":\n            return self._fseq_guarded(out, run)",
+  "        run.source = (entry or {}).get(\"source\", \"fseq\")\n        if run.source != \"timeline\":\n            return self._fseq_guarded(out, run)"),
 
  ("fireball cues: the shot is followed by an automatic purge",
   "ltcplay/fireball_cues.py",
@@ -19070,6 +19070,61 @@ def build():
   "ltcplay/web.py",
   "    cues.fireball = fb\n    remote.fireball_cues = fb",
   "    cues.fireball = fb if fb.store is not None else None\n    remote.fireball_cues = fb"),
+
+ ("fireball cues: another spelling of the show's name falls back to the FSEQ",
+  "ltcplay/fireball_cues.py",
+  "        if entry is None:\n            # A case-blind folder",
+  "        if False:\n            # A case-blind folder"),
+
+ ("fireball cues: two spellings of one show in the file are taken",
+  "ltcplay/fireball_cues.py",
+  "            if len(same) > 1:",
+  "            if False:"),
+
+ ("fireball cues: an FSEQ show is not guarded",
+  "ltcplay/fireball_cues.py",
+  "            return self._fseq_guarded(out, run)\n        out = self._masked(out)",
+  "            return out\n        out = self._masked(out)"),
+
+ ("fireball cues: Purge goes out from an FSEQ show",
+  "ltcplay/fireball_cues.py",
+  "        out[PURGE_SLOT - 1] = 0",
+  "        pass"),
+
+ ("fireball cues: an FSEQ show's charge on a charged tank goes out",
+  "ltcplay/fireball_cues.py",
+  "            if why:\n                out[slot - 1] = 0",
+  "            if False:\n                out[slot - 1] = 0"),
+
+ ("fireball cues: an FSEQ show never charges again after its shot",
+  "ltcplay/fireball_cues.py",
+  "        if fseq and state == \"empty\":",
+  "        if False:"),
+
+ ("fireball cues: a charge cut short by a Hold carries on after it",
+  "ltcplay/fireball_cues.py",
+  "            if at is not None and 0 <= self._clock() - at <= GAP_S:",
+  "            if at is not None:"),
+
+ ("fireball cues: one frame not sent ends the charge",
+  "ltcplay/fireball_cues.py",
+  "            if at is not None and 0 <= self._clock() - at <= GAP_S:",
+  "            if False:"),
+
+ ("fireball cues: the charge state is not told a charge carries on",
+  "ltcplay/fireball_cues.py",
+  "                if tell is not None:\n                    tell(tank)",
+  "                if tell is not None:\n                    pass"),
+
+ ("fireball charge: the show's charge after a short gap is a double charge",
+  "ltcplay/fireball_charge.py",
+  "            if c is not None and 0 <= now - c <= MANUAL_FRESH_S:",
+  "            if False:"),
+
+ ("fireball cues: an unrelated edit says a stage was moved by it",
+  "ltcplay/fireball_cues.py",
+  "                if old is None or old[\"s0\"] != w[\"s0\"]:",
+  "                if True:"),
 
 ]
 

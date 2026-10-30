@@ -899,6 +899,23 @@ that long. The stages, in this order:
   refused: rename one.
 - **Where.** The editor is on Interface 2.0 (a later update).
 
+### Every show, FSEQ or Timeline (a behaviour change)
+
+Jeff: never a double charge under any circumstance, and Purge by hand
+only. So for **every** show, also one that plays its fireball from its
+FSEQ:
+
+- **Purge (59) never comes from a show.** Whatever the FSEQ has on 59 is
+  zero. Purge is only the Fireball page's Purge button.
+- **The FSEQ's Fuel Charge (55) and Air Charge (56) follow the same charge
+  rule as the timeline:** they go out only while that tank is EMPTY, or
+  carrying on the charge they started; otherwise they are held off and the
+  journal and the screens say so once ("Fuel already charged: the FSEQ's
+  Fuel Charge was skipped (no double charge)."). After a shot or a Purge
+  empties the tank, the next charge in the FSEQ goes out again.
+- Valve Open (57), the Igniter (58) and every other channel of an FSEQ
+  show are exactly as before.
+
 ### In a show set to Timeline
 
 - The show's FSEQ values on 55 to 59 are ignored, always. Each stage's
@@ -916,14 +933,19 @@ that long. The stages, in this order:
   once, for example
   "Fuel already charged: the Fuel stage was skipped (no double charge)."
   A tank NOT KNOWN is skipped too: purge or fire to reset it. A charge cut
-  short by Hold, Stop or a seek never charges again in that play, even
-  after a Resume inside its time. The Valve Open and Igniter stages are
-  not limited by this.
+  short (stopped for more than a quarter of a second: Hold, Stop, a seek)
+  never charges again in that play, even after a Resume inside its time:
+  "Fuel charge cut short ... not charged again in this play". A stop of a
+  frame or two (one frame not read or not sent) is no cut: the same charge
+  carries on. The Valve Open and Igniter stages are not limited by this.
 - **Editing during a show.** A saved change is taken on the next frame. A
   stage already started keeps the times it started with. A stage not
   started yet takes the new times, unless its new start is already behind
   the show: then it is not fired in this play. A change of source (FSEQ
   or Timeline) applies from the next time a show cue starts.
+- A show plays the timeline saved for it under any spelling of its file
+  name ("SHOW.JSON" plays the timeline of "Show.json"); two entries that
+  differ only by case are a fault and that show fires no fireball.
 - If the timeline file cannot be read, or could not be set up, 55 to 59
   are zero for **every** show (a Timeline show never falls back to its
   FSEQ) and the journal and every screen's status say why.

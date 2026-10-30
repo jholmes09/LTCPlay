@@ -4617,7 +4617,7 @@ class Remote:
             return 404, {"error": "The fireball charge record is not running "
                                   "in this engine."}
         why = ""
-        if u is None or not u.active() or not me.get("name"):
+        if u is None or not me.get("name") or not u.active():
             why = "confirming the tanks are empty needs a signed-in admin."
         elif not u.may(me.get("role"), "settings"):
             why = (f"{me.get('name')} may not: "
