@@ -56915,6 +56915,43 @@ def test_conductor_stop_is_abort_without_the_latch():
           rig4.count("flames_disarm_all") >= 1,
           f"Stop with nothing playing still takes the rig dark: {r4} "
           f"{rig4.names()}")
+    # With the real device layer: BEYOND blanked (0 only) before the press
+    # returns, a running video fade stopped where it is at the press, and
+    # MadMapper sent nothing until BEYOND is dark (Abort's order).
+    from ltcplay import beyond as B
+    c5, rig5, T5, lines5, link5, bey5 = _cond_devices()
+    try:
+        check(c5.show_starting("Andy", "rack screen").ok, "show start")
+        c5.run_pending()
+        _mm_flush(link5)
+        rig5.frozen_at = rig5.moving_at = None
+        del rig5.calls[:]
+        T5.t = 500.0
+        check(c5.stop("Andy", "rack screen").ok, "Stop accepted")
+        pressed = _cd_sends(rig5.calls)
+        check([e[0] for e in pressed][:2] == ["flames_zero",
+                                              "flames_disarm_all"]
+              and [e[1][1] for e in pressed[2:]]
+              == [B.BLANK_VALUE] * B.RETRY_COUNT,
+              f"the flames cut first, then BEYOND blanked, before the press "
+              f"returns: {rig5.calls}")
+        check(("mm_call", ("cancel",), 500.0) in rig5.calls,
+              f"and any video fade is stopped where it is, at the press: "
+              f"{rig5.calls}")
+        c5.run_pending()
+        _mm_flush(link5)
+        ev = _cd_sends(rig5.calls)
+        b = _cd_idx(ev, "beyond")
+        m = _cd_idx(ev, "mm")
+        check([ev[i][1] for i in b] ==
+              [(B.BRIGHTNESS_ADDR, B.BLANK_VALUE)] * (2 * B.RETRY_COUNT),
+              f"BEYOND brightness 0 only, at the press and again: "
+              f"{[ev[i] for i in b]}")
+        check(m and min(m) > max(b[:B.RETRY_COUNT]),
+              f"BEYOND is dark before MadMapper is sent anything: "
+              f"{[e[0] for e in ev]}")
+    finally:
+        link5.close()
     print("  ok")
 
 
