@@ -142,8 +142,8 @@ def _name(v):
         raise CueError(f"the name {v[:MAX_NAME]!r}... is longer than "
                        f"{MAX_NAME} characters")
     if any(d in v for d in _DASHES):
-        raise CueError(f"the name {v!r} has a long dash; use a plain "
-                       f"hyphen or none")
+        raise CueError("the name has a long dash; use a plain hyphen or "
+                       "none")
     return v
 
 
@@ -204,7 +204,7 @@ def check_cues(cues, audio_len_s=None, need_ids=False):
         if name is not None:
             key = name.casefold()
             if key in names:
-                problems.append(f"the name {name!r} is used twice; each cue "
+                problems.append(f"the name {name!r} is used twice: each cue "
                                 f"has its own name")
             names[key] = name
         try:

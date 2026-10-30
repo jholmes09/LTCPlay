@@ -1592,6 +1592,34 @@ the same 1.0 button sends, with the same holds, confirms and refusals.
   interface", on the show PC itself, by someone with Settings (admins).
   It starts at 1.0 and stays there until Jeff changes it. It is
   `ui_default` (1 or 2) in `ltcplay_remote.json`; anything else reads as 1.
+- 2.0 Settings, "Play-from cues" (on the show PC, by someone with
+  Settings, admins): a list of named points in a show file to play the
+  show from later. Saving the list sends nothing to the rig and starts
+  nothing; playing from a cue is not built yet. Pick the show file, then
+  Add cue, or change a name, time, lead-in or note in place, or Delete a
+  cue, and Save. Each cue has:
+  - a name, up to 40 characters, used once in that show (Finale and
+    finale count as the same name);
+  - a time, HH:MM:SS:FF at 30 frames a second, counted from the top of
+    the show cue (00:00:00:00 is the first frame of the show audio, the
+    same count as the Art-Net timecode, MadMapper and BEYOND). It must be
+    inside the show AUDIO: the card says how long the audio is;
+  - a lead-in, the whole seconds played before the cue: 2 when left
+    empty, at least 1 and at most 30. The time less the lead-in cannot be
+    before the top of the show cue;
+  - a note, optional, up to 200 characters.
+  A cue that breaks a rule is marked in red and Save waits until it is
+  fixed; the engine checks every rule again and says what it refused. If
+  someone else saved the list since this screen read it, the save is
+  refused: the card reads it again, check and save again. The list is
+  `ltcplay_play_from.json` in the settings folder, one list per show file;
+  the version before each save is kept in `play_from_history` (the last
+  50), and every save and every refusal is in the journal and the audit
+  log. When the show audio is rendered again at another length, the card
+  says so and names any cue now past its end. Anyone signed in can read
+  the list; saving it from an iPad also needs Arming from a screen on.
+  This card and Default interface are 2.0's own: 1.0 has no button for
+  them.
 - The 2.0 SHOW screen, top to bottom: one line that says what to do next;
   the show state, the timecode and the time left; the big button for the
   next step (Run show, Start now, Resume or Reset), Hold and Stop show; one
