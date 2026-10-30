@@ -2966,16 +2966,15 @@ class Service:
                            fault=True)
         return {"ok": False, "text": sentence, "preroll": True}
 
-    def continue_anyway(self, who, screen, on_continue=None):
+    def continue_anyway(self, who, screen):
         """Continue anyway (Jeff, 2026-10-28): after a failed rig check, a
         signed-in person with the run permission held the button (the
         remote checks both). Starts the show NOW (late, and said so), with
         every output whose check failed left off for this show only
         (preroll.outputs_off, fire_ice.ShowRunner._outputs_off): it never
         arms, enables or lights anything. Never past an Abort, a Stop
-        under way or a live show; Resume first when the schedule is held
-        (that Hold's Delayed is then not played: on_continue() stops its
-        countdown, and a Delayed the hold already started). Journaled with
+        under way or a live show; Resume first when the schedule is held.
+        Nothing is played on the PA (Jeff, 2026-10-30). Journaled with
         who, when and the failed checks. Returns {"ok", "text"}."""
         pr = self.preroll
         r = pr.last_failed() if pr is not None else None
@@ -3027,12 +3026,6 @@ class Service:
             pr.continued = {"label": r.get("label", ""), "by": who_,
                             "at": self.clock().isoformat(timespec="seconds"),
                             "off": off, "failed": failed}
-            # The Delayed countdown ends only once the start is accepted.
-            if on_continue is not None:
-                try:
-                    on_continue()
-                except Exception:                # noqa: BLE001
-                    pass
             return {"ok": True, "text": f"Continue anyway: the show starts "
                                         f"now, late. Left off for this show: "
                                         f"{', '.join(sorted(off)) or 'nothing'}."}
@@ -3369,8 +3362,8 @@ class Service:
         while not self._stop.is_set():
             self._safe_tick()
             # After the tick, outside the lock: the alert thread's work
-            # (remote.Remote._alert_tick: the booth re-sound and the alert
-            # hold's countdown). A hook that raises never stops the ticks.
+            # (remote.Remote._alert_tick: the booth re-sound). A hook that
+            # raises never stops the ticks.
             for hook in list(self.tick_hooks):
                 try:
                     hook()
