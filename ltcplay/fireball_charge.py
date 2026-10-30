@@ -74,7 +74,11 @@ was open when the engine stopped (the release may not have finished); a
 charge, valve or purge value sent while flamesafe's status was not known.
 Only a shot or a purge seen for certain makes an UNKNOWN tank EMPTY (a
 charge seen for certain makes it CHARGED). A missing file (the very first
-run) is EMPTY, and the journal says so once.
+run, or a lost file) is NOT KNOWN too, said as a fault, until a shot, a
+Purge, or an admin confirms the tanks are empty (confirm_empty). A newer
+record left in FILE.tmp by a write that could not finish (Windows: the
+file held when it was to be replaced) is the one read at start; one that
+cannot be read makes both tanks NOT KNOWN.
 """
 import collections
 import datetime
@@ -212,15 +216,62 @@ class ChargeTracker:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread = None
+        self._writer = None
         if threaded:
+            # Two threads (review C-6): flamesafe's status is read on one;
+            # the file (fsync), the journal and the audit log are written on
+            # the other, so a slow disk never makes the status reading old
+            # (which would leave a good shot NOT KNOWN).
             self._thread = threading.Thread(target=self._run, daemon=True,
                                             name="ltcplay-fireball-charge")
+            self._writer = threading.Thread(
+                target=self._write_run, daemon=True,
+                name="ltcplay-fireball-charge-write")
             self._thread.start()
+            self._writer.start()
 
     # -- the file --------------------------------------------------------
+    @staticmethod
+    def _rev_of(path):
+        """The revision of a record file, or the exception reading it."""
+        try:
+            with open(path, encoding="utf-8-sig") as fh:
+                return read_doc(json.load(fh))[0]
+        except (OSError, ValueError, TypeError, AttributeError) as e:
+            return e
+
     def _load(self):
         now = self._wall()
-        if not self.path or not os.path.exists(self.path):
+        src = self.path
+        tmp = self.path + ".tmp" if self.path else None
+        if tmp and os.path.exists(tmp):
+            # A write that could not finish left the newest record here
+            # (review of #185: a restart read the older one and charged
+            # again).
+            got = self._rev_of(tmp)
+            main = self._rev_of(self.path) if os.path.exists(self.path) \
+                else None
+            if isinstance(got, Exception):
+                self.tanks = {k: _new_tank(UNKNOWN, now, f"{FILE}.tmp could "
+                                           f"not be read")
+                              for k in TANK_WORD}
+                self.releasing = ""
+                self.fault = (f"A write of {FILE} that did not finish left "
+                              f"{FILE}.tmp, which could not be read ({got}). "
+                              f"Both tanks are NOT KNOWN; no automatic "
+                              f"charge runs until a shot, a Purge, or an "
+                              f"admin confirms the tanks are empty.")
+                self._event("system", "engine", "unknown", self.fault,
+                            fault=True, persist=False)
+                return
+            if not isinstance(main, int) or got > main:
+                src = tmp
+                self._event("system", "engine", "recovered",
+                            f"Fireball charge: the newest record was in "
+                            f"{FILE}.tmp (a write that could not finish); "
+                            f"it is the one used.", fault=True,
+                            persist=False)
+        if not self.path or not os.path.exists(src):
             # No record (the very first run, or the file was lost): NOT
             # KNOWN, never EMPTY (review of #185): no automatic charge
             # until a shot, a Purge, or an admin confirms the tanks are
@@ -241,7 +292,7 @@ class ChargeTracker:
                             f"empty there.", fault=True, persist=True)
             return
         try:
-            with open(self.path, encoding="utf-8-sig") as fh:
+            with open(src, encoding="utf-8-sig") as fh:
                 rev, tanks, rel = read_doc(json.load(fh))
             self.rev, self.tanks, self.releasing = rev, tanks, rel
             if rel:
@@ -369,7 +420,15 @@ class ChargeTracker:
                     got = dict(zip(slots, sent))
                     if (got.get(VALVE_SLOT) or 0) > 0 or \
                             (got.get(PURGE_SLOT) or 0) > 0:
-                        self._sent_release_at = self._armed_at
+                        # Stamped with the status's own time (when flamesafe
+                        # made it), not when it was read: one status read
+                        # twice never confirms two releases (review C-7).
+                        age = v.get("age_ms")
+                        at = self._armed_at
+                        if isinstance(age, (int, float)) and \
+                                not isinstance(age, bool) and age >= 0:
+                            at -= age / 1000.0
+                        self._sent_release_at = at
                     # flamesafe's own report that it SENT a charge is
                     # evidence whatever the armed state read before
                     # (review of #185: a status up to 0.5 s old saying
@@ -436,7 +495,11 @@ class ChargeTracker:
             for k in TANK_WORD:
                 v = lv[k]
                 rising = v and not self._prev[k]
-                self._prev[k] = v if certain else (v and self._prev[k])
+                # The value on the wire, certain or not (review F3): a charge
+                # that went on while flamesafe's status was not known and is
+                # still on is the same charge, never a new edge (a false
+                # double charge once the status is back).
+                self._prev[k] = v
                 if not v:
                     continue
                 # A release still open, or closed and not yet confirmed
@@ -697,9 +760,18 @@ class ChargeTracker:
                 pass
 
     def _run(self):
-        while not self._stop.is_set():
+        """flamesafe's status, every WATCH_S. Never writes anything."""
+        while not self._stop.wait(WATCH_S):
             try:
                 self._read_armed()
+            except Exception:                    # noqa: BLE001
+                pass
+
+    def _write_run(self):
+        """The file, the journal and the audit log: at once when told, and
+        every WATCH_S for the retry timer."""
+        while not self._stop.is_set():
+            try:
                 self.pump()
             except Exception:                    # noqa: BLE001
                 pass
@@ -709,9 +781,9 @@ class ChargeTracker:
     def close(self):
         self._stop.set()
         self._wake.set()
-        t = self._thread
-        if t is not None and t is not threading.current_thread():
-            t.join(2.0)
+        for t in (self._thread, self._writer):
+            if t is not None and t is not threading.current_thread():
+                t.join(2.0)
         try:
             self.pump()
             if self._unwritten is not None:

@@ -956,7 +956,9 @@ of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
   journal line and one audit line. If the file cannot be written (on
   Windows an antivirus or the indexer can hold it), the record is kept in
   memory, written again every second until it is, and the screens show
-  the fault meanwhile: do not restart LTC Player until it clears. Every screen's status carries it as one
+  the fault meanwhile: do not restart LTC Player until it clears. (If it
+  is restarted anyway, the newest record the write left behind is the one
+  read; if that cannot be read, both tanks are NOT KNOWN.) Every screen's status carries it as one
   sentence, for example "Fuel: charged 14:32. Air: charged 14:35. No shot
   fired." There is no pressure reading: it is never invented.
 

@@ -95849,6 +95849,83 @@ def test_fireball_charge_state():
               any("flamesafe reported sending it" in a[3]
                   for a, _k in C7.lines),
               f"flamesafe reported sending Fuel: CHARGED: {C7.lines[-1:]}")
+        # A newer record left in .tmp by a write that could not finish is
+        # the one read at start (review F2: the older EMPTY was read and the
+        # next show charged again); a .tmp that cannot be read: NOT KNOWN.
+        w2 = tempfile.mkdtemp(dir=work)
+        C8 = _fbc(w2)
+        C8.tr.confirm_empty("Andy")
+        C8.tr.pump()
+        real_rep = os.replace
+
+        def held(a, b):
+            raise PermissionError(13, "Access is denied")
+        os.replace = held
+        try:
+            C8.tr.see(_fbc_frame(fuel=True), "armed")
+            C8.tr.see(_fbc_frame(), "armed")
+            C8.tr.pump()
+        finally:
+            os.replace = real_rep
+        check(C8.tr.state("fuel") == C_ and
+              os.path.exists(os.path.join(w2, FC.FILE + ".tmp")),
+              "the write could not finish: the newest record is in .tmp")
+        C9 = _fbc(w2)
+        C9.tr.pump()
+        check(C9.tr.state("fuel") == C_ and
+              any(a[2] == "recovered" for a, _k in C9.lines),
+              f"a restart reads the newer .tmp: Fuel CHARGED: "
+              f"{C9.tr.tanks['fuel']['state']}")
+        with open(os.path.join(w2, FC.FILE + ".tmp"), "w") as fh:
+            fh.write("{half a reco")
+        C10 = _fbc(w2)
+        check(C10.tr.state("fuel") == U and C10.tr.state("air") == U and
+              ".tmp" in C10.tr.fault,
+              f"a .tmp that cannot be read: both NOT KNOWN: {C10.tr.fault}")
+        # Tanks are empty never empties a CHARGED tank (review C-8): only
+        # the NOT KNOWN one.
+        C11 = _fbc(None)
+        C11.tr.tanks["fuel"]["state"] = C_
+        C11.tr.tanks["air"]["state"] = U
+        ok, text = C11.tr.confirm_empty("Andy")
+        check(ok and C11.tr.state("fuel") == C_ and
+              C11.tr.state("air") == E and "Air confirmed EMPTY" in text,
+              f"Tanks are empty: the charged tank stays charged: {text}")
+        # A charge that went on while flamesafe's status was not known and
+        # stays on is the same charge once the status is back: never a
+        # double charge (review F3).
+        C12 = _fbc(None)
+        C12.tr.see(_fbc_frame(fuel=True), "unknown")
+        C12.tr.see(_fbc_frame(fuel=True), "unknown")
+        # The status comes back and reports the charge sent: CHARGED ...
+        C12.tr._flames = lambda: {
+            "connected": True, "stale": False, "age_ms": 10,
+            "groups": [{"name": "fireball", "armed": "armed",
+                        "fire_slots": [55, 56, 57, 58, 59],
+                        "sent_fire": [255, 0, 0, 0, 0]}]}
+        C12.tr._read_armed()
+        # ... and the same charge, still on, is no new edge.
+        C12.tr.see(_fbc_frame(fuel=True), "armed")
+        C12.tr.see(_fbc_frame(fuel=True), "armed")
+        C12.tr.pump()
+        check(C12.tr.state("fuel") == C_ and
+              not any(a[2] == "double_charge" for a, _k in C12.lines),
+              f"unknown then armed, one charge on: no double charge: "
+              f"{[a[2] for a, _k in C12.lines]}")
+        # flamesafe's report of a release is stamped with the status's own
+        # time: one status read twice never confirms a later release
+        # (review C-7).
+        C13 = _fbc(None)
+        t13 = C13.tr
+        old = {"connected": True, "stale": False, "age_ms": 400,
+               "groups": [{"name": "fireball", "armed": "armed",
+                           "fire_slots": [55, 56, 57, 58, 59],
+                           "sent_fire": [0, 0, 255, 0, 0]}]}
+        t13._flames = lambda: old
+        t13._read_armed()
+        check(abs(t13._sent_release_at - (C13.t[0] - 0.4)) < 1e-9,
+              f"stamped with the status's time: {t13._sent_release_at} "
+              f"{C13.t[0]}")
         # The status's age: under 0.5 s armed counts, over it does not.
         for age, want in ((499, "armed"), (501, "unknown"), (True,
                                                               "unknown")):
@@ -95895,7 +95972,8 @@ def test_fireball_charge_wiring():
     rm.fireball = types.SimpleNamespace(on_controls=None)
     httpd = types.SimpleNamespace(
         remote=rm, fire_ice=types.SimpleNamespace(flame_link=link),
-        server_close=lambda: closed.append(1))
+        server_close=lambda: closed.append(
+            rm.fireball_charge._stop.is_set()))
     try:
         W._attach_fireball_charge(httpd)
         tr = rm.fireball_charge
@@ -95953,8 +96031,16 @@ def test_fireball_charge_wiring():
               'tks[k].state === "unknown"' in page,
               "the Fireball page's Tanks are empty asks first, shows only "
               "while a tank is NOT KNOWN, and posts the route")
+        import re as _re
+        tag = _re.search(r'<button[^>]*id="fb-empty"[^>]*>', page)
+        check(tag and "data-safe" not in tag.group(0),
+              "Tanks are empty is not a data-safe button (it is no stop, "
+              "disarm or off: the key guard may hold it back)")
         httpd.server_close()
-        check(closed == [1] and tr._stop.is_set(), "closed with the engine")
+        check(closed == [False] and tr._stop.is_set(),
+              f"closed with the engine, AFTER the flame link (and the rest "
+              f"closed before it): it still watched while they closed: "
+              f"{closed}")
     finally:
         try:
             rm.fireball_charge.close()
@@ -95962,6 +96048,29 @@ def test_fireball_charge_wiring():
             pass
         import shutil
         shutil.rmtree(work, ignore_errors=True)
+    # A slow disk never makes flamesafe's status reading old (review C-6):
+    # the file is written on its own thread.
+    import threading as _th
+    gate = _th.Event()
+    trw = FC.ChargeTracker(None, flames_get=lambda: {
+        "connected": True, "stale": False, "age_ms": 10,
+        "groups": [{"name": "fireball", "armed": "armed"}]})
+    try:
+        trw.path = os.path.join(tempfile.mkdtemp(), FC.FILE)
+        trw._write = lambda doc: gate.wait(3)
+        trw.see(_fbc_frame(fuel=True), "armed")
+        time.sleep(0.3)                  # the writer is stuck in _write
+        trw.see(_fbc_frame(fuel=True, air=True), "armed")   # more to write
+        time.sleep(0.1)
+        a0 = trw._armed_at
+        time.sleep(0.3)
+        check(a0 is not None and trw._armed_at is not None and
+              trw._armed_at > a0 and trw.armed_now() == "armed",
+              "a write stuck for seconds: the status is still read every "
+              "50 ms")
+    finally:
+        gate.set()
+        trw.close()
     # The Fireball page tells what it holds, and every cut tells set().
     P = _fb_panel()
     told = []

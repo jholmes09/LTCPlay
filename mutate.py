@@ -19469,6 +19469,41 @@ def build():
   "        elif not u.may(me.get(\"role\"), \"settings\"):\n            why = (f\"{me.get('name')} may not: \"",
   "        elif False:\n            why = (f\"{me.get('name')} may not: \""),
 
+ ("fireball charge: a newer record left in .tmp is ignored at start",
+  "ltcplay/fireball_charge.py",
+  "            if not isinstance(main, int) or got > main:\n                src = tmp",
+  "            if False:\n                src = tmp"),
+
+ ("fireball charge: a .tmp that cannot be read is ignored",
+  "ltcplay/fireball_charge.py",
+  "            if isinstance(got, Exception):\n                self.tanks = {k: _new_tank(UNKNOWN",
+  "            if False:\n                self.tanks = {k: _new_tank(UNKNOWN"),
+
+ ("fireball charge: the status reader also writes the file",
+  "ltcplay/fireball_charge.py",
+  "            try:\n                self._read_armed()\n            except",
+  "            try:\n                self._read_armed()\n                self.pump()\n            except"),
+
+ ("fireball charge: the charge record closes before the flame link",
+  "ltcplay/web.py",
+  "        try:\n            _close_before()\n        finally:\n            tr.close()",
+  "        try:\n            tr.close()\n        finally:\n            _close_before()"),
+
+ ("fireball charge: a release report is stamped when it was read",
+  "ltcplay/fireball_charge.py",
+  "                            at -= age / 1000.0",
+  "                            pass"),
+
+ ("fireball charge: a charge on through a stale status is a new edge",
+  "ltcplay/fireball_charge.py",
+  "                self._prev[k] = v\n",
+  "                self._prev[k] = v if certain else (v and self._prev[k])\n"),
+
+ ("fireball charge: Tanks are empty empties a charged tank",
+  "ltcplay/fireball_charge.py",
+  "            unk = [k for k in TANK_WORD if self.tanks[k][\"state\"] == UNKNOWN]",
+  "            unk = [k for k in TANK_WORD if self.tanks[k][\"state\"] != EMPTY]"),
+
 ]
 
 

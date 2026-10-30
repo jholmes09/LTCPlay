@@ -2441,10 +2441,13 @@ def _attach_fireball_charge(httpd):
     _close_before = httpd.server_close
 
     def _close_charge():
+        # The flame link (and everything closed before it) first, the
+        # charge record last: it sees every frame that goes out (review
+        # C-5: closed first, it missed the last frames).
         try:
-            tr.close()
-        finally:
             _close_before()
+        finally:
+            tr.close()
     httpd.server_close = _close_charge
 
 
