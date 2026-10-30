@@ -665,7 +665,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <dt>Disarm</dt><dd>One tap. Always works.</dd>
     <dt>Disarm flames</dt><dd>Every flame group. Lasers have their own.</dd>
     <dt>Red Stop at the top</dt><dd>Stops cleaning, live flame or Programming flames.</dd>
-    <dt>Wind</dt><dd>Advisory only. The on-site wind check decides.</dd>
+    <dt>Wind</dt><dd>Tap it for each reading and when it was last updated.</dd>
   </dl>
 </div>
 
@@ -807,7 +807,11 @@ function say(short, full, level){
 function short8(text, fallback){
   const t = String(text || "").trim();
   if(!t) return fallback || "";
-  const first = t.split(/(?<=[.!?])\s/)[0];
+  // The first sentence: up to the first . ! or ? with a space after it.
+  // (No lookbehind: Safari before iPadOS 16.4 cannot read one, and one
+  // left 2.0's whole script dead on an older iPad.)
+  const end = /[.!?]\s/.exec(t);
+  const first = end ? t.slice(0, end.index + 1) : t;
   return first.split(/\s+/).length <= 8 ? first : (fallback || "Done. Tap Details.");
 }
 $("msg-more").addEventListener("click", () => sheet("Details", `<div class="full">${esc(MSG_FULL)}</div>`, [{label:"Close", cls:"blue"}]));
@@ -2130,6 +2134,7 @@ const SYS_SAY = [
   [/^flamesafe$/, /fault/, "Fault. Disarm, then tell Jeff."],
   [/^show audio$/, /not attached/, "Interface missing. Check its USB."],
   [/^show audio$/, /lost|fault/, "Lost. Check the audio interface."],
+  [/^announcements$/, /delayed recording/, "Delayed button cannot play. Tell Jeff."],
   [/^announcements$/, /show audio not open/, "Cannot play: show audio not open."],
   [/^announcements$/, /output/, "No output. Pick one in Settings."],
   [/^announcements$/, /./, "Cannot play. Tell Jeff."],
@@ -2270,8 +2275,8 @@ function wxLine(w, ago){
   if(w.state === "error") return {cls:"none", text:"Wind: weather is off", v};
   const m = (w.lines || []).find(l => typeof l.speed_mph === "number");
   let t = m ? "Wind " + Math.round(m.speed_mph) + " mph" + (m.level === "stale" ? ", stale" : "") : "Wind: no reading";
-  if((w.banner || []).length) return {cls:"alert", text:t + ". NWS alert. Advisory only.", v};
-  return {cls:v.cls === "ok" ? "ok" : "stale", text:t + ". Advisory only.", v};
+  if((w.banner || []).length) return {cls:"alert", text:t + ". NWS alert.", v};
+  return {cls:v.cls === "ok" ? "ok" : "stale", text:t, v};
 }
 function renderWxLine(){
   const L = wxLine(WX, WX_AT === null ? null : (monoNow() - WX_AT) / 1000);
@@ -2288,7 +2293,7 @@ wxPoll();
 setInterval(wxPoll, 15000);
 $("wx").addEventListener("click", () => {
   const v = wxBlock(WX, WX_AT === null ? null : (monoNow() - WX_AT) / 1000);
-  sheet("Wind", `<div class="dim">${esc((WX && WX.where) || "")}</div><ul>${v.lines.map(l => `<li>${esc(l.text)}</li>`).join("")}</ul><div><b>${esc(v.foot)}</b></div>`, [{label:"Close", cls:"blue"}]);
+  sheet("Wind", `<div class="dim">${esc((WX && WX.where) || "")}</div><ul>${v.lines.map(l => `<li>${esc(l.text)}</li>`).join("")}</ul>`, [{label:"Close", cls:"blue"}]);
 });
 
 // ---- "?" : one plain sentence per control ----

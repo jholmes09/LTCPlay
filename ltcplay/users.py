@@ -82,7 +82,11 @@ ROLES = ("admin", "operator", "viewer")
 SIGNED_OUT = "signed_out"
 COLUMNS = ROLES + (SIGNED_OUT,)
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'_-]{0,39}$")
-RESERVED = ("unsigned", "system", "signed out", "nobody", "deck")
+# Never an account's name. With the engine's own names (announce.py's
+# ENGINE_NAMES: what the scheduler and the alert hold act as), so no real
+# person's press can read as the engine's, and refused (Jeff, 2026-10-30).
+RESERVED = ("unsigned", "system", "signed out", "nobody", "deck", "engine",
+            "scheduler", "ltc player", "ltcplay")
 # Who a press is from when nobody is signed in (the journal, the audit).
 UNSIGNED = "unsigned"
 PW_MIN, PW_MAX = 6, 128
@@ -412,7 +416,8 @@ def check_name(name):
     if not NAME_RE.match(name) or name.lower() in RESERVED:
         raise ValueError("A name is 1 to 40 letters, digits, spaces, dots, "
                          "dashes or apostrophes, and not unsigned, system, "
-                         "signed out, deck or nobody.")
+                         "signed out, deck, nobody, engine, scheduler, LTC "
+                         "Player or ltcplay.")
     return name
 
 

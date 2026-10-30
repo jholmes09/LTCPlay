@@ -135,30 +135,36 @@ someone acknowledges it. It stays until you press Acknowledge on the
 banner or any key on the Stream Deck. Acknowledge only clears the banner:
 nothing on the rig changes.
 
+**Nothing plays on the public PA automatically.**
+Jeff, 2026-10-30: nothing plays on the public PA automatically.
+"I want to delete the function where the delay audio plays
+automatically in any scenario. We can still notify Andy of issues with
+the in-booth speaker, but nothing on the public PA." The only things LTC
+Player plays by itself are the booth notes, on the booth speaker. The
+Delayed, Cancellation and Cannot continue announcements play on the PA
+only when someone presses them.
+
 **An alert still open when a show is due** (Jeff, 2026-10-26). Between
 shows an alert does nothing automatic. But if a show's time comes while
 any alert is open, the schedule goes on Hold at once instead of starting
-the show: the booth note sounds and the state card on the rack screen
-says "Held: alert open". For an audio, video, flames, flame link,
-timecode, start or rig check alert, a 60 second countdown shows there; if nobody
-acknowledges the alert by then, the Delayed announcement plays once on
-the PA. A Stream Deck or gate alert holds quietly, with no announcement.
-Acknowledging cancels the countdown and the announcement (with two such
-alerts open, both have to be acknowledged), even while the recording is
-still loading; once it has started it plays to its end. Acknowledging
-does NOT start the show: it waits until you press Resume (then Start now
-for the delayed show, as after any Hold). Pressing Resume on a held
+the show: the booth speaker plays "Show is held for an open alert." once,
+then the alert's own note, and the state card on the rack screen says
+"Held: alert open. Press Resume." Nothing plays on the PA (Jeff,
+2026-10-30): if the audience should hear Delayed, press it. Every kind
+of alert holds the same way, except the display only ones (aim slots,
+MadMapper not following, hazers, flame frame timing), which never hold.
+Acknowledging does NOT start the show: it waits until you press Resume
+(then Start now for the delayed show, as after any Hold). Pressing Resume on a held
 schedule while alerts are open is your choice: from this Hold or one of
 your own, before the show's time or after it, the show it lets start is
 not held again for those alerts (or for some of them, if others were
 acknowledged meanwhile); a NEW alert still holds it. It speaks only for
 that one show: the show after it is held again if the alert is still
-open, and resuming a paused, running show says nothing about the next. The automatic announcement
-changes nothing else on the rig: no laser is disarmed and nothing about
-the flames changes. If the recording or the announcement output is
-missing, it stays held and the state card says so. A show that
-is already running is never held, stopped, disarmed or announced over by
-this. Stop on the Stream Deck works the same while held.
+open, and resuming a paused, running show says nothing about the next.
+The alert hold changes nothing else on the rig: no laser is disarmed and
+nothing about the flames changes. A show that is already running is
+never held, stopped or disarmed by this. Stop on the Stream Deck works
+the same while held.
 While an alert is open the Stream Deck's Start key reads ACK / ALERT in
 blue; it goes back to START NOW once the alert is cleared. An audio alert,
 or an alert the booth speaker could not play, also pulses the floor pixels
@@ -432,14 +438,16 @@ plain words. Disarm all flame groups does not disarm, blank or switch
 off the lasers (it still ends a laser calibration test, as it always
 has), and the Stream Deck has no laser key.
 
-**WIND on the show screen (Fire & Ice).** Under the lasers. Advisory only:
-it never arms, holds or stops anything; the on-site wind check decides.
+**WIND on the show screen (Fire & Ice).** Under the lasers. It never
+arms, holds or stops anything. Each line says when it was last updated, as
+a date and time in the show's time zone ("Last updated Oct 30, 2:14 PM";
+the forecast also "NWS issued Oct 30, 1:50 PM"), or "No reading yet".
 The measured line shows the highest usable reading from UTALP (the I-15
 Point of the Mountain station) and the backup airports (Provo, Salt Lake
 City). A backup reading is amber and says "backup station", the airport,
 how far away it is and why UTALP was not used ("UTALP (Iowa mesonet)
-stopped reporting at 3:40 AM, last reading 3 h 12 min ago") or what UTALP
-reads. If the highest reading is STALE it is still shown, amber and
+stopped reporting, last updated Oct 30, 3:40 AM") or what UTALP reads.
+If the highest reading is STALE it is still shown, amber and
 marked STALE, with the current ones beside it. NO CURRENT DATA, use
 on-site wind check, with no number, means no
 source has a usable reading (UTALP over 45 min old, an airport over 2 h);
@@ -1055,7 +1063,7 @@ Continue anyway then leaves video, lasers and flames off.
 | Check | Proven by | Required |
 |---|---|---|
 | Audio | the show audio interface open and taking audio (a new buffer within 1 s), the show's audio loaded | yes |
-| Announcements | the announcement output attached and the Delayed recording playable | yes |
+| Announcements | the announcement output attached and the Delayed recording playable, for the announcement buttons. Advisory (Jeff, 2026-10-30: nothing plays on the PA by itself): a problem shows as "Announcements WARNING: ..." in the checklist and never fails the check, holds a show or needs Continue anyway | no, a warning only |
 | Booth speaker | its output attached (only when one is set up) | yes, when set up |
 | Timecode | Art-Net timecode (30 frames a second) going out with no receiver refusing it; BEYOND's black zone stream flowing | yes |
 | Video | MadMapper running; the screens taken to black first; the show bank selected; a test timecode from 00:00:00:00 sent to MadMapper ALONE; its heartbeat (/float-1) answering AND moving at about real time; MadMapper then parked on frame 0 | yes |
@@ -1079,7 +1087,8 @@ Hold during the check end it at once; nothing starts.
 **When it fails.** A **rig check** alert names each failed check in plain
 words ("Video FAILED: MadMapper did not answer the timecode"), the booth
 note sounds, and at the show's time the alert hold applies exactly as for
-any alert: Held at once, 60 s, then one Delayed on the PA. Acknowledging
+any alert: Held at once, the booth speaker says so, nothing on the PA.
+Acknowledging
 it before the time does not let the show start by itself; it is raised
 again at the time. Resume alone never lets the scheduler start a show
 whose check failed (unlike other alerts): use Start now, which checks
@@ -1101,10 +1110,11 @@ choices:
   with no laser output; a failed Flame link leaves every flame cue at
   zero. (A Network failure that names MadMapper, BEYOND or the flame node
   counts the same.) Audio is never faked: a show does not start without
-  its sound, and Start now then says why. The Delayed countdown stops (and
-  a Delayed already playing is stopped), the alert stays open so the booth
-  sees what is degraded, and the journal records who, when and every
-  failed check. It is used once per failed check, and not for a check
+  its sound, and Start now then says why. Nothing plays on the PA by
+  itself, so there is no countdown to stop; an announcement someone pressed
+  that is still playing fades out as the show starts. The alert stays
+  open so the booth sees what is degraded, and the journal records who,
+  when and every failed check. It is used once per failed check, and not for a check
   more than 10 minutes old. When the show ends, everything it left off
   is back for the next one, which is checked again in full. Continue anyway
   never gets past an Abort (press Reset), a Stop under way, the hold to
@@ -1468,7 +1478,7 @@ the same in full: flamesafe's list, LTC Player's list, the flamesafe.json LTC
 Player read when it started, and what to do (put the aim list in the
 flamesafe.json flamesafe uses, check LTC Player reads that same file, then
 quit LTC Player and start it again). It is display only: it never holds
-a show at showtime, never plays the Delayed announcement, never sounds
+a show at showtime, never sounds
 the booth speaker and changes nothing on the Stream Deck (no ACK key, page
 2 stays open). Stop, Hold, Abort and Disarm all work as usual while it
 is up, and it clears itself once the lists agree. Both
