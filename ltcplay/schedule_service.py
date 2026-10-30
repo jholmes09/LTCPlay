@@ -1099,6 +1099,7 @@ class Service:
         out, kept = self._rebuild_tonight(
             m, now, True, dropped,
             sch.FOLLOWED_PAST if deferred else sch.SAVED_PAST)
+        self._save_said_on = m.date
         self._save_said = ([self.KEPT_TIMES] if kept else
                            [f"This save undid tonight's changes: "
                             f"{' '.join(dropped)}"] if dropped else [])
@@ -1134,7 +1135,11 @@ class Service:
         show whose time had gone by, during the save's own answer)."""
         with self._locked():
             text = self._tonight_words(self.clock())
-            return " ".join([text] + list(self._save_said))
+            m = self.machine
+            # What a save did is said for the night it was made on only.
+            said = (list(self._save_said) if m is not None and
+                    getattr(self, "_save_said_on", None) == m.date else [])
+            return " ".join([text] + said)
 
     def _tonight_words(self, now):
         m = self.machine

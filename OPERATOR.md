@@ -849,47 +849,68 @@ until the engine was restarted. Now:
 
 - **A save follows the new file at once.** Saving on the Programming screen
   ("Schedule: the show times") looks at tonight straight away, the same way
-  a restart does. A save never starts a show and never sends anything to
-  the rig.
+  a restart does. A save never starts a show, and never sends anything to
+  the rig except in two cases said below: a night that had no shows at all
+  starts as a restart would, and a save that leaves no show to come closes
+  the night.
 - **Tonight's times unchanged: tonight's list is kept.** If the new file
   gives tonight the same show times (you changed another night, an
-  exception, the season or anything else), tonight's list stays exactly as
+  exception, the season or anything else; a time that already ran or was
+  skipped may be gone from the file), tonight's list stays exactly as
   it is, with every change made tonight: Delay next, Delay the rest, a
   moved show, a show added, taken off or skipped. The answer says so. A new
   show length, guard or late grace applies to the kept list, and every
   start is still checked against it.
 - **Tonight's times changed: tonight is rebuilt.** Shows that already ran
-  keep their number and status, an extra show (Start now) keeps its
-  number, and a show still to come at a time the old list also had keeps
-  its number. A new time gets the lowest number no other show tonight has.
-  A show taken off tonight's list or skipped stays skipped. A Delay next,
-  Delay the rest or move of a show still to come is kept as long as that
-  show's own time is still in the new schedule, so a delayed show is never
-  put back at a time that has already gone by. A move of a show whose time
-  is no longer in the schedule, and shows added tonight, are dropped, and
-  the answer to the save says each one ("This save undid tonight's
-  changes: ...").
+  keep their number and status, and an extra show (Start now) keeps its
+  number. The shows still to come are numbered in time order, each taking
+  the lowest number no show that already ran has, so they always run in
+  number order; the journal says when a show's number changed. A show
+  taken off tonight's list or skipped stays skipped. A Delay next, Delay
+  the rest or move of a show still to come is kept as long as that show's
+  own time is still in the new schedule and it still leaves room (show
+  length plus guard) before and after it, the same check a Delay press
+  makes. If a new time is too close to a delayed show, the new schedule
+  wins: the Delay is dropped and the show goes back to its own time. A
+  move of a show whose time is no longer in the schedule, and shows added
+  tonight, are dropped too. The answer to the save says each one ("This
+  save undid tonight's changes: ..."), and its count of shows still to
+  come never includes two shows that cannot both run.
 - **The answer says what tonight now holds.** For example "tonight now has
   4 shows still to come, next show 4 at 22:35", or "Saved, but there are
   no more shows tonight:" and the reason (every show has gone by, the
   schedule's own reason such as a dark night, or Close for the night). The
-  journal says the same, one line for each change.
+  journal says the same, one line for each change. If the save leaves no
+  show still to come while the night is waiting for one, the answer says
+  the night closes now: flame cues to zero, MadMapper stopped, pixels
+  faded, blackout.
 - **A show whose time has already gone by is never started.** A time the
   save puts at or before now is MISSED ("its time had gone by when the
   schedule was saved"), even inside the late grace. On a Hold with no show
   already waiting it waits as DELAYED instead, for Start now. A show that
   was already waiting for that same time before the save is left as it
-  was. The same holds after a restart with a changed file.
+  was. The same holds after a restart with a changed file ("when the
+  changed schedule file was read at a restart") and for a save followed
+  after a show or closing ("when the saved schedule was followed").
+  Before the first show, such a miss does not end the preshow look.
 - **A closed night opens again** when the saved file has a show still to
   come tonight, unless it was closed with Close for the night. The
   scheduler goes back to STANDBY with the rig dark: unlike a fresh start
   at that time, the intermission does not come back by itself. Nothing is
   started and no look is sent; the next show starts at its time only while
   Run is pressed, by the usual rules.
+- **A night that had no shows at all** (the engine started on a dark
+  night: another weekday's schedule, before the season, or a night an
+  exception made dark) never closed, so a save that gives it shows starts
+  it exactly as a restart would: IDLE with the preshow look, or STANDBY
+  close to the first show. Those looks go out only while Run is pressed,
+  as after a restart.
 - **A night closed with Close for the night stays closed.** The engine
   remembers the press (in tonight's file, so a restart remembers it too),
   even when no show was left to skip. A save never opens it again: every
-  time on it is SKIPPED and the answer says so. To run a show tonight after
+  time on it is SKIPPED and the answer says so. Saving again does not pile
+  up skipped rows: a time a save added is gone again once the file no
+  longer has it. To run a show tonight after
   that, press Start now (an extra show each time; the night closes again
   after it). The saved schedule is followed from the next night on.
 - **A Hold stays a Hold, and an Abort stays latched.** A save on Hold keeps
@@ -911,15 +932,17 @@ until the engine was restarted. Now:
 
 **After an engine restart, press Run.** A restart always leaves Run off,
 and LTC Player never presses it for you (no show starts unattended). While
-Run is off and a show is still to come, the rack screen says so in red:
-"Run is off: the 22:50 show (show 5) will NOT start. Press Run." On a Hold
+Run is off and a show is still to come, the rack screen says so: "Run is
+off: the 22:50 show (show 5) will NOT start. Press Run." It is amber until
+that show is within the pre-roll window (the rig check's, 10 seconds
+unless set otherwise), then red, a fault. On a Hold
 it says "Press Run, then Resume.", and after an Abort nobody has Reset it
 says Reset first ("Press Reset, then Run."). During a Programming Run
 (Run reads as pressed, but the schedule starts nothing over a rehearsal)
-it says "A Programming Run is in
-force: the 22:50 show (show 5) will NOT start. Press Stop, choose Show,
-then Run." It is a fault banner on 1.0's show screen and Schedule screen,
-an alert on 2.0's show screen, and part of the answer to a schedule save.
+it says "A Programming Run is in force: the 22:50 show (show 5) will NOT
+start. Press Stop, choose Show, then Run." It is a banner on 1.0's show
+screen and Schedule screen, an alert on 2.0's show screen, and part of the
+answer to a schedule save.
 It goes as soon as Run is pressed.
 
 ## Stop, Hold and Reset on the rack screen

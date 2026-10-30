@@ -18752,8 +18752,8 @@ def build():
 
  ("saved schedule: the rebuilt list is not saved, so a restart rebuilds again",
   "ltcplay/schedule_service.py",
-  "        self._record(out, now)\n        self._save_tonight()\n        self._journal_line(\"system\", self._tonight_words(now),",
-  "        self._record(out, now)\n        self._journal_line(\"system\", self._tonight_words(now),"),
+  "            self._apply(sch.Event(sch.BOOT_DONE, \"system\"), now)\n        self._save_tonight()\n        self._journal_line(\"system\", self._tonight_words(now),",
+  "            self._apply(sch.Event(sch.BOOT_DONE, \"system\"), now)\n        self._journal_line(\"system\", self._tonight_words(now),"),
 
  ("saved schedule: an extra show is renumbered by a rebuild",
   "ltcplay/schedule.py",
@@ -18772,7 +18772,7 @@ def build():
 
  ("saved schedule: a save during a show is never followed once it ends",
   "ltcplay/schedule_service.py",
-  "            self._follow_rule(now)\n            ev = self._tick_event()",
+  "            self._follow_rule(now, deferred=True)\n            ev = self._tick_event()",
   "            ev = self._tick_event()"),
 
  ("saved schedule: the wait for a show is said on every tick",
@@ -18787,13 +18787,13 @@ def build():
 
  ("saved schedule: a show made due during a Hold is missed, not delayed",
   "ltcplay/schedule.py",
-  "    _settle_saved_past(tx, m, held=(was == HOLD))",
-  "    _settle_saved_past(tx, m, held=False)"),
+  "    _settle_saved_past(tx, m, held=(was == HOLD), why=past)",
+  "    _settle_saved_past(tx, m, held=False, why=past)"),
 
  ("saved schedule: a night closed with Close for the night opens again",
   "ltcplay/schedule.py",
-  "        if closed:\n            sl = replace(sl, status=SKIPPED, reason=CLOSED_BY_OPERATOR)",
-  "        if False:\n            sl = replace(sl, status=SKIPPED, reason=CLOSED_BY_OPERATOR)"),
+  "        if closed:\n            sl = replace(sl, status=SKIPPED, reason=CLOSED_SAVED)",
+  "        if False:\n            sl = replace(sl, status=SKIPPED, reason=CLOSED_SAVED)"),
 
  ("saved schedule: no more shows tonight gives no reason from the schedule",
   "ltcplay/schedule_service.py",
@@ -18832,7 +18832,7 @@ def build():
 
  ("Run off: rack screen 1.0's warning is not a fault",
   "ltcplay/web/remote.html",
-  "  LOCAL_FAULT[\"run-warn\"] = !!sch.run_warning;\n",
+  "  LOCAL_FAULT[\"run-warn\"] = !!sch.run_warning && !!sch.run_warning_urgent;\n",
   "  LOCAL_FAULT[\"run-warn\"] = false;\n"),
 
  ("Run off: rack screen 1.0's Schedule screen does not show the warning",
@@ -18842,7 +18842,7 @@ def build():
 
  ("Run off: rack screen 2.0 does not show the warning",
   "ltcplay/web/remote2.html",
-  "  if(sch.run_warning) items.push({key:\"run\", tone:\"bad\", what:sch.run_warning.split(\":\")[0] + \".\", do:(sch.run_warning.split(\"will NOT start. \")[1] || \"Press Run.\"), full:sch.run_warning});\n",
+  "  if(sch.run_warning) items.push({key:\"run\", tone:sch.run_warning_urgent ? \"bad\" : \"warn\", what:sch.run_warning.split(\":\")[0] + \".\", do:(sch.run_warning.split(\"will NOT start. \")[1] || \"Press Run.\"), full:sch.run_warning});\n",
   ""),
 
  # Review of PR #180 (reviewer B): an operator's close, a show whose time
@@ -18874,8 +18874,8 @@ def build():
 
  ("review180: a rebuild forgets an operator's close",
   "ltcplay/schedule.py",
-  "                   closed_by_operator=saved.closed_by_operator)",
-  "                   closed_by_operator=False)"),
+  "                   closed_by_operator=saved.closed_by_operator,",
+  "                   closed_by_operator=False,"),
 
  ("review180: a save leaves a show whose time had gone by to start late",
   "ltcplay/schedule.py",
@@ -18894,7 +18894,7 @@ def build():
 
  ("review180: a restart after a save starts a show whose time had gone by",
   "ltcplay/schedule.py",
-  "        _settle_saved_past(tx, m, held=(m.resumed_from == HOLD))\n",
+  "        _settle_saved_past(tx, m, held=(m.resumed_from == HOLD),\n                           why=RESTART_PAST)\n",
   "        pass\n"),
 
  ("review180: on Hold a save misses the show already waiting",
@@ -18956,8 +18956,8 @@ def build():
  # mutations found unpinned.
  ("review180: a save sweeps tonight in the live state and starts a due show",
   "ltcplay/schedule.py",
-  "    _settle_saved_past(tx, m, held=(was == HOLD))\n    if was == OFF",
-  "    _settle_saved_past(tx, m, held=(was == HOLD))\n    _sweep(tx)\n    if was == OFF"),
+  "    _settle_saved_past(tx, m, held=(was == HOLD), why=past)\n    if was == OFF and m.never_opened",
+  "    _settle_saved_past(tx, m, held=(was == HOLD), why=past)\n    _sweep(tx)\n    if was == OFF and m.never_opened"),
 
  ("review180: a save during the closing is followed at once",
   "ltcplay/schedule.py",
@@ -18993,6 +18993,76 @@ def build():
   "ltcplay/schedule_service.py",
   "        elif sch._utc(plan.starts[-1]) > sch._utc(now):",
   "        elif False:"),
+
+ ("review180 r4: a save on a night that never opened reopens it dark",
+  "ltcplay/schedule.py",
+  "    if was == OFF and m.never_opened and not closed_by_operator(tx.m):",
+  "    if False:"),
+
+ ("review180 r4: a night that never opened is left in BOOT after a save",
+  "ltcplay/schedule_service.py",
+  "        if out.machine.state == sch.BOOT:\n            # A night that never opened",
+  "        if False:\n            # A night that never opened"),
+
+ ("review180 r4: a dark night at start is not marked as never opened",
+  "ltcplay/schedule.py",
+  "        tx.m = replace(tx.m, never_opened=True)",
+  "        pass"),
+
+ ("review180 r4: a kept Delay is not spaced against the new times",
+  "ltcplay/schedule.py",
+  "            if _spacing_problem(m, m.slots, {n}, _LONG_AGO) is None:",
+  "            if True:"),
+
+ ("review180 r4: shows still to come are numbered against time order",
+  "ltcplay/schedule.py",
+  "    for sl in sorted(left, key=lambda x: x.start):",
+  "    for sl in sorted(left, key=lambda x: -x.start.timestamp()):"),
+
+ ("review180 r4: a time a save put in the past moves IDLE to STANDBY",
+  "ltcplay/schedule.py",
+  "            any(s.status == MISSED and s.reason not in PAST_REASONS",
+  "            any(s.status == MISSED and s.reason not in ()"),
+
+ ("review180 r4: a restart says a time went by when the schedule was saved",
+  "ltcplay/schedule.py",
+  "                           why=RESTART_PAST)",
+  "                           why=SAVED_PAST)"),
+
+ ("review180 r4: a save followed after a show says it went by when saved",
+  "ltcplay/schedule_service.py",
+  "            sch.FOLLOWED_PAST if deferred else sch.SAVED_PAST)",
+  "            sch.SAVED_PAST)"),
+
+ ("review180 r4: a save leaving nothing to come does not say the night closes now",
+  "ltcplay/schedule_service.py",
+  "        elif m.state in (sch.IDLE, sch.STANDBY) and m.delayed() is None:",
+  "        elif False:"),
+
+ ("review180 r4: rows a save added to a closed night pile up",
+  "ltcplay/schedule.py",
+  "        if sl.reason == CLOSED_SAVED and planned not in fresh_times:",
+  "        if False:"),
+
+ ("review180 r4: the Run warning is a fault all day",
+  "ltcplay/schedule_service.py",
+  "        return (nxt.start - sch._utc(now)).total_seconds() <= window",
+  "        return True"),
+
+ ("review180 r4: two schedule saves at once are not one at a time",
+  "ltcplay/remote.py",
+  "        with _SCHEDULE_SAVE_LOCK:\n            return self._save_schedule_file(doc)",
+  "        return self._save_schedule_file(doc)"),
+
+ ("review180 r4: threads writing one JSON file share a temp file",
+  "ltcplay/remote.py",
+  "    tmp = (f\"{path}.{os.getpid()}.{threading.get_ident()}.\"\n           f\"{next(_TMP_SEQ)}.tmp\")",
+  "    tmp = f\"{path}.{os.getpid()}.tmp\""),
+
+ ("review180 r4: the kept answer says tonight's times did not change",
+  "ltcplay/schedule_service.py",
+  "        \"No show still to come tonight changed its time, so tonight's list \"",
+  "        \"Tonight's show times did not change, so tonight's list \""),
 
  ("review180: the answer to a save on Hold does not say the Hold stands",
   "ltcplay/schedule_service.py",
