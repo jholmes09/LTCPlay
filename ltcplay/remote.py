@@ -212,6 +212,14 @@ CLEANING_POST_ROUTES = ("cleaning-beat", "cleaning-stop")
 # and from the show network need screen_arming; a disarm and Hazers off
 # never.
 HAZER_POST_ROUTES = ("hazer", "hazers-off", "hazer-level")
+# Play-from cues (play_from.py, the cue list per show file): read by anyone
+# signed in; a save is the role matrix's Settings row (admin by default,
+# users.py), a signed-in person, from the show network with screen_arming
+# too. They send nothing and start nothing.
+PLAY_FROM_GET_ROUTES = ("play-from-cues",)
+# One play-from Store per engine, made under this lock (play_from_store).
+_PFC_STORE_LOCK = threading.Lock()
+PLAY_FROM_POST_ROUTES = ("play-from-cues-save",)
 # The fireball's fuel pump (fuelpump.py, Jeff 2026-10-30): read by anyone in
 # the status; {"on": true} is an arm press (users.classify) and from the
 # show network needs screen_arming; anything else turns it off, never
@@ -230,15 +238,15 @@ FIREBALL_CHARGE_POST_ROUTES = ("fireball-charge-empty",)
 GET_ROUTES = ("whoami", "status", "network", "deck-input",
               "announce-outputs") + \
     MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES + \
-    CLEANING_GET_ROUTES + FIREBALL_TIMELINE_GET_ROUTES
+    CLEANING_GET_ROUTES + PLAY_FROM_GET_ROUTES + FIREBALL_TIMELINE_GET_ROUTES
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     "network", "screen-arming", "alert", "live-flame",
     "announce-output", "announce-test-tone") + \
     MORNING_POST_ROUTES + FUEL_POST_ROUTES + FIREBALL_POST_ROUTES + \
-    CLEANING_POST_ROUTES + HAZER_POST_ROUTES + PUMP_POST_ROUTES + \
-    FIREBALL_TIMELINE_POST_ROUTES + \
+    CLEANING_POST_ROUTES + HAZER_POST_ROUTES + PLAY_FROM_POST_ROUTES + \
+    PUMP_POST_ROUTES + FIREBALL_TIMELINE_POST_ROUTES + \
     FIREBALL_CHARGE_POST_ROUTES
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
 # on the show machine itself (and the role matrix's Settings, users.py), with
@@ -1938,6 +1946,8 @@ class Remote:
         if name in CLEANING_GET_ROUTES:
             from . import cleaning as cleaning_mod
             return cleaning_mod.route_get(self.cleaning, ctx, self.wall)
+        if name in PLAY_FROM_GET_ROUTES:
+            return self.play_from_get(query, ctx)
         if name in FIREBALL_TIMELINE_GET_ROUTES:
             return self.fireball_timeline_get(query)
         return 404, {"error": "no such thing here"}
@@ -2011,6 +2021,8 @@ class Remote:
             return (*self.announce_post(name, body, ctx),) + ({},)
         if name in HAZER_POST_ROUTES:
             return (*self.hazer_post(name, body, ctx),) + ({},)
+        if name in PLAY_FROM_POST_ROUTES:
+            return (*self.play_from_save(body, ctx),) + ({},)
         if name in PUMP_POST_ROUTES:
             return (*self.pump_post(body, ctx),) + ({},)
         if name in FIREBALL_TIMELINE_POST_ROUTES:
@@ -2366,6 +2378,12 @@ class Remote:
                 self.timed_purge_cut(f"{_who} signed out on the {ctx.device}",
                                      ctx.user, ctx.device,
                                      token=getattr(ctx, "token", "") or "")
+                # The Fireball page's channels end here too, at once, not on
+                # the page's next beat or the 0.25 s backstop (round-4
+                # review, s28/s48): this screen's run, and on the show
+                # machine (every session made here ended) any run.
+                self.fireball_signout_cut(
+                    f"{_who} signed out on the {ctx.device}", ctx)
             if ended:
                 # Only this device's own hold (a hold belongs to the device
                 # it came from), and only when a sign-in really ended: a
@@ -3498,20 +3516,10 @@ class Remote:
         ph = self.playhead
         if not ph.applies():
             ph = None
-        fb = self.fireball
-        if ph is not None and name in ("play-from", "loop") and \
-                fb is not None and fb.active():
-            # A Programming Play from or Loop never starts while the
-            # Fireball page has a channel on (a landing under a held
-            # Fireball channel). The page itself works during Programming
-            # playback once it plays (fireball.py, Jeff 2026-10-30): start
-            # playback first, then press.
-            why = ("A Fireball channel is on. Turn the Fireball page off "
-                   "first. Nothing was played.")
-            self._journal(who, screen, name, "refused",
-                          f"{label}'s {name} on the {screen} was refused. "
-                          f"{why}")
-            return 409, {"error": why}
+        # The Fireball page works at any time (Jeff, 2026-10-30): a
+        # Programming Play from or Loop is never refused because a Fireball
+        # channel is on (round-4 review); the page's frame is not the show's
+        # and a landing drops only the show's values (flamelink.py).
 
         def here():
             if ph is not None:
@@ -4600,6 +4608,183 @@ class Remote:
             return 409, {"error": text}
         return 200, {"ok": True, "text": text}
 
+    # -- play-from cues (play_from.py): the cue list per show file ----------
+    def play_from_store(self):
+        """The play-from cue list's file in the settings folder: ONE Store
+        per engine, made on first use under a lock (two first requests at
+        once would otherwise each make their own, with their own file lock,
+        and overwrite each other). A new audit log is handed to it, never a
+        new store. Sends nothing."""
+        with _PFC_STORE_LOCK:
+            st = getattr(self, "_pfc_store", None)
+            if st is None:
+                from . import play_from as pf_mod
+
+                def _journal(who, screen, outcome, text, fault=False):
+                    self._journal(who or "system", screen or "engine",
+                                  "play-from cues", outcome, text,
+                                  fault=fault)
+                st = self._pfc_store = pf_mod.Store(
+                    self.folder, journal=_journal,
+                    audit=getattr(self, "audit", None), wall=self.wall)
+            st.audit = getattr(self, "audit", None)
+            return st
+
+    def play_from_show_info(self, show):
+        """(the show's own cue, its AUDIO's length in seconds, "") for a
+        show file in the show folder, opened as the Check button opens one
+        (nothing sent, nothing played), or (None, None, why). The audio's
+        length, not the show's: the show audio clock cannot start past the
+        end of its audio, however long the lights or the video run."""
+        ctl = self.control
+        folder = getattr(ctl, "folder", None)
+        name = os.path.basename(str(show or ""))
+        if not folder or not name or name != show:
+            return None, None, f"{show!r} is not a show file"
+        # Spelled exactly as the folder lists it: on a disk that does not
+        # tell case apart (Windows, macOS) "show.json" would open
+        # "Show.json" too and make a second list for the same show.
+        if name not in self.play_from_show_files():
+            return None, None, f"{name} is not in the show folder"
+        path = os.path.join(folder, name)
+        from . import clock as clock_mod
+        from .session import Session
+        kw = dict(getattr(ctl, "defaults", None) or {})
+        kw.update(no_output=True, no_log=True, sd=getattr(ctl, "_sd", None))
+        s = None
+        cue = got = None
+        try:
+            s = Session(path, **kw)
+            s.open()
+            cue = clock_mod.show_cue_of(s.clock, s.tl)
+            if cue is not None:
+                got = s.clock.show_lengths(cue)
+        except Exception as e:                       # noqa: BLE001
+            return None, None, (f"{name} could not be opened "
+                                f"({type(e).__name__}: {e})")
+        finally:
+            if s is not None:
+                try:
+                    s.stop()
+                except Exception:                    # noqa: BLE001
+                    pass
+        if cue is None or not got or not got.get("audio_s"):
+            return None, None, (f"{name} does not play from the show "
+                                f"audio, so it has no show cue to play "
+                                f"from")
+        return cue, float(got["audio_s"]), ""
+
+    def play_from_show_files(self):
+        """The file names in the show folder, exactly as it lists them
+        (a set; empty when there is no folder)."""
+        folder = getattr(self.control, "folder", None)
+        try:
+            return {n for n in os.listdir(folder)
+                    if os.path.isfile(os.path.join(folder, n))} \
+                if folder else set()
+        except OSError:
+            return set()
+
+    def play_from_get(self, query, ctx):
+        """GET play-from-cues[?show=<file>]: the file's revision, its error
+        and the rules, the lists whose show file is gone, and with ?show=
+        that show's cues, its own cue and audio length, a note when the
+        audio changed since the save, and whether this person may save
+        (and why not). Anyone signed in may read; with no users set up, the
+        show machine itself reads it, as the other Settings do. (code,
+        body)."""
+        import urllib.parse
+        me = getattr(ctx, "session", None) or {}
+        u = self.users
+        no_users = u is None or not u.active()
+        if not (me.get("name") and not no_users) and \
+                not (no_users and ctx.local):
+            return 403, {"error": "Sign in to read the play-from cues."}
+        show = (urllib.parse.parse_qs(query or "").get("show") or [None])[0]
+        from . import play_from as pf_mod
+        try:
+            out = self.play_from_store().view(show)
+        except Exception as e:                       # noqa: BLE001
+            return 500, {"error": f"The play-from cues could not be read "
+                                  f"({type(e).__name__})."}
+        if no_users:
+            out["may_edit"] = False
+            out["edit_why"] = ("Saving needs a signed-in admin. Set up "
+                               "users first (Users, in 1.0).")
+        elif not u.may(me.get("role"), "settings"):
+            out["may_edit"] = False
+            out["edit_why"] = (f"Only someone with Settings (admins) "
+                               f"saves; {me.get('name')} reads only.")
+        elif not self.may_act_from(ctx.local):
+            out["may_edit"] = False
+            out["edit_why"] = ("Saving from the show network needs Arming "
+                               "from a screen on.")
+        else:
+            out["may_edit"], out["edit_why"] = True, ""
+        here = self.play_from_show_files()
+        out["missing"] = [n for n in out["shows"] if n not in here]
+        if show is not None:
+            cue, length, why = self.play_from_show_info(show)
+            out.update(cue=cue, audio_len_s=length, show_problem=why,
+                       audio_note=pf_mod.audio_note(out["entry"], length))
+        return 200, out
+
+    def play_from_save(self, body, ctx):
+        """POST play-from-cues-save {"show", "rev", "cues": [{"id" (kept
+        from the list read; none for a new cue), "name", "tc", "lead_in_s",
+        "note"}]}: the Settings row (users.classify, checked by web.py
+        first, and again here), a signed-in person, from the show network
+        screen_arming too. The show's own cue and audio length are worked
+        out here, never taken from the page. Saved with a revision check,
+        history, a journal line and an audit event. Sends nothing, starts
+        nothing. (code, body)."""
+        from . import users as users_mod
+        from . import play_from as pf_mod
+        body = body if isinstance(body, dict) else {}
+        who, device, _surface = self._actor(ctx, body)
+        me = getattr(ctx, "session", None) or {}
+        u = self.users
+        st = self.play_from_store()
+        show = body.get("show")
+
+        def refused(code, why):
+            text = f"Not saved: {why} Nothing was changed."
+            st.refused(who, device, show, text)
+            return code, {"error": text}
+        if u is None or not u.active() or not me.get("name"):
+            return refused(403, "editing the play-from cues needs a "
+                                "signed-in admin.")
+        if not u.may(me.get("role"), "settings"):
+            return refused(403, f"{me.get('name')} may not: "
+                                f"{users_mod.perm_label('settings')}.")
+        if not self.may_act_from(ctx.local):
+            return refused(403, "editing the play-from cues from a device "
+                                "on the show network needs screen_arming "
+                                "(on the show machine itself: Programming, "
+                                "Arming from a screen, Turn on).")
+        if body.get("restore") is True:
+            # Put the last saved copy back (the file is missing or cannot
+            # be read): every show's list, as it was last saved.
+            ok, text, _doc = st.restore(body.get("rev"), who=who,
+                                        screen=device)
+            if not ok:
+                return 409, {"error": text + " Nothing was changed.",
+                             "stale": pf_mod.STALE_WORDS in text,
+                             "replace_needed": False}
+            return 200, {"ok": True, "text": text}
+        if not isinstance(show, str):
+            return refused(400, "choose a show file.")
+        cue, length, why = self.play_from_show_info(show)
+        if why:
+            return refused(409, why[0].upper() + why[1:] + ".")
+        ok, text, entry = st.save(show, cue, length, body.get("cues"),
+                                  body.get("rev"), who=who, screen=device,
+                                  replace=body.get("replace") is True)
+        if not ok:
+            return 409, {"error": text + " Nothing was changed.",
+                         "stale": pf_mod.STALE_WORDS in text,
+                         "replace_needed": pf_mod.REPLACE_WORDS in text}
+        return 200, {"ok": True, "text": text, "entry": entry}
     # -- the fuel pump (fuelpump.py) ------------------------------------------
     def pump_cut(self, reason, who="", screen=""):
         """Stop or Abort: the fuel pump OFF at the flame link now, the
@@ -5383,6 +5568,21 @@ class Remote:
         except Exception as e:                   # noqa: BLE001
             return f"the engine's state could not be read ({type(e).__name__})."
         return ""
+
+    def fireball_signout_cut(self, why, ctx):
+        """A sign-out that ended a session: the Fireball page's run from
+        this screen (on the show machine itself, any run) is cut now.
+        Cutting is always safe. Never raises."""
+        fb = self.fireball
+        if fb is None:
+            return False
+        try:
+            owner = (fb.summary() or {}).get("owner")
+            if owner is None or not (ctx.local or owner == ctx.device):
+                return False
+            return fb.cut(why, who=ctx.user or "", screen=ctx.device)
+        except Exception:                        # noqa: BLE001
+            return False
 
     def timed_purge_cut(self, why, who="", screen="", token=None,
                         group=None):

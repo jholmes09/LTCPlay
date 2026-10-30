@@ -925,6 +925,10 @@ class FlameLink:
         self._manual = None
         self.manual_slots = frozenset()
         self.manuals_sent = 0
+        # +1 on every frame that could not be sent (round-4 review, s95):
+        # the Fireball page's frame is dropped then, and its run is cut on
+        # this count, so only a fresh press brings a channel back.
+        self.manual_drops = 0
         # The show path's own values (cues, purge, programming) of the
         # frame being read, before the Fireball page's frame is merged, and
         # of the last frame that went out (all zero when it did not):
@@ -2152,6 +2156,10 @@ class FlameLink:
         except OSError as e:
             self.send_errors += 1
             self._fail_count += 1
+            # The Fireball page's frame never rides through a frame that
+            # did not go out (round-4 review, s95).
+            self._manual = None
+            self.manual_drops += 1
             if self._fail_since is None:
                 self._fail_since = self._clock()
                 self._note(f"Flame link: a frame to flamesafe could not be "

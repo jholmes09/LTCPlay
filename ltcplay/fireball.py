@@ -234,6 +234,24 @@ class FireballPanel:
         except Exception:                                # noqa: BLE001
             return None
 
+    @staticmethod
+    def _drops(link):
+        """The flame link's count of frames it could not send, or None."""
+        d = getattr(link, "manual_drops", None)
+        return d if isinstance(d, int) and not isinstance(d, bool) else None
+
+    def _link_why(self, link, r):
+        """Why the run `r` may not carry on, from the flame link: a
+        disarm_all() (Stop, Abort) since it started, or a frame that could
+        not be sent since (round-4 review, s95: a 300 ms outage, and
+        Andy's Fuel came back by itself when the link did). Else ""."""
+        if link is None or self._gen(link) != r["gen"]:
+            return ("the flame link was disarmed (Stop, Abort or a disarm "
+                    "through it)")
+        if self._drops(link) != r.get("drops"):
+            return "a frame to flamesafe could not be sent"
+        return ""
+
     def armed_state(self):
         """("armed" | "off" | "unknown", sentence) for the fireball group
         from flamesafe's status: "armed" only when a status under
@@ -386,7 +404,7 @@ class FireballPanel:
                                  "cut": True}
                 r = self._run = {"id": rid, "owner": owner, "on": set(),
                                  "beat": now, "gen": gen, "start": now,
-                                 "seq": seq}
+                                 "seq": seq, "drops": self._drops(link0)}
                 self._remember(owner, None, seq, make=True)
                 self.runs += 1
                 started = True
@@ -420,20 +438,22 @@ class FireballPanel:
                 # must already be this person's (a top-off, never a
                 # double charge).
                 self._tell(on, who, screen)
-                # Refused by the link itself when a zero() or disarm_all()
-                # (Stop, Abort) has moved its count since the run
-                # started.
+                # Refused by the link itself when a disarm_all() (Stop,
+                # Abort) has moved its disarm count since the run started
+                # (a zero(), a Hold or a show's end, does not: Jeff,
+                # 2026-10-30).
                 took = link.manual_set(vals, r["gen"])
-                # A zero() or disarm_all() that landed just after the
-                # frame went in: the count moved, and the frame comes
-                # straight out again. One that lands later clears the
-                # frame itself.
-                lost = took is False or self._gen(link) != r["gen"]
+                # A disarm_all() that landed just after the frame went in,
+                # or a frame that could not be sent since the run started:
+                # the frame comes straight out again. One that lands later
+                # clears the frame itself.
+                lost = took is False or self._link_why(link, r)
         if lost:
             if self._run is r or self._run is None:
                 link.manual_clear()
             if self._run is r:
-                self.cut("the flame link was disarmed (Stop, Abort or a "
+                self.cut(self._link_why(link, r) or
+                         "the flame link was disarmed (Stop, Abort or a "
                          "disarm through it)", who=who, screen=screen)
             return 409, {"error": "Everything was turned off: "
                                   f"{self.last_cut or 'the run ended'}. "
@@ -515,8 +535,9 @@ class FireballPanel:
     # -- the watcher -----------------------------------------------------------
     def tick(self, now=None):
         """Every WATCH_S: a live run with no beat for BEAT_STALE_S, the
-        group not armed, flamesafe stale, the flame link zeroed or
-        disarmed, or any blocker is cut."""
+        group not armed, flamesafe stale, the flame link disarmed (Stop,
+        Abort) or unable to send a frame, or any blocker is cut. A Hold or
+        a show's end does not cut it (Jeff, 2026-10-30)."""
         now = self._clock() if now is None else now
         with self._lock:
             r = self._run
@@ -526,12 +547,7 @@ class FireballPanel:
         if now - r["beat"] > BEAT_STALE_S:
             why = f"no heartbeat for {BEAT_STALE_S:g} s"
         else:
-            link = self._link()
-            if link is None or self._gen(link) != r["gen"]:
-                why = "the flame link was disarmed (Stop, Abort or a "\
-                      "disarm through it)"
-            else:
-                why = self.refusal()
+            why = self._link_why(self._link(), r) or self.refusal()
         if why:
             with self._lock:
                 same = self._run is r

@@ -64,9 +64,12 @@ CHARGE_SLOT = {"fuel": 55, "air": 56}            # tank -> slot
 PURGE_SLOT = fbtl.PURGE_SLOT
 MESSAGES_KEPT = 8
 # A charge that went out and then stopped for no longer than this (one
-# frame the flame cues could not read, one send that failed) carries on
-# as the same charge; a longer stop (Hold, Stop, a seek, the guard) ends
-# it for the rest of that play (review of #187).
+# frame the flame cues could not read, one send that failed, a lockout or
+# a Hold undone at once) carries on as the same charge, inside the same
+# window, so its total time on never exceeds the window (Jeff accepts
+# this, round-4 review); a longer stop (Hold, Stop, a seek, the guard)
+# ends it for the rest of that play, said on the screens and in the
+# journal (review of #187).
 GAP_S = 0.25
 
 
@@ -285,12 +288,17 @@ class FireballCues:
         if label != run.cue:
             return out
         if rev != run.rev:
-            ent = entry if entry is not None and \
-                entry.get("source") == "timeline" else \
-                dict(entry or {}, stages=[])
-            for k in run.adopt(ent, rev, relf):
-                self._say(f"{fbtl.STAGE_WORD[k]} was moved into the past by "
-                          f"an edit: not fired in this play of the show.")
+            if entry is None or entry.get("source") != "timeline":
+                # Switched to the FSEQ (or its entry removed) during the
+                # play: that applies from the next cue; this play keeps
+                # its own stages to the end (round-4 review, s40: dropping
+                # them left Fuel charged with no shot).
+                run.rev = rev
+            else:
+                for k in run.adopt(entry, rev, relf):
+                    self._say(f"{fbtl.STAGE_WORD[k]} was moved into the "
+                              f"past by an edit: not fired in this play of "
+                              f"the show.")
         tr = self._charge_get()
         last = self._sent(tr)
         now = self._clock()

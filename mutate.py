@@ -17826,9 +17826,9 @@ def build():
   '                    cancel(f"Hold was pressed on the {screen}")',
   '                    pass'),
 
- ("Programming playback starts over a Fireball channel that is on", "ltcplay/remote.py",
-  '        if ph is not None and name in ("play-from", "loop") and \\\n                fb is not None and fb.active():',
-  '        if False:'),
+ ("Programming Play from is refused while the Fireball page has a channel on (round 4)", "ltcplay/remote.py",
+  '        # The Fireball page works at any time (Jeff, 2026-10-30): a\n',
+  '        if name in ("play-from", "loop") and self.fireball is not None and self.fireball.active():\n            return 409, {"error": "A Fireball channel is on."}\n        # The Fireball page works at any time (Jeff, 2026-10-30): a\n'),
 
  # Jeff's field report, 2026-10-28: Stop, Reset from Hold, refusal reasons.
  ("a refused start's alert says only that the show did not start",
@@ -18015,17 +18015,13 @@ def build():
 
  ("fireball: the watcher does not see the flame link zeroed",
   "ltcplay/fireball.py",
-  "            if link is None or self._gen(link) != r[\"gen\"]:",
-  "            if link is None:"),
+  "        if link is None or self._gen(link) != r[\"gen\"]:\n            return (\"the flame link was disarmed",
+  "        if link is None:\n            return (\"the flame link was disarmed"),
 
  ("fireball: the watcher does not look at the rules",
   "ltcplay/fireball.py",
-  "            else:\n"
-  "                why = self.refusal()\n"
-  "        if why:",
-  "            else:\n"
-  "                why = \"\"\n"
-  "        if why:"),
+  "            why = self._link_why(self._link(), r) or self.refusal()\n",
+  "            why = self._link_why(self._link(), r)\n"),
 
  ("fireball: a cut run can come back",
   "ltcplay/fireball.py",
@@ -18047,7 +18043,7 @@ def build():
 
  ("fireball: a zero that lands during a beat is ignored",
   "ltcplay/fireball.py",
-  "                lost = took is False or self._gen(link) != r[\"gen\"]",
+  "                lost = took is False or self._link_why(link, r)",
   "                lost = False"),
 
  ("fireball: a disarm seen just after the frame went in is ignored",
@@ -20079,13 +20075,13 @@ def build():
 
  ("fireball timeline: a save by someone without the Settings row",
   "ltcplay/remote.py",
-  "        if not u.may(me.get(\"role\"), \"settings\"):",
-  "        if False:"),
+  "                                \"signed-in admin.\")\n        if not u.may(me.get(\"role\"), \"settings\"):\n            return refused(403, f\"{me.get('name')} may not: \"\n                                f\"{users_mod.perm_label('settings')}.\")\n        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the fireball timeline",
+  "                                \"signed-in admin.\")\n        if False:\n            return refused(403, f\"{me.get('name')} may not: \"\n                                f\"{users_mod.perm_label('settings')}.\")\n        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the fireball timeline"),
 
  ("fireball timeline: a save signed out",
   "ltcplay/remote.py",
-  "        if u is None or not u.active() or not me.get(\"name\"):",
-  "        if u is None:"),
+  "        if u is None or not u.active() or not me.get(\"name\"):\n            return refused(403, \"editing the fireball timeline needs a \"",
+  "        if u is None:\n            return refused(403, \"editing the fireball timeline needs a \""),
 
  ("fireball timeline: a save from the show network without screen_arming",
   "ltcplay/remote.py",
@@ -20180,13 +20176,13 @@ def build():
 
  ("fireball charge: a broken file reads as EMPTY",
   "ltcplay/fireball_charge.py",
-  "            self.tanks = {k: _new_tank(UNKNOWN, now, f\"{FILE} could not be \"",
-  "            self.tanks = {k: _new_tank(EMPTY, now, f\"{FILE} could not be \""),
+  "        if isinstance(src, Exception):\n            self._not_known(f\"{FILE} could not be read\", now,",
+  "        if isinstance(src, Exception):\n            self.tanks = {k: _new_tank(EMPTY, now, \"x\") for k in TANK_WORD}; self.releasing = \"\"; return\n            self._not_known(f\"{FILE} could not be read\", now,"),
 
  ("fireball charge: a restart in the middle of a release is not UNKNOWN",
   "ltcplay/fireball_charge.py",
-  "            if rel:\n                what = ",
-  "            if False:\n                what = "),
+  "        if rel:\n            what = ",
+  "        if False:\n            what = "),
 
  ("fireball charge: a change is not written to the file",
   "ltcplay/fireball_charge.py",
@@ -20215,8 +20211,8 @@ def build():
 
  ("fireball charge: no record (the first run) reads as NOT KNOWN",
   "ltcplay/fireball_charge.py",
-  "            self.tanks = {k: _new_tank(EMPTY, now, \"first run: no charge \"",
-  "            self.tanks = {k: _new_tank(UNKNOWN, now, \"first run: no charge \""),
+  "        self.tanks = {k: _new_tank(EMPTY, now, \"first run: no charge \"",
+  "        self.tanks = {k: _new_tank(UNKNOWN, now, \"first run: no charge \""),
 
  ("fireball charge: a record that could not be written is never tried again",
   "ltcplay/fireball_charge.py",
@@ -20230,8 +20226,8 @@ def build():
 
  ("fireball charge: close() does not try the unwritten record again",
   "ltcplay/fireball_charge.py",
-  "            if self._unwritten is not None:\n                # One last try now",
-  "            if False:\n                # One last try now"),
+  "                    if self._unwritten is not None:\n                        # One last try now",
+  "                    if False:\n                        # One last try now"),
 
  ("fireball charge: a charge after the valve closed is wiped by the late confirmation",
   "ltcplay/fireball_charge.py",
@@ -20265,13 +20261,73 @@ def build():
 
  ("fireball charge: a newer record left in .tmp is ignored at start",
   "ltcplay/fireball_charge.py",
-  "            if not isinstance(main, int) or got > main:\n                src = tmp",
-  "            if False:\n                src = tmp"),
+  "        if isinstance(got, tuple) and (not isinstance(main, tuple) or\n                                       got[0] > main[0]):",
+  "        if False:"),
 
  ("fireball charge: a .tmp that cannot be read is ignored",
   "ltcplay/fireball_charge.py",
-  "            if isinstance(got, Exception):\n                self.tanks = {k: _new_tank(UNKNOWN",
-  "            if False:\n                self.tanks = {k: _new_tank(UNKNOWN"),
+  "        if isinstance(got, Exception):\n            last = ",
+  "        if False:\n            last = "),
+
+ ("fireball charge: the revision starts at 0 under an unreadable record (round 4)",
+  "ltcplay/fireball_charge.py",
+  "        self.rev = max([x[0] for x in (main, got) if isinstance(x, tuple)]\n                       or [0])",
+  "        self.rev = 0"),
+
+ ("fireball charge: an older .tmp beats the newer main file (round 4)",
+  "ltcplay/fireball_charge.py",
+  "                                       got[0] > main[0]):",
+  "                                       True):"),
+
+ ("fireball charge: an unreadable .tmp hides what the main file last said (round 4)",
+  "ltcplay/fireball_charge.py",
+  "                    f\"(revision {main[0]}), but the write that did not \"",
+  "                    f\"\"\n                    f\"\""),
+
+ ("fireball charge: a first run whose record cannot be written starts EMPTY (round 4)",
+  "ltcplay/fireball_charge.py",
+  "        try:\n            self._write(self._doc())\n        except OSError as e:",
+  "        try:\n            pass\n        except OSError as e:"),
+
+ ("fireball charge: the first run is said quietly, without the folder (round 4)",
+  "ltcplay/fireball_charge.py",
+  "                    f\"Fireball page if one is pressurised.\", fault=True,",
+  "                    f\"Fireball page if one is pressurised.\", fault=False,"),
+
+ ("fireball charge: flamesafe's report leaves the wire edge open (round 4, s62)",
+  "ltcplay/fireball_charge.py",
+  "            self._prev[k] = self._prev[k] or 255\n",
+  "            pass\n"),
+
+ ("fireball charge: a charge ended inside the shot counts as charged (round 4, s90)",
+  "ltcplay/fireball_charge.py",
+  "                        rel[\"during\"].pop(k, None)",
+  "                        pass"),
+
+ ("fireball charge: flamesafe's late report of a charge ended inside the shot counts (round 4)",
+  "ltcplay/fireball_charge.py",
+  "            if tgt is not None and (tgt is not self._release or\n                                    self._prev[k]):",
+  "            if tgt is not None:"),
+
+ ("fireball charge: a fireball group off 55 to 59 is still recorded (round 4)",
+  "ltcplay/fireball_charge.py",
+  "        if self.group_fault:\n            return          # 55 to 59 are not the fireball (round 4)",
+  "        if False:\n            return          # 55 to 59 are not the fireball (round 4)"),
+
+ ("fireball charge: the group's slots are never checked (round 4)",
+  "ltcplay/fireball_charge.py",
+  "                if isinstance(slots, list) and slots:\n                    self._group_check(slots)",
+  "                if False:\n                    self._group_check(slots)"),
+
+ ("fireball charge: close() waits on a hung write for ever (round 4)",
+  "ltcplay/fireball_charge.py",
+  "        t.start()\n        t.join(CLOSE_S)",
+  "        t.start()\n        t.join()"),
+
+ ("fireball charge: close() writes beside the writer thread (round 4)",
+  "ltcplay/fireball_charge.py",
+  "            try:\n                with self._wlock:\n                    self._pump()",
+  "            try:\n                if True:\n                    self._pump()"),
 
  ("fireball charge: the status reader also writes the file",
   "ltcplay/fireball_charge.py",
@@ -20369,6 +20425,31 @@ def build():
   "ltcplay/flamelink.py",
   "            self.show_sent = show if ok else bytes(UNIVERSE_SIZE)",
   "            self.show_sent = show"),
+
+ ("fireball manual: the show's sent values keep a frame a zero() dropped (round 4, E2)",
+  "ltcplay/flamelink.py",
+  "                if len(sp) == len(values) and not dropped \\\n",
+  "                if len(sp) == len(values) \\\n"),
+
+ ("fireball manual: a zero frame leaves the show's sent values (round 4, E15)",
+  "ltcplay/flamelink.py",
+  "        self.show_sent = bytes(UNIVERSE_SIZE)\n        return self._send(encode_flame(seq, None, mono,",
+  "        return self._send(encode_flame(seq, None, mono,"),
+
+ ("fireball manual: a frame not sent keeps the page's frame (round 4, s95)",
+  "ltcplay/flamelink.py",
+  "            self._manual = None\n            self.manual_drops += 1",
+  "            pass"),
+
+ ("fireball manual: a frame not sent does not cut the page's run (round 4, s95)",
+  "ltcplay/fireball.py",
+  "        if self._drops(link) != r.get(\"drops\"):",
+  "        if False:"),
+
+ ("fireball manual: a sign-out leaves the page's run to its beats (round 4, s28)",
+  "ltcplay/remote.py",
+  "                self.fireball_signout_cut(\n",
+  "                (lambda *a: None)(\n"),
 
  ("fireball manual: the timeline judges its charge from the composed frame",
   "ltcplay/web.py",
@@ -20794,6 +20875,16 @@ def build():
   "                run.sent_at.pop(tank, None)\n                run.sent_tanks.discard(tank)\n                continue",
   "                continue"),
 
+ ("fireball cues: a switch to the FSEQ mid-play drops the play's stages (round 4, s40)",
+  "ltcplay/fireball_cues.py",
+  "                run.rev = rev\n            else:",
+  "                run.adopt(dict(entry or {}, stages=[]), rev, relf)\n            else:"),
+
+ ("fireball cues: a skipped or cut short stage is not journaled (round 4)",
+  "ltcplay/fireball_cues.py",
+  "        self._note(text, outcome=\"fireball_skipped\")",
+  "        pass"),
+
  ("fireball cues: a fireball group off 55 to 59 is not checked",
   "ltcplay/fireball_cues.py",
   "        if group is not None and group != list(SLOTS):",
@@ -20803,6 +20894,286 @@ def build():
   "ltcplay/web.py",
   "            journal=say, group_get=fireball_slots,",
   "            journal=say,"),
+
+ ("play-from cues: a cue right at the end of the show audio is saved",
+  "ltcplay/play_from.py",
+  "                fr / FPS >= audio_len_s:",
+  "                fr / FPS > audio_len_s:"),
+
+ ("play-from cues: a lead-in under 1 s is saved",
+  "ltcplay/play_from.py",
+  "    if v < LEAD_IN_MIN_S:",
+  "    if v < 0:"),
+
+ ("play-from cues: a lead-in left out is 1 s, not 2",
+  "ltcplay/play_from.py",
+  "    if v is None:\n        return LEAD_IN_DEFAULT_S",
+  "    if v is None:\n        return LEAD_IN_MIN_S"),
+
+ ("play-from cues: a lead-in may start before the top of the show cue",
+  "ltcplay/play_from.py",
+  "        elif fr is not None and lead is not None and fr < lead * FPS:",
+  "        elif False:"),
+
+ ("play-from cues: Finale and finale are two names",
+  "ltcplay/play_from.py",
+  "            key = name_key(name)",
+  "            key = name"),
+
+ ("play-from cues: an unknown field in a cue is kept quiet",
+  "ltcplay/play_from.py",
+  "        extra = set(c) - _CUE_KEYS",
+  "        extra = set()"),
+
+ ("play-from cues: the list is not kept in time order",
+  "ltcplay/play_from.py",
+  "    out.sort(key=lambda c: (parse_tc(c[\"tc\"]), c[\"name\"].casefold()))",
+  "    pass"),
+
+ ("play-from cues: a page may claim an id the list does not have",
+  "ltcplay/play_from.py",
+  "        if c[\"id\"] is not None and c[\"id\"] not in known:",
+  "        if False:"),
+
+ ("play-from cues: a new cue reuses a deleted cue's id",
+  "ltcplay/play_from.py",
+  "    nxt = max(max(used, default=0) + 1, int(next_id or 1))",
+  "    nxt = len(before) + 1"),
+
+ ("play-from cues: a stale revision overwrites another editor's save",
+  "ltcplay/play_from.py",
+  "                        base_rev != doc[\"rev\"]:",
+  "                        False:"),
+
+ ("play-from cues: a saved file is not kept in the history",
+  "ltcplay/play_from.py",
+  "        try:\n            self._keep_history(data, new[\"rev\"], False)",
+  "        try:\n            pass"),
+
+ ("play-from cues: a refused save is not in the audit log",
+  "ltcplay/play_from.py",
+  "        self._audit(who, screen, str(show)[:MAX_TEXT], \"refused\", text)",
+  "        pass"),
+
+ ("play-from cues: a save writes no journal line",
+  "ltcplay/play_from.py",
+  "        self._note(who, screen, \"saved\", text)",
+  "        pass"),
+
+ ("play-from cues: an operator may save the list",
+  "ltcplay/users.py",
+  "    \"play-from-cues-save\": \"settings\",",
+  "    \"play-from-cues-save\": \"show\","),
+
+ ("play-from cues: the engine lets any role save",
+  "ltcplay/remote.py",
+  "        if not u.may(me.get(\"role\"), \"settings\"):\n            return refused(403, f\"{me.get('name')} may not: \"\n                                f\"{users_mod.perm_label('settings')}.\")\n        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the play-from cues",
+  "        if False:\n            return refused(403, f\"{me.get('name')} may not: \"\n                                f\"{users_mod.perm_label('settings')}.\")\n        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the play-from cues"),
+
+ ("play-from cues: a save from the show network needs no screen_arming",
+  "ltcplay/remote.py",
+  "        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the play-from cues",
+  "        if False:\n            return refused(403, \"editing the play-from cues"),
+
+ ("play-from cues: signed out reads the list",
+  "ltcplay/remote.py",
+  "        if not (me.get(\"name\") and not no_users) and \\",
+  "        if False and \\"),
+
+ ("play-from cues: the page's audio length is trusted",
+  "ltcplay/remote.py",
+  "        cue, length, why = self.play_from_show_info(show)\n        if why:\n            return refused(409,",
+  "        cue, length, why = body.get(\"cue\"), body.get(\"audio_len_s\"), \"\"\n        if why:\n            return refused(409,"),
+
+ ("play-from cues: the show length, not the audio's, bounds a cue",
+  "ltcplay/remote.py",
+  "        return cue, float(got[\"audio_s\"]), \"\"",
+  "        return cue, float(got[\"show_s\"]), \"\""),
+
+ ("ui2 page: the play-from card passes a name used twice",
+  "ltcplay/web/remote2.html",
+  "    else if(seen[key(name)] > 1) out.push(\"Name used twice.\");",
+  "    else if(false) out.push(\"Name used twice.\");"),
+
+ ("ui2 page: the play-from card passes a cue past the audio end",
+  "ltcplay/web/remote2.html",
+  "    else if(audioLen && fr / 30 >= audioLen) out.push(",
+  "    else if(false) out.push("),
+
+ ("ui2 page: the play-from card passes a lead-in under 1 s",
+  "ltcplay/web/remote2.html",
+  "    if(!Number.isInteger(ln) || ln < minL || ln > maxL)",
+  "    if(!Number.isInteger(ln) || ln > maxL)"),
+
+ ("ui2 page: the play-from card sends no id, so a rename is a delete and an add",
+  "ltcplay/web/remote2.html",
+  "    if(c.id) o.id = c.id;",
+  "    if(false) o.id = c.id;"),
+
+ ("play-from cues: a file that cannot be read is saved over without a replace",
+  "ltcplay/play_from.py",
+  "                if err and replace is not True:",
+  "                if False:"),
+
+ ("play-from cues: anything in the replace field replaces a broken file",
+  "ltcplay/remote.py",
+  "                                  replace=body.get(\"replace\") is True)",
+  "                                  replace=bool(body.get(\"replace\")))"),
+
+ ("play-from cues: a good file's revision is its own, even below one kept",
+  "ltcplay/play_from.py",
+  "                got[\"rev\"] = self._high_water(got[\"rev\"])\n",
+  "                pass\n"),
+
+ ("play-from cues: a file that cannot be read is revision 0",
+  "ltcplay/play_from.py",
+  "                return (dict(empty_doc(), rev=self._high_water(raw_rev)),",
+  "                return (empty_doc(),"),
+
+ ("play-from cues: a deleted file is revision 0",
+  "ltcplay/play_from.py",
+  "                    high = self._high_water()\n",
+  "                    high = 0\n"),
+
+ ("play-from cues: a replace does not keep the broken file first",
+  "ltcplay/play_from.py",
+  "        if new is not None and err and old is not None:",
+  "        if False:"),
+
+ ("play-from cues: a file held open for a moment is not tried again",
+  "ltcplay/play_from.py",
+  "RETRIES = 5\n",
+  "RETRIES = 1\n"),
+
+ ("play-from cues: a read does not wait for a save",
+  "ltcplay/play_from.py",
+  "        with self._lock:\n            if not self.path:\n                return empty_doc(), \"\"",
+  "        if True:\n            if not self.path:\n                return empty_doc(), \"\""),
+
+ ("play-from cues: a lead-in too big for a float raises",
+  "ltcplay/play_from.py",
+  "    if not isinstance(v, int):\n        raise CueError(words)\n",
+  "    if float(v) != int(v):\n        raise CueError(words)\n"),
+
+ ("play-from cues: a file nested too deep raises out of load",
+  "ltcplay/play_from.py",
+  "            except Exception as e:               # noqa: BLE001\n                what = ",
+  "            except (OSError, ValueError) as e:\n                what = "),
+
+ ("play-from cues: a new cue takes a deleted cue's id (high-water ignored)",
+  "ltcplay/play_from.py",
+  "    nxt = max(max(used, default=0) + 1, int(next_id or 1))",
+  "    nxt = max(used, default=0) + 1"),
+
+ ("play-from cues: the next id is not saved",
+  "ltcplay/play_from.py",
+  "                     \"cues\": new_cues, \"next_id\": nxt,",
+  "                     \"cues\": new_cues,"),
+
+ ("play-from cues: control and invisible characters are kept",
+  "ltcplay/play_from.py",
+  "    if any(unicodedata.category(ch) in (\"Cc\", \"Cf\") and ch not in _JOINERS",
+  "    if False and any(unicodedata.category(ch) in (\"Cc\", \"Cf\") and ch not in _JOINERS"),
+
+ ("play-from cues: two spellings of one name are two names",
+  "ltcplay/play_from.py",
+  "    return unicodedata.normalize(\"NFC\", name).casefold()",
+  "    return name.casefold()"),
+
+ ("play-from cues: a time in other scripts' digits is read",
+  "ltcplay/play_from.py",
+  "_TC = re.compile(r\"([0-9]{2}):([0-9]{2}):([0-9]{2}):([0-9]{2})\")",
+  "_TC = re.compile(r\"(\\d{2}):(\\d{2}):(\\d{2}):(\\d{2})\")"),
+
+ ("play-from cues: a list whose show file is gone is not named",
+  "ltcplay/remote.py",
+  "        out[\"missing\"] = [n for n in out[\"shows\"] if n not in here]",
+  "        out[\"missing\"] = []"),
+
+ ("play-from cues: a show file's name is matched without its case",
+  "ltcplay/remote.py",
+  "        if name not in self.play_from_show_files():",
+  "        if not os.path.isfile(os.path.join(folder, name)):"),
+
+ ("play-from cues: with no users the show PC cannot read the list",
+  "ltcplay/remote.py",
+  "                not (no_users and ctx.local):",
+  "                True:"),
+
+ ("play-from cues: with no users the show network reads the list",
+  "ltcplay/remote.py",
+  "                not (no_users and ctx.local):",
+  "                not no_users:"),
+
+ ("ui2 page: the play-from card saves over a broken file without Replace",
+  "ltcplay/web/remote2.html",
+  "  return !!(PF && PF.may_edit && !PF_STALE && (!PF.error || PF_REPLACE));",
+  "  return !!(PF && PF.may_edit && !PF_STALE);"),
+
+ ("ui2 page: the play-from card saves again from a stale copy",
+  "ltcplay/web/remote2.html",
+  "  if(String(message).includes(PF_STALE_WORDS)) PF_STALE = true;",
+  "  if(false) PF_STALE = true;"),
+
+ ("ui2 page: the play-from Time field cuts off HH:MM:SS:FF",
+  "ltcplay/web/remote2.html",
+  "minmax(0,2fr) minmax(172px,1.3fr)",
+  "minmax(0,2fr) minmax(0,1.3fr)"),
+
+ ("play-from cues: a file saved before and gone now reads as no cues and no error",
+  "ltcplay/play_from.py",
+  "                    if high > 0 or self.history():",
+  "                    if False:"),
+
+ ("play-from cues: a stale page restores the last copy",
+  "ltcplay/play_from.py",
+  "                    not isinstance(base_rev, int) or base_rev != doc[\"rev\"]:\n                why = (f\"someone saved",
+  "                    not isinstance(base_rev, int) or False:\n                why = (f\"someone saved"),
+
+ ("play-from cues: a replace goes on when the broken file could not be kept",
+  "ltcplay/play_from.py",
+  "                return False, text, None\n        try:\n            if new is None:",
+  "                pass\n        try:\n            if new is None:"),
+
+ ("play-from cues: two first requests make two stores",
+  "ltcplay/remote.py",
+  "        with _PFC_STORE_LOCK:\n            st = getattr(self, \"_pfc_store\", None)",
+  "        if True:\n            st = getattr(self, \"_pfc_store\", None)"),
+
+ ("play-from cues: a new audit log is not handed to the store",
+  "ltcplay/remote.py",
+  "            st.audit = getattr(self, \"audit\", None)\n            return st",
+  "            return st"),
+
+ ("play-from cues: a file held open a moment is called unreadable",
+  "ltcplay/play_from.py",
+  "READ_WAIT_S = 2.0\n",
+  "READ_WAIT_S = 0.25\n"),
+
+ ("play-from cues: a revision too big resets to 0",
+  "ltcplay/play_from.py",
+  "            top = max(top, min(file_rev, MAX_REV))",
+  "            top = max(top, file_rev if file_rev <= MAX_REV else 0)"),
+
+ ("play-from cues: names are rewritten (NFKC), not kept as typed",
+  "ltcplay/play_from.py",
+  "    return v\n\n\ndef name_key",
+  "    return unicodedata.normalize(\"NFKC\", v)\n\n\ndef name_key"),
+
+ ("play-from cues: a joiner inside a name is refused",
+  "ltcplay/play_from.py",
+  "    if any(unicodedata.category(ch) in (\"Cc\", \"Cf\") and ch not in _JOINERS",
+  "    if any(unicodedata.category(ch) in (\"Cc\", \"Cf\") and ch not in ()"),
+
+ ("ui2 page: the play-from card keeps Save after the file broke",
+  "ltcplay/web/remote2.html",
+  "  else if(PF && String(message).includes(PF_REPLACE_WORDS)){ PF.error = String(message); PF_REPLACE = false; }",
+  "  else if(false){ PF.error = String(message); PF_REPLACE = false; }"),
+
+ ("play-from cues: the file is written in text mode (Windows new lines), so the kept copy is not the file",
+  "ltcplay/play_from.py",
+  "            with open(tmp, \"wb\") as fh:\n                fh.write(data)",
+  "            with open(tmp, \"w\", encoding=\"utf-8\", newline=\"\\r\\n\") as fh:\n                fh.write(data.decode(\"utf-8\"))"),
 
 ]
 
