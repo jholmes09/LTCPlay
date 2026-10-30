@@ -842,6 +842,49 @@ channel, and is either ARMED or DISARMED.
 - **If a tile says Waiting for flamesafe,** flamesafe has not taken the
   arm yet; if it stays that way, disarm it and arm it again.
 
+## The fireball timeline
+
+Jeff, 2026-10-30. For each show file, the fireball's preparation and
+ignition can run from a timeline instead of from the show's FSEQ. Each
+stage has a **start** (a timecode on the show audio's own cue time,
+HH:MM:SS:FF at 30 frames a second, 00:00:00:00 at the top of the show
+cue) and a **duration** in seconds: its channel is on from the start for
+that long. The stages, in this order:
+
+| Stage | Channel |
+|---|---|
+| Fuel (Fuel Charge) | 55 |
+| Air (Air Charge) | 56 |
+| Igniter (Fireball Igniter) | 58 |
+| Valve Open (Fireball Valve Open) | 57 |
+
+- **Purge (59) is never a stage.** Purging is pressed by hand only, on the
+  Fireball page. Nothing purges by itself, ever. All Fireball Safety (77)
+  is flamesafe's own slot: it writes it from the arm state.
+- **What is checked.** A start is a real timecode inside the show; a
+  duration is a number of seconds above 0. There is no longest duration
+  and no order between the stages: the Igniter is independent. A stage
+  left out is never on. A stage that would run past the end of the show
+  ends there. Anything wrong is refused in a sentence and nothing is
+  saved.
+- **Source.** Each show file is either **FSEQ** (as today, and the
+  default for every show) or **Timeline**. Nothing changes for any show
+  until an admin switches it.
+- **Who may edit.** A signed-in person with the Settings row of the role
+  matrix (admins by default). From an iPad, arming from a screen must be
+  on too. Signed out is view only. Editing is allowed at any time, during
+  a show too: it is restricted by who, never by when.
+- **Kept safely.** The timeline is `ltcplay_fireball_timeline.json` in
+  the settings folder. Every save is written whole, says which version it
+  was based on (if someone else saved since, it is refused: reload, check
+  and save again), keeps the version before it in
+  `fireball_timeline_history` (the last 50), and writes one journal line
+  and one audit line: who, which screen, and what changed, stage by
+  stage. If the file cannot be read, no show fires its fireball from a
+  timeline: a show set to Timeline never falls back to its FSEQ.
+- **Where.** The editor is on Interface 2.0 (a later update). Until it is
+  there, nothing sends from the timeline either.
+
 ## Stop, Hold and Reset on the rack screen
 
 Jeff, 2026-10-28. Each screen has one Stop, where the button that started
