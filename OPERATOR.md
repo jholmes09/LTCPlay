@@ -1893,6 +1893,48 @@ the same 1.0 button sends, with the same holds, confirms and refusals.
   interface", on the show PC itself, by someone with Settings (admins).
   It starts at 1.0 and stays there until Jeff changes it. It is
   `ui_default` (1 or 2) in `ltcplay_remote.json`; anything else reads as 1.
+- 2.0 Settings, "Play-from cues" (on the show PC, by someone with
+  Settings, admins): a list of named points in a show file to play the
+  show from later. Saving the list sends nothing to the rig and starts
+  nothing; playing from a cue is not built yet. Pick the show file, then
+  Add cue, or change a name, time, lead-in or note in place, or Delete a
+  cue, and Save. Each cue has:
+  - a name, up to 40 characters, used once in that show (Finale and
+    finale count as the same name);
+  - a time, HH:MM:SS:FF at 30 frames a second, counted from the top of
+    the show cue (00:00:00:00 is the first frame of the show audio, the
+    same count as the Art-Net timecode, MadMapper and BEYOND). It must be
+    inside the show AUDIO: the card says how long the audio is;
+  - a lead-in, the whole seconds played before the cue: 2 when left
+    empty, at least 1 and at most 30. The time less the lead-in cannot be
+    before the top of the show cue;
+  - a note, optional, up to 200 characters.
+  A cue that breaks a rule is marked in red and Save waits until it is
+  fixed; the engine checks every rule again and says what it refused.
+  Names and notes are one line of plain text: a control or invisible
+  character is refused. If someone else saved the list since this screen
+  read it, the save is refused and nothing is overwritten: tap Reload to
+  read the list again (changes not saved are dropped), then make them
+  again and save. The list is `ltcplay_play_from.json` in the settings
+  folder, one list per show file, under the show file's name exactly as
+  the show folder spells it; a copy of every saved file is kept in
+  `play_from_history` (the last 50), and every save and every refusal is
+  in the journal and the audit log. When the file cannot be read (damaged
+  by hand, or written by a newer LTC Player), or was saved before and is
+  gone now (deleted, moved, quarantined), the card says so and nothing
+  can be saved over it. An admin taps Restore the last saved copy (every
+  show's list, as last saved), or fixes the file, or taps Replace the
+  file, then makes this show's list and saves. Replace starts the file
+  again with only this show's list (the other shows' lists in it are
+  gone); the broken file is kept in `play_from_history` first, and when
+  it cannot be kept nothing is replaced. When the show audio is
+  rendered again at another length, the card says so and names any cue
+  now past its end; a list whose show file is no longer in the show folder
+  is named too. Anyone signed in can read the list; saving it from an
+  iPad also needs Arming from a screen on. With no users set up, the show
+  PC reads the list but nobody can save it until an admin exists.
+  This card and Default interface are 2.0's own: 1.0 has no button for
+  them.
 - The 2.0 SHOW screen, top to bottom: one line that says what to do next;
   the show state, the timecode and the time left; the big button for the
   next step (Run show, Start now, Resume or Reset), Hold and Stop show; one
