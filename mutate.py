@@ -18825,7 +18825,7 @@ def build():
 
  ("play-from cues: a new cue reuses a deleted cue's id",
   "ltcplay/play_from.py",
-  "    nxt = max(used, default=0) + 1",
+  "    nxt = max(max(used, default=0) + 1, int(next_id or 1))",
   "    nxt = len(before) + 1"),
 
  ("play-from cues: a stale revision overwrites another editor's save",
@@ -18835,8 +18835,8 @@ def build():
 
  ("play-from cues: the version before a save is not kept",
   "ltcplay/play_from.py",
-  "                self._keep_history(doc[\"rev\"], bool(err))\n",
-  "                pass\n"),
+  "                    self._keep_history(old, doc[\"rev\"], bool(err))\n",
+  "                    pass\n"),
 
  ("play-from cues: a refused save is not in the audit log",
   "ltcplay/play_from.py",
@@ -18865,8 +18865,8 @@ def build():
 
  ("play-from cues: signed out reads the list",
   "ltcplay/remote.py",
-  "        if u is None or not u.active() or not me.get(\"name\"):\n            return 403, {\"error\": \"Sign in to read the play-from cues.\"}",
-  "        if False:\n            return 403, {\"error\": \"Sign in to read the play-from cues.\"}"),
+  "        if not (me.get(\"name\") and not no_users) and \\",
+  "        if False and \\"),
 
  ("play-from cues: the page's audio length is trusted",
   "ltcplay/remote.py",
@@ -18897,6 +18897,116 @@ def build():
   "ltcplay/web/remote2.html",
   "    if(c.id) o.id = c.id;",
   "    if(false) o.id = c.id;"),
+
+ ("play-from cues: a file that cannot be read is saved over without a replace",
+  "ltcplay/play_from.py",
+  "                if err and replace is not True:",
+  "                if False:"),
+
+ ("play-from cues: anything in the replace field replaces a broken file",
+  "ltcplay/remote.py",
+  "                                  replace=body.get(\"replace\") is True)",
+  "                                  replace=bool(body.get(\"replace\")))"),
+
+ ("play-from cues: a good file's revision is its own, even below one kept",
+  "ltcplay/play_from.py",
+  "                got[\"rev\"] = self._high_water(got[\"rev\"])\n",
+  "                pass\n"),
+
+ ("play-from cues: a file that cannot be read is revision 0",
+  "ltcplay/play_from.py",
+  "                return (dict(empty_doc(), rev=self._high_water(raw_rev)),",
+  "                return (empty_doc(),"),
+
+ ("play-from cues: a deleted file is revision 0",
+  "ltcplay/play_from.py",
+  "                    return dict(empty_doc(), rev=self._high_water()), \"\"",
+  "                    return empty_doc(), \"\""),
+
+ ("play-from cues: the version before is kept before the new file is written",
+  "ltcplay/play_from.py",
+  "                old = self._read_raw()\n                self._write(new)",
+  "                old = self._read_raw()\n                if old is not None:\n                    self._keep_history(old, doc[\"rev\"], bool(err))\n                self._write(new)"),
+
+ ("play-from cues: a file held open for a moment is not tried again",
+  "ltcplay/play_from.py",
+  "RETRIES = 5\n",
+  "RETRIES = 1\n"),
+
+ ("play-from cues: a read does not wait for a save",
+  "ltcplay/play_from.py",
+  "        with self._lock:\n            if not self.path:\n                return empty_doc(), \"\"",
+  "        if True:\n            if not self.path:\n                return empty_doc(), \"\""),
+
+ ("play-from cues: a lead-in too big for a float raises",
+  "ltcplay/play_from.py",
+  "    if not isinstance(v, int):\n        raise CueError(words)\n",
+  "    if float(v) != int(v):\n        raise CueError(words)\n"),
+
+ ("play-from cues: a file nested too deep raises out of load",
+  "ltcplay/play_from.py",
+  "            except Exception as e:               # noqa: BLE001\n                what = ",
+  "            except (OSError, ValueError) as e:\n                what = "),
+
+ ("play-from cues: a new cue takes a deleted cue's id (high-water ignored)",
+  "ltcplay/play_from.py",
+  "    nxt = max(max(used, default=0) + 1, int(next_id or 1))",
+  "    nxt = max(used, default=0) + 1"),
+
+ ("play-from cues: the next id is not saved",
+  "ltcplay/play_from.py",
+  "                     \"cues\": new_cues, \"next_id\": nxt,",
+  "                     \"cues\": new_cues,"),
+
+ ("play-from cues: control and invisible characters are kept",
+  "ltcplay/play_from.py",
+  "    if any(unicodedata.category(ch) in (\"Cc\", \"Cf\") for ch in v):",
+  "    if False:"),
+
+ ("play-from cues: two spellings of one name are two names",
+  "ltcplay/play_from.py",
+  "    v = unicodedata.normalize(\"NFKC\", v)",
+  "    pass"),
+
+ ("play-from cues: a time in other scripts' digits is read",
+  "ltcplay/play_from.py",
+  "_TC = re.compile(r\"([0-9]{2}):([0-9]{2}):([0-9]{2}):([0-9]{2})\")",
+  "_TC = re.compile(r\"(\\d{2}):(\\d{2}):(\\d{2}):(\\d{2})\")"),
+
+ ("play-from cues: a list whose show file is gone is not named",
+  "ltcplay/remote.py",
+  "        out[\"missing\"] = [n for n in out[\"shows\"] if n not in here]",
+  "        out[\"missing\"] = []"),
+
+ ("play-from cues: a show file's name is matched without its case",
+  "ltcplay/remote.py",
+  "        if name not in self.play_from_show_files():",
+  "        if not os.path.isfile(os.path.join(folder, name)):"),
+
+ ("play-from cues: with no users the show PC cannot read the list",
+  "ltcplay/remote.py",
+  "                not (no_users and ctx.local):",
+  "                True:"),
+
+ ("play-from cues: with no users the show network reads the list",
+  "ltcplay/remote.py",
+  "                not (no_users and ctx.local):",
+  "                not no_users:"),
+
+ ("ui2 page: the play-from card saves over a broken file without Replace",
+  "ltcplay/web/remote2.html",
+  "  return !!(PF && PF.may_edit && !PF_STALE && (!PF.error || PF_REPLACE));",
+  "  return !!(PF && PF.may_edit && !PF_STALE);"),
+
+ ("ui2 page: the play-from card saves again from a stale copy",
+  "ltcplay/web/remote2.html",
+  "  if(String(message).includes(PF_STALE_WORDS)) PF_STALE = true;",
+  "  if(false) PF_STALE = true;"),
+
+ ("ui2 page: the play-from Time field cuts off HH:MM:SS:FF",
+  "ltcplay/web/remote2.html",
+  "minmax(0,2fr) minmax(172px,1.3fr)",
+  "minmax(0,2fr) minmax(0,1.3fr)"),
 
 ]
 

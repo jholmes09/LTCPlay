@@ -93013,6 +93013,22 @@ def test_play_from_cue_file_is_never_lost():
         ok1 = store.save("A.json", "Show", 60.0, one, 0, who="Jeff")[0]
         ok2 = store.save("B.json", "Show", 60.0, one, 1, who="Jeff")[0]
         check(ok1 and ok2 and rev() == 2, "two shows' lists, revision 2")
+        # The highest id deleted, then a cue added: never that id again.
+        ok, _t, e = store.save("B.json", "Show", 60.0, [
+            {"id": "c1", "name": "Finale", "tc": "00:00:50:00"},
+            {"name": "Top", "tc": "00:00:05:00"}], 2)
+        ok2, _t, e2 = store.save("B.json", "Show", 60.0, [
+            {"id": "c1", "name": "Finale", "tc": "00:00:50:00"}], 3)
+        ok3, _t, e3 = store.save("B.json", "Show", 60.0, [
+            {"id": "c1", "name": "Finale", "tc": "00:00:50:00"},
+            {"name": "New", "tc": "00:00:06:00"}], 4)
+        check(ok and ok2 and ok3 and
+              [c["id"] for c in e["cues"]] == ["c2", "c1"] and
+              e2["next_id"] == 3 and
+              [c["id"] for c in e3["cues"]] == ["c3", "c1"],
+              f"c2 deleted, the next cue is c3: {e3 and e3['cues']}")
+        ok, _t, _e = store.save("B.json", "Show", 60.0, one, 5)
+        check(ok and rev() == 6, "back to one cue, revision 6")
         for broken, what in (
                 ("{not json", "bad JSON"),
                 ('{"play_from_format": 2, "rev": 9, "shows": {}}',
@@ -93171,7 +93187,7 @@ def test_play_from_cue_routes():
     imports = sorted(set(re.findall(r"^\s*(?:import|from)\s+([\w.]+)", src,
                                     re.M)))
     check(imports == [".", "datetime", "json", "math", "os", "re",
-                      "threading", "time"] and
+                      "threading", "time", "unicodedata"] and
           "from . import audit as audit_mod" in src,
           f"play_from.py imports nothing that sends: {imports}")
     users_of = []
@@ -93282,8 +93298,15 @@ def test_play_from_cue_routes():
         code, out, _h = save(good, ctx("admin"))
         check(code == 403 and "signed-in admin" in out["error"],
               "with no users set up, nobody may save (admin only)")
-        code, out = read(ctx("admin"))
-        check(code == 403, "and nobody is signed in to read")
+        # With no users file, the show PC reads it as the other Settings
+        # do (review of #192), read only, and says why; the network not.
+        code, out = read(ctx(None))
+        check(code == 200 and out["may_edit"] is False and
+              "Set up users first" in out["edit_why"] and
+              out["cue"] == "Show",
+              f"no users: the show PC reads it, read only: {code} {out}")
+        code, out = read(ctx(None, local=False))
+        check(code == 403, "no users: the show network does not read it")
         users_on()
         code, out, _h = save(dict(good, show="Nope.json"), ctx("admin"))
         check(code == 409 and "Nope.json is not in the show folder" in
@@ -93339,6 +93362,49 @@ def test_play_from_cue_routes():
         code, out = read(ctx("viewer", False, "Vee"))
         check(code == 200 and "Past its end now: Finale" in
               out["audio_note"], f"a new render: {out.get('audio_note')}")
+        # Review of #192: a list whose show file is gone is named; one that
+        # is there is not.
+        check(out["missing"] == ["Show.json"],
+              f"no Show.json in the folder: named: {out['missing']}")
+        open(os.path.join(work, "Show.json"), "w").close()
+        code, out = read(ctx("viewer", False, "Vee"))
+        check(out["missing"] == [], f"Show.json there: {out['missing']}")
+        # The name exactly as the folder spells it, even on a disk that
+        # does not tell case apart (Windows, macOS): simulated here.
+        real_isfile = os.path.isfile
+        os.path.isfile = lambda p_: True if os.path.dirname(p_) == work \
+            else real_isfile(p_)
+        try:
+            got = RM.Remote.play_from_show_info(rm, "show.json")
+        finally:
+            os.path.isfile = real_isfile
+        check(got[0] is None and "show.json is not in the show folder" in
+              got[2], f"show.json is not Show.json: {got}")
+        # A broken file: the save says so (the page offers Replace), and
+        # the replace an admin asks for goes through.
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("{broken")
+        code, out = read(ctx("admin", False))
+        r = out["rev"]
+        check(out["replace_needed"] is True and r >= 2,
+              f"a broken file is read as broken: {out.get('error')}")
+        code, out, _h = save({"show": "Show.json", "rev": r, "cues": []},
+                             ctx("admin"))
+        check(code == 409 and out["replace_needed"] is True and
+              out["stale"] is False and open(path).read() == "{broken",
+              f"not saved over without replace: {out}")
+        code, out, _h = save({"show": "Show.json", "rev": r - 1,
+                              "cues": [], "replace": True}, ctx("admin"))
+        check(code == 409 and out["stale"] is True and
+              out["replace_needed"] is False, f"a stale page: {out}")
+        code, out, _h = save({"show": "Show.json", "rev": r, "cues": [],
+                              "replace": "yes"}, ctx("admin"))
+        check(code == 409 and out["replace_needed"] is True,
+              "replace is the JSON word true, nothing else")
+        code, out, _h = save({"show": "Show.json", "rev": r, "cues": [],
+                              "replace": True}, ctx("admin"))
+        check(code == 200 and out["entry"]["rev"] == r + 1 and
+              "replaced the file" in out["text"], f"replaced: {out}")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")
@@ -93404,8 +93470,8 @@ def test_play_from_cue_card_in_2_0():
           'id="pf-show"' in sec and "pf-" not in show,
           "the card is on the Settings tab, nothing of it on SHOW")
     check('"/api/remote/play-from-cues?show="' in two and
-          'post("/api/remote/play-from-cues-save", {show:PF.show, '
-          'rev:PF.rev, cues:cues})' in two and
+          'const body = {show:PF.show, rev:PF.rev, cues:cues};' in two and
+          'post("/api/remote/play-from-cues-save", body)' in two and
           "/api/remote/play-from-cues" not in one,
           "it reads and saves the cue list routes, 2.0's own")
     for n in ("pfCheck", "pfFrames", "pfTc", "pfDraw", "loadPlayFrom"):
@@ -93420,7 +93486,9 @@ def test_play_from_cue_card_in_2_0():
     for words in ("sends nothing to the rig", "ltcplay_play_from.json",
                   "play_from_history", "at least 1", "2 when left",
                   "inside the show AUDIO", "used once", "journal",
-                  "Anyone signed in can read"):
+                  "Anyone signed in can read", "tap Reload",
+                  "Replace the", "exactly as", "nobody can save it",
+                  "control or invisible"):
         check(a > 0 and words in para, f"OPERATOR.md says: {words}")
     check(a > 0 and _cfg_dashes(para), "OPERATOR.md: no long dashes")
     node = shutil.which("node")
@@ -93478,6 +93546,42 @@ def test_play_from_cue_card_in_2_0():
             want.append(True)
     check(any(want) and not all(want), "the cases hold lists the engine "
           "saves and lists it refuses")
+    # Review of #192: the broken file, the stale page, Reload, Replace and
+    # a Time field wide enough for HH:MM:SS:FF.
+    for need in ('id="pf-reload"', 'id="pf-replace" hidden',
+                 "Replace the file</button>"):
+        check(need in sec, f"the card has {need}")
+    check('const PF_STALE_WORDS = "' + PF.STALE_WORDS + '";' in two,
+          "the card knows the engine's stale words")
+    check(re.search(r"\.pfrow\{display:grid;grid-template-columns:"
+                    r"minmax\(0,2fr\) minmax\((1[7-9]\d|[2-9]\d\d)px,", two),
+          "the Time column is never narrower than HH:MM:SS:FF (172 px)")
+    check("if(PF.error && PF_REPLACE) body.replace = true;" in two and
+          two.count("PF_REPLACE = true") == 1,
+          "replace is sent only after Replace the file was chosen")
+    fn_r = _js_function(two, "loadPlayFrom") or ""
+    check("PF_STALE = false; PF_REPLACE = false;" in fn_r,
+          "a fresh read clears the stale lock and the replace choice")
+    flow = r"""
+let PF = null, PF_DIRTY = false, PF_REPLACE = false, PF_STALE = false;
+const PF_STALE_WORDS = "%s";
+const out = [];
+PF = {may_edit:true, error:""}; PF_DIRTY = true;
+out.push(["edit", pfMayEdit(), pfSaveOk([[]])]);
+out.push(["bad cue", pfSaveOk([["Name used twice."]])]);
+PF = {may_edit:false, error:""};
+out.push(["viewer", pfMayEdit(), pfSaveOk([[]])]);
+PF = {may_edit:true, error:"could not be read"};
+out.push(["broken", pfMayEdit(), pfSaveOk([[]])]);
+PF_REPLACE = true;
+out.push(["broken, replace chosen", pfMayEdit(), pfSaveOk([[]])]);
+PF = {may_edit:true, error:""}; PF_REPLACE = false;
+const said = pfRefused("Not saved: the name is too long.");
+out.push(["other refusal", PF_STALE, said]);
+const said2 = pfRefused("Not saved: someone saved the play-from cues %s. Reload.");
+out.push(["stale", PF_STALE, pfMayEdit(), pfSaveOk([[]]), said2]);
+console.log(JSON.stringify(out));
+""" % (PF.STALE_WORDS, PF.STALE_WORDS)
     fns = "\n".join(_js_function(two, n) or "" for n in
                     ("pfFrames", "pfTc", "pfCheck", "pfBody"))
     js = ("const PF_DASH = /[\\u2013\\u2014]/;\n" + fns +
@@ -93521,6 +93625,32 @@ def test_play_from_cue_card_in_2_0():
               f"{got[i]}")
         check(all(_cfg_dashes(t) and len(t.split()) <= 8 for t in said),
               f"the card's words are short, no long dashes: {said}")
+    # Who may edit and save, over a broken file and after a stale save.
+    fl = "\n".join(_js_function(two, n) or "" for n in
+                    ("pfMayEdit", "pfSaveOk", "pfRefused")) + flow
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, "flow.js")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(fl)
+        r = subprocess.run([node, p], capture_output=True, text=True,
+                           timeout=60)
+    try:
+        st = {row[0]: row[1:] for row in json.loads(r.stdout)}
+    except (ValueError, TypeError):
+        st = {}
+    check(st.get("edit") == [True, True] and st.get("bad cue") == [False]
+          and st.get("viewer") == [False, False],
+          f"an admin edits and saves a good list; a viewer neither: {st} "
+          f"{r.stderr[:300]}")
+    check(st.get("broken") == [False, False] and
+          st.get("broken, replace chosen") == [True, True],
+          f"over a broken file nothing is edited or saved until Replace "
+          f"the file is chosen: {st}")
+    check(st.get("other refusal") == [False,
+                                      "Not saved: the name is too long."]
+          and (st.get("stale") or [None])[:3] == [True, False, False] and
+          str((st.get("stale") or [""])[-1]).endswith("Tap Reload."),
+          f"a stale save locks this copy until Reload: {st}")
     print("  ok")
 
 

@@ -3117,6 +3117,7 @@ const PF_DASH = /[\u2013\u2014]/;
 // PF_STALE: a save was refused because someone saved first; nothing more
 // is saved from this copy until Reload reads the list again.
 let PF = null, PF_DIRTY = false, PF_REPLACE = false, PF_STALE = false;
+const PF_STALE_WORDS = "since this screen read them";     // play_from.STALE_WORDS
 function pfFrames(tc){
   const m = /^(\d{2}):(\d{2}):(\d{2}):(\d{2})$/.exec(String(tc || "").trim());
   if(!m) return null;
@@ -3187,6 +3188,12 @@ function pfMayEdit(){
 }
 function pfSaveOk(bad){
   return pfMayEdit() && PF_DIRTY && !bad.some(b => b.length);
+}
+// A refused save: when someone saved first, this copy is locked (nothing
+// more is saved from it) until Reload reads the list again.
+function pfRefused(message){
+  if(String(message).includes(PF_STALE_WORDS)) PF_STALE = true;
+  return String(message) + (PF_STALE ? " Tap Reload." : "");
 }
 // The marks again after an edit, in place: the rows are not drawn again,
 // so the field being typed in keeps its place.
@@ -3275,11 +3282,7 @@ $("pf-save").addEventListener("click", async () => {
     PF_DIRTY = false;
     await loadPlayFrom(true);
     pfMsg(j.text || "Saved.", "ok");
-  }catch(e){
-    // Someone saved first: this copy is not saved over; Reload reads it again.
-    if(String(e.message).includes("since this screen read them")){ PF_STALE = true; pfDraw(); }
-    pfMsg(e.message + (PF_STALE ? " Tap Reload." : ""), "bad");
-  }
+  }catch(e){ pfMsg(pfRefused(e.message), "bad"); pfDraw(); }
 });
 
 // ---- The brand (1.0's loadBrand): the show's name from the settings, the
