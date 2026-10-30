@@ -885,6 +885,38 @@ that long. The stages, in this order:
 - **Where.** The editor is on Interface 2.0 (a later update). Until it is
   there, nothing sends from the timeline either.
 
+### The fuel and air charge (never a double charge)
+
+Jeff, 2026-10-30: "If air and fuel were pressurized, but there was no
+shot, the stop button doesn't depressurize that. ... Do not under any
+circumstances double charge the air or fuel." LTC Player keeps a record
+of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
+
+- **What charges a tank:** Fuel Charge (55) or Air Charge (56) reaching
+  the Fireball while flamesafe says it is armed, from the show or from the
+  Fireball page.
+- **What empties both tanks:** the shot (Valve Open, 57, on and then off
+  again) or Purge (59, on and then off again), each only once flamesafe
+  has reported sending it. Nothing else: **Stop, Hold, the end of a show,
+  a disarm and a restart of LTC Player change nothing.** The Igniter
+  plays no part.
+- **A top-off is not a double charge.** Fuel or Air pressed again on the
+  Fireball page while that tank is charged is counted as a top-off by
+  that person, and the journal says so.
+- **NOT KNOWN:** the record could not be read, LTC Player stopped while
+  the valve or the purge was open, or a charge or release went out while
+  flamesafe's status was not known. A shot or a purge seen for certain
+  makes it EMPTY again. While a tank is CHARGED or NOT KNOWN, nothing
+  charges it automatically.
+- **The very first start** (no record yet) counts both tanks EMPTY and the
+  journal says: if the fuel or air tank is pressurised now, press Purge
+  on the Fireball page.
+- Kept in `ltcplay_fireball_charge.json` in the settings folder (written
+  whole on every change, so it survives a power cut); every change is one
+  journal line and one audit line. Every screen's status carries it as one
+  sentence, for example "Fuel: charged 14:32. Air: charged 14:35. No shot
+  fired." There is no pressure reading: it is never invented.
+
 ## Stop, Hold and Reset on the rack screen
 
 Jeff, 2026-10-28. Each screen has one Stop, where the button that started

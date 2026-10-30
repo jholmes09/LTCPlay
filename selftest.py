@@ -92114,12 +92114,21 @@ def test_fireball_timeline_docs_in_plain_words():
                  "fireball_timeline_history"):
         check(" ".join(need.split()) in " ".join(o.split()),
               f"OPERATOR.md's fireball timeline section says {need!r}")
+    c = _fb_doc_part("OPERATOR.md", "### The fuel and air charge", "\n## ")
+    for need in ("EMPTY", "CHARGED", "NOT KNOWN", "Fuel Charge (55)",
+                 "Air Charge (56)", "Valve Open, 57", "Purge (59",
+                 "Stop, Hold, the end of a show", "change nothing",
+                 "Igniter plays no part", "top-off is not a double charge",
+                 "very first start", "press Purge",
+                 "ltcplay_fireball_charge.json", "never invented"):
+        check(" ".join(need.split()) in " ".join(c.split()),
+              f"OPERATOR.md's charge section says {need!r}")
     order = [o.index(w) for w in ("| Fuel (", "| Air (", "| Igniter (",
                                   "| Valve Open (")]
     check(order == sorted(order),
           "OPERATOR.md lists the stages in Jeff's order: Fuel, Air, "
           "Igniter, Valve Open")
-    for name, part in (("MORNING.md", m), ("OPERATOR.md", o)):
+    for name, part in (("MORNING.md", m), ("OPERATOR.md", o + c)):
         check("\u2014" not in part and "\u2013" not in part,
               f"{name}'s fireball text has no em or en dashes")
     print("  ok")
