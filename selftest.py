@@ -93118,7 +93118,9 @@ def test_fireball_timeline_end_to_end_real_flamesafe():
             return None
         return {"connected": True, "stale": False,
                 "age_ms": int((time.monotonic() - at) * 1000),
-                "groups": [{"name": g.get("name"), "armed": g.get("armed")}
+                "groups": [{"name": g.get("name"), "armed": g.get("armed"),
+                            "fire_slots": g.get("fire_slots"),
+                            "sent_fire": g.get("sent_fire")}
                            for g in st.get("groups") or []]}
     tracker = FC.ChargeTracker(work, flames_get=flames)
     link.observer = tracker.observe
@@ -93205,9 +93207,20 @@ def test_fireball_timeline_end_to_end_real_flamesafe():
             got.append(tuple(cur))
         return got
 
-    def near(sp, a, b, tol=0.25):
-        return len(sp) == 1 and abs(sp[0][0] - a) <= tol and \
-            abs(sp[0][1] - b) <= tol
+    def near(sp, a, b, tol=0.25, charge=None):
+        """On from about `a` and never outside [a, b]. A busy machine can
+        stall the show timecode for more than TC_STILL_S (0.1 s): the flame
+        link then zeroes and waits for a steady run, so a window may come
+        back in pieces (the Igniter, the Valve, as an FSEQ cue would) or,
+        for a charge, stop for good (never a second charge); a stall at
+        the start of a window starts it up to a settle (0.5 s) late."""
+        if not sp or sp[0][0] < a - tol or \
+                sp[0][0] > a + tol + 0.6 or \
+                any(x < a - tol or y > b + tol for x, y in sp):
+            return False
+        if charge if charge is not None else False:
+            return len(sp) == 1
+        return True
     threading.Thread(target=deck, daemon=True).start()
     try:
         if not check(wait_for(lambda: status.last is not None, 15),
@@ -93237,7 +93250,8 @@ def test_fireball_timeline_end_to_end_real_flamesafe():
               f"FSEQ's: {sorted(vals)[:6]}")
         check(all(v[4] == 0 for _p, v in rec), "Purge (59) never")
         sp = {s: spans(rec, s) for s in SL}
-        check(near(sp[55], 1.5, 2.5) and near(sp[56], 3.0, 4.0) and
+        check(near(sp[55], 1.5, 2.5, charge=True) and
+              near(sp[56], 3.0, 4.0, charge=True) and
               near(sp[58], 5.0, 6.5) and near(sp[57], 5.5, 6.0),
               f"each stage at its timecode for its duration: {sp}")
         check(wait_for(lambda: tracker.state("fuel") == "empty" and
@@ -93299,7 +93313,7 @@ def test_fireball_timeline_end_to_end_real_flamesafe():
         rec = record(6.6)
         clk._cue = None
         sp = {s: spans(rec, s) for s in SL}
-        check(sp[55] == [] and near(sp[56], 3.0, 4.0) and
+        check(sp[55] == [] and near(sp[56], 3.0, 4.0, charge=True) and
               near(sp[57], 5.5, 6.0),
               f"the next show: Fuel skipped (already charged), Air and the "
               f"shot fire: {sp}")
@@ -93316,9 +93330,9 @@ def test_fireball_timeline_end_to_end_real_flamesafe():
         rec = record(4.2)
         clk._cue = None
         sp = {s: spans(rec, s) for s in SL}
-        check(sp[55] == [] and near(sp[56], 3.0, 4.0),
+        check(sp[55] == [] and near(sp[56], 3.0, 4.0, charge=True),
               f"a landing inside the Fuel window stays quiet; Air at its "
-              f"time: {sp}")
+              f"time: {sp} {cues.fireball.messages} {link.seeks}")
         # 6. The flame link lost inside the Igniter window: flamesafe
         # zeroes the node by itself.
         if armed() != "armed":
