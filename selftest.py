@@ -93182,12 +93182,33 @@ def test_fireball_timeline_routes():
                         "show=SHOW.JSON")
         check(v_.get("show") == "Show.json",
               f"and read as Show.json: {v_.get('show')}")
-        # Two files that differ only by case: refused, said.
+        # Two files that differ only by case: refused, said. A case-blind
+        # folder (Windows, macOS) cannot hold both: there the second
+        # spelling IS the first file, and is found as it.
         open(os.path.join(work, "OTHER.json"), "w").close()
+        both = {"Other.json", "OTHER.json"} <= set(os.listdir(work))
         code, out, _h = save(dict(good, show="other.JSON", rev=rev_now + 1),
                              ctx("admin"))
-        check(code == 409 and "more than one show file" in out["error"],
-              f"two spellings in the folder: refused: {out}")
+        if both:
+            check(code == 409 and "more than one show file" in out["error"],
+                  f"two spellings in the folder: refused: {out}")
+        else:
+            check(code == 409 and opened[-1] == "Other.json" and
+                  "Other.json" in out["error"],
+                  f"a case-blind folder: other.JSON is Other.json: {out}")
+        # The rule itself, whatever this machine's folders do.
+        real_ld = os.listdir
+        os.listdir = lambda d: ["Show.json", "Other.json", "OTHER.json"] \
+            if d == work else real_ld(d)
+        real_if = os.path.isfile
+        os.path.isfile = lambda q: True if os.path.dirname(q) == work \
+            else real_if(q)
+        try:
+            name_, why_ = rm.fireball_show_name("other.JSON")
+        finally:
+            os.listdir, os.path.isfile = real_ld, real_if
+        check(name_ is None and "more than one show file" in why_,
+              f"two spellings listed in a folder: refused: {why_}")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")
