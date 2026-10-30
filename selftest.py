@@ -92224,7 +92224,11 @@ def test_fireball_timeline_docs_in_plain_words():
                  "Settings row", "never by when", "during a show",
                  "never falls back to its FSEQ",
                  "ltcplay_fireball_timeline.json",
-                 "fireball_timeline_history"):
+                 "fireball_timeline_history",
+                 "Interface 2.0, the Schedule tab, Fireball timeline",
+                 "nothing is sent", "Sign in to edit", "Admins only",
+                 "Arming off here", "Hold, Stop show, Disarm flames and "
+                 "Abort stay at full strength"):
         check(" ".join(need.split()) in " ".join(o.split()),
               f"OPERATOR.md's fireball timeline section says {need!r}")
     c = _fb_doc_part("OPERATOR.md", "### The fuel and air charge", "\n## ")

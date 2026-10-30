@@ -894,7 +894,17 @@ that long. The stages, in this order:
   and one audit line: who, which screen, and what changed, stage by
   stage. If the file cannot be read, no show fires its fireball from a
   timeline: a show set to Timeline never falls back to its FSEQ.
-- **Where.** The editor is on Interface 2.0 (a later update).
+- **Where: Interface 2.0, the Schedule tab, Fireball timeline.** Pick
+  the show file, then FSEQ or Timeline. Each stage is one row: tap its
+  name to use it or leave it out, type its start (HH:MM:SS:FF) and its
+  length in seconds. The bar under the rows draws each stage on the show's
+  length. A row that would be refused says why in red at once and nothing
+  is sent. Save sends it; Revert reads the saved one again. The card says
+  who saved it last, and when a show is live that a save applies from the
+  next frame. Signed out, without the Settings row, or from an iPad with
+  arming from a screen off, every field and Save are greyed and Save says
+  why ("Sign in to edit", "Admins only", "Arming off here"). Hold, Stop
+  show, Disarm flames and Abort stay at full strength above and beside it.
 
 ### In a show set to Timeline
 

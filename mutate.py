@@ -18962,6 +18962,57 @@ def build():
   "tk.state === \"charged\" ? \"Charged: a press is a top-off\"",
   "tk.state === \"charged\" ? \"\""),
 
+ # -- the fireball timeline editor on 2.0 (remote2.html, 2026-10-30) -----
+ ("fireball editor: an operator may save the timeline",
+  "ltcplay/web/remote2.html",
+  "  if(!mayRow(st, \"settings\")) return \"Admins only\";",
+  "  if(false) return \"Admins only\";"),
+
+ ("fireball editor: signed out may save the timeline",
+  "ltcplay/web/remote2.html",
+  "  if(!me.user) return \"Sign in to edit\";",
+  "  if(false) return \"Sign in to edit\";"),
+
+ ("fireball editor: an iPad saves with arming from a screen off",
+  "ltcplay/web/remote2.html",
+  "  if(!local && !(st && st.arming && st.arming.enabled)) return \"Arming off here\";",
+  "  if(false) return \"Arming off here\";"),
+
+ ("fireball editor: no contact may save",
+  "ltcplay/web/remote2.html",
+  "  if(isSt) return \"No contact\";",
+  "  if(false) return \"No contact\";"),
+
+ ("fireball editor: a refused row is sent anyway",
+  "ltcplay/web/remote2.html",
+  "  if(bad.length){ fbtSay(\"Not saved: fix the stages marked below.\", \"bad\"); return; }",
+  "  if(false){ fbtSay(\"Not saved: fix the stages marked below.\", \"bad\"); return; }"),
+
+ ("fireball editor: fields stay open for a screen that may not save",
+  "ltcplay/web/remote2.html",
+  "el.disabled = !!why || !v || !!v.show_problem;",
+  "el.disabled = false;"),
+
+ ("fireball editor: frame 30 is a timecode",
+  "ltcplay/web/remote2.html",
+  "  if(mi > 59 || s > 59 || f >= FBT_FPS) return null;",
+  "  if(mi > 59 || s > 59 || f > FBT_FPS) return null;"),
+
+ ("fireball editor: a length of 0 is accepted",
+  "ltcplay/web/remote2.html",
+  "    if(!txt || !isFinite(d) || d <= 0) e.push(",
+  "    if(!txt || !isFinite(d) || d < 0) e.push("),
+
+ ("fireball editor: the save does not carry the revision it read",
+  "ltcplay/web/remote2.html",
+  "  return {show:show, rev:rev, source:source, stages:stages};",
+  "  return {show:show, rev:0, source:source, stages:stages};"),
+
+ ("fireball editor: a stage left out is sent",
+  "ltcplay/web/remote2.html",
+  "    if(!r || !r.used) continue;",
+  "    if(!r) continue;"),
+
  # -- the fireball timeline on the flame cues (fireball_cues.py) -----------
  ("fireball cues: the FSEQ's 55 to 59 are not masked for a timeline show",
   "ltcplay/fireball_cues.py",
