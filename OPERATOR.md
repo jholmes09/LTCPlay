@@ -1088,10 +1088,11 @@ choices:
   with no laser output; a failed Flame link leaves every flame cue at
   zero. (A Network failure that names MadMapper, BEYOND or the flame node
   counts the same.) Audio is never faked: a show does not start without
-  its sound, and Start now then says why. The Delayed countdown stops (and
-  a Delayed already playing is stopped), the alert stays open so the booth
-  sees what is degraded, and the journal records who, when and every
-  failed check. It is used once per failed check, and not for a check
+  its sound, and Start now then says why. Nothing plays on the PA by
+  itself, so there is no countdown to stop; an announcement someone pressed
+  that is still playing fades out as the show starts. The alert stays
+  open so the booth sees what is degraded, and the journal records who,
+  when and every failed check. It is used once per failed check, and not for a check
   more than 10 minutes old. When the show ends, everything it left off
   is back for the next one, which is checked again in full. Continue anyway
   never gets past an Abort (press Reset), a Stop under way, the hold to

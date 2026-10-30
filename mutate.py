@@ -39,8 +39,9 @@ it (twice, with --expected), and the restore is proved byte for byte.
                        that failed a check (LTC_SELFTEST_FAILFAST in
                        selftest.py). --no-failfast runs every test.
     --hints FILE       mutate_catchers.json: run the test that caught each
-                       mutation last time first. A run counts only when it
-                       fails in that test, and that test passes when run
+                       mutation last time first (or several, comma
+                       separated, all first). A run counts only when it
+                       fails in one of them, and they pass when run
                        first with nothing mutated (checked once per test);
                        anything else runs again in file order. A hinted
                        catch is confirmed by a plain file-order run with no
@@ -10393,6 +10394,35 @@ def build():
   '(i.required === false ? " WARNING: " : " FAILED: ")',
   '" FAILED: "'),
 
+ # Cold review of PR #183.
+ ("no PA: the engine announces through the conductor by itself",
+  "ltcplay/fire_ice.py",
+  "    svc.conductor = conductor\n",
+  "    svc.conductor = conductor\n"
+  "    svc.on_show_started = (lambda *a, **k: conductor.announce(\n"
+  "        \"delayed\", \"Andy\", \"Rack screen\"))\n"),
+
+ ("no PA: a missing Delayed recording reads OK on the Announcements lamp",
+  "ltcplay/remote.py",
+  "                if dl and not dl[0].get(\"available\"):",
+  "                if False:"),
+
+ ("no PA: a passing rig check hides its warning on 1.0's card",
+  "ltcplay/web/remote.html",
+  '    $("rc-warn").hidden = !prl.warn;',
+  '    $("rc-warn").hidden = true;'),
+
+ ("no PA: an account may take one of the engine's names",
+  "ltcplay/users.py",
+  'RESERVED = ("unsigned", "system", "signed out", "nobody", "deck", "engine",\n'
+  '            "scheduler", "ltc player", "ltcplay")',
+  'RESERVED = ("unsigned", "system", "signed out", "nobody", "deck")'),
+
+ ("no PA: a refused Test tone in the engine's name journals as a Play",
+  "ltcplay/announce.py",
+  '                          action="test tone" if tone else "play",',
+  '                          action="play",'),
+
  # Review of PR #129 (cold review, 2026-10-27).
  ("an announcement pressed at showtime pauses the show that just started",
   "ltcplay/schedule_service.py",
@@ -19572,11 +19602,13 @@ def _sweep(todo, workers, expected, unknown, expected_file):
     def attempt(hint, root, env):
         """One run of the mutant: (green, the test it stopped in, what
         failed, the hint if the run that counts had it first). A run with a
-        hint counts only when it failed in the hinted test; any other result
-        (green, red elsewhere, stopped without saying where) is run again in
-        file order, and that one counts."""
+        hint counts only when it failed in a hinted test (a hint may name
+        several, comma separated, as LTC_SELFTEST_FIRST does); any other
+        result (green, red elsewhere, stopped without saying where) is run
+        again in file order, and that one counts."""
         green = run_suite(limit, ff, hint, False, root, env)
-        if hint and not (not green and _LAST_STOP[0] == hint):
+        if hint and not (not green
+                         and _LAST_STOP[0] in hint.split(",")):
             green = run_suite(limit, ff, None, False, root, env)
             hint = None
         return green, _LAST_STOP[0], list(_LAST_FAILS), hint

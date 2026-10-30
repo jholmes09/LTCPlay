@@ -1646,10 +1646,14 @@ class AnnounceService:
                 raise ValueError(text)
             engine = self._engine_name(who, screen)
             if engine:
-                text = (f"A Play of {label} came from {engine}, not from a "
-                        f"person's press. Nothing plays on the public PA "
-                        f"automatically. Nothing was changed.")
-                self._emit(actor="system", action="play",
+                what = "Test tone" if tone else f"Play of {label}"
+                text = (f"A {what} came from {engine}, not from a person's "
+                        f"press. "
+                        f"Nothing plays on the public PA automatically. "
+                        f"Nothing was changed.")
+                # A refused Test tone journals as one (as during a show).
+                self._emit(actor="system",
+                          action="test tone" if tone else "play",
                           outcome="refused", reason="not an operator press",
                           text=text, ann_id=ann_id, who=who, screen=screen,
                           state=state)

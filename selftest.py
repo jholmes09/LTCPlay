@@ -18327,6 +18327,65 @@ def test_nothing_plays_on_the_pa_without_an_operator_press():
           f"the only calls that start an announcement are the operator's "
           f"routes: extra {sorted(found - allowed)}, missing "
           f"{sorted(allowed - found)}")
+    # The show engine's own path to the player (Conductor.announce, its
+    # self.announcer(...), wired to AnnounceService.play in fire_ice.py):
+    # reached only from a Stream Deck key press, never by the engine.
+    c_allowed = {
+        # Who asks the conductor to announce: page 2's key edge only.
+        ("ltcplay/streamdeck.py", "_page2_run", "_announce_press"),
+        ("ltcplay/streamdeck.py", "_announce_press", "getattr announce"),
+        # Inside the conductor: announce() queues it, the executor plays.
+        ("ltcplay/conductor.py", "announce", "_accept announce="),
+        ("ltcplay/conductor.py", "_run", "_run_announce"),
+        ("ltcplay/conductor.py", "_run_announce", "_play"),
+        ("ltcplay/conductor.py", "_play", "announcer"),
+        # The wiring: the player's play() and nothing else.
+        ("ltcplay/fire_ice.py", "announcer=announce.play"),
+        ("ltcplay/conductor.py", "__init__", "self.announcer = announcer")}
+    c_found = set()
+    for path in files:
+        rel = os.path.relpath(path, root).replace(os.sep, "/")
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                for kw in node.keywords:
+                    if kw.arg == "announcer":
+                        v = kw.value
+                        if isinstance(v, ast.IfExp):
+                            v = v.body
+                        c_found.add((rel, "announcer=" + ast.unparse(v)))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Assign) and any(
+                        isinstance(t, ast.Attribute) and t.attr == "announcer"
+                        for t in node.targets):
+                    c_found.add((rel, fn.name, ast.unparse(node)))
+                if not isinstance(node, ast.Call):
+                    continue
+                f = node.func
+                if isinstance(f, ast.Name) and f.id == "getattr" and \
+                        len(node.args) >= 2 and \
+                        isinstance(node.args[1], ast.Constant) and \
+                        node.args[1].value == "announce" and \
+                        "conductor" in ast.unparse(node.args[0]).lower():
+                    c_found.add((rel, fn.name, "getattr announce"))
+                if not isinstance(f, ast.Attribute):
+                    continue
+                if f.attr in ("announce", "_announce_press", "_run_announce",
+                              "_play", "announcer") and (
+                        f.attr != "_play" or rel == "ltcplay/conductor.py"):
+                    c_found.add((rel, fn.name, f.attr))
+                if f.attr == "_accept" and any(
+                        kw.arg == "announce" for kw in node.keywords):
+                    c_found.add((rel, fn.name, "_accept announce="))
+    check(c_found == c_allowed,
+          f"the conductor's announcement (Conductor.announce, "
+          f"self.announcer) is reached only from a Stream Deck press: extra "
+          f"{sorted(c_found - c_allowed)}, missing "
+          f"{sorted(c_allowed - c_found)}")
     # 2. Exercised: the real scheduler, a real AnnounceService, every
     # automatic path there is.
     S = _sched()
@@ -18409,6 +18468,21 @@ def test_nothing_plays_on_the_pa_without_an_operator_press():
               f"{tried}")
     finally:
         R.close()
+    # No account can carry one of the engine's names (users.check_name),
+    # so a real person's press never reads as the engine's.
+    from ltcplay import users as U
+    check({n.lower() for n in A.ENGINE_NAMES} <=
+          {n.lower() for n in U.RESERVED},
+          f"every engine name is reserved: {sorted(A.ENGINE_NAMES)} "
+          f"{U.RESERVED}")
+    for nm in ("Engine", "Scheduler", "LTC Player", "ltcplay", "System",
+               "  ltc   player "):
+        try:
+            U.check_name(nm)
+            check(False, f"an account may be named {nm!r}")
+        except ValueError as e:
+            _no_dashes(str(e), "check_name's refusal")
+    check(U.check_name("Andy") == "Andy", "a person's name is still fine")
     # 3. A play in the engine's own name is refused before anything is
     # claimed; a person's press plays.
     R, booth, ann = _alert_hold_rig(S, run=False)
@@ -18427,6 +18501,16 @@ def test_nothing_plays_on_the_pa_without_an_operator_press():
         check(len(rows) == 3 and all(r["reason"] == "not an operator press"
                                      for r in rows),
               f"each refusal journaled: {rows}")
+        try:
+            ann.test_tone("LTC Player", "engine")
+            check(False, "a Test tone in the engine's name was accepted")
+        except ValueError as e:
+            check(str(e).startswith("A Test tone came from LTC Player") and
+                  ann.playing is None, f"a Test tone as the engine: {e}")
+        rows = [r for r in ann.journal if r.get("outcome") == "refused"]
+        check(len(rows) == 4 and rows[-1]["action"] == "test tone" and
+              rows[-1]["reason"] == "not an operator press",
+              f"a refused Test tone journals as a Test tone: {rows[-1:]}")
         ann.play("delayed", "Andy", "Rack screen", surface=True)
         check(ann.playing == "delayed",
               "the operator's own press still plays the Delayed")
@@ -47033,6 +47117,18 @@ def test_mutate_fast_path_never_turns_red_green():
               f"twice: {mine}")
         check(learned.get("m one") == "test_other",
               f"the catcher learned is where it really stopped: {learned}")
+
+        # A hint may name several tests, comma separated: a run red in any
+        # of them counts as the hinted run (confirmed in file order).
+        code, lines, calls, learned = sweep(
+            red_in_t_guard, {"m one": "test_other,test_guard"})
+        mine = [c for c in calls if c[0] == "m one"]
+        check(code == 0 and mine == [
+                  ("m one", True, "test_other,test_guard", False, True),
+                  ("m one", True, None, False, True)],
+              f"red in the second test a hint names counts: {mine}")
+        check(learned.get("m one") == "test_guard",
+              f"the catcher learned is the one test it stopped in: {learned}")
 
         # Red only when the hinted test runs first (an order-dependent leak:
         # the suite in file order is green under the mutation). The file
@@ -89242,8 +89338,9 @@ def test_preroll_continue_anyway_starts_now_with_failed_outputs_off():
             "check holds the show, a person's Continue starts it NOW (late), "
             "journaled with who and the failed checks; the failed video and "
             "lasers stay OFF for that show (no bank select, no fade up, no "
-            "timecode to MadMapper, no laser output, no unblank), the "
-            "Delayed countdown stops, the alert stays open; the next show "
+            "timecode to MadMapper, no laser output, no unblank), a pressed "
+            "announcement still playing fades as the show starts, the alert "
+            "stays open; the next show "
             "is checked again in full and runs with everything; never past "
             "an Abort, never by the scheduler itself")
     n = _pr_night({"Video": (False, "MadMapper did not answer the "
@@ -89517,7 +89614,10 @@ def test_preroll_announcements_is_only_a_warning():
             "output or no Delayed recording the rig check still PASSES, "
             "says 'Announcements WARNING: ...' in its line, raises no "
             "alert, holds no show and needs no Continue anyway; the rack "
-            "screen lists it as a warning, never as FAILED")
+            "screen lists it as a warning, never as FAILED, and a missing "
+            "Delayed recording stays visible on a passing check: the "
+            "Announcements lamp says warn (1.0 and 2.0) and 1.0's Rig "
+            "check card says the warning on its own line")
     import types
     from ltcplay import web as W, preroll as P, alerts as AL
     F = _fi_mod()
@@ -89563,9 +89663,44 @@ def test_preroll_announcements_is_only_a_warning():
         _no_dashes(r["text"], "the warning line")
         check(not al.open() and pr.last_failed() is None,
               f"{what}: no alert, nothing to continue past: {al.view()}")
-    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "ltcplay", "web", "remote.html"),
+    # A missing Delayed recording stays visible on a passing rig check:
+    # the rack screen's Announcements lamp (1.0's strip, 2.0's Systems
+    # badge) says warn, never bad, and the 1.0 Rig check card says it on
+    # its own line (prerollLook's warn, below).
+    from ltcplay import remote as RM
+    here = os.path.dirname(os.path.abspath(__file__))
+    with tempfile.TemporaryDirectory() as d:
+        rem = RM.Remote(None, folder=d)
+        rem._announce = object()
+        for missing, avail, want in (
+                (True, False, ("warn", "Delayed recording missing")),
+                (False, False, ("warn", "Delayed recording cannot play")),
+                (False, True, ("ok", "own output"))):
+            rem._ann_cache = (rem.clock(), {
+                "configured": True, "ok": True, "device_set": True,
+                "route": {"ok": True, "kind": "own"},
+                "items": [{"id": "delayed", "available": avail,
+                           "missing": missing}], "playing": None})
+            lamp = [(x["state"], x["word"]) for x in rem.subsystems({})
+                    if x["name"] == "Announcements"]
+            check(lamp == [want],
+                  f"the Announcements lamp, Delayed available {avail}: "
+                  f"{lamp}")
+            _no_dashes(lamp[0][1] if lamp else "", "the lamp's word")
+    with open(os.path.join(here, "ltcplay", "web", "remote2.html"),
+              encoding="utf-8") as fh:
+        two = fh.read()
+    check('[/^announcements$/, /delayed recording/, "Delayed button cannot '
+          'play. Tell Jeff."]' in two and
+          two.find("/delayed recording/") <
+          two.find('[/^announcements$/, /./,'),
+          "2.0's Systems badge names the missing Delayed in plain words")
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
                 encoding="utf-8").read()
+    check('<div class="warnbox open" id="rc-warn" hidden></div>' in page and
+          '$("rc-warn").hidden = !prl.warn;' in page and
+          '$("rc-warn").textContent = prl.warn;' in page,
+          "1.0's Rig check card shows the warning line on a passing check")
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     import shutil
     node = shutil.which("node")
@@ -89578,7 +89713,10 @@ const out = [];
 const t = (c, m) => { if(!c) out.push(m); };
 const L = prerollLook({state:"passed", items:[{name:"Audio", ok:true, required:true}, {name:"Announcements", ok:false, required:false, text:"the announcement output is not usable: not attached"}]});
 t(L.items[1] === "Announcements WARNING: the announcement output is not usable: not attached", "a warning line: " + L.items[1]);
-t(L.trouble === "" && L.now === "Last check passed", "no trouble, passed");
+t(L.trouble === "" && L.now === "Last check passed, with a WARNING", "no trouble, passed with a warning: " + L.now);
+t(L.warn === "Announcements WARNING: the announcement output is not usable: not attached.", "the card's warning line: " + L.warn);
+const G = prerollLook({state:"passed", items:[{name:"Audio", ok:true, required:true}, {name:"Announcements", ok:true, required:false}]});
+t(G.now === "Last check passed" && G.warn === "", "all OK: no warning: " + G.now + " " + G.warn);
 const F = prerollLook({state:"failed", manual:false, age_s:5, label:"show 1", items:[{name:"Video", ok:false, required:true, text:"x"}, {name:"Announcements", ok:false, required:false, text:"y"}]});
 t(/Video FAILED: x/.test(F.trouble) && !/Announcements/.test(F.trouble), "a real failure names only what failed: " + F.trouble);
 console.log(JSON.stringify(out));

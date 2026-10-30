@@ -6864,8 +6864,18 @@ class Remote:
                 add("Announcements", "bad", "not known" if av.get("stale")
                     else "file problem")
             elif rt.get("ok"):
-                add("Announcements", "ok", "on show audio"
-                    if rt.get("kind") == "show" else "own output")
+                dl = [i for i in av.get("items") or []
+                      if i.get("id") == "delayed"]
+                if dl and not dl[0].get("available"):
+                    # Advisory (Jeff, 2026-10-30): nothing plays on the PA
+                    # by itself, but the operator's Delayed button cannot
+                    # play, so the lamp says so. A warning, never a fault.
+                    add("Announcements", "warn",
+                        "Delayed recording missing" if dl[0].get("missing")
+                        else "Delayed recording cannot play")
+                else:
+                    add("Announcements", "ok", "on show audio"
+                        if rt.get("kind") == "show" else "own output")
             elif rt.get("kind") == "show":
                 add("Announcements", "bad", "show audio not open")
             elif not av.get("device_set"):

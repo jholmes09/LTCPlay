@@ -1318,6 +1318,7 @@ button.fb-pad.na{opacity:.45}
       <h2>Rig check (pre-roll)</h2>
       <div class="dim" style="font-size:14px">Before every show the engine checks the rig by itself: audio, announcements, timecode, video, the flame link, the lasers and the network. Check the rig runs the same checks now, between shows: nothing is started, armed or played, and the screens go black until the next show.</div>
       <div class="row" style="margin-top:8px"><b id="rc-now" style="flex:2 1 0"></b><button class="ghost" id="rc-run" style="flex:1 1 0">Check the rig</button></div>
+      <div class="warnbox open" id="rc-warn" hidden></div>
       <div class="path" id="rc-items" style="font-size:14px;margin-top:6px"></div>
       <div class="toast" id="rc-msg"></div>
     </section>
@@ -2066,10 +2067,13 @@ function prerollLook(pr){
   // An advisory check (required false: Announcements, Jeff 2026-10-30) is a WARNING, never a failure.
   const items = (p.items || []).map(i => String(i.name || "") + (i.ok ? " OK" : (i.required === false ? " WARNING: " : " FAILED: ") + String(i.text || "")));
   const failed = p.state === "failed" && !p.manual && typeof p.age_s === "number" && p.age_s < 600;
+  // A passing check with an advisory one not OK still says so on the card's own line.
+  const warn = checking ? "" : items.filter(t => / WARNING: /.test(t)).join("; ");
   return {checking:checking, word:"Checking", label:"Checking the rig before " + String(p.label || "the show") + ". Nothing is heard or seen.",
           trouble: failed ? "Rig check FAILED before " + String(p.label || "the show") + ": " + items.filter(t => / FAILED: /.test(t)).join("; ") + "." : "",
-          now: checking ? "Checking the rig..." : p.state === "passed" ? "Last check passed" : p.state === "failed" ? "Last check FAILED" :
+          now: checking ? "Checking the rig..." : p.state === "passed" ? (warn ? "Last check passed, with a WARNING" : "Last check passed") : p.state === "failed" ? "Last check FAILED" :
                p.state === "cancelled" ? "Last check was cancelled" : "Not checked yet",
+          warn: warn ? warn + "." : "",
           items: items};
 }
 // After a failed rig check before a show, between shows: the failed items
@@ -2616,6 +2620,8 @@ function render(){
   rcard.hidden = !s.preroll || !(ME && ME.local);
   if(s.preroll){
     $("rc-now").textContent = prl.now;
+    $("rc-warn").hidden = !prl.warn;
+    $("rc-warn").textContent = prl.warn;
     $("rc-items").textContent = prl.items.join(". ");
     $("rc-run").disabled = prl.checking;
   }
