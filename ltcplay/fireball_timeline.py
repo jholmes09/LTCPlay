@@ -283,6 +283,12 @@ def _show_name(show):
     return show
 
 
+def show_key(name):
+    """A show file name as a case-blind folder sees it (Windows, macOS):
+    folded case, and no trailing dots or spaces (Windows drops them)."""
+    return str(name).rstrip(" .").casefold()
+
+
 def entry_of(doc, show):
     """The entry for `show` in a read doc, or the default (source "fseq",
     no stages) for a show the file does not name."""
@@ -356,7 +362,10 @@ class Store:
         self._journal = journal
         self.audit = audit
         self._wall = wall
-        self._lock = threading.Lock()
+        # Reentrant: save() reads the file under it. Every read and every
+        # write of the file is under it, so on Windows a save's os.replace
+        # never meets this program's own reader holding the file open.
+        self._lock = threading.RLock()
         # Called after every save that was written, with (show, the new
         # entry, the new revision), on the saving thread. The engine (a
         # later change) is told of a new revision this way. A listener that
@@ -385,27 +394,42 @@ class Store:
             pass
 
     def load(self):
-        """(doc, error): the file read strictly. A missing file is an
-        empty doc (rev 0) and no error. A file that cannot be read is an
-        empty doc (rev 0) and the error in a sentence: no show has a
-        timeline then. Never raises."""
-        if not self.path or not os.path.exists(self.path):
-            return empty_doc(), ""
-        try:
-            with open(self.path, encoding="utf-8-sig") as fh:
-                doc = json.load(fh)
-            return read_doc(doc), ""
-        except (OSError, ValueError) as e:
-            return empty_doc(), (f"{FILE} could not be read ({e}), so no "
-                                 f"show fires its fireball from a timeline "
-                                 f"until it is saved again")
+        """(doc, error): the file read strictly, under the store's lock.
+        A missing file with no history is an empty doc (rev 0) and no
+        error: nothing was ever saved. A file that cannot be read, or a
+        missing file whose history folder exists (saved once, now gone), is
+        an empty doc and the error in a sentence: no show fires its
+        fireball then (never an FSEQ fallback), and saves are refused
+        until an admin replaces it (save's replace_unreadable). Never
+        raises."""
+        with self._lock:
+            if not self.path or not os.path.exists(self.path):
+                if self.path and os.path.isdir(self.history_dir()):
+                    return empty_doc(), (
+                        f"{FILE} is missing although it was saved before "
+                        f"(its history is in {HISTORY_DIR}), so no show "
+                        f"fires its fireball until an admin restores it "
+                        f"or replaces it")
+                return empty_doc(), ""
+            try:
+                with open(self.path, encoding="utf-8-sig") as fh:
+                    doc = json.load(fh)
+                return read_doc(doc), ""
+            except (OSError, ValueError) as e:
+                return empty_doc(), (f"{FILE} could not be read ({e}), so "
+                                     f"no show fires its fireball until an "
+                                     f"admin replaces it")
 
     def save(self, show, cue, show_len_s, source, stages, base_rev,
-             who="", screen=""):
+             who="", screen="", replace_unreadable=False):
         """Save one show's entry: (ok, sentence, the new view of that show
         or None). Checked first, then refused unless `base_rev` is the
-        file's revision now (a broken or missing file is revision 0).
-        Nothing is written on any refusal."""
+        file's revision now. A file that cannot be read (or is missing
+        after it was saved before) has no revision: every save is refused
+        (it would drop every other show's entry), unless the admin says
+        `replace_unreadable`: then the broken file is kept in the history
+        and a new file holds this show alone. Nothing is written on any
+        refusal."""
         with self._lock:
             try:
                 _show_name(show)
@@ -424,6 +448,14 @@ class Store:
                 self._audit(who, screen, show, "refused", text)
                 return False, text, None
             doc, err = self.load()
+            if err and replace_unreadable is not True:
+                text = (f"Not saved: {err}. Replacing it starts a new file "
+                        f"with this show only; every other show's timeline "
+                        f"in it would be lost.")
+                self._audit(who, screen, show, "refused", text)
+                return False, text, None
+            if err:
+                base_rev = doc["rev"]
             if isinstance(base_rev, bool) or \
                     not isinstance(base_rev, int) or base_rev != doc["rev"]:
                 text = ("Not saved: someone saved the fireball timeline "
@@ -445,8 +477,14 @@ class Store:
             new["shows"][show] = after
             try:
                 read_doc(new)          # never writes what it would refuse
-                self._keep_history(doc["rev"], bool(err))
+                old = self._read_bytes()
                 self._write(new)
+                # Only once the new file is in place: a save that failed
+                # leaves no history copy behind.
+                self._keep_history(doc["rev"], bool(err), old)
+                # The history folder exists from the first save on: the
+                # mark that a missing file was once saved (load).
+                os.makedirs(self.history_dir(), exist_ok=True)
             except (OSError, TimelineError) as e:
                 text = f"Not saved: the file could not be written ({e})."
                 self._note(who, screen, "save_failed", text, fault=True)
@@ -465,22 +503,39 @@ class Store:
                     pass
             return True, f"Saved: {what}.", dict(after, rev=new["rev"])
 
+    def _read_bytes(self):
+        """The file as it is now, or None when it is not there."""
+        try:
+            with open(self.path, "rb") as src:
+                return src.read()
+        except FileNotFoundError:
+            return None
+
     def _write(self, doc):
         tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(doc, fh, indent=1, sort_keys=True)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, self.path)
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(doc, fh, indent=1, sort_keys=True)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, self.path)
+        except BaseException:
+            # No stray temporary file after a refused replace (Windows: a
+            # reader elsewhere holding the file).
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
 
     def history_dir(self):
         return os.path.join(self.folder, HISTORY_DIR)
 
-    def _keep_history(self, rev, unreadable):
-        """The file as it is now, copied into HISTORY_DIR before it is
-        replaced, and the oldest beyond HISTORY_KEEP removed. Nothing for
-        a file that is not there."""
-        if not self.path or not os.path.exists(self.path):
+    def _keep_history(self, rev, unreadable, data):
+        """The file as it was before a save (`data`), kept in HISTORY_DIR
+        once the save is in place, and the oldest beyond HISTORY_KEEP
+        removed. Nothing for a file that was not there."""
+        if data is None:
             return
         d = self.history_dir()
         os.makedirs(d, exist_ok=True)
@@ -488,8 +543,6 @@ class Store:
             self._wall(), datetime.timezone.utc).strftime(
                 "%Y%m%dT%H%M%S%fZ")
         name = f"{stamp}-rev{rev}{'-unreadable' if unreadable else ''}.json"
-        with open(self.path, "rb") as src:
-            data = src.read()
         tmp = os.path.join(d, name + ".tmp")
         with open(tmp, "wb") as fh:
             fh.write(data)

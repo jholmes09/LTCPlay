@@ -4501,18 +4501,46 @@ class Remote:
                 audit=getattr(self, "audit", None), wall=self.wall)
         return st
 
+    def fireball_show_name(self, show):
+        """(the show file's own name as the show folder spells it, "") or
+        (None, why). Windows and macOS folders ignore case (and Windows
+        trailing dots and spaces), but the engine finds a show's timeline
+        by the name the playing session has, which is the folder's own
+        spelling: a timeline is always saved under that spelling (review
+        of #187: "show.json" was saved, "Show.json" played, and the show
+        fell back to its FSEQ)."""
+        folder = getattr(self.control, "folder", None)
+        name = os.path.basename(str(show or ""))
+        if not folder or not name or name != show:
+            return None, f"{show!r} is not a show file"
+        try:
+            entries = [e for e in os.listdir(folder)
+                       if os.path.isfile(os.path.join(folder, e))]
+        except OSError as e:
+            return None, f"the show folder could not be read ({e})"
+        if name in entries:
+            return name, ""
+        from . import fireball_timeline as fbtl
+        same = [e for e in entries
+                if fbtl.show_key(e) == fbtl.show_key(name)]
+        if len(same) == 1:
+            return same[0], ""
+        if len(same) > 1:
+            return None, (f"{name} matches more than one show file "
+                          f"({', '.join(sorted(same))}); rename one")
+        return None, f"{name} is not in the show folder"
+
     def fireball_show_info(self, show):
         """(the show's own cue, its length in seconds, "") for a show file
         in the show folder, opened as the Check button opens one (nothing
-        sent, nothing played), or (None, None, why)."""
+        sent, nothing played), or (None, None, why). `show` must be the
+        folder's own spelling (fireball_show_name)."""
         ctl = self.control
         folder = getattr(ctl, "folder", None)
-        name = os.path.basename(str(show or ""))
-        if not folder or not name or name != show:
-            return None, None, f"{show!r} is not a show file"
+        name, why = self.fireball_show_name(show)
+        if why:
+            return None, None, why
         path = os.path.join(folder, name)
-        if not os.path.isfile(path):
-            return None, None, f"{name} is not in the show folder"
         from . import clock as clock_mod
         from .session import Session
         kw = dict(getattr(ctl, "defaults", None) or {})
@@ -4551,6 +4579,11 @@ class Remote:
             return 500, {"error": f"The fireball timeline could not be "
                                   f"read ({type(e).__name__})."}
         if show is not None:
+            real, _why = self.fireball_show_name(show)
+            if real and real != show:
+                # The folder's own spelling: the entry the engine uses.
+                show = real
+                out = self.fireball_timeline_store().view(show)
             cue, length, why = self.fireball_show_info(show)
             out.update(cue=cue, show_len_s=length, show_problem=why)
         return 200, out
@@ -4594,12 +4627,17 @@ class Remote:
                                 "on).")
         if not isinstance(show, str):
             return refused(400, "choose a show file.")
+        real, why = self.fireball_show_name(show)
+        if why:
+            return refused(409, why[0].upper() + why[1:] + ".")
+        show = real
         cue, length, why = self.fireball_show_info(show)
         if why:
             return refused(409, why[0].upper() + why[1:] + ".")
-        ok, text, entry = st.save(show, cue, length, body.get("source"),
-                                  body.get("stages"), body.get("rev"),
-                                  who=who, screen=device)
+        ok, text, entry = st.save(
+            show, cue, length, body.get("source"), body.get("stages"),
+            body.get("rev"), who=who, screen=device,
+            replace_unreadable=body.get("replace_unreadable") is True)
         if not ok:
             return 409, {"error": text + " Nothing was changed."
                          if "Nothing" not in text else text}
