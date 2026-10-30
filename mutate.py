@@ -6550,8 +6550,8 @@ def build():
   "        self._journal(f\"Alert ({a.severity}, {kind}): {text}\", fault=False,"),
 
  ("a second alert of the same kind opens a second banner", "ltcplay/alerts.py",
-  "        a = self._open.get(kind)\n        if a is not None:",
-  "        a = None\n        if a is not None:"),
+  "            a = self._open.get(kind)\n            if a is not None:",
+  "            a = None\n            if a is not None:"),
 
  ("Stop clears an alert like Acknowledge", "ltcplay/alerts.py",
   "        if action not in CLEARING:",
@@ -12120,8 +12120,8 @@ def build():
   '            if False:\n                # Only ever changed from a fresh read'),
 
  ('users: deck can be a name', 'ltcplay/users.py',
-  'RESERVED = ("unsigned", "system", "signed out", "nobody", "deck")',
-  'RESERVED = ("unsigned", "system", "signed out", "nobody")'),
+  'RESERVED = ("unsigned", "system", "signed out", "nobody", "deck", "engine",',
+  'RESERVED = ("unsigned", "system", "signed out", "nobody", "engine",'),
 
  ('users: a users file that is not UTF-8 reads as no users', 'ltcplay/users.py',
   '            with open(self.path, "rb") as fh:\n                raw = fh.read()',
@@ -18050,8 +18050,8 @@ def build():
   '            if False:'),
 
  ('pre-roll: a failed check lets the scheduler start the show', 'ltcplay/schedule_service.py',
-  '            if v == "failed":\n                return True\n',
-  '            if v == "failed":\n                return False\n'),
+  '            if v in ("failed", "cleared"):\n',
+  '            if v == "failed":\n                return False\n            if v == "cleared":\n'),
 
  ('pre-roll: a show due with no check starts unchecked', 'ltcplay/schedule_service.py',
   '            if v is None:\n                self._preroll_kick(n)\n            return True',
@@ -18186,8 +18186,424 @@ def build():
   '        if False:'),
 
  ("continue anyway: the next show's check does not end the Continue", 'ltcplay/preroll.py',
-  "            if not manual:\n                # A new show's check: the last Continue anyway is over.\n                self.continued = None",
+  "            if not manual:\n                # A new show's check: the last Continue anyway is over, and\n                # so is the last \"failure cleared\" note.\n                self.continued = None",
   '            if False:\n                self.continued = None'),
+ # -- the rig check failure cleared by a later pass, MadMapper's output
+ # window and the rack screen kept in front (Jeff's field reports,
+ # 2026-10-29) --
+ ('rig check cleared: a pass clears nothing', 'ltcplay/preroll.py',
+  '            self._clear_failure(r)\n            if self._on_pass is not None:',
+  '            if self._on_pass is not None:'),
+
+ ('rig check cleared: a pass clears a failure raised after it began', 'ltcplay/preroll.py',
+  '                newer = self._fail_seq > r.get("seq", 0)\n',
+  '                newer = False\n'),
+
+ ('rig check cleared: a pass clears a preroll alert opened after it began', 'ltcplay/preroll.py',
+  '                    now_id != r.get("alert_at_start"):',
+  '                    False:'),
+
+ ('rig check cleared: the failed verdict stays after a pass', 'ltcplay/preroll.py',
+  '                            v["state"] = "cleared"\n',
+  ''),
+
+ ('rig check cleared: a failed Pre-check does not refresh the failure', 'ltcplay/preroll.py',
+  '        elif in_force:\n            self._refresh_failure(r, bad)',
+  '        elif False:\n            self._refresh_failure(r, bad)'),
+
+ ('rig check cleared: a cleared show is started by the scheduler unattended', 'ltcplay/schedule_service.py',
+  '            if v in ("failed", "cleared"):\n',
+  '            if v == "cleared":\n                return False\n            if v == "failed":\n'),
+
+ ('rig check cleared: Resume does not release the cleared show', 'ltcplay/schedule_service.py',
+  '                if kind == sch.RESUME and not out.refused:\n                    self._preroll_release(who, screen)',
+  '                if kind == sch.RESUME and not out.refused:\n                    pass'),
+
+ ('rig check cleared: the screens do not say Press Resume', 'ltcplay/remote.py',
+  '        if st == "HOLD" and held:',
+  '        if False:'),
+
+ ('rig check cleared: 1.0 and 2.0 still show the old failure', 'ltcplay/web/remote.html',
+  '  if(p.cleared && !p.show_check && s.state !== "SHOW"',
+  '  if(false && p.cleared && !p.show_check && s.state !== "SHOW"'),
+
+ ('mm output: a window with a title bar counts as the output', 'ltcplay/showwindows.py',
+  '        if w.get("caption"):\n            continue',
+  '        if False:\n            continue'),
+
+ ('mm output: a window that does not fill the display counts', 'ltcplay/showwindows.py',
+  '    return l <= ml + tol and t <= mt + tol and r >= mr - tol and \\\n        b >= mb - tol',
+  '    return l <= ml + tol and t <= mt + tol'),
+
+ ('mm output: the rig check passes with the output OFF', 'ltcplay/preroll.py',
+  '        return False, (f"{why}. Turn it on in MadMapper: Output menu, "',
+  '        return True, (f"{why}. Turn it on in MadMapper: Output menu, "'),
+
+ ('mm output: the rig check passes when the output is not known', 'ltcplay/preroll.py',
+  '    return False, why or "not known"',
+  '    return True, why or "not known"'),
+
+ ('mm output: the switch off is ignored', 'ltcplay/web.py',
+  '        if not getattr(fire_ice, "madmapper_output_check", True):',
+  '        if False:'),
+
+ ('mm output: the lamp reads ok with the output OFF', 'ltcplay/remote.py',
+  '            add("MadMapper output", {"on": "ok", "off": "bad"}.get(',
+  '            add("MadMapper output", {"on": "ok", "off": "ok"}.get('),
+
+ ('rack keeper: raises the rack screen over the projection on its display', 'ltcplay/showwindows.py',
+  '        if any(overlap(w["rect"], area) > 0 for w in wins\n               if w["hwnd"] in outs):',
+  '        if False:'),
+
+ ('rack keeper: raises over a window a person brought forward', 'ltcplay/showwindows.py',
+  '                 and w["hwnd"] not in self.chosen\n',
+  ''),
+
+ ('rack keeper: raises over old windows after the boot settle', 'ltcplay/showwindows.py',
+  '                 and (boot or now - self.seen[w["hwnd"]] <=',
+  '                 and (True or now - self.seen[w["hwnd"]] <='),
+
+ ('rack keeper: never gives up on a window that stays on top', 'ltcplay/showwindows.py',
+  '        if n >= MAX_RAISES:',
+  '        if False:'),
+
+ ('mm output watch: alerts before MadMapper had time to come on', 'ltcplay/showwindows.py',
+  '        due = (now - self.first_seen >= self.settle_s and',
+  '        due = (True and'),
+
+ ('mm output watch: an alert the engine did not take is not sent again', 'ltcplay/showwindows.py',
+  '            self.alerted = self._call(self.alert, f"{why}. {ENABLE_STEPS}")',
+  '            self.alerted = self._call(self.alert, f"{why}. {ENABLE_STEPS}") or True'),
+
+ ('mm output watch: the alert stays after the output comes on', 'ltcplay/showwindows.py',
+  '            self.alerted = False\n            if self.raised and now >= self.next_try:',
+  '            self.alerted = False\n            if False:'),
+
+ ("mm output: the rack screen's own display counts as the projector's", 'ltcplay/showwindows.py',
+  '        outs = [(w, n) for w, n in outs if n != r]\n',
+  ''),
+
+ ('mm output: one display only reads as on', 'ltcplay/showwindows.py',
+  '    if not monitor and len(mons) == 1:',
+  '    if False:'),
+
+ ("mm output: a display past the PC's reads as off, not not known", 'ltcplay/showwindows.py',
+  '    if monitor and monitor > len(mons):',
+  '    if False:'),
+
+ ('mm output: a rig check that saw the output on leaves its alert open', 'ltcplay/web.py',
+  '        if a.kind == "output" and a.since < began:',
+  '        if False:'),
+
+ ('mm output: a rig check clears an output alert newer than it', 'ltcplay/web.py',
+  '        if a.kind == "output" and a.since < began:',
+  '        if a.kind == "output":'),
+
+ ('supervisor: the output watch reads showpc.json, not the engine file', 'packaging/windows/supervisor.py',
+  '    chk, mon, quiet = output_settings(settings)',
+  '    chk, mon, quiet = True, 0, ""'),
+
+ ('rack keeper: takes the keyboard from a person typing', 'ltcplay/showwindows.py',
+  '        if age is None or age < INPUT_QUIET_S:',
+  '        if False:'),
+
+ ('rack keeper: takes the foreground from any program', 'ltcplay/showwindows.py',
+  '        take = self.api.foreground() == c["hwnd"]',
+  '        take = True'),
+
+ ('rack keeper: picks another Edge window of the same process', 'ltcplay/showwindows.py',
+  '    if pid is not None and w.get("pid") != pid:\n        return False\n',
+  '    if pid is not None and w.get("pid") == pid:\n        return True\n'),
+
+ ('rack keeper: a minimized rack screen is restored over the projection', 'ltcplay/showwindows.py',
+  '        if rack["minimized"]:\n            # Left minimized',
+  '        if rack["minimized"] and False:\n            # Left minimized'),
+
+ ('rig check cleared: Resume journals a Start now key as a show', 'ltcplay/schedule_service.py',
+  '                        key[0] != night or not isinstance(key[1], int):',
+  '                        not isinstance(key[1], int):'),
+
+ ('rack keeper: moves the rack screen when the displays cannot be read', 'ltcplay/showwindows.py',
+  '        if not mons:\n            # The displays cannot be read',
+  '        if False:\n            # The displays cannot be read'),
+
+ ('rack keeper: a titleless MadMapper window not filling a display is a cover', 'ltcplay/showwindows.py',
+  '            if image_is(w.get("image"), MADMAPPER) and not w.get("caption")}',
+  '            if False}'),
+
+ ('mm output: page_monitor wins over where the rack screen is', 'ltcplay/showwindows.py',
+  '        r = rack_display(wins, mons, fallback=rack or 1)',
+  '        r = rack or rack_display(wins, mons)'),
+
+ ('mm output watch: a new off spell reuses a stale alert', 'ltcplay/showwindows.py',
+  "            if self.raised:\n                # The last spell's",
+  "            if False:\n                # The last spell's"),
+
+ ('mm output: the engine ignores page_monitor', 'ltcplay/web.py',
+  '            rack=_page_monitor()).start()',
+  '            rack=1).start()'),
+
+ ("mm output: the rack window under the output makes its display the rack's", 'ltcplay/showwindows.py',
+  '            if n and n not in outd:',
+  '            if n:'),
+
+ ('mm output: an output hidden by another window reads on', 'ltcplay/showwindows.py',
+  '        c = covered_by(wins, w)\n        if c is None:',
+  '        c = covered_by(wins, w)\n        if True:'),
+
+ ("supervisor: watches a MadMapper that is not the show's", 'packaging/windows/supervisor.py',
+  '    elif not showwindows.on_this_pc(mm.get("host", "127.0.0.1")):',
+  '    elif False:'),
+
+ ('supervisor: watches with no MadMapper in the show', 'packaging/windows/supervisor.py',
+  '    if not isinstance(mm, dict):\n        quiet = (',
+  '    if False:\n        quiet = ('),
+
+ ('supervisor: an alert that never reached the engine counts as sent', 'packaging/windows/supervisor.py',
+  '            f"did not reach the engine ({e.reason})")\n        return False',
+  '            f"did not reach the engine ({e.reason})")\n        return True'),
+
+ ('mm output watch: a new engine never gets the alert again', 'ltcplay/showwindows.py',
+  '        if ep != self._epoch:',
+  '        if False:'),
+
+ ('mm output watch: a refused alert is retried at the same pace forever', 'ltcplay/showwindows.py',
+  '        self.backoff = min(self.backoff * 2, 600.0)',
+  '        self.backoff = self.retry_s'),
+
+ ("mm output watch: an earlier supervisor's alert is never cleared", 'ltcplay/showwindows.py',
+  '        # on (a clear with nothing open counts as done).\n        self.raised = True',
+  '        # on (a clear with nothing open counts as done).\n        self.raised = False'),
+
+ ('rack keeper: the click that brought a window forward is not a choice', 'ltcplay/showwindows.py',
+  '            if age is not None and now - age >= self.fg_since[fg] - \\\n                    (2 * self.tick_s + 1.0):',
+  '            if age is not None and now - age >= self.fg_since[fg]:'),
+
+ ("rack keeper: a raise buries a dialog or the person's window", 'ltcplay/showwindows.py',
+  '        if why:\n            self._say("dialog"',
+  '        if False:\n            self._say("dialog"'),
+
+ ('mm output: a see-through overlay hides the output', 'ltcplay/showwindows.py',
+  '        if w.get("minimized") or w.get("seethrough"):',
+  '        if w.get("minimized"):'),
+
+ ('rack keeper: a restart of LTC Player re-enters the boot settle', 'ltcplay/showwindows.py',
+  '            if isinstance(sess, (int, float)) and sess >= 0 \\',
+  '            if False \\'),
+
+ ('rack keeper: the brought-forward margin is one tick only', 'ltcplay/showwindows.py',
+  '                    (2 * self.tick_s + 1.0):',
+  '                    self.tick_s:'),
+
+ ('supervisor: an unreadable settings file can raise output alerts', 'packaging/windows/supervisor.py',
+  '        return True, 0, "ltcplay_fire_ice.json could not be read"\n    if not isinstance',
+  '        return True, 0, ""\n    if not isinstance'),
+
+ ('key guard: Hold is held back after focus (1.0)', 'ltcplay/web/remote.html',
+  '<button data-safe id="b-hold" class="hold">',
+  '<button id="b-hold" class="hold">'),
+
+ ('key guard: Stop is held back after focus (2.0)', 'ltcplay/web/remote2.html',
+  '<button data-safe class="b redline" id="b-stop">',
+  '<button class="b redline" id="b-stop">'),
+
+ ('key guard: a Stop or Disarm two-way button is held back', 'ltcplay/web/remote.html',
+  '  return m === "stop" || m === "disarm" ||',
+  '  return false ||'),
+
+ ("key guard: a purge's release is dropped after focus", 'ltcplay/web/remote.html',
+  '  if(KEY_GUARD.passed.has(k)){ KEY_GUARD.passed.delete(k); return; }',
+  '  if(false){ KEY_GUARD.passed.delete(k); return; }'),
+
+ ('key guard: data-safe is ignored', 'ltcplay/web/remote.html',
+  '  if(b.dataset && b.dataset.safe !== undefined) return true;',
+  '  if(false) return true;'),
+
+ ('key guard: a Space on the Startup page fires a purge right after focus', 'ltcplay/web/remote.html',
+  '  if(keyFresh() || keySafe(e.target)){',
+  '  if(false){'),
+
+ ('key guard: a key held across a blur is let through after', 'ltcplay/web/remote.html',
+  'window.addEventListener("blur", () => { KEY_GUARD.passed.clear(); });',
+  'window.addEventListener("blur", () => {});'),
+
+ ('mm output watch: a switched-off watch keeps alerting', 'ltcplay/showwindows.py',
+  '            if self._config is not None and not self._config[0]:',
+  '            if False:'),
+
+ ('rack keeper: the taskbar stops the raise', 'ltcplay/showwindows.py',
+  '                 and not w.get("seethrough") and not is_taskbar(w)\n',
+  '                 and not w.get("seethrough")\n'),
+
+ ("rack keeper: the rack screen's own pop-up stops the raise", 'ltcplay/showwindows.py',
+  '                 and w.get("owner") != rack["hwnd"]\n',
+  ''),
+
+ ('rack keeper: a window nobody uses stops the raise', 'ltcplay/showwindows.py',
+  '            if w["hwnd"] == fg_now and (age is None or\n                                        age < FOREGROUND_IN_USE_S):',
+  '            if True:'),
+
+ ('rack keeper: an unowned dialog of the covering program is buried', 'ltcplay/showwindows.py',
+  '                    w.get("owner") or w.get("pid") == c.get("pid"))):',
+  '                    w.get("owner"))):'),
+
+ ('key guard: the listed safe buttons are held back', 'ltcplay/web/remote.html',
+  '  if(KEY_SAFE_IDS.includes(b.id)) return true;',
+  '  if(false) return true;'),
+
+ ("key guard: 2.0's DAY purge fires on a Space right after focus", 'ltcplay/web/remote2.html',
+  '  if(keyFresh() || keySafe(e.target)) return;\n  if(fireKeyNotOurs(e)) return;',
+  '  if(fireKeyNotOurs(e)) return;'),
+
+ ("mm output watch: the supervisor's 'this PC' is only loopback", 'ltcplay/showwindows.py',
+  '    return _thispc.on_this_pc(host)',
+  "    return str(host or '').startswith('127.') or host == 'localhost'"),
+
+ # -- review fixes of #176 (two cold reviews, 2026-10-30) --
+ ("mm output: the rig check's backstop reads the note, not whether it looked", 'ltcplay/web.py',
+  '            and i.get("used")]',
+  '            and not i.get("note")]'),
+
+ ('mm output: a rig check that did not look clears the output alert', 'ltcplay/web.py',
+  '            and i.get("used")]',
+  '            ]'),
+
+ ('rig check: an item the show does not use counts as seen', 'ltcplay/preroll.py',
+  'note=True, used=False))',
+  'note=True))'),
+
+ ('mm output: Continue anyway blacks the video on an unproven output check', 'ltcplay/preroll.py',
+  'OFF_FOR = {"Video": "video", "Lasers"',
+  'OFF_FOR = {"Video": "video", "MadMapper output": "video", "Lasers"'),
+
+ ('rack keeper: a parentless dialog box counts as a cover', 'ltcplay/showwindows.py',
+  'and not w.get("owner") and not is_dialog(w)\n',
+  'and not w.get("owner")\n'),
+
+ ("rack keeper: another program's dialog box is buried", 'ltcplay/showwindows.py',
+  '            if is_dialog(w) or (is_app(w) and (',
+  '            if (is_app(w) and ('),
+
+ ('rack keeper: windows open before a restart count as just appeared', 'ltcplay/showwindows.py',
+  'float("-inf") if first else now)',
+  'now)'),
+
+ ('rack keeper: raises over the window in use since before a restart or the lock screen', 'ltcplay/showwindows.py',
+  '                        self.seen.get(w["hwnd"], now) <= now - age)):',
+  '                        False)):'),
+
+ ('rack keeper: moves a rack screen that is not responding', 'ltcplay/showwindows.py',
+  '            if self.api.hung(rack["hwnd"]):',
+  '            if False:'),
+
+ ('rig check cleared: a clear ignores a raise made in place since', 'ltcplay/alerts.py',
+  '                if rev is not None and a.rev != rev:',
+  '                if False:'),
+
+ ('rig check cleared: the alert is cleared by kind, not as the check saw it', 'ltcplay/preroll.py',
+  '                got = self._clear_alert(KIND, alert_id)',
+  '                got = self._clear_alert(KIND)'),
+
+ ('rig check cleared: a refused clear still clears the verdict', 'ltcplay/preroll.py',
+  '                if not self._clear(now_id) and self.alert_open():',
+  '                if False:'),
+
+ ('rig check cleared: an alert opened after the check read none is ignored', 'ltcplay/preroll.py',
+  '            elif self.alert_open():\n                # Opened since',
+  '            elif False:\n                # Opened since'),
+
+ ('rig check cleared: a failure numbered during the clear is ignored', 'ltcplay/preroll.py',
+  '                    if self._fail_seq > r.get("seq", 0):\n                        newer = True',
+  '                    if False:\n                        newer = True'),
+
+ ('rig check cleared: the order of events is not checked first', 'ltcplay/preroll.py',
+  '                newer = self._fail_seq > r.get("seq", 0)\n',
+  '                newer = False\n'),
+
+ ("rig check: 'could not run' is never raised again after a pass cleared it", 'ltcplay/schedule_service.py',
+  '        once = (why, getattr(self.preroll, "clears", 0))',
+  '        once = why'),
+
+ ('rig check cleared: an open alert alone is not a failure in force', 'ltcplay/preroll.py',
+  '        return failed or self.alert_open()',
+  '        return failed'),
+
+ ('rig check cleared: Resume releases a show whose check still failed', 'ltcplay/preroll.py',
+  '                    if v["state"] == "cleared"]\n            for k in keys:',
+  '                    if v["state"] in ("cleared", "failed")]\n            for k in keys:'),
+
+ ("rig check: a 'could not run' failure is not numbered", 'ltcplay/preroll.py',
+  '        before it can clear it."""\n        with self._lock:\n            self._seq += 1',
+  '        before it can clear it."""\n        return\n        with self._lock:\n            self._seq += 1'),
+
+ ("rig check cleared: failing again keeps the old failure's age", 'ltcplay/preroll.py',
+  '                v["done"] = r["done"]\n',
+  ''),
+
+ ('rig check cleared: Resume gives the show no late allowance', 'ltcplay/schedule_service.py',
+  '                self._preroll_late[key] = pr.late_ok_s()\n                d = m.delayed()',
+  '                d = m.delayed()'),
+
+ ("rig check cleared: the note survives a show's own check", 'ltcplay/preroll.py',
+  '                self.continued = None\n                self.cleared = None',
+  '                self.continued = None'),
+
+ ('rig check cleared: Press Resume when no show was released', 'ltcplay/remote.py',
+  '        if st == "HOLD" and held:',
+  '        if st == "HOLD":'),
+
+ ('rig check: Check again refused before a show after a failure', 'ltcplay/remote.py',
+  ' and \\\n                    not pr.failure_in_force():',
+  ':'),
+
+ ('rig check: Check again allowed in the minute before a show', 'ltcplay/remote.py',
+  '            if 0 <= left < self.PRECHECK_CLEAR_S + pr.window_s and \\',
+  '            if False and \\'),
+
+ ('rig check cleared: a clear is not counted', 'ltcplay/preroll.py',
+  '                        self.clears += 1\n',
+  ''),
+
+ ('rig check cleared: the screens are not told how many shows', 'ltcplay/preroll.py',
+  '                                  "shows": cl.get("shows", 0),\n',
+  ''),
+
+ ('rig check cleared: the alerts are called under the pre-roll\'s lock (deadlock)', 'ltcplay/preroll.py',
+  '                got = self._clear_alert(KIND, alert_id)',
+  '                with self._lock:\n                    got = self._clear_alert(KIND, alert_id)'),
+
+ ("rig check: a show's pass older than a later failure is not run again", 'ltcplay/preroll.py',
+  'self._fresh(r) and not self._stale(r):',
+  'self._fresh(r):'),
+
+ ("rig check: a show's pass older than a later failure still counts", 'ltcplay/preroll.py',
+  '(not self._fresh(r) or self._stale(r)):',
+  'not self._fresh(r):'),
+
+ ('rack keeper: the in-use rule covers a window that opened after the last input', 'ltcplay/showwindows.py',
+  '                        self.seen.get(w["hwnd"], now) <= now - age)):',
+  '                        True)):'),
+
+ ('mm output: a rig check clears the output alert while the output is off again', 'ltcplay/web.py',
+  '        if look.now()[0] != "on":',
+  '        if False:'),
+
+ ('rig check cleared: a delayed show held says Press Resume', 'ltcplay/remote.py',
+  '        if m is not None and m.delayed() is not None:\n            # A delayed show waits',
+  '        if False:\n            # A delayed show waits'),
+
+ ('rig check cleared: the Resume line says a delayed show is checked again', 'ltcplay/schedule_service.py',
+  '                if d is not None and d.n == key[1]:',
+  '                if False:'),
+
+ ('continue anyway: a failed MadMapper output check reads as nothing failed', 'ltcplay/schedule_service.py',
+  '        if any(i["name"] == "MadMapper output" for i in bad):',
+  '        if False:'),
+
+ ('rig check cleared: a cleared show is journaled as a late check', 'ltcplay/schedule_service.py',
+  '            if v in ("failed", "cleared"):',
+  '            if v == "failed":'),
+
  # -- interface 2.0 (Jeff, 2026-10-28): /remote2 beside 1.0, the per-screen
  # switch, the default set on the show machine only, 1.0's own rules served,
  # and the SHOW tab's presses kept 1.0's --
