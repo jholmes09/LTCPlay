@@ -1904,7 +1904,7 @@ class FlameCues:
                 return self._zero(RENDER_OLDER_THAN_LAYOUT, fault=True)
             lay = self._layout
             if lay is None or lay[0] is not s:
-                return self._late_zero((s, label), CUES_READING_LAYOUT)
+                return self._late_zero((id(s), label), CUES_READING_LAYOUT)
             span, total, laid = lay[1], lay[2], lay[3]
         else:
             span = self._locate(s)
@@ -1923,7 +1923,8 @@ class FlameCues:
             if self._bg:
                 got = self._by_path.get(hits[0].path)
                 if got is None:
-                    return self._late_zero((s, label), CUES_READING_RENDER)
+                    return self._late_zero((id(s), label),
+                                           CUES_READING_RENDER)
                 if isinstance(got, Exception):
                     raise got
                 f, spans, made, checked_at = got
@@ -2010,7 +2011,7 @@ class FlameCues:
                     # One episode per session and cue (review of #177):
                     # playing on across uncut blocks faults after
                     # CUT_FAULT_AFTER_S however short the blocks.
-                    key = (s, label)
+                    key = (id(s), label)
                     now = self._mono()
                     u = self._uncut
                     if u is None or u[0] != key:
