@@ -1944,6 +1944,7 @@
 "play-from cues: names are rewritten (NFKC), not kept as typed": "test_play_from_cue_model",
 "play-from cues: signed out reads the list": "test_play_from_cue_routes",
 "play-from cues: the engine lets any role save": "test_play_from_cue_routes",
+"play-from cues: the file is written in text mode (Windows new lines), so the kept copy is not the file": "test_play_from_cue_store",
 "play-from cues: the list is not kept in time order": "test_play_from_cue_model",
 "play-from cues: the next id is not saved": "test_play_from_cue_file_is_never_lost",
 "play-from cues: the page's audio length is trusted": "test_play_from_cue_routes",

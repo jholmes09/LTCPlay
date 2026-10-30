@@ -19671,7 +19671,7 @@ def build():
 
  ("play-from cues: a saved file is not kept in the history",
   "ltcplay/play_from.py",
-  "        try:\n            self._keep_history(json.dumps(new, indent=1, sort_keys=True)\n                               .encode(\"utf-8\"), new[\"rev\"], False)",
+  "        try:\n            self._keep_history(data, new[\"rev\"], False)",
   "        try:\n            pass"),
 
  ("play-from cues: a refused save is not in the audit log",
@@ -19893,6 +19893,11 @@ def build():
   "ltcplay/web/remote2.html",
   "  else if(PF && String(message).includes(PF_REPLACE_WORDS)){ PF.error = String(message); PF_REPLACE = false; }",
   "  else if(false){ PF.error = String(message); PF_REPLACE = false; }"),
+
+ ("play-from cues: the file is written in text mode (Windows new lines), so the kept copy is not the file",
+  "ltcplay/play_from.py",
+  "            with open(tmp, \"wb\") as fh:\n                fh.write(data)",
+  "            with open(tmp, \"w\", encoding=\"utf-8\", newline=\"\\r\\n\") as fh:\n                fh.write(data.decode(\"utf-8\"))"),
 
 ]
 

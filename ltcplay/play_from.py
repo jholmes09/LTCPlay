@@ -714,7 +714,7 @@ class Store:
         try:
             if new is None:
                 raise fail
-            self._write(new)
+            data = self._write(new)
         except (OSError, CueError) as e:
             text = f"Not saved: the file could not be written ({e})."
             self._note(who, screen, "save_failed", text, fault=True)
@@ -722,8 +722,7 @@ class Store:
             return False, text, None
         self._high = max(self._high, new["rev"])
         try:
-            self._keep_history(json.dumps(new, indent=1, sort_keys=True)
-                               .encode("utf-8"), new["rev"], False)
+            self._keep_history(data, new["rev"], False)
         except OSError as e:
             self._note(who, screen, "history_failed",
                        f"The play-from cues were saved (revision "
@@ -750,13 +749,18 @@ class Store:
                 time.sleep(RETRY_S)
 
     def _write(self, doc):
+        """Write `doc` whole and atomically; its bytes. Written as bytes
+        (never text mode, which on Windows turns each new line into two
+        characters), so the copy kept in HISTORY_DIR is the very file."""
+        data = json.dumps(doc, indent=1, sort_keys=True).encode("utf-8")
         tmp = self.path + ".tmp"
         try:
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(doc, fh, indent=1, sort_keys=True)
+            with open(tmp, "wb") as fh:
+                fh.write(data)
                 fh.flush()
                 os.fsync(fh.fileno())
             self._replace(tmp, self.path)
+            return data
         except OSError:
             try:
                 os.remove(tmp)
