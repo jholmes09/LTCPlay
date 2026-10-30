@@ -93088,7 +93088,7 @@ def test_ui2_fuel_pump_row():
     check("body.inactive #pm-on{filter:saturate(.3)}" in two and
           "body.inactive #pm-off" not in two,
           "the calm tone quiets Fuel pump: On, never Pump off")
-    on = two[two.find('$("pm-on").addEventListener'):][:600]
+    on = two[two.find('$("pm-on").addEventListener'):][:1400]
     off = two[two.find('$("pm-off").addEventListener'):][:400]
     check('post("/api/remote/fuel-pump", actor({on: true, seconds: secs, '
           'run: run}))' in on and
@@ -93187,6 +93187,8 @@ const realFetch = window.fetch;
 window.fetch = function(u, o){
   if(window.__dead && /\/api\/remote\/status/.test(String(u))) return Promise.reject(new Error("no contact"));
   if(o && o.method === "POST") posts.push({u:String(u), b:String(o.body || "")});
+  if(window.__hang && o && o.method === "POST" && /fuel-pump/.test(String(u)))
+    return new Promise(() => {});
   if(window.__already && o && o.method === "POST" && /fuel-pump/.test(String(u)) && /"on":true/.test(String(o.body || "")))
     return Promise.resolve(new Response(JSON.stringify({error:"The fuel pump is already on (4:59 left). A second press never adds time: press Pump off, then start it again."}), {status:409, headers:{"Content-Type":"application/json"}}));
   return realFetch.apply(this, arguments);
@@ -93229,10 +93231,21 @@ async function go(){
   q("pm-on").click(); q("pm-on").click(); await wait(400);
   out.double = {n: sent().length};
   window.__already = true; posts.length = 0;
+  q("pm-time").value = "4:30"; q("pm-time").dispatchEvent(new Event("input")); await wait(100);
   q("pm-on").click(); await wait(400);
   out.double.later = sent().length;
   out.double.msg = q("msg-t").textContent; out.double.cls = q("msg").className;
+  out.double.time = q("pm-time").value;
   window.__already = false;
+  // No answer: "Sending..." while it waits, then On pressable again with
+  // "No answer. Check the pump." after 10 s.
+  window.__hang = true; posts.length = 0;
+  q("pm-on").click(); await wait(300);
+  out.hang = {sending: q("pm-why").hidden ? "" : q("pm-why").textContent, busy: q("pm-on").disabled};
+  await wait(10500);
+  out.hang.after = q("pm-why").hidden ? "" : q("pm-why").textContent;
+  out.hang.free = !q("pm-on").disabled;
+  window.__hang = false;
   window.__dead = true; await wait(2800);
   out.dead = look();
   posts.length = 0; q("pm-off").click(); await wait(300); out.dead_off = sent();
@@ -93303,7 +93316,7 @@ def test_ui2_fuel_pump_in_a_browser():
         got = _rack_screen_in_chromium(chrome, page, _ui2_status_pump(kind),
                                        sizes, measure_js=_UI2_PUMP_JS,
                                        frag="?tour=0", routes=brand,
-                                       budget_ms=25000)
+                                       budget_ms=45000)
         for (w, h), r in got.items():
             where = f"2.0 fuel pump, {kind}, {w}x{h}"
             if not check(isinstance(r, dict) and "first" in r,
@@ -93357,6 +93370,15 @@ def test_ui2_fuel_pump_in_a_browser():
                 check(r["after_on"]["time"] == "4:00",
                       f"{where}: On answered: the run time is back to the "
                       f"default: {r['after_on']['time']}")
+                check(r["double"]["time"] == "4:00",
+                      f"{where}: a refused On puts the run time back to "
+                      f"the default too: {r['double']}")
+                check(r["hang"]["sending"] == "Sending..." and
+                      r["hang"]["busy"] and r["hang"]["free"] and
+                      r["hang"]["after"] == "No answer. Check the pump.",
+                      f"{where}: On waiting says Sending..., and with no "
+                      f"answer in 10 s is pressable again and says so: "
+                      f"{r['hang']}")
                 check(r["double"]["n"] == 1 and r["double"]["later"] == 1 and
                       "already on" not in r["double"]["msg"] and
                       "bad" not in r["double"]["cls"],

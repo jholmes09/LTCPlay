@@ -1892,6 +1892,10 @@ async function hazerTap(i){
 // only shows the countdown from the engine's status. Pump off is never
 // disabled.
 let PUMP_TYPED = false, PUMP_WAS_ON = false, PUMP_OFF_SEEN = "", PUMP_BUSY = false, PUMP_OK_AT = 0;
+// What the line under the row says while On waits for its answer, or
+// after none came (delta review of #189, 3), and how long it waits.
+let PUMP_NOTE = "", PUMP_NOTE_AT = 0;
+const PUMP_ANSWER_MS = 10000;
 function pumpReset(v){
   // The run time back to the default (5:00): after a run is started, a
   // run ends, Pump off or a Stop.
@@ -1965,7 +1969,8 @@ function renderPump(s){
   const on = $("pm-on");
   on.disabled = !!why || PUMP_BUSY;
   setText($("pm-on-why"), why);
-  const full = pumpWhyFull(s, v, secs, why);
+  if(PUMP_NOTE && !PUMP_BUSY && (v.on || Date.now() - PUMP_NOTE_AT > 30000)) PUMP_NOTE = "";
+  const full = PUMP_NOTE || pumpWhyFull(s, v, secs, why);
   setText($("pm-why"), full);
   $("pm-why").hidden = !full;
   on.title = full || ("Fuel pump: On for " + pumpClock(secs) + ". It turns off by itself then.");
@@ -1983,18 +1988,32 @@ $("pm-on").addEventListener("click", async () => {
   if(secs === null){ say("Run time as m:ss.", "", "bad"); return; }
   if(PUMP_BUSY) return;
   PUMP_BUSY = true; $("pm-on").disabled = true;
+  PUMP_NOTE = "Sending..."; PUMP_NOTE_AT = Date.now();
+  if(ST) try{ renderPump(ST); }catch(e){}
   const run = String(Date.now()) + "-" + String(Math.random()).slice(2, 10);
+  // No answer in PUMP_ANSWER_MS: On is pressable again and says so.
+  const late = new Promise((_ok, no) => setTimeout(() => no(Object.assign(new Error("No answer. Check the pump."), {late: true})), PUMP_ANSWER_MS));
   try{
-    const j = await post("/api/remote/fuel-pump", actor({on: true, seconds: secs, run: run}));
+    const j = await Promise.race([post("/api/remote/fuel-pump", actor({on: true, seconds: secs, run: run})), late]);
     PUMP_OK_AT = Date.now();
     pumpReset(ST && ST.pump);
+    PUMP_NOTE = "";
     say(short8(j.text, "Pump on."), j.text, "ok");
   }
   catch(e){
-    // A second tap's "already on" never paints over the first tap's
-    // success (review B of #189, 3).
-    const running = Date.now() - PUMP_OK_AT < 5000 || !!(ST && ST.pump && ST.pump.on);
-    if(!(running && /already on/.test(e.message))) say(armShort(e.message), e.message, "bad");
+    if(e.late){
+      PUMP_NOTE = "No answer. Check the pump."; PUMP_NOTE_AT = Date.now();
+      say("No answer. Check the pump.", "", "bad");
+    } else {
+      // Any answer puts the run time back to 5:00, a refusal too (Jeff:
+      // back to 5:00 as soon as On is answered; delta review of #189, 1).
+      pumpReset(ST && ST.pump);
+      PUMP_NOTE = "";
+      // A second tap's "already on" never paints over the first tap's
+      // success (review B of #189, 3).
+      const running = Date.now() - PUMP_OK_AT < 5000 || !!(ST && ST.pump && ST.pump.on);
+      if(!(running && /already on/.test(e.message))) say(armShort(e.message), e.message, "bad");
+    }
   }
   finally{ PUMP_BUSY = false; if(ST) try{ renderPump(ST); }catch(e){} }
 });

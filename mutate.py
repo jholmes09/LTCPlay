@@ -3009,8 +3009,23 @@ MUTATIONS = [
 
  ("ui 2.0: one press id for every tap of Fuel pump: On",
   "ltcplay/web/remote2.html",
-  "  const run = String(Date.now()) + \"-\" + String(Math.random()).slice(2, 10);\n  try{\n    const j = await post(\"/api/remote/fuel-pump\"",
-  "  const run = \"pump\";\n  try{\n    const j = await post(\"/api/remote/fuel-pump\""),
+  "  const run = String(Date.now()) + \"-\" + String(Math.random()).slice(2, 10);\n  // No answer",
+  "  const run = \"pump\";\n  // No answer"),
+
+ ("ui 2.0: a refused On keeps a longer run time",
+  "ltcplay/web/remote2.html",
+  "      // back to 5:00 as soon as On is answered; delta review of #189, 1).\n      pumpReset(ST && ST.pump);",
+  "      // back to 5:00 as soon as On is answered; delta review of #189, 1)."),
+
+ ("ui 2.0: On waits for its answer forever",
+  "ltcplay/web/remote2.html",
+  "    const j = await Promise.race([post(\"/api/remote/fuel-pump\", actor({on: true, seconds: secs, run: run})), late]);",
+  "    const j = await post(\"/api/remote/fuel-pump\", actor({on: true, seconds: secs, run: run}));"),
+
+ ("ui 2.0: On waiting for its answer says nothing",
+  "ltcplay/web/remote2.html",
+  "  PUMP_NOTE = \"Sending...\"; PUMP_NOTE_AT = Date.now();",
+  "  PUMP_NOTE_AT = Date.now();"),
 
  ("ui 2.0: the run time keeps a longer one after a Stop or Pump off elsewhere",
   "ltcplay/web/remote2.html",
