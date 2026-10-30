@@ -18309,6 +18309,20 @@ def build():
   "  if(down && (down.key !== ALERT_KEY || down.act !== $(\"al-act\").dataset.act)){",
   "  if(false){"),
 
+ ("ui2 page: the footer's sentence cut is a lookbehind again (dead on iPadOS 15)",
+  "ltcplay/web/remote2.html",
+  "  const end = /[.!?]\\s/.exec(t);\n"
+  "  const first = end ? t.slice(0, end.index + 1) : t;\n",
+  "  const first = t.split(/(?<=[.!?])\\s/)[0];\n"),
+ ("ui2 page: the footer cuts at a full stop with no space after it",
+  "ltcplay/web/remote2.html",
+  "  const end = /[.!?]\\s/.exec(t);",
+  "  const end = /[.!?]/.exec(t);"),
+ ("ui2 page: the footer's sentence loses its full stop",
+  "ltcplay/web/remote2.html",
+  "  const first = end ? t.slice(0, end.index + 1) : t;",
+  "  const first = end ? t.slice(0, end.index) : t;"),
+
  ("ui2 page: no contact leaves the old alert slot", "ltcplay/web/remote2.html",
   "  if(isSt) drawSlotStale(); else",
   "  if(false) drawSlotStale(); else"),

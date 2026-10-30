@@ -89814,6 +89814,404 @@ def _js_same(text):
     return re.sub(r"\s+", " ", "\n".join(lines)).strip()
 
 
+# --------------------------------------- JavaScript an iPad on iPadOS 15 runs --
+
+# What Safari on iPadOS 15.0 cannot run, by where it breaks. "parse": the
+# whole <script> block fails to load (one lookbehind in 2.0 left the iPad
+# with a dead page). "runtime": that line throws when it runs.
+_JS_NEWER_PARSE = (
+    ("a regular expression lookbehind (?<= or (?<! (Safari 16.4)",
+     "lookbehind"),
+    ("a static class block (Safari 16.4)", "static_block"),
+    ("an await outside an async function (top-level await, Safari 15 "
+     "modules only)", "await"),
+)
+_JS_NEWER_RUNTIME = (
+    # (the tokens, what it is, the polyfill that makes it safe)
+    ((".", "at", "("), "Array.prototype.at (Safari 15.4)",
+     ("Array", ".", "prototype", ".", "at", "=")),
+    (("structuredClone", "("), "structuredClone (Safari 15.4)", None),
+    (("Object", ".", "hasOwn"), "Object.hasOwn (Safari 15.4)", None),
+    ((".", "replaceAll", "("), "String.prototype.replaceAll (Safari 13.1)",
+     None),
+)
+_JS_KEYWORDS_BEFORE_PAREN_BLOCK = {"if", "for", "while", "switch", "catch",
+                                   "with"}
+_JS_REGEX_AFTER = {"return", "typeof", "instanceof", "in", "of", "new",
+                   "delete", "void", "throw", "case", "do", "else", "yield",
+                   "await"}
+
+
+def _js_tokens(src):
+    """A small lexer: [(kind, text, line)] with kind one of "id", "num",
+    "str", "tmpl", "re", "punct". Comments are dropped; a template's ${ }
+    parts are lexed as code (their tokens sit between "tmpl" pieces)."""
+    out = []
+    i, n, line = 0, len(src), 1
+    tmpl_depth = []          # brace depth at each open ${ in a template
+
+    def prev_sig():
+        return out[-1] if out else None
+
+    def regex_allowed():
+        p = prev_sig()
+        if p is None:
+            return True
+        k, t, _l = p
+        if k in ("num", "str", "tmpl", "re"):
+            return False
+        if k == "id":
+            return t in _JS_REGEX_AFTER
+        return t not in (")", "]", "}")
+
+    def read_template(i, line):
+        # From just after ` or }, to the closing ` or an opening ${.
+        j = i
+        while j < n:
+            c = src[j]
+            if c == "\\":
+                j += 2
+                continue
+            if c == "`":
+                return j + 1, line + src.count("\n", i, j), False
+            if c == "$" and src.startswith("${", j):
+                return j + 2, line + src.count("\n", i, j), True
+            j += 1
+        return n, line + src.count("\n", i, n), False
+
+    depth = 0
+    while i < n:
+        c = src[i]
+        if c == "\n":
+            line += 1
+            i += 1
+            continue
+        if c in " \t\r\f\v":
+            i += 1
+            continue
+        if src.startswith("//", i):
+            j = src.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if src.startswith("/*", i):
+            j = src.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            line += src.count("\n", i, j)
+            i = j
+            continue
+        if c in "\"'":
+            j = i + 1
+            while j < n and src[j] != c and src[j] != "\n":
+                j += 2 if src[j] == "\\" else 1
+            out.append(("str", src[i + 1:j], line))
+            i = j + 1
+            continue
+        if c == "`":
+            j, nl, opened = read_template(i + 1, line)
+            out.append(("tmpl", src[i:j], line))
+            line = nl
+            if opened:
+                tmpl_depth.append(depth)
+            i = j
+            continue
+        if c == "}" and tmpl_depth and tmpl_depth[-1] == depth:
+            tmpl_depth.pop()
+            j, nl, opened = read_template(i + 1, line)
+            out.append(("tmpl", src[i:j], line))
+            line = nl
+            if opened:
+                tmpl_depth.append(depth)
+            i = j
+            continue
+        if c == "/" and regex_allowed():
+            j, cls = i + 1, False
+            while j < n and src[j] != "\n":
+                d = src[j]
+                if d == "\\":
+                    j += 2
+                    continue
+                if d == "[":
+                    cls = True
+                elif d == "]":
+                    cls = False
+                elif d == "/" and not cls:
+                    break
+                j += 1
+            j += 1
+            while j < n and (src[j].isalnum() or src[j] == "_"):
+                j += 1
+            out.append(("re", src[i:j], line))
+            i = j
+            continue
+        if c.isalpha() or c in "_$":
+            j = i + 1
+            while j < n and (src[j].isalnum() or src[j] in "_$"):
+                j += 1
+            out.append(("id", src[i:j], line))
+            i = j
+            continue
+        if c.isdigit():
+            m = re.match(r"\d[\w.]*", src[i:])
+            out.append(("num", m.group(0), line))
+            i += len(m.group(0))
+            continue
+        for p in ("...", "=>", "?.", "**", "==", "!=", "<=", ">=", "&&",
+                  "||", "??", "++", "--", "+=", "-=", "*=", "/="):
+            if src.startswith(p, i):
+                out.append(("punct", p, line))
+                i += len(p)
+                break
+        else:
+            if c in "{([":
+                depth += 1
+            elif c in "})]":
+                depth -= 1
+            out.append(("punct", c, line))
+            i += 1
+    return out
+
+
+def _js_awaits_outside_async(toks):
+    """The lines of every `await` that is not inside an async function."""
+    bad = []
+    match = {}
+    stack = []
+    for k, (kind, t, _l) in enumerate(toks):
+        if kind == "punct" and t in "({[":
+            stack.append(k)
+        elif kind == "punct" and t in ")}]" and stack:
+            match[k] = stack.pop()
+    # The function context of each "{": True async, False plain, None a
+    # block or object (inherits).
+    ctx = []          # [(kind "brace"/"expr", async, depth at open)]
+    depth = 0
+
+    def is_async_before(k):
+        return k >= 0 and toks[k][0] == "id" and toks[k][1] == "async"
+
+    def arrow_async(k):
+        # toks[k] is "=>": async when its parameters follow `async`.
+        p = k - 1
+        if p >= 0 and toks[p][1] == ")" and p in match:
+            return is_async_before(match[p] - 1)
+        return is_async_before(p - 1)
+
+    for k, (kind, t, line) in enumerate(toks):
+        # an arrow's expression body ends at , ; or a closer at its depth
+        while (ctx and ctx[-1][0] == "expr" and kind == "punct" and
+               ((t in ",;" and depth == ctx[-1][2]) or
+                (t in ")]}" and depth <= ctx[-1][2]))):
+            ctx.pop()
+        if kind == "punct" and t == "=>":
+            nxt = toks[k + 1] if k + 1 < len(toks) else None
+            if not (nxt and nxt[1] == "{"):
+                ctx.append(("expr", arrow_async(k), depth))
+            continue
+        if kind == "punct" and t in "([":
+            depth += 1
+            continue
+        if kind == "punct" and t in ")]":
+            depth -= 1
+            continue
+        if kind == "punct" and t == "{":
+            p = k - 1
+            fn = None
+            if p >= 0 and toks[p][1] == "=>":
+                fn = arrow_async(p)
+            elif p >= 0 and toks[p][1] == ")" and p in match:
+                q = match[p] - 1
+                if q >= 0 and toks[q][1] == "function":
+                    fn = is_async_before(q - 1)
+                elif q >= 0 and toks[q][0] == "id" and \
+                        toks[q][1] not in _JS_KEYWORDS_BEFORE_PAREN_BLOCK:
+                    if q - 1 >= 0 and toks[q - 1][1] == "function":
+                        fn = is_async_before(q - 2)
+                    else:
+                        fn = is_async_before(q - 1)   # a method
+            ctx.append(("brace", fn, depth))
+            depth += 1
+            continue
+        if kind == "punct" and t == "}":
+            depth -= 1
+            while ctx and ctx[-1][0] == "expr":
+                ctx.pop()
+            if ctx:
+                ctx.pop()
+            continue
+        if kind == "id" and t == "await":
+            inner = next((a for _k, a, _d in reversed(ctx) if a is not None),
+                         None)
+            if inner is not True:
+                bad.append(line)
+    return bad
+
+
+def _js_newer_than_ipados15(src):
+    """[(line, what)] for each thing in `src` (JavaScript) that Safari on
+    iPadOS 15.0 cannot run."""
+    found = []
+    toks = _js_tokens(src)
+    for k, (kind, t, line) in enumerate(toks):
+        if kind in ("re", "str", "tmpl") and ("(?<=" in t or "(?<!" in t):
+            found.append((line, _JS_NEWER_PARSE[0][0]))
+        if kind == "id" and t == "static" and k + 1 < len(toks) and \
+                toks[k + 1][1] == "{":
+            found.append((line, _JS_NEWER_PARSE[1][0]))
+    for line in _js_awaits_outside_async(toks):
+        found.append((line, _JS_NEWER_PARSE[2][0]))
+    # The ones that throw where they run, matched on code tokens only (a
+    # word in a string or a comment is not a call).
+    words = [t for kind, t, _l in toks if kind in ("id", "num", "punct")]
+    lines = [l for kind, _t, l in toks if kind in ("id", "num", "punct")]
+    for seq, what, guard in _JS_NEWER_RUNTIME:
+        hits = [i for i in range(len(words) - len(seq) + 1)
+                if tuple(words[i:i + len(seq)]) == seq]
+        if guard is not None and any(
+                tuple(words[i:i + len(guard)]) == guard
+                for i in range(len(words))):
+            continue
+        found += [(lines[i], what) for i in hits]
+    return sorted(set(found))
+
+
+def _js_scripts(page):
+    """[(line the code starts on, code)] for each inline <script> in an
+    HTML page (a <script src=...> is served on its own and read there)."""
+    out = []
+    for m in re.finditer(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>",
+                         page, re.S | re.I):
+        out.append((page.count("\n", 0, m.start(1)) + 1, m.group(1)))
+    return out
+
+
+def _js_balanced(code):
+    """True when the lexer read `code` through with its brackets matched,
+    so a string, template or regular expression it misread cannot hide
+    the rest of the script from the scan."""
+    depth = 0
+    for kind, t, _l in _js_tokens(code):
+        if kind == "punct" and t in "({[":
+            depth += 1
+        elif kind == "punct" and t in ")}]":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
+
+
+def test_ui2_runs_on_ipados15():
+    section("2.0 runs on iPadOS 15 and later: no script on a served page "
+            "(the pages, /remote-logic.js and the 2.0 page as served) uses "
+            "what Safari on iPadOS 15.0 cannot run (a lookbehind or a "
+            "static class block leaves the whole script dead, as one "
+            "lookbehind did to 2.0 on an older iPad; an await outside an "
+            "async function; Array.prototype.at, structuredClone, "
+            "Object.hasOwn, replaceAll); and 2.0's footer still cuts a "
+            "sentence where it did")
+    here = os.path.dirname(os.path.abspath(__file__))
+    web_dir = os.path.join(here, "ltcplay", "web")
+    from ltcplay import web as web_mod
+    # The scan finds each thing, and only in code.
+    for src, want in (
+            ("s.split(/(?<=[.!?])\\s/)", "lookbehind"),
+            ("new RegExp('(?<!a)b')", "lookbehind"),
+            ("class A { static { x = 1; } }", "static class block"),
+            ("await x;", "await outside"),
+            ("function f(){ if(a){ await x; } }", "await outside"),
+            ("a.at(-1)", "Array.prototype.at"),
+            ("o = structuredClone(p)", "structuredClone"),
+            ("Object.hasOwn(o, 'k')", "Object.hasOwn"),
+            ("s.replaceAll('a', 'b')", "replaceAll")):
+        got = _js_newer_than_ipados15(src)
+        check(len(got) == 1 and want in got[0][1],
+              f"the iPadOS 15 scan finds {want} in {src!r}: {got}")
+    for src in ("async function f(){ if(a){ await x; } }",
+                "const f = async () => await g();",
+                "el.onclick = async (e) => { try{ await post(1); }"
+                "catch(x){} };",
+                "const o = { async m(){ await 1; }, n(){ return 2; } };",
+                "setTimeout(async function(){ await f(); }, 1);",
+                "x = 'a.at(1)'; // c.at(2) structuredClone(d) (?<=e)",
+                "Array.prototype.at = function(i){ return this[i]; };"
+                " a.at(-1);",
+                "t = `${a ? `${b.x}` : '/'}`; r = x / 2 / y;",
+                "class A { static n = 1; static f(){ return 2; } }"):
+        got = _js_newer_than_ipados15(src)
+        check(not got, f"the iPadOS 15 scan passes {src!r}: {got}")
+    # Every page in the web folder, every .js file served from it, 1.0's
+    # rules as /remote-logic.js serves them and 2.0 as /remote2 serves it.
+    pages = sorted(f for f in os.listdir(web_dir) if f.endswith(".html"))
+    check({"index.html", "remote.html", "remote2.html"} <= set(pages),
+          f"the scan reads the three pages: {pages}")
+    scripts = []
+    for f in pages:
+        with open(os.path.join(web_dir, f), encoding="utf-8") as fh:
+            scripts += [(f, at, code) for at, code in _js_scripts(fh.read())]
+    for root, _dirs, files in os.walk(web_dir):
+        for f in sorted(files):
+            if f.endswith(".js"):
+                with open(os.path.join(root, f), encoding="utf-8") as fh:
+                    scripts.append((os.path.relpath(os.path.join(root, f),
+                                                    web_dir), 1, fh.read()))
+    logic = web_mod.remote_logic()
+    check(bool(logic and logic.strip()), "/remote-logic.js has 1.0's rules")
+    scripts.append(("/remote-logic.js", 1, logic or ""))
+    served2 = web_mod.remote2_page().decode("utf-8")
+    scripts += [("/remote2 as served", at, code)
+                for at, code in _js_scripts(served2)]
+    check(sum(1 for s in scripts if s[0] == "remote2.html") >= 2 and
+          sum(1 for s in scripts if s[0] == "/remote2 as served") >= 3,
+          "2.0's own scripts and 1.0's rules written into it are read")
+    for where, at, code in scripts:
+        if not check(_js_balanced(code),
+                     f"{where} (the script at line {at}): the iPadOS 15 "
+                     f"scan read it through, brackets matched"):
+            continue
+        for line, what in _js_newer_than_ipados15(code):
+            check(False, f"{where} line {at + line - 1}: {what}, which "
+                         f"Safari on iPadOS 15.0 cannot run")
+    # short8 cuts where the lookbehind did, on every kind of sentence.
+    two = _ui2_pages()[1]
+    fn = _js_function(two, "short8")
+    check(fn is not None and "(?<" not in fn, "short8 has no lookbehind")
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node or not fn:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  note: node is not here; short8 was checked by reading only")
+        print("  ok")
+        return
+    cases = ["", "   ", "Done.", "Done. Next.", "Armed! Go now.",
+             "Is it on? Yes.", "No stop at all", "v1.2 is out. Then more.",
+             "a.b.c d. e", "Line one.\nLine two.", "Tab.\tafter",
+             "Ends here.", "Wait... more words here.", "?! odd. x",
+             "One two three four five six seven eight nine. Ten.",
+             "One two three four five six seven eight. Nine.",
+             "  Padded. text  ", "Two  spaces.  Here."]
+    js = fn + "\nconst ref = (text, fallback) => { " \
+        "const t = String(text || \"\").trim(); " \
+        "if(!t) return fallback || \"\"; " \
+        "const first = t.split(new RegExp(\"(?<=[.!?])\\\\s\"))[0]; " \
+        "return first.split(/\\s+/).length <= 8 ? first : " \
+        "(fallback || \"Done. Tap Details.\"); };\n" \
+        "const cases = " + json.dumps(cases) + ";\nconst bad = [];\n" \
+        "for(const c of cases){ for(const fb of [undefined, \"fb\"]){ " \
+        "const a = short8(c, fb), b = ref(c, fb); " \
+        "if(a !== b) bad.push([c, fb, a, b]); } }\n" \
+        "console.log(JSON.stringify(bad));\n"
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, "short8.js")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(js)
+        r = subprocess.run([node, p], capture_output=True, text=True,
+                           timeout=60)
+    check(r.returncode == 0 and r.stdout.strip() == "[]",
+          f"short8 cuts each sentence where the lookbehind did: "
+          f"{r.stdout.strip()[:600]} {r.stderr.strip()[:600]}")
+    print("  ok")
+
+
 def test_ui2_pages_served_and_switched():
     section("interface 2.0 (Jeff, 2026-10-28): /remote is still 1.0 byte "
             "for byte unless this screen chose 2.0 (its own cookie, one "
@@ -92516,6 +92914,7 @@ if __name__ == "__main__":
         test_config_watch_reloads_only_what_is_safe_and_is_quick,
         test_config_watch_on_the_status_and_reload_engine,
         test_ui2_pages_served_and_switched,
+        test_ui2_runs_on_ipados15,
         test_ui2_page_makes_only_1_0_presses,
         test_ui2_show_tab_in_a_browser,
         test_ui2_day_makes_only_1_0_presses,
