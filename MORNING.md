@@ -204,6 +204,18 @@ All of these live in the machine's settings folder (`%LOCALAPPDATA%\ltcplay`
 on the show PC). `ltcplay/ltcplay_morning.example.json` is the annotated
 example. Nothing here is in the show file.
 
+### The fireball's fuel pump (Jeff, 2026-10-30)
+
+The fuel pump is not on this page and is never purged. It is one DMX
+channel on the flame universe (Jeff: channel 100, on at 255), a
+passthrough "switch" in `flamesafe.json`, not a flame group: it has no
+safety slot and is never armed. Andy turns it on by hand, from the
+engine's fuel pump route (its button on Interface 2.0's SHOW tab comes in
+its own update), for a run time he sets first (5:00 unless he sets
+another), and it turns off by itself at the end of it. Stop and Abort
+turn it off; Hold does not. OPERATOR.md, "The fireball's
+fuel pump", has the rules and the one line to add to `flamesafe.json`.
+
 ## How it works
 
 ### Arming for a purge: the deck still owns the arm link
@@ -679,6 +691,7 @@ them as burn ("other", like scrubbing), once, and never as a Showven purge.
 | T12 | A Waver fires before its head is up | a fire press on a Waver sends pan and tilt first and the fire value only after `head_settle_s` (0 to 10 s; with 0 the head values and the fire value go in the same frame, the first beat on which it is selected, unlocked and armed) of continuous heartbeats, counted per Waver from the first beat on which it is both selected and armed, and counted again from nothing whenever its group drops out of ARMED mid press (the head has fallen); the head values go in the same frame as the fire value thereafter; a machine cannot join a press that is firing |
 | T13 | The purge frame reaches a fire slot flamesafe has not armed | flamesafe sends a fire value only while that group's safety slot carries the arm value on the same packet (unchanged) |
 | T16 | A purge writes one value to every channel of a fireball (fuel, air, valve and ignite at once) | the rule is by flamesafe group (`MorningConfig.purge_refusal`, `fireball_groups`): a machine of any kind in a fireball group is refused by `purge-select` and left out of `groups_wanted` and the frame, and `ltcplay_morning.json` cannot put a machine of another kind in one; the Stream Deck refuses a purge arm for a group named fireball or ball and for every group the page lists as never purged (`purge.never_groups`), key or no key, a second barrier (review of #126, P2-4), and never arms a group with no key for a purge click |
+| T17 | The fireball's fuel pump runs on after it was meant to stop | flamesafe writes its slot (its own `on` value) only while the flame frame names it, the link is fresh and no `disarm_all` has come since it was last named OFF; the engine names it only before the run's hard end and with its timer beating (the timed purge's machinery: engine timer, the flame link's own end and beat on its clock, flamesafe's `frame_stale_ms` if the engine dies); Stop and Abort clear it at the link before the first `disarm_all` copy; it is not a fire slot, so it never arms or fires a group |
 | T14 | A checklist record is altered after the fact | every record carries the hash of the one before it; `verify` fails on any edit, insertion or deletion; the per-day PDF prints the verification result |
 | T15 | A laser lights while disarmed or locked out, or after an Abort or Hold | default disarmed at every start (DisableLaserOutput sent); EnableLaserOutput and the unblank only with every laser armed and none locked out (the laser gate, and again before every unblank packet); Abort and Hold disarm at the press on every surface and the conductor; Resume and Reset never re-arm; the night closing and the engine stopping disarm; a disarm cuts an enable or a restore short; the allow-list in beyond.py holds exactly brightness 0/100 and the two output switches with no argument |
 

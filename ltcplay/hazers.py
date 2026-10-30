@@ -266,8 +266,11 @@ class Hazers:
         pt = fl.get("passthrough")
         if not isinstance(pt, list):
             return None
+        # Hazers only: a switch (the fuel pump, 2026-10-30) is
+        # fuelpump.py's, never a hazer.
         return [(str(p.get("name", "")), list(p.get("slots") or []))
-                for p in pt if isinstance(p, dict)]
+                for p in pt if isinstance(p, dict)
+                and str(p.get("kind") or "hazer") == "hazer"]
 
     # -- why not ------------------------------------------------------------
     def down(self):
