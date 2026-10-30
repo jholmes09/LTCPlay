@@ -884,7 +884,7 @@
 "fireball charge: an operator may confirm the tanks are empty": "test_fireball_charge_wiring",
 "fireball charge: close() does not try the unwritten record again": "test_fireball_charge_state",
 "fireball charge: flamesafe reporting a charge sent is not evidence": "test_fireball_charge_state",
-"fireball charge: no record reads as both tanks EMPTY": "test_fireball_charge_state",
+"fireball charge: no record (the first run) reads as NOT KNOWN": "test_fireball_charge_state",
 "fireball charge: the Igniter counts as the shot": "test_fireball_charge_state",
 "fireball charge: the charge record closes before the flame link": "test_fireball_charge_wiring",
 "fireball charge: the fuel tracker is no longer told of each frame": "test_fireball_charge_wiring",

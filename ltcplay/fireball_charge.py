@@ -74,8 +74,9 @@ was open when the engine stopped (the release may not have finished); a
 charge, valve or purge value sent while flamesafe's status was not known.
 Only a shot or a purge seen for certain makes an UNKNOWN tank EMPTY (a
 charge seen for certain makes it CHARGED). A missing file (the very first
-run, or a lost file) is NOT KNOWN too, said as a fault, until a shot, a
-Purge, or an admin confirms the tanks are empty (confirm_empty). A newer
+run) is EMPTY (Jeff, 2026-10-30: "tanks start empty"), and the journal
+says so once. An admin can confirm NOT KNOWN tanks empty
+(confirm_empty). A newer
 record left in FILE.tmp by a write that could not finish (Windows: the
 file held when it was to be replaced) is the one read at start; one that
 cannot be read makes both tanks NOT KNOWN.
@@ -275,24 +276,19 @@ class ChargeTracker:
                             f"it is the one used.", fault=True,
                             persist=False)
         if not self.path or not os.path.exists(src):
-            # No record (the very first run, or the file was lost): NOT
-            # KNOWN, never EMPTY (review of #185): no automatic charge
-            # until a shot, a Purge, or an admin confirms the tanks are
-            # empty (confirm_empty). Memory only (no settings folder, the
-            # selftest) has nothing to lose and starts EMPTY.
-            state = UNKNOWN if self.path else EMPTY
-            self.tanks = {k: _new_tank(state, now, "no charge record")
-                          for k in TANK_WORD}
+            # No record (the very first run): both tanks START EMPTY (Jeff,
+            # 2026-10-30). A record that cannot be read, a restart with the
+            # valve open and a stale status stay NOT KNOWN.
+            self.tanks = {k: _new_tank(EMPTY, now, "first run: no charge "
+                                       "record yet") for k in TANK_WORD}
             self.releasing = ""
             self.first_run = bool(self.path)
             if self.first_run:
                 self._event("system", "engine", "first_run",
                             f"No fireball charge record was found ({FILE}), "
-                            f"so both tanks are NOT KNOWN and the timeline "
-                            f"charges nothing. Fire the shot or press Purge "
-                            f"on the Fireball page, or, if both tanks are "
-                            f"known to be empty, an admin presses Tanks are "
-                            f"empty there.", fault=True, persist=True)
+                            f"so both tanks start EMPTY. If the fuel or air "
+                            f"tank is pressurised now, press Purge on the "
+                            f"Fireball page.", persist=True)
             return
         try:
             with open(src, encoding="utf-8-sig") as fh:
