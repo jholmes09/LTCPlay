@@ -90325,8 +90325,15 @@ def test_preroll_a_pass_clears_the_failure_and_keeps_the_hold():
         n.now[0] = _den(S, 18, 0, sec)
         svc.tick()
         _settle(svc, c)
+    # A start under way can take a moment to show (a slow machine): give
+    # it the chance to, so a wrong start is never missed.
+    wait_for(lambda: svc.machine.state == S.SHOW or
+             bool(_pr_audio_started(n)), 2)
     check(svc.machine.state != S.SHOW and not _pr_audio_started(n),
           f"unattended, a cleared show never starts: {svc.machine.state}")
+    check(not [x for x in svc.journal if "could not finish before its "
+               "time" in str(x.get("text"))],
+          "a cleared show at its time is never journaled as a late check")
     from ltcplay import remote as RM
     rm = RM.Remote.__new__(RM.Remote)
     rm.preroll, rm.schedule = n.pr, svc
@@ -90814,6 +90821,88 @@ def test_preroll_resume_and_clear_guards():
     check(code == 200, f"30 s before, a failure in force: let through: "
                        f"{body}")
     wait_for(lambda: not n.pr.checking(), 15)
+    c.close()
+    n.link.close()
+    # Review B round 2, B1: the show's own check passed, then the rig
+    # broke and Start now's check failed (the alert opens), Resume: at its
+    # time the show is checked again, never started on the older pass.
+    n = _pr_night()
+    S, svc, c = n.S, n.svc, n.c
+    svc.alert_sink = n.al.raise_
+
+    def q():
+        wait_for(lambda: not n.pr.checking(), 10)
+        _settle(svc, c)
+    svc.tick()
+    q()
+    n.now[0] = _den(S, 17, 59, 50)
+    svc.tick()
+    q()
+    check(n.pr.verdict(_pr_key(n)) == "passed", "the show's own check passed")
+    svc.operator_press("hold", "Andy", "Rack screen")
+    q()
+    n.results["Video"] = (False, "broken")
+    g = svc.operator_press("start-now", "Andy", "Rack screen")
+    q()
+    check(not g["ok"] and "broken" in g["text"] and
+          n.pr.verdict(_pr_key(n)) is None,
+          f"Start now failed its check: the show's older pass no longer "
+          f"counts: {g['text']} {n.pr.verdict(_pr_key(n))}")
+    svc.operator_press("resume", "Andy", "Rack screen")
+    q()
+    for t in ((17, 59, 55), (17, 59, 59), (18, 0, 0), (18, 0, 1)):
+        n.now[0] = _den(S, *t)
+        svc.tick()
+        q()
+    check(svc.machine.state != S.SHOW and not _pr_audio_started(n) and
+          n.pr.verdict(_pr_key(n)) == "failed",
+          f"at its time: checked again, failed, not started: "
+          f"{svc.machine.state} {n.pr.verdict(_pr_key(n))}")
+    c.close()
+    n.link.close()
+    # Review A round 2: a cleared show past its time waits for Start now,
+    # held or not, and the screens and the Resume line say so.
+    n = _pr_night({"Video": (False, "x")})
+    S, svc, c = _pr_failed_at_showtime(n)
+    for sec in (2, 4):
+        n.now[0] = _den(S, 18, 5, sec)
+        svc.tick()
+        _settle(svc, c)
+    n.results["Video"] = (True, "")
+    n.pr.run(("pre-check", 1), "a Pre-check", alerts=False, manual=True,
+             by="Check again by Andy")
+    rm = RM.Remote.__new__(RM.Remote)
+    rm.preroll, rm.schedule = n.pr, svc
+    check(svc.machine.state == S.HOLD and svc.machine.delayed() is not None
+          and rm.preroll_view()["cleared"]["say"] ==
+          "Rig check passed. Press Start now for show 1.",
+          f"held, but delayed: Start now: {rm.preroll_view()['cleared']}")
+    for sec in (6, 8):
+        n.now[0] = _den(S, 18, 5, sec)
+        svc.tick()
+        _settle(svc, c)
+    svc.operator_press("resume", "Andy", "Rack screen")
+    rows = [x for x in svc.journal if x.get("outcome") == "released"]
+    check(rows and "waits for Start now" in rows[-1]["text"] and
+          "checked again" not in rows[-1]["text"],
+          f"the Resume line says it waits for Start now: {rows[-1:]}")
+    _no_dashes(rows[-1]["text"] if rows else "", "the Resume line")
+    c.close()
+    n.link.close()
+    # Review A round 2: Continue anyway after a failed MadMapper output
+    # check says it stays failed and nothing is switched off for it.
+    n = _pr_night({"MadMapper output": (False, "MadMapper's video output "
+                                               "is OFF")},
+                  names=("Audio", "Video", "MadMapper output"))
+    S, svc, c = _pr_failed_at_showtime(n)
+    r = svc.continue_anyway("Andy", "Rack screen")
+    _settle(svc, c)
+    rows = [x for x in svc.journal if x.get("action") == "continue anyway"]
+    check(r["ok"] and rows and "The MadMapper output check failed and "
+          "stays failed; nothing is switched off for it" in rows[-1]["text"]
+          and "no output's check failed" not in rows[-1]["text"],
+          f"Continue anyway's line: {rows[-1:]}")
+    _no_dashes(rows[-1]["text"] if rows else "", "Continue anyway's line")
     c.close()
     n.link.close()
     print("  ok")
@@ -91811,6 +91900,48 @@ def test_rack_screen_keeper_never_buries_a_dialog_or_a_window_in_use():
           not getattr(api, "ordered", None) and
           any("not responding" in x for x in logs),
           f"a hung rack screen: not moved: {got}")
+    # Review B round 2, B2: any program's dialog box (Explorer's, LTC
+    # Player's own) over the rack screen is never buried, in front or not.
+    xdlg = {"hwnd": 50, "image": r"C:\Windows\explorer.exe",
+            "title": "Location is not available", "cls": SW.DIALOG_CLASS,
+            "owner": 0, "caption": True, "rect": (700, 400, 1200, 600)}
+    for fg in (50, 20):
+        api = _FakeWins([xdlg, _BEYOND, _RACK])
+        api.fg = fg
+        api.session_age_s = lambda: 30.0
+        got = keeper(api).tick()
+        check(got == "left" and not api.raised and
+              not getattr(api, "ordered", None) and
+              api.wins[0]["hwnd"] == 50,
+              f"Explorer's message box over BEYOND and the rack screen "
+              f"(in front: {fg}): left on top: {got}")
+    # B3: BEYOND in front and used, then the lock screen, then unlocked by
+    # Windows Hello (no key): BEYOND, used 50 s ago while it was open, is
+    # left; the keyboard is not taken.
+    lock = {"hwnd": 90, "image": r"C:\Windows\SystemApps\Microsoft."
+            r"LockApp_cw5n1h2txyewy\LockApp.exe", "title": "Windows "
+            "Default Lock Screen", "cls": "Windows.UI.Core.CoreWindow",
+            "rect": (0, 0, 1920, 1080), "caption": False}
+    api = _FakeWins([_BEYOND, _RACK])
+    api.fg = 20
+    api.input_age = 30.0
+    api.session_age_s = lambda: 30.0
+    k = keeper(api)
+    check(k.tick() == "left", "BEYOND in front, used 30 s ago: left")
+    api.wins.insert(0, lock)
+    api.fg = 90
+    t[0] += 10
+    api.input_age = 40.0
+    k.tick()
+    api.wins.remove(lock)
+    api.fg = 20
+    t[0] += 10
+    api.input_age = 50.0
+    got = k.tick()
+    check(got == "left" and not api.raised and
+          not getattr(api, "ordered", None) and api.fg == 20,
+          f"back from the lock screen, used 50 s ago: left, the keyboard "
+          f"kept: {got}")
     _no_dashes(" ".join(logs), "the keeper's log lines")
     print("  ok")
 

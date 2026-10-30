@@ -1113,14 +1113,19 @@ again, or Continue anyway. A later check that passes on a fresh run
 (Check again, Check the rig, Start now's own check) clears the failure
 and the rig check alert, and the journal says "Rig check passed, failure
 cleared (who)". It starts nothing: a held show stays held. While the
-schedule is held for a show whose check failed, the screens say "Rig
-check passed. Press Resume." Resume then checks the show once more and
-starts it if that passes. Otherwise they say Press Start now: a show
-whose time has gone by (it waits for Start now), no hold at all, or a
+schedule is held for a show whose check failed and whose time has not
+gone by, the screens say "Rig check passed. Press Resume." Resume then
+checks the show once more and starts it if that passes. Otherwise they
+say Press Start now: a show whose time has gone by (it waits for Start
+now, held or not), no hold at all, or a
 cleared "rig check could not run" alert, which leaves no show for Resume
 to release. If the rig check still cannot run, that alert comes back.
 A failure raised after that check began is never cleared by it, and a
-check that fails again keeps the failure with the new reasons. Start now
+check that fails again keeps the failure with the new reasons. The
+other way round too: a show's own check that passed counts only until a
+failure is recorded after it (Start now's check failing, a Pre-check, a
+check that could not run). The show is then checked again before it
+starts. Start now
 that fails its check is refused with the reason.
 
 **MadMapper's output after a reboot** (Jeff, 2026-10-29). LTC Player
@@ -1151,10 +1156,13 @@ a window a person has in front, and leaves a minimized rack screen
 minimized. Its five minutes count from the sign-in, so stopping and starting
 LTC Player later does not bring them back, and windows that were already
 open when LTC Player started count as old (it raises over a BEYOND or
-MadMapper window only when one opens after that). A dialog of BEYOND or
-MadMapper (owned by its window or not, a message box included) over the
-rack screen, or a window someone used in the last minute, stops it; a
-window nobody is using does not. For 2 s after the
+MadMapper window only when one opens after that). A dialog over the rack
+screen stops it: BEYOND's or MadMapper's (owned by its window or not),
+and any program's message box (Explorer's, LTC Player's own). So does
+the window in front if the last key, touch or click (in the last minute)
+came while that window was open, including one back in front after the
+lock screen (unlocked by Windows Hello, with no key). A window nobody is
+using does not stop it. For 2 s after the
 rack screen comes to the front with no touch in it, a key that would
 start or arm something is ignored (it was typed for another program);
 Abort, Hold, Stop and every Disarm or Off key always work.

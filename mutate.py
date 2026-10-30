@@ -18050,8 +18050,8 @@ def build():
   '            if False:'),
 
  ('pre-roll: a failed check lets the scheduler start the show', 'ltcplay/schedule_service.py',
-  '            if v == "failed":\n                return True\n',
-  '            if v == "failed":\n                return False\n'),
+  '            if v in ("failed", "cleared"):\n',
+  '            if v == "failed":\n                return False\n            if v == "cleared":\n'),
 
  ('pre-roll: a show due with no check starts unchecked', 'ltcplay/schedule_service.py',
   '            if v is None:\n                self._preroll_kick(n)\n            return True',
@@ -18212,8 +18212,8 @@ def build():
   '        elif False:\n            self._refresh_failure(r, bad)'),
 
  ('rig check cleared: a cleared show is started by the scheduler unattended', 'ltcplay/schedule_service.py',
-  '            if v == "cleared":\n                # It failed',
-  '            if v == "cleared":\n                return False\n                # It failed'),
+  '            if v in ("failed", "cleared"):\n',
+  '            if v == "cleared":\n                return False\n            if v == "failed":\n'),
 
  ('rig check cleared: Resume does not release the cleared show', 'ltcplay/schedule_service.py',
   '                if kind == sch.RESUME and not out.refused:\n                    self._preroll_release(who, screen)',
@@ -18444,8 +18444,8 @@ def build():
   '            if True:'),
 
  ('rack keeper: an unowned dialog of the covering program is buried', 'ltcplay/showwindows.py',
-  '                              w.get("pid") == c.get("pid")):',
-  '                              False):'),
+  '                    w.get("owner") or w.get("pid") == c.get("pid"))):',
+  '                    w.get("owner"))):'),
 
  ('key guard: the listed safe buttons are held back', 'ltcplay/web/remote.html',
   '  if(KEY_SAFE_IDS.includes(b.id)) return true;',
@@ -18481,16 +18481,16 @@ def build():
   'and not w.get("owner")\n'),
 
  ("rack keeper: another program's dialog box is buried", 'ltcplay/showwindows.py',
-  '(w.get("owner") or is_dialog(w) or',
-  '(w.get("owner") or'),
+  '            if is_dialog(w) or (is_app(w) and (',
+  '            if (is_app(w) and ('),
 
  ('rack keeper: windows open before a restart count as just appeared', 'ltcplay/showwindows.py',
   'float("-inf") if first else now)',
   'now)'),
 
- ('rack keeper: raises over the window in use since before its first look', 'ltcplay/showwindows.py',
-  'if w["hwnd"] == fg_now and w["hwnd"] == self._fg_first \\',
-  'if False and w["hwnd"] == self._fg_first \\'),
+ ('rack keeper: raises over the window in use since before a restart or the lock screen', 'ltcplay/showwindows.py',
+  '                        self.seen.get(w["hwnd"], now) <= now - age)):',
+  '                        False)):'),
 
  ('rack keeper: moves a rack screen that is not responding', 'ltcplay/showwindows.py',
   '            if self.api.hung(rack["hwnd"]):',
@@ -18541,8 +18541,8 @@ def build():
   ''),
 
  ('rig check cleared: Resume gives the show no late allowance', 'ltcplay/schedule_service.py',
-  '                self._preroll_late[key] = pr.late_ok_s()\n                self._journal_line(\n                    "system", f"{who or \'Someone\'} pressed Resume',
-  '                self._journal_line(\n                    "system", f"{who or \'Someone\'} pressed Resume'),
+  '                self._preroll_late[key] = pr.late_ok_s()\n                d = m.delayed()',
+  '                d = m.delayed()'),
 
  ("rig check cleared: the note survives a show's own check", 'ltcplay/preroll.py',
   '                self.continued = None\n                self.cleared = None',
@@ -18571,6 +18571,38 @@ def build():
  ('rig check cleared: the alerts are called under the pre-roll\'s lock (deadlock)', 'ltcplay/preroll.py',
   '                got = self._clear_alert(KIND, alert_id)',
   '                with self._lock:\n                    got = self._clear_alert(KIND, alert_id)'),
+
+ ("rig check: a show's pass older than a later failure is not run again", 'ltcplay/preroll.py',
+  'self._fresh(r) and not self._stale(r):',
+  'self._fresh(r):'),
+
+ ("rig check: a show's pass older than a later failure still counts", 'ltcplay/preroll.py',
+  '(not self._fresh(r) or self._stale(r)):',
+  'not self._fresh(r):'),
+
+ ('rack keeper: the in-use rule covers a window that opened after the last input', 'ltcplay/showwindows.py',
+  '                        self.seen.get(w["hwnd"], now) <= now - age)):',
+  '                        True)):'),
+
+ ('mm output: a rig check clears the output alert while the output is off again', 'ltcplay/web.py',
+  '        if look.now()[0] != "on":',
+  '        if False:'),
+
+ ('rig check cleared: a delayed show held says Press Resume', 'ltcplay/remote.py',
+  '        if m is not None and m.delayed() is not None:\n            # A delayed show waits',
+  '        if False:\n            # A delayed show waits'),
+
+ ('rig check cleared: the Resume line says a delayed show is checked again', 'ltcplay/schedule_service.py',
+  '                if d is not None and d.n == key[1]:',
+  '                if False:'),
+
+ ('continue anyway: a failed MadMapper output check reads as nothing failed', 'ltcplay/schedule_service.py',
+  '        if any(i["name"] == "MadMapper output" for i in bad):',
+  '        if False:'),
+
+ ('rig check cleared: a cleared show is journaled as a late check', 'ltcplay/schedule_service.py',
+  '            if v in ("failed", "cleared"):',
+  '            if v == "failed":'),
 
  # -- interface 2.0 (Jeff, 2026-10-28): /remote2 beside 1.0, the per-screen
  # switch, the default set on the show machine only, 1.0's own rules served,
