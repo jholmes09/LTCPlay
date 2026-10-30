@@ -19228,13 +19228,13 @@ def build():
 
  ("fireball editor: a refused row is sent anyway",
   "ltcplay/web/remote2.html",
-  "  if(bad.length){ fbtSay(\"Not saved: fix the stages marked below.\", \"bad\"); return; }",
-  "  if(false){ fbtSay(\"Not saved: fix the stages marked below.\", \"bad\"); return; }"),
+  "  if(Object.keys(chk.errors).length){ fbtSay(\"Not saved: fix the stages marked above.\", \"bad\"); return; }",
+  "  if(false){ fbtSay(\"Not saved: fix the stages marked above.\", \"bad\"); return; }"),
 
  ("fireball editor: fields stay open for a screen that may not save",
   "ltcplay/web/remote2.html",
-  "el.disabled = !!why || !v || !!v.show_problem;",
-  "el.disabled = false;"),
+  "document.querySelectorAll(\"#fbt-rows input, #fbt-rows .use, #fbt-src .b\").forEach(el => { el.disabled = lock; });",
+  "document.querySelectorAll(\"#fbt-rows input, #fbt-rows .use, #fbt-src .b\").forEach(el => { el.disabled = false; });"),
 
  ("fireball editor: frame 30 is a timecode",
   "ltcplay/web/remote2.html",
@@ -19243,8 +19243,8 @@ def build():
 
  ("fireball editor: a length of 0 is accepted",
   "ltcplay/web/remote2.html",
-  "    if(!txt || !isFinite(d) || d <= 0) e.push(",
-  "    if(!txt || !isFinite(d) || d < 0) e.push("),
+  "  return isFinite(d) && d > 0 ? d : null;",
+  "  return isFinite(d) && d >= 0 ? d : null;"),
 
  ("fireball editor: the save does not carry the revision it read",
   "ltcplay/web/remote2.html",
@@ -19255,6 +19255,56 @@ def build():
   "ltcplay/web/remote2.html",
   "    if(!r || !r.used) continue;",
   "    if(!r) continue;"),
+
+ ("fireball editor: a newer revision read under an edit becomes its base",
+  "ltcplay/web/remote2.html",
+  "      if(FBT_BASE !== v.rev) FBT_STALE = true;",
+  "      FBT_BASE = v.rev;"),
+
+ ("fireball editor: Save is not held for Revert after someone saved",
+  "ltcplay/web/remote2.html",
+  "  if(stale) return \"Saved elsewhere: Revert\";",
+  "  if(false) return \"Saved elsewhere: Revert\";"),
+
+ ("fireball editor: a stale refusal leaves Save open",
+  "ltcplay/web/remote2.html",
+  "    if(/someone saved/i.test(err.message)){\n      FBT_STALE = true;",
+  "    if(/someone saved/i.test(err.message)){\n      FBT_STALE = false;"),
+
+ ("fireball editor: another show's rows stay while the new one is read",
+  "ltcplay/web/remote2.html",
+  "  FBT_SHOW = $(\"fbt-show\").value; FBT = null; FBT_FOR = \"\"; FBT_DIRTY = false; FBT_STALE = false;\n  fbtDrawRows(null);",
+  "  FBT_SHOW = $(\"fbt-show\").value; FBT_DIRTY = false; FBT_STALE = false;\n  fbtDrawRows(FBT && FBT.entry);"),
+
+ ("fireball editor: a save goes while the data is another show's",
+  "ltcplay/web/remote2.html",
+  "  if(!v || forShow !== show) return \"Loading\";",
+  "  if(!v) return \"Loading\";"),
+
+ ("fireball editor: fields stay open while a save is on its way",
+  "ltcplay/web/remote2.html",
+  "  const lock = !!why || !ours || !!(v && (v.error || v.show_problem)) || FBT_BUSY;",
+  "  const lock = !!why || !ours || !!(v && (v.error || v.show_problem));"),
+
+ ("fireball editor: a time typed into an unused stage is left out",
+  "ltcplay/web/remote2.html",
+  "  if(row && String(e.target.value || \"\").trim()) row.querySelector(\".use\").setAttribute(\"aria-pressed\", \"true\");",
+  "  if(false) row.querySelector(\".use\").setAttribute(\"aria-pressed\", \"true\");"),
+
+ ("fireball editor: a decimal comma is not a length",
+  "ltcplay/web/remote2.html",
+  "trim().replace(\",\", \".\");",
+  "trim();"),
+
+ ("fireball editor: the show list is not read again when the tab opens",
+  "ltcplay/web/remote2.html",
+  "  if(there) fbtLoad(true, true);",
+  "  if(there) fbtLoad(true, false);"),
+
+ ("fireball editor: the show picker is a small target",
+  "ltcplay/web/remote2.html",
+  "select.f{font:inherit;min-height:56px;",
+  "select.f{font:inherit;min-height:0;"),
 
  # -- the fireball timeline on the flame cues (fireball_cues.py) -----------
  ("fireball cues: the FSEQ's 55 to 59 are not masked for a timeline show",
