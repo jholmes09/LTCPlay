@@ -2448,6 +2448,57 @@ def _attach_fireball(httpd):
     httpd.server_close = _close_fireball
 
 
+def _attach_fireball_charge(httpd):
+    """The fireball's charge state (fireball_charge.py, Jeff 2026-10-30):
+    watches every flame frame after it went out (chained onto the flame
+    link's observer, beside the fuel tracker's) and flamesafe's status.
+    It never sends and never changes a value. A failure leaves it
+    unavailable and is said once."""
+    from . import fireball_charge as charge_mod
+    remote = httpd.remote
+    link = getattr(httpd.fire_ice, "flame_link", None)
+    if link is None:
+        return
+    try:
+        def _journal(who, screen, outcome, text, fault=False):
+            remote._journal(who or "system", screen or "engine",
+                            "fireball charge", outcome, text, fault=fault)
+        fs = remote.flame_status
+        tr = charge_mod.ChargeTracker(
+            remote.folder, flames_get=lambda: fs.view() if fs is not None
+            else None, journal=_journal, audit=getattr(remote, "audit", None))
+    except Exception as e:                       # noqa: BLE001
+        print(f"The fireball charge state could not be set up: "
+              f"{type(e).__name__}: {e}")
+        return
+    before = link.observer
+
+    def both(tc, values, ok, _before=before, _tr=tr):
+        if _before is not None:
+            try:
+                _before(tc, values, ok)
+            except Exception:                    # noqa: BLE001
+                pass
+        _tr.observe(tc, values, ok)
+    link.observer = both
+    remote.fireball_charge = tr
+    fb = getattr(remote, "fireball", None)
+    if fb is not None:
+        fb.on_controls = lambda on, who, screen: tr.note_manual(on, who,
+                                                                screen)
+    _close_before = httpd.server_close
+
+    def _close_charge():
+        # The flame link (and everything closed before it) first, the
+        # charge record last: it sees every frame that goes out (review
+        # C-5: closed first, it missed the last frames).
+        try:
+            _close_before()
+        finally:
+            tr.close()
+    httpd.server_close = _close_charge
+
+
 def _attach_cleaning(httpd):
     """Wave flamer cleaning (cleaning.py, the Shutdown page): flamesafe's
     wave flamer group, the engine's hold to arm and disarm, the Startup
@@ -2946,6 +2997,11 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                 getattr(httpd.fire_ice, "flame_link", None) is not None:
             _attach_fireball(httpd)
             _attach_cleaning(httpd)
+    if fire_ice is not None and \
+            getattr(httpd.fire_ice, "flame_link", None) is not None:
+        # After the fuel tracker (its observer is chained, never replaced)
+        # and the Fireball page (who pressed is told here).
+        _attach_fireball_charge(httpd)
     if fire_ice is not None and \
             getattr(httpd.fire_ice, "flame_link", None) is not None and \
             getattr(fire_ice, "flame_controller", None):

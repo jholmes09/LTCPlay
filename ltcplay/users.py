@@ -240,6 +240,9 @@ REMOTE_ROUTES = {
     # The fireball timeline (fireball_timeline.py, Jeff 2026-10-30): a
     # save is setup, admin only by default.
     "fireball-timeline-save": "settings",
+    # The charge record (fireball_charge.py): an admin confirms NOT KNOWN
+    # tanks are empty.
+    "fireball-charge-empty": "settings",
     # These depend on the body: see classify().
     "fireball-beat": "arm", "cleaning-beat": "arm",
     "purge-select": "arm", "purge-fire": "arm", "laser-test": "unlock",
