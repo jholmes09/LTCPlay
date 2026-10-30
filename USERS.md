@@ -120,7 +120,7 @@ the ticks there. These are the proposed defaults:
 | Unlock a machine, turn a laser test on | yes | yes | no | never |
 | Tick the Morning and Shutdown checklists | yes | yes | no | never |
 | Show files and setup (show folder, choosing the show, opening a folder, schedule, tonight's list, layout) | yes | yes | no | never |
-| Settings (show network, arming from a screen, moving Programming playback from an iPad while flames follow it, audit upload, idle sign out, sign out after the last show) | yes | no | no | never |
+| Settings (show network, arming from a screen, moving Programming playback from an iPad while flames follow it, audit upload, idle sign out, sign out after the last show, the fireball timeline) | yes | no | no | never |
 | Users (add, remove, passwords, roles, lockouts) | yes | no | no | never |
 
 "Signed out" is view only (your field report, 2026-10-28). It replaces

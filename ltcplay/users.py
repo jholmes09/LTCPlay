@@ -118,7 +118,7 @@ PERMS = (
                  "flame programming, moving Programming playback from an "
                  "iPad while flames follow it, the timecode input, the "
                  "announcement output, the audit upload, idle sign out, "
-                 "sign out after the last show"),
+                 "sign out after the last show, the fireball timeline"),
     ("users", "Users: add, remove, reset passwords, set roles, clear "
               "sign-in lockouts"),
 )
@@ -220,6 +220,9 @@ REMOTE_ROUTES = {
     # The hazers (hazers.py): Hazers off only takes something away; a
     # hazer ON is an arm press, OFF safety (classify).
     "hazers-off": "safety", "hazer": "arm", "hazer-level": "arm",
+    # The fireball timeline (fireball_timeline.py, Jeff 2026-10-30): a
+    # save is setup, admin only by default.
+    "fireball-timeline-save": "settings",
     # These depend on the body: see classify().
     "fireball-beat": "arm", "cleaning-beat": "arm",
     "purge-select": "arm", "purge-fire": "arm", "laser-test": "unlock",

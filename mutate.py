@@ -18713,6 +18713,77 @@ def build():
   "                    self._timed_remember(owner, rid, seq)\n                self._note(f\"{who or device}'s timed purge on the {device} \"",
   "                    self._timed_remember(owner, rid, seq, make=True)\n                self._note(f\"{who or device}'s timed purge on the {device} \""),
 
+ # -- the fireball timeline (fireball_timeline.py, Jeff 2026-10-30) --------
+ ("fireball timeline: a stale revision overwrites a newer save",
+  "ltcplay/fireball_timeline.py",
+  "not isinstance(base_rev, int) or base_rev != doc[\"rev\"]:",
+  "not isinstance(base_rev, int):"),
+
+ ("fireball timeline: a start past the end of the show is accepted",
+  "ltcplay/fireball_timeline.py",
+  "            if show_len_s is not None and fr / FPS >= show_len_s:",
+  "            if show_len_s is not None and fr / FPS > show_len_s:"),
+
+ ("fireball timeline: a stage given twice is accepted",
+  "ltcplay/fireball_timeline.py",
+  "        if key in seen:",
+  "        if False:"),
+
+ ("fireball timeline: a duration of 0 is accepted",
+  "ltcplay/fireball_timeline.py",
+  "    if not math.isfinite(v) or v <= 0:",
+  "    if not math.isfinite(v) or v < 0:"),
+
+ ("fireball timeline: frame 30 is accepted at 30 fps",
+  "ltcplay/fireball_timeline.py",
+  "    if f >= FPS:",
+  "    if f > FPS:"),
+
+ ("fireball timeline: Purge is accepted as a stage",
+  "ltcplay/fireball_timeline.py",
+  "        word = STAGE_WORD.get(key) if isinstance(key, str) else None",
+  "        word = dict(STAGE_WORD, purge=\"Purge\").get(key) if isinstance(key, str) else None"),
+
+ ("fireball timeline: an unknown field in the file is accepted",
+  "ltcplay/fireball_timeline.py",
+  "        extra = set(entry) - _ENTRY_KEYS",
+  "        extra = set()"),
+
+ ("fireball timeline: the version before a save is not kept",
+  "ltcplay/fireball_timeline.py",
+  "                self._keep_history(doc[\"rev\"], bool(err))",
+  "                pass"),
+
+ ("fireball timeline: a save is not audited",
+  "ltcplay/fireball_timeline.py",
+  "            self._audit(who, screen, show, \"accepted\", what)",
+  "            pass"),
+
+ ("fireball timeline: a save by someone without the Settings row",
+  "ltcplay/remote.py",
+  "        if not u.may(me.get(\"role\"), \"settings\"):",
+  "        if False:"),
+
+ ("fireball timeline: a save signed out",
+  "ltcplay/remote.py",
+  "        if u is None or not u.active() or not me.get(\"name\"):",
+  "        if u is None:"),
+
+ ("fireball timeline: a save from the show network without screen_arming",
+  "ltcplay/remote.py",
+  "        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the fireball timeline from a \"",
+  "        if False:\n            return refused(403, \"editing the fireball timeline from a \""),
+
+ ("fireball timeline: the page's own show length is trusted",
+  "ltcplay/remote.py",
+  "        ok, text, entry = st.save(show, cue, length, body.get(\"source\"),",
+  "        ok, text, entry = st.save(show, cue, body.get(\"show_len_s\") or length, body.get(\"source\"),"),
+
+ ("fireball timeline: a save is not a Settings press",
+  "ltcplay/users.py",
+  "    \"fireball-timeline-save\": \"settings\",",
+  "    \"fireball-timeline-save\": None,"),
+
 ]
 
 

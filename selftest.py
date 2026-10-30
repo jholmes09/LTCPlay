@@ -91550,6 +91550,568 @@ def test_ui2_day_tab_in_a_browser():
     print("  ok")
 
 
+
+# -- the fireball timeline (Jeff, 2026-10-30; fireball_timeline.py) ---------
+
+def test_fireball_timeline_model():
+    section("fireball timeline: the stages and their channels, the start "
+            "timecode at 30 fps inside the show, a duration above 0 with no "
+            "upper limit, no duplicate stage, no interlocks, Purge never a "
+            "stage, the file read strictly, plain words")
+    from ltcplay import fireball_timeline as FT
+    E = FT.TimelineError
+    check(FT.STAGES == (("fuel", "Fuel", 55), ("air", "Air", 56),
+                        ("igniter", "Igniter", 58),
+                        ("valve", "Valve Open", 57)),
+          f"Jeff's stages, order and channels: {FT.STAGES}")
+    check(FT.FIREBALL_FIRE_SLOTS == (55, 56, 57, 58, 59) and
+          FT.PURGE_SLOT == 59 and 59 not in FT.STAGE_SLOT.values() and
+          77 not in FT.STAGE_SLOT.values() and
+          77 not in FT.FIREBALL_FIRE_SLOTS,
+          "Purge 59 is never a stage; the safety slot 77 is never named")
+    check(FT.DEFAULT_SOURCE == "fseq" and FT.SOURCES == ("fseq", "timeline"),
+          "the default source is the show's FSEQ")
+    # Timecodes, at the boundaries.
+    for text, want in (("00:00:00:00", 0), ("00:00:00:29", 29),
+                       ("00:00:01:00", 30), ("00:59:59:29", 107999),
+                       ("01:00:00:00", 108000), (" 00:00:02:03 ", 63)):
+        check(FT.parse_tc(text) == want, f"{text!r} is frame {want}")
+        check(FT.tc_text(FT.parse_tc(text)) == text.strip(),
+              f"{text!r} reads back the same")
+    for bad in ("00:00:00:30", "00:00:60:00", "00:60:00:00", "0:00:00:00",
+                "00:00:00", "00:00:00:00:00", "-00:00:01:00", "00:00:00;00",
+                "", None, 12, 1.5, True, "aa:bb:cc:dd", "00:00:00:0"):
+        try:
+            FT.parse_tc(bad)
+            check(False, f"accepted a bad timecode {bad!r}")
+        except E as e:
+            check(_cfg_dashes(str(e)), f"{bad!r}: {e}")
+    # Durations: above 0, finite, any size.
+    for v in (0.001, 1, 2.5, 3600, 1e9):
+        check(FT.parse_duration(v) == float(v), f"duration {v} accepted")
+    for bad in (0, -1, 0.0, -0.0, float("nan"), float("inf"),
+                float("-inf"), True, False, "2", None, [2]):
+        try:
+            FT.parse_duration(bad)
+            check(False, f"accepted a bad duration {bad!r}")
+        except E as e:
+            check("above 0" in str(e), f"{bad!r}: {e}")
+
+    def st(stage, start, dur):
+        return {"stage": stage, "start": start, "dur_s": dur}
+    # Jeff's order whatever the order given; no interlocks of any kind.
+    got = FT.check_stages([st("valve", "00:00:01:00", 1),
+                           st("fuel", "00:00:09:00", 0.5),
+                           st("igniter", "00:00:20:00", 100),
+                           st("air", "00:00:00:00", 1e6)], 30.0)
+    check([g["stage"] for g in got] == ["fuel", "air", "igniter", "valve"],
+          f"put in Jeff's order: {got}")
+    check(got[3] == {"stage": "valve", "start": "00:00:01:00",
+                     "dur_s": 1.0},
+          "Valve Open before Fuel, outside the Igniter window, with no "
+          "Igniter overlap: accepted (no interlocks, Jeff)")
+    check(got[1]["dur_s"] == 1e6 and got[2]["dur_s"] == 100.0,
+          "durations past the end of the show and any total: accepted (no "
+          "caps, Jeff)")
+    check(FT.check_stages([], 30.0) == [] and
+          [g["stage"] for g in FT.check_stages(
+              [st("igniter", "00:00:05:00", 1)], 30.0)] == ["igniter"],
+          "a stage left out is simply not there")
+    # Inside the show: the last frame before its end, and not its end.
+    check(FT.check_stages([st("fuel", "00:00:09:29", 1)], 10.0),
+          "a start on the show's last frame: accepted")
+    for bad, why in (
+            ([st("fuel", "00:00:10:00", 1)], "not inside the show"),
+            ([st("fuel", "00:00:11:00", 1)], "not inside the show"),
+            ([st("fuel", "00:00:01:00", 1), st("fuel", "00:00:02:00", 1)],
+             "given twice"),
+            ([st("purge", "00:00:01:00", 1)], "not a stage"),
+            ([st("Fuel", "00:00:01:00", 1)], "not a stage"),
+            ([dict(st("fuel", "00:00:01:00", 1), slot=55)],
+             "unknown field"),
+            ([st("air", "00:00:01:30", 1)], "frames go 00 to 29"),
+            ([st("air", "00:00:01:00", 0)], "above 0"),
+            ([st("air", "00:00:01:00", float("inf"))], "above 0"),
+            (["fuel"], "not a stage"),
+            ({"fuel": 1}, "a list")):
+        try:
+            FT.check_stages(bad, 10.0)
+            check(False, f"accepted {bad!r}")
+        except E as e:
+            check(why in str(e) and _cfg_dashes(str(e)),
+                  f"{bad!r} refused in plain words ({why}): {e}")
+    try:
+        FT.check_stages([st("fuel", "00:00:99:00", 0),
+                         st("air", "x", -1)], 10.0)
+        check(False, "accepted two bad stages")
+    except E as e:
+        check(str(e).count("Fuel:") == 2 and str(e).count("Air:") == 2,
+              f"every problem is said, each with its stage: {e}")
+    # The windows the engine will use: start <= t < start + duration.
+    ent = {"stages": FT.check_stages([st("igniter", "00:00:01:15", 2),
+                                      st("fuel", "00:00:00:00", 0.5)])}
+    check(FT.windows(ent) == [(55, 0.0, 0.5), (58, 1.5, 3.5)],
+          f"each stage's slot and window: {FT.windows(ent)}")
+    # The file, strictly.
+    good = {"fireball_timeline_format": 1, "rev": 3, "shows": {
+        "Fire and Ice.json": {
+            "source": "timeline", "cue": "Show", "show_len_s": 300,
+            "stages": [st("fuel", "00:01:00:00", 2)],
+            "edited_by": "Andy", "edited_at": "2026-10-30T20:00:00Z",
+            "screen": "Rack screen"}}}
+    d = FT.read_doc(good)
+    check(d["rev"] == 3 and d["shows"]["Fire and Ice.json"]["stages"] ==
+          [{"stage": "fuel", "start": "00:01:00:00", "dur_s": 2.0}],
+          f"a good file reads: {d}")
+    check(FT.entry_of(d, "Other.json")["source"] == "fseq" and
+          FT.entry_of(d, "Other.json")["stages"] == [] and
+          FT.entry_of(None, "x.json")["source"] == "fseq",
+          "a show the file does not name is on its FSEQ, as today")
+    import copy
+
+    def bent(fn):
+        g = copy.deepcopy(good)
+        fn(g)
+        return g
+    show = "Fire and Ice.json"
+    for doc, why in (
+            (bent(lambda g: g.update(extra=1)), "unknown field"),
+            (bent(lambda g: g.update(fireball_timeline_format=2)),
+             "format"),
+            (bent(lambda g: g.update(rev=-1)), "rev"),
+            (bent(lambda g: g.update(rev=True)), "rev"),
+            (bent(lambda g: g["shows"][show].update(source="FSEQ")),
+             "source"),
+            (bent(lambda g: g["shows"][show].update(cue="")), "no cue"),
+            (bent(lambda g: g["shows"][show].update(colour="red")),
+             "unknown field"),
+            (bent(lambda g: g["shows"][show].update(show_len_s=0)),
+             "length"),
+            (bent(lambda g: g["shows"][show].update(show_len_s=50)),
+             "not inside the show"),
+            (bent(lambda g: g["shows"][show]["stages"].append(
+                st("fuel", "00:00:01:00", 1))), "twice"),
+            (bent(lambda g: g["shows"].update({"../x.json": {}})),
+             "not a show file name"),
+            (bent(lambda g: g.update(shows=[])), "shows"),
+            ([], "not a fireball timeline file")):
+        try:
+            FT.read_doc(doc)
+            check(False, f"the file was read with {why}")
+        except E as e:
+            check(why in str(e) and _cfg_dashes(str(e)),
+                  f"the whole file refused ({why}): {e}")
+    # What changed, in words.
+    b = FT.entry_of(None, show)
+    a = {"source": "timeline", "cue": "Show", "stages": FT.check_stages(
+        [st("fuel", "00:00:01:00", 2), st("air", "00:00:02:00", 1)])}
+    t = FT.describe_change(b, a)
+    check(t == "source fseq to timeline; Fuel added, start 00:00:01:00 for "
+               "2 s; Air added, start 00:00:02:00 for 1 s", f"added: {t}")
+    a2 = dict(a, stages=FT.check_stages(
+        [st("fuel", "00:00:01:10", 2.5)]))
+    t = FT.describe_change(a, a2)
+    check(t == "Fuel start 00:00:01:00 to 00:00:01:10, duration 2 s to "
+               "2.5 s; Air removed (was start 00:00:02:00 for 1 s)",
+          f"changed and removed: {t}")
+    check(FT.describe_change(a, a) == "", "nothing changed: nothing said")
+    # It sends nothing: no sender, socket or flame link here.
+    src = open(FT.__file__, encoding="utf-8").read()
+    for word in ("import socket", "flamelink", "sacn", "streamdeck",
+                 "fire_ice", "send"):
+        check(word not in src.replace("SENDS NOTHING", "").replace(
+            "sends nothing", "").replace("Sends nothing", "")
+              .replace("nothing that sends", "").replace(
+                  "imports nothing that sends", ""),
+              f"fireball_timeline.py has no {word!r}")
+    check(_cfg_dashes(src), "no em or en dash in fireball_timeline.py")
+    print("  ok")
+
+
+def test_fireball_timeline_store():
+    section("fireball timeline: saved whole and atomically, a stale "
+            "revision refused with nothing written, the version before "
+            "kept (the last 50), a file that cannot be read is no timeline "
+            "for any show, a journal line and an audit event for every "
+            "save and every refusal")
+    import json as _j
+    import shutil
+    from ltcplay import fireball_timeline as FT
+    work = tempfile.mkdtemp()
+    lines, events = [], []
+    wall = [1_800_000_000.0]
+
+    class _Audit:
+        def event(self, **kw):
+            events.append(kw)
+    store = FT.Store(work, journal=lambda *a, **k: lines.append((a, k)),
+                     audit=_Audit(), wall=lambda: wall[0])
+    show = "Fire and Ice.json"
+
+    def stg(start="00:00:10:00", dur=2):
+        return [{"stage": "fuel", "start": start, "dur_s": dur},
+                {"stage": "valve", "start": "00:00:01:00", "dur_s": 0.5}]
+    keep = FT.HISTORY_KEEP
+    try:
+        d, err = store.load()
+        check(d == FT.empty_doc() and err == "",
+              "no file: an empty timeline, revision 0, no error")
+        ok, text, entry = store.save(show, "Show", 60.0, "timeline", stg(),
+                                     0, who="Andy", screen="Rack screen")
+        check(ok and entry["rev"] == 1 and entry["edited_by"] == "Andy" and
+              entry["cue"] == "Show" and entry["show_len_s"] == 60.0,
+              f"saved: {ok} {text} {entry}")
+        check(text == "Saved: source fseq to timeline; Fuel added, start "
+                      "00:00:10:00 for 2 s; Valve Open added, start "
+                      "00:00:01:00 for 0.5 s.", f"said: {text}")
+        check(not [n for n in os.listdir(work) if n.endswith(".tmp")],
+              "no temporary file is left behind")
+        raw = open(store.path, encoding="utf-8").read()
+        check(FT.read_doc(_j.loads(raw))["rev"] == 1,
+              "the file on disk is a good timeline at revision 1")
+        check(store.history() == [], "the first save had nothing to keep")
+        check(lines and lines[-1][0][2] == "saved" and
+              "Andy saved the fireball timeline for Fire and Ice.json on "
+              "the Rack screen (revision 1): source fseq to timeline; Fuel "
+              "added" in lines[-1][0][3],
+              f"the journal line names who, where and what: {lines[-1]}")
+        check(events[-1]["user"] == "Andy" and
+              events[-1]["action"] == "fireball timeline" and
+              events[-1]["target"] == show and
+              events[-1]["result"] == "accepted" and
+              events[-1]["source"] == "Rack screen" and
+              "Fuel added" in events[-1]["reason"],
+              f"the audit event: {events[-1]}")
+        # A stale editor (based on revision 0): refused, nothing written.
+        before = open(store.path, "rb").read()
+        ok, text, entry = store.save(show, "Show", 60.0, "fseq", [], 0,
+                                     who="Jeff", screen="iPad")
+        check(not ok and entry is None and "someone saved" in text and
+              open(store.path, "rb").read() == before and
+              store.history() == [],
+              f"a stale revision is refused and nothing written: {text}")
+        check(events[-1]["result"] == "refused" and
+              events[-1]["user"] == "Jeff", "and audited as refused")
+        for bad_rev in (None, "1", True, 1.0, 2):
+            ok, text, _e = store.save(show, "Show", 60.0, "fseq", [],
+                                      bad_rev)
+            check(not ok and open(store.path, "rb").read() == before,
+                  f"revision {bad_rev!r}: refused, nothing written")
+        # A bad timeline: refused before anything is read or written.
+        for args, why in (
+                (("Show", 60.0, "timeline",
+                  [{"stage": "fuel", "start": "00:01:00:00", "dur_s": 1}]),
+                 "not inside the show"),
+                (("Show", 60.0, "both", stg()), "choose the source"),
+                (("", 60.0, "timeline", stg()), "own cue"),
+                (("Show", None, "timeline", stg()), "length"),
+                (("Show", 60.0, "timeline", stg(dur=0)), "above 0")):
+            ok, text, _e = store.save(show, *args, 1, who="Andy")
+            check(not ok and why in text and text.startswith("Not saved:")
+                  and _cfg_dashes(text) and
+                  open(store.path, "rb").read() == before,
+                  f"refused ({why}), nothing written: {text}")
+        ok, text, _e = store.save("../evil.json", "Show", 60.0, "fseq", [],
+                                  1)
+        check(not ok and "not a show file name" in text,
+              f"a path is not a show file name: {text}")
+        # A good save on revision 1: the version before is kept.
+        wall[0] += 60
+        ok, text, entry = store.save(show, "Show", 60.0, "timeline",
+                                     stg("00:00:12:00", 3), 1, who="Jeff",
+                                     screen="iPad at 10.0.0.9")
+        check(ok and entry["rev"] == 2 and text == (
+            "Saved: Fuel start 00:00:10:00 to 00:00:12:00, duration 2 s "
+            "to 3 s."), f"the second save: {text}")
+        h = store.history()
+        check(len(h) == 1 and h[0].endswith("-rev1.json") and
+              open(os.path.join(store.history_dir(), h[0]), "rb").read() ==
+              before, f"the version before is kept whole: {h}")
+        # Another show beside it: the first is kept as it was.
+        ok, _t, entry = store.save("Other.json", "Show", 30.0, "fseq", [],
+                                   2, who="Andy")
+        d, err = store.load()
+        check(ok and d["rev"] == 3 and set(d["shows"]) == {show,
+                                                          "Other.json"} and
+              d["shows"][show]["stages"][0]["start"] == "00:00:12:00",
+              "a save for another show keeps every other show")
+        # The view.
+        v = store.view(show)
+        check(v["rev"] == 3 and v["entry"]["source"] == "timeline" and
+              [s["slot"] for s in v["stages"]] == [55, 56, 58, 57] and
+              store.view("New.json")["entry"]["source"] == "fseq",
+              "the view: revision, entry, stages and slots")
+        # Only the last HISTORY_KEEP versions are kept.
+        FT.HISTORY_KEEP = 4
+        rev = 3
+        for i in range(6):
+            wall[0] += 1
+            ok, _t, entry = store.save(show, "Show", 60.0, "timeline",
+                                       stg(f"00:00:{20 + i:02d}:00"), rev)
+            rev = entry["rev"]
+        h = store.history()
+        check(len(h) == 4 and h[0].endswith(f"-rev{rev - 1}.json") and
+              h[-1].endswith(f"-rev{rev - 4}.json"),
+              f"the newest {FT.HISTORY_KEEP} are kept: {h}")
+        FT.HISTORY_KEEP = keep
+        # A write that fails: nothing is changed, said as a fault.
+        before = open(store.path, "rb").read()
+        real = store._write
+
+        def boom(doc):
+            raise OSError(28, "No space left on device")
+        store._write = boom
+        ok, text, _e = store.save(show, "Show", 60.0, "fseq", [], rev)
+        store._write = real
+        check(not ok and "could not be written" in text and
+              open(store.path, "rb").read() == before and
+              lines[-1][1].get("fault") is True and
+              events[-1]["result"] == "error",
+              f"a failed write: nothing changed, a fault: {text}")
+        # A file that cannot be read: no timeline for any show, said; a
+        # save on revision 0 replaces it, the broken one kept.
+        for broken in ("{not json", '{"fireball_timeline_format": 1, '
+                       '"rev": 1, "shows": {}, "x": 1}'):
+            with open(store.path, "w", encoding="utf-8") as fh:
+                fh.write(broken)
+            d, err = store.load()
+            check(d["shows"] == {} and d["rev"] == 0 and
+                  "could not be read" in err and
+                  "no show fires its fireball from a timeline" in err and
+                  _cfg_dashes(err), f"a broken file: {err}")
+            check(store.view(show)["entry"]["source"] == "fseq" and
+                  store.view(show)["error"] == err,
+                  "and the view says so")
+        wall[0] += 1
+        ok, text, entry = store.save(show, "Show", 60.0, "timeline", stg(),
+                                     0, who="Andy")
+        h = store.history()
+        check(ok and entry["rev"] == 1 and h[0].endswith(
+            "-rev0-unreadable.json") and open(os.path.join(
+                store.history_dir(), h[0]), encoding="utf-8").read() ==
+              '{"fireball_timeline_format": 1, "rev": 1, "shows": {}, '
+              '"x": 1}', f"saved over a broken file, which is kept: {h[:1]}")
+        # A UTF-8 BOM (Notepad) reads.
+        raw = open(store.path, encoding="utf-8").read()
+        with open(store.path, "w", encoding="utf-8-sig") as fh:
+            fh.write(raw)
+        check(store.load()[1] == "", "a file with a BOM reads")
+        # No folder: nothing to read, and saving says so.
+        nf = FT.Store(None)
+        check(nf.load() == (FT.empty_doc(), ""), "no folder: empty")
+    finally:
+        FT.HISTORY_KEEP = keep
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fireball_timeline_routes():
+    section("fireball timeline routes: anyone reads; a save needs a "
+            "signed-in admin (the Settings row), from the show network "
+            "screen_arming too; allowed during a show (who, never when); "
+            "the show's cue and length from the engine, never the page; "
+            "journaled and audited")
+    import shutil
+    import types
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import fireball_timeline as FT
+    check("fireball-timeline-save" in RM.POST_ROUTES and
+          "fireball-timeline" in RM.GET_ROUTES and
+          U.REMOTE_ROUTES["fireball-timeline-save"] == "settings",
+          "the routes, and a save is the Settings row")
+    for body in ({}, {"source": "fseq"}, {"source": "timeline"},
+                 {"stages": []}, None):
+        check(U.classify("/api/remote/fireball-timeline-save", body) ==
+              "settings", f"whatever the body: Settings ({body!r})")
+    check(U.DEFAULT_MATRIX["admin"]["settings"] is True and
+          U.DEFAULT_MATRIX["operator"]["settings"] is False and
+          "the fireball timeline" in dict(U.PERMS)["settings"],
+          "admin only by default, and the row says so")
+    here = os.path.dirname(os.path.abspath(__file__))
+    users_md = open(os.path.join(here, "USERS.md"), encoding="utf-8").read()
+    check("sign out after the last show, the fireball timeline) | yes | "
+          "no | no | never |" in users_md, "USERS.md's matrix row")
+    work = tempfile.mkdtemp()
+    journal = []
+    events = []
+
+    class _Svc:
+        conductor = None
+        machine = types.SimpleNamespace(state="IDLE")
+
+        def journal_press(self, *a, **kw):
+            journal.append(a)
+
+    class _Audit:
+        def event(self, **kw):
+            events.append(kw)
+    ctl = types.SimpleNamespace(session=None, folder=work,
+                                state=lambda: {})
+    rm = RM.Remote(ctl, _Svc(), folder=work, log=lambda t_: None)
+    rm.audit = _Audit()
+    matrix = U.normalise_matrix(None)
+    rm.users = types.SimpleNamespace(
+        active=lambda: True, matrix=lambda: matrix,
+        may=lambda role, perm: U.allowed(matrix, role, perm))
+    info = {"Show.json": ("Show", 120.0, "")}
+    opened = []
+
+    def fake_info(show):
+        opened.append(show)
+        return info.get(show, (None, None, f"{show} is not in the show "
+                                           f"folder"))
+    rm.fireball_show_info = fake_info
+
+    def ctx(role=None, local=True, name="Andy"):
+        return RM.Ctx(local, "127.0.0.1" if local else "10.0.0.9",
+                      session={"name": name, "role": role} if role else None)
+    good = {"show": "Show.json", "rev": 0, "source": "timeline",
+            "stages": [{"stage": "fuel", "start": "00:00:10:00",
+                        "dur_s": 2},
+                       {"stage": "igniter", "start": "00:00:11:00",
+                        "dur_s": 1.5}]}
+
+    def save(body, c):
+        return rm.post("/api/remote/fireball-timeline-save", body, c)
+    try:
+        # Reading: anyone, signed out, from the network.
+        code, out = rm.get("/api/remote/fireball-timeline", ctx(None, False),
+                           "show=Show.json")
+        check(code == 200 and out["rev"] == 0 and out["cue"] == "Show" and
+              out["show_len_s"] == 120.0 and
+              out["entry"]["source"] == "fseq" and
+              out["show_problem"] == "", f"anyone reads it: {code} {out}")
+        code, out = rm.get("/api/remote/fireball-timeline", ctx(None, False))
+        check(code == 200 and "entry" not in out and "cue" not in out,
+              "without ?show= nothing is opened")
+        # Who may save.
+        for c, why in ((ctx(None), "signed-in admin"),
+                       (ctx("operator", name="Dave"), "may not"),
+                       (ctx("viewer", name="Vee"), "may not"),
+                       (ctx("admin", local=False), "screen_arming")):
+            code, out, _h = save(good, c)
+            check(code == 403 and why in out["error"] and
+                  "Nothing was changed" in out["error"] and
+                  _cfg_dashes(out["error"]) and
+                  not os.path.exists(os.path.join(work, FT.FILE)),
+                  f"refused ({why}): {code} {out}")
+        check(events and events[-1]["result"] == "refused" and
+              journal and journal[-1][3] == "refused",
+              "a refused save is journaled and audited")
+        rm.users = types.SimpleNamespace(active=lambda: False,
+                                         matrix=lambda: matrix,
+                                         may=lambda r, p: True)
+        code, out, _h = save(good, ctx("admin"))
+        check(code == 403 and "signed-in admin" in out["error"],
+              "with no users set up, nobody may save (admin only)")
+        rm.users = types.SimpleNamespace(
+            active=lambda: True, matrix=lambda: matrix,
+            may=lambda role, perm: U.allowed(matrix, role, perm))
+        # A show that cannot be opened: refused, nothing written.
+        code, out, _h = save(dict(good, show="Nope.json"), ctx("admin"))
+        check(code == 409 and "Nope.json is not in the show folder" in
+              out["error"] and not os.path.exists(os.path.join(work,
+                                                               FT.FILE)),
+              f"a show that cannot be opened: {code} {out}")
+        # Restricted by who, never by when (Jeff, 2026-10-30): an admin
+        # on the show PC saves during a live show with Run pressed; the
+        # cue and length are the engine's (a page's own are ignored).
+        told = []
+        rm.fireball_timeline_store().on_saved.append(
+            lambda *a: told.append(a))
+        rm.schedule.machine.state = "SHOW"
+        ctl.session = types.SimpleNamespace(
+            running=True, clock=types.SimpleNamespace(playing=True))
+        opened.clear()
+        code, out, _h = save(dict(good, show_len_s=99999, cue="Fake"),
+                             ctx("admin"))
+        rm.schedule.machine.state = "IDLE"
+        ctl.session = None
+        check(told and told[-1][0] == "Show.json" and told[-1][2] == 1,
+              f"the engine is told of the new revision: {told}")
+        check(code == 200 and out["entry"]["rev"] == 1 and
+              out["entry"]["cue"] == "Show" and
+              out["entry"]["show_len_s"] == 120.0 and
+              out["entry"]["edited_by"] == "Andy" and
+              out["entry"]["screen"] == "Rack screen" and
+              opened == ["Show.json"], f"saved: {code} {out}")
+        check(journal[-1][2] == "fireball timeline" and
+              journal[-1][3] == "saved" and "Andy saved the fireball "
+              "timeline for Show.json on the Rack screen (revision 1)" in
+              journal[-1][4] and events[-1]["result"] == "accepted" and
+              events[-1]["user"] == "Andy",
+              f"journaled and audited: {journal[-1]}")
+        # Past the end of the show, by the engine's length.
+        code, out, _h = save(dict(good, rev=1, stages=[
+            {"stage": "air", "start": "00:02:00:00", "dur_s": 1}]),
+            ctx("admin"))
+        check(code == 409 and "not inside the show" in out["error"] and
+              "Nothing was changed" in out["error"],
+              f"a start past the show's end: {out}")
+        # A stale page.
+        code, out, _h = save(good, ctx("admin"))
+        check(code == 409 and "someone saved" in out["error"],
+              f"a stale page: {out}")
+        # From the network with screen_arming: allowed.
+        RM.save_settings(work, screen_arming=True)
+        code, out, _h = save(dict(good, rev=1, source="fseq"),
+                             ctx("admin", local=False, name="Jeff"))
+        check(code == 200 and out["entry"]["rev"] == 2 and
+              out["entry"]["screen"] == "iPad" and
+              out["text"] == "Saved: source timeline to fseq.",
+              f"an admin's iPad with screen_arming: {out}")
+        code, out = rm.get("/api/remote/fireball-timeline", ctx(None),
+                           "show=Show.json")
+        check(out["rev"] == 2 and out["entry"]["source"] == "fseq" and
+              len(out["entry"]["stages"]) == 2,
+              "switched back to the FSEQ, the stages kept for later")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fireball_timeline_show_info_from_a_real_show_file():
+    section("fireball timeline: the show's own cue and length come from the "
+            "show file opened as the Check button opens it (nothing sent, "
+            "nothing played)")
+    import shutil
+    import types
+    from ltcplay import remote as RM
+    from ltcplay import settings as st_mod
+    import ltcplay.player as plmod
+    real_path, real_prefs = st_mod.path, st_mod.prefs_path
+    real_prepare = plmod.Player._prepare
+
+    def fake_prepare(self, cue):
+        cue.fseq = FakeFSEQ(frames=60)
+        cue.duration = cue.fseq.duration_ms / 1000.0
+        cue._spans = [(0, 0, cue.fseq.channel_count)]
+        cue._gaps = None
+        return 0
+    work = tempfile.mkdtemp()
+    try:
+        st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+        st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+        plmod.Player._prepare = fake_prepare
+        _tl, tlp, net = _am_show(work, 2.0)
+        ctl = types.SimpleNamespace(folder=work, defaults={"networks": net},
+                                    _sd=FakeSD(), session=None)
+        rm = RM.Remote(ctl, None, folder=work, log=lambda t_: None)
+        cue, length, why = rm.fireball_show_info(os.path.basename(tlp))
+        check(cue == "Show" and why == "" and abs(length - 2.0) < 0.05,
+              f"the show cue and its length: {cue} {length} {why}")
+        for bad in ("nope.json", "../x.json", "", None):
+            cue, length, why = rm.fireball_show_info(bad)
+            check(cue is None and length is None and why and
+                  _cfg_dashes(why), f"{bad!r}: {why}")
+    finally:
+        st_mod.path, st_mod.prefs_path = real_path, real_prefs
+        plmod.Player._prepare = real_prepare
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
@@ -92332,6 +92894,10 @@ if __name__ == "__main__":
         test_ui2_day_tab_in_a_browser,
         test_ui2_calm_screens_and_brand,
         test_config_watch_supervisor_and_rack_screen_note,
+        test_fireball_timeline_model,
+        test_fireball_timeline_store,
+        test_fireball_timeline_routes,
+        test_fireball_timeline_show_info_from_a_real_show_file,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):
