@@ -638,9 +638,12 @@ engine sends; the engine names it in `hazers_on` only for a run time the
 operator sets first (5 minutes unless set, `pump_max_s` the longest), and
 only before that run's hard end on the link's own clock and while the
 engine's timer re-asserts it every 0.1 s (0.5 s without a beat and the
-link stops naming it). Stop and Abort clear it at the link before the
-first `disarm_all` copy; Hold does not. If the engine dies, flamesafe
-zeroes it at `frame_stale_ms` like every other passthrough slot.
+link stops naming it). Every `disarm_all` (Stop, Abort, Disarm all's
+fallback, the cleaning's disarm, live flame programming ending) clears it
+at the link before its first copy, and the engine journals that cause;
+Hold does not, and live flame programming does not start while it runs.
+If the engine dies, flamesafe zeroes it at `frame_stale_ms` like every
+other passthrough slot.
 
 **Deploy order for a switch.** A flamesafe from before this date refuses a
 config with a switch entry (an unknown key in a passthrough entry) and

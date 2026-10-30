@@ -2782,8 +2782,68 @@ MUTATIONS = [
 
  ("pump: a second ON adds time",
   "ltcplay/fuelpump.py",
-  "        if running is not None and self.on():",
+  "            ok = False\n            if running is None:",
+  "            ok = False\n            running = None\n            if True:"),
+
+ ("pump: live flame programming starts while the pump runs",
+  "ltcplay/remote.py",
+  "        if on:\n            return (\"The fuel pump is on, and live flame",
+  "        if False:\n            return (\"The fuel pump is on, and live flame"),
+
+ ("pump: the status waits on the flame link's lock",
+  "ltcplay/fuelpump.py",
+  "                bool(link.pump_live_now())",
+  "                bool(link.pump_on)"),
+
+ ("pump: a disarm to every group is blamed on Stop or Abort",
+  "ltcplay/fuelpump.py",
+  "        return ended or (\"the disarm to every flame group was sent (a Stop, \"",
+  "        return (\"the disarm to every flame group was sent (a Stop, \""),
+
+ ("pump: the link not sending leaves it on",
+  "ltcplay/fuelpump.py",
+  "        if not snap.get(\"open\") or not snap.get(\"sending_ok\"):",
+  "        if not snap.get(\"open\"):"),
+
+ ("pump: cut() leaves it on at the link",
+  "ltcplay/fuelpump.py",
+  "            if link is not None:\n                link.pump_stop()\n            with self._lock:\n                was, self.run",
+  "            with self._lock:\n                was, self.run"),
+
+ ("pump: an Abort standing leaves a run on",
+  "ltcplay/fuelpump.py",
+  "            if self._abort_standing():\n                return \"an Abort is standing\"",
+  "            if False:\n                return \"an Abort is standing\""),
+
+ ("pump: flamesafe not passing it never ends the run",
+  "ltcplay/fuelpump.py",
+  "            elif now - since > NOT_PASSING_S:",
+  "            elif False:"),
+
+ ("pump: flamesafe passing it with the engine off is not said",
+  "ltcplay/fuelpump.py",
+  "        if not on and p and p.get(\"passing\"):",
   "        if False:"),
+
+ ("pump: the night closing leaves it on",
+  "ltcplay/fuelpump.py",
+  "        if night in NIGHT_CLOSING:\n            return \"the night is closing\"",
+  "        if False:\n            return \"the night is closing\""),
+
+ ("pump: the night over leaves a run on",
+  "ltcplay/fuelpump.py",
+  "        if night in NIGHT_OVER and r.get(\"night\") not in NIGHT_OVER:",
+  "        if False:"),
+
+ ("pump: ON while the night closes",
+  "ltcplay/fuelpump.py",
+  "        if self._night() in NIGHT_CLOSING:\n            return \"the night is closing.\"",
+  "        if False:\n            return \"the night is closing.\""),
+
+ ("pump: on 1 at the route turns it on",
+  "ltcplay/remote.py",
+  "        on = body.get(\"on\") is True\n        if not on:\n            ok, text = pm.set(False",
+  "        on = bool(body.get(\"on\"))\n        if not on:\n            ok, text = pm.set(False"),
 
  ("pump: a run time over pump_max_s is taken",
   "ltcplay/fuelpump.py",

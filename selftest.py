@@ -61872,7 +61872,9 @@ def _pm_rig(S):
         journal=lambda who, screen, outcome, text, fault=False:
         R.remote._journal(who or "system", screen or "engine", "fuel-pump",
                           outcome, text, fault=fault),
-        clock=lambda: R.mono[0], threaded=False)
+        clock=lambda: R.mono[0], threaded=False,
+        night_state=lambda: R.night[0])
+    R.night = [None]
     close = R.close
 
     def close_all():
@@ -61981,9 +61983,10 @@ def test_pump_at_the_engine():
         st, _h, out = tap(True, seconds=240)
         check(st == 200 and link.pump_on and "4:00" in out["text"],
               f"a tap on the rack screen: ON for 4:00: {st} {out}")
-        check(RM.load_settings(R.work)["pump_s"] == 240 and
-              view()["default_s"] == 240,
-              "the run time started is the next default on this show PC")
+        check("pump_s" not in RM.load_settings(R.work) and
+              view()["default_s"] == 300,
+              "the default stays 5:00 after another run time was started "
+              "(Jeff: 5 minutes unless Andy sets another first)")
         R.mono[0] += 0.1
         check(pm.pump_send() == "" and link.pump_on, "the timer beats it")
         R.mono[0] += 0.1
@@ -62257,6 +62260,238 @@ def test_pump_at_the_engine():
         check(st == 404, f"no pump in this engine: 404: {st}")
         _st, _h, s = R.ask("GET", "/api/remote/status", client=loop)
         check("pump" not in s, "and no pump in the status (no button)")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_pump_review_fixes():
+    section("fuel pump, the reviews of #188: live flame programming does "
+            "not start while the pump runs (a Hold would end both); the "
+            "status answers while the flame link's lock is held; two "
+            "presses at once start one run; on 1 or \"true\" is OFF, signed "
+            "out too; a disarm to every group names its own cause; the "
+            "link not sending, an Abort standing and cut() each end it; "
+            "flamesafe not passing it ends the run; flamesafe passing it "
+            "while the engine has it off is said; the night closing or "
+            "over ends it")
+    S = _sched()
+    if S is None:
+        return
+    import threading
+    import itertools
+    from ltcplay import fuelpump as FP
+    loop = ("127.0.0.1", 5000)
+    R = _pm_rig(S)
+    link = R.link
+    pm = R.remote.pump
+    ids = itertools.count(1)
+
+    def tap(on, client=loop, seconds=300, run=None, **kw):
+        body = {"on": on, "seen": R.seen()}
+        if on is True:
+            body.update(seconds=seconds,
+                        run=run if run is not None else f"r{next(ids)}")
+        return R.ask("POST", "/api/remote/fuel-pump", body, client=client,
+                     **kw)
+
+    def off():
+        tap(False)
+        link._abort_repeat = None
+        link.release()
+        R.feed()
+    try:
+        # F3: live flame programming does not start while the pump runs.
+        class _LF:
+            on = False
+            begun = 0
+
+            def begin(self, who, screen):
+                self.begun += 1
+                return True, "Live flame programming is ON."
+        lf = _LF()
+        R.remote.live_flame = lf
+        tap(True)
+        check(link.pump_on, "setup: the pump runs")
+        st, _h, out = R.ask("POST", "/api/remote/live-flame",
+                            {"on": True, "confirmed": True,
+                             "seen": R.seen()}, client=loop)
+        check(st == 409 and "fuel pump is on" in out.get("error", "") and
+              lf.begun == 0 and link.pump_on,
+              f"live flame programming ON while the pump runs: refused, "
+              f"the pump untouched: {st} {out}")
+        off()
+        st, _h, out = R.ask("POST", "/api/remote/live-flame",
+                            {"on": True, "confirmed": True,
+                             "seen": R.seen()}, client=loop)
+        check(st == 200 and lf.begun == 1,
+              f"with the pump off it starts: {st} {out}")
+        R.remote.live_flame = None
+        # F5: the status answers while the sender holds the link's lock.
+        tap(True)
+        held, release = threading.Event(), threading.Event()
+
+        def hold_lock():
+            with link._lock:
+                held.set()
+                release.wait(10)
+        th = threading.Thread(target=hold_lock, daemon=True)
+        th.start()
+        held.wait(5)
+        got = {}
+
+        def ask():
+            got["r"] = R.ask("GET", "/api/remote/status", client=loop)
+        t2 = threading.Thread(target=ask, daemon=True)
+        t0 = time.monotonic()
+        t2.start()
+        t2.join(3.0)
+        took = time.monotonic() - t0
+        release.set()
+        th.join(5)
+        check("r" in got and got["r"][0] == 200 and
+              got["r"][2].get("pump", {}).get("on") is True and took < 3.0,
+              f"the status answers with the link's lock held by a stuck "
+              f"sender ({took:.2f} s): {got.get('r', ('no answer',))[0]}")
+        off()
+        # F1: a second press arriving while the first is being checked.
+        inner = {}
+        real = pm.refusal
+
+        def racing():
+            pm.refusal = real
+            inner["r"] = pm.set(True, seconds=60, run="second",
+                                who="B", screen="iPad")
+            return real()
+        pm.refusal = racing
+        first = pm.set(True, seconds=600, run="first", who="A",
+                       screen="Rack screen")
+        pm.refusal = real
+        check(inner["r"][0] is True and first[0] is False and
+              "already on" in first[1] and pm.run["id"] == "second" and
+              pm.run["seconds"] == 60,
+              f"two presses at once: one run, the other refused and never "
+              f"replacing or extending it: {inner['r']} {first} "
+              f"{pm.run and pm.run['id']}")
+        off()
+        # F4: on 1 or "true" is OFF, signed out too, with a run and seconds.
+        class _Out:
+            def may(self, role, perm):
+                return False
+
+            def machine_user(self):
+                return None
+
+            def active(self):
+                return True
+        R.remote.users = _Out()
+        for bad in (1, "true"):
+            st, _h, out = R.ask("POST", "/api/remote/fuel-pump",
+                                {"on": bad, "seconds": 300,
+                                 "run": f"x{bad}", "seen": R.seen()},
+                                client=loop)
+            check(st == 200 and not link.pump_on and pm.run is None and
+                  "OFF" in out.get("text", ""),
+                  f"on {bad!r} with a run and seconds, signed out: OFF, "
+                  f"nothing started, no permission needed: {st} {out}")
+        st, _h, out = tap(True)
+        check(st == 403 and not link.pump_on,
+              f"and on true signed out is refused: {st} {out}")
+        R.remote.users = None
+        # F6: a disarm to every group names its own cause.
+        tap(True)
+        link.disarm_all("Disarm all flame groups forced on the Rack screen")
+        why = pm.pump_send()
+        check("Disarm all flame groups forced" in why and
+              "Stop or Abort" not in why and not link.pump_on,
+              f"the journal names the real cause: {why}")
+        off()
+        # Each guard ends a run on its own.
+        tap(True)
+        real_snap = link.snapshot
+        link.snapshot = lambda: dict(real_snap(), sending_ok=False)
+        why = pm.pump_send()
+        link.snapshot = real_snap
+        check("not sending" in why and not link.pump_on,
+              f"the flame link not sending ends it: {why}")
+        R.feed()
+        link.snapshot = lambda: dict(real_snap(), sending_ok=False)
+        st, _h, out = tap(True)
+        link.snapshot = real_snap
+        check(st == 409 and "not sending" in out["error"],
+              f"and refuses ON: {out}")
+        R.feed()
+        tap(True)
+        R.aborted[0] = True
+        why = pm.pump_send()
+        R.aborted[0] = False
+        check(why == "an Abort is standing" and not link.pump_on,
+              f"an Abort standing ends it: {why}")
+        off()
+        tap(True)
+        was = pm.cut()
+        check(was is True and not link.pump_on and pm.run is None,
+              "cut() alone switches it off at the link, before any journal "
+              "thread runs")
+        off()
+        # Item 5: flamesafe not passing it ends the run after a grace.
+        tap(True)
+        R.pm_lag = True
+        R.pm["passing"] = R.pm["enabled"] = False
+        R.pm["why"] = "the show program link is not fresh"
+        ended = ""
+        for _ in range(25):
+            R.mono[0] += 0.1
+            R.feed()
+            ended = pm.pump_send()
+            if ended:
+                break
+        check("did not pass it" in ended and "not fresh" in ended and
+              not link.pump_on and pm.run is None,
+              f"flamesafe not passing it for {FP.NOT_PASSING_S:g} s ends "
+              f"the run, so a new ON works: {ended}")
+        # Item 7: flamesafe passing it while the engine has it off.
+        R.pm["passing"] = R.pm["enabled"] = True
+        R.feed()
+        _st, _h, s = R.ask("GET", "/api/remote/status", client=loop)
+        check(s["pump"]["state"] == "flamesafe_on" and not s["pump"]["on"],
+              f"flamesafe passing it with the engine off is said: "
+              f"{s['pump']['state']}")
+        R.pm_lag = False
+        off()
+        # The night: closing and over.
+        tap(True)
+        R.night[0] = "CLOSING"
+        why = pm.pump_send()
+        check(why == "the night is closing" and not link.pump_on,
+              f"the night closing ends it: {why}")
+        R.feed()
+        st, _h, out = tap(True)
+        check(st == 409 and "night is closing" in out["error"],
+              f"and refuses ON while it closes: {out}")
+        R.night[0] = "SHOW"
+        off()
+        tap(True)
+        R.night[0] = "OFF"
+        why = pm.pump_send()
+        check(why == "the night is over" and not link.pump_on,
+              f"the night over ends a run begun before it: {why}")
+        off()
+        st, _h, out = tap(True)
+        check(st == 200 and link.pump_on and pm.pump_send() == "",
+              f"a run begun after the night is over (the morning) runs: "
+              f"{out}")
+        R.night[0] = None
+        off()
+        m = getattr(R.remote.schedule, "machine", None)
+        check(R.remote.pump_night_state() == getattr(m, "state", None),
+              f"the engine's night state is the scheduler's: "
+              f"{R.remote.pump_night_state()!r}")
+        import ast as _ast
+        src = open(os.path.join(os.path.dirname(os.path.abspath(
+            __file__)), "ltcplay", "web.py"), encoding="utf-8").read()
+        check("night_state=remote.pump_night_state)" in src,
+              "web.serve gives the pump the scheduler's night state")
     finally:
         R.close()
     print("  ok")
@@ -93166,6 +93401,7 @@ if __name__ == "__main__":
         test_hazers_end_to_end_against_the_real_flamesafe,
         test_pump_flame_link,
         test_pump_at_the_engine,
+        test_pump_review_fixes,
         test_pump_timer_thread_ends_it,
         test_pump_end_to_end_against_the_real_flamesafe,
         test_hazers_on_the_rack_screens,

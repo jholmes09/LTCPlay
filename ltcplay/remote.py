@@ -593,15 +593,15 @@ def load_settings(folder=None):
     # timed purge this show machine allows, 30 s unless an admin sets it in
     # this file, never more than morning.TIMED_MAX_LIMIT_S; purge_timed_s
     # the duration last started here, the page's default.
-    # pump_max_s and pump_s (Jeff, 2026-10-30, the fuel pump): the same
-    # pair for the fuel pump's run time, 60 minutes and 5 minutes unless
-    # set, never more than fuelpump.MAX_LIMIT_S.
+    # pump_max_s (Jeff, 2026-10-30, the fuel pump): the longest run time,
+    # 60 minutes unless an admin sets it, never more than
+    # fuelpump.MAX_LIMIT_S. The default run is always 5 minutes.
     out = {"show_network_address": None, "flamesafe_config": None,
            "screen_arming": False, "purge_arming": True, "booth_alert": None,
            "alert_pixels": None, "ui_default": 1,
            "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
            "purge_timed_s": TIMED_DEFAULT_S,
-           "pump_max_s": PUMP_MAX_DEFAULT_S, "pump_s": PUMP_DEFAULT_S,
+           "pump_max_s": PUMP_MAX_DEFAULT_S,
            "path": path}
     if not os.path.exists(path):
         return out
@@ -623,7 +623,7 @@ def settings_from_doc(doc, path, out=None):
                "booth_alert": None, "alert_pixels": None,
                "ui_default": 1, "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
                "purge_timed_s": TIMED_DEFAULT_S,
-               "pump_max_s": PUMP_MAX_DEFAULT_S, "pump_s": PUMP_DEFAULT_S,
+               "pump_max_s": PUMP_MAX_DEFAULT_S,
                "path": path}
     if not isinstance(doc, dict):
         raise ValueError(f"{path} is not a settings object.")
@@ -656,7 +656,7 @@ def settings_from_doc(doc, path, out=None):
             raise ValueError(f"{path}: {k} must be a whole number of "
                              f"seconds from {lo} to {TIMED_MAX_LIMIT_S}.")
         out[k] = v
-    for k in ("pump_max_s", "pump_s"):
+    for k in ("pump_max_s",):
         if k not in doc:
             continue
         v = doc[k]
@@ -4398,6 +4398,18 @@ class Remote:
             return 403, {"error": "Live flame programming is turned on on "
                                   "the show machine itself, not from here. "
                                   "Nothing was changed."}
+        # The fuel pump (2026-10-30, review B of #188, F3): live flame
+        # programming ends with a disarm to every flame group, which turns
+        # the pump off too; a Hold or Start now ends it. So it does not
+        # start while the pump runs: Hold must never end the pump (Jeff:
+        # "Off on Stop, NOT Hold"). Only at the start: a pump that came on
+        # later is refused by pump_blocker, so none can.
+        why = self.live_flame_pump_refusal()
+        if why:
+            self._journal(who or "unsigned", screen, "live flame", "refused",
+                          f"Live flame programming ON on the {screen} was "
+                          f"refused: {why}")
+            return 409, {"error": why}
         if body.get("confirmed") is not True:
             return 400, {"error": "Confirm it on the page first. Nothing "
                                   "was changed."}
@@ -4576,7 +4588,9 @@ class Remote:
             out["error"] = str(e)
             return out
         out["max_s"] = rs["pump_max_s"]
-        out["default_s"] = min(rs["pump_s"], rs["pump_max_s"])
+        # Jeff (2026-10-30): 5 minutes unless Andy sets another run time
+        # before he turns it on; never a remembered one.
+        out["default_s"] = min(PUMP_DEFAULT_S, rs["pump_max_s"])
         return out
 
     def pump_post(self, body, ctx):
@@ -4611,16 +4625,6 @@ class Remote:
                           max_s=ps["max_s"])
         if not ok:
             return 409, {"error": text}
-        # The run time started last is this show PC's default next time.
-        # After the start, never before it: a slow disk never delays it,
-        # and a failed save changes nothing.
-        try:
-            secs = (pm.run or {}).get("seconds")
-            if secs is not None and \
-                    load_settings(self.folder)["pump_s"] != secs:
-                save_settings(self.folder, pump_s=secs)
-        except (ValueError, OSError, TypeError):
-            pass
         return 200, {"ok": True, "text": text}
 
     def pump_view(self, fl):
@@ -4686,6 +4690,33 @@ class Remote:
         if lf is not None and getattr(lf, "on", False):
             return ("live flame programming is on, and turning it off "
                     "disarms every hazer. Turn it off first.")
+        return ""
+
+    def pump_night_state(self):
+        """The scheduler's state for the fuel pump's end of night
+        (fuelpump.NIGHT_CLOSING and NIGHT_OVER), or None. Never raises."""
+        try:
+            return getattr(getattr(self.schedule, "machine", None), "state",
+                           None)
+        except Exception:                        # noqa: BLE001
+            return None
+
+    def live_flame_pump_refusal(self):
+        """Why live flame programming may not start because of the fuel
+        pump, or "": the pump is on (its end, or a Hold or Start now ending
+        it, would turn the pump off). Fails closed. Never raises."""
+        pm = self.pump
+        if pm is None:
+            return ""
+        try:
+            on = pm.run is not None or pm.on()
+        except Exception:                        # noqa: BLE001
+            on = True
+        if on:
+            return ("The fuel pump is on, and live flame programming ends "
+                    "with a disarm that turns the pump off (a Hold would "
+                    "end it too). Press Pump off first, or wait for its "
+                    "time to end. Nothing was changed.")
         return ""
 
     def pump_blocker(self):

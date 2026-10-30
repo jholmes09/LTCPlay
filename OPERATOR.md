@@ -853,26 +853,39 @@ he triggers it."
 - **What it is.** One DMX channel on the flame universe (channel 100, on
   at 255), not a flame: no safety channel, no hold to arm. flamesafe
   writes the on value itself; the show file never drives it.
-- **Run time.** Set it before you turn the pump on, in minutes and
-  seconds. It starts at 5:00, and the run time you started last is the
-  next default on that show PC. The pump turns off by itself when the
-  time is up. Turning it on while it runs is refused: press Pump off,
-  then start it again with the time you want. The longest run is 60:00
-  unless an admin changes `pump_max_s` in `ltcplay_remote.json` (at most
-  4 hours); a longer time is refused and says so.
+- **Run time.** The default is **5:00**: unless you set another time
+  before you turn it on, the pump runs 5 minutes and turns off by itself.
+  To run it longer or shorter, set the time first, in minutes and
+  seconds. The ceiling is **60:00**: a longer time is refused and says
+  so (an admin can change the ceiling, `pump_max_s` in
+  `ltcplay_remote.json`, up to 4 hours). Turning it on while it runs is
+  refused, and never adds time: press Pump off, then start it again with
+  the time you want.
 - **When.** Any time: during a show, between shows, in Programming.
 - **Who.** Turning it on needs the same sign-in as arming a flame group
   (the arm row of the role matrix), and from an iPad needs arming from a
   screen switched on. Pump off works for everyone, always.
-- **What turns it off.** Its time up, Pump off, Stop, Abort, live flame
-  programming ending, flamesafe not answering for a second, the flame
-  link not sending, and a restart of LTC Player or flamesafe. **Hold does
-  not turn it off.** After a Stop or an Abort, wait a second before you
-  turn it on again.
+- **What turns it off.** Its time up, Pump off, Stop, Abort, the night
+  closing (and the night being over, for a run started before), flamesafe
+  not answering for a second, the flame link not sending, flamesafe not
+  passing it for a second and a half (press Fuel pump: On again), and a
+  restart of LTC Player or flamesafe. **Hold does not turn it off.**
+- **Anything that sends the disarm to every flame group turns it off
+  too**, on purpose (it only takes something away): Disarm all flame
+  groups when the Stream Deck does not answer and LTC Player falls back
+  to the disarm to every group, the wave flamer cleaning's disarm, and
+  live flame programming ending. The journal names which one. Live flame
+  programming cannot be turned on while the pump runs, because a Hold or
+  Start now ends live flame programming, and that would turn the pump
+  off; press Pump off first.
+- After a Stop, an Abort or any of those, wait a second before you turn
+  it on again.
 - **When it is refused.** An Abort standing (press Reset first), a Stop or
   Abort still being sent (wait a second), live flame programming on,
-  flamesafe not answering, its channel in the lockout file, or flamesafe
-  and LTC Player reading different pump settings. The screen says which.
+  flamesafe not answering, the flame link not sending, the night closing,
+  its channel in the lockout file, flamesafe and LTC Player reading
+  different pump settings, or the pump already on. The screen says
+  which.
 
 **Setting it up.** Add this one line to the `passthrough` list in
 `flamesafe.json`, after the hazers:
@@ -886,9 +899,13 @@ he triggers it."
 entry. With no such line there is no pump and no pump button.
 
 **Order matters.** A flamesafe or an LTC Player older than the fuel pump
-update refuses a `flamesafe.json` with this line, and does not start.
-Install BOTH updates first, then add the line, then restart flamesafe and
-LTC Player.
+update refuses a `flamesafe.json` with this line. With only flamesafe
+updated, LTC Player does not start, which stops the whole show; with only
+flamesafe restarted and an older LTC Player still running, no hazer can
+be armed. Install BOTH updates first, then add the line, then restart
+flamesafe and LTC Player. Before the pump is wired, check at the bench
+that the DMX node (the PixLite) drops its outputs to zero when the flame
+universe stops arriving, rather than holding the last look.
 
 ## Stop, Hold and Reset on the rack screen
 
