@@ -90058,6 +90058,313 @@ def test_preroll_a_pass_never_clears_a_newer_or_other_failure():
     print("  ok")
 
 
+def _pr_failed_at_showtime(n):
+    """_pr_night run to its show's time with the check failing: held, the
+    preroll alert open. The scheduler's alert sink wired as Remote wires
+    it. Returns (S, svc, c)."""
+    S, svc, c = n.S, n.svc, n.c
+    svc.alert_sink = n.al.raise_
+    svc.tick()
+    _settle(svc, c)
+    n.now[0] = _den(S, 17, 59, 50)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 15),
+          "the show's own check failed")
+    n.now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.HOLD and
+          [a.kind for a in n.al.open()] == ["preroll"],
+          f"held, the preroll alert open: {svc.machine.state}")
+    return S, svc, c
+
+
+def test_preroll_a_clear_never_meets_a_newer_raise_or_a_deadlock():
+    section("rig check failure cleared, two threads at once (reviews 1 and "
+            "2 of #176): the scheduler's 'could not run' raised while a "
+            "passing Check again clears is never cleared by it (the alert "
+            "is raised again in place, same id); a raise under the "
+            "service's lock while a pass clears never deadlocks (the "
+            "alerts' pulse hook takes that lock); the wiring is web.serve's "
+            "own (preroll.alert_hooks)")
+    from ltcplay import preroll as P, alerts as AL
+    # 1) The 'could not run' alert lands between the pass's decision and
+    # its clear: the pass reads the open alert, then the scheduler raises.
+    n = _pr_night({"Video": (False, "MadMapper did not answer the "
+                                    "timecode")})
+    if n is None:
+        return
+    hooks = P.alert_hooks(n.al)
+    for k, v in hooks.items():
+        setattr(n.pr, "_" + k, v)
+    S, svc, c = _pr_failed_at_showtime(n)
+    n.results["Video"] = (True, "")
+    reads = [0]
+    real_id = hooks["alert_id"]
+
+    def alert_id():
+        tok = real_id()
+        reads[0] += 1
+        if reads[0] == 2:
+            # The pass's own read, before its clear: the scheduler's rig
+            # check breaks now (Service._preroll_broken, the real path).
+            svc._preroll_broken("the show list could not be read")
+        return tok
+    n.pr._alert_id = alert_id
+    r = n.pr.run(("pre-check", 1), "a Pre-check by Andy", alerts=False,
+                 manual=True, by="Check again by Andy")
+    al = n.al.open()
+    check(r["state"] == "passed" and reads[0] >= 2 and al and
+          al[0].kind == "preroll" and "could not run" in al[0].text,
+          f"the newer 'could not run' alert stays open: {n.al.view()}")
+    check(n.pr.view().get("cleared") is None,
+          "the screens say nothing was cleared")
+    c.close()
+    n.link.close()
+    # 1b) The alert acknowledged, the failed verdict standing: right after
+    # the pass reads "no alert open", a preroll alert is raised by another
+    # path (the local alert API: not numbered), or the scheduler's check
+    # breaks with no alert sink (numbered, no alert). Neither is cleared,
+    # and the failed verdict stays.
+    for how in ("another path", "no sink"):
+        n = _pr_night({"Video": (False, "x")})
+        for k, v in P.alert_hooks(n.al).items():
+            setattr(n.pr, "_" + k, v)
+        S, svc, c = _pr_failed_at_showtime(n)
+        n.al.clear(kind="preroll", action="Acknowledge", who="Andy",
+                   screen="Rack screen")
+        n.results["Video"] = (True, "")
+        reads = [0]
+        real_id = n.pr._alert_id
+
+        def alert_id(how=how, svc=svc, n=n, reads=reads, real_id=real_id):
+            tok = real_id()
+            reads[0] += 1
+            if reads[0] == 2:
+                if how == "another path":
+                    n.al.raise_("preroll", "The rig check could not run.")
+                else:
+                    svc.alert_sink = None
+                    svc._preroll_broken("the show list could not be read")
+            return tok
+        n.pr._alert_id = alert_id
+        r = n.pr.run(("pre-check", 1), "a Pre-check", alerts=False,
+                     manual=True, by="Check again by Andy")
+        check(r["state"] == "passed" and reads[0] >= 2 and
+              n.pr.verdict(_pr_key(n)) == "failed" and
+              n.pr.view().get("cleared") is None and
+              [a.kind for a in n.al.open()] ==
+              (["preroll"] if how == "another path" else []),
+              f"{how}: the newer failure stays: "
+              f"{n.pr.verdict(_pr_key(n))} {n.al.view()}")
+        c.close()
+        n.link.close()
+    # 2) Lock order: the pass clears (the alerts' on_change takes the
+    # service's lock, as Remote._apply_pulse does through state_view)
+    # while the scheduler, holding that lock, raises (as
+    # _preroll_before_gate does). Forced: the clear waits until the
+    # scheduler holds its lock and is raising.
+    n = _pr_night({"Video": (False, "x")})
+    S, svc, c = _pr_failed_at_showtime(n)
+    live = AL.Alerts(on_change=lambda: svc.state_view())
+    hooks = P.alert_hooks(live)
+    in_clear, raising = threading.Event(), threading.Event()
+    real_clear = hooks["clear_alert"]
+
+    def clear_alert(kind, tok=None):
+        in_clear.set()
+        raising.wait(5)
+        time.sleep(0.05)
+        return real_clear(kind, tok)
+    hooks["clear_alert"] = clear_alert
+    for k, v in hooks.items():
+        setattr(n.pr, "_" + k, v)
+    n.pr.raise_alert(n.pr.failure_text(_pr_key(n)))
+    n.results["Video"] = (True, "")
+    done = {}
+
+    def check_again():
+        done["a"] = n.pr.run(("pre-check", 2), "a Pre-check", alerts=False,
+                             manual=True, by="Check again by Andy")["state"]
+
+    def scheduler():
+        with svc.lock:
+            in_clear.wait(10)
+            raising.set()
+            n.pr.raise_alert("The rig check before show 1 FAILED: Audio "
+                             "FAILED: the interface went away.")
+            done["b"] = True
+    ta = threading.Thread(target=check_again, daemon=True)
+    tb = threading.Thread(target=scheduler, daemon=True)
+    tb.start()
+    ta.start()
+    ta.join(20)
+    tb.join(20)
+    check(done.get("a") == "passed" and done.get("b") is True,
+          f"no deadlock: both finished: {done}")
+    check([a.kind for a in live.open()] == ["preroll"] and
+          "went away" in live.open()[0].text,
+          f"and the raise made under the lock stays open: {live.view()}")
+    if not ta.is_alive() and not tb.is_alive():
+        c.close()
+        n.link.close()
+    print("  ok")
+
+
+def test_preroll_resume_and_clear_guards():
+    section("rig check failure cleared, the guards (review 1 of #176): Resume "
+            "on a show whose check still stands failed starts nothing (Start "
+            "now does, after its check); a 'could not run' alert alone is a "
+            "failure in force, cleared by a pass, raised again if it breaks "
+            "again, and the screens then say Start now; a new failure ends "
+            "the 'cleared' note; a failed Pre-check refreshes the failure's "
+            "age for Continue anyway; Resume after a clear gives the show "
+            "its late allowance; a show's own check ends the 'cleared' "
+            "note; Check again is let through in the minute before a show "
+            "once a failure is in force")
+    import types
+    from ltcplay import preroll as P, remote as RM
+    # Resume with the failure still standing (the rig fixed, no check yet):
+    # the show is never started by the scheduler.
+    n = _pr_night({"Video": (False, "MadMapper did not answer")})
+    if n is None:
+        return
+    S, svc, c = _pr_failed_at_showtime(n)
+    n.results["Video"] = (True, "")
+    rr = svc.operator_press("resume", "Andy", "Rack screen")
+    for sec in (2, 4, 6, 8):
+        n.now[0] = _den(S, 18, 0, sec)
+        svc.tick()
+        _settle(svc, c)
+    check(rr["ok"] and svc.machine.state != S.SHOW and
+          n.pr.verdict(_pr_key(n)) == "failed" and not _pr_audio_started(n),
+          f"Resume on a still failed show: not started, still failed: "
+          f"{svc.machine.state} {n.pr.verdict(_pr_key(n))}")
+    got = svc.operator_press("start-now", "Andy", "Rack screen")
+    _settle(svc, c)
+    check(got["ok"] and svc.machine.state == S.SHOW,
+          f"Start now checks and starts it: {got}")
+    c.close()
+    n.link.close()
+    # The scheduler's 'could not run' alone: in force, cleared by a pass,
+    # raised again for the same reason after that, and a new failure ends
+    # the 'cleared' note.
+    n = _pr_night()
+    S, svc, c = n.S, n.svc, n.c
+    for k, v in P.alert_hooks(n.al).items():
+        setattr(n.pr, "_" + k, v)
+    svc.alert_sink = n.al.raise_
+    svc.tick()
+    svc._preroll_broken("the show list could not be read")
+    check([a.kind for a in n.al.open()] == ["preroll"] and
+          n.pr.failure_in_force(), "a 'could not run' alert is in force")
+    r = n.pr.run(("pre-check", 1), "a Pre-check", alerts=False, manual=True,
+                 by="Check again by Andy")
+    check(r["state"] == "passed" and not n.al.open() and
+          n.pr.view().get("cleared", {}).get("shows") == 0,
+          f"a pass clears it: {n.al.view()}")
+    rm = RM.Remote.__new__(RM.Remote)
+    rm.preroll = n.pr
+    rm.schedule = types.SimpleNamespace(machine=types.SimpleNamespace(
+        state="HOLD", delayed=lambda: None))
+    check(rm.preroll_view()["cleared"]["say"] ==
+          "Rig check passed. Press Start now to start the show.",
+          f"held, no show for Resume to release: Start now: "
+          f"{rm.preroll_view()['cleared']}")
+    svc._preroll_broken("the show list could not be read")
+    check([a.kind for a in n.al.open()] == ["preroll"] and
+          n.pr.view().get("cleared") is None,
+          f"still broken: raised again, the 'cleared' note gone: "
+          f"{n.al.view()} {n.pr.view().get('cleared')}")
+    c.close()
+    n.link.close()
+    # A failed Pre-check while a failure is in force refreshes its age:
+    # Continue anyway is about what fails NOW, not a check from long ago.
+    n = _pr_night({"Video": (False, "x")})
+    off = [0.0]
+    n.pr._clock = lambda: time.monotonic() + off[0]
+    S, svc, c = _pr_failed_at_showtime(n)
+    off[0] += P.CONTINUE_MAX_AGE_S + 60
+    check(n.pr.last_failed() is None, "the failure is too old to continue "
+                                      "past")
+    n.pr.run(("pre-check", 1), "a Pre-check", alerts=False, manual=True)
+    check(n.pr.last_failed() is not None and
+          n.pr.verdict(_pr_key(n)) == "failed",
+          "failed again just now: Continue anyway answers it again")
+    c.close()
+    n.link.close()
+    # Resume after a clear: the show is checked again and starts within
+    # its late allowance, past the schedule's own grace (3 s here).
+    import dataclasses
+    n = _pr_night({"Video": (False, "x")})
+    S, svc, c = _pr_failed_at_showtime(n)
+    svc.machine = dataclasses.replace(svc.machine, late_grace_s=3)
+    n.results["Video"] = (True, "")
+    n.now[0] = _den(S, 18, 0, 1)
+    n.pr.run(("pre-check", 1), "a Pre-check", alerts=False, manual=True,
+             by="Check again by Andy")
+    check(n.pr.verdict(_pr_key(n)) == "cleared", "cleared")
+    n.now[0] = _den(S, 18, 0, 2)
+    svc.operator_press("resume", "Andy", "Rack screen")
+    for sec in (4, 5, 6, 7):
+        n.now[0] = _den(S, 18, 0, sec)
+        svc.tick()
+        _settle(svc, c)
+        if svc.machine.state == S.SHOW:
+            break
+        wait_for(lambda: n.pr.verdict(_pr_key(n)) != "checking", 15)
+    check(svc.machine.state == S.SHOW and len(_pr_audio_started(n)) == 1,
+          f"Resume: checked again and started inside its late allowance: "
+          f"{svc.machine.state}")
+    c.close()
+    n.link.close()
+    # A show's own check (Start now's) ends the 'cleared' note.
+    n = _pr_night({"Video": (False, "x")})
+    S, svc, c = n.S, n.svc, n.c
+    svc.showtime_gate = None
+    svc.tick()
+    n.now[0] = _den(S, 17, 59, 55)
+    svc.tick()
+    check(wait_for(lambda: n.pr.verdict(_pr_key(n)) == "failed", 15),
+          "failed")
+    n.results["Video"] = (True, "")
+    n.pr.run(("pre-check", 1), "a Pre-check", alerts=False, manual=True,
+             by="Check again by Andy")
+    check(n.pr.view().get("cleared") is not None, "the 'cleared' note")
+    got = svc.operator_press("start-now", "Andy", "Rack screen")
+    _settle(svc, c)
+    check(got["ok"] and svc.machine.state == S.SHOW and
+          n.pr.view().get("cleared") is None,
+          f"Start now's own check ended the note: "
+          f"{n.pr.view().get('cleared')}")
+    c.close()
+    n.link.close()
+    # Check again in the minute before a show: refused while nothing has
+    # failed (its own check runs by itself), let through after a failure
+    # (a failed show is never checked again by itself).
+    n = _pr_night({"Video": (False, "x")})
+    S, svc, c = n.S, n.svc, n.c
+    svc.tick()
+    _settle(svc, c)
+    rm = RM.Remote.__new__(RM.Remote)
+    rm.preroll, rm.schedule = n.pr, svc
+    rm.control = types.SimpleNamespace(session=object())
+    rm.programming_playback_refusal = lambda: ""
+    ctx = types.SimpleNamespace(user="Andy")
+    n.now[0] = _den(S, 17, 59, 30)
+    code, body = rm.preroll_check({}, ctx)
+    check(code == 409 and "runs by itself" in body["error"],
+          f"30 s before, nothing failed: refused: {body}")
+    n.pr.raise_alert("The rig check before show 1 FAILED: Video FAILED: x.")
+    code, body = rm.preroll_check({}, ctx)
+    check(code == 200, f"30 s before, a failure in force: let through: "
+                       f"{body}")
+    wait_for(lambda: not n.pr.checking(), 15)
+    c.close()
+    n.link.close()
+    print("  ok")
+
+
 def test_preroll_failure_cleared_on_both_screens():
     section("rig check failure cleared, on the screens: 1.0's box and 2.0's "
             "status line and alert slot say 'Rig check passed. Press "
@@ -90454,9 +90761,10 @@ def test_preroll_madmapper_output_check_and_lamp():
     section("the rig check's MadMapper output item: on passes; OFF fails "
             "with what to do; not known fails (unknown is failure); not "
             "checked (no MadMapper here, another machine, switched off) "
-            "counts as not used; Continue anyway leaves the video off; the "
-            "rack screen lamp says on, OFF or not known; the settings and "
-            "the engine wiring")
+            "counts as not used; Continue anyway leaves nothing off for it "
+            "until the rule is bench-proven; a real passing rig check that "
+            "saw it on clears the output alert; the rack screen lamp says "
+            "on, OFF or not known; the settings and the engine wiring")
     import types
     from ltcplay import preroll as P, showwindows as SW, web as W
     from ltcplay import remote as RM
@@ -90484,9 +90792,17 @@ def test_preroll_madmapper_output_check_and_lamp():
     check("MadMapper output" in P.NAMES and
           P.NAMES.index("MadMapper output") == P.NAMES.index("Video") + 1,
           "listed after Video")
-    check(P.outputs_off([{"name": "MadMapper output", "ok": False}]) ==
-          frozenset({"video"}),
-          "Continue anyway leaves the video off when the output failed")
+    # Review 2 of #176: the rule is not yet proven on a real MadMapper 6
+    # (BENCH.md), so a failed output item never blacks the video by
+    # Continue anyway. Read from a real failed run's items.
+    bad = P.PreRoll([("MadMapper output", True,
+                      lambda p: P.check_madmapper_output(p, lambda: (
+                          "off", "MadMapper's video output is OFF")))],
+                    window_s=3).run(("x", 1), "show 1")
+    check(bad["state"] == "failed" and P.outputs_off(bad["items"]) ==
+          frozenset(),
+          f"Continue anyway leaves nothing off for a failed output item: "
+          f"{P.outputs_off(bad['items'])}")
     # Settings.
     c = F.FireIceConfig.parse({})
     check(c.madmapper_output_check is True and
@@ -90554,23 +90870,56 @@ def test_preroll_madmapper_output_check_and_lamp():
     httpd.server_close()
     check(closed == [1] and look._stop.is_set(), "stopped with the server")
     # A passing rig check that SAW the output on clears the output alert
-    # raised before it began (review B of #176), never a newer one.
+    # raised before it began (review B of #176), never a newer one. Real
+    # runs of the real check, wired as web.serve wires on_pass (review 1
+    # of #176: a passing item always carries a note, so the backstop read
+    # the wrong field and never cleared).
     from ltcplay import alerts as AL
     al = AL.Alerts()
     al.raise_("output", "MadMapper's video output is OFF")
     al.raise_("video", "MadMapper is not running")
-    seen = {"items": [{"name": "MadMapper output", "ok": True,
-                       "note": False}], "wall_at": time.time() + 1}
-    check(W._output_seen_on(al, seen) and
+    time.sleep(0.02)
+    look = [("on", "MadMapper's output fills display 2")]
+    why_not = [""]
+    during = []
+
+    def mm_check(p):
+        for f in during:
+            f()
+        return P.check_madmapper_output(
+            p, (lambda: look[0]) if why_not[0] == "" else None, why_not[0])
+    got = []
+    run_pr = P.PreRoll([("MadMapper output", True, mm_check)], window_s=3,
+                       on_pass=lambda r: got.append(
+                           W._output_seen_on(al, r)),
+                       **P.alert_hooks(al))
+    r = run_pr.run(("pre-check", 1), "a Pre-check", alerts=False,
+                   manual=True)
+    check(r["state"] == "passed" and got == [True] and
           [a.kind for a in al.open()] == ["video"],
-          "seen on: the output alert cleared, the video alert kept")
+          f"a real pass that saw it on: the output alert cleared, the video "
+          f"alert kept: {r['items']} {[a.kind for a in al.open()]}")
+    # Not checked here (MadMapper on another PC): the item passes as not
+    # used, saw nothing, clears nothing.
     al.raise_("output", "MadMapper's video output is OFF")
-    check(not W._output_seen_on(al, dict(seen, wall_at=time.time() - 60))
-          and not W._output_seen_on(al, dict(seen, items=[
-              {"name": "MadMapper output", "ok": True, "note": True}])) and
+    time.sleep(0.02)
+    why_not[0] = "not checked: MadMapper is on another machine"
+    r = run_pr.run(("pre-check", 2), "a Pre-check", alerts=False,
+                   manual=True)
+    check(r["state"] == "passed" and got[-1] is False and
           [a.kind for a in al.open()] == ["video", "output"],
-          "an alert newer than the check, or a check that did not look: "
-          "kept")
+          f"a pass that did not look: the output alert kept: "
+          f"{r['items']}")
+    # An output alert raised while the check runs is newer: kept.
+    why_not[0] = ""
+    al.clear(kind="output", action="Acknowledge", who="t", screen="t")
+    during.append(lambda: al.raise_("output", "MadMapper's video output "
+                                              "is OFF"))
+    r = run_pr.run(("pre-check", 3), "a Pre-check", alerts=False,
+                   manual=True)
+    check(r["state"] == "passed" and got[-1] is False and
+          [a.kind for a in al.open()] == ["video", "output"],
+          "an output alert newer than the check: kept")
     # The lamp.
     d = tempfile.mkdtemp()
     try:
@@ -90877,6 +91226,108 @@ def test_rack_screen_keeper_raises_over_beyond_and_madmapper_only():
     bad = _FakeWins([_RACK])
     bad.fail = True
     check(keeper(bad).tick() == "none", "an unreadable list: nothing")
+    _no_dashes(" ".join(logs), "the keeper's log lines")
+    print("  ok")
+
+
+def test_rack_screen_keeper_never_buries_a_dialog_or_a_window_in_use():
+    section("the rack screen keeper (reviews 1 and 2 of #176): a dialog box "
+            "of BEYOND or MadMapper with no owner (Windows' #32770 class, a "
+            "parentless MessageBox) is never covered and never buried, "
+            "alone or under another program's window; after LTC Player "
+            "restarts, the windows already open are old (never raised over "
+            "for 'just appearing'), and the window in front that was used "
+            "in the last minute is left; a rack screen that is not "
+            "responding is never moved")
+    from ltcplay import showwindows as SW
+    t = [1000.0]
+    logs = []
+
+    def keeper(api, **kw):
+        return SW.RackKeeper(api, monitor=1, log=logs.append,
+                             clock=lambda: t[0], wall=lambda: 5000.0, **kw)
+    # The fields as Win32.info reads them for a MessageBox: class #32770,
+    # no owner, a title bar.
+    box = dict(_BEYOND, hwnd=23, pid=20, title="BEYOND: No FB4 devices found",
+               cls=SW.DIALOG_CLASS, owner=0, caption=True,
+               rect=(700, 400, 1200, 600))
+    # 1) BEYOND's message box alone over the rack screen at boot (its main
+    # window not up yet): never covered, and its keyboard never taken.
+    api = _FakeWins([box, _RACK])
+    api.fg = 23
+    api.session_age_s = lambda: 30.0
+    k = keeper(api)
+    for _ in range(3):
+        got = k.tick()
+    check(got in ("none", "left") and not api.raised and
+          not getattr(api, "ordered", None) and api.wins[0]["hwnd"] == 23,
+          f"a lone parentless BEYOND message box: left on top: {got}")
+    # 2) MadMapper's main window over the rack screen, BEYOND's message box
+    # (another program) over it or under it: the raise would bury it.
+    mm = dict(_MM_UI, pid=30)
+    for order, fg in (([mm, box, _RACK], 30), ([box, mm, _RACK], 23)):
+        api = _FakeWins(order)
+        api.fg = fg
+        api.session_age_s = lambda: 30.0
+        got = keeper(api).tick()
+        check(got == "left" and not api.raised and
+              not getattr(api, "ordered", None),
+              f"MadMapper's window over the rack screen and BEYOND's "
+              f"message box ({[w['hwnd'] for w in order]}): nothing buried: "
+              f"{got}")
+    check(any("BEYOND's dialog" in x for x in logs), "said why in the log")
+    # The same message box with BEYOND's main window minimized: left.
+    api = _FakeWins([box, dict(_BEYOND, pid=20, minimized=True), _RACK])
+    api.fg = 23
+    api.session_age_s = lambda: 30.0
+    check(keeper(api).tick() in ("none", "left") and not api.raised,
+          "BEYOND minimized, its message box up: left")
+    # 3) LTC Player restarted two hours after the sign-in: BEYOND's window
+    # was over the rack screen before this keeper's first look. It is old,
+    # not "just appeared": left, the keyboard untouched.
+    api = _FakeWins([_BEYOND, _RACK])
+    api.fg = 20
+    api.input_age = 120.0
+    api.session_age_s = lambda: 7200.0
+    k = keeper(api)
+    got = [k.tick() for _ in range(3)]
+    check(got == ["none"] * 3 and not api.raised and
+          not getattr(api, "ordered", None),
+          f"restarted after the settle: an old window is left: {got}")
+    # A window that appears after that first look is new, as before.
+    api.wins.insert(0, dict(_MM_UI, hwnd=33, pid=33))
+    api.fg = 33
+    t[0] += 2
+    check(k.tick() == "raised" and api.raised == [10],
+          "a window that appears after the restart: raised over")
+    # 4) Restarted during the boot settle (or with the sign-in time not
+    # readable): BEYOND in front since before the first look and used 10 s
+    # ago is a person's; left. Not used for minutes: raised.
+    for sess in (100.0, None):
+        api = _FakeWins([_BEYOND, _RACK])
+        api.fg = 20
+        api.input_age = 10.0
+        api.session_age_s = lambda s=sess: s
+        got = keeper(api).tick()
+        check(got == "left" and not api.raised and
+              not getattr(api, "ordered", None),
+              f"in front since before the first look, used 10 s ago "
+              f"(sign-in {sess}): left: {got}")
+        api.input_age = SW.FOREGROUND_IN_USE_S + 30
+        k = keeper(api)
+        check(k.tick() == "raised" and api.raised == [10],
+              f"in front, nobody used it for minutes (sign-in {sess}): "
+              f"raised")
+    # 5) A rack screen that is not responding is never moved (the input
+    # attach could wait on it).
+    api = _FakeWins([_BEYOND, _RACK])
+    api.session_age_s = lambda: 30.0
+    api.hung = lambda h: h == 10
+    got = keeper(api).tick()
+    check(got == "left" and not api.raised and
+          not getattr(api, "ordered", None) and
+          any("not responding" in x for x in logs),
+          f"a hung rack screen: not moved: {got}")
     _no_dashes(" ".join(logs), "the keeper's log lines")
     print("  ok")
 
@@ -93485,10 +93936,13 @@ if __name__ == "__main__":
         test_preroll_wiring_in_the_engine,
         test_preroll_a_pass_clears_the_failure_and_keeps_the_hold,
         test_preroll_a_pass_never_clears_a_newer_or_other_failure,
+        test_preroll_a_clear_never_meets_a_newer_raise_or_a_deadlock,
+        test_preroll_resume_and_clear_guards,
         test_preroll_failure_cleared_on_both_screens,
         test_madmapper_output_window_is_read_from_windows,
         test_preroll_madmapper_output_check_and_lamp,
         test_rack_screen_keeper_raises_over_beyond_and_madmapper_only,
+        test_rack_screen_keeper_never_buries_a_dialog_or_a_window_in_use,
         test_supervisor_watches_madmapper_output_after_it_starts,
         test_rack_page_key_guard_never_holds_back_the_safe_buttons,
         test_alert_booth_never_waits_behind_the_delayed,

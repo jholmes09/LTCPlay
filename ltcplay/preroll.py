@@ -710,6 +710,7 @@ class PreRoll:
             if cl is not None:
                 out["cleared"] = {"by": cl["by"], "label": cl["label"],
                                   "failed": list(cl["failed"]),
+                                  "shows": cl.get("shows", 0),
                                   "age_s": round(self._clock() - cl["at"],
                                                  1)}
             return out
