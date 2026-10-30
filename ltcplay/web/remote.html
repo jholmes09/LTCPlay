@@ -1124,12 +1124,10 @@ button.fb-pad.na{opacity:.45}
     <section class="card" id="fb-head">
       <div class="fb-top"><h2>Fireball</h2><span class="fb-armed" id="fb-armed">Not known yet</span>
         <button class="ghost" id="fb-alloff" title="Turns every Fireball channel off. Always works.">All off</button>
+        <button class="ghost" id="fb-empty" hidden title="Fuel or Air is not known: the timeline charges nothing until a shot, a Purge, or an admin confirms both tanks are empty. Only if they are known to be empty. Admins.">Tanks are empty</button>
         <button class="disarm" id="fb-disarm" title="Disarms the Fireball group. Always works. Arm it again with its hold to arm.">Disarm Fireball</button></div>
       <div class="warnbox open" id="fb-block" hidden></div>
       <div class="dim" id="fb-note"></div>
-      <div class="fb-top" id="fb-emptyrow" hidden><span id="fb-empty-t">Fuel or Air: not known. The timeline charges nothing until a shot, a Purge, or an admin confirms the tanks are empty.</span>
-        <button class="ghost" id="fb-empty" title="Only if both tanks are known to be empty. Admins.">Tanks are empty</button></div>
-
       <div class="kv" id="fb-charge"></div>
       <div class="toast" id="fb-msg"></div>
     </section>
@@ -5378,7 +5376,7 @@ function renderFireball(){
   // The charge record does not know a tank (no record yet, a lost write):
   // an admin may confirm both are empty (fireball_charge.confirm_empty).
   const chk = ST && ST.fireball_charge, tks = (chk && chk.tanks) || {};
-  $("fb-emptyrow").hidden = !(v && v.available) || !Object.keys(tks).some(k => tks[k] && tks[k].state === "unknown");
+  $("fb-empty").hidden = !(v && v.available) || !Object.keys(tks).some(k => tks[k] && tks[k].state === "unknown");
   const ctl = (v && v.controls) || [];
   const key = ctl.map(c => c.key + c.slot).join(",");
   const box = $("fb-pads");
