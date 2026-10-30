@@ -19,7 +19,10 @@ command prompt. Every step is a double-click or a Start menu item.
 ## Install or update (under 5 minutes)
 
 1. On the Releases page, https://github.com/jholmes09/LTCPlay/releases,
-   take the newest release. Download "LTC Player Setup <version>.exe".
+   take the newest release marked "Latest" (named gpl-YYYY.MM.DD.N, for
+   example gpl-2026.10.30.1). The ones named "bench-..." and marked
+   "Pre-release" are bench builds, not for a show. Download
+   "LTC Player Setup <version>.exe".
    If this PC is on the show network only, download it on another
    computer and bring it here on a USB stick.
 2. Check the download (optional). Beside every installer on the Releases
@@ -37,7 +40,7 @@ command prompt. Every step is a double-click or a Start menu item.
    zeros), replaces the program, and starts LTC Player again. The rack
    screen comes back by itself within about 30 seconds and shows the new
    version in its header, next to the device name, like
-   "LTC Player release bench-2026.10.15-abc1234, build 1a2b3c4d5e".
+   "LTC Player release 2026.10.30.1, build 1a2b3c4d5e".
    That string must match the release you downloaded.
 
 Your settings, logs, schedule, flamesafe.json and show files are never
@@ -48,7 +51,10 @@ Start menu, LTC Player, "Settings and logs" and in the show folder.
 
 Start menu, LTC Player, "Check for an update". It looks at the Releases
 page, says whether this PC has the newest, and offers to download, check
-the SHA-256 and install it. It refuses while a show is running. With no
+the SHA-256 and install it. A PC running a release is only offered the
+newest full release ("Latest"), never a bench pre-release and never an
+older release; a PC running a bench build is offered the newest of
+either, so it moves on to the release. It refuses while a show is running. With no
 internet on the show PC it says so and you use the USB stick way above.
 
 ## Go back to the version you had before

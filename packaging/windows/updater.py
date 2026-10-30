@@ -6,7 +6,12 @@ The release workflow (.github/workflows/windows-app.yml) publishes every
 build as a release with two assets: "LTC Player Setup <version>.exe" and
 its ".sha256". This asks GitHub for the releases, picks the newest one that
 carries both, and compares its tag with the version this install was
-stamped with (ltcwin.release()). Newer: download to the settings folder's
+stamped with (ltcwin.release()). A show PC running a release (a gpl-*
+tag, stamped like 2026.10.30.1) is only ever offered full releases, the
+one GitHub marks Latest: the bench-build branch's "bench-..." builds are
+pre-releases and never reach it. A bench or test build (bench-..., dev-...,
+unstamped) is offered the newest of everything, so it moves on to a
+release. Newer: download to the settings folder's
 "downloads", check the hash against the .sha256, and start the installer,
 which stops LTC Player the safe way and refuses while a show is running
 (installer.iss). Nothing is installed by this module itself.
@@ -28,6 +33,10 @@ import urllib.request
 
 REPO = "jholmes09/LTCPlay"
 API = f"https://api.github.com/repos/{REPO}/releases?per_page=30"
+# The newest full release (never a pre-release or a draft), whatever the
+# number of bench pre-releases published after it.
+API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
+RELEASE_RE = re.compile(r"^\d+(\.\d+){1,3}$")
 RELEASES_PAGE = f"https://github.com/{REPO}/releases"
 INSTALLER_RE = re.compile(r"^LTC[ .]Player[ .]Setup[ .](.+)\.exe$")
 TIMEOUT_S = 20
@@ -41,13 +50,22 @@ def _asset_version(name):
     return m.group(1) if m else None
 
 
-def pick(releases):
+def is_release(version):
+    """True for a release's version (from a gpl-YYYY.MM.DD.N tag:
+    2026.10.30.1), False for bench-..., dev-..., or nothing."""
+    return bool(RELEASE_RE.match(str(version or "").strip()))
+
+
+def pick(releases, prereleases=True):
     """The newest release (by published_at) that carries an installer and
     its .sha256, as {"tag", "version", "exe_url", "exe_name", "sha_url",
-    "size", "published", "prerelease", "page"}, or None."""
+    "size", "published", "prerelease", "page"}, or None. With
+    prereleases=False a pre-release is never picked."""
     best = None
     for r in releases or []:
         if not isinstance(r, dict) or r.get("draft"):
+            continue
+        if r.get("prerelease") and not prereleases:
             continue
         exe = sha = None
         for a in r.get("assets") or []:
@@ -75,11 +93,15 @@ def is_newer(candidate, installed):
     """True when `candidate` (a release's version string) is not the one
     installed. The versions are dated strings (bench-2026.10.15-abc1234,
     2026.10.20.1); a different one that was published later is the newer
-    one, which pick() already chose by date. An unstamped install (no
-    VERSION) counts as older than anything."""
+    one, which pick() already chose by date. Two release numbers are
+    compared as numbers, so a release is never "updated" to an older one.
+    An unstamped install (no VERSION) counts as older than anything."""
     if not installed:
         return True
-    return str(candidate).strip() != str(installed).strip()
+    c, i = str(candidate).strip(), str(installed).strip()
+    if is_release(c) and is_release(i):
+        return tuple(map(int, c.split("."))) > tuple(map(int, i.split(".")))
+    return c != i
 
 
 def sha256_matches(path, sha_text):
@@ -103,11 +125,18 @@ def _get(url, timeout=TIMEOUT_S):
         return r.read()
 
 
-def fetch_releases(get=_get):
-    """The releases list from GitHub, or raises OSError with a sentence."""
+def fetch_releases(get=_get, latest=False):
+    """The releases list from GitHub, or raises OSError with a sentence.
+    latest=True: only the newest full release (GitHub's Latest), as a list
+    of one, or an empty list when there is none yet."""
     try:
+        if latest:
+            doc = json.loads(get(API_LATEST).decode("utf-8", "replace"))
+            return [doc] if isinstance(doc, dict) else []
         return json.loads(get(API).decode("utf-8", "replace"))
     except urllib.error.HTTPError as e:
+        if latest and e.code == 404:
+            return []
         raise OSError(f"GitHub answered {e.code} for the releases list") \
             from e
     except (urllib.error.URLError, OSError, ValueError) as e:
@@ -134,14 +163,15 @@ def download(url, dest, get=_get, log=None):
 def check(installed, get=_get):
     """(code, sentence, release) for what is newest on GitHub against
     `installed` (this build's version string). Never raises."""
+    on_release = is_release(installed)
     try:
-        releases = fetch_releases(get)
+        releases = fetch_releases(get, latest=on_release)
     except OSError as e:
         return NO_NETWORK, (f"Could not check for an update: {e} To update "
                             f"anyway, download LTC Player Setup from "
                             f"{RELEASES_PAGE} on another computer, bring it "
                             f"here on a USB stick and double-click it."), None
-    rel = pick(releases)
+    rel = pick(releases, prereleases=not on_release)
     if rel is None:
         return NO_RELEASES, (f"No release on {RELEASES_PAGE} carries an "
                              f"installer and its .sha256 yet."), None
@@ -223,6 +253,52 @@ def self_test():
             not is_newer(rel["version"], ""):
         raise RuntimeError("is_newer reads the installed version wrongly")
     yield "an install is up to date only when it is the picked release"
+    full = {"tag_name": "gpl-2026.10.30.1", "published_at":
+            "2026-10-30T20:00:00Z", "prerelease": False, "assets": [
+                {"name": "LTC.Player.Setup.2026.10.30.1.exe",
+                 "browser_download_url": "u4", "size": 90 * 1024 ** 2},
+                {"name": "LTC.Player.Setup.2026.10.30.1.exe.sha256",
+                 "browser_download_url": "s4", "size": 100}]}
+    later_bench = {"tag_name": "bench-2026.10.31-def5678", "published_at":
+                   "2026-10-31T09:00:00Z", "prerelease": True, "assets": [
+                       {"name": "LTC.Player.Setup.bench-2026.10.31-def5678.exe",
+                        "browser_download_url": "u5", "size": 100},
+                       {"name": "LTC.Player.Setup.bench-2026.10.31-def5678"
+                                ".exe.sha256",
+                        "browser_download_url": "s5", "size": 100}]}
+    if pick(rels + [full, later_bench], prereleases=False)["version"] != \
+            "2026.10.30.1" or pick(rels, prereleases=False) is not None:
+        raise RuntimeError("a pre-release was picked for a release install")
+    if pick(rels + [full])["version"] != "2026.10.30.1":
+        raise RuntimeError("a bench install is not offered the release")
+    if not is_release("2026.10.30.1") or is_release("bench-2026.10.15-a") \
+            or is_release("dev-abc1234") or is_release(""):
+        raise RuntimeError("is_release reads a version wrongly")
+    if is_newer("2026.10.30.1", "2026.10.30.2") or \
+            not is_newer("2026.10.30.10", "2026.10.30.9") or \
+            is_newer("2026.10.30.1", "2026.10.30.1"):
+        raise RuntimeError("release numbers are not compared as numbers")
+
+    def latest_get(url, timeout=0):
+        if url == API_LATEST:
+            return json.dumps(full).encode()
+        raise urllib.error.URLError("a release install read the whole list")
+    code, text, _ = check("2026.10.30.1", get=latest_get)
+    if code != UP_TO_DATE:
+        raise RuntimeError(f"check (release, up to date): {code} {text}")
+    code, text, _ = check("2026.09.15.10", get=latest_get)
+    if code != NEWER_AVAILABLE or "2026.10.30.1" not in text or \
+            "pre-release" in text:
+        raise RuntimeError(f"check (release, newer): {code} {text}")
+
+    def no_latest(url, timeout=0):
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+    code, text, _ = check("2026.10.30.1", get=no_latest)
+    if code != NO_RELEASES:
+        raise RuntimeError(f"check (no full release yet): {code} {text}")
+    yield "a release install is offered only full releases (GitHub's " \
+          "Latest), never a bench pre-release, and never an older number; " \
+          "a bench install is offered the release"
     work = tempfile.mkdtemp(prefix="ltcplay-updater-")
     try:
         p = os.path.join(work, "x.exe")
