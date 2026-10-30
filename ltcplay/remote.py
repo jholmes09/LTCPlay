@@ -5330,6 +5330,32 @@ class Remote:
         svc = self.schedule
         if svc is None:
             return
+        one = getattr(svc, "halt_schedule", None)
+        if one is not None:
+            # The scheduler decides and applies it in one locked step with
+            # no tick first (cold review of #191, A-F1): a show coming due
+            # at the press is held, never started and then paused, and a
+            # show already running is ended through the conductor's Stop.
+            try:
+                r = one(who, screen,
+                        f"pressed Stop on the {screen or 'screen'}, so the "
+                        f"schedule is on Hold")
+                ok, text = bool(r.get("ok")), str(r.get("text") or "")
+                kind = r.get("kind")
+            except Exception as e:               # noqa: BLE001
+                ok, text, kind = False, f"{type(e).__name__}: {e}", "hold"
+            if kind == "stop":
+                out["show"] = {"ok": ok, "text": text}
+                out["show_ended"] = ok
+                if not ok:
+                    out["failed"].append("show")
+                elif r.get("state") == "HOLD":
+                    out["hold"] = {"ok": True, "text": ""}
+            elif kind in ("hold", "held"):
+                out["hold"] = {"ok": ok, "text": text}
+                if not ok:
+                    out["failed"].append("hold")
+            return
         for _attempt in (1, 2):
             state = getattr(getattr(svc, "machine", None), "state", None)
             if state in self.HALT_LIVE:

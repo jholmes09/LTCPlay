@@ -57543,6 +57543,258 @@ def test_streamdeck_refractory_starts_at_a_screen_stop():
     print("  ok")
 
 
+def test_stop_at_showtime_never_starts_or_pauses_a_show():
+    section("Stop at showtime (cold review of #191, A-F1): a Stop pressed "
+            "the instant a show comes due holds the schedule and never "
+            "starts the show, nor pauses one it started itself; a tick "
+            "during a Stop starts nothing (so nothing starts unchecked by "
+            "the rig check); a Stop during a late rig check starts nothing; "
+            "a show already running is ended through the conductor's Stop")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        R.now[0] = _den(S, 17, 59, 30)
+        R.svc.tick()
+        R.settle()
+        check(R.svc.machine.state in (S.IDLE, S.STANDBY),
+              f"setup: waiting for show 1: {R.svc.machine.state}")
+        asked = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (asked.append(a), real_cs(*a, **kw))[1]
+        # 18:00:00.2, no tick since 17:59:30: the press itself must not
+        # start show 1 and then pause it.
+        R.now[0] = _den(S, 18, 0, 0, 200000)
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        m = R.svc.machine
+        check(m.state == S.HOLD and m.running == 0 and m.stop_hold and
+              m.slot(1).status in (S.PENDING, S.DELAYED) and
+              m.slot(1).fired_at is None and not asked,
+              f"Stop at showtime holds; show 1 never started or paused: "
+              f"{st} {m.state} {m.running} {m.slot(1)} {asked} {out}")
+        R.now[0] = _den(S, 18, 0, 5)
+        R.svc.tick()
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and
+              R.svc.machine.running == 0,
+              f"and the next tick starts nothing: {R.svc.machine.state}")
+    finally:
+        R.close()
+    # A tick while a Stop is under way starts nothing.
+    R = _RemoteRig(S)
+    try:
+        R.now[0] = _den(S, 18, 0, 1)
+        R.svc.halt_begin()
+        try:
+            R.svc.tick()
+            check(R.svc.machine.state != S.SHOW and
+                  R.svc.machine.running == 0,
+                  f"a tick during a Stop starts no show: "
+                  f"{R.svc.machine.state}")
+            r = R.svc.halt_schedule("Andy", "Rack screen")
+        finally:
+            R.svc.halt_end()
+        R.svc.tick()
+        R.settle()
+        check(r["ok"] and r["kind"] == "hold" and
+              R.svc.machine.state == S.HOLD and R.svc.machine.running == 0,
+              f"then the Stop holds, and nothing starts: {r} "
+              f"{R.svc.machine.state}")
+        # A show already running: halt_schedule ends it (STOP_SHOW, the
+        # conductor's Stop), never a pause.
+    finally:
+        R.close()
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        asked = []
+        real_cs = R.c.stop
+        R.c.stop = lambda *a, **kw: (asked.append(a), real_cs(*a, **kw))[1]
+        r = R.svc.halt_schedule("Andy", "Rack screen")
+        R.settle()
+        check(r["kind"] == "stop" and asked and
+              R.svc.machine.state == S.HOLD and
+              R.svc.machine.slot(1).status == S.ABORTED,
+              f"a running show is ended through the conductor's Stop, "
+              f"never paused: {r} {asked} {R.svc.machine.state}")
+    finally:
+        R.close()
+    # A Stop during a late rig check: the check is cancelled, nothing
+    # starts, and no audio plays.
+    ev = threading.Event()
+    n = _pr_night(hold_until={"Video": ev})
+    if n is None:
+        return
+    try:
+        S, svc, c = n.S, n.svc, n.c
+        svc.tick()
+        _settle(svc, c)
+        n.now[0] = _den(S, 17, 59, 55)
+        svc.tick()
+        check(wait_for(lambda: "Video" in n.ran, 3),
+              f"setup: the rig check is under way: {n.ran}")
+        n.now[0] = _den(S, 18, 0, 2)
+        svc.halt_begin()
+        try:
+            svc.cancel_start_wait("Stop was pressed on the Rack screen")
+            svc.tick()
+            r = svc.halt_schedule("Andy", "Rack screen")
+        finally:
+            svc.halt_end()
+        for t_ in (3, 10, 30):
+            n.now[0] = _den(S, 18, 0, t_)
+            svc.tick()
+        _settle(svc, c)
+        check(r["kind"] == "hold" and svc.machine.state == S.HOLD and
+              svc.machine.running == 0 and not _pr_audio_started(n),
+              f"a Stop during the rig check: held, nothing started, no "
+              f"audio: {r} {svc.machine.state} {n.calls[-5:]}")
+    finally:
+        ev.set()
+        n.c.close()
+        n.link.close()
+    print("  ok")
+
+
+def test_reset_never_ends_a_stops_hold():
+    section("Reset and a Stop's Hold (cold review of #191, A-F4): Reset "
+            "never releases the Hold a Stop put on (it may clear the fault "
+            "flag); show 2 does not start; Resume releases it")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and R.svc.machine.stop_hold,
+              f"setup: on the Stop's Hold: {R.svc.machine.state}")
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
+        R.settle()
+        m = R.svc.machine
+        check(st == 409 and m.state == S.HOLD and m.stop_hold and
+              "Resume" in str(out),
+              f"Reset leaves the Stop's Hold on and says to Resume: {st} "
+              f"{out} {m.state}")
+        R.now[0] = _den(S, 18, 21)
+        R.svc.tick()
+        R.settle()
+        check(R.svc.machine.running == 0 and
+              R.svc.machine.slot(2).fired_at is None,
+              f"show 2 does not start: {R.svc.machine.slot(2)}")
+        # With a fault flag up, Reset clears the flag and still keeps the
+        # Hold.
+        R.svc._apply(S.Event(S.FAULT_RAISED, "system", detail="test fault"))
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
+        m = R.svc.machine
+        check(st == 200 and not m.faults and m.state == S.HOLD and
+              m.stop_hold,
+              f"Reset clears the fault flag and keeps the Hold: {st} {out}")
+        # An operator's own Hold (not a Stop's) is still ended by Reset.
+        st, _h, out = R.ask("POST", "/api/remote/resume", {"seen": R.seen()})
+        R.settle()
+        check(R.svc.machine.state == S.STANDBY and
+              not R.svc.machine.stop_hold,
+              f"Resume releases the Stop's Hold: {R.svc.machine.state}")
+        R.ask("POST", "/api/remote/hold", {"seen": R.seen()})
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and
+              not R.svc.machine.stop_hold, "setup: an operator's Hold")
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
+        check(st == 200 and R.svc.machine.state != S.HOLD,
+              f"Reset still ends an operator's Hold: {st} {out}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_stops_hold_outlives_the_night():
+    section("A Stop's Hold outlives the 02:00 night reset (cold review of "
+            "#191, A-F2): the next evening comes up on Hold, and its shows "
+            "do not start while Run is on until Resume")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and R.svc.machine.stop_hold,
+              "setup: on the Stop's Hold")
+        from datetime import timedelta
+        # Sunday has no shows in this rule (OFF): nothing to hold there;
+        # the Hold waits for the next night that has shows.
+        R.now[0] = _den(S, 3, 0) + timedelta(days=1)
+        R.svc.tick()
+        R.settle()
+        check(R.svc.machine.state == S.OFF,
+              f"setup: Sunday has no shows: {R.svc.machine.state}")
+        R.now[0] = _den(S, 3, 0) + timedelta(days=7)
+        R.svc.tick()
+        R.settle()
+        m = R.svc.machine
+        check(m.date != _den(S, 18, 0).date() and m.state == S.HOLD and
+              m.stop_hold,
+              f"after the night reset the new night is on the Stop's "
+              f"Hold: {m.date} {m.state} {m.stop_hold}")
+        rows = [x for x in R.svc.journal if x.get("action") == S.HOLD_ON]
+        check(rows and "kept the Hold of a Stop" in rows[-1]["text"],
+              f"journaled: {rows[-1:]}")
+        doc = S.machine_to_doc(m)
+        check(doc.get("stop_hold") is True and doc["format"] == 4,
+              f"kept in tonight's file: {doc.get('stop_hold')}")
+        R.now[0] = _den(S, 18, 1) + timedelta(days=7)
+        R.svc.tick()
+        R.settle()
+        check(R.svc.machine.state == S.HOLD and R.svc.machine.running == 0,
+              f"and that evening's first show does not start: "
+              f"{R.svc.machine.state}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fire_ice_stop_while_the_cue_starts():
+    section("fire & ice (cold review of #191, A-F3): a Stop that lands "
+            "while a show cue is starting (an urgent Stop goes beside the "
+            "line) stops the music after it began and takes the rig dark "
+            "again; the start is reported failed")
+    n = _fi_night()
+    if n.S is None:
+        return
+    try:
+        n.svc.tick()
+        real = n.sess.clock_play
+
+        def play_then_stop(cue=None):
+            out = real(cue)
+            n.c.stop("Andy", "Rack screen")
+            n.c.run_pending()
+            return out
+        n.sess.clock_play = play_then_stop
+        del n.calls[:]
+        stops = n.c.stops
+        r = n.w.runner.start_show(8, who="Andy")
+        n.c.run_pending()
+        got = [k for k, _a, _t in n.calls]
+        check(not r.ok and "Stop was pressed while it was starting" in
+              r.sentence and "music_play" in got and
+              got.index("music_play") < len(got) - 1 - got[::-1].index(
+                  "music_halt") and n.c.stops == stops + 2,
+              f"a Stop during the start: the music is stopped after it "
+              f"began, the conductor's Stop runs again, the start fails: "
+              f"{r.sentence} {got} {n.c.stops}")
+        check(not n.c.latched, "nothing latched")
+    finally:
+        n.c.close()
+        n.link.close()
+    print("  ok")
+
+
 def test_stop_says_when_its_flame_disarm_failed():
     """Third review of #126, P2-2: /api/stop also disarms every flame group,
     and when that disarm fails, the Rack screen says so instead of a bare
@@ -93910,6 +94162,10 @@ if __name__ == "__main__":
         test_stop_holds_the_schedule_and_leaves_run_on,
         test_stop_halt_order_hooks_and_programming,
         test_streamdeck_refractory_starts_at_a_screen_stop,
+        test_stop_at_showtime_never_starts_or_pauses_a_show,
+        test_reset_never_ends_a_stops_hold,
+        test_stops_hold_outlives_the_night,
+        test_fire_ice_stop_while_the_cue_starts,
         test_screen_arm_end_to_end_probes,
         test_screen_arming_switch_and_refusals,
         test_engine_stall_probe_memory_is_bounded,

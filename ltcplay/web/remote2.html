@@ -537,6 +537,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
       <button class="b green" id="b-go" data-mode="none"><svg class="i"><use href="#i-play"/></svg><span class="lbl"><span id="go-l">Start now</span><small id="go-why"></small></span></button>
       <button class="b amber" id="b-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
       <button class="b red nostop" id="b-stop"><svg class="i"><use href="#i-stop"/></svg><span id="stop-l">Stop show</span></button>
+      <button class="b red" id="b-runoff" hidden><svg class="i"><use href="#i-power"/></svg><span>Run off</span></button>
       <button class="q" data-q="transport" aria-label="Help: show controls">?</button>
     </div>
     <div id="alert" class="none">
@@ -1398,6 +1399,11 @@ function drawTransport(isSt){
   $("b-hold").className = "b " + (live || runIsOn(ST) ? "amber" : "safe");
   $("b-hold").disabled = false;
   drawStop($("b-stop"), $("stop-l"), isSt);
+  const ro = $("b-runoff"), roOn = runOffShown(isSt);
+  if(ro.hidden !== !roOn) ro.hidden = !roOn;
+  if(roOn) $("b-stop").hidden = true;
+  else if($("b-stop").hidden) $("b-stop").hidden = false;
+  ro.disabled = !!FLIPPED.go && Date.now() - FLIPPED.go < FLIP_LOCK_MS;
 }
 // Stop show (Jeff, 2026-10-30): where Stop has always been (the SHOW tab's
 // transport, and the safety strip on every other tab), solid red and full
@@ -1432,7 +1438,10 @@ function stopTap2(id, e){
   const kind = stopTapKind(e);
   if(kind !== "key") $(id).blur();
   const t = STOP_TAPS2[id];
-  const step = stopTapStep(t ? t.prev : null, monoNow(), kind, !!t);
+  // The time between the taps decides, never whether the first tap's
+  // timer has run yet: a late timer must not let a tap after STOP_TAP_MS
+  // fire (cold review of #191).
+  const step = stopTapStep(t ? t.prev : null, monoNow(), kind, false);
   if(!step.fire){
     if(t) clearTimeout(t.timer);
     STOP_TAPS2[id] = {prev:step.next, timer:setTimeout(() => stopTapDone2(id), STOP_TAP_MS)};
@@ -1493,17 +1502,21 @@ async function runShow(){
 $("b-hold").addEventListener("click", () => press("hold"));
 // Stop: the engine's complete halt (1.0's pressStop): the same body, the
 // same answer read the same way. No confirm: the double tap is its guard.
-async function pressStop(){
+async function pressStop(route){
   if(HALT_BUSY) return;
   HALT_BUSY = true;
   say("Stopping...", "Stopping: disarming, then fading to dark...", "warn");
   try{ drawTransport(false); }catch(e){}
   let r = null, j = {};
   try{
-    r = await fetch("/api/remote/stop", {method:"POST", credentials:"same-origin", cache:"no-store",
+    const opts = {method:"POST", credentials:"same-origin", cache:"no-store",
+      headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(actor({}))};
+    r = route === "run-off" ? await fetch("/api/remote/run-off", opts)
+                            : await fetch("/api/remote/stop", {method:"POST", credentials:"same-origin", cache:"no-store",
       headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(actor({}))});
     j = await r.json().catch(() => ({}));
-    if(r.ok || (j && j.failed)){
+    if(r.ok && route === "run-off" && !(j.failed || []).length) say("Run is off.", stopWords(j), "ok");
+    else if(r.ok || (j && j.failed)){
       const w = stopWords(j);
       if(w === STOP_DISARM_FAILED){ STOP_SAID = w; say("Flame disarm FAILED. Use the e-stop.", w, "bad"); }
       else if(/did NOT work/.test(w)) say("Stopped, but some parts failed.", w, "bad");
@@ -1518,6 +1531,19 @@ async function pressStop(){
   }
 }
 $("b-stop").addEventListener("click", e => stopTap2("b-stop", e));
+// Run off (cold review of #191, B1): Stop leaves Run on, so this ends a
+// Run. In Stop's place on the SHOW tab, whenever Run is on and nothing is
+// playing (stopShows), full colour: with nothing playing it is the only
+// way to end the Run. Not an emergency control, so it asks first, and the
+// engine needs the Show permission for it (it says so if it is missing).
+function runOffShown(isSt){
+  return !HALT_BUSY && !isSt && runIsOn(ST) && !stopShows(ST) && !STOP_TAPS2["b-stop"];
+}
+$("b-runoff").addEventListener("click", async () => {
+  if(!(await confirmBox("Turn Run off?", RUN_OFF_CONFIRM, "Yes, Run off", "red"))) return;
+  if(!runOffShown(stale())){ say("The show changed. Nothing done.", "The show changed while you answered, so nothing was done.", "warn"); return; }
+  return pressStop("run-off");
+});
 // A press: 1.0's press(), the answer in a few words.
 const PRESS_SAID = {"hold":"Held.", "resume":"Resumed.", "reset":"Reset. Now arm again.", "start-now":"Starting.",
   "disarm-all":"Every flame group disarmed.", "group-disarm":"Disarmed.", "abort":"Abort sent."};
@@ -2366,6 +2392,7 @@ const COACH = [
   ["pill", "Show state, timecode and time left."],
   ["b-go", "The big button is the next step."],
   ["b-hold", "Hold pauses the schedule. Resume carries on."],
+  ["b-runoff", "Run off: ends the Run (Stop leaves Run on). Asks first."],
   ["b-stop", "Stop: tap twice. Ends everything, the rig goes dark, and the schedule holds until Resume. Only there while something plays."],
   ["alert", "Problems show here. Fix, then Acknowledge."],
   ["groups", "Hold to arm. One tap disarms."],

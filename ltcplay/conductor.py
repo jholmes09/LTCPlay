@@ -732,6 +732,9 @@ class Conductor:
         self._look = None          # the look it asked for
         self._latched = False
         self._latch_who = ""
+        # Every Stop asked of this conductor, counted (fire_ice's show start
+        # re-checks it after the cue starts, as it does the Abort latch).
+        self.stops = 0
         self._mode = PRODUCTION
         self._announcing = None    # an announcement not yet started
         self._applied = {"flames": UNKNOWN, "lasers": UNKNOWN,
@@ -997,7 +1000,7 @@ class Conductor:
                     f"pixels and music fade to black over {ABORT_FADE_S:g} "
                     f"s. Press Reset to carry on.")
 
-    def stop(self, who="", screen=""):
+    def stop(self, who="", screen="", force_new=False):
         """An operator's Stop (Jeff, 2026-10-30: Stop has every guarantee
         Abort had, and Abort is going): abort() without the latch. At the
         call, on this thread, inside the lock, before anything is asked
@@ -1013,10 +1016,14 @@ class Conductor:
         a show playing (a Stop always takes the rig dark). A Stop while an
         earlier Stop's sequence is still running starts nothing new and
         sends the laser blank again (as a second Abort does). While an
-        Abort is latched it changes nothing but that blank."""
+        Abort is latched it changes nothing but that blank. `force_new`
+        (a show start that began under the Stop and must be taken dark
+        again) always starts the whole sequence afresh."""
         with self._lock:
+            self.stops += 1
             latched = self._latched
-            again = (not latched and self._want is not None and
+            again = (not latched and not force_new and
+                     self._want is not None and
                      self._want.get("halt") is True and
                      self._done_gen != self._gen)
             if not latched:

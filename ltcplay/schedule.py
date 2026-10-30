@@ -224,6 +224,10 @@ STOP_SHOW = "STOP_SHOW"
 # Reset never starts or continues a show itself: a delayed show still
 # waits for Start now. Only the journal's words differ.
 RESET_DETAIL = "reset"
+# A Hold that a Stop put on (Jeff, 2026-10-30): the Hold's detail starts
+# with one of these. Such a Hold is marked (Machine.stop_hold): Reset never
+# ends it (only Resume does), and it carries over the nightly reset.
+STOP_HOLD_DETAILS = ("pressed Stop", "kept the Hold of a Stop")
 EDIT_MOVE = "EDIT_MOVE"
 EDIT_ADD = "EDIT_ADD"
 EDIT_REMOVE = "EDIT_REMOVE"
@@ -821,6 +825,11 @@ class Machine:
     # schedule_service, and only with a conductor attached; the engine
     # carries it and reads Event.latched instead.
     abort_latched: bool = False
+    # The schedule's Hold was put on by a Stop (Jeff, 2026-10-30): only an
+    # operator's Resume (or a show started by hand) ends it; Reset does not,
+    # and it carries over the nightly reset. Kept in tonight's file. True
+    # only while state is HOLD: _enter clears it on leaving HOLD.
+    stop_hold: bool = False
 
     @property
     def fault(self):
@@ -1122,6 +1131,8 @@ def _enter(tx, state, show=0, after_stop=False, resume=False):
     dark = _stays_dark(state, after_stop)
     if tx.m.dark != dark:
         tx.m = replace(tx.m, dark=dark)
+    if state != HOLD and tx.m.stop_hold:
+        tx.m = replace(tx.m, stop_hold=False)
 
 
 def _after_show(tx, abort=False, stopped=False, hold=False):
@@ -1133,7 +1144,7 @@ def _after_show(tx, abort=False, stopped=False, hold=False):
     as an Abort does (STANDBY, and the next tick closes it)."""
     m = tx.m
     if hold and m.waiting():
-        tx.m = replace(tx.m, held_from=STANDBY)
+        tx.m = replace(tx.m, held_from=STANDBY, stop_hold=True)
         _enter(tx, HOLD, after_stop=stopped)
     elif abort or m.waiting():
         # Abort stays in STANDBY even when no show is left; the next tick
@@ -1629,7 +1640,9 @@ def _hold(m, ev, now):
                     f"Resume carries on from there.")
         tx.note(HOLD_ON, "paused", "PAUSED (operator hold)", text, show=n)
         return tx.done()
-    tx.m = replace(tx.m, held_from=m.state)
+    tx.m = replace(tx.m, held_from=m.state,
+                   stop_hold=str(ev.detail or "").startswith(
+                       STOP_HOLD_DETAILS))
     # While an Abort has not been Reset, a Hold (an operator's, or an
     # announcement's) keeps the rig dark: only Reset ends the Abort (Jeff:
     # after an Abort the rig stays dark until the operator acts, and Reset
@@ -2182,7 +2195,7 @@ TONIGHT_KEYS = frozenset((
     "format", "date", "rule_id", "state", "running", "last_end",
     "held_from", "faults", "shows_started", "slots"))
 # Format 4 only, and written only when true.
-TONIGHT_OPTIONAL = frozenset(("dark", "abort_latched"))
+TONIGHT_OPTIONAL = frozenset(("dark", "abort_latched", "stop_hold"))
 SLOT_KEYS = frozenset((
     "n", "start", "status", "reason", "origin", "planned", "fired_at",
     "confirmed_at", "ended_at", "paused_s"))
@@ -2198,7 +2211,7 @@ def machine_to_doc(m):
     tonight is kept: the slots, their statuses and edits, when the last show
     ended, hold and faults. show_len_s, guard_s, late_grace_s and the zone
     always come from the rule file, never from here. Pure."""
-    marked = m.dark or m.abort_latched
+    marked = m.dark or m.abort_latched or m.stop_hold
     doc = {
         "format": TONIGHT_FORMAT if marked else TONIGHT_PLAIN_FORMAT,
         "date": m.date.isoformat(),
@@ -2217,6 +2230,8 @@ def machine_to_doc(m):
         doc["dark"] = True
     if m.abort_latched:
         doc["abort_latched"] = True
+    if m.stop_hold:
+        doc["stop_hold"] = True
     return doc
 
 
@@ -2388,7 +2403,8 @@ def machine_from_doc(doc, rule, d, now, notes=None):
         last_end=last_end, held_from=doc["held_from"], faults=tuple(doc["faults"]),
         shows_started=doc["shows_started"], resumed_from=state,
         rule_id=str(doc["rule_id"]), dark=doc.get("dark", False),
-        abort_latched=doc.get("abort_latched", False))
+        abort_latched=doc.get("abort_latched", False),
+        stop_hold=doc.get("stop_hold", False) and state == HOLD)
 
 
 UNREADABLE = "MISSED (tonight's record was unreadable)"
@@ -2469,7 +2485,8 @@ def rebuild_night(rule, saved):
                 held_from=saved.held_from,
                 faults=saved.faults, shows_started=saved.shows_started,
                 resumed_from=saved.resumed_from, dark=saved.dark,
-                abort_latched=saved.abort_latched)
+                abort_latched=saved.abort_latched,
+                stop_hold=saved.stop_hold)
     return m, notes
 
 

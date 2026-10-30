@@ -2025,6 +2025,7 @@ function stopWords(j){
 // audio or flames following Programming, or, with no scheduler in this
 // engine, Run playing or starting.
 // Every screen draws its Stop only then (and while its own Stop answers).
+const TC_MOVING = ["LOCKED", "FREEWHEEL", "FREERUN"];
 function stopShows(st){
   const sch = (st && st.schedule) || {}, show = (st && st.show) || {};
   const tr = (st && st.transport) || {}, pr = (st && st.preroll) || {};
@@ -2033,6 +2034,9 @@ function stopShows(st){
   if(pr.state === "checking" || pr.state === "queued") return true;
   if(tr.programming && tr.playhead === "show_audio" && tr.playing) return true;
   if(st && st.programming_flames && st.programming_flames.on === true) return true;
+  // A rehearsal Run (Programming) with its timecode moving: the rig is
+  // playing (cold review of #191, B1).
+  if(tr.programming && show.running && TC_MOVING.includes(show.state)) return true;
   return !sch.attached && !!(show.running || show.starting);
 }
 // A refused press's words: the engine's own sentence, whichever key it
@@ -2090,8 +2094,11 @@ function startLook(st, stale, waiting){
 // 2026-10-30; review of #144, F4), one Stop, where Run was. Stop no longer
 // turns Run off, so with Run in force and nothing to stop it is Run off
 // (behind a confirm), and with Run off it is Run.
-function runLook(st){
+function runLook(st, stale){
   const show = (st && st.show) || {};
+  // No contact: what is playing is not known, so Stop is there (as on
+  // Start now; cold review of #191, B2).
+  if(stale && st) return {mode:"stop", label:"Stop", sub:"no contact"};
   if(!(show.running || show.starting)) return {mode:"run", label:"Run", sub:""};
   return stopShows(st) ? {mode:"stop", label:"Stop", sub:"end the show, rig dark"}
                        : {mode:"runoff", label:"Run off", sub:"stop playback"};
@@ -4016,7 +4023,7 @@ function drawStart(stale){
     (el.disabled || lk.disabled || HALT_BUSY || flipLocked("b-start"));
   const r = $("b-run");
   if(r){
-    const rk = runLook(ST);
+    const rk = runLook(ST, stale);
     const rw = stopTapWords("b-run", rk.mode, rk.label, rk.sub);
     setLook(r, rk.mode, rw[0], rw[1], rk.mode === "stop" ? STOP_TITLE : rk.mode === "runoff" ? RUN_OFF_CONFIRM : "");
     r.classList.toggle("go", rk.mode === "run");
@@ -4055,7 +4062,10 @@ function stopTap(id, e, msgId){
   const kind = stopTapKind(e);
   if(kind !== "key") $(id).blur();
   const t = STOP_TAPS[id];
-  const step = stopTapStep(t ? t.prev : null, monoNow(), kind, !!t);
+  // The time between the taps decides, never whether the first tap's
+  // timer has run yet: a late timer must not let a tap after STOP_TAP_MS
+  // fire (cold review of #191).
+  const step = stopTapStep(t ? t.prev : null, monoNow(), kind, false);
   if(!step.fire){
     if(t) clearTimeout(t.timer);
     STOP_TAPS[id] = {prev:step.next, timer:setTimeout(() => stopTapDone(id), STOP_TAP_MS)};
@@ -4197,13 +4207,13 @@ function renderRunMode(){
 }
 document.querySelectorAll("#run-mode [data-mode]").forEach(b => b.addEventListener("click", () => { RUN_MODE = b.dataset.mode; renderRunMode(); }));
 $("b-run").addEventListener("click", async ev => {
-  const d = decide("b-run", runLook(ST).mode);
+  const d = decide("b-run", runLook(ST, nowStale()).mode);
   if(d.act === "none"){ $("run-msg").textContent = d.say; return; }
   if(d.act === "stop") return stopTap("b-run", ev, "run-msg");
   if(d.act === "runoff"){
     // Run off: not an emergency control (Stop is), so it asks first.
     if(!(await confirmBox("Turn Run off?", RUN_OFF_CONFIRM, "Yes, Run off", ""))) return;
-    if(runLook(ST).mode !== "runoff"){ $("run-msg").textContent = "The show changed while you answered, so nothing was done."; return; }
+    if(runLook(ST, nowStale()).mode !== "runoff"){ $("run-msg").textContent = "The show changed while you answered, so nothing was done."; return; }
     return pressStop("run-msg", "run-off");
   }
   const f = $("run-file").value;

@@ -570,7 +570,7 @@ class _ConductorCall:
 
 # The start of the Hold's detail when a Stop between shows holds the
 # schedule (Remote.halt, "stop-hold"): the journal then reads as the Stop.
-STOP_HOLD_DETAIL = "pressed Stop"
+STOP_HOLD_DETAIL = sch.STOP_HOLD_DETAILS[0]
 
 
 class _ConductorCalls:
@@ -814,6 +814,10 @@ class Service:
         self.start_veto = None
         # Stops under way (halt_begin / halt_end).
         self._halts = 0
+        # A Stop's Hold carried over a night with no shows (the night it
+        # came from), for the next night that has some. In memory only:
+        # a restart leaves Run off, so nothing starts unattended anyway.
+        self._stop_hold_carry = None
         self._halt_count_lock = threading.Lock()
         # Whether the operator has pressed Run (a show file is running), set
         # by fire_ice.attach() with the conductor. While it says no, nothing
@@ -1704,12 +1708,26 @@ class Service:
                 # ordering rules (reset_conductor).
                 return None
             kinds = []
+            stop_held = m.state == sch.HOLD and m.stop_hold
             if m.state == sch.PAUSED:
                 kinds.append(sch.STOP_SHOW)
-            elif m.state == sch.HOLD:
+            elif m.state == sch.HOLD and not stop_held:
                 kinds.append(sch.RESUME)
             if m.faults:
                 kinds.append(sch.CLEAR_FAULT)
+            if stop_held:
+                # A Stop's Hold ends only with Resume (Jeff, 2026-10-30;
+                # cold review of #191, A-F4): Reset may clear the fault
+                # flag, never this Hold. Said, and journaled.
+                texts.append(self.RESET_KEEPS_STOP_HOLD)
+                self.journal_press(who, screen, "reset",
+                                   "done" if kinds else "refused",
+                                   f"{who}'s Reset on the {screen} left the "
+                                   f"Stop's Hold on. "
+                                   f"{self.RESET_KEEPS_STOP_HOLD}")
+                if not kinds:
+                    return {"ok": False, "text": texts[0],
+                            "stop_hold": True}
             if not kinds:
                 return None
             for kind in kinds:
@@ -1724,6 +1742,10 @@ class Service:
                     texts.append(" ".join(self._reworded(le).text
                                           for le in out.log if le.text))
         return {"ok": ok, "text": " ".join(t for t in texts if t)}
+
+    RESET_KEEPS_STOP_HOLD = ("Reset does not end the Hold a Stop put on: "
+                             "press Resume when it is safe. No show starts "
+                             "until then.")
 
     def _refuse_reset(self, who, screen, sentence):
         with self._locked():
@@ -1786,7 +1808,7 @@ class Service:
             # Hold (re-review of #144, N1).
             self.cancel_start_wait(
                 "Stop was pressed" if ev.kind == sch.HOLD_ON and
-                str(ev.detail or "").startswith(STOP_HOLD_DETAIL)
+                str(ev.detail or "").startswith(sch.STOP_HOLD_DETAILS)
                 else "the schedule was put on Hold" if ev.kind == sch.HOLD_ON
                 else "the show was aborted" if ev.kind == sch.ABORT
                 else "Stop was pressed")
@@ -2228,6 +2250,16 @@ class Service:
         # An Abort nobody has Reset outlives its night, exactly as the
         # conductor's own latch does in a run that never restarts.
         latched = self.machine.abort_latched
+        # So does a Stop's Hold nobody has Resumed (Jeff, 2026-10-30; cold
+        # review of #191, A-F2): the next evening's shows never start
+        # unattended while Run is on.
+        stop_held = (self.machine.state == sch.HOLD and
+                     self.machine.stop_hold)
+        was_night = self.machine.date
+        if not stop_held and self._stop_hold_carry is not None:
+            # Carried through a night with no shows (OFF), which has no
+            # Hold to hold it in.
+            stop_held, was_night = True, self._stop_hold_carry
         m = self._load_tonight(d, now)
         if latched and not m.abort_latched:
             m = replace(m, abort_latched=True)
@@ -2237,7 +2269,23 @@ class Service:
         m = self._boot_latch(m)
         self.machine = replace(m, operators=self.operators)
         self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
+        self._stop_hold_carry = None
+        if stop_held and self.machine.state == sch.HOLD:
+            if not self.machine.stop_hold:
+                self.machine = replace(self.machine, stop_hold=True)
+                self._save_tonight()
+        elif stop_held and self.machine.state in self.SHOWTIME_FROM:
+            self._apply(sch.Event(
+                sch.HOLD_ON, "system", who="LTC Player", screen="engine",
+                detail=self.STOP_HOLD_CARRIED.format(night=was_night)), now)
+        elif stop_held:
+            # No show tonight (or the night is already over): nothing to
+            # hold now, so the Hold waits for the next night with shows.
+            self._stop_hold_carry = was_night
         return True
+
+    STOP_HOLD_CARRIED = ("kept the Hold of a Stop pressed on the night of "
+                         "{night}, which nobody has Resumed")
 
     LATCH_CARRIED = ("The night of {night} ended with an Abort that nobody "
                      "has Reset, so tonight starts dark: no show starts and "
@@ -2432,12 +2480,93 @@ class Service:
             self._preroll_lookahead(now)
             self._preroll_before_gate(now, ev)
             self._hold_at_showtime_for_alerts(now, ev)
-            if not self._preroll_defers(now, ev):
+            if self._halt_defers(now, ev):
+                pass
+            elif not self._preroll_defers(now, ev):
                 self._apply(ev, now)
             self._sync_latch_marker()
             m = self.machine
         self._after_tick()
         return m
+
+    def _halt_defers(self, now, ev):
+        """True while a Stop is under way (halting) and this tick would
+        start a show (Jeff, 2026-10-30; cold review of #191, A-F1): the
+        tick is left for after the Stop, which holds the schedule, so a
+        show coming due at the press is never started (and never started
+        without its rig check: the pre-roll does not apply while halting).
+        Lock held. Never raises."""
+        m = self.machine
+        if not self.halting() or m is None or \
+                m.state not in self.SHOWTIME_FROM:
+            return False
+        try:
+            return bool(self._starts(sch.step(m, ev, now)))
+        except Exception:                        # noqa: BLE001
+            return True
+
+    def halt_schedule(self, who, screen, detail=""):
+        """A Stop's step at the scheduler (Remote.halt; Jeff, 2026-10-30),
+        decided and applied in ONE locked step with NO tick before it
+        (cold review of #191, A-F1: a tick first could start the show
+        coming due, and the Hold would then only pause it):
+
+          SHOW, PAUSED  STOP_SHOW: the show ends through the conductor's
+                        Stop (Abort's sequence), and the schedule holds
+                        while a show is still to come;
+          IDLE, STANDBY the schedule's Hold, said as the Stop (`detail`),
+                        marked as a Stop's Hold;
+          HOLD          already held: the Hold is marked as a Stop's, so
+                        Reset no longer ends it;
+          otherwise     nothing to hold (closing, over, booting).
+
+        {"ok", "kind" ("stop", "hold", "held" or "none"), "text",
+        "state"}. Never raises for who or where: Stop is never refused."""
+        who = str(who or "").strip() or "An unnamed operator"
+        screen = str(screen or "").strip() or "screen"
+        screen = {x.lower(): x for x in self.screens}.get(screen.lower(),
+                                                           screen)
+        with self._locked():
+            m = self.machine
+            if m is None:
+                return {"ok": True, "kind": "none", "state": None,
+                        "text": "No schedule is loaded, so there was no "
+                                "show to stop or hold."}
+            st = m.state
+            if st == sch.HOLD:
+                if not m.stop_hold:
+                    self.machine = replace(m, stop_hold=True)
+                    self._save_tonight()
+                return {"ok": True, "kind": "held", "state": st,
+                        "text": "The schedule was already on Hold; it "
+                                "stays on Hold until Resume."}
+            if st in (sch.SHOW, sch.PAUSED):
+                ev = sch.Event(sch.STOP_SHOW, "operator", who=who,
+                               screen=screen, confirmed=True, surface=True)
+                kind = "stop"
+            elif st in self.SHOWTIME_FROM:
+                ev = sch.Event(sch.HOLD_ON, "operator", who=who,
+                               screen=screen, surface=True,
+                               detail=detail or f"{STOP_HOLD_DETAIL} on the "
+                                                f"{screen}, so the schedule "
+                                                f"is on Hold")
+                kind = "hold"
+            else:
+                return {"ok": True, "kind": "none", "state": st,
+                        "text": "The night is closing or over, so there is "
+                                "nothing to hold."}
+            self._press_stamp = self.stamp_press()
+            try:
+                out = self._apply(ev)
+            finally:
+                self._press_stamp = None
+            if out.refused:
+                return {"ok": False, "kind": kind, "state": self.machine.state,
+                        "text": out.refused}
+            text = " ".join(self._reworded(le).text for le in out.log
+                            if le.text)
+            return {"ok": True, "kind": kind, "state": self.machine.state,
+                    "text": text or "Done."}
 
     def _alert_handled(self, key, ids):
         """True when the open alerts are all among a set this showtime was
