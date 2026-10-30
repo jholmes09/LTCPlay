@@ -3163,7 +3163,20 @@ function pfDraw(){
       `<input class="f" data-k="lead_in_s" value="${esc(c.lead_in_s === null || c.lead_in_s === undefined ? "" : c.lead_in_s)}" inputmode="numeric"${dis}>` +
       `<input class="f" data-k="note" value="${esc(c.note || "")}" placeholder="Note" maxlength="${PF.max_note || 200}"${dis}>` +
       (may ? `<button class="b" data-del="${i}" aria-label="Delete ${esc(c.name)}">${icon("x")}Delete</button>` : "<span></span>") +
-      (bad[i].length ? `<span class="bad">${esc(bad[i].join(" "))}</span>` : "") + `</div>`).join("");
+      `<span class="bad"${bad[i].length ? "" : " hidden"}>${esc(bad[i].join(" "))}</span></div>`).join("");
+  $("pf-save").disabled = !PF_DIRTY || bad.some(b => b.length);
+}
+// The marks again after an edit, in place: the rows are not drawn again,
+// so the field being typed in keeps its place.
+function pfMark(){
+  if(!PF || !PF.entry) return;
+  const bad = pfCheck(PF.entry.cues, PF.audio_len_s, PF);
+  $("pf-rows").querySelectorAll(".pfrow[data-i]").forEach(row => {
+    const b = bad[Number(row.dataset.i)] || [];
+    row.querySelector('[data-k="name"]').classList.toggle("no", b.length > 0);
+    const sp = row.querySelector(".bad");
+    setText(sp, b.join(" ")); sp.hidden = !b.length;
+  });
   $("pf-save").disabled = !PF_DIRTY || bad.some(b => b.length);
 }
 function pfSay(){
@@ -3199,11 +3212,8 @@ $("pf-rows").addEventListener("input", e => {
   const row = e.target.closest(".pfrow"), k = e.target.dataset.k;
   if(!PF || !row || !k) return;
   PF.entry.cues[Number(row.dataset.i)][k] = e.target.value;
-  PF_DIRTY = true; pfMsg("Not saved yet.");
-  const bad = pfCheck(PF.entry.cues, PF.audio_len_s, PF);
-  $("pf-save").disabled = bad.some(b => b.length);
+  PF_DIRTY = true; pfMsg("Not saved yet."); pfMark();
 });
-$("pf-rows").addEventListener("change", () => { if(PF) pfDraw(); });
 $("pf-rows").addEventListener("click", e => {
   const b = e.target.closest("[data-del]");
   if(!b || !PF) return;
