@@ -254,6 +254,84 @@ While this engine has any machine locked out, no purge goes until
 flamesafe's status reports exactly the slots asked for. A stop that lands
 while a beat's frame is being worked out wins: that beat sets nothing.
 
+### The timed purge (Jeff, 2026-10-29; morning.py `Purge.timed_beat`)
+
+Jeff's request: "In addition to momentary purges, we would like a
+designated time length purge option. This is to allow for longer spurts of
+testing in case there is a DMX issue." It is the momentary purge's own
+selection and its own purge frame on the flame link, held up by the
+engine's timer for a chosen number of seconds instead of by a held key.
+Nothing new reaches flamesafe and the wire does not change: flamesafe is
+still the only writer of the flame universe, arms nothing by itself, and
+fires a slot only for a group it reports ARMED.
+
+- **What it fires.** Exactly what the momentary purge fires for the same
+  selection (`Purge.frame`, a Waver's head first). It starts only when
+  every selected machine's group already reads ARMED at flamesafe; it never
+  waits for one.
+- **How long.** 2, 5, 10, 20 or 30 s, or Other (a whole number). The
+  longest is `purge_timed_max_s` in `ltcplay_remote.json`: 30 s unless an
+  admin sets it, never more than 120 s, never unlimited. A longer request
+  is refused in full (the page also keeps Other within it). The last
+  duration started on a show PC is its default (`purge_timed_s`).
+  The longest is read when a purge starts: lowering `purge_timed_max_s`
+  while one runs does not shorten it (it still ends at its own time, or
+  at any stop).
+- **How it starts.** A hold, timed by the engine from the page's beats
+  (every 100 ms, `TIMED_HOLD_S`, the Hold to arm buttons' 1 s): a tap, a
+  release, a gap of 0.25 s, a changed duration, a stale page (`seen`) or any
+  refusal fires nothing. Each hold names itself; a hold id that has ended
+  or started a purge, or a beat number not past every one that screen sent
+  before, never starts one (a replayed or late press). The button's words
+  name the machines and the seconds. Same permission as the purge (the arm
+  row), the same `purge_arming` and `screen_arming` switches, the same
+  Stream Deck must be reading, only the selection's own screen.
+- **Three ways it stops on time.** (1) The engine's timer sends every
+  100 ms and checks the deadline and every ending cause before each send,
+  and again under the lock just before it sets the frame. (2) The flame
+  link is given the hard end at the start (`FlameLink.purge_limit`, on its
+  own clock): past it every frame it sends carries zeros and `purge_set`
+  is refused until `purge_clear`, whatever keeps calling it. (3) The link
+  drops the frame 0.25 s after the last send (`PURGE_HOLD_S`), so a timer
+  that hangs or dies is a purge that stops; the watcher (10 a second) then
+  ends it in the engine too, and also checks the deadline itself. If the
+  whole engine stops, flamesafe zeroes by its own `frame_stale_ms`.
+  A stall never relights it: a send more than 0.25 s after the last one,
+  judged on a clock read just before the frame is set, ends the purge, and
+  the link itself refuses a timed frame once it has dropped one as stale,
+  or once a zero (Stop, Hold, Abort) landed after the count was read. The
+  hard end is given as the time left to the deadline, so a pause before it
+  never loosens it. A purge press while one runs ends it even from a
+  screen whose sign-in may not arm (it is refused for anything else), and
+  a Stream Deck FIRE the engine refuses posts Stop purge on its way out.
+  A group seen disarmed at flamesafe ends the purge on the next send, up
+  to 0.1 s later; meanwhile flamesafe itself sends nothing for a disarmed
+  group, so the link's value for it reaches no flame.
+- **What ends it at once.** Stop purge (from any screen, signed in or
+  not), Stop, Abort, Hold (and a Hold standing), Start now, Run (refused or
+  not), a show going live or the show clock playing, an Abort standing,
+  flamesafe's status over 1 s old, the flame link not sending or alarmed or
+  zeroed, a selected machine locked out or taken off, a disarm of one of
+  its groups (pressed, or seen at flamesafe), the starter signing out, any
+  screen in Arrange mode, the lock state not trusted, and any second purge
+  press (Space, the deck's FIRE, another hold from any screen). Each is a
+  journal line with why and the seconds it actually ran; the start line
+  says the machines, the seconds, who and where.
+- **One at a time.** No timed purge while Space or FIRE fires, and a
+  momentary press while one runs ends it. The Fireball page, the wave
+  flamer cleaning and live flame programming already refuse while a purge
+  is selected or firing, and a timed purge refuses while either of the
+  first two has the frame.
+- **The page can close.** It runs on the engine's clock: closing or
+  leaving the page, or an iPad going to sleep, does not end it (and does
+  not keep it going past its time). Meanwhile the engine keeps telling the
+  Stream Deck the group is wanted; once it has ended, the closed page's
+  selection is cleared and the deck lets go of the group as before.
+- **The countdown** is the engine's (`left_s` in the status and on
+  deck-input): the rack screen's Startup page, a banner on every 1.0
+  screen, 2.0's pinned line and pill, and the Stream Deck's key 0
+  (PURGING and the seconds).
+
 ### Lockout: one writer, enforced where the wire is written
 
 The engine (`ltc serve`) is the only writer of `ltcplay_lockout.json`,

@@ -146,6 +146,9 @@ const SCENARIOS = {
   day_firing: s => s,
   day_locked: s => s,
   day_clean_paused: s => { s.schedule.next = null; s.countdown = null; s.cleaning = {available: true, state: "paused", text: "Waiting: hold for the purge bursts"}; },
+  // A timed purge running (morning.py, 2026-10-29): the engine's countdown.
+  timed_purge: s => { s.morning.timed = {left_s: 17.4, seconds: 30, elapsed_s: 12.6, machines: ["front row 1", "front row 2", "front row 3", "cat-walk 1"],
+    device: "iPad at 10.20.0.44", who: "Dallen"}; s.flames.groups[0].armed = "armed"; s.flames.groups[1].armed = "armed"; },
   // The Stream Deck program reads the engine but does not act on a group's
   // Disarm: the engine forces the flame link's disarm_all (2026-10-29).
   deck_not_answering: s => { s.flames.groups[0].armed = "armed"; s.flames.groups[0].wanted = true; },
@@ -179,6 +182,13 @@ function routesFor(name, st){
   r["/api/remote/setup"] = FX("real_setup");
   const mo = name === "locked" ? (() => { const m = FX("morning"); m.lockout = {machines: {m8: {by: "Andy", at: 0}}, lasers: {}}; return m; })()
            : name === "purge" ? FX("morning_firing") : FX("morning");
+  // The timed purge's numbers, as the engine sends them (2026-10-29), and
+  // one running in the timed_purge scenario.
+  mo.timed_settings = {presets: [2, 5, 10, 20, 30], default_s: 5, max_s: 30, min_s: 1, limit_s: 120, hold_s: 1.0, error: ""};
+  const tm = st.morning && st.morning.timed;
+  mo.timed = Object.assign({running: !!tm, left_s: null, seconds: null, elapsed_s: null, machines: [], firing: [], waiting: [], device: null,
+    who: "", holding: false, holder: null, mine: false, held_s: null, hold_s: 1.0, last: ""}, tm ? Object.assign({running: true}, tm) : {});
+  if(tm){ mo.purge_state = Object.assign({}, mo.purge_state, {timed: true, firing: true, selected: ["m1", "m2", "m3", "m4"]}); }
   r["/api/remote/morning"] = mo;
   r["/api/remote/fireball"] = FX("fireball");
   const wx = FX("weather");
@@ -297,7 +307,8 @@ class FakeEngine {
         return ok(body.on ? "Armed for the purge." : "Taken off the purge."); }
       case "/api/remote/purge-clear": this.mo.purge_state = {selected: [], owner: null, firing: false}; this.mo.group_state = {}; return ok("Cleared.");
       case "/api/remote/purge-fire": this.mo.purge_state.firing = true; return {code: 200, body: {ok: true, fire_id: 1, firing: this.mo.purge_state.selected, waiting: []}};
-      case "/api/remote/purge-stop": this.mo.purge_state.firing = false; return ok("Stopped.");
+      case "/api/remote/purge-stop": this.mo.purge_state.firing = false; if(s.morning) s.morning.timed = null;
+        return ok(s.morning && "timed" in s.morning ? "Timed purge stopped: everything it fired is back to zero." : "Stopped.");
       case "/api/remote/lock": { const lo = this.mo.lockout; const t = body.kind === "laser" ? (lo.lasers = lo.lasers || {}) : (lo.machines = lo.machines || {});
         if(body.on) t[body.id] = {by: s.me.user || "unsigned", at: 0}; else delete t[body.id]; return ok(body.on ? "Locked out." : "Unlocked."); }
       case "/api/remote/laser-test": (this.mo.lasers || []).forEach(l => { if(body.all || l.id === body.laser) l.on = !!body.on; }); return ok(body.on ? "Test grid on." : "Test grid off.");

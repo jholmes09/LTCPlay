@@ -908,6 +908,11 @@ function isRehearsal(st){ return modeLook(st).cls === "prog"; }
 // live flame programming. Each button is 1.0's press.
 function pinItems(st){
   const s = st || {}, out = [];
+  // A timed purge (Jeff, 2026-10-29): it fires until the engine's own
+  // countdown ends it; the seconds left are the engine's.
+  const tp = s.morning && s.morning.timed;
+  if(tp) out.push({key:"tp", text:"Purging: " + timedLeft(tp.left_s) + " left. Stop when done.", pill:"PURGING " + timedLeft(tp.left_s),
+    btn:"Stop purge", full:"Timed purge: " + timedBanner(tp)});
   const wc = s.cleaning;
   if(wc && wc.state && wc.state !== "idle") out.push({key:"wc", text:wc.state === "unknown" ? "Cleaning state not known. Stop it." : "Cleaning running. Stop when done.",
     pill:"CLEANING", btn:"Stop cleaning", full:String(wc.text || "") + (wc.state === "paused" ? " (on the Startup page, Shutdown)." : ".")});
@@ -1223,7 +1228,12 @@ function renderPins(){
 $("pins").addEventListener("click", async e => {
   const b = e.target.closest("button[data-pin]"); if(!b) return;
   const k = b.dataset.pin;
-  if(k === "wc"){
+  if(k === "tp"){
+    // 1.0's Stop purge: from every screen, never refused for a timed
+    // purge (review of #172).
+    try{ const j = await post("/api/remote/purge-stop", actor({})); say("Purge stopped.", j.text || "Stopped.", "ok"); }
+    catch(e2){ say("Purge NOT stopped.", e2.message + " Abort ends it from any screen.", "bad"); }
+  } else if(k === "wc"){
     // 1.0's wcStopPress: the cleaning's Stop, always pressable.
     try{ const j = await post("/api/remote/cleaning-stop", actor({})); say("Cleaning stopped.", j.text || "Stopped.", "ok"); }
     catch(e2){ say("Cleaning NOT stopped.", e2.message, "bad"); disarmFailed("Cleaning NOT stopped.", e2.message); }
@@ -2589,8 +2599,8 @@ function daySteps(part, s){
   }
   if(part !== "shut" && mo && Object.keys(mo.groups || {}).length){
     const p = mo.purge_state || {}, n = (p.selected || []).length;
-    out.push({key:"purge", title:"Purge", icon:"flame", state: p.firing ? "live" : n ? "todo" : (seen("purge") ? "done" : "todo"),
-      why: p.firing ? "FIRING." : !mo.purge_enabled ? "Purge is off for this screen." : mo.live_refusal ? "Not now: " + short8(mo.live_refusal, "a show is live.") : n ? n + " armed. Deck FIRE or hold Space." : "Pick a group, then fire."});
+    out.push({key:"purge", title:"Purge", icon:"flame", state: p.firing || p.timed ? "live" : n ? "todo" : (seen("purge") ? "done" : "todo"),
+      why: p.timed ? "Timed purge: " + timedLeft((mo.timed || {}).left_s) + " left. Stop purge ends it." : p.firing ? "FIRING." : !mo.purge_enabled ? "Purge is off for this screen." : mo.live_refusal ? "Not now: " + short8(mo.live_refusal, "a show is live.") : n ? n + " armed. Deck FIRE or hold Space." : "Pick a group, then fire."});
   }
   if(part !== "shut" && mo && (mo.lasers || []).length){
     const on = mo.lasers.filter(l => l.on).length;
@@ -2652,7 +2662,9 @@ function dayView(on){
 // of #169, 1): leaving the step, switching Startup and Shutdown, or
 // leaving the page. 1.0's route and body; only this screen's own.
 function purgeDrop(){
-  if(MO && MO.purge_state && MO.purge_state.owner && MO.purge_state.owner === MO.me)
+  // A timed purge carries on (1.0's morningView, #172): it ends on the
+  // engine's clock, and the engine clears the selection once it has.
+  if(MO && MO.purge_state && MO.purge_state.owner && MO.purge_state.owner === MO.me && !MO.purge_state.timed)
     post("/api/remote/purge-clear", moActor({})).catch(() => {});
 }
 function dayStepsNow(){
@@ -2943,8 +2955,8 @@ function dayUpdate(k){
     // 1.0's fire key words, shorter: what fires the purge now.
     if(!FIRE){
       const kk = $("mo-key"), anySel = (purge.selected || []).length > 0;
-      kk.className = "key" + (purge.firing ? " firing" : anySel ? " ready" : "");
-      kk.textContent = purge.firing ? "FIRING" : !mo.purge_enabled ? "Purge off here" : mo.live_refusal ? "Not now" : anySel ? "Deck FIRE, or hold Space" : "Pick a group first";
+      kk.className = "key" + (purge.firing || purge.timed ? " firing" : anySel ? " ready" : "");
+      kk.textContent = purge.timed ? "TIMED PURGE: " + timedLeft((mo.timed || {}).left_s) + " left" : purge.firing ? "FIRING" : !mo.purge_enabled ? "Purge off here" : mo.live_refusal ? "Not now" : anySel ? "Deck FIRE, or hold Space" : "Pick a group first";
     }
   }
   if(k === "lasers"){
