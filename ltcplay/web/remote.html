@@ -870,8 +870,10 @@ html.setupafter #setup,html.setupafter #setup-below{order:9}
 .fb-armed.on{color:var(--red)}
 .fb-top button{flex:0 0 auto;min-height:48px}
 #fb-note{font-size:14px;margin-top:6px}
+#fb-charge{font-size:14px;margin-top:6px}
+#fb-charge:empty,button.fb-pad .fb-tk:empty{display:none}
 #fb-pads{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:10px}
-button.fb-pad{min-height:clamp(96px,20vh,200px);display:flex;flex-direction:column;align-items:center;justify-content:center;
+button.fb-pad{min-height:clamp(96px,16vh,200px);display:flex;flex-direction:column;align-items:center;justify-content:center;
   gap:6px;padding:8px;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 button.fb-pad b{font:800 clamp(18px,2.8vh,28px)/1.1 var(--sans)}
 button.fb-pad .fb-st{font:800 clamp(16px,2.4vh,24px)/1 var(--caps);letter-spacing:.12em}
@@ -1127,6 +1129,7 @@ button.fb-pad.na{opacity:.45}
         <button class="disarm" id="fb-disarm" title="Disarms the Fireball group. Always works. Arm it again with its hold to arm.">Disarm Fireball</button></div>
       <div class="warnbox open" id="fb-block" hidden></div>
       <div class="dim" id="fb-note"></div>
+      <div class="kv" id="fb-charge"></div>
       <div class="toast" id="fb-msg"></div>
     </section>
     <div id="fb-pads"></div>
@@ -5369,8 +5372,17 @@ function renderFireball(){
   const box = $("fb-pads");
   if(box.dataset.key !== key){
     box.dataset.key = key;
-    box.innerHTML = ctl.map(c => `<button class="fb-pad" data-k="${esc(c.key)}" data-kind="${esc(c.kind)}"><b>${esc(c.label)}</b><span class="fb-st">OFF</span><small>${c.kind === "toggle" ? "Press: on, press again: off" : "Hold: on only while held"}, channel ${esc(c.slot)}</small></button>`).join("");
+    box.innerHTML = ctl.map(c => `<button class="fb-pad" data-k="${esc(c.key)}" data-kind="${esc(c.kind)}"><b>${esc(c.label)}</b><span class="fb-st">OFF</span><small>${c.kind === "toggle" ? "Press: on, press again: off" : "Hold: on only while held"}, channel ${esc(c.slot)}</small><small class="fb-tk"></small></button>`).join("");
   }
+  // The fuel and air charge (fireball_charge.py) and the timeline's skips
+  // (fireball_cues.py), from every screen's status: display only.
+  const ch = ST && ST.fireball_charge, tl = ST && ST.fireball_timeline;
+  const said = [];
+  if(ch) said.push(ch.fault ? "Charge record: " + ch.fault : (ch.text || ""));
+  if(tl && tl.fault) said.push("Timeline: " + tl.fault);
+  if(tl && tl.messages && tl.messages.length) said.push(tl.messages[tl.messages.length - 1]);
+  $("fb-charge").textContent = said.filter(Boolean).join(" ");
+  const tanks = (ch && ch.tanks) || {};
   box.querySelectorAll(".fb-pad").forEach(b => {
     const on = !!FB_ON[b.dataset.k];
     b.classList.toggle("on", on);
@@ -5378,6 +5390,8 @@ function renderFireball(){
     b.setAttribute("aria-pressed", on ? "true" : "false");
     b.setAttribute("aria-disabled", st.ok || on ? "false" : "true");
     b.querySelector(".fb-st").textContent = on ? "ON" : "OFF";
+    const tk = tanks[b.dataset.k], tkEl = b.querySelector(".fb-tk");
+    if(tkEl) tkEl.textContent = !tk ? "" : tk.state === "charged" ? "Charged: a press is a top-off" : tk.state === "unknown" ? "Charge not known" : "";
   });
 }
 // Never the disabled attribute on a pad: a held button that turned

@@ -835,8 +835,10 @@ class FlameLink:
         self._program_session = 0
         self.programs_sent = 0
         # The Fireball page's frame (MANUAL_HOLD_S): (bytes(512), clock when
-        # set), or None; the only slots it may carry; how many frames it
-        # went out on.
+        # set, the zero count then), or None; the only slots it may carry;
+        # how many frames it went out on. Every zero() and disarm_all()
+        # (Hold, a show's end, Stop, Abort) moves the zero count, and a
+        # frame set before that is never sent again (_with_manual).
         self._manual = None
         self.manual_slots = frozenset()
         self.manuals_sent = 0
@@ -1522,18 +1524,18 @@ class FlameLink:
             for s in self.manual_slots:
                 keep[s - 1] = vals[s - 1]
             with self._lock:
-                if gen is not None and gen != self._zero_gen:
+                if gen is not None and self._zero_gen != gen:
                     self._manual = None
                     return False
-                self._manual = (bytes(keep), self._clock())
+                self._manual = (bytes(keep), self._clock(), self._zero_gen)
             return True
         except Exception:
             return False
 
     def manual_clear(self):
         """The Fireball page's frame off now: the next frame carries only
-        the show's own values on its slots. Also done by zero() and
-        disarm_all()."""
+        the show's own values on its slots. zero() and disarm_all() end it
+        too, by the zero count."""
         with self._lock:
             self._manual = None
 
@@ -1542,7 +1544,7 @@ class FlameLink:
         held."""
         m = self._manual
         try:
-            return m is not None and \
+            return m is not None and m[2] == self._zero_gen and \
                 0 <= self._clock() - m[1] <= MANUAL_HOLD_S
         except Exception:
             return False
@@ -1550,12 +1552,13 @@ class FlameLink:
     def _with_manual(self, vals, now):
         """`vals` with the Fireball page's frame merged: on each of its
         slots the higher of the two values, then the lockout. A frame older
-        than MANUAL_HOLD_S (or from a clock that went back) is dropped
-        here."""
+        than MANUAL_HOLD_S (or from a clock that went back), or set before
+        the last zero() or disarm_all(), is dropped here."""
         m = self._manual
         if m is None:
             return vals
-        if now - m[1] > MANUAL_HOLD_S or now < m[1]:
+        if m[2] != self._zero_gen or now - m[1] > MANUAL_HOLD_S or \
+                now < m[1]:
             with self._lock:
                 if self._manual is m:
                     self._manual = None
@@ -2024,9 +2027,6 @@ class FlameLink:
         one cannot delay it (fix round 1, item 7)."""
         with self._lock:
             self._purge = None
-            # The Fireball page's frame too (Hold, a show's end): the page
-            # sees the count move and turns everything off.
-            self._manual = None
             # Any zero (a Hold, a show's end, the dark sequence) ends live
             # flame programming at the link too: xLights stops with the
             # fire (flameprog.py ends the mode on its next pass).
@@ -2064,7 +2064,6 @@ class FlameLink:
                 # on the disarm_all itself.
                 self._hazers_on = frozenset()
                 self._purge = None
-                self._manual = None
                 # An Abort ends live flame programming at the link, at
                 # once, whichever surface sent it (flameprog.py sees it).
                 # No timed purge's hard end outlives it (review of #172).
