@@ -636,8 +636,8 @@ otherwise unchanged. The start line names it as `Fireball Fuel Pump switch
 `ltcplay/flamelink.py`, 2026-10-30). LTC Player knows one switch, the fuel
 pump, and refuses a file with two. Its slot is zero in every frame the
 engine sends; the engine names it in `hazers_on` only for a run time the
-operator sets first (5 minutes unless set, `pump_max_s` the longest), and
-only before that run's hard end on the link's own clock and while the
+operator sets first (5 minutes unless set, 10 minutes at most; a run also
+ends when the sign-in that started it signs out), and only before that run's hard end on the link's own clock and while the
 engine's timer re-asserts it every 0.1 s (0.5 s without a beat and the
 link stops naming it). Every `disarm_all` (Stop, Abort, Disarm all's
 fallback, the cleaning's disarm, live flame programming ending) clears it

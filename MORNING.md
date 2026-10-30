@@ -233,8 +233,9 @@ passthrough "switch" in `flamesafe.json`, not a flame group: it has no
 safety slot and is never armed. Andy turns it on by hand, from the
 engine's fuel pump route (its button on Interface 2.0's SHOW tab comes in
 its own update), for a run time he sets first (5:00 unless he sets
-another), and it turns off by itself at the end of it. Stop and Abort
-turn it off; Hold does not. OPERATOR.md, "The fireball's
+another, ten minutes at most), and it turns off by itself at the end of
+it. Stop, Abort and the sign-in that started it signing out turn it off;
+Hold does not. OPERATOR.md, "The fireball's
 fuel pump", has the rules and the one line to add to `flamesafe.json`.
 
 ## How it works
