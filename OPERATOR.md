@@ -937,6 +937,114 @@ flamesafe and LTC Player. Before the pump is wired, check at the bench
 that the DMX node (the PixLite) drops its outputs to zero when the flame
 universe stops arriving, rather than holding the last look.
 
+## Saving the schedule during the night
+
+On 2026-10-29 a schedule saved after the night had closed planned nothing
+until the engine was restarted. Now:
+
+- **A save follows the new file at once.** Saving on the Programming screen
+  ("Schedule: the show times") looks at tonight straight away, the same way
+  a restart does. A save never starts a show, and never sends anything to
+  the rig except in two cases said below: a night that had no shows at all
+  starts as a restart would, and a save that leaves no show to come closes
+  the night.
+- **Tonight's times unchanged: tonight's list is kept.** If the new file
+  gives tonight the same show times (you changed another night, an
+  exception, the season or anything else; a time that already ran or was
+  skipped may be gone from the file), tonight's list stays exactly as
+  it is, with every change made tonight: Delay next, Delay the rest, a
+  moved show, a show added, taken off or skipped. The answer says so. A new
+  show length, guard or late grace applies to the kept list, and every
+  start is still checked against it. If a longer show or guard leaves a
+  show too close to one you delayed, that show is skipped ("too close to
+  the delayed show N") and the answer says so instead of "kept as it is".
+- **Tonight's times changed: tonight is rebuilt.** Shows that already ran
+  keep their number and status, and an extra show (Start now) keeps its
+  number. The shows still to come are numbered in time order, each taking
+  the lowest number no show that already ran has, so they always run in
+  number order; the journal says when a show's number changed (a delayed
+  show can get a new number too). A show whose number changed is checked
+  by the rig check again before it starts. A show taken off tonight's list
+  or skipped stays skipped.
+- **A save never moves a show earlier than you delayed it, and never
+  drops a Delay.** A Delay next, Delay the rest or move of a show still to
+  come is always kept at its time, even if the time it was planned for is
+  gone from the new file. A time from the file that is too close to a
+  delayed show (show length plus guard, before or after it) is SKIPPED
+  instead, "too close to the delayed show N", and the answer and journal
+  say so. A time already gone by is left out of that check: it is missed,
+  as below. Shows added tonight are dropped, and the answer says so ("This
+  save undid tonight's changes: ..."). The count of shows still to come
+  never includes two shows that cannot both run.
+- **The answer says what tonight now holds.** For example "tonight now has
+  4 shows still to come, next show 4 at 22:35", or "Saved, but there are
+  no more shows tonight:" and the reason (every show has gone by, the
+  schedule's own reason such as a dark night, or Close for the night). The
+  journal says the same, one line for each change. If the save leaves no
+  show still to come while the night is waiting for one, the answer says
+  the night closes now: flame cues to zero, MadMapper stopped, pixels
+  faded, blackout.
+- **A show whose time has already gone by is never started.** A time the
+  save puts at or before now is MISSED ("its time had gone by when the
+  schedule was saved"), even inside the late grace. On a Hold with no show
+  already waiting it waits as DELAYED instead, for Start now. A show that
+  was already waiting for that same time before the save is left as it
+  was. The same holds after a restart with a changed file ("when the
+  changed schedule file was read at a restart") and for a save followed
+  after a show or closing ("when the saved schedule was followed").
+  Before the first show, such a miss does not end the preshow look.
+- **A closed night opens again** when the saved file has a show still to
+  come tonight, unless it was closed with Close for the night. The
+  scheduler goes back to STANDBY with the rig dark: unlike a fresh start
+  at that time, the intermission does not come back by itself. Nothing is
+  started and no look is sent; the next show starts at its time only while
+  Run is pressed, by the usual rules.
+- **A night that had no shows at all** (the engine started on a dark
+  night: another weekday's schedule, before the season, or a night an
+  exception made dark) never closed, so a save that gives it shows starts
+  it exactly as a restart would: IDLE with the preshow look, or STANDBY
+  close to the first show. Those looks go out only while Run is pressed,
+  as after a restart.
+- **A night closed with Close for the night stays closed.** The engine
+  remembers the press (in tonight's file, so a restart remembers it too),
+  even when no show was left to skip. A save never opens it again: every
+  time on it is SKIPPED and the answer says so. Saving again does not pile
+  up skipped rows: a time a save added is gone again once the file no
+  longer has it. To run a show tonight after
+  that, press Start now (an extra show each time; the night closes again
+  after it). The saved schedule is followed from the next night on.
+- **A Hold stays a Hold, and an Abort stays latched.** A save on Hold keeps
+  the Hold (Resume is still needed) and keeps the show already waiting
+  after the Hold. After an Abort every show is missed until Reset, as
+  before.
+- **During a show the save is refused** on the Programming screen. If a
+  schedule is loaded while a show runs or while the night is closing, the
+  show and its status are left alone and tonight follows the file once
+  that is over; the journal says so. If that show was the last one on the
+  old list, the night closes after it as usual (fade, black), and then
+  opens again in STANDBY, dark, for the new later show.
+- **A hand edit of the file is not watched.** Only a save from the
+  Programming screen is followed at once. A file changed on disk by hand
+  is followed at the next engine restart.
+- **Start now just before a show** runs an extra show, as before. The show
+  it pushes aside is DELAYED and waits for Start now; the later shows still
+  run on time, and the night closes only after its last scheduled show.
+
+**After an engine restart, press Run.** A restart always leaves Run off,
+and LTC Player never presses it for you (no show starts unattended). While
+Run is off and a show is still to come, the rack screen says so: "Run is
+off: the 22:50 show (show 5) will NOT start. Press Run." It is amber until
+30 minutes before that show, then red, a fault. Once the night's first
+show time has gone by it is red at once. On a Hold
+it says "Press Run, then Resume.", and after an Abort nobody has Reset it
+says Reset first ("Press Reset, then Run."). During a Programming Run
+(Run reads as pressed, but the schedule starts nothing over a rehearsal)
+it says "A Programming Run is in force: the 22:50 show (show 5) will NOT
+start. Press Stop, choose Show, then Run." It is a banner on 1.0's show
+screen and Schedule screen, an alert on 2.0's show screen, and part of the
+answer to a schedule save.
+It goes as soon as Run is pressed.
+
 ## Stop, Hold and Reset on the rack screen
 
 Jeff, 2026-10-28 and 2026-10-30. Each screen has one Stop, where Stop

@@ -1202,6 +1202,10 @@ function alertItems(st){
   if(bl && bl.link === "lost") items.push({key:"bl", tone:"bad", what:"Laser link lost.", do:"Lasers get nothing.", full:"BEYOND LINK LOST: " + (bl.why || "")});
   const sch = s.schedule || {};
   if(sch.error) items.push({key:"sch", tone:"bad", what:"Schedule problem.", do:"Tap here for details.", full:sch.error});
+  // Run off with a show to come (an engine restart leaves it off): the
+  // engine's sentence. Display only: nothing presses Run.
+  // The headline and the press come from the engine's own sentence ("Run is off: ... will NOT start. Press Run, then Resume."; a Programming Run says so), never fixed here (review of PR #180).
+  if(sch.run_warning) items.push({key:"run", tone:sch.run_warning_urgent ? "bad" : "warn", what:sch.run_warning.split(":")[0] + ".", do:(sch.run_warning.split("will NOT start. ")[1] || "Press Run."), full:sch.run_warning});
   if(sch.trouble) items.push({key:"tr", tone:"warn", what:"Show PC trouble.", do:"Tap here for details.", full:sch.trouble});
   if(sch.conductor === false && sch.attached) items.push({key:"nocond", tone:"warn", what:"No show conductor here.", do:"Tap here for details.", full:"No show conductor is attached in this engine: Hold, Resume and Abort are journaled by the scheduler only."});
   if(s.disk && s.disk.text) items.push({key:"disk", tone:"warn", what:"Show PC disk filling up.", do:"Tell Jeff.", full:s.disk.text});
