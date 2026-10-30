@@ -1671,19 +1671,16 @@ class Remote:
         if schedule is not None and hasattr(schedule, "alert_sink"):
             schedule.alert_sink = self.alerts.raise_
         # The alert hold (alerthold.py, Jeff 2026-10-26): at showtime with
-        # an alert open the schedule Holds, and a Delayed announcement
-        # follows unless acknowledged. Ticked with the booth re-sound
-        # after every scheduler tick (_alert_tick), on its thread.
+        # an alert open the schedule Holds and the booth speaker says so.
+        # Nothing plays on the public PA automatically (Jeff, 2026-10-30).
+        # The booth re-sound runs after every scheduler tick
+        # (_alert_tick), on a worker of its own.
         from .alerthold import AlertHold
-        self._alert_wake = threading.Event()
         self._booth_wake = threading.Event()
         self._alert_stop = threading.Event()
         self._alert_lock = threading.Lock()
-        self._alert_thread = None
         self._booth_thread = None
-        self.alert_hold = AlertHold(self.alerts, schedule,
-                                    announce=lambda: self._announce,
-                                    clock=clock)
+        self.alert_hold = AlertHold(self.alerts, schedule, clock=clock)
         if schedule is not None and hasattr(schedule, "showtime_gate"):
             schedule.showtime_gate = self.alert_hold.gate
             schedule.on_alert_hold = self.alert_hold.started
@@ -2078,9 +2075,7 @@ class Remote:
             return 409, {"error": "Continue anyway needs the button held "
                                   "until it fills; a tap does nothing. "
                                   "Nothing was changed."}
-        got = svc.continue_anyway(
-            who, screen,
-            on_continue=lambda: self.alert_hold.stop_for_continue(who))
+        got = svc.continue_anyway(who, screen)
         return (200 if got.get("ok") else 409), (
             got if got.get("ok") else {"error": got.get("text", "")})
 
@@ -2584,34 +2579,24 @@ class Remote:
 
     def _alert_tick(self):
         """After each scheduler tick, on the scheduler's thread: wakes the
-        alert worker and returns at once. The work itself (the booth
-        re-sound's device lookup and file read, the Delayed's file read
-        and stream open) is the worker's, so a slow disk or device never
-        stalls a scheduler tick (review of PR #133, 4)."""
+        booth worker and returns at once. The work itself (the booth
+        re-sound's device lookup and file read) is the worker's, so a slow
+        disk or device never stalls a scheduler tick (review of PR #133,
+        4)."""
         if self._alert_stop.is_set():
             return
-        self._alert_wake.set()
         self._booth_wake.set()
         with self._alert_lock:
             self._start_alert_workers()
 
     def _start_alert_workers(self):
-        """Called with _alert_lock held: one hold worker and one booth
-        worker, ever, whichever thread ticks first (a second hold worker
-        could play the Delayed twice)."""
-        if self._alert_thread is None:
-            # Two workers: the booth re-sound never waits behind the
-            # Delayed's file read, nor the other way round (review of PR
-            # #133).
-            self._alert_thread = threading.Thread(
-                target=self._worker, daemon=True,
-                args=(self._alert_wake, self._hold_work),
-                name="ltcplay-alert-hold")
+        """Called with _alert_lock held: one booth worker, ever, whichever
+        thread ticks first (a second one could sound a note twice)."""
+        if self._booth_thread is None:
             self._booth_thread = threading.Thread(
                 target=self._worker, daemon=True,
                 args=(self._booth_wake, self._booth_work),
                 name="ltcplay-alert-booth")
-            self._alert_thread.start()
             self._booth_thread.start()
 
     def _worker(self, wake, work):
@@ -2623,15 +2608,9 @@ class Remote:
             work()
 
     def close_alerts(self):
-        """Stop the alert workers (web.serve's server_close)."""
+        """Stop the alert worker (web.serve's server_close)."""
         self._alert_stop.set()
-        self._alert_wake.set()
         self._booth_wake.set()
-
-    def _alert_work(self):
-        """Both at once, on the caller's thread (tests)."""
-        self._booth_work()
-        self._hold_work()
 
     def _booth_work(self):
         """The booth note again for alerts still open. Never raises."""
@@ -2781,13 +2760,6 @@ class Remote:
                 self.alerts.raise_("timing", self.TIMING_TEXT.format(
                     n=n, w=f"{worst:.0f}", lim=lim))
             self._timing_said = n
-        except Exception:                        # noqa: BLE001
-            pass
-
-    def _hold_work(self):
-        """The alert hold's countdown and its Delayed. Never raises."""
-        try:
-            self.alert_hold.tick()
         except Exception:                        # noqa: BLE001
             pass
 
@@ -7031,8 +7003,18 @@ class Remote:
                 add("Announcements", "bad", "not known" if av.get("stale")
                     else "file problem")
             elif rt.get("ok"):
-                add("Announcements", "ok", "on show audio"
-                    if rt.get("kind") == "show" else "own output")
+                dl = [i for i in av.get("items") or []
+                      if i.get("id") == "delayed"]
+                if dl and not dl[0].get("available"):
+                    # Advisory (Jeff, 2026-10-30): nothing plays on the PA
+                    # by itself, but the operator's Delayed button cannot
+                    # play, so the lamp says so. A warning, never a fault.
+                    add("Announcements", "warn",
+                        "Delayed recording missing" if dl[0].get("missing")
+                        else "Delayed recording cannot play")
+                else:
+                    add("Announcements", "ok", "on show audio"
+                        if rt.get("kind") == "show" else "own output")
             elif rt.get("kind") == "show":
                 add("Announcements", "bad", "show audio not open")
             elif not av.get("device_set"):
