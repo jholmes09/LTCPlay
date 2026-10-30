@@ -1876,12 +1876,12 @@ async function hazerTap(i){
 // The fireball's fuel pump (fuelpump.py, Jeff 2026-10-30): "Off on Stop,
 // NOT Hold. Pump should auto-stop after 5 minutes. Allow Andy to set
 // duration before he triggers it." The run time is typed first (m:ss, or
-// whole minutes), kept on this screen, and the engine's default (the last
-// one started on the show PC) until this screen has its own. The engine
-// checks it again and runs the timer; this page only shows the countdown
-// from the engine's status. Pump off is never disabled.
-const PUMP_KEY = "ltc_ui2_pump_s";
-let PUMP_TYPED = false;
+// whole minutes); the field starts at the engine's default, 5:00, and goes
+// back to it each time the pump turns off, so a longer run is always set
+// on purpose. The engine checks it again and runs the timer; this page
+// only shows the countdown from the engine's status. Pump off is never
+// disabled.
+let PUMP_TYPED = false, PUMP_WAS_ON = false;
 function pumpSeconds(text){
   const t = String(text || "").trim();
   let m = /^(\d{1,3})$/.exec(t);
@@ -1892,6 +1892,13 @@ function pumpSeconds(text){
 function pumpClock(sec){
   const v = Math.max(0, Math.floor(Number(sec) || 0));
   return Math.floor(v / 60) + ":" + String(v % 60).padStart(2, "0");
+}
+function pumpWords(v, st){
+  // The pump's state in words, from the engine's status.
+  if(st) return v.on ? "Not known: no contact" : "Off";
+  if(v.state === "flamesafe_on") return "flamesafe has it on: press Pump off";
+  if(!v.on) return "Off";
+  return v.state === "waiting" ? "Waiting for flamesafe" : "Pump on: " + pumpClock(v.left_s) + " left";
 }
 function pumpWhy(s, v, secs){
   // Why Fuel pump: On cannot be pressed now, in a few words, or "".
@@ -1914,18 +1921,18 @@ function renderPump(s){
   }
   if(row.hidden){
     row.hidden = false;
-    let mine = null;
-    try{ mine = localStorage.getItem(PUMP_KEY); }catch(e){}
-    if(!PUMP_TYPED) $("pm-time").value = pumpClock(mine !== null && pumpSeconds(mine) !== null ? pumpSeconds(mine) : (v.default_s || 300));
+    if(!PUMP_TYPED) $("pm-time").value = pumpClock(v.default_s || 300);
     layoutGroups();
   }
+  // A run that ended: the field goes back to the default (5:00).
+  if(PUMP_WAS_ON && !v.on){ PUMP_TYPED = false; $("pm-time").value = pumpClock(v.default_s || 300); }
+  PUMP_WAS_ON = !!v.on;
   const fl = s.flames || {};
   const st = stale() || !fl.connected || !!fl.stale;
   const secs = pumpSeconds($("pm-time").value);
   const w = $("pm-w");
   w.className = "pmw" + (v.on && v.state === "on" && !st ? " on" : "");
-  setText($("pm-state"), st && v.on ? "Not known: no contact" :
-    v.on ? (v.state === "waiting" ? "Waiting for flamesafe" : "Pump on: " + pumpClock(v.left_s) + " left") : "Off");
+  setText($("pm-state"), pumpWords(v, st));
   const why = pumpWhy(s, v, secs);
   const on = $("pm-on");
   on.disabled = !!why;
@@ -1939,7 +1946,6 @@ function renderPump(s){
 }
 $("pm-time").addEventListener("input", () => {
   PUMP_TYPED = true;
-  try{ localStorage.setItem(PUMP_KEY, $("pm-time").value); }catch(e){}
   if(ST) try{ renderPump(ST); }catch(e){}
 });
 $("pm-on").addEventListener("click", async () => {

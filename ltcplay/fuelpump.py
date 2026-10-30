@@ -51,8 +51,8 @@ The rules
     up, and while flamesafe's status is not fresh or the flame link is not
     sending. NOT on Hold (Jeff: "Off on Stop, NOT Hold").
   - The duration: chosen before the press, a whole number of seconds, 5
-    minutes unless Andy chooses another (the last one started on this show
-    PC is the next default, pump_s in ltcplay_remote.json). The longest is
+    minutes unless Andy sets another before he turns it on (every screen
+    starts at 5:00; nothing is remembered as a new default). The longest is
     pump_max_s there, MAX_DEFAULT_S (60 minutes) unless an admin sets it,
     never more than MAX_LIMIT_S: a longer one is refused in a sentence,
     never cut down silently. There is no unlimited.
@@ -77,6 +77,15 @@ import time
 
 NAME = "Fuel pump"
 STATUS_FRESH_S = 1.0        # flamesafe's status, as for the hazers
+# A run flamesafe has not passed for this long ends (review A of #188, 5):
+# flamesafe took it away (a frame gap, a restart) and needs it OFF then ON,
+# so the screen would say "waiting" for the rest of the run.
+NOT_PASSING_S = 1.5
+# The scheduler's states for the end of the night (laserarm.py's): a run
+# ends while the night is CLOSING, and when the night is over (OFF) if it
+# began before that; ON is refused while CLOSING.
+NIGHT_CLOSING = ("CLOSING",)
+NIGHT_OVER = ("OFF",)
 SEND_S = 0.1                # the timer's pass; the link drops it at PUMP_HOLD_S
 # flamelink.PUMP_HOLD_S, the same number (the selftest holds them equal):
 # not imported, so the remote's routes never load the flame link on an
@@ -132,7 +141,7 @@ class FuelPump:
 
     def __init__(self, link_get, flames_get, abort_standing, blocker=None,
                  journal=None, audit=None, clock=time.monotonic,
-                 threaded=True):
+                 threaded=True, night_state=None):
         self._link_get = link_get
         self._flames_get = flames_get
         self._abort_standing = abort_standing
@@ -141,6 +150,10 @@ class FuelPump:
         self.audit = audit
         self._clock = clock
         self._threaded = threaded
+        # () -> the scheduler's state ("CLOSING", "OFF", ...), or None: the
+        # night closing ends a run, and so does the night being over
+        # (review of #188: end of night turns the pump off).
+        self._night_state = night_state or (lambda: None)
         self._lock = threading.RLock()
         self.run = None             # the pump's run while it is ON here
         self._used = collections.deque(maxlen=RUN_IDS_KEPT)
@@ -187,13 +200,28 @@ class FuelPump:
         return c[0] if c else None
 
     def on(self):
-        """ON here: a run under way and the flame link naming it."""
+        """ON here: a run under way and the flame link naming it. Read
+        without the link's lock (pump_live_now), so the status never waits
+        on a stuck sender (review B of #188, F5)."""
         link = self.link()
         try:
             return self.run is not None and link is not None and \
-                bool(link.pump_on)
+                bool(link.pump_live_now())
         except Exception:
             return False
+
+    def _disarm_words(self, link):
+        """Why the Abort count moved, in words: the flame link's own reason
+        for the disarm_all when it had the pump on (Stop, Abort, Disarm
+        all's fallback, the cleaning's disarm, live flame programming
+        ending), else all of those (review B of #188, F6)."""
+        try:
+            ended = link.pump_ended()
+        except Exception:
+            ended = ""
+        return ended or ("the disarm to every flame group was sent (a Stop, "
+                         "an Abort, Disarm all's fallback, the cleaning's "
+                         "disarm or the end of live flame programming)")
 
     def _flames(self):
         try:
@@ -277,6 +305,8 @@ class FuelPump:
             why = "the engine's state could not be read."
         if why:
             return why
+        if self._night() in NIGHT_CLOSING:
+            return "the night is closing."
         c = self.config()
         try:
             locked = c[1] in (link.snapshot().get("locked_channels") or ())
@@ -316,16 +346,10 @@ class FuelPump:
         with self._lock:
             used = rid in self._used
             self._used.append(rid)
-            running = self.run
         if used:
             return False, ("The fuel pump was not turned on: that press was "
                            "already used (a repeated request). Press again "
                            "if you mean to turn it on.")
-        if running is not None and self.on():
-            left = max(0.0, running["deadline"] - self._clock())
-            return False, (f"The fuel pump is already on ({clock_text(left)} "
-                           f"left). A second press never adds time: press "
-                           f"Pump off, then start it again.")
         secs, why = pump_seconds(seconds, max_s)
         if not why:
             why = self.refusal()
@@ -339,20 +363,31 @@ class FuelPump:
             return False, why
         link = self.link()
         with self._lock:
-            if self.run is not None:
-                self._finish(self.run, "a new run replaced it")
-            gen = link.pump_gen()
-            now = self._clock()
-            r = {"id": rid, "seconds": secs, "start": now, "beat": now,
-                 "deadline": now + secs, "gen": gen, "who": who,
-                 "screen": screen}
-            # The hard end is the deadline itself, turned into the link's
-            # clock under the link's lock (the link reads its own clock
-            # first, this one second): a pause only tightens it.
-            ok = link.pump_start(secs, gen, deadline=r["deadline"],
-                                 clock=self._clock) is True
-            if ok:
-                self.run = r
+            # The check and the reservation in one critical section (review
+            # of #188, F1): a second ON never replaces or extends a run,
+            # however close the two presses are.
+            running = self.run
+            ok = False
+            if running is None:
+                gen = link.pump_gen()
+                now = self._clock()
+                r = {"id": rid, "seconds": secs, "start": now, "beat": now,
+                     "deadline": now + secs, "gen": gen, "who": who,
+                     "screen": screen, "np": None,
+                     "night": self._night()}
+                # The hard end is the deadline itself, turned into the
+                # link's clock under the link's lock (the link reads its
+                # own clock first, this one second): a pause only tightens
+                # it.
+                ok = link.pump_start(secs, gen, deadline=r["deadline"],
+                                     clock=self._clock) is True
+                if ok:
+                    self.run = r
+        if running is not None:
+            left = max(0.0, running["deadline"] - self._clock())
+            return False, (f"The fuel pump is already on ({clock_text(left)} "
+                           f"left). A second press never adds time: press "
+                           f"Pump off, then start it again.")
         if not ok:
             why = ("The fuel pump was not turned on: the flame link did not "
                    "take it (a Stop or Abort landed). Press again in a "
@@ -379,6 +414,12 @@ class FuelPump:
         return True, (f"The fuel pump is ON for {clock_text(secs)}. It "
                       f"turns off by itself.")
 
+    def _night(self):
+        try:
+            return self._night_state()
+        except Exception:
+            return None
+
     def _end_reason(self, r, now):
         """Why a run must end now, or ""."""
         if now - r["beat"] > BEAT_STALE_S or now < r["beat"]:
@@ -393,15 +434,31 @@ class FuelPump:
                 return "an Abort is standing"
         except Exception:
             return "whether an Abort is standing could not be read"
+        night = self._night()
+        if night in NIGHT_CLOSING:
+            return "the night is closing"
+        if night in NIGHT_OVER and r.get("night") not in NIGHT_OVER:
+            return "the night is over"
         link = self.link()
         try:
             if link.pump_gen() != r["gen"]:
-                return "a Stop or Abort was sent to flamesafe"
+                return self._disarm_words(link)
         except Exception:
             return "the flame link could not be read"
         why = self.down()
         if why:
             return why.rstrip(".")
+        p = self._entry(self._flames())
+        if p is not None and not p.get("passing"):
+            since = r.get("np")
+            if since is None:
+                r["np"] = now
+            elif now - since > NOT_PASSING_S:
+                return (f"flamesafe did not pass it for {NOT_PASSING_S:g} s "
+                        f"({p.get('why') or 'no reason given'}); press Fuel "
+                        f"pump: On to start it again")
+        else:
+            r["np"] = None
         return ""
 
     def pump_send(self, now=None):
@@ -442,7 +499,7 @@ class FuelPump:
             else:
                 r["beat"] = fresh
                 lost = "" if link.pump_gen() == r["gen"] else \
-                    "a Stop or Abort was sent to flamesafe"
+                    self._disarm_words(link)
         if lost:
             self._finish(r, lost)
         return lost
@@ -538,7 +595,11 @@ class FuelPump:
         r = self.run
         on = self.on()
         p = self._entry(fl)
-        if not on:
+        if not on and p and p.get("passing"):
+            # flamesafe still passes it while the engine has it off (review
+            # A of #188, 7): said, never hidden; Pump off sends OFF again.
+            state = "flamesafe_on"
+        elif not on:
             state = "off"
         elif not p or not p.get("passing"):
             # flamesafe's word, never the engine's own bit.

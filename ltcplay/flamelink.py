@@ -1772,6 +1772,23 @@ class FlameLink:
         with self._lock:
             return self._pump_live()
 
+    def pump_live_now(self):
+        """The pump's state for the screens and the engine's checks,
+        WITHOUT self._lock (review B of #188, F5: the status must answer
+        while the sender is stuck, as snapshot() and hazers_on do). ON and
+        inside its hard end and its beat; it changes nothing (only the
+        frame path and pump_beat switch it off). Never raises."""
+        try:
+            on, until, beat = self._pump_on, self._pump_until, \
+                self._pump_beat
+            if not on or until is None or beat is None or \
+                    self._pump_name is None:
+                return False
+            now = self._clock()
+            return now < until and 0 <= now - beat <= PUMP_HOLD_S
+        except Exception:
+            return False
+
     def pump_ended(self):
         """Why the link last switched the pump OFF by itself, or ""."""
         return self._pump_ended
@@ -2157,7 +2174,14 @@ class FlameLink:
                 # copy, whichever surface sent it. flamesafe does the same
                 # on the disarm_all itself.
                 # The fuel pump OFF too (Jeff, 2026-10-30: "it should be
-                # affected by the stop button"), the same way.
+                # affected by the stop button"), the same way. Every
+                # disarm_all does (Disarm all's forced fallback, the
+                # cleaning's disarm, the end of live flame programming
+                # too): its own reason is kept, so the engine's journal
+                # names the real cause (review B of #188, F6).
+                if self._pump_on:
+                    self._pump_ended = (f"the disarm to every flame group "
+                                        f"was sent: {why}")
                 self._pump_on = False
                 self._pump_until = None
                 self._hazers_on = frozenset()

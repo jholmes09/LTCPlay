@@ -2272,7 +2272,8 @@ def _attach_pump(httpd):
             flames_get=lambda: fs.view() if fs is not None else None,
             abort_standing=remote._abort_standing,
             blocker=remote.pump_blocker,
-            journal=_journal, audit=getattr(remote, "audit", None))
+            journal=_journal, audit=getattr(remote, "audit", None),
+            night_state=remote.pump_night_state)
     except Exception as e:                       # noqa: BLE001
         print(f"The fuel pump could not be set up: {type(e).__name__}: {e}")
         return

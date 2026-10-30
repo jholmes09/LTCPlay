@@ -6393,6 +6393,14 @@ def test_passthrough_switch_composer_refusals():
         check(False, "a Composer took a switch on front row's fire slot")
     except ValueError as e:
         check("411" in str(e), f"a switch on a group slot is refused: {e}")
+    for slot in (0, 513):
+        cfg = make_config()
+        cfg.passthrough = [config.Passthrough("pump", switch=slot, on=255)]
+        try:
+            Composer(cfg)
+            check(False, f"a Composer took a switch on slot {slot}")
+        except ValueError as e:
+            check("not 1 to 512" in str(e), f"slot {slot} is refused: {e}")
     cfg = make_config()
     cfg.passthrough = list(cfg.passthrough) + [
         config.Passthrough("pump", switch=81, on=255)]
