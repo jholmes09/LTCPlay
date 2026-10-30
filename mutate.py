@@ -20180,13 +20180,13 @@ def build():
 
  ("fireball charge: a broken file reads as EMPTY",
   "ltcplay/fireball_charge.py",
-  "            self.tanks = {k: _new_tank(UNKNOWN, now, f\"{FILE} could not be \"",
-  "            self.tanks = {k: _new_tank(EMPTY, now, f\"{FILE} could not be \""),
+  "        if isinstance(src, Exception):\n            self._not_known(f\"{FILE} could not be read\", now,",
+  "        if isinstance(src, Exception):\n            self.tanks = {k: _new_tank(EMPTY, now, \"x\") for k in TANK_WORD}; self.releasing = \"\"; return\n            self._not_known(f\"{FILE} could not be read\", now,"),
 
  ("fireball charge: a restart in the middle of a release is not UNKNOWN",
   "ltcplay/fireball_charge.py",
-  "            if rel:\n                what = ",
-  "            if False:\n                what = "),
+  "        if rel:\n            what = ",
+  "        if False:\n            what = "),
 
  ("fireball charge: a change is not written to the file",
   "ltcplay/fireball_charge.py",
@@ -20215,8 +20215,8 @@ def build():
 
  ("fireball charge: no record (the first run) reads as NOT KNOWN",
   "ltcplay/fireball_charge.py",
-  "            self.tanks = {k: _new_tank(EMPTY, now, \"first run: no charge \"",
-  "            self.tanks = {k: _new_tank(UNKNOWN, now, \"first run: no charge \""),
+  "        self.tanks = {k: _new_tank(EMPTY, now, \"first run: no charge \"",
+  "        self.tanks = {k: _new_tank(UNKNOWN, now, \"first run: no charge \""),
 
  ("fireball charge: a record that could not be written is never tried again",
   "ltcplay/fireball_charge.py",
@@ -20230,8 +20230,8 @@ def build():
 
  ("fireball charge: close() does not try the unwritten record again",
   "ltcplay/fireball_charge.py",
-  "            if self._unwritten is not None:\n                # One last try now",
-  "            if False:\n                # One last try now"),
+  "                    if self._unwritten is not None:\n                        # One last try now",
+  "                    if False:\n                        # One last try now"),
 
  ("fireball charge: a charge after the valve closed is wiped by the late confirmation",
   "ltcplay/fireball_charge.py",
@@ -20265,13 +20265,73 @@ def build():
 
  ("fireball charge: a newer record left in .tmp is ignored at start",
   "ltcplay/fireball_charge.py",
-  "            if not isinstance(main, int) or got > main:\n                src = tmp",
-  "            if False:\n                src = tmp"),
+  "        if isinstance(got, tuple) and (not isinstance(main, tuple) or\n                                       got[0] > main[0]):",
+  "        if False:"),
 
  ("fireball charge: a .tmp that cannot be read is ignored",
   "ltcplay/fireball_charge.py",
-  "            if isinstance(got, Exception):\n                self.tanks = {k: _new_tank(UNKNOWN",
-  "            if False:\n                self.tanks = {k: _new_tank(UNKNOWN"),
+  "        if isinstance(got, Exception):\n            last = ",
+  "        if False:\n            last = "),
+
+ ("fireball charge: the revision starts at 0 under an unreadable record (round 4)",
+  "ltcplay/fireball_charge.py",
+  "        self.rev = max([x[0] for x in (main, got) if isinstance(x, tuple)]\n                       or [0])",
+  "        self.rev = 0"),
+
+ ("fireball charge: an older .tmp beats the newer main file (round 4)",
+  "ltcplay/fireball_charge.py",
+  "                                       got[0] > main[0]):",
+  "                                       True):"),
+
+ ("fireball charge: an unreadable .tmp hides what the main file last said (round 4)",
+  "ltcplay/fireball_charge.py",
+  "                    f\"(revision {main[0]}), but the write that did not \"",
+  "                    f\"\"\n                    f\"\""),
+
+ ("fireball charge: a first run whose record cannot be written starts EMPTY (round 4)",
+  "ltcplay/fireball_charge.py",
+  "        try:\n            self._write(self._doc())\n        except OSError as e:",
+  "        try:\n            pass\n        except OSError as e:"),
+
+ ("fireball charge: the first run is said quietly, without the folder (round 4)",
+  "ltcplay/fireball_charge.py",
+  "                    f\"Fireball page if one is pressurised.\", fault=True,",
+  "                    f\"Fireball page if one is pressurised.\", fault=False,"),
+
+ ("fireball charge: flamesafe's report leaves the wire edge open (round 4, s62)",
+  "ltcplay/fireball_charge.py",
+  "            self._prev[k] = self._prev[k] or 255\n",
+  "            pass\n"),
+
+ ("fireball charge: a charge ended inside the shot counts as charged (round 4, s90)",
+  "ltcplay/fireball_charge.py",
+  "                        rel[\"during\"].pop(k, None)",
+  "                        pass"),
+
+ ("fireball charge: flamesafe's late report of a charge ended inside the shot counts (round 4)",
+  "ltcplay/fireball_charge.py",
+  "            if tgt is not None and (tgt is not self._release or\n                                    self._prev[k]):",
+  "            if tgt is not None:"),
+
+ ("fireball charge: a fireball group off 55 to 59 is still recorded (round 4)",
+  "ltcplay/fireball_charge.py",
+  "        if self.group_fault:\n            return          # 55 to 59 are not the fireball (round 4)",
+  "        if False:\n            return          # 55 to 59 are not the fireball (round 4)"),
+
+ ("fireball charge: the group's slots are never checked (round 4)",
+  "ltcplay/fireball_charge.py",
+  "                if isinstance(slots, list) and slots:\n                    self._group_check(slots)",
+  "                if False:\n                    self._group_check(slots)"),
+
+ ("fireball charge: close() waits on a hung write for ever (round 4)",
+  "ltcplay/fireball_charge.py",
+  "        t.start()\n        t.join(CLOSE_S)",
+  "        t.start()\n        t.join()"),
+
+ ("fireball charge: close() writes beside the writer thread (round 4)",
+  "ltcplay/fireball_charge.py",
+  "            try:\n                with self._wlock:\n                    self._pump()",
+  "            try:\n                if True:\n                    self._pump()"),
 
  ("fireball charge: the status reader also writes the file",
   "ltcplay/fireball_charge.py",

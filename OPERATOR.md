@@ -994,18 +994,35 @@ of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
   57 on and then off again) or Purge (59, on and then off again), each only once flamesafe
   has reported sending it. Nothing else: **Stop, Hold, the end of a show,
   a disarm and a restart of LTC Player change nothing.** The Igniter
-  plays no part.
+  plays no part. A charge that went on and off again while the valve (or
+  the purge) was still open was released with it: that tank is EMPTY
+  after the shot. One still on when the valve closed is CHARGED after it.
 - **A top-off is not a double charge.** Fuel or Air pressed again on the
   Fireball page while that tank is charged is counted as a top-off by
   that person, and the journal says so.
-- **NOT KNOWN:** the record could not be read, LTC Player stopped while
-  the valve or the purge was open, or a charge or release went out while
-  flamesafe's status was not known. A shot or a purge seen for certain
-  makes it EMPTY again. While a tank is CHARGED or NOT KNOWN, nothing
-  charges it automatically.
+- **NOT KNOWN** (cautious on purpose; each one says why on the screens
+  and in the journal):
+  - the record could not be read (a half-written record left by a power
+    cut says what the last full record said);
+  - LTC Player stopped while the valve or the purge was open (the release
+    may not have finished);
+  - a shot or a purge that flamesafe did not report sending within half
+    a second;
+  - a charge or a release that went out while flamesafe's status was not
+    known (flamesafe down or not reporting): the tank may really be empty,
+    but nothing proves it;
+  - no record could be written in the settings folder at the very first
+    start.
+
+  A shot or a purge seen for certain makes it EMPTY again. While a tank
+  is CHARGED or NOT KNOWN, nothing charges it automatically.
 - **The very first start** (no record yet) counts both tanks EMPTY (Jeff:
-  tanks start empty), and the journal says: if the fuel or air tank is
-  pressurised now, press Purge on the Fireball page.
+  tanks start empty), and the journal says loudly, with the folder: "No
+  charge record found: starting both tanks EMPTY". If the fuel or air
+  tank is pressurised now, press Purge on the Fireball page. **If the
+  settings folder is lost or the program runs under another Windows user,
+  the tanks read EMPTY: confirm by eye before a show** (the record is in
+  that Windows user's own settings folder, `%LOCALAPPDATA%\ltcplay`).
 - **Tanks are empty** (an admin, on the Fireball page, while a tank is
   NOT KNOWN): if both tanks are known to be depressurised, it makes the
   NOT KNOWN ones EMPTY (it asks first, and the journal names who). A
@@ -1020,7 +1037,10 @@ of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN.
   memory, written again every second until it is, and the screens show
   the fault meanwhile: do not restart LTC Player until it clears. (If it
   is restarted anyway, the newest record the write left behind is the one
-  read; if that cannot be read, both tanks are NOT KNOWN.) Every screen's status carries it as one
+  read, by its revision number, which only ever goes up; if that cannot
+  be read, both tanks are NOT KNOWN.) If flamesafe's fireball group is on
+  other channels than 55 to 59, the record watches nothing until it is,
+  and the screens say so. Every screen's status carries it as one
   sentence, for example "Fuel: charged 14:32. Air: charged 14:35. No shot
   fired." There is no pressure reading: it is never invented.
 
