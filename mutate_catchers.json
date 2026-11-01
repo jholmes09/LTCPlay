@@ -1031,6 +1031,7 @@
 "fireball cues: a mark on its way skips the stage (round 5)": "test_fireball_cues_rules",
 "fireball cues: a mark that cannot be saved is not a fault (round 5)": "test_fireball_cues_rules",
 "fireball cues: a pause is not a landing (round 7)": "test_fireball_cues_rules",
+"fireball cues: a play starting at frame 1 or 2 is a landing (round 9)": "test_fireball_cues_rules",
 "fireball cues: a refused FSEQ charge starts late when the retry works (round 6)": "test_fireball_cues_rules",
 "fireball cues: a seek inside the play is not a landing (round 6)": "test_fireball_cues_rules",
 "fireball cues: a skipped or cut short stage is not journaled (round 4)": "test_fireball_cues_rules",

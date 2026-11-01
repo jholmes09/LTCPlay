@@ -106504,6 +106504,16 @@ def test_fireball_cues_rules():
         check(sum(1 for g in got if g) == 60,
               f"and a play from the top still charges its whole window: "
               f"{sum(1 for g in got if g)}")
+        # Round 9, review 2: a charge stage at 00:00:00:00 still fires when
+        # the play's first frame arrives at frame 1 or 2 (the top of the
+        # cue), but not when it lands well inside the window.
+        for first_frame, expect in ((0, 30), (1, 29), (2, 28), (5, 0)):
+            R = _fbq_rig([_st("fuel", "00:00:00:00", 1)])
+            rigs.append(R)
+            got = [R.frame(f)[54] for f in range(first_frame, 40)]
+            check(sum(1 for g in got if g) == expect,
+                  f"a Fuel stage at the top, first frame {first_frame}: "
+                  f"{expect} frames on: {sum(1 for g in got if g)}")
         # Review 6: with a charge record that judges the config itself, the
         # cues do not also tell it (the two could not race).
         R = _fbq_rig([], source="fseq")

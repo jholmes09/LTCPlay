@@ -21572,8 +21572,8 @@ def build():
 
  ("fireball cues: an FSEQ show is not guarded",
   "ltcplay/fireball_cues.py",
-  "                                      jumped)\n        out = self._masked(out)",
-  "                                      jumped) if False else out\n        out = self._masked(out)"),
+  "                                      (first and relf > TOP_FRAMES) or jumped)\n        out = self._masked(out)",
+  "                                      (first and relf > TOP_FRAMES) or jumped) if False else out\n        out = self._masked(out)"),
 
  ("fireball cues: Purge goes out from an FSEQ show",
   "ltcplay/fireball_cues.py",
@@ -21707,8 +21707,8 @@ def build():
 
  ("fireball cues: an FSEQ charge held for the mark starts late after a seek (round 6)",
   "ltcplay/fireball_cues.py",
-  "            return self._fseq_guarded(out, run, (first and relf > 1) or\n                                      jumped)",
-  "            return self._fseq_guarded(out, run, (first and relf > 1))"),
+  "            return self._fseq_guarded(out, run,\n                                      (first and relf > TOP_FRAMES) or jumped)",
+  "            return self._fseq_guarded(out, run, (first and relf > TOP_FRAMES))"),
 
  ("fireball cues: the engine never gives the cues the running flamesafe's slots (round 6)",
   "ltcplay/web.py",
@@ -21744,6 +21744,11 @@ def build():
   "ltcplay/fireball_cues.py",
   "            if r == \"off\":\n                return (f\"{word}: automatic charging is off after a \"",
   "            if False:\n                return (f\"{word}: automatic charging is off after a \""),
+
+ ("fireball cues: a play starting at frame 1 or 2 is a landing (round 9)",
+  "ltcplay/fireball_cues.py",
+  "TOP_FRAMES = 2\n",
+  "TOP_FRAMES = 0\n"),
 
  ("fireball cues: a fireball group off 55 to 59 is not checked",
   "ltcplay/fireball_cues.py",

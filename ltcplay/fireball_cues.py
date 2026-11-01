@@ -87,6 +87,9 @@ GAP_S = 0.25
 # starts (and while one is open), not at every play start: a rehearsal
 # stopped well before its charge leaves no mark (round-6 review 5).
 LEAD_FRAMES = 60
+# A play whose first frame arrives this close to the cue's top is a start,
+# not a landing: a charge stage at 00:00:00:00 still fires (round-9 review 2).
+TOP_FRAMES = 2
 
 
 class _Run:
@@ -393,13 +396,16 @@ class FireballCues:
         # than the pause is not seen as a jump by the clock (round-7
         # review 5).
         jumped = jumped or gapped
-        if first or jumped:
+        # The first frame is a landing only past the cue's top (the FSEQ
+        # path too): a play whose first frame arrives at frame 1 or 2 still
+        # fires a charge stage that starts at 00:00:00:00 (round-9 review 2).
+        if (first and relf > TOP_FRAMES) or jumped:
             run.first_relf = relf
         if run.source != "timeline":
             # A landing (the first frame past the cue's top, or a seek),
             # not a start from the top.
-            return self._fseq_guarded(out, run, (first and relf > 1) or
-                                      jumped)
+            return self._fseq_guarded(out, run,
+                                      (first and relf > TOP_FRAMES) or jumped)
         out = self._masked(out)
         if label != run.cue:
             return out
