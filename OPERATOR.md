@@ -996,6 +996,19 @@ but it wouldn't allow it. Don't restrict the schedule in any way."
   makes a show end, with its guard, after the next night's first show is
   warned the same way: that first show can be missed, because the next
   night begins only once this one's guard is over. Nothing is refused.
+  When two nights of the schedule overlap, the warning names what really
+  happens: a show of tonight at or after the next night's first show is
+  MISSED at the hand over (and that first show runs on time); a show
+  that starts before it but ends, with its guard, after it can make that
+  first show late or MISSED.
+- **A restart reads back every list the program itself can make.** That
+  includes a show started with Start now in the next night's preshow
+  (up to 30 minutes before its first show, so before midnight), and a
+  show typed for tomorrow or a date. The list is never set aside, so
+  no Abort latch is raised and the shows that ran stay done.
+- **A dry run and a Stop's Hold.** In a dry run, the Hold of a Stop is
+  put back only after the made-up end of the show, before the next
+  show is looked at, so the next show does not start by itself.
 - **The night only moves forward.** Once a night has handed over to the
   next, saving a schedule that gives it longer hours never opens it
   again; the change is for the next time that weekday comes round. A

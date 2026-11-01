@@ -8972,8 +8972,8 @@ def build():
  ("scheduler fix round 3: a latch that could not be saved is never tried "
   "again",
   "ltcplay/schedule_service.py",
-  "            self._keep_latch_on_disk()\n            m = self.machine",
-  "            m = self.machine"),
+  "            self._keep_latch_on_disk()\n            # A schedule saved during a show",
+  "            # A schedule saved during a show"),
 
  ("scheduler fix round 3: a Reset that overtakes an Abort in flight ends it",
   "ltcplay/schedule_service.py",
@@ -9338,8 +9338,32 @@ def build():
 
  ("review196C: overlapping nights do not say a show can be missed",
   "ltcplay/schedule.py",
-  "finishes first, so the next night's first show can be MISSED, \"",
-  "finishes first, so the next night's first show can be late, \""),
+  "that first show can be MISSED. Saved as \"",
+  "that first show can be late. Saved as \""),
+
+ ("review196B: the overlap warning names the wrong show",
+  "ltcplay/schedule.py",
+  "        after = [x for x in starts if x >= first]\n",
+  "        after = [x for x in starts if x > first]\n"),
+
+ ("review196B: a show at the next night's first show is not warned",
+  "ltcplay/schedule.py",
+  "        inside = [x for x in starts if x < first and x + need > first]\n",
+  "        inside = []\n"),
+
+ ("review196B: the reader refuses a show in the next night's preshow",
+  "ltcplay/schedule.py",
+  "        start_of_day = min(start_of_day,\n"
+  "                           first_show - timedelta(seconds=PRESHOW_LEAD_S))\n",
+  "        pass\n"),
+
+ ("review196B: the dry run never puts the Stop's Hold back after the show end",
+  "ltcplay/schedule_service.py",
+  "            self._keep_stop_hold(now)\n"
+  "            self._keep_latch_on_disk()\n"
+  "            # A schedule saved during a show",
+  "            self._keep_latch_on_disk()\n"
+  "            # A schedule saved during a show"),
 
  ("review196C: the second of a repeated hour is not said",
   "ltcplay/schedule.py",

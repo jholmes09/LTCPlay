@@ -13120,7 +13120,7 @@ def test_schedule_after_midnight_review_a():
                           "fri": {"first_start": "00:30", "interval_min": 30,
                                   "last_end": "01:30"}}))
     w = " ".join(S.rule_warnings(r))
-    check("A Thursday night has a show" in w,
+    check("A Thursday night has shows at 00:30 to 01:00" in w,
           f"the overlap names the weekday: {w[:160]!r}")
 
     # A 24 hour night: last_end == first_start runs to the same time the
@@ -13398,7 +13398,7 @@ def test_schedule_after_midnight_review_c():
     # 00:17:20 and its 120 s guard is over at 00:19:20. The warning is said
     # at once (journal and answer); Friday does not begin inside the
     # guard, so its 00:18 show is missed rather than started 40 s into it.
-    d2 = doc({"thu": nt("23:00", 30, "00:10"), "fri": nt("00:18", 30,
+    d2 = doc({"thu": nt("23:00", 20, "00:10"), "fri": nt("00:18", 30,
                                                          "01:00")})
     svc, now = mk(d2, at(THU, 22, 30))
     run(svc, now, at(THU, 23, 55))
@@ -13629,10 +13629,15 @@ def test_schedule_after_midnight_review_c():
           "nothing is refused" in w,
           f"the overlap warning names the show really missed: {w!r}")
     _no_dashes(w, "overlap warning")
-    ins = S.parse_rule(doc({"thu": nt("23:00", 30, "00:10"),
-                            "fri": nt("00:18", 30, "01:00")}))
+    eq = S.parse_rule(doc({"sat": nt("23:00", 30, "03:00"),
+                           "sun": nt("02:30", 30, "03:30")}))
+    w3 = " ".join(S.rule_warnings(eq))
+    check("at 02:30, at or after the next night's first show at 02:30" in w3,
+          f"a show exactly at the next night's first show is MISSED: {w3!r}")
+    ins = S.parse_rule(doc({"thu": nt("23:00", 20, "00:10"),
+                            "fri": nt("00:05", 30, "01:00")}))
     w2 = " ".join(S.rule_warnings(ins))
-    check("after the next night's first show at 00:18" in w2 and
+    check("after the next night's first show at 00:05" in w2 and
           "can be MISSED" in w2 and "nothing is refused" in w2,
           f"the inside overlap warning: {w2!r}")
     _no_dashes(w2, "inside overlap warning")
@@ -13650,6 +13655,140 @@ def test_schedule_after_midnight_review_c():
     check("times" not in inspect.getsource(S._time_notes),
           "no code is left after _time_notes return")
     print("  ok")
+
+def test_schedule_after_midnight_review_b196():
+    section("scheduler (review B of PR #196): the file reader accepts every "
+            "slot the engine can create, so a restart never sets the night "
+            "aside: Start now in the next night's preshow before midnight, "
+            "a show moved earlier then a far show added; with a conductor "
+            "attached the night is not latched as Aborted; a dry run puts "
+            "the Stop's Hold back only after its made-up show end; the "
+            "overlap warning names the show really missed")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date, timedelta, timezone
+
+    def doc(weekly, **kw):
+        kw.setdefault("exceptions", {})
+        return _sched_doc(season={"first_date": "2026-10-01",
+                                  "last_date": "2027-03-31"},
+                          weekly=weekly, late_grace_s=15, **kw)
+
+    def nt(first, iv, last):
+        return {"first_start": first, "interval_min": iv, "last_end": last}
+
+    def at(d, h, mi, s=0):
+        return _den(S, h, mi, s, d=d)
+
+    def run(svc, now, until, step=10):
+        t = now[0].astimezone(timezone.utc)
+        while t < until:
+            t += timedelta(seconds=step)
+            now[0] = t
+            svc.tick()
+        _settle(svc)
+    THU, FRI, SAT = (2026, 11, 12), (2026, 11, 13), (2026, 11, 14)
+
+    def bad(svc):
+        return [r["text"] for r in svc.journal
+                if "unreadable" in r["text"] or "set aside" in r["text"] or
+                "is not on the night" in r["text"]]
+
+    # Repro 1: Friday 22:10 to 23:00, Saturday 00:10 to 03:30. At 23:41,
+    # in Saturday's preshow, Start now; a restart at 23:55 reads it.
+    d1 = doc({"fri": nt("22:10", 20, "23:00"), "sat": nt("00:10", 30,
+                                                         "03:30")})
+    for cond in (False, True):
+        work = tempfile.mkdtemp()
+        now = [at(FRI, 23, 30)]
+        rec = _RecCond(S) if cond else None
+        svc = _svc(S, work, now, rule=d1, conductor=rec)
+        svc.start(thread=False)
+        run(svc, now, at(FRI, 23, 41))
+        check(svc.machine.date == date(*SAT),
+              f"setup: Saturday's night is open in its preshow: "
+              f"{svc.machine.date}")
+        o = svc._apply(_op(S, S.START_NOW))
+        _settle(svc)
+        check(not o.refused,
+              f"Start now in the preshow is accepted: {o.refused!r}")
+        mine = max(svc.machine.slots, key=lambda x: x.start)
+        n_before = len(svc.machine.slots)
+        svc.stop()
+        now[0] = at(FRI, 23, 55)
+        b = _svc(S, work, now, conductor=_RecCond(S) if cond else None)
+        b.start(thread=False)
+        _settle(b)
+        check(b.machine.date == date(*SAT) and
+              len(b.machine.slots) == n_before and not bad(b) and
+              not b.machine.abort_latched and not b._aborted(),
+              f"conductor {cond}: the restart reads Saturday's file whole: "
+              f"{b.machine.date} {len(b.machine.slots)}/{n_before} "
+              f"{bad(b)} latched={b.machine.abort_latched}")
+        b.stop()
+
+    # Repro 2: Thursday 22:00 to 02:00 every 30. At 00:01 show 7 (01:00)
+    # moves to 00:15; at 00:33 "19:00 tomorrow" is added; a restart 30 s
+    # later keeps shows 1 to 6 DONE and show 7 does not run twice.
+    d2 = doc({"thu": nt("22:00", 30, "02:00")})
+    for cond in (False, True):
+        work = tempfile.mkdtemp()
+        now = [at(THU, 21, 55)]
+        svc = _svc(S, work, now, rule=d2,
+                   conductor=_RecCond(S) if cond else None)
+        svc.start(thread=False)
+        run(svc, now, at(FRI, 0, 1))
+        o = svc._apply(_op(S, S.EDIT_MOVE, show=7, at="00:15"))
+        check(not o.refused, f"the move is accepted: {o.refused!r}")
+        run(svc, now, at(FRI, 0, 33))
+        o = svc._apply(_op(S, S.EDIT_ADD, at="19:00 tomorrow"))
+        check(not o.refused, f"the far show is accepted: {o.refused!r}")
+        done = sorted(x.n for x in svc.machine.slots
+                      if x.status == S.DONE)
+        svc.stop()
+        now[0] = at(FRI, 0, 33, 30)
+        b = _svc(S, work, now, conductor=_RecCond(S) if cond else None)
+        b.start(thread=False)
+        _settle(b)
+        run(b, now, at(FRI, 0, 40))
+        back = sorted(x.n for x in b.machine.slots if x.status == S.DONE)
+        seven = [x for x in b.machine.slots if x.n == 7]
+        check(back[:len(done)] == done and not bad(b) and
+              not any(x.status == S.MISSED for x in b.machine.slots
+                      if x.n <= 6) and
+              not b.machine.abort_latched and
+              len(seven) == 1 and seven[0].status == S.DONE,
+              f"conductor {cond}: restart keeps DONE {done} -> {back}, "
+              f"show 7 once: {[(x.n, x.status) for x in b.machine.slots]}")
+        b.stop()
+
+    # Dry run: Saturday 18:00 every 20, guard 0. Stop at 17:50, Start now
+    # at 18:12:45; show 2 (18:20) must not start alone at 18:20:05 because
+    # the Hold was put back before the made-up show end.
+    d3 = doc({"sat": nt("18:00", 20, "20:00")})
+    d3["guard_s"] = 0
+    work = tempfile.mkdtemp()
+    now = [at(SAT, 17, 40)]
+    svc = _svc(S, work, now, rule=d3)
+    svc.dry_run = True
+    svc.start(thread=False)
+    run(svc, now, at(SAT, 17, 49, 30))
+    svc.operator_press("start-now", "Andy", "Rack screen")
+    run(svc, now, at(SAT, 17, 50))
+    r = svc.halt_schedule("Andy", "Rack screen")
+    print("DBG stop", r, svc.machine.state, svc.machine.stop_hold)
+    run(svc, now, at(SAT, 18, 12, 40), step=5)
+    print("DBG start", svc.operator_press("start-now", "Andy", "Rack screen"))
+    run(svc, now, at(SAT, 18, 20, 30), step=1)
+    two = svc.machine.slot(2)
+    check(two is not None and two.status != S.RUNNING and
+          svc.machine.running != 2,
+          f"dry run: show 2 does not start alone after the Stop: "
+          f"{two.status if two else None} running={svc.machine.running}")
+    svc.stop()
+
 
 def test_schedule_after_midnight_delta_a():
     section("scheduler (delta review A of PR #196): every typed time the "
@@ -104442,6 +104581,7 @@ if __name__ == "__main__":
         test_schedule_after_midnight_review_a,
         test_schedule_after_midnight_review_b,
         test_schedule_after_midnight_review_c,
+        test_schedule_after_midnight_review_b196,
         test_schedule_after_midnight_delta_a,
         test_schedule_run_warning_says_only_what_is_true,
         test_schedule_late_failed_start_is_a_fault,
