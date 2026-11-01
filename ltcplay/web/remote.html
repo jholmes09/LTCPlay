@@ -1367,7 +1367,7 @@ button.fb-pad.na{opacity:.45}
       <div class="three" style="margin-top:8px">
         <div><label for="se-len">Show length, seconds</label><input id="se-len" type="number" min="1"></div>
         <div><label for="se-guard">Gap before a show, seconds</label><input id="se-guard" type="number" min="0"></div>
-        <div><label for="se-grace">Late start allowed, seconds</label><input id="se-grace" type="number" min="0"></div>
+        <div><label for="se-grace">Late start allowed, seconds</label><input id="se-grace" type="number" min="0" max="300" title="A show more than this many seconds late is missed. Default 120, most 300."></div>
       </div>
       <div class="row" style="margin-top:10px"><button id="se-save" class="go">Save the schedule</button><button id="se-reload" class="ghost">Reload from the file</button></div>
       <div class="toast" id="se-msg"></div>
@@ -4016,7 +4016,7 @@ function drawSchedule(doc){
   $("se-last").value = (doc.season || {}).last_date || "";
   $("se-len").value = doc.show_len_s == null ? "" : doc.show_len_s;
   $("se-guard").value = doc.guard_s == null ? "" : doc.guard_s;
-  $("se-grace").value = doc.late_grace_s == null ? "" : doc.late_grace_s;
+  $("se-grace").value = doc.late_grace_s == null ? 120 : doc.late_grace_s;
   const w = doc.weekly || {};
   $("se-days").innerHTML = `<span class="h">Night</span><span class="h">First show</span><span class="h">Minutes apart</span><span class="h">Last show ends</span>` +
     DAYS.map(d => { const n = w[d] || {}; const on = !!w[d];

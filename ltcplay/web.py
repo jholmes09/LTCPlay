@@ -2598,6 +2598,19 @@ def _attach_cleaning(httpd):
     httpd.server_close = _close_cleaning
 
 
+
+def _note_schedule_rewritten(schedule, config_watch):
+    """The scheduler just rewrote the schedule file while it started (the
+    late limit 15 s to 2 minutes): what is on disk is its own copy, not a
+    change to restart for. Never raises."""
+    if config_watch is None or \
+            not getattr(schedule, "legacy_grace_migrated", False):
+        return
+    try:
+        config_watch.refresh(schedule.path)
+    except Exception:                            # noqa: BLE001
+        pass
+
 def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
           token=None, on_ready=None, schedule=None, announce=None,
           madmapper=None, beyond=None, fire_ice=None,
@@ -2670,6 +2683,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         if isinstance(schedule, str):
             from . import schedule_service
             schedule = schedule_service.Service(schedule)
+        _note_schedule_rewritten(schedule, config_watch)
         if schedule.rule is not None:
             from . import clock as clock_mod
             show_path, derived, warning = \
