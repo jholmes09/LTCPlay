@@ -825,6 +825,19 @@ class Machine:
     # schedule_service, and only with a conductor attached; the engine
     # carries it and reads Event.latched instead.
     abort_latched: bool = False
+    # An operator pressed Close for the night tonight. Kept in tonight's
+    # file and across every rebuild (a save, a restart), so a saved
+    # schedule never opens the night again, even when nothing was left to
+    # skip when it was pressed (review of PR #180). Set only by _end_night;
+    # a new night starts without it. Start now still runs an extra show.
+    closed_by_operator: bool = False
+    # OFF because tonight had no shows at all when the scheduler started
+    # (BOOT_DONE), so no closing ever ran and the rig was never blacked out
+    # by one (review of PR #180, B1: a save on such a night came up dark
+    # and said "The night had closed"). A schedule saved on it starts
+    # tonight as a restart would (follow_rule). Cleared as soon as the
+    # night leaves OFF; in memory only: a restart runs BOOT_DONE again.
+    never_opened: bool = False
     # The schedule's Hold was put on by a Stop (Jeff, 2026-10-30): only an
     # operator's Resume (or a show started by hand) ends it; Reset does not,
     # and it carries over the nightly reset. Kept in tonight's file. True
@@ -1127,6 +1140,8 @@ def _enter(tx, state, show=0, after_stop=False, resume=False):
     Also the one place `dark` is decided: true only while the state was
     entered after a stopped show and so asked for no look of its own."""
     tx._set_state(state)
+    if state != OFF and tx.m.never_opened:
+        tx.m = replace(tx.m, never_opened=False)
     tx.effects.extend(entry_effects(state, show, after_stop, resume))
     dark = _stays_dark(state, after_stop)
     if tx.m.dark != dark:
@@ -1160,6 +1175,14 @@ def _after_show(tx, abort=False, stopped=False, hold=False):
 # still the one Start now starts.
 DELAYED_START = "DELAYED START (operator hold)"
 EXTRA_SHOW = "EXTRA SHOW (operator)"
+# Close for the night's reason on every show it skipped. A saved schedule
+# never opens such a night again (rebuild_night).
+CLOSED_BY_OPERATOR = "SKIPPED (operator, Close for the night)"
+# A time a saved schedule gave a night already closed with Close for the
+# night. A later save drops such a row when its time left the schedule, so
+# saves never pile them up (review of PR #180, F3).
+CLOSED_SAVED = ("SKIPPED (the night had been closed with Close for the "
+                "night before this time was saved)")
 
 
 def _fire(tx, s, reason="FIRED"):
@@ -1318,10 +1341,16 @@ def _sweep(tx, held=None):
         break
 
 
+# BOOT_DONE's detail when a schedule saved on a night that never opened
+# starts it (follow_rule): its journal line says so, not "started".
+SAVED_START = "a schedule was saved on a night that had no shows"
+
+
 def _boot_done(m, ev, now):
     tx = _Tx(m, ev, now)
     if not m.slots:
         _enter(tx, OFF)
+        tx.m = replace(tx.m, never_opened=True)
         tx.note(BOOT_DONE, "done", "no shows tonight",
                 f"The scheduler started. There are no shows on "
                 f"{m.date}, so it is off for the night.")
@@ -1393,7 +1422,8 @@ def _boot_done(m, ev, now):
                   "The next show, or an operator, brings it back.")
     nxt = tx.m.next_slot()
     head = ("The scheduler restarted and picked up tonight's list as it was"
-            if was else "The scheduler started")
+            if was else "Tonight started from the schedule just saved"
+            if ev.detail == SAVED_START else "The scheduler started")
     tx.note(BOOT_DONE, "done", why,
             f"{head}, in {tx.m.state}: {why}."
             + (f" Next is show {nxt.n} at {clock(_local(m, nxt.start))}."
@@ -1420,7 +1450,11 @@ def _tick(m, ev, now):
                 "to zero, MadMapper stopped, pixels faded, blackout.",
                 actor="scheduler")
     elif before == IDLE and st == IDLE and \
-            any(s.status == MISSED for s in tx.m.slots):
+            any(s.status == MISSED and s.reason not in PAST_REASONS
+                for s in tx.m.slots):
+        # A time a saved schedule put in the past (PAST_REASONS) is not a
+        # show going by: the save never changes the look (review of PR
+        # #180).
         # The first show went by without starting; the night is under way.
         _enter(tx, STANDBY)
         tx.note("standby", "done", "the first show was missed",
@@ -1922,14 +1956,12 @@ def _end_night(m, ev, now):
     tx = _Tx(m, ev, now)
     skipped = []
     for s in m.pending() + ([m.delayed()] if m.delayed() else []):
-        tx.set_slot(s.n, status=SKIPPED,
-                    reason="SKIPPED (operator, Close for the night)")
+        tx.set_slot(s.n, status=SKIPPED, reason=CLOSED_BY_OPERATOR)
         skipped.append(s.n)
-    tx.m = replace(tx.m, held_from="")
+    tx.m = replace(tx.m, held_from="", closed_by_operator=True)
     _enter(tx, CLOSING)
     for n in skipped:
-        tx.note(END_NIGHT, "skipped",
-                "SKIPPED (operator, Close for the night)",
+        tx.note(END_NIGHT, "skipped", CLOSED_BY_OPERATOR,
                 f"Show {n} will not run: the night was closed.", show=n)
     tx.note(END_NIGHT, "done", "night closed by the operator",
             f"{_operator_name(ev)} pressed Close for the night"
@@ -2199,8 +2231,12 @@ TONIGHT_FORMATS = (TONIGHT_PLAIN_FORMAT, TONIGHT_FORMAT)
 TONIGHT_KEYS = frozenset((
     "format", "date", "rule_id", "state", "running", "last_end",
     "held_from", "faults", "shows_started", "slots"))
-# Format 4 only, and written only when true.
-TONIGHT_OPTIONAL = frozenset(("dark", "abort_latched", "stop_hold"))
+# Format 4 only, and written only when true. `closed_by_operator` (PR #180)
+# and `stop_hold` (#191) ride on format 4 the same way: an older ltcplay
+# refuses the file and sets it aside rather than reading a closed night as
+# open, or a Stop's Hold as a plain one.
+TONIGHT_OPTIONAL = frozenset(("dark", "abort_latched", "closed_by_operator",
+                              "stop_hold"))
 SLOT_KEYS = frozenset((
     "n", "start", "status", "reason", "origin", "planned", "fired_at",
     "confirmed_at", "ended_at", "paused_s"))
@@ -2216,7 +2252,8 @@ def machine_to_doc(m):
     tonight is kept: the slots, their statuses and edits, when the last show
     ended, hold and faults. show_len_s, guard_s, late_grace_s and the zone
     always come from the rule file, never from here. Pure."""
-    marked = m.dark or m.abort_latched or m.stop_hold
+    marked = (m.dark or m.abort_latched or m.closed_by_operator or
+              m.stop_hold)
     doc = {
         "format": TONIGHT_FORMAT if marked else TONIGHT_PLAIN_FORMAT,
         "date": m.date.isoformat(),
@@ -2235,6 +2272,8 @@ def machine_to_doc(m):
         doc["dark"] = True
     if m.abort_latched:
         doc["abort_latched"] = True
+    if m.closed_by_operator:
+        doc["closed_by_operator"] = True
     if m.stop_hold:
         doc["stop_hold"] = True
     return doc
@@ -2409,6 +2448,7 @@ def machine_from_doc(doc, rule, d, now, notes=None):
         shows_started=doc["shows_started"], resumed_from=state,
         rule_id=str(doc["rule_id"]), dark=doc.get("dark", False),
         abort_latched=doc.get("abort_latched", False),
+        closed_by_operator=doc.get("closed_by_operator", False),
         stop_hold=doc.get("stop_hold", False) and state == HOLD)
 
 
@@ -2436,63 +2476,359 @@ def assume_the_worst(m, now):
     return replace(m, slots=tuple(slots), last_end=now), notes
 
 
-def rebuild_night(rule, saved):
-    """The rule changed since tonight was saved. Tonight is built again from
-    the new rule, keeping only what already happened: every show with a
-    final status (and one that was running, or delayed and waiting for
-    Start now) is carried over onto the new list, matched by the time it
-    was planned for. Operator edits to shows
-    still to come are dropped. Returns (machine, sentences), one sentence per
-    change, for the journal. Pure."""
+def closed_by_operator(m):
+    """True when tonight was closed with Close for the night. The machine's
+    own flag says so (kept in tonight's file and across every rebuild, so
+    a night closed with nothing left to skip counts too); a show SKIPPED
+    for it says so as well."""
+    return m.closed_by_operator or any(s.reason == CLOSED_BY_OPERATOR
+                                       for s in m.slots)
+
+
+def keeps_tonight(rule, saved):
+    """True when `rule` gives tonight the show times tonight's list was
+    planned from: no time is new, and no show still to come lost its time.
+    Tonight's list is then kept exactly as it is, with every change made to
+    it tonight (Delay next, Delay the rest, a move, a show added, removed
+    or skipped): a save that changed another night, an exception, the
+    season or the wording undoes nothing (reviews of PR #180: a save of
+    Friday's hours undid a Delay the rest and show 1 started 10 minutes
+    early). Only the times are compared, so a save and a restart decide
+    alike: a restart reads tonight's list onto the new rule and never knew
+    the old show length, guard or grace. A new one applies to the kept list
+    as to any other, and every start is still checked against it (the
+    guard, a show still running). Pure."""
     fresh = new_night(rule, saved.date)
+    new = {sl.start for sl in fresh.slots}
+    ours = [sl for sl in saved.slots if sl.origin == "rule"]
+    planned = {(sl.planned or sl.start) for sl in ours}
+    to_come = {(sl.planned or sl.start) for sl in ours
+               if sl.status in (PENDING, DELAYED)}
+    return new <= planned and to_come <= new
+
+
+def _carried(fresh, saved, slots, running):
+    """Tonight on `fresh` (the new rule's lengths, guard, grace and zone)
+    with `slots` and everything else that happened tonight from `saved`."""
+    return replace(fresh, slots=slots, running=running,
+                   last_end=saved.last_end, held_from=saved.held_from,
+                   faults=saved.faults, shows_started=saved.shows_started,
+                   resumed_from=saved.resumed_from, dark=saved.dark,
+                   abort_latched=saved.abort_latched,
+                   closed_by_operator=saved.closed_by_operator,
+                   never_opened=saved.never_opened,
+                   stop_hold=saved.stop_hold)
+
+
+def rebuild_night(rule, saved, dropped=None, now=None, skipped=None):
+    """The rule changed since tonight was saved.
+
+    When it gives tonight the same times still to come (keeps_tonight),
+    tonight's list is kept as it is, every change made tonight with it; the
+    rule's show length, guard, grace and zone are the new rule's.
+
+    Otherwise tonight is built again from the new rule, keeping what
+    already happened: every show with a final status (and one that was
+    running, or delayed and waiting for Start now) is carried over as it
+    is, a show taken off tonight's list or skipped stays SKIPPED. A show
+    still to come that was delayed or moved tonight keeps its time while
+    the time it was planned for is still in the schedule: a save never
+    brings it earlier. A show whose planned time left the schedule, and a
+    show added tonight, are dropped: each one is a sentence, also appended
+    to `dropped` when given, so the answer to a save can say so plainly.
+
+    Either way, a time from the file too close (show length plus guard) to
+    a show an operator delayed or moved is SKIPPED (TOO_CLOSE), never the
+    delayed show (review of PR #180, round 3): see _room_for_delays. Times
+    at or before `now` are left out of that check; the save misses them.
+    Each such skip is a sentence, also appended to `skipped`.
+
+    Numbers (Jeff, Pico, 2026-10-29: after a rebuild the extra show 19 came
+    back as show 23): a show that happened, and an extra show, keeps its
+    number; the shows still to come are numbered in time order, each
+    taking the lowest number no show that happened has. On a night closed
+    with Close for the night every show still to come is SKIPPED for the
+    same reason: a saved schedule never opens a night an operator closed.
+
+    Used by a restart (schedule_service._load_tonight) and by a schedule
+    saved while ltcplay runs (follow_rule), the one rebuild for both.
+    Returns (machine, sentences), one sentence per change, for the
+    journal. The machine is in BOOT, as a fresh night is. Pure."""
+    fresh = new_night(rule, saved.date)
+    if keeps_tonight(rule, saved):
+        notes = []
+        m = _carried(fresh, saved, saved.slots, saved.running)
+        return _room_for_delays(m, now, notes, skipped), notes
     hm = fresh.hm
-    by_time = {sl.start: sl for sl in fresh.slots}
-    slots = {sl.n: sl for sl in fresh.slots}
-    extra_n = max((sl.n for sl in fresh.slots), default=0)
+    fresh_times = {sl.start for sl in fresh.slots}
+    closed = closed_by_operator(saved)
+    slots = {}
     notes = []
     running = 0
-    kept_times = set()
+    taken = set()
+    # The number of the show still to come at each planned time.
+    to_come = {}
+    # A show still to come that was delayed or moved tonight, by the time
+    # it was planned for; `orphans`, those whose planned time left the file.
+    moved = {}
+    orphans = []
+
+    def drop(text):
+        notes.append(text)
+        if dropped is not None:
+            dropped.append(text)
     for sl in sorted(saved.slots, key=lambda x: (x.start, x.n)):
         planned = sl.planned or sl.start
         if sl.status == PENDING:
             if sl.origin != "rule":
-                notes.append(f"The show added tonight at {hm(sl.start)} is "
-                             f"dropped because the schedule changed.")
-            elif sl.planned is not None:
+                drop(f"The show added tonight at {hm(sl.start)} is dropped "
+                     f"because the schedule changed.")
+                continue
+            to_come.setdefault(planned, sl.n)
+            if sl.planned is not None and planned in fresh_times:
+                # Its time is still in the schedule: the Delay or move is
+                # kept (review of PR #180: dropping it put the show back at
+                # a time already gone by, and it was MISSED).
+                moved.setdefault(planned, sl)
                 notes.append(f"Tonight's move of the {hm(planned)} show to "
-                             f"{hm(sl.start)} is dropped because the "
-                             f"schedule changed.")
-            elif planned not in by_time:
+                             f"{hm(sl.start)} (a Delay or a move) is kept.")
+            elif sl.planned is not None:
+                # Never dropped either (review of PR #180, round 3): the
+                # operator delayed or moved it, so it stays at its time.
+                orphans.append(sl)
+                notes.append(f"Tonight's move of the {hm(planned)} show to "
+                             f"{hm(sl.start)} (a Delay or a move) is kept, "
+                             f"though the {hm(planned)} show is no longer in "
+                             f"the schedule.")
+            elif planned not in fresh_times:
                 notes.append(f"The {hm(planned)} show is no longer in the "
                              f"schedule.")
             continue
-        match = by_time.get(planned) if sl.origin == "rule" else None
-        if match is not None and match.start not in kept_times:
-            n = match.n
-            kept_times.add(match.start)
-        else:
-            extra_n += 1
-            n = extra_n
-        slots[n] = replace(sl, n=n)
+        if sl.status == SKIPPED and sl.reason.startswith(TOO_CLOSE_HEAD) \
+                and sl.origin == "rule":
+            # Skipped by a save for a delayed show: judged again from the
+            # new file, like any time still to come.
+            to_come.setdefault(planned, sl.n)
+            continue
+        if sl.reason == CLOSED_SAVED and planned not in fresh_times:
+            # Only ever a row a save added to a closed night: gone with its
+            # time, not piled up (review of PR #180, F3).
+            continue
+        if sl.origin == "rule" and planned in fresh_times:
+            taken.add(planned)
+        slots[sl.n] = sl
         if sl.status == RUNNING:
-            running = n
-        notes.append(f"Show {n} at {hm(sl.start)} keeps its status, "
-                     f"{sl.status}"
-                     + (f", from show {sl.n} on the old list."
-                        if n != sl.n else "."))
-    saved_times = {(x.planned or x.start) for x in saved.slots}
-    for sl in fresh.slots:
-        if sl.start not in saved_times:
-            notes.append(f"Show {sl.n} at {hm(sl.start)} is new in the "
-                         f"schedule.")
-    m = replace(fresh, slots=tuple(sorted(slots.values(), key=lambda x: x.n)),
-                running=running, last_end=saved.last_end,
-                held_from=saved.held_from,
-                faults=saved.faults, shows_started=saved.shows_started,
-                resumed_from=saved.resumed_from, dark=saved.dark,
-                abort_latched=saved.abort_latched,
-                stop_hold=saved.stop_hold)
-    return m, notes
+            running = sl.n
+        notes.append(f"Show {sl.n} at {hm(sl.start)} keeps its status, "
+                     f"{sl.status}.")
+    # The times still to come are numbered in time order, each taking the
+    # lowest number no show that happened (or extra show) has (review of
+    # PR #180: a save at 17:00 numbered the night 2, 4, 1, 3, 5).
+    # Each entry goes by the time it was planned for; a delayed show's
+    # place in the order is its delayed time.
+    left = [sl for sl in fresh.slots if sl.start not in taken] + [
+        replace(o, start=o.planned, planned=None) for o in orphans]
+    moved.update({o.planned: o for o in orphans})
+
+    def at(sl):
+        return moved[sl.start].start if sl.start in moved else sl.start
+    numbers = {}
+    used = set(slots)
+    free = 1
+    for sl in sorted(left, key=lambda x: (at(x), x.start)):
+        while free in used:
+            free += 1
+        numbers[sl.start] = free
+        used.add(free)
+    for sl in left:
+        n = numbers[sl.start]
+        new = sl.start not in to_come
+        if not new and to_come[sl.start] != n:
+            notes.append(f"The {hm(sl.start)} show, show "
+                         f"{to_come[sl.start]} before, is now show {n}, so "
+                         f"tonight's shows still to come are numbered in "
+                         f"time order.")
+        if closed:
+            sl = replace(sl, status=SKIPPED, reason=CLOSED_SAVED)
+            notes.append(f"Show {n} at {hm(sl.start)} is "
+                         f"{'new in' if new else 'still in'} the schedule, "
+                         f"but tonight was closed with Close for the night, "
+                         f"so it is skipped.")
+        else:
+            if new:
+                notes.append(f"Show {n} at {hm(sl.start)} is new in the "
+                             f"schedule.")
+            was = moved.get(sl.start)
+            if was is not None:
+                sl = replace(sl, start=was.start, planned=was.planned)
+        slots[n] = replace(sl, n=n)
+    m = _carried(fresh, saved,
+                 tuple(sorted(slots.values(), key=lambda x: x.n)), running)
+    return _room_for_delays(m, now, notes, skipped), notes
+
+
+# A time from the file skipped because a show an operator delayed or moved
+# is too close to it (review of PR #180, round 3).
+TOO_CLOSE_HEAD = "SKIPPED (too close to the delayed show "
+
+
+def _room_for_delays(m, now, notes, skipped=None):
+    """A show an operator delayed or moved tonight (planned set) is never
+    moved earlier or dropped by a save. Any other show still to come that
+    starts too close to it (show length plus guard either way) is SKIPPED,
+    "too close to the delayed show N", and said in `notes` (and `skipped`).
+    Times at or before `now` are left out: the save misses those, as any
+    time gone by. Two shows that are both delayed or both from the file
+    are never judged here: the file's own times are spaced by the file,
+    and a Delay press was spaced when pressed. Pure."""
+    need = timedelta(seconds=m.show_len_s + m.guard_s)
+    cut = _LONG_AGO if now is None else _utc(_aware(now))
+    while True:
+        pend = [x for x in m.pending() if x.start > cut]
+        hit = None
+        for a, b in zip(pend, pend[1:]):
+            if b.start >= a.start + need:
+                continue
+            if a.planned is not None and b.planned is None:
+                hit = (b, a)
+            elif b.planned is not None and a.planned is None:
+                hit = (a, b)
+            if hit:
+                break
+        if hit is None:
+            return m
+        victim, kept = hit
+        why = f"{TOO_CLOSE_HEAD}{kept.n})"
+        m = replace(m, slots=tuple(
+            replace(x, status=SKIPPED, reason=why) if x.n == victim.n
+            else x for x in m.slots))
+        text = (f"Show {victim.n} at {m.hm(victim.start)} is skipped: it is "
+                f"too close to show {kept.n} at {m.hm(kept.start)}, which "
+                f"an operator delayed or moved tonight, for both to run. A "
+                f"save never moves a delayed show earlier.")
+        notes.append(text)
+        if skipped is not None:
+            skipped.append(text)
+
+
+# Before any instant the machine keeps.
+_LONG_AGO = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+# A schedule saved while ltcplay runs (Jeff, Pico, 2026-10-29: a schedule
+# saved after the night had closed planned nothing until the engine was
+# restarted). In these states tonight is rebuilt only once they are over:
+# a running or paused show is never touched, and a closing finishes first.
+FOLLOW_LATER = frozenset((SHOW, PAUSED, CLOSING))
+
+SAVED_PAST = "MISSED (its time had gone by when the schedule was saved)"
+# The same at a restart that found the schedule file changed, and for a
+# save followed only once the show or closing it waited for was over
+# (review of PR #180: the time had not gone by when that was saved).
+RESTART_PAST = ("MISSED (its time had gone by when the changed schedule "
+                "file was read at a restart)")
+FOLLOWED_PAST = ("MISSED (its time had gone by when the saved schedule "
+                 "was followed, after the show or the closing it waited "
+                 "for)")
+PAST_REASONS = frozenset((SAVED_PAST, RESTART_PAST, FOLLOWED_PAST))
+
+
+def _settle_saved_past(tx, before, held, why=SAVED_PAST):
+    """A rebuild never lets a show start whose time is at or before now,
+    unless that same show was already waiting for that same time before it
+    (review of PR #180: with a 15 s late grace, a save made the next tick
+    start a show whose time had gone by, during the save's own answer).
+    Every other such show is MISSED (SAVED_PAST). On a Hold with no show
+    already waiting, the latest of them waits as DELAYED instead, as any
+    show whose time passes during a Hold does; a show already waiting stays
+    the one that waits. A show that was waiting for the same time before is
+    left for the next tick, exactly as if nothing had been saved."""
+    now = tx.when
+    late = []
+    for s in tx.m.pending():
+        if s.start > now:
+            break
+        old = before.slot(s.n)
+        if old is not None and old.status == PENDING and \
+                old.start == s.start:
+            continue
+        late.append(s)
+    wait = late[-1] if held and late and tx.m.delayed() is None else None
+    for s in late:
+        if s is wait:
+            _hold_back(tx, s)
+        else:
+            _miss(tx, s, why)
+
+
+def follow_rule(rule, m, now, dropped=None, past=SAVED_PAST, skipped=None):
+    """Tonight rebuilt from a schedule saved while the scheduler runs, the
+    same rebuild a restart makes (rebuild_night), with nothing started.
+    Returns (Outcome, sentences): the Outcome has no effects, ever; the
+    sentences are rebuild_night's (and, in BOOT, the shows it settled).
+    `dropped` gets the sentences for tonight's changes the rebuild undid.
+
+    Every state: a show the rebuild puts at or before now that was not
+    already waiting for that same time is MISSED, or DELAYED on a Hold
+    (_settle_saved_past); it is never started late. A show that was
+    already waiting is left to the next tick, as if nothing was saved.
+    BOOT (a restart): BOOT_DONE then works out the state, as it always has.
+    IDLE, STANDBY, HOLD: the state is kept (a Hold stays a Hold, nothing is
+    Resumed), and so is the show waiting after a Hold.
+    OFF: a closed night with a show still to come opens again in STANDBY,
+    dark (the closing blacked the rig out, and nothing is sent to bring a
+    look back). Never SHOW, and nothing starts: the next show starts at its
+    time only while Run is pressed, and only by the usual rules. With
+    nothing to come, or closed with Close for the night, it stays OFF.
+    SHOW, PAUSED, CLOSING (FOLLOW_LATER): refused, so a running show and its
+    status are never disturbed.
+    OFF on a night that never opened (never_opened: no shows at all when
+    the scheduler started, so no closing ran): tonight starts as a restart
+    would start it. The machine comes back in BOOT and the caller sends
+    BOOT_DONE, which picks IDLE (the preshow look) or STANDBY by the usual
+    rules (review of PR #180, B1). With nothing to come it stays OFF.
+    `past` is the reason a show the rebuild put in the past is MISSED
+    with; a restart (BOOT) always uses RESTART_PAST. Pure."""
+    now = _utc(_aware(now))
+    if m.state in FOLLOW_LATER:
+        raise ValueError(f"Tonight is not rebuilt in {m.state}; it waits "
+                         f"until that is over.")
+    rebuilt, notes = rebuild_night(rule, m, dropped, now, skipped)
+    was = m.state
+    tx = _Tx(m, Event(TICK, "scheduler"), now)
+    if was == BOOT:
+        tx.m = rebuilt
+        _settle_saved_past(tx, m, held=(m.resumed_from == HOLD),
+                           why=RESTART_PAST)
+        out = tx.done()
+        return Outcome(out.machine), notes + [e.text for e in out.log]
+    tx.m = replace(rebuilt, state=was, running=0, paused_at=None,
+                   operators=m.operators)
+    _settle_saved_past(tx, m, held=(was == HOLD), why=past)
+    if was == OFF and m.never_opened and not closed_by_operator(tx.m):
+        if tx.m.waiting():
+            tx.m = replace(tx.m, state=BOOT, held_from="", resumed_from="")
+            tx.note("open", "done", "tonight had no shows",
+                    "Tonight had no shows when the scheduler started, and "
+                    "the schedule just saved has a show tonight, so "
+                    "tonight starts now as a restart would start it. "
+                    "Nothing is started by the save; a show starts by "
+                    "itself only while Run is pressed.", actor="scheduler")
+        return tx.done(), notes
+    if was == OFF and tx.m.waiting() and not closed_by_operator(tx.m):
+        tx.m = replace(tx.m, held_from="")
+        _enter(tx, STANDBY, after_stop=True)
+        nxt = tx.m.next_slot() or tx.m.delayed()
+        what = (f"show {nxt.n} at {clock(_local(tx.m, nxt.start))} is next"
+                if tx.m.next_slot() else
+                f"show {nxt.n} is delayed and waits for Start now")
+        tx.note("reopen", "done", "a show is still to come",
+                f"The night had closed, and the schedule just saved has a "
+                f"show still to come tonight, so the scheduler is back in "
+                f"STANDBY: {what}. Nothing was started and the rig stays "
+                f"dark until the next show. A show starts by itself only "
+                f"while Run is pressed.", actor="scheduler")
+    return tx.done(), notes
 
 
 # --------------------------------------------------- operator actions --
