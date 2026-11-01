@@ -1285,13 +1285,27 @@ It was 15 seconds before.
   grace allows is counted too).
 - After a restart a show that came due while the program was down starts
   if it is no more than the limit late, and Run is pressed. A restart
-  always leaves Run off, so unless someone presses Run in time the show is
-  refused and shows as "did not start" (with the alert and the sentence
-  "Run has not been pressed"); past the limit it is simply MISSED.
+  always leaves Run off, so unless Run was pressed before the show's time
+  the show is refused and marked FAULT, with the alert "did not start" and
+  the sentence "Run has not been pressed". Pressing Run afterwards, even
+  inside the 120 seconds, does not start it: press Start now. Past the
+  limit the show is simply MISSED.
 - The rig check (pre-roll) never stretches the limit. A show whose rig
   check runs at its time may start up to the check's allowance late, but
   never past 120 seconds: a show whose rig check cannot finish by then is
   MISSED. (Only a grace set below 120 gains from the allowance.)
+- Schedule files that still say `late_grace_s` 15 (the old default, which
+  the example file had and first run copies) are changed to 120 once, when
+  the program reads them: the file is saved (the old one is kept as the
+  previous version) and the journal says "late limit changed from 15 s to 2
+  minutes". Every other value (0, 30, 60, 300 ...) is left alone, and a 15
+  chosen again afterwards is kept (a marker file,
+  `ltcplay_late_limit_migrated.json`, stays beside the schedule file). The
+  example file now says 120.
+- A night is not handed over while a waiting show can still start inside
+  its late limit, and the settling step at a hand over never starts a show:
+  every start, however late, goes through the alert hold, the rig check and
+  the Stop check.
 - It never overrides anything that says wait. A Hold, a Stop's Hold, an
   Abort, Run not pressed, the guard after the previous show, a show that
   is running and a Stop under way all still hold a show back, however

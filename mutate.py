@@ -9406,6 +9406,31 @@ def build():
   "doc.late_grace_s == null ? 120 :",
   "doc.late_grace_s == null ? \"\" :"),
 
+ ("late limit 2 min: a night is handed over while a show can still start inside its grace",
+  "ltcplay/schedule.py",
+  "                e = s.start + need + timedelta(seconds=m.late_grace_s)\n",
+  "                e = s.start + need\n"),
+
+ ("late limit 2 min: the settling tick at a hand over can start a show",
+  "ltcplay/schedule.py",
+  "        if tx.ev.settle:\n            break\n",
+  "        if False:\n            break\n"),
+
+ ("late limit 2 min: a file that says 15 is not changed to 120",
+  "ltcplay/schedule_service.py",
+  "        if not self.MIGRATE_LEGACY_GRACE:\n            return\n",
+  "        return\n"),
+
+ ("late limit 2 min: any late_grace_s is changed to 120",
+  "ltcplay/schedule_service.py",
+  "            if isinstance(g, bool) or g != 15 or not isinstance(g, int):",
+  "            if g is None:"),
+
+ ("late limit 2 min: a 15 chosen after the change is changed again",
+  "ltcplay/schedule_service.py",
+  "            if os.path.exists(marker):\n                return\n",
+  ""),
+
  ("review196C: overlapping nights do not say a show can be missed",
   "ltcplay/schedule.py",
   "so that first show will be MISSED (late by \"",
@@ -22378,8 +22403,8 @@ def build():
  # (Jeff, Pico, 2026-10-29).
  ("saved schedule: a save waits for a restart to plan tonight again",
   "ltcplay/schedule_service.py",
-  "            else:\n                self._follow_rule(self.clock())\n            rule = self.rule",
-  "            rule = self.rule"),
+  "                self._follow_rule(self.clock())\n            rule = self.rule",
+  "                pass\n            rule = self.rule"),
 
  ("saved schedule: a closed night stays closed though a show is still to come",
   "ltcplay/schedule.py",

@@ -990,6 +990,12 @@ class Event:
     # rather than without the check. Every other show keeps the grace.
     late_show: int = 0
     late_ok_s: int = 0
+    # A TICK that only settles a night being handed over (schedule_service
+    # _ensure_night): it may mark shows MISSED and finish what is over, but
+    # never starts a show, so every start goes through the normal alert
+    # hold, pre-roll and Stop checks (Jeff's rule; simulation review B of
+    # PR #202).
+    settle: bool = False
 
 
 @dataclass(frozen=True)
@@ -1629,7 +1635,11 @@ def _sweep(tx, held=None):
             _miss(tx, s, why)
             continue
         # Inside the window. Only a waiting machine fires, and only if the
-        # guard after the previous show has run out.
+        # guard after the previous show has run out. A settling tick never
+        # fires: the show stays PENDING for the normal tick (or the hand
+        # over's own MISSED).
+        if tx.ev.settle:
+            break
         if state in (IDLE, STANDBY) and _guard_left(tx.m, now) == 0:
             if tx.ev.latched:
                 # Jeff: after an Abort the rig stays dark until the
@@ -2414,7 +2424,11 @@ def night_reset(d, tz, rule=None, m=None):
                     # warned about when typed, and missed out loud at the
                     # hand over (close_unrun_at_handover).
                     continue
-                e = s.start + need
+                # Until it can no longer start: its time, the late grace
+                # it may still start inside, and then its length and guard
+                # (simulation review B of PR #202: a night handed over
+                # while a show could still start inside its grace).
+                e = s.start + need + timedelta(seconds=m.late_grace_s)
             elif s.status == RUNNING and m.running == s.n:
                 e = m.expected_end(s.fired_at or s.start) + \
                     timedelta(seconds=m.guard_s)

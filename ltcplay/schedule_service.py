@@ -953,6 +953,7 @@ class Service:
         if failed:
             self._journal_rule_error()
         else:
+            self._journal_late_migration()
             self._journal_rule_warnings()
         if why:
             self._journal_line("system", why, action="operators")
@@ -1032,6 +1033,7 @@ class Service:
             if self._load_rule():
                 self._journal_rule_error()
             else:
+                self._journal_late_migration()
                 self._follow_rule(self.clock())
             rule = self.rule
         # Worked out off the lock (review of PR #196: a long season held
@@ -1053,6 +1055,7 @@ class Service:
         """True when the rule file could not be used."""
         try:
             self.rule = load_rule(self.path)
+            self._migrate_legacy_grace()
             self.error = ""
             self._rule_id = sch.rule_fingerprint(self.rule)
             return False
@@ -1062,6 +1065,63 @@ class Service:
             self.machine = None
             self._rule_id = ""
             return True
+
+    # The late limit became 2 minutes (Jeff, 2026-11-01). The schedule
+    # file every set-up PC copied from the example said 15, so a file whose
+    # late_grace_s is exactly 15 is the old default: it is changed to 120
+    # once, saved, and said in the journal. Any other value (0, 30, 60,
+    # 300 ...) is left alone, and so is a 15 typed after this ran once (the
+    # marker file stays beside the schedule file).
+    MIGRATE_LEGACY_GRACE = True        # the selftest turns it off elsewhere
+    LATE_MIGRATED_FILE = "ltcplay_late_limit_migrated.json"
+    LATE_MIGRATED_LINE = ("late limit changed from 15 s to 2 minutes (the "
+                          "schedule file said late_grace_s 15, the old "
+                          "default; a show is MISSED only when it is more "
+                          "than 120 s late). Any other value you set is "
+                          "kept.")
+
+    def _migrate_legacy_grace(self):
+        """Lock held or at start. Never raises: a failure leaves the file
+        as it was (15) and says so once."""
+        self._late_migrated = False
+        if not self.MIGRATE_LEGACY_GRACE:
+            return
+        try:
+            marker = os.path.join(os.path.dirname(os.path.abspath(self.path)),
+                                  self.LATE_MIGRATED_FILE)
+            if os.path.exists(marker):
+                return
+            with open(self.path, encoding="utf-8-sig") as fh:
+                doc = json.loads(fh.read())
+            if not isinstance(doc, dict) or doc.get("soak_only") is True:
+                return                   # the soak's own file is left alone
+            g = doc.get("late_grace_s")
+            if isinstance(g, bool) or g != 15 or not isinstance(g, int):
+                if "late_grace_s" in doc:
+                    # An explicit other value: the migration is settled.
+                    write_json_atomic(marker, {"checked": True})
+                return
+            doc["late_grace_s"] = sch.DEFAULT_LATE_GRACE_S
+            self.rule = save_rule(self.path, doc)
+            write_json_atomic(marker, {"migrated_from": 15,
+                                       "to": sch.DEFAULT_LATE_GRACE_S})
+            self._late_migrated = True
+        except Exception as e:                   # noqa: BLE001
+            self._late_migrated_error = f"{type(e).__name__}: {e}"
+
+    def _journal_late_migration(self):
+        if getattr(self, "_late_migrated", False):
+            self._late_migrated = False
+            self._journal_line("system", self.LATE_MIGRATED_LINE,
+                               action="schedule file", outcome="migrated")
+        err = getattr(self, "_late_migrated_error", "")
+        if err:
+            self._late_migrated_error = ""
+            self._journal_line(
+                "system", f"The late limit could not be changed from 15 s "
+                          f"to 2 minutes in the schedule file ({err}). It "
+                          f"stays 15 s until you save the schedule.",
+                action="schedule file", outcome="not migrated", fault=True)
 
     # -- a schedule saved while running (Jeff, Pico, 2026-10-29) -----------
     # What a rebuild keeps and drops (sch.rebuild_night), said once at its
@@ -2608,13 +2668,13 @@ class Service:
             return True
         # A new day. Settle yesterday first: a show still on its list
         # (the machine was asleep across it) is marked MISSED in the
-        # journal rather than dropped without a word. This tick never
-        # starts a show, so it needs no alert gate: a night hands over only
-        # once its last show and guard are over (sch.night_reset), so every
-        # slot on yesterday's list is past by now; BOOT_DONE below starts
-        # nothing either, and the next
-        # TICK goes through the gate (review of PR #133, 7 and 8).
-        self._apply(sch.Event(sch.TICK, "scheduler"), now)
+        # journal rather than dropped without a word. This tick can never
+        # start a show (settle=True: it only marks MISSED), so it needs no
+        # alert gate, pre-roll or Stop check; a show still inside its late
+        # grace stays PENDING and is closed out loud below. BOOT_DONE
+        # starts nothing either, and the next TICK goes through the gate
+        # (review of PR #133, 7 and 8; simulation review B of PR #202).
+        self._apply(sch.Event(sch.TICK, "scheduler", settle=True), now)
         how = self._still_open(now, d)
         if how is None:
             return True

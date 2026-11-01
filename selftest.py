@@ -9814,6 +9814,10 @@ def _sched():
     """The scheduler module, or None after a failure saying why it cannot be
     tested on this machine (on Windows: the tzdata package is missing)."""
     from ltcplay import schedule as S
+    from ltcplay import schedule_service as _SV
+    # Tests that write late_grace_s 15 mean 15; the one-time change of the
+    # old default is tested by test_schedule_legacy_late_grace_is_migrated.
+    _SV.Service.MIGRATE_LEGACY_GRACE = False
     try:
         S.zone("America/Denver")
     except S.RuleError as e:
@@ -10560,6 +10564,157 @@ def test_schedule_late_limit_round_two():
                   s1.status in (S2.FAULT, S2.MISSED),
                   f"+{off} s with Run off: refused in words, not started: "
                   f"{s1.status} {[(r['outcome'], r['text']) for r in tried]}")
+    print("  ok")
+
+
+def test_schedule_handover_waits_for_the_grace_and_starts_nothing():
+    section("scheduler (simulation review B of PR #202): a night is not "
+            "handed over while a waiting show can still start inside its "
+            "late grace, and the settling tick at a hand over can never "
+            "start a show, so the alert hold, pre-roll and Stop checks "
+            "always apply")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import timedelta, date, datetime
+    from ltcplay import schedule_service as SV
+    # The machine level: a settling TICK in a show's window starts nothing.
+    rule = _one_night_rule(S, grace=120)
+    m = S.new_night(rule, date(2026, 11, 14))
+    m = S.step(m, S.Event(S.BOOT_DONE, "system"), _den(S, 17, 0)).machine
+    at = _den(S, 18, 0, 30)
+    plain = S.step(m, S.Event(S.TICK, "scheduler"), at)
+    settle = S.step(m, S.Event(S.TICK, "scheduler", settle=True), at)
+    check(any(e.kind == S.START_SHOW for e in plain.effects) and
+          not any(e.kind == S.START_SHOW for e in settle.effects) and
+          settle.machine.slot(1).status == S.PENDING,
+          "a settling tick leaves a show in its window PENDING, no start")
+    late = S.step(m, S.Event(S.TICK, "scheduler", settle=True),
+                  _den(S, 18, 2, 30))
+    check(late.machine.slot(1).status == S.MISSED,
+          "and still marks a show past its grace MISSED")
+    # The reset waits for a pending show's grace: show 60 s + guard 30 s,
+    # grace 120, a show at 02:30.
+    TZ = S.zone("America/Denver")
+
+    def doc():
+        return {"timezone": "America/Denver",
+                "season": {"first_date": "2026-11-13",
+                           "last_date": "2026-11-20"},
+                "weekly": {"sat": {"first_start": "23:50",
+                                   "interval_min": 20, "last_end": "02:40"}},
+                "exceptions": {}, "show_len_s": 60, "guard_s": 30,
+                "late_grace_s": 120}
+
+    def run(late_s, alert):
+        w = tempfile.mkdtemp()
+        p = os.path.join(w, SV.RULE_FILE)
+        SV.save_rule(p, doc())
+        T = datetime(2026, 11, 15, 2, 30, tzinfo=TZ)
+        now = [T - timedelta(seconds=10)]
+        svc = SV.Service(p, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                         state_dir=w)
+        svc.dry_run = True
+        if alert:
+            svc.showtime_gate = lambda: ("an alert is open", ("a1",))
+        svc.start(thread=False)
+        svc.tick()
+        now[0] = T + timedelta(seconds=late_s)
+        svc.tick()
+        svc.flush_conductor(5)
+        m = svc.machine
+        out = (str(m.date), m.state, m.slot(9).status if m.slot(9) else None)
+        svc.stop()
+        return out
+    for late_s in (20, 85, 95, 119):
+        got = run(late_s, True)
+        check(got[1] == S.HOLD and got[2] == S.PENDING,
+              f"an alert open, engine ticks {late_s} s late: the show is "
+              f"held back, not started: {got}")
+    got = run(95, False)
+    check(got[1] == S.SHOW and got[2] == S.RUNNING,
+          f"no alert: it starts, 95 s late: {got}")
+    print("  ok")
+
+
+def test_schedule_legacy_late_grace_is_migrated():
+    section("scheduler (simulation review B of PR #202): an installed "
+            "schedule file that says late_grace_s 15 (the old default, "
+            "copied from the example on first run) becomes 120 once, "
+            "saved and said in the journal; every other value stays")
+    S = _sched()
+    if S is None:
+        return
+    import json
+    import tempfile
+    from datetime import timedelta
+    from ltcplay import schedule_service as SV
+    ex = json.load(open(os.path.join(os.path.dirname(
+        os.path.abspath(__file__)), "ltcplay", "ltcplay_schedule.example.json"),
+        encoding="utf-8"))
+    check(ex.get("late_grace_s", 120) == 120,
+          "the example schedule file does not say 15")
+
+    def boot(doc, keep=None, migrate=True):
+        work = keep or tempfile.mkdtemp()
+        path = os.path.join(work, SV.RULE_FILE)
+        if keep is None:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(doc, fh)
+        now = [_den(S, 17, 0)]
+        SV.Service.MIGRATE_LEGACY_GRACE = migrate
+        try:
+            svc = SV.Service(path, clock=lambda: now[0],
+                             ntp_query=lambda: 0.0, state_dir=work)
+            svc.start(thread=False)
+        finally:
+            SV.Service.MIGRATE_LEGACY_GRACE = False
+        return svc, work, path
+    base = _sched_doc(exceptions={})
+    for value, want, migrated in ((15, 120, True), (0, 0, False),
+                                  (30, 30, False), (60, 60, False),
+                                  (120, 120, False), (300, 300, False)):
+        svc, work, path = boot(dict(base, late_grace_s=value))
+        on_disk = json.load(open(path, encoding="utf-8"))["late_grace_s"]
+        said = [r["text"] for r in svc.journal
+                if "late limit changed from 15 s to 2 minutes" in r["text"]]
+        check(svc.rule.late_grace_s == want and on_disk == want and
+              bool(said) == migrated,
+              f"late_grace_s {value}: rule {svc.rule.late_grace_s}, file "
+              f"{on_disk}, said {bool(said)}")
+        for t in said:
+            _no_dashes(t, "migration line")
+        if migrated:
+            check(os.path.exists(SV.previous_path(path)) and
+                  json.load(open(SV.previous_path(path),
+                                 encoding="utf-8"))["late_grace_s"] == 15,
+                  "the file it replaced is kept")
+            # Once only: a 15 typed afterwards stays 15.
+            svc.stop()
+            d2 = json.load(open(path, encoding="utf-8"))
+            d2["late_grace_s"] = 15
+            SV.save_rule(path, d2)
+            svc2, _w, _p = boot(None, keep=work)
+            check(svc2.rule.late_grace_s == 15 and not any(
+                "late limit changed" in r["text"] for r in svc2.journal),
+                  "a 15 chosen after the change is kept")
+            svc2.stop()
+        else:
+            svc.stop()
+    # A file with no late_grace_s reads as 120 and is not rewritten.
+    d = dict(base)
+    d.pop("late_grace_s")
+    svc, work, path = boot(d)
+    check(svc.rule.late_grace_s == 120 and
+          "late_grace_s" not in json.load(open(path, encoding="utf-8")),
+          "a file without the value means 120 and is left as it is")
+    svc.stop()
+    # The soak's own file is never touched.
+    svc, work, path = boot(dict(base, late_grace_s=15, soak_only=True))
+    check(json.load(open(path, encoding="utf-8"))["late_grace_s"] == 15,
+          "a soak file is left alone")
+    svc.stop()
     print("  ok")
 
 
@@ -110835,6 +110990,8 @@ if __name__ == "__main__":
         test_schedule_late_rule,
         test_schedule_late_limit_is_two_minutes,
         test_schedule_late_limit_round_two,
+        test_schedule_legacy_late_grace_is_migrated,
+        test_schedule_handover_waits_for_the_grace_and_starts_nothing,
         test_schedule_state_machine_every_state_every_event,
         test_abort_and_hold_never_refused_for_who_or_where,
         test_schedule_restart_guard_and_hold,
