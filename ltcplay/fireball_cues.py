@@ -102,7 +102,9 @@ LANDING_SETTLE_FRAMES = 24
 # A stage that must not run without another having run before it in the
 # same play: never gas (Valve Open) without its ignition lead (Igniter).
 NEEDS = {"valve": "igniter"}
+FIRE_STAGES = ("igniter", "valve")
 NEEDS_SLOT = {57: 58}           # the same on an FSEQ show: 57 needs 58
+_SLOT_STAGE = {s: k for k, s in fbtl.STAGE_SLOT.items()}
 
 
 class _Run:
@@ -407,15 +409,30 @@ class FireballCues:
         # on a running show) is a landing like the first frame's
         # (round-6 review 7): the cue time jumped back, or ahead by more
         # than the clock moved.
-        jumped = False
+        jumped = moved = False
         if run.last_relf is not None:
             adv = int((now - (run.last_t or now)) * fbtl.FPS) + 3
             jumped = relf < run.last_relf - 2 or relf > run.last_relf + adv
+            # The playhead itself moved (a Back, an Ahead, a Play from, a
+            # seek made during a pause), as opposed to the show carrying on
+            # from where it froze after a Hold (review of #201, round 2).
+            moved = relf < run.last_relf - 2 or relf > run.last_relf + (
+                3 if gapped else adv)
         run.last_relf, run.last_t = relf, now
         # A gap longer than GAP_S is a landing too: a forward seek shorter
         # than the pause is not seen as a jump by the clock (round-7
         # review 5).
         jumped = jumped or gapped
+        if moved:
+            # After a move, the fire stages are judged as at a fresh
+            # landing (review of #201, round 2: a Back inside a long
+            # Igniter let the Valve open while the flame link held the
+            # Igniter dark): what started, or was skipped, before the move
+            # says nothing about the shot from here. The charges keep their
+            # record: never a double charge.
+            for k in FIRE_STAGES:
+                run.started.discard(k)
+                run.skipped.pop(k, None)
         # The first frame is a landing only past the cue's top (the FSEQ
         # path too): a play whose first frame arrives at frame 1 or 2 still
         # fires a charge stage that starts at 00:00:00:00 (round-9 review 2).
@@ -431,7 +448,9 @@ class FireballCues:
             # not a start from the top.
             return self._fseq_guarded(out, run,
                                       (first and relf > TOP_FRAMES) or jumped,
-                                      relf)
+                                      relf,
+                                      (first and relf > TOP_FRAMES) or moved,
+                                      moved)
         out = self._masked(out)
         if label != run.cue:
             return out
@@ -482,6 +501,9 @@ class FireballCues:
                     # late after a Hold). Every stage, not only a charge
                     # (review B of #201): never one started part way.
                     run.skipped[k] = "landed inside its window"
+                    self._say(f"{fbtl.STAGE_WORD[k]} was skipped: the show "
+                              f"landed inside its window (a stage is never "
+                              f"started part way).")
                     continue
                 if not run.top_ok and \
                         w["s0"] < land + LANDING_SETTLE_FRAMES:
@@ -489,6 +511,9 @@ class FireballCues:
                     # landing: it would go out late and short (review B of
                     # #201). Skipped whole.
                     run.skipped[k] = "opens too soon after the landing"
+                    self._say(f"{fbtl.STAGE_WORD[k]} was skipped: it opens "
+                              f"too soon after the landing (it would go out "
+                              f"late and cut short).")
                     continue
             lead = NEEDS.get(k)
             lw = run.stages.get(lead) if lead else None
@@ -590,7 +615,7 @@ class FireballCues:
         return "charge record cannot be saved" in why or \
             "automatic charging is off" in why
 
-    def _fseq_land(self, out, run, relf, landed):
+    def _fseq_land(self, out, run, relf, landed, seek=False):
         """An FSEQ show after a landing (review B of #201). A fireball slot
         (55 to 58) that TURNS ON within LANDING_SETTLE_FRAMES of a landing
         is held at zero until the FSEQ turns it off, so it runs whole or
@@ -598,7 +623,12 @@ class FireballCues:
         own guard's, as before). Valve Open (57) turning on is held the
         same way while its Igniter (58) lead was held, or was already on
         at the landing (the flame link holds that one): never gas without
-        its ignition lead. In place. Never raises."""
+        its ignition lead. `landed`: the playhead moved (a Back, an Ahead,
+        a Play from, or a first frame part way in), never a Resume where
+        the show froze. `seek`: a move of the playhead inside this play
+        (not its first frame): a Valve Open already open there is held
+        too. Every hold is said once, in plain words. In place. Never
+        raises."""
         land = run.first_relf
         settling = land is not None and not run.top_ok and \
             relf is not None and relf < land + LANDING_SETTLE_FRAMES
@@ -613,11 +643,30 @@ class FireballCues:
                 # On at the landing (or not seen before): not a new start.
                 if landed and slot in NEEDS_SLOT.values():
                     run.fseq_lead_held.add(slot)
+                if seek and slot in NEEDS_SLOT and \
+                        slot not in run.fseq_land_hold:
+                    # Valve Open already open where the playhead moved to:
+                    # never opened part way, and its lead cannot have run
+                    # from here (review of #201, round 2: an Ahead).
+                    run.fseq_land_hold.add(slot)
+                    self._say(f"The FSEQ's "
+                              f"{fbtl.STAGE_WORD[_SLOT_STAGE[slot]]} was "
+                              f"held: the show landed inside it (never "
+                              f"opened part way).")
             elif not was:
                 lead = NEEDS_SLOT.get(slot)
-                if settling or (lead is not None and
-                                lead in run.fseq_lead_held):
+                word = fbtl.STAGE_WORD[_SLOT_STAGE[slot]]
+                if settling:
                     run.fseq_land_hold.add(slot)
+                    self._say(f"The FSEQ's {word} was held: it turned on too "
+                              f"soon after the landing (it would go out late "
+                              f"and cut short).")
+                elif lead is not None and lead in run.fseq_lead_held:
+                    run.fseq_land_hold.add(slot)
+                    self._say(f"The FSEQ's {word} was held: its "
+                              f"{fbtl.STAGE_WORD[_SLOT_STAGE[lead]]} lead did "
+                              f"not run in this play (never gas without "
+                              f"ignition).")
                 if slot in NEEDS_SLOT.values():
                     # A lead's own new start: held or not, from here.
                     if slot in run.fseq_land_hold:
@@ -627,7 +676,8 @@ class FireballCues:
             if slot in run.fseq_land_hold:
                 out[slot - 1] = 0
 
-    def _fseq_guarded(self, out, run, landed=False, relf=None):
+    def _fseq_guarded(self, out, run, landed=False, relf=None, moved=None,
+                      seek=False):
         """A show on its FSEQ (review of #187; Jeff: never a double charge
         under any circumstance, Purge by hand only): Purge (59) from the
         FSEQ is always zero, and the FSEQ's Fuel (55) and Air (56) charges
@@ -638,7 +688,12 @@ class FireballCues:
             return None
         out = list(out)
         out[PURGE_SLOT - 1] = 0
-        self._fseq_land(out, run, relf, landed)
+        # `moved`: the playhead moved (or a first frame part way in); a
+        # Resume after a Hold is a landing for the charges, but an Igniter
+        # that was on before the Hold and is on after it has run its lead
+        # (review of #201, round 2, as on a timeline show).
+        self._fseq_land(out, run, relf, landed if moved is None else moved,
+                        seek)
         tr = self._charge_get()
         last = self._sent(tr)
         now = self._clock()

@@ -1057,7 +1057,7 @@
 "fireball cues: a timeline that cannot be built lets every show's FSEQ fire the fireball": "test_fireball_cues_wiring",
 "fireball cues: an FSEQ charge at frame 1 or 2 is a landing (round 10)": "test_fireball_cues_rules",
 "fireball cues: an FSEQ charge at frame 3 is a start (round 10)": "test_fireball_cues_rules",
-"fireball cues: an FSEQ charge held for the mark starts late after a seek (round 6)": "test_fireball_cues_rules,test_start_at_cue_fireball_stages_run_whole_or_not_at_all",
+"fireball cues: an FSEQ charge held for the mark starts late after a seek (round 6)": "test_start_at_cue_fireball_stages_run_whole_or_not_at_all",
 "fireball cues: an FSEQ charge landed inside starts late after a wait (round 5)": "test_fireball_cues_rules",
 "fireball cues: an FSEQ charge the FSEQ turned off rides on": "test_fireball_cues_rules",
 "fireball cues: an FSEQ show is not guarded": "test_fireball_cues_rules",
@@ -3633,5 +3633,14 @@
 "start at a cue: the landing's settle time is only the flame link's": "test_start_at_cue_fireball_stages_run_whole_or_not_at_all",
 "start at a cue: a Stop never takes the stop position at the press": "test_start_at_cue_fireball_stages_run_whole_or_not_at_all",
 "start at a cue: a held show's frozen frame is not the one remembered": "test_start_at_cue_fireball_stages_run_whole_or_not_at_all",
-"start at a cue: the route takes a cue whose lead-in changed": "test_start_at_cue_route"
+"start at a cue: the route takes a cue whose lead-in changed": "test_start_at_cue_route",
+"start at a cue: a Back keeps what the fire stages did before the move": "test_start_at_cue_moves_inside_a_play_judge_the_shot_afresh",
+"start at a cue: an FSEQ Resume in the Igniter lead counts as a move": "test_start_at_cue_moves_inside_a_play_judge_the_shot_afresh",
+"start at a cue: an FSEQ Valve open where the playhead lands goes on": "test_start_at_cue_moves_inside_a_play_judge_the_shot_afresh",
+"start at a cue: a stage landed inside is skipped without a word": "test_start_at_cue_moves_inside_a_play_judge_the_shot_afresh",
+"start at a cue: a stage opening too soon is skipped without a word": "test_start_at_cue_moves_inside_a_play_judge_the_shot_afresh",
+"start at a cue: an FSEQ Valve held for its lead is not said": "test_start_at_cue_moves_inside_a_play_judge_the_shot_afresh",
+"start at a cue: a Valve on the Igniter's frame is taken before it": "test_start_at_cue_moves_inside_a_play_judge_the_shot_afresh",
+"start at a cue: Stop never asks for the stop position": "test_start_at_cue_halt_takes_the_stop_position",
+"start at a cue: the re-check compares the show cue with its case": "test_start_at_cue_halt_takes_the_stop_position"
 }

@@ -107377,9 +107377,14 @@ def test_fireball_cues_rules():
         rigs.append(R)
         R.tank.ready = ["wait", "wait", "ok"]   # the play's ask, the frame's
         got = [R.frame(f)[54] for f in range(45, 95)]
-        check(not any(got) and not [m for m in R.fq.messages if m],
+        # Said once, in plain words (review of #201, round 2: every
+        # skipped stage says why).
+        check(not any(got) and R.fq.messages == [
+            "Fuel was skipped: the show landed inside its window (a stage "
+            "is never started part way)."],
               f"landed inside the Fuel window while the mark was on its "
-              f"way: quiet, as the landing guard: {got.count(255)}")
+              f"way: quiet on the wire, said once: {got.count(255)} "
+              f"{R.fq.messages}")
         # With the real charge record: the first FSEQ charge frame waits
         # for the write, then goes; a folder that cannot be written means
         # no automatic charge.
@@ -111312,6 +111317,180 @@ def test_start_at_cue_fireball_stages_run_whole_or_not_at_all():
     print("  ok")
 
 
+def test_start_at_cue_moves_inside_a_play_judge_the_shot_afresh():
+    section("review of #201, round 2: after a Back or an Ahead inside the "
+            "same play the fire stages are judged as at a fresh landing "
+            "(never Valve Open while the Igniter is held dark, never a shot "
+            "sent inside the settle time), on a timeline and an FSEQ show; "
+            "after a Hold and Resume during the Igniter lead the shot fires "
+            "on both; every skip is said")
+    import shutil
+    rigs = []
+    try:
+        def tl(stages, seq, gap_at=None):
+            """Frames `seq` in order (a Back or an Ahead is a jump in it);
+            a 2 s pause before frame `gap_at`. {slot: [frames on]} after
+            the first move, and the rig."""
+            R = _fbq_rig(stages)
+            rigs.append(R)
+            on, moved, last = {}, False, None
+            for f in seq:
+                if gap_at is not None and f == gap_at and last is not None:
+                    R.clk[0] += 2.0
+                    moved = True
+                if last is not None and abs(f - last) > 3:
+                    moved = True
+                g = R.frame(f)
+                last = f
+                if moved:
+                    for slot in (57, 58):
+                        if g[slot - 1]:
+                            on.setdefault(slot, []).append(f)
+            return R, on
+
+        def fq(fs, seq, gap_at=None):
+            """The same on an FSEQ show: `fs` {slot: range on}."""
+            R = _fbq_rig(None)
+            rigs.append(R)
+            R.session.timeline_path = "Plain.json"
+            on, moved, last = {}, False, None
+            for f in seq:
+                if gap_at is not None and f == gap_at and last is not None:
+                    R.clk[0] += 2.0
+                    moved = True
+                if last is not None and abs(f - last) > 3:
+                    moved = True
+                base = [0] * 512
+                for slot, r in fs.items():
+                    if f in r:
+                        base[slot - 1] = 255
+                g = R.frame(f, base=base)
+                last = f
+                if moved:
+                    for slot in (57, 58):
+                        if g[slot - 1]:
+                            on.setdefault(slot, []).append(f)
+            return R, on
+        long_shot = [_st("igniter", "00:00:10:00", 4),
+                     _st("valve", "00:00:12:00", 0.5)]
+        short_shot = [_st("igniter", "00:00:10:00", 0.5),
+                      _st("valve", "00:00:10:05", 0.2)]
+        # (a) Back inside a long Igniter: the Igniter is landed inside, so
+        # the Valve does not open.
+        R, on = tl(long_shot, list(range(250, 331)) + list(range(310, 400)))
+        check(not on and any("Valve Open was skipped: its Igniter lead did "
+                             "not run" in m for m in R.fq.messages) and
+              any("Igniter was skipped: the show landed inside its window"
+                  in m for m in R.fq.messages),
+              f"(a) Back inside the Igniter: no Valve, said: {on} "
+              f"{R.fq.messages}")
+        # (b) The shot played, then Back to just before it: it opens in
+        # the settle time, so neither stage is sent again.
+        R, on = tl(short_shot, list(range(250, 331)) + list(range(290, 340)))
+        check(not on and any("opens too soon after the landing" in m
+                             for m in R.fq.messages),
+              f"(b) Back to just before the shot: nothing sent: {on} "
+              f"{R.fq.messages}")
+        # Ahead into the Valve's window from inside the Igniter: neither.
+        R, on = tl(long_shot, list(range(250, 321)) + list(range(365, 400)))
+        check(not on, f"Ahead into the Valve: nothing: {on}")
+        # Back far enough: the shot is fresh again and runs whole.
+        R, on = tl(short_shot, list(range(250, 331)) + list(range(200, 340)))
+        check(on.get(58) == list(range(300, 315)) and
+              on.get(57) == list(range(305, 311)),
+              f"Back well before the shot: it runs whole again: {on}")
+        # The same on an FSEQ show.
+        fl = {58: range(300, 420), 57: range(360, 375)}
+        fs = {58: range(300, 315), 57: range(305, 311)}
+        _R, on = fq(fl, list(range(250, 331)) + list(range(310, 400)))
+        check(57 not in on, f"FSEQ (a): no Valve: {on}")
+        _R, on = fq(fs, list(range(250, 331)) + list(range(290, 340)))
+        check(not on, f"FSEQ (b): nothing sent in the settle time: {on}")
+        _R, on = fq(fl, list(range(250, 321)) + list(range(365, 400)))
+        check(57 not in on, f"FSEQ Ahead into the Valve: no Valve: {on}")
+        # Hold and Resume during the Igniter lead: the shot fires, on both
+        # paths alike.
+        hold = [_st("igniter", "00:00:33:00", 2),
+                _st("valve", "00:00:34:10", 0.2)]
+        _R, on = tl(hold, list(range(950, 1060)), gap_at=1001)
+        check(on.get(57) == list(range(1030, 1036)),
+              f"timeline, Hold and Resume in the lead: the Valve fires: "
+              f"{on.get(57)}")
+        _R, on = fq({58: range(990, 1050), 57: range(1030, 1035)},
+                    list(range(950, 1060)), gap_at=1001)
+        check(on.get(57) == list(range(1030, 1035)),
+              f"FSEQ, Hold and Resume in the lead: the Valve fires: "
+              f"{on.get(57)}")
+        # An FSEQ Valve held for its lead is said.
+        R, on = fq(fl, list(range(250, 331)) + list(range(310, 400)))
+        check(any("The FSEQ's Valve Open was held: its Igniter lead did not "
+                  "run" in m for m in R.fq.messages),
+              f"said: {R.fq.messages}")
+        # From the top, an Igniter and a Valve opening on the same frame:
+        # the lead is taken first, so both run.
+        R, on = tl([_st("igniter", "00:00:03:00", 0.5),
+                    _st("valve", "00:00:03:00", 0.2)],
+                   [0] + list(range(1, 130)) + [400])
+        R2 = _fbq_rig([_st("valve", "00:00:03:00", 0.2),
+                       _st("igniter", "00:00:03:00", 0.5)])
+        rigs.append(R2)
+        got = [R2.frame(f) for f in range(0, 130)]
+        check([f for f, g in enumerate(got) if g[56]] == list(range(90, 96))
+              and [f for f, g in enumerate(got) if g[57]] ==
+              list(range(90, 105)),
+              f"same frame from the top: the Igniter first, both run")
+        for m in R.fq.messages + R2.fq.messages:
+            _no_dashes(m, "a fireball skip")
+    finally:
+        for R in rigs:
+            shutil.rmtree(R.work, ignore_errors=True)
+    print("  ok")
+
+
+def test_start_at_cue_halt_takes_the_stop_position():
+    section("review of #201, round 2: Stop (Remote.halt) asks the show "
+            "runner for the stop position, after the flames, every time; a "
+            "re-check of a cue compares the show cue without case")
+    import shutil
+    import types
+    from ltcplay import remote as RM
+    work = tempfile.mkdtemp()
+    order = []
+    try:
+        run = types.SimpleNamespace(note_stop=lambda: order.append("note"))
+        svc = types.SimpleNamespace(performer=run, machine=None,
+                                    conductor=None)
+        rm = RM.Remote(types.SimpleNamespace(session=None, folder=work,
+                                             state=lambda: {}), svc,
+                       folder=work, log=lambda t_: None)
+        real = rm._disarm_now
+
+        def disarm(*a, **k):
+            order.append("flames")
+            return real(*a, **k)
+        rm._disarm_now = disarm
+        rm.halt("Andy", "Rack screen")
+        check(order[:2] == ["flames", "note"],
+              f"halt: the flames, then the stop position: {order}")
+        # start_at_check: the show cue compared without case.
+        sess = types.SimpleNamespace(
+            running=True, no_output=False, clock=None,
+            timeline_path=os.path.join(work, "Fire.json"),
+            player=types.SimpleNamespace(on_lost="freerun"))
+        rm.control.session = sess
+        st = rm.play_from_store()
+        ok, text, _e = st.save("Fire.json", "Show", 120.0,
+                               [{"name": "Finale", "tc": "00:01:40:00",
+                                 "lead_in_s": 3}], 0, who="Jeff")
+        sa, why = rm.start_at_cue({"show": "Fire.json", "cue_id": "c1"})
+        fresh, why2 = rm.start_at_check(dict(sa, show_cue="SHOW"))
+        check(ok and not why and fresh is not None and not why2,
+              f"the show cue compared without case: {why} {why2}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_start_at_cue_route():
     section("start at a cue, the route: the Show row (operators may); a "
             "fresh page and a confirm; Show mode only; the cue resolved by "
@@ -112483,6 +112662,8 @@ if __name__ == "__main__":
         test_start_at_cue_route,
         test_start_at_cue_rechecked_at_the_start,
         test_start_at_cue_fireball_stages_run_whole_or_not_at_all,
+        test_start_at_cue_moves_inside_a_play_judge_the_shot_afresh,
+        test_start_at_cue_halt_takes_the_stop_position,
         test_start_at_cue_fireball_lands_by_its_own_rules,
         test_start_at_cue_docs_in_plain_words,
     ]

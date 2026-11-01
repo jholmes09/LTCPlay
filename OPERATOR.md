@@ -1966,9 +1966,13 @@ comes in the next update; the engine side is here.
   lands is NOT started in the middle; it stays off until its next start.
   A fireball stage that would open in the first moment after the landing
   (under about 0.8 s, while the flame link settles) is skipped whole, so
-  every stage runs whole or not at all, and Valve Open never opens unless
-  its Igniter lead ran first in that play. Choose cues with their lead-in
-  at least a second before a fireball shot.
+  every stage runs whole or not at all. When the fireball timeline has an
+  Igniter stage that starts at or before Valve Open, Valve Open runs only
+  if that Igniter ran first in that play (on a show on its FSEQ: Valve
+  Open is held while its Igniter was held, or was already on where the
+  show landed). Each skipped stage is said in the journal and on the
+  Fireball page, with why. Choose cues with their lead-in at least a
+  second before a fireball shot.
   A fuel or air charge is skipped when that tank is already charged or
   not known (never a double charge), and a charge whose window the show
   landed in is skipped too. Start at a cue never arms anything: flamesafe
