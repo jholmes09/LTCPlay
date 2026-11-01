@@ -9381,6 +9381,31 @@ def build():
   "        if late > grace:\n            if held:\n",
   "        if late >= grace:\n            if held:\n"),
 
+ ("late limit 2 min: the rig check allowance carries a show past 120 s",
+  "ltcplay/schedule.py",
+  "    return max(grace_s, min(grace_s + max(0, int(allowance_s)),\n                            DEFAULT_LATE_GRACE_S))\n",
+  "    return grace_s + max(0, int(allowance_s))\n"),
+
+ ("late limit 2 min: Resume says next on the schedule for a show starting now",
+  "ltcplay/schedule.py",
+  "                tx.m.late_grace_s and not reset else\n",
+  "                tx.m.late_grace_s and False else\n"),
+
+ ("late limit 2 min: the night overlap warning ignores a late last show",
+  "ltcplay/schedule.py",
+  "                 x + need + grace_td > first]",
+  "                 x + need + grace_td > first + grace_td]"),
+
+ ("late limit 2 min: the close-together warning says a show is missed",
+  "ltcplay/schedule.py",
+  "lateness can add up from show to show. Saved as it is.",
+  "Saved as it is."),
+
+ ("late limit 2 min: the Programming field is blank for a missing grace",
+  "ltcplay/web/remote.html",
+  "doc.late_grace_s == null ? 120 :",
+  "doc.late_grace_s == null ? \"\" :"),
+
  ("review196C: overlapping nights do not say a show can be missed",
   "ltcplay/schedule.py",
   "so that first show will be MISSED (late by \"",

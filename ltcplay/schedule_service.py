@@ -3453,8 +3453,9 @@ class Service:
                     "system", f"The rig check (pre-roll) for show {n} could "
                               f"not finish before its time, so show {n} "
                               f"starts late, as soon as the rig is checked "
-                              f"(at most {pr.late_ok_s()} s late). Checks "
-                              f"are never skipped.",
+                              f"(at most {sch.late_limit_s(m.late_grace_s, pr.late_ok_s())}"
+                              f" s late; a show later than that is MISSED). "
+                              f"Checks are never skipped.",
                     action="pre-roll", outcome="late", show=n)
             if v is None:
                 self._preroll_kick(n)
@@ -3522,7 +3523,8 @@ class Service:
                 else:
                     then = (f"Show {key[1]} is checked again at its next "
                             f"tick and starts only if that check passes (at "
-                            f"most {pr.late_ok_s()} s late).")
+                            f"most {sch.late_limit_s(m.late_grace_s, pr.late_ok_s())}"
+                            f" s late; later than that it is MISSED).")
                 self._journal_line(
                     "system", f"{who or 'Someone'} pressed Resume after the "
                               f"rig check for show {key[1]} failed and then "

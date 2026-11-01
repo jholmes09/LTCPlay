@@ -1273,21 +1273,35 @@ It was 15 seconds before.
   give it now means 120. The most it can be is 300 (5 minutes); a bigger
   number is refused in words, never quietly cut down. A file that says 15
   or 0 keeps that value.
-- Everything that waits on a show's time uses the same number: a restart
-  (a show that came due while the program was down starts if it is no more
-  than the limit late, once, and is MISSED beyond it), the saved-schedule
-  rules, the warning for two nights that run into each other ("starts late
-  by ..., within its 120 s grace" or "will be MISSED (late by ..., more
-  than its 120 s grace)"), and the hand over at night's end.
+- Everything that waits on a show's time uses the same number: the sweep
+  that starts or misses a show, the saved-schedule rules, and the warnings
+  for shows close together and for two nights that run into each other
+  ("starts late by ..., within its 120 s grace", "will be MISSED (late by
+  ..., more than its 120 s grace)"; a last show that starts as late as the
+  grace allows is counted too).
+- After a restart a show that came due while the program was down starts
+  if it is no more than the limit late, and Run is pressed. A restart
+  always leaves Run off, so unless someone presses Run in time the show is
+  refused and shows as "did not start" (with the alert and the sentence
+  "Run has not been pressed"); past the limit it is simply MISSED.
+- The rig check (pre-roll) never stretches the limit. A show whose rig
+  check runs at its time may start up to the check's allowance late, but
+  never past 120 seconds: a show whose rig check cannot finish by then is
+  MISSED. (Only a grace set below 120 gains from the allowance.)
 - It never overrides anything that says wait. A Hold, a Stop's Hold, an
   Abort, Run not pressed, the guard after the previous show, a show that
   is running and a Stop under way all still hold a show back, however
-  close to its time. Pressing Resume within the limit starts the show,
+  close to its time. Resume's journal line says "Show N ... starts now, N s
+  late" when the show will start straight away. Pressing Resume within the limit starts the show,
   late; after it the show waits for Start now, as before. A show that is
   held back past the limit is DELAYED, not MISSED, as before.
-- The 120 second guard between shows is unchanged: a show that would start
-  more than 2 minutes late, because the previous show's guard has not run
-  out, is not started by itself.
+- The 120 second guard between shows is unchanged. A show inside the guard
+  of the one before starts as soon as the guard is over, if that is within
+  2 minutes of its time (so lateness can add up from show to show when
+  shows are close together; the save warning says so); beyond 2 minutes it
+  is not started by itself.
+- The Programming screen shows 120 in the late-start field when the file
+  leaves it out.
 
 ## Schedule times: any time of day, past midnight
 

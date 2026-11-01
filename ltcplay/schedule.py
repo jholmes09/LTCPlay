@@ -268,10 +268,11 @@ DELAY_CHOICES = (5, 10)
 # late_grace_s keeps its name; when the rule file does not give one, this is
 # the value. It was 15 s before (and 0 when the file left it out).
 DEFAULT_LATE_GRACE_S = 120
-# The late rule's ceiling (5 minutes: well under the shortest sensible gap
-# between shows, so a late show never runs into the next one's slot). A bigger
-# number in the rule file is refused with a sentence rather than quietly
-# clamped: a silent clamp is a setting that says one thing and does another.
+# The late rule's ceiling (5 minutes). A bigger number in the rule file is
+# refused with a sentence rather than quietly clamped: a silent clamp is a
+# setting that says one thing and does another. A grace longer than the gap
+# between shows lets a late show run into the next one's slot; the next show
+# then waits for it and may be late itself (the save warning says so).
 MAX_LATE_GRACE_S = 300
 
 # Who may press things, until the operators file says otherwise.
@@ -744,8 +745,11 @@ def _rule_warnings(rule, most):
                 f"{where}: shows are {n.interval_min} minutes apart, but a "
                 f"show takes {rule.show_len_s} s and the guard after it is "
                 f"{rule.guard_s} s, so they overlap: a show whose time comes "
-                f"while the one before it is still running, or inside its "
-                f"guard, is missed. Saved as it is.")
+                f"while the one before it is still running waits, and is "
+                f"missed once it is more than {rule.late_grace_s} s late; "
+                f"one inside the guard starts as soon as the guard is over "
+                f"if that is within {rule.late_grace_s} s of its time, so "
+                f"lateness can add up from show to show. Saved as it is.")
         start, end = night_window(n, date(2000, 1, 3), timezone.utc)
         if (end - start).total_seconds() < need:
             out.append(
@@ -796,8 +800,13 @@ def _rule_warnings(rule, most):
         # makes that first show late, and MISSED if the lateness passes its
         # grace.
         after = [x for x in starts if x >= first]
+        grace_td = timedelta(seconds=rule.late_grace_s)
         inside = [x for x in starts if x < first and x + need > first]
-        if not after and not inside:
+        # A show that starts as late as its grace allows ends that much
+        # later (Jeff, 2026-11-01: up to 120 s late still starts).
+        maybe = [x for x in starts if x < first and x + need <= first and
+                 x + need + grace_td > first]
+        if not after and not inside and not maybe:
             continue
         special = d in rule.exceptions or d + one in rule.exceptions
         key = d if special else WEEKDAYS[d.weekday()]
@@ -840,6 +849,16 @@ def _rule_warnings(rule, most):
                 f"at {f_at}: the next night begins only once this one's "
                 f"guard is over, {fate}. Saved as it is; nothing is "
                 f"refused.")
+        if maybe and not inside:
+            x = maybe[-1]
+            worst = int((x + need + grace_td - first) // ONE_SECOND)
+            clash.append(
+                f"{who} has a show at {at_(x)} that ends, with its guard, "
+                f"just before the next night's first show at {f_at}; if it "
+                f"starts as late as its {rule.late_grace_s} s grace allows "
+                f"it ends {fmt_span(worst)} after it, and that first show "
+                f"then starts late, or is MISSED if that is more than its "
+                f"own grace. Saved as it is; nothing is refused.")
     if not scanned_all:
         clash.append(f"Nights running into each other were checked for the "
                      f"first {SCAN_NIGHTS} nights of the season only.")
@@ -870,6 +889,18 @@ def lateness_s(slot_start, now):
     N. Without this, a scheduler that looks a few times a second would
     almost never land on the exact instant, and grace 0 would mean never."""
     return (_utc(now) - _utc(slot_start)) // ONE_SECOND
+
+
+def late_limit_s(grace_s, allowance_s=0):
+    """How late a show may start, in whole seconds: the late grace, and for
+    a show whose rig check (pre-roll) could only run at its time, the check's
+    allowance on top, but never past DEFAULT_LATE_GRACE_S (Jeff, 2026-11-01:
+    a show more than 2 minutes late is MISSED, full stop). So the allowance
+    only helps a grace set below 120 s; a grace of 120 or more is the limit
+    as it stands."""
+    grace_s = int(grace_s)
+    return max(grace_s, min(grace_s + max(0, int(allowance_s)),
+                            DEFAULT_LATE_GRACE_S))
 
 
 def may_fire(slot_start, now, grace_s):
@@ -1575,7 +1606,7 @@ def _sweep(tx, held=None):
         state = tx.m.state
         grace = tx.m.late_grace_s
         if tx.ev.late_show and tx.ev.late_show == s.n:
-            grace += max(0, int(tx.ev.late_ok_s))
+            grace = late_limit_s(grace, tx.ev.late_ok_s)
         if late > grace:
             if held:
                 _hold_back(tx, s)
@@ -2014,8 +2045,12 @@ def _resume(m, ev, now):
                "by itself." if reset else "")
             + (f" The delayed show {d.n} still waits for Start now."
                if d else "")
-            + (f" Next on the schedule is show {nxt.n} at "
-               f"{clock(_local(m, nxt.start))}."
+            + ((f" Show {nxt.n}, due at {clock(_local(m, nxt.start))}, "
+                f"starts now, {lateness_s(nxt.start, now)} s late."
+                if 0 <= lateness_s(nxt.start, now) <=
+                tx.m.late_grace_s and not reset else
+                f" Next on the schedule is show {nxt.n} at "
+                f"{clock(_local(m, nxt.start))}.")
                if nxt else " There are no more scheduled shows tonight."))
     return tx.done()
 

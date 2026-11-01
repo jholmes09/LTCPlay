@@ -4016,7 +4016,7 @@ function drawSchedule(doc){
   $("se-last").value = (doc.season || {}).last_date || "";
   $("se-len").value = doc.show_len_s == null ? "" : doc.show_len_s;
   $("se-guard").value = doc.guard_s == null ? "" : doc.guard_s;
-  $("se-grace").value = doc.late_grace_s == null ? "" : doc.late_grace_s;
+  $("se-grace").value = doc.late_grace_s == null ? 120 : doc.late_grace_s;
   const w = doc.weekly || {};
   $("se-days").innerHTML = `<span class="h">Night</span><span class="h">First show</span><span class="h">Minutes apart</span><span class="h">Last show ends</span>` +
     DAYS.map(d => { const n = w[d] || {}; const on = !!w[d];

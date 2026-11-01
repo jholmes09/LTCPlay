@@ -10467,6 +10467,102 @@ def test_schedule_late_limit_is_two_minutes():
     print("  ok")
 
 
+def test_schedule_late_limit_round_two():
+    section("scheduler (cold review A of PR #202): the rig check's "
+            "allowance never carries a show past 120 s late; after a "
+            "restart with Run off a rescued show is refused in words; the "
+            "close-together and night-overlap warnings and Resume's line "
+            "know the late limit; the Programming field shows 120")
+    S = _sched()
+    if S is None:
+        return
+    from datetime import timedelta, date
+    # 1. Rule files: the close-together warning no longer says "is missed".
+    r = S.parse_rule(_sched_doc(weekly={"sat": {
+        "first_start": "18:00", "interval_min": 5, "last_end": "20:00"}},
+        exceptions={}, late_grace_s=120))
+    w = " ".join(S.rule_warnings(r))
+    check("lateness can add up" in w and "more than 120 s late" in w,
+          f"the close-together warning knows the grace: {w!r}")
+    _no_dashes(w, "close-together warning")
+    # 2. The night-overlap warning counts a last show that starts late.
+    def night_pair(grace):
+        return S.parse_rule(_sched_doc(
+            weekly={"thu": {"first_start": "23:00", "interval_min": 20,
+                            "last_end": "00:30"},
+                    "fri": {"first_start": "00:30", "interval_min": 30,
+                            "last_end": "02:00"}},
+            exceptions={}, late_grace_s=grace,
+            season={"first_date": "2026-10-01", "last_date": "2027-03-31"}))
+    for grace, warned in ((0, False), (15, False), (120, True),
+                          (300, True)):
+        w = " ".join(S.rule_warnings(night_pair(grace)))
+        check(("allows it ends" in w) == warned,
+              f"grace {grace}: the overlap warning for a last show that "
+              f"starts as late as the grace allows is "
+              f"{'given' if warned else 'not given'}: {w!r}")
+        _no_dashes(w, "overlap warning")
+    # 3. Resume's line: a show inside its window "starts now, late".
+    rule = _one_night_rule(S, grace=120)
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    n.op(S.HOLD_ON, _den(S, 17, 59))
+    o = n.op(S.RESUME, _den(S, 18, 1))
+    txt = " ".join(le.text for le in o.log)
+    check("starts now, 60 s late" in txt and "Next on the schedule" not in txt,
+          f"Resume inside the window says the show starts now: {txt!r}")
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    n.op(S.HOLD_ON, _den(S, 17, 55))
+    o = n.op(S.RESUME, _den(S, 17, 58))
+    txt = " ".join(le.text for le in o.log)
+    check("Next on the schedule is show 1 at 18:00" in txt,
+          f"Resume before showtime says what is next: {txt!r}")
+    # 4. The Programming field shows 120 when the file omits the value.
+    html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    check('doc.late_grace_s == null ? 120 :' in html,
+          "the Programming screen shows 120 for a missing late_grace_s")
+    # 5. After an engine restart Run is off: a show rescued inside the
+    # window is refused in words (a did-not-start alert); past it, MISSED.
+    for off, missed in ((119, False), (121, True)):
+        n = _fi_night(session=False, armed=False)
+        svc, S2 = n.svc, n.S
+        from ltcplay import schedule_service as SV
+        d120 = _sched_doc(weekly={"sat": {"first_start": "18:00",
+                                          "interval_min": 20,
+                                          "last_end": "22:00"}},
+                          exceptions={})
+        d120.pop("late_grace_s")
+        SV.save_rule(svc.path, d120)
+        svc.reload()
+        n.now[0] = _den(S2, 17, 59)
+        svc.tick()
+        _settle(svc, n.c)
+        check(svc.machine.late_grace_s == 120, "setup: the default grace")
+        n.now[0] = _den(S2, 18, 0) + timedelta(seconds=off)
+        svc.tick()
+        _settle(svc, n.c)
+        n.w.runner.poll()
+        _settle(svc, n.c)
+        svc.tick()
+        _settle(svc, n.c)
+        s1 = svc.machine.slot(1)
+        tried = [r for r in svc.journal
+                 if r.get("action") == "automatic start"]
+        if missed:
+            check(s1.status == S2.MISSED and not tried,
+                  f"+{off} s with Run off: quietly MISSED: {s1.status}")
+        else:
+            check(tried and tried[-1]["outcome"] == "refused" and
+                  "Run has not been pressed" in tried[-1]["text"] and
+                  s1.status in (S2.FAULT, S2.MISSED),
+                  f"+{off} s with Run off: refused in words, not started: "
+                  f"{s1.status} {[(r['outcome'], r['text']) for r in tried]}")
+    print("  ok")
+
+
 def _matrix_fixtures(S):
     """One machine in each state, plus HOLD and STANDBY with a DELAYED show
     waiting, and the moment to hit each with an event. Keyed by label."""
@@ -10927,12 +11023,12 @@ def test_schedule_hold_between_shows_delays():
     # Jeff asked: on Hold, nothing starts by itself however many slots
     # pass. Ticked every second through four slot times, at grace 0 and 15.
     from datetime import timedelta
-    for grace in (0, 15):
+    for grace in (0, 15, 120, 300):
         n = _Night(S, _one_night_rule(S, grace=grace))
         n.boot(_den(S, 18, 5))
         n.op(S.HOLD_ON, _den(S, 18, 10))
         t, fired = _den(S, 18, 10), []
-        while t <= _den(S, 19, 21):
+        while t <= _den(S, 19, 21) + timedelta(seconds=grace):
             fired += _fired(n.tick(t), S)
             t += timedelta(seconds=1)
         check(not fired and n.m.state == S.HOLD and not n.m.running,
@@ -15497,7 +15593,7 @@ def _save_fuzz_once(S, seed, viol):
     rng = random.Random(seed)
 
     def rdoc():
-        grace = rng.choice([0, 15])
+        grace = rng.choice([0, 15, 120, 300])
         if rng.random() < 0.1:
             return _sched_doc(weekly={"fri": {"first_start": "18:00",
                                               "interval_min": 20,
@@ -16845,14 +16941,14 @@ def test_schedule_a_paused_show_is_never_overlapped():
     from datetime import timedelta
     # Paused at 18:01, ticked every second through 18:20 and past its grace:
     # nothing fires, the show stays paused, 18:20 is DELAYED.
-    for grace in (0, 15):
+    for grace in (0, 15, 120, 300):
         rule = _one_night_rule(S, grace=grace)
         n = _Night(S, rule)
         n.boot(_den(S, 17, 50))
         n.tick(_den(S, 18, 0))
         n.op(S.HOLD_ON, _den(S, 18, 1))
         t, fired = _den(S, 18, 1), []
-        while t <= _den(S, 18, 21):
+        while t <= _den(S, 18, 21) + timedelta(seconds=grace):
             fired += _fired(n.tick(t), S)
             t += timedelta(seconds=1)
         check(not fired, f"grace {grace}: a paused show must never be "
@@ -98545,6 +98641,26 @@ def test_preroll_late_allowance_is_for_its_show_only():
                               late_ok_s=15), late)
     check(other.machine.slot(1).status == S.MISSED,
           "an allowance for another show changes nothing for this one")
+    # Jeff, 2026-11-01: the allowance never carries a show past 120 s late.
+    from datetime import date as _date
+    for grace, allow, off, starts in (
+            (0, 15, 15, True), (0, 15, 16, False),
+            (100, 20, 120, True), (100, 20, 121, False),
+            (120, 20, 120, True), (120, 20, 121, False),
+            (120, 20, 125, False), (300, 20, 300, True),
+            (300, 20, 301, False)):
+        rule = _one_night_rule(S, grace=grace)
+        m = S.new_night(rule, _date(2026, 11, 14))
+        m = S.step(m, S.Event(S.BOOT_DONE, "system"),
+                   _den(S, 17, 0)).machine
+        o = S.step(m, S.Event(S.TICK, "scheduler", late_show=1,
+                              late_ok_s=allow), _den(S, 18, 0, 0) +
+                   __import__("datetime").timedelta(seconds=off))
+        got = any(e.kind == S.START_SHOW and e.show == 1 for e in o.effects)
+        check(got == starts and (starts or o.machine.slot(1).status ==
+                                 S.MISSED),
+              f"grace {grace}, allowance {allow}, {off} s late: starts "
+              f"{got}, want {starts}")
     print("  ok")
 
 
@@ -110548,6 +110664,7 @@ if __name__ == "__main__":
         test_schedule_expands_the_season,
         test_schedule_late_rule,
         test_schedule_late_limit_is_two_minutes,
+        test_schedule_late_limit_round_two,
         test_schedule_state_machine_every_state_every_event,
         test_abort_and_hold_never_refused_for_who_or_where,
         test_schedule_restart_guard_and_hold,
