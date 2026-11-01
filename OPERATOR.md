@@ -972,7 +972,13 @@ but it wouldn't allow it. Don't restrict the schedule in any way."
   answer says how to type it. "Today" and "tomorrow" are the calendar
   days on the clock, also after midnight: at 00:10 on Friday, "17:00
   today" is Friday and "17:00 tomorrow" is Saturday. A date can be typed
-  too ("17:00 2026-11-14"). On the night the clocks go back, a time in the
+  too ("17:00 2026-11-14"), up to 5 years ahead; further, or a date the
+  calendar cannot hold, is refused in words. A date together with a day
+  word ("18:45 2026-11-12 tomorrow") is refused as contradictory, and so
+  is "first second"; "17:00 second" for a time that does not happen twice
+  is taken and the answer says "second" changed nothing. Whatever is
+  accepted is kept in tonight's saved list and read back after a restart.
+  On the night the clocks go back, a time in the
   repeated hour is the first one still to come (the journal says so, and
   how to type the other one), the list says "the second 01:05" for the
   later one, and "01:05 second" types it.
@@ -981,7 +987,12 @@ but it wouldn't allow it. Don't restrict the schedule in any way."
   answer to a save: tonight hands over before it, so it is MISSED, said
   out loud in the journal when the night hands over. It cannot hold the
   next night back (it used to: "18:10 tomorrow" kept Thursday open all
-  Friday and Friday's shows were missed). A Delay, a move or a save that
+  Friday and Friday's shows were missed). "The next night" is the first
+  later night that has shows, so a dark Friday does not let Thursday
+  swallow Saturday. A show typed more than 3 hours after tonight's last
+  show ends (its planned end, or 2 AM, whichever is later) never holds
+  the night either, whatever day it was typed for: a date months ahead is
+  accepted, warned about with its date, and missed at the hand over. A Delay, a move or a save that
   makes a show end, with its guard, after the next night's first show is
   warned the same way: that first show can be missed, because the next
   night begins only once this one's guard is over. Nothing is refused.
@@ -1013,7 +1024,10 @@ MISSED. Now a night ends where it hands over to the next one:
   restart);
 - later, while a show delayed by a Hold waits for Start now: it holds the
   night to the next 2 AM after its own time, never past the next night's
-  start, so a show delayed at 03:00 is not missed 10 seconds later;
+  start, so a show delayed at 03:00 is not missed 10 seconds later. A
+  show delayed inside the 30 minutes before the next night's first show
+  waits until that first show, not its preshow. A move of a show into
+  those 30 minutes is warned about;
 - earlier, when the next night's first show is earlier: 30 minutes before
   it, when its preshow begins, which can be before midnight. Never before
   this night's own shows still to come have run;

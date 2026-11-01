@@ -9083,7 +9083,7 @@ def build():
 
  ("after midnight: the next night's early first show waits for 2 AM",
   "ltcplay/schedule.py",
-  "        r = min(r, opens if end is None else max(end, opens))",
+  "        r = min(r, floor if end is None else max(end, floor))",
   "        pass"),
 
  ("after midnight: the hand over ignores the machine's moved shows",
@@ -9098,8 +9098,8 @@ def build():
 
  ("after midnight: tonight's file refuses a show after midnight",
   "ltcplay/schedule.py",
-  "    end_of_day = _utc(datetime.combine(d + timedelta(days=2), time(0),",
-  "    end_of_day = _utc(datetime.combine(d + timedelta(days=1), time(0),"),
+  "    end_of_day = start_of_day + MAX_EDIT_AHEAD",
+  "    end_of_day = start_of_day + timedelta(days=1)"),
 
  ("after midnight: the save answer leaves out the warnings",
   "ltcplay/remote.py",
@@ -9203,8 +9203,8 @@ def build():
 
  ("review196A: the next night's preshow cuts this night's own shows",
   "ltcplay/schedule.py",
-  "        r = min(r, opens if end is None else max(end, opens))",
-  "        r = min(r, opens)"),
+  "        r = min(r, floor if end is None else max(end, floor))",
+  "        r = min(r, floor)"),
 
  ("review196A: a next morning time is not said as tomorrow",
   "ltcplay/schedule.py",
@@ -9218,8 +9218,8 @@ def build():
 
  ("review196B: a closed night holds the hand over to the file's hours",
   "ltcplay/schedule.py",
-  "        end = None\n        need = timedelta(seconds=m.show_len_s + m.guard_s)\n        for s in m.slots:",
-  "        need = timedelta(seconds=m.show_len_s + m.guard_s)\n        for s in m.slots:"),
+  "        end = None\n        need = timedelta(seconds=m.show_len_s + m.guard_s)\n        limit = hold_limit(m)",
+  "        need = timedelta(seconds=m.show_len_s + m.guard_s)\n        limit = hold_limit(m)"),
 
  ("review196B: a typed time may land a day after tonight's night",
   "ltcplay/schedule.py",
@@ -9238,8 +9238,8 @@ def build():
 
  ("review196B: an edit in the repeated hour says nothing",
   "ltcplay/schedule.py",
-  "    if _utc(other) == _utc(local):\n        return \"\"",
-  "    if True:\n        return \"\""),
+  "    twice = _utc(other) != _utc(local)",
+  "    twice = False"),
 
  ("review196B: a failure working out the warnings is not a warning",
   "ltcplay/schedule.py",
@@ -9283,7 +9283,7 @@ def build():
 
  ("review196C: the next night's first show is not known to the night",
   "ltcplay/schedule.py",
-  "                   next_first=_night_span(rule, d + timedelta(days=1))[0])",
+  "                   next_first=_next_night_first(rule, d))",
   "                   next_first=None)"),
 
  ("review196C: a show ending inside the next night's first show is not warned",
@@ -9345,6 +9345,66 @@ def build():
   "ltcplay/schedule.py",
   "    if getattr(local, \"fold\", 0):\n        return (f\" {clk} happens twice",
   "    if False:\n        return (f\" {clk} happens twice"),
+
+ ("delta196A: the file refuses a show the editor accepted",
+  "ltcplay/schedule.py",
+  "    end_of_day = start_of_day + MAX_EDIT_AHEAD",
+  "    end_of_day = start_of_day + timedelta(days=2)"),
+
+ ("delta196A: a time years away is accepted",
+  "ltcplay/schedule.py",
+  "    if when is None or when - start > MAX_EDIT_AHEAD:",
+  "    if when is None:"),
+
+ ("delta196A: an impossible date is an uncaught overflow",
+  "ltcplay/schedule.py",
+  "    except OverflowError:\n        when = None",
+  "    except OverflowError:\n        raise"),
+
+ ("delta196A: only tomorrow's night caps the hand over",
+  "ltcplay/schedule.py",
+  "    for k in range(1, NEXT_NIGHT_LOOK + 1):",
+  "    for k in range(1, 2):"),
+
+ ("delta196A: a far show holds the night",
+  "ltcplay/schedule.py",
+  "                if s.start > limit:\n                    # Too far out",
+  "                if False:\n                    # Too far out"),
+
+ ("delta196A: a show delayed in the preshow is missed at the preshow",
+  "ltcplay/schedule.py",
+  "        if dl is not None and dl.start >= opens:",
+  "        if False:"),
+
+ ("delta196A: a far show is not warned",
+  "ltcplay/schedule.py",
+  "    if s.start > hold_limit(m):\n        return \"beyond\"",
+  "    if False:\n        return \"beyond\""),
+
+ ("delta196A: a move into the preshow is not warned",
+  "ltcplay/schedule.py",
+  "        return \"near\"\n    return None",
+  "        return None\n    return None"),
+
+ ("delta196A: a worse clash is not journaled again",
+  "ltcplay/schedule.py",
+  "        if how is None or was.get(s.n) == how:",
+  "        if how is None or s.n in was:"),
+
+ ("delta196A: a date and a day word are both taken",
+  "ltcplay/schedule.py",
+  "            if day is not None or on is not None:\n                raise ValueError(f\"{text!r} names the day twice. Give one \"\n                                 f\"of today, tomorrow or a date.\")\n            try:",
+  "            if False:\n                raise ValueError(f\"{text!r} names the day twice. Give one \"\n                                 f\"of today, tomorrow or a date.\")\n            try:"),
+
+ ("delta196A: first and second are both taken",
+  "ltcplay/schedule.py",
+  "            if which is not None and which != w:",
+  "            if False:"),
+
+ ("delta196A: second for a time that happens once says nothing",
+  "ltcplay/schedule.py",
+  "    twice = _utc(other) != _utc(local)\n    clk = clock(local)",
+  "    twice = _utc(other) != _utc(local) or True\n    clk = clock(local)"),
 
  ("scheduler 2 AM reset: a show running at the reset is cut by it",
   "ltcplay/schedule_service.py",

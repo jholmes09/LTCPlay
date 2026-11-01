@@ -13805,6 +13805,7 @@ def test_schedule_after_midnight_delta_a():
             ("23:59 9999-12-31", "years away"),
             ("10:00 2040-01-01", "years away"),
             ("18:45 2026-11-12 tomorrow", "names the day twice"),
+            ("18:45 tomorrow 2026-11-12", "names the day twice"),
             ("18:45 today tomorrow", "names the day twice"),
             ("18:45 first second", "both first and second")):
         o = svc._apply(_op(S, S.EDIT_ADD, at=typed))
@@ -13824,9 +13825,18 @@ def test_schedule_after_midnight_delta_a():
           "2027-06-01" in words,
           f"a date months ahead is accepted and warned, with its date: "
           f"{o.refused!r} {words[-200:]!r}")
+    # A show for Saturday morning, before the next night with shows (next
+    # Thursday): more than 3 hours after tonight's last show, so it does
+    # not hold Thursday open through Friday either, and it is warned with
+    # why (the hold limit, not the next night's first show).
+    o = svc._apply(_op(S, S.EDIT_ADD, at="08:00 2026-11-14"))
+    words = svc.tonight_words()
+    check(not o.refused and "more than 3 hours after tonight's last show"
+          in words, f"a show far after the end is warned why: {o.refused!r} "
+                    f"{words[-260:]!r}")
     run(svc, now, at(FRI, 2, 5), step=60)
     check(svc.machine.date == date(*FRI),
-          f"and it does not hold the night: {svc.machine.date}")
+          f"and neither show holds the night: {svc.machine.date}")
     svc.stop()
     print("  ok")
 
