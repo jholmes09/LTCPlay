@@ -21079,13 +21079,53 @@ def build():
 
  ("fireball manual: frames resuming after a stall bring the page's channel back (round 5, B3)",
   "ltcplay/flamelink.py",
-  "        if last is not None and self._clock() - last > MANUAL_STALL_S:",
-  "        if False:"),
+  "                self._manual = None\n                self.manual_drops += 1\n                sp0 = self._show_part",
+  "                sp0 = self._show_part"),
 
  ("fireball manual: a beat in flight sets the frame after a failed send (round 5, B4)",
   "ltcplay/flamelink.py",
   "                        (drops is not None and self.manual_drops != drops):",
   "                        False:"),
+
+ ("fireball manual: a stall inside the read keeps the page's frame (round 6)",
+  "ltcplay/flamelink.py",
+  "            if self._manual is not None and last is not None and \\\n                    self._clock() - last > self.manual_stall_s():",
+  "            if False and last is not None and \\\n                    self._clock() - last > self.manual_stall_s():"),
+
+ ("fireball manual: the stall limit ignores flamesafe's fire_hold_ms (round 6)",
+  "ltcplay/flamelink.py",
+  "                    self._clock() - last > self.manual_stall_s():",
+  "                    self._clock() - last > MANUAL_STALL_S:"),
+
+ ("fireball manual: a Fuel press is never held for the mark (round 6)",
+  "ltcplay/fireball.py",
+  "                if held and self.manual_gate is not None:",
+  "                if False and self.manual_gate is not None:"),
+
+ ("fireball manual: a held Fuel press goes out anyway (round 6)",
+  "ltcplay/fireball.py",
+  "                            vals = self.frame(set(on) - held)",
+  "                            pass"),
+
+ ("fireball manual: a run's end tells nobody (round 6)",
+  "ltcplay/fireball.py",
+  "                self.on_end(r.get(\"token\") or \"\")",
+  "                pass"),
+
+ ("fireball manual: the engine keeps a busy entry after the run (round 6)",
+  "ltcplay/remote.py",
+  "        if busy:\n            busy.pop(token, None)",
+  "        if busy:\n            pass"),
+
+ ("fireball manual: the engine does not give the panel the press gate (round 6)",
+  "ltcplay/web.py",
+  "        fb.manual_gate = tr.manual_gate",
+  "        pass"),
+
+ ("fireball manual: the panel is not told of a run's end by the engine (round 6)",
+  "ltcplay/fireball.py",
+  "        panel.on_end = end",
+  "        pass"),
 
  ("fireball manual: the timeline judges its charge from the composed frame",
   "ltcplay/web.py",

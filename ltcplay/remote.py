@@ -5751,6 +5751,13 @@ class Remote:
                     f"(their role is now {role or 'none'})")
         return ""
 
+    def fireball_run_ended(self, token):
+        """A Fireball run ended: forget the "users lock busy" time kept for
+        its sign-in (round-6 review 9)."""
+        busy = getattr(self, "_fb_users_busy", None)
+        if busy:
+            busy.pop(token, None)
+
     def fireball_signout_cut(self, why, ctx):
         """A sign-out that ended a session: the Fireball page's run that
         sign-in started, or that user started on this screen, or (on the

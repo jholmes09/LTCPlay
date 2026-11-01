@@ -545,7 +545,10 @@ group must list five fire slots" and does nothing.
 - **Valve Open** and **Igniter** are on only while your finger is on the
   button. Lift it and they go off.
 
-ON is 255 on that channel. Nothing on this page arms. Arm the Fireball as
+ON is 255 on that channel. A **Fuel Charge or Air Charge** press is held
+for the few milliseconds the charge record needs to save its PENDING mark
+(see "The fuel and air charge"); if the record cannot be saved it goes out
+anyway and both tanks read NOT KNOWN. Nothing on this page arms. Arm the Fireball as
 always, with its hold to arm (the show screen's button or its Stream Deck
 key), signed in. Until it is armed every button is grey, says why, and
 nothing is sent: flamesafe keeps every Fireball channel at zero, the Valve
@@ -557,8 +560,9 @@ Fuel, Air, Purge off before arming").
 **Everything goes off by itself** (within a quarter of a second) on: Stop,
 Abort, Disarm Fireball, Disarm all flame groups or the Fireball's deck
 key; the Fireball locked out; the flame link lost, a single frame to
-flamesafe that could not be sent, or frames stopping for more than a
-tenth of a second (flamesafe's own cut); flamesafe not reporting; leaving the page, closing it or hiding
+flamesafe that could not be sent, or frames stopping for more than
+flamesafe's own fire_hold_ms (100 ms unless its config says otherwise;
+a stall inside the engine's own reading counts too); flamesafe not reporting; leaving the page, closing it or hiding
 it; this page's status not being live; signing out (at once, at the
 engine: the run that sign-in started, or that person's run on that
 screen, and on the show PC every run started there; never someone

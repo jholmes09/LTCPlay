@@ -91351,6 +91351,41 @@ def test_fireball_panel_rules():
     check(code == 409 and "signed out" in out["error"] and
           not fb.active() and link.cur is None,
           f"a press whose sign-in has ended starts nothing: {out}")
+    # A Fuel or Air press waits for the charge record's mark (round-6
+    # review 3): held while "wait" (nothing of it goes out, the others
+    # do), on when "ok".
+    answers = ["wait", "wait", "ok"]
+    fb.manual_gate = lambda: answers.pop(0) if len(answers) > 1 \
+        else answers[0]
+    P.t[0] += 0.05
+    code, out = beat({"fuel", "valve"}, run="cg", seq=1)
+    check(code == 200 and link.cur[56] == 255 and link.cur[54] == 0,
+          f"Fuel + Valve while the mark is on its way: the Valve goes, the "
+          f"Fuel waits: {out} {link.cur[54]} {link.cur[56]}")
+    P.t[0] += 0.05
+    beat({"fuel", "valve"}, run="cg", seq=2)
+    check(link.cur[54] == 0, "and the next beat too")
+    P.t[0] += 0.05
+    beat({"fuel", "valve"}, run="cg", seq=3)
+    check(link.cur[54] == 255 and link.cur[56] == 255,
+          "then on, once the mark is on disk")
+    fb.off("reset")
+    answers[:] = ["wait"]
+    P.t[0] += 0.05
+    beat({"valve"}, run="ch", seq=1)
+    check(link.cur[56] == 255, "a press with no Fuel or Air never asks")
+    fb.off("reset")
+    fb.manual_gate = None
+    # A run's end tells the engine (review 9).
+    ended = []
+    fb.on_end = ended.append
+    P.t[0] += 0.05
+    fb.beat({"controls": {"fuel": True}, "run": "ci"}, ("iPad 3", "w"),
+            who="Zed", screen="iPad 3", token="tokZ")
+    fb.off("reset")
+    check(ended == ["tokZ"], f"a run's end tells the engine its sign-in: "
+                             f"{ended}")
+    fb.on_end = None
     # Lost while the run is on: the watcher cuts it (review B 2).
     gone[0] = ""
     P.t[0] += 0.05
@@ -91928,6 +91963,21 @@ def test_fireball_signed_out_is_view_only():
               "signed out" in P.fb.last_cut,
               f"signed out: the Fireball run cut at once: {st} "
               f"{P.fb.last_cut!r}")
+        # A run's end makes the engine forget the "users lock busy" time it
+        # kept for that sign-in (round-6 review 9).
+        rem._fb_users_busy = {"tokA": 1.0, "tokB": 2.0}
+        rem.fireball_run_ended("tokA")
+        check(rem._fb_users_busy == {"tokB": 2.0},
+              f"a run's end drops its busy entry: {rem._fb_users_busy}")
+        fsrc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "ltcplay", "fireball.py"),
+                    encoding="utf-8").read()
+        wsrc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "ltcplay", "web.py"),
+                    encoding="utf-8").read()
+        check("panel.on_end = end" in fsrc and
+              "fb.manual_gate = tr.manual_gate" in wsrc,
+              "the engine wires the run's end and the manual press gate")
         # Losing the right to arm cuts it at the engine on the watcher's
         # next look, as the fuel pump (round-5 review B 2): a demotion, a
         # removal.
@@ -92664,7 +92714,11 @@ def test_fireball_doc_in_plain_words():
         check(need in part, f"OPERATOR.md's Fireball section says {need!r}")
     for need in ("a single frame to flamesafe that could not be sent",
                  "signing out (at once, at the engine",
-                 "frames stopping for more than a tenth of a second",
+                 "frames stopping for more than flamesafe's own "
+                 "fire_hold_ms",
+                 "a stall inside the engine's own reading counts too",
+                 "A **Fuel Charge or Air Charge** press is held for the few "
+                 "milliseconds",
                  "never someone else's run on another iPad",
                  "losing the right to arm",
                  "Play from and Loop work with a Fireball channel on"):
@@ -105404,6 +105458,7 @@ def test_fireball_manual_merged_on_the_flame_link():
     # again by itself (round-5 review B 3); a beat in flight with the old
     # count is refused (B 4).
     lk.release()
+    R.cue = [0] * 512            # the show's own Fuel off from here on
     lk.send_frame()
     d1 = getattr(lk, "manual_drops", 0)
     lk.manual_set(page(s55=255), lk.abort_id, d1)
@@ -105415,6 +105470,42 @@ def test_fireball_manual_merged_on_the_flame_link():
     check(lk.manual_set(page(s55=255), lk.abort_id, d1) is False and
           lk._manual is None,
           "a beat that read the count before the stall is refused")
+    # A stall INSIDE the read (round-6 review 2): the gap is judged under
+    # the lock right before the send, so a provider that blocks for longer
+    # than flamesafe's fire hold drops the page's frame too.
+    lk.send_frame()
+    d2 = getattr(lk, "manual_drops", 0)
+    lk.manual_set(page(s55=255), lk.abort_id, d2)
+    real_cues_ = lk.cues
+    from ltcplay import fireball_timeline as _FT
+    R.f = getattr(R, "f", 30) + 3        # the show's timecode moves on
+    R.tc = _FT.tc_text(R.f)
+    read_ = []
+    lk.cues = lambda tc: (read_.append(1),
+                          R.clk.__setitem__(0, R.clk[0] + 0.15),
+                          real_cues_(tc))[2]
+    lk.send_frame()
+    lk.cues = real_cues_
+    check(read_ and seen_[-1][54] == 0 and
+          getattr(lk, "manual_drops", 0) == d2 + 1,
+          f"a 150 ms stall inside the read: the page's Fuel is not sent: "
+          f"{seen_[-1][54]}")
+    # The limit is flamesafe's own fire_hold_ms (round-6 review 2): 50 ms
+    # drops a 70 ms gap, 200 ms keeps a 150 ms one.
+    for hold_ms, gap, dropped_ in ((50, 0.07, True), (200, 0.15, False),
+                                   (None, 0.07, False), (None, 0.15, True)):
+        lk.send_frame()
+        lk.timing_limit_ms = hold_ms
+        d3 = getattr(lk, "manual_drops", 0)
+        lk.manual_set(page(s55=255), lk.abort_id, d3)
+        R.clk[0] += gap
+        lk.send_frame()
+        check((seen_[-1][54] == 0) == dropped_ and
+              (getattr(lk, "manual_drops", 0) == d3 + 1) == dropped_,
+              f"fire_hold_ms {hold_ms}, a {int(gap * 1000)} ms gap: the "
+              f"page's Fuel {'dropped' if dropped_ else 'kept'}: "
+              f"{seen_[-1][54]}")
+    lk.timing_limit_ms = 100
     lk._sock = None
     lk.observer = None
     R.cue = [0] * 512

@@ -210,10 +210,11 @@ PROGRAM_HOLD_S = 0.25
 # the SHOW's values only. The lockout zeroes its slots, and flamesafe still
 # passes them only while the fireball group is ARMED.
 MANUAL_HOLD_S = 0.25
-# flamesafe zeroes a fire value no frame has renewed for this long
-# (fire_hold): a gap between frames longer than this drops the Fireball
-# page's frame, counted (manual_drops), so a held channel never comes back
-# by itself when frames resume (round-5 review B 3).
+# flamesafe zeroes a fire value no frame has renewed for fire_hold_ms: a gap
+# between frames longer than that drops the Fireball page's frame, counted
+# (manual_drops), so a held channel never comes back by itself when frames
+# resume (round-5 review B 3). The limit is flamesafe's own fire_hold_ms
+# when its config said it (timing_limit_ms), else this.
 MANUAL_STALL_S = 0.1
 # Programming playback (playhead.py, Jeff 2026-10-29: the switch "Fire
 # flames while scrubbing" is gone). The show's own flame cues follow the
@@ -1069,6 +1070,16 @@ class FlameLink:
                                            name="ltcplay-flame-link-watch")
             self._watch.start()
         return self
+
+    def manual_stall_s(self):
+        """A gap between frames longer than this and flamesafe has already
+        zeroed the Fireball page's channels: flamesafe's fire_hold_ms when
+        its config said it, else MANUAL_STALL_S."""
+        try:
+            ms = int(getattr(self, "timing_limit_ms", 0) or 0)
+        except (TypeError, ValueError):
+            ms = 0
+        return ms / 1000.0 if ms > 0 else MANUAL_STALL_S
 
     def stall_s(self):
         """No frame for longer than this (half of flamesafe's
@@ -2202,14 +2213,6 @@ class FlameLink:
         so zero() and disarm_all() never wait on them. A frame whose values
         were read before a zero() or disarm_all() that landed meanwhile
         goes out as zeros: `_zero_gen` says one did."""
-        last = self._last_frame_at
-        if last is not None and self._clock() - last > MANUAL_STALL_S:
-            # Frames stopped for longer than flamesafe's own fire hold:
-            # flamesafe has zeroed the page's channels, and they stay off
-            # until a fresh press (round-5 review B 3).
-            with self._lock:
-                self._manual = None
-                self.manual_drops += 1
         gen = self._zero_gen
         lgen = self._land_gen
         aid = self.abort_id
@@ -2235,6 +2238,20 @@ class FlameLink:
                 # zeroed, and only while the show is not live: values_now;
                 # so is a live flame programming frame, by the same rule).
                 values = bytes(UNIVERSE_SIZE)
+            # Frames stopped for longer than flamesafe's own fire hold:
+            # flamesafe has zeroed the page's channels, and they stay off
+            # until a fresh press (round-5 review B 3). Asked HERE, under
+            # the lock right before the send, so a stall inside the
+            # providers or the read lock (round-6 review 2) counts too;
+            # the limit is flamesafe's own fire_hold_ms.
+            last = self._last_frame_at
+            if self._manual is not None and last is not None and \
+                    self._clock() - last > self.manual_stall_s():
+                self._manual = None
+                self.manual_drops += 1
+                sp0 = self._show_part
+                values = bytes(map(min, sp0, values)) \
+                    if len(sp0) == len(values) else bytes(UNIVERSE_SIZE)
             dropped = lgen != self._land_gen or gen != self._zero_gen
             if dropped and aid == self.abort_id:
                 # A zero() (Hold, a show's end) or a landing dropped the
