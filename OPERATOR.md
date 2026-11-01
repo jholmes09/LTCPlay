@@ -545,7 +545,10 @@ group must list five fire slots" and does nothing.
 - **Valve Open** and **Igniter** are on only while your finger is on the
   button. Lift it and they go off.
 
-ON is 255 on that channel. Nothing on this page arms. Arm the Fireball as
+ON is 255 on that channel. A **Fuel Charge or Air Charge** press is held
+for the few milliseconds the charge record needs to save its PENDING mark
+(see "The fuel and air charge"); if the record cannot be saved it goes out
+anyway and both tanks read NOT KNOWN. Nothing on this page arms. Arm the Fireball as
 always, with its hold to arm (the show screen's button or its Stream Deck
 key), signed in. Until it is armed every button is grey, says why, and
 nothing is sent: flamesafe keeps every Fireball channel at zero, the Valve
@@ -557,8 +560,9 @@ Fuel, Air, Purge off before arming").
 **Everything goes off by itself** (within a quarter of a second) on: Stop,
 Abort, Disarm Fireball, Disarm all flame groups or the Fireball's deck
 key; the Fireball locked out; the flame link lost, a single frame to
-flamesafe that could not be sent, or frames stopping for more than a
-tenth of a second (flamesafe's own cut); flamesafe not reporting; leaving the page, closing it or hiding
+flamesafe that could not be sent, or frames stopping for more than
+flamesafe's own fire_hold_ms (100 ms unless its config says otherwise;
+a stall inside the engine's own reading counts too); flamesafe not reporting; leaving the page, closing it or hiding
 it; this page's status not being live; signing out (at once, at the
 engine: the run that sign-in started, or that person's run on that
 screen, and on the show PC every run started there; never someone
@@ -1061,6 +1065,15 @@ FSEQ:
   on other channels, no show fires its fireball (its own channels are held
   at zero), both tanks become NOT KNOWN on the charge record, and the
   screens say why, until the group is on 55 to 59.
+- **flamesafe.json and the running flamesafe must agree.** The cues read
+  the fireball's slots from flamesafe.json, the charge record reads them
+  from the running flamesafe's status. If the two differ (for example the
+  file says 60 to 64 and flamesafe was started before the file was
+  changed and still runs 55 to 59), the channels of **both** groups are
+  zero from every show, both tanks become NOT KNOWN, "Tanks are empty" is
+  refused, and the screens say "flamesafe.json puts the fireball on ...
+  and the running flamesafe on ...", until they agree: restart
+  flamesafe and LTC Player from the same file.
 - **No fireball group found at all** in flamesafe's config: 55 to 59 are
   still guarded for every show, whatever is wired to them. Purge (59) is
   always zero, and Fuel (55) and Air (56) each get one charge until a
@@ -1081,9 +1094,13 @@ FSEQ:
 - **Never a double charge.** The Fuel or Air stage turns its channel on
   only while that tank is EMPTY (see the charge record below), or while it
   carries on the very charge it started. A new charge also waits until
-  the charge record says PENDING on disk (below); if that cannot be
-  saved, the stage is skipped: "the charge record cannot be saved:
-  automatic charging is off". Otherwise it is skipped for the
+  the charge record says PENDING on disk (below), asked for when the
+  stage is within two seconds of starting (a rehearsal stopped before
+  that leaves no mark); if that cannot be saved, the stage is skipped:
+  "the charge record cannot be saved: automatic charging is off" (an
+  FSEQ's charge stays skipped until the FSEQ turns it off). A Programming
+  Ahead or Back inside a play counts as a landing: a charge held for the
+  mark never starts late inside its window. Otherwise it is skipped for the
   rest of that play, and the journal and every screen's status say so
   once, for example
   "Fuel already charged: the Fuel stage was skipped (no double charge)."
@@ -1126,9 +1143,18 @@ for the record as a whole a mark, PENDING.
   the automatic charge is **not sent** and the screens say "the charge
   record cannot be saved: automatic charging is off". If LTC Player
   stops with PENDING on the record, an EMPTY tank reads NOT KNOWN at the
-  next start. A shot, a Purge or Tanks are empty clears it. A Fuel or
-  Air press on the Fireball page also writes PENDING, but is never held
-  back by it: a press always goes out.
+  next start. A shot, a Purge or Tanks are empty clears it. A mark that
+  no charge used (a rehearsal stopped before its charge) comes off again
+  after 5 seconds without being asked for, so it does not leave both
+  tanks NOT KNOWN at the next start.
+- **A Fuel or Air press on the Fireball page** is held for the few
+  milliseconds the PENDING mark takes to reach the disk, then goes out.
+  If the record cannot be saved the press **still goes out** (a top-off
+  is yours to decide), but both tanks become NOT KNOWN at once, the fault
+  is shown, and a second tiny marker is written in the user's temp
+  folder, so that after a crash or restart the tanks read NOT KNOWN even
+  if the settings folder works again and its record says EMPTY. Tanks are
+  empty (then) takes the marker away.
 
 - **What charges a tank:** Fuel Charge (55) or Air Charge (56) reaching
   the Fireball while flamesafe says it is armed, from the show or from the
@@ -1159,7 +1185,10 @@ for the record as a whole a mark, PENDING.
   - LTC Player stopped with PENDING on the record;
   - the record and a copy left by a write that did not finish disagree,
     or only that copy was found, or the record could not be read;
-  - flamesafe's fireball group was found on other channels than 55 to 59.
+  - flamesafe's fireball group was found on other channels than 55 to 59,
+    or flamesafe.json's fireball slots and the running flamesafe's differ
+    (Tanks are empty is refused while that stands: fix the config first);
+  - a Fireball press went out while the record could not be saved.
 
   A shot or a purge seen for certain makes it EMPTY again. While a tank
   is CHARGED or NOT KNOWN, nothing charges it automatically.

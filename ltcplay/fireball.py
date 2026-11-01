@@ -192,6 +192,12 @@ class FireballPanel:
         # charge state (fireball_charge.py) can name who charged or topped
         # off. Display and journal only: it never changes what is sent.
         self.on_controls = None
+        # () -> "ok" or "wait": asked before a Fuel or Air press goes out
+        # (the charge record's write-ahead mark, round-6 review 3); and
+        # (token) called when a run ends, so the engine can forget what it
+        # kept for that sign-in (review 9).
+        self.manual_gate = None
+        self.on_end = None
         self._stop = threading.Event()
         self._thread = None
         self._threaded = threaded
@@ -478,6 +484,17 @@ class FireballPanel:
                 # send it the moment it is set, and a charge it sees then
                 # must already be this person's (a top-off, never a
                 # double charge).
+                # A Fuel or Air press waits (a few frames) for the charge
+                # record's mark to reach the disk; it goes out anyway when
+                # the record cannot be saved (the record then marks both
+                # tanks NOT KNOWN itself): round-6 review 3.
+                held = set(on) & {"fuel", "air"}
+                if held and self.manual_gate is not None:
+                    try:
+                        if self.manual_gate() == "wait":
+                            vals = self.frame(set(on) - held)
+                    except Exception:                    # noqa: BLE001
+                        pass
                 self._tell(on, who, screen)
                 # Refused by the link itself when a disarm_all() (Stop,
                 # Abort) has moved its disarm count since the run started
@@ -563,6 +580,11 @@ class FireballPanel:
             except Exception:                            # noqa: BLE001
                 pass
         self._tell(set(), who, screen)
+        if r is not None and self.on_end is not None:
+            try:
+                self.on_end(r.get("token") or "")
+            except Exception:                            # noqa: BLE001
+                pass
         if r is not None:
             held = self._clock() - r["start"]
             self._note(f"Fireball page: everything off after {held:.1f} s: "
@@ -798,6 +820,9 @@ def build(remote, morning, link, journal=None, threaded=True,
         "the Fireball page has a channel on; turn it off there first."
         if panel.active() else "")
     morning.abort_hooks.append(panel.on_abort)
+    end = getattr(remote, "fireball_run_ended", None)
+    if end is not None:
+        panel.on_end = end
     return panel
 
 

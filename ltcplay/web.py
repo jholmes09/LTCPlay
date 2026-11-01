@@ -2473,10 +2473,22 @@ def _attach_fireball_timeline(httpd):
                 getattr(getattr(httpd, "morning", None), "groups", None)
                 or [])
             return g["fire"] if g else None
+        def live_slots():
+            # The fire slots of the fireball group the RUNNING flamesafe
+            # reports in its status (round-6 review 1), or None.
+            fs = getattr(remote, "flame_status", None)
+            v = fs.view() if fs is not None else None
+            for g in (v or {}).get("groups") or []:
+                if str(g.get("name", "")).strip().lower() != "fireball":
+                    continue
+                sl = g.get("fire_slots")
+                if isinstance(sl, list) and sl:
+                    return [int(x) for x in sl]
+            return None
         fb = fbc_mod.FireballCues(
             remote.fireball_timeline_store(),
             charge_get=lambda: getattr(remote, "fireball_charge", None),
-            journal=say, group_get=fireball_slots,
+            journal=say, group_get=fireball_slots, live_get=live_slots,
             # The show path's own sent values, before the Fireball page's
             # frame (flamelink.show_sent, third review D-F1).
             sent_get=lambda: getattr(link, "show_sent", None))
@@ -2530,6 +2542,9 @@ def _attach_fireball_charge(httpd):
     if fb is not None:
         fb.on_controls = lambda on, who, screen: tr.note_manual(on, who,
                                                                 screen)
+        # A Fuel or Air press waits for the charge record's mark on disk
+        # (round-6 review 3), and goes out anyway if it cannot be saved.
+        fb.manual_gate = tr.manual_gate
     _close_before = httpd.server_close
 
     def _close_charge():

@@ -82,6 +82,10 @@ WAIT = "\0wait"
 # ends it for the rest of that play, said on the screens and in the
 # journal (review of #187).
 GAP_S = 0.25
+# The write-ahead mark is asked for this many frames before a charge stage
+# starts (and while one is open), not at every play start: a rehearsal
+# stopped well before its charge leaves no mark (round-6 review 5).
+LEAD_FRAMES = 60
 
 
 class _Run:
@@ -101,6 +105,12 @@ class _Run:
         self.sent_at = {}        # tank -> clock when last seen on the wire
         self.last_call = None    # clock of the last frame asked of us
         self.fseq_on = {}        # FSEQ show: tank -> its charge allowed
+        # FSEQ charges refused because the record cannot be saved: they
+        # stay refused until the FSEQ itself turns that charge off, never
+        # a late start when a retry works (round-6 review 6).
+        self.fseq_skip = set()
+        self.last_relf = None    # the last frame's cue time, for seeks
+        self.last_t = None
         # The play's first frame (a start, or a landing): a charge held off
         # there while the write-ahead mark was on its way never starts
         # late, as the flame link's landing guard would have held it.
@@ -150,7 +160,8 @@ class FireballCues:
     journal     (text, **fields), the flame cues' own (off the sender)"""
 
     def __init__(self, store, charge_get=lambda: None, journal=None,
-                 clock=time.monotonic, sent_get=None, group_get=None):
+                 clock=time.monotonic, sent_get=None, group_get=None,
+                 live_get=None):
         self.store = store
         self._charge_get = charge_get
         self._journal = journal
@@ -165,6 +176,13 @@ class FireballCues:
         # refresh): the channels this module drives must be them.
         self._group_get = group_get
         self._group = None
+        # The fire slots of the fireball group the RUNNING flamesafe
+        # reports in its status (round-6 review 1), read in refresh: the
+        # file and the running flamesafe can differ, and a show must not
+        # reach either group's channels while they do.
+        self._live_get = live_get
+        self._live = None
+        self._ext_told = False
         self._plan = None         # (rev, error, shows) published
         self._run = None
         self._lock = threading.Lock()
@@ -184,6 +202,12 @@ class FireballCues:
                 self._group = sorted(g) if g is not None else None
             except Exception:                    # noqa: BLE001
                 self._group = None
+        if self._live_get is not None:
+            try:
+                g = self._live_get()
+                self._live = sorted(g) if g else None
+            except Exception:                    # noqa: BLE001
+                self._live = None
         try:
             doc, err = self.store.load()
             plan = (doc["rev"], err, dict(doc["shows"]))
@@ -252,21 +276,70 @@ class FireballCues:
             run.prev_on = set()
         run.last_call = now
 
-    def _apply(self, out, session, label, rel, cue_obj):
-        group = self._group
-        if group is not None and group != list(SLOTS):
-            # flamesafe's fireball is not on 55 to 59 (review C-4): what
-            # this module would drive is not the fireball. Fail closed:
-            # the fireball group's own slots are zero from every show.
-            self._fault(f"flamesafe's fireball group is on {group}, not "
-                        f"55 to 59, so no show fires its fireball until it "
-                        f"is (MORNING.md, The fireball)")
-            if out is None:
-                return None
-            out = list(out)
-            for s in group:
+    def _group_guard(self, out):
+        """(handled, out): flamesafe's fireball group is checked against
+        BOTH what flamesafe.json says (group_get) and what the running
+        flamesafe reports (live_get), round-6 review 1. Either one off 55
+        to 59, or the two differing, is a fault: the channels of every
+        group known are zero from every show, and when the two differ the
+        charge record is told (both tanks NOT KNOWN). Same on both: the
+        normal rules."""
+        file_g, live_g = self._group, self._live
+        known = [g for g in (file_g, live_g) if g is not None]
+        mismatch = file_g is not None and live_g is not None and \
+            file_g != live_g
+        bad = mismatch or any(g != list(SLOTS) for g in known)
+        tr = self._charge_get() if (mismatch or self._ext_told) else None
+        if not bad:
+            if self._ext_told and tr is not None:
+                self._ext_told = False
+                try:
+                    tr.note_external_fault("")
+                except Exception:                # noqa: BLE001
+                    pass
+            return False, out
+        if mismatch:
+            text = (f"flamesafe.json puts the fireball on {file_g} and the "
+                    f"running flamesafe on {live_g}, so no show reaches "
+                    f"either until they agree (MORNING.md, The fireball)")
+            if tr is not None and not self._ext_told:
+                self._ext_told = True
+                try:
+                    tr.note_external_fault(text + ".")
+                except Exception:                # noqa: BLE001
+                    pass
+        else:
+            g = next(g for g in known if g != list(SLOTS))
+            text = (f"flamesafe's fireball group is on {g}, not 55 to 59, "
+                    f"so no show fires its fireball until it is "
+                    f"(MORNING.md, The fireball)")
+        self._fault(text)
+        if out is None:
+            return True, None
+        out = list(out)
+        for g in known:
+            for s in g:
                 if 1 <= s <= len(out):
                     out[s - 1] = 0
+        return True, out
+
+    def _lead(self, run, tr, relf):
+        """Ask for the write-ahead mark when a charge stage is about to
+        start (or is open) and its tank is EMPTY (round-6 review 5)."""
+        if tr is None:
+            return
+        for k, tank in CHARGE_STAGES.items():
+            w = run.stages.get(k)
+            if w is None or k in run.skipped or k in run.started:
+                continue
+            if w["s1"] > relf and w["s0"] - relf <= LEAD_FRAMES and \
+                    tr.state(tank) == "empty":
+                self._ready(tr)
+                return
+
+    def _apply(self, out, session, label, rel, cue_obj):
+        handled, out = self._group_guard(out)
+        if handled:
             return out
         plan = self._plan
         if plan is None or plan[1]:
@@ -298,19 +371,25 @@ class FireballCues:
         if run is None or run.cue_obj is not cue_obj or run.label != label:
             run = self._run = _Run(cue_obj, label, entry, rev)
             self.messages = []
-            if run.source == "timeline" and any(
-                    k in run.stages for k in CHARGE_STAGES):
-                # The write-ahead mark asked for as the play starts, so it
-                # is on disk long before the first charge stage.
-                self._ready(self._charge_get())
         self._gap_check(run)
         first, run.first = run.first, False
-        if first:
+        now = self._clock()
+        # A seek inside the play (a Programming Ahead or Back, a Play from
+        # on a running show) is a landing like the first frame's
+        # (round-6 review 7): the cue time jumped back, or ahead by more
+        # than the clock moved.
+        jumped = False
+        if run.last_relf is not None:
+            adv = int((now - (run.last_t or now)) * fbtl.FPS) + 3
+            jumped = relf < run.last_relf - 2 or relf > run.last_relf + adv
+        run.last_relf, run.last_t = relf, now
+        if first or jumped:
             run.first_relf = relf
         if run.source != "timeline":
-            # A landing (the play's first frame past the cue's top), not a
-            # start from the top.
-            return self._fseq_guarded(out, run, first and relf > 1)
+            # A landing (the first frame past the cue's top, or a seek),
+            # not a start from the top.
+            return self._fseq_guarded(out, run, (first and relf > 1) or
+                                      jumped)
         out = self._masked(out)
         if label != run.cue:
             return out
@@ -328,7 +407,7 @@ class FireballCues:
                               f"the show.")
         tr = self._charge_get()
         last = self._sent(tr)
-        now = self._clock()
+        self._lead(run, tr, relf)
         for k, tank in CHARGE_STAGES.items():
             w = run.stages.get(k)
             if w is not None and w["slot"] in run.prev_on and \
@@ -464,10 +543,12 @@ class FireballCues:
                 run.sent_at.pop(tank, None)
                 run.sent_tanks.discard(tank)
                 run.fseq_hold.discard(tank)
+                run.fseq_skip.discard(tank)
                 continue
-            if tank in run.fseq_hold:
-                out[slot - 1] = 0   # on at the landing: held until it ends
-                continue
+            if tank in run.fseq_hold or tank in run.fseq_skip:
+                out[slot - 1] = 0   # on at the landing, or refused because
+                continue            # the record cannot be saved: held
+                                    # until the FSEQ turns it off
             word = fbtl.STAGE_WORD[tank]
             why = self._charge_refusal(tr, tank, slot, run,
                                        what=f"the FSEQ's {word} Charge")
@@ -483,6 +564,8 @@ class FireballCues:
                 if run.fseq_on.get(tank) is not False:
                     self._say(why, fault=self._unsaved(why))
                 run.fseq_on[tank] = False
+                if self._unsaved(why):
+                    run.fseq_skip.add(tank)
                 continue
             run.fseq_on[tank] = True
             on_now.add(slot)
