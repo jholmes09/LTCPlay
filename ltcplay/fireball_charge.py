@@ -100,6 +100,7 @@ valve or the purge was still open was released with it.
 """
 import collections
 import datetime
+import glob
 import hashlib
 import json
 import os
@@ -234,13 +235,18 @@ class ChargeTracker:
         # newer than the record reads NOT KNOWN; one that cannot be read
         # counts as present.
         self._alts = []
+        self._tag = ""
         if folder:
             try:
                 tag = hashlib.sha1(os.path.normcase(os.path.abspath(
                     folder)).encode("utf-8", "replace")).hexdigest()[:12]
-                # One machine's marker is never another's (a synced or
-                # roaming folder: one machine's successful write must not
-                # delete the other's marker): round-8 review 5.
+                self._tag = tag
+                # The names carry the machine, but a start reads EVERY
+                # machine's markers (round-9 review 1: a hostname can
+                # change after a crash, and a marker missed is a double
+                # charge). A record newer than a marker clears it whatever
+                # machine wrote it: the trade-off, chosen over ever missing
+                # a real one.
                 try:
                     mid = hashlib.sha1(platform.node().lower().encode(
                         "utf-8", "replace")).hexdigest()[:6]
@@ -263,6 +269,7 @@ class ChargeTracker:
         self._charge_on_wire_at = None
         self._file_get = file_get
         self._base_rev = 0
+        self._main_rev = 0      # the MAIN file's revision (never a .tmp's)
         self._auto_check_at = 0.0
         # A marker that cannot be deleted: its path, said, so the operator
         # can delete it by hand (round-8 review 5).
@@ -389,6 +396,7 @@ class ChargeTracker:
         self.rev = max([x[0] for x in (main, got) if isinstance(x, tuple)]
                        or [0])
         self._base_rev = self.rev
+        self._main_rev = main[0] if isinstance(main, tuple) else 0
         if main is None and got is None:
             self._first_run(folder, now)
             return
@@ -494,28 +502,54 @@ class ChargeTracker:
                         f"automatic charge runs until a shot or a purge.",
                         fault=True, persist=True)
 
-    def _read_alt(self):
-        """(found, rev): is there a fallback marker (or the leftover of one
-        being written), and its revision, None when it cannot be read: a
-        marker that cannot be read counts as present (round-7 review 1)."""
-        found, best, unreadable = False, None, False
-        self._unreadable_markers = []
+    def _marker_files(self):
+        """Every marker (or leftover of one being written) any machine took
+        for this settings folder: this machine's own names, any other
+        machine's, and the ones from before the names carried a machine."""
+        if not self.path or not self._alts:
+            return []
+        out = set()
+        folder = os.path.dirname(self.path)
+        home = os.path.dirname(self._alts[1]) if len(self._alts) > 1 else ""
+        for d, pat in ((folder, glob.escape(FILE) + ".*marker*"),
+                       (home, "ltcplay_fireball_charge_" +
+                        glob.escape(self._tag) + "*marker*")):
+            if not d:
+                continue
+            for name in glob.glob(os.path.join(glob.escape(d), pat)):
+                if name.endswith((".marker", ".marker.tmp")):
+                    out.add(name)
         for path in self._alts:
             for name in (path, path + ".tmp"):
-                if not os.path.exists(name):
-                    continue
-                found = True
-                try:
-                    with open(name, encoding="utf-8") as fh:
-                        r = json.load(fh).get("rev")
-                    if isinstance(r, int) and not isinstance(r, bool):
-                        best = r if best is None else max(best, r)
-                    else:
-                        unreadable = True
-                        self._unreadable_markers.append(name)
-                except (OSError, ValueError, AttributeError):
-                    unreadable = True
-                    self._unreadable_markers.append(name)
+                if os.path.exists(name):
+                    out.add(name)
+        return sorted(out)
+
+    def _marker_rev(self, name):
+        """A marker file's revision, or None when it cannot be read."""
+        try:
+            with open(name, encoding="utf-8") as fh:
+                r = json.load(fh).get("rev")
+            return r if isinstance(r, int) and not isinstance(r, bool) \
+                else None
+        except (OSError, ValueError, AttributeError):
+            return None
+
+    def _read_alt(self):
+        """(found, rev): is there a fallback marker (or the leftover of one
+        being written) of ANY machine, and the newest revision, None when
+        one cannot be read: a marker that cannot be read counts as present
+        (round-7 review 1)."""
+        found, best, unreadable = False, None, False
+        self._unreadable_markers = []
+        for name in self._marker_files():
+            found = True
+            r = self._marker_rev(name)
+            if r is None:
+                unreadable = True
+                self._unreadable_markers.append(name)
+            else:
+                best = r if best is None else max(best, r)
         return found, (None if unreadable else best)
 
     def _write_marker_file(self, path, rev):
@@ -544,29 +578,36 @@ class ChargeTracker:
         return saved
 
     def _drop_alt(self, durable_rev):
-        """A record at or past the marker's revision is on disk: the markers
-        have done their work."""
-        if self._alt_rev is not None and durable_rev >= self._alt_rev:
-            gone, stuck = True, []
-            for path in self._alts:
-                for name in (path, path + ".tmp"):
-                    try:
-                        os.remove(name)
-                    except FileNotFoundError:
-                        pass
-                    except OSError:
-                        gone = False
-                        stuck.append(name)
-            if gone:
+        """A record at or past a marker's revision is on disk (renamed into
+        place as the main file: never a .tmp, round-9 review F2): the
+        markers older than it, whatever machine wrote them, have done their
+        work."""
+        if self._alt_rev is None:
+            return
+        left, stuck = 0, []
+        for name in self._marker_files():
+            r = self._marker_rev(name)
+            if r is None:
+                r = self._alt_rev       # unreadable: the one assigned at start
+            if durable_rev < r:
+                left += 1
+                continue
+            try:
+                os.remove(name)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                stuck.append(name)
+        if stuck:
+            # Every start would read NOT KNOWN for ever: name the file.
+            self.marker_fault = (
+                "Fireball charge: the marker file " + " and ".join(stuck) +
+                " cannot be deleted, so every start reads the tanks NOT "
+                "KNOWN. Check the tanks by eye, then delete it by hand.")
+        else:
+            self.marker_fault = ""
+            if not left:
                 self._alt_rev = None
-                self.marker_fault = ""
-            else:
-                # Every start would read NOT KNOWN for ever: name the file.
-                self.marker_fault = (
-                    "Fireball charge: the marker file " +
-                    " and ".join(stuck) + " cannot be deleted, so every "
-                    "start reads the tanks NOT KNOWN. Check the tanks by "
-                    "eye, then delete it by hand.")
 
     def _apply_alt(self):
         """At start: a fallback marker newer than the record read means a
@@ -589,8 +630,10 @@ class ChargeTracker:
         # Whatever is written next outranks the marker, so it can be taken
         # away once that record is on disk.
         self.rev = max(self.rev, rev)
-        if rev <= self._base_rev:
-            self._drop_alt(self._base_rev)
+        if rev <= self._main_rev:
+            # Older than the MAIN file (a record left in .tmp never counts:
+            # round-9 review F2).
+            self._drop_alt(self._main_rev)
             return
         now = self._wall()
         unk = [k for k in TANK_WORD if self.tanks[k]["state"] == EMPTY]
@@ -615,7 +658,34 @@ class ChargeTracker:
         2026-10-30), said loudly with the folder, and the record is written
         at once. One that cannot be written there (round-4 review: a lost
         write and a restart read "no record" while the tanks were charged)
-        makes both tanks NOT KNOWN instead."""
+        makes both tanks NOT KNOWN instead. A marker of a Fireball press
+        that went out unrecorded is looked for FIRST and the NOT KNOWN
+        record written before anything else (round-9 review F3: an EMPTY
+        one written first, and a power cut before the NOT KNOWN one, would
+        outrank the marker)."""
+        found, _r = self._read_alt()
+        if found:
+            self.tanks = {k: _new_tank(UNKNOWN, now, "a marker of an "
+                                       "unrecorded Fireball press was "
+                                       "found with no record")
+                          for k in TANK_WORD}
+            self.releasing = ""
+            self.fault = (f"No charge record found ({FILE} in {folder}), "
+                          f"but a marker from a Fireball press that went "
+                          f"out unrecorded was: both tanks are NOT KNOWN; "
+                          f"check them by eye, then an admin confirms them "
+                          f"empty or presses Purge.")
+            self._next_rev()
+            try:
+                self._write(self._doc())
+                self._durable_rev = self.rev
+                self._main_rev = self.rev
+            except OSError:
+                self._unwritten = self._doc()
+                self._retry_at = self._clock()
+            self._event("system", "engine", "first_run", self.fault,
+                        fault=True, persist=False)
+            return
         self.tanks = {k: _new_tank(EMPTY, now, "first run: no charge "
                                    "record yet") for k in TANK_WORD}
         self.releasing = ""
@@ -632,16 +702,6 @@ class ChargeTracker:
                             f"presses Purge.")
             self._unwritten = self._doc()
             self._retry_at = self._clock()
-            return
-        found, _r = self._read_alt()
-        if found:
-            # An old marker beside no record: the truth, not "starting
-            # both tanks EMPTY" followed by NOT KNOWN (round-8 review 5).
-            self._event("system", "engine", "first_run",
-                        f"No charge record found ({FILE} in {folder}), but "
-                        f"a marker from a Fireball press that went out "
-                        f"unrecorded was: both tanks are NOT KNOWN; check "
-                        f"them by eye.", fault=True, persist=False)
             return
         self.first_run = True
         self._event("system", "engine", "first_run",
@@ -1140,7 +1200,11 @@ class ChargeTracker:
             now_w = self._wall()
             for k in unk:
                 self._set(k, EMPTY, f"confirmed empty by {who}", now_w)
-            self.pending = False
+            if unk:
+                # Only when a tank was NOT KNOWN: with none, a manual charge
+                # on the wire but not yet reported would lose its write-ahead
+                # mark (round-9 review 4).
+                self.pending = False
             was_off, self.auto_off = self.auto_off, False
             if unk:
                 words = " and ".join(TANK_WORD[k] for k in unk)

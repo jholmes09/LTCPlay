@@ -1030,7 +1030,15 @@ for the record as a whole a mark, PENDING.
   (EMPTY after a shot, CHARGED by frames seen); the journal says so. A
   marker that cannot be deleted or read is named with its path, so it can
   be deleted by hand once the tanks are checked. Marker names carry the
-  machine's name, so a synced or roaming folder never mixes two machines'. Tanks are empty (then) takes the markers away.
+  machine's name, but a start reads **every** machine's markers for this
+  settings folder: a computer's name can change after a crash (a Mac takes
+  it from the network), and a marker missed is a double charge. A record
+  newer than a marker clears it whatever machine wrote it; on a settings
+  folder shared by two machines the trade-off is that one machine's newer
+  record clears the other's marker, which was chosen over ever missing a
+  real one. A record left half-saved (in a `.tmp` file) never clears a
+  marker: only a record renamed into place as the main file does.
+  Tanks are empty (then) takes the markers away.
 
 - **What charges a tank:** Fuel Charge (55) or Air Charge (56) reaching
   the Fireball while flamesafe says it is armed, from the show or from the
@@ -1097,7 +1105,8 @@ for the record as a whole a mark, PENDING.
   KNOWN, never a wrong EMPTY. If that copy cannot be read, both tanks are
   NOT KNOWN.) If flamesafe's fireball group is on other channels than 55
   to 59, both tanks become NOT KNOWN and are written so, and the screens
-  say why: a group put back on 55 to 59 never finds an old EMPTY. Every screen's status carries it as one
+  say why: a group put back on 55 to 59 never finds an old EMPTY.
+- Every screen's status carries it as one
   sentence, for example "Fuel: charged 14:32. Air: charged 14:35. No shot
   fired." There is no pressure reading: it is never invented.
 
