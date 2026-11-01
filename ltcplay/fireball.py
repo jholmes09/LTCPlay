@@ -464,7 +464,8 @@ class FireballPanel:
                 # Overtaken by a later beat (separate connections): it says
                 # nothing about what is held now, and is not used.
                 return 200, {"ok": True, "run": r["id"], "overtaken": True,
-                             "on": [k for k in KEYS if k in r["on"]]}
+                             "on": [k for k in KEYS if k in r["on"]],
+                             "held": list(r.get("held", []))}
             else:
                 r["seq"] = seq
             before = set(r["on"])
@@ -479,7 +480,8 @@ class FireballPanel:
                 # frame was worked out (review of #149, P3-1): that one's
                 # frame stands, this one is not written.
                 return 200, {"ok": True, "run": r["id"], "overtaken": True,
-                             "on": [k for k in KEYS if k in r["on"]]}
+                             "on": [k for k in KEYS if k in r["on"]],
+                             "held": list(r.get("held", []))}
             if self._run is not r:
                 # A cut that landed while this beat was worked out wins:
                 # nothing is set.
@@ -502,6 +504,7 @@ class FireballPanel:
                             waiting = [k for k in KEYS if k in held]
                     except Exception:                    # noqa: BLE001
                         pass
+                r["held"] = list(waiting)
                 if waiting:
                     if r.get("held_since") is None:
                         r["held_since"] = now

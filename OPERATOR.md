@@ -553,7 +553,9 @@ page keeps sending while they are on, so a quick tap is never lost: the
 press is sent at the next beat (the answer says "held" meanwhile, and
 the pad says WAITING, not ON). If the charge record does not answer in 2
 seconds (a hung disk) the press is **dropped**, everything goes off, and
-the page says so: release and press again. It is never sent late. Nothing on this page arms. Arm the Fireball as
+the page says so: release and press again. It is never sent late. The mark still reaches the disk meanwhile, so on a
+slow disk a second press within 5 seconds goes straight out.
+Nothing on this page arms. Arm the Fireball as
 always, with its hold to arm (the show screen's button or its Stream Deck
 key), signed in. Until it is armed every button is grey, says why, and
 nothing is sent: flamesafe keeps every Fireball channel at zero, the Valve

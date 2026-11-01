@@ -93009,6 +93009,11 @@ def test_fireball_panel_rules():
     P.t[0] += 0.05
     beat({"fuel", "valve"}, run="cg", seq=2)
     check(link.cur[54] == 0, "and the next beat too")
+    # An overtaken beat carries the current held list (round 9), so a
+    # page that takes it for the newest answer still shows WAITING.
+    code, out = beat({"fuel", "valve"}, run="cg", seq=1)
+    check(out.get("overtaken") and out.get("held") == ["fuel"],
+          f"an overtaken beat carries the held list: {out}")
     P.t[0] += 0.05
     code, out = beat({"fuel", "valve"}, run="cg", seq=3)
     check(link.cur[54] == 255 and link.cur[56] == 255 and "held" not in out,
@@ -94357,6 +94362,14 @@ out.waiting.after = pad("fuel").querySelector(".fb-st").textContent;
 delete window.__answer["fireball-beat"];
 h.ev(pad("fuel"), "click");
 await h.sleep(250);
+// An older answer that arrives late does not turn the pad back (round 9).
+FB_RUN = "x"; FB_ANS = 0;
+fbAnswer("x", 5, {held:["fuel"]});
+fbAnswer("x", 4, {held:[]});
+out.ooo = {late:FB_HELD.join(), newer:(fbAnswer("x", 6, {ok:true}), FB_HELD.length), other:(fbAnswer("y", 9, {held:["air"]}), FB_HELD.length)};
+FB_RUN = null;
+FB_HELD = ["air"]; fbCut("selftest");
+out.ooo.cut = FB_HELD.length;
 // Tanks are empty: shown while automatic charging is off, though every
 // tank is known (round-8 review 1).
 const tk = {fuel:{state:"empty"}, air:{state:"empty"}};
@@ -94392,6 +94405,10 @@ out.buttons = since(n).map(p => p.route + (p.body.group ? ":" + p.body.group : "
           m["waiting"]["after"] == "ON",
           f"a press the engine holds for the mark: WAITING, then ON: "
           f"{m['waiting']}")
+    check(m["ooo"] == {"late": "fuel", "newer": 0, "other": 0, "cut": 0},
+          f"an older answer arriving late changes nothing, a newer one "
+          f"does, another run's none, and a cut clears the held list: "
+          f"{m['ooo']}")
     check(m["empty"]["auto_off"] is False and m["empty"]["known"] is True and
           m["empty"]["unknown"] is False,
           f"Tanks are empty: shown when automatic charging is off or a "
@@ -94474,6 +94491,7 @@ def test_fireball_doc_in_plain_words():
                  "the pad says WAITING, not ON",
                  "the press is **dropped**",
                  "It is never sent late",
+                 "a second press within 5 seconds goes straight out",
                  "A **Fuel Charge or Air Charge** press is held for the few "
                  "milliseconds",
                  "never someone else's run on another iPad",

@@ -21410,6 +21410,26 @@ def build():
   "FB_HELD = Array.isArray(j && j.held) ? j.held : [];",
   "FB_HELD = [];"),
 
+ ("fireball page: an older answer arriving late is used (round 9)",
+  "ltcplay/web/remote.html",
+  "if(run !== FB_RUN || seq < FB_ANS) return;",
+  "if(run !== FB_RUN) return;"),
+
+ ("fireball page: a cut leaves the held list (round 9)",
+  "ltcplay/web/remote.html",
+  "  FB_HELD = [];\n  for(const k in FB_ON) FB_ON[k] = false;",
+  "  for(const k in FB_ON) FB_ON[k] = false;"),
+
+ ("fireball manual: an overtaken beat carries no held list (round 9)",
+  "ltcplay/fireball.py",
+  "# nothing about what is held now, and is not used.\n"
+  "                return 200, {\"ok\": True, \"run\": r[\"id\"], \"overtaken\": True,\n"
+  "                             \"on\": [k for k in KEYS if k in r[\"on\"]],\n"
+  "                             \"held\": list(r.get(\"held\", []))}",
+  "# nothing about what is held now, and is not used.\n"
+  "                return 200, {\"ok\": True, \"run\": r[\"id\"], \"overtaken\": True,\n"
+  "                             \"on\": [k for k in KEYS if k in r[\"on\"]]}"),
+
  ("fireball charge: a start reads only this machine's marker names (round 9)",
   "ltcplay/fireball_charge.py",
   "(folder, glob.escape(FILE) + \".*marker*\"),",
