@@ -1991,7 +1991,7 @@ def _resume(m, ev, now):
             f"{_operator_name(ev)} pressed Resume{_screen(ev)}."
             + (f" The delayed show {d.n} still waits for Start now."
                if d else "")
-            + (_resume_words(tx, nxt, now, reset)
+            + (_resume_words(tx, nxt, now)
                if nxt else " There are no more scheduled shows tonight."))
     return tx.done()
 
@@ -1999,26 +1999,24 @@ def _resume(m, ev, now):
 RESUME_MARGIN_S = 5
 
 
-def _resume_starts_next(tx, nxt, now, reset):
+def _resume_starts_next(tx, nxt, now):
     """What the next tick will do with `nxt` after this Resume, as far as
-    the engine can tell: "yes" (a state a show starts from, nothing
-    aborted, no guard left, not a Reset, and more than RESUME_MARGIN_S of
-    its late limit left), "close" (the same but within RESUME_MARGIN_S of
+    the engine can tell: "yes" (a state a show starts from, no guard
+    left, and more than RESUME_MARGIN_S of its late limit left), "close" (the same but within RESUME_MARGIN_S of
     the limit: it may still start, or be MISSED a second later), or "no".
     Delta reviews of PR #202: Resume at exactly 120 s said "starts now" and
     the show was MISSED a tick later."""
     m = tx.m
     late = lateness_s(nxt.start, now)
-    if (reset or tx.ev.latched or m.abort_latched or
-            m.state not in (IDLE, STANDBY) or nxt.status != PENDING or
+    if (m.state not in (IDLE, STANDBY) or nxt.status != PENDING or
             _guard_left(m, now) != 0 or not 0 <= late <= m.late_grace_s):
         return "no"
     return "yes" if late <= m.late_grace_s - RESUME_MARGIN_S else "close"
 
 
-def _resume_words(tx, nxt, now, reset):
+def _resume_words(tx, nxt, now):
     m = tx.m
-    how = _resume_starts_next(tx, nxt, now, reset)
+    how = _resume_starts_next(tx, nxt, now)
     at = clock(_local(m, nxt.start))
     if how == "yes":
         return (f" Show {nxt.n}, due at {at}, is still inside its late "

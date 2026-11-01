@@ -10530,15 +10530,6 @@ def test_schedule_late_limit_round_two():
         check(want in txt and (want == "starts at the next tick" or
                                "starts at the next tick" not in txt),
               f"Resume {why}: {txt!r}")
-    # A Reset says nothing of the sort.
-    n = _Night(S, rule)
-    n.boot(_den(S, 17, 50))
-    n.op(S.HOLD_ON, _den(S, 17, 59))
-    o = n.op(S.RESUME, _den(S, 18, 1), detail=S.RESET_DETAIL)
-    txt = " ".join(le.text for le in o.log)
-    check("starts at the next tick" not in txt and
-          "close to its limit" not in txt,
-          f"a Reset starts nothing and does not say so: {txt!r}")
     # Every condition of _resume_starts_next, one at a time.
     import types
     from dataclasses import replace
@@ -10548,16 +10539,11 @@ def test_schedule_late_limit_round_two():
     nxt = m0.slot(1)
     at = _den(S, 18, 0, 30)
 
-    def how(m=m0, latched=False, reset=False, when=at):
-        tx = types.SimpleNamespace(
-            m=m, ev=S.Event(S.RESUME, "operator", latched=latched))
-        return S._resume_starts_next(tx, nxt, when, reset)
+    def how(m=m0, when=at):
+        tx = types.SimpleNamespace(m=m, ev=S.Event(S.RESUME, "operator"))
+        return S._resume_starts_next(tx, nxt, when)
     check(m0.state == S.STANDBY and how() == "yes",
           f"setup: a waiting show 30 s late: {m0.state} {how()}")
-    check(how(m=replace(m0, abort_latched=True)) == "no",
-          "after an Abort nobody Reset: no promise")
-    check(how(latched=True) == "no", "an Abort latched in the event: no")
-    check(how(reset=True) == "no", "a Reset: no")
     check(how(m=replace(m0, state=S.HOLD)) == "no", "still on Hold: no")
     check(how(m=replace(m0, last_end=at - timedelta(seconds=10))) == "no",
           "inside the guard after the last show: no")

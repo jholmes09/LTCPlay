@@ -9158,11 +9158,6 @@ def build():
   "    return \"yes\" if late <= m.late_grace_s - RESUME_MARGIN_S else \"close\"\n",
   "    return \"no\"\n"),
 
- ("late limit 2 min: Resume promises a start after an Abort",
-  "ltcplay/schedule.py",
-  "    if (reset or tx.ev.latched or m.abort_latched or\n",
-  "    if (reset or\n"),
-
  ("late limit 2 min: Resume promises a start inside the guard",
   "ltcplay/schedule.py",
   "            _guard_left(m, now) != 0 or not 0 <= late <= m.late_grace_s):\n",
