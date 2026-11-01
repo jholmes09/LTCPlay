@@ -97092,11 +97092,12 @@ console.log(JSON.stringify(out));
         for m1, m0 in zip(a1, a0):
             check(not m1["problems"], f"{size} with the Weather block "
                                       f"({m1['tag']}): {m1['problems']}")
+            # (Abort's corner sign, which the flame groups had to stay
+            # clear of, is removed: Jeff, 2026-10-30.)
             check(m1["flames_visible_at_load"] == m0["flames_visible_at_load"]
-                  and m1["flames_clear_of_abort"] ==
-                  m0["flames_clear_of_abort"],
+                  and "flames_clear_of_abort" not in m1,
                   f"{size} ({m1['tag']}): the flame groups are seen at load "
-                  f"and clear of the Abort bar as without it")
+                  f"as without it")
             # The block takes its room from the lamps' stretch, as the
             # lasers strip does, never from their buttons: every group's
             # button stays at least 44 px (and is checked above).
