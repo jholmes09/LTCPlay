@@ -153,6 +153,39 @@ def _new_tank(state, t, event):
             "topoffs": 0, "last_event": event, "by": ""}
 
 
+def no_fireball_group(fl):
+    """True when a fresh flamesafe status shows that nothing can reach the
+    tanks on 55 to 59: it lists groups, none is the fireball, and no group
+    (fire or safety slots) and no passthrough entry (a hazer or the pump
+    switch, which flamesafe passes through while switched on) sits on any of
+    them. flamesafe keeps every other slot in no group at zero (CONTRACT.md).
+    Anything not said (an older flamesafe, a missing list) is False: the
+    answer stays "unknown", the safe direction. The bench soak runs four
+    groups and no fireball (round-10 installer finding: 11 faults a run)."""
+    try:
+        groups = fl.get("groups") or []
+        pt = fl.get("passthrough")
+        if not groups or not isinstance(pt, list):
+            return False
+        for g in groups:
+            if str(g.get("name", "")).strip().lower() == GROUP_NAME:
+                return False
+            fire, safe = g.get("fire_slots"), g.get("safety_slots")
+            if not (isinstance(fire, list) and fire and
+                    isinstance(safe, list)):
+                return False
+            if any(x in FIRE_SLOTS for x in list(fire) + list(safe)):
+                return False
+        for p in pt:
+            slots = p.get("slots") if isinstance(p, dict) else None
+            if not isinstance(slots, list) or \
+                    any(x in FIRE_SLOTS for x in slots):
+                return False
+        return True
+    except Exception:                            # noqa: BLE001
+        return False
+
+
 def armed_from_status(view, group=GROUP_NAME, fresh_s=STATUS_FRESH_S):
     """"armed", "off" or "unknown" for the fireball group from the
     remote's FlameStatus view: "armed" or "off" only from a status under
@@ -164,9 +197,12 @@ def armed_from_status(view, group=GROUP_NAME, fresh_s=STATUS_FRESH_S):
                 isinstance(age, bool) or \
                 not isinstance(age, (int, float)) or age > fresh_s * 1000:
             return "unknown"
-        for g in fl.get("groups") or []:
+        groups = fl.get("groups") or []
+        for g in groups:
             if str(g.get("name", "")).strip().lower() == group:
                 return "armed" if g.get("armed") == "armed" else "off"
+        if no_fireball_group(fl):
+            return "off"
     except Exception:                            # noqa: BLE001
         pass
     return "unknown"
@@ -261,6 +297,8 @@ class ChargeTracker:
                 self._alts = []
         self._alt_rev = None
         self._best_readable = None
+        self._no_group = False      # flamesafe has no fireball group at all
+        self.nogroup_note = ""
         self._alt_job = None        # a marker write queued for the writer
         self._alt_done = None       # its result: True, False, or None
         self._unsaved_active = False    # a press went out unrecorded
@@ -827,6 +865,9 @@ class ChargeTracker:
             v = None
         self._armed = armed_from_status(v)
         self._armed_at = self._clock()
+        self._no_group = no_fireball_group(v) if self._armed == "off" \
+            else False
+        self._nogroup_check()
         try:
             for g in (v or {}).get("groups") or []:
                 if str(g.get("name", "")).strip().lower() != GROUP_NAME:
@@ -906,6 +947,27 @@ class ChargeTracker:
                     self._event("system", "engine", "group_fault", text,
                                 fault=True, persist=True)
 
+    def _nogroup_check(self):
+        """The running flamesafe has no fireball group while flamesafe.json
+        names one: nothing can fire, so no tank state changes, but the
+        screens say so, once (round-10 review 4). Display only: not a night
+        fault, no tank NOT KNOWN."""
+        note = ""
+        if self._no_group and self._file_get is not None:
+            try:
+                if self._file_get():
+                    note = ("flamesafe.json has a fireball group but the "
+                            "running flamesafe has none, so no show reaches "
+                            "the fireball (MORNING.md, The fireball).")
+            except Exception:                    # noqa: BLE001
+                note = ""
+        if note != self.nogroup_note:
+            self.nogroup_note = note
+            if note:
+                with self._lock:
+                    self._event("system", "engine", "nogroup", note,
+                                persist=False)
+
     def observe(self, tc, values, ok):
         """Called on the flame link's sender thread after each frame went
         out (FlameLink.observer). Comparisons in memory only: no disk, no
@@ -918,7 +980,11 @@ class ChargeTracker:
             self.frames += 1
             if not ok:
                 return
-            if vals[TANK_SLOT["fuel"] - 1] or vals[TANK_SLOT["air"] - 1]:
+            if (vals[TANK_SLOT["fuel"] - 1] or vals[TANK_SLOT["air"] - 1]) \
+                    and not self._no_group:
+                # (not with no fireball group at all: those channels reach
+                # nothing, and the mark is not kept asked for on a bench
+                # show, round-10 review 3)
                 self._charge_on_wire_at = self._clock()
             self.see(vals, self.armed_now())
         except Exception:                        # noqa: BLE001
@@ -1387,7 +1453,8 @@ class ChargeTracker:
                 "fault": " ".join(x for x in (self.fault, self.write_fault,
                                               self.group_fault,
                                               self.ext_fault,
-                                              self.marker_fault) if x),
+                                              self.marker_fault,
+                                              self.nogroup_note) if x),
                 "first_run": self.first_run, "rev": self.rev,
                 "pending": self.pending, "auto_off": self.auto_off,
                 # A slot for live pressure later (Jeff): never invented.
