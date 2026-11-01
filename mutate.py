@@ -21487,13 +21487,38 @@ def build():
 
  ("fireball charge: a status with no fireball group and nothing on 55 to 59 is not known (round 10c)",
   "ltcplay/fireball_charge.py",
-  "        if groups and all(",
-  "        if False and all("),
+  "        if no_fireball_group(fl):",
+  "        if False:"),
 
  ("fireball charge: a group that owns channel 55 under another name counts as off (round 10c)",
   "ltcplay/fireball_charge.py",
-  "                and not any(x in FIRE_SLOTS for x in g[\"fire_slots\"])",
-  "                and True"),
+  "            if any(x in FIRE_SLOTS for x in list(fire) + list(safe)):",
+  "            if any(x in FIRE_SLOTS for x in list(safe)):"),
+
+ ("fireball charge: a passthrough entry on 55 to 59 does not stop the off reading (round 10d)",
+  "ltcplay/fireball_charge.py",
+  "                    any(x in FIRE_SLOTS for x in slots):",
+  "                    False:"),
+
+ ("fireball charge: a safety slot on 55 to 59 does not stop the off reading (round 10d)",
+  "ltcplay/fireball_charge.py",
+  "            if any(x in FIRE_SLOTS for x in list(fire) + list(safe)):",
+  "            if any(x in FIRE_SLOTS for x in list(fire)):"),
+
+ ("fireball charge: frames with no fireball group still stamp a charge on the wire (round 10d)",
+  "ltcplay/fireball_charge.py",
+  "                    and not self._no_group:",
+  "                    :"),
+
+ ("fireball charge: flamesafe.json with a group and the running one without says nothing (round 10d)",
+  "ltcplay/fireball_charge.py",
+  "        if self._no_group and self._file_get is not None:",
+  "        if False:"),
+
+ ("remote: the flame status view drops the safety slots (round 10d)",
+  "ltcplay/remote.py",
+  "                           \"safety_slots\": _ints(g.get(\"safety_slots\")),",
+  "                           \"safety_slots\": None,"),
 
  ("fireball charge: a start reads only this machine's marker names (round 9)",
   "ltcplay/fireball_charge.py",

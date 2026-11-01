@@ -106328,9 +106328,11 @@ def test_fireball_charge_round10_lows():
         # fireball, and the show's frames put values on 55 to 57. Those
         # channels are in no group (flamesafe keeps them at zero), so the
         # charge record is not told "status not known" 11 times a run.
-        def view(*groups):
+        def view(*groups, pt=(), safe=(401,)):
             return {"connected": True, "stale": False, "age_ms": 10,
-                    "groups": [dict(name=n, fire_slots=f, armed="armed")
+                    "passthrough": list(pt) if pt is not None else None,
+                    "groups": [dict(name=n, fire_slots=f, armed="armed",
+                                    safety_slots=list(safe))
                                for n, f in groups]}
         four = view(("front row", [411, 412]), ("cat-walk", [421]),
                     ("wave flamer", [1, 2, 3]), ("pump", [441]))
@@ -106346,6 +106348,25 @@ def test_fireball_charge_round10_lows():
               FC.armed_from_status(None) == "unknown",
               "a group that does not say its fire slots, a stale status, "
               "no groups, no status: not known")
+        # A hazer or the pump switch on 55 to 59 is passed through by
+        # flamesafe while it is on: not "off" (round-10 review 1).
+        hz = [{"name": "Hazer", "kind": "hazer", "slots": [55, 56]}]
+        pump = [{"name": "Pump", "kind": "switch", "slots": [59]}]
+        ok_pt = [{"name": "Hazer 1", "slots": [80, 81]}]
+        g4 = (("front row", [411]), ("pump", [441]))
+        check(FC.armed_from_status(view(*g4, pt=ok_pt)) == "off" and
+              FC.armed_from_status(view(*g4, pt=hz)) == "unknown" and
+              FC.armed_from_status(view(*g4, pt=pump)) == "unknown" and
+              FC.armed_from_status(view(*g4, pt=None)) == "unknown",
+              "a passthrough entry on 55 to 59, or none reported: not known")
+        # A safety slot on 55 to 59 carries the group's arm value when it
+        # is armed (round-10 review 2).
+        check(FC.armed_from_status(view(*g4, safe=(57,))) == "unknown" and
+              FC.armed_from_status(view(*g4, safe=(401, 402))) == "off" and
+              FC.armed_from_status(dict(view(*g4), groups=[
+                  {"name": "x", "fire_slots": [411], "armed": "off"}])) ==
+              "unknown",
+              "a safety slot on 55 to 59, or none reported: not known")
         d = fresh()
         C = _fbc(d, flames_get=lambda: four)
         C.tr.pump()
@@ -106361,6 +106382,45 @@ def test_fireball_charge_round10_lows():
                       if a[2] != "first_run") and not C.tr.fault,
               f"a bench show's 55 to 57 with no fireball group: no fault, "
               f"the tanks as they were: {[a[3] for a, k in C.lines]}")
+        # The remote's status view carries the safety slots the check needs
+        # (round-10 review 2).
+        from ltcplay import remote as RM
+        fsv = RM.FlameStatus("127.0.0.1", 0, "k" * 20, ["front row"],
+                             clock=lambda: 0.0)
+        fsv.note(_j.dumps({"t": "status", "k": "k" * 20, "fault": "",
+                           "groups": [{"name": "front row",
+                                       "armed": "armed", "fire_slots": [411],
+                                       "safety_slots": [401, 57]}],
+                           "passthrough": []}).encode())
+        vv = fsv.view()
+        check(vv["groups"][0]["safety_slots"] == [401, 57] and
+              FC.armed_from_status(vv) == "unknown",
+              f"the view carries the safety slots, and one on 57 is not "
+              f"off: {vv['groups'][0]}")
+        # No mark kept asked for, and no PENDING left, on a bench show with
+        # no fireball group (round-10 review 3).
+        check(C.tr._charge_on_wire_at is None and C.tr._no_group,
+              "frames on 55 to 57 with no fireball group are not a charge "
+              "on the wire")
+        C.t[0] += 1.0
+        C.tr._pending_idle()
+        check(C.tr.pending is False,
+              "and nothing keeps the write-ahead mark asked for")
+        # flamesafe.json names a fireball group the running flamesafe has
+        # not: said once, display only (round-10 review 4).
+        C = _fbc(fresh(), flames_get=lambda: four,
+                 file_get=lambda: [55, 56, 57, 58, 59])
+        C.tr.pump()
+        C.tr._read_armed()
+        C.tr._read_armed()
+        C.tr.pump()
+        said = [a for a, k in C.lines if a[2] == "nogroup"]
+        check(len(said) == 1 and not any(
+                  k.get("fault") for a, k in C.lines if a[2] == "nogroup") and
+              "running flamesafe has none" in C.tr.view()["fault"] and
+              C.tr.state("fuel") == E and C.tr.state("air") == E,
+              f"flamesafe.json has a fireball group, the running one none: "
+              f"said once, not a fault, the tanks as they were: {said}")
         # ... while the same frames with status that is not known still
         # mark the tanks (the safe direction).
         C = _fbc(fresh(), flames_get=lambda: None)
