@@ -106230,6 +106230,7 @@ def test_fireball_charge_round10_lows():
         C.tr._set("fuel", U, "selftest", C.wall[0])
         C.tr.charge_ready()
         C.tr.pump()
+        C.t[0] += 1.0                   # asked a while ago, not just now
         C.tr.observe(0, _fbc_frame(air=True), True)
         check(C.tr.pending is True, "setup: mark held")
         C.tr.confirm_empty("Admin", "Rack screen")
