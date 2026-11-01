@@ -96156,11 +96156,12 @@ console.log(JSON.stringify(out));
         for m1, m0 in zip(a1, a0):
             check(not m1["problems"], f"{size} with the Weather block "
                                       f"({m1['tag']}): {m1['problems']}")
+            # (Abort's corner sign, which the flame groups had to stay
+            # clear of, is removed: Jeff, 2026-10-30.)
             check(m1["flames_visible_at_load"] == m0["flames_visible_at_load"]
-                  and m1["flames_clear_of_abort"] ==
-                  m0["flames_clear_of_abort"],
+                  and "flames_clear_of_abort" not in m1,
                   f"{size} ({m1['tag']}): the flame groups are seen at load "
-                  f"and clear of the Abort bar as without it")
+                  f"as without it")
             # The block takes its room from the lamps' stretch, as the
             # lasers strip does, never from their buttons: every group's
             # button stays at least 44 px (and is checked above).
@@ -101779,7 +101780,7 @@ def test_ui2_calm_screens_and_brand():
                       and [u for u, _ in r["pf_posts"]] ==
                       ["/api/remote/hold"] and not a["inactive"] and
                       r["pf_refused"] ==
-                      "Programming NOT paused. Abort or Disarm flames." and
+                      "Programming NOT paused. Stop show or Disarm flames." and
                       not r["first_taps"]["posts"],
                       f"{where}: Programming playback firing flames is "
                       f"pinned in the top line, never calm; its Stop is "
@@ -101966,7 +101967,7 @@ def test_ui2_show_tab_in_a_browser():
                       pf["pill"] == "FLAMES LIVE" and
                       [u for u, _ in pf["posts"]] == ["/api/remote/hold"] and
                       pf["refused"] ==
-                      "Programming NOT paused. Abort or Disarm flames.",
+                      "Programming NOT paused. Stop show or Disarm flames.",
                       f"{where}: Programming playback firing flames is "
                       f"pinned with Stop, which is 1.0's Hold; refused, it "
                       f"stays in the alert slot: {pf}")
@@ -106670,7 +106671,7 @@ console.log(JSON.stringify(out));
                       for x in res["mini"]),
                   f"{where}: Hold, Stop show and Disarm flames are "
                   f"there, never disabled or dimmed: "
-                  f"{res['mini']} {res['abort']}")
+                  f"{res['mini']}")
             check("Last saved by Andy" in res["msg"] and
                   "A show is live" in res["msg"],
                   f"{where}: who saved it last, and that a show is live: "
