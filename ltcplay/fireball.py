@@ -104,6 +104,10 @@ MOMENTARY = tuple(k for k, _l, kind in CONTROLS if kind == "momentary")
 ON_VALUE = 255
 UNIVERSE_SIZE = 512
 BEAT_STALE_S = 0.25          # the same as flamelink.PURGE_HOLD_S
+# A Fuel or Air press held for the charge record's mark is dropped, with a
+# message, after this long (a hung disk): never sent late, never held for
+# ever (round-8 review 4).
+HOLD_CAP_S = 2.0
 STATUS_FRESH_S = 0.5         # flamesafe's status, as arm_stale_ms
 PAGE_FRESH_S = 1.0           # the page's own status (seen)
 WATCH_S = 0.05
@@ -468,6 +472,7 @@ class FireballPanel:
             r["beat"] = now
         vals = self.frame(on)
         waiting = []
+        capped = False
         with self._lock:
             if self._run is r and seq is not None and r["seq"] != seq:
                 # A later beat of this run went past this one while its
@@ -497,6 +502,13 @@ class FireballPanel:
                             waiting = [k for k in KEYS if k in held]
                     except Exception:                    # noqa: BLE001
                         pass
+                if waiting:
+                    if r.get("held_since") is None:
+                        r["held_since"] = now
+                    elif now - r["held_since"] > HOLD_CAP_S:
+                        capped = True
+                else:
+                    r["held_since"] = None
                 self._tell(on, who, screen)
                 # Refused by the link itself when a disarm_all() (Stop,
                 # Abort) has moved its disarm count since the run started
@@ -510,6 +522,16 @@ class FireballPanel:
                 # the frame comes straight out again. One that lands later
                 # clears the frame itself.
                 lost = took is False or self._link_why(link, r)
+        if capped:
+            # The mark did not reach the disk in HOLD_CAP_S: the press is
+            # dropped (everything off, the safe direction), said, and
+            # nothing is sent late.
+            self.cut(f"the charge record did not answer in "
+                     f"{HOLD_CAP_S:g} s", who=who, screen=screen)
+            return 409, {"error": f"The charge record did not answer in "
+                                  f"{HOLD_CAP_S:g} s, so the Fuel or Air "
+                                  f"press was dropped, not sent late. "
+                                  f"Release and press again.", "cut": True}
         if lost:
             if self._run is r or self._run is None:
                 link.manual_clear()
