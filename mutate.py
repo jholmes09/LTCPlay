@@ -21430,6 +21430,51 @@ def build():
   "                return 200, {\"ok\": True, \"run\": r[\"id\"], \"overtaken\": True,\n"
   "                             \"on\": [k for k in KEYS if k in r[\"on\"]]}"),
 
+ ("fireball charge: Tanks are empty takes the mark off with a charge on the wire (round 10)",
+  "ltcplay/fireball_charge.py",
+  "            if unk and not self._charge_in_flight(self._clock()):",
+  "            if unk:"),
+
+ ("fireball charge: a charge the page holds does not keep the mark (round 10)",
+  "ltcplay/fireball_charge.py",
+  "        return any(self._manual_by(k, now) is not None for k in TANK_WORD)",
+  "        return False"),
+
+ ("fireball charge: a charge on the wire does not keep the mark (round 10)",
+  "ltcplay/fireball_charge.py",
+  "        if at is not None and now - at < 0.5:\n            return True\n        return any(",
+  "        return any("),
+
+ ("fireball charge: an unreadable marker ignores a readable one's higher revision (round 10)",
+  "ltcplay/fireball_charge.py",
+  "rev = max(self._next_rev(), self._best_readable or 0)",
+  "rev = self._next_rev()"),
+
+ ("fireball charge: Tanks are empty leaves the markers present now (round 10)",
+  "ltcplay/fireball_charge.py",
+  "            if unk and found:",
+  "            if False:"),
+
+ ("fireball cues: every stage gets the first-frame excuse (round 10)",
+  "ltcplay/fireball_cues.py",
+  "                        not (run.top_ok and w[\"s0\"] == 0):",
+  "                        not run.top_ok:"),
+
+ ("fireball cues: the first-frame excuse is for no stage (round 10)",
+  "ltcplay/fireball_cues.py",
+  "                        not (run.top_ok and w[\"s0\"] == 0):",
+  "                        True:"),
+
+ ("fireball cues: an FSEQ charge at frame 1 or 2 is a landing (round 10)",
+  "ltcplay/fireball_cues.py",
+  "                                      (first and relf > TOP_FRAMES) or jumped)",
+  "                                      (first and relf > 0) or jumped)"),
+
+ ("fireball cues: an FSEQ charge at frame 3 is a start (round 10)",
+  "ltcplay/fireball_cues.py",
+  "                                      (first and relf > TOP_FRAMES) or jumped)",
+  "                                      (first and relf > 4) or jumped)"),
+
  ("fireball charge: a start reads only this machine's marker names (round 9)",
   "ltcplay/fireball_charge.py",
   "(folder, glob.escape(FILE) + \".*marker*\"),",

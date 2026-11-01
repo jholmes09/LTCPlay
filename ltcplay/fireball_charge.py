@@ -260,6 +260,7 @@ class ChargeTracker:
             except Exception:                    # noqa: BLE001
                 self._alts = []
         self._alt_rev = None
+        self._best_readable = None
         self._alt_job = None        # a marker write queued for the writer
         self._alt_done = None       # its result: True, False, or None
         self._unsaved_active = False    # a press went out unrecorded
@@ -553,6 +554,7 @@ class ChargeTracker:
                 self._unreadable_markers.append(name)
             else:
                 best = r if best is None else max(best, r)
+        self._best_readable = best
         return found, (None if unreadable else best)
 
     def _write_marker_file(self, path, rev):
@@ -623,7 +625,10 @@ class ChargeTracker:
         if rev is None:
             # Unreadable: newer than anything, until a record written now
             # is on disk.
-            rev = self._next_rev()
+            # ... and past any readable marker beside it (round-10 review
+            # 2: a readable marker with a higher revision was left behind
+            # and the next clean restart read NOT KNOWN again).
+            rev = max(self._next_rev(), self._best_readable or 0)
             bad = getattr(self, "_unreadable_markers", [])
             if bad:
                 unreadable_note = (" The marker file " + " and ".join(bad) +
@@ -1170,6 +1175,15 @@ class ChargeTracker:
             self._event("system", "engine", "group_fault", text, fault=True,
                         persist=True)
 
+    def _charge_in_flight(self, now):
+        """A Fuel or Air channel went out in the last half second, or the
+        Fireball page's run holds one (pressed, its frame maybe not yet
+        recorded)."""
+        at = self._charge_on_wire_at
+        if at is not None and now - at < 0.5:
+            return True
+        return any(self._manual_by(k, now) is not None for k in TANK_WORD)
+
     def _pending_idle(self):
         """The status thread's look: a PENDING mark nothing used (a stop
         before the charge) and nobody asked for lately comes off again, so
@@ -1198,7 +1212,10 @@ class ChargeTracker:
         Refused while flamesafe's fireball group is not on 55 to 59 or
         flamesafe.json and the running flamesafe disagree (round-6 review
         4: the empty record would be stale once they agree).
-        (ok, sentence)."""
+        Every fallback marker present NOW is cleared by the record this
+        writes (round-10 review 2: one that synced in after the start was
+        left until the next restart). (ok, sentence)."""
+        found, mrev = self._read_alt()      # disk, before the lock
         with self._lock:
             if self.group_fault or self.ext_fault:
                 return False, ("Not confirmed: " +
@@ -1210,12 +1227,21 @@ class ChargeTracker:
                                "to confirm. A charged tank is emptied by the "
                                "shot or by Purge.")
             now_w = self._wall()
+            if unk and found:
+                # The record these tanks are written in outranks every
+                # marker seen just now, so the writer thread removes them.
+                top = mrev if mrev is not None else self._next_rev()
+                top = max(top, self._best_readable or 0, self._alt_rev or 0)
+                self._alt_rev = top
+                self.rev = max(self.rev, top)
             for k in unk:
                 self._set(k, EMPTY, f"confirmed empty by {who}", now_w)
-            if unk:
-                # Only when a tank was NOT KNOWN: with none, a manual charge
-                # on the wire but not yet reported would lose its write-ahead
-                # mark (round-9 review 4).
+            if unk and not self._charge_in_flight(self._clock()):
+                # Only when a tank was NOT KNOWN AND no charge is on the
+                # wire or held by the page: a manual charge of the other
+                # tank not yet recorded would lose its write-ahead mark, and
+                # a crash before its frame is recorded would read that tank
+                # EMPTY (round-9 review 4, round-10 review 1).
                 self.pending = False
             was_off, self.auto_off = self.auto_off, False
             if unk:
