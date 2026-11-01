@@ -944,8 +944,13 @@ class Conductor:
         again) always starts the whole sequence afresh."""
         with self._lock:
             self.stops += 1
+            # Music started since the last Stop (a show start that slipped
+            # in while that Stop was still fading): this Stop runs the
+            # whole sequence afresh, never only a re-blank (simulation
+            # review B of #199, M1).
+            music_since = not self._stopped_since_music
             self._stopped_since_music = True
-            again = (not force_new and
+            again = (not force_new and not music_since and
                      self._want is not None and
                      self._want.get("halt") is True and
                      self._done_gen != self._gen)

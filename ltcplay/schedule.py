@@ -2802,7 +2802,13 @@ TONIGHT_KEYS = frozenset((
 # refuses the file and sets it aside rather than reading a closed night as
 # open, or a Stop's Hold as a plain one.
 TONIGHT_OPTIONAL = frozenset(("dark", "abort_latched", "closed_by_operator",
-                              "stop_hold"))
+                              "stop_hold", "stop_held"))
+# `stop_held` (simulation review B of #199, M3) is the service's own
+# record that a Stop's Hold stands, whatever the state (HOLD, CLOSING,
+# OFF): a second copy of ltcplay_stop_hold.json, so a restart tonight or
+# on the next night keeps the Hold when that file could not be written.
+# The machine never reads it (schedule_service.py does); written only
+# when true, on format 4 or later.
 # Read, never written: an older version's Abort latch (the upgrade above).
 TONIGHT_LEGACY = frozenset(("abort_latched",))
 SLOT_KEYS = frozenset((

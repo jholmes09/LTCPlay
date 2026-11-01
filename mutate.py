@@ -17100,8 +17100,8 @@ def build():
   '                line = self._accept("Stop", STOPPED_DARK, who, screen,'),
 
  ('conductor: a second Stop starts a new fade', 'ltcplay/conductor.py',
-  '            again = (not force_new and\n',
-  '            again = (False and not force_new and\n'),
+  '            again = (not force_new and not music_since and\n',
+  '            again = (False and not force_new and not music_since and\n'),
 
  ('conductor: Stop never disarms the lasers at the conductor', 'ltcplay/conductor.py',
   '            self._flames_cut("Stop")\n'
@@ -17335,10 +17335,6 @@ def build():
   '            # A Stop landed while the cue was starting',
   '        if False:\n'
   '            # A Stop landed while the cue was starting'),
-
- ('conductor: a Stop for a start that began under it never fades afresh', 'ltcplay/conductor.py',
-  '            again = (not force_new and\n',
-  '            again = (\n'),
 
  ("Rack screen: Stop's second tap is decided by its timer, not the time",
   "ltcplay/web/remote.html",
@@ -22423,6 +22419,28 @@ def build():
   '                            self._release_set_aside()',
   '                        if False:\n'
   '                            self._release_set_aside()'),
+
+ ('conductor: a Stop only re-blanks when music started under an earlier Stop still fading (M1)', 'ltcplay/conductor.py',
+  '            again = (not force_new and not music_since and',
+  '            again = (not force_new and'),
+
+ ("stop hold: tonight's list never carries the Stop's Hold (M3)", 'ltcplay/schedule_service.py',
+  '        if held:\n'
+  "            # The Stop's Hold's second record",
+  '        if False:\n'
+  "            # The Stop's Hold's second record"),
+
+ ("stop hold: the night before's Stop's Hold is not carried forward (M3)", 'ltcplay/schedule_service.py',
+  '        elif held:\n'
+  '            self._stop_hold_from_list(',
+  '        elif False:\n'
+  '            self._stop_hold_from_list('),
+
+ ("stop hold: the list is not saved again when the Stop's Hold changes (M3)", 'ltcplay/schedule_service.py',
+  '        if self.machine is not None and \\\n'
+  '                getattr(self, "_saved_stop_held", None) != (',
+  '        if False and \\\n'
+  '                getattr(self, "_saved_stop_held", None) != ('),
 
 ]
 
