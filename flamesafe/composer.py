@@ -49,10 +49,12 @@ FLAME_OTHER_SENDER = ("Another sender is on the show program link, or it "
 # disarm_all copies after an Abort.
 FLAME_FLOOD_DATAGRAMS_PER_TICK = 50
 FLAME_FLOOD_BYTES_PER_TICK = 256 * 1024
-# The words on the ARMED lamp of a group the show program's Abort disarmed
-# (disarm_all, CONTRACT.md).  Flashing amber: cycling the arm IS the fix,
-# and the only one.  Shown until that group latches again.
-ABORT_DISARMED = "Disarmed by the show's Abort. Cycle the arm to re-arm."
+# The words on the ARMED lamp of a group the show program's disarm_all
+# disarmed (CONTRACT.md; ltcplay sends it on every Stop since 2026-10-30,
+# when Abort was removed).  Flashing amber: cycling the arm IS the fix, and
+# the only one.  Shown until that group latches again.  The name is kept
+# from when the press was called Abort.
+ABORT_DISARMED = "Disarmed by the show's Stop. Cycle the arm to re-arm."
 # Lockout (Jeff, 2026-10-17): the words on the ARMED lamp of a group every
 # one of whose fire slots is locked out.  Steady amber: cycling fixes
 # nothing; unlocking a machine on the Morning and Shutdown page does.
@@ -91,7 +93,7 @@ PT_OFF = "switched off in the show program"
 PT_LINK = "the show program link is not fresh"
 PT_START = ("not yet seen switched off by the show program since this "
             "program started: switch it off and on again")
-PT_ABORT = ("zeroed by the show's Abort: switch it off and on again in the "
+PT_ABORT = ("zeroed by the show's Stop: switch it off and on again in the "
             "show program")
 PT_NEW_SENDER = ("the show program link changed hands: switch it off and on "
                  "again in the show program")
@@ -742,7 +744,7 @@ class Composer:
         self._pt_reset(PT_ABORT)
         if pt_was_on:
             self._event("passthrough",
-                        f"the show program's Abort switched off "
+                        f"the show program's Stop switched off "
                         f"{', '.join(pt_was_on)}: zero until the show "
                         f"program switches each off and on again")
         # Fix round 1 of PR #34, item 4: a new Abort is a new (id, sender)
@@ -763,7 +765,7 @@ class Composer:
             armed = ("armed until now: " + ", ".join(up)) if up \
                 else "none was armed"
             self._event("disarm-all",
-                        f"the show program's Abort disarmed every group "
+                        f"the show program's Stop disarmed every group "
                         f"({msg.reason}; abort {msg.abort_id}; {armed}). "
                         f"Each group needs a fresh arm cycle from the "
                         f"Stream Deck.")

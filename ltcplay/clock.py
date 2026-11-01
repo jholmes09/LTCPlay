@@ -1680,7 +1680,7 @@ class AudioMaster(Clock):
             self._pause_req = False
             self._resume_after = False
             self._kick()
-            self._event(f"Abort: the show audio fades out over "
+            self._event(f"Stopped: the show audio fades out over "
                         f"{ms / 1000.0:g} s, then the "
                         f"timecode stops")
 

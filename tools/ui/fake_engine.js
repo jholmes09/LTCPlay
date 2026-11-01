@@ -66,7 +66,7 @@ function baseStatus(){
     schedule_path: "C:\\Users\\show\\AppData\\Local\\ltcplay\\ltcplay_schedule.json"});
   s.transport = {programming: false, why: "Nothing is playing. To scrub, on the show machine choose Programming on the Show file card and press Run.", freerun: false, paused: false, loop: null, marks: {}};
   s.live_flame = {available: true, on: false, why: ""};
-  s.programming_flames = {available: true, follows: true, on: false, line: "Flames follow the show while you play here. Only armed groups fire. Hold, Stop or Abort ends it."};
+  s.programming_flames = {available: true, follows: true, on: false, line: "Flames follow the show while you play here. Only armed groups fire. Hold or Stop ends it."};
   // The hazers (hazers.py, 2026-10-29): Jeff's three, all disarmed.
   s.hazers = {available: true, down: "", last_off: null, agree: true, show: "idle", levels_fault: "",
     hazers: [1, 2, 3].map(n => ({name: "Hazer " + n, haze_slot: 78 + 2 * n, fan_slot: 79 + 2 * n, armed: false,
@@ -96,7 +96,7 @@ const SCENARIOS = {
     s.laser_arm.lasers.forEach(l => l.armed = true); s.subsystems[3].word = "armed"; },
   held: s => { SCENARIOS.running(s); Object.assign(s.schedule, {state: "PAUSED", held: true}); s.countdown.running = false; },
   aborted: s => { SCENARIOS.running(s); Object.assign(s.schedule, {state: "STANDBY", running: null, aborted: true});
-    s.show.running = false; s.flames.groups.forEach(g => { g.armed = "held"; g.reason = "Disarmed by the show's Abort. Cycle the arm to re-arm."; });
+    s.show.running = false; s.flames.groups.forEach(g => { g.armed = "held"; g.reason = "Disarmed by the show's Stop. Cycle the arm to re-arm."; });
     s.laser_arm.lasers.forEach(l => l.armed = false); s.countdown = {kind: "next", label: "Next show", s: 1500, running: true}; },
   alerts_open: s => { const p = FX("status_pico"); s.alerts = p.alerts; s.flames.cues_fault = p.flames.cues_fault;
     s.deck = p.deck; s.morning.locked_machines = ["wave flamer 3"]; s.disk = p.disk;
@@ -222,7 +222,7 @@ class FakeEngine {
   setScenario(name){ this.name = name; this.st = baseStatus(); (SCENARIOS[name] || (s => s))(this.st); this.holds = {}; }
   // The real engine's hold registry (remote.py arm_hold): one hold per
   // group with its own id; a beat with any other id is refused, and any
-  // disarm, Abort or Stop ends it.
+  // disarm or Stop ends it.
   dropHolds(group){ this.holds = this.holds || {}; if(group === undefined) this.holds = {}; else delete this.holds[group]; }
   groupDisarm(i){
     const s = this.st, g = s.flames.groups[i];
@@ -230,10 +230,10 @@ class FakeEngine {
     this.dropHolds(i);
     if(this.name === "deck_not_answering"){
       const text = "Not confirmed: ALL groups disarm sent. Disarm " + g.name + " forced (flamesafe did not report " + g.name +
-        " off within 1 s of the Disarm): the flame link has no one-group disarm, so the Abort's disarm was sent to every flame group, " +
+        " off within 1 s of the Disarm): the flame link has no one-group disarm, so the Stop's disarm was sent to every flame group, " +
         "every hazer is off, and the show's flames stay at zero until Hold then Resume or a new run. Each group needs Arm again " +
         "(let go, then hold) before it can fire.";
-      s.flames.groups.forEach(x => { x.armed = "disarmed"; x.wanted = false; x.reason = "Disarmed by the show's Abort. Cycle the arm to re-arm."; });
+      s.flames.groups.forEach(x => { x.armed = "disarmed"; x.wanted = false; x.reason = "Disarmed by the show's Stop. Cycle the arm to re-arm."; });
       s.alerts = (s.alerts || []).concat([{id: 900 + i, kind: "flames", severity: "fault", text: text, options: ["Acknowledge"]}]);
       return {code: 200, body: {ok: true, confirmed: false, forced: true, text: text}};
     }
@@ -253,9 +253,6 @@ class FakeEngine {
       case "/api/remote/hold": sch.held = true; if(sch.state === "SHOW") sch.state = "PAUSED"; return ok("Held.");
       case "/api/remote/resume": sch.held = false; if(sch.state === "PAUSED") sch.state = "SHOW"; s.alert_hold = {held: false};
         if(s.announce) s.announce.playing = null; return ok("Resumed.");
-      case "/api/remote/abort": this.dropHolds(); sch.aborted = true; sch.state = "STANDBY"; sch.running = null; if(s.show) s.show.running = false;
-        s.flames.groups.forEach(g => { g.armed = "held"; g.reason = "Disarmed by the show's Abort. Cycle the arm to re-arm."; });
-        s.laser_arm.lasers.forEach(l => l.armed = false); return ok("Aborted.");
       case "/api/remote/reset": sch.aborted = false; s.flames.groups.forEach(g => { g.armed = "disarmed"; g.wanted = false; delete g.reason; }); return ok("Reset.");
       case "/api/remote/start-now": sch.state = "SHOW"; sch.running = (sch.next || {}).show || 1; sch.held = false;
         s.show = {running: true, show: "Fire and Ice", timecode: "01:00:01:00", state: "playing"}; s.countdown = {kind: "left", label: "Time left", s: 440, running: true}; return ok("Started.");

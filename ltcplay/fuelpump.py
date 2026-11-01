@@ -251,7 +251,7 @@ class FuelPump:
         except Exception:
             ended = ""
         return ended or ("the disarm to every flame group was sent (a Stop, "
-                         "an Abort, Disarm all's fallback, the cleaning's "
+                         "Disarm all's fallback, the cleaning's "
                          "disarm or the end of live flame programming)")
 
     def _flames(self):
@@ -328,7 +328,7 @@ class FuelPump:
         except Exception:
             repeating = True
         if repeating:
-            return ("a Stop or Abort is still being sent to flamesafe. Turn "
+            return ("a Stop is still being sent to flamesafe. Turn "
                     "it on again in a moment.")
         try:
             why = self._blocker() or ""
@@ -501,7 +501,7 @@ class FuelPump:
         timer started."""
         if not ok:
             why = ("The fuel pump was not turned on: the flame link did not "
-                   "take it (a Stop or Abort landed). Press again in a "
+                   "take it (a Stop landed). Press again in a "
                    "moment.")
             self._note(who, screen, "refused",
                        f"{who or 'Someone'} asked to turn the fuel pump on "
@@ -512,7 +512,7 @@ class FuelPump:
                    f"{who or 'Someone'} turned the fuel pump ({name}, "
                    f"channel {c[1]}) on on the {screen} for "
                    f"{clock_text(secs)}. It turns off by itself then; Stop, "
-                   f"Abort, Pump off, signing out and a lost link to "
+                   f"Pump off, signing out and a lost link to "
                    f"flamesafe turn it off sooner. Hold does not.")
         self._audit(who, screen, "fuel pump on", "accepted",
                     f"{secs} s")

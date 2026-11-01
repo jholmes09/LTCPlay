@@ -67,7 +67,7 @@ def passthrough_line(entries, path):
              else f"{p.name} haze {p.haze}, fan {p.fan}" for p in entries]
     return (f"passthrough: {'; '.join(parts)} (the show's values, or a "
             f"switch's own on value, only while the show program has it "
-            f"switched on, the link is fresh and no Abort has stood since; "
+            f"switched on, the link is fresh and no Stop has stood since; "
             f"else zero; off at start), read from {where}")
 
 

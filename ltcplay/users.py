@@ -5,7 +5,7 @@ WHAT THIS IS FOR: knowing who pressed what (audit.py writes it down). It is
 not what keeps the show safe, and it never stands in the way of anything
 that makes the rig safer.
 
-THE SAFETY RULE (not negotiable): Abort, Hold, Stop, every disarm, letting
+THE SAFETY RULE (not negotiable): Stop, Hold, every disarm, letting
 go of a hold, stopping or clearing a purge, locking a machine out, turning
 a laser test off, disarming a laser (one, a group or every laser),
 Acknowledge and signing in or out work from every
@@ -21,7 +21,7 @@ whose role may, on every surface: the rack screen on this machine, an
 iPad, the old page and the Stream Deck (which acts as whoever is signed in
 on this machine's rack screen). Being on the machine itself (loopback) is
 NOT a sign-in. Signed out, a screen sees status, the schedule and the
-alerts, and may only do the safety presses above: Stop, Hold, Abort,
+alerts, and may only do the safety presses above: Stop, Hold,
 Acknowledge and every disarm. allowed() refuses every restricted row for
 nobody signed in, whatever the stored matrix says, and the "Signed out"
 column is fixed off (FIXED) so nobody can tick it back on.
@@ -129,7 +129,7 @@ PERMS = (
               "sign-in lockouts"),
 )
 PERM_KEYS = tuple(p for p, _ in PERMS)
-SAFETY_ROWS = ("Abort, Hold, Stop, Disarm (one group or every group, "
+SAFETY_ROWS = ("Stop, Hold, Disarm (one group or every group, "
                "flames or lasers), "
                "letting go of a hold, stopping or clearing a purge, "
                "locking a machine, a laser test off, live flame "
@@ -173,8 +173,7 @@ READ_GRACE_S = 10.0
 # The remote page's POST routes (remote.py) and the old page's (web.py).
 # "safety": never restricted. None: harmless, never restricted.
 REMOTE_ROUTES = {
-    "abort": "safety", "hold": "safety", "disarm-all": "safety",
-    "stop": "safety",
+    "hold": "safety", "disarm-all": "safety", "stop": "safety",
     "group-disarm": "safety", "arm-release": "safety", "alert": "safety",
     "purge-stop": "safety", "purge-clear": "safety",
     "signin": "safety", "signout": "safety",
@@ -1122,7 +1121,7 @@ class Users:
                             "An admin can always manage users."
                             if c == "admin" else
                             "Signed out is view only: nobody signed in "
-                            "may do anything but Stop, Hold, Abort, "
+                            "may do anything but Stop, Hold, "
                             "Acknowledge and disarm.")
                     m[c][p] = v
             doc["matrix"] = m

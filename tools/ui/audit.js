@@ -1,7 +1,7 @@
 // Interface 2.0's layout audit (UI_AUDIT.md's measuring script, pointed at
 // ltcplay/web/remote2.html): every state and tab at seven windows against a
 // fake engine (fake_engine.js; it never reaches a rig), flagging cut,
-// clipped or covered text, overlapping controls, anything under Abort,
+// clipped or covered text, overlapping controls, a Stop covered or small,
 // targets under 44 px (56 on SHOW), text under 16 px (20 on SHOW), low
 // contrast, and any scroll on SHOW.
 // Usage (Playwright installed; NODE_PATH pointing at it if it is global):
@@ -28,7 +28,7 @@ const CASES = process.env.ONLY_CASES ? JSON.parse(process.env.ONLY_CASES) : [
   ["held", "show"], ["aborted", "show"], ["alerts_open", "show"], ["alerts_open", "show", "alert_next"],
   ["armed_groups", "show"], ["locked", "show"], ["announcing", "show"], ["alert_hold", "show"],
   ["live_flame", "show"], ["getting_started", "show"], ["stale", "show"], ["admin", "show"],
-  ["running", "show", "stop_confirm"], ["running", "show", "abort_first_tap"], ["running", "show", "help"], ["idle_operator", "show", "coach"],
+  ["running", "show", "stop_confirm"], ["running", "show", "help"], ["idle_operator", "show", "coach"],
   ["rig_checking", "show"], ["rig_failed", "show"], ["rig_continued", "show"], ["cleaning", "show"], ["timed_purge", "show"], ["timed_purge", "day"],
   ["all_live", "show"], ["hazers_on", "show"], ["hazers_held", "show"], ["hazers_on", "show", "hazer_sheet"], ["flames_unknown", "show"], ["rehearsal", "show"], ["cleaning", "day"], ["running", "schedule"],
   ["sys_one", "show"], ["sys_many", "show"], ["sys_offonly", "show"], ["sys_one", "show", "sys"], ["sys_many", "show", "sys"],
@@ -48,14 +48,14 @@ const CASES_1 = [
   ["idle_operator", "tonight"], ["admin", "programming"], ["idle_operator", "programming"], ["programming", "programming"],
   ["idle_operator", "morning"], ["locked", "morning"], ["purge", "morning"],
   ["signed_out", "users"], ["admin", "users"], ["idle_operator", "fuel"], ["idle_operator", "fireball"],
-  ["idle_operator", "show", "info"], ["running", "show", "stop_confirm"], ["running", "show", "abort_first_tap"],
+  ["idle_operator", "show", "info"], ["running", "show", "stop_confirm"],
 ];
 const ONLY = process.env.ONLY_VP ? process.env.ONLY_VP.split(",") : null;
 
 const MEASURE = () => {
   const out = {vw: innerWidth, vh: innerHeight, issues: [], texts: [], controls: []};
   const onShow0 = !!document.getElementById("t-show") && !document.getElementById("t-show").hidden;
-  const CRIT = {"b-abort": 96};
+  const CRIT = {"b-stop": 56, "m-stop": 56, "broken-stop": 56};
   const onShow = !!document.getElementById("t-show") && !document.getElementById("t-show").hidden;
   function sel(el){
     if(!el || el === document.body) return "body";
@@ -117,15 +117,17 @@ const MEASURE = () => {
   const mainEl = document.querySelector("main");
   out.main_excess = mainEl ? mainEl.scrollHeight - mainEl.clientHeight : 0;
   if(onShow0 && out.main_excess > 1) issue("vscroll", mainEl, `the SHOW pane needs ${out.main_excess}px of scroll`, {excess: out.main_excess});
-  const ab = document.getElementById("b-abort");
-  const abR = ab && shown(ab) ? ab.getBoundingClientRect() : null;
-  out.abort = abR ? {w: Math.round(abR.width), h: Math.round(abR.height), right: Math.round(innerWidth - abR.right), bottom: Math.round(innerHeight - abR.bottom),
-    dim: document.getElementById("abortbar").classList.contains("idle"), opacity: getComputedStyle(document.getElementById("abortbar")).opacity,
-    hit: (() => { const at = document.elementFromPoint(abR.left + abR.width / 2, abR.top + abR.height / 2); return !!(at && ab.contains(at)); })()} : null;
+  // Stop show (Abort was removed, 2026-10-30): when it is there, its size
+  // and whether a tap on its centre reaches it.
+  const st = document.getElementById("b-stop");
+  const stR = st && shown(st) && getComputedStyle(st).visibility !== "hidden" ? st.getBoundingClientRect() : null;
+  out.stop = stR ? {w: Math.round(stR.width), h: Math.round(stR.height), opacity: getComputedStyle(st).opacity,
+    hit: (() => { const at = document.elementFromPoint(stR.left + stR.width / 2, stR.top + stR.height / 2); return !!(at && st.contains(at)); })()} : null;
+  if(out.stop && !out.stop.hit) issue("covered", st, "something covers the centre of Stop show");
   // Interactive controls
   const modal = ["sheet", "coach"].map(id => document.getElementById(id)).find(m => m && !m.hidden);
   out.modal = modal ? modal.id : "";
-  const ctrls = [...document.querySelectorAll("button, input, select, textarea, a[href], [role=button], [role=radio], [data-arm], .slot, .warnbox")].filter(shown).filter(e => !modal || modal.contains(e) || e.id === "b-abort");
+  const ctrls = [...document.querySelectorAll("button, input, select, textarea, a[href], [role=button], [role=radio], [data-arm], .slot, .warnbox")].filter(shown).filter(e => !modal || modal.contains(e));
   // Overlap is judged on what can be seen: a control scrolled out of its
   // pane is not over the footer.
   const rects = ctrls.map(e => [e, e.getBoundingClientRect()]);
@@ -149,17 +151,8 @@ const MEASURE = () => {
     const ox = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left);
     const oy = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top);
     if(ox > 2 && oy > 2){
-      const k = (a.id === "b-abort" || b.id === "b-abort") ? "abort_overlap" : "overlap";
+      const k = (/stop/.test(a.id) || /stop/.test(b.id)) ? "stop_overlap" : "overlap";
       out.issues.push({kind: k, sel: sel(a) + "  X  " + sel(b), text: label(a).slice(0, 40) + " | " + label(b).slice(0, 40), detail: `${Math.round(ox)}x${Math.round(oy)} px overlap`});
-    }
-  }
-  // Abort over any visible text block or card at scroll top and at scroll bottom
-  if(abR){
-    const blocks = [...document.querySelectorAll("main *, header *, footer *, #sheet *")].filter(e => shown(e) && e.children.length === 0 && (e.innerText || "").trim());
-    for(const e of blocks){
-      const r = visRect(e);
-      if(r.width > 0 && r.height > 0 && Math.min(r.right, abR.right) - Math.max(r.left, abR.left) > 2 && Math.min(r.bottom, abR.bottom) - Math.max(r.top, abR.top) > 2)
-        issue("abort_over_text", e, "the Abort sign sits over this text at the top of the page");
     }
   }
   // Covered controls: centre point hits something else
@@ -234,7 +227,7 @@ const MEASURE = () => {
   // Tooltips (hover-only text) on controls
   out.tooltips = [...document.querySelectorAll("[title]")].filter(shown).map(e => ({sel: sel(e), title: e.title, words: e.title.split(/\s+/).filter(Boolean).length})).filter(t => t.title);
   // State of the big controls (enabled/disabled, label)
-  out.big = ["b-go", "b-hold", "b-stop", "b-armall", "b-disall", "b-abort"].map(id => { const e = document.getElementById(id);
+  out.big = ["b-go", "b-hold", "b-stop", "b-armall", "b-disall"].map(id => { const e = document.getElementById(id);
     return e ? {id, shown: shown(e), disabled: e.disabled, label: label(e), opacity: getComputedStyle(e).opacity, filter: getComputedStyle(e).filter} : null; });
   out.stateword = (document.getElementById("pill-t") || {}).textContent;
   out.next = (document.getElementById("next-t") || {}).textContent;
@@ -242,7 +235,7 @@ const MEASURE = () => {
 };
 
 const OUTLINE = (issues) => {
-  const kinds = {clipped: "#ff3b3b", truncated: "#ff3b3b", overlap: "#ff00ff", abort_overlap: "#ff00ff", abort_over_text: "#ff00ff", covered: "#ff00ff",
+  const kinds = {clipped: "#ff3b3b", truncated: "#ff3b3b", overlap: "#ff00ff", stop_overlap: "#ff00ff", covered: "#ff00ff",
     small_target: "#00e5ff", small_critical: "#00e5ff", offscreen_x: "#ffff00"};
   const box = document.createElement("div"); box.id = "__audit"; box.style.cssText = "position:absolute;left:0;top:0;pointer-events:none;z-index:2147483647";
   let n = 0;
@@ -270,7 +263,6 @@ async function act(page, extra){
   if(extra === "expand_alerts"){ const m = await page.$("#al-more"); if(m && await m.isVisible()) await m.click(); }
   if(extra === "info") await page.click("#nav-info");
   if(extra === "stop_confirm"){ await page.click("#b-stop"); }
-  if(extra === "abort_first_tap"){ await page.click("#b-abort"); }
   if(extra && extra.startsWith("step_")){ await page.waitForTimeout(700); const b = await page.$(`[data-step="${extra.slice(5)}"]`); if(b) await b.click(); }
   if(extra === "sys"){ await page.click("#sys"); }
   if(extra === "shut"){ await page.click('#d-seg [data-part="shut"]'); }
@@ -303,7 +295,7 @@ if(require.main === module) (async () => {
       const tag = `${sc}__${view}${extra ? "__" + extra : ""}__${w}x${h}`;
       // Plain screenshot of the viewport, then an annotated full page if anything failed.
       await page.screenshot({path: path.join(SHOTS, tag + ".png")});
-      const bad = m.issues.filter(i => ["clipped", "truncated", "overlap", "abort_overlap", "abort_over_text", "covered", "small_critical", "small_target", "offscreen_x", "offscreen_y", "small_font", "text_covered"].includes(i.kind));
+      const bad = m.issues.filter(i => ["clipped", "truncated", "overlap", "stop_overlap", "covered", "small_critical", "small_target", "offscreen_x", "offscreen_y", "small_font", "text_covered"].includes(i.kind));
       if(bad.length){
         await page.evaluate(OUTLINE, bad);
         await page.screenshot({path: path.join(SHOTS, tag + "__FAIL.png"), fullPage: true});

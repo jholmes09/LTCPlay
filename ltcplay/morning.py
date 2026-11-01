@@ -1938,7 +1938,7 @@ class Purge:
         self._note(f"{h['who'] or device} started a timed purge on the "
                    f"{device}: {', '.join(t['machines'])} for "
                    f"{t['seconds']} s. It stops by itself at {t['seconds']} s;"
-                   f" Stop purge, Stop, Abort and Hold end it at once.",
+                   f" Stop purge, Stop and Hold end it at once.",
                    action="purge", outcome="timed_start", who=h["who"],
                    screen=device)
         why = self.timed_send(now)
@@ -1976,7 +1976,7 @@ class Purge:
         if why:
             return why
         if self._gen(self._link()) != t["gen"]:
-            return "the flame link was zeroed (Stop, Hold, Abort or a disarm)"
+            return "the flame link was zeroed (Stop, Hold or a disarm)"
         why = self._timed_engine(t)
         if why:
             return why
@@ -2039,7 +2039,7 @@ class Purge:
                 f["beat"] = fresh
                 t["firing"], t["waiting"] = firing, waiting
                 lost = "" if self._gen(link) == t["gen"] else \
-                    "the flame link was zeroed (Stop, Hold, Abort or a disarm)"
+                    "the flame link was zeroed (Stop, Hold or a disarm)"
         if lost:
             self.stop(lost)
         return lost
@@ -2663,21 +2663,12 @@ class Morning:
             except Exception:
                 pass
 
-    def on_abort(self, who="", screen=""):
-        """Abort wins over everything: the purge and the laser tests end."""
-        self.purge.clear(f"Abort pressed by {who or screen or 'someone'}")
-        for hook in list(self.abort_hooks):
-            try:
-                hook(who, screen)
-            except Exception:                    # noqa: BLE001
-                pass
-        self.lasers.all_off("Abort pressed")
-
     def stop_hooks(self, who="", screen=""):
-        """Stop (Remote.halt, Jeff 2026-10-30: Stop has every guarantee an
-        Abort had): the fireball and the cleaning cut at once, through the
-        same hooks an Abort runs, said as the Stop. Remote.halt clears the
-        purge and ends the laser tests itself. Never raises."""
+        """Stop (Remote.halt, Jeff 2026-10-30: Stop has every guarantee the
+        removed Abort had): the fireball and the cleaning cut at once,
+        through the hooks in abort_hooks (named for the Abort they were
+        written for), said as the Stop. Remote.halt clears the purge and
+        ends the laser tests itself. Never raises."""
         for hook in list(self.abort_hooks):
             try:
                 hook(who, screen, what="Stop")
@@ -2879,7 +2870,7 @@ class Morning:
                                       f"selection; only that device or the "
                                       f"show machine itself can "
                                       f"{'stop' if name == 'purge-stop' else 'clear'} "
-                                      f"it (or Abort)."}
+                                      f"it (or Disarm all flame groups)."}
             if name == "purge-stop":
                 if self.purge.timed_running():
                     # The same Stop purge for both kinds (Jeff, 2026-10-29).
