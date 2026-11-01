@@ -553,11 +553,11 @@ page keeps sending while they are on, so a quick tap is never lost: the
 press is sent at the next beat (the answer says "held" meanwhile, and
 the pad says WAITING, not ON). If the charge record does not answer in 2
 seconds (a hung disk) the press is **dropped**, everything goes off, and
-the page says so: release and press again. It is never sent late. The mark still reaches the disk meanwhile, so on a
-slow disk a second press within 5 seconds goes straight out.
-Nothing on this page arms. Arm the Fireball as
-always, with its hold to arm (the show screen's button or its Stream Deck
-key), signed in. Until it is armed every button is grey, says why, and
+the page says so: release and press again. It is never sent late.
+The mark still reaches the disk meanwhile, so on a slow disk a second
+press within 5 seconds goes straight out. Nothing on this page arms. Arm
+the Fireball as always, with its hold to arm (the show screen's button or
+its Stream Deck key), signed in. Until it is armed every button is grey, says why, and
 nothing is sent: flamesafe keeps every Fireball channel at zero, the Valve
 Open included, unless the Fireball is armed. The Fireball arms only with
 every channel at zero, so this page keeps them all off until it is armed,
@@ -1251,8 +1251,12 @@ for the record as a whole a mark, PENDING.
   is restarted anyway, the newest record the write left behind is the one
   read, by its revision number, which is taken from the clock (in
   milliseconds) and only ever goes up, so a later record always ranks
-  above an earlier one. A clock set back can only cost an extra NOT
-  KNOWN, never a wrong EMPTY. If that copy cannot be read, both tanks are
+  above an earlier one. On one machine a clock set back can only cost an
+  extra NOT KNOWN, never a wrong EMPTY. That holds for one machine only: with a
+  settings folder shared between two machines and clocks that disagree,
+  a real marker can be cleared by the other machine's higher-revision
+  record. A settings folder shared between two machines is not supported
+  for the fireball record. If that copy cannot be read, both tanks are
   NOT KNOWN.) If flamesafe's fireball group is on other channels than 55
   to 59, both tanks become NOT KNOWN and are written so, and the screens
   say why: a group put back on 55 to 59 never finds an old EMPTY.
