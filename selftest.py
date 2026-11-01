@@ -61086,6 +61086,53 @@ def test_fire_ice_a_start_decided_before_a_stop_is_refused():
     print("  ok")
 
 
+def test_a_stop_after_music_started_under_a_fading_stop_fades_afresh():
+    section("conductor (simulation review B of #199, M1): a show start "
+            "that slips in while a Stop is still fading (its music "
+            "started after that Stop) is taken dark again by the next "
+            "Stop: the whole sequence afresh, never only a re-blank, so "
+            "the last music command is the halt")
+    import threading as _th
+    n = _fi_night()
+    if n.S is None:
+        return
+    c = n.c
+    try:
+        n.svc.tick()
+        c.run_pending()
+        gate, entered = _th.Event(), _th.Event()
+        real_pause = c._pause
+
+        def blocked_pause(gen, seconds):
+            entered.set()
+            gate.wait(5)
+        c._pause = blocked_pause
+        del n.calls[:]
+        c.stop("Andy", "Rack screen")              # Remote.halt's own Stop
+        th = _th.Thread(target=c.run_pending)
+        th.start()
+        entered.wait(5)
+        n.now[0] = _den(n.S, 18, 0)
+        # A start made with no decided count (the worst case): it plays.
+        r = n.w.runner.start_show(1, who="the scheduler")
+        r2 = c.stop("Andy", "engine")              # the scheduler's Stop
+        gate.set()
+        th.join(5)
+        c._pause = real_pause
+        c.run_pending()
+        music = [k for k, _a, _t in n.calls if k.startswith("music")]
+        check(r.ok and "Already stopping" not in r2.sentence and
+              music[-1:] == ["music_halt"] and
+              c.snapshot()["look"] == "STOPPED_DARK" and
+              c.snapshot()["applied"]["music"] == "stopped",
+              f"the second Stop runs the whole sequence and the music ends "
+              f"halted: {r2.sentence[:60]} {music} {c.snapshot()['applied']}")
+    finally:
+        c.close()
+        n.link.close()
+    print("  ok")
+
+
 def test_resume_clears_faults_only_after_a_stops_hold():
     section("Resume (cold review A of #199, F3): ending a Stop's Hold "
             "clears the fault flag, as Reset did after an Abort; a plain "
@@ -61280,6 +61327,75 @@ def test_after_a_stop_before_resume_what_still_works():
         e.stop()
     # Programming's Play from after a Stop:
     # test_programming_playhead_drives_the_show_path pins it (it plays).
+    print("  ok")
+
+
+def test_a_stops_hold_survives_its_file_failing():
+    section("a Stop's Hold whose own file cannot be written (simulation "
+            "review B of #199, M3): tonight's list carries it too, whatever "
+            "the state, so a restart the next night still comes up held and "
+            "show 1 does not start by itself (the removed latch survived "
+            "this in tonight's list and the night before's)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date
+    from ltcplay import schedule_service as SV
+    for where in ("in a show", "after the night closed"):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 17, 59)]
+        svc = _svc(S, work, now, conductor=_RecCond(S))
+        svc.start(thread=False)
+        _settle(svc)
+        # The Stop's Hold file cannot be written (a folder where its
+        # temporary file goes).
+        os.mkdir(os.path.join(work, SV.Service.STOP_HOLD_FILE + ".tmp"))
+        now[0] = _den(S, 18, 0)
+        svc.tick()
+        now[0] = _den(S, 18, 0, 2)
+        _confirm(S, svc)
+        _settle(svc)
+        if where != "in a show":
+            now[0] = _den(S, 18, 3)
+            svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+            _settle(svc)
+        now[0] = _den(S, 18, 4)
+        svc.halt_begin()
+        try:
+            svc.halt_schedule("Andy", "Rack screen")
+        finally:
+            svc.halt_end()
+        _settle(svc)
+        check(svc.stop_held() and svc._stop_carry_failing and
+              not os.path.exists(os.path.join(work,
+                                              SV.Service.STOP_HOLD_FILE)),
+              f"{where}: setup: the Stop's Hold stands, its file not "
+              f"written: {svc.machine.state}")
+        doc = _tonight_doc(work)
+        check(doc.get("stop_held") is True and doc["format"] >= 4,
+              f"{where}: tonight's list carries it ({svc.machine.state}): "
+              f"{sorted(doc)}")
+        svc.stop()
+        # The next night with shows (a week on), a restart in the
+        # afternoon.
+        now[0] = _den(S, 17, 0, d=(2026, 11, 21))
+        nxt = _svc(S, work, now, conductor=_RecCond(S))
+        nxt.start(thread=False)
+        _settle(nxt)
+        now[0] = _den(S, 18, 0, d=(2026, 11, 21))
+        nxt.tick()
+        _settle(nxt)
+        check(nxt.stop_held() and nxt.machine.running == 0 and
+              nxt.machine.state == S.HOLD,
+              f"{where}: the next night comes up on the Stop's Hold and "
+              f"show 1 does not start: {nxt.machine.state} "
+              f"{nxt.machine.running} {nxt.stop_held()}")
+        r = nxt.operator_press("resume", "Jeff", "Rack screen")
+        check(r.get("ok") and not nxt.stop_held() and
+              "stop_held" not in _tonight_doc(work, (2026, 11, 21)),
+              f"{where}: Resume ends it, and the list no longer carries it")
+        nxt.stop()
     print("  ok")
 
 
@@ -109232,8 +109348,10 @@ if __name__ == "__main__":
         test_stops_hold_outlives_the_night,
         test_fire_ice_stop_while_the_cue_starts,
         test_fire_ice_a_start_decided_before_a_stop_is_refused,
+        test_a_stop_after_music_started_under_a_fading_stop_fades_afresh,
         test_resume_clears_faults_only_after_a_stops_hold,
         test_resume_lets_go_of_a_set_aside_night,
+        test_a_stops_hold_survives_its_file_failing,
         test_after_a_stop_before_resume_what_still_works,
         test_stop_hold_stands_until_resume,
         test_stop_round2_conductor_and_marks,

@@ -1957,8 +1957,18 @@ class Service:
     def _save_tonight(self, tries=5):
         m = self.machine
         path = tonight_path(m.date, self.state_dir)
+        doc = sch.machine_to_doc(m)
+        held = getattr(self, "_stop_carry", None) is not None
+        if held:
+            # The Stop's Hold's second record (simulation review B of
+            # #199, M3): kept in tonight's list whatever the state, so it
+            # survives a restart, tonight or the next night, when its own
+            # file could not be written.
+            doc["stop_held"] = True
+            doc["format"] = max(doc["format"], sch.TONIGHT_FORMAT)
         try:
-            write_json_atomic(path, sch.machine_to_doc(m), tries=tries)
+            write_json_atomic(path, doc, tries=tries)
+            self._saved_stop_held = held
         except OSError as e:
             msg = (f"Tonight's list could not be saved to {path}: "
                    f"{e.strerror or e}. The schedule carries on, but a "
@@ -2006,6 +2016,8 @@ class Service:
             # read as it is, and its Abort becomes a Stop's Hold.
             self._upgrade_to_stop_hold(
                 self.UPGRADE_LIST.format(path=path), str(d))
+        elif doc.get("stop_held") is True:
+            self._stop_hold_from_list(path, d)
         for text in notes:
             self._journal_line("system", text, action="load tonight",
                                outcome="clock stepped back")
@@ -2217,6 +2229,26 @@ class Service:
                            "tried again every tick; until then a restart "
                            "would come back held.")
 
+    LIST_HELD = ("The Stop's Hold is read back from {path} (its own file "
+                 "was missing): no show starts by itself until someone "
+                 "presses Resume.")
+
+    def _stop_hold_from_list(self, path, night):
+        """Tonight's list (or the night before's) says a Stop's Hold
+        stood: it stands again (simulation review B of #199, M3). Never
+        raises."""
+        if self._stop_carry is not None:
+            return
+        self._stop_carry = {"night": str(night or ""), "who": "",
+                            "screen": "", "from": "tonight's list"}
+        self._stop_carry_dirty = True
+        self._journal_line("system", self.LIST_HELD.format(path=path),
+                           action="stop hold", outcome="read back")
+        try:
+            self._stop_carry_write()
+        except Exception:                        # noqa: BLE001
+            pass
+
     def _stop_carry_write(self):
         """Write (or remove) the marker file if it changed (lock held).
         Called after a Stop or Resume and again on every tick until it has
@@ -2225,6 +2257,12 @@ class Service:
         screen), and the in-memory Hold stands meanwhile. Never raises."""
         if not getattr(self, "_stop_carry_dirty", False):
             return
+        if self.machine is not None and \
+                getattr(self, "_saved_stop_held", None) != (
+                    self._stop_carry is not None):
+            # Tonight's list carries the Hold too (M3): saved first, so a
+            # marker file that cannot be written still leaves a record.
+            self._save_tonight()
         path = self._stop_hold_path()
         if not path:
             self._stop_carry_dirty = False
@@ -2510,7 +2548,12 @@ class Service:
         try:
             with open(tonight_path(y, self.state_dir),
                       encoding="utf-8-sig") as fh:
-                latched = sch.abort_latch_in(json.load(fh))
+                prev = json.load(fh)
+            latched = sch.abort_latch_in(prev)
+            held = isinstance(prev, dict) and (
+                prev.get("stop_held") is True or (
+                    prev.get("stop_hold") is True and
+                    prev.get("state") == sch.HOLD))
         except (OSError, ValueError):
             if self.conductor is not None:
                 self._upgrade_to_stop_hold(self.UPGRADE_EARLIER.format(
@@ -2522,6 +2565,8 @@ class Service:
             self._upgrade_to_stop_hold(self.UPGRADE_EARLIER.format(
                 night=y, why="ended with an older version's Abort that "
                              "nobody Reset"), str(y))
+        elif held:
+            self._stop_hold_from_list(tonight_path(y, self.state_dir), y)
 
     def _still_open(self, now, d):
         """None while the night on the machine (a date other than `d`)
