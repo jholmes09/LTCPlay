@@ -1626,9 +1626,12 @@ class Service:
             call = self._new_call(label, method, who, screen)
             if len(entry) > 3:
                 call.show = entry[3]
-            if method == "show_starting":
-                # The Stop count now: a Stop that lands before this call
-                # is made refuses it (cold review of #191 round 2).
+            if method in ("show_starting", "start_show"):
+                # The Stop count now, when the start is decided: a Stop
+                # that lands before this call is made refuses it (cold
+                # review of #191 round 2; for start_show, cold review A of
+                # #199, F2: the removed latch caught that as a standing
+                # state).
                 call.stops = getattr(self.conductor, "stops", None)
             calls.append(call)
         return calls
@@ -1693,7 +1696,11 @@ class Service:
             if call.method == "start_show":
                 # The Fire & Ice show runner, not the conductor (see
                 # _drive_conductor).
-                r = self.performer.start_show(call.show, who=call.who)
+                if getattr(call, "stops", None) is not None:
+                    r = self.performer.start_show(call.show, who=call.who,
+                                                  stops=call.stops)
+                else:
+                    r = self.performer.start_show(call.show, who=call.who)
             elif call.method == "show_starting" and \
                     getattr(call, "stops", None) is not None:
                 r = self.conductor.show_starting(call.who, call.screen,
@@ -2447,6 +2454,33 @@ class Service:
                 self.UPGRADE_UNREADABLE.format(night=m.date, aside=aside),
                 str(m.date))
         return m
+
+    def _release_set_aside(self):
+        """A Resume ended a Stop's Hold: tonight's set-aside list (the
+        unreadable one _boot_upgrade turned into that Hold) is renamed, so
+        a restart tonight does not put the Hold back (Reset did this
+        before it was removed; cold review A of #199, F4). Lock held.
+        Never raises."""
+        try:
+            m = self.machine
+            if m is None:
+                return
+            self._unreadable_night = None
+            aside = set_aside_path(tonight_path(m.date, self.state_dir))
+            if not os.path.exists(aside):
+                return
+            stamp = self.clock().astimezone(self._tz()).strftime("%H%M%S")
+            done = aside[:-5] + f".resumed-{stamp}.json"
+            try:
+                os.replace(aside, done)
+            except OSError as e:
+                self._journal_line(
+                    "system", f"Resume is done, but {aside} could not be "
+                    f"renamed ({e.strerror or e}), so a restart tonight "
+                    f"comes back on a Stop's Hold and needs Resume again.",
+                    action="resume", outcome="set aside kept", fault=True)
+        except Exception:                        # noqa: BLE001
+            pass
 
     def _upgrade_night_before(self, d):
         """With no list saved for `d` yet: the most recent night saved
@@ -4034,15 +4068,22 @@ class Service:
                 if kind == sch.RESUME and not out.refused:
                     if before == sch.HOLD:
                         # Only an operator's Resume ends a Stop's Hold.
-                        self._stop_carry_clear(who, screen, "pressed Resume")
-                        self._stop_carry_write()
-                        if self.machine.faults:
-                            # Resume ending a Hold clears the fault flag
-                            # too, as Reset did on a Hold before Reset was
-                            # removed (Jeff, 2026-10-30).
+                        ended = self._stop_carry_clear(who, screen,
+                                                       "pressed Resume")
+                        if ended and self.machine.faults:
+                            # Resume ending a Stop's Hold clears the fault
+                            # flag too, as Reset did after an Abort before
+                            # Reset was removed (Jeff, 2026-10-30). Only a
+                            # Stop's Hold: a plain Hold's Resume leaves
+                            # faults to Acknowledge (cold review A of #199,
+                            # F3). Before the file is removed, so a fault
+                            # that removal raises stands.
                             self._apply(sch.Event(
                                 sch.CLEAR_FAULT, "operator", who=who,
                                 screen=screen, surface=bool(surface)))
+                        self._stop_carry_write()
+                        if ended:
+                            self._release_set_aside()
                     self._preroll_release(who, screen)
             finally:
                 self._press_stamp = None

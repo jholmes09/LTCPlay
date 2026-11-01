@@ -10534,15 +10534,7 @@ def build():
   '        calls = self._decide_conductor(plan, ev)\n'
   '        if ev.kind == sch.STOP_SHOW and calls:',
   '        calls = None\n'
-  '        if any(p[1] == "abort" for p in plan):\n'
-  '            self.machine = replace(self.machine, abort_latched=True)\n'
-  '            self._marker_clear_pending = False\n'
   '        if False:'),
-
- ("abort save: a step is taken outside the scheduler's lock",
-  'ltcplay/schedule_service.py',
-  '        with self._locked():\n            return self._apply_locked(ev, now)',
-  '        if True:\n            return self._apply_locked(ev, now)'),
 
  # Look A, the deck artwork Jeff approved on the real deck (2026-09-27).
  ("deck look: the two snakes run opposite ways",
@@ -17287,14 +17279,10 @@ def build():
   "        self._stop_carry = self._stop_carry_load()",
   "        self._stop_carry = None"),
 
- ("scheduler: Resume never releases a Stop's Hold",
-  "ltcplay/schedule_service.py",
-  "                    if before == sch.HOLD:\n"
-  "                        # Only an operator's Resume ends a Stop's Hold.\n"
-  "                        self._stop_carry_clear(who, screen, \"pressed Resume\")",
-  "                    if before == sch.HOLD:\n"
-  "                        # Only an operator's Resume ends a Stop's Hold.\n"
-  "                        pass"),
+ ("scheduler: Resume never releases a Stop's Hold", 'ltcplay/schedule_service.py',
+  '                        ended = self._stop_carry_clear(who, screen,\n'
+  '                                                       "pressed Resume")',
+  '                        ended = False'),
 
  ("scheduler: Continue anyway resumes a Stop's Hold (round 2, 8)",
   "ltcplay/schedule_service.py",
@@ -19284,9 +19272,9 @@ def build():
   '            if v == "cleared":\n                return False\n            if v == "failed":\n'),
 
  ('rig check cleared: Resume does not release the cleared show', 'ltcplay/schedule_service.py',
-  '                                screen=screen, surface=bool(surface)))\n'
+  '                            self._release_set_aside()\n'
   '                    self._preroll_release(who, screen)',
-  '                                screen=screen, surface=bool(surface)))\n'
+  '                            self._release_set_aside()\n'
   '                    pass'),
 
  ('rig check cleared: the screens do not say Press Resume', 'ltcplay/remote.py',
@@ -22377,11 +22365,11 @@ def build():
   '                    (getattr(m, "lasers", None), "all_off", ("Stop held",))):',
   '                    (getattr(m, "lasers", None), "all_on", ("Stop held",))):'),
 
- ("fire & ice: a Stop just before the hand-over lets the show start go out (as the removed Abort's latch did not)", 'ltcplay/fire_ice.py',
+ ("fire & ice: a Stop during the hand-over lets the show start go out (as the removed Abort's latch did not)", 'ltcplay/fire_ice.py',
   '        if getattr(self.conductor, "stops", 0) != stops0:\n'
-  '            # A Stop landed before the hand-over',
+  '            # A Stop landed DURING the hand-over',
   '        if False:\n'
-  '            # A Stop landed before the hand-over'),
+  '            # A Stop landed DURING the hand-over'),
 
  ("upgrade: an old list's Abort latch is read as nothing (not a Stop's Hold)", 'ltcplay/schedule_service.py',
   '        if sch.abort_latch_in(doc):',
@@ -22391,11 +22379,11 @@ def build():
   '        dark=doc.get("dark", False) or abort_latch_in(doc),',
   '        dark=doc.get("dark", False),'),
 
- ('resume: a Resume from a Hold leaves the fault flag up (Reset used to clear it)', 'ltcplay/schedule_service.py',
-  '                        if self.machine.faults:\n'
-  '                            # Resume ending a Hold clears the fault flag',
+ ("resume: a Resume from a Stop's Hold leaves the fault flag up (Reset used to clear it)", 'ltcplay/schedule_service.py',
+  '                        if ended and self.machine.faults:\n'
+  "                            # Resume ending a Stop's Hold clears the fault",
   '                        if False:\n'
-  '                            # Resume ending a Hold clears the fault flag'),
+  "                            # Resume ending a Stop's Hold clears the fault"),
 
  ("rack screen: a Stop no longer lets go of the page's own arm hold (the removed Abort's tap did)", 'ltcplay/web/remote.html',
   '  try{ armStop("Stop"); }catch(e){}\n',
@@ -22412,6 +22400,29 @@ def build():
   '        # A Stop',
   '    if False:\n'
   '        # A Stop'),
+
+ ("fire & ice: a start's Stop count is read when it is made, not when it was decided (cold review A of #199, F2)", 'ltcplay/schedule_service.py',
+  '            if method in ("show_starting", "start_show"):',
+  '            if method == "show_starting":'),
+
+ ('fire & ice: the runner ignores the Stop count the start was decided with', 'ltcplay/fire_ice.py',
+  '        stops0 = getattr(self.conductor, "stops", 0) if stops is None \\\n'
+  '            else stops',
+  '        stops0 = getattr(self.conductor, "stops", 0)'),
+
+ ("fire & ice: a start refused by a Stop clears the pixels' black first (F5)", 'ltcplay/fire_ice.py',
+  '        if not why and getattr(self.conductor, "stops", 0) != stops0:',
+  '        if False:'),
+
+ ("resume: every Resume from a Hold clears the fault flag, not only a Stop's Hold's (F3)", 'ltcplay/schedule_service.py',
+  '                        if ended and self.machine.faults:',
+  '                        if self.machine.faults:'),
+
+ ("resume: a Stop's Hold Resume never lets go of the set-aside night (F4)", 'ltcplay/schedule_service.py',
+  '                        if ended:\n'
+  '                            self._release_set_aside()',
+  '                        if False:\n'
+  '                            self._release_set_aside()'),
 
 ]
 
