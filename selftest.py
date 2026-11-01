@@ -39597,6 +39597,22 @@ def test_schedule_restart_after_a_stopped_show_stays_dark():
               f"{name}: the next show still starts on schedule")
         check(I in [e.kind for e in o3.effects] and not o3.machine.dark,
               f"{name}: an operator's press brings the look back")
+    # A dark list with every show still to come (an older version's
+    # Abort before the first show, or a Stop's Hold that was Resumed):
+    # a restart waits dark in STANDBY, no preshow look (cold review A of
+    # #199: the mutation lost its latch test).
+    from dataclasses import replace as _rp
+    n = _Night(S, rule)
+    n.boot(_den(S, 16, 0))
+    m = _rp(n.m, dark=True)
+    check(all(x.status == S.PENDING for x in m.slots),
+          "setup: every show still to come")
+    doc, o = restart(m, _den(S, 16, 5))
+    kinds = [e.kind for e in o.effects]
+    check(o.machine.state == S.STANDBY and o.machine.dark and
+          S.PRESHOW_LOOK not in kinds and I not in kinds,
+          f"a dark night with every show to come waits dark in STANDBY, no "
+          f"preshow look: {o.machine.state} {kinds}")
     # A night that never went dark saves exactly as before.
     n = _Night(S, rule)
     n.boot(_den(S, 17, 50))
@@ -42637,7 +42653,7 @@ def test_refused_starts_say_why_and_what_to_press():
         perf = _ty.SimpleNamespace(
             start_blocked=lambda: {"text": "the show audio is still loading",
                                    "loading": True},
-            start_show=lambda n, who="": None)
+            start_show=lambda n, who="", stops=None: None)
         sv.performer, sv.dry_run = perf, False
         sv.START_WAIT_S = 5.0
 
@@ -42728,7 +42744,7 @@ def test_refused_starts_say_why_and_what_to_press():
             sv.cancel_start_wait("the schedule was put on Hold")
             return None
         sv.performer = _ty.SimpleNamespace(start_blocked=blocked_then_held,
-                                           start_show=lambda n, who="": None)
+                                           start_show=lambda n, who="", stops=None: None)
         sv.dry_run = False
         slots0 = len(sv.machine.slots)
         r = sv.operator_press("start-now", "Andy", "Rack screen")
@@ -42763,7 +42779,7 @@ def test_refused_starts_say_why_and_what_to_press():
         gate[0] = True
         return None
     sv.performer = _ty.SimpleNamespace(start_blocked=loads_at_showtime,
-                                       start_show=lambda n, who="": None)
+                                       start_show=lambda n, who="", stops=None: None)
     sv.dry_run = False
     r = sv.operator_press("start-now", "Andy", "Rack screen")
     check(r["ok"] is False and r.get("cancelled") is True and
@@ -47976,7 +47992,7 @@ def test_fire_ice_start_rules_on_the_ordered_line():
     S = d.S
     asked = []
     d.svc.performer = types.SimpleNamespace(
-        start_show=lambda n, who="": asked.append(n))
+        start_show=lambda n, who="", stops=None: asked.append(n))
     d.svc.tick()
     d.now[0] = _den(S, 18, 0)
     d.svc.tick()
@@ -58611,6 +58627,18 @@ def test_programming_playhead_drives_the_show_path():
             check(False, "a press with nothing playing was accepted")
         except PlayheadError as e:
             check("Play from" in str(e), f"refusal: {e}")
+    # PINNED (cold review A of #199, F1; Jeff decides): after the
+    # conductor's Stop, with no Resume, Play from still plays. The
+    # removed Abort latch refused it until Reset.
+    c.stop("Andy", "rack screen")
+    c.run_pending()
+    del order[:]
+    del calls[:]
+    ph.play_from(3600.0)
+    check(order and calls,
+          f"Play from after a Stop plays (no latch): {order} {calls}")
+    ph.follow("Andy", "iPad")
+    c.run_pending()
     # The show start refused after the cue began (a Stop landing): the
     # music is stopped again.
     real_ss2 = c.show_starting
@@ -60998,6 +61026,262 @@ def test_fire_ice_stop_while_the_cue_starts():
     finally:
         n.c.close()
         n.link.close()
+    print("  ok")
+
+
+def test_fire_ice_a_start_decided_before_a_stop_is_refused():
+    section("fire & ice (cold review A of #199, F2 and F5): the Stop count "
+            "is taken when the scheduler DECIDES a start, so a Stop that "
+            "lands while the start still waits in the conductor's line "
+            "refuses it when it runs: nothing sent, the music never starts, "
+            "the pixels' black never lifted")
+    n = _fi_night()
+    if n.S is None:
+        return
+    S = n.S
+    try:
+        n.svc.tick()
+        # The runner on its own: the count from before the Stop.
+        before = n.c.stops
+        n.c.stop("Andy", "Rack screen")
+        n.c.run_pending()
+        _mm_flush(n.link)
+        cleared = []
+        real_pfs = n.w.show.pixels_for_show
+        n.w.show.pixels_for_show = lambda *a, **k: (cleared.append(a),
+                                                    real_pfs(*a, **k))[1]
+        del n.calls[:]
+        r = n.w.runner.start_show(9, who="the scheduler", stops=before)
+        n.w.show.pixels_for_show = real_pfs
+        got = [k for k, _a, _t in n.calls]
+        check(not r.ok and "Stop was pressed" in r.sentence and
+              "music_play" not in got and not cleared and
+              n.sess.player.override == "blackout",
+              f"a start decided before a Stop: refused with nothing sent, "
+              f"the black never lifted: {r.sentence} {got} {cleared} "
+              f"{n.sess.player.override!r}")
+        # Through the scheduler's own line: the call is decided (its count
+        # taken), a Stop lands, then the call is made.
+        ev = S.Event(S.START_NOW, "operator", who="Andy",
+                     screen="Rack screen")
+        calls = n.svc._decide_conductor(
+            [("Start the show", "start_show",
+              frozenset((S.START_SHOW,)), 9)], ev)
+        check(calls and calls[0].stops == n.c.stops,
+              f"the decided start carries the Stop count: "
+              f"{calls and calls[0].stops} {n.c.stops}")
+        n.c.stop("Andy", "Rack screen")
+        n.c.run_pending()
+        del n.calls[:]
+        n.svc._run_conductor_call(calls[0])
+        got = [k for k, _a, _t in n.calls]
+        check(calls[0].ok is False and "music_play" not in got,
+              f"made after the Stop, it is refused and plays nothing: "
+              f"{calls[0].ok} {calls[0].sentence} {got}")
+        # A start decided AFTER the Stop (an operator's Start now) goes.
+        n.c.run_pending()
+        r = n.w.runner.start_show(9, who="Andy", stops=n.c.stops)
+        check(r.ok, f"a start decided after the Stop is taken: {r}")
+    finally:
+        n.c.close()
+        n.link.close()
+    print("  ok")
+
+
+def test_resume_clears_faults_only_after_a_stops_hold():
+    section("Resume (cold review A of #199, F3): ending a Stop's Hold "
+            "clears the fault flag, as Reset did after an Abort; a plain "
+            "Hold's Resume leaves faults alone; and a Stop's Hold file "
+            "that cannot be removed at that Resume is a fault that stands")
+    S = _sched()
+    if S is None:
+        return
+    import os as _os
+    import shutil as _sh
+    R = _RemoteRig(S)
+    try:
+        R.settle()
+        # A plain Hold between shows, a fault up: Resume leaves it.
+        R.svc.operator_press("hold", "Andy", "Rack screen")
+        R.settle()
+        R.svc._apply(S.Event(S.FAULT_RAISED, "madmapper", detail="x"))
+        st, _h, out = R.ask("POST", "/api/remote/resume", {"seen": R.seen()})
+        R.settle()
+        check(st == 200 and R.svc.machine.fault and not R.svc.stop_held(),
+              f"a plain Hold's Resume leaves the fault up: {st} {out} "
+              f"{R.svc.machine.faults}")
+        # A Stop's Hold, a fault up, and its file cannot be removed (a
+        # folder where the file was): Resume clears the old fault, and
+        # the removal's own fault stands.
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
+        R.settle()
+        path = R.svc._stop_hold_path()
+        check(R.svc.stop_held() and _os.path.exists(path),
+              f"setup: a Stop's Hold on disk: {R.svc.stop_held()}")
+        _os.remove(path)
+        _os.makedirs(_os.path.join(path, "x"))
+        st, _h, out = R.ask("POST", "/api/remote/resume", {"seen": R.seen()})
+        R.settle()
+        faults = list(R.svc.machine.faults)
+        check(st == 200 and not R.svc.stop_held() and
+              R.svc._stop_carry_failing and
+              any("could not be removed" in f for f in faults) and
+              not any(f == "x" or f.endswith(": x") for f in faults),
+              f"the old fault cleared, the removal's fault stands: "
+              f"{faults}")
+        _sh.rmtree(path, ignore_errors=True)
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_resume_lets_go_of_a_set_aside_night():
+    section("an unreadable tonight's list with a show conductor attached "
+            "is set aside and becomes a Stop's Hold; Resume ends it and "
+            "renames the set-aside file, so a restart that night does not "
+            "put the Hold back (Reset did that before it was removed; cold "
+            "review A of #199, F4)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date
+    from ltcplay import schedule_service as SV
+    work = tempfile.mkdtemp()
+    d = date(2026, 11, 14)
+    with open(SV.tonight_path(d, work), "w") as fh:
+        fh.write("{ not json")
+    now = [_den(S, 18, 10)]
+    svc = _svc(S, work, now, conductor=_RecCond(S))
+    svc.start(thread=False)
+    _settle(svc)
+    aside = SV.set_aside_path(SV.tonight_path(d, work))
+    check(os.path.exists(aside) and svc.stop_held(),
+          f"setup: set aside, and a Stop's Hold: {svc.stop_held()}")
+    r = svc.operator_press("resume", "Jeff", "Rack screen")
+    check(r.get("ok") and not svc.stop_held() and not os.path.exists(aside)
+          and any(n.endswith(".json") and ".resumed-" in n
+                  for n in os.listdir(work)),
+          f"Resume ends it and the set-aside file is renamed: {r} "
+          f"{sorted(os.listdir(work))}")
+    svc.stop()
+    svc2 = _svc(S, work, now, conductor=_RecCond(S))
+    svc2.start(thread=False)
+    _settle(svc2)
+    check(not svc2.stop_held(),
+          "a restart that night does not put the Stop's Hold back")
+    svc2.stop()
+    print("  ok")
+
+
+def test_after_a_stop_before_resume_what_still_works():
+    section("PINNED for Jeff's decision (cold review A of #199, F1): the "
+            "removed Abort latch refused these until Reset; a Stop's Hold "
+            "(after a Stop, before Resume) refuses only some. Each line "
+            "here pins TODAY's answer, so a change is a deliberate one")
+    S = _sched()
+    if S is None:
+        return
+    import dataclasses as _dc
+    from ltcplay import fireball as FB
+    loop = ("127.0.0.1", 50000)
+
+    def stopped(R):
+        R.feed()
+        R.settle()
+        st, _h, out = R.ask("POST", "/api/remote/stop", {}, client=loop)
+        R.settle()
+        R.feed()
+        check(st == 200 and R.svc.stop_held() and
+              R.svc.machine.state == S.HOLD,
+              f"setup: a Stop's Hold between shows: {st} "
+              f"{R.svc.machine.state} {R.svc.stop_held()}")
+    R = _pm_rig(S)
+    try:
+        stopped(R)
+        rm = R.remote
+        # STILL WORKS after a Stop, before Resume:
+        check(rm.arm_refusal("front row", "Rack screen") == "",
+              "a screen's hold to arm a flame group: allowed")
+        check(rm.hazers.refusal("Hazer 1") == "",
+              "arming a hazer: allowed")
+        check(rm.pump.refusal() == "",
+              "the fuel pump On: allowed")
+        ok, text = rm.pump.set(True, seconds=60, run="pin1")
+        R.feed()
+        check(ok and rm.pump.pump_send() == "" and R.link.pump_on,
+              f"and a pump run started then keeps running: {text}")
+        rm.pump.cut()
+        # REFUSED after a Stop, before Resume (the Hold's own rules):
+        check("Hold" in rm.live_flame_blockers(),
+              f"live flame programming: refused: "
+              f"{rm.live_flame_blockers()!r}")
+        check("Hold" in rm.timed_purge_blockers(None),
+              f"a timed purge: refused: {rm.timed_purge_blockers(None)!r}")
+        check("Hold" in rm.laser_arm_blockers(),
+              f"arming a laser (and Open BEYOND's output): refused while "
+              f"the schedule is on the Hold: {rm.laser_arm_blockers()!r}")
+        # ... but a Stop's Hold carried into a closed night (OFF) does not
+        # stop a laser being armed.
+        m0 = R.svc.machine
+        R.svc.machine = _dc.replace(m0, state=S.OFF)
+        try:
+            check(R.svc.stop_held() and rm.laser_arm_blockers() == "",
+                  f"with the night OFF, the Stop's Hold still standing: "
+                  f"arming a laser is allowed: {rm.laser_arm_blockers()!r}")
+        finally:
+            R.svc.machine = m0
+    finally:
+        R.close()
+    R = _fireball_rig(S)
+    try:
+        stopped(R)
+        check(FB.engine_blockers(R.remote, during_show=True) == "",
+              "the Fireball page (its own during-show rules): allowed")
+        check("Hold" in FB.engine_blockers(R.remote),
+              f"the Fireball's engine checks outside the page (the "
+              f"cleaning's): refused on the Hold: "
+              f"{FB.engine_blockers(R.remote)!r}")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 200, f"the Startup page's momentary purge: a machine "
+                         f"can be selected (and fired): {st} {out}")
+        R.ask("POST", "/api/remote/purge-clear", {}, client=loop)
+    finally:
+        R.close()
+    # The show conductor after its Stop: announcements, the mode and the
+    # lasers' arming are taken (the latch refused them).
+    C = _cond_mod()
+    c, rig, T, lines = _cond(hold_gate=lambda *a: (None, 1),
+                             announcer=lambda *a: None)
+    _cond_live(c, rig)
+    c.stop("Andy", "rack screen")
+    c.run_pending()
+    check(c.lasers_armed("Andy", "rack").ok, "lasers_armed(): taken")
+    check(c.set_mode(C.REHEARSAL).ok and c.set_mode(C.PRODUCTION).ok,
+          "a mode change: taken")
+    check(c.announce("delayed", "Andy", "rack screen").ok,
+          "an announcement: taken")
+    # The Stream Deck: an engine's "latched" is never read, so the deck's
+    # arm keys and its purge pass go after a Stop as before it
+    # (test_deck_presses_reach_the_engine_conductor pins the read).
+    from ltcplay import streamdeck as sd
+    e = sd.EngineConductor("http://127.0.0.1:1", poster=lambda p, b: (True,
+                           "ok"), fetcher=lambda p: {"conductor": {
+                               "latched": True, "look": "STOPPED_DARK"}},
+                           poll_hz=200.0)
+    e.start()
+    try:
+        deadline = time.time() + 2
+        while e.snapshot()["look"] != "STOPPED_DARK" and \
+                time.time() < deadline:
+            time.sleep(0.02)
+        check(e.snapshot() == {"latched": False, "look": "STOPPED_DARK"},
+              f"the deck reads no latch after a Stop: {e.snapshot()}")
+    finally:
+        e.stop()
+    # Programming's Play from after a Stop:
+    # test_programming_playhead_drives_the_show_path pins it (it plays).
     print("  ok")
 
 
@@ -108949,6 +109233,10 @@ if __name__ == "__main__":
         test_stop_at_showtime_never_starts_or_pauses_a_show,
         test_stops_hold_outlives_the_night,
         test_fire_ice_stop_while_the_cue_starts,
+        test_fire_ice_a_start_decided_before_a_stop_is_refused,
+        test_resume_clears_faults_only_after_a_stops_hold,
+        test_resume_lets_go_of_a_set_aside_night,
+        test_after_a_stop_before_resume_what_still_works,
         test_stop_hold_stands_until_resume,
         test_stop_round2_conductor_and_marks,
         test_stop_hold_round3,

@@ -2811,17 +2811,22 @@ class ShowRunner:
             return None
         return {"text": why, "loading": why == self.AUDIO_LOADING}
 
-    def start_show(self, n, who="the scheduler"):
+    def start_show(self, n, who="the scheduler", stops=None):
         """Called on the scheduler's ordered line of conductor requests,
         off its lock, after tonight is saved; the conductor is told a show
         started only once it is confirmed. Returns a conductor Result at
         once. `who` is "the scheduler" for a show that came due, or the
-        operator who pressed Start now."""
+        operator who pressed Start now. `stops`: the conductor's Stop
+        count when the scheduler decided this start (its ordered line); a
+        Stop since then refuses it with nothing sent (cold review A of
+        #199, F2: a Stop that landed while the start waited in the line
+        went unseen when the count was read only here)."""
         # A Stop that lands while this start is under way (an urgent Stop
         # goes beside the line, so it can overtake a start already being
         # made) is seen after the cue starts, as an Abort is (cold review
         # of #191, A-F3). Read before anything else (round 2, item 9).
-        stops0 = getattr(self.conductor, "stops", 0)
+        stops0 = getattr(self.conductor, "stops", 0) if stops is None \
+            else stops
         clk = self.show._clock()
         s = self.show._session()
         # A Continue anyway is for the start it was pressed for, whatever
@@ -2834,6 +2839,10 @@ class ShowRunner:
                 self._cue = {"show": n, "failed": why, "nothing_sent": True}
             return C.failed(f"Show {n} was not started: {why}.")
         why = self._refusal(s, clk)
+        if not why and getattr(self.conductor, "stops", 0) != stops0:
+            # A Stop since the start was decided: refused before the
+            # pixels are touched (cold review A of #199, F2 and F5).
+            why = "Stop was pressed while it was starting"
         if why:
             # Refused before anything went out: the failed start this is
             # reported as sends nothing either (no fade, no MadMapper).
@@ -2845,9 +2854,11 @@ class ShowRunner:
         # may later cancel, never a newer start's.
         hand = getattr(pix, "show_handoff", None)
         if getattr(self.conductor, "stops", 0) != stops0:
-            # A Stop landed before the hand-over (as the removed Abort's
+            # A Stop landed DURING the hand-over (as the removed Abort's
             # latch did, 2026-10-30): nothing goes out, the music never
-            # starts, and the black is put back over the cleared look.
+            # starts, and the black is put back over the cleared look at
+            # once (the look was cleared for at most that moment; a Stop
+            # before the hand-over is refused above, pixels untouched).
             why = "Stop was pressed while it was starting"
             self._start_undone()
             with self._lock:
