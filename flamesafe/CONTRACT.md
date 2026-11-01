@@ -588,7 +588,7 @@ else holds, and then `why` says so), `sent` (the
 values on its slots this tick) and `why` (empty while passing, else one of:
 `switched off in the show program`, `the show program link is not fresh`,
 `not yet seen switched off by the show program since this program started:
-switch it off and on again`, `zeroed by the show's Abort: switch it off
+switch it off and on again`, `zeroed by the show's Stop: switch it off
 and on again in the show program`, `the show program link changed hands:
 switch it off and on again in the show program`, `the safety program
 faulted (an overrun or a compose fault): ...`, `a slot of it is in the
@@ -1140,8 +1140,10 @@ again within `min_arm_dwell_ms` of the Abort. So:
   2.0 s hold armed at +1.9 s after an Abort).
 
   A group the deck keeps asking for reads `held`,
-  flashing amber, reason `Disarmed by the show's Abort. Cycle the arm to
-  re-arm.` until it is cycled; the deck shows it as ABORTED.
+  flashing amber, reason `Disarmed by the show's Stop. Cycle the arm to
+  re-arm.` until it is cycled; the deck shows it as STOPPED. (Before
+  2026-10-30 the show program's press was called Abort and the reason
+  read `Disarmed by the show's Abort. ...`; ltcplay reads both.)
 - The status frame's top-level `disarm_all` says what flamesafe took:
   `{"accepted": count, "last_id": id or null, "last_reason": "...",
   "age_ms": ms or null}`. ltcplay compares `last_id` with the Abort it sent

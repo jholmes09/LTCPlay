@@ -868,21 +868,6 @@ MUTATIONS = [
   "  if(show.running && tr.programming)\n",
   "  if(location.hash === \"#programming\")\n"),
 
- ("remote: the Abort confirm promises a disarm with no flame link",
-  "ltcplay/web/remote.html",
-  "  if(s.disarm_connected && fl.connected)\n",
-  "  if(true)\n"),
-
- # An Abort with no show live never latches, so the first status poll after
- # it says aborted false; a banner that hides on that is gone in 250 ms and
- # only the one-line toast is left (found rendering bench-build after #68
- # and #70 merged).
- ("remote: the Abort banner goes on the first status poll after an Abort "
-  "with no show to stop",
-  "ltcplay/web/remote.html",
-  "  if(sch.aborted === false && b.dataset.latched){ b.hidden = true;",
-  "  if(sch.aborted === false && b.dataset.aborted){ b.hidden = true;"),
-
  ("remote: the getting-started steps stack at the 950 px window, the third "
   "below the card's own scroll",
   "ltcplay/web/remote.html",
@@ -893,13 +878,15 @@ MUTATIONS = [
   "            for g in groups:\n                g[\"armed\"] = \"unknown\"",
   "            pass"),
 
- ("remote: Start now and Abort need no confirm", "ltcplay/remote.py",
-  "        if name in CONFIRM_ROUTES and body.get(\"confirmed\") is not True:",
-  "        if False:"),
+ ('remote: Start now needs no confirm', 'ltcplay/remote.py',
+  '        if name in CONFIRM_ROUTES and body.get("confirmed") is not True:',
+  '        if False:'),
 
- ("remote: an arm route appears", "ltcplay/remote.py",
-  "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n                  \"disarm-all\", \"stop\", \"run-off\")",
-  "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n                  \"disarm-all\", \"stop\", \"run-off\", \"arm\")"),
+ ('remote: an arm route appears', 'ltcplay/remote.py',
+  'CONTROL_ROUTES = ("start-now", "hold", "resume", "reset",\n'
+  '                  "disarm-all", "stop", "run-off")',
+  'CONTROL_ROUTES = ("start-now", "hold", "resume", "reset",\n'
+  '                  "disarm-all", "stop", "run-off", "arm")'),
 
  ("remote: half a request is acted on", "ltcplay/web.py",
   "            return None if \"/api/remote/\" in self.path else {}",
@@ -1242,9 +1229,11 @@ MUTATIONS = [
   "                              \"fresh\": age <= BEAT_STALE_S,",
   "                              \"fresh\": True,"),
 
- ("arm: an Abort leaves screen holds running", "ltcplay/remote.py",
-  "        if name in (\"abort\", \"disarm-all\"):\n            # No screen hold",
-  "        if False:\n            # No screen hold"),
+ ('arm: Disarm all leaves screen holds running', 'ltcplay/remote.py',
+  '        if name == "disarm-all":\n'
+  '            # No screen hold survives a disarm',
+  '        if False:\n'
+  '            # No screen hold survives a disarm'),
 
  ("arm: a group disarm leaves its hold running", "ltcplay/remote.py",
   "        self._drop_hold(i)\n        with self._arm_lock:\n"
@@ -2605,11 +2594,6 @@ MUTATIONS = [
   "        if on and not self.may_act_from(ctx.local):",
   "        if False:"),
 
- ("hazers: an Abort press leaves the hazers armed",
-  "ltcplay/remote.py",
-  "            self.hazers_cut(f\"{who or 'someone'} pressed Abort on the \"",
-  "            (f\"{who or 'someone'} pressed Abort on the \""),
-
  ("hazers: Stop leaves the hazers armed",
   "ltcplay/remote.py",
   "            self.hazers_cut(why, who, screen)",
@@ -3012,10 +2996,11 @@ MUTATIONS = [
   "            if self._abort_standing():\n                return (\"an Abort is standing. Press Reset, then turn it on \"",
   "            if False:\n                return (\"an Abort is standing. Press Reset, then turn it on \""),
 
- ("pump: ON within 0.75 s of a Stop or Abort at the engine",
-  "ltcplay/fuelpump.py",
-  "        if repeating:\n            return (\"a Stop or Abort is still being sent",
-  "        if False:\n            return (\"a Stop or Abort is still being sent"),
+ ('pump: ON within 0.75 s of a Stop at the engine', 'ltcplay/fuelpump.py',
+  '        if repeating:\n'
+  '            return ("a Stop is still being sent',
+  '        if False:\n'
+  '            return ("a Stop is still being sent'),
 
  ("pump: ON with flamesafe's status stale",
   "ltcplay/fuelpump.py",
@@ -3046,11 +3031,6 @@ MUTATIONS = [
   "ltcplay/remote.py",
   "            self.pump_cut(why, who, screen)",
   "            pass"),
-
- ("pump: an Abort press leaves the pump on",
-  "ltcplay/remote.py",
-  "            self.pump_cut(f\"{who or 'someone'} pressed Abort on the \"",
-  "            (f\"{who or 'someone'} pressed Abort on the \""),
 
  ("pump: Stop on the rack screen's /api/stop leaves the pump on",
   "ltcplay/web.py",
@@ -8328,9 +8308,8 @@ def build():
   "        if self.cfg.key == EXAMPLE_KEY:",
   "        if False:"),
 
- ("flamelink: the deck does not say ABORTED",
-  "ltcplay/streamdeck.py",
-  '''    "Disarmed by the show's Abort. Cycle the arm to re-arm.": "ABORTED",''',
+ ("flamelink: the deck does not say STOPPED for the show's Stop", 'ltcplay/streamdeck.py',
+  '    "Disarmed by the show\'s Stop. Cycle the arm to re-arm.": "STOPPED",\n',
   ""),
 
  # ---- round 5 of the safety review (PR #31) ------------------------------
@@ -9988,16 +9967,6 @@ def build():
   'def _has_status_mirror(path):\n    from . import flamelink  # noqa: F401\n    try:'),
 
 
- ("fix round 1: the deck does not read latched from its own Abort",
-  'ltcplay/streamdeck.py',
-  '        with self._lock:\n            self._local = (True, self._clock())\n        return self._press("abort", who, screen)',
-  '        return self._press("abort", who, screen)'),
-
- ("fix round 1: the deck's Abort to the engine is not confirmed",
-  'ltcplay/streamdeck.py',
-  '        if name == "abort":\n            body["confirmed"] = True',
-  '        if name == "abort":\n            pass'),
-
  ("fix round 1: an engine answer older than the deck's press wins",
   'ltcplay/streamdeck.py',
   '        if engine is not None and (pressed_at is None or\n                                   engine[1] > pressed_at):',
@@ -10171,11 +10140,6 @@ def build():
   'ltcplay/streamdeck.py',
   '                elif k in self._key_group:\n                    i = self._key_group[k]\n                    if self.arm.wanted[i] or self._reported_armed(i):',
   '                elif k == TOP_HOLD:\n                    self._do_reset()\n                elif k in self._key_group:\n                    i = self._key_group[k]\n                    if self.arm.wanted[i] or self._reported_armed(i):'),
-
- ('fix round 2: a deck Abort waits in line behind other presses',
-  'ltcplay/streamdeck.py',
-  '            body["confirmed"] = True\n            # Abort never waits',
-  '            body["confirmed"] = True\n        if False:\n            # Abort never waits'),
 
  ("fix round 2: an engine that did not take a press is not shown on the deck",
   'ltcplay/streamdeck.py',
@@ -10508,29 +10472,8 @@ def build():
   "    if True:\n        _OPENER.append("),
 
  # -- review of PR #43 (2026-10-05): P0-1, the screen Abort disarms first, every time --
- ('review43: the screen Abort sends no disarm of its own',
-  'ltcplay/remote.py',
-  '            flames = self._disarm_now(who, screen, "Abort")',
-  '            flames = (None, "")'),
-
- ('review43: a disarm that did not go out reads as a done Abort',
-  'ltcplay/remote.py',
-  '        ok = f_ok is True or (f_ok is None and s_ok)',
-  '        ok = True'),
-
-
  # -- review of PR #43: P0-5, the screen Abort's disarm never waits on the tonight.json save --
- ("review43: the screen Abort's disarm waits on the scheduler's save",
-  'ltcplay/remote.py',
-  '            flames = self._disarm_now(who, screen, "Abort")',
-  '            with self.schedule.lock:\n                self.schedule.machine and self.schedule._save_tonight()\n            flames = self._disarm_now(who, screen, "Abort")'),
-
  # -- review of PR #43: P0-1, the deck says what the engine's Abort did --
- ('review43: the deck reads RESET after an Abort that stopped no show',
-  'ltcplay/streamdeck.py',
-  '        if name == "abort" and doc.get("stopped") is False:',
-  '        if False:'),
-
  # -- review of PR #43: P0-2, the lasers' timecode blank fails closed --
  ('review43: a black zone with no address answers True again',
   'ltcplay/beyondtc.py',
@@ -10803,11 +10746,6 @@ def build():
   '            pass'),
 
  # -- re-review of #46: P1-A, the screen Abort's laser blank goes before the scheduler --
- ("rereview: the screen Abort's laser blank waits for the scheduler",
-  'ltcplay/remote.py',
-  '            lasers = self._lasers_dark_now()\n',
-  '            lasers = (None, "")\n'),
-
  # -- review of PR #43 P0-2 re-anchored, and re-review P1-B, P2-a, P2-h: the BEYOND route check --
  ('review43: a show file with no BEYOND route passes the check',
   'ltcplay/fire_ice.py',
@@ -10893,11 +10831,6 @@ def build():
   '    def _http_fetch(self, path):\n        try:\n            with urllib.request.urlopen(self.base_url + path,'),
 
  # -- review of #48: a Reset pressed before an Abort never ends it, whatever order they reach the scheduler --
- ('rereview: a Reset that reached the scheduler after a later-pressed Abort is still sent',
-  'ltcplay/schedule_service.py',
-  '            late = when < self._abort_pressed\n',
-  '            late = False\n'),
-
  ("rereview: the screen's Abort and Reset carry no press order",
   'ltcplay/remote.py',
   '        pressed = stamp() if stamp is not None else None\n',
@@ -11189,13 +11122,6 @@ def build():
   "ltcplay/fire_ice.py",
   "    link.status_mirrored = _has_status_mirror(cfg.flamesafe_config)",
   "    link.status_mirrored = False"),
-
- ('an unconfirmed screen Abort no longer disarms the flames',
-  'ltcplay/remote.py',
-  '            flames = self._disarm_now(who, screen, "Abort")\n'
-  '        if name in ("abort", "hold", "start-now"):',
-  '            flames = None\n'
-  '        if name in ("abort", "hold", "start-now"):'),
 
  ("MadMapper at High is left at High", "packaging/windows/supervisor.py",
   "HIGH_OR_ABOVE = (0x80, 0x100)", "HIGH_OR_ABOVE = ()"),
@@ -12191,21 +12117,6 @@ def build():
   '''        knows is still zeroed here while the problem stands)."""
         return
         link = self._link_get()'''),
-
- ("morning: Abort leaves a purge selection and the laser tests as they are (T7)",
-  "ltcplay/morning.py",
-  '''        self.purge.clear(f"Abort pressed by {who or screen or 'someone'}")
-        for hook in list(self.abort_hooks):
-            try:
-                hook(who, screen)
-            except Exception:                    # noqa: BLE001
-                pass
-        self.lasers.all_off("Abort pressed")''',
-  '''        for hook in list(self.abort_hooks):
-            try:
-                hook(who, screen)
-            except Exception:                    # noqa: BLE001
-                pass'''),
 
  ("morning: a laser test turns on while a show is live (T10)",
   "ltcplay/morning.py",
@@ -13223,9 +13134,9 @@ def build():
   '            return "safety" if body.get("kind") != "rewrite" else "settings"',
   '            return "unlock"'),
 
- ('users: Abort is a show press the matrix can take away', 'ltcplay/users.py',
-  '    "abort": "safety", "hold": "safety",',
-  '    "abort": "show", "hold": "safety",'),
+ ('users: Stop is a show press the matrix can take away', 'ltcplay/users.py',
+  '    "hold": "safety", "disarm-all": "safety", "stop": "safety",',
+  '    "hold": "safety", "disarm-all": "safety", "stop": "show",'),
 
  ('users: every password gets the same salt', 'ltcplay/users.py',
   '    salt = salt or secrets.token_bytes(16)',
@@ -14509,18 +14420,10 @@ def build():
   'ltcplay/web.py',
   '            httpd.fire_ice.attach_laser_arm(httpd.morning.laser_arm)',
   '            pass'),
- ('lasers: a Hold press does not disarm the lasers at the press',
-  'ltcplay/remote.py',
-  '        if name in ("abort", "hold"):\n'
+ ('lasers: a Hold press does not disarm the lasers at the press', 'ltcplay/remote.py',
+  '        if name == "hold":\n'
   '            # Every laser disarmed',
-  '        if name == "abort":\n'
-  '            # Every laser disarmed'),
- ('lasers: an unconfirmed Abort does not disarm the lasers',
-  'ltcplay/remote.py',
-  '        if name in ("abort", "hold"):\n'
-  '            # Every laser disarmed',
-  '        if name == "hold" or (name == "abort" and\n'
-  '                               body.get("confirmed") is True):\n'
+  '        if False:\n'
   '            # Every laser disarmed'),
  ('lasers: arming from the show network needs no screen_arming',
   'ltcplay/remote.py',
@@ -14595,12 +14498,11 @@ def build():
   '            self._disarm_gen += 1\n'
   '            was = [',
   '            was = ['),
- ('lasers: an Abort or Hold press in flight does not refuse arming',
-  'ltcplay/laserarm.py',
+ ('lasers: a Stop or Hold press in flight does not refuse arming', 'ltcplay/laserarm.py',
   '        if pressing:\n'
-  '            return ("an Abort or Hold is being pressed',
+  '            return ("a Stop or Hold is being pressed',
   '        if False:\n'
-  '            return ("an Abort or Hold is being pressed'),
+  '            return ("a Stop or Hold is being pressed'),
  ('lasers: the remote never tells the arm an Abort or Hold is under way',
   'ltcplay/remote.py',
   '                arm.press_begin()\n            except Exception:                    # noqa: BLE001\n                arm = None\n        try:\n            return self._press(',
@@ -15064,9 +14966,8 @@ def build():
   'ltcplay/remote.py',
   '        if ok:\n            alert = (f"{lead}: ALL groups disarm sent.',
   '        if True:\n            alert = (f"{lead}: ALL groups disarm sent.'),
- ('rack screen: a late Disarm answer covers the Abort pressed after it',
-  'ltcplay/web/remote.html',
-  '  if(seq >= (SAID_SEQ[el.id] || 0) && (el.id !== "ctl-msg" || seq >= ABORT_SEQ)){',
+ ('rack screen: a late Disarm answer covers a press made after it', 'ltcplay/web/remote.html',
+  '  if(seq >= (SAID_SEQ[el.id] || 0)){',
   '  if(true){'),
  ('ui2 page: a forced Disarm is said as done',
   'ltcplay/web/remote2.html',
@@ -15421,10 +15322,11 @@ def build():
   'ltcplay/remote.py',
   '        if body.get("confirmed") is not True:\n            return 400, {"error": "Confirm it on the page first. Nothing "\n                                  "was changed."}\n        ok, text = lf.begin(',
   '        ok, text = lf.begin('),
- ('live flame: Abort, Hold and Start now do not end it',
-  'ltcplay/remote.py',
-  '        if name in ("abort", "hold", "start-now"):',
-  '        if False:'),
+ ('live flame: Hold and Start now do not end it', 'ltcplay/remote.py',
+  '        if name in ("hold", "start-now"):\n'
+  '            # A timed purge ends at the press too',
+  '        if False:\n'
+  '            # A timed purge ends at the press too'),
  ("live flame: a second group's hold is not refused",
   'ltcplay/remote.py',
   '        why = self.live_flame_arm_refusal(gname)\n        if why:\n            return why',
@@ -15709,30 +15611,10 @@ def build():
   "  $(\"al-body\").hidden = f.fold && !ALERTS_OPEN;",
   "  $(\"al-body\").hidden = f.fold;"),
 
- ("rack screen: the Abort stop sign scrolls off the window",
-  "ltcplay/web/remote.html",
-  "#abortbar{position:fixed;z-index:15;",
-  "#abortbar{position:absolute;z-index:15;"),
-
  # The rack screen, 2026-10-26: ABORT a stop sign in the corner, one
  # button per flame group, Arm all and Disarm all one two-way button, and
  # the nav buttons that were cut off (selftest.py, drawn and pressed in
  # headless Chromium).
- ("rack screen: the Abort stop sign shrinks under a finger's 44 px",
-  "ltcplay/web/remote.html",
-  "  --abort-size:56px;",
-  "  --abort-size:30px;"),
-
- ("rack screen: the page keeps no gutter beside the Abort stop sign",
-  "ltcplay/web/remote.html",
-  "padding:clamp(6px,1vh,12px) var(--abort-gutter) var(--abort-room)",
-  "padding:clamp(6px,1vh,12px) clamp(10px,1.2vw,24px) var(--abort-room)"),
-
- ("rack screen: the Abort stop sign has no name for a screen reader",
-  "ltcplay/web/remote.html",
-  '<button id="b-abort" aria-label="Abort. Activate twice to abort."',
-  '<button id="b-abort"'),
-
  ("rack screen: the finger that armed a group disarms it on the way up",
   "ltcplay/web/remote.html",
   '  return downMode === "disarm" ? "disarm" : "";',
@@ -15829,11 +15711,6 @@ def build():
   '#b-disarm.armall{border:3px solid #5FE08A;color:#5FE08A;',
   '#b-disarm.armall{'),
 
- ("rack screen: the Abort sign's line is never shown",
-  "ltcplay/web/remote.html",
-  '#abortbar button:hover small,#abortbar button:focus-visible small{display:block}',
-  '#abortbar button:hover small,#abortbar button:focus-visible small{display:none}'),
-
  ("rack screen: letting go of a group's Hold to arm early does not let go",
   "ltcplay/web/remote.html",
   'b.addEventListener(ev, () => { if(holding(i) && !HOLD.all) armStop("let go"); }));',
@@ -15869,51 +15746,17 @@ def build():
   'if(keyboard) return nowMode === "disarm" ? "disarm" : "";',
   'if(keyboard) return "";'),
 
- ("rack screen: the idle Abort sign is drawn invisible",
-  "ltcplay/web/remote.html",
-  '#abortbar.idle:not(.tap1) .oct{background:#7A1A16}',
-  '#abortbar.idle:not(.tap1) .oct{background:transparent}'),
-
- ("rack screen: the Abort sign drops under the page",
-  "ltcplay/web/remote.html",
-  '#abortbar{position:fixed;z-index:15;',
-  '#abortbar{position:fixed;z-index:0;'),
-
- ("rack screen: the Abort sign moves to the left corner",
-  "ltcplay/web/remote.html",
-  'right:calc(10px + env(safe-area-inset-right));',
-  'left:calc(10px + env(safe-area-inset-right));'),
-
  ("rack screen: letting go of Arm all never tells the engine",
   "ltcplay/web/remote.html",
   '    if(h.all){ p.end = "out"; p.why = why ? "Hold stopped: " + why : "Hold stopped"; }\n    post("/api/remote/arm-release", {group:p.group}).catch(() => {});',
   '    if(h.all){ p.end = "out"; p.why = why ? "Hold stopped: " + why : "Hold stopped"; continue; }\n    post("/api/remote/arm-release", {group:p.group}).catch(() => {});'),
 
  # The Abort double tap and the one laser pill (Jeff, 2026-10-26).
- ("rack screen: one tap on the Abort sign aborts",
-  "ltcplay/web/remote.html",
-  '    if(nowMs - prev.at <= ABORT_TAP_MS || enlarged) return {fire:true, next:null};\n  }\n  return {fire:false, next:{at:nowMs, kind:kind}};',
-  '    if(nowMs - prev.at <= ABORT_TAP_MS || enlarged) return {fire:true, next:null};\n  }\n  return {fire:true, next:null};'),
-
- ("rack screen: the Abort sign's second tap counts long after the first",
-  'ltcplay/web/remote.html',
-  'const ABORT_TAP_MS = 2000;',
-  'const ABORT_TAP_MS = 5000;'),
-
- ("rack screen: a finger then the mouse aborts",
-  "ltcplay/web/remote.html",
-  'function abortTapStep(prev, nowMs, kind, enlarged){\n  if(prev && prev.kind === kind && nowMs >= prev.at){',
-  'function abortTapStep(prev, nowMs, kind, enlarged){\n  if(prev && nowMs >= prev.at){'),
-
- ("rack screen: the Abort sign's first tap shows nothing",
-  "ltcplay/web/remote.html",
-  '    $("abortbar").classList.add("tap1");\n',
-  ''),
-
- ("rack screen: the Abort sign never goes back after its first tap",
-  "ltcplay/web/remote.html",
-  "    ABORT_TIMER = setTimeout(abortTapDone, ABORT_TAP_MS);\n",
-  ""),
+ ('rack screen: a finger then the mouse is a Stop', 'ltcplay/web/remote.html',
+  '  if(prev && prev.kind === kind && nowMs >= prev.at){\n'
+  '    if(nowMs - prev.at <= STOP_TAP_MS',
+  '  if(prev && nowMs >= prev.at){\n'
+  '    if(nowMs - prev.at <= STOP_TAP_MS'),
 
  ("rack screen: the two laser pills are shown apart again",
   "ltcplay/web/remote.html",
@@ -15992,35 +15835,17 @@ def build():
   '  if(at && bar.previousElementSibling !== at) at.insertAdjacentElement("afterend", bar);',
   ''),
 
- ("rack screen: the enlarged Abort sign spills out of its gutter",
-  "ltcplay/web/remote.html",
-  "#abortbar.tap1 button{width:calc(var(--abort-size) + 10px);",
-  "#abortbar.tap1 button{width:calc(var(--abort-size) * 2.1);"),
+ ('rack screen: a fast double tap on Stop waits for a third', 'ltcplay/web/remote.html',
+  '    if(nowMs - prev.at <= STOP_TAP_MS || enlarged) return {fire:true, next:null};',
+  '    if((nowMs - prev.at <= STOP_TAP_MS && nowMs - prev.at > 100) || enlarged) return {fire:true, next:null};'),
 
- ("rack screen: a fast double tap on the Abort sign waits for a third",
-  'ltcplay/web/remote.html',
-  'function abortTapStep(prev, nowMs, kind, enlarged){\n  if(prev && prev.kind === kind && nowMs >= prev.at){',
-  'function abortTapStep(prev, nowMs, kind, enlarged){\n  if(prev && prev.kind === kind && nowMs >= prev.at && nowMs - prev.at >= 150){'),
+ ('rack screen: a held Enter on Stop counts again and again', 'ltcplay/web/remote.html',
+  '  el.addEventListener("keydown", e => { if(e.repeat && (e.key === "Enter" || e.key === " ")) e.preventDefault(); });',
+  '  el.addEventListener("keydown", e => { });'),
 
- ("rack screen: a held Enter on the Abort sign counts again and again",
-  "ltcplay/web/remote.html",
-  '$("b-abort").addEventListener("keydown", e => { if(e.repeat && (e.key === "Enter" || e.key === " ")) e.preventDefault(); });',
-  ''),
-
- ("rack screen: a tap leaves keyboard focus on the Abort sign",
-  "ltcplay/web/remote.html",
-  '  if(kind !== "key") $("b-abort").blur();',
-  ''),
-
- ("rack screen: a late timer turns a good second Abort tap into a first",
-  'ltcplay/web/remote.html',
-  'abortTapStep(ABORT_TAP, monoNow(), kind, $("abortbar").classList.contains("tap1"));',
-  'abortTapStep(ABORT_TAP, monoNow(), kind, false);'),
-
- ("rack screen: the second Abort tap leaves a hold under way",
-  "ltcplay/web/remote.html",
-  '  abortTapDone();\n  armStop("Abort");',
-  '  abortTapDone();'),
+ ('rack screen: a tap leaves keyboard focus on Stop', 'ltcplay/web/remote.html',
+  'if(kind !== "key") $(id).blur();',
+  'if(false) $(id).blur();'),
 
  ("rack screen: the laser pill says output on when it is only allowed",
   "ltcplay/web/remote.html",
@@ -17494,10 +17319,11 @@ def build():
   "            text = \"playback stopped, but \" + \"; and \".join(\n                t for _k, t in fails)",
   "            text = \"playback stopped, but \" + fails[0][1]"),
 
- ("deck: Stop waits on the press queue again (review of #130, 7)",
-  "ltcplay/streamdeck.py",
-  "        if name == \"stop\":\n            # Stop never waits behind another press either",
-  "        if False:\n            # Stop never waits behind another press either"),
+ ('deck: Stop waits on the press queue again (review of #130, 7)', 'ltcplay/streamdeck.py',
+  '        if name == "stop":\n'
+  '            # Stop never waits behind another press (review of #130, 7; as',
+  '        if False:\n'
+  '            # Stop never waits behind another press (review of #130, 7; as'),
 
  ("deck: the key never reads STOP ALL with the scheduler unknown",
   "ltcplay/streamdeck.py",
@@ -17709,10 +17535,9 @@ def build():
   '                    (m, "stop_hooks", (who, screen)),\n',
   ""),
 
- ("halt: a screen's Stop tells the laser arm only inside the halt",
-  "ltcplay/remote.py",
-  '            if name in ("abort", "hold", "stop", "run-off") else None',
-  '            if name in ("abort", "hold") else None'),
+ ("halt: a screen's Stop tells the laser arm only inside the halt", 'ltcplay/remote.py',
+  '            if name in ("hold", "stop", "run-off") else None',
+  '            if name in ("hold",) else None'),
 
  ("morning: Stop's hooks run nothing",
   "ltcplay/morning.py",
@@ -18623,11 +18448,6 @@ def build():
   "        if ph is not None:                          # hold",
   "        if False:                                   # hold"),
 
- ("a screen Abort in Programming playback leaves the music playing", "ltcplay/remote.py",
-  "            if ph is not None:\n                stopped = True\n                try:\n                    said = ph.abort_press(who, screen)",
-  "            if False:\n                stopped = True\n                try:\n                    said = ph.abort_press(who, screen)"),
-
-
  # Re-review of #142.
  ("a Show mode Run on this machine's clock counts as Programming", "ltcplay/remote.py",
   '            asked = getattr(s, "on_lost_arg", None) == "hold"',
@@ -18645,10 +18465,6 @@ def build():
   '                getattr(clk, "_cue", None) is ours[1])',
   '                True)'),
 
- ("a Programming Abort answers that nothing was stopped", "ltcplay/remote.py",
-  "                out = dict(out, programming=said, stopped=stopped, ok=ok,",
-  "                out = dict(out, programming=said, ok=ok,"),
-
  # Third review of #142.
  ("a Programming Hold leaves the schedule running", "ltcplay/remote.py",
   '            if svc is not None and getattr(m, "state", None) in ("IDLE",',
@@ -18657,10 +18473,6 @@ def build():
  ("Run goes over Programming playback", "ltcplay/web.py",
   '                if _why:\n                    return self._send(409, {"error": _why})',
   '                if False:\n                    return self._send(409, {"error": _why})'),
-
- ("a failed Programming stop on Abort is reported as stopped", "ltcplay/remote.py",
-  "                ok = stopped and not (flames and flames[0] is False)",
-  "                ok = not (flames and flames[0] is False)"),
 
  ("the watchdog halts a show that took over meanwhile", "ltcplay/playhead.py",
   "            if only is not None and not self._mine(only):\n                return False",
@@ -18996,10 +18808,9 @@ def build():
   "            why = self._other() or \"\"",
   "            why = \"\""),
 
- ("fireball: an Abort on the rack screen does not cut it",
-  "ltcplay/morning.py",
-  "                hook(who, screen)",
-  "                pass"),
+ ('fireball: a Stop on the rack screen does not cut it at the press', 'ltcplay/morning.py',
+  '                hook(who, screen, what="Stop")',
+  '                pass'),
 
  ("fireball: a beat that turns a channel on is a safety press",
   "ltcplay/users.py",
@@ -20302,9 +20113,11 @@ def build():
   '    "ui-default": "settings",',
   '    "ui-default": None,'),
 
- ("ui2 page: Abort fires on its first tap", "ltcplay/web/remote2.html",
-  "  const step = abortTapStep2(ABORT_TAP, monoNow(), kind, $(\"abortbar\").classList.contains(\"tap1\"));\n  if(!step.fire){",
-  "  const step = abortTapStep2(ABORT_TAP, monoNow(), kind, $(\"abortbar\").classList.contains(\"tap1\"));\n  if(false){"),
+ ("ui2 page: the broken page's Stop fires on its first tap", 'ltcplay/web/remote2.html',
+  '  const step = stopTapStep2(CORE_TAP, monoNow(), kind, false);\n'
+  '  if(!step.fire){',
+  '  const step = stopTapStep2(CORE_TAP, monoNow(), kind, false);\n'
+  '  if(false){'),
 
  ("ui2 page: Stop show is sent on its first tap", "ltcplay/web/remote2.html",
   '  if(!step.fire){\n    if(t) clearTimeout(t.timer);\n    STOP_TAPS2[id]',
@@ -20376,10 +20189,9 @@ def build():
   "  return !!(t && t.closest && t.closest(FIRE_KEY_NEVER));",
   "  return false;"),
 
- ("ui2 page: a refused Programming pin Stop is only said",
-  "ltcplay/web/remote2.html",
-  "    catch(e2){ say(\"NOT held.\", e2.message, \"bad\"); disarmFailed(\"Programming NOT paused. Abort or Disarm flames.\", e2.message); }",
-  "    catch(e2){ say(\"NOT held.\", e2.message, \"bad\"); }"),
+ ('ui2 page: a refused Programming pin Stop is only said', 'ltcplay/web/remote2.html',
+  '    catch(e2){ say("NOT held.", e2.message, "bad"); disarmFailed("Programming NOT paused. Stop show or Disarm flames.", e2.message); }',
+  '    catch(e2){ say("NOT held.", e2.message, "bad"); }'),
 
  ("ui2 page: two pins both say just Stop",
   "ltcplay/web/remote2.html",
@@ -20421,9 +20233,9 @@ def build():
   "    if logic is not None and LOGIC_TAG in page:\n",
   "    if False:\n"),
 
- ("ui2 page: Abort leans on 1.0's rules", "ltcplay/web/remote2.html",
-  "  const kind = abortTapKind2(e);",
-  "  const kind = abortTapKind(e);"),
+ ("ui2 page: the broken page's Stop leans on 1.0's rules", 'ltcplay/web/remote2.html',
+  '  const step = stopTapStep2(CORE_TAP, monoNow(), kind, false);',
+  '  const step = stopTapStep(CORE_TAP, monoNow(), kind, false);'),
 
  ("ui2 page: a page whose rules did not load says nothing", "ltcplay/web/remote2.html",
   "window.addEventListener(\"load\", () => { if(!ui2Whole()) $(\"broken\").hidden = false; });\nsetInterval(() => { if(!ui2Whole()) $(\"broken\").hidden = false; }, 1000);",
@@ -20471,9 +20283,9 @@ def build():
   "    say(dis ? \"Disarm NOT done. Use Deck or e-stop.\" : short8(",
   "    say(false ? \"Disarm NOT done. Use Deck or e-stop.\" : short8("),
 
- ("ui2 page: a failed Stop disarm does not say e-stop", "ltcplay/web/remote2.html",
-  "  if(bad.some(i => i.key === \"abort\" || i.key === \"stop\")) return",
-  "  if(bad.some(i => i.key === \"abort\")) return"),
+ ('ui2 page: a failed Stop disarm does not say e-stop', 'ltcplay/web/remote2.html',
+  '  if(bad.some(i => i.key === "stop")) return',
+  '  if(false) return'),
 
  ("ui2 page: letting go of Continue anyway early still continues", "ltcplay/web/remote2.html",
   '  if(PR_HOLD){ prHoldEnd(); say("Let go too early: nothing done."',
@@ -20620,12 +20432,11 @@ def build():
             return why''',
   '''        why = ""'''),
 
- ("timed purge: the flame link zeroed is not seen before a send",
-  "ltcplay/morning.py",
-  '''        if self._gen(self._link()) != t["gen"]:
-            return "the flame link was zeroed (Stop, Hold, Abort or a disarm)"''',
-  '''        if False:
-            return ""'''),
+ ('timed purge: the flame link zeroed is not seen before a send', 'ltcplay/morning.py',
+  '        if self._gen(self._link()) != t["gen"]:\n'
+  '            return "the flame link was zeroed (Stop, Hold or a disarm)"',
+  '        if False:\n'
+  '            return ""'),
 
  ("timed purge: a zero landing during the set is not seen",
   "ltcplay/morning.py",
@@ -22944,6 +22755,35 @@ def build():
   "ltcplay/play_from.py",
   "            with open(tmp, \"wb\") as fh:\n                fh.write(data)",
   "            with open(tmp, \"w\", encoding=\"utf-8\", newline=\"\\r\\n\") as fh:\n                fh.write(data.decode(\"utf-8\"))"),
+
+ ('remote: the Abort route is back', 'ltcplay/remote.py',
+  'CONTROL_ROUTES = ("start-now", "hold", "resume", "reset",\n'
+  '                  "disarm-all", "stop", "run-off")',
+  'CONTROL_ROUTES = ("start-now", "hold", "resume", "abort", "reset",\n'
+  '                  "disarm-all", "stop", "run-off")'),
+
+ ('rack screen: a Stop that did not do all of it is only a toast', 'ltcplay/web/remote.html',
+  '    if(stopFailed(r, j)) saidStop(el.textContent);\n',
+  ""),
+
+ ('rack screen: a Stop whose flame disarm failed is no banner', 'ltcplay/web/remote.html',
+  '  return stopWords(j) === STOP_DISARM_FAILED || ((j && j.failed) || []).length > 0;',
+  '  return ((j && j.failed) || []).length > 0;'),
+
+ ("ui2 page: the broken page's Stop posts nothing", 'ltcplay/web/remote2.html',
+  '    const r = await fetch("/api/remote/stop", {method:"POST", credentials:"same-origin", cache:"no-store",\n'
+  '      headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify({seen:seen})});',
+  '    const r = await fetch("/api/remote/status", {method:"GET", credentials:"same-origin", cache:"no-store",\n'
+  '      headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}});'),
+
+ ("halt: a Stop leaves a purge selection as it is (T7, the Abort's)", 'ltcplay/remote.py',
+  '                    (getattr(m, "purge", None), "clear",\n'
+  '                     (f"Stop held by {who or screen or \'someone\'}",)),\n',
+  ""),
+
+ ("halt: a Stop leaves the laser tests on (T7, the Abort's)", 'ltcplay/remote.py',
+  '                    (getattr(m, "lasers", None), "all_off", ("Stop held",))):',
+  '                    (getattr(m, "lasers", None), "all_on", ("Stop held",))):'),
 
 ]
 

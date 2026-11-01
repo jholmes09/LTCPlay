@@ -41,7 +41,7 @@ announcement plays WITHOUT pausing, holding or stopping anything, decided
 by the scheduler under its own lock, after its own tick, so a press at
 the second a show starts never pauses it (review of PR #129): pausing a
 show mid-way makes no sense for a cancellation or a cannot-continue, and
-the operator ends the show with Stop (or Abort) when that is what is meant.
+the operator ends the show with Stop when that is what is meant.
 An announcement never starts a show, and never disarms, stops or latches
 anything itself; see SHOW_STATES and play().
 

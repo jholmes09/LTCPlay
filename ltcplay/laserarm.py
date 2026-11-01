@@ -245,7 +245,7 @@ class LaserArm:
         with self._lock:
             pressing = self._presses
         if pressing:
-            return ("an Abort or Hold is being pressed right now; arm again "
+            return ("a Stop or Hold is being pressed right now; arm again "
                     "once it has landed")
         unknown = [lid for lid in ids if lid not in self.names]
         if unknown:
@@ -322,13 +322,13 @@ class LaserArm:
                 self.armed[lid] = {"since": now, "who": label,
                                    "screen": screen}
         if raced:
-            self._note(f"{label}'s arm was refused: a disarm (Abort, Hold or "
+            self._note(f"{label}'s arm was refused: a disarm (Stop, Hold or "
                        f"a disarm press) came in while it was being armed.",
                        action="laser-arm", outcome="refused", who=who,
                        screen=screen)
             self._audit(who, screen, "laser-arm", ",".join(ids), "refused",
                         "a disarm came in first")
-            return False, ("Not armed: a disarm (Abort, Hold or a disarm "
+            return False, ("Not armed: a disarm (Stop, Hold or a disarm "
                            "press) came in while arming. Nothing was armed.")
         names = ", ".join(self.names[i] for i in ids)
         self._note(f"{names} ARMED by {label}"

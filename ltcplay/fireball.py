@@ -283,8 +283,8 @@ class FireballPanel:
         not be sent since (round-4 review, s95: a 300 ms outage, and
         Andy's Fuel came back by itself when the link did). Else ""."""
         if link is None or self._gen(link) != r["gen"]:
-            return ("the flame link was disarmed (Stop, Abort or a disarm "
-                    "through it)")
+            return ("the flame link was disarmed (Stop or a disarm through "
+                    "it)")
         if self._drops(link) != r.get("drops"):
             return "a frame to flamesafe could not be sent"
         return ""
@@ -540,8 +540,8 @@ class FireballPanel:
                 link.manual_clear()
             if self._run is r:
                 self.cut(self._link_why(link, r) or
-                         "the flame link was disarmed (Stop, Abort or a "
-                         "disarm through it)", who=who, screen=screen)
+                         "the flame link was disarmed (Stop or a disarm "
+                         "through it)", who=who, screen=screen)
             return 409, {"error": "Everything was turned off: "
                                   f"{self.last_cut or 'the run ended'}. "
                                   "Press again.", "cut": True}

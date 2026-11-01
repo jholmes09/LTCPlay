@@ -2412,8 +2412,8 @@ def main(argv=None):
 
     dk = sub.add_parser("deck", help="run the real Stream Deck: arms and "
                         "disarms real flamesafe groups, and reaches Start "
-                        "Now, Hold and Abort through a show conductor "
-                        "where one is connected")
+                        "Now and Stop through the engine where one is "
+                        "connected")
     dk.add_argument("--flamesafe-config", required=True,
                     help="the flamesafe config this deck talks to")
     dk.add_argument("--ltcplay-url", default="http://127.0.0.1:7878",

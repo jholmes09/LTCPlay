@@ -69,7 +69,7 @@ def remote2_page():
     #166, B1): the page arrives whole in one answer, never waiting on a
     second request for its rules. Without the block, the page as it is
     (its own tag then asks /remote-logic.js, and it says when that fails;
-    its Abort needs neither)."""
+    its stop-core Stop needs neither)."""
     with open(REMOTE2_PAGE, encoding="utf-8") as fh:
         page = fh.read()
     logic = remote_logic()
@@ -97,7 +97,7 @@ WILDCARD = ("0.0.0.0", "::", "")
 
 # The show's own transport and output routes. While a scheduled show is live
 # (the scheduler in SHOW or PAUSED) every one of them is refused, on every
-# door, the machine's own page included: Hold, Resume and Abort are the only
+# door, the machine's own page included: Stop, Hold and Resume are the only
 # presses a live show takes (PR #43 review, finding 2: a GO during a live
 # show moved the pixels and fired a flame cue it jumped into).
 LIVE_SHOW_REFUSED = ("/api/start", "/api/go", "/api/skip", "/api/release",
@@ -116,9 +116,9 @@ LATCHED_REFUSAL = ("The show was aborted. Nothing on this page may bring "
 # long for the conductor's calls, and again for its fade, before playback
 # stops (review of #130, 5). The deck's post waits STOP_POST_TIMEOUT_S.
 HALT_FADE_WAIT_S = 3.0
-LIVE_SHOW_REFUSAL = ("A scheduled show is live. Only Hold, Resume and Abort "
+LIVE_SHOW_REFUSAL = ("A scheduled show is live. Only Stop, Hold and Resume "
                      "work during a show; this waits until the show has "
-                     "ended or been aborted.")
+                     "ended.")
 
 
 HOST_REFUSAL = "This page has to be opened by the show machine's address."
@@ -1022,8 +1022,7 @@ class Handler(BaseHTTPRequestHandler):
     def _stop_flames(self, body):
         """Stop's flame half (review of #126, P2-1): live flame programming
         cut, then the flame link's disarm_all
-        (the show's flames_disarm_all, never the conductor's Abort, so
-        nothing is latched). {"disarmed": True/False, "text": ...}, or None
+        (the show's flames_disarm_all; nothing is latched). {"disarmed": True/False, "text": ...}, or None
         with no flame link in this engine (the GPL path). Never raises."""
         rm = getattr(self.server, "remote", None)
         if rm is None:
@@ -1098,7 +1097,7 @@ class Handler(BaseHTTPRequestHandler):
     def _role_refused(self, route):
         """Send a 403 and return True when the role matrix does not let
         this press go ahead. NEVER for a safety press (users.classify:
-        Abort, Hold, Stop, every disarm, a release, a lock, Acknowledge,
+        Stop, Hold, every disarm, a release, a lock, Acknowledge,
         signing in or out), and never before any user exists. Being on
         this machine is not a sign-in: the rack screen is asked like any
         other (Jeff's field report, 2026-10-28). A fault in here never
@@ -1151,12 +1150,12 @@ class Handler(BaseHTTPRequestHandler):
                    if name else "Nobody is signed in on this screen, and "
                    "signed out is view only: ") + \
                 f"{users_mod.perm_label(perm)}. Sign in as someone who may " \
-                f"(the user chip at the top). Abort, Hold, Stop and every " \
+                f"(the user chip at the top). Stop, Hold and every " \
                 f"disarm always work. Nothing was changed."
         except Exception as e:                   # noqa: BLE001
             why = (f"The sign-in check could not be made ({type(e).__name__})"
                    f", so this was refused: {users_mod.perm_label(perm)}. "
-                   f"Abort, Hold, Stop and every disarm always work. Nothing "
+                   f"Stop, Hold and every disarm always work. Nothing "
                    f"was changed.")
         if ended:
             why = ("The timed purge was ended (a second purge press stops "
@@ -1370,7 +1369,7 @@ class Handler(BaseHTTPRequestHandler):
     def _conductor(self):
         """Read-only: what the Fire & Ice show conductor last did. A plain
         404 without one, like every optional route here. There is no route
-        that presses Hold, Resume or Abort."""
+        here that presses Stop, Hold or Resume."""
         c = getattr(self.server, "conductor", None)
         if c is None:
             return 404, {"error": "no such thing here"}
@@ -1769,11 +1768,10 @@ class Handler(BaseHTTPRequestHandler):
                 # Deck's alike: live flame programming ends, and the flame
                 # link's disarm_all goes out
                 # (the cues zeroed, a zero frame, the keyed disarm and its
-                # repeats: the flame half of an Abort), WITHOUT the Abort
-                # latch, which is the Abort's alone. Then playback stops.
+                # repeats), with no latch. Then playback stops.
                 # The Stream Deck's Stop is a complete halt (Jeff,
                 # 2026-10-26, "halt"): Remote.halt takes away everything
-                # an Abort does, in the Abort's order, with no latch, and
+                # the removed Abort did, in its order, with no latch, and
                 # ends a live scheduled show (STOP_SHOW). Its fade runs to
                 # the end before playback stops.
                 if self._halt_asked():
@@ -2386,7 +2384,7 @@ def _attach_pump(httpd):
         n, slot, on = link.cfg.pump
         say(f"Flame link: fuel pump {n} on channel {slot} at {on}, read from "
             f"{getattr(link, 'flamesafe_path', '')}. It is OFF until turned "
-            f"on; Stop and Abort turn it off.", action="flame_link",
+            f"on; Stop turns it off.", action="flame_link",
             outcome="fuel pump")
 
 

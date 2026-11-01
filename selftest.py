@@ -21215,7 +21215,6 @@ function go(){ const su = document.getElementById("setup");
  const r = e => { if(!e || !e.getClientRects().length) return null; const b = e.getBoundingClientRect(); return {top:b.top, bottom:b.bottom, h:b.height}; };
  const body = () => document.querySelector(".subody");
  const m = () => ({vh:innerHeight, disarm:r(document.getElementById("b-disarm")),
-    abort:r(document.getElementById("b-abort")),
     setup:!su.hidden, ann:!document.getElementById("ann").hidden,
     folded:su.classList.contains("folded"),
     make:document.getElementById("su-make").hidden ? null : r(document.getElementById("su-make")),
@@ -21285,10 +21284,6 @@ go();</script>"""
                 where = f"{w}x{h} {label} {state}"
                 check(mm["setup"] and mm["ann"],
                       f"{where}: both shown: {mm}")
-                check(mm["abort"]["top"] >= 0 and
-                      mm["abort"]["bottom"] <= vh,
-                      f"{where}: abort wholly on screen: {mm['abort']} "
-                      f"vh {vh}")
                 check(mm["disarm"]["top"] >= 0 and
                       mm["disarm"]["bottom"] <= vh - SLACK,
                       f"{where}: disarm wholly on screen with {SLACK} px "
@@ -21400,7 +21395,7 @@ function go(){ const su = document.getElementById("setup");
  if(su.hidden || !document.getElementById("b-disarm") || !document.querySelector("#fl-lamps .lamp [data-arm]")) return setTimeout(go, 50);
  const r = e => { const b = e.getBoundingClientRect(); return {top:b.top, bottom:b.bottom, h:b.height}; };
  const m = () => { scrollTo(0, 0); return {vh:innerHeight, disarm:r(document.getElementById("b-disarm")),
-    abort:r(document.getElementById("b-abort")), folded:su.classList.contains("folded"),
+    folded:su.classList.contains("folded"),
     lf:!document.getElementById("lf-banner").hidden, note:document.getElementById("arm-note").classList.contains("said"),
     root:document.documentElement.className, card:r(su), below:!document.getElementById("setup-below").hidden,
     arms:[...document.querySelectorAll("#fl-lamps .lamp [data-arm]")].map(r)}; };
@@ -21455,8 +21450,6 @@ go();
             mm, bb = m[state], bm[state]
             vh = mm["vh"]
             where = f"{w}x{h} {state}"
-            check(mm["abort"]["top"] >= 0 and mm["abort"]["bottom"] <= vh,
-                  f"{where}: abort wholly on screen: {mm['abort']} vh {vh}")
             lim = max(vh - SLACK, bb["disarm"]["bottom"]) + 1
             check(mm["disarm"]["top"] >= 0 and
                   mm["disarm"]["bottom"] <= lim,
@@ -34718,9 +34711,9 @@ def test_streamdeck_pure_logic():
     check(sd.operator_gate("", "arm") and sd.operator_gate("", "start")
           and sd.operator_gate("", "hold"),
           "arm, start and hold are refused with no operator chosen")
-    check(sd.operator_gate("", "abort") is None
+    check(sd.operator_gate("", "stop") is None
           and sd.operator_gate("", "disarm") is None,
-          "Abort and disarm are NEVER gated on an operator: a risk-reducing "
+          "Stop and disarm are NEVER gated on an operator: a risk-reducing "
           "press must never wait on a picker (item 7, Jeff's policy, "
           "blessed explicitly)")
     check(sd.operator_gate("Andy", "arm") is None,
@@ -44007,8 +44000,7 @@ def test_reset_from_hold_ends_it_and_starts_nothing():
     R = _RemoteRig(S)
     try:
         _live_show(R)
-        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
-        R.settle()
+        _latch_abort(R)
         st, _h, out = R.ask("POST", "/api/remote/hold", {})
         R.settle()
         check(R.svc.machine.state == S.HOLD and R.svc.machine.abort_latched,
@@ -44173,8 +44165,7 @@ def test_reset_says_how_the_rig_stands():
         R.settle()
         check(st == 409 and "Reset done" not in str(out),
               f"a refused Reset is answered as before: {st} {out}")
-        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
-        R.settle()
+        _latch_abort(R)
         cfg = MM.HeartbeatConfig(show_len_s=60.0)
         R.remote.madmapper_watch = MW.MadMapperWatch(lambda: True)
         R.remote.madmapper_watch.check_once()
@@ -44213,8 +44204,8 @@ _STOP_BUTTON_JS = r"""<script>
    const out = {vw:innerWidth, vh:innerHeight, sw:document.documentElement.scrollWidth,
      start:r(b), label:lbl.textContent, small:b.querySelector("small").textContent,
      mode:b.dataset.mode, cls:b.className, disabled:b.disabled,
-     abort:r(document.getElementById("b-abort")),
      run:r(run), runLabel:run.querySelector(".lbl").textContent, runMode:run.dataset.mode,
+     abort_left:!!document.getElementById("b-abort"),
      stoprun:!!document.getElementById("b-stoprun"),
      stops:[...document.querySelectorAll("button")].filter(x => x.getClientRects().length && /^Stop\b/.test((x.querySelector(".lbl") || x).textContent.trim())).length};
    const pre = document.createElement("pre"); pre.id = "rack-measure";
@@ -44297,15 +44288,12 @@ def test_rack_screen_stop_in_place_of_start_now():
           'confirmBox("Stop the show?"' not in page,
           "Stop asks nothing: no confirm box, no STOP_CONFIRM")
     import re as _re
-    _ab = _re.search(r"function abortTapStep\(prev, nowMs, kind, enlarged\)"
-                     r"\{(.*?)\n\}", logic, _re.S)
     _sp = _re.search(r"function stopTapStep\(prev, nowMs, kind, enlarged\)"
                      r"\{(.*?)\n\}", logic, _re.S)
-    check(_ab is not None and _sp is not None and
-          _ab.group(1).replace("ABORT_TAP_MS", "T") ==
-          _sp.group(1).replace("STOP_TAP_MS", "T") and
+    check(_sp is not None and "abortTapStep" not in logic and
           "const STOP_TAP_MS = 2000;" in logic,
-          "Stop's double tap is the Abort sign's, renamed (2 s)")
+          "Stop's double tap is its own rule now (the Abort sign's, which "
+          "is gone), 2 s")
     check('id="b-stoprun"' not in page and "b-stoprun" not in page,
           "the separate Stop beside Run is gone: Run becomes Stop")
     for need in ('fetch("/api/remote/stop", ',
@@ -44375,11 +44363,11 @@ t(stopShows(att("STANDBY", {}, {preroll:{state:"checking"}})) && stopShows(att("
 t(stopShows({schedule:{attached:true, state:"STANDBY", start_waiting:true}}), "Start now waiting for the audio: Stop");
 t(stopShows(att("STANDBY", {}, {transport:{programming:true, playhead:"show_audio", playing:true}})) && !stopShows(att("STANDBY", {}, {transport:{programming:true, playhead:"show_audio", playing:false}})), "Programming playback playing: Stop; stopped: none");
 t(startLook(att("STANDBY", {running:true}, {transport:{programming:true, playhead:"show_audio", playing:true}}), false, false).mode === "stop", "Start now is Stop while Programming playback plays");
-// The double tap: Abort's rule.
+// The double tap (the removed Abort sign's rule).
 t(stopTapStep(null, 1000, "touch", false).fire === false && stopTapStep({at:1000, kind:"touch"}, 2500, "touch", false).fire === true, "a second tap within 2 s fires");
 t(stopTapStep({at:1000, kind:"touch"}, 3500, "touch", false).fire === false && stopTapStep({at:1000, kind:"touch"}, 3500, "touch", true).fire === true, "later only while still showing Tap again");
 t(stopTapStep({at:1000, kind:"mouse"}, 1500, "touch", false).fire === false, "a different pointer kind is a first tap");
-t(stopTapKind({pointerType:"pen"}) === "pen" && stopTapKind({detail:0}) === "key", "the tap's kind as the Abort sign reads it");
+t(stopTapKind({pointerType:"pen"}) === "pen" && stopTapKind({detail:0}) === "key", "the tap's kind");
 t(/^Stopped\. The show ended/.test(stopWords({stopped:true, show:{ok:true}, flames:{disarmed:true}, lasers:{disarmed:true}})) && /Run is off/.test(stopWords({stopped:true, run_on:false})), "Run off's answer: the show ended, Run is off");
 const held = stopWords({stopped:true, run_on:true, show:{ok:true}, hold:{ok:true, text:""}, flames:{disarmed:true}});
 t(/^Stopped\. The show ended/.test(held) && /on Hold/.test(held) && /Resume/.test(held) && !/Run is off/.test(held), "Stop's answer: the show ended, the schedule is on Hold, Run stays on: " + held);
@@ -44444,21 +44432,17 @@ console.log(JSON.stringify(out));
                 b, word, mode = m["start"], m["label"], m["mode"]
                 check("stopnow" in m["cls"] and not m["disabled"],
                       f"{w}x{h} {label}: Stop is red and pressable: {m}")
-            ab = m["abort"]
-            if not check(b is not None and ab is not None,
-                         f"{w}x{h} {label}: Stop and Abort drawn: {m}"):
+            if not check(b is not None and not m["abort_left"],
+                         f"{w}x{h} {label}: Stop drawn, no Abort: {m}"):
                 continue
             check(word == "Stop" and mode == "stop",
                   f"{w}x{h} {label}: the button reads Stop: {word} {mode}")
             check(b["h"] >= (52 if frag else 44) and b["w"] >= 88,
                   f"{w}x{h} {label}: Stop is large enough to hit: "
                   f"{b['w']:.0f}x{b['h']:.0f}")
-            check(b["top"] >= 0 and b["bottom"] <= ab["top"] + 1 and
-                  b["bottom"] <= m["vh"],
-                  f"{w}x{h} {label}: Stop is wholly on screen, above the "
-                  f"Abort bar: {b} abort {ab} vh {m['vh']}")
-            check(ab["bottom"] <= m["vh"] + 1,
-                  f"{w}x{h} {label}: Abort still on screen: {ab}")
+            check(b["top"] >= 0 and b["bottom"] <= m["vh"],
+                  f"{w}x{h} {label}: Stop is wholly on screen: {b} "
+                  f"vh {m['vh']}")
     # Signed out (PR #143: view only) with a show live, and with Run on its
     # way in on the Programming screen: Stop is still enabled, and a press
     # really posts the complete halt (#143's lock skips a control whose
@@ -48334,10 +48318,10 @@ def test_every_show_start_clears_the_pixels():
 
 
 def test_closed_night_abort_and_stop_say_what_they_did():
-    section("pixels: in a closed night (after a Start now show) Abort still "
-            "disarms the flames and blanks the lasers, stops no show and "
-            "latches nothing; Stop is a complete halt that ends no show; "
-            "both say so truthfully (OPERATOR.md, review of PR #171)")
+    section("pixels: in a closed night (after a Start now show) there is no "
+            "Abort route (removed, Jeff, 2026-10-30); Stop is a complete "
+            "halt that disarms the flames and ends no show, and says so "
+            "truthfully (OPERATOR.md, review of PR #171)")
     S = _sched()
     if S is None:
         return
@@ -48347,13 +48331,10 @@ def test_closed_night_abort_and_stop_say_what_they_did():
                                             f"{R.svc.machine.state}")
         st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
         R.settle()
-        text = str(out.get("text") or "")
-        check(st == 200 and out.get("disarmed") and
-              out.get("lasers_blanked") and not out.get("stopped") and
-              "No show was stopped" in text and
+        check(st == 404 and not R.lines_for("abort disarm") and
               not R.svc.machine.abort_latched and not R.c.latched,
-              f"Abort with no show: flames disarmed, lasers blanked, no "
-              f"show stopped, nothing latched: {st} {out}")
+              f"there is no Abort route: nothing done, nothing latched: "
+              f"{st} {out}")
         before = len(list(R.svc.journal))
         st, _h, out = R.ask("POST", "/api/remote/stop", {})
         R.settle()
@@ -48361,6 +48342,7 @@ def test_closed_night_abort_and_stop_say_what_they_did():
         new = list(R.svc.journal)[before:]
         check(rows and ": a complete halt." in rows[-1]["text"] and
               "show" not in out and
+              (out.get("flames") or {}).get("disarmed") is True and
               not any("No show is running" in str(r.get("text"))
                       for r in new),
               f"Stop with no show is journaled as a complete halt and ends "
@@ -49525,7 +49507,7 @@ def test_the_gpl_path_never_loads_the_conductor():
 
 # flamesafe's lamp words for a group its Abort disarmed (CONTRACT.md). Not
 # imported (the wall): the test below checks the two files still say it.
-FLAME_ABORT_WORDS = "Disarmed by the show's Abort. Cycle the arm to re-arm."
+FLAME_ABORT_WORDS = "Disarmed by the show's Stop. Cycle the arm to re-arm."
 
 
 def _fl_key():
@@ -49922,8 +49904,13 @@ def test_flame_link_unit():
     from ltcplay import streamdeck as sd
     look = sd.group_look({"armed": "held", "reason": FLAME_ABORT_WORDS,
                           "amber": "flashing", "dwell_s": 0})
-    check(look[0] == "ABORTED" and look[4] is True,
-          f"the deck shows ABORTED, flashing (cycle the arm): {look}")
+    check(look[0] == "STOPPED" and look[4] is True,
+          f"the deck shows STOPPED, flashing (cycle the arm): {look}")
+    old = sd.group_look({"armed": "held", "reason": "Disarmed by the show's "
+                         "Abort. Cycle the arm to re-arm.",
+                         "amber": "flashing", "dwell_s": 0})
+    check(old[0] == "STOPPED",
+          f"an older flamesafe's words for it (Abort) read the same: {old}")
     print("  ok")
 
 
@@ -51335,7 +51322,7 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
         check(window and not any(g["sent_safety"] for x in window
                                  for g in x["groups"]),
               "2 s of the deck still asking: no group re-arms")
-        check(len(journal("disarm-all: the show program's Abort")) == 1,
+        check(len(journal("disarm-all: the show program's Stop")) == 1,
               f"flamesafe journaled the Abort once, though it got "
               f"{fl.DISARM_COPIES} copies: "
               f"{journal('disarm-all')}")
@@ -52700,6 +52687,21 @@ class _RemoteRig:
         shutil.rmtree(self.folder, ignore_errors=True)
 
 
+def _latch_abort(R):
+    """The scheduler's Abort latch, set the way the removed Abort route
+    used to set it (the scheduler's own operator Abort), for the tests of
+    the latch and Reset that stay until the latch itself goes."""
+    if R.svc.machine.state in ("SHOW", "PAUSED"):
+        R.svc.operator_press("abort", "", "iPad", confirmed=True)
+    else:
+        # The scheduler takes its Abort only during a show: the latch as a
+        # restart reads it back from tonight's file.
+        import dataclasses as _dc
+        with R.svc.lock:
+            R.svc.machine = _dc.replace(R.svc.machine, abort_latched=True)
+    R.settle()
+
+
 def _live_show(R):
     """Show 1 running and confirmed, as tests elsewhere get it."""
     S = R.S
@@ -53151,13 +53153,13 @@ def test_remote_cross_site_posts_refused_on_loopback():
                             {"confirmed": True, "seen": R.seen()}),
                            ("/api/remote/arm-hold",
                             {"group": 0, "seen": R.seen()}),
-                           ("/api/remote/abort", {"confirmed": True})):
+                           ("/api/remote/stop", {})):
             for label, hd, _x in cases:
                 st, _h, out = R.ask("POST", path, body, headers=hd)
                 check(st == 403, f"{path} with {label} from the network is "
                                  f"refused: {st} {out}")
-        check(not R.lines_for("abort") and not R.lines_for("arm hold"),
-              "no Abort or arm hold reached the remote")
+        check(not R.lines_for("stop") and not R.lines_for("arm hold"),
+              "no Stop or arm hold reached the remote")
         from ltcplay import remote as RM
         check(RM.load_settings(R.work)["show_network_address"] is None,
               "no show network address was planted")
@@ -53760,10 +53762,9 @@ def test_live_show_refuses_the_page_transport():
 
 
 def test_deck_presses_reach_the_engine_conductor():
-    section("Stream Deck: Abort, Hold, Resume and Reset reach the engine's "
-            "show conductor over loopback, off the deck's main loop, and the "
-            "deck reads latched from its own Abort at once (PR #43 review, "
-            "item 8)")
+    section("Stream Deck: Stop, Hold, Resume and Reset reach the engine "
+            "over loopback, off the deck's main loop (PR #43 review, item "
+            "8); the deck has no Abort (removed, Jeff, 2026-10-30)")
     import threading
     from ltcplay import streamdeck as sd
     # The class on its own: fakes for the engine.
@@ -53786,22 +53787,17 @@ def test_deck_presses_reach_the_engine_conductor():
     try:
         check(e.snapshot() == {"latched": False, "look": ""},
               "nothing known: not latched")
-        r = e.abort("Andy", "Stream Deck")
-        check(r.ok and e.snapshot()["latched"],
-              "the deck reads latched from its own Abort at once, before "
-              "the engine has answered")
-        check(got_one.wait(3) and posted[0][0] == "/api/remote/abort" and
-              posted[0][1]["confirmed"] is True and
+        check(not hasattr(e, "abort"), "the deck has no Abort to press")
+        r = e.stop_run("Andy", "Stream Deck")
+        check(r.ok and not e.snapshot()["latched"],
+              "the deck's Stop latches nothing")
+        check(got_one.wait(3) and posted[0][0] == "/api/stop" and
+              posted[0][1].get("halt") is True and
               posted[0][1]["screen"] == "Stream Deck" and
               posted[0][1]["who"] == "Andy",
-              f"the Abort is the engine's own confirmed remote Abort: "
-              f"{posted}")
-        # The engine's answer, older than the press, does not undo it.
+              f"the deck's Stop is the engine's complete halt: {posted}")
         engine_view["v"] = {"conductor": {"latched": False,
                                           "look": "PLAYING"}}
-        time.sleep(0.1)
-        check(e.snapshot()["latched"],
-              "an engine answer from before the press does not undo it")
         t[0] += 1.0
         time.sleep(0.1)
         check(e.snapshot() == {"latched": False, "look": "PLAYING"},
@@ -53831,7 +53827,7 @@ def test_deck_presses_reach_the_engine_conductor():
         slow = threading.Event()
         e._poster = lambda path, body: (slow.wait(3), (True, "ok"))[1]
         t0 = time.perf_counter()
-        e.abort("Andy", "Stream Deck")
+        e.stop_run("Andy", "Stream Deck")
         check(time.perf_counter() - t0 < 0.05,
               "a press returns at once, whatever the engine is doing")
         slow.set()
@@ -53874,30 +53870,26 @@ def test_deck_presses_reach_the_engine_conductor():
                  "the deck to read the hold")
         eng.resume("Jeff", "Stream Deck")
         wait_for(lambda: R.svc.machine.state == S.SHOW, "Resume")
-        # No operator chosen: an Abort is never refused (PR #43 fix round
-        # 1, for Jeff: the safe default is that Abort always works).
+        # No operator chosen: a Stop is never refused (PR #43 fix round
+        # 1, for Jeff: the safe default is that it always works; Abort,
+        # which this was, is removed).
         del R.rig.calls[:]
-        eng.abort("", "Stream Deck")
-        wait_for(lambda: R.c.latched and R.svc.machine.abort_latched,
-                 "the deck's Abort with no operator chosen to latch the "
-                 "engine's conductor")
+        eng.stop_run("", "Stream Deck")
+        wait_for(lambda: R.svc.machine.stop_hold,
+                 "the deck's Stop with no operator chosen to hold the "
+                 "schedule")
         R.c.run_pending()
         names = R.rig.names()
         check(all(x in names for x in ("flames_disarm_all", "lasers_blank",
                                        "video_fade_out", "music_halt")),
-              f"a deck Abort with no operator chosen reaches the conductor: "
+              f"a deck Stop with no operator chosen reaches the conductor: "
               f"flames disarmed, lasers blanked, video and music down: "
               f"{names}")
-        check(any("Abort pressed on the Stream Deck with no operator "
-                  "chosen" in str(r.get("text")) for r in R.svc.journal),
-              "journaled as an Abort with no operator chosen")
-        wait_for(lambda: eng.snapshot()["latched"],
-                 "the deck to read the engine latched")
-        check(any("lasers" in str(c) for c in R.rig.calls),
-              "the deck's Abort reached the rig through the conductor")
-        eng.reset("Jeff", "Stream Deck")
-        wait_for(lambda: not R.c.latched and
-                 not R.svc.machine.abort_latched, "the deck's Reset")
+        check(not R.c.latched and not R.svc.machine.abort_latched,
+              "and latches nothing")
+        eng.resume("Jeff", "Stream Deck")
+        wait_for(lambda: not R.svc.machine.stop_hold,
+                 "the deck's Resume to release the Stop's Hold")
         check(not any(k.get("fault") for _x, k in lines),
               f"no press was refused: {[x for x, k in lines if k.get('fault')]}")
     finally:
@@ -54021,8 +54013,8 @@ def test_api_conductor_reports_audio_loss():
 def test_deck_fix_round_2_abort_reset_and_disarm():
     section("Stream Deck (PR #43 fix round 2, C to E, without the deck's "
             "own Abort key since 2026-10-26): while aborted from a screen "
-            "a group key still disarms and nothing arms; the engine "
-            "conductor's Abort never waits behind another press; an engine "
+            "a group key still disarms and nothing arms; the deck's Stop "
+            "(Abort is removed) never waits behind another press; an engine "
             "that did not take a press shows on the deck")
     import threading
     from ltcplay import streamdeck as sd
@@ -54058,7 +54050,8 @@ def test_deck_fix_round_2_abort_reset_and_disarm():
                   for x in cond.calls),
           f"the deck never Aborts, Resets, Holds or Resumes: {cond.calls}")
 
-    # D: a deck Abort never waits behind a slow press.
+    # D: a deck Stop never waits behind a slow press (as the deck's
+    # Abort did, before Abort was removed).
     started = {}
     hold_gate = threading.Event()
 
@@ -54076,12 +54069,12 @@ def test_deck_fix_round_2_abort_reset_and_disarm():
         while "/api/remote/hold" not in started and time.time() < deadline:
             time.sleep(0.01)
         t0 = time.perf_counter()
-        e.abort("Andy")
+        e.stop_run("Andy")
         deadline = time.time() + 2
-        while "/api/remote/abort" not in started and time.time() < deadline:
+        while "/api/stop" not in started and time.time() < deadline:
             time.sleep(0.01)
-        lag = started.get("/api/remote/abort", t0 + 99.0) - t0
-        check(lag < 0.5, f"the Abort went to the engine at once while a Hold "
+        lag = started.get("/api/stop", t0 + 99.0) - t0
+        check(lag < 0.5, f"the Stop went to the engine at once while a Hold "
                          f"was still waiting on it: {lag:.3f} s")
         hold_gate.set()
     finally:
@@ -54095,12 +54088,12 @@ def test_deck_fix_round_2_abort_reset_and_disarm():
                             clock=lambda: clock[0])
     e2.start()
     try:
-        e2.abort("Andy")
+        e2.stop_run("Andy")
         deadline = time.time() + 2
         while not e2.fault and time.time() < deadline:
             time.sleep(0.01)
         check("unreachable" in e2.fault,
-              f"the failed Abort is the deck's engine fault: {e2.fault!r}")
+              f"the failed Stop is the deck's engine fault: {e2.fault!r}")
         clock[0] = 3.0
         check(e2.unreachable(), "an engine that never answers reads "
                                 "unreachable after 2 s")
@@ -54125,7 +54118,7 @@ def test_deck_fix_round_2_abort_reset_and_disarm():
 
 
 def test_remote_controls_reach_the_same_paths_and_journal_who_and_where():
-    section("iPad remote: Start now, Hold, Resume, Abort, Reset and disarm "
+    section("iPad remote: Start now, Hold, Resume, Stop, Reset and disarm "
             "go through the scheduler and conductor paths every other press "
             "uses, journaled with the surface they came from (no sign-in, "
             "Jeff 2026-10-07)")
@@ -54161,23 +54154,26 @@ def test_remote_controls_reach_the_same_paths_and_journal_who_and_where():
                   r["screen"] == "iPad" for r in R.svc.journal),
               "Resume journaled with who and where")
         # The same press straight into the engine reads the same.
+        # Stop (Abort was removed, Jeff, 2026-10-30): the engine's halt,
+        # every flame group disarmed, journaled with who and where, nothing
+        # latched; Resume releases the Stop's Hold.
         before = R.rig.count("flames_disarm_all")
-        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
         R.settle()
-        # Twice: the route's own disarm first (P0-1), then the conductor's.
-        check(st == 200 and R.svc.machine.abort_latched and
-              R.c.snapshot()["look"] == "ABORTED" and
-              R.rig.count("flames_disarm_all") == before + 2,
-              f"Abort latched the scheduler and the conductor disarmed "
-              f"every group: {st} {out} {R.c.snapshot()}")
-        check(any(r.get("action") == S.ABORT and r["who"] == ME and
+        check(st == 200 and not R.svc.machine.abort_latched and
+              not R.c.latched and
+              R.rig.count("flames_disarm_all") > before,
+              f"Stop disarmed every group and latched nothing: {st} {out} "
+              f"{R.c.snapshot()}")
+        check(any(r.get("action") == "stop" and r["who"] == ME and
                   r["screen"] == "iPad" for r in R.svc.journal),
-              "Abort journaled with who and where")
-        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
+              "Stop journaled with who and where")
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        check(st == 404, f"there is no Abort route: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/resume", {"seen": R.seen()})
         R.settle()
-        check(st == 200 and out["ok"] and not R.svc.machine.abort_latched
-              and not R.c.latched,
-              f"Reset is the scheduler's reset_conductor: {st} {out}")
+        check(st == 200 and not R.svc.machine.stop_hold,
+              f"Resume releases the Stop's Hold: {st} {out}")
         # Disarm every flame group: the show's own flames_disarm_all.
         n = R.rig.count("flames_disarm_all")
         st, _h, out = R.ask("POST", "/api/remote/disarm-all", {})
@@ -54272,72 +54268,6 @@ def test_remote_controls_reach_the_same_paths_and_journal_who_and_where():
     print("  ok")
 
 
-def test_remote_abort_disarms_with_no_show_live():
-    section("iPad remote: the screen Abort disarms every flame group first, "
-            "every time, with no scheduled show live too, and says what it "
-            "did (review of PR #43, P0-1)")
-    S = _sched()
-    if S is None:
-        return
-    R = _RemoteRig(S)
-    try:
-        sent = []
-        R.remote._flame_disarm = lambda reason: (
-            sent.append(reason) or _Result(True, "a disarm was sent to "
-                                                 "every flame group."))
-        # Before the first show: the scheduler is not in SHOW or PAUSED.
-        check(R.svc.machine.state not in (S.SHOW, S.PAUSED),
-              f"setup: no show live ({R.svc.machine.state})")
-        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
-        R.settle()
-        check(len(sent) == 1 and "Abort" in sent[0],
-              f"the Abort sent the flame link's disarm_all with no show "
-              f"live: {sent} {st} {out}")
-        check(st == 200 and out.get("ok") is True and
-              out.get("disarmed") is True and out.get("stopped") is False,
-              f"answered as done, with the disarm sent and no show stopped: "
-              f"{st} {out}")
-        check("Every flame group" in out.get("text", "") and
-              "No show was stopped" in out.get("text", ""),
-              f"the answer says both halves truthfully: {out}")
-        check(not R.svc.machine.abort_latched and not R.c.latched,
-              "nothing is latched by an Abort with no show live")
-        rows = R.lines_for("abort disarm")
-        check(rows and rows[-1]["who"] == "iPad at 10.20.0.44" and
-              rows[-1].get("outcome") == "done",
-              f"the disarm is journaled with the surface: {rows[-1:]}")
-        # The disarm fails: a fault, said, never "done".
-        R.remote._flame_disarm = lambda reason: _Result(False, "the socket "
-                                                        "is closed")
-        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
-        check(st == 409 and out.get("ok") is False and
-              "did NOT go out" in out.get("error", ""),
-              f"a disarm that did not go out is a fault: {st} {out}")
-        # With a show live, the disarm still goes first, before the
-        # scheduler or the conductor is asked anything.
-        order = []
-        R.remote._flame_disarm = lambda reason: (
-            order.append(("route", R.svc.machine.state)) or
-            _Result(True, "sent."))
-        _live_show(R)
-        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
-        R.settle()
-        check(order and order[0] == ("route", S.SHOW) and st == 200 and
-              out.get("stopped") is True and R.svc.machine.abort_latched,
-              f"with a show live the route's disarm goes first and the show "
-              f"is stopped: {order} {st} {out}")
-        page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 "ltcplay", "web", "remote.html"),
-                    encoding="utf-8").read()
-        check("No show is live, so nothing else changes" in page and
-              "abortPlan(ST)" in page,
-              "the Abort sign's first tap says what an Abort with no show "
-              "does, from the engine's state (abortPlan)")
-    finally:
-        R.close()
-    print("  ok")
-
-
 def test_deck_reads_reset_after_an_engine_restart():
     section("Stream Deck: after an Abort and an engine restart the "
             "scheduler's saved Abort latch is on /api/conductor, so the "
@@ -54351,8 +54281,7 @@ def test_deck_reads_reset_after_an_engine_restart():
     try:
         R.httpd.conductor = R.c
         _live_show(R)
-        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
-        R.settle()
+        _latch_abort(R)
         check(R.svc.machine.abort_latched and R.c.latched,
               "setup: aborted and latched")
         # The engine restarts: a new conductor (unlatched) and a scheduler
@@ -54434,149 +54363,10 @@ def test_deck_requests_share_one_no_proxy_opener():
     print("  ok")
 
 
-def test_deck_abort_with_no_show_reads_what_the_engine_did():
-    section("Stream Deck: an Abort the engine answered with every group "
-            "disarmed and no show stopped leaves the Abort key reading "
-            "ABORT, not RESET, and journals what the engine said (review "
-            "of PR #43, P0-1)")
-    from ltcplay import streamdeck as sd
-    lines = []
-    said = ("Every flame group: a disarm was sent. No show was stopped: No "
-            "show is running; the scheduler is in STANDBY.")
-    clock = [10.0]
-    e = sd.EngineConductor(
-        "http://127.0.0.1:1", journal=lambda x, **k: lines.append((x, k)),
-        poster=lambda path, body: (True, said, {"ok": True, "text": said,
-                                                "disarmed": True,
-                                                "stopped": False}),
-        fetcher=lambda path: None, poll_hz=50.0, clock=lambda: clock[0])
-    e.start()
-    try:
-        e.abort("Andy")
-        deadline = time.time() + 2
-        while not lines and time.time() < deadline:
-            time.sleep(0.01)
-        clock[0] += 0.1
-        check(e.snapshot()["latched"] is False,
-              f"once the engine says no show was stopped, the deck is not "
-              f"latched: {e.snapshot()}")
-        check(lines and said in lines[-1][0] and
-              not lines[-1][1].get("fault") and e.fault == "",
-              f"the engine's own words are journaled, not as a fault: "
-              f"{lines[-1:]}")
-    finally:
-        e.stop()
-    # A show the engine did stop: latched, as before.
-    lines2 = []
-    e2 = sd.EngineConductor(
-        "http://127.0.0.1:1", journal=lambda x, **k: lines2.append(x),
-        poster=lambda path, body: (True, "stopped", {"stopped": True}),
-        fetcher=lambda path: None, poll_hz=50.0)
-    e2.start()
-    try:
-        e2.abort("Andy")
-        deadline = time.time() + 2
-        while not lines2 and time.time() < deadline:
-            time.sleep(0.01)
-        check(e2.snapshot()["latched"] is True,
-              "an Abort that stopped a show keeps the deck latched")
-    finally:
-        e2.stop()
-    print("  ok")
-
-
-def test_remote_reset_and_abort_1_ms_apart_under_a_slow_save():
-    section("iPad remote: a Reset and an Abort pressed 1 ms apart, with "
-            "the tonight.json save slow, keep their press order: a Reset "
-            "pressed before the Abort never ends it, whichever reaches the "
-            "scheduler first (review of #48)")
-    S = _sched()
-    if S is None:
-        return
-    from ltcplay import schedule_service as SV
-    real_save = SV.write_json_atomic
-
-    def slow_save(path, doc, **kw):
-        time.sleep(0.3)
-        return real_save(path, doc, **kw)
-    for first in ("reset", "abort"):
-        R = _RemoteRig(S)
-        real_reset = R.svc.reset_conductor
-        try:
-            _live_show(R)
-            SV.write_json_atomic = slow_save
-            if first == "reset":
-                # The Reset arrives first, then is slow on its way in, so
-                # the Abort pressed 1 ms after it reaches the scheduler
-                # first.
-                def late_reset(*a, **k):
-                    # Held up on its way in until the Abort (pressed 1 ms
-                    # after it) is decided and done fading, so the
-                    # conductor would take the Reset if it were sent.
-                    end = time.time() + 3
-                    while time.time() < end and not (
-                            R.c.latched and not R.c.snapshot()["busy"]):
-                        time.sleep(0.01)
-                    return real_reset(*a, **k)
-                R.svc.reset_conductor = late_reset
-            got = {}
-
-            def press(route, body):
-                got[route] = R.ask("POST", f"/api/remote/{route}", body)
-            ts = {"reset": threading.Thread(target=press, args=(
-                      "reset", {"seen": R.seen()})),
-                  "abort": threading.Thread(target=press, args=(
-                      "abort", {"confirmed": True}))}
-            second = "abort" if first == "reset" else "reset"
-            # The conductor's own effects run as they would on its thread,
-            # so the Abort has finished fading by the time the Reset is
-            # answered (otherwise "still fading" refuses it, and the order
-            # is never tested).
-            pumping = threading.Event()
-
-            def pump():
-                while not pumping.is_set():
-                    try:
-                        R.c.run_pending()
-                    except Exception:
-                        pass
-                    time.sleep(0.005)
-            pt = threading.Thread(target=pump, daemon=True)
-            pt.start()
-            ts[first].start()
-            time.sleep(0.001)
-            ts[second].start()
-            for t in ts.values():
-                t.join(10)
-            pumping.set()
-            pt.join(2)
-            SV.write_json_atomic = real_save
-            R.settle()
-            latched = R.svc.machine.abort_latched
-            st, _h, out = got.get("reset", (0, None, {}))
-            if first == "reset":
-                check(latched and R.svc._aborted() and R.c.latched and
-                      not out.get("ok"),
-                      f"a Reset pressed 1 ms before the Abort does not end "
-                      f"it, though it reached the scheduler after it: "
-                      f"latched={latched} conductor={R.c.latched} {out}")
-            else:
-                check(bool(out.get("ok")) == (not latched) and
-                      latched == R.c.latched,
-                      f"a Reset pressed 1 ms after the Abort ends it or "
-                      f"says it did not, and the scheduler and the "
-                      f"conductor agree: latched={latched} "
-                      f"conductor={R.c.latched} {out}")
-        finally:
-            SV.write_json_atomic = real_save
-            R.svc.reset_conductor = real_reset
-            R.close()
-    print("  ok")
-
-
-def test_remote_abort_disarm_never_waits_on_the_tonight_save():
+def test_remote_stop_disarm_never_waits_on_the_tonight_save():
     section("iPad remote: a slow or failing tonight.json save never delays "
-            "the screen Abort's disarm (review of PR #43, P0-5)")
+            "the screen Stop's disarm or its laser blank (review of PR #43, "
+            "P0-5, for the Abort that Stop replaced)")
     S = _sched()
     if S is None:
         return
@@ -54616,7 +54406,7 @@ def test_remote_abort_disarm_never_waits_on_the_tonight_save():
             time.sleep(0.4)
             raise OSError(28, "No space left on device")
         SV.write_json_atomic = stalled
-        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        st, _h, out = R.ask("POST", "/api/remote/stop", {})
         R.settle()
         check("disarm" in seen and "save" in seen and
               seen["disarm"] < seen["save"],
@@ -54626,10 +54416,7 @@ def test_remote_abort_disarm_never_waits_on_the_tonight_save():
         check("blank" in seen and seen["blank"] < seen["save"],
               f"the lasers were blanked before the tonight.json save began "
               f"too (re-review P1-A), not after it: {seen}")
-        check(out.get("lasers_blanked") is True and
-              "Lasers blanked at the press" in out.get("text", ""),
-              f"and the answer says so: {out}")
-        check(st == 200 and out.get("disarmed") is True,
+        check((out.get("flames") or {}).get("disarmed") is True,
               f"a failing save does not undo or hide the disarm: {st} {out}")
     finally:
         SV.write_json_atomic = real
@@ -54637,42 +54424,34 @@ def test_remote_abort_disarm_never_waits_on_the_tonight_save():
     print("  ok")
 
 
-def test_remote_abort_and_start_need_the_confirm():
-    section("iPad remote: Abort and Start now need the on-page confirm")
+def test_remote_start_needs_the_confirm_and_abort_is_gone():
+    section("iPad remote: Start now needs the on-page confirm; there is no "
+            "Abort route any more (Jeff, 2026-10-30), whatever the body, "
+            "and a press of it changes nothing")
     S = _sched()
     if S is None:
         return
     R = _RemoteRig(S)
     try:
         _live_show(R)
-        for body in ({}, {"confirmed": "yes"}, {"confirmed": 1},
-                     {"confirmed": False}):
+        n = R.rig.count("flames_disarm_all")
+        for body in ({}, {"confirmed": True}, {"confirmed": False}):
             st, _h, out = R.ask("POST", "/api/remote/abort", body)
             R.settle()
-            check(st == 400 and "Confirm" in out["error"] and
-                  not R.svc.machine.abort_latched and
-                  R.c.snapshot()["look"] == "PLAYING",
-                  f"Abort {body} without a real confirm does nothing: {st}")
-        check(any(r.get("action") == "abort" and
-                  r.get("outcome") == "refused" for r in R.svc.journal),
-              "the refused Abort is journaled")
+            check(st == 404 and not R.svc.machine.abort_latched and
+                  R.c.snapshot()["look"] == "PLAYING" and
+                  R.rig.count("flames_disarm_all") == n,
+                  f"Abort {body}: no such route, nothing done: {st} {out}")
+        check(not any(r.get("action") in ("abort", "abort disarm")
+                      for r in R.svc.journal),
+              "nothing is journaled as an Abort")
         st, _h, out = R.ask("POST", "/api/remote/start-now",
                             {"seen": R.seen()})
         check(st == 400 and "Confirm" in out["error"],
               f"Start now without the confirm is refused: {st}")
-        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
-        R.settle()
-        check(st == 200 and R.c.snapshot()["look"] == "ABORTED",
-              "with the confirm, Abort goes")
         page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  "ltcplay", "web", "remote.html"),
                     encoding="utf-8").read()
-        check('const step = abortTapStep(ABORT_TAP, monoNow(), kind, '
-              '$("abortbar").classList.contains("tap1"));' in page and
-              'press("abort", {confirmed:true})' in page and
-              'id="abortbar"' in page and "position:fixed" in page,
-              "the page asks for a second tap before Abort, and the Abort "
-              "sign is fixed on screen")
         check('confirmBox("Start a show now?"' in page,
               "the page asks before Start now")
     finally:
@@ -54938,40 +54717,6 @@ def fl_confirm_s():
     return fl.CONFIRM_S
 
 
-def test_remote_unconfirmed_abort_still_disarms_the_flames():
-    section("iPad remote: an Abort without the on-page confirm still "
-            "disarms every flame group first, then refuses the rest "
-            "(safety audit of bench-build, P2 b)")
-    S = _sched()
-    if S is None:
-        return
-    R = _RemoteRig(S)
-    try:
-        _live_show(R)
-        calls = []
-        R.remote._flame_disarm = lambda reason: (
-            calls.append(reason) or _Result(True, "sent."))
-        for body in ({}, {"confirmed": False}, {"confirmed": "yes"}):
-            n = len(calls)
-            st, _h, out = R.ask("POST", "/api/remote/abort", body)
-            R.settle()
-            check(len(calls) == n + 1,
-                  f"Abort {body} without the confirm sent the disarm: "
-                  f"{calls}")
-            check(st == 400 and "Confirm" in out["error"]
-                  and "disarm" in out["error"]
-                  and not R.svc.machine.abort_latched
-                  and R.c.snapshot()["look"] == "PLAYING",
-                  f"and the rest of the Abort is still refused: {st} {out}")
-        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
-        R.settle()
-        check(st == 200 and out.get("disarmed") is True
-              and R.c.snapshot()["look"] == "ABORTED",
-              f"a confirmed Abort is unchanged: {st} {out}")
-    finally:
-        R.close()
-    print("  ok")
-
 def test_remote_stale_state_refused_and_banner():
     section("iPad remote: presses that act on what the page shows are refused "
             "on a status older than 2 s; the page shows a banner and turns "
@@ -55012,11 +54757,10 @@ def test_remote_stale_state_refused_and_banner():
                   f"{route} on a stale status is refused: {st} {out}")
         check(any(r.get("outcome") == "refused" and "s old" in r["text"]
                   for r in R.svc.journal), "stale refusals are journaled")
-        st, _h, out = R.ask("POST", "/api/remote/abort",
-                            {"confirmed": True, "seen": 1})
+        st, _h, out = R.ask("POST", "/api/remote/stop", {"seen": 1})
         R.settle()
-        check(st == 200 and R.c.snapshot()["look"] == "ABORTED",
-              "Abort goes with a stale page")
+        check(st == 200 and R.c.snapshot()["look"] == "STOPPED_DARK",
+              f"Stop goes with a stale page: {st} {out} {R.c.snapshot()}")
         # The status reports whether flamesafe's lamps are live.
         st, _h, out = R.ask("GET", "/api/remote/status")
         check(out["flames"]["connected"] is False and out["flames"]["stale"],
@@ -55435,18 +55179,10 @@ def test_rack_screen_width_guard_css_contract():
     # the window (2026-10-24), never sideways: the width guard holds.
     check((_css_rule(rules, "html") or {}).get("overflow-x") == "hidden",
           "the document never scrolls sideways")
-    # ABORT is a stop sign fixed in the bottom right corner (Jeff,
-    # 2026-10-26), never in the page's flow, so no text can push it off.
-    bar = _css_rule(rules, "#abortbar") or {}
-    btn = _css_rule(rules, "#abortbar button") or {}
-    check(bar.get("position") == "fixed" and "right" in bar and
-          bar.get("z-index") == "15" and
-          "var(--pad-bottom, 0px)" in bar.get("bottom", "") and
-          btn.get("width") == "var(--abort-size)" and
-          btn.get("height") == "var(--abort-size)" and
-          "--abort-size:56px" in page,
-          f"the Abort stop sign is fixed in the bottom right corner, 56 px, "
-          f"above any part of the window under the taskbar: {bar} {btn}")
+    # There is no Abort stop sign any more (removed, Jeff, 2026-10-30).
+    check(_css_rule(rules, "#abortbar") is None and "--abort-size" not in
+          page,
+          "no Abort stop sign is styled on the page")
     check("flex-wrap:wrap" in (_css_rule(rules, "header") or {}).__repr__()
           .replace("'", "").replace(": ", ":"),
           "the header wraps instead of overlapping on a narrow window")
@@ -55466,27 +55202,9 @@ def test_rack_screen_width_guard_css_contract():
           "/api/remote/status still names the version")
     check("modeLook(ST)" in page and '$("mode").className = mo.cls' in page,
           "the MODE pill is in the header and drawn from modeLook")
-    check('$("b-abort").title = abortPlan(ST).map(i => i.text).join(" ");'
-          in page and "Every flame group disarms at once" not in page,
-          "the Abort sign's first tap lists abortPlan's items; the old "
-          "promise is gone")
-    check('id="abort-said"' in page and "saidAbort(" in page and
-          "FLAMES WERE NOT DISARMED FROM THIS SCREEN" in page,
-          "the Abort's answer is a banner that says what was not done")
-    # The banner goes by itself only when the Abort it reported is Reset:
-    # the latch read true, then false. An Abort with no show live never
-    # latches, so the status poll right after it says aborted false; the
-    # banner hid on that within 250 ms and only the one-line toast was
-    # left (found rendering bench-build after #68 and #70 merged).
-    check('if(sch.aborted === true && b.dataset.aborted) b.dataset.latched '
-          '= "1";' in page and
-          'if(sch.aborted === false && b.dataset.latched){ b.hidden = true;'
-          in page and
-          'if(sch.aborted === false && $("abort-said").dataset.aborted)'
-          not in page,
-          "the Abort banner hides by itself only after the latch read true "
-          "and then false (a Reset), never on the first poll after an "
-          "Abort that had no show to stop")
+    check("Every flame group disarms at once" not in page and
+          "abortPlan" not in page,
+          "the old Abort promise and its plan are gone")
     # The getting-started steps stay side by side at the 950 px Edge app
     # window (1070 high showed two of three, the third below the card's
     # own scroll) and stack only narrower than that.
@@ -55500,12 +55218,12 @@ def test_rack_screen_width_guard_css_contract():
     a = page.find("// LOGIC BEGIN")
     b = page.find("// LOGIC END")
     logic = page[a:b]
-    check("function modeLook" in logic and "function abortPlan" in logic,
-          "modeLook and abortPlan are in the page's pure logic block")
+    check("function modeLook" in logic,
+          "modeLook is in the page's pure logic block")
     node = shutil.which("node")
     if not node:
-        print("  note: node is not on this machine, so modeLook and "
-              "abortPlan were checked by reading only (CI runs them)")
+        print("  note: node is not on this machine, so modeLook was "
+              "checked by reading only (CI runs it)")
         return
     js = logic + r"""
 const out = [];
@@ -55517,14 +55235,6 @@ t(m.word === "Programming" && m.cls === "prog", "a rehearsal is PROGRAMMING");
 m = modeLook({show:{running:false}, transport:{programming:false}});
 t(m.word === "Not running" && m.cls === "", "nothing running is NOT RUNNING");
 t(modeLook(null).word === "...", "no status yet: waiting");
-let p = abortPlan({disarm_connected:false, flames:{connected:false}, laser_fault:"no OSC address", schedule:{state:"SHOW", conductor:true}});
-t(p[0].ok === false && /NOT disarmed/.test(p[0].text), "no flame link: the flames line is a NOT");
-t(p.some(i => i.ok === false && /Lasers: NOT blanked/.test(i.text)), "no OSC address: the lasers line is a NOT");
-t(p.some(i => /The show stops/.test(i.text)), "a live show: it stops");
-p = abortPlan({disarm_connected:true, flames:{connected:true}, laser_fault:"", schedule:{state:"PRESHOW", conductor:true}});
-t(p[0].ok === true && /every group is sent a disarm/.test(p[0].text), "a flame link: the disarm is promised, as sent");
-t(p.some(i => /Lasers: blanked/.test(i.text)), "a conductor with an address: lasers blanked");
-t(p.some(i => /No show is live/.test(i.text)), "no show: says so");
 console.log(JSON.stringify(out));
 """
     r = _node_js(node, js, capture_output=True, text=True, timeout=60)
@@ -55533,7 +55243,7 @@ console.log(JSON.stringify(out));
     except ValueError:
         bad = None
     check(r.returncode == 0 and bad == [],
-          f"modeLook and abortPlan, in node: {r.stdout!r} {r.stderr[-400:]!r}")
+          f"modeLook, in node: {r.stdout!r} {r.stderr[-400:]!r}")
     print("  ok")
 
 
@@ -55731,13 +55441,10 @@ function measure(tag){
   // At 1920x1080 and a laptop's 1366x768 the operator sees every group's
   // buttons without scrolling.
   out.flames_visible_at_load = atLoad.every(([_n, r]) => r.top >= 0 && r.bottom <= innerHeight);
-  // And never under the Abort stop sign in the window's corner.
-  const ab = document.getElementById("b-abort").getBoundingClientRect();
-  out.abort = {w:Math.round(ab.width), h:Math.round(ab.height), right:Math.round(innerWidth - ab.right), bottom:Math.round(innerHeight - ab.bottom)};
-  out.flames_clear_of_abort = atLoad.every(([_n, r]) => r.top >= 0 &&
-    !(r.left < ab.right - 0.5 && ab.left < r.right - 0.5 && r.top - scrollY < ab.bottom - 0.5 && ab.top < r.bottom - scrollY - 0.5));
+  // There is no Abort stop sign any more (removed, Jeff, 2026-10-30).
+  out.no_abort = !document.getElementById("b-abort") && !document.getElementById("abortbar");
   out.setup_folded = !!document.querySelector("#setup.folded");
-  const ctl = {"Abort": "b-abort", "Hold": "b-hold", "Disarm all flame groups": "b-disarm", "Disarm all lasers": "lz-disarm"};
+  const ctl = {"Hold": "b-hold", "Disarm all flame groups": "b-disarm", "Disarm all lasers": "lz-disarm"};
   for(const k in ctl){
     const el = document.getElementById(ctl[k]);
     if(!shown(el)){ out.problems.push(k + ": not shown"); continue; }
@@ -55747,10 +55454,7 @@ function measure(tag){
     for(const b of hits(el)) out.problems.push(k + ": " + b);
   }
   scrollTo(0, 0);
-  // Nothing that arms or disarms overlaps anything else that does. (The
-  // Abort stop sign is left out: it stays in the window's corner while the
-  // page scrolls under it, by design; hits() above proves each button can
-  // be scrolled clear of it and pressed.)
+  // Nothing that arms or disarms overlaps anything else that does.
   const rs = [...document.querySelectorAll("#fl-lamps button, #b-disarm, #lz-disarm, #lz-chips button, #b-hold, #b-start, #b-resume, #b-reset, #alerts button")]
     .filter(shown).map(el => [el.id || el.dataset.arm && ("arm " + el.dataset.arm) || el.dataset.gdis && ("disarm " + el.dataset.gdis) || el.textContent.trim().slice(0, 24), rectOf(el)]);
   for(let i = 0; i < rs.length; i++) for(let j = i + 1; j < rs.length; j++){
@@ -56066,15 +55770,13 @@ def test_rack_screen_banners_never_squeeze_the_flame_controls():
     for sel in (".flames", ".lamps", ".lamp", ".lamp .lb"):
         check((_css_rule(rules, sel) or {}).get("min-height") ==
               "min-content", f"{sel} never shrinks below its content")
-    bar = _css_rule(rules, "#abortbar") or {}
-    check(bar.get("position") == "fixed" and "bottom" in bar and
-          "right" in bar,
-          f"the Abort stop sign stays in the window's corner: {bar}")
-    check("var(--abort-gutter)" in app.get("padding", "") and
-          "var(--abort-room)" in app.get("padding", ""),
-          f"the page keeps a gutter down its right edge for the Abort stop "
-          f"sign (review of #118, P2-4), so nothing ends up under it, and "
-          f"room under its content for the taskbar: {app}")
+    check(_css_rule(rules, "#abortbar") is None,
+          "there is no Abort stop sign in the window's corner any more")
+    check("var(--edge-gutter)" in app.get("padding", "") and
+          "var(--edge-room)" in app.get("padding", "") and
+          "var(--pad-bottom, 0px)" in page and "--abort-" not in page,
+          f"the page keeps its right edge and room under its content for "
+          f"the taskbar: {app}")
     # Startup sets the page's height too (Jeff, 2026-10-26: it shrank its
     # text to 9 px at 1280x800 instead of scrolling).
     check((_css_rule(rules, ".view:not(#v-show):not(#v-morning)") or {}
@@ -56284,7 +55986,7 @@ t(noFileLine(null, live) === "", "no setup view (an iPad): nothing");
 const off = noFileLine(su, {flames:live.flames, arming:{enabled:false}});
 t(/arming from this screen is switched off/.test(off) && /Disarming flames still works/.test(off) && !/Arming and disarming/.test(off), "screen arming off: says so: " + off);
 const stale = noFileLine(su, {flames:{connected:true, stale:true, groups:[{name:"a"}]}, arming:{enabled:true}});
-t(/flamesafe is not reporting/.test(stale) && /Disarm all and Abort still work/.test(stale) && !/Arming and disarming/.test(stale), "flamesafe stale: says so: " + stale);
+t(/flamesafe is not reporting/.test(stale) && /Disarm all and Stop still work/.test(stale) && !/Arming and disarming/.test(stale), "flamesafe stale: says so: " + stale);
 const bad = noFileLine({show_files:0, show_file_errors:["night.json: no cues"]}, live);
 t(/^No show file loads yet \(night\.json: no cues\)\./.test(bad), "a show file that does not load: says why: " + bad);
 t(!/[\u2013\u2014]/.test(nominal + off + stale + bad), "no dashes");
@@ -56335,11 +56037,10 @@ console.log(JSON.stringify(out));
               f"{w}x{h}: the no-show-file line is said: {m.get('nofile')!r}")
         # Review of #113, P2-d: with the card capped, every group's Hold
         # to arm and Disarm is on the screen without scrolling.
-        check(m.get("flames_visible_at_load") and
-              m.get("flames_clear_of_abort"),
-              f"{w}x{h}: every group's buttons on the screen at load and "
-              f"clear of the Abort bar, the getting-started card (folded to "
-              f"one line) above them: {m['lamps']}")
+        check(m.get("flames_visible_at_load") and m.get("no_abort"),
+              f"{w}x{h}: every group's buttons on the screen at load, no "
+              f"Abort sign, the getting-started card (folded to one line) "
+              f"above them: {m['lamps']}")
         check(m.get("setup_folded") is True,
               f"{w}x{h}: flamesafe reports groups: the card is folded")
     # Review of #113, P2-d: no show file and flamesafe stale, or screen
@@ -56422,7 +56123,7 @@ function snap(t){
       small:b ? b.querySelector("small").textContent : "", title:b ? b.title : "",
       why:(lp.querySelector(".why") || {}).textContent || "", word:b ? b.querySelector(".word").textContent : ""});
   });
-  for(const id of ["b-abort", "b-disarm"]){
+  for(const id of ["b-disarm"]){
     const el = document.getElementById(id);
     if(!shown(el)) out.problems.push(id + " not shown"); else for(const b of hits(el)) out.problems.push(id + " " + b);
   }
@@ -56710,18 +56411,26 @@ def test_streamdeck_reports_rearm_wait_and_purge_refusal():
     print("  ok")
 
 
-_ABORT_EDGE_JS = r"""
+_TASKBAR_EDGE_JS = r"""
 <script>
 (function(){
 function go(){
   if(!document.querySelector("#fl-lamps .lamp") && !document.querySelector("#mo-field .mach")) return setTimeout(go, 100);
   setTimeout(() => {
-    const ab = document.getElementById("b-abort"), out = {vh:innerHeight, pad:getComputedStyle(document.documentElement).getPropertyValue("--pad-bottom").trim(), at:[]};
-    for(const y of [0, 1e6]){
-      scrollTo(0, y);
-      const r = ab.getBoundingClientRect();
-      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-      out.at.push({scroll:y, top:Math.round(r.top), bottom:Math.round(r.bottom), h:Math.round(r.height), hit:!!hit && (hit === ab || ab.contains(hit))});
+    // The lowest pressable button at the bottom of the page (there is no
+    // Abort sign in the corner any more, removed 2026-10-30).
+    const out = {vh:innerHeight, pad:getComputedStyle(document.documentElement).getPropertyValue("--pad-bottom").trim(), at:[]};
+    const shown = el => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden" && !el.closest("[hidden]") && !el.closest("#modal") && !el.closest("#info");
+    scrollTo(0, 1e6);
+    let low = null;
+    for(const el of document.querySelectorAll("button")){
+      if(!shown(el)) continue;
+      const r = el.getBoundingClientRect();
+      if(r.height > 0 && (!low || r.bottom > low.r.bottom)) low = {el:el, r:r};
+    }
+    if(low){
+      const r = low.r, hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      out.at.push({scroll:1e6, id:low.el.id || low.el.textContent.trim().slice(0, 20), top:Math.round(r.top), bottom:Math.round(r.bottom), h:Math.round(r.height), hit:!!hit && (hit === low.el || low.el.contains(hit))});
     }
     scrollTo(0, 0);
     const pre = document.createElement("pre"); pre.id = "rack-measure";
@@ -56869,7 +56578,7 @@ console.log(JSON.stringify(out));
     for frag, what in (("", "show screen"), ("#morning", "Startup page")):
         for over in (0, 96):
             got = _rack_screen_in_chromium(
-                chrome, page, st, ((1280, 800),), measure_js=_ABORT_EDGE_JS,
+                chrome, page, st, ((1280, 800),), measure_js=_TASKBAR_EDGE_JS,
                 head_js=_taskbar_js(over), frag=frag,
                 routes={"/api/remote/morning": _morning_view_pico()})
             res = got[(1280, 800)]
@@ -56878,20 +56587,24 @@ console.log(JSON.stringify(out));
                          f"{res!r}"):
                 continue
             m = res[0]
-            said.append(f"{what} overlap {over}: ABORT bottom "
-                        f"{max(a['bottom'] for a in m['at'])} of {m['vh']}")
+            check(len(m["at"]) == 1, f"{what}: a button was measured: {m}")
+            said.append(f"{what} overlap {over}: the lowest button's bottom "
+                        f"{max([a['bottom'] for a in m['at']] or [0])} of "
+                        f"{m['vh']}")
             for a in m["at"]:
                 check(a["bottom"] <= m["vh"] - over and a["top"] >= 0 and
-                      a["h"] >= 44 and a["hit"],
+                      a["hit"],
                       f"{what}, {over} px of the window under the taskbar, "
-                      f"scrolled {a['scroll']}: the whole ABORT button is "
+                      f"scrolled to the bottom: the lowest button is wholly "
                       f"above it and pressable: {a} (window {m['vh']}, pad "
                       f"{m['pad']})")
             if not over:
-                check(m["pad"] == "0px" and all(
-                    a["bottom"] >= m["vh"] - 20 for a in m["at"]),
-                    f"{what}, a window that fits: no extra room, ABORT on "
-                    f"the bottom edge: {m}")
+                check(m["pad"] == "0px",
+                      f"{what}, a window that fits: no extra room: {m}")
+            else:
+                check(m["pad"] == f"{over}px",
+                      f"{what}, {over} px under the taskbar: the page keeps "
+                      f"that much room under itself: {m}")
     print("  measured: " + "; ".join(said))
     print("  ok")
 
@@ -56986,8 +56699,9 @@ function measure(){
     field_top:Math.round(document.getElementById("mo-field").getBoundingClientRect().top),
     grp:[...document.querySelectorAll("#mo-groups [data-grp]")].map(b => ({h:Math.round(b.getBoundingClientRect().height),
       text:(b.querySelector(".gd") || {}).textContent || "", title:b.title, cls:b.className}))};
-  // Every piece of text on the Startup page and the Abort bar.
-  const root = [document.getElementById("v-morning"), document.getElementById("abortbar")];
+  // Every piece of text on the Startup page (there is no Abort bar any
+  // more, removed 2026-10-30).
+  const root = [document.getElementById("v-morning")];
   for(const r of root){
     const tw = document.createTreeWalker(r, NodeFilter.SHOW_TEXT);
     for(let n = tw.nextNode(); n; n = tw.nextNode()){
@@ -57019,16 +56733,7 @@ function measure(){
     if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
       out.problems.push("overlap: tiles " + ms[i].dataset.id + " and " + ms[j].dataset.id);
   }
-  // Abort: on the window at the top of the page and at its bottom.
-  const ab = document.getElementById("b-abort");
-  for(const y of [0, 1e6]){
-    scrollTo(0, y);
-    const r = ab.getBoundingClientRect();
-    if(r.bottom > innerHeight + 0.5 || r.top < 0) out.problems.push("Abort is off the window at scroll " + y);
-  }
-  scrollTo(0, 0);
-  for(const b of hits(ab)) out.problems.push("Abort: " + b);
-  scrollTo(0, 0);
+  if(document.getElementById("b-abort") || document.getElementById("abortbar")) out.problems.push("an Abort sign is still drawn");
   // A drop-down has the keyboard: Space is its own (review of #113, P2-c).
   const nm = document.getElementById("mo-name"), fn = document.getElementById("mo-focus");
   if(nm){ nm.focus(); out.focus_select = shown(fn) ? fn.textContent : null; nm.blur(); }
@@ -57295,40 +57000,52 @@ def _page_logic_in_node(page, body):
     return bad
 
 
-def test_rack_screen_abort_is_a_corner_stop_sign():
-    section("rack screen ABORT (Jeff, 2026-10-26): a stop sign in the bottom "
-            "right corner instead of the big bar; always on the screen, "
-            "never behind a gesture, at least 44 px, 'Abort' for a screen "
-            "reader and a tooltip; nothing pressable under it at the bottom "
-            "of the page, no group's Hold to arm under it at load "
-            "(1366x768, 1280x800, 1366x700, 1920x1080, an iPad). A DOUBLE "
-            "TAP (Jeff, 2026-10-26): the first tap only changes the sign "
-            "(larger, TAP AGAIN TO ABORT) and sends nothing, a second tap "
-            "anywhere on it within 2 s sends the same Abort as before, no "
-            "confirm box. Drawn in a real browser and pressed")
+def _rack_status_stop_shown():
+    """The rack screen with a show paused on Hold: Stop is drawn in Start
+    now's place (stopShows)."""
+    st = _rack_status_pico()
+    st["schedule"] = dict(st["schedule"], state="PAUSED", running=1,
+                          held=True)
+    st["show"] = {"running": True, "timecode": "00:01:00:00"}
+    return st
+
+
+def test_rack_screen_has_no_abort_and_stop_taps_like_it_did():
+    section("Abort is removed (Jeff, 2026-10-30): no Abort sign, no Abort "
+            "route and no Abort words on the rack screen; Stop is the "
+            "double tap the Abort sign was (2 s, the same kind of pointer, "
+            "a panic double tap fires, a held key never counts again, no "
+            "focus left behind, a late timer never turns a good second tap "
+            "into a first), and a Stop that did not do all of it stays on "
+            "the screen as a banner until Seen. Drawn in a real browser and "
+            "pressed")
     here = os.path.dirname(os.path.abspath(__file__))
     page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
                 encoding="utf-8").read()
-    for need in ('<button id="b-abort" aria-label="Abort. Activate twice '
-                 'to abort."',
-                 'press("abort", {confirmed:true})'):
-        check(need in page, f"the page has {need!r}")
-    check('confirmBox("Abort the show?"' not in page,
-          "no confirm box in front of Abort: the double tap is the confirm")
+    for gone in ('id="b-abort"', 'id="abortbar"', 'press("abort"',
+                 "/api/remote/abort", "abortTapStep", "abortTapKind",
+                 "abortPlan", "saidAbort", "ABORT_TAP", "--abort-",
+                 'id="abort-said"', "TAP AGAIN TO ABORT"):
+        check(gone not in page, f"the page has no {gone!r}")
+    check('<div id="stop-said" hidden>' in page and
+          "if(stopFailed(r, j)) saidStop(el.textContent);" in page,
+          "a Stop that did not do all of it is a banner, never only a "
+          "one-line toast")
     bad = _page_logic_in_node(page, r"""
-t(ABORT_TAP_MS === 2000, "2.0 s");
-t(abortTapStep(null, 1000, "mouse").fire === false, "one tap never aborts");
-const first = abortTapStep(null, 1000, "touch").next;
-t(abortTapStep(first, 2999, "touch").fire === true && abortTapStep(first, 3000, "touch").fire === true, "a second tap within 2.0 s aborts");
-t(abortTapStep(first, 3001, "touch").fire === false && abortTapStep(first, 3001, "touch").next.at === 3001, "a second tap after 2.0 s is a first tap again");
-t(abortTapStep(first, 1500, "mouse").fire === false, "another kind of pointer is a first tap");
-t(abortTapStep({at:1000, kind:"key"}, 1800, "key").fire === true, "Enter or Space twice");
-t(abortTapStep(first, 900, "touch").fire === false, "a clock that went back is a first tap");
-t(abortTapKind({pointerType:"pen"}) === "pen" && abortTapKind({detail:0}) === "key" && abortTapKind({detail:1}) === "mouse", "the kinds");
-// Second review of #122, P2-2: a panic double tap, however fast, aborts.
-t(abortTapStep(first, 1040, "touch").fire === true && abortTapStep(first, 1100, "mouse").fire === false, "a fast second tap of the same kind aborts");
-t(abortTapStep(first, 3500, "touch", true).fire === true, "the sign still enlarged (a late timer): the second tap fires");
-t(abortTapStep(first, 3500, "touch", false).fire === false, "and once it has gone back: a first tap");
+t(STOP_TAP_MS === 2000, "2.0 s");
+t(stopTapStep(null, 1000, "mouse").fire === false, "one tap never stops");
+const first = stopTapStep(null, 1000, "touch").next;
+t(stopTapStep(first, 2999, "touch").fire === true && stopTapStep(first, 3000, "touch").fire === true, "a second tap within 2.0 s stops");
+t(stopTapStep(first, 3001, "touch").fire === false && stopTapStep(first, 3001, "touch").next.at === 3001, "a second tap after 2.0 s is a first tap again");
+t(stopTapStep(first, 1500, "mouse").fire === false, "another kind of pointer is a first tap");
+t(stopTapStep({at:1000, kind:"key"}, 1800, "key").fire === true, "Enter or Space twice");
+t(stopTapStep(first, 900, "touch").fire === false, "a clock that went back is a first tap");
+t(stopTapKind({pointerType:"pen"}) === "pen" && stopTapKind({detail:0}) === "key" && stopTapKind({detail:1}) === "mouse", "the kinds");
+// Second review of #122, P2-2: a panic double tap, however fast, fires.
+t(stopTapStep(first, 1040, "touch").fire === true && stopTapStep(first, 1100, "mouse").fire === false, "a fast second tap of the same kind stops");
+t(stopTapStep(first, 3500, "touch", true).fire === true, "still enlarged (a late timer): the second tap fires");
+t(stopTapStep(first, 3500, "touch", false).fire === false, "and once it has gone back: a first tap");
+t(typeof abortTapStep === "undefined" && typeof abortTapKind === "undefined" && typeof abortPlan === "undefined", "no Abort rules left");
 t(unlockRefusal({name:"G1", group:"ground"}, {connected:true, stale:false, groups:[{name:"ground", armed:"armed"}]}) === "Disarm ground first, then unlock G1.", "no unlock while its group is armed");
 t(unlockRefusal({name:"G1", group:"ground"}, {connected:true, stale:false, groups:[{name:"ground", armed:"held", wanted:true}]}) === "Disarm ground first, then unlock G1.", "nor asked for");
 t(unlockRefusal({name:"G1", group:"ground"}, {connected:true, stale:false, groups:[{name:"ground", armed:"disarmed"}]}) === "", "off: unlock");
@@ -57336,280 +57053,147 @@ t(/stays locked out/.test(unlockRefusal({name:"G1", group:"ground"}, {connected:
 t(/stays locked out/.test(unlockRefusal({name:"G1", group:"ground"}, {connected:false, stale:false, groups:[{name:"ground", armed:"disarmed"}]})), "flamesafe not connected: no unlock");
 """)
     if bad is not None:
-        check(bad == [], f"the Abort double tap, in node: {bad}")
+        check(bad == [], f"the Stop double tap, in node: {bad}")
     check("touchstart" not in page and "swipe" not in page.lower(),
-          "no gesture stands in front of Abort")
+          "no gesture stands in front of Stop")
     chrome = _find_chromium()
     if not chrome:
         check(not (IN_CI and sys.platform.startswith("linux")),
               "no Chromium or Chrome on this CI runner")
         print("  ok")
         return
-    steps = r"""
-const ab = document.getElementById("b-abort");
-const box = () => ab.getBoundingClientRect();
-const cover = (r) => { const a = box(); return r.left < a.right - 0.5 && a.left < r.right - 0.5 && r.top < a.bottom - 0.5 && a.top < r.bottom - 0.5; };
-const shown = el => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
-const pressable = () => [...document.querySelectorAll("button, select, input")].filter(el => shown(el) && !el.closest("#abortbar") && !el.closest("#modal") && !el.closest("#info"));
-scrollTo(0, 0);
-let a = box();
-out.vw = innerWidth; out.vh = innerHeight;
-out.abort = {w:Math.round(a.width), h:Math.round(a.height), right:Math.round(innerWidth - a.right), bottom:Math.round(innerHeight - a.bottom),
-  label:ab.getAttribute("aria-label"), title:ab.title, word:(ab.querySelector(".w") || {}).textContent || ""};
-out.arm_under_at_load = [...document.querySelectorAll("[data-arm]")].filter(el => cover(el.getBoundingClientRect())).map(el => el.dataset.arm);
-out.hit = [];
-for(const y of [0, 1e6]){
-  scrollTo(0, y);
-  const r = box();
-  const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-  out.hit.push(!!at && (at === ab || ab.contains(at)));
-}
-out.under_at_bottom = pressable().filter(el => cover(el.getBoundingClientRect())).map(el => el.id || el.textContent.trim().slice(0, 20));
-// Review of #118, P2-4: at EVERY scroll position, not only the bottom.
-out.under_anywhere = [];
-const maxY = document.scrollingElement.scrollHeight - innerHeight;
-for(let y = 0; y <= maxY + 40; y += 20){
-  scrollTo(0, y);
-  for(const el of pressable()) if(cover(el.getBoundingClientRect())){
-    const k = (el.id || el.dataset.arm && ("group " + el.dataset.arm) || el.textContent.trim().slice(0, 20)) + " at " + scrollY;
-    if(out.under_anywhere.length < 12) out.under_anywhere.push(k);
-  }
-}
-scrollTo(0, 0);
-// P2-5: the line saying what a press does, on the sign for sighted users.
-out.tip = (document.getElementById("abort-sub") || {}).textContent || "";
-out.idle = document.getElementById("abortbar").classList.contains("idle");
-out.fill = getComputedStyle(ab.querySelector(".oct")).backgroundColor + " " + getComputedStyle(ab.querySelector(".oct i")).backgroundColor;
-// One tap: the sign changes at once, nothing is sent, it is never
-// disabled, no confirm box; after 2.0 s it goes back by itself.
-h.tap(ab);
-await h.sleep(100);
-const bar = document.getElementById("abortbar");
-out.first = {tap1:bar.classList.contains("tap1"), word:ab.querySelector(".w").textContent, disabled:ab.disabled,
-  h:Math.round(box().height), modal:!document.getElementById("modal").hidden, posts:h.posts("abort").length};
-// Review of #122, P2-1: the enlarged sign covers nothing either.
-out.under_enlarged = [];
-for(const y of [0, 1e6]){ scrollTo(0, y); for(const el of pressable()) if(cover(el.getBoundingClientRect())) out.under_enlarged.push((el.id || el.textContent.trim().slice(0, 20)) + " at " + scrollY); }
-scrollTo(0, 0);
-await h.sleep(2150);
-out.back = {tap1:bar.classList.contains("tap1"), word:ab.querySelector(".w").textContent, posts:h.posts("abort").length};
-// Two taps: the second anywhere on the enlarged sign, off its centre.
-h.tap(ab);
-await h.sleep(300);
-const r = box();
-const at = document.elementFromPoint(r.left + r.width * 0.3, r.top + r.height * 0.5);
-out.second_on_sign = !!at && (at === ab || ab.contains(at));
-if(at) h.tap(at);
-await h.sleep(200);
-out.abort_posts = h.posts("abort").map(p => p.body.confirmed);
-out.said = !document.getElementById("abort-said").hidden;
-out.after = bar.classList.contains("tap1");
-"""
-    rules = _css_rules(page)
-    tip = _css_rule(rules, "#abortbar button:hover small,"
-                           "#abortbar button:focus-visible small") or {}
-    check(tip.get("display") == "block" and
-          (_css_rule(rules, "#abortbar small") or {}).get("display") ==
-          "none",
-          f"review of #118, P2-5: what a press does shows beside the sign "
-          f"on hover or keyboard focus: {tip}")
-    # Review of #118, P2-4: the Pico's screen with every group armed, the
-    # banners and live flame programming's bar (its Turn off), at the
-    # short laptop, the laptop, and an iPad both ways.
-    busy = _rack_status_pico()
-    busy["flames"] = dict(busy["flames"], groups=[
-        dict(g, armed="armed", wanted=True) for g in busy["flames"]["groups"]])
-    busy["live_flame"] = {"on": True, "receiving": True, "who": "Jeff",
-                          "map": [{"universe": 9, "slots": "1-24"}]}
-    st = _rack_status_no_show_file()
-    said = []
-    for status, size in ([(st, z) for z in ((1366, 768), (1280, 800),
-                                            (1366, 700), (1920, 1080),
-                                            (768, 1024))] +
-                         [(busy, z) for z in ((1366, 600), (1366, 768),
-                                              (768, 1024), (800, 1280))]):
-        m = _rack_drive(chrome, page, status, steps, size=size)
-        w, h = size
-        if not check(isinstance(m, dict) and not m.get("problems"),
-                     f"{w}x{h}: drawn and pressed: {m!r}"):
-            continue
-        a = m["abort"]
-        said.append(f"{w}x{h} {a['w']}x{a['h']} px, {a['right']} px from "
-                    f"the right, {a['bottom']} from the bottom")
-        check(44 <= a["w"] <= 80 and 44 <= a["h"] <= 80,
-              f"{w}x{h}: Abort is a stop sign of 44 to 80 px, not a bar "
-              f"across the screen: {a}")
-        check(0 <= a["right"] <= 24 and 0 <= a["bottom"] <= 24,
-              f"{w}x{h}: in the bottom right corner: {a}")
-        check(a["label"] == "Abort. Activate twice to abort." and
-              a["title"].startswith("Abort") and a["word"] == "ABORT",
-              f"{w}x{h}: 'Abort' for a screen reader, a tooltip, the word "
-              f"on the sign: {a}")
-        check(m["hit"] == [True, True],
-              f"{w}x{h}: pressable at the top and the bottom of the page: "
-              f"{m['hit']}")
-        check(m["arm_under_at_load"] == [],
-              f"{w}x{h}: no group's Hold to arm or Disarm under it at load: "
-              f"{m['arm_under_at_load']}")
-        check(m["under_at_bottom"] == [] and m["under_anywhere"] == [],
-              f"{w}x{h}: nothing pressable is ever under it, at load or at "
-              f"any scroll position (review of #118, P2-4): "
-              f"{m['under_at_bottom']} {m['under_anywhere']}")
-        check("rgba(0, 0, 0, 0)" not in m["fill"] and
-              "transparent" not in m["fill"],
-              f"{w}x{h}: the sign is drawn red{' (idle, dimmed)' if m['idle'] else ''}: "
-              f"{m['fill']}")
-        check(m["tip"] in ("Nothing to abort right now",
-                           "Stops the show. Flames then need Arm again"),
-              f"{w}x{h}: the sign's line says what a press does: "
-              f"{m['tip']!r}")
-        f1 = m["first"]
-        check(f1["tap1"] and f1["word"] == "TAP AGAIN TO ABORT" and
-              not f1["disabled"] and f1["h"] > a["h"] and not f1["modal"]
-              and f1["posts"] == 0 and m["under_enlarged"] == [],
-              f"{w}x{h}: one tap changes the sign at once (larger, TAP "
-              f"AGAIN TO ABORT), never disabled, no confirm box, nothing "
-              f"sent, and the bigger sign covers no control (review of "
-              f"#122, P2-1): {f1} {m['under_enlarged']}")
-        check(not m["back"]["tap1"] and m["back"]["word"] == "ABORT" and
-              m["back"]["posts"] == 0,
-              f"{w}x{h}: after 2.0 s it goes back by itself, nothing sent: "
-              f"{m['back']}")
-        check(m["second_on_sign"] and m["abort_posts"] == [True] and
-              m["said"] and not m["after"],
-              f"{w}x{h}: a second tap anywhere on the enlarged sign within "
-              f"2 s sends the same Abort as before (confirmed), and its "
-              f"answer is shown: {m}")
-    print("  measured: " + "; ".join(said))
-    _abort_double_tap_paths(chrome, page)
+    _stop_double_tap_paths(chrome, page)
     print("  ok")
 
 
-def _abort_double_tap_paths(chrome, page):
-    """The Abort double tap (Jeff, 2026-10-26): late, keyboard, two
-    fingers, a mouse's double click, signed out and with no contact."""
+def _stop_double_tap_paths(chrome, page):
+    """Stop's double tap (Jeff, 2026-10-30, the Abort sign's own rules):
+    late, keyboard, two fingers, a mouse's double click, a held key, the
+    focus, and a failure said as a banner."""
+    st = _rack_status_stop_shown()
     steps = r"""
-const ab = document.getElementById("b-abort");
-h.tap(ab);
+const sb = document.getElementById("b-start");
+out.mode = sb.dataset.mode;
+out.abort_left = !!document.getElementById("b-abort") || !!document.getElementById("abortbar");
+h.tap(sb);
 await h.sleep(2100);
-h.tap(ab);
+h.tap(sb);
 await h.sleep(150);
-out.late = h.posts("abort").length;
-out.late_armed = document.getElementById("abortbar").classList.contains("tap1");
+out.late = h.posts("stop").length;
+out.late_armed = sb.classList.contains("tap1");
 """
-    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    m = _rack_drive(chrome, page, st, steps)
     if check(isinstance(m, dict) and not m.get("problems"),
-             f"Abort, a late second tap: {m!r}"):
+             f"Stop, a late second tap: {m!r}"):
+        check(m["mode"] == "stop" and not m["abort_left"],
+              f"Stop is drawn and there is no Abort sign: {m}")
         check(m["late"] == 0 and m["late_armed"],
-              f"a second tap after 2.0 s does not abort; it is a first tap "
+              f"a second tap after 2.0 s does not stop; it is a first tap "
               f"again: {m}")
     steps = r"""
-const ab = document.getElementById("b-abort");
-const n = () => h.posts("abort").length;
-const pclick = (id, type) => ab.dispatchEvent(new PointerEvent("click", {bubbles:true, cancelable:true, detail:1, pointerId:id, pointerType:type, isPrimary:id === 1}));
-out.signed = document.getElementById("nav-user").textContent;
-ab.click(); await h.sleep(300); out.key_one = n(); ab.click(); await h.sleep(150);
+const sb = document.getElementById("b-start");
+const n = () => h.posts("stop").length;
+const pclick = (id, type) => sb.dispatchEvent(new PointerEvent("click", {bubbles:true, cancelable:true, detail:1, pointerId:id, pointerType:type, isPrimary:id === 1}));
+const settle = async () => { await h.sleep(2300); };
+sb.click(); await h.sleep(300); out.key_one = n(); sb.click(); await h.sleep(150);
 out.key = n();
+await settle();
 pclick(2, "touch"); await h.sleep(250); pclick(3, "touch"); await h.sleep(150);
 out.fingers = n();
+await settle();
 pclick(4, "touch"); await h.sleep(250); pclick(1, "mouse"); await h.sleep(250);
 out.mixed = n();
 pclick(1, "mouse"); await h.sleep(150);
 out.mixed_then_mouse = n();
-ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:1}));
-await h.sleep(200);
-ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:2}));
-ab.dispatchEvent(new MouseEvent("dblclick", {bubbles:true, detail:2}));
+await settle();
+// A fast double click (two clicks at once) stops too.
+sb.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:1}));
+sb.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:2}));
 await h.sleep(150);
-out.dbl = n();
-// A fast double click (two clicks at once) aborts too.
-ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:1}));
-ab.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:2}));
-await h.sleep(60);
-out.bounce = {n:n(), tap1:document.getElementById("abortbar").classList.contains("tap1")};
-out.bodies = h.posts("abort").map(p => p.body.confirmed);
+out.bounce = n();
+await settle();
 // A held key's repeats are swallowed; the mouse leaves no focus behind.
 const rep = new KeyboardEvent("keydown", {key:"Enter", repeat:true, bubbles:true, cancelable:true});
-ab.dispatchEvent(rep);
+sb.dispatchEvent(rep);
 out.repeat_swallowed = rep.defaultPrevented;
 const first = new KeyboardEvent("keydown", {key:"Enter", repeat:false, bubbles:true, cancelable:true});
-ab.dispatchEvent(first);
+sb.dispatchEvent(first);
 out.first_key_kept = !first.defaultPrevented;
-ab.focus();
-h.tap(ab);
-out.focus_left = document.activeElement !== ab;
+sb.focus();
+h.tap(sb);
+out.focus_left = document.activeElement !== sb;
 """
-    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    m = _rack_drive(chrome, page, st, steps)
     if check(isinstance(m, dict) and not m.get("problems"),
-             f"Abort, the other ways to tap twice: {m!r}"):
-        check(m["signed"] == "Signed out" and m["key_one"] == 0 and
-              m["key"] == 1,
-              f"signed out, Enter or Space twice aborts (once is nothing): "
-              f"{m}")
-        check(m["fingers"] == 2, f"two quick taps by two fingers abort: {m}")
+             f"Stop, the other ways to tap twice: {m!r}"):
+        check(m["key_one"] == 0 and m["key"] == 1,
+              f"Enter or Space twice stops (once is nothing): {m}")
+        check(m["fingers"] == 2, f"two quick taps by two fingers stop: {m}")
         check(m["mixed"] == 2 and m["mixed_then_mouse"] == 3,
               f"a finger then the mouse is two first taps; the mouse twice "
-              f"aborts: {m}")
-        check(m["dbl"] == 4 and all(b is True for b in m["bodies"]),
-              f"a real double click aborts once, every Abort confirmed: {m}")
-        check(m["bounce"] == {"n": 5, "tap1": False},
-              f"second review of #122, P2-2: a fast double click aborts: "
-              f"{m}")
+              f"stops: {m}")
+        check(m["bounce"] == 4,
+              f"second review of #122, P2-2: a fast double click stops: {m}")
         check(m["repeat_swallowed"] and m["first_key_kept"] and
               m["focus_left"],
               f"review of #122, P2-2: a held key's repeats never count, and "
-              f"a tap leaves no keyboard focus on the sign: {m}")
-    # Review of #122, P2-6 and P2-8: a late timer, and a hold under way.
+              f"a tap leaves no keyboard focus on Stop: {m}")
+    # A late timer (review of #122, P2-6 for the Abort sign; cold review of
+    # #191 for Stop): only the time between the taps decides.
     steps = r"""
-const ab = document.getElementById("b-abort");
+const sb = document.getElementById("b-start");
 const si = window.setTimeout;
-window.setTimeout = (f, ms, ...a) => si(f, f && f.name === "abortTapDone" ? ms + 1500 : ms, ...a);
-window.__answer["arm-hold"] = b => [200, {ok:true, hold_id:7, held_s:0.4, needs_s:2}];
-h.ev(h.lamp(1), "pointerdown");
-await h.sleep(300);
-const holds = h.posts("arm-hold").length;
-h.tap(ab);
+window.setTimeout = (f, ms, ...a) => si(f, ms === STOP_TAP_MS ? ms + 1500 : ms, ...a);
+h.tap(sb);
 await h.sleep(2300);
-out.still_big = document.getElementById("abortbar").classList.contains("tap1");
-h.tap(ab);
+out.still_tap1 = sb.classList.contains("tap1");
+h.tap(sb);
 await h.sleep(250);
-out.aborts = h.posts("abort").length;
-out.released = h.posts("arm-release").map(p => p.body.group);
-const after = h.posts("arm-hold").length;
-await h.sleep(300);
-out.more_holds = h.posts("arm-hold").length - after;
-out.holds = holds;
-out.note = h.note();
+out.late = h.posts("stop").length;
+h.tap(sb);
+await h.sleep(250);
+out.after = h.posts("stop").length;
 """
-    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    m = _rack_drive(chrome, page, st, steps)
     if check(isinstance(m, dict) and not m.get("problems"),
-             f"Abort, a late timer and a hold under way: {m!r}"):
-        check(m["still_big"] and m["aborts"] == 1,
-              f"review of #122, P2-6: a late timer never turns a good second "
-              f"tap into a first one: {m}")
-        check(m["holds"] >= 2 and m["released"] == [1] and
-              m["more_holds"] == 0 and m["note"] == "Hold stopped: Abort",
-              f"review of #122, P2-8: the second tap lets go of a hold under "
-              f"way at once: {m}")
+             f"Stop, a late timer: {m!r}"):
+        check(m["still_tap1"] and m["late"] == 0 and m["after"] == 1,
+              f"a late timer never lets a tap after 2 s fire (it is a "
+              f"first tap), and the next tap within 2 s stops: {m}")
+    # A failed Stop: said as a banner until Seen, never only a toast.
+    for answer, why in (
+            ("[503, {error:\"The engine did not answer.\"}]", "refused"),
+            ("[200, {stopped:true, run_on:true, flames:{disarmed:false}}]",
+             "flames not disarmed")):
+        steps = r"""
+const sb = document.getElementById("b-start");
+window.__answer["stop"] = b => @ANS@;
+h.tap(sb); await h.sleep(200); h.tap(sb); await h.sleep(400);
+const b = document.getElementById("stop-said");
+out.posts = h.posts("stop").length;
+out.shown = !b.hidden;
+out.said = b.querySelector(".altext").textContent;
+document.getElementById("stop-said-ok").click();
+out.seen_hides = b.hidden;
+""".replace("@ANS@", answer)
+        m = _rack_drive(chrome, page, st, steps)
+        if check(isinstance(m, dict) and not m.get("problems"),
+                 f"Stop {why}: {m!r}"):
+            check(m["posts"] == 1 and m["shown"] and
+                  ("e-stop" in m["said"]) and m["seen_hides"],
+                  f"a Stop {why} is a banner naming the e-stop, until Seen: "
+                  f"{m}")
+    # A Stop that did all of it is no banner.
     steps = r"""
-const ab = document.getElementById("b-abort");
-window.__patch = st => { throw new Error("the engine went away"); };
-window.__answer["abort"] = b => [503, {error:"The engine did not answer."}];
-await h.sleep(2400);
-out.stale = !document.getElementById("stale").hidden;
-out.disabled = ab.disabled;
-h.tap(ab); await h.sleep(200); h.tap(ab); await h.sleep(250);
-out.posts = h.posts("abort").length;
-out.said = document.querySelector("#abort-said .altext").textContent;
+const sb = document.getElementById("b-start");
+window.__answer["stop"] = b => [200, {stopped:true, run_on:true, show:{ok:true}, hold:{ok:true}, flames:{disarmed:true}}];
+h.tap(sb); await h.sleep(200); h.tap(sb); await h.sleep(400);
+out.shown = !document.getElementById("stop-said").hidden;
 """
-    m = _rack_drive(chrome, page, _rack_status_off(), steps)
+    m = _rack_drive(chrome, page, st, steps)
     if check(isinstance(m, dict) and not m.get("problems"),
-             f"Abort with no contact: {m!r}"):
-        check(m["stale"] and not m["disabled"] and m["posts"] == 1 and
-              "ABORT pressed, and the engine answered: The engine did not "
-              "answer." in m["said"],
-              f"no contact: the double tap still sends, and a failure is "
-              f"said plainly: {m}")
+             f"Stop done: {m!r}"):
+        check(not m["shown"], f"a Stop that did all of it is no banner: {m}")
 
 
 def test_rack_screen_one_button_per_flame_group():
@@ -57788,7 +57372,7 @@ window.__patch = st => { st.flames.groups[0].armed = "armed"; st.flames.groups[0
 await h.sleep(700);
 out.gd = {};
 const said = {confirmed:{ok:true, confirmed:true, text:"Disarm front row confirmed: flamesafe reports it off."},
-  forced:{ok:true, confirmed:false, forced:true, text:"Deck did not answer: ALL groups disarm sent. Disarm front row forced (flamesafe did not report front row off within 1 s of the Disarm): the flame link has no one-group disarm, so the Abort's disarm was sent to every flame group, every hazer is off, and the show's flames stay at zero until Hold then Resume or a new run."},
+  forced:{ok:true, confirmed:false, forced:true, text:"Deck did not answer: ALL groups disarm sent. Disarm front row forced (flamesafe did not report front row off within 1 s of the Disarm): the flame link has no one-group disarm, so the Stop's disarm was sent to every flame group, every hazer is off, and the show's flames stay at zero until Hold then Resume or a new run."},
   old:{ok:true, text:"Disarm front row sent."}};
 for(const k of ["confirmed", "forced", "old"]){
   window.__answer["group-disarm"] = b => [200, said[k]];
@@ -57797,17 +57381,16 @@ for(const k of ["confirmed", "forced", "old"]){
   await h.sleep(200);
   out.gd[k] = {msg:document.getElementById("ctl-msg").textContent, same:JSON.stringify(h.look(0)) === JSON.stringify(before)};
 }
-// A Disarm answered late (the engine waits up to 1 s) never covers an
-// Abort pressed after it.
+// A Disarm answered late (the engine waits up to 1 s) never covers a
+// press made after it (a Hold here; it was the Abort, now removed).
 window.__delay["group-disarm"] = 900;
 window.__answer["group-disarm"] = b => [200, said.forced];
-window.__answer["abort"] = b => [200, {ok:true, disarmed:true, text:"Aborted for the test."}];
+window.__answer["hold"] = b => [200, {ok:true, text:"Held for the test."}];
 h.tap(h.lamp(0));
 await h.sleep(100);
-const ab = document.getElementById("b-abort");
-h.tap(ab); await h.sleep(150); h.tap(ab);
+h.tap(document.getElementById("b-hold"));
 await h.sleep(1300);
-out.late = {msg:document.getElementById("ctl-msg").textContent, posts:h.posts("group-disarm").length, aborts:h.posts("abort").length};
+out.late = {msg:document.getElementById("ctl-msg").textContent, posts:h.posts("group-disarm").length, holds:h.posts("hold").length};
 """
     m = _rack_drive(chrome, page, _rack_status_off(), steps3)
     if check(isinstance(m, dict) and not m.get("problems"),
@@ -57824,10 +57407,10 @@ out.late = {msg:document.getElementById("ctl-msg").textContent, posts:h.posts("g
               f"and the tile stays what the polled status says (ARMED): "
               f"{gd}")
         la = m.get("late") or {}
-        check(la.get("aborts") == 1 and la.get("posts") == 4 and
-              la.get("msg") == "Aborted for the test.",
-              f"review of #170: a Disarm answered late never covers the "
-              f"Abort pressed after it: {la}")
+        check(la.get("holds") == 1 and la.get("posts") == 4 and
+              la.get("msg") == "Held for the test.",
+              f"review of #170: a Disarm answered late never covers a "
+              f"press made after it: {la}")
     print("  ok")
 
 
@@ -59632,7 +59215,7 @@ def test_remote_page_loss_changes_nothing():
         try:
             port = h2.server_address[1]
             for chunk in (b"POST /api/remote/resume HTTP/1.1\r\n",
-                          b"POST /api/remote/abort HTTP/1.1\r\nHost: "
+                          b"POST /api/remote/stop HTTP/1.1\r\nHost: "
                           b"127.0.0.1\r\nContent-Length: 80\r\n\r\n{\"confi",
                           b""):
                 s = socket.create_connection(("127.0.0.1", port), timeout=5)
@@ -60528,20 +60111,24 @@ def test_remote_transport_on_the_show_audio():
         check(st == 409 and "Stop the Programming playback first" in
               str(out.get("error")), f"Run over Programming playback: "
                                      f"{st} {out}")
-        # An Abort whose playback stop fails says so: not ok, not stopped.
+        # A Stop whose playback stop fails says so (Abort, which this was,
+        # is removed): the step is named as failed, never said as done.
         real_ap = R.remote.playhead.abort_press
 
         def wedged(*a):
             raise OSError("the clock is wedged")
         R.remote.playhead.abort_press = wedged
-        st, _h, out = R.ask("POST", "/api/remote/abort",
-                            {"confirmed": True, "seen": R.seen()})
+        st, _h, out = R.ask("POST", "/api/remote/stop",
+                            {"seen": R.seen()})
         R.settle()
         R.remote.playhead.abort_press = real_ap
-        check(st == 409 and out.get("ok") is False and
-              out.get("stopped") is False and
-              "did NOT stop" in out.get("text", ""),
+        check("programming playback" in (out.get("failed") or []) and
+              (out.get("programming") or {}).get("ok") is False and
+              "did NOT stop" in (out.get("programming") or {}).get("text",
+                                                                  ""),
               f"a failed Programming stop was reported as done: {st} {out}")
+        R.ask("POST", "/api/remote/resume", {"seen": R.seen()})
+        R.settle()
         st, _h, out = R.ask("POST", "/api/remote/start-now",
                             {"confirmed": True, "seen": R.seen()})
         R.settle()
@@ -60593,17 +60180,16 @@ def test_remote_transport_on_the_show_audio():
               f"Play from refused over a Fireball channel: {st} {out} "
               f"{calls[n:]}")
         n = len(calls)
-        st, _h, out = R.ask("POST", "/api/remote/abort",
-                            {"confirmed": True, "seen": R.seen()})
+        st, _h, out = R.ask("POST", "/api/remote/stop",
+                            {"seen": R.seen()})
         R.settle()
-        check(out.get("stopped") is True and
-              "No show was stopped" not in out.get("text", ""),
-              f"the Abort's answer contradicts itself: {out}")
         check(calls[n:] == [("halt",)] and
-              "Programming playback stopped" in out.get("text", "") and
+              (out.get("programming") or {}).get("ok") is True and
               not clk.playing,
-              f"Abort in Programming playback did not stop it: {calls[n:]} "
+              f"Stop in Programming playback did not stop it: {calls[n:]} "
               f"{out}")
+        R.ask("POST", "/api/remote/resume", {"seen": R.seen()})
+        R.settle()
         # Re-review of #142, P1 b: a show on this machine's own clock Run in
         # Show mode is not a programming session, though its player's
         # on_lost reads "hold" (Session.open sets that for every master
@@ -61007,17 +60593,18 @@ def test_screen_arm_engine_rules():
               f"is answered once flamesafe reports it off: {st} {out}")
         st, _h, out = _hold(R, "front row", hold_id=hid)
         check(st == 409, "and the first device's hold on it is over")
-        # An Abort cancels every hold, before anything else.
+        # A Stop cancels every hold, before anything else (as the Abort
+        # did, before it was removed).
         _live_show(R)
         R.feed()
         st, _h, out = _hold(R, "front row")
         check(st == 200, "a new hold")
         hid = out["hold_id"]
-        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True},
-                            client=other)
+        st, _h, out = R.ask("POST", "/api/remote/stop", {}, client=other)
         R.settle()
         check(R.remote.deck_input()["holds"] == [],
-              "an Abort from another device let the hold go")
+              "a Stop from another device let the hold go")
+        _latch_abort(R)
         st, _h, out = _hold(R, "front row", hold_id=hid)
         check(st == 409, "and it does not carry on")
         check(any(r.get("action") == "arm hold" and
@@ -65737,14 +65324,12 @@ def test_screen_arm_end_to_end_probes():
         ans = hold("cat-walk", andy, 1.5, seen_lag=1.2)
         check(ans and ans[0] == 409 and never_armed(1, 2.0),
               f"P3: a stale page cannot even start a hold: {ans}")
-        # P4: an Abort during the hold (Jeff, from his phone). The
-        # scheduler is not attached here, so the Abort itself is refused,
-        # but every hold is let go before anything else.
+        # P4: a Stop during the hold (Jeff, from his phone; it was an
+        # Abort, now removed): every hold is let go before anything else.
         ans = hold("cat-walk", andy, 2.0, during=(
-            0.5, lambda: http("/api/remote/abort", {"confirmed": True},
-                              jeff)))
+            0.5, lambda: http("/api/remote/stop", {}, jeff)))
         check(409 in ans and never_armed(1, 3.0),
-              f"P4: an Abort during a browser hold: never arms: {ans}")
+              f"P4: a Stop during a browser hold: never arms: {ans}")
         # P5: a second browser on the same group, asked while the first
         # hold is live: two of its heartbeats answered before, and another
         # answered after (so it never lapsed in between). A slow runner can
@@ -66267,9 +65852,7 @@ def test_screen_arming_switch_and_refusals():
         # An Abort standing (the scheduler's latch, as the deck reads it).
         _live_show(R)
         R.feed()
-        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True},
-                            client=loop)
-        R.settle()
+        _latch_abort(R)
         R.feed()
         st, _h, out = hold(R)
         check(st == 409 and "An Abort is standing" in out.get("error", ""),
@@ -68213,13 +67796,12 @@ def test_hazers_at_the_engine():
         check(st == 200 and link.hazers_on == frozenset(),
               f"a disarm always works, signed out: {st} {out}")
         R.remote.users = None
-        # Hold changes nothing; Abort and Stop disarm, and say what.
+        # Hold changes nothing; Stop disarms, and says what.
         tap("Hazer 2", True)
         R.ask("POST", "/api/remote/hold", {"seen": R.seen()}, client=loop)
         check(link.hazers_on == {"Hazer 2"}, "a Hold: the hazers stay armed")
-        R.ask("POST", "/api/remote/abort", {"seen": R.seen(),
-                                            "confirmed": True}, client=loop)
-        check(link.hazers_on == frozenset(), "Abort: every hazer DISARMED")
+        R.ask("POST", "/api/remote/stop", {"seen": R.seen()}, client=loop)
+        check(link.hazers_on == frozenset(), "Stop: every hazer DISARMED")
 
         def said(name):
             # The journal line goes on a thread of its own (hazers_cut).
@@ -68229,7 +67811,7 @@ def test_hazers_at_the_engine():
                     return True
                 time.sleep(0.01)
             return False
-        check(said("Hazer 2") and "Abort" in hz.last_off["reason"],
+        check(said("Hazer 2") and "Stop" in hz.last_off["reason"],
               f"and the journal and last_off name what was armed "
               f"(reviewer B, 1): {hz.last_off}")
         R.ask("POST", "/api/remote/reset", {"seen": R.seen()}, client=loop)
@@ -68250,10 +67832,10 @@ def test_hazers_at_the_engine():
               f"hazer DISARMED: {st} {hz.last_off}")
         R.feed()
         tap("Hazer 1", True)
-        R.ask("POST", "/api/remote/abort", {"seen": R.seen()}, client=loop)
-        check(link.hazers_on == frozenset(),
-              "an unconfirmed Abort still disarms them (it only takes "
-              "something away)")
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"seen": R.seen()},
+                            client=loop)
+        check(st == 404 and link.hazers_on == {"Hazer 1"},
+              f"there is no Abort route: nothing changes: {st} {out}")
         lines = [r.get("text", "") for r in R.lines_for("hazers")]
         check(any("armed Hazer 1" in t for t in lines) and
               any("Hazers off" in t for t in lines) and
@@ -69135,13 +68717,12 @@ def test_pump_at_the_engine():
         check(pm.pump_send() and not link.pump_on,
               "flamesafe silent for 1.5 s: the timer turns it off")
         R.feed()
-        # Abort, Stop (the deck's halt and the plain /api/stop).
+        # Stop: a screen's, the deck's halt and the plain /api/stop.
         tap(True)
-        R.ask("POST", "/api/remote/abort", {"seen": R.seen(),
-                                            "confirmed": True}, client=loop)
-        check(not link.pump_on and pm.run is None and said("Abort"),
-              f"Abort: OFF at the press, said: {pm.last_off}")
-        R.ask("POST", "/api/remote/reset", {"seen": R.seen()}, client=loop)
+        R.ask("POST", "/api/remote/stop", {"seen": R.seen()}, client=loop)
+        check(not link.pump_on and pm.run is None and said("Stop"),
+              f"a screen's Stop: OFF at the press, said: {pm.last_off}")
+        R.ask("POST", "/api/remote/resume", {"seen": R.seen()}, client=loop)
         R.settle()
         R.feed()
         pm.last_off = None
@@ -69161,11 +68742,12 @@ def test_pump_at_the_engine():
               f"Stop (the plain /api/stop): OFF: {st} {pm.last_off}")
         R.feed()
         link._abort_repeat = None
-        tap(True)
-        R.ask("POST", "/api/remote/abort", {"seen": R.seen()}, client=loop)
-        check(not link.pump_on,
-              "an unconfirmed Abort still turns it off (it only takes "
-              "something away)")
+        st, _h, out = tap(True)
+        st2, _h, out2 = R.ask("POST", "/api/remote/abort",
+                              {"seen": R.seen()}, client=loop)
+        check(st2 == 404 and link.pump_on == (st == 200),
+              f"there is no Abort route: nothing changes: {st2} {out2}")
+        R.ask("POST", "/api/remote/fuel-pump", {"on": False}, client=loop)
         lines = [r.get("text", "") for r in R.lines_for("fuel-pump")]
         check(any("turned the fuel pump" in t and "for 4:00" in t
                   for t in lines) and
@@ -70498,7 +70080,7 @@ console.log(JSON.stringify(out));
                          "fan_pct": 60, "why": ""}
                         for i, (n, sl) in enumerate(_HZ)]}
     mjs = _RACK_MEASURE_JS.replace(
-        '  const ctl = {"Abort": "b-abort",',
+        '  const ctl = {"Hold": "b-hold",',
         '  out.hazers = 0;\n'
         '  document.querySelectorAll("#hz-row button").forEach(el => {\n'
         '    const nm = "hazer " + (el.dataset.hzb || "off");\n'
@@ -70510,7 +70092,7 @@ console.log(JSON.stringify(out));
         '    const wd = el.querySelector(".word");\n'
         '    if(el.dataset.hzb && wd && !/^(ARMED|DISARMED)$/.test(wd.textContent)) out.problems.push(nm + ": its word is " + wd.textContent);\n'
         '  });\n'
-        '  const ctl = {"Abort": "b-abort",', 1).replace(
+        '  const ctl = {"Hold": "b-hold",', 1).replace(
         '#fl-lamps button, #b-disarm,', '#fl-lamps button, #hz-row button, #b-disarm,', 1)
     check(mjs != _RACK_MEASURE_JS and "#hz-row button, #b-disarm" in mjs,
           "the measure looks at the hazer row too")
@@ -70776,7 +70358,7 @@ def test_aim_slots_are_seen_on_the_rack_screen():
           al[0].kind == "aim" and
           "flamesafe has 1, 7, 13 and LTC Player has none" in al[0].text
           and path in al[0].text and "quit LTC Player and start it again"
-          in al[0].text and "Stop, Hold, Abort and Disarm all work as "
+          in al[0].text and "Stop, Hold and Disarm all work as "
           "usual" in al[0].text,
           f"a difference is an aim alert saying what to do: "
           f"{[x.text for x in al]}")
@@ -72976,22 +72558,25 @@ def test_purge_rules_at_the_engine():
         check(st == 200 and "laser-3" in R.m.lasers.on and len(R.osc) == 3
               and R.osc[0][0] == ("127.0.0.2", 8100),
               f"a configured laser's test turns on, three OSC packets: {out}")
-        # Abort, with nothing live: the purge selection and the laser test
-        # end AT THE PRESS, before any watcher pass (T7).
+        # Stop, with nothing live: the purge selection and the laser test
+        # end AT THE PRESS, before any watcher pass (T7; the Abort's, which
+        # Stop now has).
         R.m.open_beat("Rack screen")
         st, _h, out = R.ask("POST", "/api/remote/purge-select",
                             {"machine": "g1", "seen": R.seen()}, client=loop)
         check(st == 200, "armed again")
-        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True},
-                            client=loop)
+        st, _h, out = R.ask("POST", "/api/remote/stop", {}, client=loop)
         check(R.m.purge.selected == [] and not R.m.lasers.on and
               R.osc[-1][1].startswith(b"/beyond/general/stopcue"),
-              f"Abort cleared the purge and turned the laser test off at "
+              f"Stop cleared the purge and turned the laser test off at "
               f"the press: {R.m.purge.selected} {R.m.lasers.on}")
         R.settle()
         R.feed()
         check(R.m.laser_arm.armed_ids() == [],
-              "the Abort disarmed every laser (Jeff, 2026-10-22)")
+              "the Stop disarmed every laser (Jeff, 2026-10-22)")
+        R.ask("POST", "/api/remote/resume", {"seen": R.seen()}, client=loop)
+        R.settle()
+        R.feed()
         _mo_arm(R, "laser-3")
         st, _h, out = R.ask("POST", "/api/remote/laser-test",
                             {"laser": "laser-3", "on": True}, client=loop)
@@ -73041,9 +72626,7 @@ def test_purge_rules_at_the_engine():
         check(st == 409 and "not allowed now" in out["error"],
               f"nor a laser test turned on: {out}")
         # An Abort: latched until Reset, and the purge is refused.
-        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True},
-                            client=loop)
-        R.settle()
+        _latch_abort(R)
         R.feed()
         st, _h, out = R.ask("POST", "/api/remote/purge-select",
                             {"machine": "g1", "seen": R.seen()}, client=loop)
@@ -75132,17 +74715,17 @@ def test_morning_arrange_disables_firing():
         R.remote.alerts.raise_("deck", "Test alert for Acknowledge.")
         for route, body_ in (("disarm-all", {}), ("hold", {}),
                              ("alert", {"action": "acknowledge"}),
-                             ("abort", {"confirmed": True})):
+                             ("stop", {})):
             st, _h, out = R.ask("POST", "/api/remote/" + route, body_,
                                 client=loop)
             check(st == 200 and "Arrange" not in str(out) and
                   "Firing is off" not in str(out),
                   f"{route} goes while a screen arranges: {st} {out}")
-        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()},
+        st, _h, out = R.ask("POST", "/api/remote/resume", {"seen": R.seen()},
                             client=loop)
         R.settle()
         check(R.remote.show_live_refusal() == "",
-              f"setup: the Abort is reset: {st} {out}")
+              f"setup: the Stop's Hold is released: {st} {out}")
         # Two devices arranging: both named.
         beat(ipad, True, "I", 2)
         why = R.m.fire_arrange_refusal()
@@ -75568,7 +75151,7 @@ def test_purge_release_can_never_start_a_fire():
                             ("disarm-all", {}), ("hold", {}),
                             ("arm-release", {"group": 0}),
                             ("alert", {"action": "acknowledge"}),
-                            ("abort", {"confirmed": True})):
+                            ("stop", {})):
             st, _h, out = post(route, body, None)
             check(not out.get("role_refused") and st != 403,
                   f"{route} signed out with purge arming off still goes: "
@@ -76172,14 +75755,6 @@ def test_timed_purge_every_end_cause():
                   f"Stop left the schedule on Hold: {R.svc.machine.state}")
             R.ask("POST", "/api/remote/resume", {"seen": R.seen()},
                   client=loop)
-        # Abort.
-        if start():
-            m = ended("Abort", "pressed Abort")
-            R.ask("POST", "/api/remote/abort",
-                  {"confirmed": True, "seen": R.seen()}, client=loop)
-            check_end(m)
-            R.ask("POST", "/api/remote/reset",
-                  {"confirmed": True, "seen": R.seen()}, client=loop)
         # Hold.
         if start():
             m = ended("Hold", "pressed Hold")
@@ -76936,16 +76511,7 @@ function measure(){
     const r = bn.getBoundingClientRect();
     if(r.right > innerWidth + 0.5) out.problems.push("the banner runs off the window");
   }
-  // Abort: on the window, never covered, at the top and the bottom.
-  const ab = document.getElementById("b-abort");
-  for(const y of [0, 1e6]){
-    scrollTo(0, y);
-    const r = ab.getBoundingClientRect();
-    if(r.bottom > innerHeight + 0.5 || r.top < 0) out.problems.push("Abort is off the window at scroll " + y);
-  }
-  scrollTo(0, 0);
-  for(const b of hits(ab)) out.problems.push("Abort: " + b);
-  scrollTo(0, 0);
+  if(document.getElementById("b-abort") || document.getElementById("abortbar")) out.problems.push("an Abort sign is still drawn");
   return out;
 }
 function go(){
@@ -78846,11 +78412,14 @@ def test_users_role_matrix_never_restricts_a_safety_press():
     every = (RM.POST_ROUTES + RM.SETUP_POST_ROUTES + RM.USER_POST_ROUTES)
     missing = [r for r in every if r not in U.REMOTE_ROUTES]
     check(not missing, f"every remote POST route has a row: {missing}")
-    safety = ("abort", "hold", "disarm-all", "group-disarm", "arm-release",
+    safety = ("stop", "hold", "disarm-all", "group-disarm", "arm-release",
               "alert", "purge-stop", "purge-clear", "signin", "signout")
     for r in safety:
         check(U.classify("/api/remote/" + r, {}) == "safety",
               f"{r} is a safety press")
+    check("abort" not in U.REMOTE_ROUTES and
+          U.classify("/api/remote/abort", {}) is None,
+          "there is no Abort row: the route is gone (Jeff, 2026-10-30)")
     for r, body in (("purge-select", {"on": False}),
                     ("purge-fire", {"on": False}),
                     ("laser-test", {"on": False}), ("laser-test", {}),
@@ -78971,7 +78540,7 @@ def test_safety_presses_pass_signed_out_and_are_logged_unsigned():
                                                  "new_password": "vic-pw-123"})
         vic = cookie_of(h)
         check(st == 200 and vic, f"a viewer signs in: {out}")
-        presses = [("/api/remote/abort", {"confirmed": True}),
+        presses = [("/api/remote/stop", {}),
                    ("/api/remote/hold", {}),
                    ("/api/remote/disarm-all", {}),
                    ("/api/remote/group-disarm", {"group": 0}),
@@ -79004,9 +78573,9 @@ def test_safety_presses_pass_signed_out_and_are_logged_unsigned():
             raise RuntimeError("broken")
         rem.users.may = boom
         try:
-            st, out, _h = http("/api/remote/abort", {"confirmed": True})
+            st, out, _h = http("/api/remote/stop", {})
             check(not out.get("role_refused"),
-                  f"a broken sign-in check never stops an Abort: {out}")
+                  f"a broken sign-in check never stops a Stop: {out}")
             st, out, _h = http("/api/remote/start-now", {}, cookie=vic)
             check(out.get("role_refused") and
                   "could not be made" in out.get("error", ""),
@@ -79016,10 +78585,10 @@ def test_safety_presses_pass_signed_out_and_are_logged_unsigned():
             rem.users.may = real_may
         rem.audit.flush(5.0)
         lines = _audit_lines(rem.audit.folder)
-        aborts = [l for l in lines if l.get("action") == "abort"]
+        aborts = [l for l in lines if l.get("action") == "stop"]
         check(any(l["user"] == "unsigned" and l["surface"] == "web" for l in
                   aborts) and any(l["user"] == "Vic" for l in aborts),
-              f"an Abort is logged as unsigned when nobody is signed in, "
+              f"a Stop is logged as unsigned when nobody is signed in, "
               f"and by name when someone is: {aborts[:2]}")
         refused = [l for l in lines if l.get("action") == "start-now" and
                    l["result"] == "refused"]
@@ -79219,10 +78788,10 @@ def test_deck_role_gate_restricts_arming_only():
     no = {"name": "Vic", "role": "viewer", "may": {"arm": False}}
     check(sd.role_gate(no, "arm") and "Vic" in sd.role_gate(no, "arm"),
           "a viewer may not arm")
-    check(sd.role_gate(no, "abort") is None and
+    check(sd.role_gate(no, "stop") is None and
           sd.role_gate(no, "disarm") is None and
           sd.role_gate(no, "hold") is None,
-          "Abort, disarm and Hold are never asked")
+          "Stop, disarm and Hold are never asked")
     check(sd.role_gate(None, "arm") is None and
           sd.role_gate({"name": None, "may": {"arm": True}}, "arm") is None,
           "unknown or allowed: the deck's own rules decide")
@@ -79414,9 +78983,9 @@ def test_signed_out_is_view_only_on_every_surface():
             check(st == 403 and out.get("role_refused") and
                   "could not be made" in out["error"],
                   f"a broken sign-in check refuses an arm: {st} {out}")
-            st, out, _h = http("/api/remote/abort", {"confirmed": True})
+            st, out, _h = http("/api/remote/stop", {})
             check(not out.get("role_refused"),
-                  f"and never an Abort: {out}")
+                  f"and never a Stop: {out}")
         finally:
             rem.users.may = real_may
         real_classify = U.classify
@@ -79607,7 +79176,7 @@ def test_deck_needs_a_sign_in_on_the_rack_screen_to_arm():
     check(sd.operator_gate(sd.UNSIGNED, "arm") and
           sd.operator_gate(sd.UNSIGNED, "start") and
           sd.operator_gate(sd.UNSIGNED, "disarm") is None and
-          sd.operator_gate(sd.UNSIGNED, "abort") is None,
+          sd.operator_gate(sd.UNSIGNED, "stop") is None,
           "unsigned is never a chosen operator for an arm or a start")
     check(sd.role_gate(dict(sd.USER_UNKNOWN), "arm") and
           sd.role_gate(dict(sd.USER_UNKNOWN), "disarm") is None,
@@ -80031,7 +79600,7 @@ _SIGNIN_MEASURE_JS = r"""
 function shown(el){ return !!el && el.getClientRects().length > 0; }
 function state(){
   const out = {chip:($("nav-user") || {}).textContent || "", buttons:{}, arm:[], lz:[]};
-  for(const id of ["b-start", "b-resume", "b-reset", "b-run", "b-hold", "b-abort", "b-disarm", "lz-disarm", "sa-on", "lf-on"]){
+  for(const id of ["b-start", "b-resume", "b-reset", "b-run", "b-hold", "b-disarm", "lz-disarm", "sa-on", "lf-on"]){
     const el = document.getElementById(id);
     if(el) out.buttons[id] = {disabled:el.disabled, off:el.classList.contains("signin-off")};
   }
@@ -80130,13 +79699,13 @@ def test_rack_screen_locks_controls_signed_out_in_a_browser():
                                                  f"{res!r}"[:600]):
                 continue
             bt = res["before"]["buttons"]
-            live = all(not bt[k]["off"] for k in ("b-hold", "b-abort",
+            live = all(not bt[k]["off"] for k in ("b-hold",
                                                   "b-disarm", "lz-disarm"))
-            check(live and not bt["b-abort"]["disabled"] and
+            check(live and "b-abort" not in bt and
                   not bt["b-disarm"]["disabled"] and
                   not bt["lz-disarm"]["disabled"],
-                  f"{label} {w}x{h}: Abort, Disarm all and Disarm all "
-                  f"lasers live: {bt}")
+                  f"{label} {w}x{h}: Hold, Disarm all and Disarm all "
+                  f"lasers live, no Abort: {bt}")
             if label == "signed out":
                 check(all(bt[k]["disabled"] and bt[k]["off"] for k in
                           ("b-start", "b-resume", "b-reset", "b-run")),
@@ -84356,13 +83925,15 @@ def test_laser_arm_morning_page_routes_and_surfaces():
                              "confirmed": True}, client=loop)
         check(st == 200 and "laser-2" not in R.m.laser_arm.armed_ids(),
               "unlocking does not arm it")
-        # An UNCONFIRMED Abort, nothing live: every laser disarmed anyway.
+        # A Stop from the network, nothing live: every laser disarmed at
+        # the press (as the removed Abort did).
         R.m.laser_arm.arm(["laser-1", "laser-2"], who="Andy",
                           confirmed=True)
-        st, _h, out = R.ask("POST", "/api/remote/abort", {}, client=ipad)
-        check(st == 400 and R.m.laser_arm.armed_ids() == [],
-              f"an Abort refused for its confirm still disarms every laser "
-              f"at the press: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/stop", {}, client=ipad)
+        check(st == 200 and R.m.laser_arm.armed_ids() == [],
+              f"a Stop disarms every laser at the press: {st} {out}")
+        R.ask("POST", "/api/remote/resume", {"seen": R.seen()}, client=loop)
+        R.settle()
         R.m.tick()
         # Hold from the network, nothing live: disarmed at the press.
         R.m.laser_arm.arm(["laser-1"], who="Andy", confirmed=True)
@@ -84401,11 +83972,12 @@ def test_laser_arm_morning_page_routes_and_surfaces():
         R.feed()
         R.m.laser_arm.arm(list(R.m.laser_arm.order), who="Andy",
                           confirmed=True)
-        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True},
-                            client=loop)
+        st, _h, out = R.ask("POST", "/api/remote/stop", {}, client=loop)
         R.settle()
         R.feed()
-        check(R.m.laser_arm.armed_ids() == [], "Abort in the show disarms")
+        check(R.m.laser_arm.armed_ids() == [], "Stop in the show disarms")
+        _latch_abort(R)
+        R.feed()
         st, _h, out = R.ask("POST", "/api/remote/laser-arm",
                             {"laser": "laser-1", "on": True,
                              "confirmed": True}, client=loop)
@@ -84771,12 +84343,12 @@ def test_laser_arm_through_web_serve():
             tried.append(la.arm(list(la.order), who="Andy", confirmed=True))
             return orig(*a)
         httpd.remote._disarm_now = mid_press
-        _ask(httpd, "POST", "/api/remote/abort", {"confirmed": True},
-             client=loop)
+        _ask(httpd, "POST", "/api/remote/stop", {}, client=loop)
         httpd.remote._disarm_now = orig
         check(tried and not tried[0][0] and "being pressed" in tried[0][1]
               and la.armed_ids() == [],
-              f"an arm during the Abort press is refused: {tried}")
+              f"an arm during the Stop press is refused: {tried}")
+        _ask(httpd, "POST", "/api/remote/resume", {}, client=loop)
         ok, text = la.arm(list(la.order), who="Andy", confirmed=True)
         check(ok, f"armed again: {text}")
         svc._apply(_op(S, S.END_NIGHT, confirmed=True))
@@ -85524,7 +85096,7 @@ def test_disarm_all_is_a_plain_disarm_and_never_gated():
         later[-1][1]()
         al = [a for a in rem.alerts.view() if a["kind"] == "flames"]
         check(al and "COULD NOT" in al[-1]["text"] and
-              "press Abort" in al[-1]["text"] and
+              "press Stop" in al[-1]["text"] and
               "Every group was sent" not in al[-1]["text"],
               f"a forced disarm that failed is never said as done: {al}")
         rem._flame_disarm = real
@@ -85534,9 +85106,8 @@ def test_disarm_all_is_a_plain_disarm_and_never_gated():
             encoding="utf-8").read()
         check('<span class="lbl">Disarm all flame groups</span><small>plain '
               'disarm: arm again with a hold</small>' in page and
-              'abort-sub").textContent = idle ? "Nothing to abort right '
-              'now" : "Stops the show. Flames then need Arm again"' in page,
-              "the page labels the plain disarm and the Abort apart")
+              "Stop is different: it ends what is playing" in page,
+              "the page labels the plain disarm and the Stop apart")
     finally:
         R.close()
     print("  ok")
@@ -85829,21 +85400,21 @@ def test_disarm_all_end_to_end_rearms_without_a_cycle():
         check(hold("front row"),
               f"after a plain disarm one hold arms again: {group(0)} "
               f"{events[-4:]}")
-        # The contrast: the Abort's disarm (the flame link's disarm_all)
-        # leaves the deck still asking, and flamesafe holds the group
-        # until it is cycled; the same hold does not arm it.
-        http("/api/remote/abort", {"confirmed": True})
+        # The contrast: Stop's disarm (the flame link's disarm_all, as the
+        # removed Abort's was) leaves the deck still asking, and flamesafe
+        # holds the group until it is cycled; the same hold does not arm it.
+        http("/api/remote/stop", {})
         check(wait(lambda: not armed(0)),
-              f"Abort disarms it: {group(0)}")
-        check(wait(lambda: "Abort" in group(0).get("reason", "")),
-              f"and flamesafe reads the Abort's cycle: {group(0)}")
+              f"Stop disarms it: {group(0)}")
+        check(wait(lambda: "Stop" in group(0).get("reason", "")),
+              f"and flamesafe reads the Stop's cycle: {group(0)}")
         time.sleep(sd.REARM_REFRACTORY_S + 0.2)
         seen = http("/api/remote/status")[1]["served_at"]
         code, out = http("/api/remote/arm-hold",
                          {"group": "front row", "seen": seen})
         time.sleep(1.5)
         check(not armed(0),
-              f"after an Abort a hold alone does not arm: {group(0)} "
+              f"after a Stop a hold alone does not arm: {group(0)} "
               f"{code} {out}")
         # Disarm all during a standing Abort (review of PR #97): its plain
         # disarm is the low half of a cycle, but the Abort latch still
@@ -87871,7 +87442,7 @@ let ST = null;
     body = r"""
 // B6: plain words, and why.
 t(reasonWords("cycle the arm").startsWith("Re-arm needed after a fault"), "cycle the arm reads as re-arm needed, with why");
-t(reasonWords("Disarmed by the show's Abort. Cycle the arm to re-arm.").indexOf("after the Abort") >= 0, "after an Abort: says so");
+t(reasonWords("Disarmed by the show's Stop. Cycle the arm to re-arm.").indexOf("after a Stop") >= 0 && reasonWords("Disarmed by the show's Abort. Cycle the arm to re-arm.").indexOf("after a Stop") >= 0, "after a Stop (an older flamesafe's Abort words too): says so");
 t(!/cycle/i.test(reasonWords("Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back.")), "no cycle wording left: " + reasonWords("Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back."));
 const lk = lampLook({armed:"held", reason:"cycle the arm"}, "held");
 t(lk.word === "Arm again" && lk.held === "cycle", "the button reads Arm again: " + JSON.stringify(lk));
@@ -88971,42 +88542,39 @@ def test_live_flame_engine_routes_roles_and_presses():
               f"every press is audit logged, the signed-out off too: "
               f"{[(l['user'], l['result']) for l in lines]}")
         # Off and the end at a press, through the remote's own presses.
-        for name, body in (("abort", {"confirmed": True}), ("hold", {}),
+        for name, body in (("stop", {}), ("hold", {}),
                            ("start-now", {"seen": int(time.time() * 1000)})):
             lf.on = True
-            # Start now needs a sign-in (2026-10-28); Abort and Hold never.
+            # Start now needs a sign-in (2026-10-28); Stop and Hold never.
             http(f"/api/remote/{name}", body,
                  cookie=jeff if name == "start-now" else None)
             cut = [c for c in lf.calls if c[0] == "cut"]
-            check(cut and name in cut[-1][1],
+            check(cut and name in cut[-1][1].lower(),
                   f"{name} shuts the program slot at the press: {cut[-1:]}")
             end_by = time.monotonic() + 10
             while lf.on and time.monotonic() < end_by:
                 time.sleep(0.01)
-            check(not lf.on and name in lf.calls[-1][1],
+            check(not lf.on and name in lf.calls[-1][1].lower(),
                   f"{name} ends it, off the press's thread: {lf.calls[-1]}")
+            if name == "stop":
+                http("/api/remote/resume", {"seen": int(time.time() * 1000)},
+                     cookie=jeff)
         # The rest of ending (journal, audit, disarm) never holds up the
-        # Abort (review of PR #96, P3-3): with it stuck, the press answers.
+        # press (review of PR #96, P3-3, for the Abort that Stop replaced):
+        # with it stuck, a Hold answers.
         lf.on = True
         lf.gate = threading.Event()
         t0 = time.monotonic()
-        http("/api/remote/abort", {"confirmed": True})
+        http("/api/remote/hold", {})
         took = time.monotonic() - t0
         check(lf.on and lf.calls[-1][0] == "cut" and took < 3,
-              f"an Abort answers while ending is still under way "
+              f"a Hold answers while ending is still under way "
               f"({took:.2f} s): {lf.calls[-1]}")
         lf.gate.set()
         end_by = time.monotonic() + 10
         while lf.on and time.monotonic() < end_by:
             time.sleep(0.01)
         lf.gate = None
-        lf.on = True
-        http(f"/api/remote/abort", {})
-        end_by = time.monotonic() + 10
-        while lf.on and time.monotonic() < end_by:
-            time.sleep(0.01)
-        check(not lf.on, "an UNCONFIRMED Abort still ends it (risk only "
-                         "goes down)")
         # Run (/api/start) ends it before the session starts.
         lf.on = True
         http("/api/start", {"timeline": "nothing.json"}, cookie=jeff)
@@ -93423,16 +92991,18 @@ def test_fireball_at_the_engine():
         check(not R.fb.active() and link.cur is None,
               "a disarm seen by the watcher: everything off")
         _fb_armed(R)
-        # An Abort from the rack screen cuts it at the press.
+        # A Stop from the rack screen cuts it at the press (as the removed
+        # Abort did).
         st, out = beat({"fuel"}, "a12", 1)
         check(st == 200 and R.fb.active(), "Fuel on again (a new press)")
-        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True},
-                            client=loop)
+        st, _h, out = R.ask("POST", "/api/remote/stop", {}, client=loop)
         check(not R.fb.active() and link.cur is None and
-              "Abort" in R.fb.last_cut,
-              f"an Abort cuts it at the press: {R.fb.last_cut}")
-        check(out.get("disarmed") is True,
+              "Stop" in R.fb.last_cut,
+              f"a Stop cuts it at the press: {R.fb.last_cut}")
+        check((out.get("flames") or {}).get("disarmed") is True,
               f"and every group was sent a disarm: {out}")
+        R.ask("POST", "/api/remote/resume", {"seen": R.seen()}, client=loop)
+        R.settle()
         # An Abort standing (latched until Reset): even with flamesafe
         # still saying armed, nothing goes on, and it says why.
         import dataclasses as _dc
@@ -93988,9 +93558,8 @@ function go(){
   if(!pads.length) return setTimeout(go, 100);
   setTimeout(() => {
     const mainR = document.getElementById("main").getBoundingClientRect();
-    const ab = document.getElementById("abortbar");
-    const abR = ab ? ab.getBoundingClientRect() : null;
-    const out = {vw:innerWidth, vh:innerHeight, sw:document.scrollingElement.scrollWidth, problems:[],
+    const abR = null;     // no Abort sign any more (removed 2026-10-30)
+    const out = {abort_left:!!document.getElementById("abortbar"), vw:innerWidth, vh:innerHeight, sw:document.scrollingElement.scrollWidth, problems:[],
       view_shown:shown(document.getElementById("v-fireball")),
       armed:document.getElementById("fb-armed").textContent,
       note:document.getElementById("fb-note").textContent,
@@ -99764,7 +99333,7 @@ def _key_safe_scan(page):
     import re as _re
     want = _re.compile(r"\b(stop|disarm|turn off|all off|calibration off|"
                        r"hazers off|abort)\b|^hold$", _re.I)
-    skip = _re.compile(r'id="(hz-same|abort-said-ok)"|data-ann=|data-lz=|'
+    skip = _re.compile(r'id="(hz-same|stop-said-ok)"|data-ann=|data-lz=|'
                        r'data-hzb=')
     lacking, ids = [], []
     listed = _re.search(r"const KEY_SAFE_IDS = \[([^\]]*)\];", page)
@@ -101659,7 +101228,7 @@ def test_ui2_pages_served_and_switched():
               h.get("content-type") == ["application/javascript; "
                                         "charset=utf-8"] and
               "// LOGIC BEGIN" in out and "// LOGIC END" in out and
-              "function abortTapStep(" in out and
+              "function stopTapStep(" in out and
               "function armState(" in out and "<script" not in out,
               f"/remote-logic.js is remote.html's remote-logic block, "
               f"whole: {st} {h.get('content-type')}")
@@ -101732,9 +101301,9 @@ def test_ui2_page_makes_only_1_0_presses():
     section("interface 2.0's SHOW tab presses exactly what 1.0 presses: "
             "the same routes and bodies (Settings' default interface the "
             "one new route), 1.0's rules served, never copied, and the "
-            "hold to arm, Arm all, Abort's double tap, Stop and the laser "
+            "hold to arm, Arm all, Stop's double tap and the laser "
             "refusals the same code as 1.0's; no dashes, nothing from off "
-            "the show network, Abort never dimmed or covered")
+            "the show network; no Abort, and a broken page's own Stop")
     one, two = _ui2_pages()
     head2 = two.split("</head>")[0]
     for tag in ('<link rel="icon" href="/favicon.ico"',
@@ -101748,11 +101317,13 @@ def test_ui2_page_makes_only_1_0_presses():
           "2.0 has no em or en dashes")
     # The rules are 1.0's, served; not one of them is defined here.
     a = two.find('<script src="/remote-logic.js"></script>')
-    core = two[two.find('<script id="abort-core">'):]
+    core = two[two.find('<script id="stop-core">'):]
     core = core[:core.find("</script>")]
     check(a > 0 and a < two.find('"use strict";\nconst esc') and
-          0 < two.find('<script id="abort-core">') < a,
-          "2.0 loads its Abort first, then 1.0's rules, then its own script")
+          0 < two.find('<script id="stop-core">') < a and
+          'id="abort-core"' not in two,
+          "2.0 loads its stop-core first (no abort-core), then 1.0's rules, "
+          "then its own script")
     lo = one[one.find("// LOGIC BEGIN"):one.find("// LOGIC END")]
     rules = re.findall(r"^function (\w+)\(", lo, re.M)
     check(len(rules) > 30, f"the rules are read: {len(rules)}")
@@ -101767,34 +101338,29 @@ def test_ui2_page_makes_only_1_0_presses():
         check(n in rules and re.search(r"\b" + n + r"\(", two),
               f"2.0 uses 1.0's {n}")
     # The copies: the same code as 1.0's, Arm all's button id the one change.
-    # ABORT needs nothing shared (safety review of #166, B1): its double
-    # tap is 1.0's abortTapStep and abortTapKind, renamed, its window
-    # 1.0's ABORT_TAP_MS, and anything else it touches is asked for first.
-    for n1, n2 in (("abortTapStep", "abortTapStep2"),
-                   ("abortTapKind", "abortTapKind2")):
+    # The broken page's Stop needs nothing shared (safety review of #166,
+    # B1, then for Abort): its double tap is 1.0's stopTapStep and
+    # stopTapKind, renamed, its window 1.0's STOP_TAP_MS, and anything else
+    # it touches is asked for first.
+    for n1, n2 in (("stopTapStep", "stopTapStep2"),
+                   ("stopTapKind", "stopTapKind2")):
         f1, f2 = _js_function(one, n1), _js_function(core, n2)
         check(f1 and f2 and _js_same(f1.replace(n1 + "(", n2 + "(")
-                                     .replace("ABORT_TAP_MS", "ABORT_TAP_MS2"))
+                                     .replace("STOP_TAP_MS", "STOP_TAP_MS2"))
               == _js_same(f2), f"2.0's {n2} is 1.0's {n1}: {f2!r}")
-    m1 = re.search(r"const ABORT_TAP_MS = (\d+);", one)
-    m2 = re.search(r"const ABORT_TAP_MS2 = (\d+);", core)
+    m1 = re.search(r"const STOP_TAP_MS = (\d+);", one)
+    m2 = re.search(r"const STOP_TAP_MS2 = (\d+);", core)
     check(m1 and m2 and m1.group(1) == m2.group(1),
-          f"2.0's Abort window is 1.0's: {m1 and m1.group(1)} "
+          f"2.0's broken-page Stop window is 1.0's: {m1 and m1.group(1)} "
           f"{m2 and m2.group(1)}")
     leaned = [n for n in rules if re.search(r"\b" + n + r"\(", core) and
               f'typeof {n} === "function"' not in core]
-    check(not leaned, f"2.0's Abort calls none of 1.0's rules: {leaned}")
+    check(not leaned, f"2.0's stop-core calls none of 1.0's rules: {leaned}")
     for n in ("getJSON", "post", "actor", "rearmWaitFor", "holding",
               "holdLapsed", "holdFill", "groupNames", "armStart",
               "armAllStart", "armBeat", "armAllProgress", "armAllSettle",
-              "armStop", "lzArmRefusal", "abortTapDone"):
+              "armStop", "lzArmRefusal"):
         f1, f2 = _js_function(one, n), _js_function(two, n)
-        if n == "abortTapDone":
-            f1 = (f1 or "").replace("ABORT_TAP_MS", "ABORT_TAP_MS2")
-            # 2.0's sign keeps its size: only the word changes back.
-            f1 = (f1 or "").replace(
-                '$("b-abort").querySelector(".w").textContent',
-                '$("abort-w").textContent')
         check(f1 and f2 and _js_same(f1.replace('$("b-disarm")',
                                                 '$("b-armall")')) ==
               _js_same(f2),
@@ -101858,44 +101424,44 @@ def test_ui2_page_makes_only_1_0_presses():
           '{timeline:f})' in one and
           'post("/api/start", {timeline:f})' in two,
           "Run is 1.0's Run in Show: the same route and body")
-    check(re.search(r'press\("abort", \{confirmed:true\}\)', one) and
-          'fetch("/api/remote/abort", {method:"POST", credentials:'
+    # No Abort anywhere (Jeff, 2026-10-30): no sign, no route, no words.
+    for gone in ('id="b-abort"', 'id="abortbar"', "/api/remote/abort",
+                 "abortTapStep", "ABORT_SAID", "abortAnswered", "--abort"):
+        check(gone not in one and gone not in two,
+              f"neither page has {gone!r}")
+    check('fetch("/api/remote/stop", {method:"POST", credentials:'
           '"same-origin", cache:"no-store",\n      headers:{"Content-Type":'
           '"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.'
-          'stringify({confirmed:true, seen:seen})});' in core and
+          'stringify({seen:seen})});' in core and
           'const seen = (typeof ST !== "undefined" && ST) ? ST.served_at '
           ': null;' in core,
-          "Abort's body is 1.0's (actor's): confirmed, and the status it "
-          "saw; 1.0's post headers")
-    # Abort: 1.0's double tap, never disabled, never dimmed, never covered.
-    for need in ("abortTapStep2(ABORT_TAP, monoNow(), kind, "
-                 "$(\"abortbar\").classList.contains(\"tap1\"))",
-                 "ABORT_TIMER = setTimeout(abortTapDone, ABORT_TAP_MS2);",
+          "the broken page's Stop posts 1.0's Stop route with 1.0's post "
+          "headers and the status it saw")
+    # The broken page's Stop: 1.0's double tap, never disabled.
+    for need in ("stopTapStep2(CORE_TAP, monoNow(), kind, false)",
+                 "CORE_TIMER = setTimeout(coreTapDone, STOP_TAP_MS2);",
                  'if(e.repeat && (e.key === "Enter" || e.key === " ")) '
                  'e.preventDefault();',
-                 'if(kind !== "key") $("b-abort").blur();',
-                 "abortTapDone();\n  try{ if(typeof armStop === \"function\") "
-                 "armStop(\"Abort\"); }catch(e1){}"):
-        check(need in core, f"2.0's Abort keeps 1.0's double tap: {need}")
+                 'if(kind !== "key") $("broken-stop").blur();'):
+        check(need in core, f"the broken page's Stop keeps 1.0's double "
+                            f"tap: {need}")
     check('<div id="broken" hidden role="alert">' in two and
-          "Page not fully loaded" in two,
-          "a page whose rules did not load says so")
-    check('$("b-abort").disabled' not in two and
-          "abortbar\").classList.toggle(\"idle\"" not in two,
-          "2.0 never disables or dims Abort")
+          "Page not fully loaded" in two and
+          '<button data-safe class="b red" id="broken-stop">' in two,
+          "a page whose rules did not load says so, with its own Stop")
+    check('$("broken-stop").disabled' not in two,
+          "2.0 never disables the broken page's Stop")
     rules2 = _css_rules(two)
-    bar = _css_rule(rules2, "#abortbar") or {}
+    br = _css_rule(rules2, "#broken") or {}
     sh = _css_rule(rules2, "#sheet") or {}
     co = _css_rule(rules2, "#coach") or {}
-    check(bar.get("position") == "fixed" and
-          int(bar.get("z-index", "0")) > int(sh.get("z-index", "0")) and
-          int(bar.get("z-index", "0")) > int(co.get("z-index", "0")),
-          f"Abort is over every sheet and the tour: {bar} {sh} {co}")
+    check(br.get("position") == "fixed" and
+          int(br.get("z-index", "0")) > int(sh.get("z-index", "0")) and
+          int(br.get("z-index", "0")) > int(co.get("z-index", "0")),
+          f"the broken page's banner and its Stop are over every sheet and "
+          f"the tour: {br} {sh} {co}")
     check(co.get("pointer-events") == "none",
           "the tour never stands in front of a control's press")
-    check("var(--abort)" in ((_css_rule(rules2, "footer") or {})
-                             .get("padding", "")),
-          "the footer keeps Abort's corner clear")
     # The tour shows itself only while nothing is live or armed.
     tour = _js_function(two, "coachMaybe") or ""
     check("isLive(ST)" in tour and '"armed"' in tour and "stale()" in tour,
@@ -101919,7 +101485,7 @@ def test_ui2_page_makes_only_1_0_presses():
     for c in ("ALERT_WHAT", "ALERT_DO"):
         m = re.search(r"^const " + c + r" = \{.*?\};$", two, re.M | re.S)
         fns += "\n" + (m.group(0) if m else "")
-    fns += ("\nlet ABORT_SAID = null, STOP_SAID = null, DISARM_FAIL = null;")
+    fns += ("\nlet STOP_SAID = null, DISARM_FAIL = null;")
     # The systems badge's words.
     for c in ("SYS_LABEL", "SYS_SHORT", "SYS_OFF", "SYS_SAY"):
         m = re.search(r"^const " + c + r" = .*?;$", two, re.M | re.S)
@@ -101984,7 +101550,7 @@ for(const x of states) for(const st of [false, true]) for(const local of [true, 
   t(n.text.split(/\s+/).length <= 8, "the next step is 8 words or fewer: " + n.text);
   t(!/flamesafe|beats|seq|engine/i.test(n.text + " " + p.text), "no engine words on the SHOW tab: " + n.text);
 }
-t(/Abort, Hold, Stop/.test(nextStep(base(), true, true, []).text), "no contact says Abort, Hold and Stop still work");
+t(/Stop, Hold, Disarm/.test(nextStep(base(), true, true, []).text) && !/Abort/.test(nextStep(base(), true, true, []).text), "no contact says Stop, Hold and Disarm still work");
 t(/Run show/.test(nextStep(states[6], false, true, []).text), "Run off says press Run show");
 // The systems badge names what to check (Jeff, 2026-10-29).
 const okSubs = [{name:"Deck", state:"ok", word:"ok"}, {name:"Flamesafe", state:"ok", word:"linked"}];
@@ -102046,12 +101612,12 @@ t(pillLook(s, false, alertItems(s)).text === "READY", "all well: READY");
 s = base(); s.disarm_connected = true; s.transport = {programming:true};
 t(pillLook(s, false, alertItems(s)).text === "REHEARSAL" && !/Show \d+ starts/.test(nextStep(s, false, true, alertItems(s)).text) &&
   goLook(s, false, true).off && goLook(s, false, true).label === "Rehearsal", "a rehearsal: REHEARSAL, no show starts, nothing to start");
-// A Disarm that failed, or Abort/Stop that did not disarm: the e-stop.
+// A Disarm that failed, or a Stop that did not disarm: the e-stop.
 s = base(); s.disarm_connected = true;
 DISARM_FAIL = {what:"Disarm NOT done.", text:"refused"};
 t(/e-stop/.test(nextStep(s, false, true, alertItems(s)).text) && alertItems(s)[0].key === "dis-fail" && alertItems(s)[0].act === "seen", "a failed Disarm stays, worst first, until Seen, and says e-stop");
 DISARM_FAIL = null; STOP_SAID = "Stopped, but the flame disarm FAILED";
-t(nextStep(s, false, true, alertItems(s)).text === "Flames NOT disarmed. Use the e-stop.", "a failed Stop disarm: Abort's e-stop words");
+t(nextStep(s, false, true, alertItems(s)).text === "Flames NOT disarmed. Use the e-stop.", "a failed Stop disarm: the e-stop words");
 STOP_SAID = null;
 // Every fault the slot can show: the next step stays 8 words or fewer.
 s = base(); Object.assign(s, {disarm_connected:false, laser_fault:"x", disk:{text:"x"}, show_folder:{problem:"x"},
@@ -102116,13 +101682,14 @@ function measure(){
   const main = document.querySelector("main");
   out.main_excess = main.scrollHeight - main.clientHeight;
   out.doc_excess = document.scrollingElement.scrollHeight - innerHeight;
-  const ab = document.getElementById("b-abort"), A = ab.getBoundingClientRect();
-  out.abort = {w:Math.round(A.width), h:Math.round(A.height), right:Math.round(innerWidth - A.right), bottom:Math.round(innerHeight - A.bottom)};
-  const at = document.elementFromPoint(A.left + A.width / 2, A.top + A.height / 2);
-  if(!at || !ab.contains(at)) out.problems.push("Abort is covered by " + (at ? at.id || at.className || at.tagName : "nothing"));
-  let op = 1; for(let p = ab; p; p = p.parentElement) op *= Number(getComputedStyle(p).opacity);
-  const oc = getComputedStyle(ab.querySelector(".oct")).backgroundColor;
-  if(op < 1 || oc !== "rgb(230, 30, 24)") out.problems.push("Abort is dimmed: opacity " + op + ", " + oc);
+  // No Abort sign (removed, Jeff, 2026-10-30); Stop show, when it is
+  // there, is never covered.
+  if(document.getElementById("b-abort") || document.getElementById("abortbar")) out.problems.push("an Abort sign is still drawn");
+  const sbm = document.getElementById("b-stop");
+  if(shown(sbm)){
+    const S = sbm.getBoundingClientRect(), at = document.elementFromPoint(S.left + S.width / 2, S.top + S.height / 2);
+    if(!at || !sbm.contains(at)) out.problems.push("Stop show is covered by " + (at ? at.id || at.className || at.tagName : "nothing"));
+  }
   const show = document.getElementById("t-show");
   // What of a control can be seen: cut by the window and the pane.
   function vis(el){
@@ -102140,7 +101707,6 @@ function measure(){
     const name = el.id || el.dataset.arm && ("arm " + el.dataset.arm) || el.dataset.ann || el.textContent.trim().slice(0, 20);
     const min = el.closest("header") ? 44 : 56;
     if(r.width < min - 0.5 || r.height < min - 0.5) out.problems.push(name + ": " + Math.round(r.width) + "x" + Math.round(r.height) + ", under " + min);
-    if(v.width && v.height && v.left < A.right - 0.5 && A.left < v.right - 0.5 && v.top < A.bottom - 0.5 && A.top < v.bottom - 0.5) out.problems.push(name + ": under Abort");
     if(r.right > innerWidth + 0.5 || r.left < -0.5) out.problems.push(name + ": off the side");
   }
   for(let i = 0; i < rs.length; i++) for(let j = i + 1; j < rs.length; j++){
@@ -102190,14 +101756,7 @@ const n = (route) => posts.filter(p => p.u === route).length;
 async function presses(){
   const res = {};
   posts.length = 0;
-  const ab = document.getElementById("b-abort");
-  ab.click(); await wait(300);
-  res.abort_after_one = n("/api/remote/abort");
-  ab.click(); await wait(300);
-  res.abort_after_two = n("/api/remote/abort");
-  const p = posts.find(x => x.u === "/api/remote/abort");
-  res.abort_body = p ? JSON.parse(p.b) : null;
-  await wait(2500);
+  res.no_abort = !document.getElementById("b-abort");
   document.getElementById("b-hold").click(); await wait(300);
   res.hold = n("/api/remote/hold");
   // Stop show (Jeff, 2026-10-30): not there with nothing playing; with a
@@ -102247,7 +101806,7 @@ async function presses(){
   const lamp0 = () => { const t = document.querySelector('[data-lamp="0"]'); return t ? t.className : ""; };
   const lampBefore = lamp0(), gd = {};
   for(const [k, body] of [["confirmed", {ok:true, confirmed:true, text:"Disarm front row confirmed: flamesafe reports it off."}],
-      ["forced", {ok:true, confirmed:false, forced:true, text:"Deck did not answer: ALL groups disarm sent. Disarm front row forced (flamesafe did not report front row off within 1 s of the Disarm): the flame link has no one-group disarm, so the Abort's disarm was sent to every flame group, every hazer is off, and the show's flames stay at zero until Hold then Resume or a new run."}],
+      ["forced", {ok:true, confirmed:false, forced:true, text:"Deck did not answer: ALL groups disarm sent. Disarm front row forced (flamesafe did not report front row off within 1 s of the Disarm): the flame link has no one-group disarm, so the Stop's disarm was sent to every flame group, every hazer is off, and the show's flames stay at zero until Hold then Resume or a new run."}],
       ["notconf", {ok:true, confirmed:false, forced:true, text:"Not confirmed: ALL groups disarm sent. Disarm front row forced (flamesafe did not report front row off within 1 s of the Disarm): the rest."}],
       ["old", {ok:true, text:"Disarm front row sent."}]]){
     window.__answer = {re:/group-disarm/, body:body};
@@ -102263,7 +101822,7 @@ async function presses(){
   res.stale = {next:q("next-t").textContent, go_off:q("b-go").disabled, slot:q("al-what").textContent,
     arms:[...document.querySelectorAll("[data-arm]")].map(b => b.dataset.mode + (b.disabled ? ":off" : ":on")),
     armall_off:q("b-armall").disabled, hold_off:q("b-hold").disabled, stop_off:q("b-stop").disabled,
-    disall_off:q("b-disall").disabled, abort_off:q("b-abort").disabled};
+    disall_off:q("b-disall").disabled};
   res.routes = [...new Set(posts.map(x => x.u))];
   return res;
 }
@@ -102323,7 +101882,7 @@ async function fdPresses(){
   res.same = posts.filter(p => p.u === "/api/remote/alert").length;
   q("tabs").querySelector('[data-tab="day"]').click(); await wait(300);
   res.mini = ["m-hold", "m-stop", "m-disf"].map(id => shown(q(id)));
-  res.next_shown = shown(q("next")) && shown(q("b-abort"));
+  res.next_shown = shown(q("next"));
   posts.length = 0;
   q("m-hold").click(); await wait(200); q("m-disf").click(); await wait(200);
   res.mini_routes = posts.map(p => p.u);
@@ -102363,7 +101922,7 @@ function inactSnap(){
     return {id:b.dataset.ann || b.id, dis:b.disabled, fill:f ? getComputedStyle(f).display : "none", pe:getComputedStyle(b).pointerEvents};
   });
   s.hz = [...document.querySelectorAll("#hazers [data-hzb]")].map(b => ({dis:b.disabled, w:b.querySelector(".hw").textContent}));
-  s.safe = ["b-abort", "b-hold", "b-stop", "b-disall"].map(id => {
+  s.safe = ["b-hold", "b-stop", "b-disall"].map(id => {
     let op = 1; for(let p = q(id); p; p = p.parentElement) op *= Number(getComputedStyle(p).opacity);
     // Stop show is drawn only with something to stop, or no contact
     // (Jeff, 2026-10-30); otherwise its place is empty.
@@ -102425,7 +101984,7 @@ async function inact(){
     const fl = id => { const e = document.getElementById(id); return e && shown(e) ? (filtOf(e) ? filtOf(e).f : "none") : "hidden"; };
     out.day = {noact:document.body.classList.contains("noact"), steps:document.querySelectorAll("#d-steps .st").length,
       step_filter:st0 ? (filtOf(st0) ? filtOf(st0).f : "none") : "none",
-      emerg:Object.fromEntries(["b-abort", "m-hold", "m-stop", "m-disf", "m-disl"].map(id => [id, fl(id)])),
+      emerg:Object.fromEntries(["m-hold", "m-stop", "m-disf", "m-disl"].map(id => [id, fl(id)])),
       safe_ctl:[...document.querySelectorAll("#d-ctl .b.red, #d-ctl .b.safe, #d-ctl .b.redline")].filter(shown).map(e => filtOf(e) ? filtOf(e).f : "none")};
     // Text under the quiet tone keeps 4.5:1.
     out.day.lowc = inactSnap().lowc;
@@ -102530,16 +102089,16 @@ window.fetch = function(u, o){
 const wait = ms => new Promise(r => setTimeout(r, ms));
 async function go(){
   await wait(2500);
-  const q = id => document.getElementById(id), ab = q("b-abort");
-  const res = {broken:!q("broken").hidden, text:q("broken-t").textContent};
-  ab.click(); await wait(300);
-  res.after_one = posts.filter(p => p.u === "/api/remote/abort").length;
-  res.word = q("abort-w").textContent;
-  ab.click(); await wait(800);
-  const p = posts.filter(p => p.u === "/api/remote/abort");
+  const q = id => document.getElementById(id), sb = q("broken-stop");
+  const res = {broken:!q("broken").hidden, text:q("broken-t").textContent, abort:!!q("b-abort")};
+  sb.click(); await wait(300);
+  res.after_one = posts.filter(p => p.u === "/api/remote/stop").length;
+  res.word = q("broken-stop-l").textContent;
+  sb.click(); await wait(800);
+  const p = posts.filter(p => p.u === "/api/remote/stop");
   res.after_two = p.length; res.body = p.length ? JSON.parse(p[0].b) : null;
-  const A = ab.getBoundingClientRect(), at = document.elementFromPoint(A.left + A.width / 2, A.top + A.height / 2);
-  res.on_top = !!at && ab.contains(at);
+  const A = sb.getBoundingClientRect(), at = document.elementFromPoint(A.left + A.width / 2, A.top + A.height / 2);
+  res.on_top = !!at && sb.contains(at);
   res.size = [Math.round(A.width), Math.round(A.height)];
   res.after = q("broken-t").textContent;
   const pre = document.createElement("pre"); pre.id = "rack-measure";
@@ -102787,7 +102346,7 @@ function look(){
     msg: q("msg-t").textContent, msg_cls: q("msg").className,
     off_filt: getComputedStyle(off).filter, time: q("pm-time").value,
     time_dis: q("pm-time").disabled,
-    safe_dis: ["b-abort", "b-hold", "b-stop"].map(id => q(id) ? q(id).disabled : null),
+    safe_dis: ["b-hold", "b-stop"].map(id => q(id) ? q(id).disabled : null),
     right: Math.round(R.right), vw: innerWidth,
     xscroll: document.scrollingElement.scrollWidth - innerWidth,
     off_h: Math.round(off.getBoundingClientRect().height)};
@@ -102911,7 +102470,7 @@ def test_ui2_fuel_pump_in_a_browser():
                   and a["off_h"] >= 56,
                   f"{where}: the row is drawn, nothing off the side, Pump "
                   f"off 56 px or more: {a}")
-            check(a["safe_dis"] == [False, False, False],
+            check(a["safe_dis"] == [False, False],
                   f"{where}: Abort, Hold and Stop stay live: {a}")
             for k in ("first", "bad", "typed", "dead"):
                 x = r[k]
@@ -103112,14 +102671,14 @@ def test_ui2_calm_screens_and_brand():
                 d = r["day"]
                 emerg_ok = all(v in ("none", "hidden") or "saturate" not in v
                                for v in d["emerg"].values()) and \
-                    d["emerg"]["b-abort"] != "hidden" and \
+                    d["emerg"]["m-hold"] != "hidden" and \
                     all("saturate" not in v for v in d["safe_ctl"])
                 if kind == "signed out":
                     check(d["noact"] and d["steps"] and
                           "saturate" in d["step_filter"] and emerg_ok and
                           not d["lowc"],
                           f"{where}: DAY signed out: the steps go quiet "
-                          f"(4.5:1 kept), never Abort, Hold, Stop show or a "
+                          f"(4.5:1 kept), never Hold, Stop show or a "
                           f"Disarm: {d}")
                 else:
                     check(not d["noact"] and d["steps"] and
@@ -103319,11 +102878,6 @@ def test_ui2_show_tab_in_a_browser():
                 check(isinstance(m.get("spare"), int) and m["spare"] >= need,
                       f"{where}: {need} px or more to spare: "
                       f"{m.get('spare')} {m.get('rows')}")
-            ab = m["abort"]
-            check(ab["w"] == 96 and ab["h"] == 96 and
-                  ab["right"] <= 24 and ab["bottom"] <= 24,
-                  f"{where}: Abort is 96 px in the bottom right corner: "
-                  f"{ab}")
             pr = res.get("pr")
             if frag.startswith("?prhold"):
                 check(pr and pr["act"] == "pr-continue" and
@@ -103388,11 +102942,8 @@ def test_ui2_show_tab_in_a_browser():
                       f"refused: {fd}")
             p = res.get("presses")
             if frag.startswith("?presses"):
-                check(p and p["abort_after_one"] == 0 and
-                      p["abort_after_two"] == 1 and
-                      (p["abort_body"] or {}).get("confirmed") is True,
-                      f"{where}: Abort's first tap sends nothing, its "
-                      f"second sends 1.0's Abort: {p}")
+                check(p and p["no_abort"],
+                      f"{where}: there is no Abort sign: {p}")
                 check(p and p["hold"] == 1, f"{where}: Hold is one tap")
                 check(p and not p["stop_calm_shown"] and
                       p["stop_calm_posts"] == 0,
@@ -103451,21 +103002,20 @@ def test_ui2_show_tab_in_a_browser():
                       all(x == "disarm:on" for x in sl["arms"]) and
                       sl.get("armall_off") is True and
                       not any(sl.get(k) for k in ("hold_off", "stop_off",
-                                                  "disall_off",
-                                                  "abort_off")),
+                                                  "disall_off")),
                       f"{where}: with no contact nothing that acts on the "
                       f"screen's state can be pressed, every group's button "
-                      f"is Disarm, and Hold, Stop, Disarm all and Abort "
-                      f"still work: {sl}")
+                      f"is Disarm, and Hold, Stop and Disarm all still "
+                      f"work: {sl}")
                 check(p and set(p["routes"]) <= {
-                    "/api/remote/abort", "/api/remote/hold",
+                    "/api/remote/hold",
                     "/api/remote/stop", "/api/remote/run-off", "/api/remote/arm-hold",
                     "/api/remote/arm-release", "/api/remote/disarm-all",
                     "/api/remote/group-disarm"},
                       f"{where}: nothing else was posted: {p}")
     # The rules' request fails (safety review of #166, B1): the page says
-    # so over everything but Abort, and Abort still sends 1.0's Abort on
-    # its second tap, with nothing from the rules.
+    # so over everything, and its banner's own Stop still sends 1.0's Stop
+    # route on its second tap, with nothing from the rules.
     got = _rack_screen_in_chromium(chrome, two, _rack_status_pico(),
                                    ((1024, 768),), measure_js=_UI2_BROKEN_JS,
                                    frag="?tour=0", budget_ms=8000)
@@ -103475,12 +103025,14 @@ def test_ui2_show_tab_in_a_browser():
               "not fully loaded" in res.get("text", ""),
               f"{where}: the page says it did not load whole: {res!r}")
         check(isinstance(res, dict) and res.get("after_one") == 0 and
-              res.get("word") == "TAP AGAIN" and res.get("after_two") == 1 and
-              list((res.get("body") or {}).keys()) == ["confirmed", "seen"]
-              and res["body"]["confirmed"] is True and
-              res.get("on_top") and res.get("size") == [96, 96],
-              f"{where}: Abort still works: nothing on the first tap, "
-              f"1.0's Abort on the second, never covered: {res!r}")
+              res.get("word") == "Tap again" and res.get("after_two") == 1 and
+              list((res.get("body") or {}).keys()) == ["seen"] and
+              not res.get("abort") and res.get("on_top") and
+              min(res.get("size") or [0]) >= 56 and
+              "Stop" in res.get("after", ""),
+              f"{where}: the banner's own Stop still works: nothing on the "
+              f"first tap, 1.0's Stop route on the second, never covered, "
+              f"and the banner says what came back: {res!r}")
     print("  ok")
 
 
@@ -103663,10 +103215,11 @@ async function go(){
   res.prevented = [kd.defaultPrevented, ku.defaultPrevented];
   res.sel_after_focus = of("purge-select").length + of("purge-clear").length;
   gb.blur();
-  // Space on a focused Abort or Disarm flames presses it and never fires
-  // (third review of #169): its default is left alone, no purge beat goes.
+  // Space on a focused Disarm lasers or Disarm flames presses it and never
+  // fires (third review of #169): its default is left alone, no purge beat
+  // goes.
   res.emerg = {};
-  for(const id of ["b-abort", "m-disf"]){
+  for(const id of ["m-disl", "m-disf"]){
     posts.length = 0;
     const eb = q(id); eb.focus();
     const ed = new KeyboardEvent("keydown", kopt(false)); eb.dispatchEvent(ed); await wait(300);
@@ -103838,11 +103391,12 @@ def test_ui2_day_tab_in_a_browser():
               f"1): {res['fire_focused']} {res['prevented']} "
               f"{res['sel_after_focus']}")
         em = res.get("emerg") or {}
-        check(set(em) == {"b-abort", "m-disf"} and
+        check(set(em) == {"m-disl", "m-disf"} and
               all(v["focused"] and v["fire"] == 0 and
                   v["prevented"] == [False, False] for v in em.values()),
-              f"{where}: Space on a focused Abort or Disarm flames presses "
-              f"it and never fires the purge (third review of #169): {em}")
+              f"{where}: Space on a focused Disarm lasers or Disarm flames "
+              f"presses it and never fires the purge (third review of "
+              f"#169): {em}")
         check(res["clear_on_step"] >= 1 and res["clear_on_part"] >= 1 and
               res["clear_on_drop"] >= 1,
               f"{where}: leaving the Purge step or switching Startup and "
@@ -107513,19 +107067,8 @@ async function go(){
   res.save = {dis:q("fbt-save").disabled, why:q("fbt-why").textContent};
   res.msg = q("fbt-msg").textContent;
   res.mini = ["m-hold", "m-stop", "m-disf"].map(id => look(q(id)));
-  res.abort = look(q("b-abort"));
-  // Nothing of the editor under the Abort sign.
-  // (Only what can be seen: main scrolls, and what is scrolled out of it
-  // is not under anything.) And Abort is on top at its own centre.
-  const A = q("b-abort").getBoundingClientRect(), M = document.querySelector("main").getBoundingClientRect();
-  res.under = [...q("fbt").querySelectorAll("button, input, select")].filter(el => {
-    const r0 = el.getBoundingClientRect();
-    const r = {left:Math.max(r0.left, M.left), right:Math.min(r0.right, M.right), top:Math.max(r0.top, M.top), bottom:Math.min(r0.bottom, M.bottom)};
-    return shown(el) && r.left < r.right && r.top < r.bottom &&
-      r.left < A.right && A.left < r.right && r.top < A.bottom && A.top < r.bottom;
-  }).map(el => el.id || el.className);
-  const at = document.elementFromPoint(A.left + A.width / 2, A.top + A.height / 2);
-  if(!(at && q("b-abort").contains(at))) res.under.push("Abort is not on top");
+  // No Abort sign (removed, Jeff, 2026-10-30): nothing can be under it.
+  res.under = q("b-abort") ? ["an Abort sign is still drawn"] : [];
   // An edit: Air's start into the past of a frame 30, then a bad one.
   const air = document.querySelector('#fbt-rows [data-k="air"] .st');
   const typeIn = (el, v) => { el.value = v; el.dispatchEvent(new Event("input", {bubbles:true})); };
@@ -107894,12 +107437,12 @@ console.log(JSON.stringify(out));
                   all(r["h"] >= 44 for r in res["rows"]) and
                   not res["under"],
                   f"{where}: nothing off the side, fields big enough, "
-                  f"nothing under the Abort sign: {res['sw']} {res['vw']} "
+                  f"no Abort sign: {res['sw']} {res['vw']} "
                   f"{res['under']}")
             check(all(not x["dis"] and x["op"] == 1 and
                       "saturate" not in x["filt"] and x["shown"]
-                      for x in res["mini"] + [res["abort"]]),
-                  f"{where}: Hold, Stop show, Disarm flames and Abort are "
+                      for x in res["mini"]),
+                  f"{where}: Hold, Stop show and Disarm flames are "
                   f"there, never disabled or dimmed: "
                   f"{res['mini']} {res['abort']}")
             check("Last saved by Andy" in res["msg"] and
@@ -110836,16 +110379,12 @@ if __name__ == "__main__":
         test_deck_arm_journal_never_holds_the_arm_lock,
         test_api_conductor_reports_audio_loss,
         test_live_show_refuses_the_page_transport,
-        test_remote_abort_and_start_need_the_confirm,
-        test_remote_unconfirmed_abort_still_disarms_the_flames,
+        test_remote_start_needs_the_confirm_and_abort_is_gone,
         test_windows_supervisor_never_passes_bench_hooks,
         test_windows_supervisor_sets_madmapper_back_to_normal,
         test_engine_refuses_run_with_a_bench_hook_outside_the_soak,
         test_fire_ice_no_mirror_no_fault_on_every_abort,
-        test_remote_abort_disarms_with_no_show_live,
-        test_remote_abort_disarm_never_waits_on_the_tonight_save,
-        test_remote_reset_and_abort_1_ms_apart_under_a_slow_save,
-        test_deck_abort_with_no_show_reads_what_the_engine_did,
+        test_remote_stop_disarm_never_waits_on_the_tonight_save,
         test_deck_requests_share_one_no_proxy_opener,
         test_deck_reads_reset_after_an_engine_restart,
         test_remote_stale_state_refused_and_banner,
@@ -110857,7 +110396,7 @@ if __name__ == "__main__":
         test_startup_page_says_hold_space_and_this_page_selected,
         test_startup_page_readable_at_the_show_pc_sizes,
         test_rack_screen_says_the_rearm_wait,
-        test_rack_screen_abort_is_a_corner_stop_sign,
+        test_rack_screen_has_no_abort_and_stop_taps_like_it_did,
         test_rack_screen_one_button_per_flame_group,
         test_rack_screen_arm_all_and_disarm_all_toggle,
         test_rack_screen_nav_buttons_never_cut_off,

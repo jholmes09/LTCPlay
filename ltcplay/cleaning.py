@@ -716,8 +716,8 @@ class CleaningPanel:
             return self._stop_run(self._aborted, zeroed=True)
         link = self._link()
         if link is None or self._gen(link) != r["gen"]:
-            return self._stop_run("the flame link was zeroed (Stop, Hold, "
-                                  "Abort or a disarm)", zeroed=True)
+            return self._stop_run("the flame link was zeroed (Stop, Hold "
+                                  "or a disarm)", zeroed=True)
         if self._count() != r["disarms"]:
             return self._stop_run("a disarm was pressed")
         if self._locked_fixtures() != r["locked"]:
@@ -862,8 +862,8 @@ class CleaningPanel:
             link.purge_set(vals)
             r["fire_on"] = on
             if self._gen(link) != r["gen"]:
-                return self._stop_run("the flame link was zeroed (Stop, Hold, "
-                                      "Abort or a disarm)", zeroed=True)
+                return self._stop_run("the flame link was zeroed (Stop, Hold "
+                                      "or a disarm)", zeroed=True)
             state, _o, fs_why = self.status()
             if state != "armed":
                 return self._stop_run("the wave flamer is not armed any more "
