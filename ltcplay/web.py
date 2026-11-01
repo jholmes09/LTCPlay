@@ -2488,7 +2488,10 @@ def _attach_fireball_timeline(httpd):
         fb = fbc_mod.FireballCues(
             remote.fireball_timeline_store(),
             charge_get=lambda: getattr(remote, "fireball_charge", None),
-            journal=say, group_get=fireball_slots, live_get=live_slots)
+            journal=say, group_get=fireball_slots, live_get=live_slots,
+            # The show path's own sent values, before the Fireball page's
+            # frame (flamelink.show_sent, third review D-F1).
+            sent_get=lambda: getattr(link, "show_sent", None))
         fb.refresh()
     except Exception as e:                       # noqa: BLE001
         fb = fbc_mod.FireballCues(None, journal=say)
@@ -2551,6 +2554,9 @@ def _attach_fireball_charge(httpd):
     if fb is not None:
         fb.on_controls = lambda on, who, screen: tr.note_manual(on, who,
                                                                 screen)
+        # A Fuel or Air press waits for the charge record's mark on disk
+        # (round-6 review 3), and goes out anyway if it cannot be saved.
+        fb.manual_gate = tr.manual_gate
     _close_before = httpd.server_close
 
     def _close_charge():

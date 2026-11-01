@@ -2415,6 +2415,12 @@ class Remote:
                 self.pump_after_signout(
                     f"{_who} signed out on the {ctx.device}", ctx.user,
                     ctx.device, getattr(ctx, "token", "") or "")
+                # The Fireball page's channels end here too, at once, not on
+                # the page's next beat or the 0.25 s backstop (round-4
+                # review, s28/s48): this screen's run, and on the show
+                # machine (every session made here ended) any run.
+                self.fireball_signout_cut(
+                    f"{_who} signed out on the {ctx.device}", ctx)
             if ended:
                 # Only this device's own hold (a hold belongs to the device
                 # it came from), and only when a sign-in really ended: a
@@ -3553,18 +3559,10 @@ class Remote:
         ph = self.playhead
         if not ph.applies():
             ph = None
-        fb = self.fireball
-        if ph is not None and name in ("play-from", "loop") and \
-                fb is not None and fb.active():
-            # One source of fire values at a time: the Fireball page has a
-            # channel on (it cuts itself once Run is pressed; this covers
-            # the moment between).
-            why = ("A Fireball channel is on. Turn the Fireball page off "
-                   "first. Nothing was played.")
-            self._journal(who, screen, name, "refused",
-                          f"{label}'s {name} on the {screen} was refused. "
-                          f"{why}")
-            return 409, {"error": why}
+        # The Fireball page works at any time (Jeff, 2026-10-30): a
+        # Programming Play from or Loop is never refused because a Fireball
+        # channel is on (round-4 review); the page's frame is not the show's
+        # and a landing drops only the show's values (flamelink.py).
 
         def here():
             if ph is not None:
@@ -5707,6 +5705,90 @@ class Remote:
         except Exception as e:                   # noqa: BLE001
             return f"the engine's state could not be read ({type(e).__name__})."
         return ""
+
+    FIREBALL_USERS_BUSY_S = 1.0
+
+    def fireball_signed_out(self, token, who):
+        """For the Fireball page's run (round-5 review B 2, the fuel pump's
+        rule, its own words): why the sign-in that pressed may no longer
+        hold a Fireball channel, or "". Signed out (also after the last
+        show), removed, or a role that may no longer arm. Never waits on
+        the users lock: busy is "still signed in" for up to
+        FIREBALL_USERS_BUSY_S. Never raises."""
+        u = getattr(self, "users", None)
+        if u is None:
+            return ""
+        nobody = who or "the person who pressed"
+        try:
+            state, s = u.session_check(token)
+        except Exception:                        # noqa: BLE001
+            state, s = "broken", None
+        if state == "off":
+            return ""
+        busy = getattr(self, "_fb_users_busy", None)
+        if busy is None:
+            busy = self._fb_users_busy = {}
+        if state == "busy":
+            now = self.clock()
+            # [busy since, last looked at]: the second moves on every look
+            # (round-8 review 3), so an entry still being checked is never
+            # taken for an old one.
+            ent = busy.get(token)
+            if ent is None:
+                ent = busy[token] = [now, now]
+            ent[1] = now
+            if now - ent[0] > self.FIREBALL_USERS_BUSY_S:
+                return "the sign-in could not be confirmed (the users file "\
+                       "was busy too long)"
+            return ""
+        busy.pop(token, None)
+        if state == "broken":
+            return "the sign-in could not be confirmed (the users file "\
+                   "cannot be read)"
+        if state != "ok" or s is None or not token:
+            return f"{nobody} signed out"
+        role = s.get("role")
+        try:
+            may = self.users.may(role, "arm")
+        except Exception:                        # noqa: BLE001
+            may = False
+        if not may:
+            return (f"{nobody} may no longer use the Fireball controls "
+                    f"(their role is now {role or 'none'})")
+        return ""
+
+    FIREBALL_BUSY_KEEP_S = 120.0
+
+    def fireball_run_ended(self, token):
+        """A Fireball run ended. The "users lock busy" time kept for its
+        sign-in is NOT dropped here (round-7 review 8: that gave every new
+        press a fresh grace, so an unconfirmable sign-in fired in bursts);
+        it goes when a check succeeds, or when nobody has looked at that
+        sign-in for FIREBALL_BUSY_KEEP_S."""
+        busy = getattr(self, "_fb_users_busy", None)
+        if busy:
+            now = self.clock()
+            for t in [t for t, ent in busy.items()
+                      if now - ent[1] > self.FIREBALL_BUSY_KEEP_S]:
+                busy.pop(t, None)
+
+    def fireball_signout_cut(self, why, ctx):
+        """A sign-out that ended a session: the Fireball page's run that
+        sign-in started, or that user started on this screen, or (on the
+        show machine itself, where every sign-in made there ended) any run
+        started there, is cut now (round-5 review F5, the fuel pump's
+        rule). Never raises."""
+        fb = self.fireball
+        if fb is None:
+            return False
+        try:
+            return fb.cut_signed_out(
+                why, token=getattr(ctx, "token", "") or "",
+                user=ctx.user or "", device=ctx.device,
+                local=bool(ctx.local), who=ctx.user or "",
+                screen=ctx.device)
+        except Exception:                        # noqa: BLE001
+            return False
 
     def timed_purge_cut(self, why, who="", screen="", token=None,
                         group=None):

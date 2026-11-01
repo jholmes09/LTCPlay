@@ -164,10 +164,11 @@ as written (a fireball group's machines must still be kind fireball).
 
 **A fireball is never purged from this page.** (Its channels, the Purge
 channel among them, are worked one by one on the Fireball page: OPERATOR.md,
-"The Fireball page", and fireball.py. That page sends on this page's purge
-frame and by its rules, one source at a time: a purge selection here waits
-while a Fireball channel is on, and the Fireball page waits for a purge
-selection.) Its channels are a sequence (Fuel and Air
+"The Fireball page", and fireball.py. That page sends its own frame on the
+engine's flame link, during a show too, and only on the fireball's five
+fire channels; with this page's purge it is one source at a time: a purge
+selection here waits while a Fireball channel is on, and the Fireball page
+waits for a purge selection.) Its channels are a sequence (Fuel and Air
 charge, then the Igniter, then Valve Open), and the purge writes one value to every slot at once,
 which is not a valid sequence and could be dangerous. The tile says "Never
 purged: a fireball has no purge sequence yet"; a click on any machine of a

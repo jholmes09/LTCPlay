@@ -545,7 +545,17 @@ group must list five fire slots" and does nothing.
 - **Valve Open** and **Igniter** are on only while your finger is on the
   button. Lift it and they go off.
 
-ON is 255 on that channel. Nothing on this page arms. Arm the Fireball as
+ON is 255 on that channel. A **Fuel Charge or Air Charge** press is held
+for the few milliseconds the charge record needs to save its PENDING mark
+(see "The fuel and air charge"); if the record cannot be saved it goes out
+anyway and both tanks read NOT KNOWN. Fuel and Air are toggles and the
+page keeps sending while they are on, so a quick tap is never lost: the
+press is sent at the next beat (the answer says "held" meanwhile, and
+the pad says WAITING, not ON). If the charge record does not answer in 2
+seconds (a hung disk) the press is **dropped**, everything goes off, and
+the page says so: release and press again. It is never sent late. The mark still reaches the disk meanwhile, so on a
+slow disk a second press within 5 seconds goes straight out.
+Nothing on this page arms. Arm the Fireball as
 always, with its hold to arm (the show screen's button or its Stream Deck
 key), signed in. Until it is armed every button is grey, says why, and
 nothing is sent: flamesafe keeps every Fireball channel at zero, the Valve
@@ -555,24 +565,50 @@ and turns them all off when it disarms (if one still shows ON, it says "turn
 Fuel, Air, Purge off before arming").
 
 **Everything goes off by itself** (within a quarter of a second) on: Stop,
-Hold, Abort, Disarm Fireball, Disarm all flame groups or the Fireball's
-deck key; flamesafe not reporting; leaving the page, closing it or hiding
-it; this page's status not being live; signing out; the connection
-dropping; and the All off button (any screen). Losing focus (another window
+Abort, Disarm Fireball, Disarm all flame groups or the Fireball's deck
+key; the Fireball locked out; the flame link lost, a single frame to
+flamesafe that could not be sent, or frames stopping for more than
+flamesafe's own fire_hold_ms (100 ms unless its config says otherwise;
+a stall inside the engine's own reading counts too, and so does a Hold or
+the end of a show that comes during one: it never sends a channel
+flamesafe has already zeroed); flamesafe not reporting; leaving the page, closing it or hiding
+it; this page's status not being live; signing out (at once, at the
+engine: the run that sign-in started, or that person's run on that
+screen, and on the show PC every run started there; never someone
+else's run on another iPad); losing the right to arm (a role changed,
+the person removed, a password reset, the sign-out after the last
+show); the connection dropping; and the All off button (any screen). Losing focus (another window
 clicked) lets go of Valve Open and Igniter. After any of these nothing
 comes back on by itself: press again.
 
-**When it will not work** it says why in plain words: a show live or on
-Hold, an Abort standing, Run pressed (the show file owns the channels),
-live flame programming on, a purge selected
-on the Startup page (and that purge waits while a Fireball channel is on),
-any screen in Arrange mode, the Fireball locked out, or the purge switch
-off (`purge_arming`, and from an iPad `screen_arming`, in
-ltcplay_remote.json). One screen at a time. Signed out it is view only;
-turning a channel on needs the arm permission (an operator or admin), and
-All off always works. The values go out the way the Startup page's purge
-does, on the engine's own flame link to flamesafe, which stays the only
-program that writes to the flame node.
+**During a show too** (Jeff, 2026-10-30: Andy may start any phase by hand
+at any time). The page works while a show plays, while Run is pressed and
+during Programming playback, and Programming's Play from and Loop work
+with a Fireball channel on (it stays on). On each Fireball channel the higher of the
+show's value (its FSEQ, or its fireball timeline) and this page's goes
+out, so the page can add a channel the show has off, and can never turn
+off one the show has on. The page shows the fuel and air charge record
+and, when the timeline skipped a charge, why. **Fuel Charge or Air Charge
+pressed while that tank is already charged is a top-off, not a double
+charge**: the button says "Charged: a press is a top-off", and the
+journal names who topped it off. A tank charged by hand is not charged
+again by the timeline in that show (its stage is skipped and says so).
+
+**A Hold does not turn the page off** (Jeff, 2026-10-30). Hold, and the
+end of a show, zero the show's own fireball values (its FSEQ or its
+timeline); what you hold on this page stays on through them.
+
+**When it will not work** it says why in plain words: an Abort standing,
+live flame
+programming on, a purge selected on the Startup page (and that purge
+waits while a Fireball channel is on), any screen in Arrange mode, the
+Fireball locked out, or the purge switch off (`purge_arming`, and from an
+iPad `screen_arming`, in ltcplay_remote.json). One screen at a time.
+Signed out it is view only; turning a channel on needs the arm permission
+(an operator or admin), and All off always works. The values go out on
+the engine's own flame link to flamesafe, which stays the only program
+that writes to the flame node, and only on the Fireball's five channels:
+never on 77, never on any other channel.
 
 **First test at the rack, fuel valve closed and the key switch on test or
 off, with Andy:**
@@ -585,8 +621,9 @@ off, with Andy:**
    follows, and goes off when pressed again.
 4. Hold Valve Open, then Igniter: on while held, off the moment you lift.
 5. With Fuel Charge on: press Disarm Fireball, then (armed again) Abort,
-   Stop, Hold, the Fireball's deck key, and close the page. Each time every
-   channel goes off at once and stays off.
+   Stop, the Fireball's deck key, and close the page. Each time every
+   channel goes off at once and stays off. Then with Fuel Charge on press
+   Hold: it stays on (a Hold never turns the page off); Stop turns it off.
 6. Pull the network cable of the iPad (or close the browser) while holding
    Valve Open: it goes off within a second.
 7. Only then open the fuel valve, one channel at a time.
