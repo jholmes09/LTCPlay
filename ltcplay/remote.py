@@ -5751,12 +5751,20 @@ class Remote:
                     f"(their role is now {role or 'none'})")
         return ""
 
+    FIREBALL_BUSY_KEEP_S = 120.0
+
     def fireball_run_ended(self, token):
-        """A Fireball run ended: forget the "users lock busy" time kept for
-        its sign-in (round-6 review 9)."""
+        """A Fireball run ended. The "users lock busy" time kept for its
+        sign-in is NOT dropped here (round-7 review 8: that gave every new
+        press a fresh grace, so an unconfirmable sign-in fired in bursts);
+        it goes when a check succeeds, or when nobody has looked at that
+        sign-in for FIREBALL_BUSY_KEEP_S."""
         busy = getattr(self, "_fb_users_busy", None)
         if busy:
-            busy.pop(token, None)
+            now = self.clock()
+            for t in [t for t, since in busy.items()
+                      if now - since > self.FIREBALL_BUSY_KEEP_S]:
+                busy.pop(t, None)
 
     def fireball_signout_cut(self, why, ctx):
         """A sign-out that ended a session: the Fireball page's run that

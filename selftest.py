@@ -91359,6 +91359,8 @@ def test_fireball_panel_rules():
         else answers[0]
     P.t[0] += 0.05
     code, out = beat({"fuel", "valve"}, run="cg", seq=1)
+    check(out.get("held") == ["fuel"],
+          f"the answer says the Fuel is held for the mark: {out}")
     check(code == 200 and link.cur[56] == 255 and link.cur[54] == 0,
           f"Fuel + Valve while the mark is on its way: the Valve goes, the "
           f"Fuel waits: {out} {link.cur[54]} {link.cur[56]}")
@@ -91366,9 +91368,10 @@ def test_fireball_panel_rules():
     beat({"fuel", "valve"}, run="cg", seq=2)
     check(link.cur[54] == 0, "and the next beat too")
     P.t[0] += 0.05
-    beat({"fuel", "valve"}, run="cg", seq=3)
-    check(link.cur[54] == 255 and link.cur[56] == 255,
-          "then on, once the mark is on disk")
+    code, out = beat({"fuel", "valve"}, run="cg", seq=3)
+    check(link.cur[54] == 255 and link.cur[56] == 255 and "held" not in out,
+          "then on, once the mark is on disk: a toggle stays on and the "
+          "next beat sends it, so a tap is not lost")
     fb.off("reset")
     answers[:] = ["wait"]
     P.t[0] += 0.05
@@ -91965,10 +91968,44 @@ def test_fireball_signed_out_is_view_only():
               f"{P.fb.last_cut!r}")
         # A run's end makes the engine forget the "users lock busy" time it
         # kept for that sign-in (round-6 review 9).
-        rem._fb_users_busy = {"tokA": 1.0, "tokB": 2.0}
-        rem.fireball_run_ended("tokA")
-        check(rem._fb_users_busy == {"tokB": 2.0},
-              f"a run's end drops its busy entry: {rem._fb_users_busy}")
+        # The busy time is NOT dropped at a run's end (round-7 review 8: a
+        # new press would get a fresh grace), only when nobody has looked
+        # for FIREBALL_BUSY_KEEP_S.
+        import threading as _th
+        hold, release = _th.Event(), _th.Event()
+
+        def hold_users_lock():
+            with rem.users._lock:
+                hold.set()
+                release.wait(10)
+        th = _th.Thread(target=hold_users_lock, daemon=True)
+        th.start()
+        hold.wait(5)
+        real_busy_s = rem.FIREBALL_USERS_BUSY_S
+        rem.FIREBALL_USERS_BUSY_S = 0.2
+        try:
+            rem._fb_users_busy = {}
+            a_ = rem.fireball_signed_out("tokBusy", "Zed")
+            time.sleep(0.3)
+            b_ = rem.fireball_signed_out("tokBusy", "Zed")
+            rem.fireball_run_ended("tokBusy")
+            c_ = rem.fireball_signed_out("tokBusy", "Zed")
+            check(a_ == "" and "could not be confirmed" in b_ and
+                  "could not be confirmed" in c_ and
+                  "tokBusy" in rem._fb_users_busy,
+                  f"the users lock busy: a grace, then refused; a run's end "
+                  f"and a new press do not start the grace again: "
+                  f"{a_!r} {b_!r} {c_!r}")
+        finally:
+            rem.FIREBALL_USERS_BUSY_S = real_busy_s
+            release.set()
+            th.join(5)
+        rem._fb_users_busy = {"old": rem.clock() - 500, "fresh": rem.clock()}
+        rem.fireball_run_ended("x")
+        check(set(rem._fb_users_busy) == {"fresh"},
+              f"an entry nobody looked at for a long while goes: "
+              f"{rem._fb_users_busy}")
+        rem._fb_users_busy = {}
         fsrc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  "ltcplay", "fireball.py"),
                     encoding="utf-8").read()
@@ -92717,6 +92754,8 @@ def test_fireball_doc_in_plain_words():
                  "frames stopping for more than flamesafe's own "
                  "fire_hold_ms",
                  "a stall inside the engine's own reading counts too",
+                 "never sends a channel flamesafe has already zeroed",
+                 "a quick tap is never lost",
                  "A **Fuel Charge or Air Charge** press is held for the few "
                  "milliseconds",
                  "never someone else's run on another iPad",
@@ -102865,10 +102904,15 @@ def test_fireball_timeline_docs_in_plain_words():
                  "A Fuel or Air press on the Fireball page** is held for "
                  "the few milliseconds",
                  "the press **still goes out**",
-                 "a second tiny marker is written in the user's temp "
-                 "folder",
+                 "a second tiny marker is written, in the settings folder "
+                 "and in the user's own folder",
                  "comes off again after 5 seconds",
-                 "Tanks are empty is refused while that stands"):
+                 "Tanks are empty is refused while that stands",
+                 "never the temp folder, which a reboot",
+                 "automatic charging is\n  **off**",
+                 "A marker that cannot be read\n  counts as present",
+                 "it is judged on every status of flamesafe",
+                 "A charge channel that is on keeps the mark asked for"):
         check(" ".join(need.split()) in " ".join(c.split()),
               f"OPERATOR.md's charge section says {need!r}")
     s = _fb_doc_part("OPERATOR.md", "### In a show set to Timeline", "\n### ")
@@ -102891,6 +102935,7 @@ def test_fireball_timeline_docs_in_plain_words():
                  "stays skipped until the FSEQ turns it off",
                  "A Programming Ahead or Back inside a play counts as a "
                  "landing",
+                 "so does a pause of more than a quarter of a second",
                  "under any\nspelling",
                  "not fired in this play", "next time a show cue starts",
                  "finishes its own stages, Valve Open included",
@@ -103900,17 +103945,39 @@ def test_fireball_charge_state():
         C43.tr.pump()
         check(_j.load(open(C43.tr.path))["tanks"]["fuel"]["state"] ==
               "empty", "EMPTY on disk")
+        marker_writes = []
+        real_wmf = C43.tr._write_marker_file
+
+        def counting_wmf(path, rev):
+            marker_writes.append(path)
+            return real_wmf(path, rev)
+        C43.tr._write_marker_file = counting_wmf
         C43.tr._write = lambda doc: (_ for _ in ()).throw(
             PermissionError(13, "folder refuses new files"))
         g1 = C43.tr.manual_gate()
+        C43.tr.pump()                   # the record cannot be written
+        g2 = C43.tr.manual_gate()       # the marker is queued: wait
+        check(g1 == "wait" and g2 == "wait" and not marker_writes,
+              f"the marker is the writer thread's, not the gate's: {g1} "
+              f"{g2} {marker_writes}")
+        C43.tr.pump()                   # the marker is written
+        gates = [C43.tr.manual_gate() for _ in range(10)]
         C43.tr.pump()
-        g2 = C43.tr.manual_gate()
-        check(g1 == "wait" and g2 == "ok" and C43.tr.state("fuel") == U and
+        check(gates == ["ok"] * 10 and C43.tr.state("fuel") == U and
               C43.tr.state("air") == U and
               "cannot be saved" in C43.tr.view()["fault"] and
-              os.path.exists(C43.tr._alt),
+              len(marker_writes) == 2 and
+              os.path.exists(os.path.join(d43, FC.FILE + ".marker")) and
+              os.path.exists(C43.tr._alts[1]),
               f"the record cannot be saved: the press goes out, both NOT "
-              f"KNOWN, a marker written elsewhere: {g1} {g2}")
+              f"KNOWN, markers in the settings folder and the user's own "
+              f"folder, written once not on every beat: {gates} "
+              f"{len(marker_writes)}")
+        check(len([1 for a, k in C43.lines if a[2] == "unknown" and
+                   "cannot be saved" in a[3]]) == 2,
+              f"one fault line when it starts and one when the marker is "
+              f"done, not one a beat: "
+              f"{[a[3][:40] for a, k in C43.lines if a[2] == 'unknown']}")
         C43.tr.note_manual({"fuel"}, "Andy", "Rack screen")
         C43.tr.see(_fbc_frame(fuel=True), "armed")
         check(C43.tr.state("fuel") == C_, "and Andy's Fuel is CHARGED")
@@ -103921,10 +103988,175 @@ def test_fireball_charge_state():
               f"the restart reads NOT KNOWN though the record says EMPTY: "
               f"{C44.tr.state('fuel')} {C44.tr.fault}")
         C44.tr.pump()
-        check(not os.path.exists(C44.tr._alt),
-              "the marker is taken away once a newer record is on disk")
+        check(not any(os.path.exists(x) for a_ in C44.tr._alts
+                      for x in (a_, a_ + ".tmp")),
+              "the markers are taken away once a newer record is on disk")
         C45 = _fbc(d43)
         check(C45.tr.state("fuel") == U, "and NOT KNOWN is what is on disk")
+        # Round 7, review 1: the marker is never in the temp folder; a
+        # marker that cannot be read, or the leftover of one being written,
+        # counts as present; and when no marker can be written anywhere
+        # automatic charging is off until an admin confirms the tanks.
+        import tempfile as _tf
+        CD = FC.ChargeTracker(_fresh("r46"), threaded=False)
+        check(CD._alts[0].endswith(FC.FILE + ".marker") and
+              CD._alts[1].startswith(os.path.join(
+                  os.path.expanduser("~"), ".ltcplay")) and
+              not any(a_.startswith(_tf.gettempdir() + os.sep) and
+                      not a_.startswith(work) for a_ in CD._alts[1:]),
+              f"the markers: the settings folder and ~/.ltcplay, not temp: "
+              f"{CD._alts}")
+        for what, content in (("unreadable", "{half a mar"),
+                              ("tmp only", None)):
+            d47 = _fresh("r47" + what.replace(" ", ""))
+            C47 = _fbc(d47)
+            C47.tr.pump()
+            target = C47.tr._alts[1] if content else \
+                C47.tr._alts[1] + ".tmp"
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "w") as fh:
+                fh.write(content or '{"rev": ')
+            C48 = _fbc(d47)
+            check(C48.tr.state("fuel") == U and C48.tr.state("air") == U,
+                  f"a marker that is {what}: NOT KNOWN")
+            C48.tr.pump()
+            check(not os.path.exists(target) and
+                  _fbc(d47).tr.state("fuel") == U,
+                  f"{what}: taken away once a newer record is on disk")
+        # An unreadable marker beside a readable old one is still present.
+        d54 = _fresh("r54")
+        C54 = _fbc(d54)
+        C54.tr.pump()
+        os.makedirs(os.path.dirname(C54.tr._alts[1]), exist_ok=True)
+        with open(C54.tr._alts[0], "w") as fh:
+            fh.write('{"rev": 1}')           # old: the record is newer
+        with open(C54.tr._alts[1], "w") as fh:
+            fh.write("{half a mar")          # cannot be read
+        check(_fbc(d54).tr.state("fuel") == U,
+              "one marker unreadable beside an old readable one: NOT KNOWN")
+        # Atomic: a crash between the write and the rename leaves no
+        # half-written marker under its own name.
+        C53 = _fbc(_fresh("r53"))
+        real_replace_ = os.replace
+        os.replace = held
+        try:
+            try:
+                C53.tr._write_marker_file(C53.tr._alts[0], 123)
+            except PermissionError:
+                pass
+        finally:
+            os.replace = real_replace_
+        check(not os.path.exists(C53.tr._alts[0]) and
+              os.path.exists(C53.tr._alts[0] + ".tmp"),
+              "a marker is written under another name and renamed")
+        d49 = _fresh("r49")
+        C49 = _fbc(d49)
+        C49.tr.pump()
+        C49.tr._write = lambda doc: (_ for _ in ()).throw(
+            PermissionError(13, "folder refuses new files"))
+        C49.tr._write_marker_file = lambda path, rev: (_ for _ in ()).throw(
+            PermissionError(13, "disk full"))
+        C49.tr.manual_gate()
+        C49.tr.pump()
+        C49.tr.manual_gate()
+        C49.tr.pump()
+        check(C49.tr.manual_gate() == "ok" and C49.tr.auto_off and
+              "automatic charging is OFF" in C49.tr.view()["fault"] and
+              C49.tr.view()["auto_off"],
+              f"no marker anywhere: the press goes out, automatic charging "
+              f"is off: {C49.tr.view()['fault']}")
+        del C49.tr._write
+        C49.tr.pump()
+        check(C49.tr.charge_ready() == "failed" and
+              C49.tr.manual_gate() == "ok",
+              "automatic charging stays off after the record works again; "
+              "the Fireball page's presses do not ask for it")
+        C49.tr.see(_fbc_frame(valve=True), "armed")
+        C49.tr.see(_fbc_frame(), "armed")
+        check(C49.tr.state("fuel") == E and C49.tr.charge_ready() == "failed",
+              "and after a shot has made both EMPTY")
+        ok49, t49 = C49.tr.confirm_empty("Andy", "Rack screen")
+        check(ok49 and not C49.tr.auto_off and "automatic charging is "
+              "allowed again" in t49 and C49.tr.charge_ready() != "failed",
+              f"an admin's confirmation turns it back on, though no tank is "
+              f"NOT KNOWN: {t49}")
+        # Review 6: flamesafe.json against the running flamesafe is judged
+        # on every status, not only while a show computes frames.
+        C50 = _fbc(None)
+        fileg = {"v": [60, 61, 62, 63, 64]}
+        liveg = {"v": [55, 56, 57, 58, 59]}
+        C50.tr._file_get = lambda: fileg["v"]
+        C50.tr._flames = lambda: {
+            "connected": True, "stale": False, "age_ms": 10,
+            "groups": [{"name": "fireball", "armed": "armed",
+                        "fire_slots": list(liveg["v"]),
+                        "sent_fire": [0, 0, 0, 0, 0]}]}
+        C50.tr._read_armed()
+        check(C50.tr.state("fuel") == U and "flamesafe.json puts the "
+              "fireball on" in C50.tr.ext_fault and
+              not C50.tr.confirm_empty("Andy")[0],
+              f"file 60 to 64, live 55 to 59, no show playing: NOT KNOWN, "
+              f"Tanks are empty refused: {C50.tr.ext_fault}")
+        fileg["v"] = [55, 56, 57, 58, 59]
+        C50.tr._read_armed()
+        check(C50.tr.ext_fault == "" and C50.tr.confirm_empty("Andy")[0],
+              "the config fixed: the fault goes by itself, without a show")
+        fileg["v"] = liveg["v"] = [60, 61, 62, 63, 64]
+        C50.tr._read_armed()
+        check(C50.tr.ext_fault == "" and "not 55 to 59" in
+              C50.tr.group_fault, f"both moved together: no 'disagree' text, "
+                                  f"the off-55-to-59 one: "
+                                  f"{C50.tr.ext_fault!r} {C50.tr.group_fault}")
+        # Review 3: a slow marker write (a 0.5 s fsync) never holds the
+        # sender's observe() or the gate: it is the writer thread's alone.
+        d52 = _fresh("r52")
+        T52 = FC.ChargeTracker(d52, threaded=True,
+                               alt_dir=os.path.join(d52, "_alt"))
+        try:
+            T52._write = lambda doc: (_ for _ in ()).throw(
+                PermissionError(13, "folder refuses new files"))
+            real52 = T52._write_marker_file
+
+            def slow_marker(path, rev):
+                time.sleep(0.5)
+                return real52(path, rev)
+            T52._write_marker_file = slow_marker
+            worst_obs = worst_gate = 0.0
+            t_end = time.monotonic() + 3.0
+            gate_ok = False
+            while time.monotonic() < t_end and not gate_ok:
+                t0 = time.perf_counter()
+                g = T52.manual_gate()
+                worst_gate = max(worst_gate, time.perf_counter() - t0)
+                t0 = time.perf_counter()
+                T52.observe("t", _fbc_frame(), True)
+                worst_obs = max(worst_obs, time.perf_counter() - t0)
+                gate_ok = g == "ok"
+                time.sleep(0.02)
+            check(gate_ok and worst_obs < 0.15 and worst_gate < 0.15,
+                  f"a 0.5 s marker write: the sender's observe() and the "
+                  f"gate stay fast, the press goes out after it: gate ok "
+                  f"{gate_ok}, observe {worst_obs * 1000:.0f} ms, gate "
+                  f"{worst_gate * 1000:.0f} ms")
+        finally:
+            T52.close()
+        # Review 7: the mark is asked for again while a charge channel is
+        # on (a charge carried on for longer than the idle time keeps it).
+        C51 = _fbc(_fresh("r51"))
+        C51.tr.pump()
+        C51.tr.charge_ready()
+        C51.tr.pump()
+        for _ in range(20):
+            C51.tr.observe("t", _fbc_frame(fuel=True), True)
+            C51.t[0] += 0.4
+            C51.tr.observe("t", _fbc_frame(fuel=True), True)
+            C51.tr._read_armed()
+        check(C51.tr.pending, "a charge channel on keeps the mark past the "
+                              "idle time")
+        C51.tr.pending = False
+        C51.tr.observe("t", _fbc_frame(air=True), True)
+        C51.tr._read_armed()
+        check(C51.tr.pending, "and asks for it when there is none")
         # A press on the Fireball page asks for the mark, never waits.
         d36 = _fresh("r36")
         C36 = _fbc(d36)
@@ -104657,10 +104889,13 @@ def test_fireball_cues_rules():
             rigs.append(R)
             R.fq._group, R.fq._live = fgrp, lgrp
             g = R.frame(40, base=full)
+            from ltcplay import fireball_charge as _FCm
             check(all(g[x - 1] == 0 for x in range(55, 65)) and
                   g[0] == 255 and g[64] == 255 and
                   "flamesafe.json puts the fireball on" in R.fq.fault and
-                  len(R.tank.ext) == 1 and "60" in R.tank.ext[0],
+                  len(R.tank.ext) == 1 and "60" in R.tank.ext[0] and
+                  R.tank.ext[0] == _FCm.group_mismatch_text(fgrp, lgrp) and
+                  R.tank.ext[0] in R.fq.fault,
                   f"{what}: 55 to 64 zero from the show, a fault, the "
                   f"charge record told: {R.fq.fault}")
             g = R.frame(41, base=full)
@@ -104728,6 +104963,27 @@ def test_fireball_cues_rules():
             R.frame(f)
         got = [R.frame(f)[54] for f in range(20, 25)]
         check(not any(got), "and a jump back is the same")
+        # Round 7, review 5: a forward seek SHORTER than a pause is no
+        # jump to the clock, but the gap itself is a landing.
+        R = _fbq_rig([_st("fuel", "00:00:01:00", 2)])
+        rigs.append(R)
+        R.tank.ready = ["wait"] * 9 + ["ok"]
+        for f in range(0, 5):
+            R.frame(f)
+        R.clk[0] += 10.0                       # LTC paused for 10 s
+        got = [R.frame(f)[54] for f in range(45, 95)]
+        check(not any(got), f"a 5 s seek after a 10 s pause into the Fuel "
+                            f"window while the mark is on its way: quiet: "
+                            f"{got.count(255)}")
+        R = _fbq_rig([], source="fseq")
+        rigs.append(R)
+        for f in range(0, 5):
+            R.frame(f)
+        R.clk[0] += 10.0
+        R.tank.ready = ["wait", "wait", "ok"]
+        got = [R.frame(f, base=base)[54] for f in range(50, 56)]
+        check(got == [0] * 6, f"and an FSEQ charge after the pause: held "
+                              f"until the FSEQ turns it off: {got}")
         R = _fbq_rig([], source="fseq")
         rigs.append(R)
         for f in range(0, 5):
@@ -106080,6 +106336,37 @@ def test_fireball_manual_merged_on_the_flame_link():
               f"page's Fuel {'dropped' if dropped_ else 'kept'}: "
               f"{seen_[-1][54]}")
     lk.timing_limit_ms = 100
+    # A Hold or a show's end during a stall (round-7 review 4): the zero
+    # frame carries the page's frame while frames are running, but not a
+    # channel flamesafe has already zeroed.
+    fl_ = R.fl
+    sent_vals = []
+    real_enc = fl_.encode_flame
+    fl_.encode_flame = lambda *a, **k: (sent_vals.append(a[4]),
+                                        real_enc(*a, **k))[1]
+    try:
+        lk.send_frame()
+        d4 = getattr(lk, "manual_drops", 0)
+        lk.manual_set(page(s57=255), lk.abort_id, d4)
+        R.clk[0] += 0.03
+        lk.zero()
+        check(sent_vals[-1][56] == 255,
+              "a Hold with frames running: the page's Valve Open stays "
+              "(Jeff: a Hold does not end the page)")
+        lk.release()
+        lk.send_frame()
+        d4 = getattr(lk, "manual_drops", 0)
+        lk.manual_set(page(s57=255), lk.abort_id, d4)
+        R.clk[0] += 0.12                    # a stall
+        lk.zero()
+        check(sent_vals[-1][56] == 0 and
+              getattr(lk, "manual_drops", 0) == d4 + 1 and lk._manual is None,
+              f"a Hold after a 120 ms stall: flamesafe has zeroed the Valve "
+              f"and the zero frame does not send it again: "
+              f"{sent_vals[-1][56]}")
+    finally:
+        fl_.encode_flame = real_enc
+    lk.release()
     lk._sock = None
     lk.observer = None
     R.cue = [0] * 512

@@ -1707,6 +1707,15 @@ class FlameLink:
             if m is None or m[2] != self.abort_id or \
                     now - m[1] > MANUAL_HOLD_S or now < m[1]:
                 return bytes(out)
+            # Frames stopped for longer than flamesafe's fire hold: it has
+            # already zeroed the page's channels, and a Hold or a show's
+            # end that comes now must not send them again (round-7 review
+            # 4: the zero frame carried a held Valve Open back).
+            last = self._last_frame_at
+            if last is not None and now - last > self.manual_stall_s():
+                self._manual = None
+                self.manual_drops += 1
+                return bytes(out)
             for s in self.manual_slots:
                 out[s - 1] = m[0][s - 1]
         except Exception:
