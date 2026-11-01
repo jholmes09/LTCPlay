@@ -989,6 +989,132 @@ that long. The stages, in this order:
 - **Where.** The editor is on Interface 2.0 (a later update). Until it is
   there, nothing sends from the timeline either.
 
+## Schedule times: any time of day, past midnight
+
+Jeff, 2026-10-30: "I tried to schedule a show between Midnight and 2 AM
+but it wouldn't allow it. Don't restrict the schedule in any way."
+
+- **A night can run past midnight, and past 2 AM.** Write the last show's
+  end time after midnight: Thursday "first show 22:35, last show ends
+  01:30" runs Thursday's shows at 22:35, 22:50 and so on through the
+  small hours, all on Thursday's night. A last end at or before the first
+  show is on the next morning.
+- **A night can start at any time,** 00:30 included: Friday "first show
+  00:30" is Friday's night, at half past midnight on Friday.
+- **Nothing about the times is refused any more.** Shows closer together
+  than a show and its guard, a night with no room for a show, a season
+  that ends before it starts, an exception outside the season and two
+  nights that run into each other are all saved. The answer to the save
+  (and the journal) says what to know, starting "Warnings, saved
+  anyway:". An exception outside the season is used: its date runs its
+  own hours. Only a time that is not a time (25:00), a time zone this PC
+  does not know, a misspelled setting and a late grace over 15 seconds
+  are still refused. A show length, guard or gap between shows over 24
+  hours, and a season before 1971 or after 9998, are used as 24 hours and
+  as those dates, and said. A weekday written twice is said; the later
+  one is used.
+- **A weekday can be written in full,** "Thursday" as well as "thu".
+- **Tonight's Delay, move and add can go past midnight.** A time typed in
+  the small hours ("00:30") is tonight's, after midnight, and the list
+  shows it as "00:30 (tomorrow)". A time without a day is the nearest
+  one still to come inside tonight's night, which runs from the start of
+  its date to its last show end plus 3 hours. A time that has gone by,
+  near tonight's own hours, is refused as passed. Anything else is never
+  guessed: typing "10:55" at 22:40 (meant 22:55) is refused, and the
+  answer says how to type it. "Today" and "tomorrow" are the calendar
+  days on the clock, also after midnight: at 00:10 on Friday, "17:00
+  today" is Friday and "17:00 tomorrow" is Saturday. A date can be typed
+  too ("17:00 2026-11-14"), up to 5 years ahead; further, or a date the
+  calendar cannot hold, is refused in words. A date together with a day
+  word ("18:45 2026-11-12 tomorrow") is refused as contradictory, and so
+  is "first second"; "17:00 second" for a time that does not happen twice
+  is taken and the answer says "second" changed nothing. Whatever is
+  accepted is kept in tonight's saved list and read back after a restart.
+  On the night the clocks go back, a time in the
+  repeated hour is the first one still to come (the journal says so, and
+  how to type the other one), the list says "the second 01:05" for the
+  later one, and "01:05 second" types it.
+- **A show typed for a time at or after the next night's first show** is
+  accepted and warned about, in the journal, on the screens and in the
+  answer to a save: tonight hands over before it, so it is MISSED, said
+  out loud in the journal when the night hands over. It cannot hold the
+  next night back (it used to: "18:10 tomorrow" kept Thursday open all
+  Friday and Friday's shows were missed). "The next night" is the first
+  later night that has shows, so a dark Friday does not let Thursday
+  swallow Saturday. A show typed more than 3 hours after tonight's last
+  show ends (its planned end, or 2 AM, whichever is later) never holds
+  the night either, whatever day it was typed for: a date months ahead is
+  accepted, warned about with its date, and missed at the hand over. A Delay, a move or a save that
+  makes a show end, with its guard, after the next night's first show is
+  warned the same way: that first show can be missed, because the next
+  night begins only once this one's guard is over. Nothing is refused.
+  When two nights of the schedule overlap, the warning names what really
+  happens: a show of tonight at or after the next night's first show is
+  MISSED at the hand over (and that first show runs on time); a show
+  that starts before it but ends, with its guard, after it makes that
+  first show late: MISSED (the warning says "will be") when it is later than
+  the late grace, otherwise it starts late. "Runs on time" is said only when
+  no earlier show overruns it.
+- **A restart reads back every list the program itself can make.** That
+  includes a show started with Start now in the next night's preshow
+  (up to 30 minutes before its first show, so before midnight), and a
+  show typed for tomorrow or a date. The list is never set aside, so
+  no Abort latch is raised and the shows that ran stay done.
+  One limit serves the editor, Move, Delay and the file reader: from 30
+  minutes before midnight of the night's date to 5 years (1830 days)
+  after that midnight, both ends included, and it does not depend on the
+  schedule file, so saving different hours never makes tonight's list
+  unreadable. A time outside it is refused in words, and so is a Delay
+  that would move a show past it.
+- **A dry run and a Stop's Hold.** In a dry run, the Hold of a Stop is
+  put back only after the made-up end of the show, before the next
+  show is looked at, so the next show does not start by itself.
+- **The night only moves forward.** Once a night has handed over to the
+  next, saving a schedule that gives it longer hours never opens it
+  again; the change is for the next time that weekday comes round. A
+  restart never goes back either: it starts on the latest night with a
+  saved list (one that begins before midnight included) and never opens
+  an earlier one.
+- **A save never moves a delayed show earlier,** whatever it does to the
+  night's hours.
+- **A restart keeps a night that still has a show to run,** for example a
+  show moved to 02:30: it carries on until that show and its guard are
+  over. A restart after a night has handed over closes it, and a show of
+  it still to come is MISSED, in the journal.
+- **Tonight's saved list** with a show on the next morning is written as
+  format 5. An older LTC Player refuses such a file in words and sets it
+  aside rather than reading 00:30 as earlier the same evening.
+
+**What the 2 AM reset did, and what replaces it.** Every night used to
+end at 2 AM the next morning: a show could not be planned before 2 AM, a
+night could not run past midnight, and a show still delayed at 2 AM was
+MISSED. Now a night ends where it hands over to the next one:
+
+- at 2 AM, as before, when nothing of it is left to run by then;
+- later, while one of its shows (planned, moved or running) still has to
+  run, and then until the last show's guard is over, so the next night's
+  first show never starts inside it (a cut show's guard counts from the
+  restart);
+- later, while a show delayed by a Hold waits for Start now: it holds the
+  night to the next 2 AM after its own time, never past the next night's
+  start, so a show delayed at 03:00 is not missed 10 seconds later. A
+  show delayed inside the 30 minutes before the next night's first show
+  waits until that first show, not its preshow. A move of a show into
+  those 30 minutes is warned about;
+- earlier, when the next night's first show is earlier: 30 minutes before
+  it, when its preshow begins, which can be before midnight. Never before
+  this night's own shows still to come have run;
+- a night closed with Close for the night, or with its later shows
+  skipped, has nothing left to run, so it never holds the next night back.
+
+A show still delayed when the night hands over is MISSED, as before; the
+journal says "when the night ended, as the next night began" when that
+is not 2 AM. A restart in the middle of such a wait carries on with it. The hand over never drops a planned show, never starts a
+show early and never presses or releases Run. The night only moves
+forward. If two nights run into each other, the earlier one finishes
+first and a show of the next night whose time has gone by by then is
+missed: the save warns about it.
+
 ## Saving the schedule during the night
 
 On 2026-10-29 a schedule saved after the night had closed planned nothing
