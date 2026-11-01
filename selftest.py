@@ -102734,7 +102734,7 @@ def test_ui2_calm_screens_and_brand():
                       and [u for u, _ in r["pf_posts"]] ==
                       ["/api/remote/hold"] and not a["inactive"] and
                       r["pf_refused"] ==
-                      "Programming NOT paused. Abort or Disarm flames." and
+                      "Programming NOT paused. Stop show or Disarm flames." and
                       not r["first_taps"]["posts"],
                       f"{where}: Programming playback firing flames is "
                       f"pinned in the top line, never calm; its Stop is "
@@ -102921,7 +102921,7 @@ def test_ui2_show_tab_in_a_browser():
                       pf["pill"] == "FLAMES LIVE" and
                       [u for u, _ in pf["posts"]] == ["/api/remote/hold"] and
                       pf["refused"] ==
-                      "Programming NOT paused. Abort or Disarm flames.",
+                      "Programming NOT paused. Stop show or Disarm flames.",
                       f"{where}: Programming playback firing flames is "
                       f"pinned with Stop, which is 1.0's Hold; refused, it "
                       f"stays in the alert slot: {pf}")
@@ -107455,7 +107455,7 @@ console.log(JSON.stringify(out));
                       for x in res["mini"]),
                   f"{where}: Hold, Stop show and Disarm flames are "
                   f"there, never disabled or dimmed: "
-                  f"{res['mini']} {res['abort']}")
+                  f"{res['mini']}")
             check("Last saved by Andy" in res["msg"] and
                   "A show is live" in res["msg"],
                   f"{where}: who saved it last, and that a show is live: "
