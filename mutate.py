@@ -21252,7 +21252,7 @@ def build():
 
  ("fireball charge: the start ignores the marker elsewhere (round 6)",
   "ltcplay/fireball_charge.py",
-  "        if rev <= self._base_rev:\n            self._drop_alt(self._base_rev)\n            return",
+  "        if rev <= self._main_rev:\n            # Older than the MAIN file (a record left in .tmp never counts:\n            # round-9 review F2).\n            self._drop_alt(self._main_rev)\n            return",
   "        if True:\n            return"),
 
  ("fireball charge: the marker elsewhere is never taken away (round 6)",
@@ -21282,8 +21282,8 @@ def build():
 
  ("fireball charge: Tanks are empty leaves the PENDING mark (round 6)",
   "ltcplay/fireball_charge.py",
-  "                self._set(k, EMPTY, f\"confirmed empty by {who}\", now_w)\n            self.pending = False",
-  "                self._set(k, EMPTY, f\"confirmed empty by {who}\", now_w)"),
+  "                self.pending = False\n            was_off, self.auto_off = self.auto_off, False",
+  "                pass\n            was_off, self.auto_off = self.auto_off, False"),
 
  ("fireball charge: the marker goes in the temp folder (round 7)",
   "ltcplay/fireball_charge.py",
@@ -21302,13 +21302,13 @@ def build():
 
  ("fireball charge: a marker that cannot be read is ignored (round 7)",
   "ltcplay/fireball_charge.py",
-  "                except (OSError, ValueError, AttributeError):\n                    unreadable = True\n                    self._unreadable_markers.append(name)",
-  "                except (OSError, ValueError, AttributeError):\n                    pass"),
+  "        except (OSError, ValueError, AttributeError):\n            return None\n\n    def _read_alt(self):",
+  "        except (OSError, ValueError, AttributeError):\n            return 0\n\n    def _read_alt(self):"),
 
  ("fireball charge: the leftover of a marker being written is ignored (round 7)",
   "ltcplay/fireball_charge.py",
-  "            for name in (path, path + \".tmp\"):\n                if not os.path.exists(name):",
-  "            for name in (path,):\n                if not os.path.exists(name):"),
+  "                if name.endswith((\".marker\", \".marker.tmp\")):\n                    out.add(name)\n        for path in self._alts:\n            for name in (path, path + \".tmp\"):",
+  "                if name.endswith((\".marker\",)):\n                    out.add(name)\n        for path in self._alts:\n            for name in (path,):"),
 
  ("fireball charge: automatic charging stays on with no marker anywhere (round 7)",
   "ltcplay/fireball_charge.py",
@@ -21387,13 +21387,8 @@ def build():
 
  ("fireball charge: a marker that cannot be deleted is not said (round 8)",
   "ltcplay/fireball_charge.py",
-  "            else:\n                # Every start would read NOT KNOWN for ever: name the file.",
-  "            elif False:\n                # Every start would read NOT KNOWN for ever: name the file."),
-
- ("fireball charge: a first run beside an old marker says starting EMPTY (round 8)",
-  "ltcplay/fireball_charge.py",
-  "        if found:\n            # An old marker beside no record: the truth,",
-  "        if False:\n            # An old marker beside no record: the truth,"),
+  "        if stuck:\n            # Every start would read NOT KNOWN for ever: name the file.",
+  "        if False:\n            # Every start would read NOT KNOWN for ever: name the file."),
 
  ("fireball charge: the record does not judge the config alone (round 8)",
   "ltcplay/fireball_charge.py",
@@ -21414,6 +21409,51 @@ def build():
   "ltcplay/web/remote.html",
   "FB_HELD = Array.isArray(j && j.held) ? j.held : [];",
   "FB_HELD = [];"),
+
+ ("fireball charge: a start reads only this machine's marker names (round 9)",
+  "ltcplay/fireball_charge.py",
+  "(folder, glob.escape(FILE) + \".*marker*\"),",
+  "(folder, glob.escape(FILE) + \".NOPE\"),"),
+
+ ("fireball charge: a start reads only this machine's marker names in the home folder (round 9)",
+  "ltcplay/fireball_charge.py",
+  "                        glob.escape(self._tag) + \"*marker*\")):",
+  "                        glob.escape(self._tag) + \"NOPE\")):"),
+
+ ("fireball charge: a newer record clears only this machine's markers (round 9)",
+  "ltcplay/fireball_charge.py",
+  "        left, stuck = 0, []\n        for name in self._marker_files():",
+  "        left, stuck = 0, []\n        for name in [n for p in self._alts for n in (p, p + \".tmp\") if os.path.exists(n)]:"),
+
+ ("fireball charge: a record left in .tmp outranks a marker (round 9)",
+  "ltcplay/fireball_charge.py",
+  "        if rev <= self._main_rev:\n            # Older than the MAIN file",
+  "        if rev <= self._base_rev:\n            # Older than the MAIN file"),
+
+ ("fireball charge: a first run writes EMPTY before it looks for a marker (round 9)",
+  "ltcplay/fireball_charge.py",
+  "        found, _r = self._read_alt()\n        if found:\n            self.tanks = {k: _new_tank(UNKNOWN, now, \"a marker of an \"",
+  "        found, _r = self._read_alt()\n        if False:\n            self.tanks = {k: _new_tank(UNKNOWN, now, \"a marker of an \""),
+
+ ("fireball charge: Tanks are empty with no tank NOT KNOWN takes the PENDING mark off (round 9)",
+  "ltcplay/fireball_charge.py",
+  "            if unk:\n                # Only when a tank was NOT KNOWN",
+  "            if True:\n                # Only when a tank was NOT KNOWN"),
+
+ ("fireball charge: automatic charging comes back without trying a marker (round 9)",
+  "ltcplay/fireball_charge.py",
+  "        ok = False\n        for path in self._alts:\n            probe = path + \".probe\"",
+  "        ok = True\n        for path in self._alts:\n            probe = path + \".probe\""),
+
+ ("fireball charge: automatic charging comes back with the record unsaved (round 9)",
+  "ltcplay/fireball_charge.py",
+  "            saved = self._unwritten is None and not self.write_fault",
+  "            saved = True"),
+
+ ("fireball charge: the old charging-off fault stays when it comes back (round 9)",
+  "ltcplay/fireball_charge.py",
+  "            if self.fault and \"automatic charging is OFF\" in self.fault:\n                self.fault = \"\"",
+  "            if False:\n                self.fault = \"\""),
 
  ("fireball charge: close() waits on a hung write for ever (round 4)",
   "ltcplay/fireball_charge.py",
@@ -21860,8 +21900,8 @@ def build():
 
  ("fireball cues: an FSEQ show is not guarded",
   "ltcplay/fireball_cues.py",
-  "                                      jumped)\n        out = self._masked(out)",
-  "                                      jumped) if False else out\n        out = self._masked(out)"),
+  "                                      (first and relf > TOP_FRAMES) or jumped)\n        out = self._masked(out)",
+  "                                      (first and relf > TOP_FRAMES) or jumped) if False else out\n        out = self._masked(out)"),
 
  ("fireball cues: Purge goes out from an FSEQ show",
   "ltcplay/fireball_cues.py",
@@ -21995,8 +22035,8 @@ def build():
 
  ("fireball cues: an FSEQ charge held for the mark starts late after a seek (round 6)",
   "ltcplay/fireball_cues.py",
-  "            return self._fseq_guarded(out, run, (first and relf > 1) or\n                                      jumped)",
-  "            return self._fseq_guarded(out, run, (first and relf > 1))"),
+  "            return self._fseq_guarded(out, run,\n                                      (first and relf > TOP_FRAMES) or jumped)",
+  "            return self._fseq_guarded(out, run, (first and relf > TOP_FRAMES))"),
 
  ("fireball cues: the engine never gives the cues the running flamesafe's slots (round 6)",
   "ltcplay/web.py",
@@ -22032,6 +22072,11 @@ def build():
   "ltcplay/fireball_cues.py",
   "            if r == \"off\":\n                return (f\"{word}: automatic charging is off after a \"",
   "            if False:\n                return (f\"{word}: automatic charging is off after a \""),
+
+ ("fireball cues: a play starting at frame 1 or 2 is a landing (round 9)",
+  "ltcplay/fireball_cues.py",
+  "TOP_FRAMES = 2\n",
+  "TOP_FRAMES = 0\n"),
 
  ("fireball cues: a fireball group off 55 to 59 is not checked",
   "ltcplay/fireball_cues.py",
