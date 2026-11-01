@@ -5507,6 +5507,15 @@ let FB = null, FB_OPEN = false, FB_TIMER = null, FB_BEAT = null, FB_RUN = null, 
 // Fuel or Air pressed but held by the engine for the charge record's mark
 // (the beat's answer says held): the pad says WAITING, not ON.
 let FB_HELD = [];
+// The newest beat whose answer has been used: an older answer that arrives
+// late (separate connections) must not turn the pad back.
+let FB_ANS = 0;
+function fbAnswer(run, seq, j){
+  if(run !== FB_RUN || seq < FB_ANS) return;
+  FB_ANS = seq;
+  FB_HELD = Array.isArray(j && j.held) ? j.held : [];
+  renderFireball();
+}
 const FB_ON = {fuel:false, air:false, valve:false, igniter:false, purge:false};
 const FB_KEY = {};
 function fireballView(on){
@@ -5563,7 +5572,7 @@ async function fbBeat(change){
   FB_BEAT = setTimeout(() => fbBeat(false), 100);
   try{
     const j = await post("/api/remote/fireball-beat", actor(fireballBody(FB_ON, run, seq, change)));
-    if(run === FB_RUN){ FB_HELD = Array.isArray(j && j.held) ? j.held : []; renderFireball(); }
+    fbAnswer(run, seq, j);
   }
   catch(e){ if(run === FB_RUN) fbCut(e.message); }
 }
