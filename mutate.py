@@ -916,7 +916,7 @@ MUTATIONS = [
 
  ("remote: scrubbing is allowed on a show started in Show mode",
   "ltcplay/remote.py",
-  "        if not rehearsal:\n            return False, (\"This show was",
+  "        if not self._rehearsal_run(s):\n            return False, (\"This show was",
   "        if False:\n            return False, (\"This show was"),
 
  ("scheduler: a remote press from someone off the list is taken",
@@ -22979,7 +22979,7 @@ def build():
 
  ("start at a cue: the runner plays a list saved for another show cue",
   "ltcplay/fire_ice.py",
-  "        if saved and role_cue is not None and \\\n                saved.lower() != str(role_cue).lower():",
+  "        if saved and (role_cue is None or\n                      saved.lower() != str(role_cue).lower()):",
   "        if False:"),
 
  ("start at a cue: the runner plays a list saved for another show file",
@@ -22999,7 +22999,7 @@ def build():
 
  ("start at a cue: video black for the cue darkens a show that is up",
   "ltcplay/conductor.py",
-  "            if self._look in (PLAYING,) + HOLDING_LOOKS or self._playing():\n                return self._refused(\"Video black for the cue\",",
+  "            if self._look in (PLAYING,) + HOLDING_LOOKS:\n                return self._refused(\"Video black for the cue\",",
   "            if False:\n                return self._refused(\"Video black for the cue\","),
 
  ("start at a cue: the scheduler never asks the runner for the video fade",
@@ -23049,8 +23049,8 @@ def build():
 
  ("start at a cue: the route works in Programming",
   "ltcplay/remote.py",
-  "        ok, _why = self.programming()\n        if ok:",
-  "        ok, _why = self.programming()\n        if False:"),
+  "        if self._rehearsal_run(s):\n            # Asked of the run itself",
+  "        if False:\n            # Asked of the run itself"),
 
  ("start at a cue: the route starts a cue of another show file",
   "ltcplay/remote.py",
@@ -23106,6 +23106,76 @@ def build():
   "ltcplay/session.py",
   "        if part_way and self.playhead_clock() is None:",
   "        if False:"),
+
+ ("start at a cue: the runner never reads the cue again at the start",
+  "ltcplay/fire_ice.py",
+  "        recheck = getattr(self.svc, \"recheck_start_at\", None)",
+  "        recheck = lambda sa: (sa, \"\")"),
+
+ ("start at a cue: Continue anyway never reads the cue again",
+  "ltcplay/schedule_service.py",
+  "            fresh, why = self.recheck_start_at(start_at)\n            if why:",
+  "            fresh, why = start_at, \"\"\n            if why:"),
+
+ ("start at a cue: a cue changed since it was chosen still stands",
+  "ltcplay/remote.py",
+  "        if changed:\n            return None, (f\"the cue {want.get('name')} was changed",
+  "        if False:\n            return None, (f\"the cue {want.get('name')} was changed"),
+
+ ("start at a cue: Show mode is asked only while no show is live",
+  "ltcplay/remote.py",
+  "        if self._rehearsal_run(s):\n            # Asked of the run itself",
+  "        if self.programming()[0]:\n            # Asked of the run itself"),
+
+ ("start at a cue: the remote never hands the scheduler its re-check",
+  "ltcplay/remote.py",
+  "            schedule.start_at_check = self.start_at_check",
+  "            schedule.start_at_check = None"),
+
+ ("start at a cue: no re-check wired lets the cue through",
+  "ltcplay/schedule_service.py",
+  "            return None, (\"this engine cannot read the play-from cues, so \"\n                          \"it cannot start at a cue.\")",
+  "            return start_at, \"\""),
+
+ ("start at a cue: Resume's memory survives the night change",
+  "ltcplay/fire_ice.py",
+  "        if state in (\"CLOSING\", \"OFF\") or night != at.get(\"night\") or \\",
+  "        if state in (\"CLOSING\", \"OFF\") or \\"),
+
+ ("start at a cue: Resume's memory survives Run off",
+  "ltcplay/fire_ice.py",
+  "                self.show._session() is None:\n            with self._lock:\n                if self.stopped_at is at:",
+  "                False:\n            with self._lock:\n                if self.stopped_at is at:"),
+
+ ("start at a cue: Resume's memory survives Close for the night",
+  "ltcplay/fire_ice.py",
+  "        if state in (\"CLOSING\", \"OFF\") or night != at.get(\"night\") or \\",
+  "        if state in (\"OFF\",) or night != at.get(\"night\") or \\"),
+
+ ("start at a cue: the remote offers an earlier night's stop",
+  "ltcplay/remote.py",
+  "        if m is None or at.get(\"night\") != str(getattr(m, \"date\", \"\")):",
+  "        if False:"),
+
+ ("start at a cue: video black for the cue lands in a Stop's fade",
+  "ltcplay/conductor.py",
+  "            if want.get(\"halt\") is True and self._done_gen != self._gen:",
+  "            if False:"),
+
+ ("start at a cue: preshow music refuses the video black, so it cuts in",
+  "ltcplay/conductor.py",
+  "            if self._look in (PLAYING,) + HOLDING_LOOKS:\n                return self._refused(\"Video black for the cue\",",
+  "            if self._look in (PLAYING,) + HOLDING_LOOKS or self._playing():\n                return self._refused(\"Video black for the cue\","),
+
+ ("start at a cue: a cue past the audio's end passes the route",
+  "ltcplay/remote.py",
+  "        if audio_s is not None and \\\n                pf_mod.parse_tc(cue[\"tc\"]) / pf_mod.FPS >= audio_s:",
+  "        if False:"),
+
+ ("start at a cue: Resume compares the show cue with its case",
+  "ltcplay/remote.py",
+  "                       str(entry[\"cue\"]).lower() !=\n                       str(at[\"cue\"]).lower()):",
+  "                       entry[\"cue\"] !=\n                       at[\"cue\"]):"),
 
 ]
 

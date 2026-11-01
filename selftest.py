@@ -110293,12 +110293,25 @@ class _FiCueSession(_FiSession):
         return super().clock_play(cue)
 
 
+def _pf_check(svc, why=""):
+    """The remote's Remote.start_at_check stand in: the cue as given (it
+    still stands), or refused with `why`. Records each cue asked about."""
+    svc.pf_asked = []
+
+    def check_(start_at):
+        svc.pf_asked.append(start_at["cue"]["name"])
+        return (None, why) if why else (start_at, "")
+    svc.start_at_check = check_
+    return svc
+
+
 def _pf_night(**kw):
     """_fi_night with a session that starts part way and a flame link
     whose landing() is written into the same ordered log."""
     n = _fi_night(**kw)
     if n.S is None:
         return n
+    _pf_check(n.svc)
     n.sess = _FiCueSession(n.calls, n.T)
     n.control.session = n.sess
     link = n.w.show.flame_link
@@ -110510,7 +110523,8 @@ def test_start_at_cue_end_to_end_through_the_conductor():
     check(r["ok"] and svc.machine.state != S.SHOW and
           n.w.runner.stopped_at == {"show": run.n, "file":
                                     "Fire and Ice.json", "cue": "Show",
-                                    "frame": 1200},
+                                    "frame": 1200,
+                                    "night": str(svc.machine.date)},
           f"Stop ends it; the runner remembers where: "
           f"{n.w.runner.stopped_at}")
     offer = PF.resume_offer([_pf_cue("Top", "00:00:05:00", 2, "c1"),
@@ -110616,6 +110630,7 @@ def test_start_at_cue_preroll_and_continue_anyway_keep_the_cue():
     S, svc, c = n.S, n.svc, n.c
     n.sess = _FiCueSession(n.calls, n.T)
     n.control.session = n.sess
+    _pf_check(svc)
     n.now[0] = _den(S, 17, 56)
     svc.tick()
     _settle(svc, c)
@@ -110651,6 +110666,7 @@ def test_start_at_cue_preroll_and_continue_anyway_keep_the_cue():
     S, svc, c = n.S, n.svc, n.c
     n.sess = _FiCueSession(n.calls, n.T)
     n.control.session = n.sess
+    _pf_check(svc)
     n.now[0] = _den(S, 17, 56)
     svc.tick()
     svc.operator_press("start-now", "Andy", "Rack screen", surface=True,
@@ -110670,6 +110686,7 @@ def test_start_at_cue_preroll_and_continue_anyway_keep_the_cue():
     S, svc, c = n.S, n.svc, n.c
     n.sess = _FiCueSession(n.calls, n.T)
     n.control.session = n.sess
+    _pf_check(svc)
     n.now[0] = _den(S, 17, 56)
     svc.tick()
     svc.operator_press("start-now", "Andy", "Rack screen", surface=True,
@@ -110693,6 +110710,7 @@ def test_start_at_cue_preroll_and_continue_anyway_keep_the_cue():
     S, svc, c = n.S, n.svc, n.c
     n.sess = _FiCueSession(n.calls, n.T)
     n.control.session = n.sess
+    _pf_check(svc)
     n.now[0] = _den(S, 17, 56)
     svc.tick()
     out = []
@@ -110712,6 +110730,128 @@ def test_start_at_cue_preroll_and_continue_anyway_keep_the_cue():
     got = svc.continue_anyway("Andy", "Rack screen")
     check(not got["ok"] and not n.sess.starts,
           f"and Continue anyway has nothing to start: {got}")
+    c.close()
+    n.link.close()
+    print("  ok")
+
+
+def test_start_at_cue_rechecked_at_the_start():
+    section("start at a cue, review A of #201: the cue is read again at "
+            "the start itself (the runner, Continue anyway) and a cue "
+            "changed or gone since is refused with nothing sent; no re-check "
+            "wired is a refusal; Resume's memory ends at the night change, "
+            "Close for the night and Run off; video black for a cue waits "
+            "for a Stop to finish and is not refused by preshow music")
+    n = _pf_night()
+    if n.S is None:
+        return
+    S, svc, c = n.S, n.svc, n.c
+    svc.tick()
+    _settle(svc, c)
+    # The runner reads the cue again: changed since, nothing goes out.
+    _pf_check(svc, "the cue Finale was changed since it was chosen (time).")
+    del n.calls[:]
+    svc.operator_press("start-now", "Andy", "Rack screen", surface=True,
+                       start_at=_pf_start_at())
+    _settle(svc, c)
+    n.w.runner.poll()
+    _settle(svc, c)
+    rows = [x["text"] for x in svc.journal
+            if "changed since it was chosen" in x.get("text", "")]
+    check(svc.pf_asked == ["Finale"] and not n.sess.starts and
+          not _fi_rig_touched(n.calls) and rows,
+          f"the runner asked again and refused, nothing sent: "
+          f"{svc.pf_asked} {n.sess.starts} {rows[-1:]}")
+    # No re-check wired at all: refused (fail closed).
+    svc.start_at_check = None
+    del n.calls[:]
+    svc.operator_press("start-now", "Andy", "Rack screen", surface=True,
+                       start_at=_pf_start_at())
+    _settle(svc, c)
+    n.w.runner.poll()
+    _settle(svc, c)
+    check(not n.sess.starts and not _fi_rig_touched(n.calls),
+          "no re-check: never started at a cue")
+    c.close()
+    n.link.close()
+    # Continue anyway: the cue asked again first; a refusal starts nothing,
+    # neither at the old point nor from the top, and keeps the failed check.
+    n = _pr_night({"Lasers": (False, "BEYOND is not running")}, window=3)
+    S, svc, c = n.S, n.svc, n.c
+    n.sess = _FiCueSession(n.calls, n.T)
+    n.control.session = n.sess
+    _pf_check(svc)
+    n.now[0] = _den(S, 17, 56)
+    svc.tick()
+    _settle(svc, c)
+    r = svc.operator_press("start-now", "Andy", "Rack screen",
+                           surface=True, start_at=_pf_start_at())
+    check(r.get("preroll"), f"setup: the check failed: {r}")
+    _pf_check(svc, "it is for Show mode. In Programming, use Play from on "
+                   "the Programming screen.")
+    before = len(svc.journal)
+    got = svc.continue_anyway("Andy", "Rack screen")
+    _settle(svc, c)
+    said = [x["text"] for x in list(svc.journal)[before:]]
+    check(not got["ok"] and "Continue anyway was refused: it is for Show "
+          "mode" in got["text"] and not n.sess.starts and
+          svc.machine.state != S.SHOW and n.pr.last_failed() is not None and
+          not any("chose Continue anyway" in t for t in said),
+          f"Continue anyway refused, nothing started, nothing said as "
+          f"started: {got} {said}")
+    _no_dashes(got["text"], "Continue anyway's refusal")
+    _pf_check(svc)
+    got = svc.continue_anyway("Andy", "Rack screen")
+    _settle(svc, c)
+    check(got["ok"] and n.sess.starts == [(None, 27.0, 1000.0)],
+          f"once it stands again, from the cue: {got} {n.sess.starts}")
+    c.close()
+    n.link.close()
+    # Resume's memory: tonight only, gone at Close for the night and Run
+    # off.
+    n = _pf_night()
+    S, svc, c = n.S, n.svc, n.c
+    run = n.w.runner
+    svc.tick()
+    night = str(svc.machine.date)
+    stop = {"show": 9, "file": "Fire and Ice.json", "cue": "Show",
+            "frame": 300, "night": night}
+    run.stopped_at = dict(stop)
+    run.poll()
+    check(run.stopped_at == stop, "tonight's stop is kept")
+    run.stopped_at = dict(stop, night="2026-11-13")
+    run.poll()
+    check(run.stopped_at is None, "an earlier night's stop is forgotten")
+    run.stopped_at = dict(stop)
+    n.control.session = None
+    run.poll()
+    check(run.stopped_at is None, "Run off: forgotten")
+    n.control.session = n.sess
+    run.stopped_at = dict(stop)
+    svc.machine = __import__("dataclasses").replace(svc.machine,
+                                                    state=S.CLOSING)
+    run.poll()
+    check(run.stopped_at is None, "Close for the night: forgotten")
+    c.close()
+    n.link.close()
+    # Video black for a cue: refused while a Stop's sequence runs; preshow
+    # music playing does not refuse it.
+    n = _pf_night()
+    S, svc, c = n.S, n.svc, n.c
+    svc.tick()
+    _settle(svc, c)
+    n.sess.clock.playing = True
+    r = c.landing_video_dark()
+    check(r.ok, f"preshow music playing: the video still goes black for "
+                f"the fade in: {r.sentence}")
+    n.sess.clock.playing = False
+    c.stop("Andy", "Rack screen")
+    r = c.landing_video_dark()
+    check(not r.ok and "a Stop is still going to dark" in r.sentence,
+          f"a Stop not finished: refused: {r.sentence}")
+    c.run_pending()
+    r = c.landing_video_dark()
+    check(r.ok, f"once the Stop is done: allowed: {r.sentence}")
     c.close()
     n.link.close()
     print("  ok")
@@ -110747,8 +110887,10 @@ def test_start_at_cue_route():
 
     class _Svc:
         conductor = None
-        machine = types.SimpleNamespace(state="STANDBY")
+        machine = types.SimpleNamespace(state="STANDBY", date="2026-11-14")
         performer = None
+        start_veto = None
+        start_at_check = None
 
         def operator_press(self, what, who, screen, **kw):
             presses.append((what, who, screen, kw))
@@ -110806,6 +110948,59 @@ def test_start_at_cue_route():
         check(code == 200 and presses[-1][3]["start_at"]["cue"]["tc"] ==
               "00:01:40:00", "the saved time, whatever the page")
         del presses[:]
+        # Past the end of the show audio as the running clock has it now
+        # (a shorter render): refused at the route, nothing pressed.
+        sess.clock = types.SimpleNamespace(
+            show_lengths=lambda name: {"audio_s": 90.0, "show_s": 90.0}
+            if name == "Show" else None)
+        code, out, _h = press()
+        check(code == 409 and "past the end of the show audio" in
+              out["error"] and "00:01:30:00" in out["error"] and not presses,
+              f"a cue past the audio's end: refused at the route: {out}")
+        _no_dashes(out["error"], "the audio length refusal")
+        sess.clock = types.SimpleNamespace(
+            show_lengths=lambda name: {"audio_s": 120.0, "show_s": 120.0})
+        code, out, _h = press()
+        check(code == 200 and presses, f"inside the audio: pressed: {out}")
+        del presses[:]
+        # The re-check at the start itself (Continue anyway, the runner):
+        # wired into the scheduler, the cue read again by its id.
+        check(svc.start_at_check == rm.start_at_check,
+              "the remote hands the scheduler its re-check")
+        sa, why = rm.start_at_cue({"show": "Fire.json", "cue_id": fin["id"]})
+        fresh, why = rm.start_at_check(sa)
+        check(not why and fresh == sa, f"unchanged: it stands: {why}")
+        rev = st.load()[0]["rev"]
+        cues = [dict(c, tc="00:01:50:00") if c["id"] == fin["id"] else c
+                for c in PF.entry_of(st.load()[0], "Fire.json")["cues"]]
+        ok, text, _e = st.save("Fire.json", "Show", 120.0, cues, rev,
+                               who="Jeff")
+        fresh, why = rm.start_at_check(sa)
+        check(ok and fresh is None and "changed since it was chosen (time)"
+              in why, f"retimed since: refused: {why}")
+        rev = st.load()[0]["rev"]
+        ok, text, _e = st.save(
+            "Fire.json", "Show", 120.0,
+            [c for c in PF.entry_of(st.load()[0], "Fire.json")["cues"]
+             if c["id"] != fin["id"]], rev, who="Jeff")
+        fresh, why = rm.start_at_check(sa)
+        check(ok and fresh is None and "not in the saved list" in why,
+              f"deleted since: refused: {why}")
+        rev = st.load()[0]["rev"]
+        ok, text, _e = st.save(
+            "Fire.json", "Show", 120.0,
+            PF.entry_of(st.load()[0], "Fire.json")["cues"] +
+            [dict(fin, id=None)], rev, who="Jeff")
+        fin = [x for x in PF.entry_of(st.load()[0], "Fire.json")["cues"]
+               if x["name"] == "Finale"][0]
+        sa, why = rm.start_at_cue({"show": "Fire.json", "cue_id": fin["id"]})
+        sess.no_output = True
+        svc.machine.state = "SHOW"
+        fresh, why = rm.start_at_check(sa)
+        check(fresh is None and "for Show mode" in why,
+              f"a Programming run, even with a show live: refused: {why}")
+        sess.no_output = False
+        svc.machine.state = "STANDBY"
         # Programming playback on: refused before anything else.
         real = rm.programming_playback_refusal
         rm.programming_playback_refusal = lambda: RM.Remote.\
@@ -110858,14 +111053,22 @@ def test_start_at_cue_route():
         check(ok, f"setup: saved again: {text}")
         rm.play_from_show_info = lambda show: ("Show", 120.0, "")
         svc.performer = types.SimpleNamespace(stopped_at={
-            "show": 4, "file": "Fire.json", "cue": "Show", "frame": 60 * 30})
+            "show": 4, "file": "Fire.json", "cue": "show", "frame": 60 * 30,
+            "night": "2026-11-14"})
         code, out = rm.get("/api/remote/play-from-cues", local,
                            "show=Fire.json")
         res = out.get("resume") or {}
         check(code == 200 and res.get("show") == 4 and
               res.get("stopped_at") == "00:01:00:00" and
               (res.get("cue") or {}).get("name") == "Top",
-              f"Resume offers the cue before where show 4 stopped: {res}")
+              f"Resume offers the cue before where show 4 stopped (the show "
+              f"cue's name compared without case): {res}")
+        svc.performer.stopped_at["night"] = "2026-11-13"
+        code, out = rm.get("/api/remote/play-from-cues", local,
+                           "show=Fire.json")
+        check(out.get("resume") is None,
+              "a stop from an earlier night is never offered")
+        svc.performer.stopped_at["night"] = "2026-11-14"
         svc.performer.stopped_at["file"] = "Other.json"
         code, out = rm.get("/api/remote/play-from-cues", local,
                            "show=Fire.json")
@@ -111821,6 +112024,7 @@ if __name__ == "__main__":
         test_start_at_cue_end_to_end_through_the_conductor,
         test_start_at_cue_preroll_and_continue_anyway_keep_the_cue,
         test_start_at_cue_route,
+        test_start_at_cue_rechecked_at_the_start,
         test_start_at_cue_fireball_lands_by_its_own_rules,
         test_start_at_cue_docs_in_plain_words,
     ]

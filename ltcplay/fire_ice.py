@@ -2980,6 +2980,21 @@ class ShowRunner:
         runner plays; the point is the saved cue's own (play_from.
         landing_s), never anything a page sent."""
         from . import play_from as pf_mod
+        # The cue as saved NOW (review A of #201): read again from the cue
+        # file by its id, with Show mode asked again. A cue retimed,
+        # renamed or deleted since it was chosen (a Continue anyway minutes
+        # later) is refused, never started at its old point.
+        recheck = getattr(self.svc, "recheck_start_at", None)
+        if recheck is None:
+            return None, ("this engine cannot read the play-from cues, so "
+                          "it cannot start at a cue")
+        try:
+            start_at, why = recheck(start_at)
+        except Exception as e:                   # noqa: BLE001
+            start_at, why = None, f"the cue could not be checked " \
+                                  f"({type(e).__name__})"
+        if why:
+            return None, why.rstrip(".")
         try:
             cue = start_at["cue"]
             secs = pf_mod.landing_s(cue)
@@ -3009,8 +3024,8 @@ class ShowRunner:
                 role_cue = hits[0].name if len(hits) == 1 else None
         except Exception:                        # noqa: BLE001
             role_cue = None
-        if saved and role_cue is not None and \
-                saved.lower() != str(role_cue).lower():
+        if saved and (role_cue is None or
+                      saved.lower() != str(role_cue).lower()):
             return None, self.START_AT_WRONG_CUE.format(
                 file=file or here or "this show", saved=saved, cue=role_cue)
         return {"cue": cue, "s": secs,
@@ -3123,11 +3138,26 @@ class ShowRunner:
         except Exception:                        # noqa: BLE001
             pass
 
+    def _forget_stop(self, sch, state):
+        """Resume's memory of a stopped show ends at the night change, at
+        Close for the night (CLOSING, OFF) and when Run goes off (review A
+        of #201): a stop from an earlier night is never offered."""
+        at = self.stopped_at
+        if at is None:
+            return
+        night = str(getattr(sch, "date", "")) if sch is not None else None
+        if state in ("CLOSING", "OFF") or night != at.get("night") or \
+                self.show._session() is None:
+            with self._lock:
+                if self.stopped_at is at:
+                    self.stopped_at = None
+
     def poll(self):
         with self._lock:
             off_seq = self._off_seq
         sch = self.svc.machine
         state = sch.state if sch is not None else None
+        self._forget_stop(sch, state)
         # The state the last poll saw: a closing straight out of a show is
         # that show's own end (_close).
         was, self._seen_state = self._seen_state, state
@@ -3189,8 +3219,11 @@ class ShowRunner:
             if clk is None or cue.get("failed") or \
                     not isinstance(frame, int) or isinstance(frame, bool):
                 return
+            m = self.svc.machine
             self.stopped_at = {"show": cue["show"], "file": cue.get("file"),
-                               "cue": cue.get("label"), "frame": frame}
+                               "cue": cue.get("label"), "frame": frame,
+                               "night": str(getattr(m, "date", ""))
+                               if m is not None else None}
         except Exception:                        # noqa: BLE001
             pass
 

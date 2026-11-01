@@ -826,6 +826,10 @@ class Service:
         # from that cue (continue_anyway).
         self._press_start_at = None
         self._continue_cue = None
+        # (start_at) -> (the cue as saved now, "") or (None, why): the
+        # remote's Remote.start_at_check (Show mode, the cue re-read by
+        # its id). None: no start at a cue is ever made (fail closed).
+        self.start_at_check = None
         # Stops under way (halt_begin / halt_end).
         self._halts = 0
         # A Stop's Hold that stands until Resume (see _keep_stop_hold),
@@ -3564,6 +3568,20 @@ class Service:
         except Exception:                        # noqa: BLE001
             return
 
+    def recheck_start_at(self, start_at):
+        """(the cue as saved now, "") or (None, why), from start_at_check;
+        with none, refused. Never raises."""
+        fn = self.start_at_check
+        if fn is None:
+            return None, ("this engine cannot read the play-from cues, so "
+                          "it cannot start at a cue.")
+        try:
+            got, why = fn(start_at)
+        except Exception as e:                   # noqa: BLE001
+            return None, (f"the cue could not be checked "
+                          f"({type(e).__name__}).")
+        return (None, why) if why or got is None else (got, "")
+
     @staticmethod
     def start_label(start_at=None):
         """What the press is called in a sentence: "Start now", or for
@@ -3655,6 +3673,24 @@ class Service:
         if why:
             return {"ok": False, "text": f"Continue anyway was refused: "
                                          f"{why}. Nothing was changed."}
+        # A failed check for a Start at a cue: the show starts from that
+        # cue, never from the top (Jeff, 2026-10-31). Only this very
+        # failed check's own cue.
+        cc = self._continue_cue
+        start_at = cc[1] if cc is not None and cc[0] is r else None
+        if start_at is not None:
+            # The cue as saved NOW, and Show mode, asked again (review A of
+            # #201): a cue retimed or deleted since the check failed, or a
+            # Programming Run since, is refused, never started at its old
+            # point and never from the top instead.
+            fresh, why = self.recheck_start_at(start_at)
+            if why:
+                text = (f"Continue anyway was refused: {why.rstrip('.')}. "
+                        f"Nothing was started.")
+                self.journal_press(who, screen, "continue anyway",
+                                   "refused", f"{who_}'s {text}")
+                return {"ok": False, "text": text}
+            start_at = fresh
         from .preroll import outputs_off
         off = outputs_off(r["items"])
         bad = [i for i in r["items"] if i["required"] and not i["ok"]]
@@ -3674,11 +3710,6 @@ class Service:
             f"the rig check failed ({failed}). The show starts now, late, "
             f"with {left}.", fault=True)
         self.performer.continue_off = (off, who_)
-        # A failed check for a Start at a cue: the show starts from that
-        # cue, never from the top (Jeff, 2026-10-31). Only this very
-        # failed check's own cue.
-        cc = self._continue_cue
-        start_at = cc[1] if cc is not None and cc[0] is r else None
         if start_at is not None:
             from . import play_from as pf_mod
             self.journal_press(

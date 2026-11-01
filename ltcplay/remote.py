@@ -1680,6 +1680,11 @@ class Remote:
         # and any wait for the show audio (a Play from may have landed).
         if schedule is not None and hasattr(schedule, "start_veto"):
             schedule.start_veto = self.programming_playback_refusal
+        # Start at a cue (play_from.py part 2): the scheduler's Continue
+        # anyway and the show runner ask again, at the start itself, whether
+        # the cue still stands (review A of #201).
+        if schedule is not None and hasattr(schedule, "start_at_check"):
+            schedule.start_at_check = self.start_at_check
         # Screen arm holds: group index -> {token, who, device, start,
         # beat, id}; per-group disarms waiting for the deck to read them.
         import collections
@@ -3524,8 +3529,9 @@ class Remote:
         if s is None or not getattr(s, "running", False):
             return None, ("no show file is running. Press Run on the "
                           "Programming screen first (Show mode).")
-        ok, _why = self.programming()
-        if ok:
+        if self._rehearsal_run(s):
+            # Asked of the run itself, live show or not: the runner asks
+            # this again at the start (start_at_check).
             return None, ("it is for Show mode. In Programming, use Play "
                           "from on the Programming screen.")
         file = os.path.basename(str(getattr(s, "timeline_path", "") or ""))
@@ -3550,8 +3556,55 @@ class Remote:
             return None, (f"the cue {cue['name']} is at {cue['tc']} now, "
                           f"not {body.get('tc')}: it was changed since this "
                           f"screen read it. Reload and choose again.")
+        # Past the end of the show audio (a render made shorter since the
+        # list was saved): refused here, before the video goes black or a
+        # show is counted (review A of #201). The running clock's own
+        # length of the show cue's audio, as step 1 checks it on a save.
+        try:
+            got = s.clock.show_lengths(entry.get("cue") or "")
+            audio_s = float(got["audio_s"]) if got else None
+        except Exception:                        # noqa: BLE001
+            audio_s = None
+        if audio_s is not None and \
+                pf_mod.parse_tc(cue["tc"]) / pf_mod.FPS >= audio_s:
+            return None, (f"the cue {cue['name']} at {cue['tc']} is past "
+                          f"the end of the show audio, which is "
+                          f"{pf_mod.tc_text(int(audio_s * pf_mod.FPS))} "
+                          f"long now. Retime or delete it on 2.0 Settings.")
         return {"cue": dict(cue), "show_cue": entry.get("cue") or "",
                 "file": file}, ""
+
+    def start_at_check(self, start_at):
+        """(the cue as saved NOW, "") or (None, why), for a start at a cue
+        that is about to happen (Continue anyway, the show runner): every
+        refusal of start_at_cue again (Show mode, the show file running,
+        the cue file, the cue by its id, past the audio's end), and the
+        cue must still have the name, time and lead-in it was chosen with,
+        for the same show cue. A cue retimed, renamed or deleted since is
+        refused, never started at its old point (review A of #201).
+        Never raises."""
+        try:
+            want = start_at["cue"]
+            fresh, why = self.start_at_cue({"show": start_at.get("file"),
+                                            "cue_id": want.get("id")})
+        except Exception as e:                   # noqa: BLE001
+            return None, (f"the cue to start at could not be checked "
+                          f"({type(e).__name__}).")
+        if why:
+            return None, why
+        got = fresh["cue"]
+        changed = [w for w, k in (("name", "name"), ("time", "tc"),
+                                  ("lead-in", "lead_in_s"))
+                   if got.get(k) != want.get(k)]
+        if changed:
+            return None, (f"the cue {want.get('name')} was changed since it "
+                          f"was chosen ({', '.join(changed)}). Choose it "
+                          f"again.")
+        if str(fresh.get("show_cue") or "").lower() != \
+                str(start_at.get("show_cue") or "").lower():
+            return None, ("the cue list was saved again for another show "
+                          "cue since the cue was chosen. Choose it again.")
+        return fresh, ""
 
     def resume_offer(self, show):
         """Resume's offer for `show` (a show file): where the last show
@@ -3563,11 +3616,17 @@ class Remote:
         at = getattr(run, "stopped_at", None)
         if not isinstance(at, dict) or at.get("file") != show:
             return None
+        # Tonight's stop only (review A of #201): a stop from an earlier
+        # night is never offered.
+        m = getattr(self.schedule, "machine", None)
+        if m is None or at.get("night") != str(getattr(m, "date", "")):
+            return None
         try:
             doc, err = self.play_from_store().load()
             entry = pf_mod.entry_of(doc, show)
             if err or (entry.get("cue") and at.get("cue") and
-                       entry["cue"] != at["cue"]):
+                       str(entry["cue"]).lower() !=
+                       str(at["cue"]).lower()):
                 return None
             cue = pf_mod.resume_offer(entry["cues"], at["frame"])
             return {"show": at.get("show"),
@@ -3606,7 +3665,18 @@ class Remote:
             return False, ("Nothing is playing. To scrub, on the show "
                            "machine choose Programming on the Show file "
                            "card and press Run.")
-        cond = getattr(svc, "conductor", None)
+        if not self._rehearsal_run(s):
+            return False, ("This show was started in Show mode. Scrubbing "
+                           "only works in Programming: press Stop, choose "
+                           "Programming on the Show file card, then Run.")
+        return True, ""
+
+    def _rehearsal_run(self, s):
+        """True when the running session `s` is a Programming run (no
+        output, Run's own "hold", or a rehearsal conductor), whether or
+        not a show is live."""
+        p = getattr(s, "player", None)
+        cond = getattr(self.schedule, "conductor", None)
         # A show whose clock is this machine has its player's on_lost set
         # to "hold" whatever was asked (Session.open), so there the Run's
         # own choice decides: Programming asks for "hold" (re-review of
@@ -3617,14 +3687,9 @@ class Remote:
             asked = getattr(s, "on_lost_arg", None) == "hold"
         else:
             asked = getattr(p, "on_lost", "") == "hold"
-        rehearsal = (getattr(s, "no_output", False)
-                     or asked
-                     or getattr(cond, "mode", None) == "rehearsal")
-        if not rehearsal:
-            return False, ("This show was started in Show mode. Scrubbing "
-                           "only works in Programming: press Stop, choose "
-                           "Programming on the Show file card, then Run.")
-        return True, ""
+        return bool(getattr(s, "no_output", False)
+                    or asked
+                    or getattr(cond, "mode", None) == "rehearsal")
 
     def transport(self, name, body, who, screen):
         ok, why = self.programming()

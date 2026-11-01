@@ -1482,7 +1482,6 @@ def _fire(tx, s, reason="FIRED"):
         if reason == EXTRA_SHOW and nxt is not None:
             text += (f" Show {nxt.n} at {clock(_local(tx.m, nxt.start))} "
                      f"stays where it is.")
-
     else:
         late = lateness_s(s.start, now)
         text = (f"Show {s.n} started on schedule at "

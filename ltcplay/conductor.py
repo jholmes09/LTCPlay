@@ -1357,13 +1357,20 @@ class Conductor:
         to black at once just before the show cue starts part way, so the
         video fades in at the cue (show_starting with fade_s) instead of
         cutting in mid-scene. Recorded like preroll_video_dark. Refused
-        while aborted, while a Stop is pending, or with a show up: it never
-        darkens a show. Never waits on MadMapper, never lights anything."""
+        while aborted, while a Stop's sequence has not finished, or with a
+        show up (PLAYING, HELD, DARK): it never darkens a show. Music that
+        plays between shows (the preshow) does not refuse it, so the video
+        still fades in at the cue (review A of #201). Never waits on
+        MadMapper, never lights anything."""
         with self._lock:
             if self._latched:
                 return self._refused("Video black for the cue",
                                      "the show is aborted")
-            if self._look in (PLAYING,) + HOLDING_LOOKS or self._playing():
+            want = self._want or {}
+            if want.get("halt") is True and self._done_gen != self._gen:
+                return self._refused("Video black for the cue",
+                                     "a Stop is still going to dark")
+            if self._look in (PLAYING,) + HOLDING_LOOKS:
                 return self._refused("Video black for the cue",
                                      "a show is up")
             r = self._call("video black before the start at a cue",
