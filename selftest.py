@@ -63064,7 +63064,7 @@ def test_stop_says_when_its_flame_disarm_failed():
     answer["doc"] = {"stopped": True, "flames": {"disarmed": True},
                      "show": {"ok": False, "text": "No show is running."}}
     e._post_one("stop", {"who": "Andy"}, path="/api/stop")
-    check("did NOT end the show" in e.fault and "Abort" in e.fault and
+    check("did NOT end the show" in e.fault and "e-stop" in e.fault and
           tuple(e.fault_face) == ("SHOW NOT", "STOPPED"),
           f"a show the scheduler did not end is the deck's fault, SHOW NOT "
           f"STOPPED (review of #132, 2): {e.fault!r}")
@@ -85381,12 +85381,13 @@ def test_disarm_all_end_to_end_rearms_without_a_cycle():
         wait(lambda: not any(g.get("wanted")
                              for g in status.last["groups"]), 1.0)
         check(all(g["armed"] == "disarmed" and not g["wanted"] and
+                  "Stop" not in g.get("reason", "") and
                   "Abort" not in g.get("reason", "")
                   for g in status.last["groups"]) and
               (status.last.get("disarm_all") or {}).get("accepted", 0) ==
               accepted0,
               f"flamesafe took no disarm_all, and no group reads the "
-              f"Abort's cycle: {status.last['groups']} "
+              f"Stop's cycle: {status.last['groups']} "
               f"{status.last.get('disarm_all')}")
         time.sleep(RM.PLAIN_CONFIRM_S + 0.3)
         rows = [r for r in rem.schedule.journal
@@ -85673,7 +85674,7 @@ def test_group_disarm_is_confirmed_or_forced():
         check(st == 409 and out.get("ok") is False and
               out.get("error", "").startswith(
                   "Disarm front row COULD NOT be confirmed") and
-              "press Abort" in out["error"] and
+              "press Stop" in out["error"] and
               "no flame link frame went out" in out["error"] and
               flames_alerts() and "COULD NOT" in flames_alerts()[-1]["text"],
               f"a forced disarm that failed is never said as done: {st} "
@@ -86066,7 +86067,7 @@ def test_group_disarm_across_two_screens_real_flamesafe():
                   f"{link.hazers_on} {link.zeroed}")
             check(wait(lambda: not fs_armed(), 2) and
                   disarm_all_forced() > forced0 and
-                  wait(lambda: "Abort" in g0().get("reason", ""), 2),
+                  wait(lambda: "Stop" in g0().get("reason", ""), 2),
                   f"F: flamesafe took the disarm_all and reads the "
                   f"Abort's cycle: {g0()} {status.last.get('disarm_all')}")
             al = [a for a in rem.alerts.view() if a["kind"] == "flames"]
@@ -95112,13 +95113,13 @@ def test_cleaning_at_the_engine():
               "the Fireball page waits for it")
         check("cleaning is running" in (R.m.purge_blocker() or ""),
               "the Startup page's purge waits for it")
-        R.m.on_abort("Ola", "Rack screen")
+        R.m.stop_hooks("Ola", "Rack screen")
         end = time.monotonic() + 5
         while cl.active() and time.monotonic() < end:
             time.sleep(0.01)
-        check(not cl.active() and "Abort" in cl.last_cut and
+        check(not cl.active() and "Stop" in cl.last_cut and
               not R.remote.deck_input()["holds"],
-              f"an Abort stops it and its hold: {cl.last_cut}")
+              f"a Stop stops it and its hold: {cl.last_cut}")
         RM.save_settings(R.work, screen_arming=False)
         step(0.6)            # the switch is read at most every 0.5 s
         code, out = beat(run="e2")
