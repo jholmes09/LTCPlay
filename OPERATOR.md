@@ -1006,6 +1006,12 @@ but it wouldn't allow it. Don't restrict the schedule in any way."
   (up to 30 minutes before its first show, so before midnight), and a
   show typed for tomorrow or a date. The list is never set aside, so
   no Abort latch is raised and the shows that ran stay done.
+  One limit serves the editor, Move, Delay and the file reader: from 30
+  minutes before midnight of the night's date to 5 years (1830 days)
+  after that midnight, both ends included, and it does not depend on the
+  schedule file, so saving different hours never makes tonight's list
+  unreadable. A time outside it is refused in words, and so is a Delay
+  that would move a show past it.
 - **A dry run and a Stop's Hold.** In a dry run, the Hold of a Stop is
   put back only after the made-up end of the show, before the next
   show is looked at, so the next show does not start by itself.

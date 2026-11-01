@@ -13764,9 +13764,11 @@ def test_schedule_after_midnight_review_b196():
               f"show 7 once: {[(x.n, x.status) for x in b.machine.slots]}")
         b.stop()
 
-    # Dry run: Saturday 18:00 every 20, guard 0. Stop at 17:50, Start now
-    # at 18:12:45; show 2 (18:20) must not start alone at 18:20:05 because
-    # the Hold was put back before the made-up show end.
+    # Dry run: Saturday 18:00 every 20, guard 0. A show started by hand at
+    # 17:49:30 is Stopped at 17:50 (the Stop's Hold); Start now at 18:12:40
+    # runs the delayed show 1 to its made-up end at 18:20:00, and show 2
+    # (18:20) must not start alone then, because the Hold comes back after
+    # that end.
     d3 = doc({"sat": nt("18:00", 20, "20:00")})
     d3["guard_s"] = 0
     work = tempfile.mkdtemp()
@@ -13777,10 +13779,9 @@ def test_schedule_after_midnight_review_b196():
     run(svc, now, at(SAT, 17, 49, 30))
     svc.operator_press("start-now", "Andy", "Rack screen")
     run(svc, now, at(SAT, 17, 50))
-    r = svc.halt_schedule("Andy", "Rack screen")
-    print("DBG stop", r, svc.machine.state, svc.machine.stop_hold)
+    svc.halt_schedule("Andy", "Rack screen")
     run(svc, now, at(SAT, 18, 12, 40), step=5)
-    print("DBG start", svc.operator_press("start-now", "Andy", "Rack screen"))
+    svc.operator_press("start-now", "Andy", "Rack screen")
     run(svc, now, at(SAT, 18, 20, 30), step=1)
     two = svc.machine.slot(2)
     check(two is not None and two.status != S.RUNNING and
@@ -13788,6 +13789,177 @@ def test_schedule_after_midnight_review_b196():
           f"dry run: show 2 does not start alone after the Stop: "
           f"{two.status if two else None} running={svc.machine.running}")
     svc.stop()
+
+
+def test_schedule_round_trip_every_slot_the_program_makes():
+    section("scheduler (round 3 of PR #196): every time the editor, Delay, "
+            "Move and Start now can put on tonight's list is read back by "
+            "the file reader after a restart, whatever a save did to the "
+            "hours meanwhile; one shared limit (inclusive) serves them all")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date, timedelta, timezone
+    from ltcplay import schedule_service as SV
+
+    def doc(weekly, **kw):
+        kw.setdefault("exceptions", {})
+        return _sched_doc(season={"first_date": "2026-10-01",
+                                  "last_date": "2036-03-31"},
+                          weekly=weekly, late_grace_s=15, **kw)
+
+    def nt(first, iv, last):
+        return {"first_start": first, "interval_min": iv, "last_end": last}
+
+    def at(d, h, mi, s=0):
+        return _den(S, h, mi, s, d=d)
+
+    def run(svc, now, until, step=10):
+        t = now[0].astimezone(timezone.utc)
+        while t < until:
+            t += timedelta(seconds=step)
+            now[0] = t
+            svc.tick()
+        _settle(svc)
+    THU, FRI, SAT = (2026, 11, 12), (2026, 11, 13), (2026, 11, 14)
+    MAXD = S.MAX_EDIT_AHEAD.days
+
+    def day(d, n):
+        x = date(*d) + timedelta(days=n)
+        return x.isoformat(), (x.year, x.month, x.day)
+
+    def bad(svc):
+        return [r["text"] for r in svc.journal
+                if "unreadable" in r["text"] or "set aside" in r["text"] or
+                "could not be used" in r["text"]]
+
+    def again(svc, now, when, label, conductor=False):
+        """Stop, restart at `when`, and return the new service after
+        checking the file read whole."""
+        work = svc.state_dir
+        before = [(x.n, x.start, x.status) for x in svc.machine.slots
+                  if x.status != S.PENDING]
+        date_before = svc.machine.date
+        svc.stop()
+        now[0] = when
+        b = _svc(S, work, now, conductor=_RecCond(S) if conductor else None)
+        b.start(thread=False)
+        _settle(b)
+        after = [(x.n, x.start) for x in b.machine.slots]
+        check(not bad(b) and b.machine.date == date_before and
+              not b.machine.abort_latched and
+              all((n, st) in after for n, st, _s in before),
+              f"{label}: the list reads back whole after a restart: "
+              f"{bad(b)} {b.machine.date} latched="
+              f"{b.machine.abort_latched}")
+        return b
+
+    # 1. Start now in Saturday's preshow, then a save that changes
+    # Saturday's hours (later first show, a day show, dark), then a restart.
+    base = {"fri": nt("22:10", 20, "23:00"), "sat": nt("00:10", 30,
+                                                       "03:30")}
+    for label, saved in (
+            ("Saturday first show 00:30",
+             {"fri": base["fri"], "sat": nt("00:30", 30, "03:30")}),
+            ("Saturday moved to 19:00",
+             {"fri": base["fri"], "sat": nt("19:00", 30, "21:00")}),
+            ("Saturday dark", {"fri": base["fri"]})):
+        for cond in (False, True):
+            work = tempfile.mkdtemp()
+            now = [at(FRI, 23, 30)]
+            svc = _svc(S, work, now, rule=doc(base),
+                       conductor=_RecCond(S) if cond else None)
+            svc.start(thread=False)
+            run(svc, now, at(FRI, 23, 41))
+            o = svc._apply(_op(S, S.START_NOW))
+            _settle(svc)
+            check(not o.refused, f"{label}: Start now accepted")
+            run(svc, now, at(FRI, 23, 42), step=1)
+            SV.save_rule(svc.path, doc(saved))
+            now[0] = at(FRI, 23, 52)
+            svc.tick()
+            _settle(svc)
+            b = again(svc, now, at(FRI, 23, 55),
+                      f"{label}, conductor {cond}", cond)
+            b.stop()
+
+    # 2. The exact edge of the shared limit, from midnight of the night's
+    # date: MAXD days after is accepted, a minute later is refused, and
+    # the accepted one reads back. Typed on the night of Thursday.
+    d1 = doc({"thu": nt("22:00", 30, "02:00")})
+    for typed, ok in ((f"00:00 {day(THU, MAXD)[0]}", True),
+                      (f"00:01 {day(THU, MAXD)[0]}", False),
+                      (f"23:59 {day(THU, MAXD - 1)[0]}", True)):
+        work = tempfile.mkdtemp()
+        now = [at(THU, 21, 30)]
+        svc = _svc(S, work, now, rule=d1)
+        svc.start(thread=False)
+        run(svc, now, at(THU, 22, 40))
+        o = svc._apply(_op(S, S.EDIT_ADD, at=typed))
+        check(bool(o.refused) != ok,
+              f"\"{typed}\" is {'accepted' if ok else 'refused'} at the "
+              f"edge: {o.refused!r}")
+        check(ok or "years" in (o.refused or ""),
+              f"the refusal says why: {o.refused!r}")
+        again(svc, now, at(THU, 22, 41), f"edge {typed}").stop()
+
+    # 3. Delay: a far show 5 minutes inside the limit is delayed to the
+    # exact limit (accepted, reads back); 10 minutes would pass it and is
+    # refused in words; Delay the rest the same.
+    d2 = doc({"thu": nt("18:00", 20, "19:00")})
+    for kind, mins, ok in ((S.DELAY_NEXT, 5, True),
+                           (S.DELAY_NEXT, 10, False),
+                           (S.DELAY_REST, 10, False)):
+        work = tempfile.mkdtemp()
+        now = [at(THU, 17, 30)]
+        svc = _svc(S, work, now, rule=d2)
+        svc.start(thread=False)
+        far = day(THU, MAXD - 1)[0]
+        o = svc._apply(_op(S, S.EDIT_ADD, at=f"23:55 {far}"))
+        check(not o.refused, f"setup: the far show is added: {o.refused!r}")
+        run(svc, now, at(THU, 19, 5))
+        o = svc._apply(_op(S, kind, minutes=mins))
+        check(bool(o.refused) != ok,
+              f"{kind} +{mins} on a far show is "
+              f"{'accepted' if ok else 'refused'}: {o.refused!r}")
+        check(ok or "years" in (o.refused or ""),
+              f"the Delay refusal says why: {o.refused!r}")
+        again(svc, now, at(THU, 19, 6), f"{kind} +{mins}").stop()
+
+    # 4. A night with an early first show: the limit is measured from
+    # midnight, not from the preshow, so a show at the same edge reads.
+    d3 = doc({"sat": nt("00:10", 30, "03:30")})
+    work = tempfile.mkdtemp()
+    now = [at(FRI, 23, 45)]
+    svc = _svc(S, work, now, rule=d3)
+    svc.start(thread=False)
+    run(svc, now, at(FRI, 23, 50))
+    o = svc._apply(_op(S, S.EDIT_ADD, at=f"23:50 {day(SAT, MAXD - 1)[0]}"))
+    check(not o.refused, f"an edge show on a preshow night: {o.refused!r}")
+    o = svc._apply(_op(S, S.EDIT_ADD, at=f"00:01 {day(SAT, MAXD)[0]}"))
+    check(o.refused, "one minute past the limit is refused")
+    again(svc, now, at(FRI, 23, 51), "preshow night edge").stop()
+
+    # 5. Other typed forms the editor accepts all read back.
+    d4 = doc({"fri": nt("22:00", 30, "02:00")})
+    for typed in ("22:50", "23:55 tomorrow", "01:10", "03:00 second",
+                  "18:00 2026-11-14", "12:00 2027-02-01", "00:30 today",
+                  "12:00 2026-11-10"):
+        work = tempfile.mkdtemp()
+        now = [at(FRI, 21, 30)]
+        svc = _svc(S, work, now, rule=d4)
+        svc.start(thread=False)
+        run(svc, now, at(FRI, 22, 20))
+        o = svc._apply(_op(S, S.EDIT_ADD, at=typed))
+        if typed == "12:00 2026-11-10":
+            check(o.refused and "before this night began" in o.refused,
+                  f"a day before the night is refused in words: "
+                  f"{o.refused!r}")
+        if not o.refused:
+            again(svc, now, at(FRI, 22, 21), f"typed {typed}").stop()
+        else:
+            svc.stop()
 
 
 def test_schedule_after_midnight_delta_a():
@@ -104582,6 +104754,7 @@ if __name__ == "__main__":
         test_schedule_after_midnight_review_b,
         test_schedule_after_midnight_review_c,
         test_schedule_after_midnight_review_b196,
+        test_schedule_round_trip_every_slot_the_program_makes,
         test_schedule_after_midnight_delta_a,
         test_schedule_run_warning_says_only_what_is_true,
         test_schedule_late_failed_start_is_a_fault,

@@ -2114,6 +2114,14 @@ def _delay(m, ev, now, rest):
         return bad
     which = {s.n for s in m.pending()} if rest else {nxt.n}
     slots = _shift(m, m.slots, which, ev.minutes)
+    hi = edit_window(m.date, m.tz)[1]
+    far = [x.n for x in slots if x.n in which and x.start > hi]
+    if far:
+        return _refuse(m, ev, now,
+                       f"Show {far[0]} would move past the furthest time a "
+                       f"night's list can hold ("
+                       f"{MAX_EDIT_AHEAD.days // 366} years after tonight). "
+                       f"Move it to an earlier day first.")
     why = _spacing_problem(m, slots, which, now)
     if why:
         if not rest:
@@ -2518,6 +2526,19 @@ def _edit_words(text):
     return parts[0], day, on, which
 
 
+def edit_window(d, tz):
+    """The one limit on any show time a night's list may hold: from a night's
+    preshow (never earlier than PRESHOW_LEAD_S before midnight of its date)
+    to MAX_EDIT_AHEAD after that midnight, both ends inclusive. The editor,
+    Delay, Move and the file reader all use it, measured from midnight(d) and
+    not from this week's schedule file, so a save that changes the hours can
+    never make a list the program wrote unreadable (round 3 of PR #196).
+    Returns (earliest, latest) in UTC."""
+    midnight = _utc(datetime.combine(d, time(0), tzinfo=tz))
+    return (midnight - timedelta(seconds=PRESHOW_LEAD_S),
+            midnight + MAX_EDIT_AHEAD)
+
+
 def _edit_time(m, ev, now=None):
     """_edit_time_inner, with an arithmetic limit made a sentence: a date
     the calendar cannot hold, or further than MAX_EDIT_AHEAD, is refused
@@ -2528,11 +2549,15 @@ def _edit_time(m, ev, now=None):
     except OverflowError:
         when = None
     years = MAX_EDIT_AHEAD.days // 366
-    start = _utc(datetime.combine(m.date, time(0), tzinfo=m.tz))
-    if when is None or when - start > MAX_EDIT_AHEAD:
+    lo, hi = edit_window(m.date, m.tz)
+    if when is None or when > hi:
         raise ValueError(f"{str(ev.at).strip()!r} is more than {years} years "
                          f"away. Type a day within {years} years of "
                          f"tonight.")
+    if when < lo:
+        raise ValueError(f"{str(ev.at).strip()!r} is before this night "
+                         f"began. Type a time from {clock(_local(m, lo))} "
+                         f"on, tonight or later.")
     return when
 
 
@@ -2917,19 +2942,11 @@ def machine_from_doc(doc, rule, d, now, notes=None):
     ahead = []
     base = new_night(rule, d)
     tz = base.tz
-    start_of_day = _utc(datetime.combine(d, time(0), tzinfo=tz))
-    # A night can begin before midnight, at its first show's preshow
-    # (night_reset), and a show started by hand then (Start now) is on its
-    # list at that earlier time (delta review B of PR #196: the file was set
-    # aside and the shows that ran were missed on a restart).
-    first_show = _night_span(rule, d)[0]
-    if first_show is not None:
-        start_of_day = min(start_of_day,
-                           first_show - timedelta(seconds=PRESHOW_LEAD_S))
     # A night may run past midnight (Jeff, 2026-10-30), and a show may be
-    # typed for any later day: the file reads whatever the editor accepts
-    # (MAX_EDIT_AHEAD), or one wrong show would set the whole night aside.
-    end_of_day = start_of_day + MAX_EDIT_AHEAD
+    # typed for any later day: the file reads whatever the editor accepts,
+    # through the one shared limit (edit_window), or one wrong show would
+    # set the whole night aside.
+    start_of_day, end_of_day = edit_window(d, tz)
 
     def when(v, what, optional=True):
         if v is None:
@@ -2953,10 +2970,13 @@ def machine_from_doc(doc, rule, d, now, notes=None):
             dt = _utc(datetime.fromisoformat(v))
         except (TypeError, ValueError):
             raise ValueError(f"{what} is not a time: {v!r}.")
-        if not (start_of_day <= dt < end_of_day):
-            raise ValueError(f"{what} is not within {MAX_EDIT_AHEAD.days // 366}"
-                             f" years after the night of {d} in "
-                             f"{rule.timezone}.")
+        if dt < start_of_day:
+            raise ValueError(f"{what} is before the night of {d} began "
+                             f"(in {rule.timezone}).")
+        if dt > end_of_day:
+            raise ValueError(f"{what} is more than "
+                             f"{MAX_EDIT_AHEAD.days // 366} years after the "
+                             f"night of {d} in {rule.timezone}.")
         return dt
 
     if not isinstance(doc, dict):

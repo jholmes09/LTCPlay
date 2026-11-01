@@ -9098,8 +9098,8 @@ def build():
 
  ("after midnight: tonight's file refuses a show after midnight",
   "ltcplay/schedule.py",
-  "    end_of_day = start_of_day + MAX_EDIT_AHEAD",
-  "    end_of_day = start_of_day + timedelta(days=1)"),
+  "    return (midnight - timedelta(seconds=PRESHOW_LEAD_S),\n            midnight + MAX_EDIT_AHEAD)\n",
+  "    return (midnight - timedelta(seconds=PRESHOW_LEAD_S),\n            midnight + timedelta(days=1))\n"),
 
  ("after midnight: the save answer leaves out the warnings",
   "ltcplay/remote.py",
@@ -9336,6 +9336,21 @@ def build():
   "        row = {\"show\": s.n, \"start\": m.hm(s.start),",
   "        row = {\"show\": s.n, \"start\": clock(_local(m, s.start)),"),
 
+ ("round3196: the limit is not inclusive at the edge",
+  "ltcplay/schedule.py",
+  "    if when is None or when > hi:\n",
+  "    if when is None or when >= hi:\n"),
+
+ ("round3196: Delay moves a show past the limit",
+  "ltcplay/schedule.py",
+  "    far = [x.n for x in slots if x.n in which and x.start > hi]\n",
+  "    far = []\n"),
+
+ ("round3196: a time before the night began is accepted by the editor",
+  "ltcplay/schedule.py",
+  "    if when < lo:\n        raise ValueError(f\"{str(ev.at).strip()!r} is before this night \"",
+  "    if False:\n        raise ValueError(f\"{str(ev.at).strip()!r} is before this night \""),
+
  ("review196C: overlapping nights do not say a show can be missed",
   "ltcplay/schedule.py",
   "that first show can be MISSED. Saved as \"",
@@ -9353,9 +9368,8 @@ def build():
 
  ("review196B: the reader refuses a show in the next night's preshow",
   "ltcplay/schedule.py",
-  "        start_of_day = min(start_of_day,\n"
-  "                           first_show - timedelta(seconds=PRESHOW_LEAD_S))\n",
-  "        pass\n"),
+  "    return (midnight - timedelta(seconds=PRESHOW_LEAD_S),\n",
+  "    return (midnight,\n"),
 
  ("review196B: the dry run never puts the Stop's Hold back after the show end",
   "ltcplay/schedule_service.py",
@@ -9372,13 +9386,13 @@ def build():
 
  ("delta196A: the file refuses a show the editor accepted",
   "ltcplay/schedule.py",
-  "    end_of_day = start_of_day + MAX_EDIT_AHEAD",
-  "    end_of_day = start_of_day + timedelta(days=2)"),
+  "    return (midnight - timedelta(seconds=PRESHOW_LEAD_S),\n            midnight + MAX_EDIT_AHEAD)\n",
+  "    return (midnight - timedelta(seconds=PRESHOW_LEAD_S),\n            midnight + timedelta(days=2))\n"),
 
  ("delta196A: a time years away is accepted",
   "ltcplay/schedule.py",
-  "    if when is None or when - start > MAX_EDIT_AHEAD:",
-  "    if when is None:"),
+  "    if when is None or when > hi:\n",
+  "    if when is None:\n"),
 
  ("delta196A: an impossible date is an uncaught overflow",
   "ltcplay/schedule.py",
