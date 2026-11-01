@@ -20689,8 +20689,8 @@ def build():
 
  ("fireball charge: Tanks are empty leaves the PENDING mark (round 6)",
   "ltcplay/fireball_charge.py",
-  "                self.pending = False\n            was_off, self.auto_off = self.auto_off, False",
-  "                pass\n            was_off, self.auto_off = self.auto_off, False"),
+  "                self.pending = False\n            elif unk and self.pending:",
+  "                pass\n            elif unk and self.pending:"),
 
  ("fireball charge: the marker goes in the temp folder (round 7)",
   "ltcplay/fireball_charge.py",
@@ -20769,8 +20769,8 @@ def build():
 
  ("fireball charge: automatic charging off is called a record that cannot be saved (round 8)",
   "ltcplay/fireball_charge.py",
-  "            return \"off\"",
-  "            return \"failed\""),
+  "            # well be saveable now (round-8 review 1).\n            return \"off\"",
+  "            # well be saveable now (round-8 review 1).\n            return \"failed\""),
 
  ("fireball charge: a confirmation with no tank NOT KNOWN says tanks confirmed EMPTY (round 8)",
   "ltcplay/fireball_charge.py",
@@ -20849,8 +20849,8 @@ def build():
 
  ("fireball charge: a charge on the wire does not keep the mark (round 10)",
   "ltcplay/fireball_charge.py",
-  "        if at is not None and now - at < 0.5:\n            return True\n        return any(",
-  "        return any("),
+  "        if at is not None and now - at < 0.5:\n            return True\n        asked = self._pending_asked_at",
+  "        asked = self._pending_asked_at"),
 
  ("fireball charge: an unreadable marker ignores a readable one's higher revision (round 10)",
   "ltcplay/fireball_charge.py",
@@ -20892,6 +20892,41 @@ def build():
   "                self._pending_used = False\n                self._pending_asked_at = self._clock()\n            was_off",
   "                pass\n            was_off"),
 
+ ("fireball charge: a status with no fireball group and nothing on 55 to 59 is not known (round 10c)",
+  "ltcplay/fireball_charge.py",
+  "        if no_fireball_group(fl):",
+  "        if False:"),
+
+ ("fireball charge: a group that owns channel 55 under another name counts as off (round 10c)",
+  "ltcplay/fireball_charge.py",
+  "            if any(x in FIRE_SLOTS for x in list(fire) + list(safe)):",
+  "            if any(x in FIRE_SLOTS for x in list(safe)):"),
+
+ ("fireball charge: a passthrough entry on 55 to 59 does not stop the off reading (round 10d)",
+  "ltcplay/fireball_charge.py",
+  "                    any(x in FIRE_SLOTS for x in slots):",
+  "                    False:"),
+
+ ("fireball charge: a safety slot on 55 to 59 does not stop the off reading (round 10d)",
+  "ltcplay/fireball_charge.py",
+  "            if any(x in FIRE_SLOTS for x in list(fire) + list(safe)):",
+  "            if any(x in FIRE_SLOTS for x in list(fire)):"),
+
+ ("fireball charge: frames with no fireball group still stamp a charge on the wire (round 10d)",
+  "ltcplay/fireball_charge.py",
+  "                    and not self._no_group:",
+  "                    :"),
+
+ ("fireball charge: flamesafe.json with a group and the running one without says nothing (round 10d)",
+  "ltcplay/fireball_charge.py",
+  "        if self._no_group and self._file_get is not None:",
+  "        if False:"),
+
+ ("remote: the flame status view drops the safety slots (round 10d)",
+  "ltcplay/remote.py",
+  "                           \"safety_slots\": _ints(g.get(\"safety_slots\")),",
+  "                           \"safety_slots\": None,"),
+
  ("fireball charge: a start reads only this machine's marker names (round 9)",
   "ltcplay/fireball_charge.py",
   "(folder, glob.escape(FILE) + \".*marker*\"),",
@@ -20919,7 +20954,7 @@ def build():
 
  ("fireball charge: Tanks are empty with no tank NOT KNOWN takes the PENDING mark off (round 9)",
   "ltcplay/fireball_charge.py",
-  "            if unk:\n                # Only when a tank was NOT KNOWN",
+  "            if unk and not self._charge_in_flight(self._clock()):\n                # Only when a tank was NOT KNOWN",
   "            if True:\n                # Only when a tank was NOT KNOWN"),
 
  ("fireball charge: automatic charging comes back without trying a marker (round 9)",
@@ -21689,13 +21724,13 @@ def build():
 
  ("fireball cues: a charge not started begins inside a window the play landed in (round 8)",
   "ltcplay/fireball_cues.py",
-  "                if k not in run.started and run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf:",
-  "                if False and run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf:"),
+  "                if k not in run.started and run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf and \\",
+  "                if False and run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf and \\"),
 
  ("fireball cues: a charge already started is skipped by the landing rule (round 8)",
   "ltcplay/fireball_cues.py",
-  "                if k not in run.started and run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf:",
-  "                if run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf:"),
+  "                if k not in run.started and run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf and \\",
+  "                if run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf and \\"),
 
  ("fireball cues: the cues tell the record too when it judges the config (round 8)",
   "ltcplay/fireball_cues.py",

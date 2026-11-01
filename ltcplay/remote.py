@@ -1255,6 +1255,10 @@ class FlameStatus:
                            # and sent on them, for the card's aim line.
                            "aim_slots": _ints(g.get("aim_slots")),
                            "fire_slots": _ints(g.get("fire_slots")) or [],
+                           # The safety slots (None from an older
+                           # flamesafe): the group's arm value is put on
+                           # them whenever it is armed (round-10 review).
+                           "safety_slots": _ints(g.get("safety_slots")),
                            "commanded_fire": _ints(
                                g.get("commanded_fire")),
                            "sent_fire": _ints(g.get("sent_fire"))})
