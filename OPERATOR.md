@@ -1261,6 +1261,81 @@ for the record as a whole a mark, PENDING.
   sentence, for example "Fuel: charged 14:32. Air: charged 14:35. No shot
   fired." There is no pressure reading: it is never invented.
 
+## The late limit: 2 minutes
+
+(Jeff, 2026-11-01.) A show is MISSED only if it is more than 2 minutes
+(120 seconds) late. Within 2 minutes it still starts, late, and the
+journal says so ("Show 3 started on schedule at 18:40, 119 s after its
+time."). One second more and it is MISSED, as "MISSED (late by 2m 1s)".
+It was 15 seconds before.
+
+- The setting is still `late_grace_s` in the schedule file and on the
+  Programming screen ("Late start allowed, seconds"). A file that does not
+  give it now means 120. The most it can be is 300 (5 minutes); a bigger
+  number is refused in words, never quietly cut down. A file that says 15
+  or 0 keeps that value.
+- Everything that waits on a show's time uses the same number: the sweep
+  that starts or misses a show, the saved-schedule rules, and the warnings
+  for shows close together and for two nights that run into each other
+  ("starts late by ..., within its 120 s grace", "will be MISSED (late by
+  ..., more than its 120 s grace)"; a last show that starts as late as the
+  grace allows is counted too).
+- After a restart a show that came due while the program was down starts
+  if it is no more than the limit late, and Run is pressed. A restart
+  always leaves Run off, so unless Run was pressed before the show's time
+  the show is refused and marked FAULT, with the alert "did not start" and
+  the sentence "Run has not been pressed". Pressing Run afterwards, even
+  inside the 120 seconds, does not start it: press Start now. Past the
+  limit the show is simply MISSED.
+- The rig check (pre-roll) never stretches the limit. A show whose rig
+  check runs at its time may start up to the check's allowance late, but
+  never past 120 seconds: a show whose rig check cannot finish by then is
+  MISSED. (Only a grace set below 120 gains from the allowance.)
+- Schedule files that still say `late_grace_s` 15 (the old default, which
+  the example file had and first run copies) are changed to 120 once, when
+  the program reads them: the file is saved (the old one is kept as the
+  previous version) and the journal says "late limit changed from 15 s to 2
+  minutes". Every other value (0, 30, 60, 300 ...) is left alone, and a 15
+  chosen again afterwards is kept (a marker file,
+  `ltcplay_late_limit_migrated.json`, stays beside the schedule file). The
+  example file now says 120.
+- The change happens once, on the first start after the upgrade (a
+  marker file, `ltcplay_late_limit_migrated.json`, is written on the first
+  good read of the schedule file, whatever it said), never when you save
+  from the Programming screen. The file as it was is kept as
+  `ltcplay_schedule.pre-late-limit.json` (never overwritten), besides the
+  usual `ltcplay_schedule.previous.json`, which the next save replaces.
+  After rolling back to an earlier version of LTC Player, set the late
+  limit to 15 in Programming (the earlier version refuses a larger number
+  and schedules nothing); your file as it was is
+  `ltcplay_schedule.pre-late-limit.json` (the reliable copy: the next save
+  replaces `ltcplay_schedule.previous.json`). When you update again, set
+  120 in Programming, or delete `ltcplay_late_limit_migrated.json` so the
+  next start changes a 15 to 120 once more; otherwise the 15 stays. A
+  Programming tab that was open before the change and is saved afterwards
+  writes its own value back, 15 included, and that is kept.
+- A night is not handed over while a waiting show can still start inside
+  its late limit, and the settling step at a hand over never starts a show:
+  every start, however late, goes through the alert hold, the rig check and
+  the Stop check.
+- It never overrides anything that says wait. A Hold, a Stop's Hold, an
+  Abort, Run not pressed, the guard after the previous show, a show that
+  is running and a Stop under way all still hold a show back, however
+  close to its time. Resume's journal line says "Show N ... starts at the next tick,
+  N s late" only when it really will (not a Reset, nothing aborted, no
+  guard left, at least 5 seconds of the limit left); within 5 seconds of
+  the limit it says the show "is close to its limit and may still start at
+  the next tick"; otherwise it says what is next on the schedule. Pressing Resume within the limit starts the show,
+  late; after it the show waits for Start now, as before. A show that is
+  held back past the limit is DELAYED, not MISSED, as before.
+- The 120 second guard between shows is unchanged. A show inside the guard
+  of the one before starts as soon as the guard is over, if that is within
+  2 minutes of its time (so lateness can add up from show to show when
+  shows are close together; the save warning says so); beyond 2 minutes it
+  is not started by itself.
+- The Programming screen shows 120 in the late-start field when the file
+  leaves it out.
+
 ## Schedule times: any time of day, past midnight
 
 Jeff, 2026-10-30: "I tried to schedule a show between Midnight and 2 AM
@@ -1280,8 +1355,8 @@ but it wouldn't allow it. Don't restrict the schedule in any way."
   (and the journal) says what to know, starting "Warnings, saved
   anyway:". An exception outside the season is used: its date runs its
   own hours. Only a time that is not a time (25:00), a time zone this PC
-  does not know, a misspelled setting and a late grace over 15 seconds
-  are still refused. A show length, guard or gap between shows over 24
+  does not know, a misspelled setting and a late grace over 300 seconds
+  (5 minutes) are still refused. A show length, guard or gap between shows over 24
   hours, and a season before 1971 or after 9998, are used as 24 hours and
   as those dates, and said. A weekday written twice is said; the later
   one is used.

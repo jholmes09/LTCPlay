@@ -9068,6 +9068,121 @@ def build():
   "            if late > grace:\n",
   "            if late > grace - 100000:\n"),
 
+ ("late limit 2 min: the late grace defaults to 0 again",
+  "ltcplay/schedule.py",
+  "DEFAULT_LATE_GRACE_S = 120\n",
+  "DEFAULT_LATE_GRACE_S = 0\n"),
+
+ ("late limit 2 min: a file without late_grace_s reads as 15",
+  "ltcplay/schedule.py",
+  "    grace = DEFAULT_LATE_GRACE_S\n    version = 0\n",
+  "    grace = 15\n    version = 0\n"),
+
+ ("late limit 2 min: the late grace cap is 15 again",
+  "ltcplay/schedule.py",
+  "MAX_LATE_GRACE_S = 300\n",
+  "MAX_LATE_GRACE_S = 15\n"),
+
+ ("late limit 2 min: a show exactly at the limit is missed",
+  "ltcplay/schedule.py",
+  "        if late > grace:\n            if held:\n",
+  "        if late >= grace:\n            if held:\n"),
+
+ ("late limit 2 min: the rig check allowance carries a show past 120 s",
+  "ltcplay/schedule.py",
+  "    return max(grace_s, min(grace_s + max(0, int(allowance_s)),\n                            DEFAULT_LATE_GRACE_S))\n",
+  "    return grace_s + max(0, int(allowance_s))\n"),
+
+ ("late limit 2 min: the night overlap warning ignores a late last show",
+  "ltcplay/schedule.py",
+  "                 x + need + grace_td > first]",
+  "                 x + need + grace_td > first + grace_td]"),
+
+ ("late limit 2 min: the close-together warning says a show is missed",
+  "ltcplay/schedule.py",
+  "lateness can add up from show to show. Saved as it is.",
+  "Saved as it is."),
+
+ ("late limit 2 min: the Programming field is blank for a missing grace",
+  "ltcplay/web/remote.html",
+  "doc.late_grace_s == null ? 120 :",
+  "doc.late_grace_s == null ? \"\" :"),
+
+ ("late limit 2 min: a night is handed over while a show can still start inside its grace",
+  "ltcplay/schedule.py",
+  "                e = s.start + need + timedelta(seconds=m.late_grace_s)\n",
+  "                e = s.start + need\n"),
+
+ ("late limit 2 min: the settling tick at a hand over can start a show",
+  "ltcplay/schedule.py",
+  "        if tx.ev.settle:\n            break\n",
+  "        if False:\n            break\n"),
+
+ ("late limit 2 min: a file that says 15 is not changed to 120",
+  "ltcplay/schedule_service.py",
+  "        if not self.MIGRATE_LEGACY_GRACE:\n            return\n",
+  "        return\n"),
+
+ ("late limit 2 min: any late_grace_s is changed to 120",
+  "ltcplay/schedule_service.py",
+  "            if first_load and g == 15 and isinstance(g, int) and",
+  "            if first_load and g is not None and isinstance(g, int) and"),
+
+ ("late limit 2 min: a 15 chosen after the change is changed again",
+  "ltcplay/schedule_service.py",
+  "            if os.path.exists(marker):\n                return\n",
+  ""),
+
+ ("late limit 2 min: a reload changes a 15 typed in Programming",
+  "ltcplay/schedule_service.py",
+  "            if first_load and g == 15 and isinstance(g, int) and",
+  "            if g == 15 and isinstance(g, int) and"),
+
+ ("late limit 2 min: the marker is written only when the file states a value",
+  "ltcplay/schedule_service.py",
+  "            try:\n                write_json_atomic(marker, {\"migrated\": changed,",
+  "            try:\n                if g is None:\n                    raise OSError('x')\n                write_json_atomic(marker, {\"migrated\": changed,"),
+
+ ("late limit 2 min: the copy of the file as it was is overwritten",
+  "ltcplay/schedule_service.py",
+  "                    if not os.path.exists(backup):\n",
+  "                    if True:\n"),
+
+ ("late limit 2 min: Resume promises a start with no margin",
+  "ltcplay/schedule.py",
+  "RESUME_MARGIN_S = 5\n",
+  "RESUME_MARGIN_S = 0\n"),
+
+ ("late limit 2 min: Resume says next on the schedule for a show starting now",
+  "ltcplay/schedule.py",
+  "    return \"yes\" if late <= m.late_grace_s - RESUME_MARGIN_S else \"close\"\n",
+  "    return \"no\"\n"),
+
+ ("late limit 2 min: Resume promises a start inside the guard",
+  "ltcplay/schedule.py",
+  "            _guard_left(m, now) != 0 or not 0 <= late <= m.late_grace_s):\n",
+  "            not 0 <= late <= m.late_grace_s):\n"),
+
+ ("late limit 2 min: Resume does not say a show is close to its limit",
+  "ltcplay/schedule.py",
+  "    if how == \"close\":\n",
+  "    if False:\n"),
+
+ ("late limit 2 min: the settings watcher is not refreshed after a migration",
+  "ltcplay/web.py",
+  "        config_watch.refresh(schedule.path)\n",
+  "        pass\n"),
+
+ ("late limit 2 min: a reload after a failed first save writes the marker",
+  "ltcplay/schedule_service.py",
+  "            if not first_load and getattr(self, \"_late_save_failed\", False):\n",
+  "            if False:\n"),
+
+ ("late limit 2 min: the rehearsal script uses up the one-time change",
+  "tools/stress/rehearsals/rehearsals.ps1",
+  "Remove-Item $MARKER -Force",
+  "Write-Output $MARKER -Force"),
+
  ("review196C: overlapping nights do not say a show can be missed",
   "ltcplay/schedule.py",
   "so that first show will be MISSED (late by \"",
@@ -20916,7 +21031,7 @@ def build():
 
  ("fireball charge: frames with no fireball group still stamp a charge on the wire (round 10d)",
   "ltcplay/fireball_charge.py",
-  "                    and not self._no_group:",
+  "                    and not (self._no_group and self.armed_now() == \"off\"):",
   "                    :"),
 
  ("fireball charge: flamesafe.json with a group and the running one without says nothing (round 10d)",
@@ -20928,6 +21043,26 @@ def build():
   "ltcplay/remote.py",
   "                           \"safety_slots\": _ints(g.get(\"safety_slots\")),",
   "                           \"safety_slots\": None,"),
+
+ ("remote: a passthrough entry with bad slots reads as none (round 10e)",
+  "ltcplay/remote.py",
+  "                     \"slots\": _ints(p.get(\"slots\")),\n                     \"asked\"",
+  "                     \"slots\": _ints(p.get(\"slots\")) or [],\n                     \"asked\""),
+
+ ("remote: a passthrough entry that is not one is dropped (round 10e)",
+  "ltcplay/remote.py",
+  "                       if not isinstance(p, dict)]",
+  "                       if False]"),
+
+ ("fireball charge: a late status clears the no-group note (round 10e)",
+  "ltcplay/fireball_charge.py",
+  "        if not self._no_group and self._armed == \"unknown\":",
+  "        if False:"),
+
+ ("fireball charge: the wire stamp is skipped on a stale no-group reading (round 10e)",
+  "ltcplay/fireball_charge.py",
+  "                    and not (self._no_group and self.armed_now() == \"off\"):",
+  "                    and not self._no_group:"),
 
  ("fireball charge: a start reads only this machine's marker names (round 9)",
   "ltcplay/fireball_charge.py",
@@ -21763,8 +21898,8 @@ def build():
  # (Jeff, Pico, 2026-10-29).
  ("saved schedule: a save waits for a restart to plan tonight again",
   "ltcplay/schedule_service.py",
-  "            else:\n                self._follow_rule(self.clock())\n            rule = self.rule",
-  "            rule = self.rule"),
+  "                self._follow_rule(self.clock())\n            rule = self.rule",
+  "                pass\n            rule = self.rule"),
 
  ("saved schedule: a closed night stays closed though a show is still to come",
   "ltcplay/schedule.py",
