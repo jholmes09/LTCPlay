@@ -21494,6 +21494,272 @@ def build():
   "            unk = [k for k in TANK_WORD if self.tanks[k][\"state\"] == UNKNOWN]",
   "            unk = [k for k in TANK_WORD if self.tanks[k][\"state\"] != EMPTY]"),
 
+ # -- the fireball timeline on the flame cues (fireball_cues.py) -----------
+ ("fireball cues: the FSEQ's 55 to 59 are not masked for a timeline show",
+  "ltcplay/fireball_cues.py",
+  "        out = self._masked(out)\n        if label != run.cue:",
+  "        if label != run.cue:"),
+
+ ("fireball cues: a broken timeline file falls back to the FSEQ",
+  "ltcplay/fireball_cues.py",
+  "        if plan is None or plan[1]:",
+  "        if plan is None:"),
+
+ ("fireball cues: a charged tank is charged again (double charge)",
+  "ltcplay/fireball_cues.py",
+  "        if state == \"charged\":\n            return (f\"{word} already charged",
+  "        if state == \"charged\" and False:\n            return (f\"{word} already charged"),
+
+ ("fireball cues: a tank in an unknown state is charged",
+  "ltcplay/fireball_cues.py",
+  "        return (f\"{word} tank state not known: {what} was skipped \"",
+  "        return \"\"\n        return (f\"{word} tank state not known: {what} was skipped \""),
+
+ ("fireball cues: a charge cut short charges again after a Resume",
+  "ltcplay/fireball_cues.py",
+  "        if tank in run.sent_tanks:",
+  "        if False:"),
+
+ ("fireball cues: a charge stops after its first frame",
+  "ltcplay/fireball_cues.py",
+  "        if carrying_on:\n            return \"\"",
+  "        if False:\n            return \"\""),
+
+ ("fireball cues: a stage moved into the past by an edit fires late",
+  "ltcplay/fireball_cues.py",
+  "            if relf is not None and w[\"s0\"] < relf:",
+  "            if False:"),
+
+ ("fireball cues: an edit moves a stage that has started",
+  "ltcplay/fireball_cues.py",
+  "            if k not in self.started:\n                self.stages[k] = w",
+  "            if True:\n                self.stages[k] = w"),
+
+ ("fireball cues: a source switch applies in the middle of a play",
+  "ltcplay/fireball_cues.py",
+  "        if run.source != \"timeline\":\n            # A landing",
+  "        run.source = (entry or {}).get(\"source\", \"fseq\")\n        if run.source != \"timeline\":\n            # A landing"),
+
+ ("fireball cues: the shot is followed by an automatic purge",
+  "ltcplay/fireball_cues.py",
+  "        run.prev_on = now_on\n        return out",
+  "        run.prev_on = now_on\n        if 57 in now_on:\n            out[58] = ON_VALUE\n        return out"),
+
+ ("fireball cues: the flame cues skip the timeline in background mode",
+  "ltcplay/fire_ice.py",
+  "                return self._with_fireball(out, s, label, rel, cue)\n            data = f.frame(idx)",
+  "                return out\n            data = f.frame(idx)"),
+
+ ("fireball cues: the flame cues skip the timeline when reading in the call",
+  "ltcplay/fire_ice.py",
+  "        return self._with_fireball(out, s, label, rel, cue)\n\n    def _with_fireball",
+  "        return out\n\n    def _with_fireball"),
+
+ ("fireball cues: a timeline that cannot be built lets every show's FSEQ fire the fireball",
+  "ltcplay/web.py",
+  "    cues.fireball = fb\n    remote.fireball_cues = fb",
+  "    cues.fireball = fb if fb.store is not None else None\n    remote.fireball_cues = fb"),
+
+ ("fireball cues: another spelling of the show's name falls back to the FSEQ",
+  "ltcplay/fireball_cues.py",
+  "        if entry is None:\n            # A case-blind folder",
+  "        if False:\n            # A case-blind folder"),
+
+ ("fireball cues: two spellings of one show in the file are taken",
+  "ltcplay/fireball_cues.py",
+  "            if len(same) > 1:",
+  "            if False:"),
+
+ ("fireball cues: an FSEQ show is not guarded",
+  "ltcplay/fireball_cues.py",
+  "                                      (first and relf > TOP_FRAMES) or jumped)\n        out = self._masked(out)",
+  "                                      (first and relf > TOP_FRAMES) or jumped) if False else out\n        out = self._masked(out)"),
+
+ ("fireball cues: Purge goes out from an FSEQ show",
+  "ltcplay/fireball_cues.py",
+  "        out[PURGE_SLOT - 1] = 0",
+  "        pass"),
+
+ ("fireball cues: an FSEQ show's charge on a charged tank goes out",
+  "ltcplay/fireball_cues.py",
+  "            if why:\n                out[slot - 1] = 0",
+  "            if False:\n                out[slot - 1] = 0"),
+
+ ("fireball cues: an FSEQ show never charges again after its shot",
+  "ltcplay/fireball_cues.py",
+  "        if fseq and state == \"empty\":",
+  "        if False:"),
+
+ ("fireball cues: a charge cut short by a Hold carries on after it",
+  "ltcplay/fireball_cues.py",
+  "            if at is not None and 0 <= self._clock() - at <= GAP_S:",
+  "            if at is not None:"),
+
+ ("fireball cues: one frame not sent ends the charge",
+  "ltcplay/fireball_cues.py",
+  "            if at is not None and 0 <= self._clock() - at <= GAP_S:",
+  "            if False:"),
+
+ ("fireball cues: the charge state is not told a charge carries on",
+  "ltcplay/fireball_cues.py",
+  "                if tell is not None:\n                    tell(tank)",
+  "                if tell is not None:\n                    pass"),
+
+ ("fireball charge: the show's charge after a short gap is a double charge",
+  "ltcplay/fireball_charge.py",
+  "            if c is not None and 0 <= now - c <= MANUAL_FRESH_S:",
+  "            if False:"),
+
+ ("fireball cues: an unrelated edit says a stage was moved by it",
+  "ltcplay/fireball_cues.py",
+  "                if old is None or old[\"s0\"] != w[\"s0\"]:",
+  "                if True:"),
+
+ ("fireball cues: a gap with no frame asked keeps the stage carrying on",
+  "ltcplay/fireball_cues.py",
+  "        if gapped:\n            run.prev_on = set()",
+  "        if False:\n            run.prev_on = set()"),
+
+ ("fireball cues: carrying on is judged from the composed frame",
+  "ltcplay/fireball_cues.py",
+  "        if self._sent_get is not None:\n            try:\n                v = self._sent_get()",
+  "        if False:\n            try:\n                v = self._sent_get()"),
+
+ ("fireball cues: an FSEQ charge the FSEQ turned off rides on",
+  "ltcplay/fireball_cues.py",
+  "                run.sent_at.pop(tank, None)\n                run.sent_tanks.discard(tank)\n                run.fseq_hold.discard(tank)\n                run.fseq_skip.discard(tank)\n                continue",
+  "                run.fseq_hold.discard(tank)\n                run.fseq_skip.discard(tank)\n                continue"),
+
+ ("fireball cues: a switch to the FSEQ mid-play drops the play's stages (round 4, s40)",
+  "ltcplay/fireball_cues.py",
+  "                run.rev = rev\n            else:",
+  "                run.adopt(dict(entry or {}, stages=[]), rev, relf)\n            else:"),
+
+ ("fireball cues: a skipped or cut short stage is not journaled (round 4)",
+  "ltcplay/fireball_cues.py",
+  "        self._note(text, fault=fault, outcome=\"fireball_skipped\")",
+  "        pass"),
+
+ ("fireball cues: an automatic charge goes before the write-ahead mark (round 5)",
+  "ltcplay/fireball_cues.py",
+  "            r = self._ready(tr)\n            if r == \"ok\":\n                return \"\"",
+  "            r = \"ok\"\n            if r == \"ok\":\n                return \"\""),
+
+ ("fireball cues: a mark on its way skips the stage (round 5)",
+  "ltcplay/fireball_cues.py",
+  "            if r == \"wait\":\n                return WAIT",
+  "            if False:\n                return WAIT"),
+
+ ("fireball cues: the mark is not asked for as the play starts (round 5)",
+  "ltcplay/fireball_cues.py",
+  "            if w[\"s1\"] > relf and w[\"s0\"] - relf <= LEAD_FRAMES and \\\n                    tr.state(tank) == \"empty\":\n                self._ready(tr)",
+  "            if w[\"s1\"] > relf and w[\"s0\"] - relf <= LEAD_FRAMES and \\\n                    tr.state(tank) == \"empty\":\n                pass"),
+
+ ("fireball cues: a mark that cannot be saved is not a fault (round 5)",
+  "ltcplay/fireball_cues.py",
+  "        return \"charge record cannot be saved\" in why or \\\n            \"automatic charging is off\" in why",
+  "        return False"),
+
+ ("fireball cues: a timeline stage landed inside starts late after a wait (round 5)",
+  "ltcplay/fireball_cues.py",
+  "                    run.skipped[k] = \"landed inside its window\"\n                    continue\n                why = self._charge_refusal(",
+  "                    pass\n                    pass\n                why = self._charge_refusal("),
+
+ ("fireball cues: an FSEQ charge landed inside starts late after a wait (round 5)",
+  "ltcplay/fireball_cues.py",
+  "            if tank in run.fseq_hold or tank in run.fseq_skip:\n                out[slot - 1] = 0",
+  "            if tank in run.fseq_skip:\n                out[slot - 1] = 0"),
+
+ ("fireball cues: the running flamesafe's slots are never looked at (round 6)",
+  "ltcplay/fireball_cues.py",
+  "        file_g, live_g = self._group, self._live",
+  "        file_g, live_g = self._group, None"),
+
+ ("fireball cues: a file and live disagreement does not tell the charge record (round 6)",
+  "ltcplay/fireball_cues.py",
+  "            if tr is not None and not self._ext_told and \\\n                    not getattr(tr, \"judges_ext\", False):",
+  "            if False:"),
+
+ ("fireball cues: a disagreement zeroes only one group (round 6)",
+  "ltcplay/fireball_cues.py",
+  "        for g in known:\n            for s in g:",
+  "        for g in known[:1]:\n            for s in g:"),
+
+ ("fireball cues: the mark is asked for at no charge stage (round 6)",
+  "ltcplay/fireball_cues.py",
+  "        self._lead(run, tr, relf)\n",
+  "        pass\n"),
+
+ ("fireball cues: the mark is asked for however far the stage is (round 6)",
+  "ltcplay/fireball_cues.py",
+  "            if w[\"s1\"] > relf and w[\"s0\"] - relf <= LEAD_FRAMES and \\",
+  "            if w[\"s1\"] > relf and True and \\"),
+
+ ("fireball cues: a refused FSEQ charge starts late when the retry works (round 6)",
+  "ltcplay/fireball_cues.py",
+  "                if self._unsaved(why):\n                    run.fseq_skip.add(tank)",
+  "                pass"),
+
+ ("fireball cues: a seek inside the play is not a landing (round 6)",
+  "ltcplay/fireball_cues.py",
+  "            jumped = relf < run.last_relf - 2 or relf > run.last_relf + adv",
+  "            jumped = False"),
+
+ ("fireball cues: an FSEQ charge held for the mark starts late after a seek (round 6)",
+  "ltcplay/fireball_cues.py",
+  "            return self._fseq_guarded(out, run,\n                                      (first and relf > TOP_FRAMES) or jumped)",
+  "            return self._fseq_guarded(out, run, (first and relf > TOP_FRAMES))"),
+
+ ("fireball cues: the engine never gives the cues the running flamesafe's slots (round 6)",
+  "ltcplay/web.py",
+  "journal=say, group_get=fireball_slots, live_get=live_slots)",
+  "journal=say, group_get=fireball_slots)"),
+
+ ("fireball cues: a pause is not a landing (round 7)",
+  "ltcplay/fireball_cues.py",
+  "        jumped = jumped or gapped\n",
+  "        pass\n"),
+
+ ("fireball cues: the cues and the charge record word a disagreement differently (round 7)",
+  "ltcplay/fireball_cues.py",
+  "            text = group_mismatch_text(file_g, live_g)",
+  "            text = group_mismatch_text(file_g, live_g) + \" \""),
+
+ ("fireball cues: a charge not started begins inside a window the play landed in (round 8)",
+  "ltcplay/fireball_cues.py",
+  "                if k not in run.started and run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf:",
+  "                if False and run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf:"),
+
+ ("fireball cues: a charge already started is skipped by the landing rule (round 8)",
+  "ltcplay/fireball_cues.py",
+  "                if k not in run.started and run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf:",
+  "                if run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf:"),
+
+ ("fireball cues: the cues tell the record too when it judges the config (round 8)",
+  "ltcplay/fireball_cues.py",
+  "                    not getattr(tr, \"judges_ext\", False):",
+  "                    True:"),
+
+ ("fireball cues: automatic charging off is called a record that cannot be saved (round 8)",
+  "ltcplay/fireball_cues.py",
+  "            if r == \"off\":\n                return (f\"{word}: automatic charging is off after a \"",
+  "            if False:\n                return (f\"{word}: automatic charging is off after a \""),
+
+ ("fireball cues: a play starting at frame 1 or 2 is a landing (round 9)",
+  "ltcplay/fireball_cues.py",
+  "TOP_FRAMES = 2\n",
+  "TOP_FRAMES = 0\n"),
+
+ ("fireball cues: a fireball group off 55 to 59 is not checked",
+  "ltcplay/fireball_cues.py",
+  "        bad = mismatch or any(g != list(SLOTS) for g in known)",
+  "        bad = False"),
+
+ ("fireball cues: the engine never names flamesafe's fireball group",
+  "ltcplay/web.py",
+  "            journal=say, group_get=fireball_slots, live_get=live_slots)",
+  "            journal=say, live_get=live_slots)"),
+
  # A schedule saved while ltcplay runs, and Run off after a restart
  # (Jeff, Pico, 2026-10-29).
  ("saved schedule: a save waits for a restart to plan tonight again",
