@@ -1348,7 +1348,7 @@ button.fb-pad.na{opacity:.45}
     </section>
     <section class="card" id="sched-edit" hidden>
       <h2>Schedule: the show times</h2>
-      <div class="dim" style="font-size:14px">The scheduler starts a show at each time below (once Run has been pressed and the Fire &amp; Ice settings say it performs). Edits here are written to the schedule file and loaded at once: tonight's list is rebuilt from them straight away, even after the night has closed, and nothing is started by it.</div>
+      <div class="dim" style="font-size:14px">The scheduler starts a show at each time below (once Run has been pressed and the Fire &amp; Ice settings say it performs). Edits here are written to the schedule file and loaded at once: tonight's list is rebuilt from them straight away, even after the night has closed, and nothing is started by it. Any times work: a last show end after midnight is the next morning, on the same night. Anything to know is said when it is saved, and the save stands.</div>
       <div class="three" style="margin-top:8px">
         <div><label for="se-tz">Time zone</label><select id="se-tz"></select><div class="dim" style="font-size:12px;margin-top:2px" id="se-tz-now"></div></div>
         <div><label for="se-first">Season starts</label><input id="se-first" type="date"></div>
@@ -5496,6 +5496,9 @@ $("fu-recent").addEventListener("click", async (ev) => {
 // focus lets go of Valve Open and Igniter. Nothing ever comes back on by
 // itself: after a cut every channel has to be pressed again.
 let FB = null, FB_OPEN = false, FB_TIMER = null, FB_BEAT = null, FB_RUN = null, FB_SEQ = 0, FB_RUNS = 0;
+// Fuel or Air pressed but held by the engine for the charge record's mark
+// (the beat's answer says held): the pad says WAITING, not ON.
+let FB_HELD = [];
 const FB_ON = {fuel:false, air:false, valve:false, igniter:false, purge:false};
 const FB_KEY = {};
 function fireballView(on){
@@ -5518,6 +5521,7 @@ function fbNow(){
 // can never start again (an all off is never refused).
 function fbCut(why){
   const had = fbAny(), run = FB_RUN;
+  FB_HELD = [];
   for(const k in FB_ON) FB_ON[k] = false;
   FB_RUN = null; clearTimeout(FB_BEAT); FB_BEAT = null;
   if(run !== null) post("/api/remote/fireball-beat", actor(fireballBody(FB_ON, run, ++FB_SEQ, true))).catch(() => {});
@@ -5549,7 +5553,10 @@ async function fbBeat(change){
   if(st.cut){ fbCut(st.cut); return; }
   const run = FB_RUN, seq = ++FB_SEQ;
   FB_BEAT = setTimeout(() => fbBeat(false), 100);
-  try{ await post("/api/remote/fireball-beat", actor(fireballBody(FB_ON, run, seq, change))); }
+  try{
+    const j = await post("/api/remote/fireball-beat", actor(fireballBody(FB_ON, run, seq, change)));
+    if(run === FB_RUN){ FB_HELD = Array.isArray(j && j.held) ? j.held : []; renderFireball(); }
+  }
   catch(e){ if(run === FB_RUN) fbCut(e.message); }
 }
 function fbPress(k, on){
@@ -5575,7 +5582,9 @@ function renderFireball(){
   // The charge record does not know a tank (no record yet, a lost write):
   // an admin may confirm both are empty (fireball_charge.confirm_empty).
   const chk = ST && ST.fireball_charge, tks = (chk && chk.tanks) || {};
-  $("fb-empty").hidden = !(v && v.available) || !Object.keys(tks).some(k => tks[k] && tks[k].state === "unknown");
+  // Also while automatic charging is off after a press that went out
+  // unrecorded (auto_off), though every tank is known.
+  $("fb-empty").hidden = !(v && v.available) || !(chk && chk.auto_off || Object.keys(tks).some(k => tks[k] && tks[k].state === "unknown"));
   const ctl = (v && v.controls) || [];
   const key = ctl.map(c => c.key + c.slot).join(",");
   const box = $("fb-pads");
@@ -5589,7 +5598,7 @@ function renderFireball(){
     b.classList.toggle("na", !st.ok && !on);
     b.setAttribute("aria-pressed", on ? "true" : "false");
     b.setAttribute("aria-disabled", st.ok || on ? "false" : "true");
-    b.querySelector(".fb-st").textContent = on ? "ON" : "OFF";
+    b.querySelector(".fb-st").textContent = on ? (FB_HELD.indexOf(b.dataset.k) >= 0 ? "WAITING" : "ON") : "OFF";
   });
 }
 // Never the disabled attribute on a pad: a held button that turned
