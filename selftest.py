@@ -13518,6 +13518,12 @@ def test_schedule_after_midnight_review_c():
         check(o.accepted and got == second_150.astimezone(timezone.utc),
               f"\"{typed}\" at the second 01:30 is the coming second 01:50: "
               f"{o.refused!r} {got}")
+    o = S.step(m, _op(S, S.EDIT_ADD, at="01:50 2026-11-01 second"),
+               first_150 - timedelta(minutes=20))
+    check(o.accepted and max(o.machine.slots, key=lambda x: x.n).start ==
+          second_150.astimezone(timezone.utc),
+          f"a date and \"second\" together are the later 01:50: "
+          f"{o.refused!r}")
     o = S.step(m, _op(S, S.EDIT_ADD, at="01:50 second"), first_150 -
                timedelta(minutes=20))
     check(o.accepted and any("this is the second one" in le.text
