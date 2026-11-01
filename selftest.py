@@ -104190,6 +104190,7 @@ def test_fireball_timeline_docs_in_plain_words():
                  "A Programming Ahead or Back inside a play counts as a "
                  "landing",
                  "so does a pause of more than a quarter of a second",
+                 "never starts\n  inside a window the play landed in, whatever the mark's answer",
                  "under any\nspelling",
                  "not fired in this play", "next time a show cue starts",
                  "finishes its own stages, Valve Open included",
@@ -105772,6 +105773,7 @@ class _FbcTank:
         self.ready = ["ok"]
         self.asked = 0
         self.ext = []        # note_external_fault's texts, in order
+        self.judges_ext = False    # True: the record compares the config
 
     def state(self, tank):
         return self.tanks[tank]
@@ -106237,7 +106239,7 @@ def test_fireball_cues_rules():
         R.fq._group_get = lambda: [59, 58, 57, 56, 55]
         R.fq.refresh()
         R.cue_obj = {"label": "Show"}
-        g = R.frame(40, base=base)
+        g = R.frame(30, base=base)       # a play from the window's start
         check(not R.fq.fault and g[54] == 255 and g[55] == 0,
               f"on 55 to 59 (any order): the timeline runs: {R.fq.fault}")
         # Round-6 review 1: flamesafe.json and the RUNNING flamesafe differ
@@ -106357,6 +106359,59 @@ def test_fireball_cues_rules():
         check(got == [0] * 6,
               f"a seek into an FSEQ charge while the mark is on its way: "
               f"held until the FSEQ turns it off: {got}")
+        # Round 8, review 2: a charge stage that has not started never
+        # starts inside a window the play landed in, whatever the mark's
+        # answer: after a Hold, or a seek with the mark already on disk.
+        R = _fbq_rig([_st("fuel", "00:00:01:00", 2)])
+        rigs.append(R)
+        R.tank.ready = ["wait"] * 40 + ["ok"]
+        for f in range(0, 35):
+            R.frame(f)                         # the window opens, waits
+        R.clk[0] += 5.0                        # a Hold
+        R.tank.ready = ["ok"]                  # the mark was written
+        got = [R.frame(f)[54] for f in range(35, 95)]
+        check(not any(got), f"a charge held for the mark, a 5 s Hold, the "
+                            f"mark on disk: not started 5 s late mid-window: "
+                            f"{got.count(255)}")
+        R = _fbq_rig([_st("fuel", "00:00:01:00", 2)])
+        rigs.append(R)
+        R.tank.ready = ["ok"]
+        for f in range(0, 5):
+            R.frame(f)
+        got = [R.frame(f)[54] for f in range(45, 95)]
+        check(not any(got), f"a seek into the Fuel window with the mark "
+                            f"already on disk: quiet: {got.count(255)}")
+        R = _fbq_rig([_st("fuel", "00:00:01:00", 2)])
+        rigs.append(R)
+        R.tank.ready = ["ok"]
+        got = [R.frame(f)[54] for f in range(0, 95)]
+        check(sum(1 for g in got if g) == 60,
+              f"and a play from the top still charges its whole window: "
+              f"{sum(1 for g in got if g)}")
+        # Review 6: with a charge record that judges the config itself, the
+        # cues do not also tell it (the two could not race).
+        R = _fbq_rig([], source="fseq")
+        rigs.append(R)
+        R.tank.judges_ext = True
+        R.fq._group, R.fq._live = [60, 61, 62, 63, 64], [55, 56, 57, 58, 59]
+        g = R.frame(40, base=full)
+        check(not R.tank.ext and "flamesafe.json puts the fireball on" in
+              R.fq.fault and all(g[x - 1] == 0 for x in range(55, 65)),
+              "the record judges the config alone: the cues zero the "
+              "channels and raise their fault but do not tell it")
+        # Review 1: automatic charging off is said as that, a fault.
+        R = _fbq_rig([_st("fuel", "00:00:01:00", 1)])
+        rigs.append(R)
+        R.tank.ready = ["off"]
+        got = [R.frame(f)[54] for f in range(0, 70)]
+        check(not any(got) and any(
+            "automatic charging is off after a Fireball press went out "
+            "unrecorded" in m and "cannot be saved" not in m
+            for m in R.fq.messages) and any(
+                k.get("fault") and "automatic charging is off" in t
+                for t, k in R.lines),
+              f"charging off is not called a record that cannot be saved: "
+              f"{R.fq.messages}")
         # Valve Open and the Igniter: no charge guard, independent.
         R = _fbq_rig([_st("igniter", "00:00:01:00", 1),
                       _st("valve", "00:00:05:00", 1)],

@@ -21617,13 +21617,13 @@ def build():
 
  ("fireball cues: a mark that cannot be saved is not a fault (round 5)",
   "ltcplay/fireball_cues.py",
-  "        return \"charge record cannot be saved\" in why",
+  "        return \"charge record cannot be saved\" in why or \\\n            \"automatic charging is off\" in why",
   "        return False"),
 
  ("fireball cues: a timeline stage landed inside starts late after a wait (round 5)",
   "ltcplay/fireball_cues.py",
-  "                        run.skipped[k] = \"landed inside its window\"",
-  "                        pass"),
+  "                    run.skipped[k] = \"landed inside its window\"\n                    continue\n                why = self._charge_refusal(",
+  "                    pass\n                    pass\n                why = self._charge_refusal("),
 
  ("fireball cues: an FSEQ charge landed inside starts late after a wait (round 5)",
   "ltcplay/fireball_cues.py",
@@ -21637,7 +21637,7 @@ def build():
 
  ("fireball cues: a file and live disagreement does not tell the charge record (round 6)",
   "ltcplay/fireball_cues.py",
-  "            if tr is not None and not self._ext_told:",
+  "            if tr is not None and not self._ext_told and \\\n                    not getattr(tr, \"judges_ext\", False):",
   "            if False:"),
 
  ("fireball cues: a disagreement zeroes only one group (round 6)",
@@ -21684,6 +21684,26 @@ def build():
   "ltcplay/fireball_cues.py",
   "            text = group_mismatch_text(file_g, live_g)",
   "            text = group_mismatch_text(file_g, live_g) + \" \""),
+
+ ("fireball cues: a charge not started begins inside a window the play landed in (round 8)",
+  "ltcplay/fireball_cues.py",
+  "                if k not in run.started and run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf:",
+  "                if False and run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf:"),
+
+ ("fireball cues: a charge already started is skipped by the landing rule (round 8)",
+  "ltcplay/fireball_cues.py",
+  "                if k not in run.started and run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf:",
+  "                if run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf:"),
+
+ ("fireball cues: the cues tell the record too when it judges the config (round 8)",
+  "ltcplay/fireball_cues.py",
+  "                    not getattr(tr, \"judges_ext\", False):",
+  "                    True:"),
+
+ ("fireball cues: automatic charging off is called a record that cannot be saved (round 8)",
+  "ltcplay/fireball_cues.py",
+  "            if r == \"off\":\n                return (f\"{word}: automatic charging is off after a \"",
+  "            if False:\n                return (f\"{word}: automatic charging is off after a \""),
 
  ("fireball cues: a fireball group off 55 to 59 is not checked",
   "ltcplay/fireball_cues.py",

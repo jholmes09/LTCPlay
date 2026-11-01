@@ -1044,8 +1044,9 @@ FSEQ:
   FSEQ's charge stays skipped until the FSEQ turns it off). A Programming
   Ahead or Back inside a play counts as a landing, and so does a pause of
   more than a quarter of a second (the position may have moved while the
-  engine was not asked): a charge held for the mark never starts late
-  inside its window. Otherwise it is skipped for the
+  engine was not asked): a charge stage that has not started never starts
+  inside a window the play landed in, whatever the mark's answer (after a
+  Hold, a seek, a Play from). Otherwise it is skipped for the
   rest of that play, and the journal and every screen's status say so
   once, for example
   "Fuel already charged: the Fuel stage was skipped (no double charge)."

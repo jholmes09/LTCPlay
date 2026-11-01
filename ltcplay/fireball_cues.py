@@ -307,7 +307,8 @@ class FireballCues:
             # The one wording, shared with the charge record (which now
             # judges the same thing on every status, round-7 review 6).
             text = group_mismatch_text(file_g, live_g)
-            if tr is not None and not self._ext_told:
+            if tr is not None and not self._ext_told and \
+                    not getattr(tr, "judges_ext", False):
                 self._ext_told = True
                 try:
                     tr.note_external_fault(text)
@@ -435,14 +436,18 @@ class FireballCues:
             slot = w["slot"]
             tank = CHARGE_STAGES.get(k)
             if tank is not None:
+                if k not in run.started and run.first_relf is not None and \
+                        w["s0"] < run.first_relf:
+                    # The play landed inside this window (a start there, a
+                    # seek, or the position after a Hold or a pause): it
+                    # stays quiet, whatever the mark's answer, as the
+                    # landing guard keeps a cue on at a landing (round-8
+                    # review 2: a charge held for the mark started 10 s
+                    # late after a Hold).
+                    run.skipped[k] = "landed inside its window"
+                    continue
                 why = self._charge_refusal(tr, tank, slot, run)
                 if why == WAIT:
-                    if run.first_relf is not None and \
-                            w["s0"] < run.first_relf:
-                        # The play landed inside this window: it stays
-                        # quiet, as the landing guard keeps a cue on at a
-                        # landing (never a late start past the guard).
-                        run.skipped[k] = "landed inside its window"
                     continue        # the mark is on its way: next frame
                 if why:
                     run.skipped[k] = why
@@ -496,6 +501,11 @@ class FireballCues:
                 return ""
             if r == "wait":
                 return WAIT
+            if r == "off":
+                return (f"{word}: automatic charging is off after a "
+                        f"Fireball press went out unrecorded; an admin "
+                        f"confirms the tanks (Tanks are empty), so {what} "
+                        f"was skipped (no double charge).")
             return (f"{word}: the charge record cannot be saved: automatic "
                     f"charging is off, so {what} was skipped (no double "
                     f"charge).")
@@ -517,11 +527,12 @@ class FireballCues:
             r = ask()
         except Exception:                        # noqa: BLE001
             return "failed"
-        return r if r in ("ok", "wait") else "failed"
+        return r if r in ("ok", "wait", "off") else "failed"
 
     @staticmethod
     def _unsaved(why):
-        return "charge record cannot be saved" in why
+        return "charge record cannot be saved" in why or \
+            "automatic charging is off" in why
 
     def _fseq_guarded(self, out, run, landed=False):
         """A show on its FSEQ (review of #187; Jeff: never a double charge
