@@ -9351,10 +9351,20 @@ def build():
   "    if when < lo:\n        raise ValueError(f\"{str(ev.at).strip()!r} is before this night \"",
   "    if False:\n        raise ValueError(f\"{str(ev.at).strip()!r} is before this night \""),
 
+ ("round3196: the overlap warning says on time though an earlier show overruns",
+  "ltcplay/schedule.py",
+  "        on_time = (\"\" if inside else",
+  "        on_time = (\"\" if False else"),
+
+ ("round3196: a late first show is said to be missed within its grace",
+  "ltcplay/schedule.py",
+  "            if late > grace:\n",
+  "            if late > grace - 100000:\n"),
+
  ("review196C: overlapping nights do not say a show can be missed",
   "ltcplay/schedule.py",
-  "that first show can be MISSED. Saved as \"",
-  "that first show can be late. Saved as \""),
+  "so that first show will be MISSED (late by \"",
+  "so that first show will be late (late by \""),
 
  ("review196B: the overlap warning names the wrong show",
   "ltcplay/schedule.py",

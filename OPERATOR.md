@@ -999,8 +999,10 @@ but it wouldn't allow it. Don't restrict the schedule in any way."
   When two nights of the schedule overlap, the warning names what really
   happens: a show of tonight at or after the next night's first show is
   MISSED at the hand over (and that first show runs on time); a show
-  that starts before it but ends, with its guard, after it can make that
-  first show late or MISSED.
+  that starts before it but ends, with its guard, after it makes that
+  first show late: MISSED (the warning says "will be") when it is later than
+  the late grace, otherwise it starts late. "Runs on time" is said only when
+  no earlier show overruns it.
 - **A restart reads back every list the program itself can make.** That
   includes a show started with Start now in the next night's preshow
   (up to 30 minutes before its first show, so before midnight), and a

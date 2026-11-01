@@ -804,6 +804,9 @@ def _rule_warnings(rule, most):
         def at_(x):
             return _hm(x.astimezone(tz).timetz())
         f_at = at_(first)
+        # "Runs on time" only when no earlier show of tonight overruns it.
+        on_time = ("" if inside else ", and the next night's first show "
+                                     "runs on time")
         if after:
             many = len(after) > 1
             clash.append(
@@ -812,17 +815,25 @@ def _rule_warnings(rule, most):
                 (f" to {at_(after[-1])}" if many else "") +
                 f", at or after the next night's first show at {f_at}: "
                 f"tonight hands over before {'them' if many else 'it'}, so "
-                f"{'they' if many else 'it'} will be MISSED, and the next "
-                f"night's first show runs on time. Saved as it is; nothing "
-                f"is refused.")
+                f"{'they' if many else 'it'} will be MISSED{on_time}. "
+                f"Saved as it is; nothing is refused.")
         if inside:
             late = int((inside[-1] + need - first) // ONE_SECOND)
+            grace = rule.late_grace_s
+            if late > grace:
+                fate = (f"so that first show will be MISSED (late by "
+                        f"{fmt_span(late)}, more than its {grace} s grace)")
+            else:
+                fate = (f"so that first show starts late by "
+                        f"{fmt_span(late)}, within its {grace} s grace, "
+                        f"and is MISSED only if something else delays it "
+                        f"further")
             clash.append(
                 f"{who} has a show at {at_(inside[-1])} that ends, with its "
                 f"guard, {fmt_span(late)} after the next night's first show "
                 f"at {f_at}: the next night begins only once this one's "
-                f"guard is over, so that first show can be MISSED. Saved as "
-                f"it is; nothing is refused.")
+                f"guard is over, {fate}. Saved as it is; nothing is "
+                f"refused.")
     if not scanned_all:
         clash.append(f"Nights running into each other were checked for the "
                      f"first {SCAN_NIGHTS} nights of the season only.")

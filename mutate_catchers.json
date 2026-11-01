@@ -2404,6 +2404,8 @@
 "round3196: the limit is not inclusive at the edge": "test_schedule_round_trip_every_slot_the_program_makes",
 "round3196: Delay moves a show past the limit": "test_schedule_round_trip_every_slot_the_program_makes",
 "round3196: a time before the night began is accepted by the editor": "test_schedule_round_trip_every_slot_the_program_makes",
+"round3196: the overlap warning says on time though an earlier show overruns": "test_schedule_after_midnight_review_c",
+"round3196: a late first show is said to be missed within its grace": "test_schedule_after_midnight_review_c",
 "delta196A: the file refuses a show the editor accepted": "test_schedule_after_midnight_delta_a",
 "delta196A: a time years away is accepted": "test_schedule_after_midnight_delta_a",
 "delta196A: an impossible date is an uncaught overflow": "test_schedule_after_midnight_delta_a",

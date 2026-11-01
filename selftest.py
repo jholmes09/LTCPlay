@@ -13638,8 +13638,23 @@ def test_schedule_after_midnight_review_c():
                             "fri": nt("00:05", 30, "01:00")}))
     w2 = " ".join(S.rule_warnings(ins))
     check("after the next night's first show at 00:05" in w2 and
-          "can be MISSED" in w2 and "nothing is refused" in w2,
+          "will be MISSED (late by" in w2 and "grace" in w2 and
+          "runs on time" not in w2 and "nothing is refused" in w2,
           f"the inside overlap warning: {w2!r}")
+    soft = S.parse_rule(_sched_doc(
+        season={"first_date": "2026-10-01", "last_date": "2027-03-31"},
+        weekly={"thu": nt("23:00", 40, "00:30"),
+                "fri": nt("00:19", 30, "01:30")},
+        late_grace_s=15, show_len_s=2230, guard_s=120, exceptions={}))
+    w4 = " ".join(S.rule_warnings(soft))
+    check("starts late by" in w4 and "will be MISSED" not in w4 and
+          "nothing is refused" in w4,
+          f"within its grace it is not said to be missed: {w4!r}")
+    both = S.parse_rule(doc({"thu": nt("22:00", 30, "02:00"),
+                             "fri": nt("00:35", 30, "02:00")}))
+    w5 = " ".join(S.rule_warnings(both))
+    check("will be MISSED" in w5 and "runs on time" not in w5,
+          f"the two overlap texts agree: {w5!r}")
     _no_dashes(w2, "inside overlap warning")
 
     # Cleanups: the list says tomorrow like the journal; the dead code
@@ -13864,24 +13879,39 @@ def test_schedule_round_trip_every_slot_the_program_makes():
              {"fri": base["fri"], "sat": nt("00:30", 30, "03:30")}),
             ("Saturday moved to 19:00",
              {"fri": base["fri"], "sat": nt("19:00", 30, "21:00")}),
-            ("Saturday dark", {"fri": base["fri"]})):
+            ("Saturday dark", {"fri": base["fri"]}),
+            ("Saturday an exception, dark",
+             {"fri": base["fri"], "_exc": {"2026-11-14": None}})):
         for cond in (False, True):
+          for how in ("start now 23:41, save 23:52, restart 23:55",
+                      "start now 23:45, save 00:00, restart 00:02",
+                      "23:50 today added, save 00:00, restart 00:02"):
             work = tempfile.mkdtemp()
             now = [at(FRI, 23, 30)]
             svc = _svc(S, work, now, rule=doc(base),
                        conductor=_RecCond(S) if cond else None)
             svc.start(thread=False)
-            run(svc, now, at(FRI, 23, 41))
-            o = svc._apply(_op(S, S.START_NOW))
-            _settle(svc)
-            check(not o.refused, f"{label}: Start now accepted")
-            run(svc, now, at(FRI, 23, 42), step=1)
-            SV.save_rule(svc.path, doc(saved))
-            now[0] = at(FRI, 23, 52)
+            if "added" in how:
+                run(svc, now, at(FRI, 23, 41))
+                o = svc._apply(_op(S, S.EDIT_ADD, at="23:50 today"))
+                check(not o.refused, f"{label}: {how}: {o.refused!r}")
+                run(svc, now, at(FRI, 23, 52), step=1)
+            else:
+                m1 = (41, 52, 55) if "23:41" in how else (45, 59, 0)
+                run(svc, now, at(FRI, 23, m1[0]))
+                o = svc._apply(_op(S, S.START_NOW))
+                _settle(svc)
+                check(not o.refused, f"{label}: {how}: Start now accepted")
+                run(svc, now, at(FRI, 23, m1[0], 1), step=1)
+            sv = dict(saved)
+            exc = sv.pop("_exc", {})
+            SV.save_rule(svc.path, doc(sv, exceptions=exc))
+            late = "23:52" in how
+            now[0] = at(FRI, 23, 52) if late else at(SAT, 0, 0)
             svc.tick()
             _settle(svc)
-            b = again(svc, now, at(FRI, 23, 55),
-                      f"{label}, conductor {cond}", cond)
+            b = again(svc, now, at(FRI, 23, 55) if late else at(SAT, 0, 2),
+                      f"{label}, {how}, conductor {cond}", cond)
             b.stop()
 
     # 2. The exact edge of the shared limit, from midnight of the night's
