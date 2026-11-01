@@ -91945,10 +91945,19 @@ def test_fireball_signed_out_is_view_only():
             else:
                 rem.users.set_role("Ola", "operator")
                 rem.users.remove("Ola")
+            # The watcher looks every 50 ms: a users lock busy for a moment
+            # (a request still finishing) reads as still signed in, so it
+            # is polled as the watcher does, the fake clock held still.
             P.t[0] += 0.01
-            why = P.fb.tick()
+            why = ""
+            for _try in range(100):
+                why = P.fb.tick()
+                if why or not P.fb.active():
+                    break
+                time.sleep(0.02)
             check(not P.fb.active() and P.link.cur is None and why,
-                  f"Ola {how}: the run cut on the next look: {why!r}")
+                  f"Ola {how}: the run cut on the watcher's next looks: "
+                  f"{why!r}")
             if how == "demoted":
                 rem.users.set_role("Ola", "operator")
         # The handler writes a request's audit line just after its answer
