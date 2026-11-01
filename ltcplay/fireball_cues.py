@@ -120,6 +120,7 @@ class _Run:
         # late, as the flame link's landing guard would have held it.
         self.first = True
         self.first_relf = None
+        self.top_ok = False     # started within TOP_FRAMES of the top
         self.fseq_hold = set()   # FSEQ charges on at the landing, held
         self.adopt(entry, rev, None)
 
@@ -399,8 +400,13 @@ class FireballCues:
         # The first frame is a landing only past the cue's top (the FSEQ
         # path too): a play whose first frame arrives at frame 1 or 2 still
         # fires a charge stage that starts at 00:00:00:00 (round-9 review 2).
-        if (first and relf > TOP_FRAMES) or jumped:
+        if (first and relf > 0) or jumped:
             run.first_relf = relf
+            # Only a stage that starts AT the top is excused when the play
+            # arrives within TOP_FRAMES of it; a stage that starts later
+            # and is already past is a landing inside it (round-10
+            # review 4).
+            run.top_ok = bool(first and relf <= TOP_FRAMES)
         if run.source != "timeline":
             # A landing (the first frame past the cue's top, or a seek),
             # not a start from the top.
@@ -443,7 +449,8 @@ class FireballCues:
             tank = CHARGE_STAGES.get(k)
             if tank is not None:
                 if k not in run.started and run.first_relf is not None and \
-                        w["s0"] < run.first_relf:
+                        w["s0"] < run.first_relf and \
+                        not (run.top_ok and w["s0"] == 0):
                     # The play landed inside this window (a start there, a
                     # seek, or the position after a Hold or a pause): it
                     # stays quiet, whatever the mark's answer, as the
