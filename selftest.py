@@ -63245,21 +63245,22 @@ def test_stop_halt_review_of_130():
     j = [c_ for c_ in calls if c_[0] == "journal"]
     check(j and j[-1][2] == "fault" and j[-1][3] and "lasers" in j[-1][4],
           f"journaled as a fault naming the step: {j}")
-    # An Abort or a Hold from a screen tells the laser arm a press is under
-    # way before any of its work, and that it is over after (review of PR
-    # #87, P2-2, the wiring in Remote.press; Stop does the same, above).
+    # A Hold from a screen tells the laser arm a press is under way before
+    # any of its work, and that it is over after (review of PR #87, P2-2,
+    # the wiring in Remote.press; Stop does the same, above; Abort is
+    # removed).
     del calls[:]
     rm.morning = _Morning()
     rm._press = lambda name, body, ctx: (calls.append(("pressing", name)),
                                          (200, {}))[1]
-    for what in ("abort", "hold", "resume"):
+    for what in ("hold", "resume"):
         del calls[:]
         rm.press(what, {}, None)
         want = ([("press_begin",), ("pressing", what), ("press_end",)]
                 if what != "resume" else [("pressing", what)])
         check(calls == want,
               f"{what}: the laser arm told a press is under way around it "
-              f"(Abort and Hold only): {calls}")
+              f"(Hold only, of these): {calls}")
     del rm._press
     # 8: the show ended by itself while the halt was on its way: not a
     # failure.
@@ -83983,8 +83984,12 @@ def test_laser_arm_morning_page_routes_and_surfaces():
                              "confirmed": True}, client=loop)
         check(st == 409 and "aborted" in out["error"],
               f"no arming while the Abort latch stands: {out}")
-        # The night closing disarms (ruling 4).
+        # The night closing disarms (ruling 4). Reset ends the Abort; the
+        # Stop's Hold needs its Resume.
         st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()},
+                            client=loop)
+        R.settle()
+        st, _h, out = R.ask("POST", "/api/remote/resume", {"seen": R.seen()},
                             client=loop)
         R.settle()
         R.feed()
@@ -84348,7 +84353,8 @@ def test_laser_arm_through_web_serve():
         check(tried and not tried[0][0] and "being pressed" in tried[0][1]
               and la.armed_ids() == [],
               f"an arm during the Stop press is refused: {tried}")
-        _ask(httpd, "POST", "/api/remote/resume", {}, client=loop)
+        _ask(httpd, "POST", "/api/remote/resume",
+             {"seen": int(time.time() * 1000)}, client=loop)
         ok, text = la.arm(list(la.order), who="Andy", confirmed=True)
         check(ok, f"armed again: {text}")
         svc._apply(_op(S, S.END_NIGHT, confirmed=True))
@@ -90664,7 +90670,7 @@ def test_programming_flames_engine_routes_and_page():
     from ltcplay import users as U
     line = RM.PROGRAMMING_FLAMES_LINE
     check(line == "Flames follow the show while you play here. Only armed "
-                  "groups fire. Hold, Stop or Abort ends it." and
+                  "groups fire. Hold or Stop ends it." and
           len(line.split()) <= 20 and "—" not in line and
           "–" not in line, f"the line: {line!r}")
     check("scrub-flames" not in RM.POST_ROUTES and
@@ -101127,14 +101133,14 @@ def test_ui2_pages_served_and_switched():
           "<title>Show remote 2.0</title>" in two,
           "remote.html is 1.0 and remote2.html is 2.0")
     # 2.0 is served with 1.0's rules written into it (safety review of
-    # #166, B1): one answer, no second request its Abort or rules wait on.
+    # #166, B1): one answer, no second request its Stop or rules wait on.
     lo1 = one[one.find('<script id="remote-logic">'):]
     lo1 = lo1[:lo1.find("</script>") + len("</script>")]
     check(two.count('<script src="/remote-logic.js"></script>') == 1,
           "remote2.html names 1.0's rules once, where they go")
     two_s = two.replace('<script src="/remote-logic.js"></script>', lo1, 1)
     check('<script src="/remote-logic.js">' not in two_s and
-          two_s.count("function abortTapStep(") == 1,
+          two_s.count("function stopTapStep(") == 1,
           "the page served carries 1.0's rules inline")
     R = _RemoteRig(S)
     loop = ("127.0.0.1", 5000)
