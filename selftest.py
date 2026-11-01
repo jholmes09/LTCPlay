@@ -106235,15 +106235,46 @@ def test_fireball_charge_round10_lows():
         C.tr.confirm_empty("Admin", "Rack screen")
         check(C.tr.pending is True,
               "Tanks are empty while Air is on the wire: the mark stays")
-        # Nothing on the wire: the mark comes off as before.
+        # F1: an automatic charge answered ok, its frame not yet seen (the
+        # cues ask on every frame of the stage): the mark stays.
         C = _fbc(fresh())
         C.tr.pump()
         C.tr._set("fuel", U, "selftest", C.wall[0])
         C.tr.charge_ready()
         C.tr.pump()
+        C.t[0] += 0.2
+        C.tr.confirm_empty("Admin", "Rack screen")
+        check(C.tr.pending is True,
+              "Tanks are empty while an automatic charge was just asked "
+              "for: the mark stays")
+        # Nothing on the wire and nothing asked lately: the mark comes off
+        # as before.
+        C = _fbc(fresh())
+        C.tr.pump()
+        C.tr._set("fuel", U, "selftest", C.wall[0])
+        C.tr.charge_ready()
+        C.tr.pump()
+        C.t[0] += 1.0
         C.tr.confirm_empty("Admin", "Rack screen")
         check(C.tr.pending is False,
               "Tanks are empty with nothing on the wire: the mark comes off")
+        # F2: a kept mark that was already used is asked afresh, so the idle
+        # clear takes it off when the charge never happens.
+        C = _fbc(fresh())
+        C.tr.pump()
+        C.tr._set("fuel", U, "selftest", C.wall[0])
+        C.tr.note_manual({"air"}, "Andy", "Rack screen")
+        C.tr.pump()
+        C.tr._pending_used = True
+        C.tr.confirm_empty("Admin", "Rack screen")
+        check(C.tr.pending is True and C.tr._pending_used is False,
+              "a kept mark is not left 'used'")
+        C.tr.note_manual(set(), "Andy", "Rack screen")
+        C.t[0] += FC.PENDING_IDLE_S + 2
+        C.tr._pending_idle()
+        C.tr.pump()
+        check(C.tr.pending is False,
+              "and it comes off once nothing happens, not kept for ever")
 
         # 2. A readable marker above the record beside an unreadable one.
         def markers(C):

@@ -1178,9 +1178,15 @@ class ChargeTracker:
     def _charge_in_flight(self, now):
         """A Fuel or Air channel went out in the last half second, or the
         Fireball page's run holds one (pressed, its frame maybe not yet
-        recorded)."""
+        recorded), or the mark was asked for in the last half second: the
+        cues ask on every frame of a charge stage, so an automatic charge
+        that was answered "ok" and whose frame is not yet seen counts too
+        (round-10 review F1)."""
         at = self._charge_on_wire_at
         if at is not None and now - at < 0.5:
+            return True
+        asked = self._pending_asked_at
+        if self.pending and asked is not None and now - asked < 0.5:
             return True
         return any(self._manual_by(k, now) is not None for k in TANK_WORD)
 
@@ -1243,6 +1249,12 @@ class ChargeTracker:
                 # a crash before its frame is recorded would read that tank
                 # EMPTY (round-9 review 4, round-10 review 1).
                 self.pending = False
+            elif unk and self.pending:
+                # The mark stays; it is then as new as a fresh ask, so the
+                # idle clear takes it off if the charge never happens
+                # (round-10 review F2: a left-over "used" kept it for ever).
+                self._pending_used = False
+                self._pending_asked_at = self._clock()
             was_off, self.auto_off = self.auto_off, False
             if unk:
                 words = " and ".join(TANK_WORD[k] for k in unk)

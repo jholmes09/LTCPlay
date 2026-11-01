@@ -21475,6 +21475,16 @@ def build():
   "                                      (first and relf > TOP_FRAMES) or jumped)",
   "                                      (first and relf > 4) or jumped)"),
 
+ ("fireball charge: a charge just asked for does not keep the mark at Tanks are empty (round 10b)",
+  "ltcplay/fireball_charge.py",
+  "        if self.pending and asked is not None and now - asked < 0.5:",
+  "        if False:"),
+
+ ("fireball charge: a kept mark stays used (round 10b)",
+  "ltcplay/fireball_charge.py",
+  "                self._pending_used = False\n                self._pending_asked_at = self._clock()\n            was_off",
+  "                pass\n            was_off"),
+
  ("fireball charge: a start reads only this machine's marker names (round 9)",
   "ltcplay/fireball_charge.py",
   "(folder, glob.escape(FILE) + \".*marker*\"),",
