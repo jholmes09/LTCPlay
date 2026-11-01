@@ -55873,7 +55873,10 @@ sb.focus();
 h.tap(sb);
 out.focus_left = document.activeElement !== sb;
 """
-    m = _rack_drive(chrome, page, st, steps)
+    # About 11 s of the page's own time (four 2.3 s settles): past the
+    # 6 s default budget, so the page never measured itself on the
+    # windows runner (first CI run of #198).
+    m = _rack_drive(chrome, page, st, steps, budget_ms=20000)
     if check(isinstance(m, dict) and not m.get("problems"),
              f"Stop, the other ways to tap twice: {m!r}"):
         check(m["key_one"] == 0 and m["key"] == 1,
