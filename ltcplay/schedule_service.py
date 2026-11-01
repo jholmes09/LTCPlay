@@ -2016,7 +2016,11 @@ class Service:
             # read as it is, and its Abort becomes a Stop's Hold.
             self._upgrade_to_stop_hold(
                 self.UPGRADE_LIST.format(path=path), str(d))
-        elif doc.get("stop_held") is True:
+        elif doc.get("stop_held") is True or (
+                doc.get("stop_hold") is True and
+                doc.get("state") == sch.HOLD):
+            # This version's record, or a #191 build's Stop's Hold on HOLD
+            # (round 2, 4: the same as the night before's).
             self._stop_hold_from_list(path, d)
         for text in notes:
             self._journal_line("system", text, action="load tonight",
@@ -2492,6 +2496,26 @@ class Service:
                 self.UPGRADE_UNREADABLE.format(night=m.date, aside=aside),
                 str(m.date))
         return m
+
+    def _end_stop_hold(self, who, screen, surface=False):
+        """An operator's Resume (lock held): the Stop's Hold, if one
+        stands, is released, the fault flag cleared, its file removed and
+        tonight's set-aside list let go of. Whatever the state the Resume
+        found (HOLD, CLOSING, OFF; round 2 of cold review A of #199, 1)."""
+        # Only an operator's Resume ends a Stop's Hold.
+        ended = self._stop_carry_clear(who, screen, "pressed Resume")
+        if ended and self.machine is not None and self.machine.faults:
+            # Resume ending a Stop's Hold clears the fault flag too, as
+            # Reset did after an Abort before Reset was removed (Jeff,
+            # 2026-10-30). Only a Stop's Hold: a plain Hold's Resume leaves
+            # faults to Acknowledge (cold review A of #199, F3). Before the
+            # file is removed, so a fault that removal raises stands.
+            self._apply(sch.Event(sch.CLEAR_FAULT, "operator", who=who,
+                                  screen=screen, surface=bool(surface)))
+        self._stop_carry_write()
+        if ended:
+            self._release_set_aside()
+        return ended
 
     def _release_set_aside(self):
         """A Resume ended a Stop's Hold: tonight's set-aside list (the
@@ -4091,13 +4115,22 @@ class Service:
                 self.journal_press(who, screen, what, "refused",
                                    f"{who}'s {what} was refused. {sentence}")
                 return {"ok": False, "text": sentence}
+            if kind == sch.RESUME and self.halting():
+                # Again under the lock: a Stop that began after the check
+                # above is never released by this Resume (round 2 of cold
+                # review A of #199, 3).
+                sentence = (f"Resume was refused: {self.HALTING}. Nothing "
+                            f"was resumed.")
+                self.journal_press(who, screen, "resume", "refused",
+                                   f"{who}'s Resume was refused. {sentence}")
+                return {"ok": False, "text": sentence, "halting": True}
             if kind == sch.RESUME and self._stop_carry is not None and \
                     self.machine.state not in (sch.HOLD, sch.PAUSED):
                 # Nothing is held right now (the night closing, over, or
                 # with no shows), but a Stop's Hold stands: Resume
-                # releases it, so later shows start at their times again.
-                self._stop_carry_clear(who, screen, "pressed Resume")
-                self._stop_carry_write()
+                # releases it, so later shows start at their times again,
+                # with the same steps as from HOLD (round 2, 1).
+                self._end_stop_hold(who, screen, surface)
                 return {"ok": True, "text": "Resume: the Stop's Hold is "
                                             "released. Shows start at their "
                                             "times again."}
@@ -4113,22 +4146,7 @@ class Service:
                 if kind == sch.RESUME and not out.refused:
                     if before == sch.HOLD:
                         # Only an operator's Resume ends a Stop's Hold.
-                        ended = self._stop_carry_clear(who, screen,
-                                                       "pressed Resume")
-                        if ended and self.machine.faults:
-                            # Resume ending a Stop's Hold clears the fault
-                            # flag too, as Reset did after an Abort before
-                            # Reset was removed (Jeff, 2026-10-30). Only a
-                            # Stop's Hold: a plain Hold's Resume leaves
-                            # faults to Acknowledge (cold review A of #199,
-                            # F3). Before the file is removed, so a fault
-                            # that removal raises stands.
-                            self._apply(sch.Event(
-                                sch.CLEAR_FAULT, "operator", who=who,
-                                screen=screen, surface=bool(surface)))
-                        self._stop_carry_write()
-                        if ended:
-                            self._release_set_aside()
+                        self._end_stop_hold(who, screen, surface)
                     self._preroll_release(who, screen)
             finally:
                 self._press_stamp = None

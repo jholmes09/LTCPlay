@@ -61404,6 +61404,143 @@ def test_a_stops_hold_survives_its_file_failing():
     print("  ok")
 
 
+def test_resume_with_the_night_closed_lets_go_of_everything():
+    section("Resume in CLOSING or OFF while a Stop's Hold stands (round 2 "
+            "of cold review A of #199, 1 and 3): the same steps as from "
+            "HOLD (the fault flag cleared, the set-aside list let go of), so "
+            "a restart that night does not put the Hold back; and a Resume "
+            "checks again, under the lock, that no Stop has begun")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date
+    from ltcplay import schedule_service as SV
+    work = tempfile.mkdtemp()
+    d = date(2026, 11, 14)
+    with open(SV.tonight_path(d, work), "w") as fh:
+        fh.write("{ not json")
+    now = [_den(S, 22, 30)]
+    svc = _svc(S, work, now, conductor=_RecCond(S))
+    svc.start(thread=False)
+    _settle(svc)
+    aside = SV.set_aside_path(SV.tonight_path(d, work))
+    check(svc.machine.state == S.OFF and svc.stop_held() and
+          os.path.exists(aside),
+          f"setup: the night OFF on a Stop's Hold, the list set aside: "
+          f"{svc.machine.state} {svc.stop_held()}")
+    svc._apply(S.Event(S.FAULT_RAISED, "madmapper", detail="x"))
+    # A Stop that begins between Resume's first check and the lock.
+    real = svc.halting
+    calls = [0]
+
+    def late_stop():
+        calls[0] += 1
+        return calls[0] > 1
+    svc.halting = late_stop
+    r = svc.operator_press("resume", "Jeff", "Rack screen")
+    svc.halting = real
+    check(not r.get("ok") and svc.stop_held(),
+          f"a Stop begun just after the first check: the Resume is "
+          f"refused, the Stop's Hold stands: {r}")
+    r = svc.operator_press("resume", "Jeff", "Rack screen")
+    check(r.get("ok") and not svc.stop_held() and not svc.machine.fault and
+          not os.path.exists(aside) and svc._unreadable_night is None,
+          f"Resume with the night OFF: the Hold released, the fault "
+          f"cleared, the set-aside list renamed: {r} "
+          f"{svc.machine.faults} {os.path.exists(aside)}")
+    svc.stop()
+    again = _svc(S, work, now, conductor=_RecCond(S))
+    again.start(thread=False)
+    _settle(again)
+    check(not again.stop_held(),
+          "a restart that night does not put the Stop's Hold back")
+    again.stop()
+    print("  ok")
+
+
+def test_a_stops_hold_is_read_back_from_tonights_list():
+    section("tonight's list's own record of a Stop's Hold is read back on a "
+            "restart the same night, and a #191 build's Stop's Hold on HOLD "
+            "(stop_hold) is a Stop's Hold whether it is tonight's list or "
+            "the night before's (round 2 of cold review A of #199, 2 and 4)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date
+    from ltcplay import schedule_service as SV
+    # 1. The hold file cannot be written; a Stop at 22:30 with the night
+    # OFF; a restart the same night (no conductor, so nothing else would
+    # put a Hold on) reads it back from tonight's list.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 22, 30)]
+    svc = _svc(S, work, now, conductor=_RecCond(S))
+    svc.start(thread=False)
+    _settle(svc)
+    os.mkdir(os.path.join(work, SV.Service.STOP_HOLD_FILE + ".tmp"))
+    svc.halt_begin()
+    try:
+        svc.halt_schedule("Andy", "Rack screen")
+    finally:
+        svc.halt_end()
+    _settle(svc)
+    check(svc.machine.state == S.OFF and svc.stop_held() and
+          _tonight_doc(work).get("stop_held") is True,
+          f"setup: OFF, a Stop's Hold kept only in tonight's list: "
+          f"{svc.machine.state} {svc.stop_held()}")
+    svc.stop()
+    same = _svc(S, work, now)
+    same.start(thread=False)
+    _settle(same)
+    check(same.stop_held() and _tonight_doc(work).get("stop_held") is True,
+          f"a restart the same night reads the Stop's Hold back, and the "
+          f"next save keeps it: {same.stop_held()}")
+    same.stop()
+    now[0] = _den(S, 17, 0, d=(2026, 11, 21))
+    nxt = _svc(S, work, now)
+    nxt.start(thread=False)
+    now[0] = _den(S, 18, 0, d=(2026, 11, 21))
+    nxt.tick()
+    _settle(nxt)
+    check(nxt.stop_held() and nxt.machine.running == 0,
+          f"and the next night's show 1 does not start: "
+          f"{nxt.machine.state} {nxt.machine.running}")
+    nxt.stop()
+    # 2. A #191 build's list: on HOLD with stop_hold, no hold file.
+    for when in ("the same night", "the night before"):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 18, 5)]
+        svc = _svc(S, work, now)
+        svc.start(thread=False)
+        _settle(svc)
+        svc.stop()
+        path = SV.tonight_path(date(2026, 11, 14), work)
+        with open(path) as fh:
+            doc = json.load(fh)
+        doc.update(format=S.TONIGHT_FORMAT, state="HOLD",
+                   held_from="STANDBY", stop_hold=True, dark=True)
+        doc.pop("stop_held", None)
+        with open(path, "w") as fh:
+            json.dump(doc, fh)
+        hold = os.path.join(work, SV.Service.STOP_HOLD_FILE)
+        if os.path.exists(hold):
+            os.remove(hold)
+        at = (_den(S, 18, 6) if when == "the same night"
+              else _den(S, 17, 0, d=(2026, 11, 21)))
+        now[0] = at
+        b = _svc(S, work, now)
+        b.start(thread=False)
+        _settle(b)
+        check(b.stop_held() and b._stop_carry is not None and
+              os.path.exists(hold),
+              f"{when}: a #191 build's Stop's Hold on HOLD stands as a "
+              f"Stop's Hold (its own record and file, so Resume ends it "
+              f"with every step): {b.machine.state} {b._stop_carry}")
+        b.stop()
+    print("  ok")
+
+
 def test_stop_hold_stands_until_resume():
     section("A Stop's Hold stands until Resume (cold review of #191 round "
             "2): a Stop of the night's last show, a Stop while closing and "
@@ -109357,6 +109494,8 @@ if __name__ == "__main__":
         test_resume_clears_faults_only_after_a_stops_hold,
         test_resume_lets_go_of_a_set_aside_night,
         test_a_stops_hold_survives_its_file_failing,
+        test_resume_with_the_night_closed_lets_go_of_everything,
+        test_a_stops_hold_is_read_back_from_tonights_list,
         test_after_a_stop_before_resume_what_still_works,
         test_stop_hold_stands_until_resume,
         test_stop_round2_conductor_and_marks,

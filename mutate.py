@@ -17139,10 +17139,11 @@ def build():
   "        tx.m = replace(tx.m, held_from=STANDBY, stop_hold=True)\n"
   "        _enter(tx, HOLD)"),
 
- ("scheduler: Resume lands in the middle of a Stop",
-  "ltcplay/schedule_service.py",
-  "        if kind == sch.RESUME and self.halting():",
-  "        if False:"),
+ ('scheduler: Resume lands in the middle of a Stop', 'ltcplay/schedule_service.py',
+  '        gen = None\n'
+  '        if kind == sch.RESUME and self.halting():',
+  '        gen = None\n'
+  '        if False:'),
 
  ("halt: Stop between shows does not hold the schedule",
   "ltcplay/remote.py",
@@ -17280,9 +17281,8 @@ def build():
   "        self._stop_carry = None"),
 
  ("scheduler: Resume never releases a Stop's Hold", 'ltcplay/schedule_service.py',
-  '                        ended = self._stop_carry_clear(who, screen,\n'
-  '                                                       "pressed Resume")',
-  '                        ended = False'),
+  '        ended = self._stop_carry_clear(who, screen, "pressed Resume")',
+  '        ended = False'),
 
  ("scheduler: Continue anyway resumes a Stop's Hold (round 2, 8)",
   "ltcplay/schedule_service.py",
@@ -19268,9 +19268,9 @@ def build():
   '            if v == "cleared":\n                return False\n            if v == "failed":\n'),
 
  ('rig check cleared: Resume does not release the cleared show', 'ltcplay/schedule_service.py',
-  '                            self._release_set_aside()\n'
+  '                        self._end_stop_hold(who, screen, surface)\n'
   '                    self._preroll_release(who, screen)',
-  '                            self._release_set_aside()\n'
+  '                        self._end_stop_hold(who, screen, surface)\n'
   '                    pass'),
 
  ('rig check cleared: the screens do not say Press Resume', 'ltcplay/remote.py',
@@ -22376,10 +22376,8 @@ def build():
   '        dark=doc.get("dark", False),'),
 
  ("resume: a Resume from a Stop's Hold leaves the fault flag up (Reset used to clear it)", 'ltcplay/schedule_service.py',
-  '                        if ended and self.machine.faults:\n'
-  "                            # Resume ending a Stop's Hold clears the fault",
-  '                        if False:\n'
-  "                            # Resume ending a Stop's Hold clears the fault"),
+  '        if ended and self.machine is not None and self.machine.faults:',
+  '        if False:'),
 
  ("rack screen: a Stop no longer lets go of the page's own arm hold (the removed Abort's tap did)", 'ltcplay/web/remote.html',
   '  try{ armStop("Stop"); }catch(e){}\n',
@@ -22411,14 +22409,14 @@ def build():
   '        if False:'),
 
  ("resume: every Resume from a Hold clears the fault flag, not only a Stop's Hold's (F3)", 'ltcplay/schedule_service.py',
-  '                        if ended and self.machine.faults:',
-  '                        if self.machine.faults:'),
+  '        if ended and self.machine is not None and self.machine.faults:',
+  '        if self.machine is not None and self.machine.faults:'),
 
  ("resume: a Stop's Hold Resume never lets go of the set-aside night (F4)", 'ltcplay/schedule_service.py',
-  '                        if ended:\n'
-  '                            self._release_set_aside()',
-  '                        if False:\n'
-  '                            self._release_set_aside()'),
+  '        if ended:\n'
+  '            self._release_set_aside()',
+  '        if False:\n'
+  '            self._release_set_aside()'),
 
  ('conductor: a Stop only re-blanks when music started under an earlier Stop still fading (M1)', 'ltcplay/conductor.py',
   '            again = (not force_new and not music_since and',
@@ -22441,6 +22439,39 @@ def build():
   '                getattr(self, "_saved_stop_held", None) != (',
   '        if False and \\\n'
   '                getattr(self, "_saved_stop_held", None) != ('),
+
+ ("resume: a Resume in CLOSING or OFF releases the Stop's Hold without its other steps (round 2, 1)", 'ltcplay/schedule_service.py',
+  '                self._end_stop_hold(who, screen, surface)\n'
+  '                return {"ok": True,',
+  '                self._stop_carry_clear(who, screen, "pressed Resume")\n'
+  '                self._stop_carry_write()\n'
+  '                return {"ok": True,'),
+
+ ('resume: a Resume is not checked again for a Stop under the lock (round 2, 3)', 'ltcplay/schedule_service.py',
+  '            if kind == sch.RESUME and self.halting():\n'
+  '                # Again under the lock',
+  '            if False:\n'
+  '                # Again under the lock'),
+
+ ("stop hold: tonight's list's stop_held is not read back the same night (round 2, 2)", 'ltcplay/schedule_service.py',
+  '        elif doc.get("stop_held") is True or (',
+  '        elif False and ('),
+
+ ("stop hold: a #191 build's Stop's Hold on HOLD in tonight's list is a plain Hold (round 2, 4)", 'ltcplay/schedule_service.py',
+  '                doc.get("stop_hold") is True and\n'
+  '                doc.get("state") == sch.HOLD):\n'
+  '            # This version',
+  '                False):\n'
+  '            # This version'),
+
+ ("stop hold: a #191 build's Stop's Hold on HOLD the night before is not carried (round 2, 2)", 'ltcplay/schedule_service.py',
+  '                    prev.get("stop_hold") is True and\n'
+  '                    prev.get("state") == sch.HOLD))',
+  '                    False))'),
+
+ ("stop hold: tonight's list refuses its own stop_held key (round 2, 2)", 'ltcplay/schedule.py',
+  '                              "stop_hold", "stop_held"))',
+  '                              "stop_hold"))'),
 
 ]
 
