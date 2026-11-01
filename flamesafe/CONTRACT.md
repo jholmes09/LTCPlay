@@ -327,7 +327,7 @@ Per group, the two lamps of section 8 panel 5:
 |---|---|
 | `wanted` | what the arm input is asking for |
 | `armed` | the ARMED lamp: `disarmed` (dim blue), `armed` (green: the safety slot carries the arm value), `held` (amber: arm asked for and refused) |
-| `reason` | why held, in words: `cycle the arm`, `dirty edge`, `re-arm dwell`, `chatter`, `arm input stale`, `arm input has never asserted`, `safety program fault`, `Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back.`, `Show program has not answered yet: disarmed. Cycle the arm once it is running.`, `Another sender is on the arm link: a cycle cannot arm until it stops. Cycle the arm again once it has gone.` (round 4: shown instead of `cycle the arm` while `arm_input.foreign_senders` is non-zero or `arm_input.flooded` is true, and also instead of the Abort sentence), `Another sender is on the show program link, or it just changed hands: every group is disarmed and a cycle cannot arm until that has settled. Cycle the arm again once it has.` (2026-10-03, the second-copy guard: shown the same way while `frames.foreign_senders` is non-zero, `frames.new_sender` is true or `frames.flooded` is true; the arm link's sentence wins when both apply), `Disarmed by the show's Abort. Cycle the arm to re-arm.` (2026-10-02, disarm_all) |
+| `reason` | why held, in words: `cycle the arm`, `dirty edge`, `re-arm dwell`, `chatter`, `arm input stale`, `arm input has never asserted`, `safety program fault`, `Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back.`, `Show program has not answered yet: disarmed. Cycle the arm once it is running.`, `Another sender is on the arm link: a cycle cannot arm until it stops. Cycle the arm again once it has gone.` (round 4: shown instead of `cycle the arm` while `arm_input.foreign_senders` is non-zero or `arm_input.flooded` is true, and also instead of the Stop sentence), `Another sender is on the show program link, or it just changed hands: every group is disarmed and a cycle cannot arm until that has settled. Cycle the arm again once it has.` (2026-10-03, the second-copy guard: shown the same way while `frames.foreign_senders` is non-zero, `frames.new_sender` is true or `frames.flooded` is true; the arm link's sentence wins when both apply), `Disarmed by the show's Stop. Cycle the arm to re-arm.` (`Disarmed by the show's Abort. Cycle the arm to re-arm.` before 2026-10-30) (2026-10-02, disarm_all) |
 | `amber` | `flashing` when cycling the arm is the fix (`cycle the arm`, `dirty edge`, the Abort sentence); `steady` when cycling would only restart the wait or fix nothing (`re-arm dwell`, `chatter`, and every veto, the flame link's included). Empty unless held |
 | `dwell_s` | whole seconds left in the re-arm dwell, 1 or more while held for it, else 0. The lamp shows this number; the screen never counts down on its own |
 | `arm_value` | the value this group raises its safety slots to: the file's `arm_value`, or its `safety_profile`'s (added 2026-10-26). The rack screen shows it as the group name's tooltip, "Arms at N on its safety slots" |
@@ -588,7 +588,7 @@ else holds, and then `why` says so), `sent` (the
 values on its slots this tick) and `why` (empty while passing, else one of:
 `switched off in the show program`, `the show program link is not fresh`,
 `not yet seen switched off by the show program since this program started:
-switch it off and on again`, `zeroed by the show's Abort: switch it off
+switch it off and on again`, `zeroed by the show's Stop: switch it off
 and on again in the show program`, `the show program link changed hands:
 switch it off and on again in the show program`, `the safety program
 faulted (an overrun or a compose fault): ...`, `a slot of it is in the
@@ -1140,8 +1140,10 @@ again within `min_arm_dwell_ms` of the Abort. So:
   2.0 s hold armed at +1.9 s after an Abort).
 
   A group the deck keeps asking for reads `held`,
-  flashing amber, reason `Disarmed by the show's Abort. Cycle the arm to
-  re-arm.` until it is cycled; the deck shows it as ABORTED.
+  flashing amber, reason `Disarmed by the show's Stop. Cycle the arm to
+  re-arm.` until it is cycled; the deck shows it as STOPPED. (Before
+  2026-10-30 the show program's press was called Abort and the reason
+  read `Disarmed by the show's Abort. ...`; ltcplay reads both.)
 - The status frame's top-level `disarm_all` says what flamesafe took:
   `{"accepted": count, "last_id": id or null, "last_reason": "...",
   "age_ms": ms or null}`. ltcplay compares `last_id` with the Abort it sent

@@ -313,7 +313,7 @@ class Hazers:
         except Exception:
             repeating = True
         if repeating:
-            return ("an Abort or Stop is still being sent to flamesafe. "
+            return ("a Stop is still being sent to flamesafe. "
                     "Arm it again in a moment.")
         try:
             why = self._blocker() or ""
@@ -358,7 +358,7 @@ class Hazers:
         h, f = self.levels.levels.get(name, (0, 0))
         text = (f"{who or 'Someone'} armed {name} on the {screen}. It runs "
                 f"at haze {value_to_pct(h)}%, fan {value_to_pct(f)}% while "
-                f"a show plays. Abort, Stop and a lost link to flamesafe "
+                f"a show plays. Stop and a lost link to flamesafe "
                 f"disarm it.")
         self._note(who, screen, "armed", text)
         self._audit(who, screen, "hazer arm", name, "accepted", "")

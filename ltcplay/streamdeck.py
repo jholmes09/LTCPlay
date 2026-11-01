@@ -1009,9 +1009,11 @@ _SHORT_REASON = {
     "Another sender is on the show program link, or it just changed "
     "hands: every group is disarmed and a cycle cannot arm until that has "
     "settled. Cycle the arm again once it has.": "OTHER SENDER",
-    # The show's Abort from the rack screen or phone (flamesafe's
-    # disarm_all, CONTRACT.md 2026-10-02): flashing, cycle the arm.
-    "Disarmed by the show's Abort. Cycle the arm to re-arm.": "ABORTED",
+    # A Stop from any screen or the deck (flamesafe's disarm_all,
+    # CONTRACT.md 2026-10-02): flashing, cycle the arm. The second line is
+    # an older flamesafe's words for it (the press was called Abort).
+    "Disarmed by the show's Stop. Cycle the arm to re-arm.": "STOPPED",
+    "Disarmed by the show's Abort. Cycle the arm to re-arm.": "STOPPED",
 }
 
 
@@ -1019,11 +1021,11 @@ def role_gate(user, action):
     """None if the signed-in user's role (users.py, through the engine) may
     do `action` from the deck, else a refusal sentence. Only "arm" is
     asked here: the deck's other presses that a role can restrict go to
-    the engine, which checks them itself. ABORT, Hold and every disarm are
+    the engine, which checks them itself. Stop, Hold and every disarm are
     NEVER passed through this function (users.py, the safety rule), and
     `user` None (the engine not heard from) never refuses: the deck's own
     rules then decide alone, as before users existed."""
-    if action in ("abort", "disarm", "hold") or not isinstance(user, dict):
+    if action in ("stop", "disarm", "hold") or not isinstance(user, dict):
         return None
     if user.get("stale"):
         return (f"the Stream Deck's {action} key was pressed, but the deck "
@@ -1102,17 +1104,18 @@ UNSIGNED = "unsigned"
 
 
 def operator_gate(current_operator, action):
-    """None if `action` may proceed, else a refusal sentence. ABORT and a
+    """None if `action` may proceed, else a refusal sentence. STOP and a
     DISARM press (action="disarm") are never gated: see module docstring.
     Everything else (arm, start, hold, resume) needs a chosen operator.
 
     This split is Jeff's own policy decision (safety review of PR #31,
     item 7), blessed explicitly, not an oversight: a press that only
-    REDUCES risk must never wait on a picker, so Abort and disarm are
+    REDUCES risk must never wait on a picker, so Stop and disarm are
     never routed through this function with those two actions, anywhere
-    in this module. Do not "fix" that by adding a gate call at an Abort
-    or disarm call site; that would be undoing a deliberate decision."""
-    if action in ("abort", "disarm"):
+    in this module (Abort, removed 2026-10-30, was the first of the two).
+    Do not "fix" that by adding a gate call at a Stop or disarm call
+    site; that would be undoing a deliberate decision."""
+    if action in ("stop", "disarm"):
         return None
     if current_operator == UNSIGNED:
         # Users are on and nobody is signed in on this machine (2026-10-28):
@@ -1386,9 +1389,10 @@ class EngineConductor:
     (2026-10-26): stop_run() (POST /api/stop, the Rack screen's Stop, which
     also sends the flame link's disarm_all and ends live flame programming,
     review of #126, P2-1), acknowledge() and alert(); snapshot() for the
-    latch, fault and cues_fault for the Start key's face. hold(), resume(),
-    abort() and reset() are still here, duck-typed like
-    conductor.Conductor, for any caller; the deck no longer calls them.
+    latch, fault and cues_fault for the Start key's face. hold(), resume()
+    and reset() are still here, duck-typed like conductor.Conductor, for
+    any caller; the deck no longer calls them. There is no abort() (Abort
+    was removed, 2026-10-30).
 
     Each press is POSTed on a BACKGROUND thread, never the main loop (the
     same rule as LocalSchedule and DeckJournal: a slow or hung web server
@@ -1473,11 +1477,6 @@ class EngineConductor:
     def resume(self, who="", screen="Stream Deck"):
         return self._press("resume", who, screen)
 
-    def abort(self, who="", screen="Stream Deck"):
-        with self._lock:
-            self._local = (True, self._clock())
-        return self._press("abort", who, screen)
-
     def acknowledge(self, who="", screen="Stream Deck"):
         """A deck key pressed while an alert is open (alerts.py): one
         Acknowledge to the engine's alert route, clearing every open
@@ -1535,20 +1534,10 @@ class EngineConductor:
         body = {"who": who, "screen": screen or "Stream Deck",
                 "seen": int(self._wall() * 1000)}
         body.update(extra)
-        if name == "abort":
-            body["confirmed"] = True
-            # Abort never waits behind another press (fix round 2, D: a deck
-            # Abort waited 2.6 s behind a slow Hold): a thread of its own,
-            # at once, like the scheduler's own Abort bypass.
-            threading.Thread(target=self._post_one, args=(name, body),
-                             daemon=True,
-                             name="ltcplay-deck-engine-abort").start()
-            return EngineResult(True, "abort sent to the engine's show "
-                                      "conductor at once; the engine's "
-                                      "journal says what it did.")
         if name == "stop":
-            # Stop never waits behind another press either (review of
-            # #130, 7): a thread of its own, at once.
+            # Stop never waits behind another press (review of #130, 7; as
+            # the removed Abort did, fix round 2, D): a thread of its own,
+            # at once.
             threading.Thread(target=self._post_one,
                              args=(name, body, path), daemon=True,
                              name="ltcplay-deck-engine-stop").start()
@@ -1625,7 +1614,7 @@ class EngineConductor:
                 fails.append(("show",
                               f"the scheduler did NOT end the show ("
                               f"{show.get('text') or 'no reason given'}): "
-                              f"use Abort on the Rack screen"))
+                              f"use the hardware e-stop"))
             blank = doc.get("lasers_blank")
             if isinstance(blank, dict) and blank.get("ok") is False:
                 fails.append(("disarm",
@@ -1648,8 +1637,7 @@ class EngineConductor:
                     fails.append(("disarm",
                                   f"the engine's {step} step FAILED ("
                                   f"{doc.get('error') or 'no reason given'}"
-                                  f"): use Abort on the Rack screen or the "
-                                  f"hardware e-stop"))
+                                  f"): use the hardware e-stop"))
         disarm_failed = any(k == "disarm" for k, _t in fails)
         playback_only = bool(fails) and all(k == "playback" for k, _t in fails)
         if errored and playback_only:
@@ -1670,13 +1658,6 @@ class EngineConductor:
             ok = False
             text = "playback stopped, but " + "; and ".join(
                 t for _k, t in fails)
-        if name == "abort" and doc.get("stopped") is False:
-            # The engine disarmed every flame group but had no show to stop
-            # (review of PR #43, P0-1), so nothing is latched: the Abort key
-            # must not read RESET for a latch the engine does not have.
-            with self._lock:
-                if self._local[0]:
-                    self._local = (False, self._clock())
         # The engine answered, and what the press asked for is already so
         # (schedule_service.operator_press, "nothing_to_do": a Hold while
         # the schedule is already on hold or a show already paused, or the
@@ -3140,7 +3121,7 @@ class Controller:
                       f"{', '.join(keyed)}). Arm and disarm "
                       f"{'it' if len(extra) == 1 else 'them'} from the Rack "
                       f"screen (Arming from a screen must be on). Stop on "
-                      f"the deck, or an Abort on any screen, disarms every "
+                      f"the deck, or a Stop on any screen, disarms every "
                       f"group.", action="config",
                       outcome="screen-only")
 
@@ -5302,7 +5283,7 @@ class UsbMeter:
                         f"Stream Deck: writing the key images to the deck "
                         f"over USB took {worst:.1f} s (over "
                         f"{USB_SLOW_S:g} s), so the deck's keys are behind "
-                        f"while this lasts. Arming, disarming, Abort and a "
+                        f"while this lasts. Arming, disarming, Stop and a "
                         f"held FIRE do not wait on it and are not stopped "
                         f"by it, and the deck is not treated as unplugged "
                         f"for it: the arm link and the key reads have "
@@ -5326,7 +5307,7 @@ class UsbMeter:
                     f"write(s) over USB (the USB driver gave up on them), "
                     f"so its keys may show an older face until a resend "
                     f"goes through. A key press acts on the face the deck "
-                    f"last really showed. Arming, disarming and Abort do "
+                    f"last really showed. Arming, disarming and Stop do "
                     f"not wait on it. This line does not repeat until no "
                     f"write has failed for {USB_WINDOW_S:g} s.",
                     fault=True, action="deck-usb")
@@ -6002,8 +5983,8 @@ def deck_layout_at_start(names, folder, journal, settings_folder=None):
                  f"on the keys left over (a key one of those four does not "
                  f"use goes to the next group; past key 4, Rack screen "
                  f"only). The deck has no Hold "
-                 f"or Abort key (2026-10-26): Hold and Abort are on the "
-                 f"Rack screen.")
+                 f"key (2026-10-26): Hold is on the Rack screen. Its "
+                 f"Stop is the Start/Stop key, held.")
     for note in notes:
         try:
             journal(f"Stream Deck: {note}", action="config",
@@ -6017,8 +5998,8 @@ def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(
         prog="ltc deck", description="Run the real Stream Deck: arms and "
-        "disarms real flamesafe groups, and reaches Start Now, Hold and "
-        "Abort through a show conductor where one is connected.")
+        "disarms real flamesafe groups, and reaches Start Now and Stop "
+        "through the engine where one is connected.")
     ap.add_argument("--flamesafe-config", required=True,
                     help="the flamesafe config this deck talks to "
                     "(its link.arm_port, link.key and group names)")
@@ -6138,7 +6119,7 @@ def _main(args):
     # use. Nothing here touches the arm link for it.
     controller.purge_fire = PurgeFire(engine._http_post, journal=journal)
     print(f"Stream Deck: arming {', '.join(names)} over {arm_ip}:{arm_port}, "
-         f"reading flamesafe's status on {status_ip}:{status_port}. Abort, "
+         f"reading flamesafe's status on {status_ip}:{status_port}. Stop, "
          f"Hold, Resume and Reset go to the show conductor in ltc serve at "
          f"{args.ltcplay_url}; Start Now journals a refusal. "
          f"{'Screen arming is ON (ltcplay_remote.json).' if screen else 'Screen arming is off.'}"

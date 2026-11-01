@@ -207,7 +207,7 @@ flamesafe is not changed:
 There is no switch for this any more. "Fire flames while scrubbing" was removed on 2026-10-29: as long as a group is armed, the show's own flame cues fire while you play on the Programming screen. xLights is not involved.
 
 - **Where it applies:** a show that plays from the show audio (the show PC is the clock). Play from, Back, Ahead, Continue and the loop start the show's own path, so its flame cues go to flamesafe on the usual flame link exactly as in a show. A show that follows timecode from somewhere else fires no flames from Programming, and the Programming screen says so.
-- **What the Programming screen says:** one line where the switch was: "Flames follow the show while you play here. Only armed groups fire. Hold, Stop or Abort ends it." If the show's flame cues cannot go out (a render older than `xlights_networks.xml`, a render that does not fit the layout, the timecode past the render, a render that cannot be read), the reason is shown under it in full.
+- **What the Programming screen says:** one line where the switch was: "Flames follow the show while you play here. Only armed groups fire. Hold or Stop ends it." If the show's flame cues cannot go out (a render older than `xlights_networks.xml`, a render that does not fit the layout, the timecode past the render, a render that cannot be read), the reason is shown under it in full.
 - **flamesafe is not changed.** It fires only a group that is armed, and its lockouts, Abort, hold to arm and cutoffs all apply. A disarmed or locked out group never fires.
 
 ### What keeps it safe

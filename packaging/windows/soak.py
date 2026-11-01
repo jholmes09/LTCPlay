@@ -1435,7 +1435,7 @@ class Soak:
         if self.tc_last is None or t - self.tc_last > 1.0:
             why = "no show running"
         elif self.ex is not None:
-            w = self.ex.in_window(time.time(), ("hold", "aborted"))
+            w = self.ex.in_window(time.time(), ("hold", "stopped"))
             if w:
                 why = f"inside the {w}"
         if why and (not self.bey_bad or
@@ -2722,7 +2722,7 @@ class Soak:
             out.append(("PASS" if ok else "FAIL",
                         "Flame arming exerciser (on the rack screen, no "
                         "sign-in, arming through the Stream Deck program, "
-                        "Hold, Resume, Abort and Reset)",
+                        "Hold, Resume, Stop and Resume after it)",
                         f"{len(ex.failures)} failure(s) (limit 0)"
                         + (": " + "; ".join(f"{now_text(a)} {w}" for a, w in
                                             ex.failures[:6])
@@ -2730,10 +2730,11 @@ class Soak:
                         + f"; {c['arms']} of {c['arm_tries']} arms took ("
                         + ", ".join(f"{n} {k}" for n, k in
                                     ex.arms_by_group.items())
-                        + f"); {c['cycles']} arm cycle(s) after an Abort "
+                        + f"); {c['cycles']} arm cycle(s) after a Stop "
                         f"(Disarm, then hold again); {c['holds']} Holds, "
                         f"{c['resumes']} Resumes ({ex.hold_tail_line()}), "
-                        f"{c['aborts']} Aborts, {c['resets']} Resets; "
+                        f"{c['stops']} Stops, {c['stop_resumes']} Resumes "
+                        f"after a Stop; "
                         f"{self.hold_continued} Hold silence(s) in the "
                         f"timecode read as the same show"
                         + ("; the Stream Deck program ran with a virtual "

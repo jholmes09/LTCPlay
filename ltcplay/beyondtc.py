@@ -396,7 +396,7 @@ class Blanking:
             return False
         self._note(f"{NOT_SET_UP} ({when}): beyond_blank is \"{self.mode}\" "
                    f"but no BEYOND OSC address is set (the \"beyond\" block "
-                   f"with its host and port), so Hold and Abort send the "
+                   f"with its host and port), so Hold and Stop send the "
                    f"lasers nothing and BEYOND sends nothing back. The show "
                    f"can still run; blank the lasers at BEYOND yourself.",
                    fault=True, outcome="not_set_up")

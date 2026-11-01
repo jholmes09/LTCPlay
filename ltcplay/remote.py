@@ -126,7 +126,7 @@ FRESH_S = 2.0
 FLAME_STALE_S = 1.0
 
 # The routes this module answers, and nothing else. No "arm" among them.
-CONTROL_ROUTES = ("start-now", "hold", "resume", "abort", "reset",
+CONTROL_ROUTES = ("start-now", "hold", "resume", "reset",
                   "disarm-all", "stop", "run-off", "start-at-cue")
 # Stop from a screen (Jeff, 2026-10-28; review of #144, F7): the Stream
 # Deck's complete halt (Remote.halt). Since 2026-10-30 Stop leaves Run on
@@ -150,7 +150,7 @@ TRANSPORT_ROUTES = ("play-from", "jump", "pause", "continue", "mark-a",
 FRESH_ROUTES = frozenset(("start-now", "resume", "reset", "start-at-cue")
                          + TRANSPORT_ROUTES)
 JUMP_MAX_S = 600.0
-CONFIRM_ROUTES = frozenset(("start-now", "abort", "start-at-cue"))
+CONFIRM_ROUTES = frozenset(("start-now", "start-at-cue"))
 # Arming from a screen (Jeff, 2026-10-03; its own PR and safety review).
 # The page never arms anything itself: a hold here is a remote press of the
 # group's key on the Stream Deck process, which owns flamesafe's arm link
@@ -263,8 +263,8 @@ LIVE_FLAME_ENABLES = (
     "127.0.0.1), or also from the one Mac named in its settings, and passes the flame controller's channels to flamesafe "
     "through its own flame link. flamesafe still fires only a group that "
     "is armed (hold to arm on the Stream Deck), and still applies lockouts "
-    "and Abort. One flame group may be armed at a time. It turns itself "
-    "off, and disarms every flame group, on Off, Abort, Hold, Start now, "
+    "and Stop. One flame group may be armed at a time. It turns itself "
+    "off, and disarms every flame group, on Off, Stop, Hold, Start now, "
     "Run, a show starting, a second sender, no xLights data for a while, "
     "or the session limit. Never use xLights' test tools while a group is "
     "armed.")
@@ -274,15 +274,15 @@ LIVE_FLAME_ENABLES = (
 # path, so its flame cues go to flamesafe whenever it plays; flamesafe
 # fires only armed groups. The Programming screen says so in one line.
 PROGRAMMING_FLAMES_LINE = ("Flames follow the show while you play here. "
-                           "Only armed groups fire. Hold, Stop or Abort "
-                           "ends it.")
+                           "Only armed groups fire. Hold or Stop ends "
+                           "it.")
 # A page from before the change may still post the switch's route: it is
 # answered, never acted on.
 REMOVED_ROUTES = {
     "scrub-flames": ("Fire flames while scrubbing is not needed any more, so "
                      "it was removed. Flames follow the show while you play "
                      "on the Programming screen, and only armed groups "
-                     "fire. To stop flames press Hold, Stop or Abort, or "
+                     "fire. To stop flames press Hold or Stop, or "
                      "disarm on the Stream Deck. Reload this page. Nothing "
                      "was changed."),
 }
@@ -2455,8 +2455,8 @@ class Remote:
                     pass
             return 200, {"ok": True, "text": "Signed out. This screen is "
                                              "view only now: Stop, Hold, "
-                                             "Abort, Acknowledge and every "
-                                             "disarm still work."}, {
+                                             "Acknowledge and every disarm "
+                                             "still work."}, {
                 "Set-Cookie": (cookie % "") + "; Max-Age=0"}
         me = getattr(ctx, "session", None) or {}
         if name == "my-password":
@@ -3251,13 +3251,13 @@ class Remote:
         return None
 
     def press(self, name, body, ctx):
-        """A show control press. An Abort, a Hold or a Stop tells the laser
-        arm it is under way before ANY other work and until its answer is
-        made (review of PR #87, P2-2; Stop since 2026-10-30, as Abort): an
-        arm confirmed in that window, before the scheduler's latch or Hold
-        is set, is refused."""
+        """A show control press. A Hold or a Stop tells the laser arm it is
+        under way before ANY other work and until its answer is made (review
+        of PR #87, P2-2; Stop since 2026-10-30): an arm confirmed in that
+        window, before the scheduler's Hold is set, is refused. There is no
+        Abort (Jeff, 2026-10-30): Stop does everything it did."""
         arm = getattr(self.morning, "laser_arm", None) \
-            if name in ("abort", "hold", "stop", "run-off") else None
+            if name in ("hold", "stop", "run-off") else None
         if arm is not None:
             try:
                 arm.press_begin()
@@ -3273,9 +3273,8 @@ class Remote:
                     pass
 
     def _press(self, name, body, ctx):
-        # The press's place in line, taken before anything else (an Abort's
-        # disarm and laser blank, a lock): the scheduler compares a Reset's
-        # with the latest Abort's, so work done first never reorders them.
+        # The press's place in line, taken before anything else (a disarm,
+        # a laser blank, a lock), so work done first never reorders them.
         stamp = getattr(self.schedule, "stamp_press", None)
         pressed = stamp() if stamp is not None else None
         who, screen, surface = self._actor(ctx, body)
@@ -3304,26 +3303,11 @@ class Remote:
                               f"{who or 'Someone'}'s {_lbl} on the "
                               f"{screen} was refused. {why}")
                 return 409, {"ok": False, "error": why, "text": why}
-        flames = None
-        if name == "abort":
-            # The flames first, every time (review of PR #43, P0-1): every
-            # flame group disarmed through the flame link before any
-            # scheduler step, any lock or any journal line, whatever the
-            # scheduler is doing and whether or not a show is live. The
-            # scheduler takes an Abort only in SHOW or PAUSED, and the
-            # conductor only while something plays; a group armed before a
-            # show, between shows or after one must still come off. Nothing
-            # here waits on a disk (P0-5). Before the confirm check too
-            # (safety audit of bench-build, P2 b): a disarm only removes
-            # risk, so an unconfirmed Abort still takes the flames off; the
-            # rest of it is refused below.
-            flames = self._disarm_now(who, screen, "Abort")
-        if name in ("abort", "hold", "start-now", "start-at-cue"):
+        if name in ("hold", "start-now", "start-at-cue"):
             # A timed purge ends at the press too (Jeff, 2026-10-29), from
             # every surface, before the confirm check: it only takes risk
             # away. The flame link's purge frame is cleared on this thread.
-            _lbl = {"abort": "Abort", "hold": "Hold",
-                    "start-now": "Start now",
+            _lbl = {"hold": "Hold", "start-now": "Start now",
                     "start-at-cue": "Start at a cue"}[name]
             self.timed_purge_cut(f"{who or 'someone'} pressed {_lbl} on the "
                                  f"{screen}", who, screen)
@@ -3335,18 +3319,7 @@ class Remote:
             # on a thread of their own, after the lasers below.
             self.live_flame_cut(f"{who or 'someone'} pressed {name} on the "
                                 f"{screen}", who, screen)
-        if name == "abort":
-            # The hazers OFF at the press (Jeff, 2026-10-29: "Abort turns
-            # off the hazers"), before the confirm check: it only takes
-            # something away. The flame link's disarm_all above did it at
-            # the link already; this is the belt, and the journal line.
-            self.hazers_cut(f"{who or 'someone'} pressed Abort on the "
-                            f"{screen}", who, screen)
-            # The fuel pump OFF at the press too (Jeff, 2026-10-30), the
-            # same way: the link's disarm_all did it already; the belt.
-            self.pump_cut(f"{who or 'someone'} pressed Abort on the "
-                          f"{screen}", who, screen)
-        if name in ("abort", "hold"):
+        if name == "hold":
             # Every laser disarmed at the press too (Jeff, 2026-10-22,
             # ruling 3), from every surface, before the confirm check and
             # before the scheduler: only the arm's state changes on this
@@ -3354,32 +3327,16 @@ class Remote:
             # arm's own sender, so nothing here waits on BEYOND.
             self._lasers_disarm_now(who, screen, name)
         if name in CONFIRM_ROUTES and body.get("confirmed") is not True:
-            if flames is not None and flames[0] is not None:
-                why = ("Confirm it on the page first. Every flame group was "
-                       "sent a disarm; nothing else was changed.")
-            else:
-                why = "Confirm it on the page first. Nothing was changed."
+            why = "Confirm it on the page first. Nothing was changed."
             self._journal(who, screen, name, "refused",
                           f"{who or 'Someone'}'s {name} on the {screen} was "
                           f"refused. {why}")
             return 400, {"error": why}
-        if name == "abort":
-            # And the lasers, the same way (re-review P1-A): blanked here,
-            # before the scheduler's step and its save, not after them.
-            lasers = self._lasers_dark_now()
-        if name in ("abort", "disarm-all"):
-            # No screen hold survives an Abort or a disarm, whoever pressed
-            # it and whether or not it goes on to be accepted.
+        if name == "disarm-all":
+            # No screen hold survives a disarm, whoever pressed it and
+            # whether or not it goes on to be accepted.
             self.cancel_holds(f"{who or 'someone'} pressed {name} on the "
                               f"{screen}")
-            # Nor a purge or a laser test (the Morning and Shutdown page):
-            # Abort wins over everything, before the scheduler is asked.
-            m = self.morning
-            if m is not None and name == "abort":
-                try:
-                    m.on_abort(who, screen)
-                except Exception:
-                    pass
         if name == "disarm-all":
             # Disarm all flame groups (2026-10-23): the purge selection is
             # cleared first (in memory only), so the deck cannot want a
@@ -3402,40 +3359,13 @@ class Remote:
                     pass
             return out
         # Programming playback on the show audio (review of #142): Hold is
-        # its Pause and Abort its Stop, after every disarm above, and no
-        # Start now goes over it. A scheduled show is never this
+        # its Pause (Stop, stop_press, stops it), after every disarm above,
+        # and no Start now goes over it. A scheduled show is never this
         # (programming() refuses it, and active() is only the very cue
         # Play from started).
-        ph = self.playhead if name in ("hold", "abort") else None
+        ph = self.playhead if name == "hold" else None
         if ph is not None and not (self.programming()[0] and ph.active()):
             ph = None
-        if name == "abort":
-            code, out = self.abort(who, screen, flames, lasers, pressed)
-            if ph is not None:
-                stopped = True
-                try:
-                    said = ph.abort_press(who, screen)
-                except Exception as e:              # noqa: BLE001
-                    stopped = False
-                    said = (f"Programming playback did NOT stop "
-                            f"({type(e).__name__}: {e}). Press Stop the "
-                            f"show audio, or Stop.")
-                self._journal(who, screen, "abort",
-                              "done" if stopped else "fault",
-                              f"{who or 'Someone'} pressed Abort on the "
-                              f"{screen}. {said}", fault=not stopped)
-                # No scheduled show was live to stop: the answer says what
-                # did stop, the Programming playback.
-                text = " ".join(t for t in (flames[1] if flames else "",
-                                            lasers[1], said) if t)
-                ok = stopped and not (flames and flames[0] is False)
-                out = dict(out, programming=said, stopped=stopped, ok=ok,
-                           text=text)
-                out.pop("error", None)
-                if not ok:
-                    out["error"] = text
-                code = 200 if ok else 409
-            return code, out
         if ph is not None:                          # hold
             # Jeff's ruling: Hold is a schedule pause. The schedule's own
             # Hold first (so the next show does not start until Resume),
@@ -3674,8 +3604,8 @@ class Remote:
         if svc is not None:
             m = getattr(svc, "machine", None)
             if m is not None and m.state in self.LIVE_STATES:
-                return False, ("A scheduled show is live. Only Hold, Resume "
-                               "and Abort work during a show; scrubbing is "
+                return False, ("A scheduled show is live. Only Stop, Hold "
+                               "and Resume work during a show; scrubbing is "
                                "for programming sessions.")
         s = getattr(self.control, "session", None)
         p = getattr(s, "player", None)
@@ -4280,7 +4210,7 @@ class Remote:
                            "nothing could be sent")
         try:
             r = fn(f"{label} pressed Disarm {gname} on the {device} "
-                   f"({why}: every group disarmed the Abort way)")
+                   f"({why}: every group disarmed the Stop way)")
             return (bool(getattr(r, "ok", False)),
                     str(getattr(r, "sentence", "") or "").strip())
         except Exception as e:                   # noqa: BLE001
@@ -4298,7 +4228,7 @@ class Remote:
         if ok:
             alert = (f"{lead}: ALL groups disarm sent. Disarm {gname} "
                      f"forced ({why}): the flame link has no one-group "
-                     f"disarm, so the Abort's disarm was sent to every "
+                     f"disarm, so the Stop's disarm was sent to every "
                      f"flame group, every hazer is off, and the show's "
                      f"flames stay at zero until Hold then Resume or a new "
                      f"run. Each group needs Arm again (let go, then hold) "
@@ -4308,7 +4238,7 @@ class Remote:
                      f"the forced disarm did not go out either "
                      f"({said or 'no answer'}). {gname} may still be "
                      f"armed: press "
-                     f"Abort, or disarm at the Stream Deck.")
+                     f"Stop, or disarm at the Stream Deck.")
         self._journal(who, device, "disarm", "forced" if ok else "fault",
                       f"{label} pressed Disarm {gname} on the {device}. "
                       f"{alert}", fault=True)
@@ -5499,7 +5429,7 @@ class Remote:
                 f"{path or 'flamesafe config'} when it started). Until they "
                 f"match no hazer can be switched on here. Check that both "
                 f"read the same flamesafe.json, then restart flamesafe and "
-                f"LTC Player. Stop, Hold, Abort and Disarm all work as usual "
+                f"LTC Player. Stop, Hold and Disarm all work as usual "
                 f"meanwhile.")
 
     def _hazers_alert(self, agree, mine, theirs):
@@ -6022,8 +5952,7 @@ class Remote:
             text = (f"An announcement played by {label} on the {screen} "
                     f"held the schedule")
         else:
-            text = (f"{'Abort' if what == 'abort' else 'Hold'} pressed by "
-                    f"{label} on the {screen}")
+            text = f"Hold pressed by {label} on the {screen}"
         try:
             fn(text, who, screen)
         except Exception:                        # noqa: BLE001
@@ -6104,7 +6033,7 @@ class Remote:
             return "the night is closing"
         return ""
 
-    def _lasers_dark_now(self, what="Abort pressed on a screen"):
+    def _lasers_dark_now(self, what="Stop pressed on a screen"):
         """(ok or None, sentence): the conductor's laser blank, on this
         thread, at once. None when no conductor is attached."""
         cond = getattr(self.schedule, "conductor", None)
@@ -6532,45 +6461,6 @@ class Remote:
                                "Resume."}
             return
 
-    def abort(self, who, screen, flames, lasers=(None, ""), pressed=None):
-        """A screen's Abort (the deck has no Abort key since 2026-10-26).
-        `flames` is what the disarm
-        sent before anything else did (_disarm_now). Then the scheduler's
-        Abort, which stops a live show through the conductor. The answer
-        says both, truthfully: a disarm sent with no show to stop is not
-        "aborted", and a stopped show whose disarm failed is a fault."""
-        f_ok, f_text = flames
-        label = who or "An unnamed operator"
-        self._journal(who, screen, "abort disarm",
-                      "fault" if f_ok is False else
-                      ("done" if f_ok else "not connected"),
-                      f"{label} pressed Abort on the {screen}. {f_text}",
-                      fault=f_ok is False)
-        svc = self.schedule
-        if svc is None:
-            s_ok, s_text = False, ("There is no scheduler running in this "
-                                   "engine, so no show was stopped.")
-        else:
-            try:
-                r = svc.operator_press("abort", who, screen, confirmed=True,
-                                       pressed=pressed)
-                s_ok = bool(r.get("ok"))
-                s_text = str(r.get("text") or "")
-            except ValueError as e:
-                s_ok, s_text = False, str(e)
-            if not s_ok:
-                s_text = f"No show was stopped: {s_text}"
-        text = f"{f_text} {lasers[1]} {s_text}".strip().replace("  ", " ")
-        # A disarm that went out is the Abort's safety half done, whatever
-        # the scheduler said; one that failed is a fault even if the show
-        # stopped. With no flame link at all, the scheduler decides.
-        ok = f_ok is True or (f_ok is None and s_ok)
-        out = {"ok": ok, "text": text, "disarmed": f_ok, "stopped": s_ok,
-               "lasers_blanked": lasers[0]}
-        if not ok:
-            out["error"] = text
-        return (200 if ok else 409), out
-
     def disarm_all(self, who, screen):
         """Disarm all flame groups: a PLAIN disarm (Jeff, 2026-10-23), the
         same thing a group's own Disarm is, for every group at once: handed
@@ -6689,15 +6579,15 @@ class Remote:
         code, out = self._disarm_all_forced(who, screen, why)
         if out.get("ok"):
             text = (f"Disarm all flame groups was not confirmed: {why}. "
-                    f"Every group was sent the disarm Abort uses, so each "
+                    f"Every group was sent the disarm Stop uses, so each "
                     f"needs Arm again (let go, then hold) before it can "
                     f"fire. {out.get('text') or ''}")
         else:
             # Review of PR #97, P2-4: never say off when it may not be.
             text = (f"Disarm all flame groups COULD NOT be confirmed: {why}, "
-                    f"and the Abort's disarm did not go out either "
+                    f"and the Stop's disarm did not go out either "
                     f"({out.get('error') or out.get('text') or 'no answer'})."
-                    f" A group may still be armed: press Abort, or disarm "
+                    f" A group may still be armed: press Stop, or disarm "
                     f"at the Stream Deck.")
         try:
             self.alerts.raise_("flames", text=text)
@@ -6721,14 +6611,14 @@ class Remote:
             return 409, {"ok": False, "error": text}
         try:
             r = fn(f"{label} pressed Disarm all flame groups on the "
-                   f"{screen} ({why}: disarmed the Abort way)")
+                   f"{screen} ({why}: disarmed the Stop way)")
             ok = bool(getattr(r, "ok", False))
             said = str(getattr(r, "sentence", "") or "")
         except Exception as e:
             ok, said = False, f"{type(e).__name__}: {e}"
         text = (f"{label} pressed Disarm all flame groups on the {screen}. "
                 f"A plain disarm could not go ({why}), so every group was "
-                f"disarmed the way Abort does it: each needs Arm again (let "
+                f"disarmed the way Stop does it: each needs Arm again (let "
                 f"go, then hold) before it can fire. {said}").strip()
         self._journal(who, screen, "disarm all", "done" if ok else "fault",
                       text, fault=not ok)
@@ -6814,7 +6704,7 @@ class Remote:
                 f"Put the aim list in the flamesafe.json flamesafe uses, "
                 f"check that LTC Player reads that same file, then quit LTC "
                 f"Player and start it again so both read it afresh. Stop, "
-                f"Hold, Abort and Disarm all work as usual meanwhile.")
+                f"Hold and Disarm all work as usual meanwhile.")
 
     def _aim_alert(self, agree, mine, theirs, path):
         """Raise once per new mismatch sentence; clear the one raised here
@@ -7448,14 +7338,14 @@ class Remote:
                                      f"older face until a resend goes "
                                      f"through. A press acts on the face the "
                                      f"deck last really showed. Arming, "
-                                     f"disarming and Abort do not wait on "
+                                     f"disarming and Stop do not wait on "
                                      f"it.")}
                 return {"heard": True, "age_s": round(age, 1),
                         "usb_worst_ms": usb,
                         "text": (f"The Stream Deck's keys are slow to "
                                  f"update: writing them over USB took "
                                  f"{usb / 1000.0:.1f} s in the last minute. "
-                                 f"Arming, disarming and Abort do not wait "
+                                 f"Arming, disarming and Stop do not wait "
                                  f"on it. A busy machine (a big file copy, "
                                  f"a USB hub) is the usual cause."
                                  if usb is not None and
@@ -8331,7 +8221,7 @@ class Remote:
             return
         self._users_alert_said = why
         from . import users as users_mod
-        locked = ("Every control is locked except Stop, Hold, Abort, "
+        locked = ("Every control is locked except Stop, Hold, "
                   "Acknowledge and every disarm, and nobody can sign in.")
         if getattr(u, "error_kind", "") == "open":
             # There, but held by something: nothing to delete. It is tried
