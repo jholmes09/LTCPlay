@@ -925,7 +925,6 @@ button.fb-pad.na{opacity:.45}
       <button id="b-start" class="go" data-mode="start"><span class="lbl">Start now</span><small></small></button>
       <button data-safe id="b-hold" class="hold">Hold</button>
       <button id="b-resume" class="go">Resume</button>
-      <button id="b-reset">Reset</button>
     </div>
     <div class="toast" id="ctl-msg"></div>
     <div id="stop-said" hidden><div class="altext"></div><button class="ghost" id="stop-said-ok">Seen</button></div>
@@ -1404,7 +1403,6 @@ function controlStates(st, stale){
     hold: true, disarm: true,
     startNow: fresh && !!sch.attached,
     resume: fresh && !!sch.attached,
-    reset: fresh && !!sch.attached,
     transport: fresh && !!tr.programming
   };
 }
@@ -1449,13 +1447,13 @@ function staleText(nowMs, lastOkMs, drawErr){
     const d = (lastOkMs === null || lastOkMs === undefined) ? "never" :
       Math.max(0, (nowMs - lastOkMs) / 1000).toFixed(1) + " s ago";
     return "THIS PAGE CANNOT SHOW the engine's status (" + drawErr + "). Last shown: " + d +
-      ". The show carries on by itself. Start now, Resume, Reset and the programming controls are off until it can.";
+      ". The show carries on by itself. Start now, Resume and the programming controls are off until it can.";
   }
   if(lastOkMs === null || lastOkMs === undefined)
     return "NOT CONNECTED to the show engine yet.";
   const s = Math.max(0, (nowMs - lastOkMs) / 1000);
   return "CONNECTION LOST: last heard from the engine " + s.toFixed(1) +
-    " s ago. The show carries on by itself. Start now, Resume, Reset " +
+    " s ago. The show carries on by itself. Start now, Resume " +
     "and the programming controls are off until it is back.";
 }
 // What the countdown reads: the engine's own figure (ST.countdown),
@@ -1530,37 +1528,30 @@ function rearmText(ms){ return "Re-arm in " + (Math.ceil(ms / 100) / 10).toFixed
 const REARM_READY = "ready: hold to arm";
 const REARM_REFUSED = "Refused: the re-arm wait was not over. Hold again.";
 const REARM_REFUSED_PURGE = "Refused: the re-arm wait was not over. Press Clear, then click it again.";
-// An Abort standing (review of #115, P1): no countdown and never "ready"
-// (the deck refuses every hold as latched until Reset).
-const REARM_ABORTED = "Press Reset first";
-const REFUSED_LATCHED = "Refused: an Abort is standing. Press Reset first, then hold again.";
 // The arm button's small line about the wait, or null to leave armHint's:
-// `left` ms of wait, `aborted` the scheduler's latch (schedule.aborted),
-// `waited` a wait seen in the last 15 s, `ok` armState's verdict.
-function armWaitWords(left, aborted, waited, ok){
-  if(aborted) return REARM_ABORTED;
+// `left` ms of wait, `waited` a wait seen in the last 15 s, `ok` armState's
+// verdict. (There is no Abort latch any more, 2026-10-30.)
+function armWaitWords(left, waited, ok){
   if(left > 0) return rearmText(left);
   if(ok && waited) return REARM_READY;
   return null;
 }
 // What a hold that ended in an error says, or null for the engine's own
-// sentence: an Abort first (code latched, or the latch standing), then the
-// re-arm wait (code refractory, or no code while a wait still runs).
-function holdRefusalWords(code, waitLeftMs, aborted){
-  if(code === "latched" || aborted) return REFUSED_LATCHED;
+// sentence: the re-arm wait (code refractory, or no code while a wait
+// still runs).
+function holdRefusalWords(code, waitLeftMs){
   if(code === "refractory" || (!code && waitLeftMs > 0)) return REARM_REFUSED;
   return null;
 }
 // What a selected machine's tile says under its word while it is not
 // armed: the deck refused its purge arm, the wait still running, or
 // nothing.
-function machineWait(m, flames, purge, pageAgeMs, aborted){
+function machineWait(m, flames, purge, pageAgeMs){
   const sel = !!(purge && (purge.selected || []).includes(m.id));
   const g = ((flames && flames.groups) || []).find(x => x.name === m.group);
   if(!sel || !g || g.armed === "armed" || (flames && flames.stale)) return "";
   // A default wave flamer is never purged (machineLook says so): no wait.
   if(m.kind === "waver" && (m.pan == null || m.tilt == null)) return "";
-  if(aborted) return REARM_ABORTED;
   if(g.purge_refused === "refractory") return REARM_REFUSED_PURGE;
   if(g.purge_refused === "screenonly") return "Not armed: it has no Stream Deck key, so only its Hold to arm button arms it.";
   const left = rearmLeftMs(g, pageAgeMs, flames && flames.age_ms);
@@ -1770,13 +1761,12 @@ function allButtonMode(st, stale){
 const ONE_GROUP_WORDS = "Live flame programming is on, and it allows one flame group at a time. Hold one group's own button instead.";
 const LF_UNKNOWN_WORDS = "Live flame programming's state could not be read, so Arm all arms nothing. Hold one group's own button instead.";
 const KEY_HOLD_WORDS = "Arming is a hold: press and hold with your finger or mouse.";
-// Why Arm all may hold nothing at all right now, or "": an Abort
-// standing, live flame programming on with one group at a time, or its
+// Why Arm all may hold nothing at all right now, or "": live flame
+// programming on with one group at a time, or its
 // state not readable. Checked when the hold starts AND on every heartbeat
 // (review of #118, P2-1): turned on mid-hold, it stops the hold.
 function armAllRefusal(st){
   const lf = (st && st.live_flame) || {};
-  if(st && st.schedule && st.schedule.aborted) return REFUSED_LATCHED;
   if(lf.error) return LF_UNKNOWN_WORDS;
   if(lf.on === true && lf.one_group_at_a_time !== false) return ONE_GROUP_WORDS;
   return "";
@@ -1936,7 +1926,7 @@ const STOP_DISARM_FAILED = "Stopped, but the flame disarm FAILED: use Disarm all
 // had (Jeff, 2026-10-30): every flame group and laser disarmed, the fireball, the
 // cleaning and Programming playback ended, a live show ended and faded to
 // dark, and the schedule put on Hold. Run stays on: Resume releases the
-// Hold. Nothing is fired and nothing is latched: no Reset is needed. Only
+// Hold. Nothing is fired and nothing is latched. Only
 // Run off ({run_on:false}) also stops playback.
 function stopWords(j){
   const f = j && j.flames;
@@ -2522,7 +2512,6 @@ function renderStale(){
   $("b-start").disabled = !cs.startNow;
   drawStart(stale);
   $("b-resume").disabled = !cs.resume;
-  $("b-reset").disabled = !cs.reset;
   $("b-hold").disabled = !cs.hold;
   $("b-disarm").disabled = !cs.disarm;
   document.querySelectorAll("[data-tr]").forEach(el => { el.disabled = !cs.transport; });
@@ -2604,14 +2593,13 @@ function render(){
   // sentence under it says the same thing plainly.
   let word = "No schedule", label = "No schedule in this engine", cls = "";
   if(sch.attached){
-    if(sch.aborted){ word = "Aborted"; label = "Press Reset to clear it."; cls = "bad"; }
-    else if(sch.state === "SHOW"){ word = "Show"; label = "Show " + (sch.running || "") + " running"; cls = "ok"; }
+    if(sch.state === "SHOW"){ word = "Show"; label = "Show " + (sch.running || "") + " running"; cls = "ok"; }
     else if(sch.held){ word = sch.state === "PAUSED" ? "Paused" : "On hold";
       label = sch.state === "PAUSED" ? "Held. The show is paused." : "On hold"; cls = "warn"; }
     else { word = sch.state || "..."; label = ""; }
     // A Stop's Hold stands until Resume (Jeff, 2026-10-30), also when
     // nothing is held right now (the night closing, over, or without shows).
-    if(sch.stop_held && sch.state !== "SHOW" && sch.state !== "PAUSED" && !sch.aborted){
+    if(sch.stop_held && sch.state !== "SHOW" && sch.state !== "PAUSED"){
       word = "On hold"; label = "Held after Stop: press Resume."; cls = "warn"; }
     if(sch.error) label += (label ? ". " : "") + sch.error;
   }
@@ -2619,7 +2607,7 @@ function render(){
   // an alert open, said on the state card. Nothing plays on the PA by
   // itself (Jeff, 2026-10-30).
   const prl = prerollLook(s.preroll);
-  if(prl.checking && sch.attached && !sch.aborted && sch.state !== "SHOW" && sch.state !== "PAUSED"){
+  if(prl.checking && sch.attached && sch.state !== "SHOW" && sch.state !== "PAUSED"){
     word = prl.word; label = prl.label; cls = "warn";
   }
   const rcard = $("rigcheck");
@@ -2979,13 +2967,12 @@ function renderLamps(fl){
     // it is over, then says it is ready (Jeff, 2026-10-26). A hold already
     // under way is left alone. A hold the wait refused says so.
     const left = rearmLeftMs(g, LAST_OK === null ? 0 : Date.now() - LAST_OK, fl.age_ms);
-    const aborted = !!(ST && ST.schedule && ST.schedule.aborted);
     const small = ab.querySelector("small");
     if(on && c !== "armed" && c !== "unknown"){
       if(left > 0) REARM_SEEN[i] = Date.now();
-      const w = armWaitWords(left, aborted, !!REARM_SEEN[i] && Date.now() - REARM_SEEN[i] < 15000, as.ok);
+      const w = armWaitWords(left, !!REARM_SEEN[i] && Date.now() - REARM_SEEN[i] < 15000, as.ok);
       if(w !== null) small.textContent = w;
-      if(left > 0 && !aborted){
+      if(left > 0){
         if(!holding(i)) ab.disabled = true;
         ab.title = rearmText(left) + ": the Stream Deck and flamesafe wait this long after a disarm before they take a new arm.";
       }
@@ -3196,8 +3183,7 @@ async function armBeat(h, p){
     // said plainly (Jeff, 2026-10-26).
     const fl = (ST && ST.flames) || {};
     const g = (fl.groups || [])[p.group];
-    const said = holdRefusalWords(e.code, rearmLeftMs(g, LAST_OK === null ? 0 : Date.now() - LAST_OK, fl.age_ms),
-      !!(ST && ST.schedule && ST.schedule.aborted));
+    const said = holdRefusalWords(e.code, rearmLeftMs(g, LAST_OK === null ? 0 : Date.now() - LAST_OK, fl.age_ms));
     if(said) REARM_REFUSED_AT[p.group] = {at:Date.now(), text:said};
     if(!h.all){
       if(said){
@@ -3277,7 +3263,7 @@ function setArmMode(el, mode, c, held){
   // what one press does.
   el.querySelector(".act").textContent = "Disarm";
   el.querySelector("small").textContent = disarmHint(c, held);
-  el.title = "A plain disarm of this group, one press: hold it again to arm it. No Reset needed.";
+  el.title = "A plain disarm of this group, one press: hold it again to arm it.";
 }
 document.addEventListener("visibilitychange", () => { if(document.hidden) armStop("the page was hidden"); });
 window.addEventListener("pagehide", () => armStop("the page closed"));
@@ -3392,7 +3378,7 @@ let SIGNIN_SIG = null;
 function signinLocked(){
   const offs = [];
   if(!mayRow(ST, "show")){
-    offs.push($("b-start"), $("b-resume"), $("b-reset"), $("b-run"),
+    offs.push($("b-start"), $("b-resume"), $("b-run"),
       ...document.querySelectorAll("[data-tr], #ann-btns button[data-ann]"));
   }
   if(!mayRow(ST, "arm")){
@@ -4188,7 +4174,6 @@ $("b-run").addEventListener("click", async ev => {
 });
 $("b-hold").addEventListener("click", () => press("hold"));
 $("b-resume").addEventListener("click", () => press("resume"));
-$("b-reset").addEventListener("click", () => press("reset"));
 // Disarm all flame groups, or Arm all flame groups (2026-10-26). The mode
 // the button had when the finger went down decides (clickAction): an Arm
 // all hold that has just armed a group never disarms everything when the
@@ -4590,7 +4575,7 @@ function renderMorning(){
     el.title = m.notes || "";
     // The re-arm wait or a refused purge arm, said on the tile (Jeff,
     // 2026-10-26: it sat on "Arming..." with no word why).
-    const wait = machineWait(m, fl, purge, LAST_OK === null ? 0 : Date.now() - LAST_OK, !!(ST && ST.schedule && ST.schedule.aborted));
+    const wait = machineWait(m, fl, purge, LAST_OK === null ? 0 : Date.now() - LAST_OK);
     el.querySelector(".wait").textContent = wait;
     if(wait === REARM_REFUSED_PURGE) refusedNow = true;
     el.querySelector(".lk").textContent = "L";

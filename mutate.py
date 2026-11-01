@@ -883,9 +883,9 @@ MUTATIONS = [
   '        if False:'),
 
  ('remote: an arm route appears', 'ltcplay/remote.py',
-  'CONTROL_ROUTES = ("start-now", "hold", "resume", "reset",\n'
+  'CONTROL_ROUTES = ("start-now", "hold", "resume",\n'
   '                  "disarm-all", "stop", "run-off")',
-  'CONTROL_ROUTES = ("start-now", "hold", "resume", "reset",\n'
+  'CONTROL_ROUTES = ("start-now", "hold", "resume",\n'
   '                  "disarm-all", "stop", "run-off", "arm")'),
 
  ("remote: half a request is acted on", "ltcplay/web.py",
@@ -2569,11 +2569,6 @@ MUTATIONS = [
   "            values = self._with_haze(values, False)\n            self.last_values_nonzero",
   "            self.last_values_nonzero"),
 
- ("hazers: arming while an Abort is standing",
-  "ltcplay/hazers.py",
-  "            if self._abort_standing():",
-  "            if False:"),
-
  ("hazers: arming with flamesafe's status stale",
   "ltcplay/hazers.py",
   "        if fl.get(\"stale\") or age is None or age > STATUS_FRESH_S * 1000:",
@@ -2951,11 +2946,6 @@ MUTATIONS = [
   "        if lf is None or not getattr(lf, \"on\", False):\n            why = self.live_flame_pump_refusal()",
   "        if False:\n            why = self.live_flame_pump_refusal()"),
 
- ("pump: an Abort standing leaves a run on",
-  "ltcplay/fuelpump.py",
-  "            if self._abort_standing():\n                return \"an Abort is standing\"",
-  "            if False:\n                return \"an Abort is standing\""),
-
  ("pump: flamesafe not passing it never ends the run",
   "ltcplay/fuelpump.py",
   "            elif now - since > NOT_PASSING_S:",
@@ -2990,11 +2980,6 @@ MUTATIONS = [
   "ltcplay/fuelpump.py",
   "    if v > max_s:",
   "    if False:"),
-
- ("pump: ON with an Abort standing",
-  "ltcplay/fuelpump.py",
-  "            if self._abort_standing():\n                return (\"an Abort is standing. Press Reset, then turn it on \"",
-  "            if False:\n                return (\"an Abort is standing. Press Reset, then turn it on \""),
 
  ('pump: ON within 0.75 s of a Stop at the engine', 'ltcplay/fuelpump.py',
   '        if repeating:\n'
@@ -5597,10 +5582,9 @@ def build():
   '                fc.dropped()\n',
   ''),
 
- ('reset: Reset says nothing about the rig again',
-  'ltcplay/remote.py',
-  '                r = self._reset_health(r, who, screen)\n',
-  ''),
+ ('resume: a Resume says nothing about the rig (it carries what Reset said)', 'ltcplay/remote.py',
+  '                r = self._resume_health(r, who, screen)\n',
+  ""),
 
  ('reset: a lost audio interface reads ready',
   'ltcplay/righealth.py',
@@ -6034,12 +6018,6 @@ def build():
   "            self._check(gen)\n            self._announcing = None\n",
   "            self._announcing = None\n"),
 
- ("conductor: Abort's flame cut waits for the executor",
-  'ltcplay/conductor.py',
-  '                self._flames_cut()\n'
-  '                # And every laser, the same way',
-  '                # And every laser, the same way'),
-
  ("conductor: Abort no longer disarms the flames at once",
   "ltcplay/conductor.py",
   "        self._applied[\"flames\"] = ZERO if r.ok else UNKNOWN\n"
@@ -6050,37 +6028,6 @@ def build():
   "ltcplay/conductor.py",
   "            if not self._applied[\"disarmed\"]:\n                self._disarm()",
   "            if False:\n                self._disarm()"),
-
- ("conductor: a second Abort starts a second fade",
-  "ltcplay/conductor.py",
-  "            latched = self._latched\n            if not latched:\n"
-  "                # The flames do not wait",
-  "            latched = False\n            if not latched:\n"
-  "                # The flames do not wait"),
-
- ("conductor: the Abort latch no longer refuses other presses",
-  "ltcplay/conductor.py",
-  "        if self._latched:\n            return self._refused(what,",
-  "        if False:\n            return self._refused(what,"),
-
- ("conductor: Reset is taken while the Abort is still fading",
-  "ltcplay/conductor.py",
-  "                    and self._done_gen != self._gen:\n",
-  "                    and False:\n"),
-
- ("conductor: Abort is taken with nothing playing",
-  "ltcplay/conductor.py",
-  "                if not self._playing():\n"
-  "                    return self._refused(\n"
-  "                        \"Abort\", \"nothing is playing",
-  "                if False:\n"
-  "                    return self._refused(\n"
-  "                        \"Abort\", \"nothing is playing"),
-
- ("conductor: Abort sends no laser blank of its own",
-  "ltcplay/conductor.py",
-  "            r = self._call(\"lasers blanked\", self.devices.lasers_blank)",
-  "            r = done(\"lasers left to the executor\")"),
 
  ("conductor: Abort never stops the video",
   "ltcplay/conductor.py",
@@ -6254,10 +6201,11 @@ def build():
   "                   progress, self.devices.lasers_blank)\n",
   ""),
 
- ("conductor: intermission cuts an Abort's fade short",
-  'ltcplay/conductor.py',
-  '            latched = self._latched\n            if not latched:\n                if self._look == STOPPED_DARK:',
-  '            latched = False\n            if not latched:\n                if self._look == STOPPED_DARK:'),
+ ("conductor: intermission cuts a Stop's fade short", 'ltcplay/conductor.py',
+  '            if self._look == STOPPED_DARK:\n'
+  '                # Darker than BETWEEN already',
+  '            if False:\n'
+  '                # Darker than BETWEEN already'),
 
  # -- the conductor wired to BEYOND and MadMapper (ConductorDevices, and
  # the lasers-dark re-send that keeps devices.py's "never assume a blank
@@ -6273,11 +6221,10 @@ def build():
   "        want[\"changed\"] = any(AGAIN not in p for p in progress)",
   "        want[\"changed\"] = bool(progress)"),
 
- ("conductor: Abort's laser blank waits for the executor, so the video "
-  "fades first (review of PR #29, finding D)",
-  "ltcplay/conductor.py",
-  "            r = self._call(\"lasers blanked\", self.devices.lasers_blank)",
-  "            r = failed(\"left to the executor\")"),
+ ("conductor: Stop's laser blank waits for the executor, so the video fades first (review of PR #29, finding D)", 'ltcplay/conductor.py',
+  '            r = self._call("lasers blanked at the Stop",\n'
+  '                           self.devices.lasers_blank)',
+  '            r = failed("left to the executor")'),
 
  ("conductor: a Hold fades the music before the lasers go dark",
   "ltcplay/conductor.py",
@@ -6402,15 +6349,9 @@ def build():
   "                madmapper, journal=_device_journal(httpd_schedule))",
   "            madmapper = madmapper_mod.build(madmapper)"),
 
- ("conductor: a second Abort sends no blank (finding B)",
-  "ltcplay/conductor.py",
-  "            return done(f\"Already aborted. {self._reblank('Abort')} Press \"",
-  "            return done(f\"Already aborted. Press \""),
-
- ("conductor: intermission while aborted sends no blank (finding B)",
-  "ltcplay/conductor.py",
-  "                    f\"Reset. {self._reblank('Intermission')}\")",
-  "                    f\"Reset. The rig is already dark.\")"),
+ ('conductor: a second Stop sends no blank (finding B)', 'ltcplay/conductor.py',
+  '                        f"sent again. {self._reblank(\'Stop\')}")',
+  '                        f"sent again.")'),
 
  ("conductor: a second Hold sends no blank (finding B)",
   "ltcplay/conductor.py",
@@ -6437,11 +6378,10 @@ def build():
   "                self._accept(\"Hold\"",
   "                self._accept(\"Hold\""),
 
- ("conductor: Abort does not stop a running video fade at the press "
-  "(finding C)",
-  "ltcplay/conductor.py",
-  "                self._video_cancel()\n                blanked = threading.Event()",
-  "                blanked = threading.Event()"),
+ ('conductor: Stop does not stop a running video fade at the press (finding C)', 'ltcplay/conductor.py',
+  '                self._video_cancel()\n'
+  '                line = self._accept("Stop", STOPPED_DARK',
+  '                line = self._accept("Stop", STOPPED_DARK'),
 
  ("conductor: Abort trusts a video record that says black (finding C)",
   "ltcplay/conductor.py",
@@ -6504,12 +6444,6 @@ def build():
   "ltcplay/beyond.py",
   "        try:\n            ipaddress.IPv4Address(host)\n",
   "        try:\n            pass\n"),
-
- ("conductor: an announcement after Abort and Reset runs the Abort again "
-  "(finding E)",
-  "ltcplay/conductor.py",
-  "                look = BETWEEN if self._look == ABORTED else self._look",
-  "                look = self._look"),
 
  # -- review round 3 of PR #29: the second independent review's surviving
  # hand mutations, and its two beyond.py fixes.
@@ -8521,17 +8455,6 @@ def build():
   "        if False:\n"
   "            plan.append((\"Out of the show\", \"intermission\","),
 
- ("scheduler fix round: the Service's Reset never reaches the conductor",
-  "ltcplay/schedule_service.py",
-  "                self._calls.put(call)\n        if late:",
-  "                call.ok, call.sentence = False, \"not sent\"\n"
-  "                call.done.set()\n        if late:"),
-
- ('scheduler fix round: the Abort line still says nothing was disarmed',
-  'ltcplay/schedule_service.py',
-  '        if self.conductor is not None and le.action == sch.ABORT and \\',
-  '        if False and \\'),
-
  ("scheduler fix round: effects the conductor does not perform are "
   "journaled as performed",
   "ltcplay/schedule_service.py",
@@ -8539,12 +8462,11 @@ def build():
   "            claimed |= {e.kind for e in out.effects}"),
 
  # Item 3: a failed start goes dark, no disarm, no latch.
- ("scheduler fix round: a failed start or a cut show is an Abort again",
-  "ltcplay/schedule_service.py",
-  "            if ev.kind == sch.ABORT:\n"
-  "                plan.append((\"Abort\", \"abort\", self._ABORT_EFFECTS))",
-  "            if True:\n"
-  "                plan.append((\"Abort\", \"abort\", self._ABORT_EFFECTS))"),
+ ('scheduler fix round: a failed start or a cut show is a Stop again', 'ltcplay/schedule_service.py',
+  '            if ev.kind == sch.STOP_SHOW:\n'
+  "                # Every operator's Stop",
+  '            if True:\n'
+  "                # Every operator's Stop"),
 
  ("scheduler fix round: conductor: a stopped show disarms the flames",
   "ltcplay/conductor.py",
@@ -8649,30 +8571,6 @@ def build():
   "        if False:"),
 
  # Coordinator's item A: after an Abort, dark until Reset.
- ("scheduler fix round: a show due while aborted starts anyway",
-  "ltcplay/schedule.py",
-  "            if tx.ev.latched:\n"
-  "                # Jeff",
-  "            if False:\n"
-  "                # Jeff"),
-
- ("scheduler fix round: Start now works while aborted",
-  "ltcplay/schedule.py",
-  "    if ev.latched:\n"
-  "        return _refuse(m, ev, now, \"The show was aborted",
-  "    if False:\n"
-  "        return _refuse(m, ev, now, \"The show was aborted"),
-
- ("scheduler fix round: the service never tells the engine it is aborted",
-  "ltcplay/schedule_service.py",
-  "        if ev.kind in self.LATCH_EVENTS and self._aborted():",
-  "        if False:"),
-
- ("scheduler fix round: an Abort still queued does not count yet",
-  "ltcplay/schedule_service.py",
-  "            self.machine = replace(self.machine, abort_latched=True)",
-  "            pass"),
-
  # The review's own survivors.
  ("scheduler fix round: the tick never moves IDLE to STANDBY at the lead",
   "ltcplay/schedule.py",
@@ -8695,78 +8593,13 @@ def build():
 
  # Item 2: the Abort latch is saved, read back, outlives the night, and
  # only Reset ends it.
- ("scheduler fix round 2: the Abort latch is never written to tonight's file",
-  "ltcplay/schedule.py",
-  "    if m.abort_latched:\n        doc[\"abort_latched\"] = True",
-  "    if False:\n        doc[\"abort_latched\"] = True"),
-
- ("scheduler fix round 2: the Abort latch is never read back",
-  "ltcplay/schedule.py",
-  "        abort_latched=doc.get(\"abort_latched\", False),",
-  "        abort_latched=False,"),
-
- ("scheduler fix round 2: the scheduler ignores its own saved Abort latch",
-  "ltcplay/schedule_service.py",
-  "        if self.machine is not None and self.machine.abort_latched:\n"
-  "            return True",
-  "        if False:\n            return True"),
-
- ("scheduler fix round 2: Reset never clears the saved Abort latch",
-  "ltcplay/schedule_service.py",
-  "        self.machine = replace(m, abort_latched=False)\n"
-  "        self._unreadable_night = None\n",
-  "        self._unreadable_night = None\n"),
-
- ("scheduler fix round 2: a Reset after a restart can never end the Abort",
-  "ltcplay/schedule_service.py",
-  "        if not ok and still:\n            return ok, said",
-  "        if not ok:\n            return ok, said"),
-
- ("scheduler fix round 2: a Reset pressed before an Abort ends it",
-  "ltcplay/schedule_service.py",
-  "        if call.seq < self._abort_seq or (\n"
-  "                pressed is not None and pressed < self._abort_pressed):",
-  "        if False:"),
-
- ("scheduler fix round 2: an unreset Abort does not make the start dark",
-  "ltcplay/schedule.py",
-  "    dark = cut or m.dark or ev.latched",
-  "    dark = cut or m.dark"),
-
  ("scheduler fix round 2: a latched night with every show to come shows "
   "the preshow look",
   "ltcplay/schedule.py",
   "    elif dark:\n        # Every show is still to come",
   "    elif False:\n        # Every show is still to come"),
 
- ("scheduler fix round 2: the Abort latch is not carried into the next night",
-  "ltcplay/schedule_service.py",
-  "        if latched and not m.abort_latched:\n"
-  "            m = replace(m, abort_latched=True)",
-  "        if False:\n            m = replace(m, abort_latched=True)"),
-
- ("scheduler fix round 2: a fresh start forgets last night's Abort latch",
-  "ltcplay/schedule_service.py",
-  "                if fresh and self._latched_before(d):",
-  "                if False:"),
-
  # Item 3: while latched, Hold, Resume and an announcement stay dark.
- ("scheduler fix round 2: Hold while aborted brings the intermission back",
-  "ltcplay/schedule.py",
-  "    _enter(tx, HOLD, after_stop=ev.latched or stop)",
-  "    _enter(tx, HOLD, after_stop=stop)"),
-
- ("scheduler fix round 2: Resume while aborted brings the intermission back",
-  "ltcplay/schedule.py",
-  "    _enter(tx, back, after_stop=ev.latched)",
-  "    _enter(tx, back)"),
-
- ("scheduler fix round 2: Hold and Resume are never told about the latch",
-  "ltcplay/schedule_service.py",
-  "    LATCH_EVENTS = (sch.TICK, sch.BOOT_DONE, sch.START_NOW, sch.HOLD_ON,\n"
-  "                    sch.RESUME)",
-  "    LATCH_EVENTS = (sch.TICK, sch.BOOT_DONE, sch.START_NOW)"),
-
  # Item 4: a stuck or dead line is loud, and Abort does not wait behind it.
  ("scheduler fix round 2: the tick never watches the conductor's line",
   "ltcplay/schedule_service.py",
@@ -8804,11 +8637,6 @@ def build():
   "            urgent = call.method in self.URGENT and (",
   "            urgent = call.method == \"stop\" and ("),
 
- ("scheduler fix round 2: requests an Abort supersedes still go out after it",
-  "ltcplay/schedule_service.py",
-  "            gone = (self.SUPERSEDED_BY_ABORT if call.method == \"abort\"",
-  "            gone = (() if call.method == \"abort\""),
-
  ("scheduler fix round 2: an Abort that goes ahead drops later Resets too",
   "ltcplay/schedule_service.py",
   "            dropped = [c for c in self._q if c.seq < call.seq and\n",
@@ -8821,13 +8649,6 @@ def build():
   "        except Exception as e:"),
 
  # Item 5: Reset refusals are journaled.
- ("scheduler fix round 2: a refused Reset is not journaled",
-  "ltcplay/schedule_service.py",
-  "    def _refuse_reset(self, who, screen, sentence):\n"
-  "        with self._locked():",
-  "    def _refuse_reset(self, who, screen, sentence):\n"
-  "        if False:"),
-
  # Item 6: the review's hand mutations that nothing caught.
  ("scheduler fix round 2: show_starting even while the confirmed show is "
   "paused",
@@ -8880,89 +8701,9 @@ def build():
  # them. The first group breaks the Abort latch file and the start-up
  # latch; the second is the review's own hand mutations (R3xx) that the
  # suite did not catch before this round.
- ("scheduler fix round 3: the Abort latch file is never written",
-  "ltcplay/schedule_service.py",
-  "        marker_error = self._write_latch_marker(m) if latched else None\n"
-  "        path = tonight_path(m.date, self.state_dir)\n",
-  "        marker_error = None\n"
-  "        path = tonight_path(m.date, self.state_dir)\n"),
-
- ("scheduler fix round 3: the Abort latch file is written after tonight's "
-  "list",
-  "ltcplay/schedule_service.py",
-  "        marker_error = self._write_latch_marker(m) if latched else None\n"
-  "        path = tonight_path(m.date, self.state_dir)\n"
-  "        try:\n"
-  "            write_json_atomic(path, sch.machine_to_doc(m), tries=tries)\n"
-  "        except OSError as e:\n",
-  "        path = tonight_path(m.date, self.state_dir)\n"
-  "        try:\n"
-  "            write_json_atomic(path, sch.machine_to_doc(m), tries=tries)\n"
-  "            marker_error = self._write_latch_marker(m) if latched else None\n"
-  "        except OSError as e:\n"
-  "            marker_error = self._write_latch_marker(m) if latched else None\n"),
-
- ("scheduler fix round 3: the Abort latch file is never read at start",
-  "ltcplay/schedule_service.py",
-  "        if os.path.exists(marker) and not m.abort_latched:\n",
-  "        if False:\n"),
-
- ("scheduler fix round 3: the Abort latch file latches with no conductor",
-  "ltcplay/schedule_service.py",
-  "        if self.conductor is None:\n            return m\n        whys = []",
-  "        whys = []"),
-
- ("scheduler fix round 3: an unreadable or set aside list does not latch",
-  "ltcplay/schedule_service.py",
-  "        if self._unreadable_night == m.date or os.path.exists(aside):\n",
-  "        if False:\n"),
-
- ("scheduler fix round 3: an unreadable earlier night does not latch a "
-  "fresh start",
-  "ltcplay/schedule_service.py",
-  "                action=\"load tonight\", outcome=\"still aborted\", "
-  "fault=True)\n            return True",
-  "                action=\"load tonight\", outcome=\"still aborted\", "
-  "fault=True)\n            return False"),
-
- ("scheduler fix round 3: Reset leaves the Abort latch file in place",
-  "ltcplay/schedule_service.py",
-  "            remove_latch_marker(path)\n"
-  "            self._marker_clear_pending = False",
-  "            self._marker_clear_pending = False"),
-
- ("scheduler fix round 3: Reset leaves the set aside list latching",
-  "ltcplay/schedule_service.py",
-  "                os.replace(aside, done)\n",
-  "                pass\n"),
-
- ("scheduler fix round 3: a latch that could not be saved is not said",
-  "ltcplay/schedule_service.py",
-  "        if text is not None:\n"
-  "            self._journal_line(\"system\", text, action=\"save abort latch\",",
-  "        if False:\n"
-  "            self._journal_line(\"system\", text, action=\"save abort latch\","),
-
- ("scheduler fix round 3: a failed latch save says the list holds it",
-  "ltcplay/schedule_service.py",
-  "        elif list_saved:\n            text = self.LATCH_HALF",
-  "        elif True:\n            text = self.LATCH_HALF"),
-
- ("scheduler fix round 3: a latch that could not be saved is never tried "
-  "again",
-  "ltcplay/schedule_service.py",
-  "            self._keep_latch_on_disk()\n            # A schedule saved during a show",
-  "            # A schedule saved during a show"),
-
- ("scheduler fix round 3: a Reset that overtakes an Abort in flight ends it",
-  "ltcplay/schedule_service.py",
-  "        if self._calls.aborts_beside():\n",
-  "        if False:\n"),
-
- ('scheduler fix round 3: R303 an Abort that goes ahead still sends a queued show start',
-  'ltcplay/schedule_service.py',
-  '    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting",\n                           "start_show")',
-  '    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume",\n                           "start_show")'),
+ ('scheduler fix round 3: R303 a Stop that goes ahead still sends a queued show start', 'ltcplay/schedule_service.py',
+  '    STOP_DROPS = ("hold", "resume", "show_starting", "start_show")',
+  '    STOP_DROPS = ("hold", "resume", "start_show")'),
 
  ("scheduler fix round 3: R304 an Abort waits behind a dead line",
   "ltcplay/schedule_service.py",
@@ -8974,10 +8715,9 @@ def build():
   "ltcplay/schedule_service.py",
   "        y = max(dates)", "        y = min(dates)"),
 
- ("scheduler fix round 3: R309 a schedule change rebuild drops the latch",
-  "ltcplay/schedule.py",
-  "                   abort_latched=saved.abort_latched,",
-  "                   abort_latched=False,"),
+ ("scheduler fix round 3: R309 a schedule change rebuild drops the Stop's Hold", 'ltcplay/schedule.py',
+  '                   stop_hold=saved.stop_hold)',
+  '                   stop_hold=False)'),
 
  ("scheduler fix round 3: R312 a hung conductor request is a fault only "
   "after 30 s",
@@ -9001,18 +8741,6 @@ def build():
   "            self._busy = False\n            self._current = self._since = None\n"
   "            self._start()",
   "            self._start()"),
-
- ("scheduler fix round 3: R317 a conductor that cannot say whether it is "
-  "latched counts as not latched in Reset",
-  "ltcplay/schedule_service.py",
-  "        except Exception:\n            still = True",
-  "        except Exception:\n            still = False"),
-
- ("scheduler fix round 3: R318 a Reset refused while the Abort still fades "
-  "clears the scheduler's latch",
-  "ltcplay/schedule_service.py",
-  "        if not ok and still:\n            return ok, said",
-  "        if False:\n            return ok, said"),
 
  ("scheduler fix round 3: R322 a dark or latch that is not true or false is "
   "accepted",
@@ -9360,13 +9088,10 @@ def build():
   "    return (midnight - timedelta(seconds=PRESHOW_LEAD_S),\n",
   "    return (midnight,\n"),
 
- ("review196B: the dry run never puts the Stop's Hold back after the show end",
-  "ltcplay/schedule_service.py",
-  "            self._keep_stop_hold(now)\n"
-  "            self._keep_latch_on_disk()\n"
-  "            # A schedule saved during a show",
-  "            self._keep_latch_on_disk()\n"
-  "            # A schedule saved during a show"),
+ ("review196B: the dry run never puts the Stop's Hold back after the show end", 'ltcplay/schedule_service.py',
+  '            self._keep_stop_hold(now)\n'
+  '            # A schedule saved during a show or a closing',
+  '            # A schedule saved during a show or a closing'),
 
  ("review196C: the second of a repeated hour is not said",
   "ltcplay/schedule.py",
@@ -9460,11 +9185,6 @@ def build():
   "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,",
   "            self._latched = True\n"
   "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,"),
-
- ("failed start: the scheduler latches a failed start",
-  "ltcplay/schedule_service.py",
-  "        if any(c.method == \"abort\" for c in calls):",
-  "        if any(c.method in (\"abort\", \"failed_start\") for c in calls):"),
 
  ("a failed start raises no alert", "ltcplay/schedule_service.py",
   "                    self.alert_sink(\"start\", alert)",
@@ -9676,10 +9396,6 @@ def build():
   "        if s is None:\n            return self.RUN_OFF\n        if clk is None:\n            return self.NOT_AUDIO_MASTER",
   "        if s is not None and clk is None:\n            return self.NOT_AUDIO_MASTER"),
 
- ("fire & ice: a show starts while the conductor is still aborted", "ltcplay/fire_ice.py",
-  "            self.LATCHED if self.conductor.latched else \"\")",
-  "            \"\")"),
-
  ("fire & ice: an unconfirmed cue that stops is reported as ended",
   "ltcplay/fire_ice.py",
   "            self.svc.report(\"SHOW_ENDED\" if cue[\"confirmed\"]\n"
@@ -9767,10 +9483,9 @@ def build():
   '        if sch.START_SHOW in kinds and not self.dry_run and \\\n',
   '        if sch.START_SHOW in kinds and \\\n'),
 
- ('show-assembly: an Abort no longer supersedes a waiting show start',
-  'ltcplay/schedule_service.py',
-  '    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting",\n                           "start_show")',
-  '    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting")'),
+ ('show-assembly: a Stop no longer supersedes a waiting show start', 'ltcplay/schedule_service.py',
+  '    STOP_DROPS = ("hold", "resume", "show_starting", "start_show")',
+  '    STOP_DROPS = ("hold", "resume", "show_starting")'),
 
  ('show-assembly: the show start goes to the conductor, not the runner',
   'ltcplay/schedule_service.py',
@@ -9930,12 +9645,12 @@ def build():
   '            self._set("music", MUSIC_PLAYING)\n            self._stopped_since_music = False\n\n    def pixels_to_show',
   '            self._stopped_since_music = False\n\n    def pixels_to_show'),
 
- ('fix round 1: an Abort during the start leaves the music playing',
-  'ltcplay/fire_ice.py',
-  '            why = "it was aborted while it was starting"\n'
-  '            self.show.music_halt(C.ABORT_FADE_S)',
-  '            why = "it was aborted while it was starting"\n'
-  '            pass'),
+ ('fix round 1: a Stop during the start leaves the music playing', 'ltcplay/fire_ice.py',
+  '            self.show.music_halt(C.ABORT_FADE_S)\n'
+  '            try:\n'
+  '                self.conductor.stop(who, "engine", force_new=True)',
+  '            try:\n'
+  '                self.conductor.stop(who, "engine", force_new=True)'),
 
 
  ('fix round 1: the flame frames never raise an unconfirmed disarm',
@@ -9966,11 +9681,6 @@ def build():
   'def _has_status_mirror(path):\n    try:',
   'def _has_status_mirror(path):\n    from . import flamelink  # noqa: F401\n    try:'),
 
-
- ("fix round 1: an engine answer older than the deck's press wins",
-  'ltcplay/streamdeck.py',
-  '        if engine is not None and (pressed_at is None or\n                                   engine[1] > pressed_at):',
-  '        if engine is not None:'),
 
  ('fix round 1: an engine refusal of a deck press is not a fault',
   'ltcplay/streamdeck.py',
@@ -10043,15 +9753,9 @@ def build():
 
 
 
- ('fix round 1: an Abort with no operator chosen is refused',
-  'ltcplay/schedule.py',
-  'ALWAYS_TAKEN = frozenset((ABORT, HOLD_ON, STOP_SHOW))',
-  'ALWAYS_TAKEN = frozenset((HOLD_ON, STOP_SHOW))'),
-
- ('fix round 1: a Hold with no operator chosen is refused',
-  'ltcplay/schedule.py',
-  'ALWAYS_TAKEN = frozenset((ABORT, HOLD_ON, STOP_SHOW))',
-  'ALWAYS_TAKEN = frozenset((ABORT, STOP_SHOW))'),
+ ('fix round 1: a Hold with no operator chosen is refused', 'ltcplay/schedule.py',
+  'ALWAYS_TAKEN = frozenset((HOLD_ON, STOP_SHOW))',
+  'ALWAYS_TAKEN = frozenset((STOP_SHOW,))'),
 
  ("fix round 1: the service refuses an Abort by a name not on the list",
   'ltcplay/schedule_service.py',
@@ -10145,11 +9849,6 @@ def build():
   'ltcplay/streamdeck.py',
   '            self.fault = "" if (ok or noop) else f"{name.title()}: {text}"',
   '            self.fault = ""'),
-
- ('fix round 2: the page can bring the rig up while an Abort stands',
-  'ltcplay/web.py',
-  '                self._abort_latched():\n            return self._send(409, {"error": LATCHED_REFUSAL})',
-  '                False:\n            return self._send(409, {"error": LATCHED_REFUSAL})'),
 
  ("fix round 2: a press's answer says nothing was disarmed",
   'ltcplay/schedule_service.py',
@@ -10247,21 +9946,16 @@ def build():
   '            self._set("pixels", UNKNOWN)\n            return clear()\n',
   '            return clear()\n'),
 
- ("pixels: a show start hands the pixels to the show under a latched Abort",
-  'ltcplay/conductor.py',
-  '            if self._latched:\n                return None\n            self._set("pixels", UNKNOWN)\n',
-  '            self._set("pixels", UNKNOWN)\n'),
-
  ("pixels: a start refused by an Abort just before the hand-over plays "
   "the music anyway",
   'ltcplay/fire_ice.py',
   '        elif to_show(lambda: self.show.pixels_for_show(what)) is None:\n            return None\n',
   '        else:\n            to_show(lambda: self.show.pixels_for_show(what))\n'),
 
- ("pixels: an Abort while the cue was starting leaves the hand-over armed",
-  'ltcplay/fire_ice.py',
-  '            self.show.music_halt(C.ABORT_FADE_S)\n            self._start_undone()\n',
-  '            self.show.music_halt(C.ABORT_FADE_S)\n'),
+ ('pixels: a Stop while the cue was starting leaves the hand-over armed', 'ltcplay/fire_ice.py',
+  '                           action="stop", outcome="failed")\n'
+  '            self._start_undone()\n',
+  '                           action="stop", outcome="failed")\n'),
 
  ("pixels: a start the clock refused leaves its hand-over armed",
   'ltcplay/fire_ice.py',
@@ -10639,11 +10333,6 @@ def build():
   '        if False:\n            named.append('),
 
  # -- review of PR #43: P1-5, the deck reads RESET after an engine restart --
- ("review43: /api/conductor forgets the scheduler's saved Abort latch",
-  'ltcplay/web.py',
-  '        snap["latched"] = bool(snap.get("latched")) or sched_latched',
-  '        snap["latched"] = bool(snap.get("latched"))'),
-
  # -- review of PR #38: P2, the single-copy lock is machine wide or says so --
  ('review38: the fall back to Local is quiet',
   'ltcplay/onlyone.py',
@@ -10835,11 +10524,6 @@ def build():
   'ltcplay/remote.py',
   '        pressed = stamp() if stamp is not None else None\n',
   '        pressed = None\n'),
-
- ("rereview: the Abort's press order is not kept",
-  'ltcplay/schedule_service.py',
-  '                self._abort_pressed = (self._press_stamp\n',
-  '                self._abort_pressed = 0 and (self._press_stamp\n'),
 
  # -- #46's Windows run, 2026-10-08: a Reset the conductor answered while the
  # Abort pressed after it was still saving tonight.json found the latch set
@@ -13407,8 +13091,8 @@ def build():
   ''),
 
  ('page: signed out leaves Start now on', 'ltcplay/web/remote.html',
-  '    offs.push($("b-start"), $("b-resume"), $("b-reset"), $("b-run"),',
-  '    offs.push($("b-resume"), $("b-reset"), $("b-run"),'),
+  '    offs.push($("b-start"), $("b-resume"), $("b-run"),',
+  '    offs.push($("b-resume"), $("b-run"),'),
 
  ('page: signed out may hold to arm', 'ltcplay/web/remote.html',
   '  if(!mayRow(st, "arm")) return {ok:false, signin:true, why:SIGN_IN_WORDS};\n',
@@ -13897,11 +13581,6 @@ def build():
   '            return "safety"',
   '        if False:\n            return "safety"'),
 
- ('screen arm: an Abort standing is not said',
-  'ltcplay/remote.py',
-  '        if self._abort_standing():\n            return ("An Abort is standing',
-  '        if False:\n            return ("An Abort is standing'),
-
  ('screen arm: no Stream Deck reading the engine is not said',
   'ltcplay/remote.py',
   '        if seen is None or self.clock() - seen > self.DECK_QUIET_S:\n'
@@ -14350,15 +14029,12 @@ def build():
   'ltcplay/conductor.py',
   '        self._disarm_lasers("Hold", who, screen)',
   '        pass'),
- ('lasers: Abort no longer disarms the lasers',
-  'ltcplay/conductor.py',
-  '                self._disarm_lasers("Abort", who, screen)',
-  '                pass'),
- ('lasers: Abort disarms the lasers only while a show plays',
-  'ltcplay/conductor.py',
-  '                self._disarm_lasers("Abort", who, screen)',
-  '                if self._playing():\n'
-  '                    self._disarm_lasers("Abort", who, screen)'),
+ ('lasers: Stop disarms the lasers only while a show plays', 'ltcplay/conductor.py',
+  '            self._flames_cut("Stop")\n'
+  '            self._disarm_lasers("Stop", who, screen)\n',
+  '            self._flames_cut("Stop")\n'
+  '            if self._playing():\n'
+  '                self._disarm_lasers("Stop", who, screen)\n'),
  ('lasers: a laser disarm hook that raises stops the Abort',
   'ltcplay/conductor.py',
   '        try:\n'
@@ -14385,12 +14061,6 @@ def build():
   '            self._restore_lasers(gen, progress)\n'
   '            return\n',
   ''),
- ('lasers: re-arming ignores the Abort latch',
-  'ltcplay/conductor.py',
-  '            refused = self._refuse_if_latched("Lighting the armed lasers")\n'
-  '            if refused:\n'
-  '                return refused',
-  '            pass'),
  ("lasers: the conductor's laser gate ignores the arm",
   'ltcplay/fire_ice.py',
   '        why = arm_gate()\n'
@@ -14435,10 +14105,6 @@ def build():
   '        if state in ("PAUSED", "HOLD") or \\\n'
   '                getattr(cond, "_look", None) in ("HELD", "DARK"):',
   '        if False:'),
- ('lasers: arming is allowed while the Abort latch stands',
-  'ltcplay/remote.py',
-  '            return "the show is aborted; press Reset first, then arm"',
-  '            pass'),
  ('lasers: with no schedule, arming is allowed',
   'ltcplay/remote.py',
   '            return ("the show state is not known (no schedule is loaded), "\n'
@@ -15658,11 +15324,6 @@ def build():
  ("rack screen: Arm all holds a group in its re-arm wait",
   "ltcplay/web/remote.html",
   '    else if(w > 0) out.push({group:i, name:g.name, why:rearmText(w)});',
-  ''),
-
- ("rack screen: Arm all holds while an Abort stands",
-  "ltcplay/web/remote.html",
-  '  if(st && st.schedule && st.schedule.aborted) return REFUSED_LATCHED;\n',
   ''),
 
  # Review of #118: the follow-up's guards.
@@ -17221,20 +16882,13 @@ def build():
   "        out = self._halt(body)\n        if getattr(self.server, \"schedule\", None) is not None and \\\n",
   "        _s0 = (c.stop() if getattr(self.server, \"schedule\", None) is None\n               else None)\n        out = self._halt(body)\n        if getattr(self.server, \"schedule\", None) is not None and \\\n"),
 
- ("halt: the scheduler's Stop latches like an Abort",
-  "ltcplay/schedule_service.py",
-  "            if ev.kind == sch.ABORT:\n                plan.append((\"Abort\", \"abort\", self._ABORT_EFFECTS))",
-  "            if ev.kind in (sch.ABORT, sch.STOP_SHOW):\n                plan.append((\"Abort\", \"abort\", self._ABORT_EFFECTS))"),
+ ("halt: the scheduler's Stop needs no confirm", 'ltcplay/schedule.py',
+  '    if ev.kind in (END_NIGHT, STOP_SHOW) and not ev.confirmed:',
+  '    if ev.kind in (END_NIGHT,) and not ev.confirmed:'),
 
- ("halt: the scheduler's Stop needs no confirm",
-  "ltcplay/schedule.py",
-  "    if ev.kind in (ABORT, END_NIGHT, STOP_SHOW) and not ev.confirmed:",
-  "    if ev.kind in (ABORT, END_NIGHT) and not ev.confirmed:"),
-
- ("halt: the scheduler's Stop is refused with no operator chosen",
-  "ltcplay/schedule.py",
-  "ALWAYS_TAKEN = frozenset((ABORT, HOLD_ON, STOP_SHOW))",
-  "ALWAYS_TAKEN = frozenset((ABORT, HOLD_ON))"),
+ ("halt: the scheduler's Stop is refused with no operator chosen", 'ltcplay/schedule.py',
+  'ALWAYS_TAKEN = frozenset((HOLD_ON, STOP_SHOW))',
+  'ALWAYS_TAKEN = frozenset((HOLD_ON,))'),
 
  ("halt: the scheduler's Stop is refused while the show is paused",
   "ltcplay/schedule.py",
@@ -17424,10 +17078,10 @@ def build():
 
  # Stop meets every Abort guarantee (Jeff, 2026-10-30; PR-A of the Abort
  # removal): the Stop twins of the Abort's guarantees, and the new rules.
- ("conductor: Stop's flame cut waits for the executor",
-  "ltcplay/conductor.py",
-  '                self._flames_cut("Stop")\n',
-  ''),
+ ("conductor: Stop's flame cut waits for the executor", 'ltcplay/conductor.py',
+  '            self._flames_cut("Stop")\n'
+  '            self._disarm_lasers("Stop", who, screen)\n',
+  '            self._disarm_lasers("Stop", who, screen)\n'),
 
  ("conductor: Stop sends no laser blank of its own",
   "ltcplay/conductor.py",
@@ -17441,10 +17095,11 @@ def build():
   '                line = self._accept("Stop", STOPPED_DARK,',
   '                line = self._accept("Stop", STOPPED_DARK,'),
 
- ("conductor: Stop runs a stopped show's plain dark, not Abort's sequence",
-  "ltcplay/conductor.py",
-  '            if look == ABORTED or want.get("halt") is True:',
-  '            if look == ABORTED:'),
+ ("conductor: Stop runs a stopped show's plain dark, not the removed Abort's sequence", 'ltcplay/conductor.py',
+  '            if want.get("halt") is True:\n'
+  "                # A Stop (stop(): the removed Abort's sequence, no latch).",
+  '            if False:\n'
+  "                # A Stop (stop(): the removed Abort's sequence, no latch)."),
 
  ("conductor: Stop latches like an Abort",
   "ltcplay/conductor.py",
@@ -17452,32 +17107,28 @@ def build():
   '                self._latched = True\n'
   '                line = self._accept("Stop", STOPPED_DARK, who, screen,'),
 
- ("conductor: a second Stop starts a new fade",
-  "ltcplay/conductor.py",
-  '            again = (not latched and not force_new and',
-  '            again = (False and not force_new and'),
+ ('conductor: a second Stop starts a new fade', 'ltcplay/conductor.py',
+  '            again = (not force_new and\n',
+  '            again = (False and not force_new and\n'),
 
- ("conductor: Stop never disarms the lasers at the conductor",
-  "ltcplay/conductor.py",
-  '                self._flames_cut("Stop")\n'
-  '                self._disarm_lasers("Stop", who, screen)',
-  '                self._flames_cut("Stop")'),
+ ('conductor: Stop never disarms the lasers at the conductor', 'ltcplay/conductor.py',
+  '            self._flames_cut("Stop")\n'
+  '            self._disarm_lasers("Stop", who, screen)\n',
+  '            self._flames_cut("Stop")\n'),
 
- ("scheduler: a Stop asks the conductor for a stopped show's plain dark",
-  "ltcplay/schedule_service.py",
-  "            elif ev.kind == sch.STOP_SHOW and \\\n"
-  "                    ev.detail != sch.RESET_DETAIL:",
-  "            elif False:"),
+ ("scheduler: a Stop asks the conductor for a stopped show's plain dark", 'ltcplay/schedule_service.py',
+  '            if ev.kind == sch.STOP_SHOW:\n'
+  "                # Every operator's Stop",
+  '            if False:\n'
+  "                # Every operator's Stop"),
 
- ("scheduler line: a Stop waits behind a hung conductor request",
-  "ltcplay/schedule_service.py",
-  '    URGENT = ("abort", "stop")',
-  '    URGENT = ("abort",)'),
+ ('scheduler line: a Stop waits behind a hung conductor request', 'ltcplay/schedule_service.py',
+  '    URGENT = ("stop",)',
+  '    URGENT = ()'),
 
- ("scheduler line: requests a Stop supersedes still go out after it",
-  "ltcplay/schedule_service.py",
-  "                    else self.SUPERSEDED_BY_STOP)",
-  "                    else ())"),
+ ('scheduler line: requests a Stop supersedes still go out after it', 'ltcplay/schedule_service.py',
+  '            gone = self.SUPERSEDED_BY_STOP\n',
+  '            gone = ()\n'),
 
  ("scheduler line: a Stop that goes ahead drops a waiting Reset",
   "ltcplay/schedule_service.py",
@@ -17616,11 +17267,6 @@ def build():
   "            ev = replace(ev, kind=sch.HOLD_ON, confirmed=False)\n"
   "        try:\n            out = self._apply(ev)\n"),
 
- ("scheduler: Reset ends a Stop's Hold (A-F4)",
-  "ltcplay/schedule_service.py",
-  "            elif m.state == sch.HOLD and not stop_held:",
-  "            elif m.state == sch.HOLD:"),
-
  ("scheduler: a Stop's Hold is not marked as a Stop's",
   "ltcplay/schedule.py",
   "    tx.m = replace(tx.m, held_from=m.state, stop_hold=stop)",
@@ -17666,10 +17312,9 @@ def build():
   "                         name=\"ltcplay-stop-conductor\").start()",
   "        pass"),
 
- ("scheduler: a Stop's Hold between shows is not dark (round 2, 5)",
-  "ltcplay/schedule.py",
-  "    _enter(tx, HOLD, after_stop=ev.latched or stop)",
-  "    _enter(tx, HOLD, after_stop=ev.latched)"),
+ ("scheduler: a Stop's Hold between shows is not dark (round 2, 5)", 'ltcplay/schedule.py',
+  '    _enter(tx, HOLD, after_stop=stop)',
+  '    _enter(tx, HOLD)'),
 
  ("conductor: a show start asked for before a Stop is taken (round 2, 2)",
   "ltcplay/conductor.py",
@@ -17697,15 +17342,15 @@ def build():
   "    if m.stop_hold:\n        doc[\"stop_hold\"] = True\n",
   ""),
 
- ("fire & ice: a Stop during the cue start leaves the music playing (A-F3)",
-  "ltcplay/fire_ice.py",
-  "        if getattr(self.conductor, \"stops\", 0) != stops0:",
-  "        if False:"),
+ ('fire & ice: a Stop during the cue start leaves the music playing (A-F3)', 'ltcplay/fire_ice.py',
+  '        if getattr(self.conductor, "stops", 0) != stops0:\n'
+  '            # A Stop landed while the cue was starting',
+  '        if False:\n'
+  '            # A Stop landed while the cue was starting'),
 
- ("conductor: a Stop for a start that began under it never fades afresh",
-  "ltcplay/conductor.py",
-  "            again = (not latched and not force_new and",
-  "            again = (not latched and"),
+ ('conductor: a Stop for a start that began under it never fades afresh', 'ltcplay/conductor.py',
+  '            again = (not force_new and\n',
+  '            again = (\n'),
 
  ("Rack screen: Stop's second tap is decided by its timer, not the time",
   "ltcplay/web/remote.html",
@@ -18378,10 +18023,6 @@ def build():
   "            r = cond.show_starting(who, screen)\n            if getattr(r, \"ok\", True) is False:",
   "            r = None\n            if getattr(r, \"ok\", True) is False:"),
 
- ("Play from goes ahead with an Abort standing", "ltcplay/playhead.py",
-  '        if cond is not None and getattr(cond, "latched", False):',
-  '        if False:'),
-
  ("Play from leaves MadMapper on whatever bank it was", "ltcplay/playhead.py",
   "                mm.select_bank(mm.cfg.show_bank, wait=False)",
   "                pass"),
@@ -18516,15 +18157,6 @@ def build():
   "            return self.AUDIO_LOADING",
   "        if False:\n            return self.AUDIO_LOADING"),
 
- ("Reset from Hold does nothing again", "ltcplay/remote.py",
-  "                r = fn(who, screen, surface=surface) if fn else None",
-  "                r = None"),
-
- ("Reset from a paused show carries the show on",
-  "ltcplay/schedule_service.py",
-  "            if m.state == sch.PAUSED:\n                kinds.append(sch.STOP_SHOW)",
-  "            if m.state == sch.PAUSED:\n                kinds.append(sch.RESUME)"),
-
  ("Rack screen: Start now never becomes Stop during a show",
   "ltcplay/web/remote.html",
   '  if(sch.state === "SHOW" || sch.state === "PAUSED") return true;\n  // The rig is up',
@@ -18536,17 +18168,6 @@ def build():
  ("Stop from a screen does not disarm or end the show", "ltcplay/remote.py",
   "        h = self.halt(who, screen, how=\"pressed\")\n",
   "        h = {}\n"),
-
- ("Reset ends a Hold inside the late grace and the show starts",
-  "ltcplay/schedule.py",
-  "            if lateness_s(s.start, now) < 0:\n                break\n"
-  "            _hold_back(tx, s)",
-  "            if True:\n                break\n            _hold_back(tx, s)"),
-
- ("Reset counts as the operator's Resume for the alert hold",
-  "ltcplay/schedule_service.py",
-  "                ev.detail != sch.RESET_DETAIL and \\\n",
-  ""),
 
  ("a broken intermission file blocks every show start",
   "ltcplay/fire_ice.py",
@@ -18588,11 +18209,9 @@ def build():
   "  if(busy) return {act:\"none\", say:\"Stopping: wait until it has finished.\"};\n",
   ""),
 
- ("an announcement or engine Hold does not end a waiting Start now",
-  "ltcplay/schedule_service.py",
-  "        if not out.refused and ev.kind in (sch.HOLD_ON, sch.ABORT,\n"
-  "                                          sch.STOP_SHOW):",
-  "        if not out.refused and ev.kind in (sch.ABORT, sch.STOP_SHOW):"),
+ ('an announcement or engine Hold does not end a waiting Start now', 'ltcplay/schedule_service.py',
+  '        if not out.refused and ev.kind in (sch.HOLD_ON, sch.STOP_SHOW):',
+  '        if not out.refused and ev.kind in (sch.STOP_SHOW,):'),
 
  ("Start now goes ahead during a Stop's halt",
   "ltcplay/schedule_service.py",
@@ -19538,10 +19157,6 @@ def build():
   '            self._drop_held("The pre-roll\'s video test")',
   '            pass'),
 
- ('pre-roll: the screens are blacked while the show is aborted', 'ltcplay/conductor.py',
-  '            if self._latched:\n                return self._refused("Pre-roll video black",',
-  '            if False:\n                return self._refused("Pre-roll video black",'),
-
  ('pre-roll: the alert is display only and never holds the show', 'ltcplay/alerts.py',
   'DISPLAY_ONLY = frozenset(("aim", "follow"))',
   'DISPLAY_ONLY = frozenset(("aim", "follow", "preroll"))'),
@@ -19630,10 +19245,6 @@ def build():
   '        if not self.users_active() or not who:\n            return 403, {"error": "Continue anyway needs a signed-in "',
   '        if False:\n            return 403, {"error": "Continue anyway needs a signed-in "'),
 
- ('continue anyway: it goes past an Abort', 'ltcplay/schedule_service.py',
-  '        elif self._aborted():\n            why = "the show is aborted; press Reset first"',
-  '        elif False:\n            why = "the show is aborted; press Reset first"'),
-
  ('continue anyway: the choice is not journaled', 'ltcplay/schedule_service.py',
   '        self.journal_press(\n            who, screen, "continue anyway", "chosen",',
   '        (lambda *a, **k: None)(\n            who, screen, "continue anyway", "chosen",'),
@@ -19673,8 +19284,10 @@ def build():
   '            if v == "cleared":\n                return False\n            if v == "failed":\n'),
 
  ('rig check cleared: Resume does not release the cleared show', 'ltcplay/schedule_service.py',
-  '                        self._stop_carry_write()\n                    self._preroll_release(who, screen)',
-  '                        self._stop_carry_write()\n                    pass'),
+  '                                screen=screen, surface=bool(surface)))\n'
+  '                    self._preroll_release(who, screen)',
+  '                                screen=screen, surface=bool(surface)))\n'
+  '                    pass'),
 
  ('rig check cleared: the screens do not say Press Resume', 'ltcplay/remote.py',
   '        if st == "HOLD" and held:',
@@ -20474,12 +20087,11 @@ def build():
                                  f"{screen}", who, screen)''',
   '''            pass'''),
 
- ("timed purge: a Hold standing does not end it",
-  "ltcplay/remote.py",
-  '''            if state == "HOLD":
-                return ("a Hold is standing; Resume or Reset first, then "''',
-  '''            if False:
-                return ("a Hold is standing; Resume or Reset first, then "'''),
+ ('timed purge: a Hold standing does not end it', 'ltcplay/remote.py',
+  '            if state == "HOLD":\n'
+  '                return ("a Hold is standing; Resume first, then ',
+  '            if False:\n'
+  '                return ("a Hold is standing; Resume first, then '),
 
  ("timed purge: the flame link not sending does not end it",
   "ltcplay/remote.py",
@@ -21337,12 +20949,6 @@ def build():
   "                took = link.manual_set(vals, r[\"gen\"], r[\"drops\"]) \\\n                    if r[\"drops\"] is not None else \\\n                    link.manual_set(vals, r[\"gen\"])",
   "                took = link.manual_set(vals)"),
 
- ("fireball manual: the conductor's Abort latch does not hold the page off",
-  "ltcplay/fireball.py",
-  "    if getattr(mach, \"abort_latched\", False) or \\\n            getattr(cond, \"latched\", False):\n        return \"the show is aborted",
-  "    if getattr(mach, \"abort_latched\", False):\n        return \"the show is aborted"),
-
-
  ("fireball manual: flamesafe not confirming the locks does not hold the page off",
   "ltcplay/fireball.py",
   "        why = m._locks_confirmed()\n        if why:",
@@ -21615,14 +21221,6 @@ def build():
   "                              remote, link, during_show=True),",
   "                              remote, link),"),
 
-
- ("fireball manual: an Abort standing does not hold the page off",
-  "ltcplay/fireball.py",
-  "    if getattr(mach, \"abort_latched\", False) or \\\n"
-  "            getattr(cond, \"latched\", False):\n"
-  "        return \"the show is aborted",
-  "    if False:\n"
-  "        return \"the show is aborted"),
 
  ("fireball manual: live flame programming does not hold the page off",
   "ltcplay/fireball.py",
@@ -22214,10 +21812,9 @@ def build():
   "    if m.closed_by_operator:\n        doc[\"closed_by_operator\"] = True",
   "    if False:\n        doc[\"closed_by_operator\"] = True"),
 
- ("review180: a closed night is written as format 3",
-  "ltcplay/schedule.py",
-  "    marked = (m.dark or m.abort_latched or m.closed_by_operator or\n              m.stop_hold)",
-  "    marked = (m.dark or m.abort_latched or\n              m.stop_hold)"),
+ ('review180: a closed night is written as format 3', 'ltcplay/schedule.py',
+  '    marked = m.dark or m.closed_by_operator or m.stop_hold',
+  '    marked = m.dark or m.stop_hold'),
 
  ("review180: an operator's close is not read back after a restart",
   "ltcplay/schedule.py",
@@ -22293,11 +21890,6 @@ def build():
   "ltcplay/schedule_service.py",
   "        at = (s.planned or s.start) if s is not None else None",
   "        at = s.start if s is not None else None"),
-
- ("review180: after an Abort the Run warning does not say Reset first",
-  "ltcplay/schedule_service.py",
-  "        if self._aborted():\n            need.insert(0, \"Reset\")",
-  "        if False:\n            need.insert(0, \"Reset\")"),
 
  ("review180: on Hold the Run warning does not say Resume",
   "ltcplay/schedule_service.py",
@@ -22757,9 +22349,9 @@ def build():
   "            with open(tmp, \"w\", encoding=\"utf-8\", newline=\"\\r\\n\") as fh:\n                fh.write(data.decode(\"utf-8\"))"),
 
  ('remote: the Abort route is back', 'ltcplay/remote.py',
-  'CONTROL_ROUTES = ("start-now", "hold", "resume", "reset",\n'
+  'CONTROL_ROUTES = ("start-now", "hold", "resume",\n'
   '                  "disarm-all", "stop", "run-off")',
-  'CONTROL_ROUTES = ("start-now", "hold", "resume", "abort", "reset",\n'
+  'CONTROL_ROUTES = ("start-now", "hold", "resume", "abort",\n'
   '                  "disarm-all", "stop", "run-off")'),
 
  ('rack screen: a Stop that did not do all of it is only a toast', 'ltcplay/web/remote.html',
@@ -22785,9 +22377,41 @@ def build():
   '                    (getattr(m, "lasers", None), "all_off", ("Stop held",))):',
   '                    (getattr(m, "lasers", None), "all_on", ("Stop held",))):'),
 
+ ("fire & ice: a Stop just before the hand-over lets the show start go out (as the removed Abort's latch did not)", 'ltcplay/fire_ice.py',
+  '        if getattr(self.conductor, "stops", 0) != stops0:\n'
+  '            # A Stop landed before the hand-over',
+  '        if False:\n'
+  '            # A Stop landed before the hand-over'),
+
+ ("upgrade: an old list's Abort latch is read as nothing (not a Stop's Hold)", 'ltcplay/schedule_service.py',
+  '        if sch.abort_latch_in(doc):',
+  '        if False:'),
+
+ ('upgrade: an old Abort latch is not dark', 'ltcplay/schedule.py',
+  '        dark=doc.get("dark", False) or abort_latch_in(doc),',
+  '        dark=doc.get("dark", False),'),
+
+ ('resume: a Resume from a Hold leaves the fault flag up (Reset used to clear it)', 'ltcplay/schedule_service.py',
+  '                        if self.machine.faults:\n'
+  '                            # Resume ending a Hold clears the fault flag',
+  '                        if False:\n'
+  '                            # Resume ending a Hold clears the fault flag'),
+
  ("rack screen: a Stop no longer lets go of the page's own arm hold (the removed Abort's tap did)", 'ltcplay/web/remote.html',
   '  try{ armStop("Stop"); }catch(e){}\n',
   ""),
+
+ ("page: the old page can bring the rig up while a Stop's Hold stands (the removed Abort latch's rule)", 'ltcplay/web.py',
+  '                self._stop_held():\n'
+  '            return self._send(409, {"error": STOP_HOLD_REFUSAL})',
+  '                False:\n'
+  '            return self._send(409, {"error": STOP_HOLD_REFUSAL})'),
+
+ ("journal: a summary written from the journal reads a Stop's show as still running", 'ltcplay/journal.py',
+  '    if r.startswith("STOPPED"):\n'
+  '        # A Stop',
+  '    if False:\n'
+  '        # A Stop'),
 
 ]
 

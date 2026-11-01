@@ -13,7 +13,7 @@ surface whether anyone is signed in or not, whatever the role, and are
 logged as "unsigned" when nobody is. classify() names them "safety" and
 allowed() answers True for "safety" before it looks at anything else.
 Nothing in flamesafe is touched by this module: its sole writer, the
-Abort latch, the link key and hold-to-arm stay exactly as they were.
+link key and hold-to-arm stay exactly as they were.
 
 SIGNED OUT IS VIEW ONLY (Jeff's field report, 2026-10-28, Tier A): once
 any user exists, every press that is not safety needs a signed-in user
@@ -51,8 +51,8 @@ Sessions live in memory: an engine restart signs everyone out, which
 changes nothing on the rig.
 
 SIGN OUT AFTER THE LAST SHOW (Jeff, 2026-10-26): when tonight's last show
-has ended (nothing still to come, nothing live or held, no Abort
-standing, nothing going on at the rig), and `signout_after_last_show_min`
+has ended (nothing still to come, nothing live or held, nothing going on
+at the rig), and `signout_after_last_show_min`
 minutes have passed (default 10; 0 is off), every session signed in
 before the show ended is signed out, once for that night. Someone who
 signs in after the show ended is left signed in. Without a show on the
@@ -108,7 +108,7 @@ LOCK_MAX_S = 300.0
 # screen does is either safety (never restricted) or harmless (reading,
 # opening a folder, checking a file).
 PERMS = (
-    ("show", "Start now, Resume, Reset, Run a show file, rehearsal "
+    ("show", "Start now, Resume, Run a show file, rehearsal "
              "scrubbing"),
     ("arm", "Arm flames and lasers: hold to arm, the Stream Deck's arm "
             "keys, a purge (momentary or timed), the Fireball page's "
@@ -181,7 +181,7 @@ REMOTE_ROUTES = {
     # press; Stop ends only the announcement's audio, so it only takes
     # something away and is never restricted.
     "announce-stop": "safety", "announce-play": "show",
-    "start-now": "show", "resume": "show", "reset": "show",
+    "start-now": "show", "resume": "show",
     # Run off (2026-10-30): Stop no longer turns Run off, so the
     # Programming Run card's Run off does (the Stop, then playback
     # stops). Run itself is a show press (/api/start), and so is this.
@@ -497,7 +497,7 @@ class Users:
         self.error = ""
         # () -> None, or {"night": the schedule's night, "ended": wall
         # clock seconds the last show of it ended}, only while that last
-        # show is over and nothing is live, held or aborted. Set by the
+        # show is over and nothing is live or held. Set by the
         # engine (remote.Remote.last_show_over). None: never.
         self.last_show = None
         self._last_show_done = None   # the night already signed out

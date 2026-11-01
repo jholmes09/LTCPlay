@@ -242,11 +242,6 @@ class ShowAudioPlayhead:
                 pass
         s = self._session()
         cond = self._conductor()
-        if cond is not None and getattr(cond, "latched", False):
-            # The show runner's own rule: nothing starts while an Abort
-            # stands.
-            raise PlayheadError("An Abort is standing, so nothing plays "
-                                "until someone presses Reset.")
         # Every refusal the show audio has (still loading, past the end,
         # before the first cue) before MadMapper's bank is touched.
         s.clock_play_from(show_s, check_only=True)

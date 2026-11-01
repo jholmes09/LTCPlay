@@ -105,13 +105,14 @@ LIVE_SHOW_REFUSED = ("/api/start", "/api/go", "/api/skip", "/api/release",
                      "/api/showdir", "/api/reinput", "/api/input",
                      "/api/trigger", "/api/autoreload", "/api/find")
 LIVE_SHOW_STATES = ("SHOW", "PAUSED")
-# After an Abort, until Reset (PR #43 fix round 2, E): the same routes are
-# refused, except Stop and a Blackout, which only make the rig darker. The
-# page used to bring the show's pixels back up while the Abort stood.
-LATCHED_ALLOWED = ("/api/stop",)
-LATCHED_REFUSAL = ("The show was aborted. Nothing on this page may bring "
-                   "the rig back up until someone presses Reset; Stop and "
-                   "Blackout still work.")
+# While a Stop's Hold stands, until Resume (it took over the removed
+# Abort latch's rule, PR #43 fix round 2, E; Jeff, 2026-10-30): the same
+# routes are refused, except Stop and a Blackout, which only make the rig
+# darker. The page used to bring the show's pixels back up after an Abort.
+STOP_HOLD_ALLOWED = ("/api/stop",)
+STOP_HOLD_REFUSAL = ("A Stop's Hold is standing. Nothing on this page may "
+                     "bring the rig back up until someone presses Resume; "
+                     "Stop and Blackout still work.")
 # A halt that ended a live show (the Stream Deck's Stop) waits at most this
 # long for the conductor's calls, and again for its fade, before playback
 # stops (review of #130, 5). The deck's post waits STOP_POST_TIMEOUT_S.
@@ -1374,15 +1375,6 @@ class Handler(BaseHTTPRequestHandler):
         if c is None:
             return 404, {"error": "no such thing here"}
         snap = c.snapshot()
-        # The scheduler's own Abort latch, saved in tonight's file, is the
-        # one that survives an engine restart (the conductor starts
-        # unlatched): latched while either is (review of PR #43, P1-5), so
-        # the Stream Deck shows the Abort latch after a restart too. A
-        # plain read, never the scheduler's lock: this route is polled.
-        m = getattr(getattr(self.server, "schedule", None), "machine", None)
-        sched_latched = bool(getattr(m, "abort_latched", False))
-        snap["scheduler_abort_latched"] = sched_latched
-        snap["latched"] = bool(snap.get("latched")) or sched_latched
         out = {"conductor": snap}
         fi = getattr(self.server, "fire_ice", None)
         fl = getattr(fi, "flame_link", None)
@@ -1594,16 +1586,14 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, logic,
                           "application/javascript; charset=utf-8")
 
-    def _abort_latched(self):
-        """True while an Abort stands (the scheduler's latch, or the show
-        conductor's), until Reset."""
+    def _stop_held(self):
+        """True while a Stop's Hold stands (Service.stop_held), until
+        Resume. Never raises."""
         svc = getattr(self.server, "schedule", None)
-        if svc is None:
+        try:
+            return bool(svc is not None and svc.stop_held())
+        except Exception:                           # noqa: BLE001
             return False
-        m = getattr(svc, "machine", None)
-        cond = getattr(svc, "conductor", None)
-        return bool(getattr(m, "abort_latched", False) or
-                    getattr(cond, "latched", False))
 
     def _scheduled_show_live(self):
         svc = getattr(self.server, "schedule", None)
@@ -1662,11 +1652,11 @@ class Handler(BaseHTTPRequestHandler):
         # just clears the slot; the next state() call rebuilds, lazily, once.
         c._state_cache = None
         body = self._body()
-        if route in LIVE_SHOW_REFUSED and route not in LATCHED_ALLOWED and \
+        if route in LIVE_SHOW_REFUSED and route not in STOP_HOLD_ALLOWED and \
                 not (route == "/api/override" and
                      (body or {}).get("look") == "blackout") and \
-                self._abort_latched():
-            return self._send(409, {"error": LATCHED_REFUSAL})
+                self._stop_held():
+            return self._send(409, {"error": STOP_HOLD_REFUSAL})
         if isinstance(body, dict) and "who" in body and \
                 route != "/api/schedule/operator":
             body = self._authed_body(route, body)
@@ -2337,7 +2327,6 @@ def _attach_hazers(httpd):
         remote.hazers = hazers_mod.Hazers(
             link_get=lambda: getattr(httpd.fire_ice, "flame_link", None),
             flames_get=lambda: fs.view() if fs is not None else None,
-            abort_standing=remote._abort_standing,
             show_state=remote.hazer_show_state,
             blocker=remote.hazer_blocker, folder=remote.folder,
             journal=_journal, audit=getattr(remote, "audit", None))
@@ -2371,7 +2360,6 @@ def _attach_pump(httpd):
         remote.pump = fuelpump_mod.FuelPump(
             link_get=lambda: getattr(httpd.fire_ice, "flame_link", None),
             flames_get=lambda: fs.view() if fs is not None else None,
-            abort_standing=remote._abort_standing,
             blocker=remote.pump_blocker,
             journal=_journal, audit=getattr(remote, "audit", None),
             night_state=remote.pump_night_state,

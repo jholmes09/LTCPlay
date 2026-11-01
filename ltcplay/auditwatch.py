@@ -27,14 +27,6 @@ def snapshot(remote):
             out["show state"] = str(st.get("state"))
         except Exception:                        # noqa: BLE001
             pass
-        try:
-            m = getattr(svc, "machine", None)
-            cond = getattr(svc, "conductor", None)
-            out["abort latch"] = ("latched" if (
-                getattr(m, "abort_latched", False) or
-                getattr(cond, "latched", False)) else "clear")
-        except Exception:                        # noqa: BLE001
-            pass
     try:
         cs = remote.control.state() or {}
         out["show file"] = (f"running {cs.get('timeline') or cs.get('show') or ''}"

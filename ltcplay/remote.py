@@ -24,41 +24,42 @@ Who may press what
 
 The controls
 ------------
-Start now, Hold, Resume and Abort are the scheduler's own operator events
+Start now, Hold and Resume are the scheduler's own operator events
 (schedule_service.Service.operator_press: the same schedule.step every
-press goes through, journaled with who and which screen, the Abort latch
-saved before the conductor is asked). Reset is Service.reset_conductor.
+press goes through, journaled with who and which screen). Stop is the
+engine's complete halt (Remote.halt). There is no Abort and no Reset (Jeff,
+2026-10-30): Stop does everything Abort did, and Resume ends a Hold.
 "Disarm all flame groups" is a PLAIN disarm (Jeff, 2026-10-23): every
 group's disarm handed to the Stream Deck process, exactly as a group's own
 Disarm is, so no fresh arm cycle is forced; only when that cannot be
 trusted to land (the deck not reading this engine, or flamesafe not
 confirming every group off within PLAIN_CONFIRM_S) does the show's own
-flames_disarm_all go (the flame link's disarm_all, the Abort's, which
-forces one). Journaled with the surface and which screen.
+flames_disarm_all go (the flame link's disarm_all, Stop's, which forces
+one). Journaled with the surface and which screen.
 
 ARMING (Jeff, 2026-10-03, its own PR): the page never arms anything. A
 hold to arm (arm-hold, repeated every 100 ms while the
 finger is down) is read by the Stream Deck process (deck-input) as a remote
 press of that group's key. The deck owns flamesafe's arm link and runs its
-own rules (the hold, the refractory window, the latched refusal) and
-flamesafe runs all of its own (consent, dwell, the post-Abort window, the
+own rules (the hold, the refractory window) and flamesafe runs all of its
+own (consent, dwell, the window after a disarm_all, the
 round-4 veto, the second-copy guard) exactly as for a finger on the deck.
 It needs a listed address (above), a page status and a
 flamesafe status no older than ARM_FRESH_S, heartbeats the engine actually
 received for SCREEN_HOLD_S, and screen_arming on in ltcplay_remote.json
 (OFF unless the file says true; the Programming screen on the show machine
 itself turns it on and off, route screen-arming). A gap in the heartbeats,
-an Abort, a disarm or a sign out lets the hold go; an interrupted hold
+a Stop, a disarm or a sign out lets the hold go; an interrupted hold
 never carries on.
 
 Every refusal is said on the page in a sentence that names the reason
 (2026-10-22, Jeff: "I'm supposed to be able to enable flames via the
 screen"; a hold that went nowhere used to look like a working one). The
 engine refuses, and says why, what the Stream Deck would refuse anyway:
-screen arming off, an Abort standing, the Stream Deck program not reading
+screen arming off, the Stream Deck program not reading
 this engine, this device in Arrange mode on the Morning page, every machine
 in the group locked out. What only the deck knows (its re-arm wait after a
-disarm, its own latch) it reports back on its next deck-input read
+disarm) it reports back on its next deck-input read
 (`refused`), and the hold's next heartbeat carries the sentence. None of
 this loosens anything: each one is a refusal of a press the deck or
 flamesafe would refuse anyway, said out loud.
@@ -66,10 +67,10 @@ flamesafe would refuse anyway, said out loud.
 
 Fresh state
 -----------
-Start now, Resume and Reset act on what the page
-shows, so they are refused when the page's last status is more than
-FRESH_S old (the page sends the `served_at` of the status it is showing).
-Hold, Abort and disarm are never refused for that: they only take risk
+Start now and Resume act on what the page shows, so they are refused
+when the page's last status is more than FRESH_S old (the page sends the
+`served_at` of the status it is showing). Stop, Hold and disarm are never
+refused for that: they only take risk
 away, and a press that reduces risk must never wait on a stale page.
 
 The network
@@ -126,7 +127,7 @@ FRESH_S = 2.0
 FLAME_STALE_S = 1.0
 
 # The routes this module answers, and nothing else. No "arm" among them.
-CONTROL_ROUTES = ("start-now", "hold", "resume", "reset",
+CONTROL_ROUTES = ("start-now", "hold", "resume",
                   "disarm-all", "stop", "run-off")
 # Stop from a screen (Jeff, 2026-10-28; review of #144, F7): the Stream
 # Deck's complete halt (Remote.halt). Since 2026-10-30 Stop leaves Run on
@@ -143,7 +144,7 @@ STOP_FADE_WAIT_S = 3.0
 # show machine or the Settings permission: programming_move_refusal.
 TRANSPORT_ROUTES = ("play-from", "jump", "pause", "continue", "mark-a",
                     "mark-b", "loop", "follow")
-FRESH_ROUTES = frozenset(("start-now", "resume", "reset")
+FRESH_ROUTES = frozenset(("start-now", "resume")
                          + TRANSPORT_ROUTES)
 JUMP_MAX_S = 600.0
 CONFIRM_ROUTES = frozenset(("start-now",))
@@ -321,8 +322,6 @@ DECK_REFUSALS = {
     "refractory": ("The Stream Deck refused it: {g} was disarmed less than "
                    "2 s ago, and it waits that long before it takes a new "
                    "arm. Lift your finger, wait a moment, then hold again."),
-    "latched": ("The Stream Deck refused it: an Abort is standing. Press "
-                "Reset, then hold again."),
     "operator": ("The Stream Deck refused it: no operator is chosen for it "
                  "(Programming, Stream Deck operator, on the show machine)."),
     "role": ("The Stream Deck refused it: the role matrix does not let the "
@@ -2794,23 +2793,21 @@ class Remote:
             return (f"The rig's state could not be read "
                     f"({type(e).__name__}).", [])
 
-    def _reset_health(self, r, who, screen):
-        """A Reset that went through says, in plain words, how every
-        subsystem stands (Jeff's field report, 2026-10-28), in its answer
-        and in the journal. A refused Reset is answered as before. Never
-        raises."""
+    def _resume_health(self, r, who, screen):
+        """A Resume that went through says, in plain words, how every
+        subsystem stands (Jeff's field report, 2026-10-28, for Reset; Reset
+        is removed, Jeff, 2026-10-30, and Resume is what carries on after a
+        Stop or a Hold now), in its answer and in the journal. A refused
+        Resume is answered as before. Never raises."""
         try:
             if not isinstance(r, dict) or not r.get("ok"):
                 return r
             text, items = self.rig_health()
             said = str(r.get("text") or "").strip()
-            if said.startswith("Reset."):
-                said = said[len("Reset."):].strip()
-            out = dict(r, text=" ".join(x for x in ("Reset done.", said,
-                                                    text) if x),
+            out = dict(r, text=" ".join(x for x in (said, text) if x),
                        health=items)
-            self._journal(who, screen, "reset", "rig state",
-                          f"After {who or 'someone'}'s Reset on the "
+            self._journal(who, screen, "resume", "rig state",
+                          f"After {who or 'someone'}'s Resume on the "
                           f"{screen}: {text}",
                           fault=any(i.get("ok") is False for i in items))
             return out
@@ -3403,20 +3400,11 @@ class Remote:
             # surface: the press names the surface, not a person on the
             # operator list (Jeff, 2026-10-07). Every other rule the
             # scheduler has for these presses still applies.
-            if name == "reset":
-                # From a Hold, Reset ends it (and a paused show) and clears
-                # the fault flag; starts nothing (Jeff, 2026-10-28). Else,
-                # and always while an Abort stands, the Abort's Reset.
-                fn = getattr(svc, "reset_hold", None)
-                r = fn(who, screen, surface=surface) if fn else None
-                if r is None:
-                    r = svc.reset_conductor(who, screen, pressed=pressed,
-                                            surface=surface)
-                r = self._reset_health(r, who, screen)
-            else:
-                r = svc.operator_press(name, who, screen,
-                                       confirmed=body.get("confirmed") is True,
-                                       surface=surface)
+            r = svc.operator_press(name, who, screen,
+                                   confirmed=body.get("confirmed") is True,
+                                   surface=surface)
+            if name == "resume":
+                r = self._resume_health(r, who, screen)
         except ValueError as e:
             return 400, {"error": str(e)}
         return (200 if r.get("ok") else 409), r
@@ -3645,25 +3633,12 @@ class Remote:
                 return i, n
         raise ValueError("That is not a flame group flamesafe reports.")
 
-    def _abort_standing(self):
-        """True while an Abort is latched (the scheduler's or the
-        conductor's latch, as show_live_refusal reads it). The Stream Deck
-        takes no screen hold then; the engine says so first."""
-        svc = self.schedule
-        m = getattr(svc, "machine", None)
-        cond = getattr(svc, "conductor", None)
-        return bool(getattr(m, "abort_latched", False) or
-                    getattr(cond, "latched", False))
-
     def arm_refusal(self, gname, device):
         """Why a screen hold on `gname` from `device` would arm nothing
         right now, in a sentence for the page, or "". Each is something
         the Stream Deck or flamesafe refuses anyway; the engine says it
         before a hold that cannot work fills its bar. Checked on the first
         press and on every heartbeat."""
-        if self._abort_standing():
-            return ("An Abort is standing, so nothing arms until it is "
-                    "Reset. Press Reset, then hold again.")
         why = self.live_flame_arm_refusal(gname)
         if why:
             return why
@@ -4262,7 +4237,7 @@ class Remote:
         m = getattr(svc, "machine", None)
         state = getattr(m, "state", None)
         if state in ("HOLD", "PAUSED"):
-            return "a Hold is standing; Resume or Reset first"
+            return "a Hold is standing; Resume first"
         s = getattr(self.control, "session", None)
         if s is not None and getattr(s, "running", False):
             return ("Run is pressed (a show file is running), so the show "
@@ -5308,18 +5283,13 @@ class Remote:
 
     def show_live_refusal(self):
         """Why nothing may fire from the Morning page right now: a show
-        live (SHOW or PAUSED), an Abort standing, or the show clock playing
-        a cue. "" when a purge may go (between shows, nothing playing)."""
+        live (SHOW or PAUSED), or the show clock playing a cue. "" when a purge may go (between shows, nothing playing)."""
         svc = self.schedule
         m = getattr(svc, "machine", None)
         state = getattr(m, "state", None)
         if state in ("SHOW", "PAUSED"):
             return (f"a scheduled show is live ({state}); nothing fires from "
                     f"this page until it has ended")
-        cond = getattr(svc, "conductor", None)
-        if getattr(m, "abort_latched", False) or \
-                getattr(cond, "latched", False):
-            return "the show is aborted; press Reset first"
         s = getattr(self.control, "session", None)
         clk = getattr(s, "clock", None) if s is not None else None
         if clk is not None and getattr(clk, "playing", False):
@@ -5591,7 +5561,7 @@ class Remote:
             svc = self.schedule
             state = getattr(getattr(svc, "machine", None), "state", None)
             if state == "HOLD":
-                return ("a Hold is standing; Resume or Reset first, then "
+                return ("a Hold is standing; Resume first, then "
                         "start it again.")
             if getattr(svc, "halting", lambda: False)() is True:
                 return "Stop is under way."
@@ -5802,8 +5772,8 @@ class Remote:
         gets its sign-out after the reset (remembered here).
 
         None with no schedule, while a show is live, paused or on Hold,
-        while a show is still to come or waiting after a Hold, while an
-        Abort stands, while the show clock plays, and while anything is
+        while a show is still to come or waiting after a Hold, while the
+        show clock plays, and while anything is
         going on at the rig (rig_busy with armed: a hold to arm, a purge,
         a laser test, an armed laser or flame group): it waits until that
         is clear (P2-5). Plain reads, never a lock."""
@@ -5842,8 +5812,8 @@ class Remote:
 
     def laser_arm_blockers(self):
         """Why no laser may be armed (nor BEYOND's laser output switched
-        on) right now, or "": the Abort latch until Reset, a Hold until
-        Resume, the night closing, and no schedule at all (the show state
+        on) right now, or "": a Hold (a Stop's too) until Resume, the
+        night closing, and no schedule at all (the show state
         unknown). Plain reads, never a lock: the laser gate asks this."""
         svc = self.schedule
         m = getattr(svc, "machine", None)
@@ -5851,9 +5821,6 @@ class Remote:
             return ("the show state is not known (no schedule is loaded), "
                     "so no laser may be armed")
         cond = getattr(svc, "conductor", None)
-        if getattr(m, "abort_latched", False) or \
-                getattr(cond, "latched", False):
-            return "the show is aborted; press Reset first, then arm"
         state = getattr(m, "state", None)
         if state in ("PAUSED", "HOLD") or \
                 getattr(cond, "_look", None) in ("HELD", "DARK"):
@@ -8083,7 +8050,6 @@ class Remote:
                     "error": st.get("error"), "state": state,
                     "running": st.get("running"),
                     "held": state in ("HOLD", "PAUSED"),
-                    "aborted": bool(cv.get("aborted")),
                     "conductor": cv.get("attached", False),
                     "lit": cv.get("lit") is True,
                     "stop_held": cv.get("stop_held") is True,
