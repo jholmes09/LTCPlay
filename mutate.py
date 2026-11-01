@@ -21507,7 +21507,7 @@ def build():
 
  ("fireball charge: frames with no fireball group still stamp a charge on the wire (round 10d)",
   "ltcplay/fireball_charge.py",
-  "                    and not self._no_group:",
+  "                    and not (self._no_group and self.armed_now() == \"off\"):",
   "                    :"),
 
  ("fireball charge: flamesafe.json with a group and the running one without says nothing (round 10d)",
@@ -21519,6 +21519,26 @@ def build():
   "ltcplay/remote.py",
   "                           \"safety_slots\": _ints(g.get(\"safety_slots\")),",
   "                           \"safety_slots\": None,"),
+
+ ("remote: a passthrough entry with bad slots reads as none (round 10e)",
+  "ltcplay/remote.py",
+  "                     \"slots\": _ints(p.get(\"slots\")),\n                     \"asked\"",
+  "                     \"slots\": _ints(p.get(\"slots\")) or [],\n                     \"asked\""),
+
+ ("remote: a passthrough entry that is not one is dropped (round 10e)",
+  "ltcplay/remote.py",
+  "                       if not isinstance(p, dict)]",
+  "                       if False]"),
+
+ ("fireball charge: a late status clears the no-group note (round 10e)",
+  "ltcplay/fireball_charge.py",
+  "        if not self._no_group and self._armed == \"unknown\":",
+  "        if False:"),
+
+ ("fireball charge: the wire stamp is skipped on a stale no-group reading (round 10e)",
+  "ltcplay/fireball_charge.py",
+  "                    and not (self._no_group and self.armed_now() == \"off\"):",
+  "                    and not self._no_group:"),
 
  ("fireball charge: a start reads only this machine's marker names (round 9)",
   "ltcplay/fireball_charge.py",
