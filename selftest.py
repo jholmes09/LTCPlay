@@ -10521,7 +10521,10 @@ def test_schedule_late_limit_round_two():
                              (118, "close to its limit", "118 s late"),
                              (120, "close to its limit", "exactly 120 s"),
                              (115, "starts at the next tick", "115 s late"),
-                             (121, "Next on the schedule is show 1", "121 s")):
+                             # Past it: the show waits for Start now,
+                             # never named as next (final review of #199).
+                             (121, "The delayed show 1 still waits for "
+                                   "Start now", "121 s")):
         n = _Night(S, rule)
         n.boot(_den(S, 17, 50))
         n.op(S.HOLD_ON, _den(S, 17, 59))
@@ -10592,6 +10595,64 @@ def test_schedule_late_limit_round_two():
                   s1.status in (S2.FAULT, S2.MISSED),
                   f"+{off} s with Run off: refused in words, not started: "
                   f"{s1.status} {[(r['outcome'], r['text']) for r in tried]}")
+    print("  ok")
+
+
+def test_schedule_resume_after_the_late_limit_delays_the_show():
+    section("scheduler (final review of #199): a Resume that lands after a "
+            "show's late limit passed during the Hold, before any Hold tick "
+            "marked it, leaves it DELAYED (waiting for Start now), never "
+            "MISSED a tick later, and its line does not name a past show "
+            "as next; a Resume of a Stop's Hold inside the limit starts "
+            "the due show at the next tick")
+    S = _sched()
+    if S is None:
+        return
+    from datetime import timedelta
+    rule = _one_night_rule(S, grace=120)
+
+    def stopped():
+        # Show 1 runs at 18:00 and is stopped at 18:05: a Stop's Hold,
+        # show 2 due at 18:20.
+        n = _Night(S, rule)
+        n.boot(_den(S, 17, 50))
+        n.tick(_den(S, 18, 0))
+        n.op(S.STOP_SHOW, _den(S, 18, 5), confirmed=True)
+        return n
+
+    def plain():
+        # A plain Hold at 17:59, show 1 due at 18:00.
+        n = _Night(S, rule)
+        n.boot(_den(S, 17, 50))
+        n.op(S.HOLD_ON, _den(S, 17, 59))
+        return n
+    for name, make, show, late_at in (
+            ("a plain Hold", plain, 1, _den(S, 18, 2, 1)),
+            ("a Stop's Hold", stopped, 2, _den(S, 18, 22, 1))):
+        n = make()
+        held = n.m.state == S.HOLD and \
+            n.m.stop_hold == (make is stopped)
+        o = n.op(S.RESUME, late_at)
+        txt = " ".join(le.text for le in o.log)
+        at_resume = n.m.slot(show).status
+        n.tick(late_at + timedelta(seconds=0.25))
+        check(held and at_resume == S.DELAYED and
+              n.m.slot(show).status == S.DELAYED and
+              f"The delayed show {show} still waits for Start now" in txt and
+              f"Next on the schedule is show {show} " not in txt,
+              f"{name}, Resume 121 s late: show {show} waits: {held} "
+              f"{at_resume} {n.m.slot(show).status} "
+              f"{n.m.slot(show).reason!r} {txt!r}")
+        n.audit(name)
+    # A Stop's Hold ended inside the limit: the due show starts.
+    n = stopped()
+    n.op(S.RESUME, _den(S, 18, 21))
+    o = n.tick(_den(S, 18, 21, 0, 250000))
+    check(_fired(o, S) == [2] and n.m.state == S.SHOW and
+          n.m.slot(2).status == S.RUNNING,
+          f"Resume of a Stop's Hold 60 s late starts show 2: "
+          f"{_fired(o, S)} {n.m.state} {n.m.slot(2).status}")
+    n.audit("a Stop's Hold, Resume inside the limit")
     print("  ok")
 
 
@@ -110108,6 +110169,7 @@ if __name__ == "__main__":
         test_schedule_late_rule,
         test_schedule_late_limit_is_two_minutes,
         test_schedule_late_limit_round_two,
+        test_schedule_resume_after_the_late_limit_delays_the_show,
         test_schedule_legacy_late_grace_is_migrated,
         test_schedule_handover_waits_for_the_grace_and_starts_nothing,
         test_schedule_state_machine_every_state_every_event,
