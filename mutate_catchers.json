@@ -569,6 +569,7 @@
 "conductor: Stop's laser blank waits for the executor, so the video fades first (review of PR #29, finding D)": "test_conductor_stop_cuts_flames_at_once_and_fades_the_rest",
 "conductor: a 100 already on its way out is not followed by a 0 (finding D)": "test_beyond_a_blank_cuts_an_unblank_short_from_any_thread",
 "conductor: a BEYOND command that never got out is reported as sent": "test_conductor_devices_failures_missing_links_and_speed",
+"conductor: a Hold after a Stop turns it into a pause a Resume brings back (round 2)": "test_a_hold_after_a_stop_never_turns_it_into_a_pause",
 "conductor: a Hold fades the music before the lasers go dark": "test_conductor_resume_before_the_hold_fade_finishes",
 "conductor: a Hold never zeroes the flame cues": "test_conductor_resume_before_the_hold_fade_finishes",
 "conductor: a Resume never lights the lasers through the real device layer": "test_conductor_devices_stop_blanks_at_once_never_ramps",

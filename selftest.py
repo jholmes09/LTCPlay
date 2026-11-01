@@ -61138,6 +61138,124 @@ def test_a_stop_after_music_started_under_a_fading_stop_fades_afresh():
     print("  ok")
 
 
+def test_a_hold_after_a_stop_never_turns_it_into_a_pause():
+    section("conductor (simulation review B round 2 of #199): a Hold that "
+            "lands just after a Stop (a programming Pause, here straight "
+            "after the press) does not take the Stop's place: the music "
+            "ends halted, never held, the look stays STOPPED_DARK, and a "
+            "Resume after it brings no music, video or pixels back")
+    import types
+    from ltcplay.playhead import ShowAudioPlayhead
+    n = _fi_night()
+    if n.S is None:
+        return
+    c = n.c
+    try:
+        n.svc.tick()
+        c.run_pending()
+        n.now[0] = _den(n.S, 18, 0)
+        r = n.w.runner.start_show(1, who="the scheduler", stops=c.stops)
+        c.run_pending()
+        c.show_starting("the scheduler", "engine", stops=c.stops)
+        c.run_pending()
+        del n.calls[:]
+        c.stop("Andy", "Rack screen")
+        # The programming Pause (playhead.py), its sequence still pending.
+        sess = types.SimpleNamespace(running=True, clock_here=lambda: 12.0,
+                                     clock_pause=lambda: None)
+        ph = ShowAudioPlayhead(types.SimpleNamespace(session=sess),
+                               types.SimpleNamespace(conductor=c))
+        ph.pause("Andy", "Programming")
+        h = c.hold("Andy", "Programming")
+        for _ in range(3):
+            c.run_pending()
+        look = c.snapshot()["look"]
+        k = len(n.calls)
+        rs = c.resume("Andy", "Programming")
+        for _ in range(3):
+            c.run_pending()
+        sent = [kk for kk, _a, _t in n.calls]
+        after = [kk for kk in sent[k:] if kk.startswith("music") or
+                 kk in ("pixels", "flames_release", "mm_call")]
+        music = [kk for kk in sent if kk.startswith("music")]
+        check(r.ok and h.ok and look == "STOPPED_DARK" and
+              "music_hold" not in music and music[-1:] == ["music_halt"] and
+              not rs.ok and after == [] and
+              c.snapshot()["look"] == "STOPPED_DARK" and
+              c.snapshot()["applied"]["music"] == "stopped",
+              f"the Stop stands under a Hold and a Resume: {look} {music} "
+              f"{h.sentence[:60]} {rs.ok} {after} {c.snapshot()['applied']}")
+    finally:
+        c.close()
+        n.link.close()
+    print("  ok")
+
+
+def test_a_hold_in_the_line_behind_a_stop_never_turns_it_into_a_pause():
+    section("schedule service (simulation review B round 2 of #199): an "
+            "operator's Hold already decided in the scheduler's line when "
+            "a Stop lands is made after it, and does not take its place: "
+            "the music ends halted, the look stays STOPPED_DARK, and the "
+            "Resume that ends the Stop's Hold brings nothing back")
+    import datetime as _dt
+    n = _fi_night()
+    if n.S is None:
+        return
+    S, svc, c = n.S, n.svc, n.c
+    try:
+        svc.tick()
+        c.run_pending()
+        n.now[0] = _den(S, 18, 0)
+        svc.tick()
+        svc.flush_conductor(5)
+        c.run_pending()
+        n.sess.player.first_frame()
+        for _ in range(5):
+            n.now[0] = n.now[0] + _dt.timedelta(seconds=1)
+            try:
+                n.w.runner.poll()
+            except Exception:
+                pass
+            svc.tick()
+            svc.flush_conductor(5)
+            c.run_pending()
+        running = svc.machine.state
+        ev = S.Event(S.HOLD_ON, "operator", who="Bob", screen="Booth")
+        calls = svc._decide_conductor([("Hold", "hold", frozenset())], ev)
+        del n.calls[:]
+        # Remote.halt: its own Stop, then the scheduler's.
+        svc.halt_begin()
+        c.stop("Andy", "Rack screen")
+        svc.halt_schedule("Andy", "Rack screen")
+        svc.flush_conductor(5)
+        svc.halt_end()
+        svc._run_conductor_call(calls[0])          # the Hold, in flight
+        for _ in range(3):
+            c.run_pending()
+        look = c.snapshot()["look"]
+        k = len(n.calls)
+        rr = svc.operator_press("resume", "Andy", "Rack screen",
+                                confirmed=True)
+        svc.flush_conductor(5)
+        for _ in range(3):
+            c.run_pending()
+        sent = [kk for kk, _a, _t in n.calls]
+        after = [kk for kk in sent[k:] if kk.startswith("music") or
+                 kk in ("pixels", "flames_release", "mm_call")]
+        music = [kk for kk in sent if kk.startswith("music")]
+        check(running == "SHOW" and look == "STOPPED_DARK" and
+              "music_hold" not in music and music[-1:] == ["music_halt"] and
+              rr.get("ok") and after == [] and
+              c.snapshot()["look"] == "STOPPED_DARK" and
+              c.snapshot()["applied"]["music"] == "stopped",
+              f"the Stop stands under the line's Hold: {running} {look} "
+              f"{music} {after} {c.snapshot()['applied']}")
+    finally:
+        c.close()
+        n.link.close()
+    print("  ok")
+
+
 def test_resume_clears_faults_only_after_a_stops_hold():
     section("Resume (cold review A of #199, F3): ending a Stop's Hold "
             "clears the fault flag, as Reset did after an Abort; a plain "
@@ -109662,6 +109780,8 @@ if __name__ == "__main__":
         test_fire_ice_stop_while_the_cue_starts,
         test_fire_ice_a_start_decided_before_a_stop_is_refused,
         test_a_stop_after_music_started_under_a_fading_stop_fades_afresh,
+        test_a_hold_after_a_stop_never_turns_it_into_a_pause,
+        test_a_hold_in_the_line_behind_a_stop_never_turns_it_into_a_pause,
         test_resume_clears_faults_only_after_a_stops_hold,
         test_resume_lets_go_of_a_set_aside_night,
         test_a_stops_hold_survives_its_file_failing,
