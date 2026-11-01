@@ -4045,6 +4045,9 @@ async function pressStop(msgId, route){
   const el = $(msgId);
   if(HALT_BUSY) return;
   HALT_BUSY = true;
+  // A Stop lets go of this page's own arm hold first, as the removed
+  // Abort's tap did (the engine cancels every hold at the Stop too).
+  try{ armStop("Stop"); }catch(e){}
   el.textContent = "Stopping: disarming, then fading to dark...";
   try{ drawStart(false); }catch(e){}
   let r = null, j = {};

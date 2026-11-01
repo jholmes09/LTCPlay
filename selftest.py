@@ -54833,7 +54833,7 @@ def _remote_page_logic_in_node():
                  "if(document.hidden) armStop(",
                  "window.addEventListener(\"pagehide\", () => armStop(",
                  "\"pointerup\", \"pointercancel\", \"pointerleave\"",
-                 "armStop(\"Abort\");"):
+                 "try{ armStop(\"Stop\"); }catch(e){}"):
         check(need in page, f"the page wires {need!r}")
     node = shutil.which("node")
     if not node:
@@ -54854,14 +54854,14 @@ t(!isStale(10000, 8000, 2), "2 s old is still fresh");
 t(isStale(10000, 7900, 2), "2.1 s old is stale");
 const st = {schedule:{attached:true}, transport:{programming:true}};
 let c = controlStates(st, true);
-t(c.abort && c.hold && c.disarm, "stale: Abort, Hold, disarm stay on");
+t(c.hold && c.disarm && !("abort" in c), "stale: Hold and disarm stay on (no Abort)");
 t(!c.startNow && !c.resume && !c.reset && !c.transport,
   "stale: everything acting on shown state is off");
 c = controlStates(st, false);
 t(c.startNow && c.resume && c.reset && c.transport,
   "fresh: all on");
 c = controlStates(null, false);
-t(!c.startNow && !c.transport && c.abort, "no status yet: only the safe ones");
+t(!c.startNow && !c.transport && c.hold, "no status yet: only the safe ones");
 c = controlStates({schedule:{attached:true}, transport:{programming:false}}, false);
 t(!c.transport, "no programming session: transport off");
 t(lampClass({armed:"armed"}, {connected:true, stale:true}) === "unknown",

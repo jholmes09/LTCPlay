@@ -22785,6 +22785,10 @@ def build():
   '                    (getattr(m, "lasers", None), "all_off", ("Stop held",))):',
   '                    (getattr(m, "lasers", None), "all_on", ("Stop held",))):'),
 
+ ("rack screen: a Stop no longer lets go of the page's own arm hold (the removed Abort's tap did)", 'ltcplay/web/remote.html',
+  '  try{ armStop("Stop"); }catch(e){}\n',
+  ""),
+
 ]
 
 

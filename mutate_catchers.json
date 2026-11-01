@@ -2413,6 +2413,7 @@
 "rack screen: Enter on a group's Disarm does nothing": "test_rack_screen_one_button_per_flame_group",
 "rack screen: Show all never opens the banners": "test_rack_screen_banners_never_squeeze_the_flame_controls",
 "rack screen: a Disarm button is held back by a stale page": "test_schedule_conductor_calls_after_the_save_and_off_the_lock",
+"rack screen: a Stop no longer lets go of the page's own arm hold (the removed Abort's tap did)": "test_remote_stale_state_refused_and_banner",
 "rack screen: a Stop that did not do all of it is only a toast": "test_rack_screen_has_no_abort_and_stop_taps_like_it_did",
 "rack screen: a Stop whose flame disarm failed is no banner": "test_rack_screen_has_no_abort_and_stop_taps_like_it_did",
 "rack screen: a fast double tap on Stop waits for a third": "test_rack_screen_has_no_abort_and_stop_taps_like_it_did",
