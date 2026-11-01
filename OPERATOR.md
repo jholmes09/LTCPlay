@@ -1260,6 +1260,35 @@ for the record as a whole a mark, PENDING.
   sentence, for example "Fuel: charged 14:32. Air: charged 14:35. No shot
   fired." There is no pressure reading: it is never invented.
 
+## The late limit: 2 minutes
+
+(Jeff, 2026-11-01.) A show is MISSED only if it is more than 2 minutes
+(120 seconds) late. Within 2 minutes it still starts, late, and the
+journal says so ("Show 3 started on schedule at 18:40, 119 s after its
+time."). One second more and it is MISSED, as "MISSED (late by 2m 1s)".
+It was 15 seconds before.
+
+- The setting is still `late_grace_s` in the schedule file and on the
+  Programming screen ("Late start allowed, seconds"). A file that does not
+  give it now means 120. The most it can be is 300 (5 minutes); a bigger
+  number is refused in words, never quietly cut down. A file that says 15
+  or 0 keeps that value.
+- Everything that waits on a show's time uses the same number: a restart
+  (a show that came due while the program was down starts if it is no more
+  than the limit late, once, and is MISSED beyond it), the saved-schedule
+  rules, the warning for two nights that run into each other ("starts late
+  by ..., within its 120 s grace" or "will be MISSED (late by ..., more
+  than its 120 s grace)"), and the hand over at night's end.
+- It never overrides anything that says wait. A Hold, a Stop's Hold, an
+  Abort, Run not pressed, the guard after the previous show, a show that
+  is running and a Stop under way all still hold a show back, however
+  close to its time. Pressing Resume within the limit starts the show,
+  late; after it the show waits for Start now, as before. A show that is
+  held back past the limit is DELAYED, not MISSED, as before.
+- The 120 second guard between shows is unchanged: a show that would start
+  more than 2 minutes late, because the previous show's guard has not run
+  out, is not started by itself.
+
 ## Schedule times: any time of day, past midnight
 
 Jeff, 2026-10-30: "I tried to schedule a show between Midnight and 2 AM
@@ -1279,8 +1308,8 @@ but it wouldn't allow it. Don't restrict the schedule in any way."
   (and the journal) says what to know, starting "Warnings, saved
   anyway:". An exception outside the season is used: its date runs its
   own hours. Only a time that is not a time (25:00), a time zone this PC
-  does not know, a misspelled setting and a late grace over 15 seconds
-  are still refused. A show length, guard or gap between shows over 24
+  does not know, a misspelled setting and a late grace over 300 seconds
+  (5 minutes) are still refused. A show length, guard or gap between shows over 24
   hours, and a season before 1971 or after 9998, are used as 24 hours and
   as those dates, and said. A weekday written twice is said; the later
   one is used.

@@ -9944,12 +9944,16 @@ def test_schedule_rule_is_validated():
           f"the example rule read back wrong: {r}")
     d = _sched_doc()
     del d["late_grace_s"]
-    check(S.parse_rule(d).late_grace_s == 0,
-          "late_grace_s must default to 0 when the file leaves it out")
+    check(S.parse_rule(d).late_grace_s == 120 == S.DEFAULT_LATE_GRACE_S,
+          "late_grace_s must default to 120 (2 minutes) when the file "
+          "leaves it out")
     check(S.parse_rule(S.rule_to_doc(r)) == r,
           "a rule written back out must read back as the same rule")
     check(S.parse_rule(_sched_doc(late_grace_s=15)).late_grace_s == 15,
-          "late_grace_s 15 is the cap and must be allowed")
+          "a smaller late_grace_s is still a setting")
+    check(S.MAX_LATE_GRACE_S == 300 and
+          S.parse_rule(_sched_doc(late_grace_s=300)).late_grace_s == 300,
+          "late_grace_s 300 is the cap and must be allowed")
 
     def night(**kw):
         n = {"first_start": "17:30", "interval_min": 20, "last_end": "21:30"}
@@ -9967,10 +9971,10 @@ def test_schedule_rule_is_validated():
         ("a misspelled season key", _sched_doc(
             season={"first_date": "2026-11-14", "last_date": "2027-01-02",
                     "opening": "x"}), ("'opening'",)),
-        ("a grace over the cap", _sched_doc(late_grace_s=16),
-         ("16", "15", "Start now")),
-        ("a grace far over the cap", _sched_doc(late_grace_s=300),
-         ("300", "15")),
+        ("a grace over the cap", _sched_doc(late_grace_s=301),
+         ("301", "300", "Start now")),
+        ("a grace far over the cap", _sched_doc(late_grace_s=3000),
+         ("3000", "300")),
         ("a negative grace", _sched_doc(late_grace_s=-1), ("less than 0",)),
         ("a grace of true", _sched_doc(late_grace_s=True), ("whole number",)),
         ("a grace of 2.5", _sched_doc(late_grace_s=2.5), ("whole number",)),
@@ -10035,7 +10039,7 @@ def test_schedule_rule_is_validated():
           "an exception outside the season runs its own hours")
     # Every problem at once, not one per save.
     try:
-        S.parse_rule(_sched_doc(late_grace_s=99, guard_s=-5, bogus=1))
+        S.parse_rule(_sched_doc(late_grace_s=999, guard_s=-5, bogus=1))
         check(False, "three problems at once were accepted")
     except S.RuleError as e:
         check(len(e.problems) >= 3, f"all three problems must be named: {e}")
@@ -10239,7 +10243,7 @@ def test_schedule_late_rule():
     if S is None:
         return
     from datetime import timedelta
-    for grace in (0, 15):
+    for grace in (0, 15, 120):
         rule = _one_night_rule(S, grace=grace)
         start = _den(S, 18, 0)
         waiting = _Night(S, rule)
@@ -10301,6 +10305,165 @@ def test_schedule_late_rule():
               f"grace 0 at {us_off} microseconds should be {ok}")
     check(S.fmt_span(252) == "4m 12s" and S.fmt_span(7) == "7s"
           and S.fmt_span(3605) == "1h 0m 5s", "fmt_span formats wrong")
+    print("  ok")
+
+
+def test_schedule_late_limit_is_two_minutes():
+    section("scheduler (Jeff, 2026-11-01): a show is MISSED only when it is "
+            "more than 2 minutes (120 s) late; at 119 and 120 s it starts, "
+            "at 121 s it is missed, in a dry run and with a conductor, and "
+            "after a restart; a Hold, a Stop's Hold and the guard still win")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import timedelta
+    from ltcplay import schedule_service as SV
+
+    def rule(**kw):
+        d = _sched_doc(weekly={"sat": {"first_start": "18:00",
+                                       "interval_min": 20,
+                                       "last_end": "22:00"}},
+                       exceptions={}, **kw)
+        d.pop("late_grace_s", None)
+        return d
+    check(S.parse_rule(rule()).late_grace_s == 120,
+          "the late limit is 120 s when the file does not say")
+    T0 = _den(S, 18, 0)
+
+    def mk(cond, **kw):
+        work = tempfile.mkdtemp()
+        now = [T0 - timedelta(minutes=5)]
+        rec = _RecCond(S) if cond else None
+        svc = _svc(S, work, now, rule=rule(**kw), conductor=rec)
+        svc.start(thread=False)
+        svc.tick()
+        _settle(svc)
+        return svc, now, rec, work
+
+    def started(svc):
+        return [r["show"] for r in svc.journal
+                if r["action"] in ("START_SHOW", "fire", "fired") and
+                r["outcome"] in ("not performed", "fired")] or \
+            ([1] if svc.machine.slot(1).status in (S.RUNNING, S.DONE)
+             else [])
+
+    for cond in (False, True):
+        for late, ok in ((119, True), (120, True), (121, False)):
+            svc, now, rec, work = mk(cond)
+            now[0] = T0 + timedelta(seconds=late)
+            svc.tick()
+            _settle(svc)
+            s1 = svc.machine.slot(1)
+            if ok:
+                check(s1.status in (S.RUNNING, S.DONE) and
+                      svc.machine.running == 1,
+                      f"conductor {cond}: {late} s late still starts: "
+                      f"{s1.status} {s1.reason!r}")
+                check(any(f"{late} s after its time" in r["text"]
+                          for r in svc.journal),
+                      f"conductor {cond}: the journal says {late} s after "
+                      f"its time")
+            else:
+                check(s1.status == S.MISSED and
+                      s1.reason == f"MISSED (late by {S.fmt_span(late)})" and
+                      svc.machine.running != 1,
+                      f"conductor {cond}: {late} s late is missed: "
+                      f"{s1.status} {s1.reason!r}")
+            svc.stop()
+
+    # The restart rescue: a restart at +119 / +120 starts the show once, at
+    # +121 it is missed.
+    for late, ok in ((119, True), (120, True), (121, False)):
+        svc, now, rec, work = mk(False)
+        svc.stop()
+        now[0] = T0 + timedelta(seconds=late)
+        b = _svc(S, work, now)
+        b.start(thread=False)
+        _settle(b)
+        b.tick()
+        s1 = b.machine.slot(1)
+        check((s1.status in (S.RUNNING, S.DONE)) == ok and
+              (ok or s1.status == S.MISSED),
+              f"restart at +{late} s: show 1 is {s1.status}")
+        b.stop()
+
+    # A start 119 s late still respects a Hold and a Stop's Hold: nothing
+    # starts, the show waits as DELAYED for Start now.
+    for how in ("hold", "stop"):
+        svc, now, rec, work = mk(True)
+        now[0] = T0 - timedelta(seconds=30)
+        svc.tick()
+        if how == "hold":
+            svc._apply(_op(S, S.HOLD_ON))
+        else:
+            svc.halt_schedule("Andy", "rack screen")
+        _settle(svc)
+        now[0] = T0 + timedelta(seconds=119)
+        svc.tick()
+        _settle(svc)
+        s1 = svc.machine.slot(1)
+        check(s1.status in (S.PENDING, S.DELAYED) and
+              svc.machine.running != 1 and svc.machine.state == S.HOLD,
+              f"{how}: 119 s late on a Hold, nothing starts: "
+              f"{s1.status} {svc.machine.state}")
+        now[0] = T0 + timedelta(seconds=121)
+        svc.tick()
+        _settle(svc)
+        check(svc.machine.slot(1).status == S.DELAYED and
+              svc.machine.running != 1,
+              f"{how}: 121 s late on a Hold, the show waits for Start now: "
+              f"{svc.machine.slot(1).status}")
+        svc.stop()
+        # Resume inside the limit starts it (late); past it never does.
+        for res, ok in ((119, True), (121, False)):
+            svc, now, rec, work = mk(True)
+            now[0] = T0 - timedelta(seconds=30)
+            svc.tick()
+            if how == "hold":
+                svc._apply(_op(S, S.HOLD_ON))
+            else:
+                svc.halt_schedule("Andy", "rack screen")
+            _settle(svc)
+            now[0] = T0 + timedelta(seconds=res)
+            svc.tick()
+            svc.operator_press("resume", "Andy", "Rack screen")
+            _settle(svc)
+            svc.tick()
+            _settle(svc)
+            got = svc.machine.running == 1
+            check(got == ok and (ok or svc.machine.slot(1).status in
+                                 (S.DELAYED, S.MISSED)),
+                  f"{how}: Resume at +{res} s: started={got} "
+                  f"{svc.machine.slot(1).status}")
+            svc.stop()
+
+    # The guard: show 2 (18:20) after a Start now show. The extra show at
+    # 18:12:00 ends 18:19:20 and its guard 18:21:20: show 2 starts 80 s late.
+    # The extra show at 18:14:00 ends 18:21:20, its guard 18:23:20: show 2
+    # would start 200 s late, so it is not started (DELAYED behind the extra
+    # show, waiting for Start now), as before.
+    for extra_at, ok in ((_den(S, 18, 12), True), (_den(S, 18, 14), False)):
+        work = tempfile.mkdtemp()
+        now = [T0 - timedelta(minutes=2)]
+        svc = _svc(S, work, now, rule=rule())
+        svc.dry_run = True
+        svc.start(thread=False)
+        t = now[0]
+        pressed = False
+        while t < _den(S, 18, 26):
+            t += timedelta(seconds=5)
+            now[0] = t
+            if not pressed and t >= extra_at:
+                svc.operator_press("start-now", "Andy", "Rack screen")
+                pressed = True
+            svc.tick()
+        s2 = svc.machine.slot(2)
+        check((s2.status in (S.RUNNING, S.DONE)) == ok and
+              (ok or s2.status in (S.DELAYED, S.MISSED)),
+              f"extra show at {extra_at:%H:%M}: show 2 is {s2.status} "
+              f"{s2.reason!r}")
+        svc.stop()
     print("  ok")
 
 
@@ -11225,10 +11388,10 @@ def test_schedule_file_is_versioned_and_atomic():
         return [f for f in os.listdir(work) if f.endswith(".new")]
 
     try:
-        SV.save_rule(path, _sched_doc(late_grace_s=99))
+        SV.save_rule(path, _sched_doc(late_grace_s=999))
         check(False, "an invalid rule was saved")
     except ValueError as e:
-        check("15" in str(e), f"an invalid save says why: {e}")
+        check("300" in str(e), f"an invalid save says why: {e}")
     check((open(path, "rb").read(), open(prev, "rb").read()) == snap
           and not leftovers(), "an invalid save touches nothing")
 
@@ -11528,11 +11691,11 @@ def test_schedule_routes():
         svc.stop()
 
     # A bad rule file does not take the server down; the page says why.
-    open(path, "w", encoding="utf-8").write(json.dumps(_sched_doc(late_grace_s=60)))
+    open(path, "w", encoding="utf-8").write(json.dumps(_sched_doc(late_grace_s=999)))
     bad = SV.Service(path, clock=lambda: now[0], ntp_query=lambda: 0.0,
                      state_dir=work)
     code, rv = bad.get("/api/schedule")
-    check(code == 200 and not rv["ok"] and "15" in rv["error"],
+    check(code == 200 and not rv["ok"] and "300" in rv["error"],
           f"a bad rule file is reported, not fatal: {rv}")
     code, sv = bad.get("/api/schedule/state")
     check(code == 200 and not sv["ok"] and sv["error"],
@@ -110384,6 +110547,7 @@ if __name__ == "__main__":
         test_schedule_rule_is_validated,
         test_schedule_expands_the_season,
         test_schedule_late_rule,
+        test_schedule_late_limit_is_two_minutes,
         test_schedule_state_machine_every_state_every_event,
         test_abort_and_hold_never_refused_for_who_or_where,
         test_schedule_restart_guard_and_hold,

@@ -7431,7 +7431,7 @@ class Remote:
                            "sat": {"first_start": "17:00",
                                    "interval_min": 20, "last_end": "22:00"}},
                 "exceptions": {}, "show_len_s": 440, "guard_s": 120,
-                "late_grace_s": 15}
+                "late_grace_s": 120}
 
     def save_schedule_file(self, body):
         """POST schedule-file {"doc": {...}}: checked by the scheduler's

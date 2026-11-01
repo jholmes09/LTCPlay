@@ -1367,7 +1367,7 @@ button.fb-pad.na{opacity:.45}
       <div class="three" style="margin-top:8px">
         <div><label for="se-len">Show length, seconds</label><input id="se-len" type="number" min="1"></div>
         <div><label for="se-guard">Gap before a show, seconds</label><input id="se-guard" type="number" min="0"></div>
-        <div><label for="se-grace">Late start allowed, seconds</label><input id="se-grace" type="number" min="0"></div>
+        <div><label for="se-grace">Late start allowed, seconds</label><input id="se-grace" type="number" min="0" max="300" title="A show more than this many seconds late is missed. Default 120, most 300."></div>
       </div>
       <div class="row" style="margin-top:10px"><button id="se-save" class="go">Save the schedule</button><button id="se-reload" class="ghost">Reload from the file</button></div>
       <div class="toast" id="se-msg"></div>

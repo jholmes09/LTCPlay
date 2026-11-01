@@ -263,10 +263,16 @@ EVENT_ACTORS = {
 EVENTS = tuple(EVENT_ACTORS)
 DELAY_CHOICES = (5, 10)
 
-# The late rule's ceiling. A bigger number in the rule file is refused with a
-# sentence rather than quietly clamped: a silent clamp is a setting that says
-# one thing and does another.
-MAX_LATE_GRACE_S = 15
+# The late rule (Jeff, 2026-11-01): a show is MISSED only when it is more
+# than 2 minutes (120 s) late; within that it still starts, late. The setting
+# late_grace_s keeps its name; when the rule file does not give one, this is
+# the value. It was 15 s before (and 0 when the file left it out).
+DEFAULT_LATE_GRACE_S = 120
+# The late rule's ceiling (5 minutes: well under the shortest sensible gap
+# between shows, so a late show never runs into the next one's slot). A bigger
+# number in the rule file is refused with a sentence rather than quietly
+# clamped: a silent clamp is a setting that says one thing and does another.
+MAX_LATE_GRACE_S = 300
 
 # Who may press things, until the operators file says otherwise.
 DEFAULT_OPERATORS = ("Andy", "Jeff")
@@ -314,7 +320,7 @@ class Rule:
     exceptions: dict         # date -> NightRule, or None for a closed night
     show_len_s: int
     guard_s: int
-    late_grace_s: int = 0
+    late_grace_s: int = DEFAULT_LATE_GRACE_S
     version: int = 0
     tz: object = field(default=None, compare=False, repr=False)
     # What parse_rule had to change to use the file at all (a value capped,
@@ -469,7 +475,7 @@ def parse_rule(doc, where=""):
             problems.extend(e.problems)
 
     show_len_s = guard_s = None
-    grace = 0
+    grace = DEFAULT_LATE_GRACE_S
     version = 0
     notes = []
     if "show_len_s" in doc:
@@ -492,7 +498,7 @@ def parse_rule(doc, where=""):
                 why += (" A show that far behind its time does not start by "
                         "itself; the operator can press Start now.")
             problems.append(why)
-            grace = 0
+            grace = DEFAULT_LATE_GRACE_S
     if "version" in doc:
         version, why = _whole(doc["version"], "version", 0, unit="saves")
         if why:
@@ -3397,7 +3403,7 @@ PAST_REASONS = frozenset((SAVED_PAST, RESTART_PAST, FOLLOWED_PAST))
 def _settle_saved_past(tx, before, held, why=SAVED_PAST):
     """A rebuild never lets a show start whose time is at or before now,
     unless that same show was already waiting for that same time before it
-    (review of PR #180: with a 15 s late grace, a save made the next tick
+    (review of PR #180: with a late grace, a save made the next tick
     start a show whose time had gone by, during the save's own answer).
     Every other such show is MISSED (SAVED_PAST). On a Hold with no show
     already waiting, the latest of them waits as DELAYED instead, as any

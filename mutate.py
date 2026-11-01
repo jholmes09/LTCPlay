@@ -9361,6 +9361,26 @@ def build():
   "            if late > grace:\n",
   "            if late > grace - 100000:\n"),
 
+ ("late limit 2 min: the late grace defaults to 0 again",
+  "ltcplay/schedule.py",
+  "DEFAULT_LATE_GRACE_S = 120\n",
+  "DEFAULT_LATE_GRACE_S = 0\n"),
+
+ ("late limit 2 min: a file without late_grace_s reads as 15",
+  "ltcplay/schedule.py",
+  "    grace = DEFAULT_LATE_GRACE_S\n    version = 0\n",
+  "    grace = 15\n    version = 0\n"),
+
+ ("late limit 2 min: the late grace cap is 15 again",
+  "ltcplay/schedule.py",
+  "MAX_LATE_GRACE_S = 300\n",
+  "MAX_LATE_GRACE_S = 15\n"),
+
+ ("late limit 2 min: a show exactly at the limit is missed",
+  "ltcplay/schedule.py",
+  "        if late > grace:\n            if held:\n",
+  "        if late >= grace:\n            if held:\n"),
+
  ("review196C: overlapping nights do not say a show can be missed",
   "ltcplay/schedule.py",
   "so that first show will be MISSED (late by \"",
