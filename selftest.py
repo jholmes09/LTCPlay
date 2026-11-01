@@ -93940,6 +93940,32 @@ out.left = {posts:since(n).map(p => p.route + ":" + on(p.body || {controls:{}}))
 location.hash = "fireball";
 showView();
 await h.sleep(700);
+// Fuel held by the engine for the charge record's mark: the pad says
+// WAITING, not ON (round-8 review 4), and ON once the engine lets it go.
+window.__answer["fireball-beat"] = b => [200, on(b) ? {ok:true, held:["fuel"]} : {ok:true}];
+h.ev(pad("fuel"), "click");
+await h.sleep(350);
+out.waiting = {st:pad("fuel").querySelector(".fb-st").textContent, on:pad("fuel").classList.contains("on")};
+window.__answer["fireball-beat"] = b => [200, {ok:true}];
+await h.sleep(350);
+out.waiting.after = pad("fuel").querySelector(".fb-st").textContent;
+delete window.__answer["fireball-beat"];
+h.ev(pad("fuel"), "click");
+await h.sleep(250);
+// Tanks are empty: shown while automatic charging is off, though every
+// tank is known (round-8 review 1).
+const tk = {fuel:{state:"empty"}, air:{state:"empty"}};
+window.__patch = s => Object.assign(s, {fireball_charge:{tanks:tk, text:"", auto_off:true}});
+await h.sleep(900);
+out.empty = {auto_off:document.getElementById("fb-empty").hidden};
+window.__patch = s => Object.assign(s, {fireball_charge:{tanks:tk, text:"", auto_off:false}});
+await h.sleep(900);
+out.empty.known = document.getElementById("fb-empty").hidden;
+window.__patch = s => Object.assign(s, {fireball_charge:{tanks:{fuel:{state:"unknown"}, air:{state:"empty"}}, text:"", auto_off:false}});
+await h.sleep(900);
+out.empty.unknown = document.getElementById("fb-empty").hidden;
+window.__patch = null;
+await h.sleep(300);
 // All off and Disarm.
 n = mark();
 document.getElementById("fb-alloff").click();
@@ -93957,6 +93983,14 @@ out.buttons = since(n).map(p => p.route + (p.body.group ? ":" + p.body.group : "
                  f"the Fireball page, pressed: {m!r}"[:1500]):
         print("  ok")
         return
+    check(m["waiting"]["st"] == "WAITING" and m["waiting"]["on"] and
+          m["waiting"]["after"] == "ON",
+          f"a press the engine holds for the mark: WAITING, then ON: "
+          f"{m['waiting']}")
+    check(m["empty"]["auto_off"] is False and m["empty"]["known"] is True and
+          m["empty"]["unknown"] is False,
+          f"Tanks are empty: shown when automatic charging is off or a "
+          f"tank is NOT KNOWN, hidden when all is known: {m['empty']}")
     hd = m["held"]
     check(hd["n"] >= 4 and all(x == "valve" for x in hd["on"]) and
           hd["runs"] == 1 and hd["seqs"] == sorted(hd["seqs"]) and
@@ -104092,12 +104126,67 @@ def test_fireball_timeline_docs_in_plain_words():
                  "fireball_timeline_history"):
         check(" ".join(need.split()) in " ".join(o.split()),
               f"OPERATOR.md's fireball timeline section says {need!r}")
+    c = _fb_doc_part("OPERATOR.md", "### The fuel and air charge", "\n## ")
+    for need in ("EMPTY", "CHARGED", "NOT KNOWN", "Fuel Charge (55)",
+                 "Air Charge (56)", "Valve Open IS the shot", "Purge (59",
+                 "Stop, Hold, the end of a show", "change nothing",
+                 "Igniter plays no part", "top-off is not a double charge",
+                 "very first start", "press Purge",
+                 "counts both tanks EMPTY", "tanks start empty",
+                 "**Tanks are empty**", "flamesafe itself reports",
+                 "written again every second until it is",
+                 "ltcplay_fireball_charge.json", "never invented",
+                 "If the settings folder is lost or the program runs "
+                 "under another Windows user, the tanks read EMPTY: "
+                 "confirm by eye before a show",
+                 "No charge record found: starting both tanks EMPTY",
+                 "says what the last full record said",
+                 "did not report sending within half a second",
+                 "flamesafe down or not reporting",
+                 "no record could be written in the settings folder",
+                 "was released with it", "only ever goes up",
+                 "both tanks become NOT KNOWN and are written so",
+                 "PENDING (write first, then charge)",
+                 "the automatic charge is **not sent**",
+                 "the charge record cannot be saved: automatic charging is "
+                 "off",
+                 "A clock set back can only cost an extra NOT KNOWN",
+                 "LTC Player stopped with PENDING on the record",
+                 "A Fuel or Air press on the Fireball page** is held for "
+                 "the few milliseconds",
+                 "the press **still goes out**",
+                 "a second tiny marker is written, in the settings folder "
+                 "and in the user's own folder",
+                 "comes off again after 5 seconds",
+                 "Tanks are empty is refused while that stands",
+                 "never the temp folder, which a reboot",
+                 "automatic charging is\n  **off**",
+                 "A marker that cannot be read\n  counts as present",
+                 "it is judged on every status of flamesafe",
+                 "A charge channel that is on keeps the mark asked for",
+                 "the button is shown\n  whenever automatic charging is off",
+                 "comes back **by itself**",
+                 "Marker names carry the\n  machine's name",
+                 "a start reads **every** machine's markers",
+                 "which was chosen over ever missing a\n  real one",
+                 "never clears a\n  marker: only a record renamed into place"):
+        check(" ".join(need.split()) in " ".join(c.split()),
+              f"OPERATOR.md's charge section says {need!r}")
+    mo_all = " ".join(open(os.path.join(os.path.dirname(
+        os.path.abspath(__file__)), "MORNING.md"), encoding="utf-8")
+        .read().split())
+    check("If the settings folder is lost or the program runs under "
+          "another Windows user, the tanks read EMPTY: confirm by eye "
+          "before a show." in mo_all and
+          "No charge record found: starting both tanks EMPTY" in mo_all,
+          "MORNING.md says a lost settings folder or another Windows "
+          "user reads the tanks EMPTY (round-4 review)")
     order = [o.index(w) for w in ("| Fuel (", "| Air (", "| Igniter (",
                                   "| Valve Open (")]
     check(order == sorted(order),
           "OPERATOR.md lists the stages in Jeff's order: Fuel, Air, "
           "Igniter, Valve Open")
-    for name, part in (("MORNING.md", m), ("OPERATOR.md", o)):
+    for name, part in (("MORNING.md", m), ("OPERATOR.md", o + c)):
         check("\u2014" not in part and "\u2013" not in part,
               f"{name}'s fireball text has no em or en dashes")
     print("  ok")
@@ -104141,6 +104230,1564 @@ def test_fireball_timeline_show_info_from_a_real_show_file():
         st_mod.path, st_mod.prefs_path = real_path, real_prefs
         plmod.Player._prepare = real_prepare
         shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+
+# -- the fireball's charge state (Jeff, 2026-10-30; fireball_charge.py) ------
+
+def _fbc(work=None, **kw):
+    """A ChargeTracker on the test's clocks, by hand (no thread)."""
+    import types
+    from ltcplay import fireball_charge as FC
+    C = types.SimpleNamespace(t=[1000.0], wall=[1_800_000_000.0], lines=[],
+                              events=[])
+
+    class _Audit:
+        def event(self, **k):
+            C.events.append(k)
+    if work and "alt_dir" not in kw and os.path.isdir(work):
+        # The fallback marker goes in the test's own folder, never the
+        # machine's temp folder.
+        kw["alt_dir"] = os.path.join(work, "_alt")
+        os.makedirs(kw["alt_dir"], exist_ok=True)
+    C.tr = FC.ChargeTracker(
+        work, journal=lambda *a, **k: C.lines.append((a, k)),
+        audit=_Audit(), wall=lambda: C.wall[0], clock=lambda: C.t[0],
+        threaded=False, **kw)
+    return C
+
+
+def _fbc_frame(**on):
+    v = bytearray(512)
+    for k, slot in (("fuel", 55), ("air", 56), ("valve", 57),
+                    ("igniter", 58), ("purge", 59), ("safety", 77)):
+        if on.get(k):
+            v[slot - 1] = on[k] if on[k] is not True else 255
+    return bytes(v)
+
+
+def test_fireball_charge_state():
+    section("the fireball's charge state: Fuel and Air Charge make a tank "
+            "CHARGED; only a shot (Valve Open on, then off) or a purge "
+            "resets it; Stop, Hold, the end of a show and an engine restart "
+            "never do; a top-off from the Fireball page is counted; "
+            "UNKNOWN when the evidence is not certain; every change "
+            "written atomically, journaled and audited")
+    import json as _j
+    import shutil
+    from ltcplay import fireball_charge as FC
+    E, C_, U = FC.EMPTY, FC.CHARGED, FC.UNKNOWN
+    check(FC.TANKS == (("fuel", "Fuel", 55), ("air", "Air", 56)) and
+          FC.VALVE_SLOT == 57 and FC.PURGE_SLOT == 59,
+          "Fuel 55, Air 56, Valve Open 57, Purge 59")
+    work = tempfile.mkdtemp()
+    try:
+        # The very first run: no file, both tanks START EMPTY (Jeff,
+        # 2026-10-30), said once, written.
+        C = _fbc(work)
+        tr = C.tr
+        check(tr.state("fuel") == E and tr.state("air") == E and
+              tr.first_run, "no file: both tanks EMPTY (the first run)")
+        tr.pump()
+        check(any(a[2] == "first_run" and "No charge record found: "
+                  "starting both tanks EMPTY" in a[3] and work in a[3] and
+                  "another Windows user" in a[3] and k.get("fault")
+                  for a, k in C.lines) and
+              os.path.exists(tr.path) and _cfg_dashes(C.lines[0][0][3]),
+              f"said once, loudly, with the folder, and written: "
+              f"{C.lines[:1]}")
+        # Tanks are empty (an admin) for NOT KNOWN tanks: journaled and
+        # audited; nothing to confirm when none is NOT KNOWN.
+        ok, text = tr.confirm_empty("Andy", "Rack screen")
+        check(not ok and "nothing to confirm" in text,
+              f"nothing NOT KNOWN: nothing to confirm: {text}")
+        tr.tanks["fuel"]["state"] = U
+        tr.tanks["air"]["state"] = U
+        ok, text = tr.confirm_empty("Andy", "Rack screen")
+        tr.pump()
+        check(ok and tr.state("fuel") == E and tr.state("air") == E and
+              "Fuel and Air confirmed EMPTY by Andy on the Rack screen" in
+              text and C.events[-1]["user"] == "Andy" and
+              C.events[-1]["target"] == "confirmed_empty",
+              f"an admin confirms them empty: journaled and audited: {text}")
+        check(_fbc(None).tr.state("fuel") == E,
+              "memory only (no settings folder): EMPTY")
+        check(tr.sentence() == "Fuel: empty. Air: empty.",
+              f"the words: {tr.sentence()}")
+        # Not armed: nothing reached the fireball, nothing changes.
+        tr.see(_fbc_frame(fuel=True, air=True), "off")
+        check(tr.state("fuel") == E and tr.state("air") == E,
+              "a charge sent while the group is not armed: still EMPTY")
+        # Armed: Fuel Charge on: CHARGED by the show, once.
+        n = len(C.lines)
+        for _ in range(5):
+            tr.see(_fbc_frame(fuel=True), "armed")
+        tr.pump()
+        check(tr.state("fuel") == C_ and tr.state("air") == E and
+              tr.tanks["fuel"]["by"] == "the show" and
+              tr.tanks["fuel"]["charged_at"] and
+              [a[2] for a, _k in C.lines[n:]] == ["charged"],
+              f"Fuel Charge on: CHARGED, one line for one charge: "
+              f"{C.lines[n:]}")
+        doc = _j.load(open(tr.path, encoding="utf-8"))
+        check(doc["tanks"]["fuel"]["state"] == "charged" and
+              FC.read_doc(doc)[0] == doc["rev"],
+              "written to the file at once")
+        check(C.events[-1]["action"] == "fireball charge" and
+              C.events[-1]["target"] == "charged" and
+              "Fuel CHARGED" in C.events[-1]["reason"], "and audited")
+        # Stop / Hold / the end of a show: the channels go to zero, the
+        # tank stays charged.
+        for _ in range(10):
+            tr.see(_fbc_frame(), "armed")
+        tr.see(_fbc_frame(), "off")
+        check(tr.state("fuel") == C_, "Stop, Hold, zeros, a disarm: still "
+                                      "CHARGED (Stop does not depressurise)")
+        # The Igniter is independent: it resets nothing.
+        tr.see(_fbc_frame(igniter=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        check(tr.state("fuel") == C_, "the Igniter alone resets nothing")
+        # Fuel Charge on again, not from the Fireball page: a double charge
+        # is a fault (the engine's guard is to stop it ever happening).
+        n = len(C.lines)
+        tr.see(_fbc_frame(fuel=True), "armed")
+        tr.pump()
+        check(tr.state("fuel") == C_ and
+              [a[2] for a, _k in C.lines[n:]] == ["double_charge"] and
+              C.lines[-1][1].get("fault") is True,
+              f"on again while charged, not from the page: a fault: "
+              f"{C.lines[n:]}")
+        tr.see(_fbc_frame(), "armed")
+        # A top-off by Andy from the Fireball page: counted, said, no fault.
+        n = len(C.lines)
+        tr.note_manual({"fuel"}, "Andy", "Rack screen")
+        tr.see(_fbc_frame(fuel=True), "armed")
+        tr.see(_fbc_frame(fuel=True), "armed")
+        tr.pump()
+        tf = tr.tanks["fuel"]
+        check(tf["state"] == C_ and tf["topoffs"] == 2 and
+              [a[2] for a, _k in C.lines[n:]] == ["topoff"] and
+              C.lines[-1][0][0] == "Andy" and
+              C.lines[-1][0][3].startswith("Top-off by Andy (fuel already "
+                                           "charged") and
+              not C.lines[-1][1].get("fault"),
+              f"a top-off by Andy: {C.lines[n:]} {tf}")
+        check(tr.sentence() == f"Fuel: charged {tr._clock_text(tf['charged_at'])}, "
+                               f"topped off 2 times. Air: empty. No shot fired.",
+              f"the words: {tr.sentence()}")
+        tr.note_manual(set(), "Andy", "Rack screen")
+        tr.see(_fbc_frame(), "armed")
+        # Air by Andy from empty: CHARGED by Andy.
+        tr.note_manual({"air"}, "Andy", "Rack screen")
+        tr.see(_fbc_frame(air=True), "armed")
+        check(tr.state("air") == C_ and tr.tanks["air"]["by"] == "Andy",
+              "Air charged by Andy")
+        tr.note_manual(set())
+        tr.see(_fbc_frame(), "armed")
+        tr.pump()
+        # An engine restart: read back exactly.
+        C2 = _fbc(work)
+        check(C2.tr.state("fuel") == C_ and C2.tr.state("air") == C_ and
+              C2.tr.tanks["fuel"]["topoffs"] == 2 and not C2.tr.first_run
+              and not C2.tr.fault,
+              "an engine restart reads both tanks back CHARGED")
+        tr = C2.tr
+        # The shot: Valve Open on (any length), then off: both EMPTY.
+        tr.see(_fbc_frame(valve=True, igniter=True), "armed")
+        check(tr.state("fuel") == C_ and tr.releasing == "shot",
+              "while the valve is open: still charged, releasing")
+        tr.pump()
+        doc = _j.load(open(tr.path, encoding="utf-8"))
+        check(doc["releasing"] == "shot", "releasing is written at once")
+        tr.see(_fbc_frame(), "armed")
+        tr.pump()
+        check(tr.state("fuel") == E and tr.state("air") == E and
+              tr.tanks["fuel"]["topoffs"] == 0 and tr.releasing == "" and
+              "the shot was fired (Valve Open)" in C2.lines[-1][0][3],
+              f"the valve closed: the shot was fired, both EMPTY: "
+              f"{C2.lines[-1]}")
+        # Purge resets too.
+        tr.see(_fbc_frame(fuel=True, air=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        tr.see(_fbc_frame(purge=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        tr.pump()
+        check(tr.state("fuel") == E and tr.state("air") == E and
+              C2.lines[-1][0][2] == "purge", "a purge: both EMPTY")
+        # A charge on while the valve is open: charged again when it shuts.
+        tr.see(_fbc_frame(fuel=True), "armed")
+        tr.see(_fbc_frame(valve=True), "armed")
+        tr.see(_fbc_frame(valve=True, air=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        check(tr.state("fuel") == E and tr.state("air") == C_,
+              f"Air Charge on while the valve was open: air CHARGED after "
+              f"it, fuel EMPTY: {tr.state('fuel')} {tr.state('air')}")
+        tr.see(_fbc_frame(purge=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        # Not certain: a charge sent with flamesafe's status unknown.
+        tr.see(_fbc_frame(fuel=True), "unknown")
+        tr.see(_fbc_frame(), "unknown")
+        check(tr.state("fuel") == U and tr.state("air") == E,
+              "a charge with flamesafe's status not known: UNKNOWN")
+        # A release that is not certain never makes a tank EMPTY.
+        tr.see(_fbc_frame(purge=True), "unknown")
+        tr.see(_fbc_frame(), "unknown")
+        check(tr.state("fuel") == U, "a purge not seen for certain: still "
+                                     "UNKNOWN")
+        tr.see(_fbc_frame(fuel=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        tr.see(_fbc_frame(valve=True), "unknown")
+        tr.see(_fbc_frame(), "unknown")
+        check(tr.state("fuel") == U and tr.state("air") == E,
+              "a charged tank and an uncertain valve: UNKNOWN; an empty one "
+              "stays empty")
+        tr.see(_fbc_frame(purge=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        check(tr.state("fuel") == E, "a certain purge resets UNKNOWN")
+        # A frame that did not go out changes nothing.
+        tr.observe("00:00:01:00", _fbc_frame(fuel=True), False)
+        check(tr.state("fuel") == E, "a frame not sent: nothing")
+        # observe() with no fresh status reading: UNKNOWN (never certain).
+        tr.observe("00:00:01:00", _fbc_frame(fuel=True), True)
+        tr.observe("00:00:01:01", _fbc_frame(), True)
+        check(tr.state("fuel") == U, "observe() with no status read yet: "
+                                     "UNKNOWN")
+        tr._flames = lambda: {"connected": True, "stale": False,
+                              "age_ms": 20, "groups": [
+                                  {"name": "fireball", "armed": "armed"}]}
+        tr._read_armed()
+        tr.observe("t", _fbc_frame(purge=True), True)
+        tr.observe("t", _fbc_frame(), True)
+        check(tr.state("fuel") == E, "with flamesafe saying ARMED: certain")
+        C.t[0] += 1.0
+        C2.t[0] += 1.0
+        check(tr.armed_now() == "unknown", "a status reading older than "
+                                           "0.5 s is not known")
+        # flamesafe's own report: a release resets the tanks only once
+        # flamesafe's status has reported SENDING the valve or the purge.
+        sent = {"v": [0, 0, 0, 0, 0]}
+        tr._flames = lambda: {"connected": True, "stale": False,
+                              "age_ms": 20, "groups": [
+                                  {"name": "fireball", "armed": "armed",
+                                   "fire_slots": [55, 56, 57, 58, 59],
+                                   "sent_fire": list(sent["v"])}]}
+        tr._read_armed()
+        tr.see(_fbc_frame(fuel=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        tr.see(_fbc_frame(valve=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        check(tr.state("fuel") == C_, "the valve closed but flamesafe has "
+                                      "not reported sending it: not yet")
+        C.t[0] += 0.6
+        C2.t[0] += 0.6
+        tr._read_armed()
+        tr.pump()
+        check(tr.state("fuel") == U and
+              "did not report sending it" in C2.lines[-1][0][3],
+              f"never reported within 0.5 s: UNKNOWN, said: "
+              f"{C2.lines[-1][0][3]}")
+        sent["v"] = [0, 0, 0, 0, 255]
+        tr.see(_fbc_frame(purge=True), "armed")
+        tr._read_armed()
+        tr.see(_fbc_frame(), "armed")
+        check(tr.state("fuel") == E, "a purge flamesafe reported sending: "
+                                     "EMPTY")
+        sent["v"] = [0, 0, 0, 0, 0]
+        tr.see(_fbc_frame(air=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        tr._read_armed()
+        tr._sent_release_at = None
+        sent["v"] = [0, 0, 255, 0, 0]
+        tr.see(_fbc_frame(valve=True), "armed")
+        tr.see(_fbc_frame(), "armed")
+        check(tr.state("air") == C_, "closed before the report came")
+        tr._read_armed()
+        check(tr.state("air") == E, "the report comes: the shot counts")
+        tr._flames = lambda: None
+        tr._read_armed()
+        tr._sent_supported = None
+        # The sender's call never touches a file.
+        import builtins
+        real_open, real_replace = builtins.open, os.replace
+        touched = []
+        builtins.open = lambda *a, **k: touched.append(a) or real_open(*a,
+                                                                       **k)
+        os.replace = lambda *a, **k: touched.append(a) or real_replace(*a,
+                                                                       **k)
+        try:
+            tr._read_armed()
+            for _ in range(20):
+                tr.observe("t", _fbc_frame(fuel=True), True)
+                tr.observe("t", _fbc_frame(valve=True), True)
+                tr.observe("t", _fbc_frame(), True)
+        finally:
+            builtins.open, os.replace = real_open, real_replace
+        check(not touched, f"observe() never opens or writes a file: "
+                           f"{touched[:2]}")
+        tr.pump()
+        # The engine stopped while the valve was open: UNKNOWN, a fault.
+        tr.see(_fbc_frame(fuel=True), "armed")
+        tr.see(_fbc_frame(valve=True), "armed")
+        tr.pump()
+        C3 = _fbc(work)
+        C3.tr.pump()
+        check(C3.tr.state("fuel") == U and C3.tr.state("air") == U and
+              C3.tr.releasing == "" and
+              any(k.get("fault") and "stopped while the valve was open" in
+                  a[3] for a, k in C3.lines),
+              f"a restart in the middle of a release: both UNKNOWN: "
+              f"{C3.lines[-1:]}")
+        check(C3.tr.sentence() == "Fuel: not known. Air: not known. Purge "
+                                  "or fire to reset.",
+              f"the words: {C3.tr.sentence()}")
+        # A file that cannot be read: UNKNOWN, said.
+        for bad in ("{oops", '{"fireball_charge_format": 1}',
+                    '{"fireball_charge_format": 1, "rev": 1, "releasing": '
+                    '"", "tanks": {"fuel": {}, "air": {}}}'):
+            with open(os.path.join(work, FC.FILE), "w") as fh:
+                fh.write(bad)
+            C4 = _fbc(work)
+            check(C4.tr.state("fuel") == U and C4.tr.state("air") == U and
+                  "could not be read" in C4.tr.fault and
+                  C4.tr.view()["fault"] and _cfg_dashes(C4.tr.fault),
+                  f"a broken file: both UNKNOWN: {C4.tr.fault}")
+        # A write that fails: the state is kept, the fault said once.
+        C4.tr._write = lambda doc: (_ for _ in ()).throw(
+            OSError(28, "No space left on device"))
+        C4.tr.see(_fbc_frame(purge=True), "armed")
+        C4.tr.see(_fbc_frame(), "armed")
+        C4.tr.pump()
+        check(C4.tr.state("fuel") == E and "could not be written" in
+              C4.tr.view()["fault"], "a failed write: the state stands in "
+                                     "memory, the fault shown")
+        # ... and it is written again every RETRY_S until it is (review
+        # of #185: a restart read the old record and double charged).
+        tries = []
+        C4.tr._write = lambda doc: tries.append(doc["rev"]) or (
+            _ for _ in ()).throw(PermissionError(13, "Access is denied"))
+        C4.tr.see(_fbc_frame(air=True), "armed")
+        C4.tr.see(_fbc_frame(), "armed")
+        C4.tr.pump()
+        n0 = len(tries)
+        C4.t[0] += 0.5
+        C4.tr.pump()
+        check(len(tries) == n0, "not again before RETRY_S")
+        C4.t[0] += FC.RETRY_S
+        C4.tr.pump()
+        check(len(tries) == n0 + 1 and "written again every" in
+              C4.tr.view()["fault"],
+              f"tried again after RETRY_S, the fault shown: {tries}")
+        real_w = FC.ChargeTracker._write.__get__(C4.tr)
+        C4.tr._write = real_w
+        C4.t[0] += FC.RETRY_S
+        C4.tr.pump()
+        doc = _j.load(open(os.path.join(work, FC.FILE), encoding="utf-8"))
+        check(doc["tanks"]["air"]["state"] == "charged" and
+              not C4.tr.write_fault and C4.tr._unwritten is None,
+              f"once it can, the newest record is on disk and the fault "
+              f"clears: {doc['tanks']['air']['state']}")
+        C5 = _fbc(work)
+        check(C5.tr.state("air") == C_, "a restart reads it")
+        # A write still failing when the engine stops: one last try.
+        C5.tr._write = lambda doc: (_ for _ in ()).throw(
+            PermissionError(13, "Access is denied"))
+        C5.tr.see(_fbc_frame(valve=True), "armed")
+        C5.tr.see(_fbc_frame(), "armed")
+        C5.tr.pump()
+        C5.tr._write = FC.ChargeTracker._write.__get__(C5.tr)
+        C5.tr.close()
+        doc = _j.load(open(os.path.join(work, FC.FILE), encoding="utf-8"))
+        check(doc["tanks"]["air"]["state"] == "empty",
+              "close() writes the record that could not be written")
+        # A charge made after the valve closed and before flamesafe
+        # confirmed the shot is not wiped by the confirmation (review of
+        # #185).
+        C6 = _fbc(None)
+        t6 = C6.tr
+        sent6 = {"v": [0, 0, 0, 0, 0]}
+        t6._flames = lambda: {"connected": True, "stale": False,
+                              "age_ms": 20, "groups": [
+                                  {"name": "fireball", "armed": "armed",
+                                   "fire_slots": [55, 56, 57, 58, 59],
+                                   "sent_fire": list(sent6["v"])}]}
+        t6._read_armed()
+        t6.see(_fbc_frame(fuel=True), "armed")
+        t6.see(_fbc_frame(), "armed")
+        t6.see(_fbc_frame(valve=True), "armed")
+        t6.see(_fbc_frame(), "armed")
+        t6.note_manual({"fuel"}, "Andy", "Rack screen")
+        t6.see(_fbc_frame(fuel=True), "armed")
+        t6.see(_fbc_frame(), "armed")
+        sent6["v"] = [0, 0, 255, 0, 0]
+        t6._read_armed()
+        check(t6.state("fuel") == C_,
+              f"Andy's charge after the valve closed stands when the shot "
+              f"is confirmed: {t6.tanks['fuel']}")
+        # A report of the valve older than this release (0.1 s slack) is
+        # not this release's: never reported in time, UNKNOWN.
+        sent6["v"] = [0, 0, 0, 0, 0]
+        t6._read_armed()
+        C6.t[0] += 5.0
+        t6._sent_release_at = C6.t[0] - 0.5
+        t6.see(_fbc_frame(air=True), "armed")
+        t6.see(_fbc_frame(), "armed")
+        t6.see(_fbc_frame(valve=True), "armed")
+        t6.see(_fbc_frame(), "armed")
+        t6._finish_release(C6.t[0])
+        check(t6.state("air") == C_, "an older report does not confirm it")
+        C6.t[0] += 0.6
+        t6._finish_release(C6.t[0])
+        check(t6.state("air") == U, "and after 0.5 s it is NOT KNOWN")
+        # flamesafe's report of SENDING a charge is evidence even when
+        # the status read just before said disarmed (review of #185).
+        C7 = _fbc(None)
+        t7 = C7.tr
+        t7.see(_fbc_frame(fuel=True), "off")
+        check(t7.state("fuel") == E, "a status saying disarmed: nothing yet")
+        t7._flames = lambda: {"connected": True, "stale": False,
+                              "age_ms": 20, "groups": [
+                                  {"name": "fireball", "armed": "armed",
+                                   "fire_slots": [55, 56, 57, 58, 59],
+                                   "sent_fire": [255, 0, 0, 0, 0]}]}
+        t7._read_armed()
+        t7.pump()
+        check(t7.state("fuel") == C_ and t7.state("air") == E and
+              any("flamesafe reported sending it" in a[3]
+                  for a, _k in C7.lines),
+              f"flamesafe reported sending Fuel: CHARGED: {C7.lines[-1:]}")
+        # A newer record left in .tmp by a write that could not finish is
+        # the one read at start (review F2: the older EMPTY was read and the
+        # next show charged again); a .tmp that cannot be read: NOT KNOWN.
+        w2 = tempfile.mkdtemp(dir=work)
+        C8 = _fbc(w2)
+        C8.tr.confirm_empty("Andy")
+        C8.tr.pump()
+        real_rep = os.replace
+
+        def held(a, b):
+            raise PermissionError(13, "Access is denied")
+        os.replace = held
+        try:
+            C8.tr.see(_fbc_frame(fuel=True), "armed")
+            C8.tr.see(_fbc_frame(), "armed")
+            C8.tr.pump()
+        finally:
+            os.replace = real_rep
+        check(C8.tr.state("fuel") == C_ and
+              os.path.exists(os.path.join(w2, FC.FILE + ".tmp")),
+              "the write could not finish: the newest record is in .tmp")
+        C9 = _fbc(w2)
+        C9.tr.pump()
+        check(C9.tr.state("fuel") == C_ and
+              any(a[2] == "recovered" for a, _k in C9.lines),
+              f"a restart reads the newer .tmp: Fuel CHARGED: "
+              f"{C9.tr.tanks['fuel']['state']}")
+        with open(os.path.join(w2, FC.FILE + ".tmp"), "w") as fh:
+            fh.write("{half a reco")
+        C10 = _fbc(w2)
+        check(C10.tr.state("fuel") == U and C10.tr.state("air") == U and
+              ".tmp" in C10.tr.fault,
+              f"a .tmp that cannot be read: both NOT KNOWN: {C10.tr.fault}")
+        # Tanks are empty never empties a CHARGED tank (review C-8): only
+        # the NOT KNOWN one.
+        C11 = _fbc(None)
+        C11.tr.tanks["fuel"]["state"] = C_
+        C11.tr.tanks["air"]["state"] = U
+        ok, text = C11.tr.confirm_empty("Andy")
+        check(ok and C11.tr.state("fuel") == C_ and
+              C11.tr.state("air") == E and "Air confirmed EMPTY" in text,
+              f"Tanks are empty: the charged tank stays charged: {text}")
+        # A charge that went on while flamesafe's status was not known and
+        # stays on is the same charge once the status is back: never a
+        # double charge (review F3).
+        C12 = _fbc(None)
+        C12.tr.see(_fbc_frame(fuel=True), "unknown")
+        C12.tr.see(_fbc_frame(fuel=True), "unknown")
+        # The status comes back and reports the charge sent: CHARGED ...
+        C12.tr._flames = lambda: {
+            "connected": True, "stale": False, "age_ms": 10,
+            "groups": [{"name": "fireball", "armed": "armed",
+                        "fire_slots": [55, 56, 57, 58, 59],
+                        "sent_fire": [255, 0, 0, 0, 0]}]}
+        C12.tr._read_armed()
+        # ... and the same charge, still on, is no new edge.
+        C12.tr.see(_fbc_frame(fuel=True), "armed")
+        C12.tr.see(_fbc_frame(fuel=True), "armed")
+        C12.tr.pump()
+        check(C12.tr.state("fuel") == C_ and
+              not any(a[2] == "double_charge" for a, _k in C12.lines),
+              f"unknown then armed, one charge on: no double charge: "
+              f"{[a[2] for a, _k in C12.lines]}")
+        # The same with no report from flamesafe (an older flamesafe): the
+        # wire value carried through the unknown frames is still no new
+        # edge once the status is back.
+        C12b = _fbc(None)
+        C12b.tr.tanks["fuel"]["state"] = C_
+        C12b.tr.see(_fbc_frame(fuel=True), "unknown")
+        C12b.tr.see(_fbc_frame(fuel=True), "armed")
+        C12b.tr.pump()
+        check(not any(a[2] == "double_charge" for a, _k in C12b.lines),
+              f"on through an unknown status, no report: no new edge: "
+              f"{[a[2] for a, _k in C12b.lines]}")
+        # flamesafe's report of a release is stamped with the status's own
+        # time: one status read twice never confirms a later release
+        # (review C-7).
+        C13 = _fbc(None)
+        t13 = C13.tr
+        old = {"connected": True, "stale": False, "age_ms": 400,
+               "groups": [{"name": "fireball", "armed": "armed",
+                           "fire_slots": [55, 56, 57, 58, 59],
+                           "sent_fire": [0, 0, 255, 0, 0]}]}
+        t13._flames = lambda: old
+        t13._read_armed()
+        check(abs(t13._sent_release_at - (C13.t[0] - 0.4)) < 1e-9,
+              f"stamped with the status's time: {t13._sent_release_at} "
+              f"{C13.t[0]}")
+        # Round-4 review (#185). The revision never goes back: an
+        # unreadable .tmp at start, then writes whose rename is refused,
+        # then restarts: the newest record (in .tmp) wins, never the older
+        # main file (tmpE2: main rev 31 EMPTY, tanks charged since).
+        w3 = tempfile.mkdtemp(dir=work)
+        C14 = _fbc(w3)
+        for _ in range(15):
+            C14.tr.see(_fbc_frame(fuel=True), "armed")
+            C14.tr.see(_fbc_frame(), "armed")
+            C14.tr.see(_fbc_frame(valve=True), "armed")
+            C14.tr.see(_fbc_frame(), "armed")
+        C14.tr.pump()
+        main_rev = _j.load(open(os.path.join(w3, FC.FILE)))["rev"]
+        with open(os.path.join(w3, FC.FILE + ".tmp"), "w") as fh:
+            fh.write('{"fireball_charge_format": 1, "rev": ')
+        C15 = _fbc(w3)
+        check(C15.tr.state("fuel") == U and C15.tr.rev == main_rev and
+              "last said: Fuel empty, Air empty (revision " +
+              str(main_rev) + ")" in C15.tr.fault,
+              f"an unreadable .tmp: NOT KNOWN, the revision kept at the main "
+              f"file's, and what it last said: {C15.tr.rev} {main_rev} "
+              f"{C15.tr.fault}")
+        real_rep = os.replace
+        os.replace = held
+        try:
+            C15.tr.confirm_empty("Andy")
+            C15.tr.see(_fbc_frame(fuel=True), "armed")
+            C15.tr.see(_fbc_frame(air=True), "armed")
+            C15.tr.see(_fbc_frame(), "armed")
+            C15.tr.pump()
+            C15.tr.close()
+            tmp_rev = _j.load(open(os.path.join(w3, FC.FILE + ".tmp")))["rev"]
+            C16 = _fbc(w3)
+            C16.tr.close()
+            C17 = _fbc(w3)
+        finally:
+            os.replace = real_rep
+        check(tmp_rev > main_rev and C16.tr.state("fuel") == C_ and
+              C16.tr.state("air") == C_ and C17.tr.state("fuel") == C_ and
+              C17.tr.state("air") == C_,
+              f"every rename refused, two restarts: the charged record wins "
+              f"by revision: tmp {tmp_rev} main {main_rev} "
+              f"{C16.tr.state('fuel')} {C17.tr.state('fuel')}")
+        # Two readable records: the newer revision wins, either way round.
+        os.replace(os.path.join(w3, FC.FILE + ".tmp"),
+                   os.path.join(w3, FC.FILE))
+        newer = _j.load(open(os.path.join(w3, FC.FILE)))
+        older = dict(newer, rev=newer["rev"] - 5, tanks={
+            k: dict(v, state="empty") for k, v in newer["tanks"].items()})
+        with open(os.path.join(w3, FC.FILE + ".tmp"), "w") as fh:
+            _j.dump(older, fh)
+        C18 = _fbc(w3)
+        check(C18.tr.state("fuel") == C_ and C18.tr.rev == newer["rev"],
+              "an older .tmp left behind loses to the newer main file")
+        # A first run whose record cannot be written (round-4 review, s09:
+        # the write lost, a restart read "no record" and charged again):
+        # both NOT KNOWN, said, and written again once it can be.
+        w4 = os.path.join(work, "not-there", "deeper")
+        C19 = _fbc(w4)
+        check(C19.tr.state("fuel") == U and C19.tr.state("air") == U and
+              not C19.tr.first_run and "could not be written" in
+              C19.tr.fault and w4 in C19.tr.fault and
+              C19.tr._unwritten is not None and _cfg_dashes(C19.tr.fault),
+              f"no record and none can be written: NOT KNOWN: "
+              f"{C19.tr.fault}")
+        os.makedirs(w4)
+        C19.t[0] += FC.RETRY_S
+        C19.tr.pump()
+        check(_j.load(open(os.path.join(w4, FC.FILE)))["tanks"]["fuel"][
+            "state"] == "unknown", "written NOT KNOWN once it can be")
+        # A charge that started within a status of arming (the frames read
+        # under a disarmed status, then flamesafe's report): one charge, no
+        # double charge and no top-off (round-4 review, s62).
+        for manual in (False, True):
+            C20 = _fbc(None)
+            if manual:
+                C20.tr.note_manual({"fuel"}, "Andy", "Rack screen")
+            C20.tr.see(_fbc_frame(fuel=True), "off")
+            C20.tr._flames = lambda: {
+                "connected": True, "stale": False, "age_ms": 10,
+                "groups": [{"name": "fireball", "armed": "armed",
+                            "fire_slots": [55, 56, 57, 58, 59],
+                            "sent_fire": [255, 0, 0, 0, 0]}]}
+            C20.tr._read_armed()
+            C20.tr.see(_fbc_frame(fuel=True), "armed")
+            C20.tr.see(_fbc_frame(fuel=True), "armed")
+            C20.tr.pump()
+            outs = [a[2] for a, _k in C20.lines]
+            check(C20.tr.state("fuel") == C_ and
+                  C20.tr.tanks["fuel"]["topoffs"] == 0 and
+                  "double_charge" not in outs and "topoff" not in outs,
+                  f"a charge right after arming (manual={manual}): one "
+                  f"charge: {outs}")
+        # A charge that went off again while the valve was still open was
+        # released with it (round-4 review, s90); one still on when the
+        # valve closed is charged after it.
+        C21 = _fbc(None)
+        C21.tr.see(_fbc_frame(valve=True), "armed")
+        C21.tr.see(_fbc_frame(valve=True, air=True), "armed")
+        C21.tr.see(_fbc_frame(valve=True), "armed")
+        C21.tr.see(_fbc_frame(), "armed")
+        check(C21.tr.state("air") == E,
+              f"Air on and off inside the shot: EMPTY: {C21.tr.state('air')}")
+        C21.tr._flames = lambda: {
+            "connected": True, "stale": False, "age_ms": 10,
+            "groups": [{"name": "fireball", "armed": "armed",
+                        "fire_slots": [55, 56, 57, 58, 59],
+                        "sent_fire": [0, 255, 255, 0, 0]}]}
+        C21.tr.see(_fbc_frame(valve=True), "armed")
+        C21.tr._read_armed()
+        C21.tr.see(_fbc_frame(), "armed")
+        C21.tr._flames = lambda: {
+            "connected": True, "stale": False, "age_ms": 10,
+            "groups": [{"name": "fireball", "armed": "armed",
+                        "fire_slots": [55, 56, 57, 58, 59],
+                        "sent_fire": [0, 0, 0, 0, 0]}]}
+        C21.tr._read_armed()
+        check(C21.tr.state("air") == E,
+              f"flamesafe's late report of that Air inside the shot: still "
+              f"EMPTY after it: {C21.tr.state('air')}")
+        # flamesafe's fireball group on other channels: 55 to 59 are not
+        # the fireball, nothing is recorded, both tanks are NOT KNOWN and
+        # written so (round-5 review, F3), and the view says why; back on
+        # 55 to 59 they stay NOT KNOWN (never a stale EMPTY) until a
+        # charge, a shot, a Purge or an admin.
+        w23 = tempfile.mkdtemp(dir=work)
+        C23 = _fbc(w23)
+        grp = {"slots": [60, 61, 62, 63, 64], "sent": [255, 0, 0, 0, 0]}
+        C23.tr._flames = lambda: {
+            "connected": True, "stale": False, "age_ms": 10,
+            "groups": [{"name": "fireball", "armed": "armed",
+                        "fire_slots": list(grp["slots"]),
+                        "sent_fire": list(grp["sent"])}]}
+        C23.tr._read_armed()
+        C23.tr.see(_fbc_frame(fuel=True, valve=True), "armed")
+        C23.tr.see(_fbc_frame(air=True), "armed")
+        C23.tr.pump()
+        check(C23.tr.state("fuel") == U and C23.tr.state("air") == U and
+              "not 55 to 59" in C23.tr.view()["fault"] and
+              any(a[2] == "group_fault" and k.get("fault")
+                  for a, k in C23.lines) and
+              _j.load(open(os.path.join(w23, FC.FILE)))["tanks"]["fuel"][
+                  "state"] == "unknown",
+              f"the fireball group off 55 to 59: nothing recorded, both NOT "
+              f"KNOWN, written: {C23.tr.view()['fault']}")
+        grp["slots"], grp["sent"] = [59, 58, 57, 56, 55], [0, 0, 0, 0, 0]
+        C23.tr._read_armed()
+        check(C23.tr.state("fuel") == U and C23.tr.state("air") == U and
+              not C23.tr.group_fault,
+              "back on 55 to 59 (any order): still NOT KNOWN, never a stale "
+              "EMPTY")
+        C23.tr.see(_fbc_frame(fuel=True), "armed")
+        check(C23.tr.state("fuel") == C_, "and a charge seen is recorded")
+        # Round 5 (review A F1/F2/F4, review B 1): revisions from the
+        # clock, a write-ahead mark before an automatic charge, and a
+        # leftover .tmp never brings back an EMPTY on its own.
+        def _fresh(sub):
+            d = os.path.join(work, sub)
+            os.makedirs(d)
+            return d
+        # The revision is above the clock in milliseconds.
+        C24 = _fbc(_fresh("r24"))
+        C24.tr.pump()
+        check(C24.tr.rev >= int(C24.wall[0] * 1000) and
+              _j.load(open(C24.tr.path))["rev"] == C24.tr.rev,
+              f"the revision is above the clock in ms: {C24.tr.rev}")
+        # F2: the main file unreadable at start (an antivirus lock), the
+        # renames then refused, the main readable again at the restart:
+        # the newer .tmp (CHARGED) wins, never the old main's EMPTY.
+        d25 = _fresh("r25")
+        C25 = _fbc(d25)
+        for _ in range(10):
+            C25.tr.see(_fbc_frame(fuel=True), "armed")
+            C25.tr.see(_fbc_frame(), "armed")
+            C25.tr.see(_fbc_frame(valve=True), "armed")
+            C25.tr.see(_fbc_frame(), "armed")
+        C25.tr.pump()
+        old_rev = _j.load(open(C25.tr.path))["rev"]
+        import builtins as _bi
+        real_open_ = _bi.open
+
+        def locked_main(p_, *a, **k):
+            mode = a[0] if a else k.get("mode", "r")
+            if str(p_).endswith(FC.FILE) and "r" in mode:
+                raise PermissionError(13, "locked by antivirus")
+            return real_open_(p_, *a, **k)
+        _bi.open = locked_main
+        try:
+            C26 = _fbc(d25)
+        finally:
+            _bi.open = real_open_
+        check(C26.tr.state("fuel") == U and "could not be read" in
+              C26.tr.fault, f"the main file locked at start: NOT KNOWN: "
+                            f"{C26.tr.fault}")
+        real_rep = os.replace
+        os.replace = held
+        try:
+            C26.wall[0] -= 3600      # even a clock an hour behind
+            C26.tr.confirm_empty("Andy")
+            C26.tr.see(_fbc_frame(fuel=True), "armed")
+            C26.tr.see(_fbc_frame(air=True), "armed")
+            C26.tr.see(_fbc_frame(), "armed")
+            C26.tr.pump()
+        finally:
+            os.replace = real_rep
+        C27 = _fbc(d25)
+        check(C27.tr.state("fuel") == U and C27.tr.state("air") == U,
+              f"the main readable again, the clock an hour behind: never "
+              f"the old main's EMPTY (NOT KNOWN): {C27.tr.state('fuel')} "
+              f"{C27.tr.state('air')}")
+        # The same with the clock right: the newer .tmp wins (CHARGED).
+        os.remove(os.path.join(d25, FC.FILE + ".tmp"))
+        _bi.open = locked_main
+        try:
+            C26b = _fbc(d25)
+        finally:
+            _bi.open = real_open_
+        os.replace = held
+        try:
+            C26b.wall[0] += 1.0      # time has moved on since the old main
+            C26b.tr.confirm_empty("Andy")
+            C26b.tr.see(_fbc_frame(fuel=True), "armed")
+            C26b.tr.see(_fbc_frame(air=True), "armed")
+            C26b.tr.see(_fbc_frame(), "armed")
+            C26b.tr.pump()
+        finally:
+            os.replace = real_rep
+        C27b = _fbc(d25)
+        check(C27b.tr.state("fuel") == C_ and C27b.tr.state("air") == C_ and
+              C27b.tr.rev > old_rev,
+              f"the main readable again: the newer .tmp wins (CHARGED): "
+              f"{C27b.tr.state('fuel')} {C27b.tr.state('air')}")
+        # The main file unreadable and a readable .tmp beside it: which is
+        # newer cannot be told, so NOT KNOWN, never the .tmp alone.
+        _bi.open = locked_main
+        try:
+            C27c = _fbc(d25)
+        finally:
+            _bi.open = real_open_
+        check(os.path.exists(os.path.join(d25, FC.FILE + ".tmp")) and
+              C27c.tr.state("fuel") == U and C27c.tr.state("air") == U,
+              f"main unreadable, a readable .tmp: NOT KNOWN: "
+              f"{C27c.tr.state('fuel')}")
+        # F4: the first run's write leaves an EMPTY .tmp it could not
+        # rename, and the process stops: never trusted on its own.
+        d28 = _fresh("r28")
+        os.replace = held
+        try:
+            C28 = _fbc(d28)
+        finally:
+            os.replace = real_rep
+        check(os.path.exists(os.path.join(d28, FC.FILE + ".tmp")) and
+              not os.path.exists(os.path.join(d28, FC.FILE)) and
+              C28.tr.state("fuel") == U, "the first run's rename refused: "
+                                         "NOT KNOWN, an EMPTY .tmp left")
+        C29 = _fbc(d28)
+        check(C29.tr.state("fuel") == U and C29.tr.state("air") == U and
+              "Only" in C29.tr.fault,
+              f"a restart finds only that .tmp: NOT KNOWN, never its EMPTY: "
+              f"{C29.tr.fault}")
+        # Review B 1: a purge's (or a shot's) EMPTY left in .tmp by a
+        # refused rename, then a charge whose write fails at open, then two
+        # restarts: never EMPTY.
+        for what in ("purge", "valve"):
+            d30 = _fresh("r30" + what)
+            C30 = _fbc(d30)
+            C30.tr.see(_fbc_frame(fuel=True), "armed")
+            C30.tr.see(_fbc_frame(air=True), "armed")
+            C30.tr.see(_fbc_frame(), "armed")
+            C30.tr.pump()
+            os.replace = held
+            try:
+                C30.tr.see(_fbc_frame(**{what: True}), "armed")
+                C30.tr.see(_fbc_frame(), "armed")
+                C30.tr.pump()
+            finally:
+                os.replace = real_rep
+            C30.tr._write = lambda doc: (_ for _ in ()).throw(
+                PermissionError(13, "folder locked"))
+            C30.tr.note_manual({"fuel"}, "Andy", "Rack screen")
+            C30.tr.see(_fbc_frame(fuel=True), "armed")
+            C30.tr.see(_fbc_frame(), "armed")
+            C30.tr.pump()
+            C31 = _fbc(d30)
+            C32 = _fbc(d30)
+            check(C31.tr.state("fuel") == U and C32.tr.state("fuel") == U,
+                  f"{what}'s EMPTY in .tmp, Andy's Fuel not written, two "
+                  f"restarts: Fuel NOT KNOWN: {C31.tr.state('fuel')} "
+                  f"{C32.tr.state('fuel')}")
+        # The write-ahead mark: "wait" until it is on disk, then "ok"; a
+        # restart then makes EMPTY tanks NOT KNOWN; a shot clears it.
+        d33 = _fresh("r33")
+        C33 = _fbc(d33)
+        C33.tr.pump()
+        got = [C33.tr.charge_ready()]
+        got.append(C33.tr.charge_ready())
+        C33.tr.pump()
+        got.append(C33.tr.charge_ready())
+        check(got == ["wait", "wait", "ok"] and
+              _j.load(open(C33.tr.path))["pending"] is True,
+              f"the mark is written before an automatic charge may go: {got}")
+        C34 = _fbc(d33)
+        check(C34.tr.state("fuel") == U and C34.tr.state("air") == U and
+              "automatic charge" in C34.tr.fault,
+              f"a restart reads the mark: EMPTY tanks NOT KNOWN: "
+              f"{C34.tr.fault}")
+        C34.tr.see(_fbc_frame(fuel=True), "armed")
+        C34.tr.see(_fbc_frame(), "armed")
+        C34.tr.see(_fbc_frame(valve=True), "armed")
+        C34.tr.see(_fbc_frame(), "armed")
+        C34.tr.pump()
+        check(_j.load(open(C34.tr.path))["pending"] is False and
+              C34.tr.state("fuel") == E,
+              "the shot clears the mark")
+        C35 = _fbc(d33)
+        check(C35.tr.state("fuel") == E and C35.tr.state("air") == E and
+              not C35.tr.fault, "a restart after the shot: EMPTY, no fault")
+        # The mark cannot be written: "failed", the automatic charge is not
+        # sent (fireball_cues), the fault shown.
+        C35.tr._write = lambda doc: (_ for _ in ()).throw(
+            PermissionError(13, "folder locked"))
+        first = C35.tr.charge_ready()
+        C35.tr.pump()
+        check(first == "wait" and C35.tr.charge_ready() == "failed" and
+              "could not be written" in C35.tr.view()["fault"],
+              "the mark cannot be written: failed, the fault shown")
+        # Round 6. Tanks are empty clears the PENDING mark (review A: a
+        # test gap) and is refused while the fireball group is off 55 to
+        # 59 or flamesafe.json and the running flamesafe disagree (review
+        # A bug 3).
+        d40 = _fresh("r40")
+        C40 = _fbc(d40)
+        C40.tr.pump()
+        C40.tr.charge_ready()
+        C40.tr.pump()
+        check(_j.load(open(C40.tr.path))["pending"] is True, "PENDING on")
+        C40b = _fbc(d40)
+        check(C40b.tr.state("fuel") == U and C40b.tr.pending, "restart: NOT KNOWN")
+        ok40, _t = C40b.tr.confirm_empty("Andy")
+        C40b.tr.pump()
+        check(ok40 and C40b.tr.pending is False and
+              _j.load(open(C40b.tr.path))["pending"] is False,
+              "Tanks are empty takes the PENDING mark off, written")
+        C40c = _fbc(d40)
+        check(C40c.tr.state("fuel") == E and not C40c.tr.fault,
+              "and the next start reads EMPTY")
+        C40c.tr.group_fault = "flamesafe's fireball group is on [60]."
+        C40c.tr.tanks["fuel"]["state"] = U
+        ok40, t40 = C40c.tr.confirm_empty("Andy")
+        check(not ok40 and C40c.tr.state("fuel") == U and
+              "Fix the flamesafe config first" in t40 and _cfg_dashes(t40),
+              f"Tanks are empty refused while the group is off 55 to 59: "
+              f"{t40}")
+        C40c.tr.group_fault = ""
+        C40c.tr.note_external_fault("flamesafe.json says 60 to 64, the "
+                                    "running flamesafe 55 to 59.")
+        C40c.tr.pump()
+        check(C40c.tr.state("fuel") == U and C40c.tr.state("air") == U and
+              not C40c.tr.confirm_empty("Andy")[0] and
+              "60 to 64" in C40c.tr.view()["fault"] and
+              any(a[2] == "group_fault" and k.get("fault")
+                  for a, k in C40c.lines),
+              "flamesafe.json and the running flamesafe disagree: both NOT "
+              "KNOWN, said, Tanks are empty refused")
+        C40c.tr.note_external_fault("")
+        check(C40c.tr.state("fuel") == U and C40c.tr.confirm_empty("Andy")[0],
+              "they agree again: still NOT KNOWN until confirmed, then it "
+              "may be")
+        # A PENDING mark nothing used comes off again (review A bug 2, B4):
+        # a rehearsal stopped before its charge.
+        d41 = _fresh("r41")
+        C41 = _fbc(d41)
+        C41.tr.pump()
+        C41.tr.charge_ready()
+        C41.tr.pump()
+        C41.t[0] += FC.PENDING_IDLE_S - 1
+        C41.tr._read_armed()
+        C41.tr.pump()
+        check(C41.tr.pending is True, "not before the idle time")
+        C41.t[0] += 2
+        C41.tr._read_armed()
+        C41.tr.pump()
+        check(C41.tr.pending is False and
+              _j.load(open(C41.tr.path))["pending"] is False and
+              _fbc(d41).tr.state("fuel") == E,
+              "after the idle time it comes off, written: a restart keeps "
+              "EMPTY")
+        C41.tr.charge_ready()
+        C41.tr.pump()
+        C41.tr.see(_fbc_frame(fuel=True), "armed")
+        C41.t[0] += FC.PENDING_IDLE_S + 1
+        C41.tr._read_armed()
+        check(C41.tr.pending is True, "a mark a charge used stays")
+        # Review 3: a manual press is held until the mark is on disk, and
+        # goes out anyway when the record cannot be saved, with both tanks
+        # NOT KNOWN in memory and a marker elsewhere so a restart reads
+        # NOT KNOWN though the record on disk says EMPTY.
+        d42 = _fresh("r42")
+        C42 = _fbc(d42)
+        C42.tr.pump()
+        got = [C42.tr.manual_gate()]
+        C42.tr.pump()
+        got.append(C42.tr.manual_gate())
+        check(got == ["wait", "ok"], f"a manual press waits for the mark: "
+                                     f"{got}")
+        C42.tr.see(_fbc_frame(valve=True), "armed")
+        C42.tr.see(_fbc_frame(), "armed")
+        C42.tr.pump()
+        d43 = _fresh("r43")
+        C43 = _fbc(d43)
+        C43.tr.pump()
+        check(_j.load(open(C43.tr.path))["tanks"]["fuel"]["state"] ==
+              "empty", "EMPTY on disk")
+        marker_writes = []
+        real_wmf = C43.tr._write_marker_file
+
+        def counting_wmf(path, rev):
+            marker_writes.append(path)
+            return real_wmf(path, rev)
+        C43.tr._write_marker_file = counting_wmf
+        C43.tr._write = lambda doc: (_ for _ in ()).throw(
+            PermissionError(13, "folder refuses new files"))
+        g1 = C43.tr.manual_gate()
+        C43.tr.pump()                   # the record cannot be written
+        g2 = C43.tr.manual_gate()       # the marker is queued: wait
+        check(g1 == "wait" and g2 == "wait" and not marker_writes,
+              f"the marker is the writer thread's, not the gate's: {g1} "
+              f"{g2} {marker_writes}")
+        C43.tr.pump()                   # the marker is written
+        gates = [C43.tr.manual_gate() for _ in range(10)]
+        C43.tr.pump()
+        check(gates == ["ok"] * 10 and C43.tr.state("fuel") == U and
+              C43.tr.state("air") == U and
+              "cannot be saved" in C43.tr.view()["fault"] and
+              len(marker_writes) == 2 and
+              os.path.exists(C43.tr._alts[0]) and
+              os.path.exists(C43.tr._alts[1]),
+              f"the record cannot be saved: the press goes out, both NOT "
+              f"KNOWN, markers in the settings folder and the user's own "
+              f"folder, written once not on every beat: {gates} "
+              f"{len(marker_writes)}")
+        check(len([1 for a, k in C43.lines if a[2] == "unknown" and
+                   "cannot be saved" in a[3]]) == 2,
+              f"one fault line when it starts and one when the marker is "
+              f"done, not one a beat: "
+              f"{[a[3][:40] for a, k in C43.lines if a[2] == 'unknown']}")
+        C43.tr.note_manual({"fuel"}, "Andy", "Rack screen")
+        C43.tr.see(_fbc_frame(fuel=True), "armed")
+        check(C43.tr.state("fuel") == C_, "and Andy's Fuel is CHARGED")
+        C44 = _fbc(d43)       # crash, the folder works again
+        check(C44.tr.state("fuel") == U and C44.tr.state("air") == U and
+              "went out while the record could not be saved" in
+              C44.tr.fault,
+              f"the restart reads NOT KNOWN though the record says EMPTY: "
+              f"{C44.tr.state('fuel')} {C44.tr.fault}")
+        C44.tr.pump()
+        check(not any(os.path.exists(x) for a_ in C44.tr._alts
+                      for x in (a_, a_ + ".tmp")),
+              "the markers are taken away once a newer record is on disk")
+        C45 = _fbc(d43)
+        check(C45.tr.state("fuel") == U, "and NOT KNOWN is what is on disk")
+        # Round 7, review 1: the marker is never in the temp folder; a
+        # marker that cannot be read, or the leftover of one being written,
+        # counts as present; and when no marker can be written anywhere
+        # automatic charging is off until an admin confirms the tanks.
+        import tempfile as _tf
+        CD = FC.ChargeTracker(_fresh("r46"), threaded=False)
+        check(CD._alts[0].startswith(os.path.join(
+                  os.path.dirname(CD.path), FC.FILE + ".")) and
+              CD._alts[0].endswith(".marker") and
+              CD._alts[1].startswith(os.path.join(
+                  os.path.expanduser("~"), ".ltcplay")) and
+              not any(a_.startswith(_tf.gettempdir() + os.sep) and
+                      not a_.startswith(work) for a_ in CD._alts[1:]),
+              f"the markers: the settings folder and ~/.ltcplay, not temp: "
+              f"{CD._alts}")
+        for what, content in (("unreadable", "{half a mar"),
+                              ("tmp only", None)):
+            d47 = _fresh("r47" + what.replace(" ", ""))
+            C47 = _fbc(d47)
+            C47.tr.pump()
+            target = C47.tr._alts[1] if content else \
+                C47.tr._alts[1] + ".tmp"
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "w") as fh:
+                fh.write(content or '{"rev": ')
+            C48 = _fbc(d47)
+            check(C48.tr.state("fuel") == U and C48.tr.state("air") == U,
+                  f"a marker that is {what}: NOT KNOWN")
+            C48.tr.pump()
+            check(not os.path.exists(target) and
+                  _fbc(d47).tr.state("fuel") == U,
+                  f"{what}: taken away once a newer record is on disk")
+        # An unreadable marker beside a readable old one is still present.
+        d54 = _fresh("r54")
+        C54 = _fbc(d54)
+        C54.tr.pump()
+        os.makedirs(os.path.dirname(C54.tr._alts[1]), exist_ok=True)
+        with open(C54.tr._alts[0], "w") as fh:
+            fh.write('{"rev": 1}')           # old: the record is newer
+        with open(C54.tr._alts[1], "w") as fh:
+            fh.write("{half a mar")          # cannot be read
+        check(_fbc(d54).tr.state("fuel") == U,
+              "one marker unreadable beside an old readable one: NOT KNOWN")
+        # Atomic: a crash between the write and the rename leaves no
+        # half-written marker under its own name.
+        C53 = _fbc(_fresh("r53"))
+        real_replace_ = os.replace
+        os.replace = held
+        try:
+            try:
+                C53.tr._write_marker_file(C53.tr._alts[0], 123)
+            except PermissionError:
+                pass
+        finally:
+            os.replace = real_replace_
+        check(not os.path.exists(C53.tr._alts[0]) and
+              os.path.exists(C53.tr._alts[0] + ".tmp"),
+              "a marker is written under another name and renamed")
+        d49 = _fresh("r49")
+        C49 = _fbc(d49)
+        C49.tr.pump()
+        C49.tr._write = lambda doc: (_ for _ in ()).throw(
+            PermissionError(13, "folder refuses new files"))
+        C49.tr._write_marker_file = lambda path, rev: (_ for _ in ()).throw(
+            PermissionError(13, "disk full"))
+        C49.tr.manual_gate()
+        C49.tr.pump()
+        C49.tr.manual_gate()
+        C49.tr.pump()
+        check(C49.tr.manual_gate() == "ok" and C49.tr.auto_off and
+              "automatic charging is OFF" in C49.tr.view()["fault"] and
+              C49.tr.view()["auto_off"],
+              f"no marker anywhere: the press goes out, automatic charging "
+              f"is off: {C49.tr.view()['fault']}")
+        del C49.tr._write
+        C49.tr.pump()
+        check(C49.tr.charge_ready() == "off" and
+              C49.tr.manual_gate() == "ok",
+              "automatic charging stays off after the record works again; "
+              "the Fireball page's presses do not ask for it")
+        C49.tr.see(_fbc_frame(valve=True), "armed")
+        C49.tr.see(_fbc_frame(), "armed")
+        check(C49.tr.state("fuel") == E and C49.tr.charge_ready() == "off",
+              "and after a shot has made both EMPTY")
+        C49.tr.pending = True          # a manual charge about to be seen
+        ok49, t49 = C49.tr.confirm_empty("Andy", "Rack screen")
+        check(C49.tr.pending, "Tanks are empty with no tank NOT KNOWN leaves "
+                              "the PENDING mark alone (round-9 review 4)")
+        check(ok49 and not C49.tr.auto_off and "automatic charging allowed "
+              "again" in t49 and "confirmed EMPTY" not in t49 and
+              "the tanks stay as recorded" in t49 and
+              C49.tr.charge_ready() != "off",
+              f"an admin's confirmation turns it back on, though no tank is "
+              f"NOT KNOWN, and says only what happened: {t49}")
+        # Round 8, review 1: it comes back by itself once the record is
+        # saved and a marker can be written again and every tank is known;
+        # not while a tank is NOT KNOWN.
+        # (a shot first, the record back, the marker back, so it returns)
+        for shot_first, rec_back, mark_back, comes_back in (
+                (True, True, True, True), (False, True, True, False),
+                (True, True, False, False), (True, False, True, False)):
+            C55 = _fbc(_fresh("r55" + str((shot_first, rec_back,
+                                           mark_back))))
+            C55.tr.pump()
+            real_w55 = C55.tr._write
+            real_m55 = C55.tr._write_marker_file
+            C55.tr._write = lambda doc: (_ for _ in ()).throw(
+                PermissionError(13, "disk full"))
+            C55.tr._write_marker_file = lambda path, rev: (
+                _ for _ in ()).throw(PermissionError(13, "disk full"))
+            C55.tr.manual_gate()
+            C55.tr.pump()
+            C55.tr.manual_gate()
+            C55.tr.pump()
+            if shot_first:
+                C55.tr.see(_fbc_frame(valve=True), "armed")
+                C55.tr.see(_fbc_frame(), "armed")
+            check(C55.tr.auto_off and "automatic charging is OFF" in
+                  C55.tr.view()["fault"],
+                  "disk full: automatic charging is off, said")
+            if rec_back:
+                C55.tr._write = real_w55
+            if mark_back:
+                C55.tr._write_marker_file = real_m55
+            for _ in range(3):
+                C55.t[0] += FC.RETRY_S + 0.1
+                C55.tr.pump()
+            check(C55.tr.auto_off != comes_back,
+                  f"disk freed (tanks {'known' if shot_first else 'NOT KNOWN'}, record {'back' if rec_back else 'still failing'},"
+                  f" marker {'back' if mark_back else 'still failing'}): "
+                  f"automatic charging {'on again' if comes_back else 'off'}"
+                  f": {C55.tr.auto_off}")
+            if comes_back:
+                check(C55.tr.charge_ready() != "off" and
+                      not C55.tr.marker_fault and
+                      "automatic charging is OFF" not in
+                      C55.tr.view()["fault"] and
+                      any(a[2] == "auto_on" for a, _k in C55.lines),
+                      f"and it is journaled, the old fault gone: "
+                      f"{C55.tr.view()['fault']}")
+            C55.tr.close()
+        # Round 8, review 5: the marker names are folded for case, carry a
+        # per-machine id; an unreadable marker and one that cannot be
+        # deleted name their file; a first run beside an old marker says
+        # so.
+        import platform as _so
+        real_norm = os.path.normcase
+        real_host = _so.node
+        try:
+            os.path.normcase = lambda p_: p_.lower()
+            a_ = FC.ChargeTracker(os.path.join(work, "Abc"), threaded=False,
+                                  alt_dir=None)._alts[1]
+            b_ = FC.ChargeTracker(os.path.join(work, "aBC"), threaded=False,
+                                  alt_dir=None)._alts[1]
+            os.path.normcase = real_norm
+            check(a_ == b_, "the folder's case does not change the marker's "
+                            "name (normcase)")
+            _so.node = lambda: "MACHINE-ONE"
+            m1 = FC.ChargeTracker(os.path.join(work, "z"),
+                                  threaded=False)._alts
+            _so.node = lambda: "MACHINE-TWO"
+            m2 = FC.ChargeTracker(os.path.join(work, "z"),
+                                  threaded=False)._alts
+            check(m1[0] != m2[0] and m1[1] != m2[1],
+                  "another machine, another marker name (a synced folder)")
+        finally:
+            os.path.normcase = real_norm
+            _so.node = real_host
+        d56 = _fresh("r56")
+        C56 = _fbc(d56)
+        C56.tr.pump()
+        os.makedirs(os.path.dirname(C56.tr._alts[1]), exist_ok=True)
+        with open(C56.tr._alts[1], "w") as fh:
+            fh.write("{half a mar")
+        C57 = _fbc(d56)
+        check(C56.tr._alts[1] in C57.tr.fault,
+              f"an unreadable marker names its file: {C57.tr.fault}")
+        real_remove = os.remove
+
+        def stuck_remove(p_):
+            if str(p_).endswith(".marker"):
+                raise PermissionError(13, "in use")
+            return real_remove(p_)
+        os.remove = stuck_remove
+        try:
+            C57.tr.pump()
+        finally:
+            os.remove = real_remove
+        check(C56.tr._alts[1] in C57.tr.marker_fault and
+              "cannot be deleted" in C57.tr.marker_fault and
+              C57.tr.marker_fault in C57.tr.view()["fault"],
+              f"a marker that cannot be deleted names its file: "
+              f"{C57.tr.view()['fault']}")
+        d58 = _fresh("r58")
+        Cx = _fbc(d58)
+        os.remove(Cx.tr.path)
+        os.makedirs(os.path.dirname(Cx.tr._alts[1]), exist_ok=True)
+        with open(Cx.tr._alts[1], "w") as fh:
+            json.dump({"rev": 10 ** 15}, fh)
+        C58 = _fbc(d58)
+        C58.tr.pump()
+        check(C58.tr.state("fuel") == U and not C58.tr.first_run and
+              not any("starting both tanks EMPTY" in a[3]
+                      for a, _k in C58.lines) and
+              any("but a marker from a Fireball press" in a[3]
+                  for a, _k in C58.lines),
+              f"a first run beside an old marker says so, not 'starting "
+              f"both tanks EMPTY': {[a[3][:60] for a, _k in C58.lines]}")
+        # Round 9, F1: the hostname changes after a crash (macOS takes it
+        # from DHCP): the marker written under the old name is still found,
+        # whatever machine wrote it, and a record newer than it clears it.
+        import platform as _pl9
+        real_node9 = _pl9.node
+        try:
+            for which in ("both", "folder only", "home only"):
+                d60 = _fresh("r60" + which.replace(" ", ""))
+                _pl9.node = lambda: "andys-mbp"
+                C60 = _fbc(d60)
+                C60.tr.pump()
+                C60.tr._write = lambda doc: (_ for _ in ()).throw(
+                    PermissionError(13, "folder refuses new files"))
+                C60.tr.manual_gate()
+                C60.tr.pump()
+                C60.tr.manual_gate()
+                C60.tr.pump()
+                written = C60.tr._marker_files()
+                if which == "folder only":
+                    os.remove(C60.tr._alts[1])
+                elif which == "home only":
+                    os.remove(C60.tr._alts[0])
+                _pl9.node = lambda: "Andys-MacBook-Pro.local"
+                C61 = _fbc(d60)       # crash; the machine is now called otherwise
+                check(len(written) == 2 and C61.tr.state("fuel") == U and
+                      C61.tr.state("air") == U and
+                      C61.tr._alts[0] not in written,
+                      f"the hostname changed after the crash ({which}): the "
+                      f"marker under the old name is found: "
+                      f"{C61.tr.state('fuel')} "
+                      f"{[os.path.basename(w) for w in written]}")
+                C61.tr.pump()
+                check(C61.tr._marker_files() == [] and
+                      _fbc(d60).tr.state("fuel") == U,
+                      f"and a newer record clears it, whatever machine wrote "
+                      f"it: {C61.tr._marker_files()}")
+        finally:
+            _pl9.node = real_node9
+        # F2: a record left in .tmp (a rename refused) never outranks a
+        # marker: Air pressed unrecorded (a marker), the shot's EMPTY left
+        # in .tmp, then Fuel pressed with the record unwritable again and
+        # no new marker, a crash.
+        d62 = _fresh("r62")
+        C62 = _fbc(d62)
+        C62.tr.pump()
+        real_write62 = C62.tr._write
+
+        def fail_open62(doc):
+            raise PermissionError(13, "locked")
+        C62.tr._write = fail_open62
+        C62.tr.manual_gate()
+        C62.tr.pump()
+        C62.tr.manual_gate()
+        C62.tr.pump()
+        C62.tr.note_manual({"air"}, "Andy", "Rack screen")
+        C62.tr.see(_fbc_frame(air=True), "armed")
+        C62.tr.see(_fbc_frame(), "armed")
+        C62.tr._write = real_write62
+        real_replace62 = os.replace
+        os.replace = held
+        try:
+            C62.tr.see(_fbc_frame(valve=True), "armed")
+            C62.tr.see(_fbc_frame(), "armed")
+            C62.tr.pump()
+        finally:
+            os.replace = real_replace62
+        C62.tr._write = fail_open62
+        C62.tr.note_manual({"fuel"}, "Andy", "Rack screen")
+        C62.tr.manual_gate()
+        C62.tr.pump()
+        C62.tr.see(_fbc_frame(fuel=True), "armed")
+        C62.tr.pump()
+        tmp62 = _j.load(open(C62.tr.path + ".tmp"))
+        main62 = _j.load(open(C62.tr.path))
+        C63 = _fbc(d62)       # a crash, the folder works again
+        check(tmp62["tanks"]["fuel"]["state"] == "empty" and
+              tmp62["rev"] > main62["rev"] and C63.tr.state("fuel") == U and
+              C63.tr.state("air") == U,
+              f"a record left in .tmp says EMPTY and is newer than the "
+              f"record, but not than the marker: NOT KNOWN: "
+              f"{C63.tr.state('fuel')} tmp {tmp62['rev']} main "
+              f"{main62['rev']}")
+        # F3: no record and a marker: the NOT KNOWN record is on disk
+        # BEFORE anything else (a power cut before the writer's first
+        # flush must not leave an EMPTY one that outranks the marker).
+        d64 = _fresh("r64")
+        Cy = _fbc(d64)
+        Cy.tr.pump()
+        os.makedirs(os.path.dirname(Cy.tr._alts[1]), exist_ok=True)
+        with open(Cy.tr._alts[1], "w") as fh:
+            _j.dump({"rev": 10 ** 15}, fh)
+        os.remove(Cy.tr.path)
+        C64 = _fbc(d64)       # no pump: the power goes
+        on_disk = _j.load(open(C64.tr.path))
+        C65 = _fbc(d64)
+        check(on_disk["tanks"]["fuel"]["state"] == "unknown" and
+              on_disk["tanks"]["air"]["state"] == "unknown" and
+              C65.tr.state("fuel") == U and C65.tr.state("air") == U,
+              f"no record and a marker: NOT KNOWN written at once, not "
+              f"EMPTY first: {on_disk['tanks']['fuel']['state']}")
+        # Review 6: flamesafe.json against the running flamesafe is judged
+        # on every status, not only while a show computes frames.
+        C50 = _fbc(None)
+        check(not C50.tr.judges_ext, "no slots given: the cues tell it")
+        fileg = {"v": [60, 61, 62, 63, 64]}
+        liveg = {"v": [55, 56, 57, 58, 59]}
+        C50.tr._file_get = lambda: fileg["v"]
+        check(C50.tr.judges_ext, "given the file's slots: it judges alone")
+        C50.tr._flames = lambda: {
+            "connected": True, "stale": False, "age_ms": 10,
+            "groups": [{"name": "fireball", "armed": "armed",
+                        "fire_slots": list(liveg["v"]),
+                        "sent_fire": [0, 0, 0, 0, 0]}]}
+        C50.tr._read_armed()
+        check(C50.tr.state("fuel") == U and "flamesafe.json puts the "
+              "fireball on" in C50.tr.ext_fault and
+              not C50.tr.confirm_empty("Andy")[0],
+              f"file 60 to 64, live 55 to 59, no show playing: NOT KNOWN, "
+              f"Tanks are empty refused: {C50.tr.ext_fault}")
+        fileg["v"] = [55, 56, 57, 58, 59]
+        C50.tr._read_armed()
+        check(C50.tr.ext_fault == "" and C50.tr.confirm_empty("Andy")[0],
+              "the config fixed: the fault goes by itself, without a show")
+        fileg["v"] = liveg["v"] = [60, 61, 62, 63, 64]
+        C50.tr._read_armed()
+        check(C50.tr.ext_fault == "" and "not 55 to 59" in
+              C50.tr.group_fault, f"both moved together: no 'disagree' text, "
+                                  f"the off-55-to-59 one: "
+                                  f"{C50.tr.ext_fault!r} {C50.tr.group_fault}")
+        # Review 3: a slow marker write (a 0.5 s fsync) never holds the
+        # sender's observe() or the gate: it is the writer thread's alone.
+        d52 = _fresh("r52")
+        T52 = FC.ChargeTracker(d52, threaded=True,
+                               alt_dir=os.path.join(d52, "_alt"))
+        try:
+            T52._write = lambda doc: (_ for _ in ()).throw(
+                PermissionError(13, "folder refuses new files"))
+            real52 = T52._write_marker_file
+
+            def slow_marker(path, rev):
+                time.sleep(0.5)
+                return real52(path, rev)
+            T52._write_marker_file = slow_marker
+            worst_obs = worst_gate = 0.0
+            t_end = time.monotonic() + 3.0
+            gate_ok = False
+            while time.monotonic() < t_end and not gate_ok:
+                t0 = time.perf_counter()
+                g = T52.manual_gate()
+                worst_gate = max(worst_gate, time.perf_counter() - t0)
+                t0 = time.perf_counter()
+                T52.observe("t", _fbc_frame(), True)
+                worst_obs = max(worst_obs, time.perf_counter() - t0)
+                gate_ok = g == "ok"
+                time.sleep(0.02)
+            check(gate_ok and worst_obs < 0.15 and worst_gate < 0.15,
+                  f"a 0.5 s marker write: the sender's observe() and the "
+                  f"gate stay fast, the press goes out after it: gate ok "
+                  f"{gate_ok}, observe {worst_obs * 1000:.0f} ms, gate "
+                  f"{worst_gate * 1000:.0f} ms")
+        finally:
+            T52.close()
+        # Review 7: the mark is asked for again while a charge channel is
+        # on (a charge carried on for longer than the idle time keeps it).
+        C51 = _fbc(_fresh("r51"))
+        C51.tr.pump()
+        C51.tr.charge_ready()
+        C51.tr.pump()
+        for _ in range(20):
+            C51.tr.observe("t", _fbc_frame(fuel=True), True)
+            C51.t[0] += 0.4
+            C51.tr.observe("t", _fbc_frame(fuel=True), True)
+            C51.tr._read_armed()
+        check(C51.tr.pending, "a charge channel on keeps the mark past the "
+                              "idle time")
+        C51.tr.pending = False
+        C51.tr.observe("t", _fbc_frame(air=True), True)
+        C51.tr._read_armed()
+        check(C51.tr.pending, "and asks for it when there is none")
+        # A press on the Fireball page asks for the mark, never waits.
+        d36 = _fresh("r36")
+        C36 = _fbc(d36)
+        C36.tr.pump()
+        C36.tr.note_manual({"air"}, "Andy", "Rack screen")
+        C36.tr.pump()
+        check(_j.load(open(C36.tr.path))["pending"] is True,
+              "Andy's charge press writes the mark too")
+        check(_fbc(None).tr.charge_ready() == "ok",
+              "memory only: nothing to wait for")
+        # close(): its last write is bounded and never runs beside another
+        # writer (round-4 review).
+        C22 = _fbc(None)
+        inside, most, gate = [0], [0], threading.Event()
+
+        def slow(doc):
+            inside[0] += 1
+            most[0] = max(most[0], inside[0])
+            gate.wait(5)
+            inside[0] -= 1
+        C22.tr._write = slow
+        C22.tr._unwritten = C22.tr._doc()
+        C22.tr._retry_at = -1e9
+        busy = threading.Thread(target=C22.tr.pump, daemon=True)
+        busy.start()
+        time.sleep(0.1)
+        real_close_s = FC.CLOSE_S
+        FC.CLOSE_S = 0.3
+        try:
+            t0 = time.monotonic()
+            C22.tr.close()
+            took = time.monotonic() - t0
+        finally:
+            FC.CLOSE_S = real_close_s
+            gate.set()
+            busy.join(5)
+        time.sleep(0.1)
+        check(took < 1.5 and most[0] == 1,
+              f"close() with a write hung: back in {took:.2f} s, one writer "
+              f"at a time ({most[0]})")
+        # The status's age: under 0.5 s armed counts, over it does not.
+        for age, want in ((499, "armed"), (501, "unknown"), (True,
+                                                              "unknown")):
+            got = FC.armed_from_status({"connected": True, "stale": False,
+                                        "age_ms": age, "groups": [
+                                            {"name": "fireball",
+                                             "armed": "armed"}]})
+            check(got == want, f"a status {age} ms old: {got}")
+        v = C4.tr.view()
+        check(v["psi"] is None and set(v["tanks"]) == {"fuel", "air"} and
+              v["tanks"]["fuel"]["slot"] == 55 and v["text"],
+              "the view: both tanks, the words, and no pressure invented")
+        # It sends nothing.
+        src = open(FC.__file__, encoding="utf-8").read()
+        for word in ("purge_set", "program_set", "sendto", "import socket",
+                     "flamelink"):
+            check(word not in src, f"fireball_charge.py has no {word!r}")
+        check(_cfg_dashes(src), "no em or en dash in fireball_charge.py")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fireball_charge_wiring():
+    section("the fireball's charge state in the engine: chained onto the "
+            "flame link's observer (the fuel tracker still told), told who "
+            "pressed by the Fireball page, in every screen's status")
+    import types
+    from ltcplay import web as W
+    from ltcplay import remote as RM
+    from ltcplay import fireball_charge as FC
+    work = tempfile.mkdtemp()
+    seen = []
+    link = types.SimpleNamespace(observer=lambda *a: seen.append(a))
+    closed = []
+
+    class _Svc:
+        conductor = None
+        machine = None
+
+        def journal_press(self, *a, **kw):
+            pass
+    rm = RM.Remote(None, _Svc(), folder=work, log=lambda t_: None)
+    rm.fireball = types.SimpleNamespace(on_controls=None)
+    httpd = types.SimpleNamespace(
+        remote=rm, fire_ice=types.SimpleNamespace(flame_link=link),
+        server_close=lambda: closed.append(
+            rm.fireball_charge._stop.is_set()))
+    try:
+        W._attach_fireball_charge(httpd)
+        tr = rm.fireball_charge
+        check(isinstance(tr, FC.ChargeTracker), "built")
+        link.observer("00:00:01:00", _fbc_frame(fuel=True), True)
+        check(seen and seen[-1][1] == _fbc_frame(fuel=True) and
+              tr.frames == 1, "the fuel tracker's observer is still told, "
+                              "and so is the charge state")
+        rm.fireball.on_controls({"fuel"}, "Andy", "Rack screen")
+        check(tr._manual.get("fuel", ("",))[0] == "Andy",
+              "the Fireball page tells who holds Fuel Charge")
+        st = rm.status(RM.Ctx(True, "127.0.0.1"))
+        check(st.get("fireball_charge", {}).get("tanks", {}).get(
+            "fuel", {}).get("state") in ("empty", "unknown") and
+              "text" in st["fireball_charge"],
+              f"in the status: {st.get('fireball_charge')}")
+        # Tanks are empty (fireball-charge-empty): the Settings row,
+        # signed in, from the show network screen_arming too.
+        from ltcplay import users as U
+        check(U.classify("/api/remote/fireball-charge-empty", {}) ==
+              "settings" and
+              "fireball-charge-empty" in RM.POST_ROUTES,
+              "Tanks are empty is a Settings press")
+        matrix = U.normalise_matrix(None)
+        rm.users = types.SimpleNamespace(
+            active=lambda: True, matrix=lambda: matrix,
+            may=lambda role, perm: U.allowed(matrix, role, perm))
+
+        def ctx(role=None, local=True):
+            return RM.Ctx(local, "127.0.0.1" if local else "10.0.0.9",
+                          session={"name": "Andy", "role": role}
+                          if role else None)
+        tr.tanks["fuel"]["state"] = "unknown"
+        for c, why in ((ctx(), "signed out"), (ctx("operator"),
+                                               "an operator")):
+            code, out, _h = rm.post("/api/remote/fireball-charge-empty", {},
+                                    c)
+            check(code == 403 and tr.state("fuel") == "unknown",
+                  f"{why}: refused, nothing changed: {code} {out}")
+        RM.save_settings(work, screen_arming=False)
+        code, out, _h = rm.post("/api/remote/fireball-charge-empty", {},
+                                ctx("admin", local=False))
+        check(code == 403 and "screen_arming" in out["error"],
+              f"an admin on an iPad without screen_arming: refused: {out}")
+        code, out, _h = rm.post("/api/remote/fireball-charge-empty", {},
+                                ctx("admin"))
+        check(code == 200 and tr.state("fuel") == "empty" and
+              "confirmed EMPTY by Andy" in out["text"],
+              f"an admin on the show PC: confirmed: {code} {out}")
+        page = open(os.path.join(os.path.dirname(os.path.abspath(
+            __file__)), "ltcplay", "web", "remote.html"),
+            encoding="utf-8").read()
+        check('post("/api/remote/fireball-charge-empty", actor({}))' in page
+              and 'confirmBox("Are both tanks empty?"' in page and
+              'tks[k].state === "unknown"' in page,
+              "the Fireball page's Tanks are empty asks first, shows only "
+              "while a tank is NOT KNOWN, and posts the route")
+        import re as _re
+        tag = _re.search(r'<button[^>]*id="fb-empty"[^>]*>', page)
+        check(tag and "data-safe" not in tag.group(0),
+              "Tanks are empty is not a data-safe button (it is no stop, "
+              "disarm or off: the key guard may hold it back)")
+        httpd.server_close()
+        check(closed == [False] and tr._stop.is_set(),
+              f"closed with the engine, AFTER the flame link (and the rest "
+              f"closed before it): it still watched while they closed: "
+              f"{closed}")
+    finally:
+        try:
+            rm.fireball_charge.close()
+        except Exception:
+            pass
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    # A slow disk never makes flamesafe's status reading old (review C-6):
+    # the file is written on its own thread.
+    import threading as _th
+    gate = _th.Event()
+    trw = FC.ChargeTracker(None, flames_get=lambda: {
+        "connected": True, "stale": False, "age_ms": 10,
+        "groups": [{"name": "fireball", "armed": "armed"}]})
+    try:
+        trw.path = os.path.join(tempfile.mkdtemp(), FC.FILE)
+        trw._write = lambda doc: gate.wait(3)
+        trw.see(_fbc_frame(fuel=True), "armed")
+        time.sleep(0.3)                  # the writer is stuck in _write
+        trw.see(_fbc_frame(fuel=True, air=True), "armed")   # more to write
+        time.sleep(0.1)
+        a0 = trw._armed_at
+        time.sleep(0.3)
+        check(a0 is not None and trw._armed_at is not None and
+              trw._armed_at > a0 and trw.armed_now() == "armed",
+              "a write stuck for seconds: the status is still read every "
+              "50 ms")
+    finally:
+        gate.set()
+        trw.close()
+    # The Fireball page tells what it holds, and every cut tells set().
+    P = _fb_panel()
+    told = []
+    P.fb.on_controls = lambda on, who, screen: told.append((set(on), who))
+    me = ("Rack screen", "w-a")
+    P.fb.beat({"controls": {"fuel": True}, "run": "r1", "seq": 1,
+               "seen": 0}, me, who="Andy", screen="Rack screen")
+    check(told and told[-1] == ({"fuel"}, "Andy"),
+          f"a beat that went in tells what is held and by whom: {told}")
+    P.fb.cut("test")
+    check(told[-1] == (set(), ""), f"a cut tells nothing is held: {told}")
     print("  ok")
 
 
@@ -106221,6 +107868,8 @@ if __name__ == "__main__":
         test_fireball_timeline_routes,
         test_fireball_timeline_show_info_from_a_real_show_file,
         test_fireball_timeline_docs_in_plain_words,
+        test_fireball_charge_state,
+        test_fireball_charge_wiring,
         test_play_from_cue_model,
         test_play_from_cue_store,
         test_play_from_cue_file_is_never_lost,

@@ -125,6 +125,13 @@ Fireball page"). For a show set to its fireball timeline, 55, 56, 57 and
 With no `machines` list the page builds exactly that one machine from
 flamesafe's group (one machine per fireball, never one per channel).
 
+**The fuel and air charge record** (`ltcplay_fireball_charge.json`, in the
+settings folder; OPERATOR.md, "The fuel and air charge") starts both
+tanks EMPTY when it finds no record. If the settings folder is lost or
+the program runs under another Windows user, the tanks read EMPTY:
+confirm by eye before a show. The journal says "No charge record found:
+starting both tanks EMPTY" with the folder it looked in.
+
 **The rule is by flamesafe group, not by machine.** A fireball group is
 one named in `fireball_groups` in `ltcplay_morning.json` (for a group
 whose name does not say so: `"fireball_groups": ["Big Boom"]`), one whose

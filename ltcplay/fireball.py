@@ -178,6 +178,11 @@ class FireballPanel:
         self._ended = collections.OrderedDict()
         self.runs = 0
         self.last_cut = ""
+        # (on keys, who, screen): told what this page holds ON after each
+        # beat that went in, and set() on every cut, so the fireball's
+        # charge state (fireball_charge.py) can name who charged or topped
+        # off. Display and journal only: it never changes what is sent.
+        self.on_controls = None
         self._stop = threading.Event()
         self._thread = None
         self._threaded = threaded
@@ -195,6 +200,14 @@ class FireballPanel:
                           fault=fault)
         except Exception:                                # noqa: BLE001
             pass
+
+    def _tell(self, on, who, screen):
+        tell = self.on_controls
+        if tell is not None:
+            try:
+                tell(set(on), who, screen)
+            except Exception:                            # noqa: BLE001
+                pass
 
     @property
     def available(self):
@@ -406,6 +419,7 @@ class FireballPanel:
             self.cut(f"the Fireball is not armed: {why}", who=who,
                      screen=screen)
             return 409, {"error": why, "cut": True}
+        self._tell(on, who, screen)
         if started or before != set(on):
             names = [lb for k, lb, _t in CONTROLS if k in on]
             self._note(f"{owner[0]} on the Fireball page: "
@@ -461,6 +475,7 @@ class FireballPanel:
                 link.purge_clear()
             except Exception:                            # noqa: BLE001
                 pass
+        self._tell(set(), who, screen)
         if r is not None:
             held = self._clock() - r["start"]
             self._note(f"Fireball page: everything off after {held:.1f} s: "
