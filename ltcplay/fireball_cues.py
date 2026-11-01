@@ -64,6 +64,7 @@ import threading
 import time
 
 from . import fireball_timeline as fbtl
+from .fireball_charge import group_mismatch_text
 
 ON_VALUE = 255          # fireball.ON_VALUE (ASSUMED, for Jeff and Andy)
 SLOTS = fbtl.FIREBALL_FIRE_SLOTS
@@ -270,11 +271,15 @@ class FireballCues:
     def _gap_check(self, run):
         """Asked again after more than GAP_S (a Hold, a look over the
         show, a stalled timecode, a read fault): nothing of ours was on
-        meanwhile, so nothing carries on (review D-F1)."""
+        meanwhile, so nothing carries on (review D-F1). True after such a
+        gap: the position may have moved while nothing was asked, so it is
+        a landing too (round-7 review 5)."""
         now = self._clock()
-        if run.last_call is not None and now - run.last_call > GAP_S:
+        gapped = run.last_call is not None and now - run.last_call > GAP_S
+        if gapped:
             run.prev_on = set()
         run.last_call = now
+        return gapped
 
     def _group_guard(self, out):
         """(handled, out): flamesafe's fireball group is checked against
@@ -299,13 +304,13 @@ class FireballCues:
                     pass
             return False, out
         if mismatch:
-            text = (f"flamesafe.json puts the fireball on {file_g} and the "
-                    f"running flamesafe on {live_g}, so no show reaches "
-                    f"either until they agree (MORNING.md, The fireball)")
+            # The one wording, shared with the charge record (which now
+            # judges the same thing on every status, round-7 review 6).
+            text = group_mismatch_text(file_g, live_g)
             if tr is not None and not self._ext_told:
                 self._ext_told = True
                 try:
-                    tr.note_external_fault(text + ".")
+                    tr.note_external_fault(text)
                 except Exception:                # noqa: BLE001
                     pass
         else:
@@ -371,7 +376,7 @@ class FireballCues:
         if run is None or run.cue_obj is not cue_obj or run.label != label:
             run = self._run = _Run(cue_obj, label, entry, rev)
             self.messages = []
-        self._gap_check(run)
+        gapped = self._gap_check(run)
         first, run.first = run.first, False
         now = self._clock()
         # A seek inside the play (a Programming Ahead or Back, a Play from
@@ -383,6 +388,10 @@ class FireballCues:
             adv = int((now - (run.last_t or now)) * fbtl.FPS) + 3
             jumped = relf < run.last_relf - 2 or relf > run.last_relf + adv
         run.last_relf, run.last_t = relf, now
+        # A gap longer than GAP_S is a landing too: a forward seek shorter
+        # than the pause is not seen as a jump by the clock (round-7
+        # review 5).
+        jumped = jumped or gapped
         if first or jumped:
             run.first_relf = relf
         if run.source != "timeline":

@@ -21142,7 +21142,7 @@ def build():
 
  ("fireball cues: a gap with no frame asked keeps the stage carrying on",
   "ltcplay/fireball_cues.py",
-  "        if run.last_call is not None and now - run.last_call > GAP_S:\n            run.prev_on = set()",
+  "        if gapped:\n            run.prev_on = set()",
   "        if False:\n            run.prev_on = set()"),
 
  ("fireball cues: carrying on is judged from the composed frame",
@@ -21239,6 +21239,16 @@ def build():
   "ltcplay/web.py",
   "journal=say, group_get=fireball_slots, live_get=live_slots)",
   "journal=say, group_get=fireball_slots)"),
+
+ ("fireball cues: a pause is not a landing (round 7)",
+  "ltcplay/fireball_cues.py",
+  "        jumped = jumped or gapped\n",
+  "        pass\n"),
+
+ ("fireball cues: the cues and the charge record word a disagreement differently (round 7)",
+  "ltcplay/fireball_cues.py",
+  "            text = group_mismatch_text(file_g, live_g)",
+  "            text = group_mismatch_text(file_g, live_g) + \" \""),
 
  ("fireball cues: a fireball group off 55 to 59 is not checked",
   "ltcplay/fireball_cues.py",

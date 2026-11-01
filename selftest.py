@@ -102510,6 +102510,7 @@ def test_fireball_timeline_docs_in_plain_words():
                  "stays skipped until the FSEQ turns it off",
                  "A Programming Ahead or Back inside a play counts as a "
                  "landing",
+                 "so does a pause of more than a quarter of a second",
                  "under any\nspelling",
                  "not fired in this play", "next time a show cue starts",
                  "finishes its own stages, Valve Open included",
@@ -104463,10 +104464,13 @@ def test_fireball_cues_rules():
             rigs.append(R)
             R.fq._group, R.fq._live = fgrp, lgrp
             g = R.frame(40, base=full)
+            from ltcplay import fireball_charge as _FCm
             check(all(g[x - 1] == 0 for x in range(55, 65)) and
                   g[0] == 255 and g[64] == 255 and
                   "flamesafe.json puts the fireball on" in R.fq.fault and
-                  len(R.tank.ext) == 1 and "60" in R.tank.ext[0],
+                  len(R.tank.ext) == 1 and "60" in R.tank.ext[0] and
+                  R.tank.ext[0] == _FCm.group_mismatch_text(fgrp, lgrp) and
+                  R.tank.ext[0] in R.fq.fault,
                   f"{what}: 55 to 64 zero from the show, a fault, the "
                   f"charge record told: {R.fq.fault}")
             g = R.frame(41, base=full)
@@ -104534,6 +104538,27 @@ def test_fireball_cues_rules():
             R.frame(f)
         got = [R.frame(f)[54] for f in range(20, 25)]
         check(not any(got), "and a jump back is the same")
+        # Round 7, review 5: a forward seek SHORTER than a pause is no
+        # jump to the clock, but the gap itself is a landing.
+        R = _fbq_rig([_st("fuel", "00:00:01:00", 2)])
+        rigs.append(R)
+        R.tank.ready = ["wait"] * 9 + ["ok"]
+        for f in range(0, 5):
+            R.frame(f)
+        R.clk[0] += 10.0                       # LTC paused for 10 s
+        got = [R.frame(f)[54] for f in range(45, 95)]
+        check(not any(got), f"a 5 s seek after a 10 s pause into the Fuel "
+                            f"window while the mark is on its way: quiet: "
+                            f"{got.count(255)}")
+        R = _fbq_rig([], source="fseq")
+        rigs.append(R)
+        for f in range(0, 5):
+            R.frame(f)
+        R.clk[0] += 10.0
+        R.tank.ready = ["wait", "wait", "ok"]
+        got = [R.frame(f, base=base)[54] for f in range(50, 56)]
+        check(got == [0] * 6, f"and an FSEQ charge after the pause: held "
+                              f"until the FSEQ turns it off: {got}")
         R = _fbq_rig([], source="fseq")
         rigs.append(R)
         for f in range(0, 5):

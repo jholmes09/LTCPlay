@@ -1042,8 +1042,10 @@ FSEQ:
   that leaves no mark); if that cannot be saved, the stage is skipped:
   "the charge record cannot be saved: automatic charging is off" (an
   FSEQ's charge stays skipped until the FSEQ turns it off). A Programming
-  Ahead or Back inside a play counts as a landing: a charge held for the
-  mark never starts late inside its window. Otherwise it is skipped for the
+  Ahead or Back inside a play counts as a landing, and so does a pause of
+  more than a quarter of a second (the position may have moved while the
+  engine was not asked): a charge held for the mark never starts late
+  inside its window. Otherwise it is skipped for the
   rest of that play, and the journal and every screen's status say so
   once, for example
   "Fuel already charged: the Fuel stage was skipped (no double charge)."
