@@ -1318,11 +1318,11 @@ It was 15 seconds before.
   its late limit, and the settling step at a hand over never starts a show:
   every start, however late, goes through the alert hold, the rig check and
   the Stop check.
-- It never overrides anything that says wait. A Hold, a Stop's Hold, an
-  Abort, Run not pressed, the guard after the previous show, a show that
+- It never overrides anything that says wait. A Hold, a Stop's Hold,
+  Run not pressed, the guard after the previous show, a show that
   is running and a Stop under way all still hold a show back, however
   close to its time. Resume's journal line says "Show N ... starts at the next tick,
-  N s late" only when it really will (not a Reset, nothing aborted, no
+  N s late" only when it really will (no
   guard left, at least 5 seconds of the limit left); within 5 seconds of
   the limit it says the show "is close to its limit and may still start at
   the next tick"; otherwise it says what is next on the schedule. Pressing Resume within the limit starts the show,
