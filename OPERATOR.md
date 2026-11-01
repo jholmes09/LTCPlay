@@ -1008,6 +1008,15 @@ FSEQ:
   on other channels, no show fires its fireball (its own channels are held
   at zero), both tanks become NOT KNOWN on the charge record, and the
   screens say why, until the group is on 55 to 59.
+- **flamesafe.json and the running flamesafe must agree.** The cues read
+  the fireball's slots from flamesafe.json, the charge record reads them
+  from the running flamesafe's status. If the two differ (for example the
+  file says 60 to 64 and flamesafe was started before the file was
+  changed and still runs 55 to 59), the channels of **both** groups are
+  zero from every show, both tanks become NOT KNOWN, "Tanks are empty" is
+  refused, and the screens say "flamesafe.json puts the fireball on ...
+  and the running flamesafe on ...", until they agree: restart
+  flamesafe and LTC Player from the same file.
 - **No fireball group found at all** in flamesafe's config: 55 to 59 are
   still guarded for every show, whatever is wired to them. Purge (59) is
   always zero, and Fuel (55) and Air (56) each get one charge until a
@@ -1028,9 +1037,13 @@ FSEQ:
 - **Never a double charge.** The Fuel or Air stage turns its channel on
   only while that tank is EMPTY (see the charge record below), or while it
   carries on the very charge it started. A new charge also waits until
-  the charge record says PENDING on disk (below); if that cannot be
-  saved, the stage is skipped: "the charge record cannot be saved:
-  automatic charging is off". Otherwise it is skipped for the
+  the charge record says PENDING on disk (below), asked for when the
+  stage is within two seconds of starting (a rehearsal stopped before
+  that leaves no mark); if that cannot be saved, the stage is skipped:
+  "the charge record cannot be saved: automatic charging is off" (an
+  FSEQ's charge stays skipped until the FSEQ turns it off). A Programming
+  Ahead or Back inside a play counts as a landing: a charge held for the
+  mark never starts late inside its window. Otherwise it is skipped for the
   rest of that play, and the journal and every screen's status say so
   once, for example
   "Fuel already charged: the Fuel stage was skipped (no double charge)."
