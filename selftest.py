@@ -106421,6 +106421,62 @@ def test_fireball_charge_round10_lows():
               C.tr.state("fuel") == E and C.tr.state("air") == E,
               f"flamesafe.json has a fireball group, the running one none: "
               f"said once, not a fault, the tanks as they were: {said}")
+        # Delta review 1: a passthrough entry whose slots are missing, a
+        # string or a range, or that is not an entry at all, is not
+        # "nothing on 55 to 59".
+        for what, pt in (("slots a string", [{"name": "H", "slots": "55"}]),
+                         ("slots missing", [{"name": "H"}]),
+                         ("slots with a non-number",
+                          [{"name": "H", "slots": [80, "55"]}]),
+                         ("an entry that is not one", [7])):
+            fsv = RM.FlameStatus("127.0.0.1", 0, "k" * 20, ["front row"],
+                                 clock=lambda: 0.0)
+            fsv.note(_j.dumps({"t": "status", "k": "k" * 20, "fault": "",
+                               "groups": [{"name": "front row",
+                                           "armed": "armed",
+                                           "fire_slots": [411],
+                                           "safety_slots": [401]}],
+                               "passthrough": pt}).encode())
+            check(FC.armed_from_status(fsv.view()) == "unknown",
+                  f"a passthrough entry with {what}: not known")
+        fsv.note(_j.dumps({"t": "status", "k": "k" * 20, "fault": "",
+                           "groups": [{"name": "front row",
+                                       "armed": "armed",
+                                       "fire_slots": [411],
+                                       "safety_slots": [401]}],
+                           "passthrough": [{"name": "H",
+                                            "slots": [80, 81]}]}).encode())
+        check(FC.armed_from_status(fsv.view()) == "off",
+              "and a well-formed one off 55 to 59 still reads off")
+        # Delta review 2: a late or unreadable status does not clear the
+        # note, so it is not journaled again; a fresh status that shows a
+        # fireball group clears it.
+        cur = [four]
+        C = _fbc(fresh(), flames_get=lambda: cur[0],
+                 file_get=lambda: [55, 56, 57, 58, 59])
+        C.tr.pump()
+        for v_ in (four, None, None, dict(four, stale=True), None, four):
+            cur[0] = v_
+            C.tr._read_armed()
+        C.tr.pump()
+        said = [a for a, k in C.lines if a[2] == "nogroup"]
+        check(len(said) == 1 and "running flamesafe has none" in
+              C.tr.view()["fault"],
+              f"five late statuses between two good ones: the note stands "
+              f"and is journaled once: {len(said)}")
+        cur[0] = view(("fireball", [55, 56, 57, 58, 59]))
+        C.tr._read_armed()
+        check("running flamesafe has none" not in C.tr.view()["fault"],
+              "a fresh status that shows a fireball group clears it")
+        # Delta review 3: the wire stamp is skipped only while the status
+        # that says "no fireball group" is fresh.
+        C = _fbc(fresh(), flames_get=lambda: four)
+        C.tr.pump()
+        C.tr._read_armed()
+        C.t[0] += FC.STATUS_FRESH_S + 1.0       # the status thread stalled
+        C.tr.observe(0, _fbc_frame(fuel=True), True)
+        check(C.tr._charge_on_wire_at is not None,
+              "frames after a stale reading are a charge on the wire again")
         # ... while the same frames with status that is not known still
         # mark the tanks (the safe direction).
         C = _fbc(fresh(), flames_get=lambda: None)
