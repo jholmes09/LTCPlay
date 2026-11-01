@@ -106602,8 +106602,10 @@ def test_fireball_cues_rules():
         # A show the file does not name: the same.
         R.session.timeline_path = "Other.json"
         R.cue_obj = {"label": "Show"}
-        check(R.frame(40, base=noise) == nop, "a show not in the file: "
-                                              "the FSEQ, Purge zero")
+        # Played from its top (a first frame part way in is a landing,
+        # which holds 55 to 58 whole: review B of #201).
+        check([R.frame(f, base=noise) for f in range(0, 41)][-1] == nop,
+              "a show not in the file: the FSEQ, Purge zero")
         # NEVER A DOUBLE CHARGE from an FSEQ show either (review of #187):
         # its Fuel and Air charges go out only while the tank is EMPTY (or
         # carrying on the charge they started); Valve Open, Igniter and
@@ -106723,7 +106725,7 @@ def test_fireball_cues_rules():
         R = _fbq_rig([_st("fuel", "00:00:01:00", 1)])
         rigs.append(R)
         R.fq._charge_get = lambda: None
-        check(all(R.frame(f)[54] == 0 for f in range(25, 70)) and
+        check(all(R.frame(f)[54] == 0 for f in range(0, 70)) and
               "not running in this engine" in R.fq.messages[0],
               f"no charge state: skipped: {R.fq.messages}")
         # EMPTY: the charge runs its whole window, carrying itself on even
@@ -106747,7 +106749,7 @@ def test_fireball_cues_rules():
         # a Resume).
         R = _fbq_rig([_st("fuel", "00:00:01:00", 2)])
         rigs.append(R)
-        for f in range(25, 40):
+        for f in range(0, 40):
             g = R.frame(f)
             if g[54]:
                 R.tank.tanks["fuel"] = "charged"
@@ -106774,7 +106776,7 @@ def test_fireball_cues_rules():
         rigs.append(R)
         told = []
         R.tank.note_continuing = told.append
-        for f in range(25, 40):
+        for f in range(0, 40):
             if R.frame(f)[54]:
                 R.tank.tanks["fuel"] = "charged"
         R.frame(40, sent=False)
@@ -106788,7 +106790,7 @@ def test_fireball_cues_rules():
         # it may still start when it can, if the tank is EMPTY.
         R = _fbq_rig([_st("fuel", "00:00:01:00", 2)])
         rigs.append(R)
-        for f in range(30, 40):
+        for f in range(0, 40):
             R.frame(f, sent=False)
         check(R.frame(40)[54] == 255, "a charge held off on the wire from "
                                       "its start has not charged anything: "
@@ -106864,7 +106866,7 @@ def test_fireball_cues_rules():
         # carrying on (stale prev_on), it is cut short.
         R = _fbq_rig([_st("fuel", "00:00:01:00", 3)])
         rigs.append(R)
-        for f in range(25, 40):
+        for f in range(0, 40):
             if R.frame(f)[54]:
                 R.tank.tanks["fuel"] = "charged"
         R.clk[0] += 1.0                      # no frame asked for a second
@@ -106885,7 +106887,7 @@ def test_fireball_cues_rules():
         rigs.append(R)
         show_sent = [bytes(512)]
         R.fq._sent_get = lambda: show_sent[0]
-        for f in range(25, 40):
+        for f in range(0, 40):
             g = R.frame(f)
             show_sent[0] = bytes(g)
             if g[54]:
@@ -106982,7 +106984,9 @@ def test_fireball_cues_rules():
         R.fq._group_get = lambda: [59, 58, 57, 56, 55]
         R.fq.refresh()
         R.cue_obj = {"label": "Show"}
-        g = R.frame(30, base=base)       # a play from the window's start
+        for f in range(0, 30):           # a play from the top
+            R.frame(f, base=base)
+        g = R.frame(30, base=base)       # the window's start
         check(not R.fq.fault and g[54] == 255 and g[55] == 0,
               f"on 55 to 59 (any order): the timeline runs: {R.fq.fault}")
         # Round-6 review 1: flamesafe.json and the RUNNING flamesafe differ
@@ -107255,7 +107259,12 @@ def test_fireball_cues_rules():
         R.tank.ready = ["wait", "ok"]
         got = [R.frame(f, base=base)[54] for f in range(60, 66)]
         got.append(R.frame(66)[54])
-        got.append(R.frame(67, base=base)[54])
+        # A new charge once the landing has settled (one that turns on
+        # inside the settle time is held whole: review B of #201).
+        from ltcplay import fireball_cues as _FQs
+        for f in range(67, 60 + _FQs.LANDING_SETTLE_FRAMES):
+            R.frame(f)
+        got.append(R.frame(60 + _FQs.LANDING_SETTLE_FRAMES, base=base)[54])
         check(got == [0, 0, 0, 0, 0, 0, 0, 255],
               f"landed inside an FSEQ charge: held until it ends: {got}")
         R = _fbq_rig([_st("fuel", "00:00:01:00", 2)])
@@ -107596,11 +107605,11 @@ def test_fireball_cues_wiring():
                        step_ms=25, compression="zlib", block_frames=50,
                        fill=90)
         st.save("S.json", "Show", 60.0, "timeline",
-                [_st("valve", "00:00:01:00", 1)], 2)
+                [_st("valve", "00:00:00:00", 2)], 2)
         bclk = types.SimpleNamespace(
             source="audio_master", paused=False,
             _cue={"label": "Show", "position_s": 0.0},
-            last_sent=(0, 0, 1, 10))
+            last_sent=(0, 0, 0, 1))
         bsess = types.SimpleNamespace(
             running=True, clock=bclk, timeline_path="S.json",
             player=types.SimpleNamespace(override=None, freerun_epoch=None),
@@ -107610,8 +107619,10 @@ def test_fireball_cues_wiring():
                          background=True)
         bg.fireball = cues.fireball
         got = None
+        # Read from the top (a first frame part way into a stage is a
+        # landing inside it, which never starts it: review B of #201).
         for _ in range(200):
-            got = bg("00:00:01:10")
+            got = bg("00:00:00:01")
             if got:
                 break
             time.sleep(0.02)
@@ -109156,7 +109167,9 @@ def test_fireball_timeline_end_to_end_real_flamesafe():
         # zeroes the node by itself.
         if armed() != "armed":
             check(arm_fireball(), "armed again")
-        play(4.3)
+        # From 1 s before it (a stage opening in the landing's settle time
+        # is skipped whole: review B of #201).
+        play(4.0)
         rec = record(5.4)
         check(any(v[3] == 255 for _p, v in rec), "the Igniter is on")
         link.stop()
@@ -111027,6 +111040,172 @@ def test_start_at_cue_rechecked_at_the_start():
     print("  ok")
 
 
+def test_start_at_cue_fireball_stages_run_whole_or_not_at_all():
+    section("start at a cue, review B of #201: after a landing a fireball "
+            "stage that opens while the flame link still settles is skipped "
+            "whole, never late and short; Valve Open never without its "
+            "Igniter lead; the same on an FSEQ show; a Stop on a held show "
+            "keeps Resume's offer; a cue's lead-in changed since is refused")
+    import shutil
+    from ltcplay import fireball_cues as FQ
+    from ltcplay import flamelink as FL
+    check(FQ.LANDING_SETTLE_FRAMES >= int(FL.SEEK_SETTLE_S * 30) + 3,
+          f"the settle time covers the flame link's {FL.SEEK_SETTLE_S} s "
+          f"and the audio start: {FQ.LANDING_SETTLE_FRAMES} frames")
+    stages = [_st("fuel", "00:00:10:00", 2), _st("air", "00:00:10:15", 2),
+              _st("igniter", "00:00:13:00", 0.5),
+              _st("valve", "00:00:13:05", 0.2)]
+    win = {55: range(300, 360), 56: range(315, 375), 58: range(390, 405),
+           57: range(395, 401)}
+    rigs = []
+    try:
+        def play(f0, frames=160, tank=None):
+            R = _fbq_rig(stages, tank=tank)
+            rigs.append(R)
+            on = {}
+            for f in range(f0, f0 + frames):
+                g = R.frame(f)
+                for slot in (55, 56, 57, 58):
+                    if g[slot - 1]:
+                        on.setdefault(slot, []).append(f)
+            return R, on
+
+        def whole(on):
+            return [s for s, fs in on.items() if fs != list(win[s])]
+        # Review B's repros: landing at 380 and 387 (the shot opens inside
+        # the settle time): neither the Igniter nor the Valve, never the
+        # Valve alone.
+        for f0 in (380, 387):
+            R, on = play(f0)
+            check(57 not in on and 58 not in on and not whole(on),
+                  f"landed at {f0}: no part of the shot: {on}")
+        # Landing at 287: Fuel opens at 300, inside the settle time:
+        # skipped whole (not charged late and short); Air at 315 and the
+        # shot whole.
+        R, on = play(287)
+        check(55 not in on and on.get(56) == list(win[56]) and
+              on.get(58) == list(win[58]) and on.get(57) == list(win[57]),
+              f"landed at 287: Fuel skipped whole, the rest whole: "
+              f"{ {k: (v[0], v[-1]) for k, v in on.items()} }")
+        # Landed inside the Igniter's window: the Igniter is never started
+        # part way, so the Valve does not open either, and it is said.
+        stages[2:] = [_st("igniter", "00:00:13:00", 2),
+                      _st("valve", "00:00:14:00", 0.2)]
+        R, on = play(392)
+        check(not on and any("Valve Open was skipped: its Igniter lead did "
+                             "not run" in m for m in R.fq.messages),
+              f"landed inside the Igniter: no gas without ignition: {on} "
+              f"{R.fq.messages}")
+        # From well before: every stage whole, at its time.
+        stages[2:] = [_st("igniter", "00:00:13:00", 0.5),
+                      _st("valve", "00:00:13:05", 0.2)]
+        R, on = play(200, frames=250)
+        check(not whole(on) and sorted(on) == [55, 56, 57, 58],
+              f"from well before: every stage whole: {sorted(on)}")
+        # The FSEQ path: Igniter 58 from 990 for 15 frames, Valve 57 from
+        # 996 for 5; a landing at 980 (both open in the settle time) and
+        # at 993 (inside the Igniter): no Valve without its lead, nothing
+        # part way; from 900, both whole.
+        def fseq(f0, frames=60):
+            R = _fbq_rig(None)
+            rigs.append(R)
+            R.session.timeline_path = "Plain.json"
+            on = {}
+            for f in range(f0, f0 + frames):
+                base = [0] * 512
+                if 990 <= f < 1005:
+                    base[57] = 255
+                if 996 <= f < 1001:
+                    base[56] = 255
+                g = R.frame(f, base=base)
+                for slot in (57, 58):
+                    if g[slot - 1]:
+                        on.setdefault(slot, []).append(f)
+            return on
+        on = fseq(980)
+        check(not on, f"FSEQ landed at 980: the shot opens in the settle "
+                      f"time: neither, never part way: {on}")
+        # Landed inside the Igniter (993): the flame link's own guard holds
+        # an Igniter already on at a landing; the Valve is held here.
+        on = fseq(993)
+        check(57 not in on, f"FSEQ landed at 993: no Valve without its "
+                            f"lead: {on}")
+        # Landed inside a long Igniter (on at the landing, which the flame
+        # link holds); the Valve opens after the settle time: still held,
+        # its lead never ran in this play.
+        R = _fbq_rig(None)
+        rigs.append(R)
+        R.session.timeline_path = "Plain.json"
+        got = []
+        for f in range(993, 1040):
+            base = [0] * 512
+            base[57] = 255
+            if 1020 <= f < 1025:
+                base[56] = 255
+            got.append(R.frame(f, base=base)[56])
+        check(not any(got), f"a Valve after the settle time, its Igniter "
+                            f"on at the landing: held: {got}")
+        # A seek into an FSEQ charge that was already on before it, while
+        # the mark is on its way: held until the FSEQ turns it off.
+        R = _fbq_rig(None)
+        rigs.append(R)
+        R.session.timeline_path = "Plain.json"
+        base = [0] * 512
+        base[54] = 255
+        R.tank.tanks["fuel"] = "charged"     # on in the FSEQ, held off
+        for f in range(0, 5):
+            R.frame(f, base=base)
+        R.tank.tanks["fuel"] = "empty"
+        R.tank.ready = ["wait", "wait", "ok"]
+        got = [R.frame(f, base=base)[54] for f in range(300, 306)]
+        check(got == [0] * 6, f"a seek inside an FSEQ charge on before it "
+                              f"(held off then): held until it ends: {got}")
+        on = fseq(900, frames=150)
+        check(on.get(58) == list(range(990, 1005)) and
+              on.get(57) == list(range(996, 1001)),
+              f"FSEQ from well before: both whole: {on}")
+    finally:
+        for R in rigs:
+            shutil.rmtree(R.work, ignore_errors=True)
+    # A Stop on a held show: the frozen frame is taken at the press, kept
+    # once the clock has forgotten it (Remote.halt calls note_stop after
+    # the flames, before anything stops the show audio).
+    n = _pf_night()
+    S, svc, c = n.S, n.svc, n.c
+    svc.tick()
+    _settle(svc, c)
+    svc.operator_press("start-now", "Andy", "Rack screen", surface=True,
+                       start_at=_pf_start_at())
+    _settle(svc, c)
+    n.sess.clock._last_frame = 27 * 30 + 3
+    n.w.runner.poll()
+    _settle(svc, c)
+    clk = n.sess.clock
+    clk._paused, clk._frozen_frame, clk._last_frame = True, 1500, 1490
+    n.w.runner.note_stop()
+    clk._paused, clk._frozen_frame, clk._last_frame = False, None, None
+    svc.operator_press("stop-show", "Andy", "Rack screen", confirmed=True)
+    _settle(svc, c)
+    n.w.runner.poll()
+    at = n.w.runner.stopped_at or {}
+    check(at.get("frame") == 1500 and svc.machine.state != S.SHOW,
+          f"a held show stopped: Resume's offer kept from the press: {at}")
+    c.close()
+    n.link.close()
+    here = os.path.dirname(os.path.abspath(__file__))
+    rsrc = open(os.path.join(here, "ltcplay", "remote.py"),
+                encoding="utf-8").read()
+    body = rsrc[rsrc.find("    def halt(self, who, screen"):]
+    body = body[:body.find("\n    def ", 10)]
+    i_fl = body.find("self._disarm_now(who, screen, \"Stop\")")
+    i_no = body.find('"note_stop"')
+    i_lf = body.find("self.timed_purge_cut(")
+    check(0 <= i_fl < i_no < i_lf,
+          f"halt takes the stop position after the flames, before the "
+          f"rest of the Stop: {i_fl} {i_no} {i_lf}")
+    print("  ok")
+
+
 def test_start_at_cue_route():
     section("start at a cue, the route: the Show row (operators may); a "
             "fresh page and a confirm; Show mode only; the cue resolved by "
@@ -111106,6 +111285,7 @@ def test_start_at_cue_route():
                 ({"cue_id": "c99"}, "not in the saved list"),
                 ({"cue_id": None}, "not in the saved list"),
                 ({"tc": "00:01:41:00"}, "changed since this screen"),
+                ({"lead_in_s": 5}, "changed since this screen"),
                 ({"show": "Other.json"}, "Fire.json is running")):
             code, out, _h = press(**body)
             said = out.get("error", "")
@@ -112196,6 +112376,7 @@ if __name__ == "__main__":
         test_start_at_cue_preroll_and_continue_anyway_keep_the_cue,
         test_start_at_cue_route,
         test_start_at_cue_rechecked_at_the_start,
+        test_start_at_cue_fireball_stages_run_whole_or_not_at_all,
         test_start_at_cue_fireball_lands_by_its_own_rules,
         test_start_at_cue_docs_in_plain_words,
     ]

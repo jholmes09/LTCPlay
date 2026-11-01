@@ -3556,6 +3556,11 @@ class Remote:
             return None, (f"the cue {cue['name']} is at {cue['tc']} now, "
                           f"not {body.get('tc')}: it was changed since this "
                           f"screen read it. Reload and choose again.")
+        if "lead_in_s" in body and body.get("lead_in_s") != cue["lead_in_s"]:
+            return None, (f"the cue {cue['name']} has a {cue['lead_in_s']} s "
+                          f"lead-in now, not {body.get('lead_in_s')} s: it "
+                          f"was changed since this screen read it. Reload "
+                          f"and choose again.")
         # Past the end of the show audio (a render made shorter since the
         # list was saved): refused here, before the video goes black or a
         # show is counted (review A of #201). The running clock's own
@@ -6233,6 +6238,17 @@ class Remote:
                 out["flames"] = {"disarmed": bool(f_ok), "text": f_text}
                 if not f_ok:
                     out["failed"].append("flames")
+            # Where the show was, for Resume's offer (play_from.py part 2;
+            # review B of #201): taken now, after the flames and before
+            # anything stops the show audio, which forgets a held frame.
+            # Memory only, never waits.
+            note = getattr(getattr(self.schedule, "performer", None),
+                           "note_stop", None)
+            if note is not None:
+                try:
+                    note()
+                except Exception:                # noqa: BLE001
+                    pass
             # 2. Live flame programming, cut as an Abort cuts it (review of
             # #130, second pass, 3).
             why = f"{label} {how} Stop on the {screen}"

@@ -1051,7 +1051,7 @@
 "fireball cues: a timeline that cannot be built lets every show's FSEQ fire the fireball": "test_fireball_cues_wiring",
 "fireball cues: an FSEQ charge at frame 1 or 2 is a landing (round 10)": "test_fireball_cues_rules",
 "fireball cues: an FSEQ charge at frame 3 is a start (round 10)": "test_fireball_cues_rules",
-"fireball cues: an FSEQ charge held for the mark starts late after a seek (round 6)": "test_fireball_cues_rules",
+"fireball cues: an FSEQ charge held for the mark starts late after a seek (round 6)": "test_fireball_cues_rules,test_start_at_cue_fireball_stages_run_whole_or_not_at_all",
 "fireball cues: an FSEQ charge landed inside starts late after a wait (round 5)": "test_fireball_cues_rules",
 "fireball cues: an FSEQ charge the FSEQ turned off rides on": "test_fireball_cues_rules",
 "fireball cues: an FSEQ show is not guarded": "test_fireball_cues_rules",
@@ -3618,5 +3618,13 @@
 "start at a cue: video black for the cue lands in a Stop's fade": "test_start_at_cue_rechecked_at_the_start",
 "start at a cue: preshow music refuses the video black, so it cuts in": "test_start_at_cue_rechecked_at_the_start",
 "start at a cue: a cue past the audio's end passes the route": "test_start_at_cue_route",
-"start at a cue: Resume compares the show cue with its case": "test_start_at_cue_route"
+"start at a cue: Resume compares the show cue with its case": "test_start_at_cue_route",
+"start at a cue: a fireball stage opening in the landing's settle time goes out late and short": "test_start_at_cue_fireball_stages_run_whole_or_not_at_all",
+"start at a cue: Valve Open opens without its Igniter lead": "test_start_at_cue_fireball_stages_run_whole_or_not_at_all",
+"start at a cue: an FSEQ slot turning on in the settle time is not held": "test_start_at_cue_fireball_stages_run_whole_or_not_at_all",
+"start at a cue: an FSEQ Valve opens while its Igniter lead was held": "test_start_at_cue_fireball_stages_run_whole_or_not_at_all",
+"start at a cue: the landing's settle time is only the flame link's": "test_start_at_cue_fireball_stages_run_whole_or_not_at_all",
+"start at a cue: a Stop never takes the stop position at the press": "test_start_at_cue_fireball_stages_run_whole_or_not_at_all",
+"start at a cue: a held show's frozen frame is not the one remembered": "test_start_at_cue_fireball_stages_run_whole_or_not_at_all",
+"start at a cue: the route takes a cue whose lead-in changed": "test_start_at_cue_route"
 }

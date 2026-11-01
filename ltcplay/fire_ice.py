@@ -3209,13 +3209,37 @@ class ShowRunner:
             self.svc.report("SHOW_ENDED" if cue["confirmed"]
                             else "SHOW_FAILED", how, show=n)
 
-    def _remember_stop(self, cue):
+    @staticmethod
+    def _held_frame(clk):
+        """The frame the show cue is on: the frozen one while held (a Stop
+        on a held show ends the clock at once and forgets it), else the
+        last one sent."""
+        if getattr(clk, "_paused", False):
+            f = getattr(clk, "_frozen_frame", None)
+            if isinstance(f, int) and not isinstance(f, bool):
+                return f
+        return getattr(clk, "_last_frame", None)
+
+    def note_stop(self):
+        """Stop was pressed (Remote.halt, before the show audio is
+        stopped; review B of #201): where the show cue is now, for
+        Resume's offer, while the clock still knows it. Memory only.
+        Never raises."""
+        with self._lock:
+            cue = self._cue
+            if cue is not None:
+                self._remember_stop(cue, self._held_frame(cue.get("clock")))
+
+    def _remember_stop(self, cue, frame=None):
         """A show taken out of SHOW or PAUSED before its cue ended (a Stop,
         an Abort): where its show cue was, for Resume's offer of the cue
-        before it (play_from.resume_offer). Lock held. Never raises."""
+        before it (play_from.resume_offer). A clock that no longer knows
+        (a held show stopped) leaves what note_stop took at the press.
+        Lock held. Never raises."""
         try:
             clk = cue.get("clock")
-            frame = getattr(clk, "_last_frame", None)
+            if frame is None:
+                frame = self._held_frame(clk)
             if clk is None or cue.get("failed") or \
                     not isinstance(frame, int) or isinstance(frame, bool):
                 return

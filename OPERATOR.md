@@ -1964,6 +1964,11 @@ comes in the next update; the engine side is here.
 - **Flames land safely.** Nothing fires for the first half second. A
   flame or fireball stage that is already part way through when the show
   lands is NOT started in the middle; it stays off until its next start.
+  A fireball stage that would open in the first moment after the landing
+  (under about 0.8 s, while the flame link settles) is skipped whole, so
+  every stage runs whole or not at all, and Valve Open never opens unless
+  its Igniter lead ran first in that play. Choose cues with their lead-in
+  at least a second before a fireball shot.
   A fuel or air charge is skipped when that tank is already charged or
   not known (never a double charge), and a charge whose window the show
   landed in is skipped too. Start at a cue never arms anything: flamesafe
@@ -1971,9 +1976,15 @@ comes in the next update; the engine side is here.
 - **Stop wins.** Stop, Hold or Abort at any moment, during the rig check
   or after the start, stops it at once, as for Start now.
 - **Resume after a Stop:** the engine remembers where a stopped show
-  stopped and offers the cue at or before that point, so the scene starts
-  fresh from its own top rather than in the middle. If no cue is before
-  that point, start from the top with Start now.
+  stopped (a held show too) and offers the cue at or before that point, so
+  the scene starts fresh from its own top rather than in the middle. If no
+  cue is before that point, start from the top with Start now. It is
+  tonight's only: forgotten at the night change, at Close for the night
+  and when Run goes off.
+- **The cue is checked again at the start.** If the cue was changed or
+  deleted on 2.0 Settings after it was chosen (for example while the rig
+  check failed), Start at a cue and Continue anyway are refused and
+  nothing starts: choose the cue again.
 - **The journal** says who pressed it, on which screen, the cue, its time
   and lead-in, and every refusal in words.
 
