@@ -61219,7 +61219,7 @@ def test_stream_deck_review_of_120():
                   "Blue Flames (wave flamer), key 4 Fireball (fireball); "
                   "no key: pump (pump); key 5 opens the announcements "
                   "page.") and
-              "no Hold or Abort key" in lines[0][0] and
+              "no Hold key" in lines[0][0] and "Abort" not in lines[0][0] and
               all(kw.get("action") == "config" for _t, kw in lines),
               f"Jeff's four by name whatever flamesafe's order, and the key "
               f"map journaled in plain words: {lines}")
