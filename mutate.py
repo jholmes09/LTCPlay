@@ -20857,7 +20857,7 @@ def build():
 
  ("fireball charge: a press on the page never asks for the mark (round 5)",
   "ltcplay/fireball_charge.py",
-  "                # review), but a restart after this charge then finds it.\n                self.charge_ready()",
+  "                # review), but a restart after this charge then finds it.\n                self.charge_ready(manual=True)",
   "                # review), but a restart after this charge then finds it.\n                pass"),
 
  ("fireball charge: a group fault leaves the tanks as they were (round 5, F3)",
@@ -20867,8 +20867,8 @@ def build():
 
  ("fireball charge: a manual press is not held for the mark (round 6)",
   "ltcplay/fireball_charge.py",
-  "        r = self.charge_ready()\n        if r != \"failed\":\n            return r",
-  "        r = self.charge_ready()\n        if r != \"failed\":\n            return \"ok\""),
+  "        r = self.charge_ready(manual=True)\n        if r != \"failed\":\n            return r",
+  "        r = self.charge_ready(manual=True)\n        if r != \"failed\":\n            return \"ok\""),
 
  ("fireball charge: a manual press that cannot be saved leaves the tanks as they were (round 6)",
   "ltcplay/fireball_charge.py",
@@ -20877,8 +20877,8 @@ def build():
 
  ("fireball charge: an unsaved manual press writes no marker elsewhere (round 6)",
   "ltcplay/fireball_charge.py",
-  "                    saved = self._write_alt(self._next_rev())",
-  "                    saved = False"),
+  "        saved = self._write_alt(job)\n        with self._lock:\n            self._alt_done = saved",
+  "        saved = False\n        with self._lock:\n            self._alt_done = saved"),
 
  ("fireball charge: the start ignores the marker elsewhere (round 6)",
   "ltcplay/fireball_charge.py",
@@ -20887,8 +20887,8 @@ def build():
 
  ("fireball charge: the marker elsewhere is never taken away (round 6)",
   "ltcplay/fireball_charge.py",
-  "            self._drop_alt(doc[\"rev\"])\n            self._unwritten = None",
-  "            self._unwritten = None"),
+  "            self._drop_alt(doc[\"rev\"])\n            self._unsaved_active = False",
+  "            self._unsaved_active = False"),
 
  ("fireball charge: Tanks are empty works while the group is off 55 to 59 (round 6)",
   "ltcplay/fireball_charge.py",
@@ -20914,6 +20914,71 @@ def build():
   "ltcplay/fireball_charge.py",
   "                self._set(k, EMPTY, f\"confirmed empty by {who}\", now_w)\n            self.pending = False",
   "                self._set(k, EMPTY, f\"confirmed empty by {who}\", now_w)"),
+
+ ("fireball charge: the marker goes in the temp folder (round 7)",
+  "ltcplay/fireball_charge.py",
+  "                        os.path.expanduser(\"~\"), \".ltcplay\"), name)]",
+  "                        \"/tmp\", \"x\"), name)]"),
+
+ ("fireball charge: a marker is written in one place only (round 7)",
+  "ltcplay/fireball_charge.py",
+  "        saved = False\n        for path in self._alts:",
+  "        saved = False\n        for path in self._alts[:1]:"),
+
+ ("fireball charge: a marker is written in place, not renamed (round 7)",
+  "ltcplay/fireball_charge.py",
+  "        tmp = path + \".tmp\"\n        with open(tmp, \"w\", encoding=\"utf-8\") as fh:\n            json.dump({\"rev\": rev,",
+  "        tmp = path\n        with open(tmp, \"w\", encoding=\"utf-8\") as fh:\n            json.dump({\"rev\": rev,"),
+
+ ("fireball charge: a marker that cannot be read is ignored (round 7)",
+  "ltcplay/fireball_charge.py",
+  "                    else:\n                        unreadable = True\n                except (OSError, ValueError, AttributeError):\n                    unreadable = True",
+  "                    else:\n                        unreadable = True\n                except (OSError, ValueError, AttributeError):\n                    pass"),
+
+ ("fireball charge: the leftover of a marker being written is ignored (round 7)",
+  "ltcplay/fireball_charge.py",
+  "            for name in (path, path + \".tmp\"):\n                if not os.path.exists(name):",
+  "            for name in (path,):\n                if not os.path.exists(name):"),
+
+ ("fireball charge: automatic charging stays on with no marker anywhere (round 7)",
+  "ltcplay/fireball_charge.py",
+  "        if self.auto_off and not manual:",
+  "        if False and not manual:"),
+
+ ("fireball charge: Tanks are empty does not turn automatic charging back on (round 7)",
+  "ltcplay/fireball_charge.py",
+  "            was_off, self.auto_off = self.auto_off, False",
+  "            was_off = self.auto_off"),
+
+ ("fireball charge: the unsaved press is handled on every beat (round 7)",
+  "ltcplay/fireball_charge.py",
+  "                if not self._unsaved_active:\n                    self._unsaved_active = True",
+  "                if True:\n                    self._unsaved_active = True"),
+
+ ("fireball charge: the marker is written under the tracker's lock (round 7)",
+  "ltcplay/fireball_charge.py",
+  "        saved = self._write_alt(job)\n        with self._lock:\n            self._alt_done = saved",
+  "        with self._lock:\n            saved = self._write_alt(job)\n            self._alt_done = saved"),
+
+ ("fireball charge: the press goes out before the marker is written (round 7)",
+  "ltcplay/fireball_charge.py",
+  "                return \"wait\" if self._alt_done is None else \"ok\"",
+  "                return \"ok\""),
+
+ ("fireball charge: the config comparison waits for a show (round 7)",
+  "ltcplay/fireball_charge.py",
+  "        self.note_external_fault(ext)\n        if text != self.group_fault:",
+  "        if text != self.group_fault:"),
+
+ ("fireball charge: a charge channel on does not keep the mark (round 7)",
+  "ltcplay/fireball_charge.py",
+  "        if at is not None and self._clock() - at < 0.5:",
+  "        if False:"),
+
+ ("fireball charge: the sender never notes a charge on the wire (round 7)",
+  "ltcplay/fireball_charge.py",
+  "                self._charge_on_wire_at = self._clock()",
+  "                pass"),
 
  ("fireball charge: close() waits on a hung write for ever (round 4)",
   "ltcplay/fireball_charge.py",
@@ -21370,7 +21435,7 @@ def build():
 
  ("fireball cues: a gap with no frame asked keeps the stage carrying on",
   "ltcplay/fireball_cues.py",
-  "        if run.last_call is not None and now - run.last_call > GAP_S:\n            run.prev_on = set()",
+  "        if gapped:\n            run.prev_on = set()",
   "        if False:\n            run.prev_on = set()"),
 
  ("fireball cues: carrying on is judged from the composed frame",
@@ -21467,6 +21532,16 @@ def build():
   "ltcplay/web.py",
   "journal=say, group_get=fireball_slots, live_get=live_slots,",
   "journal=say, group_get=fireball_slots,"),
+
+ ("fireball cues: a pause is not a landing (round 7)",
+  "ltcplay/fireball_cues.py",
+  "        jumped = jumped or gapped\n",
+  "        pass\n"),
+
+ ("fireball cues: the cues and the charge record word a disagreement differently (round 7)",
+  "ltcplay/fireball_cues.py",
+  "            text = group_mismatch_text(file_g, live_g)",
+  "            text = group_mismatch_text(file_g, live_g) + \" \""),
 
  ("fireball cues: a fireball group off 55 to 59 is not checked",
   "ltcplay/fireball_cues.py",

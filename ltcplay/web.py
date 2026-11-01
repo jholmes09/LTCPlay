@@ -2504,6 +2504,15 @@ def _attach_fireball_timeline(httpd):
     remote.fireball_cues = fb
 
 
+def _fireball_file_slots(httpd):
+    """The fireball group's fire slots as flamesafe.json has them (the
+    Startup page's reading of flamesafe's config), or None."""
+    from . import fireball as fireball_mod
+    g, _why = fireball_mod.find_group(
+        getattr(getattr(httpd, "morning", None), "groups", None) or [])
+    return g["fire"] if g else None
+
+
 def _attach_fireball_charge(httpd):
     """The fireball's charge state (fireball_charge.py, Jeff 2026-10-30):
     watches every flame frame after it went out (chained onto the flame
@@ -2522,7 +2531,10 @@ def _attach_fireball_charge(httpd):
         fs = remote.flame_status
         tr = charge_mod.ChargeTracker(
             remote.folder, flames_get=lambda: fs.view() if fs is not None
-            else None, journal=_journal, audit=getattr(remote, "audit", None))
+            else None, journal=_journal, audit=getattr(remote, "audit", None),
+            # flamesafe.json's fireball slots, compared with the running
+            # flamesafe's on every status (round-7 review 6).
+            file_get=lambda: _fireball_file_slots(httpd))
     except Exception as e:                       # noqa: BLE001
         print(f"The fireball charge state could not be set up: "
               f"{type(e).__name__}: {e}")
