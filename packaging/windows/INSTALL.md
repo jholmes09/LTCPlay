@@ -66,8 +66,12 @@ build changed `late_grace_s` in the schedule file from 15 to 120 (once, on
 its first start), and the earlier build refuses anything over 15 and would
 schedule nothing. Open Programming, set "Late start allowed, seconds" to 15
 and save (or put 15 in `ltcplay_schedule.json`). Your file as it was before
-the change is kept as `ltcplay_schedule.pre-late-limit.json` in the settings
-folder, and the copy before the latest save as `ltcplay_schedule.previous.json`.
+the change is kept as `ltcplay_schedule.pre-late-limit.json`, beside the
+schedule file (that copy is never overwritten; `ltcplay_schedule.previous.json`
+is replaced by every save). When you update to the new build again, set 120
+in Programming (or delete `ltcplay_late_limit_migrated.json` beside the
+schedule file and the next start changes a 15 to 120 once more); otherwise
+the 15 you set for the rollback stays.
 
 ## Something is wrong: send the diagnostics bundle
 

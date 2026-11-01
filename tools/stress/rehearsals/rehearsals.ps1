@@ -109,6 +109,12 @@ if ($st.body.running -or $st.body.starting) { Say "REFUSED. A show is running or
 
 # ------------------------------------------------------------ schedule ---
 if (Test-Path $SCHED) { Copy-Item $SCHED $BACKUP -Force; Say "Backed up $SCHED to $BACKUP" }
+# The engine changes a schedule file that says late_grace_s 15 to 120 once, on
+# its first start after an upgrade, and writes this marker beside it. This
+# script's own schedule must not use that one chance up: whatever it causes is
+# undone at the end, so the operator's own file is looked at by the real start.
+$MARKER = Join-Path (Split-Path -Parent $SCHED) "ltcplay_late_limit_migrated.json"
+$MarkerBefore = Test-Path $MARKER
 $utc = (Get-Date).ToUniversalTime()
 $offH = [math]::Round(((Get-Date) - $utc).TotalHours)
 $tz = "UTC"
@@ -122,7 +128,7 @@ $night = @{ first_start = $first.ToString("HH:mm"); interval_min = $EveryMin; la
 $rule = @{ timezone = $tz
            season = @{ first_date = $local.Date.AddDays(-1).ToString("yyyy-MM-dd"); last_date = $local.Date.AddDays(2).ToString("yyyy-MM-dd") }
            weekly = @{ mon = $night; tue = $night; wed = $night; thu = $night; fri = $night; sat = $night; sun = $night }
-           exceptions = @{}; show_len_s = $ShowLenS; guard_s = 30; late_grace_s = 15 }
+           exceptions = @{}; show_len_s = $ShowLenS; guard_s = 30; late_grace_s = 120 }
 $rule | ConvertTo-Json -Depth 5 | ForEach-Object { [IO.File]::WriteAllText($SCHED, $_, (New-Object Text.UTF8Encoding($false))) }   # no BOM
 Say "Wrote a rehearsal schedule: $Shows shows, the first at $($night.first_start) ($tz), every $EveryMin min, show_len_s $ShowLenS, until $($night.last_end)."
 Restart-LTCPlayer
@@ -195,6 +201,7 @@ while ($done -lt $Shows -and (Get-Date) -lt $deadline) {
     }
 }
 Say "Rehearsals finished: $done show(s) seen. Restoring the schedule."
+if (-not $MarkerBefore -and (Test-Path $MARKER)) { Remove-Item $MARKER -Force -ErrorAction SilentlyContinue; Say "Removed the late-limit marker this run caused, so the engine looks at your own schedule file." }
 if (Test-Path $BACKUP) { Copy-Item $BACKUP $SCHED -Force; Say "Restored $SCHED."; Restart-LTCPlayer }
 Say "Now run the checker on the witness run: it must show fire only in SHOW, nothing while an Abort stood, and every armed slot backed by a press."
 exit 0

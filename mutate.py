@@ -9386,11 +9386,6 @@ def build():
   "    return max(grace_s, min(grace_s + max(0, int(allowance_s)),\n                            DEFAULT_LATE_GRACE_S))\n",
   "    return grace_s + max(0, int(allowance_s))\n"),
 
- ("late limit 2 min: Resume says next on the schedule for a show starting now",
-  "ltcplay/schedule.py",
-  "            0 <= late <= m.late_grace_s - RESUME_MARGIN_S)\n",
-  "            0 <= late <= m.late_grace_s + 1000 and False)\n"),
-
  ("late limit 2 min: the night overlap warning ignores a late last show",
   "ltcplay/schedule.py",
   "                 x + need + grace_td > first]",
@@ -9446,15 +9441,45 @@ def build():
   "                    if not os.path.exists(backup):\n",
   "                    if True:\n"),
 
- ("late limit 2 min: the settings watcher is not refreshed after a migration",
-  "ltcplay/web.py",
-  "                config_watch.refresh(schedule.path)\n",
-  "                pass\n"),
-
  ("late limit 2 min: Resume promises a start with no margin",
   "ltcplay/schedule.py",
   "RESUME_MARGIN_S = 5\n",
   "RESUME_MARGIN_S = 0\n"),
+
+ ("late limit 2 min: Resume says next on the schedule for a show starting now",
+  "ltcplay/schedule.py",
+  "    return \"yes\" if late <= m.late_grace_s - RESUME_MARGIN_S else \"close\"\n",
+  "    return \"no\"\n"),
+
+ ("late limit 2 min: Resume promises a start after an Abort",
+  "ltcplay/schedule.py",
+  "    if (reset or tx.ev.latched or m.abort_latched or\n",
+  "    if (reset or\n"),
+
+ ("late limit 2 min: Resume promises a start inside the guard",
+  "ltcplay/schedule.py",
+  "            _guard_left(m, now) != 0 or not 0 <= late <= m.late_grace_s):\n",
+  "            not 0 <= late <= m.late_grace_s):\n"),
+
+ ("late limit 2 min: Resume does not say a show is close to its limit",
+  "ltcplay/schedule.py",
+  "    if how == \"close\":\n",
+  "    if False:\n"),
+
+ ("late limit 2 min: the settings watcher is not refreshed after a migration",
+  "ltcplay/web.py",
+  "        config_watch.refresh(schedule.path)\n",
+  "        pass\n"),
+
+ ("late limit 2 min: a reload after a failed first save writes the marker",
+  "ltcplay/schedule_service.py",
+  "            if not first_load and getattr(self, \"_late_save_failed\", False):\n",
+  "            if False:\n"),
+
+ ("late limit 2 min: the rehearsal script uses up the one-time change",
+  "tools/stress/rehearsals/rehearsals.ps1",
+  "Remove-Item $MARKER -Force",
+  "Write-Output $MARKER -Force"),
 
  ("review196C: overlapping nights do not say a show can be missed",
   "ltcplay/schedule.py",

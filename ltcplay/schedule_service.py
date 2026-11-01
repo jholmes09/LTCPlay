@@ -1108,6 +1108,11 @@ class Service:
             g = doc.get("late_grace_s")
             changed = False
             backup = os.path.join(folder, self.LATE_BACKUP_FILE)
+            if not first_load and getattr(self, "_late_save_failed", False):
+                # The first start's save failed: the file still says 15 and
+                # the next start must try again, so no marker now (a save
+                # from Programming would otherwise use up the one chance).
+                return
             if first_load and g == 15 and isinstance(g, int) and \
                     not isinstance(g, bool):
                 try:
@@ -1118,12 +1123,15 @@ class Service:
                     changed = True
                     self.legacy_grace_migrated = True
                 except Exception as e:           # noqa: BLE001
+                    self._late_save_failed = True
                     self._late_notes.append((
                         "save",
                         f"The late limit could not be changed from 15 s to "
-                        f"2 minutes in the schedule file "
-                        f"({type(e).__name__}: {e}). It stays 15 s; the "
-                        f"next start tries again.", True))
+                        f"2 minutes: the schedule file {self.path} could "
+                        f"not be written ({type(e).__name__}; another "
+                        f"program, such as a sync client or antivirus, may "
+                        f"have it open). It stays 15 s; the next start "
+                        f"tries again.", True))
                     return
             try:
                 write_json_atomic(marker, {"migrated": changed,

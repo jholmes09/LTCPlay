@@ -10516,30 +10516,54 @@ def test_schedule_late_limit_round_two():
     check("starts at the next tick, 60 s late" in txt and
           "Next on the schedule" not in txt,
           f"Resume inside the window says the show starts: {txt!r}")
-    # Not when it cannot: too close to the limit, a Reset, an Abort.
-    for t_off, why in ((118, "118 s late, 2 s left"), (120, "exactly 120 s")):
+    # Close to the limit (116 to 120 s): said as such; past it: what is next.
+    for t_off, want, why in ((116, "close to its limit", "116 s late"),
+                             (118, "close to its limit", "118 s late"),
+                             (120, "close to its limit", "exactly 120 s"),
+                             (115, "starts at the next tick", "115 s late"),
+                             (121, "Next on the schedule is show 1", "121 s")):
         n = _Night(S, rule)
         n.boot(_den(S, 17, 50))
         n.op(S.HOLD_ON, _den(S, 17, 59))
         o = n.op(S.RESUME, _den(S, 18, 0) + timedelta(seconds=t_off))
         txt = " ".join(le.text for le in o.log)
-        check("starts at the next tick" not in txt and
-              "Next on the schedule is show 1" in txt,
-              f"Resume {why}: no promise it starts: {txt!r}")
+        check(want in txt and (want == "starts at the next tick" or
+                               "starts at the next tick" not in txt),
+              f"Resume {why}: {txt!r}")
+    # A Reset says nothing of the sort.
     n = _Night(S, rule)
     n.boot(_den(S, 17, 50))
     n.op(S.HOLD_ON, _den(S, 17, 59))
     o = n.op(S.RESUME, _den(S, 18, 1), detail=S.RESET_DETAIL)
     txt = " ".join(le.text for le in o.log)
-    check("starts at the next tick" not in txt,
+    check("starts at the next tick" not in txt and
+          "close to its limit" not in txt,
           f"a Reset starts nothing and does not say so: {txt!r}")
+    # Every condition of _resume_starts_next, one at a time.
+    import types
+    from dataclasses import replace
     n = _Night(S, rule)
     n.boot(_den(S, 17, 50))
-    n.op(S.HOLD_ON, _den(S, 17, 55))
-    o = n.op(S.RESUME, _den(S, 17, 58))
-    txt = " ".join(le.text for le in o.log)
-    check("Next on the schedule is show 1 at 18:00" in txt,
-          f"Resume before showtime says what is next: {txt!r}")
+    m0 = n.m
+    nxt = m0.slot(1)
+    at = _den(S, 18, 0, 30)
+
+    def how(m=m0, latched=False, reset=False, when=at):
+        tx = types.SimpleNamespace(
+            m=m, ev=S.Event(S.RESUME, "operator", latched=latched))
+        return S._resume_starts_next(tx, nxt, when, reset)
+    check(m0.state == S.STANDBY and how() == "yes",
+          f"setup: a waiting show 30 s late: {m0.state} {how()}")
+    check(how(m=replace(m0, abort_latched=True)) == "no",
+          "after an Abort nobody Reset: no promise")
+    check(how(latched=True) == "no", "an Abort latched in the event: no")
+    check(how(reset=True) == "no", "a Reset: no")
+    check(how(m=replace(m0, state=S.HOLD)) == "no", "still on Hold: no")
+    check(how(m=replace(m0, last_end=at - timedelta(seconds=10))) == "no",
+          "inside the guard after the last show: no")
+    check(how(when=_den(S, 18, 0) - timedelta(seconds=1)) == "no",
+          "before its time: no")
+    check(how(when=_den(S, 18, 2, 1)) == "no", "past the limit: no")
     # 4. The Programming field shows 120 when the file omits the value.
     html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "ltcplay", "web", "remote.html"),
@@ -10814,8 +10838,10 @@ def test_schedule_legacy_late_grace_is_migrated():
     SV.save_rule = bad_save
     try:
         svc, work, path = boot(dict(base, late_grace_s=15))
+        SV.Service.MIGRATE_LEGACY_GRACE = True
         svc.reload()
     finally:
+        SV.Service.MIGRATE_LEGACY_GRACE = False
         SV.save_rule = real_save
     texts = [r["text"] for r in svc.journal
              if "could not be changed from 15 s" in r["text"]]
@@ -10823,13 +10849,61 @@ def test_schedule_legacy_late_grace_is_migrated():
           not os.path.exists(os.path.join(
               work, SV.Service.LATE_MIGRATED_FILE)),
           f"a failed save: stays 15, said once, no marker: {texts}")
+    check("could not be written" in texts[0] and
+          "save again" not in texts[0],
+          f"and says the file could not be written: {texts[0]!r}")
+    # Programming saves something (the field shows 15) while the first
+    # start's save had failed: no marker, so the next start tries again.
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(dict(base, late_grace_s=15), fh)
+    SV.Service.MIGRATE_LEGACY_GRACE = True
+    try:
+        svc.reload()
+    finally:
+        SV.Service.MIGRATE_LEGACY_GRACE = False
+    check(not os.path.exists(os.path.join(
+        work, SV.Service.LATE_MIGRATED_FILE)),
+          "a reload after the failed first save writes no marker")
     svc.stop()
+    svc2, _w, _p = boot(None, keep=work)
+    check(svc2.rule.late_grace_s == 120,
+          "and the next start changes the 15 to 120")
+    svc2.stop()
     # The settings watcher is told after the engine rewrote the file.
     web_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "ltcplay", "web.py"), encoding="utf-8").read()
-    check("config_watch.refresh(schedule.path)" in web_src and
-          "legacy_grace_migrated" in web_src,
+    check("_note_schedule_rewritten(schedule, config_watch)" in web_src,
           "web.serve refreshes the settings watcher after a migration")
+    from ltcplay import configwatch as CW
+    from ltcplay import web as W
+    for refresh in (False, True):
+        work = tempfile.mkdtemp()
+        path = os.path.join(work, SV.RULE_FILE)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(dict(base, late_grace_s=15), fh)
+        watch = CW.ConfigWatch()
+        watch.add("schedule", path)          # noted BEFORE the engine reads
+        SV.Service.MIGRATE_LEGACY_GRACE = True
+        try:
+            svc = SV.Service(path, ntp_query=lambda: 0.0, state_dir=work)
+        finally:
+            SV.Service.MIGRATE_LEGACY_GRACE = False
+        check(svc.legacy_grace_migrated, "setup: the scheduler migrated")
+        if refresh:
+            W._note_schedule_rewritten(svc, watch)
+        items = watch.check(None)
+        check(bool(items) == (not refresh),
+              f"settings watcher, refreshed={refresh}: reported as changed "
+              f"= {bool(items)}")
+        svc.stop()
+    rh = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "tools", "stress", "rehearsals",
+                           "rehearsals.ps1"), encoding="utf-8").read()
+    check("late_grace_s = 120" in rh and "late_grace_s = 15" not in rh and
+          "ltcplay_late_limit_migrated.json" in rh and
+          "Remove-Item $MARKER" in rh,
+          "the rehearsal script rehearses at 120 and leaves the one-time "
+          "marker as it found it")
     # The soak's own file is never touched.
     svc, work, path = boot(dict(base, late_grace_s=15, soak_only=True))
     check(json.load(open(path, encoding="utf-8"))["late_grace_s"] == 15,
