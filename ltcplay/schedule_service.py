@@ -897,6 +897,13 @@ class Service:
         self._pending_hooks = []
         self.rule = None
         self.error = ""
+        self._rule_id = ""
+        # (night, rule) a save is waiting on (a show running, a closing),
+        # once said in the journal. See _follow_rule.
+        self._follow_said = None
+        # What the last save did to tonight's changes, for the answer to
+        # that save (tonight_words): kept, or each change it undid.
+        self._save_said = []
         self.machine = None
         self.clock_check = None
         # The night journal and the machine log. Given a state folder (the
@@ -1014,10 +1021,16 @@ class Service:
     # -- the rule -------------------------------------------------------
     def reload(self):
         """Read the rule file. A bad file leaves the scheduler with no night
-        and the reason on the page; it never takes the server down with it."""
+        and the reason on the page; it never takes the server down with it.
+        A good one is followed at once (_follow_rule): tonight's list is
+        rebuilt from it now, even on a night that had closed, exactly as a
+        restart would rebuild it, and nothing is started."""
         with self._locked():
+            self._save_said = []
             if self._load_rule():
                 self._journal_rule_error()
+            else:
+                self._follow_rule(self.clock())
             return self.rule
 
     def _load_rule(self):
@@ -1025,12 +1038,288 @@ class Service:
         try:
             self.rule = load_rule(self.path)
             self.error = ""
+            self._rule_id = sch.rule_fingerprint(self.rule)
             return False
         except (ValueError, OSError) as e:
             self.rule = None
             self.error = str(e)
             self.machine = None
+            self._rule_id = ""
             return True
+
+    # -- a schedule saved while running (Jeff, Pico, 2026-10-29) -----------
+    # What a rebuild keeps and drops (sch.rebuild_night), said once at its
+    # head. A show taken off tonight's list or skipped stays SKIPPED, a
+    # Delay or move is always kept (a save never moves a show earlier than
+    # an operator put it), and a time from the file too close to a delayed
+    # show is skipped; only shows added tonight are dropped. Each change is
+    # a sentence of its own.
+    REBUILT_WHAT = (
+        "Shows that already happened keep their status and their numbers, "
+        "and a show taken off tonight's list or skipped stays skipped. A "
+        "Delay or move of a show still to come is kept, and a time from the "
+        "file too close to a delayed show is skipped. Shows added tonight "
+        "are dropped. Each change is said below.")
+    REBUILT_RESTART = (
+        "The schedule file changed after tonight's list was saved, so "
+        "tonight is rebuilt from the new schedule. " + REBUILT_WHAT)
+    REBUILT_SAVED = (
+        "The schedule file was saved, so tonight's list is rebuilt from it "
+        "now, as a restart would rebuild it. " + REBUILT_WHAT +
+        " Nothing is started by the rebuild.")
+    # Tonight's times did not change (sch.keeps_tonight): nothing undone.
+    # Only the times still to come are compared: a time taken out that had
+    # already run or been skipped stays on tonight's list (review of PR
+    # #180: "did not change" was not true then).
+    KEPT_TIMES = (
+        "No show still to come tonight changed its time, so tonight's list "
+        "is kept as it is, with every change made to it tonight (delays, "
+        "moves, shows added, taken off or skipped).")
+    # The same, when the new show length or guard leaves a show too close
+    # to one an operator delayed: that show is skipped, said next.
+    KEPT_BUT = (
+        "No show still to come tonight changed its time, so tonight's list "
+        "is kept with every change made to it tonight, except a show now "
+        "too close to a delayed one, which is skipped:")
+    KEPT_RESTART = ("The schedule file changed after tonight's list was "
+                    "saved. " + KEPT_TIMES)
+    KEPT_SAVED = "The schedule file was saved. " + KEPT_TIMES
+
+    def _rebuild_tonight(self, m, now, saved, dropped=None,
+                         past=sch.SAVED_PAST, skipped=None):
+        """The one rebuild for a changed schedule, a restart's and a save's
+        (`saved`) (sch.follow_rule, which uses sch.rebuild_night): the
+        Outcome, with every change said in the journal. `dropped` gets each
+        change made tonight that the rebuild undid, `skipped` each time
+        from the file skipped for a delayed show. Lock held."""
+        kept = sch.keeps_tonight(self.rule, m)
+        skipped = [] if skipped is None else skipped
+        out, notes = sch.follow_rule(self.rule, m, now, dropped, past,
+                                     skipped)
+        if kept and skipped:
+            # Not "kept as it is": a show was skipped for a delayed show
+            # (review of PR #180, round 3, a new show length).
+            why = ((self.KEPT_SAVED if saved else self.KEPT_RESTART)
+                   .replace(self.KEPT_TIMES, self.KEPT_BUT))
+        elif kept:
+            why = self.KEPT_SAVED if saved else self.KEPT_RESTART
+        else:
+            why = self.REBUILT_SAVED if saved else self.REBUILT_RESTART
+        outcome = "kept" if kept else "rebuilt"
+        self._journal_line("system", why, action="load tonight",
+                           outcome=outcome)
+        for text in notes:
+            self._journal_line("system", text, action="load tonight",
+                               outcome=outcome)
+        return out, kept
+
+    def _follow_rule(self, now, deferred=False):
+        """Tonight follows the schedule file the scheduler has loaded: once
+        it was saved, tonight's list is rebuilt at once (reload) or, while
+        a show runs or the night is closing, on the first tick after that
+        is over. True when tonight was rebuilt. Lock held."""
+        m = self.machine
+        if m is None or self.rule is None or m.rule_id == self._rule_id:
+            return False
+        if m.date != self._tonight(now):
+            # An earlier night still open: _ensure_night settles it, and
+            # loads tonight from the new schedule.
+            return False
+        if m.state in sch.FOLLOW_LATER:
+            key = (m.date, self._rule_id)
+            if self._follow_said != key:
+                self._follow_said = key
+                self._journal_line(
+                    "system", self._follow_later_words(m),
+                    action="load tonight", outcome="waiting")
+            return False
+        self._follow_said = None
+        dropped, skipped = [], []
+        # A save followed only now, after the show or closing it waited
+        # for, misses a time gone by for that reason, not "when saved".
+        out, kept = self._rebuild_tonight(
+            m, now, True, dropped,
+            sch.FOLLOWED_PAST if deferred else sch.SAVED_PAST, skipped)
+        self._save_said_on = m.date
+        self._save_said = (
+            ([self.KEPT_BUT if skipped else self.KEPT_TIMES] if kept else
+             [f"This save undid tonight's changes: {' '.join(dropped)}"]
+             if dropped else []) + list(skipped))
+        self.machine = out.machine
+        self._record(out, now)
+        if out.machine.state == sch.BOOT:
+            # A night that never opened (sch.follow_rule): it starts as a
+            # restart starts it, through BOOT_DONE and its usual effects,
+            # held back like any the scheduler decides while Run is off.
+            self._apply(sch.Event(sch.BOOT_DONE, "system",
+                                  detail=sch.SAVED_START), now)
+        self._save_tonight()
+        self._journal_line("system", self._tonight_words(now),
+                           action="load tonight", outcome="planned")
+        return True
+
+    @staticmethod
+    def _follow_later_words(m):
+        if m.state == sch.CLOSING:
+            return ("The schedule file was saved while the night was "
+                    "closing. Tonight's list is rebuilt from it as soon as "
+                    "the closing has finished.")
+        how = "paused" if m.state == sch.PAUSED else "running"
+        return (f"The schedule file was saved while show {m.running} was "
+                f"{how}. Show {m.running} is not touched; tonight's list is "
+                f"rebuilt from the new schedule as soon as it has ended.")
+
+    def tonight_words(self):
+        """What tonight holds now, in plain sentences: the Programming
+        screen's answer to a save (remote.save_schedule_file), never "The
+        scheduler has loaded it" when nothing is planned, and every change
+        made tonight that the save undid. Read only: it never ticks and
+        never changes anything (review of PR #180: a tick here started a
+        show whose time had gone by, during the save's own answer)."""
+        with self._locked():
+            text = self._tonight_words(self.clock())
+            m = self.machine
+            # What a save did is said for the night it was made on only.
+            said = (list(self._save_said) if m is not None and
+                    getattr(self, "_save_said_on", None) == m.date else [])
+            return " ".join([text] + said)
+
+    def _tonight_words(self, now):
+        m = self.machine
+        if self.rule is None:
+            return f"The scheduler could not load it: {self.error}"
+        if m is None:
+            return ("The scheduler has loaded it; tonight is not worked "
+                    "out yet.")
+        if m.rule_id != self._rule_id and m.state in sch.FOLLOW_LATER:
+            return "The scheduler has loaded it. " + \
+                self._follow_later_words(m)
+        pend, d = m.pending(), m.delayed()
+        if pend:
+            nxt = pend[0]
+            text = (f"The scheduler has loaded it: tonight now has "
+                    f"{len(pend)} show{'' if len(pend) == 1 else 's'} still "
+                    f"to come, next show {nxt.n} at {m.hm(nxt.start)}.")
+            if d is not None:
+                text += (f" Show {d.n} is delayed and waits for Start now.")
+        elif d is not None:
+            text = (f"The scheduler has loaded it, but no scheduled show is "
+                    f"still to come tonight. Show {d.n} is delayed and waits "
+                    f"for Start now.")
+        else:
+            text = (f"Saved, but there are no more shows tonight: "
+                    f"{self._no_more_why(m, now)}")
+        if m.state == sch.HOLD:
+            text += " The schedule is on Hold: nothing starts until Resume."
+        if self._aborted():
+            text += (" An Abort has not been Reset: no show starts until "
+                     "Reset.")
+        warn = self._run_warning(now)
+        if warn:
+            text += " " + warn
+        return text
+
+    def _no_more_why(self, m, now):
+        plan = sch.expand(self.rule, m.date)
+        if sch.closed_by_operator(m):
+            why = ("tonight was closed with Close for the night, and a "
+                   "saved schedule never opens a night an operator closed. "
+                   "The saved schedule is followed from the next night "
+                   "on.")
+        elif not plan.starts:
+            why = plan.why
+        elif sch._utc(plan.starts[-1]) > sch._utc(now):
+            # Review of PR #180: not "gone by" when the later times were
+            # skipped, taken off tonight's list or missed.
+            why = (f"the shows on the schedule for {m.date} still to come "
+                   f"(the last at {sch.clock(plan.starts[-1])}) were "
+                   f"skipped, taken off tonight's list or missed tonight.")
+        else:
+            why = (f"every show on the schedule for {m.date} has already "
+                   f"gone by (the last was at "
+                   f"{sch.clock(plan.starts[-1])}).")
+        if m.state in (sch.OFF, sch.CLOSING):
+            why += (" The scheduler is off until tomorrow; Start now still "
+                    "works.")
+        elif m.state in (sch.IDLE, sch.STANDBY) and m.delayed() is None:
+            # Review of PR #180, F2: the next tick closes the night.
+            why += (" So the night closes now: flame cues to zero, "
+                    "MadMapper stopped, pixels faded, blackout. Start now "
+                    "still works.")
+        return why
+
+    def _run_warning(self, now):
+        """"Run is off: the 22:50 show will NOT start. Press Run." (and
+        Resume on a Hold, Reset first after an Abort nobody has Reset) while
+        Run is not pressed (an engine restart always leaves it off) and a
+        show is still to come that the scheduler would start, or None. Said
+        only: nothing here presses Run (Jeff's standing rule: no auto-Run;
+        the schedule never starts a show unattended). Lock held."""
+        m = self.machine
+        if m is None or self.run_gate is None or self.dry_run or \
+                self.performer is None:
+            return None
+        cfg = getattr(self.performer, "cfg", None)
+        if getattr(cfg, "auto_start", "when_run_pressed") == "off":
+            return None
+        if m.state in (sch.SHOW, sch.PAUSED, sch.CLOSING, sch.OFF,
+                       sch.BOOT):
+            return None
+        nxt = m.next_slot()
+        if nxt is None:
+            return None
+        if self._run_pressed():
+            # Run reads as pressed during a Programming Run, but the
+            # scheduler starts nothing over a rehearsal (_preroll_defers):
+            # said too (review of PR #180).
+            why = self._programming_run()
+            if not why:
+                return None
+            return (f"A Programming Run is in force: the {m.hm(nxt.start)} "
+                    f"show (show {nxt.n}) will NOT start. Press Stop, "
+                    f"choose Show, then Run.")
+        # Everything that has to be pressed before it starts, from what
+        # stands now, in the order to press it (review of PR #180: on Hold,
+        # Run alone is not enough). An Abort is Reset first, as every other
+        # refusal in this engine says ("press Reset first").
+        need = ["Run"]
+        if self._aborted():
+            need.insert(0, "Reset")
+        if m.state == sch.HOLD:
+            need.append("Resume")
+        return (f"Run is off: the {m.hm(nxt.start)} show (show {nxt.n}) will "
+                f"NOT start. Press {', then '.join(need)}.")
+
+    # The Run warning turns red (a fault) this long before the next show
+    # (review of PR #180, round 3: the pre-roll window, 10 s, was too late
+    # to act on).
+    RUN_WARNING_RED_S = 30 * 60
+
+    def _run_warning_urgent(self, now):
+        """True when the next show is within RUN_WARNING_RED_S, or once the
+        night's first show time has gone by: the Run warning is then a
+        fault, red. Before that it is said in amber, not as a fault, so it
+        is not red all day in IDLE. Lock held."""
+        m = self.machine
+        nxt = m.next_slot() if m is not None else None
+        if nxt is None:
+            return False
+        now = sch._utc(now)
+        if any(s.start <= now for s in m.slots):
+            return True
+        return (nxt.start - now).total_seconds() <= self.RUN_WARNING_RED_S
+
+    def _programming_run(self):
+        """A sentence while a Programming Run is in force (the pre-roll's
+        skip()), so the scheduler will not start a show; "" otherwise or
+        with no pre-roll. Never raises."""
+        pr = self.preroll
+        if pr is None:
+            return ""
+        try:
+            return str(pr.skip() or "")
+        except Exception:                        # noqa: BLE001
+            return ""
 
     def _journal_rule_error(self):
         self._journal_line("system", "The schedule file was not loaded, so "
@@ -2164,18 +2453,10 @@ class Service:
         for text in notes:
             self._journal_line("system", text, action="load tonight",
                                outcome="clock stepped back")
-        rid = sch.rule_fingerprint(self.rule)
-        if m.rule_id != rid:
-            m, notes = sch.rebuild_night(self.rule, m)
-            self._journal_line(
-                "system", "The schedule file changed after tonight's list "
-                "was saved, so tonight is rebuilt from the new schedule. "
-                "Shows that already happened keep their status; tonight's "
-                "changes to shows still to come are dropped.",
-                action="load tonight", outcome="rebuilt")
-            for text in notes:
-                self._journal_line("system", text, action="load tonight",
-                                   outcome="rebuilt")
+        if m.rule_id != self._rule_id:
+            # The same rebuild a schedule saved while running gets
+            # (_follow_rule); BOOT_DONE then works out the state.
+            m = self._rebuild_tonight(m, now, False)[0].machine
         return m
 
     def _set_aside(self, path, e, d, now):
@@ -2702,6 +2983,9 @@ class Service:
                 self._apply(sch.Event(sch.SHOW_ENDED, "system",
                                       detail="dry run, nothing was started",
                                       show=m.running), now)
+            # A schedule saved during a show or a closing: tonight follows
+            # it once that is over, before this tick looks at the list.
+            self._follow_rule(now, deferred=True)
             ev = self._tick_event()
             self._preroll_lookahead(now)
             self._preroll_before_gate(now, ev)
@@ -2856,7 +3140,7 @@ class Service:
         except Exception:                        # noqa: BLE001
             return
         for n in set(shows):
-            self._alert_held.setdefault((str(m.date), n), []).append(
+            self._alert_held.setdefault(self._show_key(m, n), []).append(
                 frozenset(got[1]))
 
     # The states a show can START from on a tick; a running (SHOW) or
@@ -2890,7 +3174,7 @@ class Service:
         # Resumed it with these alerts open, it is never held again for
         # them (review of PR #133): the Resume was the choice. A NEW alert
         # at the same showtime holds again.
-        key = (str(m.date), shows[0])
+        key = self._show_key(m, shows[0])
         if self._alert_handled(key, ids):
             return
         out = self._apply(sch.Event(
@@ -2905,6 +3189,19 @@ class Service:
             epoch = self.hold_epoch
             self._pending_hooks.append(lambda: hook(epoch, why))
 
+    @staticmethod
+    def _show_key(m, n):
+        """The key every record kept in memory for one show tonight goes by
+        (its pre-roll and the pre-roll's late allowance, and the alert hold
+        and the Resume given with alerts open): the night, the show number
+        and the time it was planned for. A number a saved schedule gives to
+        a new time is a new show and inherits none of them (review of PR
+        #180: a Resume given while alerts were open let a later show with
+        the same number past the alert hold)."""
+        s = m.slot(n)
+        at = (s.planned or s.start) if s is not None else None
+        return (str(m.date), n, at.isoformat() if at is not None else "")
+
     # -- the pre-roll (preroll.py, Jeff 2026-10-28) -------------------------
     def _tick_event(self):
         """The scheduler's TICK, with the late allowance (late_ok_s) for
@@ -2914,7 +3211,7 @@ class Service:
         if self._preroll_late and m is not None:
             nxt = m.next_slot()
             if nxt is not None:
-                late = self._preroll_late.get((str(m.date), nxt.n))
+                late = self._preroll_late.get(self._show_key(m, nxt.n))
                 if late:
                     ev = replace(ev, late_show=nxt.n, late_ok_s=late)
         return ev
@@ -2951,7 +3248,7 @@ class Service:
         """Queue the pre-roll for show `n` (lock held): it runs on a
         thread of its own once the lock is free, never under it."""
         m, pr = self.machine, self.preroll
-        key = (str(m.date), n)
+        key = self._show_key(m, n)
         slot = m.slot(n)
         label = f"show {n}" + (f" ({m.hm(slot.start)})" if slot else "")
         if pr.claim(key, label):
@@ -2990,7 +3287,7 @@ class Service:
             if not n:
                 return
             pr = self.preroll
-            key = (str(self.machine.date), n)
+            key = self._show_key(self.machine, n)
             if pr.verdict(key) == "failed" and not pr.alert_open():
                 pr.raise_alert(pr.failure_text(key))
         except Exception:                        # noqa: BLE001
@@ -3013,7 +3310,7 @@ class Service:
             n = self._starts(sch.step(m, ev, now))
             if not n:
                 return False
-            key = (str(m.date), n)
+            key = self._show_key(m, n)
             if pr.skip():
                 # A Programming Run: the scheduler never starts a show
                 # unchecked or over a rehearsal (review of #162).
@@ -3091,10 +3388,13 @@ class Service:
             m = self.machine
             night = str(m.date) if m is not None else None
             for key in keys:
-                # A scheduled show's key is (night, show); Start now's and
-                # a Pre-check's are not shows (review A of #176).
-                if not isinstance(key, tuple) or len(key) != 2 or \
-                        key[0] != night or not isinstance(key[1], int):
+                # A scheduled show's key is _show_key's (night, show,
+                # planned time; PR #180); Start now's and a Pre-check's are
+                # not shows (review A of #176). A key for a number a saved
+                # schedule has since given another time is not this show.
+                if not isinstance(key, tuple) or len(key) != 3 or \
+                        key[0] != night or not isinstance(key[1], int) or \
+                        m is None or key != self._show_key(m, key[1]):
                     continue
                 self._preroll_late[key] = pr.late_ok_s()
                 d = m.delayed() if m is not None else None
@@ -3683,6 +3983,11 @@ class Service:
                    "journal": list(self.journal)[-int(journal):][::-1]}
             if self.machine is not None:
                 out.update(sch.machine_view(self.machine, now))
+            # Run off with a show to come (an engine restart leaves it
+            # off): said on every screen, never pressed for anyone.
+            out["run_warning"] = self._run_warning(now)
+            out["run_warning_urgent"] = bool(
+                out["run_warning"] and self._run_warning_urgent(now))
         # What Start now would be refused with now (the rack screen's
         # Loading state and its reason), read off this service's lock.
         out["start_blocked"] = self.start_blocked()
