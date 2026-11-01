@@ -123,7 +123,8 @@ PERMS = (
                  "flame programming, moving Programming playback from an "
                  "iPad while flames follow it, the timecode input, the "
                  "announcement output, the audit upload, idle sign out, "
-                 "sign out after the last show, the play-from cues"),
+                 "sign out after the last show, the play-from cues, the "
+                 "fireball timeline"),
     ("users", "Users: add, remove, reset passwords, set roles, clear "
               "sign-in lockouts"),
 )
@@ -236,6 +237,9 @@ REMOTE_ROUTES = {
     # The fuel pump (fuelpump.py, 2026-10-30): ON is an arm press, OFF
     # safety (classify).
     "fuel-pump": "arm",
+    # The fireball timeline (fireball_timeline.py, Jeff 2026-10-30): a
+    # save is setup, admin only by default.
+    "fireball-timeline-save": "settings",
     # These depend on the body: see classify().
     "fireball-beat": "arm", "cleaning-beat": "arm",
     "purge-select": "arm", "purge-fire": "arm", "laser-test": "unlock",
