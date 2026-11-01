@@ -10517,8 +10517,8 @@ def test_schedule_state_machine_every_state_every_event():
           "the matrix did not run every cell")
 
     # Operator events must name someone on the list, and a screen: all but
-    # Abort and Hold, which are taken whoever pressed them and wherever
-    # (PR #43 fix round 1; tested in test_abort_and_hold_never_refused_for_
+    # Stop and Hold, which are taken whoever pressed them and wherever
+    # (PR #43 fix round 1; tested in test_stop_and_hold_never_refused_for_
     # who_or_where).
     for kind in [k for k, a in S.EVENT_ACTORS.items() if "operator" in a
                  and k not in S.ALWAYS_TAKEN]:
