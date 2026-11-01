@@ -1240,6 +1240,8 @@ class Service:
         warn = self._run_warning(now)
         if warn:
             text += " " + warn
+        for w in sch.clash_warnings(m):
+            text += " " + w
         return text
 
     def _no_more_why(self, m, now):
@@ -2530,8 +2532,11 @@ class Service:
         m = self.machine
         if m is not None:
             return max(d, m.date)
+        # A night can begin before midnight (its preshow), so a saved list
+        # dated tomorrow counts (review of PR #196, round 2).
         floor = self._latest_saved_night(
-            sch._utc(sch._aware(now)).astimezone(self.rule.tz).date())
+            sch._utc(sch._aware(now)).astimezone(self.rule.tz).date() +
+            timedelta(days=1))
         return d if floor is None else max(d, floor)
 
     def _latest_saved_night(self, upto):
@@ -2969,22 +2974,26 @@ class Service:
             return None
         words = sch.reset_words()
         ends = sch.night_reset(m.date, m.tz, self.rule, m)
-        # Said as the 2 AM reset only when the night was over by 2 AM: a
-        # show delayed at a time after 2 AM ends the night later (review B
-        # of PR #196).
-        two = sch.night_reset(m.date, m.tz)
-        late = m.delayed() is not None and m.delayed().start > two
-        default = ends == two and not late
-        if late:
-            ends = max(ends, m.delayed().start)
+        # Said as the 2 AM reset only when that is when it ends: a show
+        # delayed after 2 AM, or one still running, ends the night later
+        # (review of PR #196).
+        default = ends == sch.night_reset(m.date, m.tz)
         if not default:
             words = f"{m.hm(ends)} hand over to the next night"
+        if m.delayed() is not None and now < ends:
+            return None
+        if m.pending():
+            # A show typed for a time at or after the next night's first
+            # show: the night handed over first, said out loud.
+            out = sch.close_unrun_at_handover(m, now)
+            self.machine = out.machine
+            self._record(out, now)
+            self._save_tonight()
+            m = self.machine
         if m.delayed() is None:
             return (f"written at the {words}" +
                     (" nightly reset" if default else "") +
                     "; the night was never closed")
-        if now < ends:
-            return None
         n = m.delayed().n
         out = sch.close_at_reset(m, now, at_default=default)
         self.machine = out.machine
@@ -3001,7 +3010,14 @@ class Service:
         picked up only to be closed by _still_open's rule, out loud: before
         2026-10-03 (the next-night-preshow rule) it could be picked up and
         run days later. Journaled. An unreadable file is left where it is
-        and said out loud; tonight's list then starts as it always did."""
+        and said out loud; tonight's list then starts as it always did.
+
+        Never an earlier night than the latest one saved (review of PR #196,
+        round 2: after a hand over before midnight, a restart reopened the
+        night before): when `d` already has a saved list, tonight carries on
+        from it and nothing before it is opened."""
+        if os.path.exists(tonight_path(d, self.state_dir)):
+            return None
         for back in range(1, self.OPEN_NIGHT_LOOK_BACK + 1):
             y = d - timedelta(days=back)
             path = tonight_path(y, self.state_dir)

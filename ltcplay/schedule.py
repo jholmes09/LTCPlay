@@ -794,8 +794,9 @@ def _rule_warnings(rule, most):
             f"{_hm(end.astimezone(tz).timetz())} with its guard, after the "
             f"next night's first show at "
             f"{_hm(first.astimezone(tz).timetz())}: the earlier night "
-            f"finishes first, and a show of the next night whose time has "
-            f"gone by then is missed. Saved as it is.")
+            f"finishes first, so the next night's first show can be MISSED, "
+            f"late by up to {fmt_span(int((end - first) // ONE_SECOND))}. "
+            f"Saved as it is; nothing is refused.")
     if not scanned_all:
         clash.append(f"Nights running into each other were checked for the "
                      f"first {SCAN_NIGHTS} nights of the season only.")
@@ -993,6 +994,12 @@ class Machine:
     # tonight as a restart would (follow_rule). Cleared as soon as the
     # night leaves OFF; in memory only: a restart runs BOOT_DONE again.
     never_opened: bool = False
+    # The first show of the NEXT night, UTC, from the rule when this night
+    # was built (None when the next night has none). Not kept in tonight's
+    # file: a restart builds it again. The hand over (night_reset) and the
+    # warnings about a show that cannot fit before it read it (review of
+    # PR #196, round 2).
+    next_first: object = None
     # The schedule's Hold was put on by a Stop (Jeff, 2026-10-30): only an
     # operator's Resume (or a show started by hand) ends it; Reset does not,
     # and it carries over the nightly reset. Kept in tonight's file. True
@@ -1075,7 +1082,8 @@ def new_night(rule, d):
            if plan.night is not None else None)
     return Machine(date=d, tz=tz, show_len_s=rule.show_len_s,
                    guard_s=rule.guard_s, late_grace_s=rule.late_grace_s,
-                   slots=slots, night_end=end, rule_id=rule_fingerprint(rule))
+                   slots=slots, night_end=end, rule_id=rule_fingerprint(rule),
+                   next_first=_night_span(rule, d + timedelta(days=1))[0])
 
 
 def rule_fingerprint(rule):
@@ -1097,10 +1105,47 @@ def runs_late(m, s):
             > m.night_end)
 
 
+def clash_with_next_night(m, s):
+    """How a show still to come meets the next night's first show: "after"
+    (it starts at or after it: tonight hands over before it, so it is
+    missed), "inside" (it ends, with its guard, after it: the next night
+    begins only once this one's guard is over, so that first show is
+    missed), or None. Pure."""
+    if m.next_first is None or s.status != PENDING:
+        return None
+    if s.start >= m.next_first:
+        return "after"
+    if s.start + timedelta(seconds=m.show_len_s + m.guard_s) > m.next_first:
+        return "inside"
+    return None
+
+
+def clash_warnings(m):
+    """Sentences for every show still to come that cannot be fitted before
+    the next night's first show. Said, never refused (Jeff, 2026-10-30)."""
+    out = []
+    for s in m.pending():
+        how = clash_with_next_night(m, s)
+        if how == "after":
+            out.append(
+                f"Show {s.n} at {m.hm(s.start)} is at or after the next "
+                f"night's first show at {m.hm(m.next_first)}, so tonight "
+                f"hands over before it and show {s.n} will be missed.")
+        elif how == "inside":
+            late = int((s.start + timedelta(
+                seconds=m.show_len_s + m.guard_s) - m.next_first) // ONE_SECOND)
+            out.append(
+                f"Show {s.n} at {m.hm(s.start)} ends, with its guard, "
+                f"{fmt_span(late)} after the next night's first show at "
+                f"{m.hm(m.next_first)}, so that show can be missed: the next "
+                f"night begins only once this one's guard is over.")
+    return out
+
+
 def late_warnings(m):
     return [f"Show {s.n} at {m.hm(s.start)} finishes after tonight's "
             f"last_end of {m.hm(m.night_end)}, so the night runs late."
-            for s in m.pending() if runs_late(m, s)]
+            for s in m.pending() if runs_late(m, s)] + clash_warnings(m)
 
 
 def _local(m, now):
@@ -1971,9 +2016,24 @@ def _spacing_problem(m, slots, moved, now):
     return None
 
 
+def _note_clash(tx, m_before):
+    """Journal every show an edit or a Delay has just made meet the next
+    night's first show (clash_with_next_night). Allowed, never silent."""
+    was = {s.n for s in m_before.pending()
+           if clash_with_next_night(m_before, s)}
+    for s in tx.m.pending():
+        if s.n in was or not clash_with_next_night(tx.m, s):
+            continue
+        text = [w for w in clash_warnings(tx.m)
+                if w.startswith(f"Show {s.n} at ")][0]
+        tx.note(tx.ev.kind, "clashes with the next night",
+                "CLASHES WITH THE NEXT NIGHT", text + " Allowed.", show=s.n)
+
+
 def _note_late(tx, m_before):
     """Journal every show an edit has just pushed past last_end. Allowed, and
     never silent."""
+    _note_clash(tx, m_before)
     was = {s.n for s in m_before.pending() if runs_late(m_before, s)}
     for s in tx.m.pending():
         if runs_late(tx.m, s) and s.n not in was:
@@ -2162,6 +2222,16 @@ def night_of(now, tz, rule=None, m=None):
     return today
 
 
+def _next_reset_after(t, tz):
+    """The first NIGHT_RESET (local) strictly after the instant `t`."""
+    local = _utc(t).astimezone(tz)
+    r = _utc(datetime.combine(local.date(), NIGHT_RESET, tzinfo=tz))
+    if r <= _utc(t):
+        r = _utc(datetime.combine(local.date() + timedelta(days=1),
+                                  NIGHT_RESET, tzinfo=tz))
+    return r
+
+
 def night_reset(d, tz, rule=None, m=None):
     """The instant the night of `d` closes: NIGHT_RESET, local, on the next
     calendar day. A reset inside the spring gap comes out as the first
@@ -2180,16 +2250,25 @@ def night_reset(d, tz, rule=None, m=None):
     if rule is None:
         return base
     _first, end = _night_span(rule, d)
+    nxt, _e = _night_span(rule, d + timedelta(days=1))
+    hold = None
     if m is not None:
         # The machine is the night: what it still has to run decides, not
         # the file's hours (review B of PR #196: a night closed with Close
         # for the night, or with its late shows skipped, held the next
-        # night back until its planned end, and the next night's first
-        # shows were missed). Nothing left to run: the night is over.
+        # night back until its planned end). Nothing left to run: over.
         end = None
         need = timedelta(seconds=m.show_len_s + m.guard_s)
         for s in m.slots:
             if s.status == PENDING:
+                if nxt is not None and s.start >= nxt:
+                    # At or after the next night's first show: this night
+                    # cannot hold the next one back for it (review of PR
+                    # #196, round 2: "18:10 tomorrow" held Thursday open
+                    # all Friday and Friday's shows were missed). It is
+                    # warned about when typed, and missed out loud at the
+                    # hand over (close_unrun_at_handover).
+                    continue
                 e = s.start + need
             elif s.status == RUNNING and m.running == s.n:
                 e = m.expected_end(s.fired_at or s.start) + \
@@ -2197,8 +2276,23 @@ def night_reset(d, tz, rule=None, m=None):
             else:
                 continue
             end = e if end is None else max(end, e)
+        if m.last_end is not None:
+            # The last show that ran still has its guard: the next night's
+            # first show never starts inside it (review of PR #196, round
+            # 2: Friday's 00:18 show started 40 s into Thursday's guard).
+            tail = m.last_end + timedelta(seconds=m.guard_s)
+            end = tail if end is None else max(end, tail)
+        dl = m.delayed()
+        if dl is not None:
+            # A show delayed (a Hold) waits for Start now and holds the
+            # night open, as far as the next 2 AM after its own time (the
+            # old reset, for a show before 2 AM), never past the next
+            # night's start (review of PR #196, round 2: a show delayed
+            # after 2 AM was missed 10 s later).
+            hold = _next_reset_after(dl.start, tz)
     r = base if end is None else max(base, end)
-    nxt, _e = _night_span(rule, d + timedelta(days=1))
+    if hold is not None:
+        r = max(r, hold)
     if nxt is not None:
         opens = nxt - timedelta(seconds=PRESHOW_LEAD_S)
         r = min(r, opens if end is None else max(end, opens))
@@ -2209,6 +2303,33 @@ def night_reset(d, tz, rule=None, m=None):
 # still to run after 2 AM, or the next night's first show before it).
 HANDOVER_MISSED = ("MISSED (still waiting when the night ended, as the "
                    "next night began)")
+
+
+UNRUN_AT_HANDOVER = ("MISSED (the night handed over to the next night "
+                     "before its time)")
+
+
+def close_unrun_at_handover(m, now):
+    """Shows still to come when the night hands over (typed for a time at or
+    after the next night's first show, review of PR #196): MISSED out loud,
+    each a fault line, never started and never left PENDING in the file.
+    Returns an Outcome; the caller sets the night aside. Pure."""
+    pend = m.pending()
+    if not pend:
+        return Outcome(m)
+    now = _utc(_aware(now))
+    tx = _Tx(m, Event(TICK, "scheduler"), now)
+    texts = []
+    for sl in pend:
+        text = (f"Show {sl.n}, set for {m.hm(sl.start)}, never started: the "
+                f"night of {m.date} handed over to the next night first. "
+                f"It is {UNRUN_AT_HANDOVER}.")
+        tx.set_slot(sl.n, status=MISSED, reason=UNRUN_AT_HANDOVER)
+        tx.note("miss", "fault", UNRUN_AT_HANDOVER, text, show=sl.n,
+                actor="scheduler")
+        texts.append(text)
+    tx.m = replace(tx.m, faults=tx.m.faults + tuple(texts))
+    return tx.done()
 
 
 def close_at_reset(m, now, at_default=True):
@@ -2247,54 +2368,123 @@ def close_at_reset(m, now, at_default=True):
 EDIT_DAY_LIMIT = timedelta(hours=3)
 
 
+def _wall_all(d, t, tz):
+    """Every instant the wall clock reads `t` on date `d`, earliest first:
+    two in the autumn's repeated hour, one otherwise (a time inside the
+    spring gap is one hour later, as _wall does). Pure."""
+    out = []
+    for fold in (0, 1):
+        dt = datetime.combine(d, t, tzinfo=tz).replace(fold=fold)
+        u = _utc(dt)
+        if fold == 1 and u.astimezone(tz).replace(tzinfo=None) != \
+                dt.replace(tzinfo=None):
+            continue
+        if u not in out:
+            out.append(u)
+    return sorted(out)
+
+
+_TIME_WORDS = ("today", "tomorrow", "tonight", "first", "second")
+
+
+def _edit_words(text):
+    """(time text, day word or None, date or None, "first"/"second" or
+    None) from what was typed: "00:30", "10:55 tomorrow", "23:30 today",
+    "10:55 2026-11-14", "01:45 second". ValueError with the sentence."""
+    parts = str(text or "").split()
+    if not parts:
+        raise ValueError("The new time has to be a time of day like "
+                         "\"17:30\", not nothing.")
+    day = which = on = None
+    for w in (x.lower() for x in parts[1:]):
+        if w in ("first", "second"):
+            which = w
+        elif w in ("today", "tomorrow", "tonight"):
+            day = w
+        else:
+            try:
+                on = date.fromisoformat(w)
+            except ValueError:
+                raise ValueError(
+                    f"The new time has to be a time of day like \"17:30\", "
+                    f"then if you like today, tomorrow, a date like "
+                    f"2026-11-14, or second for the later of a time that "
+                    f"happens twice; not {text!r}.")
+    return parts[0], day, on, which
+
+
 def _edit_time(m, ev, now=None):
     """The time an operator typed for tonight's list ("00:30", or "10:55
-    tomorrow", "23:30 today").
+    tomorrow", "23:30 today", "10:55 2026-11-14", "01:45 second").
+
+    "today" and "tomorrow" are the calendar days of NOW, on the clock, in
+    the show's zone (review of PR #196, round 2: counted from the night's
+    date they gave the wrong day after midnight); "tonight" is the night's
+    own date. A date may be typed in full. "second" is the later of a time
+    the clocks make happen twice.
 
     Without a day, the time is the nearest occurrence still to come inside
     tonight's window: from the start of the night's date to its planned end
     (the file's last_end, or its last planned show) plus EDIT_DAY_LIMIT
-    (review B of PR #196: a guess from whatever was on the list sent a
-    time typed in the afternoon to the next day). A time that has gone by
-    and is still inside the window is taken (and then refused as passed);
-    anything else is never guessed: it is refused, saying how to type it
-    with its day. A time in the autumn's repeated hour is the first one,
-    and the journal says so (_ambiguous_note)."""
-    text = str(ev.at or "").strip()
-    day = None
-    for word in ("tomorrow", "today", "tonight"):
-        if text.lower().endswith(" " + word):
-            day, text = word, text[:-len(word) - 1].strip()
-            break
-    t = parse_time(text, "The new time")
-    same = _utc(_wall(m.date, t, m.tz))
-    later = _utc(_wall(m.date + timedelta(days=1), t, m.tz))
+    (review B of PR #196). A time that has gone by and is still near
+    tonight's hours is taken (and then refused as passed); anything else is
+    never guessed: it is refused, saying how to type it with its day. In a
+    time that happens twice, the first one still to come is taken, and the
+    journal says so (_ambiguous_note)."""
+    tpart, day, on, which = _edit_words(ev.at)
+    t = parse_time(tpart, "The new time")
+    now_u = _utc(_aware(now)) if now is not None else None
+    today = (now_u.astimezone(m.tz).date() if now_u is not None else m.date)
+
+    def pick(cands):
+        if which == "second":
+            ambiguous = [c for c in cands if c.astimezone(m.tz).fold == 1]
+            return (ambiguous or cands)[-1]
+        if which == "first":
+            cands = [c for c in cands if c.astimezone(m.tz).fold == 0] or cands
+        if now_u is not None:
+            ahead = [c for c in cands if c > now_u]
+            if ahead:
+                return ahead[0]
+        return cands[0]
+    if on is not None:
+        return pick(_wall_all(on, t, m.tz))
     if day == "tomorrow":
-        return later
-    if day is not None:
-        return same
+        return pick(_wall_all(today + timedelta(days=1), t, m.tz))
+    if day == "today":
+        return pick(_wall_all(today, t, m.tz))
+    if day == "tonight":
+        return pick(_wall_all(m.date, t, m.tz))
+    both = sorted(_wall_all(m.date, t, m.tz) +
+                  _wall_all(m.date + timedelta(days=1), t, m.tz))
+    if which == "second":
+        both = [c for c in both if c.astimezone(m.tz).fold == 1] or both
+    elif which == "first":
+        both = [c for c in both if c.astimezone(m.tz).fold == 0] or both
     planned = [(s.planned or s.start) for s in m.slots if s.origin == "rule"]
     ends = [x for x in (m.night_end, max(planned, default=None))
             if x is not None]
     if not ends:
-        return same
+        return both[0]
     start = _utc(datetime.combine(m.date, time(0), tzinfo=m.tz))
     limit = max(ends) + EDIT_DAY_LIMIT
-    cut = _utc(_aware(now)) if now is not None else start
-    for c in (same, later):
+    cut = now_u if now_u is not None else start
+    for c in both:
         if cut < c <= limit:
             return c
     # Gone by, near tonight's own hours: it is tonight's, and refused as
     # passed by the spacing check.
-    if planned and min(planned) - EDIT_DAY_LIMIT <= same <= limit:
-        return same
+    same = [c for c in both if c.astimezone(m.tz).date() == m.date]
+    if planned and same and min(planned) - EDIT_DAY_LIMIT <= same[0] <= limit:
+        return same[0]
     hhmm = _hm(t)
-    word = "tomorrow" if later > limit else "today"
+    d1, d2 = today, today + timedelta(days=1)
     raise ValueError(
         f"{hhmm} is not inside tonight's night, which ends at "
         f"{m.hm(max(ends))} (with {int(EDIT_DAY_LIMIT.total_seconds() // 3600)}"
-        f" hours to spare). If you mean {word} at {hhmm}, type "
-        f"\"{hhmm} {word}\" to confirm.")
+        f" hours to spare). Say which day: type \"{hhmm} today\" "
+        f"({d1:%a %d %b}) or \"{hhmm} tomorrow\" ({d2:%a %d %b}), or "
+        f"\"{hhmm} {d1}\" with a date.")
 
 
 def _ambiguous_note(m, when):
@@ -2303,17 +2493,12 @@ def _ambiguous_note(m, when):
     other = local.replace(fold=1 - getattr(local, "fold", 0))
     if _utc(other) == _utc(local):
         return ""
-    return (f" {clock(local)} happens twice tonight, as the clocks go back; "
-            f"this is the first one.")
-    first, last = min(times), max(times)
-    later = _utc(_wall(m.date + timedelta(days=1), t, m.tz))
-    # Earlier in the day than tonight's first show, and within 12 hours
-    # after its last one: the small hours of tonight, not tomorrow
-    # afternoon (a time that has passed is then refused as passed).
-    if t < _local(m, first).time() and \
-            later - last <= timedelta(hours=12):
-        return later
-    return when
+    clk = clock(local)
+    if getattr(local, "fold", 0):
+        return (f" {clk} happens twice tonight, as the clocks go back; this "
+                f"is the second one.")
+    return (f" {clk} happens twice tonight, as the clocks go back; this is "
+            f"the first one (type \"{clk} second\" for the later one).")
 
 
 def _edit_move(m, ev, now):
@@ -3202,10 +3387,10 @@ def slot_view(m, now=None):
     out = []
     for s in sorted(m.slots, key=lambda s: (s.start, s.n)):
         status = NEXT if (nxt is not None and s.n == nxt.n) else s.status
-        row = {"show": s.n, "start": clock(_local(m, s.start)),
+        row = {"show": s.n, "start": m.hm(s.start),
                "start_iso": _local(m, s.start).isoformat(timespec="seconds"),
                "status": status, "reason": s.reason, "origin": s.origin,
-               "planned": (clock(_local(m, s.planned))
+               "planned": (m.hm(s.planned)
                            if s.planned is not None else None),
                "past_last_end": runs_late(m, s)}
         if now is not None and s.status == PENDING:

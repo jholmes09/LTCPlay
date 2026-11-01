@@ -12741,17 +12741,18 @@ def test_schedule_shows_after_midnight():
           f"all 9 shows ran on Thursday's night: {m.date} {_starts(svc)}")
     check(svc._tonight(at(3, 7)) == date(*THU),
           "while its 03:00 show runs the night is Thursday's")
-    run(None, None, at(3, 9), svc=svc, now=now)
+    run(None, None, at(3, 10), svc=svc, now=now)
     thu = json.load(open(SV.tonight_path(date(*THU), svc.state_dir),
                          encoding="utf-8"))
     check(all(x["status"] == S.DONE for x in thu["slots"]) and
           thu["state"] in (S.CLOSING, S.OFF),
           f"and it closed after its last show: {thu['state']}")
-    # It hands over to Friday once nothing of it is left to run (02:00 was
-    # the old reset; here the last show ends at 03:07:20).
+    # It hands over to Friday once nothing of it is left to run and the last
+    # show's guard is over (02:00 was the old reset; here the last show ends
+    # at 03:07:20 and its guard at 03:09:20).
     check(svc.machine.date == date(*FRI),
-          "the night hands over to Friday when its last show is over, not "
-          "at 2 AM")
+          "the night hands over to Friday when its last show and guard are "
+          "over, not at 2 AM")
     svc.stop()
 
     # A restart at 00:45 picks Thursday's night up again and runs on.
@@ -12826,17 +12827,49 @@ def test_schedule_shows_after_midnight():
           f"Run off after midnight: said, and red: {w!r}")
     svc.stop()
 
-    # A delayed show still waiting when the night hands over (after its
-    # last planned show, 02:39:20) is missed, said as the hand over.
-    svc, now = run(rule(thu={"first_start": "23:00", "interval_min": 30,
-                             "last_end": "02:50"}), at(2, 25), at(2, 26))
+    # A show delayed after 2 AM waits for Start now (review of PR #196,
+    # round 2: it was missed 10 s after it became DELAYED). Thursday 23:00
+    # to 03:30, 15 s late grace; Hold at 02:44, so the 03:00 show (show 9)
+    # is DELAYED at 03:00:20 and the night stays Thursday's.
+    svc, now = run(rule(), at(2, 40), at(2, 44))
     svc._apply(_op(S, S.HOLD_ON))
-    run(None, None, at(2, 31), svc=svc, now=now)
-    svc._apply(_op(S, S.RESUME))
-    run(None, None, at(2, 45), svc=svc, now=now)
+    run(None, None, at(3, 2), svc=svc, now=now)
+    check(svc.machine.delayed() is not None and svc.machine.delayed().n == 9,
+          f"setup: show 9 is DELAYED: {svc.machine.delayed()}")
+    run(None, None, at(3, 40), svc=svc, now=now)
+    check(svc.machine.date == date(*THU) and
+          svc.machine.delayed() is not None and
+          svc.machine.slot(9).status == S.DELAYED,
+          f"a show delayed after 2 AM still waits at 03:40: "
+          f"{svc.machine.date} {svc.machine.slot(9).status}")
+    work = svc.state_dir
+    svc.stop()
+    # ...also after a restart in the middle of that wait.
+    now[0] = at(3, 41)
+    b = _svc(S, work, now)
+    b.start(thread=False)
+    b.tick()
+    check(b.machine.date == date(*THU) and b.machine.delayed() is not None,
+          f"and after a restart at 03:41: {b.machine.date} "
+          f"{b.machine.delayed()}")
+    o = b._apply(_op(S, S.START_NOW))
+    check(o.accepted and b.machine.running == 9,
+          f"Start now starts it: {o.refused!r}")
+    b.stop()
+
+    # It is missed only when the next night begins: Friday's first show at
+    # 04:30 (preshow 04:00), said as the hand over.
+    svc, now = run(rule(fri={"first_start": "04:30", "interval_min": 30,
+                             "last_end": "05:30"}), at(2, 40), at(2, 44))
+    svc._apply(_op(S, S.HOLD_ON))
+    run(None, None, at(3, 30), svc=svc, now=now)
+    check(svc.machine.date == date(*THU) and
+          svc.machine.slot(9).status == S.DELAYED,
+          "setup: show 9 waits at 03:30, before Friday's preshow")
+    run(None, None, at(4, 2), svc=svc, now=now)
     sl = [x for x in svc.journal if S.HANDOVER_MISSED in x["text"]]
     check(svc.machine.date == date(*FRI) and sl,
-          f"the delayed show is missed when the night hands over: "
+          f"the delayed show is missed when the next night begins: "
           f"{svc.machine.date} {[x['text'] for x in sl][:1]}")
     svc.stop()
 
@@ -39294,7 +39327,13 @@ def test_schedule_delayed_night_closes_at_the_2am_reset():
               svc.machine.running == 12,
               f"at {t} show 12 is still running on Saturday's night: "
               f"{svc.machine.date} {svc.machine.state}")
+    # Show 12 ends at 02:07:19; its 120 s guard is over at 02:09:19, and
+    # only then does Saturday hand over (review of PR #196, round 2).
     now[0] = _den(S, 2, 8, d=(2026, 11, 15))
+    svc.tick()
+    check(str(svc.machine.date) == "2026-11-14",
+          "inside the guard after show 12, it is still Saturday's night")
+    now[0] = _den(S, 2, 10, d=(2026, 11, 15))
     svc.tick()
     svc.tick()
     with open(SV.tonight_path(date(2026, 11, 14), work)) as fh:
@@ -39447,6 +39486,11 @@ def test_schedule_restart_across_the_2am_reset():
     sat = saturday(work)
     cut = [r for r in again.journal if r.get("fault") and
            "restarted during show 12" in r["text"]]
+    # The guard after a cut show counts from the restart (02:30), so
+    # Sunday begins at 02:32 (review of PR #196, round 2).
+    now[0] = _den(S, 2, 33, d=(2026, 11, 15))
+    again.tick()
+    again.tick()
     check(sat["slots"][11]["status"] == S.FAULT and cut and
           str(again.machine.date) == "2026-11-15",
           f"show 12 is a cut show (FAULT, a fault line), Saturday is closed "
