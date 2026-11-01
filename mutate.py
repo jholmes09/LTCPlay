@@ -21634,13 +21634,33 @@ def build():
 
  ("fireball manual: an old busy entry is never forgotten (round 7)",
   "ltcplay/remote.py",
-  "                      if now - since > self.FIREBALL_BUSY_KEEP_S]:",
+  "                      if now - ent[1] > self.FIREBALL_BUSY_KEEP_S]:",
   "                      if False]:"),
 
  ("fireball manual: a held press is not said to be held (round 7)",
   "ltcplay/fireball.py",
   "                            waiting = [k for k in KEYS if k in held]",
   "                            waiting = []"),
+
+ ("fireball manual: a held press is held for ever (round 8)",
+  "ltcplay/fireball.py",
+  "                    elif now - r[\"held_since\"] > HOLD_CAP_S:\n                        capped = True",
+  "                    elif False:\n                        capped = True"),
+
+ ("fireball manual: the held count never starts again (round 8)",
+  "ltcplay/fireball.py",
+  "                else:\n                    r[\"held_since\"] = None",
+  "                else:\n                    pass"),
+
+ ("fireball manual: a dropped press says nothing (round 8)",
+  "ltcplay/fireball.py",
+  "                                  f\"press was dropped, not sent late. \"",
+  "                                  f\"press was dropped. \""),
+
+ ("fireball manual: a busy entry ages from its first look (round 8)",
+  "ltcplay/remote.py",
+  "            ent[1] = now\n",
+  "            pass\n"),
 
  ("fireball manual: the timeline judges its charge from the composed frame",
   "ltcplay/web.py",

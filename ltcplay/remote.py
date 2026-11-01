@@ -5730,8 +5730,14 @@ class Remote:
             busy = self._fb_users_busy = {}
         if state == "busy":
             now = self.clock()
-            since = busy.setdefault(token, now)
-            if now - since > self.FIREBALL_USERS_BUSY_S:
+            # [busy since, last looked at]: the second moves on every look
+            # (round-8 review 3), so an entry still being checked is never
+            # taken for an old one.
+            ent = busy.get(token)
+            if ent is None:
+                ent = busy[token] = [now, now]
+            ent[1] = now
+            if now - ent[0] > self.FIREBALL_USERS_BUSY_S:
                 return "the sign-in could not be confirmed (the users file "\
                        "was busy too long)"
             return ""
@@ -5762,8 +5768,8 @@ class Remote:
         busy = getattr(self, "_fb_users_busy", None)
         if busy:
             now = self.clock()
-            for t in [t for t, since in busy.items()
-                      if now - since > self.FIREBALL_BUSY_KEEP_S]:
+            for t in [t for t, ent in busy.items()
+                      if now - ent[1] > self.FIREBALL_BUSY_KEEP_S]:
                 busy.pop(t, None)
 
     def fireball_signout_cut(self, why, ctx):

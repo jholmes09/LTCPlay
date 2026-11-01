@@ -550,7 +550,10 @@ for the few milliseconds the charge record needs to save its PENDING mark
 (see "The fuel and air charge"); if the record cannot be saved it goes out
 anyway and both tanks read NOT KNOWN. Fuel and Air are toggles and the
 page keeps sending while they are on, so a quick tap is never lost: the
-press is sent at the next beat (the answer says "held" meanwhile). Nothing on this page arms. Arm the Fireball as
+press is sent at the next beat (the answer says "held" meanwhile, and
+the pad says WAITING, not ON). If the charge record does not answer in 2
+seconds (a hung disk) the press is **dropped**, everything goes off, and
+the page says so: release and press again. It is never sent late. Nothing on this page arms. Arm the Fireball as
 always, with its hold to arm (the show screen's button or its Stream Deck
 key), signed in. Until it is armed every button is grey, says why, and
 nothing is sent: flamesafe keeps every Fireball channel at zero, the Valve

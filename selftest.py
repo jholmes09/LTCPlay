@@ -93020,6 +93020,36 @@ def test_fireball_panel_rules():
     beat({"valve"}, run="ch", seq=1)
     check(link.cur[56] == 255, "a press with no Fuel or Air never asks")
     fb.off("reset")
+    # A held press is dropped after HOLD_CAP_S, said, never sent late
+    # (round-8 review 4: a hung disk).
+    import ltcplay.fireball as _FBm
+    answers[:] = ["wait"]
+    P.t[0] += 0.05
+    codes = []
+    for i in range(1, 60):
+        P.t[0] += 0.1
+        code, out = beat({"fuel", "valve"}, run="cap", seq=i)
+        codes.append(code)
+        if code != 200:
+            break
+    check(codes[-1] == 409 and len(codes) > 15 and
+          len(codes) <= 2 + int(_FBm.HOLD_CAP_S / 0.1) and
+          "did not answer" in out["error"] and "not sent late" in
+          out["error"] and not fb.active() and link.cur is None,
+          f"Fuel held for the mark for more than {_FBm.HOLD_CAP_S:g} s: "
+          f"dropped, everything off, said: {len(codes)} {out}")
+    # A mark that arrives in time resets the count.
+    codes2, seq_ = [], 0
+    for phase in ("wait", "wait", "ok", "wait", "wait"):
+        answers[:] = [phase]
+        for _i in range(9 if phase == "wait" else 1):
+            seq_ += 1
+            P.t[0] += 0.1
+            code, out = beat({"fuel"}, run="cap2", seq=seq_)
+            codes2.append(code)
+    check(set(codes2) == {200} and fb.active(),
+          f"a mark that came in time starts the count again: {codes2}")
+    fb.off("reset")
     fb.manual_gate = None
     # A run's end tells the engine (review 9).
     ended = []
@@ -93638,15 +93668,24 @@ def test_fireball_signed_out_is_view_only():
                   f"the users lock busy: a grace, then refused; a run's end "
                   f"and a new press do not start the grace again: "
                   f"{a_!r} {b_!r} {c_!r}")
+            ent_ = rem._fb_users_busy["tokBusy"]
+            check(ent_[1] - ent_[0] >= 0.25,
+                  f"every look moves the entry's last-looked time on (round "
+                  f"8 review 3): {ent_}")
         finally:
             rem.FIREBALL_USERS_BUSY_S = real_busy_s
             release.set()
             th.join(5)
-        rem._fb_users_busy = {"old": rem.clock() - 500, "fresh": rem.clock()}
+        # Aged on the LAST look, not the first (round-8 review 3): an entry
+        # busy for a long while but looked at just now stays.
+        now_ = rem.clock()
+        rem._fb_users_busy = {"old": [now_ - 500, now_ - 500],
+                              "looked": [now_ - 500, now_ - 1],
+                              "fresh": [now_, now_]}
         rem.fireball_run_ended("x")
-        check(set(rem._fb_users_busy) == {"fresh"},
-              f"an entry nobody looked at for a long while goes: "
-              f"{rem._fb_users_busy}")
+        check(set(rem._fb_users_busy) == {"looked", "fresh"},
+              f"an entry nobody looked at for a long while goes, one still "
+              f"being checked stays: {rem._fb_users_busy}")
         rem._fb_users_busy = {}
         fsrc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  "ltcplay", "fireball.py"),
@@ -94432,6 +94471,9 @@ def test_fireball_doc_in_plain_words():
                  "a stall inside the engine's own reading counts too",
                  "never sends a channel flamesafe has already zeroed",
                  "a quick tap is never lost",
+                 "the pad says WAITING, not ON",
+                 "the press is **dropped**",
+                 "It is never sent late",
                  "A **Fuel Charge or Air Charge** press is held for the few "
                  "milliseconds",
                  "never someone else's run on another iPad",
