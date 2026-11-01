@@ -417,7 +417,7 @@ class SacnJudge:
     def packet(self, values, at, armed, in_show, quiet, src=None):
         """`values`: the 512 slot values; `armed`: {name: bool};
         `in_show`: timecode moving; `quiet`: the reason fire must be zero
-        now (a Hold, an Abort), or None, or a callable(group) giving it per
+        now (a Hold, a Stop), or None, or a callable(group) giving it per
         group."""
         self.packets += 1
         self.armed_state(armed, at)
@@ -581,10 +581,6 @@ def self_test():
                 return 409, {"error": "front row is already armed or "
                                       "asked for.", "let_go": True}
             return 200, {"ok": True, "hold_id": "h"}
-        if path == "/api/remote/reset":
-            r = state.setdefault("resets", 0)
-            state["resets"] = r + 1
-            return (409, {"error": "still fading"}) if r == 0 else (200, {})
         return 200, {}
     clock = [0.0]
 

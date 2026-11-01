@@ -17,13 +17,15 @@ how many packets):
   UNKNOWN SLOT          a nonzero slot that is in no group of the config
   ARMED WITHOUT PRESS   a safety slot at the arm value with no arm press on
                         record for that group (deck lines in the machine log)
-                        since the last disarm, Abort, link loss or restart
+                        since the last disarm, Stop, link loss or restart
   FIRE OUTSIDE SHOW     a fire slot nonzero while the scheduler was not in
                         SHOW (Hold, between shows, before Run) and no purge
                         was held (purge lines in the machine log)
   WHILE ABORT LATCHED   anything nonzero between an accepted Abort and its
-                        Reset (both the engine's record and flamesafe's
-                        disarm-all count as the Abort)
+                        Reset, in a journal from before 2026-10-30, when
+                        Abort and Reset were removed (both the engine's
+                        record and flamesafe's disarm-all count as the
+                        Abort). A Stop latches nothing
   LOCKED SLOT           a locked slot (--locked-slots, or the lockout file)
                         nonzero while a lock was on record
   GAP / STALL           a gap between packets over --gap-ms (250, flamesafe's
@@ -35,7 +37,8 @@ With the laser listener's files in the run folder (laser.csv, laser.json,
 from laser_listener.ps1 or .py standing where BEYOND would), the engine's
 journal is the oracle for the lasers too:
 
-  LASER BLANK MISSING   an Abort the conductor accepted, or a Hold that
+  LASER BLANK MISSING   a Stop (or an older journal's Abort) the conductor
+                        accepted, or a Hold that
                         paused a show, with no brightness blank (0, or
                         --blank-value) heard within --blank-within-s (2 s)
   LASER BLANK NOT HEARD the journal says a blank was sent (Lasers blanked,
@@ -46,7 +49,7 @@ journal is the oracle for the lasers too:
                         value) while the scheduler was not in SHOW, PAUSED
                         or REHEARSAL
   LASER LIT WHILE ABORT LATCHED  a restore or a laser test ON between an
-                        accepted Abort and its Reset
+                        accepted Abort and its Reset (older journals only)
   LASER TEST WITHOUT RECORD  a laser's test ON message (the exact address
                         AND value ltcplay_morning.json gives) with no
                         Morning page test on record for that laser
@@ -57,7 +60,7 @@ journal is the oracle for the lasers too:
   LASER TEST NOT HEARD  a test ON on record with no ON message heard
   LASER TEST OFF MISSING  a test on record with no off (its off or lock
                         message, or a blank) within --blank-within-s of its
-                        OFF, a show start or an Abort
+                        OFF, a show start or a Stop (an older Abort)
   UNKNOWN LASER MESSAGE any OSC that is neither the brightness blank or
                         restore nor a configured laser message, a test ON
                         at the wrong value included
@@ -258,6 +261,11 @@ class Timeline:
         self.groups = groups
         names = [g["name"] for g in groups]
         self.events = []       # (t, kind, payload) sorted
+        # A journal from before 2026-10-30 has Abort and Reset lines; only
+        # there does flamesafe's disarm-all mean a latch (a Stop latches
+        # nothing, so in a newer journal it would never be cleared).
+        old = any(str(r.get("action", "")).lower() in ("abort", "reset")
+                  for r in recs)
         for r in recs:
             t = r["_t"]
             action = str(r.get("action", "")).lower()
@@ -267,9 +275,14 @@ class Timeline:
             st = str(r.get("to_state") or r.get("state") or "").upper()
             if st:
                 self.events.append((t, "state", st))
-            if action == "abort":
-                # Every Abort disarms the flames first, whatever else it
-                # was refused for; the latch only stands when it was taken.
+            if action == "stop" and low.startswith("stop, asked for by"):
+                # The show conductor's Stop (2026-10-30: every Stop does
+                # what Abort did, with no latch) disarms the flames first.
+                self.events.append((t, "disarm_all", "engine Stop"))
+            elif action == "abort":
+                # An older journal's Abort: it disarms the flames first,
+                # whatever else it was refused for; the latch only stands
+                # when it was taken.
                 self.events.append((t, "disarm_all", "engine Abort"))
                 if "refused" not in outcome:
                     self.events.append((t, "latch", True))
@@ -306,7 +319,8 @@ class Timeline:
         for t, kind, msg in fs_lines:
             if kind == "disarm-all":
                 self.events.append((t, "disarm_all", "flamesafe disarm-all"))
-                self.events.append((t, "latch", True))
+                if old:
+                    self.events.append((t, "latch", True))
             elif kind == "link" and "stopped answering" in msg:
                 self.events.append((t, "disarm_all", "flamesafe link lost"))
             elif kind == "start":
@@ -460,6 +474,12 @@ def laser_journal(recs, table):
         if action == "abort" and not refused and (
                 low.startswith("abort, asked for by") or
                 prev_state in LIVE_STATES):
+            ev["aborts"].append(t)
+        if action == "stop" and not refused and \
+                low.startswith("stop, asked for by"):
+            # The show conductor's Stop blanks the lasers at the press as
+            # the removed Abort did (Jeff, 2026-10-30), so it is judged
+            # the same way.
             ev["aborts"].append(t)
         if action == "hold" and not refused and (
                 low.startswith("hold, asked for by") or st == "PAUSED"):
@@ -919,7 +939,7 @@ def report(res, counts, w, args_text, span):
                      f"{c['blanks']} blank, {c['unblanks']} restore, "
                      f"{c['tests']} laser test (on, off or lock), "
                      f"{c['other']} unknown, {c['forbidden']} forbidden. "
-                     f"Journal: {lz['aborts']} accepted Abort(s), "
+                     f"Journal: {lz['aborts']} accepted Stop(s) or Abort(s), "
                      f"{lz['holds']} Hold(s) that paused a show, "
                      f"{lz['show_starts']} show start(s), "
                      f"{lz['blank_claims']} blank(s) said sent, "
@@ -927,7 +947,7 @@ def report(res, counts, w, args_text, span):
                      f"to the listener: {known}.")
         if not res["has_state"]:
             lines.append("UNVERIFIED: without the machine log the laser "
-                         "rules that need the journal (blank after Abort "
+                         "rules that need the journal (blank after Stop "
                          "and Hold, test on record, latched) were not "
                          "judged; only unknown and forbidden messages were.")
         for u in lz["unverified"]:
@@ -952,9 +972,10 @@ def report(res, counts, w, args_text, span):
     lines += ["", "What PASS means here: every nonzero flame channel the "
               "witness heard was armed by a press on record, fired only in "
               "SHOW (or under a purge on record), never while an Abort "
-              "stood, never on a locked slot, and the stream never stalled "
+              "stood (older journals), never on a locked slot, and the stream never stalled "
               "or stopped with values on the wire. With the laser listener: "
-              "every accepted Abort and every Hold that paused a show was "
+              "every accepted Stop (or Abort) and every Hold that paused a "
+              "show was "
               "followed by BEYOND's brightness blank on the wire, every "
               "blank the journal says it sent was heard, the lasers were "
               "never restored outside SHOW or while an Abort stood, a laser "

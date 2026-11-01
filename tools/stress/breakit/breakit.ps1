@@ -255,22 +255,22 @@ $STEP_LIST = @(
            $r = Http "POST" "/api/remote/start-now" @{ confirmed = $true; seen = $seen; who = "Break-it"; screen = "Rack screen" }
            "POST start-now at ${t}: HTTP $($r.code) $($r.body | ConvertTo-Json -Compress)" }
        recover = { $true } },
-    @{ id = 13; name = "Laser test ON, then Start now, then Abort (the laser listener judges the lasers)"; needs = "morning,operator,laser"
-       expect = "laser.log: TEST ON <laser> when you switch the test on (its configured address and low value, nothing else); within 2 s of Start now its TEST OFF (or a BLANK) and journal 'Laser tests turned off: the show is going live'; within 2 s of the Abort a BLANK (brightness 0) when ltcplay_fire_ice.json has a beyond block, and NO TEST ON or UNBLANK afterwards while the Abort stands; with no beyond block the blank is absent and the journal says 'Lasers: blanking not set up' (EXPECTED while BEYOND is absent); checker: no LASER TEST OFF MISSING, no LASER BLANK MISSING, no LASER LIT WHILE ABORT LATCHED"
+    @{ id = 13; name = "Laser test ON, then Start now, then Stop (the laser listener judges the lasers)"; needs = "morning,operator,laser"
+       expect = "laser.log: TEST ON <laser> when you switch the test on (its configured address and low value, nothing else); within 2 s of Start now its TEST OFF (or a BLANK) and journal 'Laser tests turned off: the show is going live'; within 2 s of the Stop a BLANK (brightness 0) when ltcplay_fire_ice.json has a beyond block, and NO TEST ON or UNBLANK afterwards while the Stop's Hold stands; with no beyond block the blank is absent and the journal says 'Lasers: blanking not set up' (EXPECTED while BEYOND is absent); checker: no LASER TEST OFF MISSING, no LASER BLANK MISSING"
        do = {
-           Read-Host "On the Morning page turn ONE laser's calibration test ON (a laser with mechanism osc; a placeholder laser refuses and sends nothing). When laser.log shows its TEST ON line, press Enter here: this presses Start now, waits for SHOW, then presses Abort 10 s later. Press Reset yourself afterwards"
+           Read-Host "On the Morning page turn ONE laser's calibration test ON (a laser with mechanism osc; a placeholder laser refuses and sends nothing). When laser.log shows its TEST ON line, press Enter here: this presses Start now, waits for SHOW, then presses Stop 10 s later. Press Resume yourself afterwards"
            $rs = Http "GET" "/api/remote/status"
            $seen = $(if ($rs.body) { $rs.body.served_at } else { 0 })
            $t1 = (Get-Date).ToString("HH:mm:ss.fff")
            $r1 = Http "POST" "/api/remote/start-now" @{ confirmed = $true; seen = $seen; who = "Break-it"; screen = "Rack screen" }
            $inShow = Wait-Until { $s = Http "GET" "/api/schedule/state"; $s.body -and ($s.body.state -eq "SHOW") } 90
-           if ($inShow -lt 0) { return "POST start-now at ${t1}: HTTP $($r1.code); the scheduler did not reach SHOW within 90 s, so no Abort was pressed. Compare laser.log with the journal's start lines." }
+           if ($inShow -lt 0) { return "POST start-now at ${t1}: HTTP $($r1.code); the scheduler did not reach SHOW within 90 s, so no Stop was pressed. Compare laser.log with the journal's start lines." }
            Start-Sleep -Seconds 10
            $rs = Http "GET" "/api/remote/status"
            $seen = $(if ($rs.body) { $rs.body.served_at } else { 0 })
            $t2 = (Get-Date).ToString("HH:mm:ss.fff")
-           $r2 = Http "POST" "/api/remote/abort" @{ confirmed = $true; seen = $seen; who = "Break-it"; screen = "Rack screen" }
-           "POST start-now at ${t1} (HTTP $($r1.code), SHOW after $inShow s); POST abort at ${t2} (HTTP $($r2.code) $($r2.body | ConvertTo-Json -Compress)); compare both times with laser.log's TEST OFF and BLANK lines" }
+           $r2 = Http "POST" "/api/remote/stop" @{ seen = $seen; who = "Break-it"; screen = "Rack screen" }
+           "POST start-now at ${t1} (HTTP $($r1.code), SHOW after $inShow s); POST stop at ${t2} (HTTP $($r2.code) $($r2.body | ConvertTo-Json -Compress)); compare both times with laser.log's TEST OFF and BLANK lines" }
        recover = { $true } }
 )
 

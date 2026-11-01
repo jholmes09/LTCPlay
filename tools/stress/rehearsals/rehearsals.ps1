@@ -1,6 +1,7 @@
 <#
 Dress rehearsals (stage 4): 20 or more real shows back to back from the
-installed engine's own scheduler, with random Aborts (and Resets) pressed
+installed engine's own scheduler, with random Stops (and the Resume that
+ends each Stop's Hold; Abort and Reset were removed 2026-10-30) pressed
 through the same screen routes a person presses, while the wire witness
 records flamesafe's output. Optionally arms every group before each show
 through the deck's own arm-hold route (the exerciser's path).
@@ -10,7 +11,7 @@ talks to flamesafe: every press goes to the engine's rack screen routes on
 127.0.0.1, and the deck process and flamesafe keep every one of their rules.
 
   powershell -NoProfile -ExecutionPolicy Bypass -File rehearsals.ps1 `
-      -Shows 22 -EveryMin 10 -ShowLenS 444 -AbortChance 0.4 -Arm `
+      -Shows 22 -EveryMin 10 -ShowLenS 444 -StopChance 0.4 -Arm `
       -FlameHardwareDisconnected -Confirmation DISCONNECTED
   ... -Restore      put the operator's schedule file back (also done at the end)
 
@@ -24,13 +25,15 @@ this script never presses Run). ShowLenS must be at least the show audio's
 length or the engine refuses to start.
 
 Logs: %LOCALAPPDATA%\ltcplay\witness\rehearsals.log and rehearsals.csv (one
-row per show: number, start, abort time, reset time, HTTP answers).
+row per show: number, start, Stop time, Resume time, HTTP answers;
+-AbortChance still works as the old name of -StopChance).
 #>
 param(
     [int]$Shows = 22,
     [double]$EveryMin = 10,
     [int]$ShowLenS = 444,
-    [double]$AbortChance = 0.4,
+    [Alias("AbortChance")]
+    [double]$StopChance = 0.4,
     [switch]$Arm,
     [switch]$Restore,
     [switch]$FlameHardwareDisconnected,
@@ -89,7 +92,7 @@ function Restart-LTCPlayer() {
     Say ("  engine answering again: " + ((Http "GET" "/api/state").code -eq 200))
 }
 function Row($vals) {
-    if (-not (Test-Path $CSV)) { "show,scheduled,started_seen,abort_planned_s,abort_at,abort_http,reset_at,reset_http,ended_seen,note" | Set-Content -Encoding UTF8 $CSV }
+    if (-not (Test-Path $CSV)) { "show,scheduled,started_seen,stop_planned_s,stop_at,stop_http,resume_at,resume_http,ended_seen,note" | Set-Content -Encoding UTF8 $CSV }
     ($vals | ForEach-Object { '"' + ([string]$_).Replace('"', '""') + '"' }) -join "," | Add-Content -Encoding UTF8 $CSV
 }
 
@@ -126,7 +129,7 @@ $rule = @{ timezone = $tz
 $rule | ConvertTo-Json -Depth 5 | ForEach-Object { [IO.File]::WriteAllText($SCHED, $_, (New-Object Text.UTF8Encoding($false))) }   # no BOM
 Say "Wrote a rehearsal schedule: $Shows shows, the first at $($night.first_start) ($tz), every $EveryMin min, show_len_s $ShowLenS, until $($night.last_end)."
 Restart-LTCPlayer
-Say "PRESS RUN ON THE PAGE NOW. The scheduler starts nothing before Run is pressed. Random Aborts: chance $AbortChance per show."
+Say "PRESS RUN ON THE PAGE NOW. The scheduler starts nothing before Run is pressed. Random Stops: chance $StopChance per show."
 if ($Arm) {
     $op = Http "POST" "/api/schedule/operator" @{ who = $Operator; screen = "Rack screen" }
     Say "Chose $Operator as the Stream Deck's operator: HTTP $($op.code)"
@@ -166,35 +169,37 @@ while ($done -lt $Shows -and (Get-Date) -lt $deadline) {
         $startedAt = Get-Date
         Say "show $($s.running) started (rehearsal $done of $Shows)"
         if ($Arm) { ArmAll }
-        $abortAt = -1; $abortHttp = ""; $resetHttp = ""; $abortStamp = ""; $resetStamp = ""
-        if ($rnd.NextDouble() -lt $AbortChance) {
-            $abortAt = 20 + $rnd.Next(0, [math]::Max(1, $ShowLenS - 60))
-            Say "  this show gets an Abort at +$abortAt s"
+        $stopAt = -1; $stopHttp = ""; $resumeHttp = ""; $stopStamp = ""; $resumeStamp = ""
+        if ($rnd.NextDouble() -lt $StopChance) {
+            $stopAt = 20 + $rnd.Next(0, [math]::Max(1, $ShowLenS - 60))
+            Say "  this show gets a Stop at +$stopAt s"
         }
         $ended = $false
         while (-not $ended) {
             Start-Sleep -Milliseconds 500
             $el = ((Get-Date) - $startedAt).TotalSeconds
-            if ($abortAt -ge 0 -and $el -ge $abortAt) {
-                $abortStamp = (Get-Date).ToString("HH:mm:ss.fff")
-                $r = Press "abort" @{ confirmed = $true }
-                $abortHttp = $r.code
+            if ($stopAt -ge 0 -and $el -ge $stopAt) {
+                $stopStamp = (Get-Date).ToString("HH:mm:ss.fff")
+                $r = Press "stop" @{}
+                $stopHttp = $r.code
                 Start-Sleep -Seconds (10 + $rnd.Next(0, 10))
-                $resetStamp = (Get-Date).ToString("HH:mm:ss.fff")
-                $r2 = Press "reset" @{}
-                $resetHttp = $r2.code
-                if ($r2.code -ne 200) { Start-Sleep -Seconds 3; $r2 = Press "reset" @{}; $resetHttp = "$resetHttp/$($r2.code)" }
-                $abortAt = -1
+                # Every Stop holds the schedule until Resume (Jeff,
+                # 2026-10-30): without it no later show would start.
+                $resumeStamp = (Get-Date).ToString("HH:mm:ss.fff")
+                $r2 = Press "resume" @{}
+                $resumeHttp = $r2.code
+                if ($r2.code -ne 200) { Start-Sleep -Seconds 3; $r2 = Press "resume" @{}; $resumeHttp = "$resumeHttp/$($r2.code)" }
+                $stopAt = -1
             }
             $s2 = SchedState
             if ($s2 -and ($s2.state -ne "SHOW" -and $s2.state -ne "PAUSED")) { $ended = $true }
             if ($el -gt $ShowLenS + 90) { $ended = $true }
         }
         Say "  show $lastShow over at $((Get-Date).ToString('HH:mm:ss')) (state $($s2.state))"
-        Row @($lastShow, $startedAt.ToString("s"), $startedAt.ToString("HH:mm:ss"), $(if ($abortStamp) { "planned" } else { "" }), $abortStamp, $abortHttp, $resetStamp, $resetHttp, (Get-Date).ToString("HH:mm:ss"), $s2.state)
+        Row @($lastShow, $startedAt.ToString("s"), $startedAt.ToString("HH:mm:ss"), $(if ($stopStamp) { "planned" } else { "" }), $stopStamp, $stopHttp, $resumeStamp, $resumeHttp, (Get-Date).ToString("HH:mm:ss"), $s2.state)
     }
 }
 Say "Rehearsals finished: $done show(s) seen. Restoring the schedule."
 if (Test-Path $BACKUP) { Copy-Item $BACKUP $SCHED -Force; Say "Restored $SCHED."; Restart-LTCPlayer }
-Say "Now run the checker on the witness run: it must show fire only in SHOW, nothing while an Abort stood, and every armed slot backed by a press."
+Say "Now run the checker on the witness run: it must show fire only in SHOW, and every armed slot backed by a press (a Stop disarms every group)."
 exit 0

@@ -11,7 +11,7 @@ with the time, the screen it came from and whether it worked. If nobody
 is signed in it is still written down, as "unsigned". Once a night LTC
 Player can send that record to your server. Signed out, every screen is
 view only, the rack screen on the show machine too: it shows everything
-but may only Stop, Hold, Abort, Acknowledge and disarm. Signing in never
+but may only Stop, Hold, Acknowledge and disarm. Signing in never
 stands in the way of those: they work for everyone, signed in or not,
 always.
 
@@ -36,7 +36,7 @@ each person sign in once soon after the update.
 
 If `ltcplay_users.json` is ever damaged, or deleted after users were set
 up, LTC Player does not fall back to "nobody set up". Every screen shows
-an alert, every control is locked except Stop, Hold, Abort, Acknowledge
+an alert, every control is locked except Stop, Hold, Acknowledge
 and the disarms, and nobody can sign in. A good `ltcplay_users.json` put
 back in the settings folder is used at once, with no restart. To start
 over with no users: close LTC Player, remove `ltcplay_users.json` and
@@ -71,8 +71,8 @@ screen with no scrolling.
   on the Users screen); 0 means off.
 - Sign out after the last show is ON: 10 minutes after the last show of
   the night has ended, everyone who was signed in before it ended is
-  signed out, once. It waits while a show is live, on Hold, or after an
-  Abort until Reset, and while anything is armed or going on at the rig
+  signed out, once. It waits while a show is live or on Hold, and while
+  anything is armed or going on at the rig
   (a hold to arm, a purge, a laser test, an armed laser or flame group),
   then goes as soon as that is clear. A show started by hand with Start
   now counts as a show, on a night that has a show on the schedule; on a
@@ -115,8 +115,8 @@ the ticks there. These are the proposed defaults:
 
 | What | admin | operator | viewer | signed out |
 |---|---|---|---|---|
-| **Abort, Hold, Stop, every disarm (flames and lasers), letting go, locking a machine, a hazer disarm, Hazers off, the fuel pump off, Acknowledge** | always | always | always | always |
-| Start now, Resume, Reset, Run a show file, rehearsal scrubbing, playing an announcement, choosing the operator | yes | yes | no | never |
+| **Stop, Hold, every disarm (flames and lasers), letting go, locking a machine, a hazer disarm, Hazers off, the fuel pump off, Acknowledge** | always | always | always | always |
+| Start now, Resume, Run a show file, rehearsal scrubbing, playing an announcement, choosing the operator | yes | yes | no | never |
 | Arm flames and lasers (hold to arm, the deck's arm keys, a purge, momentary or timed, the Fireball page's channels, the wave flamer cleaning, arming a laser, arming a hazer, the hazer levels, turning the fuel pump on) | yes | yes | no | never |
 | Unlock a machine, turn a laser test on | yes | yes | no | never |
 | Tick the Morning and Shutdown checklists | yes | yes | no | never |
@@ -135,7 +135,7 @@ The first row can never be unticked by anyone. It is not in the settings
 at all: it is written into the program.
 
 On the rack screen and the iPad, the first row's buttons never ask anyone to
-sign in: the ABORT stop sign in the bottom right corner (tap it twice), a flame group's
+sign in: Stop (tap it twice; there is no Abort any more), a flame group's
 button while it reads Disarm, and Disarm all flame groups. Arm all flame
 groups is arming: it follows the "Arm flames" row, group by group, and a
 group the screen may not arm stays out and is named.
@@ -156,7 +156,7 @@ plus which screen or window it came from.
 What is logged: every Stream Deck key going down and coming up (so holds
 and the release of FIRE are there), every button on the rack screen or an
 iPad that does something, sign-ins and sign-outs and failed ones, settings
-and user changes, shows starting and ending, Hold and Abort taking effect,
+and user changes, shows starting and ending, Hold and Stop taking effect,
 flame groups arming and disarming, machines locked out.
 
 What is never logged: passwords, anything typed into a password box, the
