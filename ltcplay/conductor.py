@@ -824,9 +824,13 @@ class Conductor:
             return done("Resume: the music fades back in; lasers and flame "
                         "cues come back once the timecode is moving.")
 
-    def show_starting(self, who="", screen="", stops=None):
+    def show_starting(self, who="", screen="", stops=None, fade_s=0.0):
         """A show cue has just started: bring back whatever a previous Abort
-        or announcement left dark (lasers only through the gate)."""
+        or announcement left dark (lasers only through the gate).
+        `fade_s`: the video comes up over this long (Start at a cue,
+        play_from.LANDING_FADE_S, after landing_video_dark); 0, every other
+        start, as before. It only slows the video up: the lasers still
+        wait for the gate and the flame cues still come last."""
         with self._lock:
             refused = self._refuse_if_latched("Show start")
             if refused:
@@ -847,8 +851,15 @@ class Conductor:
             # A fact, not a command: the caller has just started the cue, so
             # a later Hold pauses it even after an Abort marked it stopped.
             self._applied["music"] = MUSIC_PLAYING
-            self._accept("Show start", PLAYING, who, screen, fade_s=0.0,
+            try:
+                fade = max(0.0, min(float(fade_s or 0.0), ABORT_FADE_S))
+            except (TypeError, ValueError):
+                fade = 0.0
+            self._accept("Show start", PLAYING, who, screen, fade_s=fade,
                          resume=False)
+            if fade:
+                return done(f"The rig comes up for the show, the video "
+                            f"fading in over {fade:g} s.")
             return done("The rig comes up for the show.")
 
     def music_started(self):
@@ -1332,6 +1343,30 @@ class Conductor:
                 return self._refused("Pre-roll video black",
                                      "a show is up")
             r = self._call("video black for the pre-roll",
+                           self.devices.video_fade_out, 0.0)
+            if "video" in self._async:
+                self._set("video", UNKNOWN)
+                self._async_seq["video"] = getattr(self.devices,
+                                                   "video_seq", None)
+            else:
+                self._set("video", BLACK if r.ok else UNKNOWN)
+            return r
+
+    def landing_video_dark(self):
+        """Start at a cue (play_from.py, part 2): every MadMapper surface
+        to black at once just before the show cue starts part way, so the
+        video fades in at the cue (show_starting with fade_s) instead of
+        cutting in mid-scene. Recorded like preroll_video_dark. Refused
+        while aborted, while a Stop is pending, or with a show up: it never
+        darkens a show. Never waits on MadMapper, never lights anything."""
+        with self._lock:
+            if self._latched:
+                return self._refused("Video black for the cue",
+                                     "the show is aborted")
+            if self._look in (PLAYING,) + HOLDING_LOOKS or self._playing():
+                return self._refused("Video black for the cue",
+                                     "a show is up")
+            r = self._call("video black before the start at a cue",
                            self.devices.video_fade_out, 0.0)
             if "video" in self._async:
                 self._set("video", UNKNOWN)

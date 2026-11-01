@@ -1922,6 +1922,57 @@ choices:
   never gets past an Abort (press Reset), a Stop under way, the hold to
   arm or the flame link's rules. The scheduler never continues by itself.
 
+## Start at a cue (play-from cues, Show mode)
+
+Start at a cue starts the show part way, at one of the cues saved on 2.0
+Settings ("Play-from cues"), instead of from the top. It is Start now with
+a starting point: everything Start now does and refuses, it does and
+refuses too. The screen to choose the cue on (the 2.0 "Resume show" sheet)
+comes in the next update; the engine side is here.
+
+- **Who:** anyone who may press Start now (the Show row: operators and
+  admins, signed in). Like Start now it needs a page that is up to date
+  and a confirm.
+- **Show mode only.** In Programming, use Play from on the Programming
+  screen, which works as before.
+- **Where it starts:** the engine reads the cue from the saved list of
+  the show file that is running, never a time from the screen. It plays
+  from the cue's time less its lead-in (a cue at 00:08:12:00 with a 3 s
+  lead-in plays from 00:08:09:00). If the cue was changed, deleted, or the
+  running show is another file since the screen read the list, it is
+  refused and nothing starts: reload and choose again.
+- **It is an extra show,** like Start now: it counts as one show, the
+  schedule runs on around it, and a Stop's Hold comes back when it ends.
+  A show waiting after a Hold (delayed) is not the one it starts; that
+  delayed show is then missed, the way it is when any other show starts.
+  It is refused while a show is up, while an Abort stands, and while a
+  Stop is under way or still fading, exactly as Start now is.
+- **The rig check runs first,** as for Start now, and the screen says
+  "Start at the cue Finale by ...". If it fails and you hold Continue
+  anyway, the show starts **from that same cue**, never from the top, with
+  what failed left off for that show.
+- **How it lands:** the music and the video fade in over about 1 second
+  at the cue instead of starting hard. The timecode starts on the cue's
+  frame, so MadMapper, BEYOND and the pixels are in that cue's scene from
+  the first frame. The pixels cannot fade, so they come up in the scene at
+  once. The lasers come up only through the laser gate, as at every show
+  start: a disarmed laser stays dark until someone arms it.
+- **Flames land safely.** Nothing fires for the first half second. A
+  flame or fireball stage that is already part way through when the show
+  lands is NOT started in the middle; it stays off until its next start.
+  A fuel or air charge is skipped when that tank is already charged or
+  not known (never a double charge), and a charge whose window the show
+  landed in is skipped too. Start at a cue never arms anything: flamesafe
+  fires only a group someone has armed, and hold to arm is unchanged.
+- **Stop wins.** Stop, Hold or Abort at any moment, during the rig check
+  or after the start, stops it at once, as for Start now.
+- **Resume after a Stop:** the engine remembers where a stopped show
+  stopped and offers the cue at or before that point, so the scene starts
+  fresh from its own top rather than in the middle. If no cue is before
+  that point, start from the top with Start now.
+- **The journal** says who pressed it, on which screen, the cue, its time
+  and lead-in, and every refusal in words.
+
 ## How long a show runs
 
 Jeff's field report, 2026-10-28. With the show audio played by ltcplay
@@ -2407,7 +2458,8 @@ the same 1.0 button sends, with the same holds, confirms and refusals.
 - 2.0 Settings, "Play-from cues" (on the show PC, by someone with
   Settings, admins): a list of named points in a show file to play the
   show from later. Saving the list sends nothing to the rig and starts
-  nothing; playing from a cue is not built yet. Pick the show file, then
+  nothing; starting a show from a cue is "Start at a cue" (below, in its
+  own section). Pick the show file, then
   Add cue, or change a name, time, lead-in or note in place, or Delete a
   cue, and Save. Each cue has:
   - a name, up to 40 characters, used once in that show (Finale and

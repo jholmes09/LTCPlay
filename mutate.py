@@ -898,8 +898,8 @@ MUTATIONS = [
   "        if False:"),
 
  ("remote: an arm route appears", "ltcplay/remote.py",
-  "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n                  \"disarm-all\", \"stop\", \"run-off\")",
-  "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n                  \"disarm-all\", \"stop\", \"run-off\", \"arm\")"),
+  "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n                  \"disarm-all\", \"stop\", \"run-off\", \"start-at-cue\")",
+  "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n                  \"disarm-all\", \"stop\", \"run-off\", \"start-at-cue\", \"arm\")"),
 
  ("remote: half a request is acted on", "ltcplay/web.py",
   "            return None if \"/api/remote/\" in self.path else {}",
@@ -2152,8 +2152,14 @@ MUTATIONS = [
   '        input_used = self.clock is None'),
 
  ("a Stop racing clock_play lets the clock's own error escape", 'ltcplay/session.py',
-  '        try:\n            self.clock.play(pick.tc_seconds, pick.duration, pick.name)\n        except ValueError as e:',
-  '        if True:\n            self.clock.play(pick.tc_seconds, pick.duration, pick.name)\n        if False:'),
+  '        try:\n            if part_way:\n                self.clock.play(pick.tc_seconds, pick.duration, pick.name,\n'
+  '                                start_s=float(start_s),\n'
+  '                                fade_in_ms=float(fade_in_ms))\n            else:\n'
+  '                self.clock.play(pick.tc_seconds, pick.duration, pick.name)\n        except ValueError as e:',
+  '        if True:\n            if part_way:\n                self.clock.play(pick.tc_seconds, pick.duration, pick.name,\n'
+  '                                start_s=float(start_s),\n'
+  '                                fade_in_ms=float(fade_in_ms))\n            else:\n'
+  '                self.clock.play(pick.tc_seconds, pick.duration, pick.name)\n        if False:'),
 
  ("tctest defaults to every node in the show file when --to is left off",
   'ltcplay/tctest.py',
@@ -11193,9 +11199,9 @@ def build():
  ('an unconfirmed screen Abort no longer disarms the flames',
   'ltcplay/remote.py',
   '            flames = self._disarm_now(who, screen, "Abort")\n'
-  '        if name in ("abort", "hold", "start-now"):',
+  '        if name in ("abort", "hold", "start-now", "start-at-cue"):',
   '            flames = None\n'
-  '        if name in ("abort", "hold", "start-now"):'),
+  '        if name in ("abort", "hold", "start-now", "start-at-cue"):'),
 
  ("MadMapper at High is left at High", "packaging/windows/supervisor.py",
   "HIGH_OR_ABOVE = (0x80, 0x100)", "HIGH_OR_ABOVE = ()"),
@@ -15423,7 +15429,7 @@ def build():
   '        ok, text = lf.begin('),
  ('live flame: Abort, Hold and Start now do not end it',
   'ltcplay/remote.py',
-  '        if name in ("abort", "hold", "start-now"):',
+  '        if name in ("abort", "hold", "start-now", "start-at-cue"):',
   '        if False:'),
  ("live flame: a second group's hold is not refused",
   'ltcplay/remote.py',
@@ -18502,8 +18508,8 @@ def build():
  # The Programming playhead on the show audio (playhead.py, Jeff
  # 2026-10-28, field report items 7 and 8).
  ("Play from starts the show audio at the top, not at the point asked", "ltcplay/clock.py",
-  '            self._send(("play", role, sample, 0, self._token))',
-  '            self._send(("play", role, 0, 0, self._token))'),
+  '            self._send(("play", role, sample, fade, self._token))',
+  '            self._send(("play", role, 0, fade, self._token))'),
 
  ("Play from starts the timecode at 00:00:00:00 whatever the point", "ltcplay/clock.py",
   '            frame = cue.get("first_frame", 0)\n        if last is None or',
@@ -19708,7 +19714,8 @@ def build():
   '        pr = self.preroll\n        if pr is not None:\n            pass'),
 
  ('pre-roll: Start now skips the rig check', 'ltcplay/schedule_service.py',
-  '            return self._preroll_for_start_now(who, screen, gen), gen',
+  '            return self._preroll_for_start_now(who, screen, gen,\n'
+  '                                               start_at), gen',
   '            return None, gen'),
 
  ('pre-roll: the late allowance applies to every show', 'ltcplay/schedule.py',
@@ -22944,6 +22951,161 @@ def build():
   "ltcplay/play_from.py",
   "            with open(tmp, \"wb\") as fh:\n                fh.write(data)",
   "            with open(tmp, \"w\", encoding=\"utf-8\", newline=\"\\r\\n\") as fh:\n                fh.write(data.decode(\"utf-8\"))"),
+
+ ("start at a cue: the runner starts the show cue from the top",
+  "ltcplay/fire_ice.py",
+  "start_s=land[\"s\"],",
+  "start_s=0.0,"),
+
+ ("start at a cue: the music starts hard, no fade in",
+  "ltcplay/fire_ice.py",
+  "fade_in_ms=land[\"fade_s\"] * 1000.0)",
+  "fade_in_ms=0)"),
+
+ ("start at a cue: no flame landing before the cue starts",
+  "ltcplay/fire_ice.py",
+  "        if land is not None:\n            self._flame_landing()\n        try:",
+  "        try:"),
+
+ ("start at a cue: no flame landing after the cue started",
+  "ltcplay/fire_ice.py",
+  "        finally:\n            if land is not None:\n                self._flame_landing()",
+  "        finally:\n            pass"),
+
+ ("start at a cue: the video is not taken black before the cue",
+  "ltcplay/fire_ice.py",
+  "            if dark is not None:\n                dark()",
+  "            if dark is not None:\n                pass"),
+
+ ("start at a cue: the runner plays a list saved for another show cue",
+  "ltcplay/fire_ice.py",
+  "        if saved and role_cue is not None and \\\n                saved.lower() != str(role_cue).lower():",
+  "        if False:"),
+
+ ("start at a cue: the runner plays a list saved for another show file",
+  "ltcplay/fire_ice.py",
+  "        if file and here and file != here:",
+  "        if False:"),
+
+ ("start at a cue: where a stopped show stopped is not remembered",
+  "ltcplay/fire_ice.py",
+  "                    self._remember_stop(cue)",
+  "                    pass"),
+
+ ("start at a cue: the conductor brings the video up hard",
+  "ltcplay/conductor.py",
+  "                fade = max(0.0, min(float(fade_s or 0.0), ABORT_FADE_S))",
+  "                fade = 0.0"),
+
+ ("start at a cue: video black for the cue darkens a show that is up",
+  "ltcplay/conductor.py",
+  "            if self._look in (PLAYING,) + HOLDING_LOOKS or self._playing():\n                return self._refused(\"Video black for the cue\",",
+  "            if False:\n                return self._refused(\"Video black for the cue\","),
+
+ ("start at a cue: the scheduler never asks the runner for the video fade",
+  "ltcplay/schedule_service.py",
+  "                    call.fade_s = float(fade()) if fade is not None else 0.0",
+  "                    call.fade_s = 0.0"),
+
+ ("start at a cue: the press's cue never reaches the show start",
+  "ltcplay/schedule_service.py",
+  "            self._press_start_at = start_at\n",
+  ""),
+
+ ("start at a cue: Continue anyway starts from the top",
+  "ltcplay/schedule_service.py",
+  "        start_at = cc[1] if cc is not None and cc[0] is r else None",
+  "        start_at = None"),
+
+ ("start at a cue: Continue anyway takes an older failed check's cue",
+  "ltcplay/schedule_service.py",
+  "        start_at = cc[1] if cc is not None and cc[0] is r else None",
+  "        start_at = cc[1] if cc is not None else None"),
+
+ ("start at a cue: a failed check does not keep the cue",
+  "ltcplay/schedule_service.py",
+  "        self._continue_cue = (r, start_at)\n",
+  ""),
+
+ ("start at a cue: refusals say Start now, not the cue",
+  "ltcplay/schedule_service.py",
+  "            return f\"Start at the cue {start_at['cue']['name']}\"",
+  "            return \"Start now\""),
+
+ ("start at a cue: it starts the delayed show, not an extra one",
+  "ltcplay/schedule.py",
+  "    if d is not None and not str(ev.detail or \"\").startswith(\n            PLAY_FROM_DETAIL):",
+  "    if d is not None:"),
+
+ ("start at a cue: the journal says Start now, with no cue",
+  "ltcplay/schedule.py",
+  "        if cue.startswith(PLAY_FROM_DETAIL):",
+  "        if False:"),
+
+ ("start at a cue: the route takes a cue the page shows at another time",
+  "ltcplay/remote.py",
+  "        if \"tc\" in body and body.get(\"tc\") != cue[\"tc\"]:",
+  "        if False:"),
+
+ ("start at a cue: the route works in Programming",
+  "ltcplay/remote.py",
+  "        ok, _why = self.programming()\n        if ok:",
+  "        ok, _why = self.programming()\n        if False:"),
+
+ ("start at a cue: the route starts a cue of another show file",
+  "ltcplay/remote.py",
+  "        if show is not None and show != file:",
+  "        if False:"),
+
+ ("start at a cue: no confirm needed",
+  "ltcplay/remote.py",
+  "CONFIRM_ROUTES = frozenset((\"start-now\", \"abort\", \"start-at-cue\"))",
+  "CONFIRM_ROUTES = frozenset((\"start-now\", \"abort\"))"),
+
+ ("start at a cue: a stale page may press it",
+  "ltcplay/remote.py",
+  "FRESH_ROUTES = frozenset((\"start-now\", \"resume\", \"reset\", \"start-at-cue\")",
+  "FRESH_ROUTES = frozenset((\"start-now\", \"resume\", \"reset\")"),
+
+ ("start at a cue: it starts over Programming playback",
+  "ltcplay/remote.py",
+  "        if name in (\"start-now\", \"start-at-cue\"):\n            why = self.programming_playback_refusal()",
+  "        if name == \"start-now\":\n            why = self.programming_playback_refusal()"),
+
+ ("start at a cue: a timed purge and live flames are not cut at the press",
+  "ltcplay/remote.py",
+  "        if name in (\"abort\", \"hold\", \"start-now\", \"start-at-cue\"):",
+  "        if name in (\"abort\", \"hold\", \"start-now\"):"),
+
+ ("start at a cue: Resume offers another show file's stop",
+  "ltcplay/remote.py",
+  "        if not isinstance(at, dict) or at.get(\"file\") != show:",
+  "        if not isinstance(at, dict):"),
+
+ ("start at a cue: operators may not (the Settings row)",
+  "ltcplay/users.py",
+  "    \"start-at-cue\": \"show\",",
+  "    \"start-at-cue\": \"settings\","),
+
+ ("start at a cue: the landing ignores the lead-in",
+  "ltcplay/play_from.py",
+  "    return max(0, parse_tc(cue[\"tc\"]) - int(cue[\"lead_in_s\"]) * FPS)",
+  "    return max(0, parse_tc(cue[\"tc\"]))"),
+
+ ("start at a cue: Resume offers the cue after, at the very frame",
+  "ltcplay/play_from.py",
+  "        if at <= frame and (best is None or at >= parse_tc(best[\"tc\"])):",
+  "        if at < frame and (best is None or at >= parse_tc(best[\"tc\"])):"),
+
+ ("start at a cue: the audio fade in is never sent",
+  "ltcplay/clock.py",
+  "            fade = self._sa.fade_frames(fade_in_ms) if fade_in_ms else 0",
+  "            fade = 0"),
+
+ ("start at a cue: a clock that cannot seek is started part way",
+  "ltcplay/session.py",
+  "        if part_way and self.playhead_clock() is None:",
+  "        if False:"),
 
 ]
 

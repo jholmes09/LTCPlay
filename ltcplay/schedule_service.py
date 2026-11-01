@@ -565,6 +565,12 @@ class _ConductorCall:
         self.seq = seq
         self.show = 0       # start_show only: which show
         self.stops = None   # show_starting only: the Stop count then
+        # start_show only: Start at a cue's saved cue (play_from.py part
+        # 2), only ever from an operator's press; None, every other start.
+        self.start_at = None
+        # show_starting only: how long the video fades up (a start at a
+        # cue: play_from.LANDING_FADE_S), read from the runner when decided.
+        self.fade_s = 0.0
         self.ok, self.sentence = None, ""
         self.done = threading.Event()
 
@@ -813,6 +819,13 @@ class Service:
         # remote). Asked under this lock after the tick, so a Play from
         # that landed while a Start now waited is never started over.
         self.start_veto = None
+        # Start at a cue (play_from.py part 2): the cue of the press being
+        # applied (operator_press, under the lock), and the failed rig
+        # check a start at a cue was refused by, with its cue: (the
+        # pre-roll's run record, start_at or None). Continue anyway starts
+        # from that cue (continue_anyway).
+        self._press_start_at = None
+        self._continue_cue = None
         # Stops under way (halt_begin / halt_end).
         self._halts = 0
         # A Stop's Hold that stands until Resume (see _keep_stop_hold),
@@ -1715,10 +1728,20 @@ class Service:
             call = self._new_call(label, method, who, screen)
             if len(entry) > 3:
                 call.show = entry[3]
+            if method == "start_show" and ev.kind == sch.START_NOW:
+                # Start at a cue: only the operator's own press carries a
+                # cue (a show that came due never does).
+                call.start_at = self._press_start_at
             if method == "show_starting":
                 # The Stop count now: a Stop that lands before this call
                 # is made refuses it (cold review of #191 round 2).
                 call.stops = getattr(self.conductor, "stops", None)
+                # A start at a cue: the video fades up as the music does.
+                fade = getattr(self.performer, "start_fade_s", None)
+                try:
+                    call.fade_s = float(fade()) if fade is not None else 0.0
+                except Exception:                # noqa: BLE001
+                    call.fade_s = 0.0
             if method == "abort":
                 self._abort_seq = call.seq
                 self._abort_pressed = (self._press_stamp
@@ -1800,11 +1823,20 @@ class Service:
             if call.method == "start_show":
                 # The Fire & Ice show runner, not the conductor (see
                 # _drive_conductor).
-                r = self.performer.start_show(call.show, who=call.who)
+                if call.start_at is not None:
+                    r = self.performer.start_show(call.show, who=call.who,
+                                                  start_at=call.start_at)
+                else:
+                    r = self.performer.start_show(call.show, who=call.who)
             elif call.method == "show_starting" and \
                     getattr(call, "stops", None) is not None:
-                r = self.conductor.show_starting(call.who, call.screen,
-                                                 stops=call.stops)
+                if call.fade_s:
+                    r = self.conductor.show_starting(call.who, call.screen,
+                                                     stops=call.stops,
+                                                     fade_s=call.fade_s)
+                else:
+                    r = self.conductor.show_starting(call.who, call.screen,
+                                                     stops=call.stops)
             else:
                 r = getattr(self.conductor, call.method)(call.who,
                                                          call.screen)
@@ -1832,7 +1864,8 @@ class Service:
                 # (one report, from one place); this only says what happened.
                 # An automatic start is always journaled, done or not.
                 what = ("Automatic show start" if call.who ==
-                        "the scheduler" else f"Start now by {call.who}")
+                        "the scheduler" else
+                        f"{self.start_label(call.start_at)} by {call.who}")
                 self._journal_line(
                     "system", f"{what}, show {call.show}: {said}".strip(),
                     action="automatic start" if call.who == "the scheduler"
@@ -3531,38 +3564,58 @@ class Service:
         except Exception:                        # noqa: BLE001
             return
 
-    def _preroll_for_start_now(self, who, screen, gen):
+    @staticmethod
+    def start_label(start_at=None):
+        """What the press is called in a sentence: "Start now", or for
+        Start at a cue (play_from.py part 2) "Start at the cue <name>"."""
+        if start_at is None:
+            return "Start now"
+        try:
+            return f"Start at the cue {start_at['cue']['name']}"
+        except Exception:                        # noqa: BLE001
+            return "Start at a cue"
+
+    def _preroll_for_start_now(self, who, screen, gen, start_at=None):
         """Start now: the rig is checked first, on the pressing thread,
         outside this service's lock (at most the pre-roll's budget). A
         Stop, Hold or Abort meanwhile cancels it. Returns a refusal or
         None. A failure is never started past here: Continue anyway (a
-        signed-in hold, failed outputs left off) is the only way on."""
+        signed-in hold, failed outputs left off) is the only way on. A
+        failure for a Start at a cue keeps that cue with it
+        (_continue_cue), so Continue anyway starts from the same cue,
+        never from the top (Jeff, 2026-10-31)."""
         if not self._preroll_applies():
             return None
         pr = self.preroll
         self._preroll_seq += 1
         who_ = who or "someone"
-        r = pr.run(("start now", self._preroll_seq), f"Start now by {who_}",
-                   by=f"Start now by {who_}",
+        what = self.start_label(start_at)
+        r = pr.run(("start now", self._preroll_seq), f"{what} by {who_}",
+                   by=f"{what} by {who_}",
                    cancelled=lambda: (self._start_cancel[0] != gen or
                                       self.halting()))
         if r["state"] == "passed":
             return None
         if r["state"] == "cancelled":
             said = self._start_cancel[1] or "it was cancelled"
-            sentence = (f"Start now was refused: {said} while the rig was "
+            sentence = (f"{what} was refused: {said} while the rig was "
                         f"being checked. Nothing was started.")
             self.journal_press(who, screen, "start-now", "refused",
-                               f"{who_}'s Start now was refused. {sentence}")
+                               f"{who_}'s {what} was refused. {sentence}")
             return {"ok": False, "text": sentence, "cancelled": True}
+        # Whatever this start was (a cue, or the top): Continue anyway on
+        # THIS failed check starts the same.
+        self._continue_cue = (r, start_at)
         bad = "; ".join(f"{i['name']}: {i['text']}" for i in r["items"]
                         if i["required"] and not i["ok"])
-        sentence = (f"Start now was refused: the rig check failed ({bad}). "
-                    f"Nothing was started. Fix it and press Start now "
+        again = "Start at a cue" if start_at is not None else "Start now"
+        sentence = (f"{what} was refused: the rig check failed ({bad}). "
+                    f"Nothing was started. Fix it and press {again} "
                     f"again, or hold Continue anyway to start without what "
-                    f"failed.")
+                    f"failed" + (" (it starts from the same cue)."
+                                 if start_at is not None else "."))
         self.journal_press(who, screen, "start-now", "refused",
-                           f"{who_}'s Start now was refused. {sentence}",
+                           f"{who_}'s {what} was refused. {sentence}",
                            fault=True)
         return {"ok": False, "text": sentence, "preroll": True}
 
@@ -3621,6 +3674,17 @@ class Service:
             f"the rig check failed ({failed}). The show starts now, late, "
             f"with {left}.", fault=True)
         self.performer.continue_off = (off, who_)
+        # A failed check for a Start at a cue: the show starts from that
+        # cue, never from the top (Jeff, 2026-10-31). Only this very
+        # failed check's own cue.
+        cc = self._continue_cue
+        start_at = cc[1] if cc is not None and cc[0] is r else None
+        if start_at is not None:
+            from . import play_from as pf_mod
+            self.journal_press(
+                who, screen, "continue anyway", "chosen",
+                f"Continue anyway starts the show from the cue it was asked "
+                f"to start at: {pf_mod.start_words(start_at['cue'])}.")
         if m.state == sch.HOLD and not self.stop_held():
             # An operator's own Hold is resumed first (a Stop's Hold is
             # not: Start now starts this one show from it, and the Hold
@@ -3631,14 +3695,17 @@ class Service:
                 self.performer.continue_off = None
                 return got
         got = self.operator_press("start-now", who, screen, surface=True,
-                                  preroll=False)
+                                  preroll=False, start_at=start_at)
         if self.machine is not None and self.machine.state == sch.SHOW:
             pr.consume(r)
             pr.continued = {"label": r.get("label", ""), "by": who_,
                             "at": self.clock().isoformat(timespec="seconds"),
                             "off": off, "failed": failed}
+            where = (f" from the cue {start_at['cue']['name']}"
+                     if start_at is not None else "")
             return {"ok": True, "text": f"Continue anyway: the show starts "
-                                        f"now, late. Left off for this show: "
+                                        f"now{where}, late. Left off for "
+                                        f"this show: "
                                         f"{', '.join(sorted(off)) or 'nothing'}."}
         self.performer.continue_off = None
         return got
@@ -4376,7 +4443,7 @@ class Service:
 
     def operator_press(self, what, who, screen, confirmed=False,
                        pressed=None, surface=False, preroll=True,
-                       detail=""):
+                       detail="", start_at=None):
         """One operator press from a screen: Start now, Hold, Resume or
         Abort. `who` must be on the operator list and `screen` on the
         screen list; anything else is refused in the journal and raised as
@@ -4385,11 +4452,28 @@ class Service:
         "text"}: ok False with the engine's own refusal sentence.
         surface=True: the remote page's press, where `who` names the
         surface it came from (Jeff, 2026-10-07: no sign-in), so it is not
-        looked up on the operator list; the screen still is."""
+        looked up on the operator list; the screen still is.
+        `start_at` (Start at a cue, play_from.py part 2; "start-now" only):
+        {"cue", "show_cue", "file"}, the saved cue the engine resolved.
+        Every rule of Start now applies unchanged; the show is always an
+        extra show (schedule.PLAY_FROM_DETAIL) and the runner starts it at
+        the cue."""
         kind = self.PRESSES.get(what)
         if kind is None:
             raise ValueError(f"{what!r} is not a press this program knows. "
                              f"Nothing was changed.")
+        if start_at is not None and kind != sch.START_NOW:
+            raise ValueError("Only a start can be at a cue. Nothing was "
+                             "changed.")
+        label = self.start_label(start_at)
+        if start_at is not None:
+            from . import play_from as pf_mod
+            try:
+                detail = sch.PLAY_FROM_DETAIL + pf_mod.start_words(
+                    start_at["cue"])
+            except Exception:                    # noqa: BLE001
+                raise ValueError("The cue to start at could not be read. "
+                                 "Nothing was changed.")
         who = str(who or "").strip()
         screen = str(screen or "").strip()
         names = {n.lower(): n for n in self.operators}
@@ -4431,21 +4515,22 @@ class Service:
         if kind == sch.START_NOW:
             why = self._stop_still_fading()
             if why:
-                sentence = f"Start now was refused: {why}"
+                sentence = f"{label} was refused: {why}"
                 self.journal_press(who, screen, "start-now", "refused",
-                                   f"{who}'s Start now was refused. "
+                                   f"{who}'s {label} was refused. "
                                    f"{sentence}")
                 return {"ok": False, "text": sentence, "halting": True}
         if kind == sch.START_NOW and self.halting():
-            sentence = (f"Start now was refused: {self.HALTING}. Nothing "
+            sentence = (f"{label} was refused: {self.HALTING}. Nothing "
                         f"was started.")
             self.journal_press(who, screen, "start-now", "refused",
-                               f"{who}'s Start now was refused. {sentence}")
+                               f"{who}'s {label} was refused. {sentence}")
             return {"ok": False, "text": sentence, "halting": True}
         if kind == sch.START_NOW:
             # Outside this service's lock: the performer's check reads the
             # show's clock (start_blocked), and it may wait for the audio.
-            refused, gen = self._start_now_refusal(who, screen, preroll)
+            refused, gen = self._start_now_refusal(who, screen, preroll,
+                                                   start_at)
             if refused is not None:
                 return refused
         with self._locked():
@@ -4464,10 +4549,10 @@ class Service:
                 # A Stop, Hold or Abort landed after the wait ended and
                 # before this: the start is not made.
                 why = self._start_cancel[1] or "it was cancelled"
-                sentence = (f"Start now was refused: {why} just before it "
+                sentence = (f"{label} was refused: {why} just before it "
                             f"started. Nothing was started.")
                 self.journal_press(who, screen, "start-now", "refused",
-                                   f"{who}'s Start now was refused. "
+                                   f"{who}'s {label} was refused. "
                                    f"{sentence}")
                 return {"ok": False, "text": sentence, "cancelled": True}
             veto = ""
@@ -4477,9 +4562,9 @@ class Service:
                 except Exception:                    # noqa: BLE001
                     veto = ""
             if veto:
-                sentence = f"Start now was refused: {veto}"
+                sentence = f"{label} was refused: {veto}"
                 self.journal_press(who, screen, "start-now", "refused",
-                                   f"{who}'s Start now was refused. "
+                                   f"{who}'s {label} was refused. "
                                    f"{sentence}")
                 return {"ok": False, "text": sentence}
             if self.machine is None:
@@ -4500,6 +4585,9 @@ class Service:
                                             "times again."}
             self._press_stamp = (pressed if pressed is not None
                                  else self.stamp_press())
+            # The cue this press starts at, for _decide_conductor (under
+            # this lock, this press's own step only).
+            self._press_start_at = start_at
             before = self.machine.state
             try:
                 out = self._apply(sch.Event(kind, "operator", who=who,
@@ -4515,6 +4603,7 @@ class Service:
                     self._preroll_release(who, screen)
             finally:
                 self._press_stamp = None
+                self._press_start_at = None
         if out.refused:
             # nothing_to_do: what the press asks for is already so (a Hold
             # with the schedule on hold, a show paused or the night over;
@@ -4596,7 +4685,7 @@ class Service:
         """True while a Start now waits for the show audio to load."""
         return self._start_waiters > 0
 
-    def _start_now_refusal(self, who, screen, preroll=True):
+    def _start_now_refusal(self, who, screen, preroll=True, start_at=None):
         """Start now that cannot work, said up front with the real reason
         and what to press (Jeff's field report, 2026-10-28: Start now with
         Run off was "refused" only by a FAULT slot and an alert that said
@@ -4650,12 +4739,14 @@ class Service:
                 # Continue anyway: the person has just seen the failed
                 # check and chosen; it is not run again.
                 return None, gen
-            return self._preroll_for_start_now(who, screen, gen), gen
+            return self._preroll_for_start_now(who, screen, gen,
+                                               start_at), gen
+        what = self.start_label(start_at)
         why = blocked["text"].rstrip(".")
-        sentence = (f"Start now was refused: {why}. Nothing was started and "
+        sentence = (f"{what} was refused: {why}. Nothing was started and "
                     f"nothing was sent to the rig.")
         self.journal_press(who, screen, "start-now", "refused",
-                           f"{who or 'Someone'}'s Start now was refused. "
+                           f"{who or 'Someone'}'s {what} was refused. "
                            f"{sentence}")
         return {"ok": False, "text": sentence,
                 "loading": blocked["loading"],

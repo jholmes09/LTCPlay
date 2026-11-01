@@ -2693,6 +2693,10 @@ class ShowRunner:
         # Bumped (under _lock) every time a start sets what is left off:
         # poll clears it only if no start came since it read the state.
         self._off_seq = 0
+        # Where the last show that was stopped part way stopped (Start at a
+        # cue's Resume offer, play_from.resume_offer): {"show", "file",
+        # "cue", "frame"}, or None.
+        self.stopped_at = None
 
     def _note(self, text, **fields):
         if self._journal is not None:
@@ -2813,12 +2817,32 @@ class ShowRunner:
             return None
         return {"text": why, "loading": why == self.AUDIO_LOADING}
 
-    def start_show(self, n, who="the scheduler"):
+    START_AT_WRONG_CUE = ("the play-from cues for {file} were saved for "
+                          "its show cue {saved}, but this show starts "
+                          "{cue}; check the cues on 2.0 Settings, then "
+                          "press Start at a cue again")
+
+    def start_show(self, n, who="the scheduler", start_at=None):
         """Called on the scheduler's ordered line of conductor requests,
         off its lock, after tonight is saved; the conductor is told a show
         started only once it is confirmed. Returns a conductor Result at
         once. `who` is "the scheduler" for a show that came due, or the
-        operator who pressed Start now."""
+        operator who pressed Start now.
+
+        `start_at` (Start at a cue, play_from.py part 2; only ever from an
+        operator's press, Service.operator_press): {"cue": the saved cue,
+        "show_cue": the show cue the list was saved for, "file": the show
+        file}. The show cue then starts at the cue's landing point
+        (play_from.landing_s) instead of its top, with the flame link's
+        landing before and after it (FlameLink.landing: nothing fires for
+        0.5 s, and a flame channel already up where it lands stays off
+        until it has been seen at zero; the fireball's own landing rule,
+        fireball_cues.TOP_FRAMES, holds a charge whose window it landed
+        in, and never charges a tank already charged), the video taken to
+        black at once (Conductor.landing_video_dark) and the show audio
+        faded in over play_from.LANDING_FADE_S; show_starting brings the
+        video up over the same time (start_fade_s). It arms nothing and
+        lights nothing itself."""
         # A Stop that lands while this start is under way (an urgent Stop
         # goes beside the line, so it can overtake a start already being
         # made) is seen after the cue starts, as an Abort is (cold review
@@ -2843,6 +2867,14 @@ class ShowRunner:
             with self._lock:
                 self._cue = {"show": n, "failed": why, "nothing_sent": True}
             return C.failed(f"Show {n} was not started: {why}.")
+        land = None
+        if start_at is not None:
+            land, why = self._landing(s, start_at)
+            if why:
+                with self._lock:
+                    self._cue = {"show": n, "failed": why,
+                                 "nothing_sent": True}
+                return C.failed(f"Show {n} was not started: {why}.")
         pix = self._clear_look(s, n)
         # This start's own hand-over (one slot on the player): what poll()
         # may later cancel, never a newer start's.
@@ -2862,9 +2894,19 @@ class ShowRunner:
                 self._note(f"Selecting the MadMapper show bank failed: {e}",
                            fault=True, action="video", outcome="failed")
             follow_show_bank(self.mm, self._note)
+        if land is not None and "video" not in off:
+            dark = getattr(self.conductor, "landing_video_dark", None)
+            if dark is not None:
+                dark()
         sent = self._mono()
+        if land is not None:
+            self._flame_landing()
         try:
-            pick = s.clock_play(self.cfg.show_cue)
+            if land is None:
+                pick = s.clock_play(self.cfg.show_cue)
+            else:
+                pick = s.clock_play(self.cfg.show_cue, start_s=land["s"],
+                                    fade_in_ms=land["fade_s"] * 1000.0)
         except Exception as e:
             # The clock's own sentence, then what to press (Jeff,
             # 2026-10-28): "still loading" says to wait.
@@ -2874,6 +2916,9 @@ class ShowRunner:
             with self._lock:
                 self._cue = {"show": n, "failed": why}
             return C.failed(f"Show {n} was not started: {why}.")
+        finally:
+            if land is not None:
+                self._flame_landing()
         # The music is now playing, whatever the conductor's record says:
         # an Abort or Hold before SHOW_CONFIRMED must stop or freeze it (PR
         # #43 review, finding 4).
@@ -2912,8 +2957,86 @@ class ShowRunner:
             self._cue = {"show": n, "clock": clk,
                          "played": clk.cues_played, "confirmed": False,
                          "failed": None, "pix": pix, "sent": sent,
-                         "hand": hand}
+                         "hand": hand, "file": self._file(s),
+                         "label": pick.name,
+                         "fade_s": land["fade_s"] if land else 0.0}
+            self.stopped_at = None
+        if land is not None:
+            from . import play_from as pf_mod
+            return C.done(f"Show {n}: {pick.name} started on the show audio "
+                          f"at the cue {pf_mod.start_words(land['cue'])}; "
+                          f"the music and the video fade in over "
+                          f"{land['fade_s']:g} s.")
         return C.done(f"Show {n}: {pick.name} started on the show audio.")
+
+    @staticmethod
+    def _file(s):
+        return os.path.basename(str(getattr(s, "timeline_path", "") or ""))
+
+    def _landing(self, s, start_at):
+        """(where a start at a cue plays from, "") or (None, why): the cue
+        checked against the show that is about to start. The list must
+        have been saved for this show file and for the show cue this
+        runner plays; the point is the saved cue's own (play_from.
+        landing_s), never anything a page sent."""
+        from . import play_from as pf_mod
+        try:
+            cue = start_at["cue"]
+            secs = pf_mod.landing_s(cue)
+            saved = str(start_at.get("show_cue") or "")
+            file = str(start_at.get("file") or "")
+        except Exception as e:                   # noqa: BLE001
+            return None, (f"the cue to start at could not be read "
+                          f"({type(e).__name__}); press Start at a cue "
+                          f"again")
+        here = self._file(s)
+        if file and here and file != here:
+            return None, (f"the cue {cue.get('name')} is in the list for "
+                          f"{file}, but {here} is running; press Start at "
+                          f"a cue again")
+        want = self.cfg.show_cue
+        role_cue = None
+        try:
+            cues = list(getattr(getattr(s, "tl", None), "cues", None) or ())
+            if want is None and cues:
+                role_cue = cues[0].name
+            elif want is not None:
+                w = str(want).strip().lower()
+                hits = [c for c in cues if w in (
+                    str(getattr(c, "name", "")).lower(),
+                    os.path.basename(str(getattr(c, "path", ""))).lower(),
+                    str(getattr(c, "tc_text", "")).lower())]
+                role_cue = hits[0].name if len(hits) == 1 else None
+        except Exception:                        # noqa: BLE001
+            role_cue = None
+        if saved and role_cue is not None and \
+                saved.lower() != str(role_cue).lower():
+            return None, self.START_AT_WRONG_CUE.format(
+                file=file or here or "this show", saved=saved, cue=role_cue)
+        return {"cue": cue, "s": secs,
+                "fade_s": pf_mod.LANDING_FADE_S}, ""
+
+    def _flame_landing(self):
+        """The flame link's landing (FlameLink.landing), as Programming's
+        Play from does: it only takes fire away. Never raises."""
+        fn = getattr(getattr(self.show, "flame_link", None), "landing", None)
+        if fn is None:
+            return
+        try:
+            fn()
+        except Exception:                        # noqa: BLE001
+            pass
+
+    def start_fade_s(self):
+        """How long show_starting fades the video up for the show that is
+        starting: play_from.LANDING_FADE_S for a start at a cue, else 0.
+        Never raises."""
+        with self._lock:
+            cue = self._cue
+        try:
+            return float((cue or {}).get("fade_s") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
 
     def _degraded_over(self, off_seq):
         """Out of the show: what a Continue anyway left off for it ends
@@ -3026,6 +3149,7 @@ class ShowRunner:
             with self._lock:
                 if self._cue is cue:
                     self._cue = None
+                    self._remember_stop(cue)
             return
         if cue.get("failed"):
             if state == "SHOW":
@@ -3054,6 +3178,21 @@ class ShowRunner:
                 how = self.NEVER_CONFIRMED.format(how=how)
             self.svc.report("SHOW_ENDED" if cue["confirmed"]
                             else "SHOW_FAILED", how, show=n)
+
+    def _remember_stop(self, cue):
+        """A show taken out of SHOW or PAUSED before its cue ended (a Stop,
+        an Abort): where its show cue was, for Resume's offer of the cue
+        before it (play_from.resume_offer). Lock held. Never raises."""
+        try:
+            clk = cue.get("clock")
+            frame = getattr(clk, "_last_frame", None)
+            if clk is None or cue.get("failed") or \
+                    not isinstance(frame, int) or isinstance(frame, bool):
+                return
+            self.stopped_at = {"show": cue["show"], "file": cue.get("file"),
+                               "cue": cue.get("label"), "frame": frame}
+        except Exception:                        # noqa: BLE001
+            pass
 
     @staticmethod
     def _handoff_over(cue):

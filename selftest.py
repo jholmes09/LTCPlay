@@ -109727,9 +109727,18 @@ def test_play_from_cue_routes():
             if re.search(r"import play_from\b|\bplay_from as\b|"
                          r"\bplay_from_(?:store|get|save|show_info)\b", t):
                 users_of.append(f)
-    check(users_of == ["remote.py"],
-          f"only the routes read the cue list, never the start path: "
-          f"{users_of}")
+    # Part 2 (Start at a cue): the routes read the file (Remote.
+    # start_at_cue); the scheduler and the runner only ever use the cue the
+    # route handed them, through the model's pure helpers, never the Store.
+    check(users_of == ["fire_ice.py", "remote.py", "schedule_service.py"],
+          f"only the routes read the cue list; the start path gets the cue "
+          f"from them: {users_of}")
+    for f in ("fire_ice.py", "schedule_service.py"):
+        t = open(os.path.join(here, "ltcplay", f), encoding="utf-8").read()
+        used = set(re.findall(r"pf_mod\.(\w+)", t))
+        check(used and used <= {"landing_s", "start_words",
+                                "LANDING_FADE_S"} and "Store(" not in t,
+              f"{f} reads no cue file, only the cue it was given: {used}")
     rsrc = open(os.path.join(here, "ltcplay", "remote.py"),
                 encoding="utf-8").read()
     for fn in ("play_from_get", "play_from_save", "play_from_show_info",
@@ -110247,6 +110256,696 @@ console.log(JSON.stringify(out));
           'post("/api/remote/play-from-cues-save", {restore:true, '
           'rev:PF.rev})' in two,
           "the card offers Restore the last saved copy, an admin's press")
+    print("  ok")
+
+
+# ---------------------------------------------------------------------------
+# Play-from cues, part 2: Start at a cue (Show mode). The cue is resolved by
+# the engine from the saved list, carried through Start now's own path and
+# started part way, with the flame link's landing, a 1 s fade in for the
+# music and the video, and Continue anyway keeping the cue.
+# ---------------------------------------------------------------------------
+
+def _pf_cue(name="Finale", tc="00:00:30:00", lead=3, cid="c1"):
+    return {"id": cid, "name": name, "tc": tc, "lead_in_s": lead,
+            "note": ""}
+
+
+def _pf_start_at(cue=None, file="Fire and Ice.json", show_cue="Show"):
+    return {"cue": cue or _pf_cue(), "show_cue": show_cue, "file": file}
+
+
+class _FiCueSession(_FiSession):
+    """_FiSession that can start the show cue part way, as Session.
+    clock_play(start_s, fade_in_ms) does on an audio_master clock."""
+
+    timeline_path = os.path.join("x", "Fire and Ice.json")
+
+    def __init__(self, calls, T):
+        import types
+        super().__init__(calls, T)
+        self.starts = []
+        self.tl = types.SimpleNamespace(cues=[types.SimpleNamespace(
+            name="Show", path="Show.fseq", tc_text="01:00:00:00")])
+
+    def clock_play(self, cue=None, start_s=0.0, fade_in_ms=0):
+        self.starts.append((cue, float(start_s), float(fade_in_ms)))
+        return super().clock_play(cue)
+
+
+def _pf_night(**kw):
+    """_fi_night with a session that starts part way and a flame link
+    whose landing() is written into the same ordered log."""
+    n = _fi_night(**kw)
+    if n.S is None:
+        return n
+    n.sess = _FiCueSession(n.calls, n.T)
+    n.control.session = n.sess
+    link = n.w.show.flame_link
+    if link is not None:
+        link.landing = lambda: n.calls.append(("flames_landing", (),
+                                               n.T.now()))
+    return n
+
+
+def test_start_at_cue_model():
+    section("start at a cue, the model: the landing point is the cue's time "
+            "less its lead-in, never before the top; a cue is found by its "
+            "id; Resume offers the last cue at or before where a show "
+            "stopped; the words have no long dash")
+    from ltcplay import play_from as PF
+    c = _pf_cue(tc="00:08:12:00", lead=3)
+    check(PF.landing_frames(c) == (8 * 60 + 9) * 30 and
+          PF.landing_s(c) == 8 * 60 + 9.0,
+          f"00:08:12:00 less 3 s plays from 00:08:09:00: "
+          f"{PF.landing_frames(c)}")
+    check(PF.landing_frames(_pf_cue(tc="00:00:01:00", lead=5)) == 0,
+          "never before the top of the show cue")
+    check(PF.LANDING_FADE_S == 1.0, "the fade in is 1 s (Jeff)")
+    entry = {"cues": [_pf_cue("Top", "00:00:05:00", 2, "c1"),
+                      _pf_cue("Fire", "00:01:00:00", 2, "c2"),
+                      _pf_cue("Finale", "00:02:00:00", 3, "c3")]}
+    check(PF.find_cue(entry, "c2")["name"] == "Fire" and
+          PF.find_cue(entry, "c9") is None and
+          PF.find_cue(entry, None) is None and PF.find_cue(None, "c1") is
+          None, "found by id only")
+    cues = entry["cues"]
+    got = [(f, (PF.resume_offer(cues, f) or {}).get("name"))
+           for f in (0, 149, 150, 151, 1799, 1800, 1801, 3599, 3600, 9000)]
+    check(got == [(0, None), (149, None), (150, "Top"), (151, "Top"),
+                  (1799, "Top"), (1800, "Fire"), (1801, "Fire"),
+                  (3599, "Fire"), (3600, "Finale"), (9000, "Finale")],
+          f"Resume offers the cue at or before the stop: {got}")
+    check(PF.resume_offer(cues, None) is None and
+          PF.resume_offer(cues, True) is None and
+          PF.resume_offer([], 500) is None,
+          "no frame, or no cue, offers nothing")
+    w = PF.start_words(c)
+    check(w == "Finale (00:08:12:00, played from 00:08:09:00 with its 3 s "
+               "lead-in)", f"in words: {w}")
+    _no_dashes(w, "the cue in words")
+    print("  ok")
+
+
+def test_start_at_cue_audio_fades_in():
+    section("start at a cue, the show audio: the cue starts on its sample "
+            "with a fade in over 1 s (the same fade a Resume sends), the "
+            "timecode on its frame at once; every other start is hard, as "
+            "before; a clock that cannot start part way refuses it")
+    import types
+    from ltcplay import session as SE
+    r = _am_rig(seconds=6.0)
+    am, sim, out, eng, vc = r["am"], r["sim"], r["out"], r["eng"], r["vc"]
+    sent = []
+    real_send = eng.send
+    eng.send = lambda msg: (sent.append(msg), real_send(msg))[1]
+    t0 = vc()
+    am.play(3600.0, None, "Show", start_s=2.0, fade_in_ms=1000.0)
+    check(sent and sent[-1][:4] == ("play", "show", 96000, 48000),
+          f"the audio from sample 96000, fading in over 48000 samples: "
+          f"{sent}")
+    sim.run(t0 + 1.0)
+    fr = out.frames(since=t0)
+    check(fr and fr[0][1] == 60, f"the timecode starts on frame 60 at "
+                                 f"once: {[n for _, n in fr[:3]]}")
+    am.halt(fade_ms=0)
+    sim.run(vc() + 0.5)
+    del sent[:]
+    am.play(3600.0, None, "Show", start_s=2.0)
+    check(sent and sent[-1][:4] == ("play", "show", 96000, 0),
+          f"Programming's Play from is still a hard start: {sent}")
+    am.halt(fade_ms=0)
+    sim.run(vc() + 0.5)
+    del sent[:]
+    am.play(3600.0, None, "Show")
+    check(sent and sent[-1][:4] == ("play", "show", 0, 0),
+          f"a show from the top is still a hard start: {sent}")
+    eng.send = real_send
+    am.stop()
+    # Session.clock_play: part way only on a clock that can (AudioMaster).
+    asked = []
+    clk = types.SimpleNamespace(master=True, play=lambda *a, **k:
+                                asked.append((a, k)))
+    s = SE.Session.__new__(SE.Session)
+    s._running = True
+    s.clock = clk
+    s.tl = types.SimpleNamespace(cues=[types.SimpleNamespace(
+        name="Show", path="Show.fseq", tc_text="01:00:00:00",
+        fseq=object(), duration=600.0, tc_seconds=3600.0)])
+    s.player = types.SimpleNamespace(freerun_epoch=None)
+    try:
+        s.clock_play(None, start_s=27.0, fade_in_ms=1000)
+        raised = None
+    except SE.SessionError as e:
+        raised = str(e)
+    check(raised and "cannot start part way" in raised and not asked,
+          f"a clock with no seek refuses a start at a cue: {raised}")
+    clk.seek = lambda x: x
+    s.clock_play(None, start_s=27.0, fade_in_ms=1000)
+    s.clock_play(None)
+    check(asked == [((3600.0, 600.0, "Show"),
+                     {"start_s": 27.0, "fade_in_ms": 1000.0}),
+                    ((3600.0, 600.0, "Show"), {})],
+          f"part way with its fade; from the top exactly as before: {asked}")
+    print("  ok")
+
+
+def test_start_at_cue_end_to_end_through_the_conductor():
+    section("start at a cue, end to end (real scheduler, runner and "
+            "conductor; fake rig): an extra show at the cue's landing "
+            "point, the flame link's landing before and after, video black "
+            "then up over 1 s, music in over 1 s, lasers through the gate "
+            "and flame cues last; no second start; a scheduled show never "
+            "gets a cue; nothing armed; Stop wins; Resume's offer")
+    n = _pf_night()
+    if n.S is None:
+        return
+    S, svc, c, T = n.S, n.svc, n.c, n.T
+    from ltcplay import play_from as PF
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.STANDBY, f"preshow: {svc.machine.state}")
+    armed = n.arm.armed_ids()
+    del n.calls[:]
+    r = svc.operator_press("start-now", "Andy", "Rack screen",
+                           surface=True, start_at=_pf_start_at())
+    _settle(svc, c)
+    _mm_flush(n.link)
+    check(r["ok"] is True and svc.machine.state == S.SHOW,
+          f"started: {r} {svc.machine.state}")
+    run = svc.machine.slot(svc.machine.running)
+    check(run.origin == "operator" and run.reason == S.EXTRA_SHOW and
+          run.n == max(x.n for x in svc.machine.slots),
+          f"an extra show, like Start now: {run}")
+    check(n.sess.starts == [(None, 27.0, 1000.0)],
+          f"the show cue from 27 s (30 s less the 3 s lead-in), the music "
+          f"fading in over 1 s: {n.sess.starts}")
+    start = _fi_log(n.calls)
+    check(start == [("video", "select_bank"), ("video", "fade 0 to 0"),
+                    ("flames", "landing"), ("music", "play"),
+                    ("flames", "landing")],
+          f"the show bank, video black at once, the flame landing, the "
+          f"music, the landing again, and nothing else until the timecode "
+          f"moves: {start}")
+    rows = [x["text"] for x in svc.journal if "Start at a cue" in
+            x.get("text", "")]
+    check(any("pressed Start at a cue on the Rack screen. Started an extra "
+              "show" in t and "from the cue Finale (00:00:30:00, played "
+              "from 00:00:27:00 with its 3 s lead-in)" in t for t in rows),
+          f"the journal says who, where, which cue and where it plays "
+          f"from: {rows}")
+    starts = [x["text"] for x in svc.journal
+              if x.get("action") == "start now"]
+    check(starts and "Start at the cue Finale by Andy" in starts[-1] and
+          "the music and the video fade in over 1 s" in starts[-1],
+          f"the start line: {starts[-1:]}")
+    for t in rows + starts:
+        _no_dashes(t, "a start at a cue's journal line")
+    # A second start while it plays: refused, nothing started again.
+    r2 = svc.operator_press("start-now", "Andy", "Rack screen",
+                            surface=True, start_at=_pf_start_at())
+    r3 = svc.operator_press("start-now", "Andy", "Rack screen",
+                            surface=True)
+    _settle(svc, c)
+    check(not r2["ok"] and not r3["ok"] and len(n.sess.starts) == 1 and
+          [k for k, _a, _t in n.calls].count("music_play") == 1,
+          f"never a second start while it plays: {r2} {r3}")
+    # Confirmed: video up over 1 s, lasers through the gate, flames last.
+    n.sess.clock._last_frame = 27 * 30 + 3
+    n.w.runner.poll()
+    _settle(svc, c)
+    _mm_flush(n.link)
+    log = _fi_log(n.calls)
+    check(log[len(start):] == [("video", "fade 0 to 1"),
+                               ("laser output", "on"), ("lasers", "lit"),
+                               ("flames", "release")],
+          f"once confirmed: video up, lasers through the gate, flame cues "
+          f"last: {log}")
+    before = len(n.calls)
+    dark = c.landing_video_dark()
+    _mm_flush(n.link)
+    check(not dark.ok and "a show is up" in dark.sentence and
+          not [k for k, a, _t in n.calls[before:] if k == "mm_call"],
+          f"video black for a cue never darkens a show that is up: "
+          f"{dark.sentence}")
+    up = [x["text"] for x in svc.journal
+          if "Show conductor, Show start" in x.get("text", "")]
+    check(up and "the video fading in over 1 s" in up[-1],
+          f"the video fades up over 1 s: {up}")
+    land = [i for i, (k, _a, _t) in enumerate(n.calls)
+            if k == "flames_landing"]
+    rel = [i for i, (k, _a, _t) in enumerate(n.calls)
+           if k == "flames_release"]
+    check(len(land) == 2 and rel and max(land) < rel[0],
+          "the flame landing came before the flame cues were released")
+    check(n.arm.armed_ids() == armed and not any(
+        k in ("flames_disarm",) or "arm" in k for k, _a, _t in n.calls),
+          "nothing was armed or disarmed by it (hold to arm unchanged)")
+    # Stop: wins at once; Resume's offer is the cue at or before the stop.
+    n.sess.clock._last_frame = 40 * 30
+    r = svc.operator_press("stop-show", "Andy", "Rack screen",
+                           confirmed=True)
+    _settle(svc, c)
+    n.w.runner.poll()
+    check(r["ok"] and svc.machine.state != S.SHOW and
+          n.w.runner.stopped_at == {"show": run.n, "file":
+                                    "Fire and Ice.json", "cue": "Show",
+                                    "frame": 1200},
+          f"Stop ends it; the runner remembers where: "
+          f"{n.w.runner.stopped_at}")
+    offer = PF.resume_offer([_pf_cue("Top", "00:00:05:00", 2, "c1"),
+                             _pf_cue("Finale", "00:00:30:00", 3, "c2"),
+                             _pf_cue("End", "00:00:50:00", 3, "c3")],
+                            n.w.runner.stopped_at["frame"])
+    check(offer and offer["name"] == "Finale",
+          f"Resume offers the cue before the stop: {offer}")
+    # The cue was for that one press: the next show the scheduler starts
+    # by itself plays from the top.
+    svc.operator_press("resume", "Andy", "Rack screen", surface=True)
+    n.now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.SHOW and len(n.sess.starts) == 2 and
+          n.sess.starts[-1] == (None, 0.0, 0.0),
+          f"after it, show 1 at its time from the top: {svc.machine.state} "
+          f"{n.sess.starts}")
+    c.close()
+    n.link.close()
+    # A scheduled show at its time never gets a cue, and a cue pressed
+    # while the scheduler is about to start one never double starts it.
+    n = _pf_night()
+    S, svc, c = n.S, n.svc, n.c
+    svc.tick()
+    n.now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.SHOW and n.sess.starts == [(None, 0.0, 0.0)],
+          f"the scheduled show from the top: {n.sess.starts}")
+    r = svc.operator_press("start-now", "Andy", "Rack screen",
+                           surface=True, start_at=_pf_start_at())
+    _settle(svc, c)
+    check(not r["ok"] and len(n.sess.starts) == 1,
+          f"no start at a cue over it: {r}")
+    c.close()
+    n.link.close()
+    # A list saved for another show file, or another show cue: refused by
+    # the runner before anything goes out (a failed start, nothing sent).
+    for bad, words in ((_pf_start_at(file="Other.json"), "Other.json"),
+                       (_pf_start_at(show_cue="Preshow"), "Preshow")):
+        n = _pf_night()
+        S, svc, c = n.S, n.svc, n.c
+        svc.tick()
+        _settle(svc, c)
+        del n.calls[:]
+        svc.operator_press("start-now", "Andy", "Rack screen",
+                           surface=True, start_at=bad)
+        _settle(svc, c)
+        n.w.runner.poll()
+        _settle(svc, c)
+        rows = [x["text"] for x in svc.journal
+                if words in x.get("text", "") and "not started" in
+                x.get("text", "")]
+        check(not n.sess.starts and not _fi_rig_touched(n.calls) and rows,
+              f"{words}: refused, nothing sent: {n.sess.starts} {rows[-1:]}")
+        c.close()
+        n.link.close()
+    # Programming playback on: the veto refuses it like Start now.
+    n = _pf_night()
+    S, svc, c = n.S, n.svc, n.c
+    svc.tick()
+    svc.start_veto = lambda: "Stop the Programming playback first."
+    r = svc.operator_press("start-now", "Andy", "Rack screen",
+                           surface=True, start_at=_pf_start_at())
+    check(not r["ok"] and "Start at the cue Finale was refused" in r["text"]
+          and not n.sess.starts, f"Programming playing: refused: {r}")
+    c.close()
+    n.link.close()
+    # A delayed show (its time passed in a Hold): a start at a cue is an
+    # extra show, never the delayed one.
+    n = _pf_night()
+    S, svc, c = n.S, n.svc, n.c
+    svc.tick()
+    svc.operator_press("hold", "Andy", "Rack screen", surface=True)
+    n.now[0] = _den(S, 18, 5)
+    svc.tick()
+    svc.operator_press("resume", "Andy", "Rack screen", surface=True)
+    d = svc.machine.delayed()
+    check(d is not None and d.n == 1, f"show 1 is delayed: {d}")
+    r = svc.operator_press("start-now", "Andy", "Rack screen",
+                           surface=True, start_at=_pf_start_at())
+    _settle(svc, c)
+    run = svc.machine.slot(svc.machine.running) if svc.machine.running \
+        else None
+    check(r["ok"] and run is not None and run.n != 1 and
+          run.reason == S.EXTRA_SHOW and
+          svc.machine.slot(1).status == S.MISSED,
+          f"an extra show; the delayed one is overtaken: {r} {run}")
+    c.close()
+    n.link.close()
+    print("  ok")
+
+
+def test_start_at_cue_preroll_and_continue_anyway_keep_the_cue():
+    section("start at a cue, the rig check: checked first and labelled with "
+            "the cue; a failure refuses it in words; Continue anyway starts "
+            "from THAT cue, never the top; a plain Start now's failure "
+            "still starts from the top; a Stop during the check wins")
+    n = _pr_night({"Lasers": (False, "BEYOND is not running")}, window=3)
+    if n is None:
+        return
+    S, svc, c = n.S, n.svc, n.c
+    n.sess = _FiCueSession(n.calls, n.T)
+    n.control.session = n.sess
+    n.now[0] = _den(S, 17, 56)
+    svc.tick()
+    _settle(svc, c)
+    r = svc.operator_press("start-now", "Andy", "Rack screen",
+                           surface=True, start_at=_pf_start_at())
+    check(r["ok"] is False and r.get("preroll") and
+          r["text"].startswith("Start at the cue Finale was refused: the rig "
+                               "check failed (Lasers: BEYOND is not running)")
+          and "Continue anyway" in r["text"] and "same cue" in r["text"] and
+          not n.sess.starts, f"refused in words, nothing started: {r}")
+    _no_dashes(r["text"], "the refusal")
+    lf = n.pr.last_failed()
+    check(lf and lf["label"] == "Start at the cue Finale by Andy",
+          f"the check is labelled with the cue: {lf and lf['label']}")
+    got = svc.continue_anyway("Andy", "Rack screen")
+    _settle(svc, c)
+    check(got["ok"] and "from the cue Finale" in got["text"] and
+          svc.machine.state == S.SHOW and
+          n.sess.starts == [(None, 27.0, 1000.0)] and
+          c.outputs_off == {"lasers"},
+          f"Continue anyway starts from the same cue, with what failed "
+          f"left off: {got} {n.sess.starts} {c.outputs_off}")
+    rows = [x["text"] for x in svc.journal
+            if "Continue anyway starts the show from the cue" in
+            x.get("text", "")]
+    check(rows and "Finale (00:00:30:00" in rows[-1],
+          f"journaled in words: {rows}")
+    c.close()
+    n.link.close()
+    # A newer failed check (a scheduled show's own): Continue anyway is
+    # about that one, from the top, never the older check's cue.
+    n = _pr_night({"Lasers": (False, "BEYOND is not running")}, window=3)
+    S, svc, c = n.S, n.svc, n.c
+    n.sess = _FiCueSession(n.calls, n.T)
+    n.control.session = n.sess
+    n.now[0] = _den(S, 17, 56)
+    svc.tick()
+    svc.operator_press("start-now", "Andy", "Rack screen", surface=True,
+                       start_at=_pf_start_at())
+    newer = n.pr.run(("a show", 9), "Show 1")
+    check(newer["state"] == "failed" and n.pr.last_failed() is newer,
+          "setup: a newer failed check")
+    got = svc.continue_anyway("Andy", "Rack screen")
+    _settle(svc, c)
+    check(got["ok"] and n.sess.starts == [(None, 0.0, 0.0)] and
+          "from the cue" not in got["text"],
+          f"the newer failure starts from the top: {got} {n.sess.starts}")
+    c.close()
+    n.link.close()
+    # A plain Start now's failure: Continue anyway from the top, as before.
+    n = _pr_night({"Lasers": (False, "BEYOND is not running")}, window=3)
+    S, svc, c = n.S, n.svc, n.c
+    n.sess = _FiCueSession(n.calls, n.T)
+    n.control.session = n.sess
+    n.now[0] = _den(S, 17, 56)
+    svc.tick()
+    svc.operator_press("start-now", "Andy", "Rack screen", surface=True,
+                       start_at=_pf_start_at())
+    r = svc.operator_press("start-now", "Andy", "Rack screen",
+                           surface=True)
+    check(r["ok"] is False and r["text"].startswith("Start now was refused"),
+          f"a plain Start now after it, refused: {r}")
+    got = svc.continue_anyway("Andy", "Rack screen")
+    _settle(svc, c)
+    check(got["ok"] and n.sess.starts == [(None, 0.0, 0.0)],
+          f"the newer, plain Start now's failure: from the top: "
+          f"{got} {n.sess.starts}")
+    c.close()
+    n.link.close()
+    # Stop during the check: refused, nothing started, the cue never
+    # carried to a later start.
+    import threading as _th
+    ev = _th.Event()
+    n = _pr_night(hold_until={"Lasers": ev}, window=3)
+    S, svc, c = n.S, n.svc, n.c
+    n.sess = _FiCueSession(n.calls, n.T)
+    n.control.session = n.sess
+    n.now[0] = _den(S, 17, 56)
+    svc.tick()
+    out = []
+    th = _th.Thread(target=lambda: out.append(svc.operator_press(
+        "start-now", "Andy", "Rack screen", surface=True,
+        start_at=_pf_start_at())))
+    th.start()
+    check(wait_for(n.pr.checking, 3), "the rig is being checked")
+    svc.cancel_start_wait("Stop was pressed")
+    th.join(5)
+    _settle(svc, c)
+    check(out and not out[0]["ok"] and out[0].get("cancelled") and
+          "Stop was pressed while the rig was being checked" in
+          out[0]["text"] and not n.sess.starts and
+          svc.machine.state != S.SHOW,
+          f"Stop wins during the check: {out}")
+    got = svc.continue_anyway("Andy", "Rack screen")
+    check(not got["ok"] and not n.sess.starts,
+          f"and Continue anyway has nothing to start: {got}")
+    c.close()
+    n.link.close()
+    print("  ok")
+
+
+def test_start_at_cue_route():
+    section("start at a cue, the route: the Show row (operators may); a "
+            "fresh page and a confirm; Show mode only; the cue resolved by "
+            "the engine from the saved list of the show that is running, "
+            "never a time from the page; a changed cue, list or show is "
+            "refused; GET play-from-cues offers Resume's cue")
+    import shutil
+    import types
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import play_from as PF
+    check("start-at-cue" in RM.POST_ROUTES and
+          "start-at-cue" in RM.FRESH_ROUTES and
+          "start-at-cue" in RM.CONFIRM_ROUTES and
+          U.REMOTE_ROUTES["start-at-cue"] == "show" and
+          U.classify("/api/remote/start-at-cue", {}) == "show" and
+          U.DEFAULT_MATRIX["operator"]["show"] is True and
+          U.allowed(U.normalise_matrix(None), "operator", "show") and
+          not U.allowed(U.normalise_matrix(None), "viewer", "show") and
+          "Start at a cue" in dict(U.PERMS)["show"],
+          "a fresh, confirmed press on the Show row: operators may")
+    here = os.path.dirname(os.path.abspath(__file__))
+    users_md = open(os.path.join(here, "USERS.md"), encoding="utf-8").read()
+    check("| Start now, Start at a cue, Resume, Reset" in users_md,
+          "USERS.md's matrix row names it")
+    work = tempfile.mkdtemp()
+    presses, journal = [], []
+
+    class _Svc:
+        conductor = None
+        machine = types.SimpleNamespace(state="STANDBY")
+        performer = None
+
+        def operator_press(self, what, who, screen, **kw):
+            presses.append((what, who, screen, kw))
+            return {"ok": True, "text": "started"}
+
+        def journal_press(self, *a, **kw):
+            journal.append(a)
+    sess = types.SimpleNamespace(
+        running=True, no_output=False,
+        timeline_path=os.path.join(work, "Fire.json"),
+        player=types.SimpleNamespace(on_lost="freerun"), clock=None)
+    ctl = types.SimpleNamespace(session=sess, folder=work, state=lambda: {})
+    svc = _Svc()
+    rm = RM.Remote(ctl, svc, folder=work, log=lambda t_: None)
+    st = rm.play_from_store()
+    ok, text, _e = st.save("Fire.json", "Show", 120.0,
+                           [{"name": "Finale", "tc": "00:01:40:00",
+                             "lead_in_s": 3},
+                            {"name": "Top", "tc": "00:00:05:00"}], 0,
+                           who="Jeff")
+    check(ok, f"setup: the list saved: {text}")
+    entry = PF.entry_of(st.load()[0], "Fire.json")
+    fin = [x for x in entry["cues"] if x["name"] == "Finale"][0]
+    local = RM.Ctx(True, "127.0.0.1")
+
+    def press(**body):
+        b = {"seen": rm.wall() * 1000.0, "confirmed": True,
+             "show": "Fire.json", "cue_id": fin["id"], "tc": fin["tc"]}
+        b.update(body)
+        b = {k: v for k, v in b.items() if v is not None}
+        return rm.post("/api/remote/start-at-cue", b, local)
+    try:
+        code, out, _h = press()
+        check(code == 200 and presses and presses[-1][0] == "start-now" and
+              presses[-1][3]["start_at"] == {"cue": fin, "show_cue": "Show",
+                                             "file": "Fire.json"} and
+              presses[-1][3]["confirmed"] is True,
+              f"Start now with the saved cue: {code} {out} {presses[-1:]}")
+        del presses[:]
+        for body, words in (
+                ({"seen": None}, "has not shown a status"),
+                ({"confirmed": None}, "Confirm it"),
+                ({"cue_id": "c99"}, "not in the saved list"),
+                ({"cue_id": None}, "not in the saved list"),
+                ({"tc": "00:01:41:00"}, "changed since this screen"),
+                ({"show": "Other.json"}, "Fire.json is running")):
+            code, out, _h = press(**body)
+            said = out.get("error", "")
+            check(code in (400, 409) and words in said and not presses,
+                  f"{body}: refused, nothing pressed: {code} {said}")
+            _no_dashes(said, "a refusal")
+        # The page's time is never used: a cue retimed by the page alone
+        # (no "tc" sent) still starts at the SAVED time.
+        code, out, _h = press(tc=None)
+        check(code == 200 and presses[-1][3]["start_at"]["cue"]["tc"] ==
+              "00:01:40:00", "the saved time, whatever the page")
+        del presses[:]
+        # Programming playback on: refused before anything else.
+        real = rm.programming_playback_refusal
+        rm.programming_playback_refusal = lambda: RM.Remote.\
+            PROGRAMMING_PLAYING
+        code, out, _h = press()
+        check(code == 409 and "Stop the Programming playback first" in
+              out["error"] and not presses,
+              f"Programming playback: refused: {out}")
+        rm.programming_playback_refusal = real
+        # A timed purge and live flame programming end at the press, as
+        # for Start now.
+        cuts = []
+        rm.timed_purge_cut = lambda why, *a: cuts.append(("purge", why))
+        rm.live_flame_cut = lambda why, *a: cuts.append(("live", why))
+        code, out, _h = press(confirmed=None)
+        check(code == 400 and [k for k, _w in cuts] == ["purge", "live"] and
+              "Start at a cue" in cuts[0][1],
+              f"the purge and live flames cut at the press, even "
+              f"unconfirmed: {cuts}")
+        # Programming: refused; Programming keeps its own Play from.
+        sess.no_output = True
+        code, out, _h = press()
+        check(code == 409 and "for Show mode" in out["error"] and
+              "Play from" in out["error"] and not presses,
+              f"Programming: refused: {out}")
+        sess.no_output = False
+        # No show running.
+        ctl.session = None
+        code, out, _h = press()
+        check(code == 409 and "Press Run" in out["error"] and not presses,
+              f"Run not pressed: refused: {out}")
+        ctl.session = sess
+        # A broken cue file: refused in its words, never guessed.
+        with open(st.path, "w") as fh:
+            fh.write("{broken")
+        code, out, _h = press()
+        check(code == 409 and "could not be read" in out["error"] and
+              not presses, f"a broken list: refused: {out}")
+        os.remove(st.path)
+        st._high = 0
+        check(any("Start at a cue" in str(a) for a in journal),
+              "refusals are journaled")
+        # Resume's offer in GET play-from-cues (display only).
+        ok, text, _e = st.save("Fire.json", "Show", 120.0,
+                               [{"name": "Finale", "tc": "00:01:40:00",
+                                 "lead_in_s": 3},
+                                {"name": "Top", "tc": "00:00:05:00"}],
+                               st.load()[0]["rev"], who="Jeff",
+                               replace=True)
+        check(ok, f"setup: saved again: {text}")
+        rm.play_from_show_info = lambda show: ("Show", 120.0, "")
+        svc.performer = types.SimpleNamespace(stopped_at={
+            "show": 4, "file": "Fire.json", "cue": "Show", "frame": 60 * 30})
+        code, out = rm.get("/api/remote/play-from-cues", local,
+                           "show=Fire.json")
+        res = out.get("resume") or {}
+        check(code == 200 and res.get("show") == 4 and
+              res.get("stopped_at") == "00:01:00:00" and
+              (res.get("cue") or {}).get("name") == "Top",
+              f"Resume offers the cue before where show 4 stopped: {res}")
+        svc.performer.stopped_at["file"] = "Other.json"
+        code, out = rm.get("/api/remote/play-from-cues", local,
+                           "show=Fire.json")
+        check(out.get("resume") is None, "another file's stop: no offer")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_start_at_cue_fireball_lands_by_its_own_rules():
+    section("start at a cue, the fireball (the landing rules of #184 to "
+            "#194, reused): a start at a cue's landing frame is a landing; "
+            "a charge whose window it lands in is skipped; a charge from a "
+            "tank already charged is skipped (never a double charge); one "
+            "that has not started yet, from an empty tank, fires on time")
+    import shutil
+    from ltcplay import play_from as PF
+    from ltcplay import fireball_cues as FQ
+    stages = [_st("fuel", "00:00:10:00", 2), _st("air", "00:00:10:15", 2),
+              _st("igniter", "00:00:13:00", 0.5),
+              _st("valve", "00:00:13:05", 0.2)]
+    rigs = []
+    try:
+        def play(cue, tank=None, frames=200):
+            R = _fbq_rig(stages, tank=tank)
+            rigs.append(R)
+            f0 = PF.landing_frames(cue)
+            on = {}
+            for f in range(f0, f0 + frames):
+                got = R.frame(f)
+                for slot in (55, 56, 57, 58):
+                    if got[slot - 1]:
+                        on.setdefault(slot, []).append(f)
+            return R, f0, on
+        # Landing inside the Fuel and Air windows (frame 330): both skipped.
+        R, f0, on = play(_pf_cue(tc="00:00:12:00", lead=1))
+        check(f0 == 330 > FQ.TOP_FRAMES and 55 not in on and 56 not in on
+              and R.fq._run.skipped.get("fuel") == "landed inside its "
+              "window" and R.fq._run.skipped.get("air") == "landed inside "
+              "its window",
+              f"landed inside the charge windows: neither charged: {on} "
+              f"{R.fq._run.skipped}")
+        # Landing before them, Fuel already charged: Fuel skipped, Air
+        # (empty) charges on time.
+        R, f0, on = play(_pf_cue(tc="00:00:09:00", lead=2),
+                         tank=_FbcTank(fuel="charged"))
+        check(f0 == 210 and 55 not in on and
+              on.get(56, [None])[0] == 315 and
+              any("Fuel already charged" in m for m in R.fq.messages),
+              f"never a double charge: Fuel skipped, Air on time: "
+              f"{sorted(on)} {R.fq.messages}")
+        # Landing before them with both tanks empty: everything on time.
+        R, f0, on = play(_pf_cue(tc="00:00:09:00", lead=2))
+        check(on.get(55, [None])[0] == 300 and on.get(56, [None])[0] == 315
+              and on.get(58, [None])[0] == 390 and
+              on.get(57, [None])[0] == 395,
+              f"from before the shot, every stage at its own time: "
+              f"{ {k: v[0] for k, v in on.items()} }")
+    finally:
+        for R in rigs:
+            shutil.rmtree(R.work, ignore_errors=True)
+    print("  ok")
+
+
+def test_start_at_cue_docs_in_plain_words():
+    section("start at a cue, the docs: OPERATOR.md says who, Show mode, an "
+            "extra show, Continue anyway keeps the cue, the fades, the "
+            "flame landing, Stop wins and Resume's offer, with no long "
+            "dash")
+    here = os.path.dirname(os.path.abspath(__file__))
+    doc = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
+    i = doc.find("## Start at a cue (play-from cues, Show mode)")
+    sec = doc[i:doc.find("\n## ", i + 5)] if i >= 0 else ""
+    for words in ("operators and", "Show mode only", "extra show",
+                  "**from that same cue**", "fade in over about 1 second",
+                  "NOT started in the middle", "never a double charge",
+                  "never arms anything", "Stop wins",
+                  "offers the cue at or before"):
+        check(words in sec, f"OPERATOR.md says {words!r}")
+    _no_dashes(sec, "OPERATOR.md, Start at a cue")
     print("  ok")
 
 
@@ -111117,6 +111816,13 @@ if __name__ == "__main__":
         test_play_from_cue_routes,
         test_play_from_cue_audio_length_from_a_real_show_file,
         test_play_from_cue_card_in_2_0,
+        test_start_at_cue_model,
+        test_start_at_cue_audio_fades_in,
+        test_start_at_cue_end_to_end_through_the_conductor,
+        test_start_at_cue_preroll_and_continue_anyway_keep_the_cue,
+        test_start_at_cue_route,
+        test_start_at_cue_fireball_lands_by_its_own_rules,
+        test_start_at_cue_docs_in_plain_words,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):

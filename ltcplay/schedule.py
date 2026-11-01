@@ -1438,6 +1438,14 @@ def _after_show(tx, abort=False, stopped=False, hold=False):
 # still the one Start now starts.
 DELAYED_START = "DELAYED START (operator hold)"
 EXTRA_SHOW = "EXTRA SHOW (operator)"
+# Start at a cue (play_from.py, part 2; Jeff, 2026-10-31): START_NOW whose
+# detail starts with this is a start at a saved cue. It is ALWAYS an extra
+# show ("every play-from counts as an extra show"), never the delayed one;
+# a delayed show is then overtaken, as by any other show that starts
+# (_fire: MISSED, "show N was started instead"). Everything else is Start
+# now's (one show, then a Stop's Hold comes back; refused while a show is
+# up or an Abort stands).
+PLAY_FROM_DETAIL = "from the cue "
 # Close for the night's reason on every show it skipped. A saved schedule
 # never opens such a night again (rebuild_night).
 CLOSED_BY_OPERATOR = "SKIPPED (operator, Close for the night)"
@@ -1461,13 +1469,20 @@ def _fire(tx, s, reason="FIRED"):
         what = {DELAYED_START: f"the delayed show {s.n}, planned for "
                                f"{clock(_local(tx.m, s.start))}",
                 EXTRA_SHOW: f"an extra show, {s.n}"}[reason]
-        text = (f"{_operator_name(tx.ev)} pressed Start now"
-                f"{_screen(tx.ev)}. Started {what}, at "
-                f"{clock(_local(tx.m, now))}.")
+        cue = str(getattr(tx.ev, "detail", "") or "")
+        if cue.startswith(PLAY_FROM_DETAIL):
+            text = (f"{_operator_name(tx.ev)} pressed Start at a cue"
+                    f"{_screen(tx.ev)}. Started {what}, {cue}, at "
+                    f"{clock(_local(tx.m, now))}.")
+        else:
+            text = (f"{_operator_name(tx.ev)} pressed Start now"
+                    f"{_screen(tx.ev)}. Started {what}, at "
+                    f"{clock(_local(tx.m, now))}.")
         nxt = tx.m.next_slot()
         if reason == EXTRA_SHOW and nxt is not None:
             text += (f" Show {nxt.n} at {clock(_local(tx.m, nxt.start))} "
                      f"stays where it is.")
+
     else:
         late = lateness_s(s.start, now)
         text = (f"Show {s.n} started on schedule at "
@@ -1903,7 +1918,8 @@ def _start_now(m, ev, now):
                                    "starts until then.")
     tx = _Tx(m, ev, now)
     d = m.delayed()
-    if d is not None:
+    if d is not None and not str(ev.detail or "").startswith(
+            PLAY_FROM_DETAIL):
         _fire(tx, d, DELAYED_START)
     else:
         n = max((s.n for s in m.slots), default=0) + 1

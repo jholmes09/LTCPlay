@@ -1576,7 +1576,7 @@ class AudioMaster(Clock):
             self.out.close()
 
     def play(self, position_s, length_s=None, label="", start_s=0.0,
-             check_only=False):
+             check_only=False, fade_in_ms=0):
         """Run a cue: its audio from the top, the timecode from 00:00:00:00
         as the first sample is heard, the pixels from `position_s`. The
         cue's length is its audio's, whatever `length_s` says.
@@ -1587,7 +1587,12 @@ class AudioMaster(Clock):
         after a lost interface sends), and the timecode starts on that
         frame, not on 00:00:00:00. 0, every show start, is the top exactly
         as before. `check_only` makes every check and refusal and starts
-        nothing (Play from asks before it moves MadMapper's bank)."""
+        nothing (Play from asks before it moves MadMapper's bank).
+
+        `fade_in_ms` (Start at a cue, play_from.LANDING_FADE_S): the audio
+        process fades the cue in over this long from its first sample, the
+        same fade a Resume sends. 0, every other start, is a hard start
+        exactly as before. The timecode is not delayed by it."""
         got = self.cues.get(label)
         if got is None:
             raise ClockConfigError(
@@ -1634,7 +1639,8 @@ class AudioMaster(Clock):
             self.cues_played += 1
             self._set_paused(False)
             self._restore_level()
-            self._send(("play", role, sample, 0, self._token))
+            fade = self._sa.fade_frames(fade_in_ms) if fade_in_ms else 0
+            self._send(("play", role, sample, fade, self._token))
             self._mode = "wait"
             self._wait_since = now
             self._event(f"timecode from {self._tc_text(first)} for "

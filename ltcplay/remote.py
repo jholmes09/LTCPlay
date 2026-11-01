@@ -127,7 +127,7 @@ FLAME_STALE_S = 1.0
 
 # The routes this module answers, and nothing else. No "arm" among them.
 CONTROL_ROUTES = ("start-now", "hold", "resume", "abort", "reset",
-                  "disarm-all", "stop", "run-off")
+                  "disarm-all", "stop", "run-off", "start-at-cue")
 # Stop from a screen (Jeff, 2026-10-28; review of #144, F7): the Stream
 # Deck's complete halt (Remote.halt). Since 2026-10-30 Stop leaves Run on
 # and holds the schedule instead; "run-off" is the halt and then playback
@@ -143,10 +143,14 @@ STOP_FADE_WAIT_S = 3.0
 # show machine or the Settings permission: programming_move_refusal.
 TRANSPORT_ROUTES = ("play-from", "jump", "pause", "continue", "mark-a",
                     "mark-b", "loop", "follow")
-FRESH_ROUTES = frozenset(("start-now", "resume", "reset")
+# Start at a cue (play_from.py part 2, Jeff 2026-10-31): Start now from a
+# saved play-from cue, in Show mode. The Show row (operators may), every
+# guard Start now has, and the cue resolved by the engine from the saved
+# list (Remote.start_at_cue), never a time from the page.
+FRESH_ROUTES = frozenset(("start-now", "resume", "reset", "start-at-cue")
                          + TRANSPORT_ROUTES)
 JUMP_MAX_S = 600.0
-CONFIRM_ROUTES = frozenset(("start-now", "abort"))
+CONFIRM_ROUTES = frozenset(("start-now", "abort", "start-at-cue"))
 # Arming from a screen (Jeff, 2026-10-03; its own PR and safety review).
 # The page never arms anything itself: a hold here is a remote press of the
 # group's key on the Stream Deck process, which owns flamesafe's arm link
@@ -3273,11 +3277,13 @@ class Remote:
                               f"{who or 'Someone'}'s {name} on the {screen} "
                               f"was refused. {why}")
                 return 409, {"error": why, "stale": True}
-        if name == "start-now":
+        if name in ("start-now", "start-at-cue"):
             why = self.programming_playback_refusal()
             if why:
+                _lbl = ("Start now" if name == "start-now" else
+                        "Start at a cue")
                 self._journal(who, screen, name, "refused",
-                              f"{who or 'Someone'}'s Start now on the "
+                              f"{who or 'Someone'}'s {_lbl} on the "
                               f"{screen} was refused. {why}")
                 return 409, {"ok": False, "error": why, "text": why}
         flames = None
@@ -3294,12 +3300,13 @@ class Remote:
             # risk, so an unconfirmed Abort still takes the flames off; the
             # rest of it is refused below.
             flames = self._disarm_now(who, screen, "Abort")
-        if name in ("abort", "hold", "start-now"):
+        if name in ("abort", "hold", "start-now", "start-at-cue"):
             # A timed purge ends at the press too (Jeff, 2026-10-29), from
             # every surface, before the confirm check: it only takes risk
             # away. The flame link's purge frame is cleared on this thread.
             _lbl = {"abort": "Abort", "hold": "Hold",
-                    "start-now": "Start now"}[name]
+                    "start-now": "Start now",
+                    "start-at-cue": "Start at a cue"}[name]
             self.timed_purge_cut(f"{who or 'someone'} pressed {_lbl} on the "
                                  f"{screen}", who, screen)
             # Live flame programming ends at the press, from every surface,
@@ -3483,6 +3490,18 @@ class Remote:
                     r = svc.reset_conductor(who, screen, pressed=pressed,
                                             surface=surface)
                 r = self._reset_health(r, who, screen)
+            elif name == "start-at-cue":
+                start_at, why = self.start_at_cue(body)
+                if why:
+                    text = (f"Start at a cue was refused: {why} Nothing was "
+                            f"started.")
+                    self._journal(who, screen, name, "refused",
+                                  f"{who or 'Someone'}'s Start at a cue on "
+                                  f"the {screen} was refused. {text}")
+                    return 409, {"ok": False, "error": text, "text": text}
+                r = svc.operator_press("start-now", who, screen,
+                                       confirmed=body.get("confirmed") is True,
+                                       surface=surface, start_at=start_at)
             else:
                 r = svc.operator_press(name, who, screen,
                                        confirmed=body.get("confirmed") is True,
@@ -3490,6 +3509,72 @@ class Remote:
         except ValueError as e:
             return 400, {"error": str(e)}
         return (200 if r.get("ok") else 409), r
+
+    # -- Start at a cue (play_from.py part 2) -----------------------------
+    def start_at_cue(self, body):
+        """(start_at, "") or (None, why) for POST start-at-cue {"show",
+        "cue_id", "tc"}: the saved cue of the show file that is RUNNING,
+        looked up by its id in ltcplay_play_from.json. The page's "show"
+        and "tc", when given, must still be what is running and what is
+        saved (a list retimed or a show changed since the page read it is
+        refused, never guessed). Show mode only: Programming has its own
+        Play from. Sends nothing, starts nothing."""
+        from . import play_from as pf_mod
+        s = getattr(self.control, "session", None)
+        if s is None or not getattr(s, "running", False):
+            return None, ("no show file is running. Press Run on the "
+                          "Programming screen first (Show mode).")
+        ok, _why = self.programming()
+        if ok:
+            return None, ("it is for Show mode. In Programming, use Play "
+                          "from on the Programming screen.")
+        file = os.path.basename(str(getattr(s, "timeline_path", "") or ""))
+        show = body.get("show")
+        if show is not None and show != file:
+            return None, (f"this screen shows the cues of {show}, but "
+                          f"{file} is running. Reload and choose again.")
+        try:
+            doc, err = self.play_from_store().load()
+        except Exception as e:                   # noqa: BLE001
+            doc, err = None, f"the play-from cues could not be read " \
+                             f"({type(e).__name__})"
+        if err:
+            return None, err.rstrip(".") + "."
+        entry = pf_mod.entry_of(doc, file)
+        cue = pf_mod.find_cue(entry, body.get("cue_id"))
+        if cue is None:
+            return None, (f"that cue is not in the saved list for {file} "
+                          f"(it may have been deleted). Reload and choose "
+                          f"again.")
+        if "tc" in body and body.get("tc") != cue["tc"]:
+            return None, (f"the cue {cue['name']} is at {cue['tc']} now, "
+                          f"not {body.get('tc')}: it was changed since this "
+                          f"screen read it. Reload and choose again.")
+        return {"cue": dict(cue), "show_cue": entry.get("cue") or "",
+                "file": file}, ""
+
+    def resume_offer(self, show):
+        """Resume's offer for `show` (a show file): where the last show
+        that was stopped part way stopped, and the cue at or before it
+        (play_from.resume_offer), so the scene starts fresh. None when no
+        stopped show of that file is known. Display only."""
+        from . import play_from as pf_mod
+        run = getattr(self.schedule, "performer", None)
+        at = getattr(run, "stopped_at", None)
+        if not isinstance(at, dict) or at.get("file") != show:
+            return None
+        try:
+            doc, err = self.play_from_store().load()
+            entry = pf_mod.entry_of(doc, show)
+            if err or (entry.get("cue") and at.get("cue") and
+                       entry["cue"] != at["cue"]):
+                return None
+            cue = pf_mod.resume_offer(entry["cues"], at["frame"])
+            return {"show": at.get("show"),
+                    "stopped_at": pf_mod.tc_text(at["frame"]),
+                    "cue": cue}
+        except Exception:                        # noqa: BLE001
+            return None
 
     # -- programming-session transport ----------------------------------
     LIVE_STATES = ("SHOW", "PAUSED")
@@ -4770,6 +4855,9 @@ class Remote:
             cue, length, why = self.play_from_show_info(show)
             out.update(cue=cue, audio_len_s=length, show_problem=why,
                        audio_note=pf_mod.audio_note(out["entry"], length))
+            # Start at a cue (part 2): Resume's offer, the cue before where
+            # the last stopped show of this file stopped. Display only.
+            out["resume"] = self.resume_offer(show)
         return 200, out
 
     def play_from_save(self, body, ctx):
