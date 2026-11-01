@@ -91359,6 +91359,8 @@ def test_fireball_panel_rules():
         else answers[0]
     P.t[0] += 0.05
     code, out = beat({"fuel", "valve"}, run="cg", seq=1)
+    check(out.get("held") == ["fuel"],
+          f"the answer says the Fuel is held for the mark: {out}")
     check(code == 200 and link.cur[56] == 255 and link.cur[54] == 0,
           f"Fuel + Valve while the mark is on its way: the Valve goes, the "
           f"Fuel waits: {out} {link.cur[54]} {link.cur[56]}")
@@ -91366,9 +91368,10 @@ def test_fireball_panel_rules():
     beat({"fuel", "valve"}, run="cg", seq=2)
     check(link.cur[54] == 0, "and the next beat too")
     P.t[0] += 0.05
-    beat({"fuel", "valve"}, run="cg", seq=3)
-    check(link.cur[54] == 255 and link.cur[56] == 255,
-          "then on, once the mark is on disk")
+    code, out = beat({"fuel", "valve"}, run="cg", seq=3)
+    check(link.cur[54] == 255 and link.cur[56] == 255 and "held" not in out,
+          "then on, once the mark is on disk: a toggle stays on and the "
+          "next beat sends it, so a tap is not lost")
     fb.off("reset")
     answers[:] = ["wait"]
     P.t[0] += 0.05
@@ -91965,10 +91968,44 @@ def test_fireball_signed_out_is_view_only():
               f"{P.fb.last_cut!r}")
         # A run's end makes the engine forget the "users lock busy" time it
         # kept for that sign-in (round-6 review 9).
-        rem._fb_users_busy = {"tokA": 1.0, "tokB": 2.0}
-        rem.fireball_run_ended("tokA")
-        check(rem._fb_users_busy == {"tokB": 2.0},
-              f"a run's end drops its busy entry: {rem._fb_users_busy}")
+        # The busy time is NOT dropped at a run's end (round-7 review 8: a
+        # new press would get a fresh grace), only when nobody has looked
+        # for FIREBALL_BUSY_KEEP_S.
+        import threading as _th
+        hold, release = _th.Event(), _th.Event()
+
+        def hold_users_lock():
+            with rem.users._lock:
+                hold.set()
+                release.wait(10)
+        th = _th.Thread(target=hold_users_lock, daemon=True)
+        th.start()
+        hold.wait(5)
+        real_busy_s = rem.FIREBALL_USERS_BUSY_S
+        rem.FIREBALL_USERS_BUSY_S = 0.2
+        try:
+            rem._fb_users_busy = {}
+            a_ = rem.fireball_signed_out("tokBusy", "Zed")
+            time.sleep(0.3)
+            b_ = rem.fireball_signed_out("tokBusy", "Zed")
+            rem.fireball_run_ended("tokBusy")
+            c_ = rem.fireball_signed_out("tokBusy", "Zed")
+            check(a_ == "" and "could not be confirmed" in b_ and
+                  "could not be confirmed" in c_ and
+                  "tokBusy" in rem._fb_users_busy,
+                  f"the users lock busy: a grace, then refused; a run's end "
+                  f"and a new press do not start the grace again: "
+                  f"{a_!r} {b_!r} {c_!r}")
+        finally:
+            rem.FIREBALL_USERS_BUSY_S = real_busy_s
+            release.set()
+            th.join(5)
+        rem._fb_users_busy = {"old": rem.clock() - 500, "fresh": rem.clock()}
+        rem.fireball_run_ended("x")
+        check(set(rem._fb_users_busy) == {"fresh"},
+              f"an entry nobody looked at for a long while goes: "
+              f"{rem._fb_users_busy}")
+        rem._fb_users_busy = {}
         fsrc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  "ltcplay", "fireball.py"),
                     encoding="utf-8").read()
@@ -92717,6 +92754,8 @@ def test_fireball_doc_in_plain_words():
                  "frames stopping for more than flamesafe's own "
                  "fire_hold_ms",
                  "a stall inside the engine's own reading counts too",
+                 "never sends a channel flamesafe has already zeroed",
+                 "a quick tap is never lost",
                  "A **Fuel Charge or Air Charge** press is held for the few "
                  "milliseconds",
                  "never someone else's run on another iPad",
@@ -105723,6 +105762,37 @@ def test_fireball_manual_merged_on_the_flame_link():
               f"page's Fuel {'dropped' if dropped_ else 'kept'}: "
               f"{seen_[-1][54]}")
     lk.timing_limit_ms = 100
+    # A Hold or a show's end during a stall (round-7 review 4): the zero
+    # frame carries the page's frame while frames are running, but not a
+    # channel flamesafe has already zeroed.
+    fl_ = R.fl
+    sent_vals = []
+    real_enc = fl_.encode_flame
+    fl_.encode_flame = lambda *a, **k: (sent_vals.append(a[4]),
+                                        real_enc(*a, **k))[1]
+    try:
+        lk.send_frame()
+        d4 = getattr(lk, "manual_drops", 0)
+        lk.manual_set(page(s57=255), lk.abort_id, d4)
+        R.clk[0] += 0.03
+        lk.zero()
+        check(sent_vals[-1][56] == 255,
+              "a Hold with frames running: the page's Valve Open stays "
+              "(Jeff: a Hold does not end the page)")
+        lk.release()
+        lk.send_frame()
+        d4 = getattr(lk, "manual_drops", 0)
+        lk.manual_set(page(s57=255), lk.abort_id, d4)
+        R.clk[0] += 0.12                    # a stall
+        lk.zero()
+        check(sent_vals[-1][56] == 0 and
+              getattr(lk, "manual_drops", 0) == d4 + 1 and lk._manual is None,
+              f"a Hold after a 120 ms stall: flamesafe has zeroed the Valve "
+              f"and the zero frame does not send it again: "
+              f"{sent_vals[-1][56]}")
+    finally:
+        fl_.encode_flame = real_enc
+    lk.release()
     lk._sock = None
     lk.observer = None
     R.cue = [0] * 512

@@ -21177,11 +21177,6 @@ def build():
   "                self.on_end(r.get(\"token\") or \"\")",
   "                pass"),
 
- ("fireball manual: the engine keeps a busy entry after the run (round 6)",
-  "ltcplay/remote.py",
-  "        if busy:\n            busy.pop(token, None)",
-  "        if busy:\n            pass"),
-
  ("fireball manual: the engine does not give the panel the press gate (round 6)",
   "ltcplay/web.py",
   "        fb.manual_gate = tr.manual_gate",
@@ -21191,6 +21186,26 @@ def build():
   "ltcplay/fireball.py",
   "        panel.on_end = end",
   "        pass"),
+
+ ("fireball manual: a Hold during a stall sends the page's frame again (round 7)",
+  "ltcplay/flamelink.py",
+  "            if last is not None and now - last > self.manual_stall_s():",
+  "            if False:"),
+
+ ("fireball manual: a run's end gives the sign-in a fresh grace (round 7)",
+  "ltcplay/remote.py",
+  "        busy = getattr(self, \"_fb_users_busy\", None)\n        if busy:\n            now = self.clock()",
+  "        busy = getattr(self, \"_fb_users_busy\", None)\n        if busy:\n            busy.pop(token, None)\n            now = self.clock()"),
+
+ ("fireball manual: an old busy entry is never forgotten (round 7)",
+  "ltcplay/remote.py",
+  "                      if now - since > self.FIREBALL_BUSY_KEEP_S]:",
+  "                      if False]:"),
+
+ ("fireball manual: a held press is not said to be held (round 7)",
+  "ltcplay/fireball.py",
+  "                            waiting = [k for k in KEYS if k in held]",
+  "                            waiting = []"),
 
  ("fireball manual: the timeline judges its charge from the composed frame",
   "ltcplay/web.py",

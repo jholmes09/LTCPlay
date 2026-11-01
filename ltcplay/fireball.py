@@ -467,6 +467,7 @@ class FireballPanel:
             r["on"] = set(on)
             r["beat"] = now
         vals = self.frame(on)
+        waiting = []
         with self._lock:
             if self._run is r and seq is not None and r["seq"] != seq:
                 # A later beat of this run went past this one while its
@@ -493,6 +494,7 @@ class FireballPanel:
                     try:
                         if self.manual_gate() == "wait":
                             vals = self.frame(set(on) - held)
+                            waiting = [k for k in KEYS if k in held]
                     except Exception:                    # noqa: BLE001
                         pass
                 self._tell(on, who, screen)
@@ -530,8 +532,15 @@ class FireballPanel:
                        f"{', '.join(names)} ON"
                        f"{' (a new run)' if started else ''}.",
                        outcome="on", who=who, screen=screen)
-        return 200, {"ok": True, "run": r["id"],
-                     "on": [k for k in KEYS if k in on]}
+        out = {"ok": True, "run": r["id"],
+               "on": [k for k in KEYS if k in on]}
+        if waiting:
+            # Fuel or Air pressed, held for the few milliseconds the charge
+            # record needs for its mark. They are toggles: the page keeps
+            # beating while they are on, so the next beat sends them (a
+            # tap is not lost: round-7 review 9).
+            out["held"] = waiting
+        return 200, out
 
     def _remember(self, owner, rid, seq, make=False):
         """Note an ended run id and the highest beat number of `owner`.
