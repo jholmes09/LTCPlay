@@ -10513,8 +10513,26 @@ def test_schedule_late_limit_round_two():
     n.op(S.HOLD_ON, _den(S, 17, 59))
     o = n.op(S.RESUME, _den(S, 18, 1))
     txt = " ".join(le.text for le in o.log)
-    check("starts now, 60 s late" in txt and "Next on the schedule" not in txt,
-          f"Resume inside the window says the show starts now: {txt!r}")
+    check("starts at the next tick, 60 s late" in txt and
+          "Next on the schedule" not in txt,
+          f"Resume inside the window says the show starts: {txt!r}")
+    # Not when it cannot: too close to the limit, a Reset, an Abort.
+    for t_off, why in ((118, "118 s late, 2 s left"), (120, "exactly 120 s")):
+        n = _Night(S, rule)
+        n.boot(_den(S, 17, 50))
+        n.op(S.HOLD_ON, _den(S, 17, 59))
+        o = n.op(S.RESUME, _den(S, 18, 0) + timedelta(seconds=t_off))
+        txt = " ".join(le.text for le in o.log)
+        check("starts at the next tick" not in txt and
+              "Next on the schedule is show 1" in txt,
+              f"Resume {why}: no promise it starts: {txt!r}")
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    n.op(S.HOLD_ON, _den(S, 17, 59))
+    o = n.op(S.RESUME, _den(S, 18, 1), detail=S.RESET_DETAIL)
+    txt = " ".join(le.text for le in o.log)
+    check("starts at the next tick" not in txt,
+          f"a Reset starts nothing and does not say so: {txt!r}")
     n = _Night(S, rule)
     n.boot(_den(S, 17, 50))
     n.op(S.HOLD_ON, _den(S, 17, 55))
@@ -10710,6 +10728,108 @@ def test_schedule_legacy_late_grace_is_migrated():
           "late_grace_s" not in json.load(open(path, encoding="utf-8")),
           "a file without the value means 120 and is left as it is")
     svc.stop()
+    # Delta review of PR #202: the marker is written on the first load
+    # whatever the file said, and a 15 typed in Programming (a reload) is
+    # never touched, with or without a late_grace_s in the file before.
+    for label, first in (("no value in the file", d), ("no file at all", None)):
+        work = tempfile.mkdtemp()
+        path = os.path.join(work, SV.RULE_FILE)
+        if first is not None:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(first, fh)
+        now = [_den(S, 17, 0)]
+        SV.Service.MIGRATE_LEGACY_GRACE = True
+        try:
+            svc = SV.Service(path, clock=lambda: now[0],
+                             ntp_query=lambda: 0.0, state_dir=work)
+            svc.start(thread=False)
+            check(os.path.exists(os.path.join(
+                work, SV.Service.LATE_MIGRATED_FILE)) == (first is not None),
+                  f"{label}: the marker is written on the first good load "
+                  f"whatever the file said, and not before one")
+            typed = dict(base, late_grace_s=15)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(typed, fh)                  # Programming's save
+            svc.reload()
+            check(svc.rule.late_grace_s == 15 and
+                  json.load(open(path, encoding="utf-8"))["late_grace_s"]
+                  == 15 and os.path.exists(os.path.join(
+                      work, SV.Service.LATE_MIGRATED_FILE)),
+                  f"{label}: a 15 typed in Programming stays 15, marker "
+                  f"written")
+            svc.stop()
+            svc2 = SV.Service(path, clock=lambda: now[0],
+                              ntp_query=lambda: 0.0, state_dir=work)
+            svc2.start(thread=False)
+            check(svc2.rule.late_grace_s == 15,
+                  f"{label}: and after a restart")
+            svc2.stop()
+        finally:
+            SV.Service.MIGRATE_LEGACY_GRACE = False
+    # The copy of the file as it was is kept, and never overwritten.
+    svc, work, path = boot(dict(base, late_grace_s=15))
+    bk = os.path.join(work, SV.Service.LATE_BACKUP_FILE)
+    check(json.load(open(bk, encoding="utf-8"))["late_grace_s"] == 15 and
+          svc.legacy_grace_migrated,
+          "the file as it was is kept as ltcplay_schedule.pre-late-limit.json")
+    svc.stop()
+    work = tempfile.mkdtemp()
+    path = os.path.join(work, SV.RULE_FILE)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(dict(base, late_grace_s=15, guard_s=99), fh)
+    bk = os.path.join(work, SV.Service.LATE_BACKUP_FILE)
+    with open(bk, "w", encoding="utf-8") as fh:
+        json.dump({"mine": True}, fh)
+    svc, _w, _p = boot(None, keep=work)
+    check(json.load(open(bk, encoding="utf-8")) == {"mine": True},
+          "an existing copy is never overwritten")
+    svc.stop()
+    # The marker cannot be written: the truth is said, once.
+    real_write = SV.write_json_atomic
+
+    def no_marker(p, doc, *a, **k):
+        if os.path.basename(p) == SV.Service.LATE_MIGRATED_FILE:
+            raise OSError("read-only")
+        return real_write(p, doc, *a, **k)
+    SV.write_json_atomic = no_marker
+    try:
+        svc, work, path = boot(dict(base, late_grace_s=15))
+    finally:
+        SV.write_json_atomic = real_write
+    texts = [r["text"] for r in svc.journal]
+    check(svc.rule.late_grace_s == 120 and
+          sum("late limit changed from 15 s to 2 minutes" in x
+              for x in texts) == 1 and
+          sum("could not be written" in x and "already changed" in x
+              for x in texts) == 1 and
+          not any("could not be changed" in x for x in texts),
+          f"marker failure: the file WAS changed and the journal says so: "
+          f"{[x[:80] for x in texts if 'late' in x]}")
+    svc.stop()
+    # The save fails: the file stays 15 and that is said, once per run.
+    real_save = SV.save_rule
+
+    def bad_save(*a, **k):
+        raise OSError("disk full")
+    SV.save_rule = bad_save
+    try:
+        svc, work, path = boot(dict(base, late_grace_s=15))
+        svc.reload()
+    finally:
+        SV.save_rule = real_save
+    texts = [r["text"] for r in svc.journal
+             if "could not be changed from 15 s" in r["text"]]
+    check(svc.rule.late_grace_s == 15 and len(texts) == 1 and
+          not os.path.exists(os.path.join(
+              work, SV.Service.LATE_MIGRATED_FILE)),
+          f"a failed save: stays 15, said once, no marker: {texts}")
+    svc.stop()
+    # The settings watcher is told after the engine rewrote the file.
+    web_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "ltcplay", "web.py"), encoding="utf-8").read()
+    check("config_watch.refresh(schedule.path)" in web_src and
+          "legacy_grace_migrated" in web_src,
+          "web.serve refreshes the settings watcher after a migration")
     # The soak's own file is never touched.
     svc, work, path = boot(dict(base, late_grace_s=15, soak_only=True))
     check(json.load(open(path, encoding="utf-8"))["late_grace_s"] == 15,

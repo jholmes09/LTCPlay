@@ -947,7 +947,8 @@ class Service:
         self._clock_thread = None
         self._sample_thread = None
         self._started = False
-        failed = self._load_rule()
+        self.legacy_grace_migrated = False
+        failed = self._load_rule(first_load=True)
         self._log(self.logbook.started, state=self._state_name(),
                   night=self._night())
         if failed:
@@ -1051,11 +1052,12 @@ class Service:
                                            outcome="warning")
         return rule
 
-    def _load_rule(self):
-        """True when the rule file could not be used."""
+    def _load_rule(self, first_load=False):
+        """True when the rule file could not be used. `first_load` is the
+        start-up read (the only one that may change a legacy late limit)."""
         try:
             self.rule = load_rule(self.path)
-            self._migrate_legacy_grace()
+            self._migrate_legacy_grace(first_load)
             self.error = ""
             self._rule_id = sch.rule_fingerprint(self.rule)
             return False
@@ -1074,54 +1076,88 @@ class Service:
     # marker file stays beside the schedule file).
     MIGRATE_LEGACY_GRACE = True        # the selftest turns it off elsewhere
     LATE_MIGRATED_FILE = "ltcplay_late_limit_migrated.json"
+    LATE_BACKUP_FILE = "ltcplay_schedule.pre-late-limit.json"
     LATE_MIGRATED_LINE = ("late limit changed from 15 s to 2 minutes (the "
                           "schedule file said late_grace_s 15, the old "
                           "default; a show is MISSED only when it is more "
                           "than 120 s late). Any other value you set is "
-                          "kept.")
+                          "kept. The file as it was is kept as {backup}.")
 
-    def _migrate_legacy_grace(self):
-        """Lock held or at start. Never raises: a failure leaves the file
-        as it was (15) and says so once."""
-        self._late_migrated = False
+    def _migrate_legacy_grace(self, first_load=True):
+        """The first successful load of the schedule file after the upgrade
+        (marker file absent): a file that states late_grace_s 15 becomes
+        120 (the file as it was is kept in LATE_BACKUP_FILE, never
+        overwritten) and the marker is written, whatever the file said, so
+        this can only ever happen once per install. `first_load` is False
+        on a reload (the Programming screen's save, a change on disk): that
+        only writes the marker, so a 15 typed in Programming is never
+        touched (delta review of PR #202). Never raises."""
+        self._late_notes = []
         if not self.MIGRATE_LEGACY_GRACE:
             return
         try:
-            marker = os.path.join(os.path.dirname(os.path.abspath(self.path)),
-                                  self.LATE_MIGRATED_FILE)
+            folder = os.path.dirname(os.path.abspath(self.path))
+            marker = os.path.join(folder, self.LATE_MIGRATED_FILE)
             if os.path.exists(marker):
                 return
             with open(self.path, encoding="utf-8-sig") as fh:
-                doc = json.loads(fh.read())
+                text = fh.read()
+            doc = json.loads(text)
             if not isinstance(doc, dict) or doc.get("soak_only") is True:
                 return                   # the soak's own file is left alone
             g = doc.get("late_grace_s")
-            if isinstance(g, bool) or g != 15 or not isinstance(g, int):
-                if "late_grace_s" in doc:
-                    # An explicit other value: the migration is settled.
-                    write_json_atomic(marker, {"checked": True})
-                return
-            doc["late_grace_s"] = sch.DEFAULT_LATE_GRACE_S
-            self.rule = save_rule(self.path, doc)
-            write_json_atomic(marker, {"migrated_from": 15,
-                                       "to": sch.DEFAULT_LATE_GRACE_S})
-            self._late_migrated = True
-        except Exception as e:                   # noqa: BLE001
-            self._late_migrated_error = f"{type(e).__name__}: {e}"
+            changed = False
+            backup = os.path.join(folder, self.LATE_BACKUP_FILE)
+            if first_load and g == 15 and isinstance(g, int) and \
+                    not isinstance(g, bool):
+                try:
+                    if not os.path.exists(backup):
+                        write_json_atomic(backup, doc)
+                    doc["late_grace_s"] = sch.DEFAULT_LATE_GRACE_S
+                    self.rule = save_rule(self.path, doc)
+                    changed = True
+                    self.legacy_grace_migrated = True
+                except Exception as e:           # noqa: BLE001
+                    self._late_notes.append((
+                        "save",
+                        f"The late limit could not be changed from 15 s to "
+                        f"2 minutes in the schedule file "
+                        f"({type(e).__name__}: {e}). It stays 15 s; the "
+                        f"next start tries again.", True))
+                    return
+            try:
+                write_json_atomic(marker, {"migrated": changed,
+                                           "late_grace_s_was": g})
+            except Exception as e:               # noqa: BLE001
+                self._late_notes.append((
+                    "marker",
+                    f"The note that the late limit was looked at "
+                    f"({marker}) could not be written "
+                    f"({type(e).__name__}: {e}); "
+                    + ("the schedule file itself is already changed to "
+                       "120 s." if changed else
+                       "nothing was changed in the schedule file."), True))
+            if changed:
+                self._late_notes.insert(0, (
+                    "migrated", self.LATE_MIGRATED_LINE.format(
+                        backup=self.LATE_BACKUP_FILE), False))
+        except Exception:                        # noqa: BLE001
+            pass
 
     def _journal_late_migration(self):
-        if getattr(self, "_late_migrated", False):
-            self._late_migrated = False
-            self._journal_line("system", self.LATE_MIGRATED_LINE,
-                               action="schedule file", outcome="migrated")
-        err = getattr(self, "_late_migrated_error", "")
-        if err:
-            self._late_migrated_error = ""
+        """Each kind of note once per run (lock held or at start)."""
+        said = getattr(self, "_late_said", None)
+        if said is None:
+            said = self._late_said = set()
+        for kind, text, fault in getattr(self, "_late_notes", []):
+            if kind in said:
+                continue
+            said.add(kind)
             self._journal_line(
-                "system", f"The late limit could not be changed from 15 s "
-                          f"to 2 minutes in the schedule file ({err}). It "
-                          f"stays 15 s until you save the schedule.",
-                action="schedule file", outcome="not migrated", fault=True)
+                "system", text, action="schedule file",
+                outcome="migrated" if kind == "migrated" else "not migrated"
+                if kind == "save" else "marker", fault=fault)
+        self._late_notes = []
 
     # -- a schedule saved while running (Jeff, Pico, 2026-10-29) -----------
     # What a rebuild keeps and drops (sch.rebuild_night), said once at its

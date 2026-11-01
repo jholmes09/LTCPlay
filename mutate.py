@@ -9388,8 +9388,8 @@ def build():
 
  ("late limit 2 min: Resume says next on the schedule for a show starting now",
   "ltcplay/schedule.py",
-  "                tx.m.late_grace_s and not reset else\n",
-  "                tx.m.late_grace_s and False else\n"),
+  "            0 <= late <= m.late_grace_s - RESUME_MARGIN_S)\n",
+  "            0 <= late <= m.late_grace_s + 1000 and False)\n"),
 
  ("late limit 2 min: the night overlap warning ignores a late last show",
   "ltcplay/schedule.py",
@@ -9423,13 +9423,38 @@ def build():
 
  ("late limit 2 min: any late_grace_s is changed to 120",
   "ltcplay/schedule_service.py",
-  "            if isinstance(g, bool) or g != 15 or not isinstance(g, int):",
-  "            if g is None:"),
+  "            if first_load and g == 15 and isinstance(g, int) and",
+  "            if first_load and g is not None and isinstance(g, int) and"),
 
  ("late limit 2 min: a 15 chosen after the change is changed again",
   "ltcplay/schedule_service.py",
   "            if os.path.exists(marker):\n                return\n",
   ""),
+
+ ("late limit 2 min: a reload changes a 15 typed in Programming",
+  "ltcplay/schedule_service.py",
+  "            if first_load and g == 15 and isinstance(g, int) and",
+  "            if g == 15 and isinstance(g, int) and"),
+
+ ("late limit 2 min: the marker is written only when the file states a value",
+  "ltcplay/schedule_service.py",
+  "            try:\n                write_json_atomic(marker, {\"migrated\": changed,",
+  "            try:\n                if g is None:\n                    raise OSError('x')\n                write_json_atomic(marker, {\"migrated\": changed,"),
+
+ ("late limit 2 min: the copy of the file as it was is overwritten",
+  "ltcplay/schedule_service.py",
+  "                    if not os.path.exists(backup):\n",
+  "                    if True:\n"),
+
+ ("late limit 2 min: the settings watcher is not refreshed after a migration",
+  "ltcplay/web.py",
+  "                config_watch.refresh(schedule.path)\n",
+  "                pass\n"),
+
+ ("late limit 2 min: Resume promises a start with no margin",
+  "ltcplay/schedule.py",
+  "RESUME_MARGIN_S = 5\n",
+  "RESUME_MARGIN_S = 0\n"),
 
  ("review196C: overlapping nights do not say a show can be missed",
   "ltcplay/schedule.py",

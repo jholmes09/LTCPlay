@@ -2056,13 +2056,33 @@ def _resume(m, ev, now):
             + (f" The delayed show {d.n} still waits for Start now."
                if d else "")
             + ((f" Show {nxt.n}, due at {clock(_local(m, nxt.start))}, "
-                f"starts now, {lateness_s(nxt.start, now)} s late."
-                if 0 <= lateness_s(nxt.start, now) <=
-                tx.m.late_grace_s and not reset else
+                f"is still inside its late limit and starts at the next "
+                f"tick, {lateness_s(nxt.start, now)} s late, unless "
+                f"something else holds it (an open alert, Run, the rig "
+                f"check)."
+                if _resume_starts_next(tx, nxt, now, reset) else
                 f" Next on the schedule is show {nxt.n} at "
                 f"{clock(_local(m, nxt.start))}.")
                if nxt else " There are no more scheduled shows tonight."))
     return tx.done()
+
+
+RESUME_MARGIN_S = 5
+
+
+def _resume_starts_next(tx, nxt, now, reset):
+    """True when the next tick will really start `nxt` after this Resume,
+    as far as the engine can tell: not a Reset, nothing aborted, a state a
+    show starts from, no guard left, and at least RESUME_MARGIN_S of its
+    late limit left (a tick can come a second later; delta review of PR
+    #202: Resume at exactly 120 s said "starts now" and the show was MISSED
+    a tick later)."""
+    m = tx.m
+    late = lateness_s(nxt.start, now)
+    return (not reset and not tx.ev.latched and not m.abort_latched and
+            m.state in (IDLE, STANDBY) and nxt.status == PENDING and
+            _guard_left(m, now) == 0 and
+            0 <= late <= m.late_grace_s - RESUME_MARGIN_S)
 
 
 def _need_next(m, ev, now):

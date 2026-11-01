@@ -61,6 +61,14 @@ settings and show files alone. If it says no earlier version is kept,
 download the version you want from the Releases page and run it like an
 update.
 
+After going back from the build that made the late limit 2 minutes: that
+build changed `late_grace_s` in the schedule file from 15 to 120 (once, on
+its first start), and the earlier build refuses anything over 15 and would
+schedule nothing. Open Programming, set "Late start allowed, seconds" to 15
+and save (or put 15 in `ltcplay_schedule.json`). Your file as it was before
+the change is kept as `ltcplay_schedule.pre-late-limit.json` in the settings
+folder, and the copy before the latest save as `ltcplay_schedule.previous.json`.
+
 ## Something is wrong: send the diagnostics bundle
 
 Start menu, LTC Player, "Diagnostics bundle (send this to Jeff)". It

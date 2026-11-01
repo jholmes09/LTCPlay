@@ -2670,6 +2670,15 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         if isinstance(schedule, str):
             from . import schedule_service
             schedule = schedule_service.Service(schedule)
+        if config_watch is not None and \
+                getattr(schedule, "legacy_grace_migrated", False):
+            # The scheduler just rewrote the schedule file (the late limit
+            # 15 s to 2 minutes): what is on disk is its copy, not a change
+            # to restart for.
+            try:
+                config_watch.refresh(schedule.path)
+            except Exception:                    # noqa: BLE001
+                pass
         if schedule.rule is not None:
             from . import clock as clock_mod
             show_path, derived, warning = \

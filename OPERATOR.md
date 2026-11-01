@@ -1302,6 +1302,17 @@ It was 15 seconds before.
   chosen again afterwards is kept (a marker file,
   `ltcplay_late_limit_migrated.json`, stays beside the schedule file). The
   example file now says 120.
+- The change happens once, on the first start after the upgrade (a
+  marker file, `ltcplay_late_limit_migrated.json`, is written on the first
+  good read of the schedule file, whatever it said), never when you save
+  from the Programming screen. The file as it was is kept as
+  `ltcplay_schedule.pre-late-limit.json` (never overwritten), besides the
+  usual `ltcplay_schedule.previous.json`, which the next save replaces.
+  After rolling back to an earlier version of LTC Player, set the late
+  limit to 15 in Programming (the earlier version refuses a larger number
+  and schedules nothing); the old copy is in the previous file. A
+  Programming tab that was open before the change and is saved afterwards
+  writes its own value back, 15 included, and that is kept.
 - A night is not handed over while a waiting show can still start inside
   its late limit, and the settling step at a hand over never starts a show:
   every start, however late, goes through the alert hold, the rig check and
@@ -1309,8 +1320,10 @@ It was 15 seconds before.
 - It never overrides anything that says wait. A Hold, a Stop's Hold, an
   Abort, Run not pressed, the guard after the previous show, a show that
   is running and a Stop under way all still hold a show back, however
-  close to its time. Resume's journal line says "Show N ... starts now, N s
-  late" when the show will start straight away. Pressing Resume within the limit starts the show,
+  close to its time. Resume's journal line says "Show N ... starts at the next tick,
+  N s late" only when it really will (not a Reset, nothing aborted, no
+  guard left, at least 5 seconds of the limit left); otherwise it says
+  what is next on the schedule. Pressing Resume within the limit starts the show,
   late; after it the show waits for Start now, as before. A show that is
   held back past the limit is DELAYED, not MISSED, as before.
 - The 120 second guard between shows is unchanged. A show inside the guard
