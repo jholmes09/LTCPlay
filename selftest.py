@@ -106323,6 +106323,51 @@ def test_fireball_charge_round10_lows():
         check(not markers(C) and _fbc(d).tr.state("fuel") == E,
               f"Tanks are empty clears every marker present at that "
               f"moment: {markers(C)}")
+        # 3. The installer's bench soak: flamesafe runs four groups and no
+        # fireball, and the show's frames put values on 55 to 57. Those
+        # channels are in no group (flamesafe keeps them at zero), so the
+        # charge record is not told "status not known" 11 times a run.
+        def view(*groups):
+            return {"connected": True, "stale": False, "age_ms": 10,
+                    "groups": [dict(name=n, fire_slots=f, armed="armed")
+                               for n, f in groups]}
+        four = view(("front row", [411, 412]), ("cat-walk", [421]),
+                    ("wave flamer", [1, 2, 3]), ("pump", [441]))
+        check(FC.armed_from_status(four) == "off",
+              "a fresh status with no fireball group and no group on 55 to "
+              "59: those channels reach nothing: off")
+        check(FC.armed_from_status(view(("front row", [55, 411]))) ==
+              "unknown",
+              "a group of another name that owns channel 55: not known")
+        check(FC.armed_from_status(view(("front row", []))) == "unknown" and
+              FC.armed_from_status(dict(four, stale=True)) == "unknown" and
+              FC.armed_from_status(dict(four, groups=[])) == "unknown" and
+              FC.armed_from_status(None) == "unknown",
+              "a group that does not say its fire slots, a stale status, "
+              "no groups, no status: not known")
+        d = fresh()
+        C = _fbc(d, flames_get=lambda: four)
+        C.tr.pump()
+        C.tr._read_armed()
+        for _i in range(40):
+            C.t[0] += 0.03
+            C.tr._read_armed()          # the status thread's look
+            C.tr.observe(0, _fbc_frame(fuel=True, air=True, valve=True),
+                         True)
+        C.tr.pump()
+        check(C.tr.state("fuel") == E and C.tr.state("air") == E and
+              not any(k.get("fault") for a, k in C.lines
+                      if a[2] != "first_run") and not C.tr.fault,
+              f"a bench show's 55 to 57 with no fireball group: no fault, "
+              f"the tanks as they were: {[a[3] for a, k in C.lines]}")
+        # ... while the same frames with status that is not known still
+        # mark the tanks (the safe direction).
+        C = _fbc(fresh(), flames_get=lambda: None)
+        C.tr.pump()
+        C.tr._read_armed()
+        C.tr.observe(0, _fbc_frame(fuel=True), True)
+        check(C.tr.state("fuel") == U,
+              "and with no status at all a charge still makes it NOT KNOWN")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")

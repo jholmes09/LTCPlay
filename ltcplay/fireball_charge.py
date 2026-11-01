@@ -164,9 +164,23 @@ def armed_from_status(view, group=GROUP_NAME, fresh_s=STATUS_FRESH_S):
                 isinstance(age, bool) or \
                 not isinstance(age, (int, float)) or age > fresh_s * 1000:
             return "unknown"
-        for g in fl.get("groups") or []:
+        groups = fl.get("groups") or []
+        for g in groups:
             if str(g.get("name", "")).strip().lower() == group:
                 return "armed" if g.get("armed") == "armed" else "off"
+        # A fresh status that names no fireball group, and no group of any
+        # name that owns one of 55 to 59: those channels are in no group,
+        # and flamesafe keeps every slot in no group at zero (CONTRACT.md,
+        # the passthrough), so nothing on them can reach the tanks. That is
+        # "off", not "unknown": the bench soak runs four groups and no
+        # fireball, and its show's channels there are not a fireball
+        # (round-10 installer finding: 11 faults a run). A group that does
+        # not say its fire slots keeps the answer "unknown".
+        if groups and all(
+                isinstance(g.get("fire_slots"), list) and g["fire_slots"]
+                and not any(x in FIRE_SLOTS for x in g["fire_slots"])
+                for g in groups):
+            return "off"
     except Exception:                            # noqa: BLE001
         pass
     return "unknown"

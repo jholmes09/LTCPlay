@@ -21485,6 +21485,16 @@ def build():
   "                self._pending_used = False\n                self._pending_asked_at = self._clock()\n            was_off",
   "                pass\n            was_off"),
 
+ ("fireball charge: a status with no fireball group and nothing on 55 to 59 is not known (round 10c)",
+  "ltcplay/fireball_charge.py",
+  "        if groups and all(",
+  "        if False and all("),
+
+ ("fireball charge: a group that owns channel 55 under another name counts as off (round 10c)",
+  "ltcplay/fireball_charge.py",
+  "                and not any(x in FIRE_SLOTS for x in g[\"fire_slots\"])",
+  "                and True"),
+
  ("fireball charge: a start reads only this machine's marker names (round 9)",
   "ltcplay/fireball_charge.py",
   "(folder, glob.escape(FILE) + \".*marker*\"),",
