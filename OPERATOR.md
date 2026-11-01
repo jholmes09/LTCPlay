@@ -1073,9 +1073,18 @@ for the record as a whole a mark, PENDING.
   the automatic charge is **not sent** and the screens say "the charge
   record cannot be saved: automatic charging is off". If LTC Player
   stops with PENDING on the record, an EMPTY tank reads NOT KNOWN at the
-  next start. A shot, a Purge or Tanks are empty clears it. A Fuel or
-  Air press on the Fireball page also writes PENDING, but is never held
-  back by it: a press always goes out.
+  next start. A shot, a Purge or Tanks are empty clears it. A mark that
+  no charge used (a rehearsal stopped before its charge) comes off again
+  after 5 seconds without being asked for, so it does not leave both
+  tanks NOT KNOWN at the next start.
+- **A Fuel or Air press on the Fireball page** is held for the few
+  milliseconds the PENDING mark takes to reach the disk, then goes out.
+  If the record cannot be saved the press **still goes out** (a top-off
+  is yours to decide), but both tanks become NOT KNOWN at once, the fault
+  is shown, and a second tiny marker is written in the user's temp
+  folder, so that after a crash or restart the tanks read NOT KNOWN even
+  if the settings folder works again and its record says EMPTY. Tanks are
+  empty (then) takes the marker away.
 
 - **What charges a tank:** Fuel Charge (55) or Air Charge (56) reaching
   the Fireball while flamesafe says it is armed, from the show or from the
@@ -1106,7 +1115,10 @@ for the record as a whole a mark, PENDING.
   - LTC Player stopped with PENDING on the record;
   - the record and a copy left by a write that did not finish disagree,
     or only that copy was found, or the record could not be read;
-  - flamesafe's fireball group was found on other channels than 55 to 59.
+  - flamesafe's fireball group was found on other channels than 55 to 59,
+    or flamesafe.json's fireball slots and the running flamesafe's differ
+    (Tanks are empty is refused while that stands: fix the config first);
+  - a Fireball press went out while the record could not be saved.
 
   A shot or a purge seen for certain makes it EMPTY again. While a tank
   is CHARGED or NOT KNOWN, nothing charges it automatically.

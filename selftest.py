@@ -102473,9 +102473,16 @@ def test_fireball_timeline_docs_in_plain_words():
                  "PENDING (write first, then charge)",
                  "the automatic charge is **not sent**",
                  "the charge record cannot be saved: automatic charging is "
-                 "off", "is never held back by it",
+                 "off",
                  "A clock set back can only cost an extra NOT KNOWN",
-                 "LTC Player stopped with PENDING on the record"):
+                 "LTC Player stopped with PENDING on the record",
+                 "A Fuel or Air press on the Fireball page** is held for "
+                 "the few milliseconds",
+                 "the press **still goes out**",
+                 "a second tiny marker is written in the user's temp "
+                 "folder",
+                 "comes off again after 5 seconds",
+                 "Tanks are empty is refused while that stands"):
         check(" ".join(need.split()) in " ".join(c.split()),
               f"OPERATOR.md's charge section says {need!r}")
     s = _fb_doc_part("OPERATOR.md", "### In a show set to Timeline", "\n### ")
@@ -102588,6 +102595,11 @@ def _fbc(work=None, **kw):
     class _Audit:
         def event(self, **k):
             C.events.append(k)
+    if work and "alt_dir" not in kw and os.path.isdir(work):
+        # The fallback marker goes in the test's own folder, never the
+        # machine's temp folder.
+        kw["alt_dir"] = os.path.join(work, "_alt")
+        os.makedirs(kw["alt_dir"], exist_ok=True)
     C.tr = FC.ChargeTracker(
         work, journal=lambda *a, **k: C.lines.append((a, k)),
         audit=_Audit(), wall=lambda: C.wall[0], clock=lambda: C.t[0],
@@ -103407,6 +103419,118 @@ def test_fireball_charge_state():
         check(first == "wait" and C35.tr.charge_ready() == "failed" and
               "could not be written" in C35.tr.view()["fault"],
               "the mark cannot be written: failed, the fault shown")
+        # Round 6. Tanks are empty clears the PENDING mark (review A: a
+        # test gap) and is refused while the fireball group is off 55 to
+        # 59 or flamesafe.json and the running flamesafe disagree (review
+        # A bug 3).
+        d40 = _fresh("r40")
+        C40 = _fbc(d40)
+        C40.tr.pump()
+        C40.tr.charge_ready()
+        C40.tr.pump()
+        check(_j.load(open(C40.tr.path))["pending"] is True, "PENDING on")
+        C40b = _fbc(d40)
+        check(C40b.tr.state("fuel") == U and C40b.tr.pending, "restart: NOT KNOWN")
+        ok40, _t = C40b.tr.confirm_empty("Andy")
+        C40b.tr.pump()
+        check(ok40 and C40b.tr.pending is False and
+              _j.load(open(C40b.tr.path))["pending"] is False,
+              "Tanks are empty takes the PENDING mark off, written")
+        C40c = _fbc(d40)
+        check(C40c.tr.state("fuel") == E and not C40c.tr.fault,
+              "and the next start reads EMPTY")
+        C40c.tr.group_fault = "flamesafe's fireball group is on [60]."
+        C40c.tr.tanks["fuel"]["state"] = U
+        ok40, t40 = C40c.tr.confirm_empty("Andy")
+        check(not ok40 and C40c.tr.state("fuel") == U and
+              "Fix the flamesafe config first" in t40 and _cfg_dashes(t40),
+              f"Tanks are empty refused while the group is off 55 to 59: "
+              f"{t40}")
+        C40c.tr.group_fault = ""
+        C40c.tr.note_external_fault("flamesafe.json says 60 to 64, the "
+                                    "running flamesafe 55 to 59.")
+        C40c.tr.pump()
+        check(C40c.tr.state("fuel") == U and C40c.tr.state("air") == U and
+              not C40c.tr.confirm_empty("Andy")[0] and
+              "60 to 64" in C40c.tr.view()["fault"] and
+              any(a[2] == "group_fault" and k.get("fault")
+                  for a, k in C40c.lines),
+              "flamesafe.json and the running flamesafe disagree: both NOT "
+              "KNOWN, said, Tanks are empty refused")
+        C40c.tr.note_external_fault("")
+        check(C40c.tr.state("fuel") == U and C40c.tr.confirm_empty("Andy")[0],
+              "they agree again: still NOT KNOWN until confirmed, then it "
+              "may be")
+        # A PENDING mark nothing used comes off again (review A bug 2, B4):
+        # a rehearsal stopped before its charge.
+        d41 = _fresh("r41")
+        C41 = _fbc(d41)
+        C41.tr.pump()
+        C41.tr.charge_ready()
+        C41.tr.pump()
+        C41.t[0] += FC.PENDING_IDLE_S - 1
+        C41.tr._read_armed()
+        C41.tr.pump()
+        check(C41.tr.pending is True, "not before the idle time")
+        C41.t[0] += 2
+        C41.tr._read_armed()
+        C41.tr.pump()
+        check(C41.tr.pending is False and
+              _j.load(open(C41.tr.path))["pending"] is False and
+              _fbc(d41).tr.state("fuel") == E,
+              "after the idle time it comes off, written: a restart keeps "
+              "EMPTY")
+        C41.tr.charge_ready()
+        C41.tr.pump()
+        C41.tr.see(_fbc_frame(fuel=True), "armed")
+        C41.t[0] += FC.PENDING_IDLE_S + 1
+        C41.tr._read_armed()
+        check(C41.tr.pending is True, "a mark a charge used stays")
+        # Review 3: a manual press is held until the mark is on disk, and
+        # goes out anyway when the record cannot be saved, with both tanks
+        # NOT KNOWN in memory and a marker elsewhere so a restart reads
+        # NOT KNOWN though the record on disk says EMPTY.
+        d42 = _fresh("r42")
+        C42 = _fbc(d42)
+        C42.tr.pump()
+        got = [C42.tr.manual_gate()]
+        C42.tr.pump()
+        got.append(C42.tr.manual_gate())
+        check(got == ["wait", "ok"], f"a manual press waits for the mark: "
+                                     f"{got}")
+        C42.tr.see(_fbc_frame(valve=True), "armed")
+        C42.tr.see(_fbc_frame(), "armed")
+        C42.tr.pump()
+        d43 = _fresh("r43")
+        C43 = _fbc(d43)
+        C43.tr.pump()
+        check(_j.load(open(C43.tr.path))["tanks"]["fuel"]["state"] ==
+              "empty", "EMPTY on disk")
+        C43.tr._write = lambda doc: (_ for _ in ()).throw(
+            PermissionError(13, "folder refuses new files"))
+        g1 = C43.tr.manual_gate()
+        C43.tr.pump()
+        g2 = C43.tr.manual_gate()
+        check(g1 == "wait" and g2 == "ok" and C43.tr.state("fuel") == U and
+              C43.tr.state("air") == U and
+              "cannot be saved" in C43.tr.view()["fault"] and
+              os.path.exists(C43.tr._alt),
+              f"the record cannot be saved: the press goes out, both NOT "
+              f"KNOWN, a marker written elsewhere: {g1} {g2}")
+        C43.tr.note_manual({"fuel"}, "Andy", "Rack screen")
+        C43.tr.see(_fbc_frame(fuel=True), "armed")
+        check(C43.tr.state("fuel") == C_, "and Andy's Fuel is CHARGED")
+        C44 = _fbc(d43)       # crash, the folder works again
+        check(C44.tr.state("fuel") == U and C44.tr.state("air") == U and
+              "went out while the record could not be saved" in
+              C44.tr.fault,
+              f"the restart reads NOT KNOWN though the record says EMPTY: "
+              f"{C44.tr.state('fuel')} {C44.tr.fault}")
+        C44.tr.pump()
+        check(not os.path.exists(C44.tr._alt),
+              "the marker is taken away once a newer record is on disk")
+        C45 = _fbc(d43)
+        check(C45.tr.state("fuel") == U, "and NOT KNOWN is what is on disk")
         # A press on the Fireball page asks for the mark, never waits.
         d36 = _fresh("r36")
         C36 = _fbc(d36)
