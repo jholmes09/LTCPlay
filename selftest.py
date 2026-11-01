@@ -104914,7 +104914,12 @@ def test_fireball_timeline_docs_in_plain_words():
                  "the automatic charge is **not sent**",
                  "the charge record cannot be saved: automatic charging is "
                  "off",
-                 "A clock set back can only cost an extra NOT KNOWN",
+                 "On one machine a clock set back can only cost an extra "
+                 "NOT KNOWN",
+                 "A settings folder shared between two machines is not "
+                 "supported for the fireball record",
+                 "can be cleared by the other machine's higher-revision "
+                 "record",
                  "LTC Player stopped with PENDING on the record",
                  "A Fuel or Air press on the Fireball page** is held for "
                  "the few milliseconds",
@@ -106465,6 +106470,143 @@ def test_fireball_charge_state():
     print("  ok")
 
 
+def test_fireball_charge_round10_lows():
+    section("round-10 lows on the charge record: Tanks are empty keeps the "
+            "write-ahead mark while a charge is on the wire or held by the "
+            "page; the markers left by a purge or a confirm include a "
+            "readable one beside an unreadable one, and one that synced in "
+            "after the start")
+    import json as _j
+    import shutil
+    from ltcplay import fireball_charge as FC
+    E, U = FC.EMPTY, FC.UNKNOWN
+    work = tempfile.mkdtemp()
+    n_dir = [0]
+
+    def fresh():
+        n_dir[0] += 1
+        d = os.path.join(work, f"d{n_dir[0]}")
+        os.makedirs(d)
+        return d
+    try:
+        # 1. Fuel NOT KNOWN, Air EMPTY, the page's Air press holds the mark.
+        C = _fbc(fresh())
+        C.tr.pump()
+        C.tr._set("fuel", U, "selftest", C.wall[0])
+        C.tr.pump()
+        C.tr.note_manual({"air"}, "Andy", "Rack screen")
+        C.tr.pump()
+        check(C.tr.pending is True,
+              "setup: the Air press asked for the write-ahead mark")
+        ok, _t = C.tr.confirm_empty("Admin", "Rack screen")
+        check(ok and C.tr.pending is True and C.tr.state("fuel") == E,
+              f"Tanks are empty while the page holds Air: the mark stays: "
+              f"{ok} {C.tr.pending}")
+        C.tr.note_manual(set(), "Andy", "Rack screen")
+        # A charge channel on the wire (the show's, or a frame already out).
+        C = _fbc(fresh())
+        C.tr.pump()
+        C.tr._set("fuel", U, "selftest", C.wall[0])
+        C.tr.charge_ready()
+        C.tr.pump()
+        C.tr.observe(0, _fbc_frame(air=True), True)
+        check(C.tr.pending is True, "setup: mark held")
+        C.tr.confirm_empty("Admin", "Rack screen")
+        check(C.tr.pending is True,
+              "Tanks are empty while Air is on the wire: the mark stays")
+        # F1: an automatic charge answered ok, its frame not yet seen (the
+        # cues ask on every frame of the stage): the mark stays.
+        C = _fbc(fresh())
+        C.tr.pump()
+        C.tr._set("fuel", U, "selftest", C.wall[0])
+        C.tr.charge_ready()
+        C.tr.pump()
+        C.t[0] += 0.2
+        C.tr.confirm_empty("Admin", "Rack screen")
+        check(C.tr.pending is True,
+              "Tanks are empty while an automatic charge was just asked "
+              "for: the mark stays")
+        # Nothing on the wire and nothing asked lately: the mark comes off
+        # as before.
+        C = _fbc(fresh())
+        C.tr.pump()
+        C.tr._set("fuel", U, "selftest", C.wall[0])
+        C.tr.charge_ready()
+        C.tr.pump()
+        C.t[0] += 1.0
+        C.tr.confirm_empty("Admin", "Rack screen")
+        check(C.tr.pending is False,
+              "Tanks are empty with nothing on the wire: the mark comes off")
+        # F2: a kept mark that was already used is asked afresh, so the idle
+        # clear takes it off when the charge never happens.
+        C = _fbc(fresh())
+        C.tr.pump()
+        C.tr._set("fuel", U, "selftest", C.wall[0])
+        C.tr.note_manual({"air"}, "Andy", "Rack screen")
+        C.tr.pump()
+        C.tr._pending_used = True
+        C.tr.confirm_empty("Admin", "Rack screen")
+        check(C.tr.pending is True and C.tr._pending_used is False,
+              "a kept mark is not left 'used'")
+        C.tr.note_manual(set(), "Andy", "Rack screen")
+        C.t[0] += FC.PENDING_IDLE_S + 2
+        C.tr._pending_idle()
+        C.tr.pump()
+        check(C.tr.pending is False,
+              "and it comes off once nothing happens, not kept for ever")
+
+        # 2. A readable marker above the record beside an unreadable one.
+        def markers(C):
+            return sorted(C.tr._marker_files())
+
+        def put(C, name, content):
+            d = os.path.dirname(C.tr._alts[1])
+            with open(os.path.join(d, name), "w") as fh:
+                fh.write(content)
+        for how in ("purge", "confirm"):
+            d = fresh()
+            C = _fbc(d)
+            C.tr.pump()
+            main = _j.load(open(C.tr.path))["rev"]
+            tag = C.tr._tag
+            put(C, f"ltcplay_fireball_charge_{tag}_x.marker",
+                _j.dumps({"rev": main + 3600000}))
+            put(C, f"ltcplay_fireball_charge_{tag}_x.marker.tmp",
+                '{"rev": 1')
+            C2 = _fbc(d)
+            check(C2.tr.state("fuel") == U,
+                  "setup: the markers read NOT KNOWN")
+            if how == "purge":
+                C2.tr.see(_fbc_frame(purge=True), "armed")
+                C2.tr.see(_fbc_frame(), "armed")
+            else:
+                C2.tr.confirm_empty("Admin", "Rack screen")
+            C2.tr.pump()
+            check(not markers(C2) and _fbc(d).tr.state("fuel") == E and
+                  not _fbc(d).tr.fault,
+                  f"{how}: a readable marker above the record and an "
+                  f"unreadable one are both taken away, so the next clean "
+                  f"start reads EMPTY: {markers(C2)}")
+        # A marker that synced in after the start is cleared by the confirm.
+        d = fresh()
+        C = _fbc(d)
+        C.tr.pump()
+        C.tr._set("fuel", U, "selftest", C.wall[0])
+        C.tr.pump()
+        main = _j.load(open(C.tr.path))["rev"]
+        put(C, f"ltcplay_fireball_charge_{C.tr._tag}_other.marker",
+            _j.dumps({"rev": main + 10 ** 9}))
+        check(len(markers(C)) == 1, "setup: a foreign marker synced in")
+        C.tr.confirm_empty("Admin", "Rack screen")
+        C.tr.pump()
+        check(not markers(C) and _fbc(d).tr.state("fuel") == E,
+              f"Tanks are empty clears every marker present at that "
+              f"moment: {markers(C)}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_fireball_charge_wiring():
     section("the fireball's charge state in the engine: chained onto the "
             "flame link's observer (the fuel tracker still told), told who "
@@ -107278,6 +107420,34 @@ def test_fireball_cues_rules():
             check(sum(1 for g in got if g) == expect,
                   f"a Fuel stage at the top, first frame {first_frame}: "
                   f"{expect} frames on: {sum(1 for g in got if g)}")
+        # Round 10, review 4: the excuse is for a stage that starts AT the
+        # top only. A stage that started at frame 1 is already past when the
+        # play's first frame is 2: landed inside it, quiet.
+        for first_frame, tc, fires in ((2, "00:00:00:01", False),
+                                       (1, "00:00:00:01", True),
+                                       (2, "00:00:00:02", True)):
+            R = _fbq_rig([_st("fuel", tc, 1)])
+            rigs.append(R)
+            got = [R.frame(f)[54] for f in range(first_frame, 40)]
+            n_on = sum(1 for g in got if g)
+            check((n_on > 0) == fires,
+                  f"a Fuel stage at {tc}, first frame {first_frame}: "
+                  f"{'fires' if fires else 'quiet (landed inside it)'}: "
+                  f"{n_on}")
+        # ... and an FSEQ charge that is on at the first frame: a start
+        # (waits for the mark, then goes) at frame 1 or 2, a landing (held
+        # until the FSEQ turns it off) from frame 3.
+        fbase = [0] * 512
+        fbase[54] = 255
+        for first_frame, goes in ((1, True), (2, True), (3, False)):
+            R = _fbq_rig([], source="fseq")
+            rigs.append(R)
+            R.tank.ready = ["wait", "wait", "ok"]
+            got = [R.frame(f, base=fbase)[54]
+                   for f in range(first_frame, first_frame + 8)]
+            check(any(got) == goes,
+                  f"an FSEQ charge on at first frame {first_frame}: "
+                  f"{'a start, goes once the mark is on disk' if goes else 'a landing, held'}: {got}")
         # Review 6: with a charge record that judges the config itself, the
         # cues do not also tell it (the two could not race).
         R = _fbq_rig([], source="fseq")
@@ -111381,6 +111551,7 @@ if __name__ == "__main__":
         test_fireball_timeline_show_info_from_a_real_show_file,
         test_fireball_timeline_docs_in_plain_words,
         test_fireball_charge_state,
+        test_fireball_charge_round10_lows,
         test_fireball_charge_wiring,
         test_fireball_cues_rules,
         test_fireball_cues_never_drive_purge,
