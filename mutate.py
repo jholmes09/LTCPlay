@@ -21306,8 +21306,8 @@ def build():
 
  ("fireball charge: a marker that cannot be read is ignored (round 7)",
   "ltcplay/fireball_charge.py",
-  "                    else:\n                        unreadable = True\n                except (OSError, ValueError, AttributeError):\n                    unreadable = True",
-  "                    else:\n                        unreadable = True\n                except (OSError, ValueError, AttributeError):\n                    pass"),
+  "                except (OSError, ValueError, AttributeError):\n                    unreadable = True\n                    self._unreadable_markers.append(name)",
+  "                except (OSError, ValueError, AttributeError):\n                    pass"),
 
  ("fireball charge: the leftover of a marker being written is ignored (round 7)",
   "ltcplay/fireball_charge.py",
@@ -21353,6 +21353,71 @@ def build():
   "ltcplay/fireball_charge.py",
   "                self._charge_on_wire_at = self._clock()",
   "                pass"),
+
+ ("fireball charge: automatic charging never comes back by itself (round 8)",
+  "ltcplay/fireball_charge.py",
+  "        self._alt_work()\n        self._auto_off_check()",
+  "        self._alt_work()"),
+
+ ("fireball charge: automatic charging comes back with a tank NOT KNOWN (round 8)",
+  "ltcplay/fireball_charge.py",
+  "            known = all(self.tanks[k][\"state\"] != UNKNOWN for k in TANK_WORD)",
+  "            known = True"),
+
+ ("fireball charge: automatic charging off is called a record that cannot be saved (round 8)",
+  "ltcplay/fireball_charge.py",
+  "            return \"off\"",
+  "            return \"failed\""),
+
+ ("fireball charge: a confirmation with no tank NOT KNOWN says tanks confirmed EMPTY (round 8)",
+  "ltcplay/fireball_charge.py",
+  "            if unk:\n                words = \" and \".join(TANK_WORD[k] for k in unk)",
+  "            if True:\n                words = \" and \".join(TANK_WORD[k] for k in unk)"),
+
+ ("fireball charge: the marker's name ignores the folder's case (round 8)",
+  "ltcplay/fireball_charge.py",
+  "hashlib.sha1(os.path.normcase(os.path.abspath(\n                    folder)).encode(",
+  "hashlib.sha1((os.path.abspath(\n                    folder)).encode("),
+
+ ("fireball charge: the marker's name carries no machine (round 8)",
+  "ltcplay/fireball_charge.py",
+  "                name = f\"ltcplay_fireball_charge_{tag}_{mid}.marker\"\n                self._alts = [\n                    os.path.join(folder, f\"{FILE}.{mid}.marker\"),",
+  "                name = f\"ltcplay_fireball_charge_{tag}.marker\"\n                self._alts = [\n                    os.path.join(folder, f\"{FILE}.marker\"),"),
+
+ ("fireball charge: an unreadable marker does not name its file (round 8)",
+  "ltcplay/fireball_charge.py",
+  "            bad = getattr(self, \"_unreadable_markers\", [])\n            if bad:",
+  "            bad = getattr(self, \"_unreadable_markers\", [])\n            if False:"),
+
+ ("fireball charge: a marker that cannot be deleted is not said (round 8)",
+  "ltcplay/fireball_charge.py",
+  "            else:\n                # Every start would read NOT KNOWN for ever: name the file.",
+  "            elif False:\n                # Every start would read NOT KNOWN for ever: name the file."),
+
+ ("fireball charge: a first run beside an old marker says starting EMPTY (round 8)",
+  "ltcplay/fireball_charge.py",
+  "        if found:\n            # An old marker beside no record: the truth,",
+  "        if False:\n            # An old marker beside no record: the truth,"),
+
+ ("fireball charge: the record does not judge the config alone (round 8)",
+  "ltcplay/fireball_charge.py",
+  "        return self._file_get is not None",
+  "        return False"),
+
+ ("fireball page: Tanks are empty stays hidden while automatic charging is off (round 8)",
+  "ltcplay/web/remote.html",
+  "!(chk && chk.auto_off || Object.keys(tks).some(",
+  "!(Object.keys(tks).some("),
+
+ ("fireball page: a held press shows ON, not WAITING (round 8)",
+  "ltcplay/web/remote.html",
+  "(FB_HELD.indexOf(b.dataset.k) >= 0 ? \"WAITING\" : \"ON\")",
+  "\"ON\""),
+
+ ("fireball page: the beat's held answer is ignored (round 8)",
+  "ltcplay/web/remote.html",
+  "FB_HELD = Array.isArray(j && j.held) ? j.held : [];",
+  "FB_HELD = [];"),
 
  ("fireball charge: close() waits on a hung write for ever (round 4)",
   "ltcplay/fireball_charge.py",

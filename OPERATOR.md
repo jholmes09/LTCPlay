@@ -1023,8 +1023,14 @@ for the record as a whole a mark, PENDING.
   long as the record cannot be saved, and the press goes out after it.
   If **no** marker could be written anywhere, automatic charging is
   **off** until an admin confirms the tanks with Tanks are empty (it
-  works then even when no tank is NOT KNOWN); the Fireball page's own
-  presses still go out. Tanks are empty (then) takes the markers away.
+  works then even when no tank is NOT KNOWN, and the button is shown
+  whenever automatic charging is off); the Fireball page's own presses
+  still go out. It also comes back **by itself** once the record can be
+  saved again, a marker can be written again, and every tank is known
+  (EMPTY after a shot, CHARGED by frames seen); the journal says so. A
+  marker that cannot be deleted or read is named with its path, so it can
+  be deleted by hand once the tanks are checked. Marker names carry the
+  machine's name, so a synced or roaming folder never mixes two machines'. Tanks are empty (then) takes the markers away.
 
 - **What charges a tank:** Fuel Charge (55) or Air Charge (56) reaching
   the Fireball while flamesafe says it is armed, from the show or from the
