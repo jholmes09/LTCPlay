@@ -786,7 +786,16 @@ class Conductor:
         self._disarm_lasers("Hold", who, screen)
         with self._lock:
             held = self._look in HOLDING_LOOKS
-            if not held:
+            # A Stop (its sequence still running or done) stands: a Hold
+            # that lands after it (a call already in the scheduler's line,
+            # a programming Pause) must not turn it into a pause that a
+            # Resume brings back. Nothing changes but a laser blank
+            # (simulation review B round 2 of #199). Music started since
+            # that Stop (a new show's start, before its look moves) is
+            # held as ever.
+            stopped = (self._look == STOPPED_DARK and
+                       self._stopped_since_music)
+            if not held and not stopped:
                 if not self._playing():
                     return done("Nothing is playing, so the rig was left as "
                                 "it is.")
@@ -798,6 +807,9 @@ class Conductor:
                 return done(f"Hold: flames to zero and lasers blanked, then "
                             f"the music fades over {fade:g} s and the show "
                             f"freezes.")
+        if stopped:
+            return done(f"The show was stopped, so there is nothing to "
+                        f"hold: it stays dark. {self._reblank('Hold')}")
         # Already on hold: nothing new starts, but the lasers are blanked
         # again, on this thread (finding B): a blank only makes it darker.
         return done(f"Already on hold. {self._reblank('Hold')}")

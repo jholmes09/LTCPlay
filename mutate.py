@@ -22528,6 +22528,10 @@ def build():
   '                              "stop_hold", "stop_held"))',
   '                              "stop_hold"))'),
 
+ ('conductor: a Hold after a Stop turns it into a pause a Resume brings back (round 2)', 'ltcplay/conductor.py',
+  '            stopped = (self._look == STOPPED_DARK and\n',
+  '            stopped = (False and\n'),
+
 ]
 
 
