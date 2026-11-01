@@ -56316,8 +56316,8 @@ out.label_switch_off = lbl();
 
 def _arm_all_review_118(chrome, page):
     """Review of #118: Arm all let go early, its label through a hold, a
-    stale page and live flame programming or an Abort mid-hold, the
-    keyboard, and how it looks."""
+    stale page and live flame programming mid-hold, the keyboard, and
+    how it looks."""
     rules = _css_rules(page)
     arm = _css_rule(rules, "#b-disarm.armall") or {}
     check("#5fe08a" in arm.get("border", "").lower() and
@@ -56440,16 +56440,16 @@ h.ev(B, "pointerup");
                   "Not live" in m["note"],
                   f"P1: a stale page stops Arm all {how}: no heartbeat on a "
                   f"status over 1 s old, every hold let go, said: {m}")
-    # P2-1: live flame programming turned on (one group at a time), or an
-    # Abort, mid-hold stops Arm all at once; its state not readable
-    # refuses Arm all.
+    # P2-1: live flame programming turned on (one group at a time)
+    # mid-hold stops Arm all at once; its state not readable refuses Arm
+    # all. (An Abort mid-hold was the other case; there is no Abort latch
+    # any more, 2026-10-30, and the plan's own test pins that an older
+    # engine's aborted flag is not read.)
     for name, patch, words in (
             ("live flame programming turned on",
              "st.live_flame = {on:true, one_group_at_a_time:true, receiving:true, map:[]};",
              "Live flame programming is on, and it allows one flame group "
-             "at a time."),
-            ("an Abort", 'st.schedule = Object.assign({}, st.schedule, {aborted:true, state:"ABORTED"});',
-             "Refused: an Abort is standing.")):
+             "at a time."),):
         steps = r"""
 let on = false;
 const B = document.getElementById("b-disarm");
