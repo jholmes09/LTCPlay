@@ -40176,11 +40176,17 @@ def test_upgrade_reads_an_old_abort_latch_as_a_stops_hold():
               f"itself: {svc.machine.state} {svc.machine.slot(2).status}")
         check("abort_latched" not in _tonight_doc(work),
               "the next save writes no abort_latched")
+        # A fault standing at the Resume: Resume ending a Hold clears the
+        # flag, as Reset did before it was removed.
+        svc._apply(S.Event(S.FAULT_RAISED, "madmapper", detail="x"))
+        check(svc.machine.fault, "setup: a fault is up")
         r = svc.operator_press("resume", "Jeff", "Rack screen")
         check(r.get("ok") and not svc.stop_held() and
               not os.path.exists(os.path.join(work,
                                               SV.Service.STOP_HOLD_FILE)),
               f"Resume releases it: {r}")
+        check(not svc.machine.fault,
+              f"and clears the fault flag: {svc.machine.faults}")
         now[0] = _den(S, 18, 40)
         svc.tick()
         check(svc.machine.running == 3,
