@@ -20869,6 +20869,56 @@ def build():
   "                        if self.tanks[k][\"state\"] != UNKNOWN:\n                            self._set(k, UNKNOWN,",
   "                        if False:\n                            self._set(k, UNKNOWN,"),
 
+ ("fireball charge: a manual press is not held for the mark (round 6)",
+  "ltcplay/fireball_charge.py",
+  "        r = self.charge_ready()\n        if r != \"failed\":\n            return r",
+  "        r = self.charge_ready()\n        if r != \"failed\":\n            return \"ok\""),
+
+ ("fireball charge: a manual press that cannot be saved leaves the tanks as they were (round 6)",
+  "ltcplay/fireball_charge.py",
+  "                        if self.tanks[k][\"state\"] == EMPTY:\n                            self._set(k, UNKNOWN, \"a Fireball press went \"",
+  "                        if False:\n                            self._set(k, UNKNOWN, \"a Fireball press went \""),
+
+ ("fireball charge: an unsaved manual press writes no marker elsewhere (round 6)",
+  "ltcplay/fireball_charge.py",
+  "                    saved = self._write_alt(self._next_rev())",
+  "                    saved = False"),
+
+ ("fireball charge: the start ignores the marker elsewhere (round 6)",
+  "ltcplay/fireball_charge.py",
+  "        if rev <= self._base_rev:\n            self._drop_alt(self._base_rev)\n            return",
+  "        if True:\n            return"),
+
+ ("fireball charge: the marker elsewhere is never taken away (round 6)",
+  "ltcplay/fireball_charge.py",
+  "            self._drop_alt(doc[\"rev\"])\n            self._unwritten = None",
+  "            self._unwritten = None"),
+
+ ("fireball charge: Tanks are empty works while the group is off 55 to 59 (round 6)",
+  "ltcplay/fireball_charge.py",
+  "            if self.group_fault or self.ext_fault:\n                return False,",
+  "            if False:\n                return False,"),
+
+ ("fireball charge: a disagreeing flamesafe.json leaves the tanks as they were (round 6)",
+  "ltcplay/fireball_charge.py",
+  "                if self.tanks[k][\"state\"] != UNKNOWN:\n                    self._set(k, UNKNOWN, \"flamesafe.json and the running \"",
+  "                if False:\n                    self._set(k, UNKNOWN, \"flamesafe.json and the running \""),
+
+ ("fireball charge: a mark nothing used stays for ever (round 6)",
+  "ltcplay/fireball_charge.py",
+  "        self._pending_idle()\n",
+  "        pass\n"),
+
+ ("fireball charge: a mark a charge used is taken off when idle (round 6)",
+  "ltcplay/fireball_charge.py",
+  "        if state == CHARGED:\n            self._pending_used = True",
+  "        if False:\n            self._pending_used = True"),
+
+ ("fireball charge: Tanks are empty leaves the PENDING mark (round 6)",
+  "ltcplay/fireball_charge.py",
+  "                self._set(k, EMPTY, f\"confirmed empty by {who}\", now_w)\n            self.pending = False",
+  "                self._set(k, EMPTY, f\"confirmed empty by {who}\", now_w)"),
+
  ("fireball charge: close() waits on a hung write for ever (round 4)",
   "ltcplay/fireball_charge.py",
   "        t.start()\n        t.join(CLOSE_S)",
