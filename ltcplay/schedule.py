@@ -777,10 +777,21 @@ def _rule_warnings(rule, most):
         k += 1
     scanned_all = d > hi
     seen, clash = set(), []
+    need = timedelta(seconds=rule.show_len_s + rule.guard_s)
     for d in sorted(dates):
-        _f, end = _night_span(rule, d)
-        first, _e = _night_span(rule, d + one)
-        if end is None or first is None or end <= first:
+        plan = expand(rule, d)
+        first = _next_night_first(rule, d)
+        if not plan.starts or first is None:
+            continue
+        starts = [_utc(x) for x in plan.starts]
+        # What really happens (night_reset): a show at or after the next
+        # night's first show is MISSED when tonight hands over before it;
+        # a show that starts before it but ends, with its guard, after it
+        # makes that first show late, and MISSED if the lateness passes its
+        # grace.
+        after = [x for x in starts if x >= first]
+        inside = [x for x in starts if x < first and x + need > first]
+        if not after and not inside:
             continue
         special = d in rule.exceptions or d + one in rule.exceptions
         key = d if special else WEEKDAYS[d.weekday()]
@@ -789,14 +800,29 @@ def _rule_warnings(rule, most):
         seen.add(key)
         who = (f"The night of {d}" if special else
                f"A {names[WEEKDAYS[d.weekday()]]} night")
-        clash.append(
-            f"{who} has a show finishing at "
-            f"{_hm(end.astimezone(tz).timetz())} with its guard, after the "
-            f"next night's first show at "
-            f"{_hm(first.astimezone(tz).timetz())}: the earlier night "
-            f"finishes first, so the next night's first show can be MISSED, "
-            f"late by up to {fmt_span(int((end - first) // ONE_SECOND))}. "
-            f"Saved as it is; nothing is refused.")
+
+        def at_(x):
+            return _hm(x.astimezone(tz).timetz())
+        f_at = at_(first)
+        if after:
+            many = len(after) > 1
+            clash.append(
+                f"{who} has {'shows' if many else 'a show'} at "
+                f"{at_(after[0])}" +
+                (f" to {at_(after[-1])}" if many else "") +
+                f", at or after the next night's first show at {f_at}: "
+                f"tonight hands over before {'them' if many else 'it'}, so "
+                f"{'they' if many else 'it'} will be MISSED, and the next "
+                f"night's first show runs on time. Saved as it is; nothing "
+                f"is refused.")
+        if inside:
+            late = int((inside[-1] + need - first) // ONE_SECOND)
+            clash.append(
+                f"{who} has a show at {at_(inside[-1])} that ends, with its "
+                f"guard, {fmt_span(late)} after the next night's first show "
+                f"at {f_at}: the next night begins only once this one's "
+                f"guard is over, so that first show can be MISSED. Saved as "
+                f"it is; nothing is refused.")
     if not scanned_all:
         clash.append(f"Nights running into each other were checked for the "
                      f"first {SCAN_NIGHTS} nights of the season only.")
@@ -2892,6 +2918,14 @@ def machine_from_doc(doc, rule, d, now, notes=None):
     base = new_night(rule, d)
     tz = base.tz
     start_of_day = _utc(datetime.combine(d, time(0), tzinfo=tz))
+    # A night can begin before midnight, at its first show's preshow
+    # (night_reset), and a show started by hand then (Start now) is on its
+    # list at that earlier time (delta review B of PR #196: the file was set
+    # aside and the shows that ran were missed on a restart).
+    first_show = _night_span(rule, d)[0]
+    if first_show is not None:
+        start_of_day = min(start_of_day,
+                           first_show - timedelta(seconds=PRESHOW_LEAD_S))
     # A night may run past midnight (Jeff, 2026-10-30), and a show may be
     # typed for any later day: the file reads whatever the editor accepts
     # (MAX_EDIT_AHEAD), or one wrong show would set the whole night aside.

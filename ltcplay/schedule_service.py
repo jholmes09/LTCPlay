@@ -3087,16 +3087,18 @@ class Service:
             self._watch_conductor()
             if not self._ensure_night(now):
                 return None
-            self._keep_stop_hold(now)
-            self._keep_latch_on_disk()
             m = self.machine
             # Dry run: nothing was started, so the show "ends" when it would
             # have, which a pause moves later. A paused show never ends.
+            # Before the Stop's Hold is put back, so the same tick cannot
+            # start the next show (delta review B of PR #196).
             if self.dry_run and m.state == sch.SHOW and \
                     now >= m.expected_end(now):
                 self._apply(sch.Event(sch.SHOW_ENDED, "system",
                                       detail="dry run, nothing was started",
                                       show=m.running), now)
+            self._keep_stop_hold(now)
+            self._keep_latch_on_disk()
             # A schedule saved during a show or a closing: tonight follows
             # it once that is over, before this tick looks at the list.
             self._follow_rule(now, deferred=True)

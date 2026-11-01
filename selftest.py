@@ -13623,10 +13623,19 @@ def test_schedule_after_midnight_review_c():
     ov = S.parse_rule(doc({"sat": nt("23:00", 30, "03:00"),
                            "sun": nt("02:15", 30, "03:30")}))
     w = " ".join(S.rule_warnings(ov))
-    check("can be MISSED" in w and "nothing is refused" in w and
-          "A Saturday night" in w,
-          f"the overlap warning says a show can be missed: {w!r}")
+    check("A Saturday night has a show at 02:30" in w and
+          "it will be MISSED" in w and
+          "the next night's first show runs on time" in w and
+          "nothing is refused" in w,
+          f"the overlap warning names the show really missed: {w!r}")
     _no_dashes(w, "overlap warning")
+    ins = S.parse_rule(doc({"thu": nt("23:00", 30, "00:10"),
+                            "fri": nt("00:18", 30, "01:00")}))
+    w2 = " ".join(S.rule_warnings(ins))
+    check("after the next night's first show at 00:18" in w2 and
+          "can be MISSED" in w2 and "nothing is refused" in w2,
+          f"the inside overlap warning: {w2!r}")
+    _no_dashes(w2, "inside overlap warning")
 
     # Cleanups: the list says tomorrow like the journal; the dead code
     # after _time_notes is gone.
