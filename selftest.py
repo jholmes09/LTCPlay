@@ -13629,7 +13629,7 @@ def test_schedule_after_midnight_review_c():
     _no_dashes(w, "overlap warning")
 
     # Cleanups: the list says tomorrow like the journal; the dead code
-    # after _ambiguous_note is gone.
+    # after _time_notes is gone.
     m = S.step(S.new_night(S.parse_rule(doc({"thu": nt("23:30", 30,
                                                         "01:00")})),
                            date(*THU)), S.Event(S.BOOT_DONE, "system"),
@@ -13638,8 +13638,196 @@ def test_schedule_after_midnight_review_c():
     check([r["start"] for r in rows] ==
           ["23:30", "00:00 (tomorrow)", "00:30 (tomorrow)"],
           f"the list says tomorrow: {[r['start'] for r in rows]}")
-    check("times" not in inspect.getsource(S._ambiguous_note),
-          "no code is left after _ambiguous_note's return")
+    check("times" not in inspect.getsource(S._time_notes),
+          "no code is left after _time_notes return")
+    print("  ok")
+
+def test_schedule_after_midnight_delta_a():
+    section("scheduler (delta review A of PR #196): every typed time the "
+            "editor accepts is read back after a restart; the hand over is "
+            "capped by the first later night that has shows, and a show "
+            "typed days or years out never holds the night; a show delayed "
+            "inside the next night's preshow waits for its first show; "
+            "impossible dates, a date with a day word, and a \"second\" that "
+            "changes nothing are answered in words")
+    S = _sched()
+    if S is None:
+        return
+    import json
+    import tempfile
+    from datetime import date, timedelta, timezone
+    from ltcplay import schedule_service as SV
+
+    def doc(weekly, **kw):
+        kw.setdefault("exceptions", {})
+        return _sched_doc(season={"first_date": "2026-10-01",
+                                  "last_date": "2027-03-31"},
+                          weekly=weekly, late_grace_s=15, **kw)
+
+    def nt(first, iv, last):
+        return {"first_start": first, "interval_min": iv, "last_end": last}
+
+    def at(d, h, mi, s=0):
+        return _den(S, h, mi, s, d=d)
+
+    def run(svc, now, until, step=10):
+        t = now[0].astimezone(timezone.utc)
+        while t < until:
+            t += timedelta(seconds=step)
+            now[0] = t
+            svc.tick()
+
+    def mk(d, start):
+        work = tempfile.mkdtemp()
+        now = [start]
+        svc = _svc(S, work, now, rule=d)
+        svc.start(thread=False)
+        return svc, now
+    THU, FRI, SAT = (2026, 11, 12), (2026, 11, 13), (2026, 11, 14)
+
+    # Finding 1: Thursday 23:00 to 01:30, Friday 18:00 to 20:00. At Friday
+    # 00:20 each word form is typed; a restart at 01:01 reads the file
+    # back whole: the same night, the same shows, the shows that ran still
+    # DONE, nothing set aside.
+    d1 = doc({"thu": nt("23:00", 20, "01:30"), "fri": nt("18:00", 20,
+                                                         "20:00")})
+    forms = (("18:10 tomorrow", at(SAT, 18, 10)),
+             ("17:00 2026-11-14", at(SAT, 17, 0)),
+             ("02:00", at(FRI, 2, 0)),
+             ("02:30 today", at(FRI, 2, 30)),
+             ("04:10 2027-06-01", at((2027, 6, 1), 4, 10)),
+             ("03:00 first", at(FRI, 3, 0)))
+    for typed, want in forms:
+        svc, now = mk(d1, at(THU, 22, 30))
+        run(svc, now, at(FRI, 0, 20), step=30)
+        before = [(x.n, x.status) for x in svc.machine.slots
+                  if x.status == S.DONE]
+        o = svc._apply(_op(S, S.EDIT_ADD, at=typed))
+        added = max(svc.machine.slots, key=lambda x: x.n)
+        check(not o.refused and added.start == want.astimezone(timezone.utc),
+              f"\"{typed}\" is accepted as {want}: {o.refused!r}")
+        work = svc.state_dir
+        svc.stop()
+        now[0] = at(FRI, 1, 1)
+        b = _svc(S, work, now)
+        b.start(thread=False)
+        back = [x for x in b.machine.slots if x.n == added.n]
+        check(b.machine.date == date(*THU) and back and
+              back[0].start == added.start and
+              [(x.n, x.status) for x in b.machine.slots
+               if x.status == S.DONE] == before and
+              not any("unreadable" in r["text"] or "set aside" in r["text"]
+                      for r in b.journal),
+              f"\"{typed}\": the file reads back after a restart, shows "
+              f"that ran stay DONE: {b.machine.date} {before}")
+        b.stop()
+
+    # Finding 2a: Thursday 18:00 to 20:00, Friday dark, Saturday 18:00 to
+    # 20:00. Show 4 moved to "18:10 2026-11-14" does not hold Thursday
+    # open through Friday: it is warned, Thursday hands over at 2 AM, and
+    # Saturday's 18:00 show runs.
+    d2 = doc({"thu": nt("18:00", 20, "20:00"), "sat": nt("18:00", 20,
+                                                         "20:00")})
+    svc, now = mk(d2, at(THU, 17, 30))
+    run(svc, now, at(THU, 18, 30))
+    o = svc._apply(_op(S, S.EDIT_MOVE, show=4, at="18:10 2026-11-14"))
+    check(not o.refused and "will be missed" in svc.tonight_words(),
+          f"a show typed for Saturday is accepted and warned: "
+          f"{o.refused!r}")
+    run(svc, now, at(FRI, 2, 5), step=60)
+    check(svc.machine.date == date(*FRI),
+          f"Thursday hands over at 2 AM on Friday: {svc.machine.date}")
+    thu = json.load(open(SV.tonight_path(date(*THU), svc.state_dir),
+                         encoding="utf-8"))
+    check([x["status"] for x in thu["slots"] if x["n"] == 4] == [S.MISSED],
+          "and the show typed for Saturday is missed out loud, not pending")
+    run(svc, now, at(SAT, 17, 55), step=120)
+    run(svc, now, at(SAT, 18, 2), step=10)
+    check(svc.machine.date == date(*SAT) and
+          svc.machine.slot(1).status in (S.RUNNING, S.DONE),
+          f"Saturday's 18:00 show runs: {svc.machine.date} "
+          f"{svc.machine.slot(1).status}")
+    svc.stop()
+    # 2b: Thursday 23:00 to 03:30, Friday dark, Saturday's first show at
+    # 00:30. A show delayed at 03:00 holds Thursday to Saturday's preshow
+    # (00:00), never past it: Saturday's shows run.
+    d2b = doc({"thu": nt("23:00", 30, "03:30"), "sat": nt("00:30", 30,
+                                                          "02:00")})
+    svc, now = mk(d2b, at(FRI, 2, 40))
+    run(svc, now, at(FRI, 2, 44))
+    svc._apply(_op(S, S.HOLD_ON))
+    run(svc, now, at(FRI, 12, 0), step=60)
+    check(svc.machine.date == date(*THU) and
+          svc.machine.slot(9).status == S.DELAYED,
+          f"setup: show 9 waits through Friday: {svc.machine.date}")
+    run(svc, now, at(SAT, 0, 5), step=30)
+    check(svc.machine.date == date(*SAT),
+          f"Saturday begins at its preshow: {svc.machine.date}")
+    run(svc, now, at(SAT, 0, 32), step=10)
+    check(svc.machine.slot(1).status in (S.RUNNING, S.DONE),
+          f"and its 00:30 show is not missed: "
+          f"{[(x.n, x.status) for x in svc.machine.slots][:2]}")
+    svc.stop()
+
+    # Finding 3: Thursday 23:00 to 03:30, Friday's first show 04:30
+    # (preshow 04:00). Show 9 moved to 04:10 is warned; Hold at 04:00; it
+    # becomes DELAYED and the night waits for Friday's first show, 04:30.
+    d3 = doc({"thu": nt("23:00", 30, "03:30"), "fri": nt("04:30", 30,
+                                                         "05:30")})
+    svc, now = mk(d3, at(FRI, 2, 40))
+    run(svc, now, at(FRI, 2, 45))
+    o = svc._apply(_op(S, S.EDIT_MOVE, show=9, at="04:10"))
+    check(not o.refused and any(le.outcome == "clashes with the next night"
+                                for le in o.log),
+          f"a move into the next night's preshow is warned: {o.refused!r}")
+    run(svc, now, at(FRI, 4, 0))
+    svc._apply(_op(S, S.HOLD_ON))
+    run(svc, now, at(FRI, 4, 11, 30))
+    check(svc.machine.date == date(*THU) and
+          svc.machine.slot(9).status == S.DELAYED,
+          f"show 9 is DELAYED at 04:10 and the night waits: "
+          f"{svc.machine.date} {svc.machine.slot(9).status}")
+    run(svc, now, at(FRI, 4, 29, 30))
+    check(svc.machine.date == date(*THU),
+          "and still waits 30 s before Friday's first show")
+    run(svc, now, at(FRI, 4, 31))
+    check(svc.machine.date == date(*FRI) and any(
+              S.HANDOVER_MISSED in r["text"] for r in svc.journal),
+          f"it is missed only when Friday's first show is due: "
+          f"{svc.machine.date}")
+    svc.stop()
+
+    # Finding 4: arithmetic limits, contradictions and no-ops in words.
+    d4 = doc({"thu": nt("18:00", 20, "20:00")})
+    svc, now = mk(d4, at(THU, 17, 30))
+    run(svc, now, at(THU, 18, 30))
+    for typed, must in (
+            ("23:59 9999-12-31", "years away"),
+            ("10:00 2040-01-01", "years away"),
+            ("18:45 2026-11-12 tomorrow", "names the day twice"),
+            ("18:45 today tomorrow", "names the day twice"),
+            ("18:45 first second", "both first and second")):
+        o = svc._apply(_op(S, S.EDIT_ADD, at=typed))
+        check(o.refused and must in o.refused,
+              f"\"{typed}\" is refused in words ({must}): {o.refused!r}")
+        _no_dashes(o.refused, typed)
+    o = svc._apply(_op(S, S.EDIT_ADD, at="21:00 second"))
+    check(not o.refused and any("does not happen twice" in le.text
+                                for le in o.log),
+          f"\"21:00 second\" says it changes nothing: {o.refused!r} "
+          f"{[le.text for le in o.log][-1:]}")
+    o = svc._apply(_op(S, S.EDIT_ADD, at="10:00 2027-06-01"))
+    added = max(svc.machine.slots, key=lambda x: x.n)
+    words = svc.tonight_words()
+    check(not o.refused and added.start == at((2027, 6, 1), 10, 0).astimezone(
+              timezone.utc) and "will be missed" in words and
+          "2027-06-01" in words,
+          f"a date months ahead is accepted and warned, with its date: "
+          f"{o.refused!r} {words[-200:]!r}")
+    run(svc, now, at(FRI, 2, 5), step=60)
+    check(svc.machine.date == date(*FRI),
+          f"and it does not hold the night: {svc.machine.date}")
+    svc.stop()
     print("  ok")
 
 def test_schedule_rule_file_with_a_bom():
@@ -13730,8 +13918,16 @@ def test_schedule_tonight_file_is_checked():
         return lambda doc: doc["slots"][i].update(kw)
 
     # A night may run past midnight now (Jeff, 2026-10-30): the next
-    # morning is still the night's; two days on is not.
-    bad("a show on another date", slot(4, start="2026-11-16T01:00:00-07:00"))
+    # morning is the night's, and so is any later day a time was typed for
+    # (the file reads whatever the editor accepts, delta review of PR
+    # #196); only a show more than five years out is not a record this
+    # version reads.
+    bad("a show on another date", slot(4, start="2040-11-16T01:00:00-07:00"))
+    far = copy.deepcopy(good)
+    far["slots"][4]["start"] = "2026-11-16T01:00:00-07:00"
+    check(S.machine_from_doc(far, rule, d, at).slot(5).start ==
+          _den(S, 1, 0, d=(2026, 11, 16)),
+          "a show typed for a day or two on reads back")
     ok = copy.deepcopy(good)
     ok["slots"][4]["start"] = "2026-11-15T01:00:00-07:00"
     check(S.machine_from_doc(ok, rule, d, at).slot(5).start ==
@@ -13791,9 +13987,9 @@ def test_schedule_tonight_file_is_checked():
           f"times after now are taken as now and the 6 s step is named: "
           f"{notes}")
     _no_dashes(notes[0], "clock step")
-    bad("an added show two days on", lambda doc: doc["slots"].append(
+    bad("an added show years out", lambda doc: doc["slots"].append(
         dict(doc["slots"][-1], n=99, origin="edit",
-             start="2026-11-16T08:00:00+00:00")))
+             start="2040-11-16T08:00:00+00:00")))
     print("  ok")
 
 
@@ -104227,6 +104423,7 @@ if __name__ == "__main__":
         test_schedule_after_midnight_review_a,
         test_schedule_after_midnight_review_b,
         test_schedule_after_midnight_review_c,
+        test_schedule_after_midnight_delta_a,
         test_schedule_run_warning_says_only_what_is_true,
         test_schedule_late_failed_start_is_a_fault,
         test_schedule_after_a_stopped_show_is_one_choice,

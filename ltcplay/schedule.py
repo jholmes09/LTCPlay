@@ -1083,7 +1083,7 @@ def new_night(rule, d):
     return Machine(date=d, tz=tz, show_len_s=rule.show_len_s,
                    guard_s=rule.guard_s, late_grace_s=rule.late_grace_s,
                    slots=slots, night_end=end, rule_id=rule_fingerprint(rule),
-                   next_first=_night_span(rule, d + timedelta(days=1))[0])
+                   next_first=_next_night_first(rule, d))
 
 
 def rule_fingerprint(rule):
@@ -1106,23 +1106,34 @@ def runs_late(m, s):
 
 
 def clash_with_next_night(m, s):
-    """How a show still to come meets the next night's first show: "after"
-    (it starts at or after it: tonight hands over before it, so it is
-    missed), "inside" (it ends, with its guard, after it: the next night
-    begins only once this one's guard is over, so that first show is
-    missed), or None. Pure."""
-    if m.next_first is None or s.status != PENDING:
+    """How a show still to come meets what follows tonight: "after" (it
+    starts at or after the next night's first show, so tonight hands over
+    before it), "beyond" (it starts later than tonight's hold limit,
+    hold_limit: it cannot hold the night either), "inside" (it ends, with
+    its guard, after the next night's first show: that night begins only
+    once this one's guard is over), "near" (it is inside the next night's
+    preshow lead: that preshow begins only after it), or None. Pure."""
+    if s.status != PENDING:
         return None
-    if s.start >= m.next_first:
+    if m.next_first is not None and s.start >= m.next_first:
         return "after"
+    if s.start > hold_limit(m):
+        return "beyond"
+    if m.next_first is None:
+        return None
     if s.start + timedelta(seconds=m.show_len_s + m.guard_s) > m.next_first:
         return "inside"
+    if (s.planned is not None or s.origin != "rule") and \
+            s.start >= m.next_first - timedelta(seconds=PRESHOW_LEAD_S):
+        # Only a show an operator moved or added: the rule's own shows
+        # are the rule's business (rule_warnings).
+        return "near"
     return None
 
 
 def clash_warnings(m):
-    """Sentences for every show still to come that cannot be fitted before
-    the next night's first show. Said, never refused (Jeff, 2026-10-30)."""
+    """Sentences for every show still to come that cannot be fitted into
+    tonight's hand over. Said, never refused (Jeff, 2026-10-30)."""
     out = []
     for s in m.pending():
         how = clash_with_next_night(m, s)
@@ -1131,6 +1142,13 @@ def clash_warnings(m):
                 f"Show {s.n} at {m.hm(s.start)} is at or after the next "
                 f"night's first show at {m.hm(m.next_first)}, so tonight "
                 f"hands over before it and show {s.n} will be missed.")
+        elif how == "beyond":
+            out.append(
+                f"Show {s.n} at {m.hm(s.start)} is more than "
+                f"{int(EDIT_DAY_LIMIT.total_seconds() // 3600)} hours after "
+                f"tonight's last show ends ({m.hm(hold_limit(m) - EDIT_DAY_LIMIT)}), "
+                f"so tonight hands over before it and show {s.n} will be "
+                f"missed.")
         elif how == "inside":
             late = int((s.start + timedelta(
                 seconds=m.show_len_s + m.guard_s) - m.next_first) // ONE_SECOND)
@@ -1139,6 +1157,12 @@ def clash_warnings(m):
                 f"{fmt_span(late)} after the next night's first show at "
                 f"{m.hm(m.next_first)}, so that show can be missed: the next "
                 f"night begins only once this one's guard is over.")
+        elif how == "near":
+            out.append(
+                f"Show {s.n} at {m.hm(s.start)} is inside the "
+                f"{fmt_span(PRESHOW_LEAD_S)} before the next night's first "
+                f"show at {m.hm(m.next_first)}, so that night's preshow "
+                f"begins only after show {s.n} and its guard.")
     return out
 
 
@@ -2019,10 +2043,11 @@ def _spacing_problem(m, slots, moved, now):
 def _note_clash(tx, m_before):
     """Journal every show an edit or a Delay has just made meet the next
     night's first show (clash_with_next_night). Allowed, never silent."""
-    was = {s.n for s in m_before.pending()
-           if clash_with_next_night(m_before, s)}
+    was = {s.n: clash_with_next_night(m_before, s)
+           for s in m_before.pending()}
     for s in tx.m.pending():
-        if s.n in was or not clash_with_next_night(tx.m, s):
+        how = clash_with_next_night(tx.m, s)
+        if how is None or was.get(s.n) == how:
             continue
         text = [w for w in clash_warnings(tx.m)
                 if w.startswith(f"Show {s.n} at ")][0]
@@ -2222,6 +2247,34 @@ def night_of(now, tz, rule=None, m=None):
     return today
 
 
+NEXT_NIGHT_LOOK = 8
+
+
+def _next_night_first(rule, d):
+    """The first show of the first LATER night that has shows (up to
+    NEXT_NIGHT_LOOK days on), UTC, or None (delta review of PR #196: a dark
+    night let this night swallow the one after). Pure."""
+    one = timedelta(days=1)
+    for k in range(1, NEXT_NIGHT_LOOK + 1):
+        first, _e = _night_span(rule, d + k * one)
+        if first is not None:
+            return first
+    return None
+
+
+def hold_limit(m):
+    """How late a show of this night's list may start and still hold the
+    night open: its last planned end (or the 2 AM reset, whichever is
+    later) plus EDIT_DAY_LIMIT, the same window a time typed without a day
+    may land in. A show further out never holds the night: it is warned
+    about when typed and missed out loud at the hand over (delta review of
+    PR #196: a date years ahead). Pure."""
+    base = _utc(datetime.combine(m.date + timedelta(days=1), NIGHT_RESET,
+                                 tzinfo=m.tz))
+    end = m.night_end if m.night_end is not None else base
+    return max(base, end) + EDIT_DAY_LIMIT
+
+
 def _next_reset_after(t, tz):
     """The first NIGHT_RESET (local) strictly after the instant `t`."""
     local = _utc(t).astimezone(tz)
@@ -2250,8 +2303,9 @@ def night_reset(d, tz, rule=None, m=None):
     if rule is None:
         return base
     _first, end = _night_span(rule, d)
-    nxt, _e = _night_span(rule, d + timedelta(days=1))
+    nxt = _next_night_first(rule, d)
     hold = None
+    dl = None
     if m is not None:
         # The machine is the night: what it still has to run decides, not
         # the file's hours (review B of PR #196: a night closed with Close
@@ -2259,8 +2313,13 @@ def night_reset(d, tz, rule=None, m=None):
         # night back until its planned end). Nothing left to run: over.
         end = None
         need = timedelta(seconds=m.show_len_s + m.guard_s)
+        limit = hold_limit(m)
         for s in m.slots:
             if s.status == PENDING:
+                if s.start > limit:
+                    # Too far out to hold the night (a date days or years
+                    # ahead): warned when typed, missed at the hand over.
+                    continue
                 if nxt is not None and s.start >= nxt:
                     # At or after the next night's first show: this night
                     # cannot hold the next one back for it (review of PR
@@ -2295,7 +2354,13 @@ def night_reset(d, tz, rule=None, m=None):
         r = max(r, hold)
     if nxt is not None:
         opens = nxt - timedelta(seconds=PRESHOW_LEAD_S)
-        r = min(r, opens if end is None else max(end, opens))
+        floor = opens
+        if dl is not None and dl.start >= opens:
+            # A show delayed inside the next night's preshow waits until
+            # that night's first show, not its preshow (delta review of PR
+            # #196: it was missed one tick after it became DELAYED).
+            floor = max(opens, min(nxt, hold))
+        r = min(r, floor if end is None else max(end, floor))
     return r
 
 
@@ -2366,6 +2431,11 @@ def close_at_reset(m, now, at_default=True):
 # has to say its day (review of PR #196: at 22:40 "10:55", meant 22:55,
 # became Friday 10:55 AM and started then).
 EDIT_DAY_LIMIT = timedelta(hours=3)
+# How far ahead a typed time may be, and the same window the file reader
+# accepts (delta review of PR #196: a time the editor took made the file
+# unreadable on a restart). Further is an arithmetic limit, refused with a
+# sentence, not a scheduling restriction.
+MAX_EDIT_AHEAD = timedelta(days=5 * 366)
 
 
 def _wall_all(d, t, tz):
@@ -2398,10 +2468,19 @@ def _edit_words(text):
     day = which = on = None
     for w in (x.lower() for x in parts[1:]):
         if w in ("first", "second"):
+            if which is not None and which != w:
+                raise ValueError(f"{text!r} says both first and second. "
+                                 f"Say one.")
             which = w
         elif w in ("today", "tomorrow", "tonight"):
+            if day is not None or on is not None:
+                raise ValueError(f"{text!r} names the day twice. Give one "
+                                 f"of today, tomorrow or a date.")
             day = w
         else:
+            if day is not None or on is not None:
+                raise ValueError(f"{text!r} names the day twice. Give one "
+                                 f"of today, tomorrow or a date.")
             try:
                 on = date.fromisoformat(w)
             except ValueError:
@@ -2414,6 +2493,24 @@ def _edit_words(text):
 
 
 def _edit_time(m, ev, now=None):
+    """_edit_time_inner, with an arithmetic limit made a sentence: a date
+    the calendar cannot hold, or further than MAX_EDIT_AHEAD, is refused
+    with how far it may go (delta review of PR #196: 9999-12-31 raised an
+    uncaught OverflowError). Not a scheduling restriction."""
+    try:
+        when = _edit_time_inner(m, ev, now)
+    except OverflowError:
+        when = None
+    years = MAX_EDIT_AHEAD.days // 366
+    start = _utc(datetime.combine(m.date, time(0), tzinfo=m.tz))
+    if when is None or when - start > MAX_EDIT_AHEAD:
+        raise ValueError(f"{str(ev.at).strip()!r} is more than {years} years "
+                         f"away. Type a day within {years} years of "
+                         f"tonight.")
+    return when
+
+
+def _edit_time_inner(m, ev, now=None):
     """The time an operator typed for tonight's list ("00:30", or "10:55
     tomorrow", "23:30 today", "10:55 2026-11-14", "01:45 second").
 
@@ -2430,7 +2527,7 @@ def _edit_time(m, ev, now=None):
     tonight's hours is taken (and then refused as passed); anything else is
     never guessed: it is refused, saying how to type it with its day. In a
     time that happens twice, the first one still to come is taken, and the
-    journal says so (_ambiguous_note)."""
+    journal says so (_time_notes)."""
     tpart, day, on, which = _edit_words(ev.at)
     t = parse_time(tpart, "The new time")
     now_u = _utc(_aware(now)) if now is not None else None
@@ -2487,13 +2584,22 @@ def _edit_time(m, ev, now=None):
         f"\"{hhmm} {d1}\" with a date.")
 
 
-def _ambiguous_note(m, when):
-    """A sentence when `when` is in the autumn's repeated hour, else ""."""
+def _time_notes(m, ev, when):
+    """Sentences about how a typed time was read: a time the clocks make
+    happen twice (which one was taken, how to type the other), and "first"
+    or "second" typed for a time that does not happen twice (it changes
+    nothing). "" when there is nothing to say. Pure."""
     local = when.astimezone(m.tz)
     other = local.replace(fold=1 - getattr(local, "fold", 0))
-    if _utc(other) == _utc(local):
-        return ""
+    twice = _utc(other) != _utc(local)
     clk = clock(local)
+    try:
+        which = _edit_words(ev.at)[3]
+    except ValueError:
+        which = None
+    if not twice:
+        return (f" {clk} does not happen twice, so \"{which}\" changes "
+                f"nothing." if which else "")
     if getattr(local, "fold", 0):
         return (f" {clk} happens twice tonight, as the clocks go back; this "
                 f"is the second one.")
@@ -2525,7 +2631,7 @@ def _edit_move(m, ev, now):
             f"{_operator_name(ev)} moved show {s.n} from "
             f"{m.hm(s.start)} to {m.hm(when)}"
             f"{_screen(ev)}, for tonight only."
-            f"{_ambiguous_note(m, when)}", show=s.n)
+            f"{_time_notes(m, ev, when)}", show=s.n)
     _note_late(tx, m)
     return tx.done()
 
@@ -2545,7 +2651,7 @@ def _edit_add(m, ev, now):
     tx.note(EDIT_ADD, "done", "ADDED (operator)",
             f"{_operator_name(ev)} added show {n} at "
             f"{m.hm(when)}{_screen(ev)}, for tonight only."
-            f"{_ambiguous_note(m, when)}",
+            f"{_time_notes(m, ev, when)}",
             show=n)
     _note_late(tx, m)
     return tx.done()
@@ -2786,10 +2892,10 @@ def machine_from_doc(doc, rule, d, now, notes=None):
     base = new_night(rule, d)
     tz = base.tz
     start_of_day = _utc(datetime.combine(d, time(0), tzinfo=tz))
-    # A night may run past midnight (Jeff, 2026-10-30): its shows are on
-    # its date or the next one.
-    end_of_day = _utc(datetime.combine(d + timedelta(days=2), time(0),
-                                       tzinfo=tz))
+    # A night may run past midnight (Jeff, 2026-10-30), and a show may be
+    # typed for any later day: the file reads whatever the editor accepts
+    # (MAX_EDIT_AHEAD), or one wrong show would set the whole night aside.
+    end_of_day = start_of_day + MAX_EDIT_AHEAD
 
     def when(v, what, optional=True):
         if v is None:
@@ -2814,7 +2920,8 @@ def machine_from_doc(doc, rule, d, now, notes=None):
         except (TypeError, ValueError):
             raise ValueError(f"{what} is not a time: {v!r}.")
         if not (start_of_day <= dt < end_of_day):
-            raise ValueError(f"{what} is not on the night of {d} in "
+            raise ValueError(f"{what} is not within {MAX_EDIT_AHEAD.days // 366}"
+                             f" years after the night of {d} in "
                              f"{rule.timezone}.")
         return dt
 
