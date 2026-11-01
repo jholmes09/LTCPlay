@@ -952,6 +952,12 @@ class ChargeTracker:
         names one: nothing can fire, so no tank state changes, but the
         screens say so, once (round-10 review 4). Display only: not a night
         fault, no tank NOT KNOWN."""
+        if not self._no_group and self._armed == "unknown":
+            # A status that is late, stale or unreadable says nothing: the
+            # note stands until a fresh status shows a fireball group or
+            # flamesafe.json changes, so a blip does not journal it again
+            # (round-10 delta review 2).
+            return
         note = ""
         if self._no_group and self._file_get is not None:
             try:
@@ -981,10 +987,11 @@ class ChargeTracker:
             if not ok:
                 return
             if (vals[TANK_SLOT["fuel"] - 1] or vals[TANK_SLOT["air"] - 1]) \
-                    and not self._no_group:
-                # (not with no fireball group at all: those channels reach
-                # nothing, and the mark is not kept asked for on a bench
-                # show, round-10 review 3)
+                    and not (self._no_group and self.armed_now() == "off"):
+                # (not with no fireball group at all, on a status that is
+                # fresh now: those channels reach nothing, and the mark is
+                # not kept asked for on a bench show, round-10 review 3 and
+                # the delta review 3)
                 self._charge_on_wire_at = self._clock()
             self.see(vals, self.armed_now())
         except Exception:                        # noqa: BLE001

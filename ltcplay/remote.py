@@ -1294,12 +1294,21 @@ class FlameStatus:
                      "on": (p.get("on") if isinstance(p.get("on"), int)
                             and not isinstance(p.get("on"), bool)
                             else None),
-                     "slots": _ints(p.get("slots")) or [],
+                     # None when it is missing or not a list of whole
+                     # numbers: the charge record then does not take the
+                     # entry for "nothing on 55 to 59" (round-10 delta
+                     # review 1).
+                     "slots": _ints(p.get("slots")),
                      "asked": bool(p.get("asked")),
                      "enabled": bool(p.get("enabled")),
                      "passing": bool(p.get("passing")),
                      "why": str(p.get("why", ""))}
                     for p in last["passthrough"] if isinstance(p, dict)]
+                    + [{"name": "", "kind": "malformed", "on": None,
+                        "slots": None, "asked": False, "enabled": False,
+                        "passing": False, "why": "not an entry"}
+                       for p in last["passthrough"]
+                       if not isinstance(p, dict)]
                     if isinstance(last.get("passthrough"), list)
                     and not stale else None),
                 # What flamesafe says it is holding at zero (the lockout
@@ -7293,7 +7302,7 @@ class Remote:
                            "sat": {"first_start": "17:00",
                                    "interval_min": 20, "last_end": "22:00"}},
                 "exceptions": {}, "show_len_s": 440, "guard_s": 120,
-                "late_grace_s": 15}
+                "late_grace_s": 120}
 
     def save_schedule_file(self, body):
         """POST schedule-file {"doc": {...}}: checked by the scheduler's

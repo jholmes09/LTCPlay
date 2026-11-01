@@ -887,12 +887,14 @@ class Service:
         self._clock_thread = None
         self._sample_thread = None
         self._started = False
-        failed = self._load_rule()
+        self.legacy_grace_migrated = False
+        failed = self._load_rule(first_load=True)
         self._log(self.logbook.started, state=self._state_name(),
                   night=self._night())
         if failed:
             self._journal_rule_error()
         else:
+            self._journal_late_migration()
             self._journal_rule_warnings()
         if why:
             self._journal_line("system", why, action="operators")
@@ -972,6 +974,7 @@ class Service:
             if self._load_rule():
                 self._journal_rule_error()
             else:
+                self._journal_late_migration()
                 self._follow_rule(self.clock())
             rule = self.rule
         # Worked out off the lock (review of PR #196: a long season held
@@ -989,10 +992,12 @@ class Service:
                                            outcome="warning")
         return rule
 
-    def _load_rule(self):
-        """True when the rule file could not be used."""
+    def _load_rule(self, first_load=False):
+        """True when the rule file could not be used. `first_load` is the
+        start-up read (the only one that may change a legacy late limit)."""
         try:
             self.rule = load_rule(self.path)
+            self._migrate_legacy_grace(first_load)
             self.error = ""
             self._rule_id = sch.rule_fingerprint(self.rule)
             return False
@@ -1002,6 +1007,105 @@ class Service:
             self.machine = None
             self._rule_id = ""
             return True
+
+    # The late limit became 2 minutes (Jeff, 2026-11-01). The schedule
+    # file every set-up PC copied from the example said 15, so a file whose
+    # late_grace_s is exactly 15 is the old default: it is changed to 120
+    # once, saved, and said in the journal. Any other value (0, 30, 60,
+    # 300 ...) is left alone, and so is a 15 typed after this ran once (the
+    # marker file stays beside the schedule file).
+    MIGRATE_LEGACY_GRACE = True        # the selftest turns it off elsewhere
+    LATE_MIGRATED_FILE = "ltcplay_late_limit_migrated.json"
+    LATE_BACKUP_FILE = "ltcplay_schedule.pre-late-limit.json"
+    LATE_MIGRATED_LINE = ("late limit changed from 15 s to 2 minutes (the "
+                          "schedule file said late_grace_s 15, the old "
+                          "default; a show is MISSED only when it is more "
+                          "than 120 s late). Any other value you set is "
+                          "kept. The file as it was is kept as {backup}.")
+
+    def _migrate_legacy_grace(self, first_load=True):
+        """The first successful load of the schedule file after the upgrade
+        (marker file absent): a file that states late_grace_s 15 becomes
+        120 (the file as it was is kept in LATE_BACKUP_FILE, never
+        overwritten) and the marker is written, whatever the file said, so
+        this can only ever happen once per install. `first_load` is False
+        on a reload (the Programming screen's save, a change on disk): that
+        only writes the marker, so a 15 typed in Programming is never
+        touched (delta review of PR #202). Never raises."""
+        self._late_notes = []
+        if not self.MIGRATE_LEGACY_GRACE:
+            return
+        try:
+            folder = os.path.dirname(os.path.abspath(self.path))
+            marker = os.path.join(folder, self.LATE_MIGRATED_FILE)
+            if os.path.exists(marker):
+                return
+            with open(self.path, encoding="utf-8-sig") as fh:
+                text = fh.read()
+            doc = json.loads(text)
+            if not isinstance(doc, dict) or doc.get("soak_only") is True:
+                return                   # the soak's own file is left alone
+            g = doc.get("late_grace_s")
+            changed = False
+            backup = os.path.join(folder, self.LATE_BACKUP_FILE)
+            if not first_load and getattr(self, "_late_save_failed", False):
+                # The first start's save failed: the file still says 15 and
+                # the next start must try again, so no marker now (a save
+                # from Programming would otherwise use up the one chance).
+                return
+            if first_load and g == 15 and isinstance(g, int) and \
+                    not isinstance(g, bool):
+                try:
+                    if not os.path.exists(backup):
+                        write_json_atomic(backup, doc)
+                    doc["late_grace_s"] = sch.DEFAULT_LATE_GRACE_S
+                    self.rule = save_rule(self.path, doc)
+                    changed = True
+                    self.legacy_grace_migrated = True
+                except Exception as e:           # noqa: BLE001
+                    self._late_save_failed = True
+                    self._late_notes.append((
+                        "save",
+                        f"The late limit could not be changed from 15 s to "
+                        f"2 minutes: the schedule file {self.path} could "
+                        f"not be written ({type(e).__name__}; another "
+                        f"program, such as a sync client or antivirus, may "
+                        f"have it open). It stays 15 s; the next start "
+                        f"tries again.", True))
+                    return
+            try:
+                write_json_atomic(marker, {"migrated": changed,
+                                           "late_grace_s_was": g})
+            except Exception as e:               # noqa: BLE001
+                self._late_notes.append((
+                    "marker",
+                    f"The note that the late limit was looked at "
+                    f"({marker}) could not be written "
+                    f"({type(e).__name__}: {e}); "
+                    + ("the schedule file itself is already changed to "
+                       "120 s." if changed else
+                       "nothing was changed in the schedule file."), True))
+            if changed:
+                self._late_notes.insert(0, (
+                    "migrated", self.LATE_MIGRATED_LINE.format(
+                        backup=self.LATE_BACKUP_FILE), False))
+        except Exception:                        # noqa: BLE001
+            pass
+
+    def _journal_late_migration(self):
+        """Each kind of note once per run (lock held or at start)."""
+        said = getattr(self, "_late_said", None)
+        if said is None:
+            said = self._late_said = set()
+        for kind, text, fault in getattr(self, "_late_notes", []):
+            if kind in said:
+                continue
+            said.add(kind)
+            self._journal_line(
+                "system", text, action="schedule file",
+                outcome="migrated" if kind == "migrated" else "not migrated"
+                if kind == "save" else "marker", fault=fault)
+        self._late_notes = []
 
     # -- a schedule saved while running (Jeff, Pico, 2026-10-29) -----------
     # What a rebuild keeps and drops (sch.rebuild_night), said once at its
@@ -2145,13 +2249,13 @@ class Service:
             return True
         # A new day. Settle yesterday first: a show still on its list
         # (the machine was asleep across it) is marked MISSED in the
-        # journal rather than dropped without a word. This tick never
-        # starts a show, so it needs no alert gate: a night hands over only
-        # once its last show and guard are over (sch.night_reset), so every
-        # slot on yesterday's list is past by now; BOOT_DONE below starts
-        # nothing either, and the next
-        # TICK goes through the gate (review of PR #133, 7 and 8).
-        self._apply(sch.Event(sch.TICK, "scheduler"), now)
+        # journal rather than dropped without a word. This tick can never
+        # start a show (settle=True: it only marks MISSED), so it needs no
+        # alert gate, pre-roll or Stop check; a show still inside its late
+        # grace stays PENDING and is closed out loud below. BOOT_DONE
+        # starts nothing either, and the next TICK goes through the gate
+        # (review of PR #133, 7 and 8; simulation review B of PR #202).
+        self._apply(sch.Event(sch.TICK, "scheduler", settle=True), now)
         how = self._still_open(now, d)
         if how is None:
             return True
@@ -3084,8 +3188,9 @@ class Service:
                     "system", f"The rig check (pre-roll) for show {n} could "
                               f"not finish before its time, so show {n} "
                               f"starts late, as soon as the rig is checked "
-                              f"(at most {pr.late_ok_s()} s late). Checks "
-                              f"are never skipped.",
+                              f"(at most {sch.late_limit_s(m.late_grace_s, pr.late_ok_s())}"
+                              f" s late; a show later than that is MISSED). "
+                              f"Checks are never skipped.",
                     action="pre-roll", outcome="late", show=n)
             if v is None:
                 self._preroll_kick(n)
@@ -3153,7 +3258,8 @@ class Service:
                 else:
                     then = (f"Show {key[1]} is checked again at its next "
                             f"tick and starts only if that check passes (at "
-                            f"most {pr.late_ok_s()} s late).")
+                            f"most {sch.late_limit_s(m.late_grace_s, pr.late_ok_s())}"
+                            f" s late; later than that it is MISSED).")
                 self._journal_line(
                     "system", f"{who or 'Someone'} pressed Resume after the "
                               f"rig check for show {key[1]} failed and then "
