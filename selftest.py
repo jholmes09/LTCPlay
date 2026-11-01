@@ -104166,7 +104166,10 @@ def test_fireball_timeline_docs_in_plain_words():
                  "A charge channel that is on keeps the mark asked for",
                  "the button is shown\n  whenever automatic charging is off",
                  "comes back **by itself**",
-                 "Marker names carry the\n  machine's name"):
+                 "Marker names carry the\n  machine's name",
+                 "a start reads **every** machine's markers",
+                 "which was chosen over ever missing a\n  real one",
+                 "never clears a\n  marker: only a record renamed into place"):
         check(" ".join(need.split()) in " ".join(c.split()),
               f"OPERATOR.md's charge section says {need!r}")
     s = _fb_doc_part("OPERATOR.md", "### In a show set to Timeline", "\n### ")
@@ -105332,7 +105335,10 @@ def test_fireball_charge_state():
         C49.tr.see(_fbc_frame(), "armed")
         check(C49.tr.state("fuel") == E and C49.tr.charge_ready() == "off",
               "and after a shot has made both EMPTY")
+        C49.tr.pending = True          # a manual charge about to be seen
         ok49, t49 = C49.tr.confirm_empty("Andy", "Rack screen")
+        check(C49.tr.pending, "Tanks are empty with no tank NOT KNOWN leaves "
+                              "the PENDING mark alone (round-9 review 4)")
         check(ok49 and not C49.tr.auto_off and "automatic charging allowed "
               "again" in t49 and "confirmed EMPTY" not in t49 and
               "the tanks stay as recorded" in t49 and
@@ -105342,8 +105348,12 @@ def test_fireball_charge_state():
         # Round 8, review 1: it comes back by itself once the record is
         # saved and a marker can be written again and every tank is known;
         # not while a tank is NOT KNOWN.
-        for shot_first in (True, False):
-            C55 = _fbc(_fresh("r55" + str(shot_first)))
+        # (a shot first, the record back, the marker back, so it returns)
+        for shot_first, rec_back, mark_back, comes_back in (
+                (True, True, True, True), (False, True, True, False),
+                (True, True, False, False), (True, False, True, False)):
+            C55 = _fbc(_fresh("r55" + str((shot_first, rec_back,
+                                           mark_back))))
             C55.tr.pump()
             real_w55 = C55.tr._write
             real_m55 = C55.tr._write_marker_file
@@ -105358,23 +105368,29 @@ def test_fireball_charge_state():
             if shot_first:
                 C55.tr.see(_fbc_frame(valve=True), "armed")
                 C55.tr.see(_fbc_frame(), "armed")
-            check(C55.tr.auto_off, "disk full: automatic charging is off")
-            C55.tr._write = real_w55
-            C55.tr._write_marker_file = real_m55
+            check(C55.tr.auto_off and "automatic charging is OFF" in
+                  C55.tr.view()["fault"],
+                  "disk full: automatic charging is off, said")
+            if rec_back:
+                C55.tr._write = real_w55
+            if mark_back:
+                C55.tr._write_marker_file = real_m55
             for _ in range(3):
                 C55.t[0] += FC.RETRY_S + 0.1
                 C55.tr.pump()
-            check(C55.tr.auto_off != shot_first,
-                  "disk freed (tanks " +
-                  ("known" if shot_first else "NOT KNOWN") +
-                  "): automatic charging " +
-                  ("on again by itself" if shot_first else "stays off") +
+            check(C55.tr.auto_off != comes_back,
+                  f"disk freed (tanks {'known' if shot_first else 'NOT KNOWN'}, record {'back' if rec_back else 'still failing'},"
+                  f" marker {'back' if mark_back else 'still failing'}): "
+                  f"automatic charging {'on again' if comes_back else 'off'}"
                   f": {C55.tr.auto_off}")
-            if shot_first:
+            if comes_back:
                 check(C55.tr.charge_ready() != "off" and
                       not C55.tr.marker_fault and
+                      "automatic charging is OFF" not in
+                      C55.tr.view()["fault"] and
                       any(a[2] == "auto_on" for a, _k in C55.lines),
-                      "and it is journaled")
+                      f"and it is journaled, the old fault gone: "
+                      f"{C55.tr.view()['fault']}")
             C55.tr.close()
         # Round 8, review 5: the marker names are folded for case, carry a
         # per-machine id; an unreadable marker and one that cannot be
@@ -105443,6 +105459,106 @@ def test_fireball_charge_state():
                   for a, _k in C58.lines),
               f"a first run beside an old marker says so, not 'starting "
               f"both tanks EMPTY': {[a[3][:60] for a, _k in C58.lines]}")
+        # Round 9, F1: the hostname changes after a crash (macOS takes it
+        # from DHCP): the marker written under the old name is still found,
+        # whatever machine wrote it, and a record newer than it clears it.
+        import platform as _pl9
+        real_node9 = _pl9.node
+        try:
+            for which in ("both", "folder only", "home only"):
+                d60 = _fresh("r60" + which.replace(" ", ""))
+                _pl9.node = lambda: "andys-mbp"
+                C60 = _fbc(d60)
+                C60.tr.pump()
+                C60.tr._write = lambda doc: (_ for _ in ()).throw(
+                    PermissionError(13, "folder refuses new files"))
+                C60.tr.manual_gate()
+                C60.tr.pump()
+                C60.tr.manual_gate()
+                C60.tr.pump()
+                written = C60.tr._marker_files()
+                if which == "folder only":
+                    os.remove(C60.tr._alts[1])
+                elif which == "home only":
+                    os.remove(C60.tr._alts[0])
+                _pl9.node = lambda: "Andys-MacBook-Pro.local"
+                C61 = _fbc(d60)       # crash; the machine is now called otherwise
+                check(len(written) == 2 and C61.tr.state("fuel") == U and
+                      C61.tr.state("air") == U and
+                      C61.tr._alts[0] not in written,
+                      f"the hostname changed after the crash ({which}): the "
+                      f"marker under the old name is found: "
+                      f"{C61.tr.state('fuel')} "
+                      f"{[os.path.basename(w) for w in written]}")
+                C61.tr.pump()
+                check(C61.tr._marker_files() == [] and
+                      _fbc(d60).tr.state("fuel") == U,
+                      f"and a newer record clears it, whatever machine wrote "
+                      f"it: {C61.tr._marker_files()}")
+        finally:
+            _pl9.node = real_node9
+        # F2: a record left in .tmp (a rename refused) never outranks a
+        # marker: Air pressed unrecorded (a marker), the shot's EMPTY left
+        # in .tmp, then Fuel pressed with the record unwritable again and
+        # no new marker, a crash.
+        d62 = _fresh("r62")
+        C62 = _fbc(d62)
+        C62.tr.pump()
+        real_write62 = C62.tr._write
+
+        def fail_open62(doc):
+            raise PermissionError(13, "locked")
+        C62.tr._write = fail_open62
+        C62.tr.manual_gate()
+        C62.tr.pump()
+        C62.tr.manual_gate()
+        C62.tr.pump()
+        C62.tr.note_manual({"air"}, "Andy", "Rack screen")
+        C62.tr.see(_fbc_frame(air=True), "armed")
+        C62.tr.see(_fbc_frame(), "armed")
+        C62.tr._write = real_write62
+        real_replace62 = os.replace
+        os.replace = held
+        try:
+            C62.tr.see(_fbc_frame(valve=True), "armed")
+            C62.tr.see(_fbc_frame(), "armed")
+            C62.tr.pump()
+        finally:
+            os.replace = real_replace62
+        C62.tr._write = fail_open62
+        C62.tr.note_manual({"fuel"}, "Andy", "Rack screen")
+        C62.tr.manual_gate()
+        C62.tr.pump()
+        C62.tr.see(_fbc_frame(fuel=True), "armed")
+        C62.tr.pump()
+        tmp62 = _j.load(open(C62.tr.path + ".tmp"))
+        main62 = _j.load(open(C62.tr.path))
+        C63 = _fbc(d62)       # a crash, the folder works again
+        check(tmp62["tanks"]["fuel"]["state"] == "empty" and
+              tmp62["rev"] > main62["rev"] and C63.tr.state("fuel") == U and
+              C63.tr.state("air") == U,
+              f"a record left in .tmp says EMPTY and is newer than the "
+              f"record, but not than the marker: NOT KNOWN: "
+              f"{C63.tr.state('fuel')} tmp {tmp62['rev']} main "
+              f"{main62['rev']}")
+        # F3: no record and a marker: the NOT KNOWN record is on disk
+        # BEFORE anything else (a power cut before the writer's first
+        # flush must not leave an EMPTY one that outranks the marker).
+        d64 = _fresh("r64")
+        Cy = _fbc(d64)
+        Cy.tr.pump()
+        os.makedirs(os.path.dirname(Cy.tr._alts[1]), exist_ok=True)
+        with open(Cy.tr._alts[1], "w") as fh:
+            _j.dump({"rev": 10 ** 15}, fh)
+        os.remove(Cy.tr.path)
+        C64 = _fbc(d64)       # no pump: the power goes
+        on_disk = _j.load(open(C64.tr.path))
+        C65 = _fbc(d64)
+        check(on_disk["tanks"]["fuel"]["state"] == "unknown" and
+              on_disk["tanks"]["air"]["state"] == "unknown" and
+              C65.tr.state("fuel") == U and C65.tr.state("air") == U,
+              f"no record and a marker: NOT KNOWN written at once, not "
+              f"EMPTY first: {on_disk['tanks']['fuel']['state']}")
         # Review 6: flamesafe.json against the running flamesafe is judged
         # on every status, not only while a show computes frames.
         C50 = _fbc(None)
