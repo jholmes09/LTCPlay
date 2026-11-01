@@ -20865,6 +20865,56 @@ def build():
   "                        if self.tanks[k][\"state\"] != UNKNOWN:\n                            self._set(k, UNKNOWN,",
   "                        if False:\n                            self._set(k, UNKNOWN,"),
 
+ ("fireball charge: a manual press is not held for the mark (round 6)",
+  "ltcplay/fireball_charge.py",
+  "        r = self.charge_ready()\n        if r != \"failed\":\n            return r",
+  "        r = self.charge_ready()\n        if r != \"failed\":\n            return \"ok\""),
+
+ ("fireball charge: a manual press that cannot be saved leaves the tanks as they were (round 6)",
+  "ltcplay/fireball_charge.py",
+  "                        if self.tanks[k][\"state\"] == EMPTY:\n                            self._set(k, UNKNOWN, \"a Fireball press went \"",
+  "                        if False:\n                            self._set(k, UNKNOWN, \"a Fireball press went \""),
+
+ ("fireball charge: an unsaved manual press writes no marker elsewhere (round 6)",
+  "ltcplay/fireball_charge.py",
+  "                    saved = self._write_alt(self._next_rev())",
+  "                    saved = False"),
+
+ ("fireball charge: the start ignores the marker elsewhere (round 6)",
+  "ltcplay/fireball_charge.py",
+  "        if rev <= self._base_rev:\n            self._drop_alt(self._base_rev)\n            return",
+  "        if True:\n            return"),
+
+ ("fireball charge: the marker elsewhere is never taken away (round 6)",
+  "ltcplay/fireball_charge.py",
+  "            self._drop_alt(doc[\"rev\"])\n            self._unwritten = None",
+  "            self._unwritten = None"),
+
+ ("fireball charge: Tanks are empty works while the group is off 55 to 59 (round 6)",
+  "ltcplay/fireball_charge.py",
+  "            if self.group_fault or self.ext_fault:\n                return False,",
+  "            if False:\n                return False,"),
+
+ ("fireball charge: a disagreeing flamesafe.json leaves the tanks as they were (round 6)",
+  "ltcplay/fireball_charge.py",
+  "                if self.tanks[k][\"state\"] != UNKNOWN:\n                    self._set(k, UNKNOWN, \"flamesafe.json and the running \"",
+  "                if False:\n                    self._set(k, UNKNOWN, \"flamesafe.json and the running \""),
+
+ ("fireball charge: a mark nothing used stays for ever (round 6)",
+  "ltcplay/fireball_charge.py",
+  "        self._pending_idle()\n",
+  "        pass\n"),
+
+ ("fireball charge: a mark a charge used is taken off when idle (round 6)",
+  "ltcplay/fireball_charge.py",
+  "        if state == CHARGED:\n            self._pending_used = True",
+  "        if False:\n            self._pending_used = True"),
+
+ ("fireball charge: Tanks are empty leaves the PENDING mark (round 6)",
+  "ltcplay/fireball_charge.py",
+  "                self._set(k, EMPTY, f\"confirmed empty by {who}\", now_w)\n            self.pending = False",
+  "                self._set(k, EMPTY, f\"confirmed empty by {who}\", now_w)"),
+
  ("fireball charge: close() waits on a hung write for ever (round 4)",
   "ltcplay/fireball_charge.py",
   "        t.start()\n        t.join(CLOSE_S)",
@@ -21235,8 +21285,8 @@ def build():
 
  ("fireball cues: an FSEQ show is not guarded",
   "ltcplay/fireball_cues.py",
-  "            return self._fseq_guarded(out, run, first and relf > 1)\n        out = self._masked(out)",
-  "            return out\n        out = self._masked(out)"),
+  "                                      jumped)\n        out = self._masked(out)",
+  "                                      jumped) if False else out\n        out = self._masked(out)"),
 
  ("fireball cues: Purge goes out from an FSEQ show",
   "ltcplay/fireball_cues.py",
@@ -21290,8 +21340,8 @@ def build():
 
  ("fireball cues: an FSEQ charge the FSEQ turned off rides on",
   "ltcplay/fireball_cues.py",
-  "                run.sent_at.pop(tank, None)\n                run.sent_tanks.discard(tank)\n                run.fseq_hold.discard(tank)\n                continue",
-  "                run.fseq_hold.discard(tank)\n                continue"),
+  "                run.sent_at.pop(tank, None)\n                run.sent_tanks.discard(tank)\n                run.fseq_hold.discard(tank)\n                run.fseq_skip.discard(tank)\n                continue",
+  "                run.fseq_hold.discard(tank)\n                run.fseq_skip.discard(tank)\n                continue"),
 
  ("fireball cues: a switch to the FSEQ mid-play drops the play's stages (round 4, s40)",
   "ltcplay/fireball_cues.py",
@@ -21315,8 +21365,8 @@ def build():
 
  ("fireball cues: the mark is not asked for as the play starts (round 5)",
   "ltcplay/fireball_cues.py",
-  "                # is on disk long before the first charge stage.\n                self._ready(self._charge_get())",
-  "                # is on disk long before the first charge stage.\n                pass"),
+  "            if w[\"s1\"] > relf and w[\"s0\"] - relf <= LEAD_FRAMES and \\\n                    tr.state(tank) == \"empty\":\n                self._ready(tr)",
+  "            if w[\"s1\"] > relf and w[\"s0\"] - relf <= LEAD_FRAMES and \\\n                    tr.state(tank) == \"empty\":\n                pass"),
 
  ("fireball cues: a mark that cannot be saved is not a fault (round 5)",
   "ltcplay/fireball_cues.py",
@@ -21330,18 +21380,63 @@ def build():
 
  ("fireball cues: an FSEQ charge landed inside starts late after a wait (round 5)",
   "ltcplay/fireball_cues.py",
-  "            if tank in run.fseq_hold:\n                out[slot - 1] = 0",
-  "            if False:\n                out[slot - 1] = 0"),
+  "            if tank in run.fseq_hold or tank in run.fseq_skip:\n                out[slot - 1] = 0",
+  "            if tank in run.fseq_skip:\n                out[slot - 1] = 0"),
+
+ ("fireball cues: the running flamesafe's slots are never looked at (round 6)",
+  "ltcplay/fireball_cues.py",
+  "        file_g, live_g = self._group, self._live",
+  "        file_g, live_g = self._group, None"),
+
+ ("fireball cues: a file and live disagreement does not tell the charge record (round 6)",
+  "ltcplay/fireball_cues.py",
+  "            if tr is not None and not self._ext_told:",
+  "            if False:"),
+
+ ("fireball cues: a disagreement zeroes only one group (round 6)",
+  "ltcplay/fireball_cues.py",
+  "        for g in known:\n            for s in g:",
+  "        for g in known[:1]:\n            for s in g:"),
+
+ ("fireball cues: the mark is asked for at no charge stage (round 6)",
+  "ltcplay/fireball_cues.py",
+  "        self._lead(run, tr, relf)\n",
+  "        pass\n"),
+
+ ("fireball cues: the mark is asked for however far the stage is (round 6)",
+  "ltcplay/fireball_cues.py",
+  "            if w[\"s1\"] > relf and w[\"s0\"] - relf <= LEAD_FRAMES and \\",
+  "            if w[\"s1\"] > relf and True and \\"),
+
+ ("fireball cues: a refused FSEQ charge starts late when the retry works (round 6)",
+  "ltcplay/fireball_cues.py",
+  "                if self._unsaved(why):\n                    run.fseq_skip.add(tank)",
+  "                pass"),
+
+ ("fireball cues: a seek inside the play is not a landing (round 6)",
+  "ltcplay/fireball_cues.py",
+  "            jumped = relf < run.last_relf - 2 or relf > run.last_relf + adv",
+  "            jumped = False"),
+
+ ("fireball cues: an FSEQ charge held for the mark starts late after a seek (round 6)",
+  "ltcplay/fireball_cues.py",
+  "            return self._fseq_guarded(out, run, (first and relf > 1) or\n                                      jumped)",
+  "            return self._fseq_guarded(out, run, (first and relf > 1))"),
+
+ ("fireball cues: the engine never gives the cues the running flamesafe's slots (round 6)",
+  "ltcplay/web.py",
+  "journal=say, group_get=fireball_slots, live_get=live_slots,",
+  "journal=say, group_get=fireball_slots,"),
 
  ("fireball cues: a fireball group off 55 to 59 is not checked",
   "ltcplay/fireball_cues.py",
-  "        if group is not None and group != list(SLOTS):",
-  "        if False:"),
+  "        bad = mismatch or any(g != list(SLOTS) for g in known)",
+  "        bad = False"),
 
  ("fireball cues: the engine never names flamesafe's fireball group",
   "ltcplay/web.py",
-  "            journal=say, group_get=fireball_slots,",
-  "            journal=say,"),
+  "            journal=say, group_get=fireball_slots, live_get=live_slots,",
+  "            journal=say, live_get=live_slots,"),
 
  # A schedule saved while ltcplay runs, and Run off after a restart
  # (Jeff, Pico, 2026-10-29).

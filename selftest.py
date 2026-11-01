@@ -102792,9 +102792,16 @@ def test_fireball_timeline_docs_in_plain_words():
                  "PENDING (write first, then charge)",
                  "the automatic charge is **not sent**",
                  "the charge record cannot be saved: automatic charging is "
-                 "off", "is never held back by it",
+                 "off",
                  "A clock set back can only cost an extra NOT KNOWN",
-                 "LTC Player stopped with PENDING on the record"):
+                 "LTC Player stopped with PENDING on the record",
+                 "A Fuel or Air press on the Fireball page** is held for "
+                 "the few milliseconds",
+                 "the press **still goes out**",
+                 "a second tiny marker is written in the user's temp "
+                 "folder",
+                 "comes off again after 5 seconds",
+                 "Tanks are empty is refused while that stands"):
         check(" ".join(need.split()) in " ".join(c.split()),
               f"OPERATOR.md's charge section says {need!r}")
     s = _fb_doc_part("OPERATOR.md", "### In a show set to Timeline", "\n### ")
@@ -102812,6 +102819,11 @@ def test_fireball_timeline_docs_in_plain_words():
                  "under-charged, and the journal says so too",
                  "A new charge also waits until the charge record says "
                  "PENDING on disk",
+                 "asked for when the stage is within two seconds of "
+                 "starting",
+                 "stays skipped until the FSEQ turns it off",
+                 "A Programming Ahead or Back inside a play counts as a "
+                 "landing",
                  "under any\nspelling",
                  "not fired in this play", "next time a show cue starts",
                  "finishes its own stages, Valve Open included",
@@ -102841,6 +102853,9 @@ def test_fireball_timeline_docs_in_plain_words():
                  "A charge the FSEQ itself turns off has ended",
                  "The fireball must be on 55 to 59",
                  "both tanks become NOT KNOWN on the charge record",
+                 "flamesafe.json and the running flamesafe must agree",
+                 "the channels of **both** groups are zero from every "
+                 "show",
                  "No fireball group found at all",
                  "Purge (59) is always zero",
                  "each get one charge until a shot (57) or a Purge",
@@ -102907,6 +102922,11 @@ def _fbc(work=None, **kw):
     class _Audit:
         def event(self, **k):
             C.events.append(k)
+    if work and "alt_dir" not in kw and os.path.isdir(work):
+        # The fallback marker goes in the test's own folder, never the
+        # machine's temp folder.
+        kw["alt_dir"] = os.path.join(work, "_alt")
+        os.makedirs(kw["alt_dir"], exist_ok=True)
     C.tr = FC.ChargeTracker(
         work, journal=lambda *a, **k: C.lines.append((a, k)),
         audit=_Audit(), wall=lambda: C.wall[0], clock=lambda: C.t[0],
@@ -103726,6 +103746,118 @@ def test_fireball_charge_state():
         check(first == "wait" and C35.tr.charge_ready() == "failed" and
               "could not be written" in C35.tr.view()["fault"],
               "the mark cannot be written: failed, the fault shown")
+        # Round 6. Tanks are empty clears the PENDING mark (review A: a
+        # test gap) and is refused while the fireball group is off 55 to
+        # 59 or flamesafe.json and the running flamesafe disagree (review
+        # A bug 3).
+        d40 = _fresh("r40")
+        C40 = _fbc(d40)
+        C40.tr.pump()
+        C40.tr.charge_ready()
+        C40.tr.pump()
+        check(_j.load(open(C40.tr.path))["pending"] is True, "PENDING on")
+        C40b = _fbc(d40)
+        check(C40b.tr.state("fuel") == U and C40b.tr.pending, "restart: NOT KNOWN")
+        ok40, _t = C40b.tr.confirm_empty("Andy")
+        C40b.tr.pump()
+        check(ok40 and C40b.tr.pending is False and
+              _j.load(open(C40b.tr.path))["pending"] is False,
+              "Tanks are empty takes the PENDING mark off, written")
+        C40c = _fbc(d40)
+        check(C40c.tr.state("fuel") == E and not C40c.tr.fault,
+              "and the next start reads EMPTY")
+        C40c.tr.group_fault = "flamesafe's fireball group is on [60]."
+        C40c.tr.tanks["fuel"]["state"] = U
+        ok40, t40 = C40c.tr.confirm_empty("Andy")
+        check(not ok40 and C40c.tr.state("fuel") == U and
+              "Fix the flamesafe config first" in t40 and _cfg_dashes(t40),
+              f"Tanks are empty refused while the group is off 55 to 59: "
+              f"{t40}")
+        C40c.tr.group_fault = ""
+        C40c.tr.note_external_fault("flamesafe.json says 60 to 64, the "
+                                    "running flamesafe 55 to 59.")
+        C40c.tr.pump()
+        check(C40c.tr.state("fuel") == U and C40c.tr.state("air") == U and
+              not C40c.tr.confirm_empty("Andy")[0] and
+              "60 to 64" in C40c.tr.view()["fault"] and
+              any(a[2] == "group_fault" and k.get("fault")
+                  for a, k in C40c.lines),
+              "flamesafe.json and the running flamesafe disagree: both NOT "
+              "KNOWN, said, Tanks are empty refused")
+        C40c.tr.note_external_fault("")
+        check(C40c.tr.state("fuel") == U and C40c.tr.confirm_empty("Andy")[0],
+              "they agree again: still NOT KNOWN until confirmed, then it "
+              "may be")
+        # A PENDING mark nothing used comes off again (review A bug 2, B4):
+        # a rehearsal stopped before its charge.
+        d41 = _fresh("r41")
+        C41 = _fbc(d41)
+        C41.tr.pump()
+        C41.tr.charge_ready()
+        C41.tr.pump()
+        C41.t[0] += FC.PENDING_IDLE_S - 1
+        C41.tr._read_armed()
+        C41.tr.pump()
+        check(C41.tr.pending is True, "not before the idle time")
+        C41.t[0] += 2
+        C41.tr._read_armed()
+        C41.tr.pump()
+        check(C41.tr.pending is False and
+              _j.load(open(C41.tr.path))["pending"] is False and
+              _fbc(d41).tr.state("fuel") == E,
+              "after the idle time it comes off, written: a restart keeps "
+              "EMPTY")
+        C41.tr.charge_ready()
+        C41.tr.pump()
+        C41.tr.see(_fbc_frame(fuel=True), "armed")
+        C41.t[0] += FC.PENDING_IDLE_S + 1
+        C41.tr._read_armed()
+        check(C41.tr.pending is True, "a mark a charge used stays")
+        # Review 3: a manual press is held until the mark is on disk, and
+        # goes out anyway when the record cannot be saved, with both tanks
+        # NOT KNOWN in memory and a marker elsewhere so a restart reads
+        # NOT KNOWN though the record on disk says EMPTY.
+        d42 = _fresh("r42")
+        C42 = _fbc(d42)
+        C42.tr.pump()
+        got = [C42.tr.manual_gate()]
+        C42.tr.pump()
+        got.append(C42.tr.manual_gate())
+        check(got == ["wait", "ok"], f"a manual press waits for the mark: "
+                                     f"{got}")
+        C42.tr.see(_fbc_frame(valve=True), "armed")
+        C42.tr.see(_fbc_frame(), "armed")
+        C42.tr.pump()
+        d43 = _fresh("r43")
+        C43 = _fbc(d43)
+        C43.tr.pump()
+        check(_j.load(open(C43.tr.path))["tanks"]["fuel"]["state"] ==
+              "empty", "EMPTY on disk")
+        C43.tr._write = lambda doc: (_ for _ in ()).throw(
+            PermissionError(13, "folder refuses new files"))
+        g1 = C43.tr.manual_gate()
+        C43.tr.pump()
+        g2 = C43.tr.manual_gate()
+        check(g1 == "wait" and g2 == "ok" and C43.tr.state("fuel") == U and
+              C43.tr.state("air") == U and
+              "cannot be saved" in C43.tr.view()["fault"] and
+              os.path.exists(C43.tr._alt),
+              f"the record cannot be saved: the press goes out, both NOT "
+              f"KNOWN, a marker written elsewhere: {g1} {g2}")
+        C43.tr.note_manual({"fuel"}, "Andy", "Rack screen")
+        C43.tr.see(_fbc_frame(fuel=True), "armed")
+        check(C43.tr.state("fuel") == C_, "and Andy's Fuel is CHARGED")
+        C44 = _fbc(d43)       # crash, the folder works again
+        check(C44.tr.state("fuel") == U and C44.tr.state("air") == U and
+              "went out while the record could not be saved" in
+              C44.tr.fault,
+              f"the restart reads NOT KNOWN though the record says EMPTY: "
+              f"{C44.tr.state('fuel')} {C44.tr.fault}")
+        C44.tr.pump()
+        check(not os.path.exists(C44.tr._alt),
+              "the marker is taken away once a newer record is on disk")
+        C45 = _fbc(d43)
+        check(C45.tr.state("fuel") == U, "and NOT KNOWN is what is on disk")
         # A press on the Fireball page asks for the mark, never waits.
         d36 = _fresh("r36")
         C36 = _fbc(d36)
@@ -103976,6 +104108,7 @@ class _FbcTank:
         # counts the questions.
         self.ready = ["ok"]
         self.asked = 0
+        self.ext = []        # note_external_fault's texts, in order
 
     def state(self, tank):
         return self.tanks[tank]
@@ -103983,6 +104116,9 @@ class _FbcTank:
     def charge_ready(self):
         self.asked += 1
         return self.ready.pop(0) if len(self.ready) > 1 else self.ready[0]
+
+    def note_external_fault(self, text):
+        self.ext.append(text)
 
 
 def _fbq_rig(stages, source="timeline", cue="Show", show_len_s=600.0,
@@ -104441,6 +104577,99 @@ def test_fireball_cues_rules():
         g = R.frame(40, base=base)
         check(not R.fq.fault and g[54] == 255 and g[55] == 0,
               f"on 55 to 59 (any order): the timeline runs: {R.fq.fault}")
+        # Round-6 review 1: flamesafe.json and the RUNNING flamesafe differ
+        # on the fireball's slots, either way round: the channels of both
+        # groups are zero from every show, the charge record is told (both
+        # tanks NOT KNOWN), and it is told again when they agree.
+        full = [255] * 512
+        for fgrp, lgrp, what in (([60, 61, 62, 63, 64], [55, 56, 57, 58, 59],
+                                  "file 60 to 64, live 55 to 59"),
+                                 ([55, 56, 57, 58, 59], [60, 61, 62, 63, 64],
+                                  "file 55 to 59, live 60 to 64")):
+            R = _fbq_rig([], source="fseq")
+            rigs.append(R)
+            R.fq._group, R.fq._live = fgrp, lgrp
+            g = R.frame(40, base=full)
+            check(all(g[x - 1] == 0 for x in range(55, 65)) and
+                  g[0] == 255 and g[64] == 255 and
+                  "flamesafe.json puts the fireball on" in R.fq.fault and
+                  len(R.tank.ext) == 1 and "60" in R.tank.ext[0],
+                  f"{what}: 55 to 64 zero from the show, a fault, the "
+                  f"charge record told: {R.fq.fault}")
+            g = R.frame(41, base=full)
+            check(len(R.tank.ext) == 1, f"{what}: told once")
+            R.fq._group = R.fq._live = [55, 56, 57, 58, 59]
+            g = R.frame(42, base=full)
+            check(R.tank.ext[-1] == "" and not R.fq.fault and
+                  g[54] == 255 and g[55] == 255 and g[56] == 255 and
+                  g[57] == 255 and g[58] == 0 and g[59] == 255,
+                  f"{what}: they agree: told, and the normal guard "
+                  f"(Purge 59 zero, charges by the rule): "
+                  f"{R.tank.ext[-1:]} {g[54:60]}")
+        R = _fbq_rig([], source="fseq")
+        rigs.append(R)
+        R.fq._group, R.fq._live = [60, 61, 62, 63, 64], None
+        g = R.frame(40, base=full)
+        check(all(g[x - 1] == 0 for x in range(60, 65)) and g[54] == 255
+              and not R.tank.ext,
+              "file 60 to 64, the live group not known: its own slots zero "
+              "as before, nothing to compare")
+        # Review 5: the mark is asked for only when a charge stage is about
+        # to start (a rehearsal stopped before it asks nothing).
+        R = _fbq_rig([_st("fuel", "00:00:10:00", 1)])
+        rigs.append(R)
+        for f in range(0, 200):
+            R.frame(f)
+        check(R.tank.asked == 0, f"a charge stage 10 s away: not asked: "
+                                 f"{R.tank.asked}")
+        for f in range(200, 290):
+            R.frame(f)
+        check(R.tank.asked > 0, "and asked as it comes within two seconds")
+        R = _fbq_rig([_st("fuel", "00:00:10:00", 1)],
+                     tank=_FbcTank(fuel="charged"))
+        rigs.append(R)
+        for f in range(240, 300):
+            R.frame(f)
+        check(R.tank.asked == 0, "a tank that is not EMPTY: never asked")
+        # Review 6: a FSEQ charge refused because the record cannot be
+        # saved stays refused until the FSEQ turns it off.
+        R = _fbq_rig([], source="fseq")
+        rigs.append(R)
+        R.tank.ready = ["failed"]
+        got = [R.frame(f, base=base)[54] for f in range(0, 4)]
+        R.tank.ready = ["ok"]
+        got += [R.frame(f, base=base)[54] for f in range(4, 10)]
+        off = [R.frame(f)[54] for f in range(10, 12)]
+        again = [R.frame(f, base=base)[54] for f in range(12, 16)]
+        check(got == [0] * 10 and off == [0, 0] and again == [200] * 4,
+              f"refused (cannot be saved) stays refused though the retry "
+              f"works, until the FSEQ turns it off: {got} {off} {again}")
+        # Review 7: a seek inside the play is a landing: a stage waiting
+        # for the mark never starts mid-window after a jump.
+        R = _fbq_rig([_st("fuel", "00:00:01:00", 2)])
+        rigs.append(R)
+        R.tank.ready = ["wait"] * 9 + ["ok"]
+        for f in range(0, 5):
+            R.frame(f)
+        got = [R.frame(f)[54] for f in range(40, 95)]
+        check(not any(got), f"a jump into the Fuel window while the mark "
+                            f"is on its way: quiet: {got.count(255)}")
+        R = _fbq_rig([_st("fuel", "00:00:01:00", 2)])
+        rigs.append(R)
+        R.tank.ready = ["wait"] * 9 + ["ok"]
+        for f in range(100, 105):
+            R.frame(f)
+        got = [R.frame(f)[54] for f in range(20, 25)]
+        check(not any(got), "and a jump back is the same")
+        R = _fbq_rig([], source="fseq")
+        rigs.append(R)
+        for f in range(0, 5):
+            R.frame(f)               # the FSEQ's charge is off
+        R.tank.ready = ["wait", "wait", "ok"]
+        got = [R.frame(f, base=base)[54] for f in range(300, 306)]
+        check(got == [0] * 6,
+              f"a seek into an FSEQ charge while the mark is on its way: "
+              f"held until the FSEQ turns it off: {got}")
         # Valve Open and the Igniter: no charge guard, independent.
         R = _fbq_rig([_st("igniter", "00:00:01:00", 1),
                       _st("valve", "00:00:05:00", 1)],
@@ -104456,9 +104685,13 @@ def test_fireball_cues_rules():
         R = _fbq_rig([_st("fuel", "00:00:01:00", 1),
                       _st("valve", "00:00:03:00", 0.2)])
         rigs.append(R)
-        R.tank.ready = ["wait", "wait", "wait", "ok"]
+        # One question a frame before the stage (the lead), two a frame
+        # once it is open (the lead and the stage's own): the 36th is the
+        # stage's at frame 32.
+        R.tank.ready = ["wait"] * 35 + ["ok"]
         R.frame(0)
-        check(R.tank.asked == 1, "the mark is asked for as the play starts")
+        check(R.tank.asked == 1, "the mark is asked for when the charge "
+                                 "stage is within two seconds")
         got = [R.frame(f)[54] for f in range(1, 70)]
         on = [f + 1 for f, v in enumerate(got) if v]
         check(on and on[0] == 32 and on[-1] == 59,
@@ -104770,6 +105003,13 @@ def test_fireball_cues_wiring():
     from ltcplay import fireball_cues as FQ
     F = _fi_mod()
     work = tempfile.mkdtemp()
+    wsrc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web.py"), encoding="utf-8").read()
+    check("group_get=fireball_slots, live_get=live_slots," in wsrc and
+          'if str(g.get("name", "")).strip().lower() != "fireball":' in wsrc
+          and 'sl = g.get("fire_slots")' in wsrc,
+          "the engine gives the cues the running flamesafe's fireball "
+          "slots (round-6 review 1)")
 
     class _Svc:
         conductor = None
