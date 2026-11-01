@@ -3534,8 +3534,9 @@ class Remote:
                     at = p.nudge(secs)
                 said = f"jumped {secs:+g} s to {tl.format(at)}"
             elif name == "pause" and ph is not None:
-                at = ph.pause(who, screen)
-                said = f"paused at {tl.format(at)}"
+                at, why = ph.pause_or_why(who, screen)
+                said = (f"not paused at {tl.format(at)}: {why}" if why
+                        else f"paused at {tl.format(at)}")
             elif name == "continue" and ph is not None:
                 at = ph.cont(who, screen)
                 said = f"continued from {tl.format(at)}"

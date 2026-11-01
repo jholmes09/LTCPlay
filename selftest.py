@@ -61159,11 +61159,15 @@ def test_a_hold_after_a_stop_never_turns_it_into_a_pause():
         del n.calls[:]
         c.stop("Andy", "Rack screen")
         # The programming Pause (playhead.py), its sequence still pending.
-        sess = types.SimpleNamespace(running=True, clock_here=lambda: 12.0,
-                                     clock_pause=lambda: None)
+        sess = types.SimpleNamespace(
+            running=True, clock_here=lambda: 12.0, clock_pause=lambda: None,
+            tl=types.SimpleNamespace(format=lambda x: f"T{x:g}"))
         ph = ShowAudioPlayhead(types.SimpleNamespace(session=sess),
                                types.SimpleNamespace(conductor=c))
-        ph.pause("Andy", "Programming")
+        # The Hold press while Programming plays (remote.py): the operator
+        # reads the conductor's own answer, never "paused ... Continue
+        # carries on" (round 3 review of #199, 3).
+        said = ph.hold_press("Andy", "Stream Deck")
         h = c.hold("Andy", "Programming")
         for _ in range(3):
             c.run_pending()
@@ -61183,6 +61187,60 @@ def test_a_hold_after_a_stop_never_turns_it_into_a_pause():
               c.snapshot()["applied"]["music"] == "stopped",
               f"the Stop stands under a Hold and a Resume: {look} {music} "
               f"{h.sentence[:60]} {rs.ok} {after} {c.snapshot()['applied']}")
+        check(said.startswith("Programming playback was not paused") and
+              "nothing to hold" in said and "Continue" not in said,
+              f"the Hold press after a Stop says what happened: {said}")
+    finally:
+        c.close()
+        n.link.close()
+    print("  ok")
+
+
+def test_a_new_shows_music_after_a_stop_is_still_held():
+    section("conductor (round 3 review of #199, 1): a Stop, then the next "
+            "show starts (its music playing, the look still STOPPED_DARK "
+            "until the show is confirmed): a Hold then holds it, the look "
+            "HELD and music_hold sent, and the Hold press says paused")
+    import types
+    from ltcplay.playhead import ShowAudioPlayhead
+    n = _fi_night()
+    if n.S is None:
+        return
+    c = n.c
+    try:
+        n.svc.tick()
+        c.run_pending()
+        n.now[0] = _den(n.S, 18, 0)
+        n.w.runner.start_show(1, who="the scheduler", stops=c.stops)
+        c.run_pending()
+        c.show_starting("the scheduler", "engine", stops=c.stops)
+        c.run_pending()
+        c.stop("Andy", "Rack screen")
+        for _ in range(3):
+            c.run_pending()
+        c.resume("Andy", "Rack screen")
+        c.run_pending()
+        # The next show starts (decided after the Stop): music playing,
+        # not yet confirmed, so the look is still the Stop's.
+        r = n.w.runner.start_show(1, who="the scheduler", stops=c.stops)
+        c.run_pending()
+        look0 = c.snapshot()["look"]
+        music0 = c.snapshot()["applied"]["music"]
+        del n.calls[:]
+        sess = types.SimpleNamespace(
+            running=True, clock_here=lambda: 12.0, clock_pause=lambda: None,
+            tl=types.SimpleNamespace(format=lambda x: f"T{x:g}"))
+        ph = ShowAudioPlayhead(types.SimpleNamespace(session=sess),
+                               types.SimpleNamespace(conductor=c))
+        said = ph.hold_press("Andy", "Stream Deck")
+        for _ in range(3):
+            c.run_pending()
+        music = [kk for kk, _a, _t in n.calls if kk.startswith("music")]
+        check(r.ok and look0 == "STOPPED_DARK" and music0 == "playing" and
+              c.snapshot()["look"] == "HELD" and "music_hold" in music and
+              said.startswith("Programming playback paused at"),
+              f"the new show's music is held: {r.sentence[:60]} {look0} "
+              f"{music0} {c.snapshot()['look']} {music} {said[:70]}")
     finally:
         c.close()
         n.link.close()
@@ -109885,6 +109943,7 @@ if __name__ == "__main__":
         test_fire_ice_a_start_decided_before_a_stop_is_refused,
         test_a_stop_after_music_started_under_a_fading_stop_fades_afresh,
         test_a_hold_after_a_stop_never_turns_it_into_a_pause,
+        test_a_new_shows_music_after_a_stop_is_still_held,
         test_a_hold_in_the_line_behind_a_stop_never_turns_it_into_a_pause,
         test_resume_clears_faults_only_after_a_stops_hold,
         test_resume_lets_go_of_a_set_aside_night,

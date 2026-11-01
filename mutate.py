@@ -18016,8 +18016,10 @@ def build():
   "                # The Abort's black stands"),
 
  ("Pause freezes only the clock, not the show's Hold", "ltcplay/playhead.py",
-  '            self._refused(cond.hold(who, screen), "Pause")',
-  '            s.clock_pause()'),
+  '            r = cond.hold(who, screen)\n'
+  '            self._refused(r, "Pause")',
+  '            r = s.clock_pause()\n'
+  '            self._refused(r, "Pause")'),
 
  ("Continue skips the show's Resume", "ltcplay/playhead.py",
   '            self._refused(cond.resume(who, screen), "Continue")',
@@ -22566,6 +22568,20 @@ def build():
  ('conductor: a Hold after a Stop turns it into a pause a Resume brings back (round 2)', 'ltcplay/conductor.py',
   '            stopped = (self._look == STOPPED_DARK and\n',
   '            stopped = (False and\n'),
+
+ ("conductor: a new show's music after a Stop is not held (round 3)", 'ltcplay/conductor.py',
+  '                       self._stopped_since_music)\n',
+  '                       (self._stopped_since_music or self.stops > 0))\n'),
+
+ ('playhead: the Hold press says paused when a Stop left the rig dark (round 3)', 'ltcplay/playhead.py',
+  '        if why:\n'
+  '            return f"Programming playback was not paused: {why}"',
+  '        if False:\n'
+  '            return f"Programming playback was not paused: {why}"'),
+
+ ('playhead: a Pause never hears that a Stop left the rig dark (round 3)', 'ltcplay/playhead.py',
+  '            if self._stopped_dark(cond):\n',
+  '            if False:\n'),
 
 ]
 
