@@ -725,16 +725,9 @@ class FireballPanel:
 def _during_show_blockers(remote, m):
     """The Fireball page's own rules during a show (Jeff, 2026-10-30): a
     show playing, the show clock playing, Run pressed and Programming
-    playback and a Hold do NOT hold it off; an Abort standing, live flame
-    programming, and the Startup page's settings or lock state not trusted
-    do. "" or the sentence. May raise (the caller
-    fails closed)."""
-    svc = remote.schedule
-    mach = getattr(svc, "machine", None)
-    cond = getattr(svc, "conductor", None)
-    if getattr(mach, "abort_latched", False) or \
-            getattr(cond, "latched", False):
-        return "the show is aborted; press Reset first."
+    playback and a Hold do NOT hold it off; live flame programming, and
+    the Startup page's settings or lock state not trusted do. "" or the
+    sentence. May raise (the caller fails closed)."""
     # A Hold (the schedule HOLD or PAUSED, the conductor's held look) does
     # NOT hold the page off (Jeff, 2026-10-30): it zeroes the show's own
     # values only.
@@ -783,7 +776,7 @@ def engine_blockers(remote, link=None, cleaning=True, during_show=False):
             svc = remote.schedule
             st = getattr(getattr(svc, "machine", None), "state", None)
             if st == "HOLD":
-                return "a Hold is standing; Resume or Reset first."
+                return "a Hold is standing; Resume first."
             s = getattr(remote.control, "session", None)
             if s is not None and getattr(s, "running", False):
                 return ("Run is pressed (a show file is running), so the "

@@ -142,7 +142,6 @@ class FuelPump:
 
     link_get        () -> the engine's FlameLink, or None
     flames_get      () -> remote.FlameStatus.view() or None
-    abort_standing  () -> True while an Abort is latched
     blocker         () -> why ON is refused right now, or "" (live flame
                     programming on)
     journal         (who, screen, outcome, text, fault=False)
@@ -150,12 +149,11 @@ class FuelPump:
     clock           the engine's monotonic clock
     threaded        False for the selftest: pump_send() by hand"""
 
-    def __init__(self, link_get, flames_get, abort_standing, blocker=None,
+    def __init__(self, link_get, flames_get, blocker=None,
                  journal=None, audit=None, clock=time.monotonic,
                  threaded=True, night_state=None, signed_out=None):
         self._link_get = link_get
         self._flames_get = flames_get
-        self._abort_standing = abort_standing
         self._blocker = blocker or (lambda: "")
         self._journal = journal
         self.audit = audit
@@ -313,12 +311,6 @@ class FuelPump:
 
     def refusal(self):
         """Why the pump may not be turned ON now, in a sentence, or ""."""
-        try:
-            if self._abort_standing():
-                return ("an Abort is standing. Press Reset, then turn it on "
-                        "again.")
-        except Exception:
-            return "whether an Abort is standing could not be read."
         why = self.down()
         if why:
             return why
@@ -548,11 +540,6 @@ class FuelPump:
                     f"{now - r['beat']:.2f} s)")
         if now >= r["deadline"]:
             return f"its {clock_text(r['seconds'])} were up"
-        try:
-            if self._abort_standing():
-                return "an Abort is standing"
-        except Exception:
-            return "whether an Abort is standing could not be read"
         gone = self._sign_in_gone(r.get("token", ""), r.get("who", ""))
         if gone:
             return gone

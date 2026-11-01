@@ -1389,10 +1389,10 @@ class EngineConductor:
     (2026-10-26): stop_run() (POST /api/stop, the Rack screen's Stop, which
     also sends the flame link's disarm_all and ends live flame programming,
     review of #126, P2-1), acknowledge() and alert(); snapshot() for the
-    latch, fault and cues_fault for the Start key's face. hold(), resume()
-    and reset() are still here, duck-typed like conductor.Conductor, for
-    any caller; the deck no longer calls them. There is no abort() (Abort
-    was removed, 2026-10-30).
+    latch, fault and cues_fault for the Start key's face. hold() and
+    resume() are still here, duck-typed like conductor.Conductor, for any
+    caller; the deck no longer calls them. There is no abort() and no
+    reset() (Abort and Reset were removed, 2026-10-30).
 
     Each press is POSTed on a BACKGROUND thread, never the main loop (the
     same rule as LocalSchedule and DeckJournal: a slow or hung web server
@@ -1402,10 +1402,9 @@ class EngineConductor:
     group's wanted state false on the arm link before this is asked.
 
     snapshot() never touches the network and never raises: a background
-    poll caches GET /api/conductor. "latched" is the newer of an abort() or
-    reset() asked through here and the engine's last answer (an Abort or
-    Reset from a screen reaches the deck as the engine's answer), and
-    stays as last answered while the engine cannot be reached."""
+    poll caches GET /api/conductor. "latched" is always False: there is no
+    Abort latch any more (Abort and Reset were removed, 2026-10-30), and an
+    older engine's "latched" is not read."""
 
     def __init__(self, base_url, journal=None, poll_hz=POLL_HZ,
                  clock=time.monotonic, wall=time.time, poster=None,
@@ -1419,7 +1418,6 @@ class EngineConductor:
         self._fetch = fetcher or self._http_get
         self._lock = threading.Lock()
         self._engine = None        # (snapshot dict, monotonic time it came)
-        self._local = (False, None)   # (latched, monotonic time of press)
         self._q = queue.Queue(maxsize=ENGINE_QUEUE_MAX)
         # Announcement presses have a queue and a thread of their own: a
         # Play can take a while at the engine (it reads the file), and it
@@ -1491,11 +1489,6 @@ class EngineConductor:
         answers 200 to it (_post_one), so the caller can post it again."""
         self.alert_delivered = False
         return self._press("alert", "", "Stream Deck", **body)
-
-    def reset(self, who="", screen="Stream Deck"):
-        with self._lock:
-            self._local = (False, self._clock())
-        return self._press("reset", who, screen)
 
     def stop_run(self, who="", screen="Stream Deck"):
         """The Start/Stop key's Stop (Jeff, 2026-10-26): POST /api/stop on
@@ -1815,15 +1808,14 @@ class EngineConductor:
         return bool(isinstance(audio, dict) and audio.get("lost"))
 
     def snapshot(self):
-        """{"latched", "look"}: never the network, never raises."""
+        """{"latched": False, "look"}: never the network, never raises.
+        "latched" stays in the answer, always False (the Abort latch is
+        gone), so the deck's key and drawing rules read it unchanged."""
         with self._lock:
-            engine, (local, pressed_at) = self._engine, self._local
-        if engine is not None and (pressed_at is None or
-                                   engine[1] > pressed_at):
-            snap = engine[0]
-            return {"latched": bool(snap.get("latched")),
-                    "look": snap.get("look") or ""}
-        return {"latched": local, "look": ""}
+            engine = self._engine
+        if engine is not None:
+            return {"latched": False, "look": engine[0].get("look") or ""}
+        return {"latched": False, "look": ""}
 
 
 # --------------------------------------------------------------------------
@@ -3249,6 +3241,10 @@ class Controller:
         return any(self._prev_keys) or bool(getattr(self, "_vpressed", ()))
 
     def _latched_now(self):
+        """Whether the rig is latched. Since Abort and Reset were removed
+        (2026-10-30) nothing latches it: the engine's snapshot says False
+        and a conductor's "latched" is no longer kept. The deck's latched
+        branches below are dead and stay only until they are taken out."""
         if self.conductor is not None:
             try:
                 return bool(self.conductor.snapshot().get("latched"))
@@ -6120,7 +6116,7 @@ def _main(args):
     controller.purge_fire = PurgeFire(engine._http_post, journal=journal)
     print(f"Stream Deck: arming {', '.join(names)} over {arm_ip}:{arm_port}, "
          f"reading flamesafe's status on {status_ip}:{status_port}. Stop, "
-         f"Hold, Resume and Reset go to the show conductor in ltc serve at "
+         f"Hold and Resume go to the show conductor in ltc serve at "
          f"{args.ltcplay_url}; Start Now journals a refusal. "
          f"{'Screen arming is ON (ltcplay_remote.json).' if screen else 'Screen arming is off.'}"
          f" Ctrl-C to stop.")

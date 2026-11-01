@@ -146,7 +146,6 @@ class Hazers:
 
     link_get        () -> the engine's FlameLink, or None
     flames_get      () -> remote.FlameStatus.view() or None
-    abort_standing  () -> True while an Abort is latched
     show_state      () -> "playing", "held" or "idle" (the scheduled show)
     blocker         () -> why arming is refused right now, or "" (live
                     flame programming on)
@@ -155,12 +154,11 @@ class Hazers:
     audit           audit.AuditLog or None
     threaded        False for the selftest: check() by hand"""
 
-    def __init__(self, link_get, flames_get, abort_standing, show_state=None,
+    def __init__(self, link_get, flames_get, show_state=None,
                  blocker=None, folder=None, journal=None, audit=None,
                  clock=time.monotonic, threaded=True):
         self._link_get = link_get
         self._flames_get = flames_get
-        self._abort_standing = abort_standing
         self._show_state = show_state or (lambda: "idle")
         self._blocker = blocker or (lambda: "")
         self._journal = journal
@@ -297,12 +295,6 @@ class Hazers:
 
     def refusal(self, name):
         """Why `name` may not be ARMED now, in a sentence, or ""."""
-        try:
-            if self._abort_standing():
-                return ("an Abort is standing. Press Reset, then arm it "
-                        "again.")
-        except Exception:
-            return "whether an Abort is standing could not be read."
         why = self.down()
         if why:
             return why

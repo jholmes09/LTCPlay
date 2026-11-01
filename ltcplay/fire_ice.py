@@ -2716,8 +2716,6 @@ class ShowRunner:
                         "on the Programming screen press Stop, choose the "
                         "show file whose clock is \"audio_master\", then "
                         "press Run")
-    LATCHED = ("the show is aborted, and the show conductor stays latched "
-               "until someone presses Reset; press Reset, then Start now")
     AUDIO_LOADING = ("the show audio is still loading (it takes a few "
                      "seconds after Run); wait a moment, then press Start "
                      "now, which waits for it to finish loading")
@@ -2813,17 +2811,22 @@ class ShowRunner:
             return None
         return {"text": why, "loading": why == self.AUDIO_LOADING}
 
-    def start_show(self, n, who="the scheduler"):
+    def start_show(self, n, who="the scheduler", stops=None):
         """Called on the scheduler's ordered line of conductor requests,
         off its lock, after tonight is saved; the conductor is told a show
         started only once it is confirmed. Returns a conductor Result at
         once. `who` is "the scheduler" for a show that came due, or the
-        operator who pressed Start now."""
+        operator who pressed Start now. `stops`: the conductor's Stop
+        count when the scheduler decided this start (its ordered line); a
+        Stop since then refuses it with nothing sent (cold review A of
+        #199, F2: a Stop that landed while the start waited in the line
+        went unseen when the count was read only here)."""
         # A Stop that lands while this start is under way (an urgent Stop
         # goes beside the line, so it can overtake a start already being
         # made) is seen after the cue starts, as an Abort is (cold review
         # of #191, A-F3). Read before anything else (round 2, item 9).
-        stops0 = getattr(self.conductor, "stops", 0)
+        stops0 = getattr(self.conductor, "stops", 0) if stops is None \
+            else stops
         clk = self.show._clock()
         s = self.show._session()
         # A Continue anyway is for the start it was pressed for, whatever
@@ -2835,8 +2838,11 @@ class ShowRunner:
             with self._lock:
                 self._cue = {"show": n, "failed": why, "nothing_sent": True}
             return C.failed(f"Show {n} was not started: {why}.")
-        why = self._refusal(s, clk) or (
-            self.LATCHED if self.conductor.latched else "")
+        why = self._refusal(s, clk)
+        if not why and getattr(self.conductor, "stops", 0) != stops0:
+            # A Stop since the start was decided: refused before the
+            # pixels are touched (cold review A of #199, F2 and F5).
+            why = "Stop was pressed while it was starting"
         if why:
             # Refused before anything went out: the failed start this is
             # reported as sends nothing either (no fade, no MadMapper).
@@ -2847,10 +2853,14 @@ class ShowRunner:
         # This start's own hand-over (one slot on the player): what poll()
         # may later cancel, never a newer start's.
         hand = getattr(pix, "show_handoff", None)
-        if pix is None and self.conductor.latched:
-            # An Abort landed just before the hand-over: its black stands
-            # and nothing goes out.
-            why = self.LATCHED
+        if getattr(self.conductor, "stops", 0) != stops0:
+            # A Stop landed DURING the hand-over (as the removed Abort's
+            # latch did, 2026-10-30): nothing goes out, the music never
+            # starts, and the black is put back over the cleared look at
+            # once (the look was cleared for at most that moment; a Stop
+            # before the hand-over is refused above, pixels untouched).
+            why = "Stop was pressed while it was starting"
+            self._start_undone()
             with self._lock:
                 self._cue = {"show": n, "failed": why, "nothing_sent": True}
             return C.failed(f"Show {n} was not started: {why}.")
@@ -2875,21 +2885,11 @@ class ShowRunner:
                 self._cue = {"show": n, "failed": why}
             return C.failed(f"Show {n} was not started: {why}.")
         # The music is now playing, whatever the conductor's record says:
-        # an Abort or Hold before SHOW_CONFIRMED must stop or freeze it (PR
+        # a Stop or Hold before SHOW_CONFIRMED must stop or freeze it (PR
         # #43 review, finding 4).
         told = getattr(self.conductor, "music_started", None)
         if told is not None:
             told()
-        if self.conductor.latched:
-            # An Abort landed while the cue was starting, so its music step
-            # may have run before the cue began: stop the music here too.
-            why = "it was aborted while it was starting"
-            self.show.music_halt(C.ABORT_FADE_S)
-            self._start_undone()
-            with self._lock:
-                self._cue = {"show": n, "failed": why}
-            return C.failed(f"Show {n} was not started: {why}; the music "
-                            f"was stopped.")
         if getattr(self.conductor, "stops", 0) != stops0:
             # A Stop landed while the cue was starting: its sequence may
             # have run before the cue began. The music stops here, and the
@@ -2977,10 +2977,10 @@ class ShowRunner:
         report, 2026-10-29: after a show that finished on its own, the
         closing black stayed on all of the next show). Returns the player
         whose hand-over poll() watches for the first show frame, or None
-        when an Abort latched first (its black stands; nothing handed
-        over). The conductor's pixels record goes UNKNOWN in the same step
-        (Conductor.pixels_to_show), so a Hold, an Abort or a Stop after
-        it sends its black (review of PR #171)."""
+        when the conductor hands nothing over. The conductor's pixels
+        record goes UNKNOWN in the same step (Conductor.pixels_to_show),
+        so a Hold, a Stop or a failed start after it sends its black
+        (review of PR #171)."""
         what = f"Show {n} start"
         to_show = getattr(self.conductor, "pixels_to_show", None)
         if to_show is None:
@@ -2990,11 +2990,11 @@ class ShowRunner:
         return getattr(s, "player", None)
 
     def _start_undone(self):
-        """A start that did not happen (the clock refused it, an Abort
+        """A start that did not happen (the clock refused it, a Stop
         landed while it was starting): the hand-over it armed ends and the
         pixels are black, never the show nor the look held at the start
         (review of PR #171). The conductor's dark sequence for the failed
-        start or the Abort sends its black again. Never raises."""
+        start or the Stop sends its black again. Never raises."""
         try:
             self.show.pixels_fade_out(0)
         except Exception:                        # noqa: BLE001
