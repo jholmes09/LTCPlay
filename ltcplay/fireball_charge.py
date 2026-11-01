@@ -103,7 +103,6 @@ import datetime
 import hashlib
 import json
 import os
-import tempfile
 import threading
 import time
 
@@ -171,6 +170,16 @@ def armed_from_status(view, group=GROUP_NAME, fresh_s=STATUS_FRESH_S):
     return "unknown"
 
 
+def group_mismatch_text(file_g, live_g):
+    """What the screens say when flamesafe.json and the running flamesafe
+    put the fireball on different slots (the cues and the charge record
+    both use it, so the one text never flaps)."""
+    return (f"flamesafe.json puts the fireball on {file_g} and the running "
+            f"flamesafe on {live_g}, so no show reaches either until they "
+            f"agree, and both tanks are NOT KNOWN (MORNING.md, The "
+            f"fireball).")
+
+
 def read_doc(doc):
     """FILE's contents checked strictly: (rev, tanks, releasing, pending).
     ValueError otherwise. A record from before the write-ahead mark has
@@ -214,25 +223,37 @@ class ChargeTracker:
 
     def __init__(self, folder, flames_get=lambda: None, journal=None,
                  audit=None, wall=time.time, clock=time.monotonic,
-                 threaded=True, alt_dir=None):
+                 threaded=True, alt_dir=None, file_get=None):
         self.path = os.path.join(folder, FILE) if folder else None
-        # A second, tiny marker written somewhere else (the user's temp
-        # folder unless told) when a Fireball press must go out and the
-        # record cannot be saved (round-6 review 3): a restart that finds
-        # it newer than the record reads NOT KNOWN.
-        self._alt = None
+        # A second, tiny marker (round-6 review 3, round-7 review 1),
+        # written when a Fireball press must go out and the record cannot
+        # be saved: in the settings folder under another name AND in the
+        # user's own persistent folder (~/.ltcplay, never the temp folder,
+        # which a reboot or a disk clean-up empties). A start that finds one
+        # newer than the record reads NOT KNOWN; one that cannot be read
+        # counts as present.
+        self._alts = []
         if folder:
             try:
                 tag = hashlib.sha1(os.path.abspath(folder).encode(
                     "utf-8", "replace")).hexdigest()[:12]
-                self._alt = os.path.join(
-                    alt_dir or tempfile.gettempdir(),
-                    f"ltcplay_fireball_charge_{tag}.marker")
+                name = f"ltcplay_fireball_charge_{tag}.marker"
+                self._alts = [
+                    os.path.join(folder, FILE + ".marker"),
+                    os.path.join(alt_dir or os.path.join(
+                        os.path.expanduser("~"), ".ltcplay"), name)]
             except Exception:                    # noqa: BLE001
-                self._alt = None
+                self._alts = []
         self._alt_rev = None
+        self._alt_job = None        # a marker write queued for the writer
+        self._alt_done = None       # its result: True, False, or None
+        self._unsaved_active = False    # a press went out unrecorded
+        # No marker could be written anywhere: automatic charging stays
+        # off until an admin confirms the tanks (round-7 review 1).
+        self.auto_off = False
+        self._charge_on_wire_at = None
+        self._file_get = file_get
         self._base_rev = 0
-        self._unsaved_handled = None
         self._flames = flames_get
         self._journal = journal
         self.audit = audit
@@ -461,50 +482,78 @@ class ChargeTracker:
                         fault=True, persist=True)
 
     def _read_alt(self):
-        """The fallback marker's revision, or None."""
-        if not self._alt:
-            return None
-        try:
-            with open(self._alt, encoding="utf-8") as fh:
-                d = json.load(fh)
-            r = d.get("rev")
-            return r if isinstance(r, int) and not isinstance(r, bool) \
-                else None
-        except (OSError, ValueError, AttributeError):
-            return None
+        """(found, rev): is there a fallback marker (or the leftover of one
+        being written), and its revision, None when it cannot be read: a
+        marker that cannot be read counts as present (round-7 review 1)."""
+        found, best, unreadable = False, None, False
+        for path in self._alts:
+            for name in (path, path + ".tmp"):
+                if not os.path.exists(name):
+                    continue
+                found = True
+                try:
+                    with open(name, encoding="utf-8") as fh:
+                        r = json.load(fh).get("rev")
+                    if isinstance(r, int) and not isinstance(r, bool):
+                        best = r if best is None else max(best, r)
+                    else:
+                        unreadable = True
+                except (OSError, ValueError, AttributeError):
+                    unreadable = True
+        return found, (None if unreadable else best)
+
+    def _write_marker_file(self, path, rev):
+        """One marker file, atomically (written under another name, fsynced,
+        then renamed), so a crash mid-write never leaves it half there."""
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"rev": rev, "at": _utc(self._wall())}, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
 
     def _write_alt(self, rev):
-        """The fallback marker, fsynced; True when it was written."""
-        if not self._alt:
-            return False
-        try:
-            with open(self._alt, "w", encoding="utf-8") as fh:
-                json.dump({"rev": rev, "at": _utc(self._wall()),
-                           "folder": os.path.dirname(self.path)}, fh)
-                fh.flush()
-                os.fsync(fh.fileno())
+        """The fallback markers, every place that takes one; True when at
+        least one was written. Disk: never under the tracker's lock."""
+        saved = False
+        for path in self._alts:
+            try:
+                self._write_marker_file(path, rev)
+                saved = True
+            except OSError:
+                pass
+        if saved:
             self._alt_rev = rev
-            return True
-        except OSError:
-            return False
+        return saved
 
     def _drop_alt(self, durable_rev):
-        """A record at or past the marker's revision is on disk: the marker
-        has done its work."""
+        """A record at or past the marker's revision is on disk: the markers
+        have done their work."""
         if self._alt_rev is not None and durable_rev >= self._alt_rev:
-            try:
-                os.remove(self._alt)
-            except OSError:
-                return
-            self._alt_rev = None
+            gone = True
+            for path in self._alts:
+                for name in (path, path + ".tmp"):
+                    try:
+                        os.remove(name)
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        gone = False
+            if gone:
+                self._alt_rev = None
 
     def _apply_alt(self):
         """At start: a fallback marker newer than the record read means a
         Fireball press went out that the record never heard of (round-6
         review 3): an EMPTY tank is NOT KNOWN."""
-        rev = self._read_alt()
-        if rev is None:
+        found, rev = self._read_alt()
+        if not found:
             return
+        if rev is None:
+            # Unreadable: newer than anything, until a record written now
+            # is on disk.
+            rev = self._next_rev()
         self._alt_rev = rev
         # Whatever is written next outranks the marker, so it can be taken
         # away once that record is on disk.
@@ -633,7 +682,7 @@ class ChargeTracker:
                 # The write-ahead mark is asked for, never waited on: the
                 # page's presses are never held back by the disk (round-5
                 # review), but a restart after this charge then finds it.
-                self.charge_ready()
+                self.charge_ready(manual=True)
         except Exception:                        # noqa: BLE001
             pass
 
@@ -710,6 +759,18 @@ class ChargeTracker:
                 f"watch the fireball: both tanks are NOT KNOWN until a "
                 f"shot, a Purge, or an admin confirms them empty."
                 if bad else "")
+        # flamesafe.json against the running flamesafe, on every status, not
+        # only while a show computes frames (round-7 review 6).
+        ext = ""
+        if got is not None and self._file_get is not None:
+            try:
+                fg = self._file_get()
+                fg = sorted(int(x) for x in fg) if fg else None
+            except Exception:                    # noqa: BLE001
+                fg = None
+            if fg is not None and fg != got:
+                ext = group_mismatch_text(fg, got)
+        self.note_external_fault(ext)
         if text != self.group_fault:
             self.group_fault = text
             if text:
@@ -738,6 +799,8 @@ class ChargeTracker:
             self.frames += 1
             if not ok:
                 return
+            if vals[TANK_SLOT["fuel"] - 1] or vals[TANK_SLOT["air"] - 1]:
+                self._charge_on_wire_at = self._clock()
             self.see(vals, self.armed_now())
         except Exception:                        # noqa: BLE001
             pass
@@ -855,7 +918,7 @@ class ChargeTracker:
                         "charged", f"Fireball charge: {TANK_WORD[k]} "
                         f"CHARGED by {by} (flamesafe reported sending it).")
 
-    def charge_ready(self):
+    def charge_ready(self, manual=False):
         """Asked by the flame cues before an AUTOMATIC charge (a timeline's
         Fuel or Air stage, an FSEQ's guarded 55 or 56) goes out (round-5
         review, write-ahead): "ok" once a record saying "an automatic
@@ -866,6 +929,10 @@ class ChargeTracker:
         on the sender thread; never raises."""
         if not self.path:
             return "ok"
+        if self.auto_off and not manual:
+            # No marker could be written anywhere (round-7 review 1): no
+            # automatic charge until an admin confirms the tanks.
+            return "failed"
         try:
             with self._lock:
                 self._pending_asked_at = self._clock()
@@ -893,35 +960,71 @@ class ChargeTracker:
         If the record cannot be saved the press still goes out (Jeff: a
         top-off is the operator's own decision), but both tanks become NOT
         KNOWN in memory with the fault shown, and a second tiny marker is
-        written somewhere else so the next start reads NOT KNOWN too,
-        whatever the record on disk says. Never raises."""
-        r = self.charge_ready()
+        written, in the settings folder and in the user's own folder, so
+        the next start reads NOT KNOWN too, whatever the record on disk
+        says. The press waits for that marker's write (which the writer
+        thread does, never this call: round-7 review 3), goes out whether
+        it worked or not, and if no marker could be written anywhere
+        automatic charging is off until an admin confirms the tanks. Done
+        once for as long as the record cannot be saved (round-7 review 2).
+        Never raises."""
+        r = self.charge_ready(manual=True)
         if r != "failed":
             return r
         try:
             with self._lock:
-                if self._unsaved_handled != self._failed_rev:
-                    self._unsaved_handled = self._failed_rev
+                if not self._unsaved_active:
+                    self._unsaved_active = True
+                    self._alt_done = None
                     now = self._wall()
                     for k in TANK_WORD:
                         if self.tanks[k]["state"] == EMPTY:
                             self._set(k, UNKNOWN, "a Fireball press went "
                                       "out while the record could not be "
                                       "saved", now)
-                    saved = self._write_alt(self._next_rev())
+                    self._alt_job = self._next_rev()
                     self.fault = (
                         "Fireball charge: the record cannot be saved, so a "
-                        "Fireball charge press went out unrecorded; both "
-                        "tanks are NOT KNOWN" +
-                        (" (and a marker was written elsewhere, so the next "
-                         "start reads them NOT KNOWN too)." if saved else
-                         ". No marker could be written either: check the "
-                         "tanks by eye after any restart."))
+                        "Fireball charge press goes out unrecorded; both "
+                        "tanks are NOT KNOWN (a marker is being written "
+                        "elsewhere so the next start reads them NOT KNOWN "
+                        "too).")
                     self._event("system", "engine", "unknown", self.fault,
                                 fault=True, persist=True)
+                    w = getattr(self, "_wake", None)
+                    if w is not None:
+                        w.set()
+                return "wait" if self._alt_done is None else "ok"
         except Exception:                        # noqa: BLE001
-            pass
-        return "ok"
+            return "ok"
+
+    def _alt_work(self):
+        """The writer thread's side of manual_gate: the marker write, off
+        every lock, then the result under the tracker's lock."""
+        job = self._alt_job
+        if job is None:
+            return
+        self._alt_job = None
+        saved = self._write_alt(job)
+        with self._lock:
+            self._alt_done = saved
+            if saved:
+                self.fault = (
+                    "Fireball charge: the record cannot be saved, so a "
+                    "Fireball charge press went out unrecorded; both tanks "
+                    "are NOT KNOWN (a marker was written elsewhere, so the "
+                    "next start reads them NOT KNOWN too).")
+            else:
+                self.auto_off = True
+                self.fault = (
+                    "Fireball charge: the record cannot be saved and no "
+                    "marker could be written anywhere, so a Fireball "
+                    "charge press went out unrecorded. Both tanks are NOT "
+                    "KNOWN and automatic charging is OFF until an admin "
+                    "confirms the tanks; check them by eye after any "
+                    "restart.")
+            self._event("system", "engine", "unknown", self.fault,
+                        fault=True, persist=False)
 
     def note_external_fault(self, text):
         """The flame cues found flamesafe.json's fireball slots and the
@@ -948,6 +1051,12 @@ class ChargeTracker:
         before the charge) and nobody asked for lately comes off again, so
         an ordinary rehearsal does not leave both tanks NOT KNOWN at the
         next start (round-6 review 5)."""
+        at = self._charge_on_wire_at
+        if at is not None and self._clock() - at < 0.5:
+            # A charge channel is on: the mark is asked for again, not
+            # taken off (round-7 review 7).
+            self.charge_ready(manual=True)
+            return
         with self._lock:
             if (self.pending and not self._pending_used and
                     self._pending_asked_at is not None and
@@ -972,7 +1081,7 @@ class ChargeTracker:
                                (self.group_fault or self.ext_fault) +
                                " Fix the flamesafe config first.")
             unk = [k for k in TANK_WORD if self.tanks[k]["state"] == UNKNOWN]
-            if not unk:
+            if not unk and not self.auto_off:
                 return False, ("No tank is NOT KNOWN, so there is nothing "
                                "to confirm. A charged tank is emptied by the "
                                "shot or by Purge.")
@@ -980,9 +1089,12 @@ class ChargeTracker:
             for k in unk:
                 self._set(k, EMPTY, f"confirmed empty by {who}", now_w)
             self.pending = False
-            words = " and ".join(TANK_WORD[k] for k in unk)
+            was_off, self.auto_off = self.auto_off, False
+            words = " and ".join(TANK_WORD[k] for k in unk) or "the tanks"
             text = (f"Fireball charge: {words} confirmed EMPTY by "
-                    f"{who or 'someone'} on the {screen or 'engine'}.")
+                    f"{who or 'someone'} on the {screen or 'engine'}" +
+                    (", and automatic charging is allowed again."
+                     if was_off else "."))
             self._event(who or "someone", screen or "engine",
                         "confirmed_empty", text)
             if self.fault and not any(
@@ -1100,7 +1212,7 @@ class ChargeTracker:
                                               self.group_fault,
                                               self.ext_fault) if x),
                 "first_run": self.first_run, "rev": self.rev,
-                "pending": self.pending,
+                "pending": self.pending, "auto_off": self.auto_off,
                 # A slot for live pressure later (Jeff): never invented.
                 "psi": None}
 
@@ -1113,6 +1225,7 @@ class ChargeTracker:
             return self._pump()
 
     def _pump(self):
+        self._alt_work()
         n = 0
         doc = None
         while self._events:
@@ -1145,6 +1258,8 @@ class ChargeTracker:
             self._write(doc)
             self._durable_rev = max(self._durable_rev, doc["rev"])
             self._drop_alt(doc["rev"])
+            self._unsaved_active = False
+            self._alt_done = None
             self._unwritten = None
             if self.write_fault:
                 self.write_fault = ""
