@@ -850,6 +850,16 @@ class ChargeTracker:
         return m
 
     # -- the flame link's side ---------------------------------------------
+    def nothing_reaches_tanks(self):
+        """True while a fresh flamesafe status says no group and no
+        passthrough sits on 55 to 59 (no_fireball_group, read only with the
+        fireball "off"): nothing the show sends there can reach a tank.
+        Never raises."""
+        try:
+            return bool(self._no_group) and self.armed_now() == "off"
+        except Exception:                        # noqa: BLE001
+            return False
+
     def armed_now(self):
         """The fireball group's state, as the thread last read it, or
         "unknown" when that reading is older than STATUS_FRESH_S."""

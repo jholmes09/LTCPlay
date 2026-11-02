@@ -53324,12 +53324,32 @@ def test_deck_presses_reach_the_engine_conductor():
               "seen" in posted[-1][1], "Hold carries the page's freshness")
         # A slow engine never holds up the press.
         slow = threading.Event()
-        e._poster = lambda path, body: (slow.wait(3), (True, "ok"))[1]
+        order = []
+
+        def slow_post(path, body):
+            if path == "/api/stop":
+                slow.wait(3)
+            order.append(path)
+            return True, "ok"
+        e._poster = slow_post
         t0 = time.perf_counter()
         e.stop_run("Andy", "Stream Deck")
         check(time.perf_counter() - t0 < 0.05,
               "a press returns at once, whatever the engine is doing")
+        # A Resume pressed right after the deck's own Stop is sent once the
+        # engine has answered that Stop (the engine refuses a Resume while
+        # a Stop's halt is under way: #201 follow-up on Windows).
+        e.resume("Andy", "Stream Deck")
+        time.sleep(0.2)
+        check(order == [], f"the Resume waits for the Stop's answer: "
+                           f"{order}")
         slow.set()
+        for _ in range(100):
+            if len(order) == 2:
+                break
+            time.sleep(0.02)
+        check(order == ["/api/stop", "/api/remote/resume"],
+              f"then the Stop's answer, then the Resume: {order}")
     finally:
         e.stop()
 
@@ -111293,8 +111313,10 @@ def test_start_at_cue_same_frame_valve_is_said():
         check(got == ["Show.json: 1 fireball shot skipped: Valve Open needs "
                       "its Igniter to go out first"],
               f"counted for the show's play, in words: {got}")
-        check(any("has not gone out" in t and k.get("fault")
-                  for t, k in R.lines), f"a fault line: {R.lines[-1:]}")
+        # A note, not a fault line: the count is the page's Fireball line
+        # (the installer soak counted one fault per shot, #201 follow-up).
+        check(any("has not gone out" in t and not k.get("fault")
+                  for t, k in R.lines), f"said as a note: {R.lines[-1:]}")
         R.cue_obj = {"label": "Show"}
         for f in range(0, 130):
             R.frame(f)
@@ -111306,6 +111328,72 @@ def test_start_at_cue_same_frame_valve_is_said():
                encoding="utf-8").read()
     check("if(tl && tl.shots && tl.shots.length) said.push(tl.shots.join("
           "\" \"));" in one, "the page's Fireball line shows the counts")
+    print("  ok")
+
+
+def test_fireball_soak_show_raises_no_fault():
+    section("the installer soak's show (#201 follow-up): its FSEQ puts the "
+            "same byte on every channel, so Valve Open and the Igniter rise "
+            "on the same frame, and its flamesafe has no fireball group: "
+            "the Valve is still held, but nothing is counted or journaled "
+            "as a fault; with a real fireball group a lost shot is counted "
+            "for the page and said as a note, never a fault line")
+    import shutil
+    import types
+    from ltcplay import fireball_charge as FC
+    work = tempfile.mkdtemp()
+    rigs = []
+    try:
+        def status(fireball):
+            groups = [{"name": n, "armed": "off", "fire_slots": f,
+                       "safety_slots": [sf]}
+                      for n, f, sf in (("front row", [411, 412], 401),
+                                       ("cat-walk", [421], 402),
+                                       ("wave flamer", [1, 2, 3], 403),
+                                       ("pump", [441], 404))]
+            if fireball:
+                groups.append({"name": "fireball", "armed": "armed",
+                               "fire_slots": [55, 56, 57, 58, 59],
+                               "safety_slots": [77]})
+            return {"connected": True, "stale": False, "age_ms": 10,
+                    "groups": groups, "passthrough": []}
+
+        def play(fireball):
+            tr = FC.ChargeTracker(os.path.join(work, str(fireball)),
+                                  flames_get=lambda: status(fireball))
+            tr._read_armed()
+            R = _fbq_rig(None, tank=types.SimpleNamespace(
+                state=lambda tank: "empty", last_sent=bytes(512),
+                charge_ready=lambda: "ok",
+                note_external_fault=lambda t: None,
+                nothing_reaches_tanks=tr.nothing_reaches_tanks))
+            rigs.append(R)
+            R.session.timeline_path = "bench.json"
+            held = 0
+            for f in range(0, 600):
+                v = (f * 3) & 0xFF            # soak.make_show's fill
+                g = R.frame(f, base=[v] * 512)
+                held += 1 if v and not g[56] else 0
+            return tr, R, held
+        tr, R, held = play(False)
+        check(tr.nothing_reaches_tanks() is True,
+              "the soak's flamesafe: nothing reaches 55 to 59")
+        check(held > 0 and not any(k.get("fault") for _t, k in R.lines)
+              and not R.fq.shots_view() and
+              not any("has not gone out" in t for t, _k in R.lines),
+              f"no fireball group: the Valve held, nothing counted, no "
+              f"fault: {held} {R.lines[:2]} {R.fq.shots_view()}")
+        tr, R, held = play(True)
+        check(tr.nothing_reaches_tanks() is False and R.fq.shots_view() and
+              any("has not gone out" in t for t, _k in R.lines) and
+              not any(k.get("fault") and "has not gone out" in t
+                      for t, k in R.lines),
+              f"a real fireball group: counted and said, never a fault "
+              f"line: {R.fq.shots_view()} {R.lines[:2]}")
+    finally:
+        for R in rigs:
+            shutil.rmtree(R.work, ignore_errors=True)
+        shutil.rmtree(work, ignore_errors=True)
     print("  ok")
 
 
@@ -112483,6 +112571,7 @@ if __name__ == "__main__":
         test_start_at_cue_halt_takes_the_stop_position,
         test_start_at_cue_valve_needs_its_igniter_on_the_wire,
         test_start_at_cue_same_frame_valve_is_said,
+        test_fireball_soak_show_raises_no_fault,
         test_start_at_cue_fireball_lands_by_its_own_rules,
         test_start_at_cue_docs_in_plain_words,
     ]

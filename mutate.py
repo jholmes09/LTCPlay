@@ -22858,8 +22858,8 @@ def build():
 
  ("start at a cue: an FSEQ Valve held for its lead is not said",
   "ltcplay/fireball_cues.py",
-  "                    self._say(f\"The FSEQ's {word} was held: its \"",
-  "                    (lambda *a: None)(f\"The FSEQ's {word} was held: its \""),
+  "                    self._shot_lost(run, f\"The FSEQ's {word} was held: its \"",
+  "                    (lambda *a: None)(run, f\"The FSEQ's {word} was held: its \""),
 
 
  ("start at a cue: Stop never asks for the stop position",
@@ -23098,10 +23098,6 @@ def build():
   "            self.shots_skipped[show] += 1",
   "            pass"),
 
- ("start at a cue: a Valve skipped for its Igniter is not a fault line",
-  "ltcplay/fireball_cues.py",
-  "                          f\"the show landed (never gas without ignition).\",\n                          fault=True)",
-  "                          f\"the show landed (never gas without ignition).\",\n                          fault=False)"),
 
  ("fireball timeline: a Valve on its Igniter's frame is not warned about",
   "ltcplay/fireball_timeline.py",
@@ -23122,6 +23118,31 @@ def build():
   "ltcplay/web/remote.html",
   "  if(tl && tl.shots && tl.shots.length) said.push(tl.shots.join(\" \"));\n",
   ""),
+
+ ("fireball cues: a lost shot is counted though nothing reaches a tank",
+  "ltcplay/fireball_cues.py",
+  "        if idle:\n            return\n        self._shot_skipped(run)",
+  "        if False:\n            return\n        self._shot_skipped(run)"),
+
+ ("fireball cues: every lost shot is a fault line again (the soak counts them)",
+  "ltcplay/fireball_cues.py",
+  "        self._say(text)\n\n    def _shot_skipped(self, run):",
+  "        self._say(text, fault=True)\n\n    def _shot_skipped(self, run):"),
+
+ ("fireball charge: the soak's flamesafe reads as a fireball that may be reached",
+  "ltcplay/fireball_charge.py",
+  "            return bool(self._no_group) and self.armed_now() == \"off\"",
+  "            return False"),
+
+ ("Stream Deck: a press after the deck's own Stop is sent before its answer",
+  "ltcplay/streamdeck.py",
+  "            self._after_stops()\n            self._post_one(*item)",
+  "            self._post_one(*item)"),
+
+ ("Stream Deck: a Stop is not counted as waiting for its answer",
+  "ltcplay/streamdeck.py",
+  "            with self._stops_cv:\n                self._stops += 1",
+  "            with self._stops_cv:\n                pass"),
 
 ]
 

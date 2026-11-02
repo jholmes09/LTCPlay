@@ -309,6 +309,25 @@ class FireballCues:
                 return b""
         return getattr(tr, "last_sent", b"") if tr is not None else b""
 
+    def _shot_lost(self, run, text):
+        """A shot lost to the Igniter rule: counted for the page's Fireball
+        line and said as a note, never a fault line, so a night's count is
+        one number on the Morning page, not a fault per shot (installer
+        soak, review of #201). With nothing able to reach a tank (the
+        charge record's reading of a flamesafe with no fireball group on 55
+        to 59) the hold stays, but nothing is counted or said: those
+        channels drive no fireball."""
+        tr = self._charge_get()
+        fn = getattr(tr, "nothing_reaches_tanks", None)
+        try:
+            idle = bool(fn()) if fn is not None else False
+        except Exception:                        # noqa: BLE001
+            idle = False
+        if idle:
+            return
+        self._shot_skipped(run)
+        self._say(text)
+
     def _shot_skipped(self, run):
         """One more shot of this play's show lost because its Valve had no
         Igniter on the wire before it: counted per show, for the page's
@@ -592,11 +611,10 @@ class FireballCues:
                 # can hold an Igniter dark that this module turned on).
                 run.skipped[k] = f"its {fbtl.STAGE_WORD[lead]} has not " \
                                  f"gone out"
-                self._shot_skipped(run)
-                self._say(f"{fbtl.STAGE_WORD[k]} was skipped: its "
-                          f"{fbtl.STAGE_WORD[lead]} has not gone out since "
-                          f"the show landed (never gas without ignition).",
-                          fault=True)
+                self._shot_lost(run, f"{fbtl.STAGE_WORD[k]} was skipped: "
+                                     f"its {fbtl.STAGE_WORD[lead]} has not "
+                                     f"gone out since the show landed (never "
+                                     f"gas without ignition).")
                 continue
             if tank is not None:
                 why = self._charge_refusal(tr, tank, slot, run)
@@ -747,11 +765,11 @@ class FireballCues:
                     # in the FSEQ now) and has not gone out on the wire
                     # since the latest landing (final review of #201).
                     run.fseq_land_hold.add(slot)
-                    self._shot_skipped(run)
-                    self._say(f"The FSEQ's {word} was held: its "
-                              f"{fbtl.STAGE_WORD[_SLOT_STAGE[lead]]} has not "
-                              f"gone out since the show landed (never gas "
-                              f"without ignition).", fault=True)
+                    self._shot_lost(run, f"The FSEQ's {word} was held: its "
+                                         f"{fbtl.STAGE_WORD[_SLOT_STAGE[lead]]} "
+                                         f"has not gone out since the show "
+                                         f"landed (never gas without "
+                                         f"ignition).")
                 if slot in NEEDS_SLOT.values():
                     # A lead's own new start: held or not, from here.
                     if slot in run.fseq_land_hold:
