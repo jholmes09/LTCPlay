@@ -3508,7 +3508,15 @@ function fbtCheck(rows, showLen){
     if(e.length) errors[r.k] = e.join(" ");
     else stages.push({stage:r.k, start:fbtTcText(fr), dur_s:d});
   }
-  return {errors:errors, stages:stages};
+  // A warning, never a refusal (fireball_timeline.lead_warning): a Valve
+  // Open less than 3 frames after its Igniter never runs.
+  const at = {};
+  for(const s of stages) at[s.stage] = fbtParseTc(s.start);
+  let warning = "";
+  if(at.igniter !== undefined && at.valve !== undefined && at.valve >= at.igniter && at.valve < at.igniter + 3){
+    warning = "Valve Open starts " + (at.valve === at.igniter ? "on the Igniter's own frame" : (at.valve - at.igniter) + " frame" + (at.valve - at.igniter === 1 ? "" : "s") + " after the Igniter") + ": it never runs, because the Igniter has not gone out yet. Start it at least 3 frames (0.1 s) after the Igniter.";
+  }
+  return {errors:errors, stages:stages, warning:warning};
 }
 // Why this screen may not save, in 8 words or fewer, or "".
 function fbtWhy(st, local, isSt){
@@ -3575,7 +3583,7 @@ function fbtDraw(){
   const chk = fbtCheck(fbtRowsNow(), len);
   FBT_STAGES.forEach(([k]) => {
     const row = document.querySelector(`#fbt-rows [data-k="${k}"]`); if(!row) return;
-    setText(row.querySelector(".err"), chk.errors[k] || "");
+    setText(row.querySelector(".err"), chk.errors[k] || (k === "valve" ? chk.warning : "") || "");
     const used = row.querySelector(".use").getAttribute("aria-pressed") === "true";
     row.querySelector(".use").classList.toggle("on", used);
     const sm = row.querySelector(".use small"); setText(sm, (used ? "Used" : "Not used") + sm.textContent.replace(/^(Used|Not used)/, ""));

@@ -832,12 +832,18 @@ class Session:
         return on, msg
 
     # -- the show clock ---------------------------------------------------
-    def clock_play(self, cue=None):
+    def clock_play(self, cue=None, start_s=0.0, fade_in_ms=0):
         """Start the show clock at 00:00:00:00 for one cue.
 
         Only when this machine is the clock. `cue` is a cue's name, its file
         name or its timecode in the show file; None means the first cue.
-        Returns the cue."""
+        Returns the cue.
+
+        Start at a cue (play_from.py, part 2): `start_s` seconds into the
+        cue instead of its top, the audio faded in over `fade_in_ms`. Only
+        a clock that can start part way (playhead_clock, AudioMaster);
+        any other refuses it. Both left out, the start is exactly as
+        before."""
         if not self._running:
             raise SessionError("Nothing is running. Press Run first.")
         if self.clock is None or not self.clock.master:
@@ -867,10 +873,19 @@ class Session:
                 f"would run forever. Fix the render and restart.")
         # A free run left over from the last cue ending would outrank the
         # clock, and the rig would ignore the cue just started.
+        part_way = bool(start_s) or bool(fade_in_ms)
+        if part_way and self.playhead_clock() is None:
+            raise SessionError("This show's clock cannot start part way, so "
+                               "it cannot start at a cue.")
         if self.player.freerun_epoch is not None:
             self.player.release()
         try:
-            self.clock.play(pick.tc_seconds, pick.duration, pick.name)
+            if part_way:
+                self.clock.play(pick.tc_seconds, pick.duration, pick.name,
+                                start_s=float(start_s),
+                                fade_in_ms=float(fade_in_ms))
+            else:
+                self.clock.play(pick.tc_seconds, pick.duration, pick.name)
         except ValueError as e:
             # A Stop that lands while this is on its way in stops the clock
             # first. The caller gets the same kind of sentence as every other

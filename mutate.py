@@ -884,9 +884,9 @@ MUTATIONS = [
 
  ('remote: an arm route appears', 'ltcplay/remote.py',
   'CONTROL_ROUTES = ("start-now", "hold", "resume",\n'
-  '                  "disarm-all", "stop", "run-off")',
+  '                  "disarm-all", "stop", "run-off", "start-at-cue")',
   'CONTROL_ROUTES = ("start-now", "hold", "resume",\n'
-  '                  "disarm-all", "stop", "run-off", "arm")'),
+  '                  "disarm-all", "stop", "run-off", "start-at-cue", "arm")'),
 
  ("remote: half a request is acted on", "ltcplay/web.py",
   "            return None if \"/api/remote/\" in self.path else {}",
@@ -903,7 +903,7 @@ MUTATIONS = [
 
  ("remote: scrubbing is allowed on a show started in Show mode",
   "ltcplay/remote.py",
-  "        if not rehearsal:\n            return False, (\"This show was",
+  "        if not self._rehearsal_run(s):\n            return False, (\"This show was",
   "        if False:\n            return False, (\"This show was"),
 
  ("scheduler: a remote press from someone off the list is taken",
@@ -2141,8 +2141,14 @@ MUTATIONS = [
   '        input_used = self.clock is None'),
 
  ("a Stop racing clock_play lets the clock's own error escape", 'ltcplay/session.py',
-  '        try:\n            self.clock.play(pick.tc_seconds, pick.duration, pick.name)\n        except ValueError as e:',
-  '        if True:\n            self.clock.play(pick.tc_seconds, pick.duration, pick.name)\n        if False:'),
+  '        try:\n            if part_way:\n                self.clock.play(pick.tc_seconds, pick.duration, pick.name,\n'
+  '                                start_s=float(start_s),\n'
+  '                                fade_in_ms=float(fade_in_ms))\n            else:\n'
+  '                self.clock.play(pick.tc_seconds, pick.duration, pick.name)\n        except ValueError as e:',
+  '        if True:\n            if part_way:\n                self.clock.play(pick.tc_seconds, pick.duration, pick.name,\n'
+  '                                start_s=float(start_s),\n'
+  '                                fade_in_ms=float(fade_in_ms))\n            else:\n'
+  '                self.clock.play(pick.tc_seconds, pick.duration, pick.name)\n        if False:'),
 
  ("tctest defaults to every node in the show file when --to is left off",
   'ltcplay/tctest.py',
@@ -15096,7 +15102,7 @@ def build():
   '        if body.get("confirmed") is not True:\n            return 400, {"error": "Confirm it on the page first. Nothing "\n                                  "was changed."}\n        ok, text = lf.begin(',
   '        ok, text = lf.begin('),
  ('live flame: Hold and Start now do not end it', 'ltcplay/remote.py',
-  '        if name in ("hold", "start-now"):\n'
+  '        if name in ("hold", "start-now", "start-at-cue"):\n'
   '            # A timed purge ends at the press too',
   '        if False:\n'
   '            # A timed purge ends at the press too'),
@@ -18071,8 +18077,8 @@ def build():
  # The Programming playhead on the show audio (playhead.py, Jeff
  # 2026-10-28, field report items 7 and 8).
  ("Play from starts the show audio at the top, not at the point asked", "ltcplay/clock.py",
-  '            self._send(("play", role, sample, 0, self._token))',
-  '            self._send(("play", role, 0, 0, self._token))'),
+  '            self._send(("play", role, sample, fade, self._token))',
+  '            self._send(("play", role, 0, fade, self._token))'),
 
  ("Play from starts the timecode at 00:00:00:00 whatever the point", "ltcplay/clock.py",
   '            frame = cue.get("first_frame", 0)\n        if last is None or',
@@ -19239,7 +19245,8 @@ def build():
   '        pr = self.preroll\n        if pr is not None:\n            pass'),
 
  ('pre-roll: Start now skips the rig check', 'ltcplay/schedule_service.py',
-  '            return self._preroll_for_start_now(who, screen, gen), gen',
+  '            return self._preroll_for_start_now(who, screen, gen,\n'
+  '                                               start_at), gen',
   '            return None, gen'),
 
  ('pre-roll: the late allowance applies to every show', 'ltcplay/schedule.py',
@@ -21053,23 +21060,23 @@ def build():
 
  ("fireball cues: every stage gets the first-frame excuse (round 10)",
   "ltcplay/fireball_cues.py",
-  "                        not (run.top_ok and w[\"s0\"] == 0):",
-  "                        not run.top_ok:"),
+  "                    not (run.top_ok and w[\"s0\"] == 0):",
+  "                    not run.top_ok:"),
 
  ("fireball cues: the first-frame excuse is for no stage (round 10)",
   "ltcplay/fireball_cues.py",
-  "                        not (run.top_ok and w[\"s0\"] == 0):",
-  "                        True:"),
+  "                    not (run.top_ok and w[\"s0\"] == 0):",
+  "                    True:"),
 
  ("fireball cues: an FSEQ charge at frame 1 or 2 is a landing (round 10)",
   "ltcplay/fireball_cues.py",
-  "                                      (first and relf > TOP_FRAMES) or jumped)",
-  "                                      (first and relf > 0) or jumped)"),
+  "                                      (first and relf > TOP_FRAMES) or jumped,\n                                      relf,",
+  "                                      (first and relf > 0) or jumped,\n                                      relf,"),
 
  ("fireball cues: an FSEQ charge at frame 3 is a start (round 10)",
   "ltcplay/fireball_cues.py",
-  "                                      (first and relf > TOP_FRAMES) or jumped)",
-  "                                      (first and relf > 4) or jumped)"),
+  "                                      (first and relf > TOP_FRAMES) or jumped,\n                                      relf,",
+  "                                      (first and relf > 4) or jumped,\n                                      relf,"),
 
  ("fireball charge: a charge just asked for does not keep the mark at Tanks are empty (round 10b)",
   "ltcplay/fireball_charge.py",
@@ -21424,8 +21431,8 @@ def build():
 
  ("fireball manual: the timeline judges its charge from the composed frame",
   "ltcplay/web.py",
-  "            sent_get=lambda: getattr(link, \"show_sent\", None))",
-  "            sent_get=None)"),
+  "            sent_get=lambda: getattr(link, \"show_sent\", None),",
+  "            sent_get=None,"),
 
  ("fireball: a held pad whose pointer leaves it stays on",
   "ltcplay/web/remote.html",
@@ -21778,8 +21785,8 @@ def build():
 
  ("fireball cues: an FSEQ show is not guarded",
   "ltcplay/fireball_cues.py",
-  "                                      (first and relf > TOP_FRAMES) or jumped)\n        out = self._masked(out)",
-  "                                      (first and relf > TOP_FRAMES) or jumped) if False else out\n        out = self._masked(out)"),
+  "            return self._fseq_guarded(out, run,\n                                      (first and relf > TOP_FRAMES) or jumped,\n                                      relf,\n                                      (first and relf > TOP_FRAMES) or moved,\n                                      moved)\n        out = self._masked(out)",
+  "            return self._fseq_guarded(out, run,\n                                      (first and relf > TOP_FRAMES) or jumped,\n                                      relf,\n                                      (first and relf > TOP_FRAMES) or moved,\n                                      moved) if False else out\n        out = self._masked(out)"),
 
  ("fireball cues: Purge goes out from an FSEQ show",
   "ltcplay/fireball_cues.py",
@@ -21868,8 +21875,8 @@ def build():
 
  ("fireball cues: a timeline stage landed inside starts late after a wait (round 5)",
   "ltcplay/fireball_cues.py",
-  "                    run.skipped[k] = \"landed inside its window\"\n                    continue\n                why = self._charge_refusal(",
-  "                    pass\n                    pass\n                why = self._charge_refusal("),
+  "                    run.skipped[k] = \"landed inside its window\"\n                    self._say(f\"{fbtl.STAGE_WORD[k]} was skipped: the show \"\n                              f\"landed inside its window (a stage is never \"\n                              f\"started part way).\")\n                    continue\n                if not run.top_ok and \\\n                        w[\"s0\"] < land + LANDING_SETTLE_FRAMES:",
+  "                    pass\n                if False:"),
 
  ("fireball cues: an FSEQ charge landed inside starts late after a wait (round 5)",
   "ltcplay/fireball_cues.py",
@@ -21913,8 +21920,8 @@ def build():
 
  ("fireball cues: an FSEQ charge held for the mark starts late after a seek (round 6)",
   "ltcplay/fireball_cues.py",
-  "            return self._fseq_guarded(out, run,\n                                      (first and relf > TOP_FRAMES) or jumped)",
-  "            return self._fseq_guarded(out, run, (first and relf > TOP_FRAMES))"),
+  "            return self._fseq_guarded(out, run,\n                                      (first and relf > TOP_FRAMES) or jumped,\n                                      relf,\n                                      (first and relf > TOP_FRAMES) or moved,\n                                      moved)",
+  "            return self._fseq_guarded(out, run, (first and relf > TOP_FRAMES), relf,\n                                      (first and relf > TOP_FRAMES) or moved,\n                                      moved)"),
 
  ("fireball cues: the engine never gives the cues the running flamesafe's slots (round 6)",
   "ltcplay/web.py",
@@ -21933,13 +21940,13 @@ def build():
 
  ("fireball cues: a charge not started begins inside a window the play landed in (round 8)",
   "ltcplay/fireball_cues.py",
-  "                if k not in run.started and run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf and \\",
-  "                if False and run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf and \\"),
+  "            if k not in run.started and land is not None and \\\n                    not (run.top_ok and w[\"s0\"] == 0):",
+  "            if False and land is not None and \\\n                    not (run.top_ok and w[\"s0\"] == 0):"),
 
  ("fireball cues: a charge already started is skipped by the landing rule (round 8)",
   "ltcplay/fireball_cues.py",
-  "                if k not in run.started and run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf and \\",
-  "                if run.first_relf is not None and \\\n                        w[\"s0\"] < run.first_relf and \\"),
+  "            if k not in run.started and land is not None and \\\n                    not (run.top_ok and w[\"s0\"] == 0):",
+  "            if land is not None and \\\n                    not (run.top_ok and w[\"s0\"] == 0):"),
 
  ("fireball cues: the cues tell the record too when it judges the config (round 8)",
   "ltcplay/fireball_cues.py",
@@ -22631,11 +22638,317 @@ def build():
   "            with open(tmp, \"wb\") as fh:\n                fh.write(data)",
   "            with open(tmp, \"w\", encoding=\"utf-8\", newline=\"\\r\\n\") as fh:\n                fh.write(data.decode(\"utf-8\"))"),
 
+ ("start at a cue: the runner starts the show cue from the top",
+  "ltcplay/fire_ice.py",
+  "start_s=land[\"s\"],",
+  "start_s=0.0,"),
+
+ ("start at a cue: the music starts hard, no fade in",
+  "ltcplay/fire_ice.py",
+  "fade_in_ms=land[\"fade_s\"] * 1000.0)",
+  "fade_in_ms=0)"),
+
+ ("start at a cue: no flame landing before the cue starts",
+  "ltcplay/fire_ice.py",
+  "        if land is not None:\n            self._flame_landing()\n        try:",
+  "        try:"),
+
+ ("start at a cue: no flame landing after the cue started",
+  "ltcplay/fire_ice.py",
+  "        finally:\n            if land is not None:\n                self._flame_landing()",
+  "        finally:\n            pass"),
+
+ ("start at a cue: the video is not taken black before the cue",
+  "ltcplay/fire_ice.py",
+  "            if dark is not None:\n                dark()",
+  "            if dark is not None:\n                pass"),
+
+ ("start at a cue: the runner plays a list saved for another show cue",
+  "ltcplay/fire_ice.py",
+  "        if saved and (role_cue is None or\n                      saved.lower() != str(role_cue).lower()):",
+  "        if False:"),
+
+ ("start at a cue: the runner plays a list saved for another show file",
+  "ltcplay/fire_ice.py",
+  "        if file and here and file != here:",
+  "        if False:"),
+
+ ("start at a cue: where a stopped show stopped is not remembered",
+  "ltcplay/fire_ice.py",
+  "                    self._remember_stop(cue)",
+  "                    pass"),
+
+ ("start at a cue: the conductor brings the video up hard",
+  "ltcplay/conductor.py",
+  "                fade = max(0.0, min(float(fade_s or 0.0), ABORT_FADE_S))",
+  "                fade = 0.0"),
+
+ ("start at a cue: video black for the cue darkens a show that is up",
+  "ltcplay/conductor.py",
+  "            if self._look in (PLAYING,) + HOLDING_LOOKS:\n                return self._refused(\"Video black for the cue\",",
+  "            if False:\n                return self._refused(\"Video black for the cue\","),
+
+ ("start at a cue: the scheduler never asks the runner for the video fade",
+  "ltcplay/schedule_service.py",
+  "                    call.fade_s = float(fade()) if fade is not None else 0.0",
+  "                    call.fade_s = 0.0"),
+
+ ("start at a cue: the press's cue never reaches the show start",
+  "ltcplay/schedule_service.py",
+  "            self._press_start_at = start_at\n",
+  ""),
+
+ ("start at a cue: Continue anyway starts from the top",
+  "ltcplay/schedule_service.py",
+  "        start_at = cc[1] if cc is not None and cc[0] is r else None",
+  "        start_at = None"),
+
+ ("start at a cue: Continue anyway takes an older failed check's cue",
+  "ltcplay/schedule_service.py",
+  "        start_at = cc[1] if cc is not None and cc[0] is r else None",
+  "        start_at = cc[1] if cc is not None else None"),
+
+ ("start at a cue: a failed check does not keep the cue",
+  "ltcplay/schedule_service.py",
+  "        self._continue_cue = (r, start_at)\n",
+  ""),
+
+ ("start at a cue: refusals say Start now, not the cue",
+  "ltcplay/schedule_service.py",
+  "            return f\"Start at the cue {start_at['cue']['name']}\"",
+  "            return \"Start now\""),
+
+ ("start at a cue: it starts the delayed show, not an extra one",
+  "ltcplay/schedule.py",
+  "    if d is not None and not str(ev.detail or \"\").startswith(\n            PLAY_FROM_DETAIL):",
+  "    if d is not None:"),
+
+ ("start at a cue: the journal says Start now, with no cue",
+  "ltcplay/schedule.py",
+  "        if cue.startswith(PLAY_FROM_DETAIL):",
+  "        if False:"),
+
+ ("start at a cue: the route takes a cue the page shows at another time",
+  "ltcplay/remote.py",
+  "        if \"tc\" in body and body.get(\"tc\") != cue[\"tc\"]:",
+  "        if False:"),
+
+ ("start at a cue: the route works in Programming",
+  "ltcplay/remote.py",
+  "        if self._rehearsal_run(s):\n            # Asked of the run itself",
+  "        if False:\n            # Asked of the run itself"),
+
+ ("start at a cue: the route starts a cue of another show file",
+  "ltcplay/remote.py",
+  "        if show is not None and show != file:",
+  "        if False:"),
+
+ ("start at a cue: no confirm needed",
+  "ltcplay/remote.py",
+  "CONFIRM_ROUTES = frozenset((\"start-now\", \"start-at-cue\"))",
+  "CONFIRM_ROUTES = frozenset((\"start-now\",))"),
+
+ ("start at a cue: a stale page may press it",
+  "ltcplay/remote.py",
+  "FRESH_ROUTES = frozenset((\"start-now\", \"resume\", \"start-at-cue\")",
+  "FRESH_ROUTES = frozenset((\"start-now\", \"resume\")"),
+
+ ("start at a cue: it starts over Programming playback",
+  "ltcplay/remote.py",
+  "        if name in (\"start-now\", \"start-at-cue\"):\n            why = self.programming_playback_refusal()",
+  "        if name == \"start-now\":\n            why = self.programming_playback_refusal()"),
+
+ ("start at a cue: a timed purge and live flames are not cut at the press",
+  "ltcplay/remote.py",
+  "        if name in (\"hold\", \"start-now\", \"start-at-cue\"):",
+  "        if name in (\"hold\", \"start-now\"):"),
+
+ ("start at a cue: Resume offers another show file's stop",
+  "ltcplay/remote.py",
+  "        if not isinstance(at, dict) or at.get(\"file\") != show:",
+  "        if not isinstance(at, dict):"),
+
+ ("start at a cue: operators may not (the Settings row)",
+  "ltcplay/users.py",
+  "    \"start-at-cue\": \"show\",",
+  "    \"start-at-cue\": \"settings\","),
+
+ ("start at a cue: the landing ignores the lead-in",
+  "ltcplay/play_from.py",
+  "    return max(0, parse_tc(cue[\"tc\"]) - int(cue[\"lead_in_s\"]) * FPS)",
+  "    return max(0, parse_tc(cue[\"tc\"]))"),
+
+ ("start at a cue: Resume offers the cue after, at the very frame",
+  "ltcplay/play_from.py",
+  "        if at <= frame and (best is None or at >= parse_tc(best[\"tc\"])):",
+  "        if at < frame and (best is None or at >= parse_tc(best[\"tc\"])):"),
+
+ ("start at a cue: the audio fade in is never sent",
+  "ltcplay/clock.py",
+  "            fade = self._sa.fade_frames(fade_in_ms) if fade_in_ms else 0",
+  "            fade = 0"),
+
+ ("start at a cue: a clock that cannot seek is started part way",
+  "ltcplay/session.py",
+  "        if part_way and self.playhead_clock() is None:",
+  "        if False:"),
+
+ ("start at a cue: the runner never reads the cue again at the start",
+  "ltcplay/fire_ice.py",
+  "        recheck = getattr(self.svc, \"recheck_start_at\", None)",
+  "        recheck = lambda sa: (sa, \"\")"),
+
+ ("start at a cue: Continue anyway never reads the cue again",
+  "ltcplay/schedule_service.py",
+  "            fresh, why = self.recheck_start_at(start_at)\n            if why:",
+  "            fresh, why = start_at, \"\"\n            if why:"),
+
+ ("start at a cue: a cue changed since it was chosen still stands",
+  "ltcplay/remote.py",
+  "        if changed:\n            return None, (f\"the cue {want.get('name')} was changed",
+  "        if False:\n            return None, (f\"the cue {want.get('name')} was changed"),
+
+ ("start at a cue: Show mode is asked only while no show is live",
+  "ltcplay/remote.py",
+  "        if self._rehearsal_run(s):\n            # Asked of the run itself",
+  "        if self.programming()[0]:\n            # Asked of the run itself"),
+
+ ("start at a cue: the remote never hands the scheduler its re-check",
+  "ltcplay/remote.py",
+  "            schedule.start_at_check = self.start_at_check",
+  "            schedule.start_at_check = None"),
+
+ ("start at a cue: no re-check wired lets the cue through",
+  "ltcplay/schedule_service.py",
+  "            return None, (\"this engine cannot read the play-from cues, so \"\n                          \"it cannot start at a cue.\")",
+  "            return start_at, \"\""),
+
+ ("start at a cue: Resume's memory survives the night change",
+  "ltcplay/fire_ice.py",
+  "        if state in (\"CLOSING\", \"OFF\") or night != at.get(\"night\") or \\",
+  "        if state in (\"CLOSING\", \"OFF\") or \\"),
+
+ ("start at a cue: Resume's memory survives Run off",
+  "ltcplay/fire_ice.py",
+  "                self.show._session() is None:\n            with self._lock:\n                if self.stopped_at is at:",
+  "                False:\n            with self._lock:\n                if self.stopped_at is at:"),
+
+ ("start at a cue: Resume's memory survives Close for the night",
+  "ltcplay/fire_ice.py",
+  "        if state in (\"CLOSING\", \"OFF\") or night != at.get(\"night\") or \\",
+  "        if state in (\"OFF\",) or night != at.get(\"night\") or \\"),
+
+ ("start at a cue: the remote offers an earlier night's stop",
+  "ltcplay/remote.py",
+  "        if m is None or at.get(\"night\") != str(getattr(m, \"date\", \"\")):",
+  "        if False:"),
+
+ ("start at a cue: video black for the cue lands in a Stop's fade",
+  "ltcplay/conductor.py",
+  "            if want.get(\"halt\") is True and self._done_gen != self._gen:",
+  "            if False:"),
+
+ ("start at a cue: preshow music refuses the video black, so it cuts in",
+  "ltcplay/conductor.py",
+  "            if self._look in (PLAYING,) + HOLDING_LOOKS:\n                return self._refused(\"Video black for the cue\",",
+  "            if self._look in (PLAYING,) + HOLDING_LOOKS or self._playing():\n                return self._refused(\"Video black for the cue\","),
+
+ ("start at a cue: a cue past the audio's end passes the route",
+  "ltcplay/remote.py",
+  "        if audio_s is not None and \\\n                pf_mod.parse_tc(cue[\"tc\"]) / pf_mod.FPS >= audio_s:",
+  "        if False:"),
+
+ ("start at a cue: Resume compares the show cue with its case",
+  "ltcplay/remote.py",
+  "                       str(entry[\"cue\"]).lower() !=\n                       str(at[\"cue\"]).lower()):",
+  "                       entry[\"cue\"] !=\n                       at[\"cue\"]):"),
+
+ ("start at a cue: a fireball stage opening in the landing's settle time goes out late and short",
+  "ltcplay/fireball_cues.py",
+  "                if not run.top_ok and \\\n                        w[\"s0\"] < land + LANDING_SETTLE_FRAMES:",
+  "                if False:"),
+
+ ("start at a cue: Valve Open opens without its Igniter lead",
+  "ltcplay/fireball_cues.py",
+  "            if k not in run.started and lw is not None and \\",
+  "            if False and lw is not None and \\"),
+
+ ("start at a cue: an FSEQ slot turning on in the settle time is not held",
+  "ltcplay/fireball_cues.py",
+  "                if settling:\n                    run.fseq_land_hold.add(slot)",
+  "                if False:\n                    run.fseq_land_hold.add(slot)"),
+
+ ("start at a cue: an FSEQ Valve opens while its Igniter lead was held",
+  "ltcplay/fireball_cues.py",
+  "                        lead in run.fseq_lead_held or\n",
+  "                        False or\n"),
+
+ ("start at a cue: the landing's settle time is only the flame link's",
+  "ltcplay/fireball_cues.py",
+  "LANDING_SETTLE_FRAMES = 24",
+  "LANDING_SETTLE_FRAMES = 15"),
+
+ ("start at a cue: a Stop never takes the stop position at the press",
+  "ltcplay/remote.py",
+  "            note = getattr(getattr(self.schedule, \"performer\", None),\n                           \"note_stop\", None)",
+  "            note = None"),
+
+ ("start at a cue: a held show's frozen frame is not the one remembered",
+  "ltcplay/fire_ice.py",
+  "        if getattr(clk, \"_paused\", False):\n            f = getattr(clk, \"_frozen_frame\", None)",
+  "        if False:\n            f = getattr(clk, \"_frozen_frame\", None)"),
+
+ ("start at a cue: the route takes a cue whose lead-in changed",
+  "ltcplay/remote.py",
+  "        if \"lead_in_s\" in body and body.get(\"lead_in_s\") != cue[\"lead_in_s\"]:",
+  "        if False:"),
+
+ ("start at a cue: a Back keeps what the fire stages did before the move",
+  "ltcplay/fireball_cues.py",
+  "            for k in FIRE_STAGES:\n                run.started.discard(k)",
+  "            for k in ():\n                run.started.discard(k)"),
+
+ ("start at a cue: an FSEQ Resume in the Igniter lead counts as a move",
+  "ltcplay/fireball_cues.py",
+  "        self._fseq_land(out, run, relf, landed if moved is None else moved,\n                        seek)",
+  "        self._fseq_land(out, run, relf, landed,\n                        seek)"),
+
+ ("start at a cue: an FSEQ Valve open where the playhead lands goes on",
+  "ltcplay/fireball_cues.py",
+  "                if seek and slot in NEEDS_SLOT and \\",
+  "                if False and slot in NEEDS_SLOT and \\"),
+
+ ("start at a cue: a stage landed inside is skipped without a word",
+  "ltcplay/fireball_cues.py",
+  "                    self._say(f\"{fbtl.STAGE_WORD[k]} was skipped: the show \"\n                              f\"landed inside its window (a stage is never \"\n                              f\"started part way).\")",
+  "                    pass"),
+
+ ("start at a cue: a stage opening too soon is skipped without a word",
+  "ltcplay/fireball_cues.py",
+  "                    self._say(f\"{fbtl.STAGE_WORD[k]} was skipped: it opens \"\n                              f\"too soon after the landing (it would go out \"\n                              f\"late and cut short).\")",
+  "                    pass"),
+
+ ("start at a cue: an FSEQ Valve held for its lead is not said",
+  "ltcplay/fireball_cues.py",
+  "                    self._say(f\"The FSEQ's {word} was held: its \"",
+  "                    (lambda *a: None)(f\"The FSEQ's {word} was held: its \""),
+
+
+ ("start at a cue: Stop never asks for the stop position",
+  "ltcplay/remote.py",
+  "                    note()\n",
+  "                    pass\n"),
+
+ ("start at a cue: the re-check compares the show cue with its case",
+  "ltcplay/remote.py",
+  "        if str(fresh.get(\"show_cue\") or \"\").lower() != \\\n                str(start_at.get(\"show_cue\") or \"\").lower():",
+  "        if str(fresh.get(\"show_cue\") or \"\") != \\\n                str(start_at.get(\"show_cue\") or \"\"):"),
+
  ('remote: the Abort route is back', 'ltcplay/remote.py',
   'CONTROL_ROUTES = ("start-now", "hold", "resume",\n'
-  '                  "disarm-all", "stop", "run-off")',
+  '                  "disarm-all", "stop", "run-off", "start-at-cue")',
   'CONTROL_ROUTES = ("start-now", "hold", "resume", "abort",\n'
-  '                  "disarm-all", "stop", "run-off")'),
+  '                  "disarm-all", "stop", "run-off", "start-at-cue")'),
 
  ('rack screen: a Stop that did not do all of it is only a toast', 'ltcplay/web/remote.html',
   '    if(stopFailed(r, j)) saidStop(el.textContent);\n',
@@ -22790,6 +23103,36 @@ def build():
   '            if self._stopped_dark(cond):\n',
   '            if False:\n'),
 
+ ("start at a cue: Valve Open trusts that its Igniter was asked for, not that it went out",
+  "ltcplay/fireball_cues.py",
+  "                    lw[\"slot\"] not in run.lead_seen:",
+  "                    lead not in run.started:"),
+
+ ("start at a cue: a flame link landing with the cue time unchanged is not a move",
+  "ltcplay/fireball_cues.py",
+  "        lc = self._land_count()",
+  "        lc = None"),
+
+ ("start at a cue: an FSEQ Valve opens while its Igniter has not gone out",
+  "ltcplay/fireball_cues.py",
+  "                        (raw[lead - 1] > 0 and\n                         lead not in run.lead_seen)):",
+  "                        False):"),
+
+ ("start at a cue: an Igniter counts as gone out without the wire saying so",
+  "ltcplay/fireball_cues.py",
+  "                if len(sent) >= slot and sent[slot - 1] > 0:\n                    run.lead_seen.add(slot)",
+  "                if True:\n                    run.lead_seen.add(slot)"),
+
+ ("start at a cue: an Igniter seen before a landing still counts after it",
+  "ltcplay/fireball_cues.py",
+  "        if moved:\n            run.lead_seen.clear()",
+  "        if False:\n            run.lead_seen.clear()"),
+
+ ("start at a cue: the engine never hands the fireball the link's landings",
+  "ltcplay/web.py",
+  "            land_get=lambda: getattr(link, \"guard_gen\", None))",
+  "            land_get=None)"),
+
  ('scheduler: Resume hands the next tick a show past its late limit to miss', 'ltcplay/schedule.py',
   '        _sweep(tx, held=True)\n'
   '    back = m.held_from',
@@ -22805,6 +23148,52 @@ def build():
   '                if s.start <= now:\n'
   '                    _hold_back(tx, s)\n'
   '    back = m.held_from'),
+
+ ("flame link: a seek it sees itself does not start the guard generation again",
+  "ltcplay/flamelink.py",
+  "        self.seeks += 1\n        self.guard_gen += 1",
+  "        self.seeks += 1"),
+
+
+ ("start at a cue: the engine hands the fireball only the link's landings",
+  "ltcplay/web.py",
+  "            land_get=lambda: getattr(link, \"guard_gen\", None))",
+  "            land_get=lambda: getattr(link, \"landings\", None))"),
+
+ ("start at a cue: an FSEQ Igniter's evidence outlives its shot",
+  "ltcplay/fireball_cues.py",
+  "                    run.lead_seen.discard(slot)\n                continue",
+  "                    pass\n                continue"),
+
+ ("start at a cue: a shot lost to the Igniter rule is not counted",
+  "ltcplay/fireball_cues.py",
+  "            self.shots_skipped[show] += 1",
+  "            pass"),
+
+ ("start at a cue: a Valve skipped for its Igniter is not a fault line",
+  "ltcplay/fireball_cues.py",
+  "                          f\"the show landed (never gas without ignition).\",\n                          fault=True)",
+  "                          f\"the show landed (never gas without ignition).\",\n                          fault=False)"),
+
+ ("fireball timeline: a Valve on its Igniter's frame is not warned about",
+  "ltcplay/fireball_timeline.py",
+  "    if ig is None or va is None or va < ig or va >= ig + LEAD_FRAMES:",
+  "    if True:"),
+
+ ("fireball timeline: a save with a same-frame Valve says nothing",
+  "ltcplay/remote.py",
+  "        warn = fbtl_mod.lead_warning((entry or {}).get(\"stages\") or ())",
+  "        warn = \"\""),
+
+ ("ui2 page: the fireball editor never warns about a same-frame Valve",
+  "ltcplay/web/remote2.html",
+  "  if(at.igniter !== undefined && at.valve !== undefined && at.valve >= at.igniter && at.valve < at.igniter + 3){",
+  "  if(false){"),
+
+ ("rack screen: the Fireball line never shows the lost shots",
+  "ltcplay/web/remote.html",
+  "  if(tl && tl.shots && tl.shots.length) said.push(tl.shots.join(\" \"));\n",
+  ""),
 
 ]
 

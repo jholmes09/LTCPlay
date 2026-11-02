@@ -5,8 +5,9 @@ cue has a name, a time counted from the top of the show cue, a lead-in and
 an optional note. An admin keeps the list on 2.0's Settings tab.
 
 This module is the model, the validation and the storage. It SENDS
-NOTHING: it imports nothing that sends, and nothing that starts a show
-reads it in this change. Starting a show from a cue is a later change.
+NOTHING: it imports nothing that sends. Part 2 (Start at a cue) reads it
+through find_cue, landing_s and resume_offer below: the engine works out
+where a show starts from the saved list, never from a time a page sent.
 
 A cue
 =====
@@ -96,6 +97,11 @@ MAX_REV = 10 ** 12
 STALE_WORDS = "since this screen read them"
 REPLACE_WORDS = "Replace the file"
 RETRY_S = 0.05
+
+
+# Start at a cue (part 2): the show audio and the video fade in over
+# this long at the cue instead of starting hard (Jeff, 2026-10-31).
+LANDING_FADE_S = 1.0
 
 
 class CueError(ValueError):
@@ -825,3 +831,55 @@ class Store:
             out["show"] = show
             out["entry"] = entry_of(doc, show)
         return out
+
+
+# ------------------------------------------------ part 2: start at a cue --
+
+def find_cue(entry, cue_id):
+    """The cue with id `cue_id` in a show's entry (entry_of), or None."""
+    for c in (entry or {}).get("cues") or ():
+        if c.get("id") == cue_id:
+            return c
+    return None
+
+
+def landing_frames(cue):
+    """Where a start at `cue` plays from, in whole frames from the top of
+    the show cue: the cue's time less its lead-in, never before the top."""
+    return max(0, parse_tc(cue["tc"]) - int(cue["lead_in_s"]) * FPS)
+
+
+def landing_s(cue):
+    """landing_frames in seconds from the top of the show cue."""
+    return landing_frames(cue) / float(FPS)
+
+
+def resume_offer(cues, frame):
+    """The cue a Resume offers after a show stopped at `frame` (frames from
+    the top of the show cue): the last cue at or before it, so the scene
+    starts fresh from its own top (Jeff, 2026-10-31). None when no cue is
+    at or before it (the show starts from the top) or `frame` is not
+    known."""
+    if frame is None or isinstance(frame, bool):
+        return None
+    try:
+        frame = int(frame)
+    except (TypeError, ValueError):
+        return None
+    best = None
+    for c in cues or ():
+        try:
+            at = parse_tc(c["tc"])
+        except (CueError, KeyError, TypeError):
+            continue
+        if at <= frame and (best is None or at >= parse_tc(best["tc"])):
+            best = c
+    return best
+
+
+def start_words(cue):
+    """A cue as the journal and the screens say it: its name, its time and
+    its lead-in."""
+    return (f"{cue['name']} ({cue['tc']}, played from "
+            f"{tc_text(landing_frames(cue))} with its {cue['lead_in_s']} s "
+            f"lead-in)")
