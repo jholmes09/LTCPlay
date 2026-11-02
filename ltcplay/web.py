@@ -44,9 +44,11 @@ REMOTE_PAGE = os.path.join(HERE, "web", "remote.html")
 # /remote serves 1.0 unless this screen chose 2.0 with its own cookie (set
 # by /ui?v=2, cleared back by /ui?v=1), or the show machine's default says
 # 2 (remote.ui_default, 1 until Jeff sets it). /remote1 and /remote2 are
-# always that page. /remote-logic.js is 1.0's own pure rules (remote.html's
-# remote-logic block, cut out at each request), so both pages run one set.
+# always that page. /remote-logic.js is the pure rules both pages share
+# (web/remote_rules.js, its own file since step 1 of
+# docs/REMOVE_1_0_PLAN.md), so both pages run one set.
 REMOTE2_PAGE = os.path.join(HERE, "web", "remote2.html")
+REMOTE_RULES = os.path.join(HERE, "web", "remote_rules.js")
 UI_COOKIE = "ltcplay_ui"
 UI_ROUTES = ("/remote1", "/remote2", "/remote-logic.js", "/ui")
 LOGIC_OPEN = '<script id="remote-logic">'
@@ -54,28 +56,43 @@ LOGIC_TAG = '<script src="/remote-logic.js"></script>'
 
 
 def remote_logic():
-    """1.0's pure rules (remote.html's remote-logic block), or None."""
-    with open(REMOTE_PAGE, encoding="utf-8") as fh:
-        page = fh.read()
-    a = page.find(LOGIC_OPEN)
-    b = page.find("</script>", a) if a >= 0 else -1
-    if a < 0 or b < 0:
+    """The shared pure rules (web/remote_rules.js), or None when the file
+    is missing or cannot be written into a page whole (a "</script>" in
+    it would end the block early)."""
+    try:
+        with open(REMOTE_RULES, encoding="utf-8") as fh:
+            logic = fh.read()
+    except OSError:
         return None
-    return page[a + len(LOGIC_OPEN):b]
+    if "</script>" in logic:
+        return None
+    return logic
 
 
-def remote2_page():
-    """remote2.html with 1.0's rules written into it (safety review of
-    #166, B1): the page arrives whole in one answer, never waiting on a
-    second request for its rules. Without the block, the page as it is
-    (its own tag then asks /remote-logic.js, and it says when that fails;
-    its stop-core Stop needs neither)."""
-    with open(REMOTE2_PAGE, encoding="utf-8") as fh:
+def _with_rules(path):
+    """The page at `path` with the shared rules written into it in place of
+    its /remote-logic.js tag (safety review of #166, B1): the page arrives
+    whole in one answer, never waiting on a second request for its rules.
+    Without the rules, the page as it is (its tag then asks
+    /remote-logic.js)."""
+    with open(path, encoding="utf-8") as fh:
         page = fh.read()
     logic = remote_logic()
     if logic is not None and LOGIC_TAG in page:
         page = page.replace(LOGIC_TAG, LOGIC_OPEN + logic + "</script>", 1)
     return page.encode("utf-8")
+
+
+def remote1_page():
+    """remote.html as /remote and /remote1 serve it: the rules written in,
+    byte for byte the page it was while they lived inside it."""
+    return _with_rules(REMOTE_PAGE)
+
+
+def remote2_page():
+    """remote2.html as /remote2 serves it, the same rules written in. 2.0
+    says when they did not load; its stop-core Stop needs neither."""
+    return _with_rules(REMOTE2_PAGE)
 # The pages' icons (tab, iPad home screen, installed web app), made from the
 # LTC Player app icon by tools/make_web_icons.py. A fixed list of files at
 # fixed addresses: nothing here reads a path the request names.
@@ -1471,9 +1488,8 @@ class Handler(BaseHTTPRequestHandler):
                 if page == REMOTE2_PAGE:
                     return self._send(200, remote2_page(),
                                       "text/html; charset=utf-8")
-                with open(page, "rb") as fh:
-                    return self._send(200, fh.read(),
-                                      "text/html; charset=utf-8")
+                return self._send(200, remote1_page(),
+                                  "text/html; charset=utf-8")
             if route == "/api/remote" or route.startswith("/api/remote/"):
                 remote = getattr(self.server, "remote", None)
                 if remote is None:
@@ -1576,13 +1592,14 @@ class Handler(BaseHTTPRequestHandler):
                           f"Max-Age=31536000"})
 
     def _remote_logic(self):
-        """GET /remote-logic.js: 1.0's pure rules, cut out of remote.html
-        (its remote-logic block) at each request, so 2.0 runs the very
-        functions 1.0 runs and selftest.py proves."""
+        """GET /remote-logic.js: the shared pure rules (web/remote_rules.js),
+        read at each request, so 2.0 runs the very functions 1.0 runs and
+        selftest.py proves."""
         logic = remote_logic()
         if logic is None:
-            return self._send(500, {"error": "remote.html has no "
-                                             "remote-logic block."})
+            return self._send(500, {"error": "The page rules file "
+                                             "(remote_rules.js) is missing "
+                                             "or broken."})
         return self._send(200, logic,
                           "application/javascript; charset=utf-8")
 

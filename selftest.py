@@ -575,6 +575,23 @@ def section(name):
     print(f"\n== {name}")
 
 
+def remote1_text():
+    """remote.html as /remote serves it: its /remote-logic.js tag replaced
+    by the shared rules file (web/remote_rules.js), as web.remote1_page
+    does. Byte for byte the page 1.0 was while the rules lived inside it,
+    so every test reads 1.0 through this; test_remote_rules_file proves
+    the server builds the same page."""
+    web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ltcplay", "web")
+    with open(os.path.join(web_dir, "remote.html"), encoding="utf-8") as fh:
+        page = fh.read()
+    with open(os.path.join(web_dir, "remote_rules.js"),
+              encoding="utf-8") as fh:
+        rules = fh.read()
+    return page.replace('<script src="/remote-logic.js"></script>',
+                        '<script id="remote-logic">' + rules + "</script>", 1)
+
+
 def wait_for(pred, timeout=3.0, step=0.02):
     """Poll until true. Fixed sleeps in a thread test pass on an idle machine
     and fail on a busy one, which makes the suite a coin toss rather than a
@@ -10554,9 +10571,7 @@ def test_schedule_late_limit_round_two():
           "before its time: no")
     check(how(when=_den(S, 18, 2, 1)) == "no", "past the limit: no")
     # 4. The Programming field shows 120 when the file omits the value.
-    html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    html = remote1_text()
     check('doc.late_grace_s == null ? 120 :' in html,
           "the Programming screen shows 120 for a missing late_grace_s")
     # 5. After an engine restart Run is off: a show rescued inside the
@@ -16716,8 +16731,7 @@ def test_schedule_run_off_says_the_next_show_will_not_start():
     # and on the Schedule screen, 2.0 as an alert item.
     here = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "ltcplay", "web")
-    with open(os.path.join(here, "remote.html"), encoding="utf-8") as fh:
-        one = fh.read()
+    one = remote1_text()
     with open(os.path.join(here, "remote2.html"), encoding="utf-8") as fh:
         two = fh.read()
     check('id="run-warn"' in one and 'id="tn-run-warn"' in one and
@@ -19782,9 +19796,7 @@ def test_announce_rack_screen_page_logic():
             "Stop, Recording missing on a button whose file is not on the "
             "PC, Held for announcement while one plays between shows, no "
             "double tap anywhere")
-    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     for el in ('id="ann"', 'id="ann-btns"', 'id="ann-stop"',
                'id="ann-banner"', 'id="ann-banner-stop"'):
         check(el in page, f"the page has {el}")
@@ -20479,9 +20491,7 @@ def test_announce_output_picker():
               f"lamps, labelled apart: {out.get('subsystems')}")
     finally:
         R.close()
-    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     for el in ('id="annout-card"', 'id="annout-pick"', 'id="annout-save"',
                '"/api/remote/announce-outputs"',
                '"/api/remote/announce-output"'):
@@ -21741,8 +21751,7 @@ def test_rack_screen_small_screens_with_announcements_and_setup():
             "Show the steps the header's Make a show file (40 px) and the "
             "steps are on screen; a poll never resets the steps' scroll")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     chrome = _find_chromium()
     if not chrome:
         check(not (IN_CI and sys.platform.startswith("linux")),
@@ -21920,8 +21929,7 @@ def test_rack_screen_setup_card_refits_when_warnings_come():
             "1366x700, 1024x768, 1180x820 and 1920x900; the steps hand a "
             "scroll at their end on to the page")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     chrome = _find_chromium()
     if not chrome:
         check(not (IN_CI and sys.platform.startswith("linux")),
@@ -23065,9 +23073,7 @@ def test_deck_stop_works_while_held_for_an_alert():
 def test_alert_hold_rack_screen_words():
     section("alert hold on the rack screen: the state card says Held and "
             "the sentence; nothing new is drawn anywhere else")
-    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     check("function alertHoldLook" in logic, "alertHoldLook is pure logic")
     import shutil
@@ -36824,8 +36830,7 @@ def test_streamdeck_unconfirmed_config_never_marks_a_key():
     # The rack screen says it in the Info popup only (not a banner, not
     # the keys): the page wires flames.confirmed to #info-flames.
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     check('id="info-flames" hidden' in page
           and "s.flames.confirmed === false" in page
           and '$("info-flames").hidden = !unconf;' in page
@@ -42303,8 +42308,7 @@ def test_fire_ice_config_defaults_and_refusals():
           f"/api/brand names the Fire & Ice show from its own config, "
           f"under the global brand: {b}")
     plain = W.brand_doc(types.SimpleNamespace(fire_ice_config=None))
-    page = open(os.path.join(os.path.dirname(W.__file__), "web",
-                             "remote.html")).read()
+    page = remote1_text()
     check("beyond_blank" not in b and "Lasers blanked" not in page and
           "black zone" not in page.lower(),
           "the web pages say nothing about how the lasers are blanked "
@@ -43798,8 +43802,7 @@ def test_rack_screen_stop_in_place_of_start_now():
             "audio loads")
     import shutil as _sh
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     check("new Error(refusedWords(j, r.statusText))" in page,
           "every refused press shows the engine's own words")
@@ -44909,9 +44912,7 @@ def test_fire_ice_flame_cue_refusals_are_faults_on_the_screens():
                       f"{out.get('flames')}")
             finally:
                 R.close()
-        page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 "ltcplay", "web", "remote.html"),
-                    encoding="utf-8").read()
+        page = remote1_text()
         check("fl.cues_fault" in page and "Flame cues are zero, a fault"
               in page, "the rack screen shows it")
         # The deck: read from /api/conductor, drawn on its own key.
@@ -47803,10 +47804,7 @@ def test_every_show_start_clears_the_pixels():
     # short as a whole, no sentence over eight words; "black", never
     # "blackout".
     said = cues.faults_now()
-    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "ltcplay", "web", "remote.html"),
-              encoding="utf-8") as fh:
-        rack = fh.read()
+    rack = remote1_text()
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "ltcplay", "web", "remote2.html"),
               encoding="utf-8") as fh:
@@ -53880,9 +53878,7 @@ def test_remote_start_needs_the_confirm_and_abort_is_gone():
                             {"seen": R.seen()})
         check(st == 400 and "Confirm" in out["error"],
               f"Start now without the confirm is refused: {st}")
-        page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 "ltcplay", "web", "remote.html"),
-                    encoding="utf-8").read()
+        page = remote1_text()
         check('confirmBox("Start a show now?"' in page,
               "the page asks before Start now")
     finally:
@@ -54237,8 +54233,7 @@ def _remote_page_logic_in_node():
     import shutil
     import subprocess as _sp
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     a = page.find("// LOGIC BEGIN")
     b = page.find("// LOGIC END")
     check(a != -1 and b > a, "the page's logic block is marked")
@@ -54389,8 +54384,7 @@ def _morning_page_logic_in_node():
     import shutil
     import subprocess as _sp
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     a = page.find("// LOGIC BEGIN")
     b = page.find("// LOGIC END")
     logic = page[a:b]
@@ -54504,8 +54498,7 @@ def test_remote_has_no_arm_route():
                      "from . import streamdeck"):
             check(word not in src,
                   f"{name} never touches the arm link ({word})")
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     posted = set(_re.findall(r'/api/remote/([a-z-]+)', page)) | set(
         _re.findall(r'press\("([a-z-]+)"', page))
     check({p for p in posted if _re.search(r"(?<!dis)arm", p)} <=
@@ -54583,8 +54576,7 @@ def test_rack_screen_width_guard_css_contract():
     import shutil
     import subprocess as _sp
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     rules = _css_rules(page)
     app = _css_rule(rules, "#app") or {}
     check(app.get("grid-template-columns", "").startswith("minmax(0,"),
@@ -55177,8 +55169,7 @@ def test_rack_screen_banners_never_squeeze_the_flame_controls():
     import shutil as _sh
     import subprocess as _sp
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     rules = _css_rules(page)
     html_r = _css_rule(rules, "html") or {}
     check(html_r.get("overflow-y") == "auto" and
@@ -55393,8 +55384,7 @@ def test_rack_screen_flame_controls_need_no_show_file():
             "pressable, and one plain line says what works without a show "
             "file. Drawn in a real browser")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     check(".flames{display:none}" not in page.replace(" ", ""),
           "no rule hides the flame groups")
     import shutil as _sh
@@ -55590,8 +55580,7 @@ def test_rack_screen_says_the_rearm_wait():
     from ltcplay import remote as RM
     from ltcplay import streamdeck as SD
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     # The engine: the deck's words, parsed and aged; display only.
     check(RM.deck_rearm("usb_ms=3&rearm=0.1500,2.300&prefused=1.refractory,"
                         "2.bogus,x.refractory") ==
@@ -55935,8 +55924,7 @@ def test_rack_window_fits_the_work_area_above_the_taskbar():
     finally:
         gone()
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     import shutil as _sh
     import subprocess as _sp
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
@@ -56168,8 +56156,7 @@ def test_startup_page_says_hold_space_and_this_page_selected():
             "keyboard; the no-show-file line shows here too. Drawn in a "
             "real browser")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     for t in ("Hold Space (this page must be selected)",
               "Click this page, then hold Space"):
         check(t in page, f"the page says {t!r}")
@@ -56236,8 +56223,7 @@ def test_startup_page_readable_at_the_show_pc_sizes():
             "overlaps; the Abort bar stays on the window. Drawn in a real "
             "browser at 1280x800, 1366x768 and 1920x1080")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     chrome = _find_chromium()
     if not chrome:
         check(not (IN_CI and sys.platform.startswith("linux")),
@@ -56425,8 +56411,7 @@ def test_rack_screen_has_no_abort_and_stop_taps_like_it_did():
             "the screen as a banner until Seen. Drawn in a real browser and "
             "pressed")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     for gone in ('id="b-abort"', 'id="abortbar"', 'press("abort"',
                  "/api/remote/abort", "abortTapStep", "abortTapKind",
                  "abortPlan", "saidAbort", "ABORT_TAP", "--abort-",
@@ -56613,8 +56598,7 @@ def test_rack_screen_one_button_per_flame_group():
             "screen arming off it is the lamp only, as before. Page logic "
             "in node, then drawn in a real browser and pressed")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     check("data-gdis" not in page and 'class="gdis" data-' not in page,
           "no separate Disarm button per group")
     bad = _page_logic_in_node(page, r"""
@@ -56833,8 +56817,7 @@ def test_rack_screen_arm_all_and_disarm_all_toggle():
             "Disarm all from the finger that armed. Page logic in node, "
             "then drawn in a real browser and pressed")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     bad = _page_logic_in_node(page, r"""
 const live = gs => ({arming:{enabled:true, fresh_s:1.0}, flames:{connected:true, stale:false, age_ms:100, groups:gs}, schedule:{aborted:false}});
 const off = [{name:"a", armed:"disarmed"}, {name:"b", armed:"disarmed"}, {name:"c", armed:"held"}];
@@ -57158,8 +57141,7 @@ def test_rack_screen_one_laser_pill():
             "first and stays red; Disarm all lasers still works. Page logic "
             "in node, then drawn in a real browser")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     bad = _page_logic_in_node(page, r"""
 const chips = (aw, as, lw, ls) => [{name:"Show", state:"ok", word:"ready"}, {name:"Laser arm", state:as, word:aw}, {name:"Lasers", state:ls, word:lw, title:"sent only"}, {name:"Audio", state:"ok", word:"ready"}];
 const L = (a, b, extra) => Object.assign({lasers:[{id:"L1", name:"Laser 1", armed:a}, {id:"L2", name:"Laser 2", armed:b}], groups:{}}, extra || {});
@@ -57258,8 +57240,7 @@ def test_startup_lock_is_one_tap_with_undo():
             "as before (an unlock says confirmed). Drawn in a real browser "
             "and pressed")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     lc = page[page.find("async function lockClick("):
               page.find("// ARRANGE BEGIN")]
     check(lc and "confirmBox(" not in lc and "confirm(" not in lc,
@@ -57495,8 +57476,7 @@ def test_rack_screen_flame_group_machine_count():
     check(RM.Remote.group_machines(types.SimpleNamespace()) is None,
           "a list it cannot read: None, never raises")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     bad = _page_logic_in_node(page, r"""
 const gm = {"front row":{machines:3, locked:1}, "cat-walk":{machines:4, locked:0}, "fireball":{machines:1, locked:0}};
 t(machineCountLine({name:"front row"}, "armed", gm) === "armed 2 of 2 machines, 1 locked out", "armed: m of m, the locked one apart");
@@ -57597,8 +57577,7 @@ def test_rack_screen_nav_buttons_never_cut_off():
             "show screen and on Users, at the show PC's sizes and an "
             "iPad's. Drawn in a real browser")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     nav = _css_rule(_css_rules(page), "nav") or {}
     check(nav.get("flex-wrap") == "wrap" and nav.get("min-width") == "0",
           f"the nav may shrink to the window and wrap its buttons: {nav}")
@@ -58284,8 +58263,7 @@ def test_make_a_show_file_from_the_show_folder():
     # The page: the buttons on the folder card and on Getting started,
     # wired, and its sentences, run in node.
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     for need in ('id="fo-make"', 'id="fo-check"', 'id="su-make"',
                  'post("/api/remote/show-file-new"',
                  'post("/api/check", {timeline:f})',
@@ -59626,9 +59604,7 @@ def test_remote_transport_on_the_show_audio():
               "Programming watchdog's heartbeat")
         check(tr.get("playhead") == "show_audio" and tr.get("freerun") is False,
               f"the page is not told the show audio is the playhead: {tr}")
-        page = open(os.path.join(os.path.dirname(os.path.abspath(
-            __file__)), "ltcplay", "web", "remote.html"),
-            encoding="utf-8").read()
+        page = remote1_text()
         check('"Playing on the show audio"' in page and
               '"Paused on the show audio"' in page and
               '"Stop the show audio"' in page,
@@ -60647,9 +60623,7 @@ def test_stream_deck_review_of_120():
           RM.deck_nokey(k._path().split("?", 1)[1]) == {4, 5} and
           RM.deck_nokey("usb_ms=3") == set(),
           f"the deck says nokey and the engine reads it: {k._path()}")
-    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     check('g.deck_key === false ? " (no Stream Deck key)"' in page,
           "the flame card names a group with no deck key")
     # The Deck chip hears it.
@@ -63029,8 +63003,7 @@ def test_stop_says_when_its_flame_disarm_failed():
     import shutil as _sh
     from ltcplay import streamdeck as sd
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     # The deck: Stop's answer from the engine, as _http_post returns it.
     lines = []
     answer = {}
@@ -65859,8 +65832,7 @@ def test_screen_arming_switch_and_refusals():
     # -- the page: off is said and in sight, a refusal is never silent ---
     import re as _re
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     m = _re.search(r'const ARMING_OFF = "([^"]*)";', page)
     check(m and m.group(1) == RM.ARMING_OFF,
           "the page and the engine say the same about arming off")
@@ -66516,8 +66488,7 @@ def test_alerts_route_status_and_acknowledge():
     finally:
         R.close()
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     check('id="al-list"' in page and "renderAlerts(s.alerts" in page
           and '"/api/remote/alert"' in page and 'action:"acknowledge"' in page
           and ">Acknowledge</button>" in page
@@ -69976,8 +69947,7 @@ def test_hazers_on_the_rack_screens():
             "under Abort")
     import shutil
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     page2 = open(os.path.join(here, "ltcplay", "web", "remote2.html"),
                  encoding="utf-8").read()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
@@ -70219,8 +70189,7 @@ def test_flamesafe_multi_safety_ltcplay_side():
     fs.last = {"groups": [dict(base)]}
     check(fs.view()["groups"][0]["arm_value"] is None,
           "an older flamesafe without arm_value: none")
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     check("function safetyLine" in logic and
           'const sl = safetyLine(g, c) || machineCountLine(g, c, ST && '
@@ -70451,9 +70420,7 @@ def test_aim_slots_are_seen_on_the_rack_screen():
     check("httpd.remote.flame_aim = (" in web,
           "web.serve hands the engine's aim slots to the rack screen")
     # The card's line, from page logic.
-    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     check("function aimLine" in logic and
           'const al = aimLine(g, c), ae = el.querySelector(".aim");' in page,
@@ -71820,9 +71787,7 @@ def test_calibrate_all_and_open_beyond_routes():
                             client=loop)
         check(st == 409 and "live" in out["error"] and len(calls) == 1,
               f"not while a show is live: {out}")
-        page = open(os.path.join(os.path.dirname(os.path.abspath(
-            __file__)), "ltcplay", "web", "remote.html"),
-            encoding="utf-8").read()
+        page = remote1_text()
         for need in ('moPress("laser-test", {all:true, on:true}, "mo-lmsg")',
                      'moPress("laser-test", {all:true, on:false}, "mo-lmsg")',
                      'moPress("open-beyond", {}, "mo-lmsg")',
@@ -72673,9 +72638,7 @@ def test_purge_rules_at_the_engine():
         # The page's own fire key: one keydown starts it, the browser's key
         # repeat events are the evidence the key is still down, and every
         # way of losing the key stops it (review of PR #68, P1-4).
-        html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 "ltcplay", "web", "remote.html"),
-                    encoding="utf-8").read()
+        html = remote1_text()
         for want in ('if(e.repeat){ if(FIRE) FIRE.repeatAt = Date.now(); return; }',
                      "const KEY_REPEAT_GRACE_MS = 2500, KEY_REPEAT_GAP_MS = 1000;",
                      "if(fireKeyLapsed(now, f.startAt, f.repeatAt, "
@@ -73816,8 +73779,7 @@ def test_morning_arrange_mode_arms_nothing():
     import shutil
     import subprocess as _sp
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     a = page.find("// ARRANGE BEGIN")
     b = page.find("// ARRANGE END")
     check(0 < a < b, "the page has its ARRANGE block")
@@ -74480,9 +74442,7 @@ def test_morning_group_button_skips_locked_and_always_disarms():
             R.m.close()
             R.close()
     # The page: the click's direction comes from ANY member selected.
-    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     a = page.find("// GROUP CLICK BEGIN")
     b = page.find("// GROUP CLICK END")
     check(0 < a < b, "the page has its GROUP CLICK block")
@@ -74856,10 +74816,7 @@ def test_purge_release_can_never_start_a_fire():
 
     # The page's Space bar asks to fire with on true on every heartbeat,
     # and its let-go is purge-stop, which never asks to fire.
-    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "ltcplay", "web", "remote.html"),
-              encoding="utf-8") as fh:
-        page = fh.read()
+    page = remote1_text()
     check(page.count('post("/api/remote/purge-fire", '
                      'moActor({fire_id:f.id, on:true}))') == 1 and
           page.count('"/api/remote/purge-fire"') == 1 and
@@ -77173,9 +77130,7 @@ def test_windows_rack_window_and_explorer_front():
     check('brought it to the front. If you do not' in rm_src and
           'see it, it is on the taskbar.' in rm_src,
           "the route's answer says where the folder is")
-    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     info = page[page.find('<div id="info"'):page.find('<script id="remote-logic">')]
     check("Minimize, Maximize and Close buttons" in info and
           "<kbd>Windows</kbd> key + <kbd>Down arrow</kbd>" in info and
@@ -77973,9 +77928,7 @@ def test_config_watch_supervisor_and_rack_screen_note():
             srv.server_close()
         gone()
         _sh.rmtree(d, ignore_errors=True)
-    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     for need in ('<div class="warnbox" id="cfg-note" hidden></div>'
                  '<button class="ghost" id="cfg-reload" hidden>Reload '
                  'engine</button>',
@@ -78313,9 +78266,7 @@ def test_users_sign_out_after_the_last_show():
     check("r.users.last_show = r.last_show_over" in src and
           "r.users.start()" in src and "r.users.stop()" in src,
           "web.serve gives the users the engine's answer")
-    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     check('post("/api/remote/last-show-signout", {minutes:lastShow})' in
           page and 'id="au-lastshow"' in page,
           "the Users screen has the setting and saves it")
@@ -79619,9 +79570,7 @@ def test_rack_screen_locks_controls_signed_out_in_a_browser():
         print("  note: no Chromium here, so the page was not drawn")
         print("  ok")
         return
-    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     perms = ("show", "arm", "unlock", "checklist", "show_files", "settings",
              "users")
     base = _rack_status_pico(many=False)
@@ -79784,9 +79733,7 @@ def test_rack_screen_sign_in_and_out_unlock_and_lock_in_a_browser():
         print("  note: no Chromium here, so the page was not drawn")
         print("  ok")
         return
-    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     perms = ("show", "arm", "unlock", "checklist", "show_files", "settings",
              "users")
     st = _rack_status_pico(many=False)
@@ -81276,9 +81223,7 @@ def test_soak_render_older_than_layout_is_a_cues_fault_at_show_load():
         check("httpd.remote.flame_cues.on_render_fault = \\\n"
               "                httpd.remote.render_fault_alert" in web_src,
               "ltc serve hands the flame cues the rack screen's alert")
-        with open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                  encoding="utf-8") as fh:
-            page = fh.read()
+        page = remote1_text()
         check("renderEngineChecks(mo.checks || []);" in page,
               "the Morning page draws the engine checks")
     finally:
@@ -81444,9 +81389,7 @@ def test_soak_show_folder_served_is_said_and_followed():
                 R.remote._journal = real_journal
                 R.close()
         here = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                  encoding="utf-8") as fh:
-            page = fh.read()
+        page = remote1_text()
         check("s.show_folder && s.show_folder.problem ? "
               "s.show_folder.problem : null" in page,
               "the rack screen's trouble line carries it")
@@ -82735,8 +82678,7 @@ def test_deck_chip_in_a_browser():
             "with the deck unplugged, acknowledged, replugged, and with the "
             "page cut off from the engine; never green but replugged")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     check('el.className = "chip warn"; const w = el.querySelector("span"); '
           'if(w) w.textContent = "no contact";' in page,
           "a page that lost the engine makes every chip amber, 'no contact'")
@@ -84346,8 +84288,7 @@ def test_laser_arm_review_round_two():
           f"two single disarms merged cover both: {calls}")
     # 2. The page: Arrange mode never holds back a disarm click.
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     a = page.index("async function laserArmClick(ids){")
     b = page.index("function laserGroupClick(g){")
     node = _sh.which("node")
@@ -84688,8 +84629,7 @@ def test_rack_lasers_strip_page():
     import shutil
     import subprocess as _sp
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     vs = page.find('<section id="v-show"')
     fl = page.find('<div class="flames">', vs)
     lz = page.find('<div class="lz" id="lz" hidden aria-label="Lasers">', vs)
@@ -85045,9 +84985,7 @@ def test_disarm_all_is_a_plain_disarm_and_never_gated():
               f"a forced disarm that failed is never said as done: {al}")
         rem._flame_disarm = real
         # The page says which one a press does.
-        page = open(os.path.join(os.path.dirname(os.path.abspath(
-            __file__)), "ltcplay", "web", "remote.html"),
-            encoding="utf-8").read()
+        page = remote1_text()
         check('<span class="lbl">Disarm all flame groups</span><small>plain '
               'disarm: arm again with a hold</small>' in page and
               "Stop is different: it ends what is playing" in page,
@@ -86365,8 +86303,7 @@ def test_a_laser_without_its_calibration_cue_says_what_and_where():
     for t in (need, text):
         check("—" not in t and "–" not in t, "no dashes")
     here = os.path.dirname(os.path.abspath(__file__))
-    html = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    html = remote1_text()
     check("!l.configured ? need :" in html and "l.setup_needed" in html,
           "the Startup page shows the sentence for a laser not set up, "
           "armed or not")
@@ -86925,9 +86862,7 @@ def test_video_lamp_follows_the_madmapper_watch():
           "httpd.remote.madmapper_heartbeat = httpd.madmapper[1]" in web_src,
           "web.serve starts the MadMapper watch and hands it the heartbeat")
     # The page draws the chip and its tooltip exactly as the engine says.
-    with open(os.path.join(HERE, "ltcplay", "web", "remote.html"),
-              encoding="utf-8") as fh:
-        page = fh.read()
+    page = remote1_text()
     draw = _js_block(page, '$("subs").innerHTML = ', '\n\n')
     check(draw.startswith('$("subs").innerHTML'),
           "the page has its status strip drawing")
@@ -87257,9 +87192,7 @@ def test_artnet_faults_only_for_the_show_in_use():
         with open(sel_path) as fh:
             check(json.load(fh).get("show") == "show.json",
                   "once the disk answers, the file says the show Run")
-        page = open(os.path.join(os.path.dirname(os.path.abspath(
-            __file__)), "ltcplay", "web", "remote.html"),
-            encoding="utf-8").read()
+        page = remote1_text()
         check('post("/api/remote/show-select", {file: $("run-file").value})'
               in page and "if(sel && ok.includes(sel) && !RUN_PICKED) "
               '$("run-file").value = sel;' in page,
@@ -87308,8 +87241,7 @@ def test_rack_screen_jeff_2026_10_23_page():
     import shutil as _sh
     import subprocess as _sp
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     # Static wiring.
     for need in ('data-go="tonight">Schedule</button>',
                  'data-go="morning" hidden>Startup</button>',
@@ -87450,8 +87382,7 @@ def test_show_mode_stays_show_on_the_show_audio():
     if S is None:
         return
     here = os.path.dirname(os.path.abspath(__file__))
-    rack = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    rack = remote1_text()
     old = open(os.path.join(here, "ltcplay", "web", "index.html"),
                encoding="utf-8").read()
     # What each Run sends, exactly as the pages send it.
@@ -88585,8 +88516,7 @@ def test_live_flame_page_banner_and_card():
             "PROGRAMMING bar on every screen while it is on, with Off; the "
             "card's confirm says what the engine says; no dashes")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     from ltcplay import remote as RM
     check(f'const LIVE_FLAME_ENABLES = "{RM.LIVE_FLAME_ENABLES}";' in page,
           "the confirm box says remote.LIVE_FLAME_ENABLES word for word")
@@ -89574,9 +89504,7 @@ def test_live_flame_from_a_mac():
         R.disarms.clear()
         R.on()
         check(R.lf.view()["sender"] is None, "no sender yet: none shown")
-        page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 "ltcplay", "web", "remote.html"),
-                    encoding="utf-8").read()
+        page = remote1_text()
         check('"; source: " + ((lf.sender && lf.sender.from) ||' in page,
               "the bar's source is the sender holding the lock")
         R.feed(R.pk(), host="127.0.0.1")
@@ -90694,8 +90622,7 @@ def test_programming_flames_engine_routes_and_page():
           f"{st.get('programming_flames')}")
     # The pages: no switch, no banner, no route; 1.0's line and fault.
     here = os.path.dirname(os.path.abspath(__file__))
-    one = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-               encoding="utf-8").read()
+    one = remote1_text()
     two = open(os.path.join(here, "ltcplay", "web", "remote2.html"),
                encoding="utf-8").read()
     for page, what in ((one, "1.0"), (two, "2.0")):
@@ -92055,8 +91982,7 @@ def test_fuel_page_in_a_browser():
             "with the reason until someone who may is signed in; the "
             "admin's undo list; the nav button turns amber for refill soon")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     for need in ('<button id="nav-fuel" class="ghost" data-go="fuel" '
                  'hidden>Fuel</button>', 'fuel:"v-fuel"',
                  'fuelView(v === "fuel");', '<section id="v-fuel"'):
@@ -93546,8 +93472,7 @@ def test_fireball_page_in_a_browser():
             "buttons work; not armed or not available, they say why; the "
             "Fireball button in the header only with a fireball group")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     for need in ('<button id="nav-fireball" class="ghost" data-go="fireball" '
                  'hidden>Fireball</button>', 'fireball:"v-fireball"',
                  'fireballView(v === "fireball");',
@@ -93714,8 +93639,7 @@ def test_fireball_page_buttons_driven():
             "leaving the page turn everything off and nothing comes back; "
             "nothing is sent while it is not armed; All off and Disarm")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     chrome = _find_chromium()
     if not chrome:
         check(not (IN_CI and sys.platform.startswith("linux")),
@@ -95172,8 +95096,7 @@ def test_cleaning_on_the_shutdown_page_in_a_browser():
             "hold, blocked); the banner with its Stop on every screen; the "
             "page's logic in node; no em or en dashes")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     for need in ('<div class="wc" id="wc" hidden aria-label="Wave flamer '
                  'cleaning">', 'cleaningView(v === "morning");',
                  '<button class="disarm wc-stop" id="wc-stop"',
@@ -95325,8 +95248,7 @@ def test_cleaning_button_driven():
             "is the go-ahead; Stop on the page and in the banner post "
             "cleaning-stop")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     chrome = _find_chromium()
     if not chrome:
         check(not (IN_CI and sys.platform.startswith("linux")),
@@ -96848,8 +96770,7 @@ def test_weather_block_on_the_rack_screen():
     import shutil as _sh
     import subprocess as _sp
     here = os.path.dirname(os.path.abspath(__file__))
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     a = page.find('<section id="v-show"')
     b = page.find("</section>", page.find('id="lz-msg"'))
     check(a < page.find('id="lz"') < page.find('id="wx"') < b,
@@ -97969,9 +97890,7 @@ def test_preroll_settings_and_screens():
         pass
     check(U.classify("/api/remote/preroll-check") == "settings",
           "Check the rig needs the Settings row (an admin)")
-    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     check("function prerollLook" in logic, "the page's rig check words are "
                                           "in its logic block")
@@ -98247,9 +98166,7 @@ def test_preroll_continue_anyway_needs_a_signed_in_hold():
     check(sk.to[1:] == ["127.0.0.9", "127.0.0.8"], "unmuted: both again")
     # The page: the failed items and the two choices.
     import shutil as _sh
-    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     for need in ('"pointerdown"', '{phase:"begin", token:token}',
                  '{phase:"done", token:token}', 'id="pr-continue"',
@@ -98369,8 +98286,7 @@ def test_preroll_announcements_is_only_a_warning():
           two.find("/delayed recording/") <
           two.find('[/^announcements$/, /./,'),
           "2.0's Systems badge names the missing Delayed in plain words")
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     check('<div class="warnbox open" id="rc-warn" hidden></div>' in page and
           '$("rc-warn").hidden = !prl.warn;' in page and
           '$("rc-warn").textContent = prl.warn;' in page,
@@ -99208,9 +99124,7 @@ def test_preroll_failure_cleared_on_both_screens():
           "Rig check passed. Press Start now for show 2.",
           "delayed: Press Start now")
     _no_dashes(json.dumps(rm.preroll_view()), "the cleared view")
-    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     p2 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "ltcplay", "web", "remote2.html"),
@@ -99281,8 +99195,9 @@ def test_rack_page_key_guard_never_holds_back_the_safe_buttons():
     node = _sh.which("node")
     here = os.path.dirname(os.path.abspath(__file__))
     for name in ("remote.html", "remote2.html"):
-        page = open(os.path.join(here, "ltcplay", "web", name),
-                    encoding="utf-8").read()
+        page = remote1_text() if name == "remote.html" else open(
+            os.path.join(here, "ltcplay", "web", name),
+            encoding="utf-8").read()
         a = page.find("// Keys that arrive just after this window")
         b = page.find("}, true);\n", page.find('window.addEventListener("keyup"', a))
         check(a > 0 and b > a, f"{name}: the key guard is there")
@@ -99356,8 +99271,7 @@ console.log(JSON.stringify(out));
     # The Startup page's purge key obeys the guard (review B round 4): a
     # Space just after the window came forward never starts a fire, on any
     # button; and a Start or Stop key decides from its keydown's mode.
-    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-                encoding="utf-8").read()
+    page = remote1_text()
     i = page.find('if((location.hash || "").replace("#", "") !== "morning") return;')
     j = page.find("fireStart();", i)
     check(i > 0 and 0 < page.find("if(keyFresh() || keySafe(e.target)){", i) < j,
@@ -100565,9 +100479,7 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
 
 def _ui2_pages():
     here = os.path.dirname(os.path.abspath(__file__))
-    with open(os.path.join(here, "ltcplay", "web", "remote.html"),
-              encoding="utf-8") as fh:
-        one = fh.read()
+    one = remote1_text()
     with open(os.path.join(here, "ltcplay", "web", "remote2.html"),
               encoding="utf-8") as fh:
         two = fh.read()
@@ -101208,6 +101120,80 @@ def test_ui2_pages_served_and_switched():
               "setting the default needs Settings (admins by default)")
     finally:
         R.close()
+    print("  ok")
+
+
+def test_remote_rules_file():
+    section("the shared page rules in their own file (docs/"
+            "REMOVE_1_0_PLAN.md, step 1): web/remote_rules.js is the one "
+            "copy; 1.0 and 2.0 are served with it written in, 1.0 byte for "
+            "byte the page it was; /remote-logic.js is the file; a missing "
+            "or broken file serves each page as it is, never half a rule")
+    from ltcplay import web as web_mod
+    here = os.path.dirname(os.path.abspath(__file__))
+    web_dir = os.path.join(here, "ltcplay", "web")
+    tag = '<script src="/remote-logic.js"></script>'
+    opener = '<script id="remote-logic">'
+    with open(os.path.join(web_dir, "remote_rules.js"),
+              encoding="utf-8") as fh:
+        rules = fh.read()
+    with open(os.path.join(web_dir, "remote.html"), encoding="utf-8") as fh:
+        one_file = fh.read()
+    with open(os.path.join(web_dir, "remote2.html"), encoding="utf-8") as fh:
+        two_file = fh.read()
+    check(web_mod.REMOTE_RULES == os.path.join(web_dir, "remote_rules.js"),
+          "web.py reads the rules from web/remote_rules.js")
+    check(rules.startswith("\n// LOGIC BEGIN") and
+          rules.endswith("// LOGIC END\n") and
+          "function stopTapStep(" in rules and "function armState(" in rules
+          and "<script" not in rules and "</script>" not in rules,
+          "remote_rules.js is the rules block whole, LOGIC BEGIN to "
+          "LOGIC END, with no script tag of its own")
+    for name, page in (("remote.html", one_file), ("remote2.html", two_file)):
+        check(page.count(tag) == 1 and opener not in page and
+              "// LOGIC BEGIN" not in page and
+              "function stopTapStep(" not in page,
+              f"{name} names the rules once and carries no copy of them")
+    # Served: the rules written in once, where the tag was.
+    one = web_mod.remote1_page().decode("utf-8")
+    two = web_mod.remote2_page().decode("utf-8")
+    want1 = one_file.replace(tag, opener + rules + "</script>", 1)
+    want2 = two_file.replace(tag, opener + rules + "</script>", 1)
+    check(one == want1 and one == remote1_text() and tag not in one and
+          one.count(opener) == 1 and one.count("// LOGIC BEGIN") == 1,
+          "1.0 as served is remote.html with the rules written in once")
+    check(two == want2 and tag not in two and two.count(opener) == 1 and
+          two.count("// LOGIC BEGIN") == 1,
+          "2.0 as served is remote2.html with the same rules written in "
+          "once")
+    a1 = one.find(opener) + len(opener)
+    a2 = two.find(opener) + len(opener)
+    check(web_mod.remote_logic() == rules and
+          one[a1:one.find("</script>", a1)] == rules and
+          two[a2:two.find("</script>", a2)] == rules,
+          "/remote-logic.js, 1.0 and 2.0 carry the very same rules text")
+    # A missing file, or one a page could not carry whole: each page as it
+    # is (its tag asks /remote-logic.js, which says so), never cut short.
+    tmp = tempfile.mkdtemp(prefix="ltcrules-")
+    keep = web_mod.REMOTE_RULES
+    try:
+        web_mod.REMOTE_RULES = os.path.join(tmp, "missing.js")
+        check(web_mod.remote_logic() is None and
+              web_mod.remote1_page().decode("utf-8") == one_file and
+              web_mod.remote2_page().decode("utf-8") == two_file,
+              "no rules file: no rules, and each page is served as it is")
+        bad = os.path.join(tmp, "bad.js")
+        with open(bad, "w", encoding="utf-8") as fh:
+            fh.write("function a(){}\n</script><script>alert(1)\n")
+        web_mod.REMOTE_RULES = bad
+        check(web_mod.remote_logic() is None and
+              web_mod.remote1_page().decode("utf-8") == one_file,
+              "a rules file with a closing script tag in it is never "
+              "written into a page")
+    finally:
+        web_mod.REMOTE_RULES = keep
+        import shutil as _sh
+        _sh.rmtree(tmp, ignore_errors=True)
     print("  ok")
 
 
@@ -106028,9 +106014,7 @@ def test_fireball_charge_wiring():
         check(code == 200 and tr.state("fuel") == "empty" and
               "confirmed EMPTY by Andy" in out["text"],
               f"an admin on the show PC: confirmed: {code} {out}")
-        page = open(os.path.join(os.path.dirname(os.path.abspath(
-            __file__)), "ltcplay", "web", "remote.html"),
-            encoding="utf-8").read()
+        page = remote1_text()
         check('post("/api/remote/fireball-charge-empty", actor({}))' in page
               and 'confirmBox("Are both tanks empty?"' in page and
               'tks[k].state === "unknown"' in page,
@@ -110871,6 +110855,7 @@ if __name__ == "__main__":
         test_config_watch_reloads_only_what_is_safe_and_is_quick,
         test_config_watch_on_the_status_and_reload_engine,
         test_ui2_pages_served_and_switched,
+        test_remote_rules_file,
         test_ui2_runs_on_ipados15,
         test_ui2_page_makes_only_1_0_presses,
         test_ui2_show_tab_in_a_browser,
