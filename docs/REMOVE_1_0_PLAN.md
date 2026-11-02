@@ -2,7 +2,9 @@
 
 Jeff's decision (2026-11): 2.0 is a cosmetic refresh of 1.0. The code under it stays and is updated, never replaced. The release waits until everything in 1.0 that matters is in 2.0. Then 1.0 is removed entirely.
 
-Read from the code on bench-build at 5e602d8. 1.0 is `ltcplay/web/remote.html` (served at `/remote`, `/remote1`). 2.0 is `ltcplay/web/remote2.html` (served at `/remote2`, or `/remote` by choice).
+Read from the code on bench-build at 5e602d8. 1.0 is `ltcplay/web/remote.html` (served at `/remote1`, and at `/remote` for a screen that chose the old screen). 2.0 is `ltcplay/web/remote2.html` (served at `/remote2`, and at `/remote` by default).
+
+**Default switched (Jeff, 2026-11-02).** `/remote` (and the show network's `/`) serves 2.0 to every screen. Only a screen's own cookie `ltcplay_ui=1` keeps 1.0 there: 2.0's "Open the old screen (for Users, Audit, Network and the rest)" link (header "Old screen" on every tab, in full on the Schedule and Settings tabs) sets it through `/ui?v=1` and opens `/remote1`; 1.0's Try 2.0 (`/ui?v=2`) clears it and goes back to `/remote`. `/remote1` and `/remote2` are unchanged. The show machine's `ui_default` setting no longer decides; its Settings card is gone from 2.0, its route stays until R1.
 
 ## Already in both (nothing to port)
 
@@ -29,7 +31,7 @@ Read from the code on bench-build at 5e602d8. 1.0 is `ltcplay/web/remote.html` (
 | Fuel pump (run time, On, Pump off) | SHOW tab | `fuel-pump` |
 | Fireball timeline editor (per show file, FSEQ or Timeline, Save, Revert) | Schedule tab | `fireball-timeline`, `fireball-timeline-save` |
 | Play-from cues editor | Settings tab | `play-from-cues`, `play-from-cues-save` |
-| Default interface (1.0 or 2.0) | Settings tab | `ui-default` (removed with 1.0) |
+| Default interface (1.0 or 2.0) | REMOVED from the Settings tab when the default switched; no page calls the route | `ui-default` (removed with 1.0) |
 | Coach marks, quick card, help sheets | every tab | none |
 
 The Fireball manual page's merge with the show is server side (fireball.py, fireball_cues.py). Only its page is missing from 2.0 (P8).
@@ -57,7 +59,7 @@ Routes are under `/api/remote/` unless they start with `/api/`. A route 2.0 alre
 | P14 | Show machine tools: show network address, Save, Restart the engine, settings changed on disk with Reload engine, Stream Deck operator, rig check card (Check the rig, items) | 8 | `network` (GET, POST), `reload-engine`, `/api/schedule/operator` (GET, POST); `preroll-check` from a card | 0 | Medium. Engine restart. |
 | P15 | Show folder and Getting started: folder path, Use this folder, Make a show file, Check the show file, open show and settings folders, the three setup steps | 7 | `show-folder`, `show-file-new`, `/api/check`, `open-folder`, `setup` | P1 | Medium. Fresh install flow. |
 | P16 | Info panel: version, screen, settings path, mode, how to leave the window, Close this window | 2 | `screen` | 0 | Low. |
-| R1 | Remove 1.0: `remote.html`, `/remote1`, `/ui`, the `ltcplay_ui` cookie, `ui-default` and its Settings card, Back to 1.0, the 1.0 window title | 0 | removes routes | P1 to P16; Jeff's yes | High. About 80 selftest reads of 1.0, about 200 mutations on `remote.html`, the parity tables become fixed tables. |
+| R1 | Remove 1.0: `remote.html`, `/remote1`, `/ui`, the `ltcplay_ui` cookie, `ui-default` (its Settings card already went with the default switch), 2.0's old screen links (header "Old screen", the Schedule and Settings cards, every "Open in 1.0"), the 1.0 window title | 0 | removes routes | P1 to P16; Jeff's yes | High. About 80 selftest reads of 1.0, about 200 mutations on `remote.html`, the parity tables become fixed tables. |
 | R2 | Docs: OPERATOR.md, USERS.md, MORNING.md, FUEL.md, TESTING.md say 2.0 only | 0 | none | R1 | Low. |
 
 Totals: 16 port PRs (P1 to P16) with 95 or more controls, 42 routes 2.0 does not call yet, and 4 new bodies on routes it already calls (`/api/start`, the open beat, `preroll-check`, `live-flame`). With this PR and R1, R2: 19 PRs.

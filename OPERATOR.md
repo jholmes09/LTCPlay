@@ -2234,7 +2234,8 @@ Turning it off puts every controller back on the live stream immediately.
 
 ## The iPad
 
-Once, on the show machine: open the page (http://127.0.0.1:7878/remote),
+Once, on the show machine: open the old screen
+(http://127.0.0.1:7878/remote1, or "Old screen" at the top of 2.0),
 press Programming, and pick this machine's show Wi-Fi address under "Show
 network". On a Mac, start it with the show network on (Run ltcplay, answer
 y to the iPad question). There is no PIN.
@@ -2242,7 +2243,7 @@ y to the iPad question). There is no PIN.
 ### Open the page from your Mac or iPad
 
 On the Windows show PC the "Show network, on this machine" card on
-Programming says it all in plain words: the address saved (or none), where
+Programming (on the old screen, `/remote1`, until 2.0 has it) says it all in plain words: the address saved (or none), where
 the engine is listening, whether the Windows Firewall rule is there,
 whether Windows calls that network Public or Private (with what to do
 when it is Public), and the address to type on the other machine, for
@@ -2566,24 +2567,37 @@ from the screen: the Stream Deck's group keys and Stop, and the hardware
 e-stop, are), it stays on the screen as a banner until it is seen, never
 only as a one-line note.
 
-## Interface 2.0 (being tried, 1.0 stays)
+## Interface 2.0, the default screen (1.0 is the old screen)
 
-The page above is interface 1.0. Interface 2.0 is a new look on the same
-program: its SHOW and Day tabs and its Programming cards (on the Schedule
-tab) do what 1.0 does, and what 2.0
-does not have yet opens the 1.0 page ("Open in 1.0"). Nothing else
+Interface 2.0 is the default screen on every device (Jeff, 2026-11-02):
+the rack screen, every iPad and every laptop get it at `/remote` and at
+the show network address with no choice made. It is a new look on the
+same program: its SHOW and Day tabs, its Schedule tab and its
+Programming cards (on the Schedule tab) do what 1.0 does. Nothing else
 changes: every 2.0 button sends exactly what the same 1.0 button sends,
-with the same holds, confirms and refusals.
+with the same holds, confirms and refusals. Stop show, Hold and Disarm
+flames work the same on both, and the hardware e-stop always works.
 
-- Try it: "Try 2.0" in the 1.0 header. Back: "Back to 1.0" in the 2.0
-  header. One tap each way, and it is this screen only (a cookie in that
-  browser): the rack screen, each iPad and each laptop choose for
-  themselves. The rack window's address stays `/remote`.
-- `/remote1` is always 1.0 and `/remote2` is always 2.0, for comparing.
-- Which one a screen that has not chosen gets: 2.0 Settings, "Default
-  interface", on the show PC itself, by someone with Settings (admins).
-  It starts at 1.0 and stays there until Jeff changes it. It is
-  `ui_default` (1 or 2) in `ltcplay_remote.json`; anything else reads as 1.
+Interface 1.0 is now "the old screen". It stays until everything in it
+is in 2.0 (docs/REMOVE_1_0_PLAN.md). Some things are only on the old
+screen for now: Users, Who may do what, the Audit log, checklist Verify,
+PDF and Export, the Show network, Restart the engine, the Stream Deck
+operator, the Show folder and Getting started, and the Info panel.
+
+- To get there: "Old screen" at the top of 2.0 on every tab, or "Open
+  the old screen (for Users, Audit, Network and the rest)" on the
+  Schedule and Settings tabs. Some 2.0 cards also have "Open in 1.0",
+  which opens that part of the old screen once.
+- The old screen link is remembered on that screen only (a cookie in that
+  browser): it keeps showing the old screen, even at `/remote`, until
+  someone taps "Try 2.0" in the old screen's header. Try 2.0 forgets the
+  choice and goes back to 2.0. The rack screen, each iPad and each laptop
+  choose for themselves. The rack window's address stays `/remote`.
+- `/remote1` is always the old screen and `/remote2` is always 2.0,
+  whatever a screen chose.
+- The "Default interface" card is gone from 2.0 Settings. A
+  `ui_default` saved in `ltcplay_remote.json` earlier is kept but no
+  longer decides anything.
 - 2.0 Settings, "Play-from cues" (on the show PC, by someone with
   Settings, admins): a list of named points in a show file to play the
   show from later. Saving the list sends nothing to the rig and starts
@@ -2625,8 +2639,7 @@ with the same holds, confirms and refusals.
   is named too. Anyone signed in can read the list; saving it from an
   iPad also needs Arming from a screen on. With no users set up, the show
   PC reads the list but nobody can save it until an admin exists.
-  This card and Default interface are 2.0's own: 1.0 has no button for
-  them.
+  This card is 2.0's own: 1.0 has no button for it.
 - The 2.0 SHOW screen, top to bottom: one line that says what to do next;
   the show state, the timecode and the time left; the big button for the
   next step (Run show, Start now or Resume; Resume and Start now offer

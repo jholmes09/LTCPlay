@@ -40,10 +40,12 @@ USER_ERRORS = (SessionError, audio_mod.DeviceError, ValueError,
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = os.path.join(HERE, "web", "index.html")
 REMOTE_PAGE = os.path.join(HERE, "web", "remote.html")
-# Interface 2.0 (Jeff, 2026-10-28), beside 1.0, never instead of it.
-# /remote serves 1.0 unless this screen chose 2.0 with its own cookie (set
-# by /ui?v=2, cleared back by /ui?v=1), or the show machine's default says
-# 2 (remote.ui_default, 1 until Jeff sets it). /remote1 and /remote2 are
+# Interface 2.0 (Jeff, 2026-10-28), beside 1.0 until 1.0 is removed
+# (docs/REMOVE_1_0_PLAN.md). 2.0 is the default screen (Jeff, 2026-11-02):
+# /remote serves 2.0 to every screen, unless this screen chose the old
+# screen with its own cookie (ltcplay_ui=1, set by /ui?v=1, the old screen
+# link on 2.0, cleared by /ui?v=2, Try 2.0 on 1.0). The show machine's
+# ui_default setting no longer decides it. /remote1 and /remote2 are
 # always that page. /remote-logic.js is the pure rules both pages share
 # (web/remote_rules.js, its own file since step 1 of
 # docs/REMOVE_1_0_PLAN.md), so both pages run one set.
@@ -88,7 +90,8 @@ def _rules_fault(why):
         _RULES_FAULT_SAID[0] = True
         print(f"ltcplay: FAULT: the screen rules file "
               f"{os.path.basename(REMOTE_RULES)} did not load ({why}). "
-              f"/remote shows a page that points to /remote2.", flush=True)
+              f"The old screen (/remote1) shows a page that points to "
+              f"/remote2.", flush=True)
 
 
 def remote_logic():
@@ -127,10 +130,11 @@ def _with_rules(path, logic):
 
 
 def remote1_answer():
-    """(status, body) for /remote and /remote1 as 1.0: remote.html with the
-    rules written in, byte for byte the page it was while they lived inside
-    it. Without the rules, 503 and a plain page that says so and links to
-    /remote2, whose own Stop needs no rules."""
+    """(status, body) for /remote1 (and /remote for a screen that chose the
+    old screen) as 1.0: remote.html with the rules written in, byte for
+    byte the page it was while they lived inside it. Without the rules, 503
+    and a plain page that says so and links to /remote2, whose own Stop
+    needs no rules."""
     logic = remote_logic()
     if logic is None:
         return 503, RULES_MISSING_PAGE.encode("utf-8")
@@ -148,16 +152,16 @@ RULES_SERVED_MARK = "function armState("
 
 
 def rules_self_check():
-    """"" when /remote and /remote2 are each served with the rules written
-    in, else what is wrong (the engine's --self-check, cold review of #206,
-    3)."""
+    """"" when /remote1 (1.0) and /remote2 (2.0, also /remote's default)
+    are each served with the rules written in, else what is wrong (the
+    engine's --self-check, cold review of #206, 3)."""
     status, one = remote1_answer()
     if status != 200 or RULES_SERVED_MARK.encode() not in one:
-        return (f"the rack screen (/remote) is not served with its rules: "
+        return (f"the old screen (/remote1) is not served with its rules: "
                 f"{REMOTE_RULES} is missing or broken")
     if RULES_SERVED_MARK.encode() not in remote2_page():
-        return (f"the rack screen (/remote2) is not served with its rules: "
-                f"{REMOTE_RULES} is missing or broken")
+        return (f"the rack screen (/remote, /remote2) is not served with "
+                f"its rules: {REMOTE_RULES} is missing or broken")
     return ""
 
 
@@ -1551,8 +1555,8 @@ class Handler(BaseHTTPRequestHandler):
             if route in ("/remote", "/remote1", "/remote2") or (
                     route in ("/", "/index.html") and not self._local()):
                 # The show network gets the remote page: the sign-in form
-                # until it has a session, then the touch controls. 1.0
-                # unless this screen chose 2.0 (or the default is 2.0);
+                # until it has a session, then the touch controls. 2.0
+                # unless this screen chose the old screen (its cookie);
                 # /remote1 and /remote2 are always that page.
                 page = {"/remote1": REMOTE_PAGE,
                         "/remote2": REMOTE2_PAGE}.get(route) or (
@@ -1630,25 +1634,23 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, {"error": "no such thing here"})
 
     def _ui_choice(self):
-        """1 or 2: which page /remote serves this screen. Its own
-        ltcplay_ui cookie ("1" or "2") first, else the show machine's
-        default (remote.ui_default, 1 until Jeff sets 2). Anything odd, or
-        anything that cannot be read, is 1: the page every screen had."""
+        """1 or 2: which page /remote serves this screen. 1 only when its
+        own ltcplay_ui cookie is exactly "1" (it chose the old screen);
+        anything else, no cookie, "2" or anything odd, is 2, the default
+        screen (Jeff, 2026-11-02). Nothing on the show machine is read."""
         for part in str(self.headers.get("Cookie") or "").split(";"):
             k, _, v = part.strip().partition("=")
-            if k == UI_COOKIE and v in ("1", "2"):
-                return int(v)
-        rm = getattr(self.server, "remote", None)
-        try:
-            return 2 if rm is not None and rm.ui_default() == 2 else 1
-        except Exception:                        # noqa: BLE001
-            return 1
+            if k == UI_COOKIE and v == "1":
+                return 1
+        return 2
 
     def _ui_switch(self):
-        """GET /ui?v=2 or /ui?v=1: this screen's own choice of interface, a
-        cookie in this browser and nothing else, then back to /remote.
-        Nothing on the show machine changes. A link followed from another
-        site's page is refused, as a press from one is."""
+        """GET /ui?v=1 or /ui?v=2: this screen's own choice of interface, a
+        cookie in this browser and nothing else. v=1 (2.0's "Open the old
+        screen" link) remembers the old screen and goes to /remote1; v=2
+        (1.0's Try 2.0) forgets that choice and goes back to /remote, the
+        default 2.0. Nothing on the show machine changes. A link followed
+        from another site's page is refused, as a press from one is."""
         sfs = self.headers.get("Sec-Fetch-Site")
         if sfs is not None and sfs.strip().lower() not in ("same-origin",
                                                            "none"):
@@ -1658,10 +1660,15 @@ class Handler(BaseHTTPRequestHandler):
         v = (q.get("v") or [""])[0]
         if v not in ("1", "2"):
             return self._send(400, {"error": "v has to be 1 or 2."})
+        if v == "1":
+            return self._send(302, b"", "text/plain", headers={
+                "Location": "/remote1",
+                "Set-Cookie": f"{UI_COOKIE}=1; SameSite=Strict; Path=/; "
+                              f"Max-Age=31536000"})
         return self._send(302, b"", "text/plain", headers={
             "Location": "/remote",
-            "Set-Cookie": f"{UI_COOKIE}={v}; SameSite=Strict; Path=/; "
-                          f"Max-Age=31536000"})
+            "Set-Cookie": f"{UI_COOKIE}=; SameSite=Strict; Path=/; "
+                          f"Max-Age=0"})
 
     def _remote_logic(self):
         """GET /remote-logic.js: the shared pure rules (web/remote_rules.js),
