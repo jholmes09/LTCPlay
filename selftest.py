@@ -102777,7 +102777,9 @@ await h.sleep(900);
 out.shown = !document.getElementById("d-fb").hidden && !!pad("valve");
 const mainEx = () => { const m = document.querySelector("main"); return m.scrollHeight - m.clientHeight; };
 const small = sel => [...document.querySelectorAll(sel)].filter(e => e.getClientRects().length && e.getBoundingClientRect().height < 55.5).map(e => e.id || e.textContent.trim().slice(0, 16));
-out.fb_layout = {excess:mainEx(), small:small("#d-fb .b, #d-fb .fb-pad"), xs:document.scrollingElement.scrollWidth - innerWidth};
+out.fb_layout = {excess:mainEx(), small:small("#d-fb .b, #d-fb .fb-pad"), xs:document.scrollingElement.scrollWidth - innerWidth,
+  // All off and Disarm Fireball are on the screen without a scroll.
+  safe_seen:["fb-alloff", "fb-disarm"].every(id => { const r = document.getElementById(id).getBoundingClientRect(), pr = document.getElementById("d-panel").getBoundingClientRect(); return r.top >= pr.top - 1 && r.bottom <= pr.bottom + 1 && r.bottom <= innerHeight; })};
 let n = mark();
 h.ev(pad("valve"), "pointerdown");
 await h.sleep(460);
@@ -102868,7 +102870,7 @@ out.buttons = since(n).filter(p => p.route !== "morning-open").map(p => p.route 
     seed = ('<script type="application/json" id="fb-seed">' +
             json.dumps(_fb_view()) + '</script>')
     m = _ui2_drive(chrome, page.replace("</body>", seed + "</body>", 1),
-                   _ui2_status_day(), steps, size=(1366, 768),
+                   _ui2_status_day(), steps, size=(1366, 625),
                    frag="?tour=0#day",
                    routes={"/api/remote/fireball": _fb_view(),
                            "/api/remote/morning": _morning_view_pico()},
@@ -102880,8 +102882,11 @@ out.buttons = since(n).filter(p => p.route !== "morning-open").map(p => p.route 
     check(m["has_step"] and m["shown"],
           f"a fireball group: the Fireball step and its pads: {m}"[:600])
     fl = m["fb_layout"]
-    check(fl["excess"] <= 1 and not fl["small"] and fl["xs"] <= 0,
-          f"the Fireball step fits: no scroll, 56 px targets: {fl}")
+    check(fl["excess"] <= 1 and not fl["small"] and fl["xs"] <= 0 and
+          fl["safe_seen"],
+          f"the Fireball step: the page never scrolls (the step's panel "
+          f"may), 56 px targets, All off and Disarm Fireball on the "
+          f"screen: {fl}")
     hd = m["held"]
     check(hd["n"] >= 4 and all(x == "valve" for x in hd["on"]) and
           hd["runs"] == 1 and hd["seqs"] == sorted(hd["seqs"]) and
@@ -103023,7 +103028,7 @@ if(yes) yes.click();
 await h.sleep(400);
 out.undo = since(n).filter(p => p.route !== "morning-open").map(p => [p.route, bare(p.body)]);
 """
-    m = _ui2_drive(chrome, page, _ui2_status_day(), steps, size=(1366, 768),
+    m = _ui2_drive(chrome, page, _ui2_status_day(), steps, size=(1366, 625),
                    frag="?tour=0#day",
                    routes={"/api/remote/morning": mo,
                            "/api/remote/fuel": fu},

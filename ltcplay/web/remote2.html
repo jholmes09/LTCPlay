@@ -418,12 +418,17 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 @media (max-width:560px){ .fbt-row{grid-template-columns:1fr 1fr} .fbt-row .b{grid-column:1 / -1} }
 
 /* P8, P9, P10 on DAY: 1.0's Fireball pads, recent refills, timed purge. */
-/* Within the DAY panel, never past it: a long list scrolls inside. */
-.dsec{display:flex;flex-direction:column;gap:var(--gap);min-width:0;flex:0 1 auto;min-height:0;overflow-y:auto}
+/* Within the DAY panel, never past it (the rack window, a short iPad):
+   DAY is the height of the screen and its panel scrolls inside itself,
+   so the page never does. The step's own buttons come first. */
+#t-day{flex:1 1 0}
+.dpanel{overflow-y:auto}
+.dsec{display:flex;flex-direction:column;gap:var(--gap);min-width:0;flex:0 0 auto}
+#fb-note,#fb-charge,#fb-block{font-size:calc(var(--fs) - 2px)}
 .fb-armed.on{color:var(--red-hi)}
 #fb-charge:empty,#fb-msg:empty,#tp-st:empty{display:none}
 #fb-pads{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:var(--gap)}
-button.fb-pad{min-height:96px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:8px;
+button.fb-pad{min-height:64px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:8px;
   border:2px solid var(--line);border-radius:12px;background:var(--panel2);color:var(--cream);font:inherit;cursor:pointer;touch-action:none;-webkit-user-select:none;user-select:none}
 button.fb-pad b{font-weight:800}
 button.fb-pad .fb-st{font-weight:800;letter-spacing:.12em}
