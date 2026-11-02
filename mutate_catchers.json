@@ -3662,5 +3662,19 @@
 "fireball cues: every lost shot is a fault line again (the soak counts them)": "test_fireball_soak_show_raises_no_fault",
 "fireball charge: the soak's flamesafe reads as a fireball that may be reached": "test_fireball_soak_show_raises_no_fault",
 "Stream Deck: a press after the deck's own Stop is sent before its answer": "test_deck_presses_reach_the_engine_conductor",
-"Stream Deck: a Stop is not counted as waiting for its answer": "test_deck_presses_reach_the_engine_conductor"
+"Stream Deck: a Stop is not counted as waiting for its answer": "test_deck_presses_reach_the_engine_conductor",
+"ui 2.0 Programming: Run in Programming starts a Show run (no on_lost hold)": "test_ui2_programming_tab_makes_1_0_presses",
+"ui 2.0 Programming: Programming runs while a scheduled show is live": "test_ui2_programming_tab_in_a_browser",
+"ui 2.0 Programming: Run starts with no question": "test_ui2_programming_tab_in_a_browser",
+"ui 2.0 Programming: Run off goes with no question": "test_ui2_programming_tab_in_a_browser",
+"ui 2.0 Programming: the session is pressable signed out": "test_ui2_programming_tab_makes_1_0_presses",
+"ui 2.0 Programming: the session is pressable with no contact": "test_ui2_programming_tab_makes_1_0_presses",
+"ui 2.0 Programming: Run's Stop is held back while signed out": "test_ui2_programming_tab_in_a_browser",
+"ui 2.0 Programming: Run is pressable signed out": "test_ui2_programming_tab_in_a_browser",
+"ui 2.0 Programming: Run's Stop fires on one tap": "test_ui2_programming_tab_makes_1_0_presses",
+"ui 2.0 Programming: Loop sends the state it already has": "test_ui2_programming_tab_makes_1_0_presses",
+"ui 2.0 Programming: a flame cue fault is not said": "test_ui2_programming_tab_makes_1_0_presses",
+"ui 2.0 Programming: Programming is never locked by a live show (copy differs)": "test_ui2_programming_tab_makes_1_0_presses",
+"ui 2.0 Programming: the Run card shows on an iPad": "test_ui2_programming_tab_in_a_browser",
+"ui 2.0 Programming: a tab opened from its address never reads the show files": "test_ui2_programming_tab_in_a_browser"
 }

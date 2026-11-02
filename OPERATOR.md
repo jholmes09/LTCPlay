@@ -2561,10 +2561,12 @@ only as a one-line note.
 
 ## Interface 2.0 (being tried, 1.0 stays)
 
-The page above is interface 1.0. Interface 2.0 is a new SHOW screen beside
-it; the Day, Schedule and Settings tabs of 2.0 open the 1.0 page for now
-("Open in 1.0"). Nothing else changes: every 2.0 button sends exactly what
-the same 1.0 button sends, with the same holds, confirms and refusals.
+The page above is interface 1.0. Interface 2.0 is a new look on the same
+program: its SHOW and Day tabs and its Programming cards (on the Schedule
+tab) do what 1.0 does, and what 2.0
+does not have yet opens the 1.0 page ("Open in 1.0"). Nothing else
+changes: every 2.0 button sends exactly what the same 1.0 button sends,
+with the same holds, confirms and refusals.
 
 - Try it: "Try 2.0" in the 1.0 header. Back: "Back to 1.0" in the 2.0
   header. One tap each way, and it is this screen only (a cookie in that
@@ -2627,6 +2629,27 @@ the same 1.0 button sends, with the same holds, confirms and refusals.
   flames (flames only; the lasers' tile has its own Disarm lasers); the
   announcements and the wind along the bottom. Tap "Announce" for what
   the announcements do. Run show is the 1.0 Run in Show mode, on the show PC only.
+- 2.0 Programming (Schedule tab): 1.0's Programming screen, the same
+  presses, on the Schedule tab (there is no room in the header for a tab
+  of its own; `/remote2#prog` opens it). On the show PC, the Show file
+  card: Show or Programming (which mode Run
+  starts), the show file, and Run. Run asks first ("Press Run?" in Show,
+  "Run in Programming?" in Programming); Programming is a rehearsal (Play
+  from, jump and loop work, the scheduler starts no show). Programming is
+  refused while a scheduled show is live: press Hold, and once the show
+  has ended Stop, then Run in Programming. While Run is on, the same
+  button is Stop (tap twice) when something is playing, else Run off
+  (asks first); to switch modes, Stop or Run off, choose the other mode,
+  then Run. On every screen, the Programming session card: Play from (a
+  timecode or a cue name), Back 10 s, Back 5 s, Ahead 5 s, Ahead 10 s,
+  Pause, Continue, Set A, Set B, Loop on or off, and Follow timecode again
+  (Stop the show audio while the show audio plays). They work only in a
+  Programming run, with contact, signed in with the Show row; the engine
+  says why it refuses one, and its answer is shown under the card. While
+  the show's flame cues follow Programming playback, a move needs the show
+  PC or Settings, as on 1.0, and the card says how the flames follow; a
+  flame cue fault is shown there in full. "More programming" opens 1.0 for
+  the schedule rules, the show folder and the network.
 - Anything live that has to be stopped by hand (the wave flamer cleaning,
   live flame programming) sits in the next-step
   line with its own red Stop, on every tab, never behind another alert,

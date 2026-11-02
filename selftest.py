@@ -112064,6 +112064,490 @@ def test_start_at_cue_docs_in_plain_words():
     print("  ok")
 
 
+# ---------------------------------------------------------------------------
+# Interface 2.0's Programming cards (docs/REMOVE_1_0_PLAN.md P1 and P2): 1.0's
+# Show file card and Programming session card, the same presses.
+# ---------------------------------------------------------------------------
+
+def test_ui2_programming_tab_makes_1_0_presses():
+    section("2.0's Programming cards (P1, P2, on the Schedule tab): 1.0's Show file card (Show or "
+            "Programming, the show file, Run, Stop and Run off in its "
+            "place) and its Programming session card (Play from, Back and "
+            "Ahead, Pause, Continue, Set A and B, Loop, Follow timecode "
+            "again), every press 1.0's route and body, 1.0's mode words "
+            "copied word for word, and the session line and the flame cue "
+            "lines 1.0's; no dashes")
+    one, two = _ui2_pages()
+    sched = two[two.find('<section class="pane" id="t-schedule"'):]
+    sched = sched[:sched.find("</section>")]
+    pane = sched[sched.find('<div class="cards" id="t-prog">'):]
+    sets = two[two.find('<section class="pane" id="t-settings"'):]
+    sets = sets[:sets.find("</section>")]
+    check('<div class="cards" id="t-prog">' in sched and
+          'const prog = t === "prog";\n  if(prog) t = "schedule";' in two,
+          "2.0's Programming cards are on the Schedule tab, and #prog "
+          "opens them (the header has no room for a fifth tab)")
+    for need in ('id="p-run-card" hidden', 'id="p-mode"',
+                 'data-mode="show"', 'data-mode="programming"',
+                 'id="p-file"', 'id="p-run" data-mode="run"', 'id="p-at"',
+                 'id="p-play" data-tr', 'data-jump="-10"', 'data-jump="-5"',
+                 'data-jump="5"', 'data-jump="10"', 'id="p-pause" data-tr',
+                 'id="p-cont" data-tr', 'id="p-a" data-tr',
+                 'id="p-b" data-tr', 'id="p-loop" data-tr',
+                 'id="p-follow" data-tr', 'id="p-pf-line" hidden',
+                 'id="p-pf-warn" role="alert" hidden'):
+        check(need in pane, f"the Programming cards have {need}")
+    check(pane.count(" data-tr") == 11,
+          f"11 session controls follow 1.0's transport rule: "
+          f"{pane.count(' data-tr')}")
+    check("/remote1#programming" in pane and
+          "/remote1#programming" not in sets,
+          "the 1.0 link for the rest of Programming moved to the cards; "
+          "the Settings card is gone")
+    check("–" not in pane and "—" not in pane,
+          "no em or en dashes on the Programming cards")
+    # 1.0's mode words and rules, copied word for word.
+    for n in ("runModeNow", "runModeView", "rateNote"):
+        f1, f2 = _js_function(one, n), _js_function(two, n)
+        check(f1 and f2 and _js_same(f1) == _js_same(f2),
+              f"2.0's {n} is 1.0's own code: {(f2 or 'missing')[:160]!r}")
+    m1 = re.search(r"^const MODE_WHAT = \{.*?\};$", one, re.M | re.S)
+    m2 = re.search(r"^const MODE_WHAT = \{.*?\};$", two, re.M | re.S)
+    check(m1 and m2 and m1.group(0) == m2.group(0),
+          "2.0's MODE_WHAT is 1.0's")
+    # The presses, body for body: 1.0's press(route, body, "tr-msg") is
+    # 2.0's press(route, body), the field ids the one difference.
+    for p1, p2 in (
+            ('press("play-from", {at:$("tr-at").value}, "tr-msg")',
+             'press("play-from", {at:$("p-at").value})'),
+            ('press("jump", {seconds:Number(b.dataset.jump)}, "tr-msg")',
+             'press("jump", {seconds:Number(b.dataset.jump)})'),
+            ('press("pause", {}, "tr-msg")', 'press("pause", {})'),
+            ('press("continue", {}, "tr-msg")', 'press("continue", {})'),
+            ('press("mark-a", {}, "tr-msg")', 'press("mark-a", {})'),
+            ('press("mark-b", {}, "tr-msg")', 'press("mark-b", {})'),
+            ('press("loop", {on: !$("tr-loop").dataset.on}, "tr-msg")',
+             'press("loop", {on: !$("p-loop").dataset.on})'),
+            ('press("follow", {}, "tr-msg")', 'press("follow", {})'),
+            ('post("/api/remote/show-select", {file: $("run-file").value})',
+             'post("/api/remote/show-select", {file: $("p-file").value})'),
+            ('post("/api/start", prog ? {timeline:f, on_lost:"hold"} : '
+             '{timeline:f})',
+             'post("/api/start", prog ? {timeline:f, on_lost:"hold"} : '
+             '{timeline:f})'),
+            ('confirmBox(prog ? "Run in Programming?" : "Press Run?", prog '
+             '? "Run " + f + " as a rehearsal. Play from, jump and loop '
+             'work, and the scheduler starts no show." : "Run " + f + ". '
+             'The scheduler then starts each show by itself.", "Yes, Run"',
+             'confirmBox(prog ? "Run in Programming?" : "Press Run?", prog '
+             '? "Run " + f + " as a rehearsal. Play from, jump and loop '
+             'work, and the scheduler starts no show." : "Run " + f + ". '
+             'The scheduler then starts each show by itself.", "Yes, Run"'),
+            ('confirmBox("Turn Run off?", RUN_OFF_CONFIRM, "Yes, Run off"',
+             'confirmBox("Turn Run off?", RUN_OFF_CONFIRM, "Yes, Run off"'),
+            ('if(runLook(ST, nowStale()).mode !== "runoff")',
+             'if(runLook(ST, stale()).mode !== "runoff")')):
+        check(p1 in one and p2 in two, f"1.0 presses {p1} and 2.0 {p2}")
+    check('const v = runModeView(ST, RUN_MODE || "show");\n  if(v.locked)'
+          in one and
+          'const v = runModeView(ST, RUN_MODE || "show");\n  if(v.locked)'
+          in two, "Programming is refused while a scheduled show is live, "
+                  "on both pages, before the confirm")
+    run2 = two[two.find('$("p-run").addEventListener("click"'):]
+    run2 = run2[:run2.find("\n});\n")]
+    check(run2.find("v.locked") < run2.find('confirmBox(prog') <
+          run2.find('post("/api/start"') and
+          'if(d.act === "stop") return stopTap2("p-run", ev);' in run2 and
+          "pressDecision(seen, now," in run2,
+          "2.0's Run: the touch-down decision, Stop's double tap, the "
+          "lock, then the confirm, then the post")
+    dp = _js_function(two, "drawProg") or ""
+    check("const can = controlStates(ST, isSt).transport && "
+          'mayRow(ST, "show");' in dp and
+          "runLook(ST, isSt)" in dp,
+          "the session controls follow 1.0's controlStates and sign-in "
+          "lock; Run follows 1.0's runLook")
+    here = os.path.dirname(os.path.abspath(__file__))
+    op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
+    i = op.find("- 2.0 Programming (Schedule tab):")
+    para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
+    for words in ("Run asks first", "refused while a scheduled show is live",
+                  "Stop (tap twice)", "Run off", "Play from", "Set A",
+                  "Follow timecode again", "flame cue fault", "Show row",
+                  "More programming"):
+        check(words in para, f"OPERATOR.md, 2.0 Programming, says "
+                             f"{words!r}")
+    _no_dashes(para, "OPERATOR.md, 2.0 Programming")
+    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
+                encoding="utf-8").read()
+    check("| P1 | DONE" in plan and "| P2 | DONE" in plan,
+          "the removal plan marks P1 and P2 done")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  note: node is not here; checked by reading only")
+        print("  ok")
+        return
+    # The session line and the flame lines: 1.0's renderer against 2.0's,
+    # state for state.
+    a1 = one.find("  setWarn(\"tr-why\"")
+    b1 = one.find("  $(\"tr-state\").textContent = bits.join(\". \");", a1)
+    bits1 = one[one.find("  const bits = [];", a1):b1]
+    pf1 = _js_function(one, "renderProgFlames") or ""
+    js = (_js_function(two, "progBits") + "\n" +
+          _js_function(two, "progFlames") + "\n" +
+          "function bits1(st){ const tr = st.transport || {}, show = "
+          "st.show || {};\n" + bits1 + "  return bits.join('. ');}\n" +
+          "const EL = {};\nconst $ = id => EL[id] || (EL[id] = "
+          "{hidden:false, textContent:''});\nlet ST = null;\n" + pf1 +
+          r"""
+const out = [];
+const states = [];
+for(const ph of [undefined, "show_audio"]) for(const playing of [false, true]) for(const paused of [false, true])
+  for(const freerun of [false, true]) for(const marks of [null, {a:"00:01:00:00"}, {b:"00:02:00:00"}])
+    for(const loop of [null, ["00:01:00:00", "00:02:00:00"]]) for(const running of [false, true])
+      states.push({transport:{playhead:ph, playing, paused, freerun, marks, loop, programming:true}, show:{running}});
+for(const s of states) if(progBits(s) !== bits1(s)) out.push(["bits", s, progBits(s), bits1(s)]);
+for(const pf of [undefined, {available:false}, {available:true, line:"Flame cues follow."}, {available:true, follows:false, line:"x"}])
+  for(const prog of [false, true]) for(const fault of ["", "No flame link."]){
+    const s = {programming_flames:pf, transport:{programming:prog}, flames:{cues_fault:fault}};
+    ST = s; renderProgFlames();
+    const want = {on:!$("pf-line").hidden, line:$("pf-line").hidden ? "" : $("pf-line").textContent, warn:$("pf-warn").hidden ? "" : $("pf-warn").textContent};
+    const got = progFlames(s);
+    if(got.on !== want.on || got.line !== want.line || got.warn !== want.warn) out.push(["flames", s, got, want]);
+  }
+console.log(JSON.stringify(out));
+""")
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    check(r.returncode == 0 and r.stdout.strip() == "[]",
+          f"2.0's session line and flame lines are 1.0's, state for state: "
+          f"{r.stdout[-700:]!r} {r.stderr[-500:]!r}")
+    print("  ok")
+
+
+def _ui2_status_prog():
+    """A rehearsal (Programming) running on the show PC, the show audio
+    stopped, mark A set, the show's flame cues following it."""
+    st = _ui2_status_running()
+    st["schedule"].update({"state": "STANDBY", "running": None})
+    st["show"] = {"running": True, "timecode": "01:00:42:10",
+                  "state": "STOPPED", "timeline": "Fire and Ice.json",
+                  "rate_note": ""}
+    st["countdown"] = None
+    st["transport"] = {"programming": True, "playhead": "show_audio",
+                       "playing": False, "paused": False,
+                       "marks": {"a": "00:01:00:00"}, "loop": None}
+    st["programming_flames"] = {"available": True, "follows": True,
+                                "on": False,
+                                "line": "The show's flame cues follow "
+                                        "Programming playback."}
+    st["selected_show"] = "Fire and Ice.json"
+    st["laser_arm"]["lasers"][0]["armed"] = False
+    st["flames"]["groups"] = [dict(g, armed="disarmed")
+                              for g in st["flames"]["groups"]]
+    return st
+
+
+_UI2_PROG_JS = r"""
+<script>
+(function(){
+const posts = [];
+const realFetch = window.fetch;
+window.fetch = function(u, o){
+  if(window.__dead && /\/api\/remote\/status/.test(String(u))) return Promise.reject(new Error("no contact"));
+  if(window.__mod && /\/api\/remote\/status/.test(String(u)))
+    return realFetch.apply(this, arguments).then(r => r.json()).then(j => {
+      window.__mod(j);
+      return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}});
+    });
+  if(o && o.method === "POST") posts.push({u:String(u), b:JSON.parse(String(o.body || "{}"))});
+  return realFetch.apply(this, arguments);
+};
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const q = id => document.getElementById(id);
+const bodies = () => posts.map(p => { const b = Object.assign({}, p.b); delete b.seen; return [p.u.replace("/api/remote/", ""), b]; });
+const trs = () => [...document.querySelectorAll("#t-prog [data-tr]")];
+function shown(el){
+  if(!el || !el.getClientRects().length) return false;
+  for(let p = el; p; p = p.parentElement){ if(p.hidden) return false; }
+  return getComputedStyle(el).visibility !== "hidden";
+}
+function look(){
+  const ctl = [...document.querySelectorAll("#t-prog .b, #t-prog select, #t-prog input")].filter(shown);
+  const small = ctl.filter(e => e.getBoundingClientRect().height < 55.5).map(e => e.id || e.textContent.trim());
+  const off = ctl.filter(e => e.getBoundingClientRect().right > innerWidth + 0.5 || e.getBoundingClientRect().left < -0.5).map(e => e.id || e.textContent.trim());
+  const hb = [...document.querySelectorAll("header .tab, header .hb")].filter(shown).map(e => e.getBoundingClientRect());
+  let hover = 0;
+  for(let i = 0; i < hb.length; i++) for(let j = i + 1; j < hb.length; j++){
+    const a = hb[i], b = hb[j];
+    if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5) hover++;
+  }
+  return {run_card:shown(q("p-run-card")), tr_card:shown(q("p-tr")),
+    files:[...q("p-file").options].map(o => o.value), file:q("p-file").value,
+    mode:[...document.querySelectorAll("#p-mode .b.on")].map(b => b.dataset.mode).join(","),
+    what:q("p-mode-what").textContent, run:q("p-run").dataset.mode, run_l:q("p-run-l").textContent,
+    run_dis:q("p-run").disabled, tr_dis:trs().map(b => b.disabled), state:q("p-state").textContent,
+    tc:q("p-tc").textContent, why:q("p-why").hidden ? "" : q("p-why").textContent,
+    pf_line:q("p-pf-line").hidden ? "" : q("p-pf-line").textContent, pf_warn:shown(q("p-pf-warn")) ? q("p-pf-warn").textContent : "",
+    loop:q("p-loop-l").textContent, follow:q("p-follow-l").textContent, msg:q("p-msg").textContent,
+    sheet:!q("sheet").hidden, sheet_h:q("sh-h").textContent, say:q("msg-t").textContent,
+    small:small, off:off, header_overlap:hover, xscroll:document.scrollingElement.scrollWidth - innerWidth};
+}
+// A new alert brings the screen back to SHOW (a flame cue fault is one):
+// the Schedule tab (the Programming cards) is opened again after each
+// change.
+async function settle(ms){ await wait(ms || 900); document.querySelector('.tab[data-tab="schedule"]').click(); await wait(300); }
+async function yes(){ const b = document.querySelector('#sh-row [data-i="1"]'); if(b) b.click(); await wait(400); }
+async function no(){ const b = document.querySelector('#sh-row [data-i="0"]'); if(b) b.click(); await wait(300); }
+async function go(){
+  for(let i = 0; i < 80 && !(typeof ST !== "undefined" && ST && ST.transport); i++) await wait(100);
+  // hashopen=1: the address ended #prog, so the tab opened before this
+  // screen knew it was the show PC; nothing is clicked.
+  if(!/hashopen=1/.test(location.search)) document.querySelector('.tab[data-tab="schedule"]').click();
+  await wait(1500);
+  const out = {first:look()};
+  if(/presses=1/.test(location.search)){
+    posts.length = 0;
+    q("p-at").value = "00:02:00:00"; q("p-play").click(); await wait(250);
+    for(const b of document.querySelectorAll("#t-prog [data-jump]")){ b.click(); await wait(150); }
+    for(const id of ["p-pause", "p-cont", "p-a", "p-b", "p-loop", "p-follow"]){ q(id).click(); await wait(150); }
+    await wait(300);
+    out.presses = bodies(); out.after = look();
+    // Loop on: its press turns it off; the show audio playing: Stop the show audio.
+    window.__mod = j => { j.transport.loop = ["00:01:00:00", "00:02:00:00"]; j.transport.playing = true; };
+    await settle(); posts.length = 0;
+    out.looped = look();
+    q("p-loop").click(); await wait(300); out.loop_off = bodies();
+    // A flame cue fault: said in full while Play from cannot send them.
+    window.__mod = j => { j.flames.cues_fault = "The flame link is not connected."; };
+    await settle(); out.fault = look();
+    // Signed out: view only; nothing in the session is pressed.
+    window.__mod = j => { j.me = {local:true, user:null, view_only:true, may:{show:false, arm:false, settings:false, show_files:false}}; };
+    // (past the lock after Stop turned back into Run off: FLIP_LOCK_MS)
+    await settle(2600); posts.length = 0;
+    out.signed_out = look();
+    for(const b of trs()){ b.click(); await wait(40); }
+    q("p-run").click(); await wait(300);
+    out.signed_out_posts = bodies(); await no();
+    // Signed out with something playing: Run is Stop, never held back.
+    window.__mod = j => { j.me = {local:true, user:null, view_only:true, may:{show:false}}; j.transport.playing = true; };
+    await settle(); posts.length = 0;
+    out.so_stop = look();
+    q("p-run").click(); await wait(250); out.so_stop_one = look(); out.so_stop_one_posts = bodies();
+    q("p-run").click(); await wait(600); out.so_stop_two = bodies();
+    window.__mod = null;
+    // No contact: nothing in the session; Run is Stop.
+    window.__dead = true; await settle(3000);
+    out.stale = look();
+    window.__dead = false; await settle(2600);
+    // An iPad: the session card only.
+    ME.local = false; await settle(600); out.ipad = look(); ME.local = true; await settle(600);
+  }
+  if(/run=1/.test(location.search)){
+    // Run off: Run, in Show or Programming, each asked first.
+    window.__mod = j => { j.show.running = false; j.transport = {programming:false, why:"No show file is running."}; j.programming_flames = {available:false}; };
+    await settle(2600); posts.length = 0;
+    out.off = look();
+    document.querySelector('#p-mode [data-mode="programming"]').click(); await wait(200);
+    out.prog_pick = look();
+    q("p-run").click(); await wait(400);
+    out.prog_sheet = look(); out.prog_before = bodies();
+    await yes(); out.prog_after = bodies();
+    posts.length = 0;
+    document.querySelector('#p-mode [data-mode="show"]').click(); await wait(200);
+    q("p-run").click(); await wait(400); out.show_sheet = look();
+    await no(); out.show_cancel = bodies();
+    q("p-run").click(); await wait(400); await yes(); out.show_after = bodies();
+    // Another show file chosen: the engine's show-select.
+    posts.length = 0;
+    q("p-file").value = "Other.json"; q("p-file").dispatchEvent(new Event("change")); await wait(300);
+    out.select = bodies();
+    // A scheduled show live: Programming is refused before any question.
+    window.__mod = j => { j.show.running = false; j.transport = {programming:false}; j.programming_flames = {available:false}; j.schedule.state = "SHOW"; };
+    await settle(); posts.length = 0;
+    document.querySelector('#p-mode [data-mode="programming"]').click(); await wait(200);
+    out.locked = look();
+    q("p-run").click(); await wait(400);
+    out.locked_press = look(); out.locked_posts = bodies();
+    // Run on, nothing playing: Run off, asked first.
+    window.__mod = j => { j.transport.playing = false; };
+    await settle(2800); posts.length = 0;
+    out.runon = look();
+    q("p-run").click(); await wait(400); out.runoff_sheet = look(); out.runoff_before = bodies();
+    await yes(); await wait(300); out.runoff_after = bodies();
+  }
+  const pre = document.createElement("pre"); pre.id = "rack-measure";
+  pre.textContent = JSON.stringify(out);
+  document.body.appendChild(pre);
+}
+go();
+})();
+</script>
+"""
+
+
+def test_ui2_programming_tab_in_a_browser():
+    section("2.0's Programming cards drawn and pressed (P1, P2, on the Schedule tab): each session "
+            "control posts 1.0's body, its answer said in the card; Loop "
+            "says Loop off once on; a flame cue fault is shown in full; "
+            "signed out or with no contact nothing in the session is "
+            "pressable and Run is Stop when there is something to stop "
+            "(a double tap, never held back); Run asks first and posts "
+            "1.0's body in Show and in Programming; Programming is refused "
+            "while a scheduled show is live, before any question; Run off "
+            "asks first; an iPad gets the session card only; 56 px "
+            "targets, nothing off the side, the header's buttons never "
+            "overlap")
+    _one, two = _ui2_pages()
+    lo = _one[_one.find('<script id="remote-logic">') +
+              len('<script id="remote-logic">'):]
+    lo = lo[:lo.find("</script>")]
+    page = two.replace('<script src="/remote-logic.js"></script>',
+                       "<script>" + lo + "</script>", 1)
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    routes = {"/api/brand": {"show": "Fire and Ice"},
+              "/api/timelines": {"timelines": [
+                  {"file": "Fire and Ice.json"}, {"file": "Other.json"},
+                  {"file": "Broken.json", "error": "not JSON"}]}}
+    answers = {"/api/remote/jump": {"ok": True,
+                                    "text": "Jumped to 00:00:52:10."}}
+    st = _ui2_status_prog()
+    for frag, sizes in (("?tour=0&presses=1", ((1366, 768),)),
+                        ("?tour=0&run=1", ((1366, 768),)),
+                        ("?tour=0&hashopen=1#prog",
+                         ((1024, 768), (390, 844)))):
+        got = _rack_screen_in_chromium(chrome, page, st, sizes,
+                                       measure_js=_UI2_PROG_JS, frag=frag,
+                                       routes=routes, posts=answers,
+                                       budget_ms=60000)
+        for (w, h), r in got.items():
+            where = f"2.0 Programming cards, {w}x{h} {frag}"
+            if not check(isinstance(r, dict) and "first" in r,
+                         f"{where}: drawn and measured: {r!r}"[:900]):
+                continue
+            a = r["first"]
+            check(a["run_card"] and a["tr_card"] and
+                  a["files"] == ["Fire and Ice.json", "Other.json"] and
+                  a["file"] == "Fire and Ice.json" and
+                  a["mode"] == "programming" and "Running now." in a["what"]
+                  and a["run"] == "runoff" and a["run_l"] == "Run off" and
+                  not a["run_dis"] and not any(a["tr_dis"]) and
+                  len(a["tr_dis"]) == 11,
+                  f"{where}: the show PC in a rehearsal: both cards, the "
+                  f"good show files with the engine's choice, Programming "
+                  f"running now, Run off, the session pressable: {a}")
+            check(a["state"] == "Stopped. Play from a timecode to start "
+                               "the show audio. A 00:01:00:00, B none" and
+                  a["tc"] == "01:00:42:10" and a["why"] == "" and
+                  a["pf_line"] == "The show's flame cues follow "
+                                  "Programming playback." and
+                  a["pf_warn"] == "" and a["loop"] == "Loop on" and
+                  a["follow"] == "Stop the show audio",
+                  f"{where}: 1.0's session line, timecode and flame line: "
+                  f"{a}")
+            check(not a["small"] and not a["off"] and
+                  a["header_overlap"] == 0 and a["xscroll"] <= 0,
+                  f"{where}: 56 px targets, nothing off the side, the "
+                  f"header's buttons never overlap: {a}")
+            if "presses=1" in frag:
+                check(r["presses"] == [
+                        ["play-from", {"at": "00:02:00:00"}],
+                        ["jump", {"seconds": -10}], ["jump", {"seconds": -5}],
+                        ["jump", {"seconds": 5}], ["jump", {"seconds": 10}],
+                        ["pause", {}], ["continue", {}], ["mark-a", {}],
+                        ["mark-b", {}], ["loop", {"on": True}],
+                        ["follow", {}]],
+                      f"{where}: each control posts 1.0's body: "
+                      f"{r['presses']}")
+                check(r["after"]["msg"] in ("Done.",
+                                            "Jumped to 00:00:52:10."),
+                      f"{where}: the answer is said in the card: "
+                      f"{r['after']['msg']!r}")
+                check(r["looped"]["loop"] == "Loop off" and
+                      r["loop_off"] == [["loop", {"on": False}]] and
+                      r["looped"]["state"].endswith(
+                          "Looping 00:01:00:00 to 00:02:00:00"),
+                      f"{where}: a loop on: Loop off turns it off: "
+                      f"{r['looped']} {r['loop_off']}")
+                check(r["fault"]["pf_warn"] ==
+                      "Flame cues are not going out, so nothing fires from "
+                      "Play from: The flame link is not connected.",
+                      f"{where}: a flame cue fault in full: {r['fault']}")
+                so = r["signed_out"]
+                check(all(so["tr_dis"]) and so["run_dis"] and
+                      r["signed_out_posts"] == [],
+                      f"{where}: signed out, nothing in the session or Run "
+                      f"is pressable and nothing is sent: {so} "
+                      f"{r['signed_out_posts']}")
+                check(r["so_stop"]["run"] == "stop" and
+                      not r["so_stop"]["run_dis"] and
+                      r["so_stop_one"]["run_l"] == "Tap again" and
+                      r["so_stop_one_posts"] == [] and
+                      [p[0] for p in r["so_stop_two"]] == ["stop"],
+                      f"{where}: signed out with playback playing: Run is "
+                      f"Stop, a double tap, never held back: "
+                      f"{r['so_stop']} {r['so_stop_two']}")
+                check(all(r["stale"]["tr_dis"]) and
+                      r["stale"]["run"] == "stop" and
+                      not r["stale"]["run_dis"] and
+                      r["stale"]["tc"] == "--:--:--:--" and
+                      r["stale"]["why"].startswith("No contact"),
+                      f"{where}: no contact: nothing in the session, Run "
+                      f"is Stop: {r['stale']}")
+                check(not r["ipad"]["run_card"] and r["ipad"]["tr_card"],
+                      f"{where}: an iPad gets the session card only: "
+                      f"{r['ipad']}")
+            if "run=1" in frag:
+                check(r["off"]["run"] == "run" and
+                      r["off"]["run_l"] == "Run" and
+                      not r["off"]["run_dis"] and all(r["off"]["tr_dis"]) and
+                      r["off"]["why"] == "No show file is running.",
+                      f"{where}: Run off: Run, the session not pressable, "
+                      f"the engine's reason: {r['off']}")
+                check(r["prog_sheet"]["sheet"] and
+                      r["prog_sheet"]["sheet_h"] == "Run in Programming?" and
+                      r["prog_before"] == [] and
+                      r["prog_after"] == [["/api/start", {
+                          "timeline": "Fire and Ice.json",
+                          "on_lost": "hold"}]],
+                      f"{where}: Run in Programming asks first, then posts "
+                      f"1.0's rehearsal body: {r['prog_sheet']} "
+                      f"{r['prog_after']}")
+                check(r["show_sheet"]["sheet_h"] == "Press Run?" and
+                      r["show_cancel"] == [] and
+                      r["show_after"] == [["/api/start", {
+                          "timeline": "Fire and Ice.json"}]],
+                      f"{where}: Run in Show asks first, Cancel sends "
+                      f"nothing, Yes posts 1.0's body: {r['show_after']}")
+                check(r["select"] == [["show-select",
+                                       {"file": "Other.json"}]],
+                      f"{where}: choosing a show file is 1.0's show-select: "
+                      f"{r['select']}")
+                check(r["locked"]["what"].startswith(
+                          "Programming is locked:") and
+                      not r["locked_press"]["sheet"] and
+                      r["locked_posts"] == [] and
+                      r["locked_press"]["say"] == "Programming is locked.",
+                      f"{where}: a scheduled show live: Programming is "
+                      f"refused before any question, nothing sent: "
+                      f"{r['locked_press']}")
+                check(r["runon"]["run"] == "runoff" and
+                      r["runoff_sheet"]["sheet_h"] == "Turn Run off?" and
+                      r["runoff_before"] == [] and
+                      [p[0] for p in r["runoff_after"]] == ["run-off"],
+                      f"{where}: Run off asks first, then posts run-off: "
+                      f"{r['runoff_sheet']} {r['runoff_after']}")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
@@ -112948,6 +113432,8 @@ if __name__ == "__main__":
         test_fireball_soak_show_raises_no_fault,
         test_start_at_cue_fireball_lands_by_its_own_rules,
         test_start_at_cue_docs_in_plain_words,
+        test_ui2_programming_tab_makes_1_0_presses,
+        test_ui2_programming_tab_in_a_browser,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):

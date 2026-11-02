@@ -23267,6 +23267,77 @@ def build():
   "            with self._stops_cv:\n                self._stops += 1",
   "            with self._stops_cv:\n                pass"),
 
+
+ # interface 2.0's Programming tab (P1, P2 of docs/REMOVE_1_0_PLAN.md)
+ ("ui 2.0 Programming: Run in Programming starts a Show run (no on_lost hold)",
+  "ltcplay/web/remote2.html",
+  "  try{ const j = await post(\"/api/start\", prog ? {timeline:f, on_lost:\"hold\"} : {timeline:f}); say(prog",
+  "  try{ const j = await post(\"/api/start\", {timeline:f}); say(prog"),
+
+ ("ui 2.0 Programming: Programming runs while a scheduled show is live",
+  "ltcplay/web/remote2.html",
+  "  if(v.locked){ say(\"Programming is locked.\",",
+  "  if(false){ say(\"Programming is locked.\","),
+
+ ("ui 2.0 Programming: Run starts with no question",
+  "ltcplay/web/remote2.html",
+  "  if(!(await confirmBox(prog ? \"Run in Programming?\"",
+  "  if(false && !(await confirmBox(prog ? \"Run in Programming?\""),
+
+ ("ui 2.0 Programming: Run off goes with no question",
+  "ltcplay/web/remote2.html",
+  "    const sure = await confirmBox(\"Turn Run off?\", RUN_OFF_CONFIRM, \"Yes, Run off\", \"red\");\n    if(!sure) return;\n    if(runLook(ST, stale()).mode !== \"runoff\")",
+  "    if(runLook(ST, stale()).mode !== \"runoff\")"),
+
+ ("ui 2.0 Programming: the session is pressable signed out",
+  "ltcplay/web/remote2.html",
+  "  const can = controlStates(ST, isSt).transport && mayRow(ST, \"show\");",
+  "  const can = controlStates(ST, isSt).transport;"),
+
+ ("ui 2.0 Programming: the session is pressable with no contact",
+  "ltcplay/web/remote2.html",
+  "  const can = controlStates(ST, isSt).transport && mayRow(ST, \"show\");",
+  "  const can = mayRow(ST, \"show\");"),
+
+ ("ui 2.0 Programming: Run's Stop is held back while signed out",
+  "ltcplay/web/remote2.html",
+  "    b.disabled = HALT_BUSY || (rk.mode !== \"stop\" && (progFlipped() || !mayRow(ST, \"show\")));",
+  "    b.disabled = HALT_BUSY || progFlipped() || !mayRow(ST, \"show\");"),
+
+ ("ui 2.0 Programming: Run is pressable signed out",
+  "ltcplay/web/remote2.html",
+  "    b.disabled = HALT_BUSY || (rk.mode !== \"stop\" && (progFlipped() || !mayRow(ST, \"show\")));",
+  "    b.disabled = HALT_BUSY || (rk.mode !== \"stop\" && progFlipped());"),
+
+ ("ui 2.0 Programming: Run's Stop fires on one tap",
+  "ltcplay/web/remote2.html",
+  "  if(d.act === \"stop\") return stopTap2(\"p-run\", ev);",
+  "  if(d.act === \"stop\") return pressStop();"),
+
+ ("ui 2.0 Programming: Loop sends the state it already has",
+  "ltcplay/web/remote2.html",
+  "press(\"loop\", {on: !$(\"p-loop\").dataset.on})",
+  "press(\"loop\", {on: !!$(\"p-loop\").dataset.on})"),
+
+ ("ui 2.0 Programming: a flame cue fault is not said",
+  "ltcplay/web/remote2.html",
+  "  const warn = on && tr.programming && fault ? \"Flame cues are not going out, so nothing fires from Play from: \" + fault : \"\";\n  return {on, line, warn};",
+  "  const warn = \"\";\n  return {on, line, warn};"),
+
+ ("ui 2.0 Programming: Programming is never locked by a live show (copy differs)",
+  "ltcplay/web/remote2.html",
+  "  const live = sch.state === \"SHOW\" || sch.state === \"PAUSED\";\n  let text = MODE_WHAT[want], locked = false;",
+  "  const live = sch.state === \"SHOW\";\n  let text = MODE_WHAT[want], locked = false;"),
+
+ ("ui 2.0 Programming: a tab opened from its address never reads the show files",
+  "ltcplay/web/remote2.html",
+  "  if(local && !$(\"p-file\").options.length && Date.now() - P_FILES_AT > 5000) progFiles();\n",
+  ""),
+
+ ("ui 2.0 Programming: the Run card shows on an iPad",
+  "ltcplay/web/remote2.html",
+  "  if($(\"p-run-card\").hidden !== !local) $(\"p-run-card\").hidden = !local;",
+  "  $(\"p-run-card\").hidden = false;"),
 ]
 
 
