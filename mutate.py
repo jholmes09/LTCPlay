@@ -3048,6 +3048,57 @@ MUTATIONS = [
   "        if isinstance(v, bool) or not isinstance(v, int) or v < PUMP_MIN_S:",
   "        if False:"),
 
+ # interface 2.0's Resume sheet (play-from cues part 3): start at a cue
+ ("ui 2.0 cue: Start at a cue goes with no question",
+  "ltcplay/web/remote2.html",
+  "  if(!(await confirmBox(title + \"?\", \"The show starts now, part way: \"",
+  "  if(false && !(await confirmBox(title + \"?\", \"The show starts now, part way: \""),
+
+ ("ui 2.0 cue: a cue starts after the show changed under the question",
+  "ltcplay/web/remote2.html",
+  "  if(HALT_BUSY || goLook(ST, false, !!(ME && ME.local), START_WAITING).mode !== mode || cueFile(ST) !== file){",
+  "  if(false){"),
+
+ ("ui 2.0 cue: Resume's offer is made from a cue retimed since",
+  "ltcplay/web/remote2.html",
+  "cues.filter(c => c.id === rc.id && c.tc === rc.tc)[0]",
+  "cues.filter(c => c.id === rc.id)[0]"),
+
+ ("ui 2.0 cue: the cues are offered in a rehearsal",
+  "ltcplay/web/remote2.html",
+  "  if(!show.running || isRehearsal(st)) return \"\";\n  return String(show.timeline || \"\");",
+  "  if(!show.running) return \"\";\n  return String(show.timeline || \"\");"),
+
+ ("ui 2.0 cue: another show file's list is offered",
+  "ltcplay/web/remote2.html",
+  "  if(!file || !got || got.error || got.show !== file) return null;",
+  "  if(!file || !got || got.error) return null;"),
+
+ ("ui 2.0 cue: the start sends no cue time for the engine to check",
+  "ltcplay/web/remote2.html",
+  "{show:file, cue_id:c.id, tc:c.tc, lead_in_s:c.lead_in_s, confirmed:true}",
+  "{show:file, cue_id:c.id, lead_in_s:c.lead_in_s, confirmed:true}"),
+
+ ("ui 2.0 cue: the landing said ignores the lead-in",
+  "ltcplay/web/remote2.html",
+  "  return pfTc(Math.max(0, pfFrames(c.tc) - Math.round(Number(c.lead_in_s) || 0) * 30));",
+  "  return pfTc(Math.max(0, pfFrames(c.tc)));"),
+
+ ("ui 2.0 cue: Resume never offers the cue",
+  "ltcplay/web/remote2.html",
+  "  if(d.act === \"resume\") return resumeOrCue();",
+  "  if(d.act === \"resume\") return press(\"resume\");"),
+
+ ("ui 2.0 cue: the sheet's plain Resume does nothing",
+  "ltcplay/web/remote2.html",
+  "    if(goLook(ST, stale(), !!(ME && ME.local), START_WAITING).mode !== \"resume\"){ say(\"The show changed. Nothing done.\", \"The show changed while you answered, so nothing was done.\", \"warn\"); return; }\n    return press(\"resume\");",
+  "    return;"),
+
+ ("ui 2.0 cue: Start now never offers From a cue",
+  "ltcplay/web/remote2.html",
+  "  const got = await cueRead(\"start\");\n  if(got && got.ch){",
+  "  const got = null;\n  if(got && got.ch){"),
+
  # the fuel pump on interface 2.0 (2026-10-30)
  ("ui 2.0: Pump off is disabled with no contact",
   "ltcplay/web/remote2.html",

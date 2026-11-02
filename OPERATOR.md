@@ -2020,8 +2020,25 @@ choices:
 Start at a cue starts the show part way, at one of the cues saved on 2.0
 Settings ("Play-from cues"), instead of from the top. It is Start now with
 a starting point: everything Start now does and refuses, it does and
-refuses too. The screen to choose the cue on (the 2.0 "Resume show" sheet)
-comes in the next update; the engine side is here.
+refuses too.
+
+- **On 2.0, after a Stop:** tap Resume. When the show file running has
+  saved cues, a sheet asks what to do: **Resume** (carries on the
+  schedule, as always), **Resume show 4 from Finale** (the cue the engine
+  offers, at or before where show 4 stopped; the sheet says where it
+  stopped), or **Another cue** (every saved cue of that show file, by name
+  and time). A cue then asks once more, like Start now ("Resume show 4
+  from Finale?", with the time it plays from), and starts only on
+  **Yes, start**. Cancel sends nothing.
+- **On 2.0, any time Start now is offered:** its question has
+  **From a cue** beside Yes, start now: pick any saved cue, then Yes,
+  start.
+- With no saved cues for the show file running, Resume and Start now are
+  the one press and the one question they always were. The cue list is
+  read when you press, from the saved list, never from this screen's
+  memory; if the show changes while a question is up, nothing starts and
+  the footer says so. Not offered in Programming, and not to someone
+  signed out.
 
 - **Who:** anyone who may press Start now (the Show row: operators and
   admins, signed in). Like Start now it needs a page that is up to date
@@ -2603,7 +2620,8 @@ the same 1.0 button sends, with the same holds, confirms and refusals.
   them.
 - The 2.0 SHOW screen, top to bottom: one line that says what to do next;
   the show state, the timecode and the time left; the big button for the
-  next step (Run show, Start now or Resume), Hold and Stop show; one
+  next step (Run show, Start now or Resume; Resume and Start now offer
+  the saved play-from cues, see Start at a cue), Hold and Stop show; one
   alert at a time with Acknowledge (tap the words for the details); a tile
   per flame group and one for the lasers, with Hold: arm flames and Disarm
   flames (flames only; the lasers' tile has its own Disarm lasers); the

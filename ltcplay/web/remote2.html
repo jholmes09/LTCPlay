@@ -1606,14 +1606,22 @@ $("b-go").addEventListener("click", async () => {
   if(d.act === "none"){ say("Nothing done. Look, then press again.", d.say, "warn"); return; }
   if(lk.blocked){ say("Start now would be refused.", "Start now would be refused: " + lk.blocked.replace(/\.$/, "") + ".", "warn"); return; }
   if(lk.off) return;
-  if(d.act === "resume") return press("resume");
+  if(d.act === "resume") return resumeOrCue();
   if(d.act === "run") return runShow();
   if(d.act === "start") return startNow();
 });
 async function startNow(){
   // 1.0's Start now: its confirm (Yes on the other side from Stop's), its
-  // body, its wait for the show audio.
-  if(!(await confirmBox("Start the next show now?", "It starts now, or an extra show.", "Yes, start now", "green", true))) return;
+  // body, its wait for the show audio. With saved cues for the show file
+  // running (Show mode), the same question also offers From a cue.
+  const got = await cueRead("start");
+  if(got && got.ch){
+    const v = await sheet("Start the next show now?", `<div>It starts now, or an extra show. Or start it part way, from a saved cue.</div>`,
+      [{label:"Cancel", value:false, safe:true}, {label:"From a cue", value:"pick", cls:"blue"}, {label:"Yes, start now", value:true, cls:"green"}], true);
+    if(v === "pick") return cuePick(got, "start");
+    if(v !== true) return;
+  }
+  else if(!(await confirmBox("Start the next show now?", "It starts now, or an extra show.", "Yes, start now", "green", true))) return;
   if(HALT_BUSY || goLook(ST, false, !!(ME && ME.local), START_WAITING).mode !== "start"){ say("The show changed. Nothing started.", "The show changed while you answered, so nothing was started.", "warn"); return; }
   const loading = !!(ST && ST.schedule && ST.schedule.start_blocked && ST.schedule.start_blocked.loading);
   START_WAITING = loading;
@@ -1621,6 +1629,85 @@ async function startNow(){
   try{ drawTransport(false); }catch(e){}
   try{ await press("start-now", {confirmed:true}); }
   finally{ START_WAITING = false; try{ drawTransport(false); }catch(e){} }
+}
+// ---- Start at a cue (play-from cues part 3: the Resume sheet) ----
+// OPERATOR.md, "Start at a cue": Start now with a starting point, in Show
+// mode only, for anyone who may press Start now (the Show row), with the
+// confirm Start now has. Resume offers the cue at or before where the
+// last show stopped (the engine's play-from-cues `resume`), and any saved
+// cue can be picked. The engine reads the cue from the saved list of the
+// show file running, and refuses a cue changed since this screen read it.
+// The show file running, in Show mode; "" in a rehearsal or with no Run.
+function cueFile(st){
+  const show = (st && st.show) || {};
+  if(!show.running || isRehearsal(st)) return "";
+  return String(show.timeline || "");
+}
+// What to offer from the play-from-cues answer `got` for `file`: the
+// saved cues, and on a Resume (mode "resume") the engine's offer when its
+// cue is still in the list. null: nothing to offer, so the press is the
+// plain one it always was. Pure.
+function cueChoices(got, file, mode){
+  if(!file || !got || got.error || got.show !== file) return null;
+  const cues = (((got.entry || {}).cues) || []).filter(c => c && c.id && c.name && pfFrames(c.tc) !== null);
+  if(!cues.length) return null;
+  const r = got.resume, rc = r && r.cue;
+  const hit = mode === "resume" && rc ? cues.filter(c => c.id === rc.id && c.tc === rc.tc)[0] : null;
+  return {cues:cues, offer: hit ? {show:r.show, at:String(r.stopped_at || ""), cue:hit} : null};
+}
+// Where a start at `c` plays from: its time less its lead-in, never
+// before the top (play_from.landing_frames). Pure.
+function cueLanding(c){
+  return pfTc(Math.max(0, pfFrames(c.tc) - Math.round(Number(c.lead_in_s) || 0) * 30));
+}
+function cueWords(c){
+  return c.name + " at " + c.tc + ", played from " + cueLanding(c) + " with its " + c.lead_in_s + " s lead-in";
+}
+// The saved cues of the show file running, read when the big button is
+// pressed (never polled: the engine opens the show file to answer).
+async function cueRead(mode){
+  const f = cueFile(ST);
+  if(!f || !mayRow(ST, "show")) return null;
+  try{ return {file:f, ch:cueChoices(await getJSON("/api/remote/play-from-cues?show=" + encodeURIComponent(f), 3000), f, mode)}; }
+  catch(e){ return null; }
+}
+// The start itself, after its confirm (Start now's: Yes on the other
+// side from Stop's), only if nothing changed while the question was up.
+async function cueStart(c, file, title, mode){
+  if(!(await confirmBox(title + "?", "The show starts now, part way: " + cueWords(c) + ". It is an extra show, like Start now; the rig check runs first, and Stop wins at any moment.", "Yes, start", "green", true))) return;
+  if(HALT_BUSY || goLook(ST, false, !!(ME && ME.local), START_WAITING).mode !== mode || cueFile(ST) !== file){
+    say("The show changed. Nothing started.", "The show changed while you answered, so nothing was started.", "warn"); return;
+  }
+  const loading = !!(ST && ST.schedule && ST.schedule.start_blocked && ST.schedule.start_blocked.loading);
+  START_WAITING = loading;
+  try{ drawTransport(false); }catch(e){}
+  try{ await press("start-at-cue", {show:file, cue_id:c.id, tc:c.tc, lead_in_s:c.lead_in_s, confirmed:true}); }
+  finally{ START_WAITING = false; try{ drawTransport(false); }catch(e){} }
+}
+// Any saved cue: one button each, then the confirm.
+async function cuePick(got, mode){
+  const v = await sheet("Start from a cue", `<div>Saved cues of ${esc(got.file)}. The show starts part way, at the cue less its lead-in.</div>`,
+    [{label:"Cancel", value:false, safe:true}].concat(got.ch.cues.map((c, i) => ({label:c.name + " " + c.tc, value:i, cls:"blue"}))));
+  if(typeof v !== "number") return;
+  const c = got.ch.cues[v];
+  return cueStart(c, got.file, "Start at the cue " + c.name, mode);
+}
+// Resume (Jeff, 2026-10-31: Resume offers the previous cue): with saved
+// cues for the show file running and no show live, a sheet: Resume as
+// always, the engine's offer, or another cue. Without, the plain Resume.
+async function resumeOrCue(){
+  const got = isLive(ST) ? null : await cueRead("resume");
+  if(!got || !got.ch) return press("resume");
+  const o = got.ch.offer;
+  const v = await sheet("Resume", `<div>${o ? esc("Show " + o.show + " stopped at " + o.at + ". ") : ""}Resume carries on the schedule. Or start the show again part way, from a saved cue, as an extra show.</div>`,
+    [{label:"Cancel", value:false, safe:true}, {label:"Another cue", value:"pick", cls:"blue"}, {label:"Resume", value:"resume", cls:"green"}]
+      .concat(o ? [{label:"Resume show " + o.show + " from " + o.cue.name, value:"offer", cls:"green"}] : []));
+  if(v === "resume"){
+    if(goLook(ST, stale(), !!(ME && ME.local), START_WAITING).mode !== "resume"){ say("The show changed. Nothing done.", "The show changed while you answered, so nothing was done.", "warn"); return; }
+    return press("resume");
+  }
+  if(v === "offer") return cueStart(o.cue, got.file, "Resume show " + o.show + " from " + o.cue.name, "resume");
+  if(v === "pick") return cuePick(got, "resume");
 }
 // Run: 1.0's Run in Show mode, on the show machine only: the show file
 // 1.0's picker would hold (the engine's selection, else the first), the
