@@ -425,6 +425,8 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 .dpanel{overflow-y:auto}
 .dsec{display:flex;flex-direction:column;gap:var(--gap);min-width:0;flex:0 0 auto}
 #fb-note,#fb-charge,#fb-block{font-size:calc(var(--fs) - 2px)}
+/* All off and Disarm Fireball stay in sight while the panel scrolls. */
+#d-fb > .drow:first-child{position:sticky;top:0;z-index:1;background:var(--panel);padding-bottom:4px}
 .fb-armed.on{color:var(--red-hi)}
 #fb-charge:empty,#fb-msg:empty,#tp-st:empty{display:none}
 #fb-pads{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:var(--gap)}

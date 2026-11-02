@@ -102779,7 +102779,8 @@ const mainEx = () => { const m = document.querySelector("main"); return m.scroll
 const small = sel => [...document.querySelectorAll(sel)].filter(e => e.getClientRects().length && e.getBoundingClientRect().height < 55.5).map(e => e.id || e.textContent.trim().slice(0, 16));
 out.fb_layout = {excess:mainEx(), small:small("#d-fb .b, #d-fb .fb-pad"), xs:document.scrollingElement.scrollWidth - innerWidth,
   // All off and Disarm Fireball are on the screen without a scroll.
-  safe_seen:["fb-alloff", "fb-disarm"].every(id => { const r = document.getElementById(id).getBoundingClientRect(), pr = document.getElementById("d-panel").getBoundingClientRect(); return r.top >= pr.top - 1 && r.bottom <= pr.bottom + 1 && r.bottom <= innerHeight; })};
+  safe_seen:["fb-alloff", "fb-disarm"].every(id => { const r = document.getElementById(id).getBoundingClientRect(), pr = document.getElementById("d-panel").getBoundingClientRect(); return r.height > 0 && r.top >= pr.top - 1 && r.bottom <= pr.bottom + 1 && r.bottom <= innerHeight; }),
+  rects:["d-panel", "fb-alloff", "fb-disarm", "d-steps", "next", "mini"].map(id => { const e = document.getElementById(id); if(!e) return id + ":none"; const r = e.getBoundingClientRect(); return id + ":" + Math.round(r.top) + "-" + Math.round(r.bottom); }).concat(["inner:" + innerHeight, "scroll:" + document.getElementById("d-panel").scrollTop])};
 let n = mark();
 h.ev(pad("valve"), "pointerdown");
 await h.sleep(460);
