@@ -3141,6 +3141,47 @@ MUTATIONS = [
   "  const got = await cueRead(\"start\");\n  if(got && got.ch){",
   "  const got = null;\n  if(got && got.ch){"),
 
+ # interface 2.0's DAY tab: P8 Fireball, P9 fuel undo, P10 timed purge
+ ("ui 2.0 Fireball: the beat comes every 300 ms instead of 1.0's 100",
+  "ltcplay/web/remote2.html",
+  "  FB_BEAT = setTimeout(() => fbBeat(false), 100);",
+  "  FB_BEAT = setTimeout(() => fbBeat(false), 300);"),
+
+ ("ui 2.0 Fireball: another step leaves the channels on",
+  "ltcplay/web/remote2.html",
+  "  fireballView(k === \"fireball\");\n",
+  "  if(k === \"fireball\") fireballView(true);\n"),
+
+ ("ui 2.0 Fireball: leaving DAY leaves the channels on",
+  "ltcplay/web/remote2.html",
+  "  if(!on) daySections(null);\n",
+  ""),
+
+ ("ui 2.0 Fireball: the step is offered without a fireball group",
+  "ltcplay/web/remote2.html",
+  "  if(part !== \"shut\" && fb && fb.available)",
+  "  if(part !== \"shut\" && fb)"),
+
+ ("ui 2.0 timed purge: another step leaves the hold beating",
+  "ltcplay/web/remote2.html",
+  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); tpLetGo(\"another step was chosen\"); purgeDrop(); }",
+  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); purgeDrop(); }"),
+
+ ("ui 2.0 timed purge: the hold beats every 300 ms instead of 1.0's 100",
+  "ltcplay/web/remote2.html",
+  "  TP_BEAT = setTimeout(tpBeat, 100);",
+  "  TP_BEAT = setTimeout(tpBeat, 300);"),
+
+ ("ui 2.0 fuel: Refills and notes never shows",
+  "ltcplay/web/remote2.html",
+  "    $(\"d-fu-rec\").hidden = !(nWarn || hasRec);",
+  "    $(\"d-fu-rec\").hidden = true;"),
+
+ ("ui 2.0 fuel: Undo goes with no question",
+  "ltcplay/web/remote2.html",
+  "  if(await confirmBox(\"Undo this refill?\",",
+  "  if(true || await confirmBox(\"Undo this refill?\","),
+
  # the fuel pump on interface 2.0 (2026-10-30)
  ("ui 2.0: Pump off is disabled with no contact",
   "ltcplay/web/remote2.html",
@@ -23309,47 +23350,6 @@ def build():
   "            with self._stops_cv:\n                self._stops += 1",
   "            with self._stops_cv:\n                pass"),
 
-
- # interface 2.0's DAY tab: P8 Fireball, P9 fuel undo, P10 timed purge
- ("ui 2.0 Fireball: the beat comes every 300 ms instead of 1.0's 100",
-  "ltcplay/web/remote2.html",
-  "  FB_BEAT = setTimeout(() => fbBeat(false), 100);",
-  "  FB_BEAT = setTimeout(() => fbBeat(false), 300);"),
-
- ("ui 2.0 Fireball: another step leaves the channels on",
-  "ltcplay/web/remote2.html",
-  "  fireballView(k === \"fireball\");\n",
-  "  if(k === \"fireball\") fireballView(true);\n"),
-
- ("ui 2.0 Fireball: leaving DAY leaves the channels on",
-  "ltcplay/web/remote2.html",
-  "  if(!on) daySections(null);\n",
-  ""),
-
- ("ui 2.0 Fireball: the step is offered without a fireball group",
-  "ltcplay/web/remote2.html",
-  "  if(part !== \"shut\" && fb && fb.available)",
-  "  if(part !== \"shut\" && fb)"),
-
- ("ui 2.0 timed purge: another step leaves the hold beating",
-  "ltcplay/web/remote2.html",
-  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); tpLetGo(\"another step was chosen\"); purgeDrop(); }",
-  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); purgeDrop(); }"),
-
- ("ui 2.0 timed purge: the hold beats every 300 ms instead of 1.0's 100",
-  "ltcplay/web/remote2.html",
-  "  TP_BEAT = setTimeout(tpBeat, 100);",
-  "  TP_BEAT = setTimeout(tpBeat, 300);"),
-
- ("ui 2.0 fuel: Refills and notes never shows",
-  "ltcplay/web/remote2.html",
-  "    $(\"d-fu-rec\").hidden = !(nWarn || hasRec);",
-  "    $(\"d-fu-rec\").hidden = true;"),
-
- ("ui 2.0 fuel: Undo goes with no question",
-  "ltcplay/web/remote2.html",
-  "  if(await confirmBox(\"Undo this refill?\",",
-  "  if(true || await confirmBox(\"Undo this refill?\","),
 
  # interface 2.0's Programming tab (P1, P2 of docs/REMOVE_1_0_PLAN.md)
  ("ui 2.0 Programming: Run in Programming starts a Show run (no on_lost hold)",
