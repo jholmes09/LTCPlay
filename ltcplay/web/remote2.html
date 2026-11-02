@@ -1936,7 +1936,8 @@ $("p-run").addEventListener("click", async ev => {
   if(d.act === "stop") return stopTap2("p-run", ev);
   if(d.act === "runoff"){
     // Run off: not an emergency control (Stop is), so it asks first.
-    if(!(await confirmBox("Turn Run off?", RUN_OFF_CONFIRM, "Yes, Run off", "red"))) return;
+    const sure = await confirmBox("Turn Run off?", RUN_OFF_CONFIRM, "Yes, Run off", "red");
+    if(!sure) return;
     if(runLook(ST, stale()).mode !== "runoff"){ say("The show changed. Nothing done.", "The show changed while you answered, so nothing was done.", "warn"); return; }
     return pressStop("run-off");
   }

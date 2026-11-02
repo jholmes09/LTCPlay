@@ -23235,7 +23235,7 @@ def build():
 
  ("ui 2.0 Programming: Run off goes with no question",
   "ltcplay/web/remote2.html",
-  "    if(!(await confirmBox(\"Turn Run off?\", RUN_OFF_CONFIRM, \"Yes, Run off\", \"red\"))) return;\n    if(runLook(ST, stale()).mode !== \"runoff\")",
+  "    const sure = await confirmBox(\"Turn Run off?\", RUN_OFF_CONFIRM, \"Yes, Run off\", \"red\");\n    if(!sure) return;\n    if(runLook(ST, stale()).mode !== \"runoff\")",
   "    if(runLook(ST, stale()).mode !== \"runoff\")"),
 
  ("ui 2.0 Programming: the session is pressable signed out",
