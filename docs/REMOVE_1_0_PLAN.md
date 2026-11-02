@@ -72,7 +72,7 @@ Show night needs first (Programming, schedule, fireball, purge, map), then admin
 
 | Item | Why |
 |---|---|
-| Resume show N sheet (play-from step 3) | Another author, after PR #201. |
+| Resume show N sheet (play-from step 3) | DONE: 2.0 Resume and Start now offer the saved cues (start-at-cue). 2.0 only, 1.0 has no button for it. |
 | Practice mode | In neither page. 2.0 has only a note that a later PR adds it. Needs Jeff's definition. |
 | Redirects from old addresses | Jeff: not needed. |
 | Pin rule | Jeff: dropped. |
