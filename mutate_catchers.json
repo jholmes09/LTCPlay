@@ -3644,9 +3644,13 @@
 "start at a cue: the engine hands the fireball only the link's landings": "test_fireball_cues_wiring",
 "start at a cue: an FSEQ Igniter's evidence outlives its shot": "test_start_at_cue_valve_needs_its_igniter_on_the_wire",
 "start at a cue: a shot lost to the Igniter rule is not counted": "test_start_at_cue_same_frame_valve_is_said",
-"start at a cue: a Valve skipped for its Igniter is not a fault line": "test_start_at_cue_same_frame_valve_is_said",
 "fireball timeline: a Valve on its Igniter's frame is not warned about": "test_start_at_cue_same_frame_valve_is_said",
 "fireball timeline: a save with a same-frame Valve says nothing": "test_start_at_cue_same_frame_valve_is_said",
 "ui2 page: the fireball editor never warns about a same-frame Valve": "test_ui2_fireball_timeline_editor",
-"rack screen: the Fireball line never shows the lost shots": "test_start_at_cue_same_frame_valve_is_said"
+"rack screen: the Fireball line never shows the lost shots": "test_start_at_cue_same_frame_valve_is_said",
+"fireball cues: a lost shot is counted though nothing reaches a tank": "test_fireball_soak_show_raises_no_fault",
+"fireball cues: every lost shot is a fault line again (the soak counts them)": "test_fireball_soak_show_raises_no_fault",
+"fireball charge: the soak's flamesafe reads as a fireball that may be reached": "test_fireball_soak_show_raises_no_fault",
+"Stream Deck: a press after the deck's own Stop is sent before its answer": "test_deck_presses_reach_the_engine_conductor",
+"Stream Deck: a Stop is not counted as waiting for its answer": "test_deck_presses_reach_the_engine_conductor"
 }

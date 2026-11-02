@@ -1105,10 +1105,12 @@ only until the FSEQ turns it off, so each shot needs its own.
   Settings) shows this under Valve Open, and a save that has it says so
   (it is still saved). An FSEQ made in xLights with the two starting
   together loses that shot the same way.
-- **Every lost shot is loud.** Each is a fault line in the journal, and
-  the Fireball line on the Morning and Startup page says, per show, "N
+- **Every lost shot is said.** Each is a line in the journal, and the
+  Fireball line on the Morning and Startup page says, per show, "N
   fireball shots skipped: Valve Open needs its Igniter to go out first"
-  for that show's latest play.
+  for that show's latest play. With no fireball group on 55 to 59 in
+  flamesafe (nothing there can reach a tank, as on the bench soak), the
+  Valve is still held but nothing is counted or said.
 
 ### In a show set to Timeline
 
