@@ -2636,6 +2636,26 @@ with the same holds, confirms and refusals.
   flames (flames only; the lasers' tile has its own Disarm lasers); the
   announcements and the wind along the bottom. Tap "Announce" for what
   the announcements do. Run show is the 1.0 Run in Show mode, on the show PC only.
+- 2.0 DAY tab, Fireball, fuel and timed purge: 1.0's Fireball page,
+  its recent refills and its timed purge, the same code and presses.
+  The Fireball step (Startup, only when the show has a fireball group):
+  a pad per channel. Fuel Charge, Air Charge and Purge stay on until
+  pressed again; Valve Open and Igniter are on only while held. While
+  anything is on, the page sends a beat every 100 ms, and the engine and
+  the flame link turn everything off 0.25 s after the last one. Leaving
+  the step or the tab, hiding or closing the page, no contact, signing
+  out and every refusal turn everything off at once; losing focus lets
+  go of Valve Open and Igniter; a Hold does not end it. Nothing comes
+  back on by itself. All off and Disarm Fireball always work; Tanks are
+  empty is for admins. Nothing on this step arms: the Fireball is armed
+  by its own hold to arm. The Fuel step: Refills and notes (amber
+  when there is a fuel warning) shows the warning and Recent refills
+  with Undo (admins; it asks first, and the refill stays in the record
+  marked undone); press it again for the tanks. The Purge step: the
+  timed purge, a preset or Other seconds, and Hold to start (held like a Hold to arm: a tap,
+  letting go early, another step or tab, no contact or signing out fire
+  nothing); once it runs you may let go, it stops by itself, and
+  Stop purge here or in the line at the top ends it now.
 - 2.0 Programming (Schedule tab): 1.0's Programming screen, the same
   presses, on the Schedule tab (there is no room in the header for a tab
   of its own; `/remote2#prog` opens it). On the show PC, the Show file
