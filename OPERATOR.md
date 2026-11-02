@@ -2650,7 +2650,16 @@ with the same holds, confirms and refusals.
   started); the engine checks every rule and says what it refused or
   anything to know. Reload from the file reads it again (changes not saved
   are dropped). Date exceptions in the file are kept as they are; the card
-  says how many. iPads and laptops see tonight's shows only.
+  says how many. Edits not yet saved stay in the form when the screen
+  goes back to SHOW by itself (a new alert, or a minute untouched near a
+  show; typing counts as a touch), and the footer says "Unsaved schedule
+  edits kept"; opening Schedule again never reads the file over them. A
+  save writes the whole schedule: a save from another window or iPad
+  since this one read the file is overwritten, so press Reload from the
+  file first if someone else may have changed it (1.0 is the same). The
+  card's first line is 1.0's state line (STANDBY, On hold, Held after
+  Stop, Checking, Held for an alert). iPads and laptops see tonight's
+  shows only.
 - 2.0 Programming (Schedule tab): 1.0's Programming screen, the same
   presses, on the Schedule tab (there is no room in the header for a tab
   of its own; `/remote2#prog` opens it). On the show PC, the Show file

@@ -684,7 +684,8 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
            engine's Run warning. Its list is 1.0's own code (copied, and
            checked to stay the same by selftest.py). -->
       <div class="card col" id="tn-card">
-        <div class="t"><b>Tonight's shows</b><span id="tn-next">Next: none tonight</span></div>
+        <div class="t"><b>Tonight's shows</b><span id="tn-state"></span></div>
+        <div class="pline" id="tn-next">Next: None tonight</div>
         <div class="pline bad" id="tn-run-warn" role="alert" hidden></div>
         <div id="tonight"></div>
         <div class="pline">Tap a show to see its notes.</div>
@@ -696,7 +697,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
            all the engine's (schedule.py, Remote.schedule_file_save). -->
       <div class="card col" id="sched-edit" hidden>
         <div class="t"><b>Schedule: the show times</b><span>On this machine. Saved to the schedule file and loaded at once; nothing is started by it.</span></div>
-        <div class="pline">The scheduler starts a show at each time below once Run has been pressed. Tonight's list is rebuilt from a save straight away, even after the night has closed. A last show end after midnight is the next morning, on the same night. Anything to know is said when it is saved, and the save stands.</div>
+        <div class="pline">The scheduler starts a show at each time below (once Run has been pressed and the Fire &amp; Ice settings say it performs). Tonight's list is rebuilt from a save straight away, even after the night has closed, and nothing is started by it. Any times work: a last show end after midnight is the next morning, on the same night. Anything to know is said when it is saved, and the save stands. A save writes the whole schedule: a save from another window or iPad since this one read the file is overwritten, so Reload first if someone else may have changed it.</div>
         <div class="segrid">
           <label class="fl"><span>Time zone</span><select class="f" id="se-tz"></select><span class="pline" id="se-tz-now"></span></label>
           <label class="fl"><span>Season starts</span><input class="f" id="se-first" type="date"></label>
@@ -1100,25 +1101,38 @@ function showTab(t){
   TABS.forEach(k => { $("t-" + k).hidden = k !== t; });
   document.querySelectorAll(".tab").forEach(b => { b.classList.toggle("on", b.dataset.tab === t); b.setAttribute("aria-selected", b.dataset.tab === t ? "true" : "false"); });
   if(t === "settings"){ loadUiDefault(); loadPlayFrom(); }
-  if(t === "schedule"){ fbtOpen(); progFiles(); try{ drawProg(stale()); }catch(e){} if(ME && ME.local){ SE_READ = true; loadSchedule(); } }
+  if(t === "schedule"){ fbtOpen(); progFiles(); try{ drawProg(stale()); }catch(e){} if(ME && ME.local && !SE_READ){ SE_READ = true; loadSchedule(); } }
   if(prog) try{ $("t-prog").scrollIntoView(); }catch(e){}
   if(t === "show") layoutGroups();
   $("mini").hidden = t === "show";
 }
 document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => {
   const t = b.dataset.tab;
-  if(t === "show") history.replaceState(null, "", location.pathname + location.search); else location.hash = t;
+  // One showTab per press: a new hash calls it through hashchange.
+  if(t === "show") history.replaceState(null, "", location.pathname + location.search);
+  else if(location.hash !== "#" + t){ location.hash = t; return; }
   showTab(t);
 }));
 window.addEventListener("hashchange", () => showTab((location.hash || "").replace("#", "")));
 document.addEventListener("pointerdown", () => { LAST_TOUCH = Date.now(); }, true);
+// Typing counts as a touch (review of #210): an operator filling in the
+// schedule editor is never sent back to SHOW for not tapping.
+document.addEventListener("keydown", () => { LAST_TOUCH = Date.now(); }, true);
+document.addEventListener("input", () => { LAST_TOUCH = Date.now(); }, true);
+// Back to SHOW by itself (a new alert, or a minute idle near a show). The
+// schedule editor's unsaved edits stay in the form, and it says so.
+function backToShow(){
+  history.replaceState(null, "", location.pathname + location.search);
+  showTab("show");
+  try{ if(seDirty()) say("Unsaved schedule edits kept.", "The screen went back to SHOW. Your schedule edits are not saved yet; they are still on the Schedule tab. Save the schedule there.", "warn"); }catch(e){}
+}
 // Back to SHOW by itself a minute after the last touch on another tab
 // while a show is live or due within two minutes.
 setInterval(() => {
   if(TAB === "show" || !ST || Date.now() - LAST_TOUCH < 60000) return;
   const sch = ST.schedule || {};
   const due = sch.next && typeof sch.next.in_s === "number" && sch.next.in_s <= 120;
-  if(isLive(ST) || due){ history.replaceState(null, "", location.pathname + location.search); showTab("show"); }
+  if(isLive(ST) || due) backToShow();
 }, 5000);
 
 // ---- the engine's state, four times a second (1.0's loop) ----
@@ -1379,7 +1393,7 @@ function renderAlertSlot(){
   if(fresh && !HOLD && !PR_HOLD && !alDownFresh() && items.length) ALERT_KEY = items[0].key;
   // Any new alert brings the screen back to SHOW.
   const all = items.map(i => i.key);
-  if(KEYS_SEEN && all.some(k => !KEYS_SEEN.has(k)) && TAB !== "show"){ history.replaceState(null, "", location.pathname + location.search); showTab("show"); }
+  if(KEYS_SEEN && all.some(k => !KEYS_SEEN.has(k)) && TAB !== "show") backToShow();
   KEYS_SEEN = new Set(all);
   let idx = items.findIndex(i => i.key === ALERT_KEY);
   if(idx < 0){ idx = 0; ALERT_KEY = items.length ? items[0].key : null; }
@@ -2291,7 +2305,35 @@ $("se-save").addEventListener("click", async () => {
 // Tonight's card (1.0's Schedule screen): what is next, 1.0's words, and
 // the engine's Run warning; the editor on the show PC only, read once the
 // screen knows it is the show PC (an address ending #schedule).
-let SE_READ = false;
+let SE_READ = false, SE_BASE = null, SE_BASE_DOC = null;
+// Unsaved edits (review of #210): the form against what it showed when
+// the file was last drawn into it (1.0's drawSchedule sets SCHED_DOC).
+function seBaseline(){
+  if(SCHED_DOC && SCHED_DOC !== SE_BASE_DOC){ SE_BASE_DOC = SCHED_DOC; SE_BASE = JSON.stringify(readSchedule()); }
+}
+function seDirty(){
+  return !!SCHED_DOC && SCHED_DOC === SE_BASE_DOC && JSON.stringify(readSchedule()) !== SE_BASE;
+}
+// 1.0's Schedule screen line: the state word and its sentence (1.0's
+// render, the same words).
+function tonightState(s){
+  const sch = s.schedule || {};
+  let word = "No schedule", label = "No schedule in this engine";
+  if(sch.attached){
+    if(sch.state === "SHOW"){ word = "Show"; label = "Show " + (sch.running || "") + " running"; }
+    else if(sch.held){ word = sch.state === "PAUSED" ? "Paused" : "On hold";
+      label = sch.state === "PAUSED" ? "Held. The show is paused." : "On hold"; }
+    else { word = sch.state || "..."; label = ""; }
+    if(sch.stop_held && sch.state !== "SHOW" && sch.state !== "PAUSED"){
+      word = "On hold"; label = "Held after Stop: press Resume."; }
+    if(sch.error) label += (label ? ". " : "") + sch.error;
+  }
+  const prl = prerollLook(s.preroll);
+  if(prl.checking && sch.attached && sch.state !== "SHOW" && sch.state !== "PAUSED"){ word = prl.word; label = prl.label; }
+  const ah = alertHoldLook(s.alert_hold);
+  if(ah){ word = ah.word; label = ah.label + (sch.error ? " " + sch.error : ""); }
+  return word + (label ? ": " + label : "");
+}
 function tonightNext(sch){
   const nx = sch.next;
   return nx ? ("Show " + nx.show + " at " + nx.start) :
@@ -2299,6 +2341,7 @@ function tonightNext(sch){
 }
 function renderTonight(s){
   const sch = s.schedule || {};
+  setText($("tn-state"), tonightState(s));
   setText($("tn-next"), sch.attached ? "Next: " + tonightNext(sch) : "No schedule in this engine");
   const rw = String(sch.run_warning || "");
   $("tn-run-warn").hidden = !rw; setText($("tn-run-warn"), rw);
@@ -2306,6 +2349,7 @@ function renderTonight(s){
   const local = !!(ME && ME.local);
   if($("sched-edit").hidden !== !local) $("sched-edit").hidden = !local;
   if(local && TAB === "schedule" && !SE_READ){ SE_READ = true; loadSchedule(); }
+  seBaseline();
 }
 // ---- flame groups: 1.0's hold to arm, one button per group ----
 // COPIED FROM 1.0 (selftest.py checks they stay the same, with the Arm all

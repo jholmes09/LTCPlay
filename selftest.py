@@ -112683,9 +112683,13 @@ def test_ui2_schedule_tab_makes_1_0_presses():
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
     i = op.find("- 2.0 Schedule tab:")
     para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
+    for need in ("and the Fire &amp; Ice settings say it performs",
+                 "Any times work:", "is overwritten, so Reload first"):
+        check(need in sched, f"the editor says, as 1.0 does: {need!r}")
     for words in ("tap a show", "Run warning", "show PC only",
                   "Save the schedule", "Reload from the file",
-                  "Late start allowed", "exceptions"):
+                  "Late start allowed", "exceptions",
+                  "Unsaved schedule", "is overwritten"):
         check(words in para, f"OPERATOR.md, 2.0 Schedule tab, says "
                              f"{words!r}")
     _no_dashes(para, "OPERATOR.md, 2.0 Schedule tab")
@@ -112752,9 +112756,13 @@ _UI2_SCHED_JS = r"""
 (function(){
 const posts = [], gets = [];
 const realFetch = window.fetch;
+const tl = [];
 window.fetch = function(u, o){
   if(/schedule-file/.test(String(u)) && !(o && o.method === "POST")) gets.push(String(u));
+  if(/\/api\/timelines/.test(String(u))) tl.push(String(u));
   if(o && o.method === "POST") posts.push({u:String(u), b:JSON.parse(String(o.body || "{}"))});
+  if(window.__mod && /\/api\/remote\/status/.test(String(u)))
+    return realFetch.apply(this, arguments).then(r => r.json()).then(j => { window.__mod(j); return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}}); });
   return realFetch.apply(this, arguments);
 };
 const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -112767,7 +112775,7 @@ function shown(el){
 function look(){
   const ctl = [...document.querySelectorAll("#tn-card .slot, #sched-edit .b, #sched-edit select, #sched-edit input:not([type=checkbox]), #sched-edit label")].filter(shown);
   return {slots:[...document.querySelectorAll("#tonight .slot")].map(e => e.querySelector("b").textContent + " " + e.querySelector(".t").textContent + " " + e.querySelector(".s").textContent + " | " + e.querySelector(".r").textContent),
-    next:q("tn-next").textContent, warn:shown(q("tn-run-warn")) ? q("tn-run-warn").textContent : "",
+    next:q("tn-next").textContent, state:q("tn-state").textContent, tab:TAB, warn:shown(q("tn-run-warn")) ? q("tn-run-warn").textContent : "",
     editor:shown(q("sched-edit")), tz:q("se-tz").value, first:q("se-first").value, last:q("se-last").value,
     len:q("se-len").value, guard:q("se-guard").value, grace:q("se-grace").value,
     days:[...document.querySelectorAll("#se-days [data-day]")].filter(c => c.checked).map(c => c.dataset.day),
@@ -112781,7 +112789,27 @@ async function go(){
   for(let i = 0; i < 80 && !(typeof ST !== "undefined" && ST && ST.schedule); i++) await wait(100);
   if(!/hashopen=1/.test(location.search)) document.querySelector('.tab[data-tab="schedule"]').click();
   await wait(1500);
-  const out = {first:look(), gets:gets.length};
+  const out = {first:look(), gets:gets.length, tl:tl.length};
+  if(/keep=1/.test(location.search)){
+    // Review of #210: unsaved edits survive a return to SHOW (a new
+    // alert), the tab opened again never reloads them away, and the page
+    // says so; Reload is the one way back to the file.
+    q("se-len").value = "777"; q("se-len").dispatchEvent(new Event("input", {bubbles:true}));
+    window.__mod = j => { j.alerts = [{id:99, kind:"deck", text:"Stream Deck: not plugged in.", severity:"fault", since:0, options:["Acknowledge"], booth:"", pulse:false}]; };
+    await wait(1500);
+    out.after_alert = {tab:TAB, say:q("msg-t").textContent};
+    document.querySelector('.tab[data-tab="schedule"]').click(); await wait(800);
+    out.back = {len:q("se-len").value, gets:gets.length};
+    q("se-reload").click(); await wait(600);
+    out.reloaded = {len:q("se-len").value, gets:gets.length};
+    // Typing counts as a touch: a show due within 2 minutes, a minute and
+    // more of typing, still on Schedule; then a minute untouched: SHOW.
+    window.__mod = j => { j.alerts = [{id:99, kind:"deck", text:"Stream Deck: not plugged in.", severity:"fault", since:0, options:["Acknowledge"], booth:"", pulse:false}]; j.schedule.next = {show:5, start:"19:50", in_s:90}; };
+    for(let i = 0; i < 8; i++){ await wait(10000); q("se-guard").dispatchEvent(new KeyboardEvent("keydown", {key:"5", bubbles:true})); }
+    out.typing_tab = TAB;
+    await wait(70000);
+    out.idle_tab = TAB;
+  }
   if(/presses=1/.test(location.search)){
     const slot = () => document.querySelectorAll("#tonight .slot")[2];
     const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:1, clientX:10, clientY:10};
@@ -112840,12 +112868,13 @@ def test_ui2_schedule_tab_in_a_browser():
     answers = {"/api/remote/schedule-file": {
         "ok": True, "text": "Saved. Tonight's list was rebuilt."}}
     for frag, sizes in (("?tour=0&presses=1", ((1366, 768),)),
+                        ("?tour=0&keep=1", ((1366, 768),)),
                         ("?tour=0&hashopen=1#schedule",
                          ((1024, 768), (390, 844)))):
         got = _rack_screen_in_chromium(chrome, page, _ui2_status_tonight(),
                                        sizes, measure_js=_UI2_SCHED_JS,
                                        frag=frag, routes=routes,
-                                       posts=answers, budget_ms=60000)
+                                       posts=answers, budget_ms=200000)
         for (w, h), r in got.items():
             where = f"2.0 Schedule tab, {w}x{h} {frag}"
             if not check(isinstance(r, dict) and "first" in r,
@@ -112873,8 +112902,32 @@ def test_ui2_schedule_tab_in_a_browser():
                   f"schedule-file: {a}")
             check(not a["small"] and not a["off"] and a["xscroll"] <= 0,
                   f"{where}: 56 px targets, nothing off the side: {a}")
+            check(a["state"] == "STANDBY",
+                  f"{where}: 1.0's state line on the tonight card: "
+                  f"{a['state']!r}")
+            if "keep=1" in frag:
+                check(r["after_alert"] == {
+                        "tab": "show", "say": "Unsaved schedule edits kept."},
+                      f"{where}: a new alert sends the page to SHOW and says "
+                      f"the unsaved edits are kept: {r['after_alert']}")
+                check(r["back"] == {"len": "777", "gets": r["gets"]},
+                      f"{where}: Schedule opened again: the edit is still "
+                      f"there, the file is not read again: {r['back']}")
+                check(r["reloaded"] == {"len": "900",
+                                        "gets": r["gets"] + 1},
+                      f"{where}: Reload reads the file and drops the edit: "
+                      f"{r['reloaded']}")
+                check(r["typing_tab"] == "schedule" and
+                      r["idle_tab"] == "show",
+                      f"{where}: typing counts as a touch near a show; a "
+                      f"minute untouched goes back to SHOW: "
+                      f"{r['typing_tab']} {r['idle_tab']}")
+                continue
             if "presses=1" not in frag:
                 continue
+            check(r["gets"] == 1 and r["tl"] == 1,
+                  f"{where}: one tap on Schedule reads the schedule file "
+                  f"and the show files once each: {r['gets']} {r['tl']}")
             check(r["open"].endswith("| No notes for this show.") and
                   r["closed"].endswith("| "),
                   f"{where}: a tap opens a show's notes and closes them: "

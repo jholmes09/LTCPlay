@@ -23311,6 +23311,31 @@ def build():
 
 
  # interface 2.0's Schedule tab (P3, P4 of docs/REMOVE_1_0_PLAN.md)
+ ("ui 2.0 Schedule: opening the tab again reloads the file over unsaved edits",
+  "ltcplay/web/remote2.html",
+  "if(ME && ME.local && !SE_READ){ SE_READ = true; loadSchedule(); } }",
+  "if(ME && ME.local){ SE_READ = true; loadSchedule(); } }"),
+
+ ("ui 2.0 Schedule: a tab press opens the tab twice (two reads)",
+  "ltcplay/web/remote2.html",
+  "  else if(location.hash !== \"#\" + t){ location.hash = t; return; }\n",
+  "  else if(location.hash !== \"#\" + t){ location.hash = t; }\n"),
+
+ ("ui 2.0 Schedule: typing is not a touch, so the page leaves a form being typed in",
+  "ltcplay/web/remote2.html",
+  "document.addEventListener(\"keydown\", () => { LAST_TOUCH = Date.now(); }, true);\n",
+  ""),
+
+ ("ui 2.0 Schedule: going back to SHOW says nothing of unsaved edits",
+  "ltcplay/web/remote2.html",
+  "  try{ if(seDirty()) say(\"Unsaved schedule edits kept.\",",
+  "  try{ if(false) say(\"Unsaved schedule edits kept.\","),
+
+ ("ui 2.0 Schedule: the tonight card has no state line",
+  "ltcplay/web/remote2.html",
+  "  setText($(\"tn-state\"), tonightState(s));\n",
+  ""),
+
  ("ui 2.0 Schedule: the Run warning is not shown",
   "ltcplay/web/remote2.html",
   "  $(\"tn-run-warn\").hidden = !rw; setText($(\"tn-run-warn\"), rw);",
