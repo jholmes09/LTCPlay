@@ -3048,6 +3048,48 @@ MUTATIONS = [
   "        if isinstance(v, bool) or not isinstance(v, int) or v < PUMP_MIN_S:",
   "        if False:"),
 
+ # review of #209: a Resume or Start now that waited is sent only if
+ # nothing changed (a Stop or Hold since always wins)
+ ("ui 2.0 cue: a Resume read slowly is sent after a Hold or a Stop",
+  "ltcplay/web/remote2.html",
+  "    if(read && !tapStill(mk, true)){",
+  "    if(false){"),
+
+ ("ui 2.0 cue: this page's Stop and Hold are not counted against a waiting press",
+  "ltcplay/web/remote2.html",
+  "  if(HALT_BUSY || HALT_SEQ !== mk.seq || schedSig(ST) !== mk.sig) return false;",
+  "  if(HALT_BUSY) return false;"),
+
+ ("ui 2.0 cue: a Hold press is not counted",
+  "ltcplay/web/remote2.html",
+  "  if(route === \"hold\") HALT_SEQ++;\n",
+  ""),
+
+ ("ui 2.0 cue: a cue list that came too late still sends Resume",
+  "ltcplay/web/remote2.html",
+  "  if(quick && Date.now() - mk.at > CUE_READ_MAX_MS) return false;\n",
+  ""),
+
+ ("ui 2.0 cue: Resume offers the cues after any Hold, not only a Stop's",
+  "ltcplay/web/remote2.html",
+  "  const read = sh && !isLive(ST);",
+  "  const read = !isLive(ST);"),
+
+ ("ui 2.0 cue: an offer with no show number says show null",
+  "ltcplay/web/remote2.html",
+  "o && o.show !== null && o.show !== undefined && o.show !== \"\" ? \"show \" + o.show : \"the show\"",
+  "o ? \"show \" + o.show : \"the show\""),
+
+ ("ui 2.0 cue: the landing rounds the lead-in instead of the engine's int()",
+  "ltcplay/web/remote2.html",
+  "Math.trunc(Number(c.lead_in_s) || 0) * 30));",
+  "Math.round(Number(c.lead_in_s) || 0) * 30));"),
+
+ ("ui 2.0 Programming: a late answer paints over a newer one",
+  "ltcplay/web/remote2.html",
+  "  if(n !== P_SAID) return j;\n",
+  ""),
+
  # interface 2.0's Resume sheet (play-from cues part 3): start at a cue
  ("ui 2.0 cue: Start at a cue goes with no question",
   "ltcplay/web/remote2.html",
@@ -3056,7 +3098,7 @@ MUTATIONS = [
 
  ("ui 2.0 cue: a cue starts after the show changed under the question",
   "ltcplay/web/remote2.html",
-  "  if(HALT_BUSY || goLook(ST, false, !!(ME && ME.local), START_WAITING).mode !== mode || cueFile(ST) !== file){",
+  "  if(!tapStill(mk, false) || cueFile(ST) !== file){",
   "  if(false){"),
 
  ("ui 2.0 cue: Resume's offer is made from a cue retimed since",
@@ -3081,7 +3123,7 @@ MUTATIONS = [
 
  ("ui 2.0 cue: the landing said ignores the lead-in",
   "ltcplay/web/remote2.html",
-  "  return pfTc(Math.max(0, pfFrames(c.tc) - Math.round(Number(c.lead_in_s) || 0) * 30));",
+  "  return pfTc(Math.max(0, pfFrames(c.tc) - Math.trunc(Number(c.lead_in_s) || 0) * 30));",
   "  return pfTc(Math.max(0, pfFrames(c.tc)));"),
 
  ("ui 2.0 cue: Resume never offers the cue",
@@ -3091,7 +3133,7 @@ MUTATIONS = [
 
  ("ui 2.0 cue: the sheet's plain Resume does nothing",
   "ltcplay/web/remote2.html",
-  "    if(goLook(ST, stale(), !!(ME && ME.local), START_WAITING).mode !== \"resume\"){ say(\"The show changed. Nothing done.\", \"The show changed while you answered, so nothing was done.\", \"warn\"); return; }\n    return press(\"resume\");",
+  "    if(!tapStill(mk, false)){ say(\"The show changed. Nothing done.\", \"The show changed while you answered, so nothing was done.\", \"warn\"); return; }\n    return press(\"resume\");",
   "    return;"),
 
  ("ui 2.0 cue: Start now never offers From a cue",

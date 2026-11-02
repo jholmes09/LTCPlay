@@ -2037,8 +2037,15 @@ refuses too.
   the one press and the one question they always were. The cue list is
   read when you press, from the saved list, never from this screen's
   memory; if the show changes while a question is up, nothing starts and
-  the footer says so. Not offered in Programming, and not to someone
-  signed out.
+  the footer says so. Resume offers the cues only while a Stop's Hold
+  stands; after any other Hold (yours, an alert's, an announcement's)
+  Resume is the one press it always was. If a Stop or a Hold is pressed
+  while the list is being read, or the list takes more than about 1.5 s
+  to come, Resume sends nothing and says so: look, then press it again.
+  Not offered in Programming, not to someone signed out, and not on an
+  iPad or laptop when no users are set up (the cue list is read by the
+  show PC only then): there Resume and Start now are the plain press and
+  question.
 
 - **Who:** anyone who may press Start now (the Show row: operators and
   admins, signed in). Like Start now it needs a page that is up to date

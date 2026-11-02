@@ -681,22 +681,22 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <div class="pline warn" id="p-why" hidden></div>
           <div class="ptc" id="p-tc">--:--:--:--</div>
           <div class="pbar"><input class="f" id="p-at" placeholder="00:01:30:00" inputmode="text" autocomplete="off" aria-label="Play from: a timecode or a cue name">
-            <button class="b green" id="p-play" data-tr><svg class="i"><use href="#i-play"/></svg>Play from</button></div>
+            <button class="b green" id="p-play" data-tr disabled><svg class="i"><use href="#i-play"/></svg>Play from</button></div>
           <div class="pgrid">
-            <button class="b" data-tr data-jump="-10"><svg class="i"><use href="#i-left"/></svg>Back 10 s</button>
-            <button class="b" data-tr data-jump="-5"><svg class="i"><use href="#i-left"/></svg>Back 5 s</button>
-            <button class="b" data-tr data-jump="5"><svg class="i"><use href="#i-right"/></svg>Ahead 5 s</button>
-            <button class="b" data-tr data-jump="10"><svg class="i"><use href="#i-right"/></svg>Ahead 10 s</button>
+            <button class="b" data-tr disabled data-jump="-10"><svg class="i"><use href="#i-left"/></svg>Back 10 s</button>
+            <button class="b" data-tr disabled data-jump="-5"><svg class="i"><use href="#i-left"/></svg>Back 5 s</button>
+            <button class="b" data-tr disabled data-jump="5"><svg class="i"><use href="#i-right"/></svg>Ahead 5 s</button>
+            <button class="b" data-tr disabled data-jump="10"><svg class="i"><use href="#i-right"/></svg>Ahead 10 s</button>
           </div>
           <div class="pgrid">
-            <button data-safe class="b amber" id="p-pause" data-tr><svg class="i"><use href="#i-pause"/></svg>Pause</button>
-            <button class="b green" id="p-cont" data-tr><svg class="i"><use href="#i-play"/></svg>Continue</button>
+            <button data-safe class="b amber" id="p-pause" data-tr disabled><svg class="i"><use href="#i-pause"/></svg>Pause</button>
+            <button class="b green" id="p-cont" data-tr disabled><svg class="i"><use href="#i-play"/></svg>Continue</button>
           </div>
           <div class="pgrid">
-            <button class="b" id="p-a" data-tr><svg class="i"><use href="#i-check"/></svg>Set A</button>
-            <button class="b" id="p-b" data-tr><svg class="i"><use href="#i-check"/></svg>Set B</button>
-            <button class="b" id="p-loop" data-tr><svg class="i"><use href="#i-reset"/></svg><span id="p-loop-l">Loop on</span></button>
-            <button class="b" id="p-follow" data-tr><svg class="i"><use href="#i-clock"/></svg><span id="p-follow-l">Follow timecode again</span></button>
+            <button class="b" id="p-a" data-tr disabled><svg class="i"><use href="#i-check"/></svg>Set A</button>
+            <button class="b" id="p-b" data-tr disabled><svg class="i"><use href="#i-check"/></svg>Set B</button>
+            <button class="b" id="p-loop" data-tr disabled><svg class="i"><use href="#i-reset"/></svg><span id="p-loop-l">Loop on</span></button>
+            <button class="b" id="p-follow" data-tr disabled><svg class="i"><use href="#i-clock"/></svg><span id="p-follow-l">Follow timecode again</span></button>
           </div>
           <!-- The show's flame cues follow Programming playback (no switch:
                Jeff, 2026-10-29): 1.0's line, and a flame cue fault in full. -->
@@ -1680,15 +1680,16 @@ async function startNow(){
   // 1.0's Start now: its confirm (Yes on the other side from Stop's), its
   // body, its wait for the show audio. With saved cues for the show file
   // running (Show mode), the same question also offers From a cue.
+  const mk = tapMark("start");
   const got = await cueRead("start");
   if(got && got.ch){
     const v = await sheet("Start the next show now?", `<div>It starts now, or an extra show. Or start it part way, from a saved cue.</div>`,
       [{label:"Cancel", value:false, safe:true}, {label:"From a cue", value:"pick", cls:"blue"}, {label:"Yes, start now", value:true, cls:"green"}], true);
-    if(v === "pick") return cuePick(got, "start");
+    if(v === "pick") return cuePick(got, mk);
     if(v !== true) return;
   }
   else if(!(await confirmBox("Start the next show now?", "It starts now, or an extra show.", "Yes, start now", "green", true))) return;
-  if(HALT_BUSY || goLook(ST, false, !!(ME && ME.local), START_WAITING).mode !== "start"){ say("The show changed. Nothing started.", "The show changed while you answered, so nothing was started.", "warn"); return; }
+  if(!tapStill(mk, false)){ say("The show changed. Nothing started.", "The show changed while you answered, so nothing was started.", "warn"); return; }
   const loading = !!(ST && ST.schedule && ST.schedule.start_blocked && ST.schedule.start_blocked.loading);
   START_WAITING = loading;
   if(loading) say("Starting when the show audio loads.", "Waiting for the show audio to load; the show starts when it is ready. Hold or Stop cancels it.", "ok");
@@ -1703,6 +1704,25 @@ async function startNow(){
 // last show stopped (the engine's play-from-cues `resume`), and any saved
 // cue can be picked. The engine reads the cue from the saved list of the
 // show file running, and refuses a cue changed since this screen read it.
+// What a tap on the big button saw (review of #209): its mode, the
+// schedule's state, and this page's own Stop and Hold presses (HALT_SEQ).
+// A Resume or Start now that waits for the cue list (up to 3 s) or for an
+// answer is sent only if none of that changed since: a Stop or a Hold
+// pressed meanwhile, here or on another screen, always wins. With no
+// question asked, the list must also have come within CUE_READ_MAX_MS, so
+// a slow answer never sends a press the operator has stopped waiting for.
+let HALT_SEQ = 0;
+const CUE_READ_MAX_MS = 1500;
+function schedSig(st){
+  const s = (st && st.schedule) || {};
+  return [s.state, !!s.held, !!s.stop_held, s.running || null, !!s.lit, !!(st && st.alert_hold && st.alert_hold.held)].join("|");
+}
+function tapMark(mode){ return {mode:mode, seq:HALT_SEQ, at:Date.now(), sig:schedSig(ST)}; }
+function tapStill(mk, quick){
+  if(HALT_BUSY || HALT_SEQ !== mk.seq || schedSig(ST) !== mk.sig) return false;
+  if(quick && Date.now() - mk.at > CUE_READ_MAX_MS) return false;
+  return goLook(ST, stale(), !!(ME && ME.local), START_WAITING).mode === mk.mode;
+}
 // The show file running, in Show mode; "" in a rehearsal or with no Run.
 function cueFile(st){
   const show = (st && st.show) || {};
@@ -1724,7 +1744,7 @@ function cueChoices(got, file, mode){
 // Where a start at `c` plays from: its time less its lead-in, never
 // before the top (play_from.landing_frames). Pure.
 function cueLanding(c){
-  return pfTc(Math.max(0, pfFrames(c.tc) - Math.round(Number(c.lead_in_s) || 0) * 30));
+  return pfTc(Math.max(0, pfFrames(c.tc) - Math.trunc(Number(c.lead_in_s) || 0) * 30));
 }
 function cueWords(c){
   return c.name + " at " + c.tc + ", played from " + cueLanding(c) + " with its " + c.lead_in_s + " s lead-in";
@@ -1739,9 +1759,9 @@ async function cueRead(mode){
 }
 // The start itself, after its confirm (Start now's: Yes on the other
 // side from Stop's), only if nothing changed while the question was up.
-async function cueStart(c, file, title, mode){
+async function cueStart(c, file, title, mk){
   if(!(await confirmBox(title + "?", "The show starts now, part way: " + cueWords(c) + ". It is an extra show, like Start now; the rig check runs first, and Stop wins at any moment.", "Yes, start", "green", true))) return;
-  if(HALT_BUSY || goLook(ST, false, !!(ME && ME.local), START_WAITING).mode !== mode || cueFile(ST) !== file){
+  if(!tapStill(mk, false) || cueFile(ST) !== file){
     say("The show changed. Nothing started.", "The show changed while you answered, so nothing was started.", "warn"); return;
   }
   const loading = !!(ST && ST.schedule && ST.schedule.start_blocked && ST.schedule.start_blocked.loading);
@@ -1751,29 +1771,38 @@ async function cueStart(c, file, title, mode){
   finally{ START_WAITING = false; try{ drawTransport(false); }catch(e){} }
 }
 // Any saved cue: one button each, then the confirm.
-async function cuePick(got, mode){
+async function cuePick(got, mk){
   const v = await sheet("Start from a cue", `<div>Saved cues of ${esc(got.file)}. The show starts part way, at the cue less its lead-in.</div>`,
     [{label:"Cancel", value:false, safe:true}].concat(got.ch.cues.map((c, i) => ({label:c.name + " " + c.tc, value:i, cls:"blue"}))));
   if(typeof v !== "number") return;
   const c = got.ch.cues[v];
-  return cueStart(c, got.file, "Start at the cue " + c.name, mode);
+  return cueStart(c, got.file, "Start at the cue " + c.name, mk);
 }
 // Resume (Jeff, 2026-10-31: Resume offers the previous cue): with saved
 // cues for the show file running and no show live, a sheet: Resume as
 // always, the engine's offer, or another cue. Without, the plain Resume.
 async function resumeOrCue(){
-  const got = isLive(ST) ? null : await cueRead("resume");
-  if(!got || !got.ch) return press("resume");
-  const o = got.ch.offer;
-  const v = await sheet("Resume", `<div>${o ? esc("Show " + o.show + " stopped at " + o.at + ". ") : ""}Resume carries on the schedule. Or start the show again part way, from a saved cue, as an extra show.</div>`,
-    [{label:"Cancel", value:false, safe:true}, {label:"Another cue", value:"pick", cls:"blue"}, {label:"Resume", value:"resume", cls:"green"}]
-      .concat(o ? [{label:"Resume show " + o.show + " from " + o.cue.name, value:"offer", cls:"green"}] : []));
-  if(v === "resume"){
-    if(goLook(ST, stale(), !!(ME && ME.local), START_WAITING).mode !== "resume"){ say("The show changed. Nothing done.", "The show changed while you answered, so nothing was done.", "warn"); return; }
+  const mk = tapMark("resume");
+  // Only while a Stop's Hold stands (OPERATOR.md, Start at a cue): any
+  // other Hold resumes as it always did.
+  const sh = !!(ST && ST.schedule && ST.schedule.stop_held);
+  const read = sh && !isLive(ST);
+  const got = read ? await cueRead("resume") : null;
+  if(!got || !got.ch){
+    if(read && !tapStill(mk, true)){ say("The show changed. Nothing done.", "Resume was not sent: the show changed, or a Stop or Hold was pressed, while the saved cues were read. Look, then press Resume again.", "warn"); return; }
     return press("resume");
   }
-  if(v === "offer") return cueStart(o.cue, got.file, "Resume show " + o.show + " from " + o.cue.name, "resume");
-  if(v === "pick") return cuePick(got, "resume");
+  const o = got.ch.offer;
+  const who = o && o.show !== null && o.show !== undefined && o.show !== "" ? "show " + o.show : "the show";
+  const v = await sheet("Resume", `<div>${o ? esc(who.charAt(0).toUpperCase() + who.slice(1) + " stopped at " + o.at + ". ") : ""}Resume carries on the schedule. Or start the show again part way, from a saved cue, as an extra show.</div>`,
+    [{label:"Cancel", value:false, safe:true}, {label:"Another cue", value:"pick", cls:"blue"}, {label:"Resume", value:"resume", cls:"green"}]
+      .concat(o ? [{label:"Resume " + who + " from " + o.cue.name, value:"offer", cls:"green"}] : []));
+  if(v === "resume"){
+    if(!tapStill(mk, false)){ say("The show changed. Nothing done.", "The show changed while you answered, so nothing was done.", "warn"); return; }
+    return press("resume");
+  }
+  if(v === "offer") return cueStart(o.cue, got.file, "Resume " + who + " from " + o.cue.name, mk);
+  if(v === "pick") return cuePick(got, mk);
 }
 // Run: 1.0's Run in Show mode, on the show machine only: the show file
 // 1.0's picker would hold (the engine's selection, else the first), the
@@ -1796,6 +1825,7 @@ $("b-hold").addEventListener("click", () => press("hold"));
 // Stop: the engine's complete halt (1.0's pressStop): the same body, the
 // same answer read the same way. No confirm: the double tap is its guard.
 async function pressStop(route){
+  HALT_SEQ++;
   if(HALT_BUSY) return;
   HALT_BUSY = true;
   say("Stopping...", "Stopping: disarming, then fading to dark...", "warn");
@@ -1841,6 +1871,7 @@ $("b-runoff").addEventListener("click", async () => {
 const PRESS_SAID = {"hold":"Held.", "resume":"Resumed.", "start-now":"Starting.",
   "disarm-all":"Every flame group disarmed.", "group-disarm":"Disarmed."};
 async function press(route, extra){
+  if(route === "hold") HALT_SEQ++;
   let j = null;
   try{
     j = await post("/api/remote/" + route, actor(extra));
@@ -1910,7 +1941,7 @@ async function progFiles(){
     if(sel.dataset.html !== html){ sel.dataset.html = html; sel.innerHTML = html; if(cur && ok.includes(cur)) sel.value = cur; }
     const pick = ST && ST.selected_show;
     if(pick && ok.includes(pick) && !P_PICKED) sel.value = pick;
-  }catch(e){ say("Show files not readable.", e.message, "bad"); }
+  }catch(e){}   // silent, as 1.0's loadShowFiles: read again in 5 s
 }
 $("p-file").addEventListener("change", () => {
   P_PICKED = true;
@@ -1999,8 +2030,12 @@ function drawProg(isSt){
   $("p-pf-warn").hidden = !pf.warn; setText($("p-pf-warn"), pf.warn);
 }
 // A Programming press: 1.0's press(), its answer also in the card.
+let P_SAID = 0;
 async function progSaid(pr){
+  // Numbered: a late answer never paints over a newer press's answer.
+  const n = ++P_SAID;
   const j = await pr;
+  if(n !== P_SAID) return j;
   setText($("p-msg"), j ? String(j.text || "Done.") : (MSG_FULL || $("msg-t").textContent));
   return j;
 }

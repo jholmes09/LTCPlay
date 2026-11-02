@@ -110239,7 +110239,7 @@ def test_ui2_resume_from_a_cue():
           "lead-in and confirmed (2.0's own route: 1.0 has no button for "
           "it)")
     cs = _js_function(two, "cueStart") or ""
-    check(0 < cs.find("confirmBox(") < cs.find("goLook(ST, false") <
+    check(0 < cs.find("confirmBox(") < cs.find("tapStill(mk, false)") <
           cs.find('press("start-at-cue"'),
           "the start asks first, then checks nothing changed, then posts")
     check(two.count("cueRead(") == 3 and
@@ -110299,6 +110299,7 @@ t(cueChoices(null, F, "resume") === null, "no answer: nothing");
 t(cueChoices(got({entry:{cues:[{id:"c9", name:"x", tc:"bad", lead_in_s:2}, c1]}}), F, "start").cues.length === 1, "a cue with no readable time is never offered");
 t(cueLanding(c2) === "00:08:09:00", "Finale at 00:08:12:00, 3 s lead-in: played from 00:08:09:00: " + cueLanding(c2));
 t(cueLanding({tc:"00:00:01:00", lead_in_s:2}) === "00:00:00:00", "never before the top");
+t(cueLanding({tc:"00:00:10:00", lead_in_s:2.6}) === "00:00:08:00", "the lead-in in whole seconds, cut as the engine's int() cuts: " + cueLanding({tc:"00:00:10:00", lead_in_s:2.6}));
 console.log(JSON.stringify(out));
 """
     r = _node_js(node, js, capture_output=True, text=True, timeout=60)
@@ -110332,7 +110333,11 @@ const C2 = {id:"c2", name:"Finale", tc:"00:08:12:00", lead_in_s:3, note:""};
 window.__cues = {show:"Fire and Ice.json", error:"", entry:{cue:"Show", cues:[C1, C2]}, resume:{show:4, stopped_at:"00:08:20:05", cue:C2}};
 const J = (o) => Promise.resolve(new Response(JSON.stringify(o), {status:200, headers:{"Content-Type":"application/json"}}));
 window.fetch = function(u, o){
-  if(/play-from-cues\?show=/.test(String(u))){ gets.push(decodeURIComponent(String(u).split("show=")[1])); return J(window.__cues || {}); }
+  if(/play-from-cues\?show=/.test(String(u))){
+    gets.push(decodeURIComponent(String(u).split("show=")[1]));
+    const ans = window.__cues || {};
+    return window.__hang ? new Promise(r => setTimeout(() => r(J(ans)), window.__hang)) : J(ans);
+  }
   if(window.__mod && /\/api\/remote\/status/.test(String(u)))
     return realFetch.apply(this, arguments).then(r => r.json()).then(j => { window.__mod(j); return J(j); });
   if(o && o.method === "POST") posts.push({u:String(u), b:JSON.parse(String(o.body || "{}"))});
@@ -110383,6 +110388,23 @@ async function go(){
   window.__cues = {show:"Fire and Ice.json", error:"", entry:{cues:[]}, resume:null};
   window.__mod = null; await wait(1600);
   posts.length = 0; await tap(); out.none = {sheet:sheetLook().open, posts:bodies(), go:q("go-l").textContent};
+  // Review of #209: a Hold pressed while the list is read wins: Resume is
+  // not sent.
+  window.__hang = 1000; await wait(2600); posts.length = 0;
+  q("b-go").click(); await wait(300); q("b-hold").click(); await wait(1500);
+  out.hold_during = bodies(); out.hold_during_say = q("msg-t").textContent;
+  // A list that comes too late (over 1.5 s): nothing is sent.
+  window.__hang = 2200; await wait(2600); posts.length = 0;
+  q("b-go").click(); await wait(2800); out.slow = bodies();
+  window.__hang = 0;
+  // Any other Hold (not a Stop's): Resume at once, the list never read.
+  window.__mod = j => { j.schedule.stop_held = false; }; await wait(2600);
+  let g0 = gets.length; posts.length = 0; await tap();
+  out.plain_hold = {posts:bodies(), read:gets.length - g0, sheet:sheetLook().open};
+  // The engine's offer with no show number.
+  window.__mod = null;
+  window.__cues = {show:"Fire and Ice.json", error:"", entry:{cue:"Show", cues:[C1, C2]}, resume:{show:null, stopped_at:"00:08:20:05", cue:C2}};
+  await wait(2600); await tap(); out.noshow = sheetLook(); await pick("Cancel");
   out.gets = gets;
   const pre = document.createElement("pre"); pre.id = "rack-measure";
   pre.textContent = JSON.stringify(out);
@@ -110469,6 +110491,21 @@ def test_ui2_resume_from_a_cue_in_a_browser():
           f"Start now, From a cue: start-at-cue: {r['start_pick']}")
     check(not r["none"]["sheet"] and r["none"]["posts"] == [["resume", {}]],
           f"no saved cues: Resume is one press: {r['none']}")
+    check(r["hold_during"] == [["hold", {}]] and
+          r["hold_during_say"] == "The show changed. Nothing done.",
+          f"a Hold pressed while the cues are read: Resume is not sent "
+          f"(review of #209): {r['hold_during']} {r['hold_during_say']!r}")
+    check(r["slow"] == [],
+          f"a cue list that comes after 1.5 s: Resume is not sent: "
+          f"{r['slow']}")
+    check(r["plain_hold"] == {"posts": [["resume", {}]], "read": 0,
+                              "sheet": False},
+          f"a Hold that is not a Stop's: Resume at once, no list read: "
+          f"{r['plain_hold']}")
+    check("Resume the show from Finale" in r["noshow"]["btns"] and
+          "null" not in " ".join(r["noshow"]["btns"]) + r["noshow"]["body"]
+          and "The show stopped at 00:08:20:05." in r["noshow"]["body"],
+          f"an offer with no show number says the show: {r['noshow']}")
     print("  ok")
 
 # ---------------------------------------------------------------------------
@@ -112097,6 +112134,9 @@ def test_ui2_programming_tab_makes_1_0_presses():
                  'id="p-follow" data-tr', 'id="p-pf-line" hidden',
                  'id="p-pf-warn" role="alert" hidden'):
         check(need in pane, f"the Programming cards have {need}")
+    check(pane.count(" data-tr disabled") == 11,
+          "each session control starts disabled, until the first status "
+          "says it may be pressed")
     check(pane.count(" data-tr") == 11,
           f"11 session controls follow 1.0's transport rule: "
           f"{pane.count(' data-tr')}")
@@ -112262,6 +112302,10 @@ window.fetch = function(u, o){
       return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}});
     });
   if(o && o.method === "POST") posts.push({u:String(u), b:JSON.parse(String(o.body || "{}"))});
+  if(window.__slow && o && o.method === "POST" && window.__slow.test(String(u))){
+    const a = arguments, self = this;
+    return new Promise(r => setTimeout(() => r(realFetch.apply(self, a)), 700));
+  }
   return realFetch.apply(this, arguments);
 };
 const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -112314,6 +112358,14 @@ async function go(){
     for(const id of ["p-pause", "p-cont", "p-a", "p-b", "p-loop", "p-follow"]){ q(id).click(); await wait(150); }
     await wait(300);
     out.presses = bodies(); out.after = look();
+    // Every press carries the status it acted on (seen), as 1.0's.
+    out.seen = posts.length > 0 && posts.every(p => typeof p.b.seen === "number");
+    // A late answer never paints over a newer press's answer.
+    window.__slow = /\/jump/;
+    document.querySelector('#t-prog [data-jump="-10"]').click(); await wait(100);
+    q("p-pause").click(); await wait(1300);
+    window.__slow = null;
+    out.order = q("p-msg").textContent;
     // Loop on: its press turns it off; the show audio playing: Stop the show audio.
     window.__mod = j => { j.transport.loop = ["00:01:00:00", "00:02:00:00"]; j.transport.playing = true; };
     await settle(); posts.length = 0;
@@ -112467,6 +112519,12 @@ def test_ui2_programming_tab_in_a_browser():
                         ["follow", {}]],
                       f"{where}: each control posts 1.0's body: "
                       f"{r['presses']}")
+                check(r["seen"] is True,
+                      f"{where}: every press sends the status it acted on "
+                      f"(seen), as 1.0's press")
+                check(r["order"] == "Done.",
+                      f"{where}: a late answer (Back 10 s) never paints "
+                      f"over the newer press's (Pause): {r['order']!r}")
                 check(r["after"]["msg"] in ("Done.",
                                             "Jumped to 00:00:52:10."),
                       f"{where}: the answer is said in the card: "
