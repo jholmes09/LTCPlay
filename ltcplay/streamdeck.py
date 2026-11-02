@@ -1426,6 +1426,13 @@ class EngineConductor:
         self._aq = queue.Queue(maxsize=ENGINE_QUEUE_MAX)
         self._stop = threading.Event()
         self._threads = []
+        # The deck's own Stops still waiting for the engine's answer: a
+        # press queued after a Stop waits for it (STOP_ANSWER_WAIT_S at
+        # most), so a Resume pressed right after the Stop is not refused
+        # because that Stop's halt is still under way (the engine refuses
+        # Resume then). Stop itself never waits for anything.
+        self._stops = 0
+        self._stops_cv = threading.Condition()
         self.dropped = 0
         self.alert_delivered = None   # the last alert raise: None, False, True
         # The last press the engine did not take (or could not be reached
@@ -1530,8 +1537,10 @@ class EngineConductor:
         if name == "stop":
             # Stop never waits behind another press (review of #130, 7; as
             # the removed Abort did, fix round 2, D): a thread of its own,
-            # at once.
-            threading.Thread(target=self._post_one,
+            # at once. Presses queued after it wait for its answer.
+            with self._stops_cv:
+                self._stops += 1
+            threading.Thread(target=self._post_stop,
                              args=(name, body, path), daemon=True,
                              name="ltcplay-deck-engine-stop").start()
             return EngineResult(True, "Stop sent to the engine at once; "
@@ -1550,11 +1559,38 @@ class EngineConductor:
                                   f"conductor; the engine's journal says "
                                   f"what it did.")
 
+    # How long a press queued after the deck's own Stop waits for that
+    # Stop's answer (the engine's halt and its fade, HALT_FADE_WAIT_S, with
+    # room to spare) before it is sent anyway.
+    STOP_ANSWER_WAIT_S = 10.0
+
+    def _post_stop(self, name, body, path):
+        try:
+            self._post_one(name, body, path)
+        finally:
+            with self._stops_cv:
+                self._stops -= 1
+                self._stops_cv.notify_all()
+
+    def _after_stops(self):
+        """Wait until no Stop of this deck is waiting for its answer, at
+        most STOP_ANSWER_WAIT_S. Never raises."""
+        end = time.monotonic() + self.STOP_ANSWER_WAIT_S
+        with self._stops_cv:
+            while self._stops > 0 and not self._stop.is_set():
+                left = end - time.monotonic()
+                if left <= 0:
+                    return
+                self._stops_cv.wait(min(left, 0.1))
+
     def _post_loop(self):
         while not self._stop.is_set():
             item = self._q.get()
             if item is None:
                 return
+            # A Resume (or any press) after this deck's own Stop is sent
+            # once the engine has answered that Stop.
+            self._after_stops()
             self._post_one(*item)
 
     def _announce_loop(self):
