@@ -48,6 +48,12 @@ def _self_check():
     if not os.path.isfile(page):
         raise RuntimeError(f"the show page is missing: {page}")
     yield "show page present"
+    # Both rack screens as served carry the shared rules (web/
+    # remote_rules.js): an installed app without the file fails here.
+    why = web.rules_self_check()
+    if why:
+        raise RuntimeError(why)
+    yield "rack screen rules present (/remote and /remote2)"
     icons = sorted({name for name, _ in web.ICONS.values()})
     missing = [n for n in icons
                if not os.path.isfile(os.path.join(web.ICONS_DIR, n)) or

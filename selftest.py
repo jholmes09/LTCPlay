@@ -100938,7 +100938,7 @@ def test_ui2_pages_served_and_switched():
             "for byte unless this screen chose 2.0 (its own cookie, one "
             "tap each way) or the show machine's default says 2.0; "
             "/remote1 and /remote2 are always that page; /remote-logic.js "
-            "is 1.0's own rules; the same network, Host, proxy and other-"
+            "is the shared rules file; the same network, Host, proxy and other-"
             "site rules; the default is set on the show machine only, with "
             "Settings, and changes nothing on the rig")
     S = _sched()
@@ -100951,16 +100951,16 @@ def test_ui2_pages_served_and_switched():
     check(one != two and "<title>Show remote</title>" in one and
           "<title>Show remote 2.0</title>" in two,
           "remote.html is 1.0 and remote2.html is 2.0")
-    # 2.0 is served with 1.0's rules written into it (safety review of
+    # 2.0 is served with the shared rules written into it (safety review of
     # #166, B1): one answer, no second request its Stop or rules wait on.
     lo1 = one[one.find('<script id="remote-logic">'):]
     lo1 = lo1[:lo1.find("</script>") + len("</script>")]
     check(two.count('<script src="/remote-logic.js"></script>') == 1,
-          "remote2.html names 1.0's rules once, where they go")
+          "remote2.html names the shared rules once, where they go")
     two_s = two.replace('<script src="/remote-logic.js"></script>', lo1, 1)
     check('<script src="/remote-logic.js">' not in two_s and
           two_s.count("function stopTapStep(") == 1,
-          "the page served carries 1.0's rules inline")
+          "the page served carries the shared rules inline")
     R = _RemoteRig(S)
     loop = ("127.0.0.1", 5000)
     try:
@@ -100974,7 +100974,7 @@ def test_ui2_pages_served_and_switched():
             st, h, out = page(path)
             check(st == 200 and out == one,
                   f"GET {path} from the network with no choice is 1.0, "
-                  f"the file byte for byte: {st}")
+                  f"byte for byte as served before the rules moved: {st}")
         st, _h, out = page("/remote", client=loop)
         check(st == 200 and out == one, f"and on the show machine: {st}")
         for path, want in (("/remote1", one), ("/remote2", two_s)):
@@ -101045,7 +101045,7 @@ def test_ui2_pages_served_and_switched():
         for path in ("/remote3", "/remote2.html", "/web/remote2.html"):
             st, _h, _o = R.ask("GET", path)
             check(st in (403, 404), f"GET {path} from the network: {st}")
-        # 1.0's own rules, cut out of remote.html at each request.
+        # The shared rules, web/remote_rules.js, read at each request.
         a = one.find('<script id="remote-logic">')
         b = one.find("</script>", a)
         want = one[a + len('<script id="remote-logic">'):b]
@@ -101056,7 +101056,7 @@ def test_ui2_pages_served_and_switched():
               "// LOGIC BEGIN" in out and "// LOGIC END" in out and
               "function stopTapStep(" in out and
               "function armState(" in out and "<script" not in out,
-              f"/remote-logic.js is remote.html's remote-logic block, "
+              f"/remote-logic.js is the rules 1.0 is served with, "
               f"whole: {st} {h.get('content-type')}")
         # The default: the show machine only, Settings, 1 or 2.
         st, _h, out = R.ask("GET", "/api/remote/ui-default")
@@ -101172,28 +101172,155 @@ def test_remote_rules_file():
           one[a1:one.find("</script>", a1)] == rules and
           two[a2:two.find("</script>", a2)] == rules,
           "/remote-logic.js, 1.0 and 2.0 carry the very same rules text")
-    # A missing file, or one a page could not carry whole: each page as it
-    # is (its tag asks /remote-logic.js, which says so), never cut short.
+    # The installed app's checks look for the same rule in both screens.
+    check(web_mod.RULES_SERVED_MARK == "function armState(" and
+          web_mod.RULES_SERVED_MARK in one and
+          web_mod.RULES_SERVED_MARK in two and
+          web_mod.RULES_SERVED_MARK not in one_file + two_file and
+          web_mod.rules_self_check() == "",
+          "both screens as served carry the rules mark, the files do not, "
+          "and the self-check passes")
+    pk = os.path.join(here, "packaging", "windows")
+    with open(os.path.join(pk, "entry_engine.py"), encoding="utf-8") as fh:
+        eng = fh.read()
+    with open(os.path.join(pk, "ci_smoke.py"), encoding="utf-8") as fh:
+        smoke = fh.read()
+    check("why = web.rules_self_check()\n    if why:\n"
+          "        raise RuntimeError(why)\n" in eng,
+          "the installed engine's --self-check fails without the rules")
+    check('for path in ("/remote", "/remote2"):' in smoke and
+          '"function armState(" in body' in smoke,
+          "the installer smoke test asks /remote and /remote2 for the "
+          "rules mark")
+
+    def logic_now():
+        """remote_logic(), or what it raised: it must never raise."""
+        try:
+            return web_mod.remote_logic(), ""
+        except Exception as e:                       # noqa: BLE001
+            return "raised", f"{type(e).__name__}: {e}"
+
+    # Rules that cannot be used: 2.0 as it is (its own Stop needs no
+    # rules), 1.0 a plain 503 page that sends the operator to 2.0, and the
+    # engine's log says so once. Never an exception, never half a rule.
+    import contextlib
+    import io
     tmp = tempfile.mkdtemp(prefix="ltcrules-")
     keep = web_mod.REMOTE_RULES
+    words = web_mod.RULES_MISSING_TEXT
+    check(words == "The screen's rules file did not load. Use the new "
+                   "screen: /remote2. Stop works there." and
+          words in web_mod.RULES_MISSING_PAGE and
+          'href="/remote2"' in web_mod.RULES_MISSING_PAGE,
+          "the page 1.0 gets without its rules says so and links to /remote2")
+    _no_dashes(web_mod.RULES_MISSING_PAGE, "the rules-missing page")
+
+    def put(name, data):
+        path = os.path.join(tmp, name)
+        with open(path, "wb") as fh:
+            fh.write(data)
+        return path
+
+    enc = rules.encode("utf-8")
+    cases = (
+        ("no rules file", os.path.join(tmp, "missing.js")),
+        ("a rules file that is not UTF-8",
+         put("latin.js", enc[:200] + b"\xff\xfe\x80" + enc[200:])),
+        ("an empty rules file", put("empty.js", b"")),
+        ("a rules file cut short", put("short.js", enc[:len(enc) // 2])),
+        ("a rules file with a closing script tag",
+         put("tag.js", enc + b"\n</script><script>alert(1)\n")),
+        ("a rules file with a closing script tag in capitals",
+         put("tag2.js", enc + b"\n</SCRIPT ><script>alert(1)\n")),
+    )
     try:
-        web_mod.REMOTE_RULES = os.path.join(tmp, "missing.js")
-        check(web_mod.remote_logic() is None and
-              web_mod.remote1_page().decode("utf-8") == one_file and
-              web_mod.remote2_page().decode("utf-8") == two_file,
-              "no rules file: no rules, and each page is served as it is")
-        bad = os.path.join(tmp, "bad.js")
-        with open(bad, "w", encoding="utf-8") as fh:
-            fh.write("function a(){}\n</script><script>alert(1)\n")
-        web_mod.REMOTE_RULES = bad
-        check(web_mod.remote_logic() is None and
-              web_mod.remote1_page().decode("utf-8") == one_file,
-              "a rules file with a closing script tag in it is never "
-              "written into a page")
+        for why, path in cases:
+            web_mod.REMOTE_RULES = path
+            web_mod._RULES_FAULT_SAID[0] = False
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                got, err = logic_now()
+                got2, _e = logic_now()
+                try:
+                    st1, body1 = web_mod.remote1_answer()
+                    body2 = web_mod.remote2_page()
+                    self_check = web_mod.rules_self_check()
+                except Exception as e:                   # noqa: BLE001
+                    st1, body1, body2, self_check = (
+                        0, b"", b"", f"raised {type(e).__name__}: {e}")
+            said = [ln for ln in out.getvalue().splitlines() if "FAULT" in ln]
+            check(got is None and got2 is None and not err,
+                  f"{why}: no rules, and nothing raised: {err or got!r:.80}")
+            check(st1 == 503 and
+                  body1 == web_mod.RULES_MISSING_PAGE.encode("utf-8") and
+                  body2.decode("utf-8") == two_file,
+                  f"{why}: 1.0 is the plain 503 page pointing to /remote2, "
+                  f"2.0 is served as it is with its own Stop: {st1}")
+            check(bool(self_check) and not self_check.startswith("raised"),
+                  f"{why}: the installed engine's self-check fails: "
+                  f"{self_check!r}")
+            check(len(said) == 1 and os.path.basename(path) in said[0],
+                  f"{why}: the engine's log says it once: {said}")
+        # Rules that load, but a 2.0 page that does not take them (its tag
+        # gone): the self-check says so too.
+        web_mod.REMOTE_RULES = keep
+        keep2 = web_mod.REMOTE2_PAGE
+        web_mod.REMOTE2_PAGE = put("remote2.html",
+                                   two_file.replace(tag, "").encode("utf-8"))
+        try:
+            why2 = web_mod.rules_self_check()
+        finally:
+            web_mod.REMOTE2_PAGE = keep2
+        check("/remote2" in why2,
+              f"a 2.0 served without the rules fails the self-check: "
+              f"{why2!r}")
+        # Loaded again: the fault is cleared, said again if it comes back.
+        web_mod.REMOTE_RULES = keep
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            got, err = logic_now()
+            web_mod.REMOTE_RULES = os.path.join(tmp, "missing.js")
+            logic_now()
+        check(got == rules and web_mod.remote1_answer()[0] == 503 and
+              out.getvalue().count("FAULT") == 1,
+              "rules that load again clear the fault; losing them again "
+              "says so again")
     finally:
         web_mod.REMOTE_RULES = keep
+        web_mod._RULES_FAULT_SAID[0] = False
         import shutil as _sh
         _sh.rmtree(tmp, ignore_errors=True)
+    # Over HTTP: the three addresses answer, none a 400 (cold review of
+    # #206, 1: a file that is not UTF-8 was a 400 on 2.0's page, its Stop
+    # with it).
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        st, _h, out = R.ask("GET", "/remote")
+        check(st == 200 and isinstance(out, str) and
+              web_mod.RULES_SERVED_MARK in out, f"GET /remote: {st}")
+        web_mod.REMOTE_RULES = put_bad = os.path.join(
+            tempfile.mkdtemp(prefix="ltcrules-"), "latin.js")
+        with open(put_bad, "wb") as fh:
+            fh.write(enc[:200] + b"\xff\xfe" + enc[200:])
+        with contextlib.redirect_stdout(io.StringIO()):
+            st1, _h, out1 = R.ask("GET", "/remote")
+            st2, _h, out2 = R.ask("GET", "/remote2")
+            st3, _h, out3 = R.ask("GET", "/remote-logic.js")
+        check(st1 == 503 and isinstance(out1, str) and words in out1,
+              f"a rules file that is not UTF-8: GET /remote is the plain "
+              f"page: {st1}")
+        check(st2 == 200 and out2 == two_file,
+              f"and GET /remote2 is 2.0 as it is, its own Stop with it: "
+              f"{st2}")
+        check(st3 == 500, f"and GET /remote-logic.js says it is broken: "
+                          f"{st3} {out3!r:.120}")
+    finally:
+        web_mod.REMOTE_RULES = keep
+        web_mod._RULES_FAULT_SAID[0] = False
+        R.close()
     print("  ok")
 
 

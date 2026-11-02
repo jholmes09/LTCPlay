@@ -727,6 +727,15 @@ def main(installer, version=""):
         st, body = get("/remote")
         check(st == 200 and "<html" in body.lower() and "<title>" in body,
               f"GET /remote (the rack screen page): {st} {body[:120]!r}")
+        # The shared rules written into both screens (ltcplay/web/
+        # remote_rules.js; web.RULES_SERVED_MARK): a package without the
+        # file fails here, not on the night.
+        for path in ("/remote", "/remote2"):
+            st, body = get(path)
+            check(st == 200 and "function armState(" in body,
+                  f"GET {path} is not served with the screen rules "
+                  f"(remote_rules.js missing from the package?): {st} "
+                  f"{body[:120]!r}")
         st, body = get("/api/remote/status")
         try:
             status = json.loads(body) if st == 200 else {}

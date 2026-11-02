@@ -19813,18 +19813,66 @@ def build():
  # 1.0 is still served whole, byte for byte the page it was.
  ("rules: 1.0 is served without the shared rules written in",
   "ltcplay/web.py",
-  "    return _with_rules(REMOTE_PAGE)\n",
-  "    with open(REMOTE_PAGE, \"rb\") as fh:\n        return fh.read()\n"),
+  "    return 200, _with_rules(REMOTE_PAGE, logic)\n",
+  "    with open(REMOTE_PAGE, \"rb\") as fh:\n        return 200, fh.read()\n"),
 
  ("rules: a rules file with a closing script tag is written into the pages",
   "ltcplay/web.py",
-  "    if \"</script>\" in logic:\n        return None\n",
+  "    if \"</script\" in logic.lower():\n"
+  "        _rules_fault(\"it has a closing script tag in it\")\n"
+  "        return None\n",
   ""),
+
+ ("rules: a closing script tag in capitals is written into the pages",
+  "ltcplay/web.py",
+  "    if \"</script\" in logic.lower():\n",
+  "    if \"</script>\" in logic:\n"),
 
  ("rules: a missing rules file breaks the page instead of serving it as is",
   "ltcplay/web.py",
-  "    except OSError:\n        return None\n    if",
-  "    except ValueError:\n        return None\n    if"),
+  "    except (OSError, ValueError) as e:\n",
+  "    except ValueError as e:\n"),
+
+ # Cold review of #206.
+ ("rules: a rules file that is not UTF-8 breaks every screen, Stop too",
+  "ltcplay/web.py",
+  "    except (OSError, ValueError) as e:\n",
+  "    except OSError as e:\n"),
+
+ ("rules: an empty or cut short rules file is served as the rules",
+  "ltcplay/web.py",
+  "    if gone:\n",
+  "    if False:\n"),
+
+ ("rules: 1.0 without its rules is served with no Stop that works",
+  "ltcplay/web.py",
+  "    if logic is None:\n        return 503, RULES_MISSING_PAGE.encode(\"utf-8\")\n",
+  "    if logic is None:\n        return 200, _with_rules(REMOTE_PAGE, None)\n"),
+
+ ("rules: a rules file that did not load is never said in the log",
+  "ltcplay/web.py",
+  "        _RULES_FAULT_SAID[0] = True\n        print(",
+  "        _RULES_FAULT_SAID[0] = True\n        if False: print("),
+
+ ("rules: a rules file that did not load is said on every request",
+  "ltcplay/web.py",
+  "    if not _RULES_FAULT_SAID[0]:\n",
+  "    if True:\n"),
+
+ ("rules: the installed engine's self-check passes without the rules",
+  "packaging/windows/entry_engine.py",
+  "    if why:\n        raise RuntimeError(why)\n",
+  "    if False:\n        raise RuntimeError(why)\n"),
+
+ ("rules: the installer smoke test takes a screen without its rules",
+  "packaging/windows/ci_smoke.py",
+  "            check(st == 200 and \"function armState(\" in body,\n",
+  "            check(st == 200,\n"),
+
+ ("rules: the self-check reads 2.0 as whole without its rules",
+  "ltcplay/web.py",
+  "    if RULES_SERVED_MARK.encode() not in remote2_page():\n",
+  "    if False:\n"),
 
  ("rules: the rules are written into a page twice",
   "ltcplay/web.py",

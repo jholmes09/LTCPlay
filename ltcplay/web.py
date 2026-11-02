@@ -55,44 +55,116 @@ LOGIC_OPEN = '<script id="remote-logic">'
 LOGIC_TAG = '<script src="/remote-logic.js"></script>'
 
 
+# What a whole rules file has in it: the block's own ends and the rules
+# the arming and the Stop double tap run on. A file without one of them is
+# empty, cut short or not the rules, and is never served (cold review of
+# #206, 2).
+RULE_MARKERS = ("// LOGIC BEGIN", "// LOGIC END", "function isStale(",
+                "function armState(", "function stopTapStep(",
+                "function stopTapKind(")
+# 1.0 when the rules did not load: 1.0 has no Stop of its own without them,
+# so it is never served half working. 2.0 has (its stop-core).
+RULES_MISSING_TEXT = ("The screen's rules file did not load. Use the new "
+                      "screen: /remote2. Stop works there.")
+RULES_MISSING_PAGE = (
+    '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
+    '<meta name="viewport" content="width=device-width, initial-scale=1">'
+    '<title>Show remote: not loaded</title><style>body{background:#070605;'
+    'color:#EFE3C6;font:22px/1.4 system-ui,sans-serif;margin:24px}'
+    'a{display:inline-block;margin-top:12px;padding:14px 22px;'
+    'border-radius:10px;background:#8f1d14;color:#fff;font-weight:700;'
+    'text-decoration:none}</style></head><body>'
+    '<h1>This screen did not load</h1>'
+    '<p id="rules-missing">' + RULES_MISSING_TEXT + '</p>'
+    '<p><a href="/remote2">Open the new screen (Stop works there)</a></p>'
+    '<p>The hardware e-stop always works.</p></body></html>\n')
+_RULES_FAULT_SAID = [False]
+
+
+def _rules_fault(why):
+    """Says once, in the engine's log, that the rules did not load, until
+    they load again."""
+    if not _RULES_FAULT_SAID[0]:
+        _RULES_FAULT_SAID[0] = True
+        print(f"ltcplay: FAULT: the screen rules file "
+              f"{os.path.basename(REMOTE_RULES)} did not load ({why}). "
+              f"/remote shows a page that points to /remote2.", flush=True)
+
+
 def remote_logic():
     """The shared pure rules (web/remote_rules.js), or None when the file
-    is missing or cannot be written into a page whole (a "</script>" in
-    it would end the block early)."""
+    is missing, cannot be read or decoded, or is not the rules whole (empty,
+    cut short, or with a closing script tag in it that would end the block
+    early). A None is said once in the engine's log."""
     try:
         with open(REMOTE_RULES, encoding="utf-8") as fh:
             logic = fh.read()
-    except OSError:
+    except (OSError, ValueError) as e:
+        _rules_fault(f"{type(e).__name__}: {e}")
         return None
-    if "</script>" in logic:
+    if "</script" in logic.lower():
+        _rules_fault("it has a closing script tag in it")
         return None
+    gone = [m for m in RULE_MARKERS if m not in logic]
+    if gone:
+        _rules_fault(f"it is empty or cut short: no {gone[0]}")
+        return None
+    _RULES_FAULT_SAID[0] = False
     return logic
 
 
-def _with_rules(path):
-    """The page at `path` with the shared rules written into it in place of
-    its /remote-logic.js tag (safety review of #166, B1): the page arrives
-    whole in one answer, never waiting on a second request for its rules.
-    Without the rules, the page as it is (its tag then asks
+def _with_rules(path, logic):
+    """The page at `path` with the shared rules (`logic`) written into it in
+    place of its /remote-logic.js tag (safety review of #166, B1): the page
+    arrives whole in one answer, never waiting on a second request for its
+    rules. Without the rules, the page as it is (its tag then asks
     /remote-logic.js)."""
     with open(path, encoding="utf-8") as fh:
         page = fh.read()
-    logic = remote_logic()
     if logic is not None and LOGIC_TAG in page:
         page = page.replace(LOGIC_TAG, LOGIC_OPEN + logic + "</script>", 1)
     return page.encode("utf-8")
 
 
+def remote1_answer():
+    """(status, body) for /remote and /remote1 as 1.0: remote.html with the
+    rules written in, byte for byte the page it was while they lived inside
+    it. Without the rules, 503 and a plain page that says so and links to
+    /remote2, whose own Stop needs no rules."""
+    logic = remote_logic()
+    if logic is None:
+        return 503, RULES_MISSING_PAGE.encode("utf-8")
+    return 200, _with_rules(REMOTE_PAGE, logic)
+
+
 def remote1_page():
-    """remote.html as /remote and /remote1 serve it: the rules written in,
-    byte for byte the page it was while they lived inside it."""
-    return _with_rules(REMOTE_PAGE)
+    """The body of remote1_answer()."""
+    return remote1_answer()[1]
+
+
+# The installer's checks (entry_engine.py's self-check, ci_smoke.py) look
+# for this in both screens as served: a rule the page cannot work without.
+RULES_SERVED_MARK = "function armState("
+
+
+def rules_self_check():
+    """"" when /remote and /remote2 are each served with the rules written
+    in, else what is wrong (the engine's --self-check, cold review of #206,
+    3)."""
+    status, one = remote1_answer()
+    if status != 200 or RULES_SERVED_MARK.encode() not in one:
+        return (f"the rack screen (/remote) is not served with its rules: "
+                f"{REMOTE_RULES} is missing or broken")
+    if RULES_SERVED_MARK.encode() not in remote2_page():
+        return (f"the rack screen (/remote2) is not served with its rules: "
+                f"{REMOTE_RULES} is missing or broken")
+    return ""
 
 
 def remote2_page():
     """remote2.html as /remote2 serves it, the same rules written in. 2.0
     says when they did not load; its stop-core Stop needs neither."""
-    return _with_rules(REMOTE2_PAGE)
+    return _with_rules(REMOTE2_PAGE, remote_logic())
 # The pages' icons (tab, iPad home screen, installed web app), made from the
 # LTC Player app icon by tools/make_web_icons.py. A fixed list of files at
 # fixed addresses: nothing here reads a path the request names.
@@ -1488,8 +1560,8 @@ class Handler(BaseHTTPRequestHandler):
                 if page == REMOTE2_PAGE:
                     return self._send(200, remote2_page(),
                                       "text/html; charset=utf-8")
-                return self._send(200, remote1_page(),
-                                  "text/html; charset=utf-8")
+                status, body = remote1_answer()
+                return self._send(status, body, "text/html; charset=utf-8")
             if route == "/api/remote" or route.startswith("/api/remote/"):
                 remote = getattr(self.server, "remote", None)
                 if remote is None:

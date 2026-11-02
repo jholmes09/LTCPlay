@@ -36,7 +36,7 @@ The Fireball manual page's merge with the show is server side (fireball.py, fire
 
 ## Gaps: in 1.0, not in 2.0
 
-Routes are under `/api/remote/` unless they start with `/api/`. "Controls" counts the buttons, fields and lists the operator uses. Every port PR replaces the matching "Open in 1.0" link in 2.0 and adds 2.0 to the request-parity tables (`test_ui2_page_makes_only_1_0_presses`).
+Routes are under `/api/remote/` unless they start with `/api/`. A route 2.0 already calls with another body is named with that body. "Controls" counts the buttons, fields and lists the operator uses. Every port PR replaces the matching "Open in 1.0" link in 2.0 and adds 2.0 to the request-parity tables (`test_ui2_page_makes_only_1_0_presses`).
 
 | PR | Work item | Controls | Routes 2.0 does not call yet | Depends on | Risk |
 |---|---|---|---|---|---|
@@ -53,14 +53,14 @@ Routes are under `/api/remote/` unless they start with `/api/`. "Controls" count
 | P10 | Timed purge: presets, other seconds, hold to start, Stop purge, time left | 5 | `purge-timed` | 0 | High. Fires for a set time. Safety review. |
 | P11 | Machine map and Arrange mode (show PC only): field map, Arrange, Save layout, Reset layout, Cancel, drag | 5 | `layout`; open beat `arranging: true` | P10 | High. Arming is blocked while arranging (2.0 has `ARRANGE = false` today). Safety review. |
 | P12 | Checklists: Verify records, Download today's PDF, Export all | 3 | `checklist-verify`, `checklist-pdf`, `checklist-export` | 0 | Low. Downloads on iPad Safari. |
-| P13 | Show machine switches: arming from a screen (on, off), live flame programming On (with confirm), announcement output picker, Save, Test tone | 6 | `screen-arming`, `live-flame` (on), `announce-outputs`, `announce-output`, `announce-test-tone` | 0 | High. Arming from a screen and live flame On. Safety review. |
+| P13 | Show machine switches: arming from a screen (on, off), live flame programming On (with confirm), announcement output picker, Save, Test tone | 6 | `screen-arming`, `announce-outputs`, `announce-output`, `announce-test-tone`; `live-flame` with `on: true` (2.0 calls it only with `on: false`, its Live flame off) | 0 | High. Arming from a screen and live flame On. Safety review. |
 | P14 | Show machine tools: show network address, Save, Restart the engine, settings changed on disk with Reload engine, Stream Deck operator, rig check card (Check the rig, items) | 8 | `network` (GET, POST), `reload-engine`, `/api/schedule/operator` (GET, POST); `preroll-check` from a card | 0 | Medium. Engine restart. |
 | P15 | Show folder and Getting started: folder path, Use this folder, Make a show file, Check the show file, open show and settings folders, the three setup steps | 7 | `show-folder`, `show-file-new`, `/api/check`, `open-folder`, `setup` | P1 | Medium. Fresh install flow. |
 | P16 | Info panel: version, screen, settings path, mode, how to leave the window, Close this window | 2 | `screen` | 0 | Low. |
 | R1 | Remove 1.0: `remote.html`, `/remote1`, `/ui`, the `ltcplay_ui` cookie, `ui-default` and its Settings card, Back to 1.0, the 1.0 window title | 0 | removes routes | P1 to P16; Jeff's yes | High. About 80 selftest reads of 1.0, about 200 mutations on `remote.html`, the parity tables become fixed tables. |
 | R2 | Docs: OPERATOR.md, USERS.md, MORNING.md, FUEL.md, TESTING.md say 2.0 only | 0 | none | R1 | Low. |
 
-Totals: 16 port PRs (P1 to P16) with 95 or more controls and 46 routes or route variants. With this PR and R1, R2: 19 PRs.
+Totals: 16 port PRs (P1 to P16) with 95 or more controls, 42 routes 2.0 does not call yet, and 4 new bodies on routes it already calls (`/api/start`, the open beat, `preroll-check`, `live-flame`). With this PR and R1, R2: 19 PRs.
 
 ## Proposed order
 
