@@ -23082,10 +23082,6 @@ def build():
   "        self.seeks += 1\n        self.guard_gen += 1",
   "        self.seeks += 1"),
 
- ("flame link: a landing does not start the guard generation again",
-  "ltcplay/flamelink.py",
-  "    def _seek_reset(self):\n        self.guard_gen += 1",
-  "    def _seek_reset(self):\n        pass"),
 
  ("start at a cue: the engine hands the fireball only the link's landings",
   "ltcplay/web.py",

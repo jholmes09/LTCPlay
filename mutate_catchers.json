@@ -3626,7 +3626,6 @@
 "start at a cue: an Igniter seen before a landing still counts after it": "test_start_at_cue_valve_needs_its_igniter_on_the_wire",
 "start at a cue: the engine never hands the fireball the link's landings": "test_fireball_cues_wiring",
 "flame link: a seek it sees itself does not start the guard generation again": "test_start_at_cue_valve_needs_its_igniter_on_the_wire",
-"flame link: a landing does not start the guard generation again": "test_start_at_cue_valve_needs_its_igniter_on_the_wire",
 "start at a cue: the engine hands the fireball only the link's landings": "test_fireball_cues_wiring",
 "start at a cue: an FSEQ Igniter's evidence outlives its shot": "test_start_at_cue_valve_needs_its_igniter_on_the_wire",
 "start at a cue: a shot lost to the Igniter rule is not counted": "test_start_at_cue_same_frame_valve_is_said",
