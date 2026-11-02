@@ -1774,8 +1774,8 @@ function armAllRefusal(st){
 // Arm all: which groups one hold on it holds to arm (`go`), and which stay
 // out and why (`out`, each {group, name, why}). The same rules as a
 // group's own button (armState, the re-arm wait `waits[i]` ms) for every
-// group; nothing at all while an Abort stands, or with live flame
-// programming on one group at a time. The engine still checks every
+// group; nothing at all with live flame programming on one group at a
+// time. The engine still checks every
 // heartbeat of every group's hold, as it does for a group's own button.
 function armAllPlan(st, nowMs, lastOkMs, waits){
   const gs = ((st && st.flames) || {}).groups || [];

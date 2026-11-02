@@ -13,7 +13,7 @@ rule written there.
    power level are PLACEHOLDERS in `ltcplay_morning.json` (`lasers`). A
    laser whose mechanism is `"none"` (the shipped default) refuses the
    test in words and sends nothing. A test turns off when a show starts,
-   when Abort is pressed, when the laser is locked out, and when the
+   when Stop is pressed, when the laser is locked out, and when the
    engine stops. A locked-out laser's test is refused.
 2. **Purge**, momentary. Click a machine to arm it; it fires ONLY while the
    Space bar (the page) or the Stream Deck's FIRE key is held. Release, tab
@@ -51,8 +51,8 @@ rule written there.
    While any screen or window is in Arrange mode, nothing fires from any
    surface, the Stream Deck's FIRE key included, and a fire press already
    going stops at once; the refusal names the screen that is arranging. A
-   page that closed without saving lets go by itself within 2 s. Abort,
-   Hold, Stop, disarm, letting go of a fire key, a lockout, a laser test
+   page that closed without saving lets go by itself within 2 s. Hold,
+   Stop, disarm, letting go of a fire key, a lockout, a laser test
    going off and Acknowledge are never held back by Arrange mode.
 5. **Lockout**: any single flame machine or laser can be locked out until
    it is unlocked, across restarts. A locked unit cannot be armed or fired
@@ -179,7 +179,7 @@ this on: a fireball purge needs its own design and safety review first.
 file loads, and it is not used.
 
 The Stream Deck (a Mini: six keys; Jeff, 2026-10-26: START / STOP, four
-arm keys and a spare, no Hold or Abort key) has four arm keys. Which four
+arm keys and a spare, no Hold key) has four arm keys. Which four
 groups, in which order, and what each key says come from
 `ltcplay_deck.json` in the settings folder (optional):
 
@@ -196,8 +196,7 @@ order. A label is up to 12 letters, and a group with none says its own
 name. A group past the fourth has no key: it
 is armed only by holding its Hold to arm button on the Rack screen
 (Arming from a screen on): a purge click never arms it, and its tile says
-so. It is disarmed there, by Disarm all flame groups, by a Stop on the
-deck or by any Abort. At start the deck journals its key map and which
+so. It is disarmed there, by Disarm all flame groups, or by any Stop. At start the deck journals its key map and which
 group has no key, and the Rack screen's flame card says "(no Stream Deck
 key)" by its name. If anything in `ltcplay_deck.json` is wrong (a listed
 group flamesafe does not have, an entry with no group name, a group twice,
@@ -235,7 +234,7 @@ safety slot and is never armed. Andy turns it on by hand, from the
 engine's fuel pump route (its button on Interface 2.0's SHOW tab comes in
 its own update), for a run time he sets first (5:00 unless he sets
 another, ten minutes at most), and it turns off by itself at the end of
-it. Stop, Abort and the sign-in that started it signing out turn it off;
+it. Stop and the sign-in that started it signing out turn it off;
 Hold does not. OPERATOR.md, "The fireball's
 fuel pump", has the rules and the one line to add to `flamesafe.json`.
 
@@ -253,7 +252,7 @@ applied. flamesafe then runs every consent rule it has. This is the
 Jeff-approved exception: no hold-to-arm for a purge, a click instead. The
 deck disarms a group the moment the engine stops listing it: the machine is
 deselected, the page stops saying it is open (2 s), the engine is
-unreachable (0.3 s), a show goes live, an Abort lands.
+unreachable (0.3 s), a show goes live, a Stop lands.
 
 ### Firing: the flame link carries a purge frame, the same way it carries cues
 
@@ -334,7 +333,7 @@ fires a slot only for a group it reports ARMED.
   A stall never relights it: a send more than 0.25 s after the last one,
   judged on a clock read just before the frame is set, ends the purge, and
   the link itself refuses a timed frame once it has dropped one as stale,
-  or once a zero (Stop, Hold, Abort) landed after the count was read. The
+  or once a zero (Stop, Hold) landed after the count was read. The
   hard end is given as the time left to the deadline, so a pause before it
   never loosens it. A purge press while one runs ends it even from a
   screen whose sign-in may not arm (it is refused for anything else), and
@@ -343,8 +342,8 @@ fires a slot only for a group it reports ARMED.
   to 0.1 s later; meanwhile flamesafe itself sends nothing for a disarmed
   group, so the link's value for it reaches no flame.
 - **What ends it at once.** Stop purge (from any screen, signed in or
-  not), Stop, Abort, Hold (and a Hold standing), Start now, Run (refused or
-  not), a show going live or the show clock playing, an Abort standing,
+  not), Stop, Hold (and a Hold standing), Start now, Run (refused or
+  not), a show going live or the show clock playing,
   flamesafe's status over 1 s old, the flame link not sending or alarmed or
   zeroed, a selected machine locked out or taken off, a disarm of one of
   its groups (pressed, or seen at flamesafe), the starter signing out, any
@@ -406,7 +405,7 @@ every engine start and restart is DISARMED, and BEYOND's
   then Arm in the confirm box. All or none. Refused, with the reason, when
   the lasers' blanking is not set up ("Lasers: blanking not set up": no
   `beyond` block with its host and port), when the laser is locked out,
-  while the Abort latch stands, while the show is on Hold, while the night
+  while the show is on Hold, while the night
   is closing, and while this page's settings or lockout cannot be
   trusted. It is the role matrix's "arm" row (as for arming flames), and
   from the show network it needs `screen_arming`, as a laser test ON does.
@@ -428,19 +427,19 @@ every engine start and restart is DISARMED, and BEYOND's
 - **When EnableLaserOutput is sent**: once when the last laser needed is
   armed (output on, still blanked), and again at every show start and
   Resume right before the unblank (through the conductor's laser gate).
-- **Abort and Hold** disarm every laser at the press, on every surface,
+- **Stop and Hold** disarm every laser at the press, on every surface,
   before anything else is asked; the blank and DisableLaserOutput go on
   the arm's own sender thread, retried, so the press never waits on
-  BEYOND. Abort's own blank at the press stays the fast path. Resume and
-  Reset never re-arm: the lasers stay dark until someone arms them again,
+  BEYOND. Stop's own blank at the press stays the fast path. Resume
+  never re-arms: the lasers stay dark until someone arms them again,
   and arming during a show that is already up lights them through the
   laser gate.
 - **Announcements** disarm every laser the way a Hold does (blank,
   DisableLaserOutput, arm again by hand afterwards). Jeff has not ruled on
   this; it is the safe default and can be reverted.
 - **Arming never races a disarm**: an arm whose checks were overtaken by a
-  disarm (an Abort, a Hold, a disarm press) writes nothing, and while an
-  Abort or Hold press is being handled no laser arms at all.
+  disarm (a Stop, a Hold, a disarm press) writes nothing, and while a
+  Stop or Hold press is being handled no laser arms at all.
 - **Closing**: no laser stays armed while the scheduler is CLOSING, and the
   night being over (OFF) disarms on the way in, even when a dry-run
   scheduler went from CLOSING to OFF in one step; arming in OFF (the next
@@ -473,7 +472,7 @@ Three buttons under the lasers on the Startup page:
   as that laser's own button: a locked-out laser is skipped and named, a
   laser that is not armed is skipped and named, a laser whose cue is not
   set up says what to put in the settings and sends nothing. It is refused
-  while a show is live, while an Abort stands, and while this page's
+  while a show is live, and while this page's
   settings or lockout cannot be trusted, and the engine asks again before
   each laser, so a show going live part way stops it there. From the show
   network it needs `screen_arming`, and Arrange mode holds it back, as a
@@ -486,7 +485,7 @@ Three buttons under the lasers on the Startup page:
   never starts BEYOND. It works on the show PC itself only (the button is
   not shown elsewhere), signed in or not, any time no show is live: it is
   refused only while a show is live, on Hold or between shows (STANDBY),
-  while an Abort stands, and while a hold to arm or a purge is going on
+  and while a hold to arm or a purge is going on
   (the rack screen stays in front for those). The calibration test can be
   running: bringing BEYOND forward to adjust it is what it is for.
   Calibration off stays on the rack screen; click the rack screen (or
@@ -637,7 +636,7 @@ depressurizes the pump, then fires the leftover fuel to clear it.
    `aim` (128, straight up), the heads get `aim_settle_s` (1 s) from the
    first frame actually written with them up, then the ignition (channel 3
    of each Showven) 255 for `burst_on_s` (1 s) and 0 for `burst_off_s`
-   (1 s) until Stop or Abort, at most `max_burst_min` (10). Nobody has to
+   (1 s) until Stop, at most `max_burst_min` (10). Nobody has to
    hold. Speed, duration and preset stay 0.
 
 **Arming: no new way to arm.** Every arm is the rack screen's own hold to
@@ -673,7 +672,7 @@ purge and the Fireball page wait for it, and it for them.
 disarm; a stopped run never carries on), in every phase and while paused:
 Stop (the page's or the banner's on any screen, the rack screen's, the
 Stream Deck's: the deck reads the cleaning as running, so its key is
-Stop), Abort (which never waits on the cleaning's lock), Hold, any disarm
+Stop, which never waits on the cleaning's lock), Hold, any disarm
 anywhere (the engine's disarm count moves), the flame link zeroed, the
 group not reading armed when it should, flamesafe's status older than
 0.5 s, a wave flamer locked or unlocked, a show live, Run pressed, live
@@ -700,25 +699,26 @@ them as burn ("other", like scrubbing), once, and never as a Showven purge.
 
 | # | Threat | Where it is stopped |
 |---|---|---|
-| T1 | A purge frame goes out while a show cue is playing (two sources of fire values) | `FlameLink.values_now`: purge is read only when `live is not True`; the engine refuses `purge-select` and `purge-fire` while the scheduler is in SHOW or PAUSED, while an Abort is latched, or while the show clock plays a cue; the watcher clears the selection when a show goes live |
+| T1 | A purge frame goes out while a show cue is playing (two sources of fire values) | `FlameLink.values_now`: purge is read only when `live is not True`; the engine refuses `purge-select` and `purge-fire` while the scheduler is in SHOW or PAUSED, or while the show clock plays a cue; the watcher clears the selection when a show goes live |
 | T2 | The page dies with Space down (crash, sleep, cable) | the heartbeat stops; `FlameLink` drops the purge frame 0.25 s after the last `purge_set` on its own clock; flamesafe zeroes `fire_hold_ms` after ltcplay's last frame if the engine dies too |
 | T3 | Key repeat, a lost keyup, a second tab or device | the page sends heartbeats on its own 100 ms timer from one keydown and stops on keyup, blur, visibilitychange and pagehide; the heartbeats are not the key: the browser's key repeat events are the evidence the key is still down, and a press older than 2.5 s with no repeat event for 1 s ends (`fireKeyLapsed`; so the OS key repeat has to be on; the page says so). A physically stuck key still repeats, so the PAGE is not a dead-man switch; the Stream Deck's FIRE key is (its heartbeats stop the instant the key reads up). The engine binds a fire press to a `fire_id` and the device that owns the selection; a heartbeat from another device, or for an old `fire_id`, is refused and does not end the owner's press; the deck process is known by its `screen` over loopback, never by an operator name; a machine never joins a press that is already firing |
 | T4 | A machine selected for purge is left armed after the page is gone | the selection lives only while the OWNER device's `morning-open` beat (every 500 ms) is under 2 s old (another device's open page does not keep it); leaving the page posts `purge-clear` at once; the deck disarms every purge group it armed the moment the engine stops listing it, and 0.3 s after the engine stops answering |
 | T5 | A locked machine fires from a show cue or a purge | flamesafe zeroes locked slots on every packet (the only writer); the flame link zeroes them too; `purge-select` refuses a locked machine and a lock drops it from a live selection; while this engine has any machine locked, NO purge goes until flamesafe's status reports exactly the slots this engine asked for (an old flamesafe, one without a lockout file, or a stale status all refuse) |
 | T6 | The lockout file is deleted, corrupted or half-written; the lock table and the config disagree | atomic replace by one writer; flamesafe keeps the last set on an unreadable file, and on a file that held locks and disappeared (the engine never deletes it), and journals both; `lockout_file` defaults to the file beside flamesafe's own config, so the show PC enforces it with nothing set up; on the engine's side a lockout file that could not be read, or one naming a machine `ltcplay_morning.json` no longer has, is never written over (every lock and unlock is refused, the purge and the laser tests too) and is said on every screen until fixed; the engine's view and flamesafe's `lockout` field are compared both ways on the page and in the journal: slots flamesafe holds that this engine cannot account for (the file deleted and kept by flamesafe, an engine restarted without it), a config edited under a lock, flamesafe with no lockout file, or one reading a different path than the engine writes (said at start, both paths named) all refuse every lock, unlock, purge and laser test; the one way out is a confirmed "Rewrite the lockout file" on the show machine itself, journaled as a fault, which writes exactly this engine's table |
-| T7 | Abort during a purge | the engine's Abort clears the purge and sends `disarm_all` before anything else, as today; `disarm_all()` and `zero()` clear the purge frame; the deck has no Abort key since 2026-10-26: it disarms every purge group it armed when it sees the Abort latch, and a Stop (the deck's or the Rack screen's) sends every group false on the arm link and the flame link's `disarm_all`, without the latch; the laser tests are turned off |
+| T7 | Stop during a purge | the engine's Stop clears the purge and sends `disarm_all` before anything else (Abort, which did the same, was removed 2026-10-30); `disarm_all()` and `zero()` clear the purge frame; a Stop (the deck's or the Rack screen's) sends every group false on the arm link and the flame link's `disarm_all`; the laser tests are turned off |
 | T8 | The deck arms a purge group while latched, in its refractory window, or with no operator chosen | the deck's purge pass arms through `_do_arm_fire` itself, the code a completed hold goes through: the latch, the re-arm refractory window and the operator gate are checked at the moment of arming; only the hold is waived (Jeff). A latched rig also reads as no groups wanted at all (`purge_wanted`). The test holds that no arm value goes out on the arm link even for one pass |
 | T9 | A network device purges, unlocks or lights a laser without anyone meaning it to | purge from the network, an unlock and a laser test ON all need `screen_arming` true (the existing switch, off by default); a lock, which only lowers risk, is open to every device; every press is journaled with the device address; the same proxy, Host and cross-site refusals as every other route |
-| T10 | A laser test lights during a show, or on a locked laser | the engine refuses the toggle while a show is live or latched; the watcher turns tests off when a show goes live; the sender refuses a locked laser; only configured addresses with no OSC wildcards, never BEYOND's BlackOut or MasterPause |
+| T10 | A laser test lights during a show, or on a locked laser | the engine refuses the toggle while a show is live; the watcher turns tests off when a show goes live; the sender refuses a locked laser; only configured addresses with no OSC wildcards, never BEYOND's BlackOut or MasterPause |
 | T11 | The deck stays re-mapped after the page closes (FIRE where START was) | the deck's morning mode follows the engine's `morning_open` flag, which the engine clears 2 s after the last page beat from a device that may purge (a view-only device's beats do not count); a stale `deck-input` (0.3 s) also ends it |
 | T12 | A Waver fires before its head is up | a fire press on a Waver sends pan and tilt first and the fire value only after `head_settle_s` (0 to 10 s; with 0 the head values and the fire value go in the same frame, the first beat on which it is selected, unlocked and armed) of continuous heartbeats, counted per Waver from the first beat on which it is both selected and armed, and counted again from nothing whenever its group drops out of ARMED mid press (the head has fallen); the head values go in the same frame as the fire value thereafter; a machine cannot join a press that is firing |
 | T13 | The purge frame reaches a fire slot flamesafe has not armed | flamesafe sends a fire value only while that group's safety slot carries the arm value on the same packet (unchanged) |
 | T16 | A purge writes one value to every channel of a fireball (fuel, air, valve, igniter and purge at once) | the rule is by flamesafe group (`MorningConfig.purge_refusal`, `fireball_groups`): a machine of any kind in a fireball group is refused by `purge-select` and left out of `groups_wanted` and the frame, and `ltcplay_morning.json` cannot put a machine of another kind in one; the Stream Deck refuses a purge arm for a group named fireball or ball and for every group the page lists as never purged (`purge.never_groups`), key or no key, a second barrier (review of #126, P2-4), and never arms a group with no key for a purge click |
-| T17 | The fireball's fuel pump runs on after it was meant to stop | flamesafe writes its slot (its own `on` value) only while the flame frame names it, the link is fresh and no `disarm_all` has come since it was last named OFF; the engine names it only before the run's hard end and with its timer beating (the timed purge's machinery: engine timer, the flame link's own end and beat on its clock, flamesafe's `frame_stale_ms` if the engine dies); Stop and Abort clear it at the link before the first `disarm_all` copy; it is not a fire slot, so it never arms or fires a group |
+| T17 | The fireball's fuel pump runs on after it was meant to stop | flamesafe writes its slot (its own `on` value) only while the flame frame names it, the link is fresh and no `disarm_all` has come since it was last named OFF; the engine names it only before the run's hard end and with its timer beating (the timed purge's machinery: engine timer, the flame link's own end and beat on its clock, flamesafe's `frame_stale_ms` if the engine dies); Stop clears it at the link before the first `disarm_all` copy; it is not a fire slot, so it never arms or fires a group |
 | T14 | A checklist record is altered after the fact | every record carries the hash of the one before it; `verify` fails on any edit, insertion or deletion; the per-day PDF prints the verification result |
-| T15 | A laser lights while disarmed or locked out, or after an Abort or Hold | default disarmed at every start (DisableLaserOutput sent); EnableLaserOutput and the unblank only with every laser armed and none locked out (the laser gate, and again before every unblank packet); Abort and Hold disarm at the press on every surface and the conductor; Resume and Reset never re-arm; the night closing and the engine stopping disarm; a disarm cuts an enable or a restore short; the allow-list in beyond.py holds exactly brightness 0/100 and the two output switches with no argument |
+| T15 | A laser lights while disarmed or locked out, or after a Stop or Hold | default disarmed at every start (DisableLaserOutput sent); EnableLaserOutput and the unblank only with every laser armed and none locked out (the laser gate, and again before every unblank packet); Stop and Hold disarm at the press on every surface and the conductor; Resume never re-arms; the night closing and the engine stopping disarm; a disarm cuts an enable or a restore short; the allow-list in beyond.py holds exactly brightness 0/100 and the two output switches with no argument |
 
-Tier A guarantees that do not change: Abort wins over everything, flamesafe
+Tier A guarantees that do not change: Stop wins over everything (it took
+over from the removed Abort), flamesafe
 is the only writer of the flame universe, the link key and sender lock,
 `frame_stale_ms` disarms, one arm sender (the deck), consent needs a
 genuine off-then-on from that sender, no re-arm without a deliberate
@@ -732,8 +732,8 @@ still hold.
   values only while a show cue is live and its timecode is moving
   (`flamelink.values_now`). A Hold is not live, so flames are zero through
   a Hold; the conductor also zeroes the cues at Hold. The purge keeps that:
-  it is refused and cleared whenever the scheduler is in SHOW or PAUSED, an
-  Abort is latched, or the show clock plays a cue. A purge between shows
+  it is refused and cleared whenever the scheduler is in SHOW or PAUSED,
+  or the show clock plays a cue. A purge between shows
   (PRESHOW, INTERMISSION, STANDBY) is allowed, which is when Andy needs it.
 - **Arming from a screen.** Off by default (`screen_arming`, review of PR
   #43). The purge's arming from the Rack screen itself is on by default

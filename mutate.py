@@ -23061,6 +23061,22 @@ def build():
   "            land_get=lambda: getattr(link, \"landings\", None))",
   "            land_get=None)"),
 
+ ('scheduler: Resume hands the next tick a show past its late limit to miss', 'ltcplay/schedule.py',
+  '        _sweep(tx, held=True)\n'
+  '    back = m.held_from',
+  '        pass\n'
+  '    back = m.held_from'),
+
+ ("scheduler: Resume of a Stop's Hold holds back every due show", 'ltcplay/schedule.py',
+  '        _sweep(tx, held=True)\n'
+  '    back = m.held_from',
+  '        _sweep(tx, held=True)\n'
+  '        if m.stop_hold:\n'
+  '            for s in tx.m.pending():\n'
+  '                if s.start <= now:\n'
+  '                    _hold_back(tx, s)\n'
+  '    back = m.held_from'),
+
 ]
 
 

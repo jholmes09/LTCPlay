@@ -44,12 +44,12 @@ sign-in.
 - **Signed out, every screen is view only.** It still shows the show
   state, the schedule, the flame and laser lamps and the alerts. The chip
   at the top right reads "Sign in to use controls", and Start now, Resume,
-  Reset, Run, every Hold to arm, a laser's Arm, the announcements and the
-  settings switches are greyed out. Hold, Abort, Disarm all and every
+  Run, every Hold to arm, a laser's Arm, the announcements and the
+  settings switches are greyed out. Stop, Hold, Disarm all and every
   Disarm stay live.
-- **Always, signed in or not:** Stop, Hold, Abort, Acknowledge an alert,
+- **Always, signed in or not:** Stop, Hold, Acknowledge an alert,
   Disarm all flame groups, disarming one group, and disarming lasers.
-- **Needs a signed-in operator or admin:** Start now, Resume, Reset, Run,
+- **Needs a signed-in operator or admin:** Start now, Resume, Run,
   arming a flame group (hold to arm and Arm all), a purge, arming a laser,
   a laser test, unlocking, playing an announcement, the checklists,
   choosing the operator and editing tonight's list. Settings, show files
@@ -61,7 +61,7 @@ sign-in.
   anything or stop live flame programming: use Disarm all or Stop for that.
 - **If the users file is damaged or missing** after users were set up, an
   alert says so on every screen and every control is locked except Stop,
-  Hold, Abort, Acknowledge and the disarms. Nobody can sign in. A good
+  Hold, Acknowledge and the disarms. Nobody can sign in. A good
   `ltcplay_users.json` put back in the settings folder is used at once, with
   no restart. To start over with no users: close LTC Player, remove
   `ltcplay_users.json` and `ltcplay_users.made` from the settings folder
@@ -180,9 +180,10 @@ three below:
 Key 5 reads ANNOUNCE while LTC Player runs announcements (it is blank and
 does nothing otherwise). One press opens page 2, see Announcements below.
 
-The deck has **no Hold key and no Abort key** any more. Hold, Resume,
-Abort and Reset are on the Rack screen (and the hardware e-stop is where it
-always was). The four flame keys arm and disarm Floor G (front row),
+The deck has **no Hold key** any more. Hold and Resume are on the Rack
+screen; the deck's Stop is key 0, held (and the hardware e-stop is where
+it always was). There is no Abort anywhere (removed, Jeff, 2026-10-30):
+Stop does everything it did. The four flame keys arm and disarm Floor G (front row),
 Cat-Walk G (cat-walk), Blue Flames (wave flamer) and Fireball (fireball):
 hold a key to arm its group, tap it to disarm. With no ltcplay_deck.json
 those four go on keys 1 to 4 by their names (any case; cat walk and
@@ -219,7 +220,7 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   schedule STAYS on Hold: press Resume when you are ready to carry on.
 - **During a show** the announcement plays over the show and pauses,
   holds and stops nothing, even when it is pressed the very second a show
-  starts. If the show has to end, press Stop (or Abort) yourself. The
+  starts. If the show has to end, press Stop yourself. The
   banner then reads ANNOUNCEMENT PLAYING.
 - On the show screen the Announcements line itself says HELD FOR
   ANNOUNCEMENT (or ANNOUNCEMENT PLAYING) and Stop announcement lights;
@@ -241,8 +242,8 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   announcement plays THROUGH THE SHOW AUDIO: mixed into the show's own
   front left and right, outputs 1 and 2, which are the Main L/R (USB
   return 1/2 on the StudioLive 16R). There is no second device: it plays
-  during a show, and neither the show, Hold, Stop nor Abort ever has to
-  let go of the interface for it. A Hold or an Abort fades the show's own
+  during a show, and neither the show, Hold nor Stop ever has to
+  let go of the interface for it. A Hold or a Stop fades the show's own
   audio as always; an announcement already playing goes on until it ends
   or you press Stop announcement.
 - **The level.** The show's own audio is never turned down or changed by
@@ -275,7 +276,7 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   during a show, and it holds nothing.
 - **A show starting or a Resume still fades an announcement** that is
   playing (over 0.15 s), so the show starts on time with its own sound.
-  Stop and Abort on the show never touch it. Stop announcement fades only
+  Stop on the show never touches it. Stop announcement fades only
   the announcement.
 - **Programming.** If you are playing the show in Programming when an
   announcement holds the schedule, the Programming playback pauses with it
@@ -310,7 +311,7 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   buttons are off and the line says to look at the Show audio lamp.
 - The deck's page 2 hides the four flame keys while it is up, because the
   deck has only six keys. It goes back to the flame keys by itself: BACK,
-  ten seconds with no key pressed, an Abort, an alert, the Startup page
+  ten seconds with no key pressed, an alert, the Startup page
   opening, or a deck alarm. START / STOP is the same key on both pages.
   It goes back for the ten seconds only when LTC Player has just said
   nothing is playing: while one plays, or while the deck has not heard
@@ -372,22 +373,22 @@ Run has been pressed and playback is going it reads STOP RUN: hold it for
 half a second to Stop. Stop first turns every flame group off, at once,
 then does exactly what the Rack screen's Stop does: live flame programming
 ends, every flame group is sent off again through the show's flame link
-(the flame half of an Abort, so each group needs a fresh arm), the
+(so each group needs a fresh arm), the
 outputs go dark, and the schedule goes on Hold: no show starts until
 Resume (Jeff, 2026-10-30). Run stays on, so the key keeps reading STOP
 RUN after a Stop; that is expected. The deck's Stop is a complete halt:
-every laser is disarmed too. Unlike Abort it does not latch the rig:
-nothing needs a Reset. A tap does nothing; let go before the ring fills
+every laser is disarmed too. Nothing latches: Resume carries on. A tap
+does nothing; let go before the ring fills
 and nothing is sent.
 
 **Stop during a scheduled show** (Jeff, 2026-10-26). The key keeps saying
 NOW PLAYING, PAUSED or AUDIO LOST, but holding it half a second still
 stops everything: every flame group and laser is disarmed, the show ends
-(faded to dark as an Abort is, but with no latch and no Reset needed),
+(faded to dark over 1 second, nothing latched),
 and the schedule goes on Hold, so no later show starts until Resume. Run
 stays on (Jeff, 2026-10-30). A show whose time comes during the Hold
 waits as a delayed show for Start now. Stopping the last show of the
-night closes the night a moment later, as an Abort does. To disarm just
+night closes the night a moment later. To disarm just
 one group during a show, tap its key on the deck, or use the Rack
 screen.
 
@@ -398,7 +399,7 @@ show computer for the rest, and says ENGINE FAULT if it cannot reach it
 (or CHECK RACK if it took the Stop but has not answered yet). If the
 flames and lasers went off but playback itself did not stop, the key reads
 PLAYBACK FAILED: press Stop on the Rack screen. If the show itself did not
-end, the key flashes SHOW NOT STOPPED: press Abort on the Rack screen. The key also reads STOP
+end, the key flashes SHOW NOT STOPPED: press Stop on the Rack screen, or use the hardware e-stop. The key also reads STOP
 ALL when nothing is running but a flame group is armed, or live flame
 programming or Programming playback with flames is on, and the hold turns everything
 off. An alert waiting on the deck never eats a
@@ -412,16 +413,14 @@ anything but the purge (a group the purge selection wants counts as the
 purge's, even if it was armed by hand first): then it is Stop. If FIRE is
 being held when a show or run starts, FIRE ends and the same held key
 becomes a Stop hold at once: keep holding to stop, let go to cancel. The Rack screen's Stop is the same complete halt, during a show
-too (see Stop, Hold and Reset on the rack screen, below). After an Abort the deck's border goes red and
-the keys grey out, but STOP RUN still works while a run is going, as on
-the Rack screen. If Stop stopped playback but could not send the flame
+too (see Stop, Hold and Resume on the rack screen, below). If Stop stopped playback but could not send the flame
 groups off, the Rack screen says "Stopped, but the flame disarm FAILED"
 and the deck's key flashes DISARM FAILED: press Disarm all flame groups,
 or use the hardware e-stop.
 
 **A flame group with no key.** A group past key 4 has no key: arm it by
 holding its Hold to arm button on the Rack screen, disarm it there, with
-Disarm all flame groups, a Stop on the deck or any Abort. Its name on the
+Disarm all flame groups, or any Stop. Its name on the
 Rack screen's flame card says "(no Stream Deck key)". A purge click on
 the Morning page never arms it, and a Fireball is never purged at all.
 
@@ -465,8 +464,8 @@ laser starts DISARMED each time the engine starts; Arm on a laser, or Arm
 on a laser group, then Arm in the confirm box; Disarm all lasers is one
 click and always works, signed in or not; BEYOND's laser output comes on
 only once EVERY laser is armed and none is locked out, because BEYOND's
-only known command is for all lasers at once; Abort, Hold and the night
-closing disarm every laser, and after Resume or Reset they stay dark until
+only known command is for all lasers at once; Stop, Hold and the night
+closing disarm every laser, and after Resume they stay dark until
 you arm them again; the Lasers pill at the top of the rack screen says how
 many are armed); one calibration test button per laser (the laser has to be
 armed first) (ON keeps the grid up at low power until pressed again;
@@ -489,8 +488,7 @@ a group button arms every machine in it that can be armed and says which
 it skipped and why, such as one locked out; it is green when all of the
 group is armed, amber with the count and the reason when only part is,
 and while any of it is armed, clicking it again takes the whole group off;
-let go and it stops; nothing fires while a show is live or an Abort
-stands); the timed purge (below); lock out of any one machine or laser (the L button on it: one tap
+let go and it stops; nothing fires while a show is live); the timed purge (below); lock out of any one machine or laser (the L button on it: one tap
 locks it out, one tap on a locked one unlocks it, with no pop-up either
 way; a line under the machine map, or under the lasers, says what was
 done, with Undo for 5 seconds; a tap does what the screen showed when you
@@ -525,7 +523,7 @@ stop by themselves, even if the page or the iPad is closed. The rack
 screen, every screen's banner, 2.0's top line and the Stream Deck's key 0
 (PURGING and the seconds) count down. To end it early press Stop purge
 (on the Startup page or the banner, from any screen, signed in or
-not), or Stop, Hold or Abort; Start now, Run, a disarm of one of
+not), or Stop or Hold; Start now, Run, a disarm of one of
 its groups, a lock, signing out and any other purge press (Space, the
 deck's FIRE, the button again) also end it at once. Only one purge at a
 time; the Fireball page, the cleaning and live flame programming wait for
@@ -565,7 +563,7 @@ and turns them all off when it disarms (if one still shows ON, it says "turn
 Fuel, Air, Purge off before arming").
 
 **Everything goes off by itself** (within a quarter of a second) on: Stop,
-Abort, Disarm Fireball, Disarm all flame groups or the Fireball's deck
+Disarm Fireball, Disarm all flame groups or the Fireball's deck
 key; the Fireball locked out; the flame link lost, a single frame to
 flamesafe that could not be sent, or frames stopping for more than
 flamesafe's own fire_hold_ms (100 ms unless its config says otherwise;
@@ -598,8 +596,7 @@ again by the timeline in that show (its stage is skipped and says so).
 end of a show, zero the show's own fireball values (its FSEQ or its
 timeline); what you hold on this page stays on through them.
 
-**When it will not work** it says why in plain words: an Abort standing,
-live flame
+**When it will not work** it says why in plain words: live flame
 programming on, a purge selected on the Startup page (and that purge
 waits while a Fireball channel is on), any screen in Arrange mode, the
 Fireball locked out, or the purge switch off (`purge_arming`, and from an
@@ -620,8 +617,8 @@ off, with Andy:**
 3. Each toggle on and off once (Fuel Charge, Air Charge, Purge): the head
    follows, and goes off when pressed again.
 4. Hold Valve Open, then Igniter: on while held, off the moment you lift.
-5. With Fuel Charge on: press Disarm Fireball, then (armed again) Abort,
-   Stop, the Fireball's deck key, and close the page. Each time every
+5. With Fuel Charge on: press Disarm Fireball, then (armed again) Stop,
+   the Fireball's deck key, and close the page. Each time every
    channel goes off at once and stays off. Then with Fuel Charge on press
    Hold: it stays on (a Hold never turns the page off); Stop turns it off.
 6. Pull the network cable of the iPad (or close the browser) while holding
@@ -658,7 +655,7 @@ says the limits).
 
 **Stop** works from the Shutdown page and the banner on the rack screen or
 an iPad, the rack screen's own Stop, and the Stream Deck's Stop key (the
-deck shows Stop while the cleaning runs or waits). **Abort** always works.
+deck shows Stop while the cleaning runs or waits).
 
 **How it arms.** Every arm is a hold to arm, exactly as on the show screen:
 yours for the start and for the go-ahead, and, in phase 1 only, the same
@@ -670,7 +667,7 @@ and the Stream Deck program running, signed in as someone who may arm.
 Signed out it is view only; Stop always works.
 
 **It stops at once, the ignition off first and then the wave flamers
-disarmed,** on: Stop (anywhere); Abort; Hold; any disarm anywhere; the
+disarmed,** on: Stop (anywhere); Hold; any disarm anywhere; the
 wave flamers disarming by themselves; flamesafe not reporting; a wave
 flamer locked or unlocked; a show starting; live flame programming
 going on; another flame group armed; an alert about
@@ -680,8 +677,8 @@ gave the go-ahead) signing out; any refusal. If flamesafe does not report
 the wave flamers off within a second, Disarm all flame groups goes.
 Nothing comes back by itself: start again with a hold.
 
-**When it will not start** it says why: a show live or on Hold, an Abort
-standing, Run pressed, live flame programming on,
+**When it will not start** it says why: a show live or on Hold, Run
+pressed, live flame programming on,
 a purge selected (and the purge waits while the cleaning runs), the
 Fireball page with a channel on, any screen in Arrange mode, another flame
 group armed or being armed, the wave flamers already armed (it starts
@@ -705,7 +702,7 @@ page as flame (not as a purge).
    going.
 4. Press Stop on the page: the click stops at once, the lamp goes off
    within a second. Run it again and try each stop once, in phase 1 and
-   in the bursts: the banner's Stop, Abort, Hold, the Stream Deck's Stop,
+   in the bursts: the banner's Stop, Hold, the Stream Deck's Stop,
    Disarm all flame groups, locking a wave flamer, unplugging the deck.
    Each time the click stops at once and the wave flamers disarm.
 5. Lock one wave flamer before starting: that one never moves or clicks,
@@ -881,10 +878,10 @@ channel, and is either ARMED or DISARMED.
   group (the arm row of the role matrix), and from an iPad need arming
   from a screen switched on. Disarming and Hazers off work for everyone,
   always.
-- **What disarms them.** Abort, Stop, Hazers off, a restart, flamesafe not
+- **What disarms them.** Stop, Hazers off, a restart, flamesafe not
   answering for a second, and live flame programming ending (a hazer
-  cannot be armed while live flame programming is on). After an Abort or
-  a Stop, arm each one again (wait a second after a Stop).
+  cannot be armed while live flame programming is on). After a Stop, arm
+  each one again (wait a second after a Stop).
 - **If a tile says Waiting for flamesafe,** flamesafe has not taken the
   arm yet; if it stays that way, disarm it and arm it again.
 
@@ -907,8 +904,8 @@ he triggers it."
   be pressed it is greyed and says why in a few words. Pump off is never
   greyed. The row is there only when `flamesafe.json` lists a pump.
   When On cannot be pressed, the line under the row says why in full.
-  Interface 1.0 and the Stream Deck have no pump control. Every Abort
-  and every Stop that is carried out turns the pump off (a screen's
+  Interface 1.0 and the Stream Deck have no pump control. Every Stop
+  that is carried out turns the pump off (a screen's
   double tap Stop and the Stream Deck's Stop always are); a Hold never
   does, and neither does a Stop's Hold standing on later nights. A Stop
   that is refused, such as the old page's plain Stop during a live show,
@@ -932,7 +929,7 @@ he triggers it."
   sign-in ending any other way (idle sign out, sign out after the last
   show, a sign-out on the show PC, which ends every sign-in made there).
   Someone else signing out on another screen leaves it running.
-- **What turns it off.** Its time up, Pump off, signing out (above), Stop, Abort, the night
+- **What turns it off.** Its time up, Pump off, signing out (above), Stop, the night
   closing (and the night being over, for a run started before), flamesafe
   not answering for a second, the flame link not sending, flamesafe not
   passing it for a second and a half (press Fuel pump: On again), and a
@@ -945,10 +942,10 @@ he triggers it."
   programming cannot be turned on while the pump runs, because a Hold or
   Start now ends live flame programming, and that would turn the pump
   off; press Pump off first.
-- After a Stop, an Abort or any of those, wait a second before you turn
+- After a Stop or any of those, wait a second before you turn
   it on again.
-- **When it is refused.** An Abort standing (press Reset first), a Stop or
-  Abort still being sent (wait a second), live flame programming on,
+- **When it is refused.** A Stop still being sent (wait a second), live
+  flame programming on,
   flamesafe not answering, the flame link not sending, the night closing,
   its channel in the lockout file, flamesafe and LTC Player reading
   different pump settings, or the pump already on. The screen says
@@ -1051,7 +1048,7 @@ that long. The stages, in this order:
   next frame. Signed out, without the Settings row, or from an iPad with
   arming from a screen off, every field and Save are greyed with a dashed
   edge and Save says why ("Sign in to edit", "Admins only", "Arming off
-  here"). Hold, Stop show, Disarm flames and Abort stay at full strength
+  here"). Hold, Stop show and Disarm flames stay at full strength
   above and beside it.
 
 ### Every show, FSEQ or Timeline (a behaviour change)
@@ -1097,7 +1094,7 @@ FSEQ:
   own cue time, and off otherwise. **Purge (59) is never set.**
 - Everything that stops flames stops these: they reach the Fireball only
   while it is **armed** (flamesafe), only while the show plays, and Hold,
-  Stop, Abort, a seek and a Programming move work on them exactly as on
+  Stop, a seek and a Programming move work on them exactly as on
   any flame cue. After a Resume a stage whose time is still running comes
   back like any flame cue does, **except a charge** (below).
 - **Never a double charge.** The Fuel or Air stage turns its channel on
@@ -1321,11 +1318,11 @@ It was 15 seconds before.
   its late limit, and the settling step at a hand over never starts a show:
   every start, however late, goes through the alert hold, the rig check and
   the Stop check.
-- It never overrides anything that says wait. A Hold, a Stop's Hold, an
-  Abort, Run not pressed, the guard after the previous show, a show that
+- It never overrides anything that says wait. A Hold, a Stop's Hold,
+  Run not pressed, the guard after the previous show, a show that
   is running and a Stop under way all still hold a show back, however
   close to its time. Resume's journal line says "Show N ... starts at the next tick,
-  N s late" only when it really will (not a Reset, nothing aborted, no
+  N s late" only when it really will (no
   guard left, at least 5 seconds of the limit left); within 5 seconds of
   the limit it says the show "is close to its limit and may still start at
   the next tick"; otherwise it says what is next on the schedule. Pressing Resume within the limit starts the show,
@@ -1409,7 +1406,8 @@ but it wouldn't allow it. Don't restrict the schedule in any way."
   includes a show started with Start now in the next night's preshow
   (up to 30 minutes before its first show, so before midnight), and a
   show typed for tomorrow or a date. The list is never set aside, so
-  no Abort latch is raised and the shows that ran stay done.
+  no Stop's Hold is put on for an unreadable night and the shows that
+  ran stay done.
   One limit serves the editor, Move, Delay and the file reader: from 30
   minutes before midnight of the night's date to 5 years (1830 days)
   after that midnight, both ends included, and it does not depend on the
@@ -1541,10 +1539,9 @@ until the engine was restarted. Now:
   longer has it. To run a show tonight after
   that, press Start now (an extra show each time; the night closes again
   after it). The saved schedule is followed from the next night on.
-- **A Hold stays a Hold, and an Abort stays latched.** A save on Hold keeps
+- **A Hold stays a Hold, and a Stop's Hold stays.** A save on Hold keeps
   the Hold (Resume is still needed) and keeps the show already waiting
-  after the Hold. After an Abort every show is missed until Reset, as
-  before.
+  after the Hold.
 - **During a show the save is refused** on the Programming screen. If a
   schedule is loaded while a show runs or while the night is closing, the
   show and its status are left alone and tonight follows the file once
@@ -1564,8 +1561,7 @@ Run is off and a show is still to come, the rack screen says so: "Run is
 off: the 22:50 show (show 5) will NOT start. Press Run." It is amber until
 30 minutes before that show, then red, a fault. Once the night's first
 show time has gone by it is red at once. On a Hold
-it says "Press Run, then Resume.", and after an Abort nobody has Reset it
-says Reset first ("Press Reset, then Run."). During a Programming Run
+it says "Press Run, then Resume.". During a Programming Run
 (Run reads as pressed, but the schedule starts nothing over a rehearsal)
 it says "A Programming Run is in force: the 22:50 show (show 5) will NOT
 start. Press Stop, choose Show, then Run." It is a banner on 1.0's show
@@ -1573,7 +1569,7 @@ screen and Schedule screen, an alert on 2.0's show screen, and part of the
 answer to a schedule save.
 It goes as soon as Run is pressed.
 
-## Stop, Hold and Reset on the rack screen
+## Stop, Hold and Resume on the rack screen
 
 Jeff, 2026-10-28 and 2026-10-30. Each screen has one Stop, where Stop
 has always been, and it is there only while there is something for it to
@@ -1592,7 +1588,8 @@ stop:
   button (it pulses and reads Tap again) and sends nothing; a second tap
   within 2 seconds, with the same finger, mouse or key, sends Stop. A lone
   tap goes back by itself after 2 seconds. A held key never counts twice.
-- **What Stop does** (everything Abort does, and it latches nothing):
+- **What Stop does** (everything the removed Abort did, and it latches
+  nothing):
   every flame group and every laser is disarmed first, the lasers are
   blanked at once, the hazers go off, a timed purge, live flame
   programming, the fireball, the cleaning and the laser tests end at
@@ -1614,8 +1611,7 @@ stop:
   now pressed while the rig is still being taken dark waits up to 3 s for
   it, and is refused with what to do if a device is slower than that). Every screen says **Held after Stop:
   press Resume**. Only **Resume** ends it (pressed with nothing held, it
-  just releases it); **Reset does not** (it can still clear the fault
-  flag), and neither does Continue anyway. A show whose time comes during
+  just releases it); Continue anyway does not. A show whose time comes during
   the Hold waits as a delayed show for Start now. **Start now** still works
   from it, as an explicit start with its rig check: it starts that one
   show, and the Hold comes back when that show ends. Every Stop takes
@@ -1654,27 +1650,22 @@ stop:
   flamesafe take a Stop's disarm from any screen, so a reflex press right
   after a Stop does not quietly re-arm a group.
 - **Hold** pauses the show where it is (or, between shows, keeps the next
-  show from starting). **Resume** carries on.
-- **Reset** works from Hold. With a show paused on Hold, Reset ends that
-  show: it fades to dark, nothing is latched, and no flame group is
-  disarmed. With the schedule on Hold between shows, Reset ends the Hold.
-  Either way it also clears the fault flag, and it never starts or
-  continues a show by itself: a show whose time has already come waits as
-  a delayed show for Start now (even one still inside the late grace), the
-  next show starts at its own time (only while Run is pressed), and if an
-  alert is open at that time the schedule still holds for it.
-  After an Abort, Reset ends the Abort as it always has; if the schedule is
-  also on Hold, a second Reset ends the Hold.
-- **ABORT** keeps its own meaning for now (it is being removed: Stop now
-  does everything it did): tap twice, the show stops, everything is
-  disarmed, and the rig stays latched until Reset.
+  show from starting). **Resume** carries on. Resume ending a Hold also
+  clears the fault flag.
+- **There is no Abort and no Reset** (removed, Jeff, 2026-10-30). Stop does
+  everything Abort did, with no latch; Resume is what carries on after a
+  Stop or a Hold. The hardware e-stop is the emergency layer. A tonight's
+  list or a latch file saved by an older version with an Abort still
+  standing is read as a Stop's Hold: nothing starts by itself until
+  Resume, and every show on the list is kept.
 
-**Reset says how the rig stands** (Jeff's field report, 2026-10-28). After
-Reset the line under the buttons, and the journal, say each part in plain
+**Resume says how the rig stands** (Jeff's field report, 2026-10-28, for
+the Reset that was removed). After a Resume the line under the buttons,
+and the journal, say each part in plain
 words, in this order: audio, pixels, flame link (and which groups are
 armed), timecode (and the frame it holds for MadMapper), MadMapper (its
-heartbeat), BEYOND, lasers and the laser arm, announcements. For example:
-"Reset done. The rig stays dark until a show starts. Audio ready. Pixels
+heartbeat), BEYOND, lasers and the laser arm, announcements. For example,
+after Resume's own words: "Audio ready. Pixels
 ready. Flame link OK, all groups disarmed. Timecode ready, holding
 00:01:27:10 for MadMapper until the next show. MadMapper running:
 heartbeat not seen yet (it must follow once a show starts; Start now sets
@@ -1683,17 +1674,18 @@ laser arm disarmed. Announcements ready." Anything not ready says so in
 capitals with what to do ("MadMapper NOT RUNNING: start MadMapper and its
 project."), and the line ends with "Needs attention:" and the list.
 MadMapper's heartbeat only arrives while a show's video is moving, so
-after Reset it reads "not seen yet"; the alert below says if it does not
+after a Resume between shows it reads "not seen yet"; the alert below
+says if it does not
 follow once the show runs.
 
-**After an Abort the video follows the next show by itself.** Every Abort
+**After a Stop the video follows the next show by itself.** Every Stop
 (and a stopped show, and a failed start) ends by stopping MadMapper's
 show bank. On the bench (B2) a stopped bank stayed stopped even while
 timecode kept arriving, until it was told to play again. So every show
 start (Start now, a scheduled show, Programming's Play from) now selects
 the show bank and then tells it to play, MadMapper's own documented
 message, before the show audio starts. Under External Sync that puts the
-bank back to following the timecode: Abort, Reset, Start now should not
+bank back to following the timecode: Stop, Resume, Start now should not
 need anything touched in MadMapper.
 
 **MadMapper is not following timecode.** If the show's timecode has been
@@ -1717,7 +1709,7 @@ now that cannot work is refused at once with the same words, and adds no
 FAULT line. Right after Run the show audio takes a few seconds to load:
 Start now then says "audio loading, starts when ready". Pressed then, it
 waits for the audio (at most 20 seconds) and reads **Loading, starting when
-ready**; the show starts as soon as the audio is in. Hold, Stop or Abort
+ready**; the show starts as soon as the audio is in. Hold or Stop
 cancels the wait and nothing starts, and so does any Hold the program
 makes itself (for an announcement, or at showtime for an open alert).
 While a Stop is still disarming and fading to dark, Start now and Run on
@@ -1739,10 +1731,8 @@ What each end leaves on the pixels:
 | A Start now show ends by itself | the idle look, even with nothing else tonight |
 | Programming's Play reaches the end of the cue | the idle look |
 | Stop | black, and the schedule on Hold (Run stays on) |
-| Abort during a show | black, latched until Reset; dark after Reset until a show starts |
-| Abort during Programming playback | the idle look; nothing latches |
 | A show that started and then failed | black |
-| A start refused before anything went out (Auto start off, an Abort standing, the show audio not ready) | left as they were |
+| A start refused before anything went out (Auto start off, the show audio not ready) | left as they were |
 
 **No black frame between the show and the idle look** (Jeff's report,
 2026-10-30: "a little blip of black when we go from intermission to the
@@ -1752,7 +1742,7 @@ ends on the next whole timecode frame after the lights file ends, up to
 (25 ms) before the idle look. Now the lights file's last frame stays up
 through it, at most 2/30 s, and the idle look follows on the next frame.
 That is the same with the show file's Intermission cue after the show or
-without it. A Hold, an Abort or a Stop in that moment still goes black at
+without it. A Hold or a Stop in that moment still goes black at
 once. Show audio (or `clock.zones.show_len_s`) that ends up to one
 timecode frame (1/30 s) after the lights file is covered by the same
 hold: the last frame stays up, not black. If it runs on longer than that,
@@ -1766,20 +1756,18 @@ is unchanged.
 
 After a Start now show ends by itself with nothing else tonight, the
 night closes and the pixels stay on the idle look all through the closed
-night, until the next show starts. Abort then still disarms every flame
+night, until the next show starts. Stop then still disarms every flame
 group, blanks and disarms the lasers, turns the hazers off, lets go of
-any hold to arm and clears the purge selection and laser tests, but there
-is no show to stop: the screen says "No show was stopped", nothing
-latches, and the pixels stay on the idle look. Stop is a complete halt (the journal says "held
-Stop on the ...: a complete halt"); with no show running it ends no show,
-but it turns Run off, and turning Run off sends black to the pixels.
+any hold to arm and clears the purge selection and laser tests (a
+complete halt), takes whatever look is up down to dark, and puts on a
+Stop's Hold; it never turns Run off.
 
 **Every start clears it.** Start now, a scheduled start and Programming's
 Play from all clear the pixels for the show in the same one place,
 whatever ended the show before:
 
-- the show conductor's black (the closing, a stopped or failed show, an
-  Abort since Reset), and a stale record of it;
+- the show conductor's black (the closing, a stopped or failed show),
+  and a stale record of it;
 - on Start now and a scheduled start, also a black or preshow look put
   on the pixel output before the start. The Fire & Ice screens have no
   Black or Preshow button; only the engine's override can set one. On
@@ -1793,23 +1781,24 @@ whatever ended the show before:
 
 Nothing goes dark for it: the look that is up (the idle look, a Preshow,
 the closing black) stays until the show's first frame, and the show takes
-over on that very frame. A Hold, an Abort or a Stop after the start is
+over on that very frame. A Hold or a Stop after the start is
 not touched and holds, and so does a look set through the engine's
-override. That includes a Hold, an Abort, a Stop or
+override. That includes a Hold, a Stop or
 a failed start before the show's first frame, or in the moment between
 that frame and the show being confirmed: the pixels go black, never the
-show, whatever ended the show before (a Stop, an Abort and Reset). The pre-roll blacks MadMapper's surfaces,
+show, whatever ended the show before. A Stop that lands before the start
+hands the pixels to the show sends nothing out at all. The pre-roll blacks MadMapper's surfaces,
 never the pixels.
 
 The journal says it at every start, in the same words, for example "Show 4
 start: the pixel output is cleared for the show (the show conductor's
 black from between shows). The black stays up until the first show frame
-goes out, and the show takes over on that frame. A Hold, an Abort or a
-Stop after this start still holds." and then "Show 4: the
+goes out, and the show takes over on that frame. A Hold or a Stop after
+this start still holds." and then "Show 4: the
 first show frame went out on the pixels 0.21 s after the start was sent."
 
 **If the pixels are ever on a look while a show plays** (anything but a
-Hold's or an Abort's own fade), after 1.5 s the rack screen and the Stream
+Hold's or a Stop's own fade), after 1.5 s the rack screen and the Stream
 Deck show it as a flame cues fault: "CUES FAULT: pixels show black, not
 the show. Programming: Show file card, Stop, then Run. On 2.0, Open in
 1.0 first. Scheduled show: tell Jeff." That Stop is the one on the "Show
@@ -1884,8 +1873,8 @@ unless set).
 **What the audience sees and hears: nothing.** Nothing is played, armed,
 fired or lit. The lasers get one more blank (a blank only darkens). The
 screens go black for the video test and stay black until the show's own
-start brings them up (a moment after the first frame). Abort, Stop and
-Hold during the check end it at once; nothing starts.
+start brings them up (a moment after the first frame). Stop and Hold
+during the check end it at once; nothing starts.
 
 **When it fails.** A **rig check** alert names each failed check in plain
 words ("Video FAILED: MadMapper did not answer the timecode"), the booth
@@ -1951,7 +1940,7 @@ lock screen (unlocked by Windows Hello, with no key). A window nobody is
 using does not stop it. For 2 s after the
 rack screen comes to the front with no touch in it, a key that would
 start or arm something is ignored (it was typed for another program);
-Abort, Hold, Stop and every Disarm or Off key always work.
+Hold, Stop and every Disarm or Off key always work.
 
 How the output is judged: the rack screen's display is where its window
 is (unless MadMapper's output sits over it there: then that display is
@@ -1998,8 +1987,8 @@ choices:
   when and every failed check. It is used once per failed check, and not for a check
   more than 10 minutes old. When the show ends, everything it left off
   is back for the next one, which is checked again in full. Continue anyway
-  never gets past an Abort (press Reset), a Stop under way, the hold to
-  arm or the flame link's rules. The scheduler never continues by itself.
+  never gets past a Stop under way, the hold to arm or the flame link's
+  rules. The scheduler never continues by itself.
 
 ## Start at a cue (play-from cues, Show mode)
 
@@ -2106,15 +2095,15 @@ time the night plans for a show and is not used here.
   file), never to BEYOND, never by broadcast, whatever the lasers'
   blanking mode. The held frame stops when the next show starts, or on
   Stop.
-- **Abort** (Jeff's field report, 2026-10-28) fades and stops the show as
-  before, and then the timecode HOLDS on the aborted show's last frame for
-  MadMapper, the same way as at the end of a show (MadMapper alone, never
-  BEYOND, never by broadcast, never the pixels), until the next show
-  starts or Stop. An Abort after the end keeps the held frame. Flames,
-  lasers, fuel and the Abort latch are exactly as before: everything is
-  disarmed, the lasers stay blanked, and Reset is still needed.
-- **Stop** is as before: it stops the timecode at once, including after
-  the audio has ended. A longer show never delays Stop or Abort.
+- **The show's Stop** (Jeff's field report, 2026-10-28, for the Abort it
+  replaced) fades and stops the show, and then the timecode HOLDS on the
+  stopped show's last frame for MadMapper, the same way as at the end of
+  a show (MadMapper alone, never BEYOND, never by broadcast, never the
+  pixels), until the next show starts. A Stop after the end keeps the
+  held frame. Everything is disarmed and the lasers stay blanked.
+- **Stop on the show file card** (it ends playback and turns Run off)
+  stops the timecode at once, including after the audio has ended. A
+  longer show never delays either Stop.
 
 ## Stopping
 
@@ -2224,19 +2213,19 @@ example
   installer again. INSTALL.md has the rest.
 
 A device on the show network signed out is view only, and arming from it
-still needs "Arming from a screen" on. Nothing about Abort, Hold or Stop
+still needs "Arming from a screen" on. Nothing about Hold or Stop
 changes.
 
  Once users are set up (USERS.md), an
 iPad signed out is view only, like every screen ("Signing in" above); it
-can still Stop, Hold, Abort, Acknowledge and disarm. Anything on the show
+can still Stop, Hold, Acknowledge and disarm. Anything on the show
 Wi-Fi that can reach that address can see the page, so keep the show Wi-Fi
 to the crew.
 
 After the last show of the night, everyone is signed out on their own:
 10 minutes after the last show ends, every screen that was signed in
-before it ended is signed out, once. It waits while a show is live, on
-Hold or aborted, and while anything is armed or going on at the rig (a
+before it ended is signed out, once. It waits while a show is live or on
+Hold, and while anything is armed or going on at the rig (a
 hold to arm, a purge, a laser test, an armed laser or flame group), and
 goes as soon as that is clear. Anyone who signs in after the last show
 ended stays signed in for the rest of the night. It only happens on a
@@ -2248,33 +2237,27 @@ On the iPad, on the show Wi-Fi, open `http://<that address>:7878/`. It goes
 straight to the show screen. Everything you need during a show is on that
 one screen, with no scrolling: the show state, the timecode, the current
 show and how long is left in it, the next show, Start now, Hold, Resume,
-Reset, the flame groups and the status strip along the top (deck,
-flamesafe, audio, video, lasers, pixels). ABORT is a red stop sign in the
-bottom right corner, on every screen, always in sight (it stays there while
-the page scrolls; there is no gesture to find it). The page keeps a strip
-free down its right edge, so no other button is ever under the sign. Point
-at it (or reach it with the Tab key) and a line beside it says what a press
-does now, for example "Nothing to abort right now". Abort is a DOUBLE TAP,
-with no pop-up: the first tap only makes the sign bigger and flashing, with
-TAP AGAIN TO ABORT on it (it grows upward, inside the free strip, so it
-never covers another button), and sends nothing; a second tap anywhere on
-the big sign while it is big (2 seconds) aborts, exactly as before, however
-fast the second tap comes. Any finger works, two
-different fingers too, or the mouse twice (a double click), or Enter or
-Space twice (holding the key down counts once); a finger then the mouse
-counts as one tap. After 2 seconds
-with no second tap the sign goes back by itself and nothing happened. It
-works signed out, and with the connection lost it still sends and says
-plainly if the engine did not answer. The Stream Deck's Abort is unchanged. If you pinch-zoom an iPad in on part of the page, the sign
-is only in view when the zoomed part includes the bottom right corner: zoom
-back out to find it. Start now asks once too. Hold, Resume and Reset are one
-press. Disarm all flame groups is one press and never asks. It is a plain
-disarm: every group goes off, and a group is armed again by holding its
-button, with no Reset. Abort is different: it stops the
-show, and every group then needs Arm again (let go, then hold) after Reset.
-If the Stream Deck program is not running, or flamesafe does not report
-every group off within a second, Disarm all flame groups disarms them the
-way Abort does instead, and says so.
+the flame groups and the status strip along the top (deck, flamesafe,
+audio, video, lasers, pixels). Stop is where Stop has always been, in
+Start now's place while there is something to stop (see Stop, Hold and
+Resume on the rack screen): a DOUBLE TAP, with no pop-up. The first tap
+only changes the button (it pulses and reads Tap again) and sends
+nothing; a second tap within 2 seconds sends Stop, however fast it comes.
+Any finger works, two different fingers too, or the mouse twice (a double
+click), or Enter or Space twice (holding the key down counts once); a
+finger then the mouse counts as one tap. After 2 seconds with no second
+tap the button goes back by itself and nothing happened. It works signed
+out, and with the connection lost it still sends. A Stop that did not do
+all of it (its flame disarm failed, a part failed, it was refused, or the
+engine did not answer) stays on the screen as a banner until Seen. There
+is no Abort sign any more (removed, Jeff, 2026-10-30); the hardware
+e-stop is the emergency layer. Start now asks once too. Hold and Resume
+are one press. Disarm all flame groups is one press and never asks. It is
+a plain disarm: every group goes off, and a group is armed again by
+holding its button. A Stop is different: every group then needs Arm
+again (let go, then hold). If the Stream Deck program is not running, or
+flamesafe does not report every group off within a second, Disarm all
+flame groups disarms them the way Stop does instead, and says so.
 
 The lasers have ONE pill in the status strip, one plain sentence: who is
 armed and BEYOND's laser output, for example "Lasers: all disarmed, output
@@ -2363,7 +2346,7 @@ audio.
 While Programming is playing, Hold on any screen or the Stream Deck
 pauses it the same as Pause, and also holds the schedule, so no show
 starts until someone presses Resume (Continue carries the playback on but
-leaves the schedule held). Abort (after it disarms every flame group and
+leaves the schedule held). Stop (after it disarms every flame group and
 laser, as always) stops the playback the way Stop the show audio does.
 Start now and Run are refused while Programming is playing: stop the
 Programming playback first.
@@ -2387,7 +2370,7 @@ scrubbing" was removed): while you play here, the show's own flame cues go
 to flamesafe and only armed groups fire. The Programming screen says so in
 one line, and shows in full why the flame cues cannot go out when they
 cannot. While flames follow the transport, only the show PC or an admin
-can move the position, the loop or the marks. Hold, Stop or Abort ends it.
+can move the position, the loop or the marks. Hold or Stop ends it.
 LIVE_FLAME_PROGRAMMING.md, "Flames in Programming playback", has the rules.
 
 The time zone on the schedule card is a list of plain names (for example
@@ -2395,8 +2378,8 @@ Mountain Time (Denver)); the show's local time is shown under it. The
 engine checks the zone again when the schedule is saved.
 
 Each flame group has ONE button, and its colour is the group's state:
-green armed, bronze off, amber held back (flashing: re-arm needed after an
-Abort, a fault or a lost link), WAIT (the re-arm wait). While the group is
+green armed, bronze off, amber held back (flashing: re-arm needed after a
+Stop, a fault or a lost link), WAIT (the re-arm wait). While the group is
 off the button is Hold to arm: press and hold it, as before. While the group
 is armed or asked for, the button still says the state in big letters
 (ARMED, ARM AGAIN, WAIT), with DISARM under it and "One press disarms": one
@@ -2430,7 +2413,7 @@ flamesafe.json flamesafe uses, check LTC Player reads that same file, then
 quit LTC Player and start it again). It is display only: it never holds
 a show at showtime, never sounds
 the booth speaker and changes nothing on the Stream Deck (no ACK key, page
-2 stays open). Stop, Hold, Abort and Disarm all work as usual while it
+2 stays open). Stop, Hold and Disarm all work as usual while it
 is up, and it clears itself once the lists agree. Both
 programs also write their aim list and the file they read to the journal
 when they start.
@@ -2449,14 +2432,14 @@ every hold still under way is let go; a group the Stream Deck already armed
 during the hold stays armed (its button then reads Disarm). A
 group that is locked out, still in its re-arm wait or refused stays out, and
 the line beside it names each one and why. While live flame programming is
-on with one group at a time (or turns on during the hold), or an Abort
-stands, Arm all arms nothing, stops, and says so. While any
+on with one group at a time (or turns on during the hold), Arm all arms
+nothing, stops, and says so. While any
 group is armed or asked for (one or several), or the lamps are not known, it
 reads Disarm all flame groups: one press, as before. With arming from a
 screen switched off it always reads Disarm all flame groups.
 
 If the page shows a red CONNECTION LOST bar, the iPad has lost the engine.
-The show carries on by itself and a Hold stays held. Start now, Resume, Reset
+The show carries on by itself and a Hold stays held. Start now, Resume
 and the programming buttons go grey until it is back.
 
 Arming from the iPad or the rack screen (when screen arming is switched on;
@@ -2528,13 +2511,11 @@ is live), and flamesafe with the Stream Deck (what the show PC's LTC
 Player says about each program, and why one is not running). The card
 goes away once a show file and a schedule exist.
 
-The Abort confirm lists what the press will do from this screen and, in
-red, what it cannot: with no flame link in the engine, the flames are NOT
-disarmed from the screen (the Stream Deck's group keys and Stop, and the
-hardware e-stop, are), and with no BEYOND OSC address the lasers are not
-blanked from here.
-After the press, the engine's answer stays on the screen as a banner until
-it is seen, never only as a one-line note.
+After a Stop, the engine's answer says what it did and, if any part did
+not work (with no flame link in the engine the flames are NOT disarmed
+from the screen: the Stream Deck's group keys and Stop, and the hardware
+e-stop, are), it stays on the screen as a banner until it is seen, never
+only as a one-line note.
 
 ## Interface 2.0 (being tried, 1.0 stays)
 
@@ -2597,12 +2578,12 @@ the same 1.0 button sends, with the same holds, confirms and refusals.
   them.
 - The 2.0 SHOW screen, top to bottom: one line that says what to do next;
   the show state, the timecode and the time left; the big button for the
-  next step (Run show, Start now, Resume or Reset), Hold and Stop show; one
+  next step (Run show, Start now or Resume), Hold and Stop show; one
   alert at a time with Acknowledge (tap the words for the details); a tile
   per flame group and one for the lasers, with Hold: arm flames and Disarm
   flames (flames only; the lasers' tile has its own Disarm lasers); the
-  announcements and the wind along the bottom, left of Abort in its
-  corner, 96 px, tap twice. Tap "Announce" for what the announcements do. Run show is the 1.0 Run in Show mode, on the show PC only.
+  announcements and the wind along the bottom. Tap "Announce" for what
+  the announcements do. Run show is the 1.0 Run in Show mode, on the show PC only.
 - Anything live that has to be stopped by hand (the wave flamer cleaning,
   live flame programming) sits in the next-step
   line with its own red Stop, on every tab, never behind another alert,
@@ -2614,9 +2595,9 @@ the same 1.0 button sends, with the same holds, confirms and refusals.
 - A Disarm that is refused stays in the alert slot until Seen, and the
   next step says to use the Deck or the e-stop. With no contact the slot
   says Connection lost.
-- Abort does not depend on the rest of the page: if the page did not load
-  whole it says "Page not fully loaded. Reload it." across the top, and
-  Abort still works.
+- Stop does not depend on the rest of the page: if the page did not load
+  whole it says "Page not fully loaded. Reload it." across the top, with
+  its own Stop show button, which still works (a double tap).
 - The rig check before a show: the big button says Checking rig while it
   runs. When it fails, the alert slot says so and its button is 1.0's
   "Hold: continue anyway" (a hold; a tap does nothing). On the show PC the

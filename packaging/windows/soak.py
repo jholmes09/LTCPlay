@@ -44,9 +44,9 @@ blocks). Each block waits until both programs answer, saying what to click;
 between blocks everything stops cleanly and the operator quits and starts
 both programs again. One combined report, with a section for each block.
 
-Not exercised: Hold, Resume and Abort (no page route presses them in this
-build; they come with the iPad remote, PR #39), announcements, real LTC
-input, and anything actually lighting up.
+Not exercised here: announcements, real LTC input, and anything actually
+lighting up. (The exerciser, soak_exercise.py, presses Hold, Resume and
+Stop.)
 """
 import csv
 import json
@@ -1423,7 +1423,7 @@ class Soak:
         """BEYOND's own timecode stream (fallback mode): hour
         BLACK_HOUR is the black zone; anything else is the show's, which
         is a fault while the lasers must be dark: no show timecode moving
-        to MadMapper, or inside the exerciser's Hold or Abort."""
+        to MadMapper, or inside the exerciser's Hold or Stop."""
         if self.stopping or len(b) < 19 or b[:8] != b"Art-Net\0" or \
                 struct.unpack_from("<H", b, 8)[0] != 0x9700:
             return
@@ -2511,13 +2511,14 @@ class Soak:
                  in str(r).lower()]
         failed = [(n, r) for n, (st, r) in sorted(self.slots.items())
                   if st == "FAULT" and n not in early]
-        # The exerciser Aborts every other show 40 s before its end: an
-        # Abort it pressed is a show that ran, not a failure.
+        # The exerciser Stops every other show 40 s before its end: a
+        # Stop it pressed is a show that ran, not a failure (status
+        # ABORTED, the status a stopped show keeps).
         aborted = sum(1 for st, _r in self.slots.values() if st == "ABORTED")
         out.append(("PASS" if (done or aborted) and not failed else "FAIL",
                     "Scheduled shows (the scheduler starting each show)",
                     f"{done} show(s) played to the end, {aborted} stopped by "
-                    f"the exerciser's Abort near the end, {len(failed)} failed "
+                    f"the exerciser's Stop near the end, {len(failed)} failed "
                     f"to start (limit 0)" + (": " + "; ".join(
                         f"show {n}: {r}" for n, r in failed[:5])
                         if failed else "") + (
@@ -2626,7 +2627,7 @@ class Soak:
                     + f"; {sc.events} packets, {self.sacn_nonzero} not all "
                     f"zero. A group's channels may carry values only while "
                     f"flamesafe reports it armed, and its fire channels only "
-                    f"in a show, never in a Hold, never after an Abort until "
+                    f"in a show, never in a Hold, never after a Stop until "
                     f"it is armed again."))
         # The engine on PORT is this soak's only while its own engine runs:
         # an earlier run's report, rewritten by the A/B while the next run

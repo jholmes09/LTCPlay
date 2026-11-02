@@ -10521,7 +10521,10 @@ def test_schedule_late_limit_round_two():
                              (118, "close to its limit", "118 s late"),
                              (120, "close to its limit", "exactly 120 s"),
                              (115, "starts at the next tick", "115 s late"),
-                             (121, "Next on the schedule is show 1", "121 s")):
+                             # Past it: the show waits for Start now,
+                             # never named as next (final review of #199).
+                             (121, "The delayed show 1 still waits for "
+                                   "Start now", "121 s")):
         n = _Night(S, rule)
         n.boot(_den(S, 17, 50))
         n.op(S.HOLD_ON, _den(S, 17, 59))
@@ -10592,6 +10595,64 @@ def test_schedule_late_limit_round_two():
                   s1.status in (S2.FAULT, S2.MISSED),
                   f"+{off} s with Run off: refused in words, not started: "
                   f"{s1.status} {[(r['outcome'], r['text']) for r in tried]}")
+    print("  ok")
+
+
+def test_schedule_resume_after_the_late_limit_delays_the_show():
+    section("scheduler (final review of #199): a Resume that lands after a "
+            "show's late limit passed during the Hold, before any Hold tick "
+            "marked it, leaves it DELAYED (waiting for Start now), never "
+            "MISSED a tick later, and its line does not name a past show "
+            "as next; a Resume of a Stop's Hold inside the limit starts "
+            "the due show at the next tick")
+    S = _sched()
+    if S is None:
+        return
+    from datetime import timedelta
+    rule = _one_night_rule(S, grace=120)
+
+    def stopped():
+        # Show 1 runs at 18:00 and is stopped at 18:05: a Stop's Hold,
+        # show 2 due at 18:20.
+        n = _Night(S, rule)
+        n.boot(_den(S, 17, 50))
+        n.tick(_den(S, 18, 0))
+        n.op(S.STOP_SHOW, _den(S, 18, 5), confirmed=True)
+        return n
+
+    def plain():
+        # A plain Hold at 17:59, show 1 due at 18:00.
+        n = _Night(S, rule)
+        n.boot(_den(S, 17, 50))
+        n.op(S.HOLD_ON, _den(S, 17, 59))
+        return n
+    for name, make, show, late_at in (
+            ("a plain Hold", plain, 1, _den(S, 18, 2, 1)),
+            ("a Stop's Hold", stopped, 2, _den(S, 18, 22, 1))):
+        n = make()
+        held = n.m.state == S.HOLD and \
+            n.m.stop_hold == (make is stopped)
+        o = n.op(S.RESUME, late_at)
+        txt = " ".join(le.text for le in o.log)
+        at_resume = n.m.slot(show).status
+        n.tick(late_at + timedelta(seconds=0.25))
+        check(held and at_resume == S.DELAYED and
+              n.m.slot(show).status == S.DELAYED and
+              f"The delayed show {show} still waits for Start now" in txt and
+              f"Next on the schedule is show {show} " not in txt,
+              f"{name}, Resume 121 s late: show {show} waits: {held} "
+              f"{at_resume} {n.m.slot(show).status} "
+              f"{n.m.slot(show).reason!r} {txt!r}")
+        n.audit(name)
+    # A Stop's Hold ended inside the limit: the due show starts.
+    n = stopped()
+    n.op(S.RESUME, _den(S, 18, 21))
+    o = n.tick(_den(S, 18, 21, 0, 250000))
+    check(_fired(o, S) == [2] and n.m.state == S.SHOW and
+          n.m.slot(2).status == S.RUNNING,
+          f"Resume of a Stop's Hold 60 s late starts show 2: "
+          f"{_fired(o, S)} {n.m.state} {n.m.slot(2).status}")
+    n.audit("a Stop's Hold, Resume inside the limit")
     print("  ok")
 
 
@@ -10940,7 +11001,7 @@ def _matrix_fixtures(S):
     return fx
 
 
-def test_abort_and_hold_never_refused_for_who_or_where():
+def test_stop_and_hold_never_refused_for_who_or_where():
     section("scheduler: Stop and Hold are taken with no operator chosen, a "
             "name not on the list, or no screen, and journaled so; Start "
             "now, Resume and edits still need an operator (PR #43 fix round "
@@ -11111,8 +11172,8 @@ def test_schedule_state_machine_every_state_every_event():
           "the matrix did not run every cell")
 
     # Operator events must name someone on the list, and a screen: all but
-    # Abort and Hold, which are taken whoever pressed them and wherever
-    # (PR #43 fix round 1; tested in test_abort_and_hold_never_refused_for_
+    # Stop and Hold, which are taken whoever pressed them and wherever
+    # (PR #43 fix round 1; tested in test_stop_and_hold_never_refused_for_
     # who_or_where).
     for kind in [k for k, a in S.EVENT_ACTORS.items() if "operator" in a
                  and k not in S.ALWAYS_TAKEN]:
@@ -11577,7 +11638,7 @@ def test_schedule_extra_show_and_the_next_slot():
     print("  ok")
 
 
-def test_schedule_abort_end_night_and_operator_actions():
+def test_schedule_end_night_and_operator_actions():
     section("scheduler: End night, Skip, Delay and tonight's edits")
     S = _sched()
     if S is None:
@@ -15226,13 +15287,13 @@ def test_schedule_saved_after_the_night_closed_plans_tonight_at_once():
     print("  ok")
 
 
-def test_schedule_saved_keeps_show_hold_and_abort():
+def test_schedule_saved_keeps_show_and_hold():
     section("scheduler (Jeff, Pico, 2026-10-29): a schedule saved during a "
             "show leaves the show and its status alone and rebuilds once it "
             "has ended; saved on Hold it stays on Hold and starts nothing; "
-            "saved after an Abort the latch stays and nothing starts; a "
-            "night closed with Close for the night stays closed; a slot "
-            "made due in the past is missed or delayed, never started")
+            "a night closed with Close for the night stays closed; a "
+            "slot made due in the past is missed or delayed, never "
+            "started")
     S = _sched()
     if S is None:
         return
@@ -34242,9 +34303,10 @@ def _cond_live(c, rig):
     del rig.calls[:]
 
 
-def test_conductor_abort_cuts_flames_at_once_and_fades_the_rest():
-    section("conductor: Abort zeroes and disarms the flames at once, fades "
-            "lasers, video, pixels and music together over 1 s, and latches")
+def test_conductor_stop_cuts_flames_at_once_and_fades_the_rest():
+    section("conductor: Stop (Abort's sequence, since 2026-10-30) zeroes "
+            "and disarms the flames at once, fades lasers, video, pixels "
+            "and music together over 1 s, and latches nothing")
     C = _cond_mod()
     check(C.HOLD_FADE_S == 0.25, "production Hold fades over 0.25 s")
     check(C.ABORT_FADE_S == 1.0, "Abort fades over 1 s")
@@ -34344,7 +34406,7 @@ def test_conductor_failed_start_leaves_groups_as_they_are():
     print("  ok")
 
 
-def test_conductor_abort_mid_hold_fade_wins():
+def test_conductor_stop_mid_hold_fade_wins():
     section("conductor: Abort during a Hold's fade takes over at once and "
             "the Hold never finishes")
     c, rig, T, lines = _cond()
@@ -36343,7 +36405,7 @@ def test_streamdeck_reconnect_resets_hold_state_and_key_snapshot():
           f"happened after the reconnect: {events}")
 
 
-def test_streamdeck_abort_same_pass_as_arm_hold_completion():
+def test_streamdeck_stop_same_pass_as_arm_hold_completion():
     section("Stream Deck: a Stop firing in the SAME main-loop pass an "
             "arm-hold completes in must never also arm the group Stop just "
             "disarmed (item 3, round 2 of the safety review; the deck's "
@@ -37394,7 +37456,7 @@ def test_conductor_devices_hold_blanks_beyond_before_anything_fades():
     print("  ok")
 
 
-def test_conductor_devices_abort_blanks_at_once_never_ramps():
+def test_conductor_devices_stop_blanks_at_once_never_ramps():
     section("conductor + devices: Abort blanks BEYOND at once (never a "
             "brightness ramp; beyond.py's 0/100 allow-list is unchanged), "
             "before the video and music fade, then stops the video bank")
@@ -39217,7 +39279,7 @@ def test_beyond_a_blank_cuts_an_unblank_short_from_any_thread():
     print("  ok")
 
 
-def test_conductor_abort_is_never_held_up_by_a_slow_device():
+def test_conductor_stop_is_never_held_up_by_a_slow_device():
     section("conductor: Abort's flame cut and laser blank go out within a "
             "few ms of the press, whatever BEYOND, the laser gate or an "
             "announcement is doing (review of PR #29, finding D)")
@@ -39497,7 +39559,7 @@ def test_conductor_hears_about_madmapper_failures_and_stalls():
     print("  ok")
 
 
-def test_conductor_a_failed_abort_blank_can_be_sent_again():
+def test_conductor_a_failed_stop_blank_can_be_sent_again():
     section("conductor: BEYOND unreachable at Abort; a second Abort, a "
             "second Hold and intermission() all send the blank again and "
             "say how the lasers really stand (review of PR #29, finding B)")
@@ -39560,7 +39622,7 @@ def test_conductor_a_failed_abort_blank_can_be_sent_again():
     print("  ok")
 
 
-def test_conductor_video_never_rises_after_abort_or_hold():
+def test_conductor_video_never_rises_after_stop_or_hold():
     section("conductor: Abort or Hold during a Resume's video fade-up stops "
             "it where it is and fades down from there, never up to full "
             "first (review of PR #29, finding C)")
@@ -40143,7 +40205,7 @@ def test_schedule_failed_start_leaves_groups_and_raises_an_alert():
 
 
 def test_schedule_restart_after_a_stopped_show_stays_dark():
-    section("scheduler: a restart after an Abort, a failed start or a cut "
+    section("scheduler: a restart after a failed start or a cut "
             "show stays dark until the operator acts or the next show "
             "starts; it no longer brings the intermission loop back")
     S = _sched()
@@ -41870,7 +41932,7 @@ def test_beyond_timecode_needs_one_route_through_the_gate():
     print("  ok")
 
 
-def test_beyond_restore_never_outruns_an_abort_blank():
+def test_beyond_restore_never_outruns_a_stop_blank():
     section("fire & ice: an Abort's blank that lands after a laser "
             "restore's last check, and before the restore lights BEYOND's "
             "timecode, always wins (review of PR #43, P0-3), reproduced "
@@ -42804,7 +42866,7 @@ def _fi_rig_touched(calls, since=0):
             k.startswith("music_") or k.startswith("flames_")]
 
 
-def test_fire_ice_abort_reset_start_now_video_follows_again():
+def test_fire_ice_stop_resume_start_now_video_follows_again():
     section("fire & ice: after Stop, Resume and Start now MadMapper's show "
             "bank is set following timecode again: the Stop's "
             "conductor/stop is answered by conductor/play T right after "
@@ -43488,7 +43550,8 @@ def test_refused_starts_say_why_and_what_to_press():
 
 
 def test_reset_says_how_the_rig_stands():
-    section("Reset says, in plain words, how every subsystem stands: audio, "
+    section("Resume (Reset until 2026-10-30) says, in plain words, how "
+            "every subsystem stands: audio, "
             "pixels, flame link, timecode, MadMapper (its heartbeat), "
             "BEYOND, lasers, announcements; anything unhealthy in capitals "
             "with what to do; in the answer and the journal (Jeff's field "
@@ -47293,7 +47356,7 @@ def test_fire_ice_status_mirror_reaches_the_flame_link():
     print("  ok")
 
 
-def test_fire_ice_abort_and_hold_before_the_show_is_confirmed():
+def test_fire_ice_stop_and_hold_before_the_show_is_confirmed():
     section("fire & ice: a Stop or Hold pressed after a show cue started "
             "but before SHOW_CONFIRMED stops or freezes the music, even when "
             "an earlier Stop or failed start recorded it stopped (PR #43 "
@@ -47510,7 +47573,7 @@ def test_every_show_start_clears_the_pixels():
     section("pixels: every show start (Start now, a scheduled start, the "
             "Programming screen's Play) clears whatever dark the last show "
             "left (the closing black after a show that ended on its own, a "
-            "stale record of it, Stop, Abort and Reset), with the same "
+            "stale record of it, Stop and Resume), with the same "
             "journal line; a Start now show ends on the idle look; a look "
             "on the pixels during a show is a CUES FAULT (Jeff's report, "
             "2026-10-29)")
@@ -47786,7 +47849,7 @@ def test_every_show_start_clears_the_pixels():
     print("  ok")
 
 
-def test_closed_night_abort_and_stop_say_what_they_did():
+def test_closed_night_stop_says_what_it_did():
     section("pixels: in a closed night (after a Start now show) there is no "
             "Abort route (removed, Jeff, 2026-10-30); Stop is a complete "
             "halt that disarms the flames and ends no show, and says so "
@@ -47850,7 +47913,7 @@ def _px_after_stop(S, ff=False):
     return n
 
 
-def test_hold_abort_stop_black_the_pixels_after_a_start():
+def test_hold_and_stop_black_the_pixels_after_a_start():
     section("pixels: after a Stop and a new start, "
             "a Hold, a Stop or a failed start, before the first "
             "show frame or before the show is confirmed, still puts the "
@@ -53554,7 +53617,7 @@ def test_deck_fix_round_2_abort_reset_and_disarm():
 
 
 def test_remote_controls_reach_the_same_paths_and_journal_who_and_where():
-    section("iPad remote: Start now, Hold, Resume, Stop, Reset and disarm "
+    section("iPad remote: Start now, Hold, Resume, Stop and disarm "
             "go through the scheduler and conductor paths every other press "
             "uses, journaled with the surface they came from (no sign-in, "
             "Jeff 2026-10-07)")
@@ -54029,7 +54092,7 @@ def test_engine_refuses_run_with_a_bench_hook_outside_the_soak():
     print("  ok")
 
 
-def test_fire_ice_no_mirror_no_fault_on_every_abort():
+def test_fire_ice_no_mirror_no_fault_on_every_stop():
     section("flame link: with no status mirror in flamesafe's config an "
             "Abort raises no disarm fault (it cannot be confirmed here), "
             "one note says so when the link starts; with a mirror an "
@@ -54088,7 +54151,7 @@ def fl_confirm_s():
 def test_remote_stale_state_refused_and_banner():
     section("iPad remote: presses that act on what the page shows are refused "
             "on a status older than 2 s; the page shows a banner and turns "
-            "those controls off; Hold, Abort and disarm never wait on it")
+            "those controls off; Stop, Hold and disarm never wait on it")
     S = _sched()
     if S is None:
         return
@@ -79544,7 +79607,7 @@ window.__posts = [];
 
 def test_rack_screen_locks_controls_signed_out_in_a_browser():
     section("rack screen, drawn in a real browser at the rack sizes: signed "
-            "out with users on, Start now, Resume, Reset, Run, hold to arm, "
+            "out with users on, Start now, Resume, Run, hold to arm, "
             "laser arm and the settings switches are off and say Sign in "
             "to use controls; Hold, Abort, Disarm all and Disarm all lasers "
             "stay live; a press does not reach the engine; Sign out lets go "
@@ -83435,7 +83498,7 @@ def _arm_cond():
     return c, rig, T, lines, arm, out
 
 
-def test_laser_arm_abort_and_hold_disarm_and_need_rearming():
+def test_laser_arm_stop_and_hold_disarm_and_need_rearming():
     section("lasers (ruling 3): Stop and Hold disarm every laser at the "
             "press, playing or not, and the blank and DisableLaserOutput "
             "go out; Resume never re-arms, the gate keeps them dark; "
@@ -93882,7 +93945,7 @@ def test_fireball_doc_in_plain_words():
     for need in ("Fuel Charge", "Air Charge", "Valve Open", "Igniter",
                  "Purge", "toggles", "only while your finger",
                  "Nothing on this page arms", "hold to arm", "255",
-                 "Stop", "Hold", "Abort", "signing out", "All off",
+                 "Stop", "Hold", "signing out", "All off",
                  "fuel valve closed", "One screen at a time",
                  "turn\nFuel, Air, Purge off before arming",
                  "During a show too", "while Run is pressed",
@@ -94283,7 +94346,7 @@ def test_cleaning_group_and_config():
                  "pressurizes and depressurizes the pump", "no fire",
                  "armed 3 s", "disarmed 3 s", "Cycles done. Hold to start the "
                  "purge bursts", "1 s on, 1 s off", "straight up",
-                 "Fuel valve closed first", "Stop", "Abort",
+                 "Fuel valve closed first", "Stop",
                  "Signed out it is view only", "One screen at a time",
                  "A tap does nothing"):
         check(need in flat, f"OPERATOR.md's cleaning section says {need!r}")
@@ -97533,7 +97596,7 @@ def test_preroll_failure_holds_the_show_with_no_sound_and_no_fire():
     print("  ok")
 
 
-def test_preroll_late_start_hold_and_abort_during_the_check():
+def test_preroll_late_start_hold_and_stop_during_the_check():
     section("pre-roll: when it could not run before the time (Run pressed "
             "late, the app started inside the window) the show waits for "
             "the check and starts LATE, said in the journal, never "
@@ -104002,8 +104065,8 @@ def test_fireball_timeline_docs_in_plain_words():
                  "fireball_timeline_history",
                  "Interface 2.0, the Schedule tab, Fireball timeline",
                  "nothing is sent", "Sign in to edit", "Admins only",
-                 "Arming off here", "Hold, Stop show, Disarm flames and "
-                 "Abort stay at full strength", "Saved elsewhere: Revert",
+                 "Arming off here", "Hold, Stop show and Disarm flames "
+                 "stay at full strength", "Saved elsewhere: Revert",
                  "**Replace the file**", "the fields are locked",
                  "empties the rows", "**Keep editing**",
                  "**Discard my changes**", "**Could not read: Retry**",
@@ -104065,7 +104128,7 @@ def test_fireball_timeline_docs_in_plain_words():
               f"OPERATOR.md's charge section says {need!r}")
     s = _fb_doc_part("OPERATOR.md", "### In a show set to Timeline", "\n### ")
     for need in ("ignored, always", "ON (255)", "Purge (59) is never set",
-                 "**armed**", "Hold, Stop, Abort, a seek",
+                 "**armed**", "Hold, Stop, a seek",
                  "Never a double charge", "only while that tank is EMPTY",
                  "Fuel already charged: the Fuel stage was skipped (no "
                  "double charge).", "NOT KNOWN is skipped",
@@ -111127,7 +111190,7 @@ def test_start_at_cue_route():
           "a fresh, confirmed press on the Show row: operators may")
     here = os.path.dirname(os.path.abspath(__file__))
     users_md = open(os.path.join(here, "USERS.md"), encoding="utf-8").read()
-    check("| Start now, Start at a cue, Resume, Reset" in users_md,
+    check("| Start now, Start at a cue, Resume," in users_md,
           "USERS.md's matrix row names it")
     work = tempfile.mkdtemp()
     presses, journal = [], []
@@ -111536,16 +111599,17 @@ if __name__ == "__main__":
         test_schedule_late_rule,
         test_schedule_late_limit_is_two_minutes,
         test_schedule_late_limit_round_two,
+        test_schedule_resume_after_the_late_limit_delays_the_show,
         test_schedule_legacy_late_grace_is_migrated,
         test_schedule_handover_waits_for_the_grace_and_starts_nothing,
         test_schedule_state_machine_every_state_every_event,
-        test_abort_and_hold_never_refused_for_who_or_where,
+        test_stop_and_hold_never_refused_for_who_or_where,
         test_schedule_restart_guard_and_hold,
         test_schedule_hold_pauses_a_show,
         test_schedule_hold_between_shows_delays,
         test_schedule_start_now_in_every_state,
         test_schedule_extra_show_and_the_next_slot,
-        test_schedule_abort_end_night_and_operator_actions,
+        test_schedule_end_night_and_operator_actions,
         test_schedule_file_is_versioned_and_atomic,
         test_schedule_clock_check,
         test_schedule_routes,
@@ -111563,7 +111627,7 @@ if __name__ == "__main__":
         test_schedule_tonight_file_is_checked,
         test_schedule_rule_change_rebuilds_tonight,
         test_schedule_saved_after_the_night_closed_plans_tonight_at_once,
-        test_schedule_saved_keeps_show_hold_and_abort,
+        test_schedule_saved_keeps_show_and_hold,
         test_schedule_run_off_says_the_next_show_will_not_start,
         test_remote_schedule_save_says_what_tonight_holds,
         test_schedule_save_never_reopens_an_operator_closed_night,
@@ -111689,7 +111753,7 @@ if __name__ == "__main__":
         test_preroll_runner_unknown_is_failure_and_cancel_is_clean,
         test_preroll_scheduled_show_starts_at_its_time_when_healthy,
         test_preroll_failure_holds_the_show_with_no_sound_and_no_fire,
-        test_preroll_late_start_hold_and_abort_during_the_check,
+        test_preroll_late_start_hold_and_stop_during_the_check,
         test_preroll_start_now_checks_first_and_never_starts_on_a_failure,
         test_preroll_late_allowance_is_for_its_show_only,
         test_preroll_video_test_reaches_madmapper_alone,
@@ -111813,9 +111877,9 @@ if __name__ == "__main__":
         test_the_gpl_path_never_loads_devices,
         test_flamesafe_in_its_own_process,
         test_the_wall_between_ltcplay_and_flamesafe,
-        test_conductor_abort_cuts_flames_at_once_and_fades_the_rest,
+        test_conductor_stop_cuts_flames_at_once_and_fades_the_rest,
         test_conductor_failed_start_leaves_groups_as_they_are,
-        test_conductor_abort_mid_hold_fade_wins,
+        test_conductor_stop_mid_hold_fade_wins,
         test_conductor_resume_before_the_hold_fade_finishes,
         test_conductor_generation_guard_stops_a_stale_effect,
         test_conductor_announcements_hold_go_dark_then_play,
@@ -111833,7 +111897,7 @@ if __name__ == "__main__":
         test_streamdeck_stop_hold_face_and_ring_from_the_first_instant,
         test_streamdeck_no_flame_link_words,
         test_streamdeck_reconnect_resets_hold_state_and_key_snapshot,
-        test_streamdeck_abort_same_pass_as_arm_hold_completion,
+        test_streamdeck_stop_same_pass_as_arm_hold_completion,
         test_streamdeck_arm_fire_refuses_latched_and_refractory,
         test_streamdeck_refractory_also_starts_at_reset,
         test_streamdeck_draw_latched_shows_real_state_not_flat_off,
@@ -111866,17 +111930,17 @@ if __name__ == "__main__":
         test_streamdeck_reconnect_never_remembers_old_state,
         test_streamdeck_never_imports_flamesafe,
         test_conductor_devices_hold_blanks_beyond_before_anything_fades,
-        test_conductor_devices_abort_blanks_at_once_never_ramps,
+        test_conductor_devices_stop_blanks_at_once_never_ramps,
         test_conductor_devices_resume_unblanks_only_after_timecode_and_gate,
         test_conductor_devices_failures_missing_links_and_speed,
         test_conductor_devices_instant_video_lands_after_a_running_fade,
         test_conductor_devices_every_dark_path_fades_the_video_down_to_zero,
         test_conductor_devices_unknown_video_level_never_fades_from_full,
         test_beyond_a_blank_cuts_an_unblank_short_from_any_thread,
-        test_conductor_abort_is_never_held_up_by_a_slow_device,
+        test_conductor_stop_is_never_held_up_by_a_slow_device,
         test_conductor_hears_about_madmapper_failures_and_stalls,
-        test_conductor_a_failed_abort_blank_can_be_sent_again,
-        test_conductor_video_never_rises_after_abort_or_hold,
+        test_conductor_a_failed_stop_blank_can_be_sent_again,
+        test_conductor_video_never_rises_after_stop_or_hold,
         test_conductor_rehearsal_hold_mid_fade_never_records_the_video_lit,
         test_schedule_drives_the_show_conductor,
         test_schedule_conductor_calls_after_the_save_and_off_the_lock,
@@ -111896,13 +111960,13 @@ if __name__ == "__main__":
         test_flame_groups_are_a_settings_change_only,
         test_beyond_timecode_blanking,
         test_beyond_timecode_needs_one_route_through_the_gate,
-        test_beyond_restore_never_outruns_an_abort_blank,
+        test_beyond_restore_never_outruns_a_stop_blank,
         test_beyond_lasers_dark_when_the_engine_stops,
         test_fire_ice_serves_the_rack_screen_not_the_old_page,
         test_fire_ice_show_outputs,
         test_audio_master_per_call_fade,
         test_fire_ice_night_end_to_end,
-        test_fire_ice_abort_reset_start_now_video_follows_again,
+        test_fire_ice_stop_resume_start_now_video_follows_again,
         test_fire_ice_runner_reports_the_show,
         test_schedule_never_touches_the_rig_before_run,
         test_a_refused_start_sends_no_fade,
@@ -111934,10 +111998,10 @@ if __name__ == "__main__":
         test_every_show_start_clears_the_pixels,
         test_the_show_takes_over_the_pixels_on_its_first_frame,
         test_no_dark_frame_between_the_show_and_the_idle_look,
-        test_hold_abort_stop_black_the_pixels_after_a_start,
-        test_closed_night_abort_and_stop_say_what_they_did,
+        test_hold_and_stop_black_the_pixels_after_a_start,
+        test_closed_night_stop_says_what_it_did,
         test_fire_ice_show_log_is_written_off_the_logging_threads,
-        test_fire_ice_abort_and_hold_before_the_show_is_confirmed,
+        test_fire_ice_stop_and_hold_before_the_show_is_confirmed,
         test_fire_ice_show_end_burst_never_holds_up_the_flame_link,
         test_fire_ice_status_mirror_reaches_the_flame_link,
         test_ltc_serve_gpl_builds_no_conductor,
@@ -111983,7 +112047,7 @@ if __name__ == "__main__":
         test_windows_supervisor_never_passes_bench_hooks,
         test_windows_supervisor_sets_madmapper_back_to_normal,
         test_engine_refuses_run_with_a_bench_hook_outside_the_soak,
-        test_fire_ice_no_mirror_no_fault_on_every_abort,
+        test_fire_ice_no_mirror_no_fault_on_every_stop,
         test_remote_stop_disarm_never_waits_on_the_tonight_save,
         test_deck_requests_share_one_no_proxy_opener,
         test_remote_stale_state_refused_and_banner,
@@ -112105,7 +112169,7 @@ if __name__ == "__main__":
         test_laser_output_allow_list_is_exactly_the_three_addresses,
         test_laser_arm_by_laser_and_group_default_disarmed,
         test_laser_arm_groups_config_and_placeholders,
-        test_laser_arm_abort_and_hold_disarm_and_need_rearming,
+        test_laser_arm_stop_and_hold_disarm_and_need_rearming,
         test_laser_arm_disarm_never_waits_on_beyond,
         test_laser_arm_blanking_unblank_needs_the_arm,
         test_laser_arm_morning_page_routes_and_surfaces,

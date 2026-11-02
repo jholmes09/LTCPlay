@@ -1992,6 +1992,12 @@ def _resume(m, ev, now):
                 f"paused; it now ends at "
                 f"{clock(_local(tx.m, tx.m.expected_end()))}.", show=n)
         return tx.done()
+    if m.state == HOLD:
+        # A show whose late limit passed during the Hold waits (DELAYED),
+        # as a tick on the Hold would have made it, even when no tick ran
+        # since: Resume never hands the next tick a show to call MISSED
+        # (final review of #199). Still on HOLD here, so nothing fires.
+        _sweep(tx, held=True)
     back = m.held_from if m.held_from in (IDLE, STANDBY) else STANDBY
     if back == IDLE and (any(s.status != PENDING for s in m.slots) or
                           _in_preshow_lead(m, now)):

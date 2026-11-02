@@ -35,7 +35,7 @@ only the Morning page's test messages. Any other fault line is a FAIL.
 | 10 | Corrupt the morning config (Morning build only) | no change | Morning page refuses with one sentence naming the file | the sentence in the journal | restore the backup |
 | 11 | Close the page mid-purge (Morning build, operator holds the purge) | the purge fire slot falls to 0 within 0.25 s of the kill (heartbeat gap; the flame link drops the purge frame 0.25 s after the last beat; flamesafe's fire_hold_ms behind it) | none needed | purge released or stopped line | `LTC Player --start` reopens the page |
 | 12 | Start a show while a purge is held (Morning build, operator holds the purge) | the purge is cleared the moment the scheduler enters SHOW: fire slot to 0 within 0.25 s of the press; the show fires only its own cues once the timecode moves | the show banner as usual | purge cleared, then the Start now, in that order | none needed |
-| 13 | Laser test ON, then Start now, then Abort 10 s later (Morning build, operator turns the test on; the laser listener running) | nothing armed: every flame slot stays 0. Lasers: `laser.log` shows `TEST ON <laser>` when the test is switched on (its configured address and low value, nothing else); within 2 s of Start now `TEST OFF <laser>` (or a `BLANK`); within 2 s of the Abort a `BLANK` when a `beyond` block is set (with none, no blank and the EXPECTED `blanking not set up` line instead); no `TEST ON` and no `UNBLANK` afterwards while the Abort stands | the show banner, then the Abort banner until Reset | `... turned the <laser> calibration test ON`; `Laser tests turned off: the show is going live`; `Abort, asked for by Break-it ...`; `Lasers blanked (osc): OSC brightness 0` when set up | Reset by hand; the checker: no `LASER TEST OFF MISSING`, no `LASER BLANK MISSING`, no `LASER LIT WHILE ABORT LATCHED`, no `UNKNOWN LASER MESSAGE` |
+| 13 | Laser test ON, then Start now, then Stop 10 s later (Morning build, operator turns the test on; the laser listener running) | nothing armed: every flame slot stays 0. Lasers: `laser.log` shows `TEST ON <laser>` when the test is switched on (its configured address and low value, nothing else); within 2 s of Start now `TEST OFF <laser>` (or a `BLANK`); within 2 s of the Stop a `BLANK` when a `beyond` block is set (with none, no blank and the EXPECTED `blanking not set up` line instead); no `TEST ON` and no `UNBLANK` afterwards while the Stop's Hold stands | the show banner, then Held after Stop: press Resume | `... turned the <laser> calibration test ON`; `Laser tests turned off: the show is going live`; `Stop, asked for by Break-it ...`; `Lasers blanked (osc): OSC brightness 0` when set up | Resume by hand; the checker: no `LASER TEST OFF MISSING`, no `LASER BLANK MISSING`, no `UNKNOWN LASER MESSAGE` |
 
 ## How to run it
 
@@ -60,7 +60,7 @@ After the run: `Check witness.cmd` (or the checker where Python is). The
 checker must say PASS: in stage 2 nothing is armed, so any nonzero slot is
 a FAIL; the only stall allowed is step 2's, and it must read `STREAM
 STOPPED`, never `WITH NONZERO ON THE WIRE`. The same report carries the
-laser rules (`LASER BLANK MISSING`, `LASER LIT WHILE ABORT LATCHED`,
+laser rules (`LASER BLANK MISSING`, `LASER LIT WHILE ABORT LATCHED` (an older journal's Abort),
 `LASER TEST ...`, `UNKNOWN LASER MESSAGE`, see check_witness.py); with no
 `beyond` block the blank rules read UNVERIFIED and the report says that is
 EXPECTED while BEYOND is absent. Its "From the journals" lines count the
