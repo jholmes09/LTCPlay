@@ -101424,13 +101424,17 @@ def test_ui2_page_makes_only_1_0_presses():
     # 1.0 is being retired and gets no new controls, FIREBALL_TIMELINE_
     # DESIGN, section 4) and the fireball timeline's save (Jeff,
     # 2026-10-30; 2.0 only, no 1.0 page edits it).
+    # Start at a cue (play-from cues part 3, the Resume sheet): 1.0 has no
+    # button for it either.
     check(r2 - r1 == {"/api/remote/ui-default",
                       "/api/remote/play-from-cues-save",
                       "/api/remote/fuel-pump",
-                      "/api/remote/fireball-timeline-save"} and
+                      "/api/remote/fireball-timeline-save",
+                      "/api/remote/start-at-cue"} and
           '"/api/remote/play-from-cues?show="' in two,
-          f"2.0 adds four routes, the default interface, the play-from "
-          f"cue list, the fuel pump and the fireball timeline's save: "
+          f"2.0 adds five routes, the default interface, the play-from "
+          f"cue list, the fuel pump, the fireball timeline's save and "
+          f"start at a cue: "
           f"{sorted(r2 - r1)}")
     # The presses, body for body.
     for press in ('press("start-now", {confirmed:true})',
@@ -110211,6 +110215,300 @@ console.log(JSON.stringify(out));
 
 
 # ---------------------------------------------------------------------------
+# Play-from cues, part 3: the 2.0 Resume sheet. Resume offers the cue the
+# engine offers (play-from-cues `resume`), and any saved cue can be picked
+# from Resume or Start now; the start is POST start-at-cue with Start now's
+# confirm. Show mode only.
+# ---------------------------------------------------------------------------
+
+def test_ui2_resume_from_a_cue():
+    section("2.0's Resume sheet (play-from cues part 3): with saved cues for "
+            "the show file running in Show mode, Resume offers 'Resume show "
+            "N from <cue>' (the engine's offer, only while that cue is "
+            "unchanged) and any cue, Start now offers From a cue; never in "
+            "a rehearsal, never for another file's list; the start is "
+            "start-at-cue with the cue's id, time and lead-in, after Start "
+            "now's confirm and a re-check; the list is read only when the "
+            "button is pressed; OPERATOR.md says it")
+    import shutil
+    one, two = _ui2_pages()
+    check('press("start-at-cue", {show:file, cue_id:c.id, tc:c.tc, '
+          'lead_in_s:c.lead_in_s, confirmed:true})' in two and
+          "start-at-cue" not in one,
+          "2.0 posts start-at-cue with the show, the cue's id, time and "
+          "lead-in and confirmed (2.0's own route: 1.0 has no button for "
+          "it)")
+    cs = _js_function(two, "cueStart") or ""
+    check(0 < cs.find("confirmBox(") < cs.find("tapStill(mk, false)") <
+          cs.find('press("start-at-cue"'),
+          "the start asks first, then checks nothing changed, then posts")
+    check(two.count("cueRead(") == 3 and
+          '"/api/remote/play-from-cues?show=" + encodeURIComponent(f)' in
+          (_js_function(two, "cueRead") or ""),
+          "the cues are read only when Resume or Start now is pressed, "
+          "never polled (the engine opens the show file to answer)")
+    check('if(d.act === "resume") return resumeOrCue();' in two,
+          "Resume goes through the offer")
+    here = os.path.dirname(os.path.abspath(__file__))
+    doc = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
+    i = doc.find("## Start at a cue (play-from cues, Show mode)")
+    sec = doc[i:doc.find("\n## ", i + 5)] if i >= 0 else ""
+    for words in ("Resume show 4 from Finale", "Another cue", "From a cue",
+                  "Yes, start", "read when you press"):
+        check(words in sec, f"OPERATOR.md, Start at a cue, says {words!r}")
+    check("comes in the next update" not in sec,
+          "OPERATOR.md no longer says the sheet is still to come")
+    _no_dashes(sec, "OPERATOR.md, Start at a cue")
+    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
+                encoding="utf-8").read()
+    check("| Resume show N sheet (play-from step 3) | DONE" in plan,
+          "the removal plan marks the Resume sheet done")
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  note: node is not here; checked by reading only")
+        print("  ok")
+        return
+    lo = one[one.find("// LOGIC BEGIN"):one.find("// LOGIC END")]
+    fns = "\n".join(_js_function(two, n) or "" for n in (
+        "isRehearsal", "cueFile", "cueChoices", "cueLanding", "pfFrames",
+        "pfTc"))
+    js = lo + "\n" + fns + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const F = "Fire and Ice.json";
+const c1 = {id:"c1", name:"Opening", tc:"00:00:30:00", lead_in_s:2, note:""};
+const c2 = {id:"c2", name:"Finale", tc:"00:08:12:00", lead_in_s:3, note:""};
+const got = (o) => Object.assign({show:F, error:"", entry:{cue:"Show", cues:[c1, c2]}, resume:{show:4, stopped_at:"00:08:20:05", cue:c2}}, o || {});
+const run = {show:{running:true, timeline:F}, transport:{programming:false}};
+t(cueFile(run) === F, "Show mode: the show file running");
+t(cueFile({show:{running:true, timeline:F}, transport:{programming:true}}) === "", "a rehearsal: nothing (Show mode only)");
+t(cueFile({show:{running:false, timeline:F}}) === "", "no Run: nothing");
+let c = cueChoices(got(), F, "resume");
+t(c && c.cues.length === 2 && c.offer && c.offer.cue.id === "c2" && c.offer.show === 4 && c.offer.at === "00:08:20:05", "Resume: the engine's offer and every cue: " + JSON.stringify(c));
+c = cueChoices(got(), F, "start");
+t(c && c.cues.length === 2 && c.offer === null, "Start now: every cue, no offer");
+t(cueChoices(got({resume:{show:4, stopped_at:"00:08:20:05", cue:Object.assign({}, c2, {tc:"00:08:10:00"})}}), F, "resume").offer === null, "an offer whose cue was retimed since is not made");
+t(cueChoices(got({resume:{show:4, stopped_at:"00:00:10:00", cue:null}}), F, "resume").offer === null, "no cue before the stop: no offer, the cues still listed");
+t(cueChoices(got({resume:null}), F, "resume").offer === null, "no stopped show: no offer");
+t(cueChoices(got({show:"Other.json"}), F, "resume") === null, "another file's list: nothing");
+t(cueChoices(got({error:"could not be read"}), F, "resume") === null, "a broken cue file: nothing (the engine would refuse)");
+t(cueChoices(got({entry:{cues:[]}}), F, "resume") === null, "no saved cues: nothing, the plain press");
+t(cueChoices(got(), "", "resume") === null, "no show file running: nothing");
+t(cueChoices(null, F, "resume") === null, "no answer: nothing");
+t(cueChoices(got({entry:{cues:[{id:"c9", name:"x", tc:"bad", lead_in_s:2}, c1]}}), F, "start").cues.length === 1, "a cue with no readable time is never offered");
+t(cueLanding(c2) === "00:08:09:00", "Finale at 00:08:12:00, 3 s lead-in: played from 00:08:09:00: " + cueLanding(c2));
+t(cueLanding({tc:"00:00:01:00", lead_in_s:2}) === "00:00:00:00", "never before the top");
+t(cueLanding({tc:"00:00:10:00", lead_in_s:2.6}) === "00:00:08:00", "the lead-in in whole seconds, cut as the engine's int() cuts: " + cueLanding({tc:"00:00:10:00", lead_in_s:2.6}));
+console.log(JSON.stringify(out));
+"""
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    check(r.returncode == 0 and r.stdout.strip() == "[]",
+          f"the offer, in node: {r.stdout[-900:]!r} {r.stderr[-500:]!r}")
+    print("  ok")
+
+
+def _ui2_status_stopped():
+    """Show mode, Run on, show 4 stopped part way: the Stop's Hold."""
+    st = _ui2_status_running()
+    st["schedule"].update({"state": "STANDBY", "running": None,
+                           "stop_held": True, "held": True})
+    st["show"] = {"running": True, "timecode": "01:08:20:05",
+                  "state": "STOPPED", "timeline": "Fire and Ice.json"}
+    st["countdown"] = None
+    st["transport"] = {"programming": False}
+    st["laser_arm"]["lasers"][0]["armed"] = False
+    st["flames"]["groups"] = [dict(g, armed="disarmed")
+                              for g in st["flames"]["groups"]]
+    return st
+
+
+_UI2_CUE_JS = r"""
+<script>
+(function(){
+const posts = [], gets = [];
+const realFetch = window.fetch;
+const C1 = {id:"c1", name:"Opening", tc:"00:00:30:00", lead_in_s:2, note:""};
+const C2 = {id:"c2", name:"Finale", tc:"00:08:12:00", lead_in_s:3, note:""};
+window.__cues = {show:"Fire and Ice.json", error:"", entry:{cue:"Show", cues:[C1, C2]}, resume:{show:4, stopped_at:"00:08:20:05", cue:C2}};
+const J = (o) => Promise.resolve(new Response(JSON.stringify(o), {status:200, headers:{"Content-Type":"application/json"}}));
+window.fetch = function(u, o){
+  if(/play-from-cues\?show=/.test(String(u))){
+    gets.push(decodeURIComponent(String(u).split("show=")[1]));
+    const ans = window.__cues || {};
+    return window.__hang ? new Promise(r => setTimeout(() => r(J(ans)), window.__hang)) : J(ans);
+  }
+  if(window.__mod && /\/api\/remote\/status/.test(String(u)))
+    return realFetch.apply(this, arguments).then(r => r.json()).then(j => { window.__mod(j); return J(j); });
+  if(o && o.method === "POST") posts.push({u:String(u), b:JSON.parse(String(o.body || "{}"))});
+  return realFetch.apply(this, arguments);
+};
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const q = id => document.getElementById(id);
+const bodies = () => posts.map(p => { const b = Object.assign({}, p.b); delete b.seen; return [p.u.replace("/api/remote/", ""), b]; });
+const sheetLook = () => ({open:!q("sheet").hidden, h:q("sh-h").textContent, body:q("sh-body").textContent,
+  btns:[...document.querySelectorAll("#sh-row button")].map(b => b.textContent.trim())});
+async function pick(label){
+  const b = [...document.querySelectorAll("#sh-row button")].filter(x => x.textContent.trim() === label)[0];
+  if(b) b.click();
+  await wait(400);
+  return !!b;
+}
+async function tap(){ q("b-go").click(); await wait(600); }
+async function go(){
+  for(let i = 0; i < 80 && !(typeof ST !== "undefined" && ST && ST.schedule); i++) await wait(100);
+  await wait(800);
+  const out = {go:q("go-l").textContent};
+  // Resume: the sheet, the engine's offer, then its confirm.
+  posts.length = 0;
+  await tap(); out.resume_sheet = sheetLook(); out.resume_gets = gets.slice(); out.resume_posts = bodies();
+  await pick("Resume show 4 from Finale"); out.offer_confirm = sheetLook(); out.offer_before = bodies();
+  await pick("Yes, start"); out.offer_after = bodies();
+  // Resume, plain.
+  posts.length = 0; await tap(); await pick("Resume"); out.plain = bodies();
+  // Another cue.
+  posts.length = 0; await tap(); await pick("Another cue"); out.list = sheetLook();
+  await pick("Opening 00:00:30:00"); out.pick_confirm = sheetLook();
+  await pick("Cancel"); out.pick_cancel = bodies();
+  // The show changed while the question was up: nothing is started.
+  await tap(); await pick("Resume show 4 from Finale");
+  window.__mod = j => { j.schedule.state = "SHOW"; j.schedule.running = 4; j.schedule.stop_held = false; j.schedule.held = false; };
+  await wait(1200);
+  await pick("Yes, start"); out.changed = bodies(); out.changed_say = q("msg-t").textContent;
+  window.__mod = j => { j.schedule.stop_held = false; j.schedule.held = false; };
+  await wait(3000);
+  // Start now: the same question, with From a cue.
+  out.go2 = q("go-l").textContent;
+  posts.length = 0; await tap(); out.start_sheet = sheetLook();
+  await pick("Yes, start now"); out.start_now = bodies();
+  posts.length = 0; await tap(); await pick("From a cue"); await pick("Finale 00:08:12:00");
+  out.start_pick_confirm = sheetLook();
+  await pick("Yes, start"); out.start_pick = bodies();
+  // No saved cues: Resume is the one press it always was.
+  window.__cues = {show:"Fire and Ice.json", error:"", entry:{cues:[]}, resume:null};
+  window.__mod = null; await wait(1600);
+  posts.length = 0; await tap(); out.none = {sheet:sheetLook().open, posts:bodies(), go:q("go-l").textContent};
+  // Review of #209: a Hold pressed while the list is read wins: Resume is
+  // not sent.
+  window.__hang = 1000; await wait(2600); posts.length = 0;
+  q("b-go").click(); await wait(300); q("b-hold").click(); await wait(1500);
+  out.hold_during = bodies(); out.hold_during_say = q("msg-t").textContent;
+  // A list that comes too late (over 1.5 s): nothing is sent.
+  window.__hang = 2200; await wait(2600); posts.length = 0;
+  q("b-go").click(); await wait(2800); out.slow = bodies();
+  window.__hang = 0;
+  // Any other Hold (not a Stop's): Resume at once, the list never read.
+  window.__mod = j => { j.schedule.stop_held = false; }; await wait(2600);
+  let g0 = gets.length; posts.length = 0; await tap();
+  out.plain_hold = {posts:bodies(), read:gets.length - g0, sheet:sheetLook().open};
+  // The engine's offer with no show number.
+  window.__mod = null;
+  window.__cues = {show:"Fire and Ice.json", error:"", entry:{cue:"Show", cues:[C1, C2]}, resume:{show:null, stopped_at:"00:08:20:05", cue:C2}};
+  await wait(2600); await tap(); out.noshow = sheetLook(); await pick("Cancel");
+  out.gets = gets;
+  const pre = document.createElement("pre"); pre.id = "rack-measure";
+  pre.textContent = JSON.stringify(out);
+  document.body.appendChild(pre);
+}
+go();
+})();
+</script>
+"""
+
+
+def test_ui2_resume_from_a_cue_in_a_browser():
+    section("2.0's Resume sheet drawn and pressed: Resume after a Stop "
+            "offers 'Resume show 4 from Finale', Another cue and the plain "
+            "Resume; the cue asks first and posts start-at-cue with the "
+            "cue's id, time and lead-in; Cancel and a show that changed "
+            "under the question send nothing; Start now offers From a cue; "
+            "with no saved cues Resume is one press, as before")
+    one, two = _ui2_pages()
+    lo = one[one.find('<script id="remote-logic">') +
+             len('<script id="remote-logic">'):]
+    lo = lo[:lo.find("</script>")]
+    page = two.replace('<script src="/remote-logic.js"></script>',
+                       "<script>" + lo + "</script>", 1)
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    got = _rack_screen_in_chromium(chrome, page, _ui2_status_stopped(),
+                                   ((1366, 768),), measure_js=_UI2_CUE_JS,
+                                   frag="?tour=0",
+                                   routes={"/api/brand": {"show": "x"}},
+                                   budget_ms=60000)
+    r = got.get((1366, 768))
+    if not check(isinstance(r, dict) and "resume_sheet" in r,
+                 f"2.0 drawn and pressed: {r!r}"[:900]):
+        print("  ok")
+        return
+    F = "Fire and Ice.json"
+    rs = r["resume_sheet"]
+    check(r["go"] == "Resume" and rs["open"] and rs["h"] == "Resume" and
+          "Show 4 stopped at 00:08:20:05." in rs["body"] and
+          {"Resume show 4 from Finale", "Another cue", "Resume",
+           "Cancel"} == set(rs["btns"]) and r["resume_posts"] == [] and
+          r["resume_gets"] == [F],
+          f"Resume after a Stop: the sheet, read for the show file "
+          f"running, nothing sent: {rs} {r['resume_gets']}")
+    oc = r["offer_confirm"]
+    check(oc["h"] == "Resume show 4 from Finale?" and
+          "played from 00:08:09:00 with its 3 s lead-in" in oc["body"] and
+          r["offer_before"] == [] and
+          r["offer_after"] == [["start-at-cue", {
+              "show": F, "cue_id": "c2", "tc": "00:08:12:00",
+              "lead_in_s": 3, "confirmed": True}]],
+          f"the offer asks first, then posts start-at-cue: {oc} "
+          f"{r['offer_after']}")
+    check(r["plain"] == [["resume", {}]],
+          f"Resume in the sheet is the plain Resume: {r['plain']}")
+    check(r["list"]["h"] == "Start from a cue" and
+          "Opening 00:00:30:00" in r["list"]["btns"] and
+          "Finale 00:08:12:00" in r["list"]["btns"] and
+          r["pick_confirm"]["h"] == "Start at the cue Opening?" and
+          r["pick_cancel"] == [],
+          f"Another cue lists every saved cue; Cancel sends nothing: "
+          f"{r['list']} {r['pick_confirm']} {r['pick_cancel']}")
+    check(r["changed"] == [] and
+          r["changed_say"] == "The show changed. Nothing started.",
+          f"a show that went live under the question: nothing started: "
+          f"{r['changed']} {r['changed_say']!r}")
+    check(r["go2"] == "Start now" and
+          r["start_sheet"]["h"] == "Start the next show now?" and
+          "From a cue" in r["start_sheet"]["btns"] and
+          r["start_now"] == [["start-now", {"confirmed": True}]],
+          f"Start now: the same question with From a cue; Yes is Start "
+          f"now: {r['start_sheet']} {r['start_now']}")
+    check(r["start_pick_confirm"]["h"] == "Start at the cue Finale?" and
+          r["start_pick"] == [["start-at-cue", {
+              "show": F, "cue_id": "c2", "tc": "00:08:12:00",
+              "lead_in_s": 3, "confirmed": True}]],
+          f"Start now, From a cue: start-at-cue: {r['start_pick']}")
+    check(not r["none"]["sheet"] and r["none"]["posts"] == [["resume", {}]],
+          f"no saved cues: Resume is one press: {r['none']}")
+    check(r["hold_during"] == [["hold", {}]] and
+          r["hold_during_say"] == "The show changed. Nothing done.",
+          f"a Hold pressed while the cues are read: Resume is not sent "
+          f"(review of #209): {r['hold_during']} {r['hold_during_say']!r}")
+    check(r["slow"] == [],
+          f"a cue list that comes after 1.5 s: Resume is not sent: "
+          f"{r['slow']}")
+    check(r["plain_hold"] == {"posts": [["resume", {}]], "read": 0,
+                              "sheet": False},
+          f"a Hold that is not a Stop's: Resume at once, no list read: "
+          f"{r['plain_hold']}")
+    check("Resume the show from Finale" in r["noshow"]["btns"] and
+          "null" not in " ".join(r["noshow"]["btns"]) + r["noshow"]["body"]
+          and "The show stopped at 00:08:20:05." in r["noshow"]["body"],
+          f"an offer with no show number says the show: {r['noshow']}")
+    print("  ok")
+
+# ---------------------------------------------------------------------------
 # Play-from cues, part 2: Start at a cue (Show mode). The cue is resolved by
 # the engine from the saved list, carried through Start now's own path and
 # started part way, with the flame link's landing, a 1 s fade in for the
@@ -111836,6 +112134,9 @@ def test_ui2_programming_tab_makes_1_0_presses():
                  'id="p-follow" data-tr', 'id="p-pf-line" hidden',
                  'id="p-pf-warn" role="alert" hidden'):
         check(need in pane, f"the Programming cards have {need}")
+    check(pane.count(" data-tr disabled") == 11,
+          "each session control starts disabled, until the first status "
+          "says it may be pressed")
     check(pane.count(" data-tr") == 11,
           f"11 session controls follow 1.0's transport rule: "
           f"{pane.count(' data-tr')}")
@@ -112001,6 +112302,10 @@ window.fetch = function(u, o){
       return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}});
     });
   if(o && o.method === "POST") posts.push({u:String(u), b:JSON.parse(String(o.body || "{}"))});
+  if(window.__slow && o && o.method === "POST" && window.__slow.test(String(u))){
+    const a = arguments, self = this;
+    return new Promise(r => setTimeout(() => r(realFetch.apply(self, a)), 700));
+  }
   return realFetch.apply(this, arguments);
 };
 const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -112053,6 +112358,14 @@ async function go(){
     for(const id of ["p-pause", "p-cont", "p-a", "p-b", "p-loop", "p-follow"]){ q(id).click(); await wait(150); }
     await wait(300);
     out.presses = bodies(); out.after = look();
+    // Every press carries the status it acted on (seen), as 1.0's.
+    out.seen = posts.length > 0 && posts.every(p => typeof p.b.seen === "number");
+    // A late answer never paints over a newer press's answer.
+    window.__slow = /\/jump/;
+    document.querySelector('#t-prog [data-jump="-10"]').click(); await wait(100);
+    q("p-pause").click(); await wait(1300);
+    window.__slow = null;
+    out.order = q("p-msg").textContent;
     // Loop on: its press turns it off; the show audio playing: Stop the show audio.
     window.__mod = j => { j.transport.loop = ["00:01:00:00", "00:02:00:00"]; j.transport.playing = true; };
     await settle(); posts.length = 0;
@@ -112206,6 +112519,12 @@ def test_ui2_programming_tab_in_a_browser():
                         ["follow", {}]],
                       f"{where}: each control posts 1.0's body: "
                       f"{r['presses']}")
+                check(r["seen"] is True,
+                      f"{where}: every press sends the status it acted on "
+                      f"(seen), as 1.0's press")
+                check(r["order"] == "Done.",
+                      f"{where}: a late answer (Back 10 s) never paints "
+                      f"over the newer press's (Pause): {r['order']!r}")
                 check(r["after"]["msg"] in ("Done.",
                                             "Jumped to 00:00:52:10."),
                       f"{where}: the answer is said in the card: "
@@ -113451,6 +113770,8 @@ if __name__ == "__main__":
         test_play_from_cue_routes,
         test_play_from_cue_audio_length_from_a_real_show_file,
         test_play_from_cue_card_in_2_0,
+        test_ui2_resume_from_a_cue,
+        test_ui2_resume_from_a_cue_in_a_browser,
         test_start_at_cue_model,
         test_start_at_cue_audio_fades_in,
         test_start_at_cue_end_to_end_through_the_conductor,
