@@ -3147,15 +3147,25 @@ MUTATIONS = [
   "  FB_BEAT = setTimeout(() => fbBeat(false), 100);",
   "  FB_BEAT = setTimeout(() => fbBeat(false), 300);"),
 
- ("ui 2.0 Fireball: another step leaves the channels on",
+ ("ui 2.0 Fireball: the Fireball page keeps polling after its step is left",
   "ltcplay/web/remote2.html",
   "  fireballView(k === \"fireball\");\n",
-  "  if(k === \"fireball\") fireballView(true);\n"),
+  "  fireballView(true);\n"),
 
- ("ui 2.0 Fireball: leaving DAY leaves the channels on",
+ ("ui 2.0 Fireball: leaving DAY does not cut the Fireball page first",
   "ltcplay/web/remote2.html",
-  "  if(!on) daySections(null);\n",
-  ""),
+  "function dayCuts(why){\n  fireballView(false);\n",
+  "function dayCuts(why){\n"),
+
+ ("ui 2.0 Fireball: pads drawn on a window too short for them",
+  "ltcplay/web/remote2.html",
+  "  const ok = pan.scrollHeight <= pan.clientHeight + 1 && gr.bottom <= Math.min(innerHeight, pr.bottom) + 1;",
+  "  const ok = true;"),
+
+ ("ui 2.0 Fireball: a window turning too short leaves channels on",
+  "ltcplay/web/remote2.html",
+  "    if(fbAny()) fbCut(\"this window is too short for the fireball pads\");",
+  "    if(false) fbCut(\"this window is too short for the fireball pads\");"),
 
  ("ui 2.0 Fireball: the step is offered without a fireball group",
   "ltcplay/web/remote2.html",
@@ -3164,8 +3174,8 @@ MUTATIONS = [
 
  ("ui 2.0 Fireball: All off and Disarm scroll out of sight with the panel",
   "ltcplay/web/remote2.html",
-  "#d-fb > .drow:first-child{position:sticky;",
-  "#d-fb > .drow:first-child{position:static;"),
+  "#fb-top{position:sticky;",
+  "#fb-top{position:static;"),
 
  ("ui 2.0 timed purge: another step leaves the hold beating",
   "ltcplay/web/remote2.html",
@@ -20080,8 +20090,8 @@ def build():
   "      $(\"wc-hold\").addEventListener(ev, () => { if(false) wcLetGo(\"you let go before the hold was complete\"); });\n    }\n    $(\"wc-hold\").addEventListener(\"contextmenu\", e => e.preventDefault());\n    $(\"wc-stop\")"),
 
  ("ui2 day: leaving DAY keeps this screen's purge selection", "ltcplay/web/remote2.html",
-  "    tpLetGo(\"the page was left\");\n    purgeDrop();\n  }",
-  "    tpLetGo(\"the page was left\");\n  }"),
+  "    MO_OPEN = false; clearTimeout(MO_TIMER);\n    purgeDrop();\n  }",
+  "    MO_OPEN = false; clearTimeout(MO_TIMER);\n  }"),
 
  ("ui2 day: leaving the Purge step keeps this screen's selection", "ltcplay/web/remote2.html",
   "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); tpLetGo(\"another step was chosen\"); purgeDrop(); }",

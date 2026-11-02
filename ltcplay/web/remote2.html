@@ -449,12 +449,32 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 .dsec{display:flex;flex-direction:column;gap:var(--gap);min-width:0;flex:0 0 auto}
 #fb-note,#fb-charge,#fb-block{font-size:calc(var(--fs) - 2px)}
 /* All off and Disarm Fireball stay in sight while the panel scrolls. */
-#d-fb > .drow:first-child{position:sticky;top:0;z-index:1;background:var(--panel);padding-bottom:4px}
+#fb-top{position:sticky;top:0;z-index:1;background:var(--panel);padding-bottom:4px}
 .fb-armed.on{color:var(--red-hi)}
-#fb-charge:empty,#fb-msg:empty,#tp-st:empty{display:none}
+#tp-st:empty{display:none}
+/* Every line above the pads keeps one height, whatever it says, so the
+   pads never move while a finger is on one (review of #211, 1): the
+   message sits in the top row, the note and the charge line are clipped
+   to their room. Only the line that says nothing may be pressed (a
+   block) adds room, and then nothing on the pads may be pressed. */
+#fb-top{flex-wrap:nowrap;min-height:56px}
+#fb-top .fb-armed{flex:0 1 auto;min-width:0}
+#fb-msg{flex:1 1 8em;min-width:0;max-height:2.6em;overflow:hidden;line-height:1.3;font-size:calc(var(--fs) - 4px)}
+#fb-note,#fb-crow{height:1.4em;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+button.fb-pad small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;font-size:calc(var(--fs) - 6px) !important}
+button.fb-pad{gap:2px !important;padding:6px !important}
 #fb-pads{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:var(--gap)}
-button.fb-pad{min-height:64px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:8px;
-  border:2px solid var(--line);border-radius:12px;background:var(--panel2);color:var(--cream);font:inherit;cursor:pointer;touch-action:none;-webkit-user-select:none;user-select:none}
+/* 1.0's pad size and gap where the screen allows (review of #211, 3). */
+#fb-pads{gap:10px}
+button.fb-pad{min-height:clamp(96px,14vh,200px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:8px;
+  border:2px solid var(--line);border-radius:12px;background:var(--panel2);color:var(--cream);font:inherit;cursor:pointer;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+/* Safety first (review of #211, 1): the pads are drawn only while the
+   whole Fireball section fits the DAY panel with nothing to scroll, so a
+   pad is never half on the screen; otherwise a plain line says so (fbFit).
+   All off and Disarm Fireball are always there. */
+#d-fb:not(.fits) #fb-pads{display:none}
+#d-fb.measure #fb-pads{visibility:hidden}
+#d-fb.fits #fb-short{display:none}
 button.fb-pad b{font-weight:800}
 button.fb-pad .fb-st{font-weight:800;letter-spacing:.12em}
 button.fb-pad small{font-size:calc(var(--fs) - 4px);color:var(--muted)}
@@ -467,7 +487,7 @@ button.fb-pad.na{opacity:.45}
 #tp-presets button{font:inherit;font-weight:800;min-height:56px;min-width:64px;padding:0 12px;border:2px solid var(--line);border-radius:12px;background:var(--panel2);color:var(--cream)}
 #tp-presets button.on{background:var(--amber);border-color:#FFD08A;color:var(--amber-ink)}
 #tp-secs{width:5em}
-#tp-hold{flex:1 1 14em;touch-action:none;-webkit-user-select:none;user-select:none}
+#tp-hold{flex:1 1 14em;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 #tp-hold.on,#tp-hold.run{background:var(--red-deep);border:3px solid var(--red);color:#fff}
 #tp-hold.na{opacity:.45}
 /* ---- sheets (confirm, details, help, sign in) over everything but the footer ---- */
@@ -707,14 +727,15 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
              1.0's, copied word for word (selftest.py checks): the same
              routes, bodies, beats and timings. -->
         <div id="d-fb" class="dsec" hidden>
-          <div class="drow"><span class="fb-armed dbig" id="fb-armed">Not known yet</span>
+          <div class="drow" id="fb-top"><span class="fb-armed dbig" id="fb-armed">Not known yet</span>
+            <div class="pline" id="fb-msg" role="status"></div>
+            <button class="b" id="fb-empty" hidden title="Fuel or Air is not known: the timeline charges nothing until a shot, a Purge, or an admin confirms both tanks are empty. Only if they are known to be empty. Admins."><svg class="i"><use href="#i-check"/></svg>Tanks are empty</button>
             <button data-safe class="b safe" id="fb-alloff" title="Turns every Fireball channel off. Always works."><svg class="i"><use href="#i-shield"/></svg>All off</button>
             <button data-safe class="b safe" id="fb-disarm" title="Disarms the Fireball group. Always works. Arm it again with its hold to arm."><svg class="i"><use href="#i-shield"/></svg>Disarm Fireball</button></div>
           <div class="pline bad" id="fb-block" hidden></div>
           <div class="pline" id="fb-note"></div>
-          <div class="drow"><span class="pline" id="fb-charge"></span>
-            <button class="b" id="fb-empty" hidden title="Fuel or Air is not known: the timeline charges nothing until a shot, a Purge, or an admin confirms both tanks are empty. Only if they are known to be empty. Admins."><svg class="i"><use href="#i-check"/></svg>Tanks are empty</button></div>
-          <div class="pline" id="fb-msg" role="status"></div>
+          <div class="pline" id="fb-crow"><span id="fb-charge"></span></div>
+          <div class="pline bad" id="fb-short">This window is too short for the fireball pads: make it taller or use the iPad.</div>
           <div id="fb-pads"></div>
         </div>
         <div id="d-fu" class="dsec" hidden>
@@ -1154,6 +1175,9 @@ function showTab(t){
   const prog = t === "prog";
   if(prog) t = "schedule";
   if(!TABS.includes(t)) t = "show";
+  // Leaving DAY: the Fireball page, the fire key and a timed purge's hold
+  // end first, before anything else here can fail (review of #211, 2).
+  if(t !== "day" && TAB === "day") dayCuts("the page was left");
   TAB = t;
   document.body.dataset.tab = t;
   try{ dayView(t === "day"); }catch(e){}
@@ -4038,16 +4062,21 @@ async function fuelPoll2(){
 // the open beats and the polls run only while it shows; leaving it stops
 // a fire, drops this screen's own purge selection at once, and lets go of
 // a cleaning hold.
-function dayView(on){
-  if(on && !MO_OPEN){ MO_OPEN = true; morningPoll(); }
-  if(!on && MO_OPEN){
-    MO_OPEN = false; clearTimeout(MO_TIMER); fireStop("the page was left");
-    // 1.0's morningView: a timed purge's hold ends with the page.
-    tpLetGo("the page was left");
+// Every cut leaving DAY makes, first and each on its own.
+// (1.0's morningView and fireballView: the fire, a timed purge's hold
+// and this screen's own purge selection end with the page.)
+function dayCuts(why){
+  fireballView(false);
+  fireStop(why);
+  tpLetGo(why);
+  if(MO_OPEN){
+    MO_OPEN = false; clearTimeout(MO_TIMER);
     purgeDrop();
   }
-  // 1.0's fireballView: leaving the page turns everything off.
-  if(!on) daySections(null);
+}
+function dayView(on){
+  if(!on) dayCuts("the page was left");
+  if(on && !MO_OPEN){ MO_OPEN = true; morningPoll(); }
   if(on && !FU_OPEN){ FU_OPEN = true; fuelPoll2(); }
   if(!on && FU_OPEN){ FU_OPEN = false; clearTimeout(FU_TIMER); }
   cleaningView(on);
@@ -4180,11 +4209,32 @@ function renderMorning(){
 // step only; the Fireball page is open only while its step shows, so
 // leaving it (another step, another tab, the page) turns everything off,
 // as leaving 1.0's page does. A Hold does not.
+// The pads only whole (review of #211, 1): measured with the pads laid
+// out but invisible, in one go, so nothing is painted or pressable in
+// between. Too short: no pads, and anything on is turned off.
+function fbFit(){
+  const sec = $("d-fb"), pan = $("d-panel");
+  if(sec.hidden){ sec.classList.remove("fits"); return; }
+  // The note and the charge line are cut to one line: whole on a hover.
+  $("fb-note").title = $("fb-note").textContent; $("fb-crow").title = $("fb-crow").textContent;
+  sec.classList.add("measure"); sec.classList.add("fits");
+  const pr = pan.getBoundingClientRect(), gr = $("fb-pads").getBoundingClientRect();
+  const ok = pan.scrollHeight <= pan.clientHeight + 1 && gr.bottom <= Math.min(innerHeight, pr.bottom) + 1;
+  sec.classList.remove("measure");
+  if(!ok){
+    sec.classList.remove("fits");
+    if(fbAny()) fbCut("this window is too short for the fireball pads");
+  }
+}
+try{ new MutationObserver(fbFit).observe($("d-fb"), {childList:true, subtree:true, characterData:true}); }catch(e){}
+window.addEventListener("resize", fbFit);
+setInterval(fbFit, 250);
 function daySections(k){
   $("d-fb").hidden = k !== "fireball";
   $("d-fu").hidden = k !== "fuel" || !DAY_FU_REC;
   $("d-tp").hidden = k !== "purge";
   fireballView(k === "fireball");
+  fbFit();
   if(k === "fuel") renderFuelUndo();
   if(k === "purge") renderTimedPurge();
 }

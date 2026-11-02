@@ -102655,10 +102655,17 @@ def test_ui2_day_fireball_fuel_purge_are_1_0s():
                  'if(k === "fuel") renderFuelUndo();'):
         check(need in ds, f"daySections: {need}")
     dv = _js_function(two, "dayView") or ""
-    check('tpLetGo("the page was left");' in dv and
-          "daySections(null)" in dv,
-          "leaving DAY ends a timed purge's hold and turns the Fireball "
-          "page off (1.0's morningView and fireballView)")
+    dc = _js_function(two, "dayCuts") or ""
+    st_ = _js_function(two, "showTab") or ""
+    check(dv.find('if(!on) dayCuts("the page was left");') == dv.find("{") + 4
+          and dc.find("fireballView(false);") < dc.find("fireStop(why);") <
+          dc.find("tpLetGo(why);") < dc.find("purgeDrop();") and
+          "try" not in dc and
+          0 < st_.find('if(t !== "day" && TAB === "day") dayCuts(') <
+          st_.find("try{ dayView("),
+          "leaving DAY: the Fireball page, the fire key, a timed purge's "
+          "hold and this screen's selection end first, outside any try "
+          "(review of #211, 2)")
     dg = _js_function(two, "dayGo") or ""
     check('if(DAY_STEP === "fireball") fireballView(false);' in dg and
           'tpLetGo("another step was chosen")' in dg,
@@ -102780,7 +102787,7 @@ const small = sel => [...document.querySelectorAll(sel)].filter(e => e.getClient
 out.fb_layout = {excess:mainEx(), small:small("#d-fb .b, #d-fb .fb-pad"), xs:document.scrollingElement.scrollWidth - innerWidth,
   // All off and Disarm Fireball are on the screen without a scroll.
   safe_seen:["fb-alloff", "fb-disarm"].every(id => { const r = document.getElementById(id).getBoundingClientRect(), pr = document.getElementById("d-panel").getBoundingClientRect(); return r.height > 0 && r.top >= pr.top - 1 && r.bottom <= pr.bottom + 1 && r.bottom <= innerHeight; }),
-  sticky:getComputedStyle(document.querySelector("#d-fb > .drow")).position === "sticky" && document.querySelector("#d-fb > .drow").contains(document.getElementById("fb-alloff")) && document.querySelector("#d-fb > .drow").contains(document.getElementById("fb-disarm")),
+  sticky:getComputedStyle(document.getElementById("fb-top")).position === "sticky" && document.getElementById("fb-top").contains(document.getElementById("fb-alloff")) && document.getElementById("fb-top").contains(document.getElementById("fb-disarm")),
   panel_h:Math.round(document.getElementById("d-panel").getBoundingClientRect().height),
   rects:["d-panel", "fb-alloff", "fb-disarm", "d-steps", "next", "mini"].map(id => { const e = document.getElementById(id); if(!e) return id + ":none"; const r = e.getBoundingClientRect(); return id + ":" + Math.round(r.top) + "-" + Math.round(r.bottom); }).concat(["inner:" + innerHeight, "scroll:" + document.getElementById("d-panel").scrollTop])};
 let n = mark();
@@ -102850,7 +102857,7 @@ await h.sleep(250);
 n = mark();
 step("purge");
 await h.sleep(400);
-out.other_step = {posts:since(n).filter(p => p.route === "fireball-beat").map(p => on(p.body)), air:FB_ON.air, shown:!document.getElementById("d-fb").hidden};
+out.other_step = {posts:since(n).filter(p => p.route === "fireball-beat").map(p => on(p.body)), air:FB_ON.air, shown:!document.getElementById("d-fb").hidden, open:FB_OPEN};
 step("fireball");
 await h.sleep(800);
 // Another tab while Fuel is on: everything off.
@@ -102869,11 +102876,45 @@ document.getElementById("fb-alloff").click();
 document.getElementById("fb-disarm").click();
 await h.sleep(300);
 out.buttons = since(n).filter(p => p.route !== "morning-open").map(p => p.route + (p.body.group ? ":" + p.body.group : ""));
+// More cut paths (review of #211, 4): the engine's Stop (the next beat
+// answered 409 with cut), the page hidden, closed, a held pad's pointer
+// cancelled or its capture lost.
+const lastOn = n0 => since(n0).filter(p => p.route === "fireball-beat").map(p => on(p.body));
+await h.sleep(500);
+h.ev(pad("fuel"), "click"); await h.sleep(250);
+window.__answer["fireball-beat"] = b => on(b) ? [409, {error:"Stopped: everything off. Arm again after Resume.", cut:true}] : [200, {ok:true}];
+await h.sleep(400);
+n = mark(); await h.sleep(300);
+out.stopped = {fuel:pad("fuel").classList.contains("on"), more:since(n).filter(p => p.route === "fireball-beat" && on(p.body)).length, msg:document.getElementById("fb-msg").textContent};
+delete window.__answer["fireball-beat"];
+const cutBy = async (fire) => {
+  h.ev(pad("air"), "click"); await h.sleep(250);
+  const n0 = mark(); fire(); await h.sleep(300);
+  const r = {air:FB_ON.air, first:lastOn(n0)[0]};
+  const n1 = mark(); await h.sleep(250);
+  r.more = since(n1).filter(p => p.route === "fireball-beat" && on(p.body)).length;
+  return r;
+};
+out.hidden = await cutBy(() => { Object.defineProperty(document, "hidden", {configurable:true, get:() => true}); document.dispatchEvent(new Event("visibilitychange")); });
+Object.defineProperty(document, "hidden", {configurable:true, get:() => false});
+out.pagehide = await cutBy(() => window.dispatchEvent(new Event("pagehide")));
+const heldCut = async (type) => {
+  h.ev(pad("valve"), "pointerdown"); await h.sleep(250);
+  const n0 = mark();
+  pad("valve").dispatchEvent(new PointerEvent(type, {bubbles:true, pointerId:1, pointerType:"mouse"}));
+  await h.sleep(300);
+  const r = {valve:FB_ON.valve, first:lastOn(n0)[0]};
+  const n1 = mark(); await h.sleep(250);
+  r.more = since(n1).filter(p => p.route === "fireball-beat" && on(p.body)).length;
+  return r;
+};
+out.cancel = await heldCut("pointercancel");
+out.lost = await heldCut("lostpointercapture");
 """
     seed = ('<script type="application/json" id="fb-seed">' +
             json.dumps(_fb_view()) + '</script>')
     m = _ui2_drive(chrome, page.replace("</body>", seed + "</body>", 1),
-                   _ui2_status_day(), steps, size=(1366, 625),
+                   _ui2_status_day(), steps, size=(1366, 1100),
                    frag="?tour=0#day",
                    routes={"/api/remote/fireball": _fb_view(),
                            "/api/remote/morning": _morning_view_pico()},
@@ -102889,7 +102930,7 @@ out.buttons = since(n).filter(p => p.route !== "morning-open").map(p => p.route 
     # (sticky) while the panel scrolls; on the screen at once wherever the
     # panel has room for them (the runner's window can be under 500 px).
     check(fl["excess"] <= 1 and not fl["small"] and fl["xs"] <= 0 and
-          fl["sticky"] and (fl["safe_seen"] or fl["panel_h"] < 200),
+          fl["sticky"],
           f"the Fireball step: the page never scrolls (the step's panel "
           f"may), 56 px targets, All off and Disarm Fireball on the "
           f"screen: {fl}")
@@ -102931,6 +102972,100 @@ out.buttons = since(n).filter(p => p.route !== "morning-open").map(p => p.route 
           f"another tab: everything off: {m['other_tab']}")
     check(m["buttons"] == ["fireball-off", "group-disarm:fireball"],
           f"All off and Disarm Fireball: {m['buttons']}")
+    check(not m["stopped"]["fuel"] and m["stopped"]["more"] == 0 and
+          "Stopped" in m["stopped"]["msg"],
+          f"the engine's Stop (a beat answered 409, cut): everything off, "
+          f"said, nothing comes back: {m['stopped']}")
+    for k in ("hidden", "pagehide"):
+        check(m[k]["air"] is False and m[k]["first"] == "" and
+              m[k]["more"] == 0,
+              f"the page {k}: everything off at once: {m[k]}")
+    for k in ("cancel", "lost"):
+        check(m[k]["valve"] is False and m[k]["first"] == "" and
+              m[k]["more"] == 0,
+              f"a held Valve Open's pointer {k}: let go at once: {m[k]}")
+    check(m["other_step"].get("open") is False,
+          f"another step: the Fireball page stops polling: "
+          f"{m['other_step']}")
+    print("  ok")
+
+
+_UI2_FB_SIZES = ((1366, 482), (1024, 768), (768, 1024), (820, 1180),
+                 (1180, 820), (1366, 768))
+
+
+def test_ui2_fireball_pads_only_whole():
+    section("2.0's Fireball step on every screen size (review of #211, 1): "
+            "a pad is shown only whole, inside the step's panel and the "
+            "window, with nothing to scroll; a window too short for the "
+            "pads gets no pads at all and says so plainly, All off and "
+            "Disarm Fireball still there; a window turning too short "
+            "turns everything on off")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2_page_inline()
+    steps = r"""
+const q = id => document.getElementById(id);
+const step = k => { const b = document.querySelector('#d-steps [data-step="' + k + '"]'); if(b) b.click(); return !!b; };
+await h.sleep(900);
+step("fireball");
+await h.sleep(1200);
+const pan = q("d-panel"), pr = pan.getBoundingClientRect();
+const pads = [...document.querySelectorAll("#fb-pads .fb-pad")];
+const shown = el => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
+out.look = {fits:q("d-fb").classList.contains("fits"), short:shown(q("fb-short")) ? q("fb-short").textContent : "",
+  n:pads.length, shownPads:pads.filter(shown).length,
+  whole:pads.filter(shown).every(b => { const r = b.getBoundingClientRect(); return r.top >= pr.top - 1 && r.bottom <= pr.bottom + 1 && r.bottom <= innerHeight + 1 && r.top >= 0; }),
+  scroll:pan.scrollHeight - pan.clientHeight, alloff:!!q("fb-alloff") && shown(q("fb-alloff")), disarm:shown(q("fb-disarm")),
+  inner:[innerWidth, innerHeight], panel:Math.round(pr.height)};
+// A window turning too short with Fuel on: everything off.
+if(out.look.fits){
+  const pad = document.querySelector('.fb-pad[data-k="fuel"]');
+  pad.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:1}));
+  await h.sleep(300);
+  q("d-panel").style.maxHeight = "60px";
+  window.dispatchEvent(new Event("resize"));
+  await h.sleep(400);
+  out.shrunk = {fuel:FB_ON.fuel, fits:q("d-fb").classList.contains("fits"), last:window.__posts.filter(p => p.route === "fireball-beat").slice(-1).map(p => Object.keys(p.body.controls).filter(k => p.body.controls[k]).join("+"))};
+}
+"""
+    seed = ('<script type="application/json" id="fb-seed">' +
+            json.dumps(_fb_view()) + '</script>')
+    for size in _UI2_FB_SIZES:
+        m = _ui2_drive(chrome, page.replace("</body>", seed + "</body>", 1),
+                       _ui2_status_day(), steps, size=size,
+                       frag="?tour=0#day",
+                       routes={"/api/remote/fireball": _fb_view(),
+                               "/api/remote/morning": _morning_view_pico()},
+                       budget_ms=20000)
+        where = f"2.0 Fireball step, {size[0]}x{size[1]}"
+        if not check(isinstance(m, dict) and not m.get("problems") and
+                     "look" in m, f"{where}: drawn: {m!r}"[:900]):
+            continue
+        a = m["look"]
+        check(a["alloff"] and a["disarm"],
+              f"{where}: All off and Disarm Fireball are there: {a}")
+        if a["fits"]:
+            check(a["n"] == 5 and a["shownPads"] == 5 and a["whole"] and
+                  a["scroll"] <= 1 and not a["short"],
+                  f"{where}: the pads, each whole, nothing to scroll: {a}")
+            s = m.get("shrunk") or {}
+            check(s.get("fuel") is False and s.get("fits") is False and
+                  s.get("last") == [""],
+                  f"{where}: the window turning too short turns "
+                  f"everything off: {s}")
+        else:
+            check(a["shownPads"] == 0 and a["short"] ==
+                  "This window is too short for the fireball pads: make "
+                  "it taller or use the iPad.",
+                  f"{where}: too short: no pad at all, said plainly: {a}")
+        if size == (1366, 768) and not IN_CI:
+            check(a["fits"], f"{where}: the rack screen's size has room for "
+                             f"the pads: {a}")
     print("  ok")
 
 
@@ -103034,7 +103169,7 @@ if(yes) yes.click();
 await h.sleep(400);
 out.undo = since(n).filter(p => p.route !== "morning-open").map(p => [p.route, bare(p.body)]);
 """
-    m = _ui2_drive(chrome, page, _ui2_status_day(), steps, size=(1366, 625),
+    m = _ui2_drive(chrome, page, _ui2_status_day(), steps, size=(1366, 768),
                    frag="?tour=0#day",
                    routes={"/api/remote/morning": mo,
                            "/api/remote/fuel": fu},
@@ -114290,6 +114425,7 @@ if __name__ == "__main__":
         test_ui2_day_tab_in_a_browser,
         test_ui2_day_fireball_fuel_purge_are_1_0s,
         test_ui2_fireball_page_driven,
+        test_ui2_fireball_pads_only_whole,
         test_ui2_timed_purge_and_fuel_undo_driven,
         test_ui2_calm_screens_and_brand,
         test_config_watch_supervisor_and_rack_screen_note,

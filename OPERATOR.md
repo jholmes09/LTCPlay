@@ -2718,7 +2718,12 @@ with the same holds, confirms and refusals.
   out and every refusal turn everything off at once; losing focus lets
   go of Valve Open and Igniter; a Hold does not end it. Nothing comes
   back on by itself. All off and Disarm Fireball always work; Tanks are
-  empty is for admins. Nothing on this step arms: the Fireball is armed
+  empty is for admins. The pads show only whole: on a window too short
+  for them (under about 690 px of page) the step says "This window is
+  too short for the fireball pads: make it taller or use the iPad", and
+  anything on is turned off. The Fireball step is not there at Shutdown,
+  or while the show PC's status has no fireball group; 2.0 then has no
+  All off, but Stop show and Disarm flames still turn the fireball off. Nothing on this step arms: the Fireball is armed
   by its own hold to arm. The Fuel step: Refills and notes (amber
   when there is a fuel warning) shows the warning and Recent refills
   with Undo (admins; it asks first, and the refill stays in the record
