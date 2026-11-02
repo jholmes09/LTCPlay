@@ -5481,6 +5481,8 @@ function renderFireball(){
   if(ch) said.push(ch.fault ? "Charge record: " + ch.fault : (ch.text || ""));
   if(tl && tl.fault) said.push("Timeline: " + tl.fault);
   if(tl && tl.messages && tl.messages.length) said.push(tl.messages[tl.messages.length - 1]);
+  // One line per show whose latest play lost a shot to the Igniter rule.
+  if(tl && tl.shots && tl.shots.length) said.push(tl.shots.join(" "));
   $("fb-charge").textContent = said.filter(Boolean).join(" ");
   const tanks = (ch && ch.tanks) || {};
   box.querySelectorAll(".fb-pad").forEach(b => {

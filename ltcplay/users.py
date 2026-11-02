@@ -108,8 +108,8 @@ LOCK_MAX_S = 300.0
 # screen does is either safety (never restricted) or harmless (reading,
 # opening a folder, checking a file).
 PERMS = (
-    ("show", "Start now, Resume, Run a show file, rehearsal "
-             "scrubbing"),
+    ("show", "Start now, Start at a cue, Resume, Run a show file, "
+             "rehearsal scrubbing"),
     ("arm", "Arm flames and lasers: hold to arm, the Stream Deck's arm "
             "keys, a purge (momentary or timed), the Fireball page's "
             "channels, the wave flamer "
@@ -182,6 +182,9 @@ REMOTE_ROUTES = {
     # something away and is never restricted.
     "announce-stop": "safety", "announce-play": "show",
     "start-now": "show", "resume": "show",
+    # Start at a cue (play_from.py part 2, Jeff 2026-10-31): Start now from
+    # a saved cue; operators may, as for Start now.
+    "start-at-cue": "show",
     # Run off (2026-10-30): Stop no longer turns Run off, so the
     # Programming Run card's Run off does (the Stop, then playback
     # stops). Run itself is a show press (/api/start), and so is this.

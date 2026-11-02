@@ -992,8 +992,7 @@ that long. The stages, in this order:
   is flamesafe's own slot: it writes it from the arm state.
 - **What is checked.** A start is a real timecode inside the show; a
   duration is a number of seconds above 0. There is no longest duration
-  and no order between the stages: the Igniter is independent. A stage
-  left out is never on. A stage that would run past the end of the show
+  and no order between the stages. A stage left out is never on. A stage that would run past the end of the show
   ends there. Anything wrong is refused in a sentence and nothing is
   saved.
 - **Source.** Each show file is either **FSEQ** (as today, and the
@@ -1084,8 +1083,32 @@ FSEQ:
   still guarded for every show, whatever is wired to them. Purge (59) is
   always zero, and Fuel (55) and Air (56) each get one charge until a
   shot (57) or a Purge empties the record again.
-- Valve Open (57), the Igniter (58) and every other channel of an FSEQ
-  show are exactly as before.
+- Valve Open (57) and the Igniter (58) of an FSEQ show follow the rules
+  below (whole or not at all after a landing; Valve Open needs its
+  Igniter to have gone out first). Every other channel of an FSEQ show is
+  exactly as before.
+
+### Valve Open needs its Igniter first (every play, every show)
+
+Valve Open runs only after its Igniter has actually gone out in that run:
+the flame link must have sent the Igniter since it last started its guard
+again (a start, Play from, Back, Ahead, Continue, a loop, or the show
+timecode jumping by itself, for example after a stall). This holds on
+every play, not only a start at a cue. It applies when the timeline has an
+Igniter starting at or before Valve Open, and on a show on its FSEQ when
+the Igniter is on as Valve Open opens; on an FSEQ show the Igniter counts
+only until the FSEQ turns it off, so each shot needs its own.
+
+- **A Valve on the Igniter's own frame never runs.** The Igniter has not
+  gone out yet when the Valve would open. Start Valve Open at least 3
+  frames (0.1 s) after the Igniter. The fireball timeline editor (2.0
+  Settings) shows this under Valve Open, and a save that has it says so
+  (it is still saved). An FSEQ made in xLights with the two starting
+  together loses that shot the same way.
+- **Every lost shot is loud.** Each is a fault line in the journal, and
+  the Fireball line on the Morning and Startup page says, per show, "N
+  fireball shots skipped: Valve Open needs its Igniter to go out first"
+  for that show's latest play.
 
 ### In a show set to Timeline
 
@@ -1990,6 +2013,75 @@ choices:
   never gets past a Stop under way, the hold to arm or the flame link's
   rules. The scheduler never continues by itself.
 
+## Start at a cue (play-from cues, Show mode)
+
+Start at a cue starts the show part way, at one of the cues saved on 2.0
+Settings ("Play-from cues"), instead of from the top. It is Start now with
+a starting point: everything Start now does and refuses, it does and
+refuses too. The screen to choose the cue on (the 2.0 "Resume show" sheet)
+comes in the next update; the engine side is here.
+
+- **Who:** anyone who may press Start now (the Show row: operators and
+  admins, signed in). Like Start now it needs a page that is up to date
+  and a confirm.
+- **Show mode only.** In Programming, use Play from on the Programming
+  screen, which works as before.
+- **Where it starts:** the engine reads the cue from the saved list of
+  the show file that is running, never a time from the screen. It plays
+  from the cue's time less its lead-in (a cue at 00:08:12:00 with a 3 s
+  lead-in plays from 00:08:09:00). If the cue was changed, deleted, or the
+  running show is another file since the screen read the list, it is
+  refused and nothing starts: reload and choose again.
+- **It is an extra show,** like Start now: it counts as one show, the
+  schedule runs on around it, and a Stop's Hold comes back when it ends.
+  A show waiting after a Hold (delayed) is not the one it starts; that
+  delayed show is then missed, the way it is when any other show starts.
+  It is refused while a show is up, while an Abort stands, and while a
+  Stop is under way or still fading, exactly as Start now is.
+- **The rig check runs first,** as for Start now, and the screen says
+  "Start at the cue Finale by ...". If it fails and you hold Continue
+  anyway, the show starts **from that same cue**, never from the top, with
+  what failed left off for that show.
+- **How it lands:** the music and the video fade in over about 1 second
+  at the cue instead of starting hard. The timecode starts on the cue's
+  frame, so MadMapper, BEYOND and the pixels are in that cue's scene from
+  the first frame. The pixels cannot fade, so they come up in the scene at
+  once. The lasers come up only through the laser gate, as at every show
+  start: a disarmed laser stays dark until someone arms it.
+- **Flames land safely.** Nothing fires for the first half second. A
+  flame or fireball stage that is already part way through when the show
+  lands is NOT started in the middle; it stays off until its next start.
+  A fireball stage that would open in the first moment after the landing
+  (under about 0.8 s, while the flame link settles) is skipped whole, so
+  every stage runs whole or not at all. Valve Open runs only after its
+  Igniter has actually gone out in that run: the flame link must have
+  sent the Igniter since the latest landing (a start, Play from, Back,
+  Ahead, Continue or a loop). That applies when the fireball timeline has
+  an Igniter stage at or before Valve Open, and on a show on its FSEQ when
+  the Igniter is on as Valve Open opens. An Igniter at the very top of a
+  show is held dark by the flame link for its first moment, so its Valve
+  Open does not run either. Each skipped or held stage is said in the
+  journal and on the Fireball page, with why. Choose cues with their
+  lead-in at least a second before a fireball shot.
+  A fuel or air charge is skipped when that tank is already charged or
+  not known (never a double charge), and a charge whose window the show
+  landed in is skipped too. Start at a cue never arms anything: flamesafe
+  fires only a group someone has armed, and hold to arm is unchanged.
+- **Stop wins.** Stop, Hold or Abort at any moment, during the rig check
+  or after the start, stops it at once, as for Start now.
+- **Resume after a Stop:** the engine remembers where a stopped show
+  stopped (a held show too) and offers the cue at or before that point, so
+  the scene starts fresh from its own top rather than in the middle. If no
+  cue is before that point, start from the top with Start now. It is
+  tonight's only: forgotten at the night change, at Close for the night
+  and when Run goes off.
+- **The cue is checked again at the start.** If the cue was changed or
+  deleted on 2.0 Settings after it was chosen (for example while the rig
+  check failed), Start at a cue and Continue anyway are refused and
+  nothing starts: choose the cue again.
+- **The journal** says who pressed it, on which screen, the cue, its time
+  and lead-in, and every refusal in words.
+
 ## How long a show runs
 
 Jeff's field report, 2026-10-28. With the show audio played by ltcplay
@@ -2467,7 +2559,8 @@ the same 1.0 button sends, with the same holds, confirms and refusals.
 - 2.0 Settings, "Play-from cues" (on the show PC, by someone with
   Settings, admins): a list of named points in a show file to play the
   show from later. Saving the list sends nothing to the rig and starts
-  nothing; playing from a cue is not built yet. Pick the show file, then
+  nothing; starting a show from a cue is "Start at a cue" (below, in its
+  own section). Pick the show file, then
   Add cue, or change a name, time, lead-in or note in place, or Delete a
   cue, and Save. Each cue has:
   - a name, up to 40 characters, used once in that show (Finale and
