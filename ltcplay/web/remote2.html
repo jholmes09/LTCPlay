@@ -375,6 +375,29 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 #pf-msg.ok{color:var(--green)}
 @media (max-width:700px){ .pfrow{grid-template-columns:minmax(0,1fr) minmax(172px,1fr)} .pfrow.head{display:none} }
 .seg .b.on{border-color:var(--gold);background:#3a2c10}
+/* Tonight and the schedule editor (P3, P4): 1.0's list and fields. */
+#tonight{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 14px}
+@media (max-width:700px){ #tonight{grid-template-columns:1fr} }
+.slot{display:grid;grid-template-columns:auto auto 1fr;gap:4px 12px;align-items:baseline;min-height:56px;
+  border-bottom:1px solid var(--line);padding:8px 4px;cursor:pointer;min-width:0}
+.slot b{white-space:nowrap}
+.slot .t{font-weight:700;font-variant-numeric:tabular-nums}
+.slot .s{text-align:right;white-space:nowrap;font-weight:700}
+.slot .r{grid-column:1 / -1;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.slot .r:empty{display:none}
+.slot.open .r{white-space:normal}
+#tonight .dim{color:var(--muted)}
+.segrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:var(--gap)}
+.fl{display:flex;flex-direction:column;gap:4px;min-width:0}
+.fl > span:first-child{color:var(--muted)}
+.fl .f{width:100%}
+.sched{display:grid;grid-template-columns:auto repeat(3,minmax(0,1fr));gap:6px 8px;align-items:center}
+.sched .h{color:var(--muted);overflow-wrap:anywhere}
+.sched input:not([type=checkbox]){font:inherit;min-height:56px;width:100%;min-width:0;padding:0 10px;border-radius:10px;border:2px solid var(--line);background:#0e0b08;color:var(--cream)}
+.sched input:disabled{border-style:dashed;color:#B3A68E}
+.sched label{display:flex;align-items:center;gap:8px;min-height:56px;font-weight:700}
+.sched input[type=checkbox]{width:28px;height:28px}
+@media (max-width:600px){ .sched{grid-template-columns:1fr 1fr} .sched .h{display:none} .sched label{grid-column:1 / -1} }
 /* Programming (P1, P2): 1.0's Show file and Programming session cards. */
 .pline{color:var(--muted);line-height:1.3}
 .pline b{color:var(--cream)}
@@ -656,7 +679,41 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   </section>
   <section class="pane" id="t-schedule" hidden>
     <div class="cards">
-      <div class="card"><div class="t"><b>Tonight's shows</b><span>Times and notes.</span></div><a class="b blue" href="/remote1#tonight"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
+      <!-- TONIGHT (docs/REMOVE_1_0_PLAN.md P3): 1.0's Schedule screen,
+           read only: tonight's shows, a tap for each one's notes, and the
+           engine's Run warning. Its list is 1.0's own code (copied, and
+           checked to stay the same by selftest.py). -->
+      <div class="card col" id="tn-card">
+        <div class="t"><b>Tonight's shows</b><span id="tn-state"></span></div>
+        <div class="pline" id="tn-next">Next: None tonight</div>
+        <div class="pline bad" id="tn-run-warn" role="alert" hidden></div>
+        <div id="tonight"></div>
+        <div class="pline">Tap a show to see its notes.</div>
+      </div>
+      <!-- SCHEDULE EDITOR (P4): 1.0's "Schedule: the show times" card, on
+           the show PC only, with 1.0's element ids so its code is copied
+           word for word (selftest.py checks): the same route
+           (schedule-file, GET and POST), the same body, the same refusals,
+           all the engine's (schedule.py, Remote.schedule_file_save). -->
+      <div class="card col" id="sched-edit" hidden>
+        <div class="t"><b>Schedule: the show times</b><span>On this machine. Saved to the schedule file and loaded at once; nothing is started by it.</span></div>
+        <div class="pline">The scheduler starts a show at each time below (once Run has been pressed and the Fire &amp; Ice settings say it performs). Tonight's list is rebuilt from a save straight away, even after the night has closed, and nothing is started by it. Any times work: a last show end after midnight is the next morning, on the same night. Anything to know is said when it is saved, and the save stands. A save writes the whole schedule: a save from another window or iPad since this one read the file is overwritten, so Reload first if someone else may have changed it.</div>
+        <div class="segrid">
+          <label class="fl"><span>Time zone</span><select class="f" id="se-tz"></select><span class="pline" id="se-tz-now"></span></label>
+          <label class="fl"><span>Season starts</span><input class="f" id="se-first" type="date"></label>
+          <label class="fl"><span>Season ends</span><input class="f" id="se-last" type="date"></label>
+        </div>
+        <b>Show nights</b>
+        <div class="sched" id="se-days"></div>
+        <div class="segrid">
+          <label class="fl"><span>Show length, seconds</span><input class="f" id="se-len" type="number" min="1"></label>
+          <label class="fl"><span>Gap before a show, seconds</span><input class="f" id="se-guard" type="number" min="0"></label>
+          <label class="fl"><span>Late start allowed, seconds</span><input class="f" id="se-grace" type="number" min="0" max="300" title="A show more than this many seconds late is missed. Default 120, most 300."></label>
+        </div>
+        <div class="pbar"><button class="b green" id="se-save"><svg class="i"><use href="#i-check"/></svg>Save the schedule</button><button class="b" id="se-reload"><svg class="i"><use href="#i-reset"/></svg>Reload from the file</button></div>
+        <div class="pline" id="se-msg" role="status"></div>
+        <div class="pline" id="se-note"></div>
+      </div>
       <!-- PROGRAMMING (docs/REMOVE_1_0_PLAN.md P1 and P2): 1.0's
            Programming screen, here on the Schedule tab (the header has no
            room for a fifth tab; #prog opens it): its Show file card (Show
@@ -704,7 +761,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <div class="pline bad" id="p-pf-warn" role="alert" hidden></div>
           <div class="pline" id="p-msg" role="status"></div>
         </div>
-        <div class="card"><div class="t"><b>More programming</b><span>Schedule rules, show folder, network.</span></div><a class="b blue" href="/remote1#programming"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
+        <div class="card"><div class="t"><b>More programming</b><span>Show folder, network.</span></div><a class="b blue" href="/remote1#programming"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
       </div>
       <!-- The fireball timeline (fireball_timeline.py, Jeff 2026-10-30):
            per show file, a start timecode and a duration for each stage.
@@ -1044,25 +1101,38 @@ function showTab(t){
   TABS.forEach(k => { $("t-" + k).hidden = k !== t; });
   document.querySelectorAll(".tab").forEach(b => { b.classList.toggle("on", b.dataset.tab === t); b.setAttribute("aria-selected", b.dataset.tab === t ? "true" : "false"); });
   if(t === "settings"){ loadUiDefault(); loadPlayFrom(); }
-  if(t === "schedule"){ fbtOpen(); progFiles(); try{ drawProg(stale()); }catch(e){} }
+  if(t === "schedule"){ fbtOpen(); progFiles(); try{ drawProg(stale()); }catch(e){} if(ME && ME.local && !SE_READ){ SE_READ = true; loadSchedule(); } }
   if(prog) try{ $("t-prog").scrollIntoView(); }catch(e){}
   if(t === "show") layoutGroups();
   $("mini").hidden = t === "show";
 }
 document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => {
   const t = b.dataset.tab;
-  if(t === "show") history.replaceState(null, "", location.pathname + location.search); else location.hash = t;
+  // One showTab per press: a new hash calls it through hashchange.
+  if(t === "show") history.replaceState(null, "", location.pathname + location.search);
+  else if(location.hash !== "#" + t){ location.hash = t; return; }
   showTab(t);
 }));
 window.addEventListener("hashchange", () => showTab((location.hash || "").replace("#", "")));
 document.addEventListener("pointerdown", () => { LAST_TOUCH = Date.now(); }, true);
+// Typing counts as a touch (review of #210): an operator filling in the
+// schedule editor is never sent back to SHOW for not tapping.
+document.addEventListener("keydown", () => { LAST_TOUCH = Date.now(); }, true);
+document.addEventListener("input", () => { LAST_TOUCH = Date.now(); }, true);
+// Back to SHOW by itself (a new alert, or a minute idle near a show). The
+// schedule editor's unsaved edits stay in the form, and it says so.
+function backToShow(){
+  history.replaceState(null, "", location.pathname + location.search);
+  showTab("show");
+  try{ if(seDirty()) say("Unsaved schedule edits kept.", "The screen went back to SHOW. Your schedule edits are not saved yet; they are still on the Schedule tab. Save the schedule there.", "warn"); }catch(e){}
+}
 // Back to SHOW by itself a minute after the last touch on another tab
 // while a show is live or due within two minutes.
 setInterval(() => {
   if(TAB === "show" || !ST || Date.now() - LAST_TOUCH < 60000) return;
   const sch = ST.schedule || {};
   const due = sch.next && typeof sch.next.in_s === "number" && sch.next.in_s <= 120;
-  if(isLive(ST) || due){ history.replaceState(null, "", location.pathname + location.search); showTab("show"); }
+  if(isLive(ST) || due) backToShow();
 }, 5000);
 
 // ---- the engine's state, four times a second (1.0's loop) ----
@@ -1323,7 +1393,7 @@ function renderAlertSlot(){
   if(fresh && !HOLD && !PR_HOLD && !alDownFresh() && items.length) ALERT_KEY = items[0].key;
   // Any new alert brings the screen back to SHOW.
   const all = items.map(i => i.key);
-  if(KEYS_SEEN && all.some(k => !KEYS_SEEN.has(k)) && TAB !== "show"){ history.replaceState(null, "", location.pathname + location.search); showTab("show"); }
+  if(KEYS_SEEN && all.some(k => !KEYS_SEEN.has(k)) && TAB !== "show") backToShow();
   KEYS_SEEN = new Set(all);
   let idx = items.findIndex(i => i.key === ALERT_KEY);
   if(idx < 0){ idx = 0; ALERT_KEY = items.length ? items[0].key : null; }
@@ -1511,6 +1581,7 @@ function render(){
   setText($("st-tc"), show.timecode || "--:--:--:--");
   ALERTS = alertItems(s);
   renderAlertSlot();
+  try{ renderTonight(s); }catch(e){}
   renderGroups(s.flames || {});
   renderHazers(s);
   renderPump(s);
@@ -2081,6 +2152,205 @@ $("p-run").addEventListener("click", async ev => {
   catch(e){ say("Run was refused.", e.message, "bad"); }
 });
 
+// ---- TONIGHT (P3) and the SCHEDULE EDITOR (P4): 1.0's own code ----
+// COPIED FROM 1.0 (selftest.py checks both blocks stay word for word
+// the same): the list of tonight's shows and its tap, and the schedule
+// editor, with 1.0's element ids.
+// The Schedule tab (Jeff, 2026-10-23: tapping a show did nothing, even
+// with a show running). Two causes: the list was rebuilt on every 250 ms
+// status poll, so a tap's press and release landed on two different
+// elements and the browser sent no click; and a show with no reason had
+// nothing to open. Now the list is redrawn only when what it shows
+// changes, a tap is read on release wherever it lands, and every show
+// opens to its notes: the reason, the planned time if it moved, how it
+// was added, a late warning, or "No notes".
+const SLOT_OPEN = new Set();
+let SLOT_KEY = "";
+function slotNotes(r){
+  const out = [];
+  if(r.reason) out.push(String(r.reason));
+  if(r.planned && r.planned !== r.start) out.push("Planned for " + r.planned + ", moved to " + r.start + ".");
+  if(r.origin === "edit") out.push("Added for tonight only.");
+  if(r.origin === "operator") out.push("Started with Start now.");
+  if(r.past_last_end) out.push("Runs past the night's last end time.");
+  return out.join(" ");
+}
+function renderSchedule(slots){
+  const key = JSON.stringify([slots.map(r => [r.show, r.start, r.status, slotNotes(r)]), [...SLOT_OPEN]]);
+  if(key === SLOT_KEY) return;
+  SLOT_KEY = key;
+  $("tonight").innerHTML = slots.length ? slots.map(r => {
+    const k = r.show + "@" + r.start, notes = slotNotes(r), open = SLOT_OPEN.has(k);
+    return `<div class="slot${open ? " open" : ""}" data-k="${esc(k)}" role="button" tabindex="0" aria-expanded="${open}"><b>Show ${esc(r.show)}</b><span class="t">${esc(r.start)}</span><span class="s">${esc(r.status)}</span><span class="r">${esc(open ? (notes || "No notes for this show.") : notes)}</span></div>`;
+  }).join("") : `<div class="dim">No shows tonight.</div>`;
+}
+function toggleSlot(k){
+  if(SLOT_OPEN.has(k)) SLOT_OPEN.delete(k); else SLOT_OPEN.add(k);
+  renderSchedule((ST && ST.schedule && ST.schedule.slots) || []);
+}
+let SLOT_DOWN = null;
+$("tonight").addEventListener("pointerdown", e => { SLOT_DOWN = {x:e.clientX, y:e.clientY}; });
+$("tonight").addEventListener("pointerup", e => {
+  const d = SLOT_DOWN; SLOT_DOWN = null;
+  if(d && Math.hypot(e.clientX - d.x, e.clientY - d.y) > 12) return;   // a scroll, not a tap
+  const el = e.target.closest && e.target.closest(".slot");
+  if(el) toggleSlot(el.dataset.k);
+});
+$("tonight").addEventListener("keydown", e => {
+  const el = e.target.closest && e.target.closest(".slot");
+  if(el && (e.key === "Enter" || e.key === " ")){ e.preventDefault(); toggleSlot(el.dataset.k); }
+});
+
+// The time zone (Jeff, 2026-10-23): a dropdown of friendly names, grouped,
+// the schedule's zone (or this PC's, for a new file) chosen, and the
+// schedule's local time beside it. The engine still checks the name when
+// the schedule is saved (schedule.zone): an unknown zone is refused.
+const TZ_GROUPS = [
+  ["United States and Canada", [["America/New_York", "Eastern Time (New York)"], ["America/Chicago", "Central Time (Chicago)"],
+    ["America/Denver", "Mountain Time (Denver)"], ["America/Phoenix", "Mountain Time, no daylight saving (Phoenix)"],
+    ["America/Los_Angeles", "Pacific Time (Los Angeles)"], ["America/Anchorage", "Alaska Time (Anchorage)"],
+    ["Pacific/Honolulu", "Hawaii Time (Honolulu)"], ["America/Halifax", "Atlantic Time (Halifax)"],
+    ["America/St_Johns", "Newfoundland Time (St. John's)"], ["America/Toronto", "Eastern Time (Toronto)"],
+    ["America/Vancouver", "Pacific Time (Vancouver)"]]],
+  ["Europe", [["Europe/London", "UK Time (London)"], ["Europe/Dublin", "Irish Time (Dublin)"],
+    ["Europe/Paris", "Central European Time (Paris)"], ["Europe/Berlin", "Central European Time (Berlin)"],
+    ["Europe/Madrid", "Central European Time (Madrid)"], ["Europe/Amsterdam", "Central European Time (Amsterdam)"],
+    ["Europe/Athens", "Eastern European Time (Athens)"]]],
+  ["Asia and Pacific", [["Asia/Dubai", "Gulf Time (Dubai)"], ["Asia/Singapore", "Singapore Time"],
+    ["Asia/Shanghai", "China Time (Shanghai)"], ["Asia/Tokyo", "Japan Time (Tokyo)"],
+    ["Australia/Perth", "Western Australia Time (Perth)"], ["Australia/Sydney", "Eastern Australia Time (Sydney)"],
+    ["Pacific/Auckland", "New Zealand Time (Auckland)"]]]];
+function pcZone(){ try{ return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; }catch(e){ return ""; } }
+function zoneLabel(z){
+  for(const [, zs] of TZ_GROUPS) for(const [id, name] of zs) if(id === z) return name;
+  return String(z || "").replace(/_/g, " ").replace(/\//g, " / ");
+}
+function allZones(){
+  try{ return Intl.supportedValuesOf("timeZone"); }catch(e){ return []; }
+}
+function fillZones(want){
+  const sel = $("se-tz");
+  const known = new Set(TZ_GROUPS.flatMap(g => g[1].map(x => x[0])));
+  const others = allZones().filter(z => !known.has(z));
+  let h = "";
+  if(want && !known.has(want) && !others.includes(want)) h += `<option value="${esc(want)}">${esc(zoneLabel(want))}</option>`;
+  for(const [g, zs] of TZ_GROUPS) h += `<optgroup label="${esc(g)}">` + zs.map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`).join("") + `</optgroup>`;
+  if(others.length) h += `<optgroup label="Every other zone">` + others.map(z => `<option value="${esc(z)}">${esc(zoneLabel(z))}</option>`).join("") + `</optgroup>`;
+  sel.innerHTML = h;
+  sel.value = want || "America/Denver";
+  tzNow();
+}
+function tzNow(){
+  const z = $("se-tz").value, pc = pcZone();
+  let t = "";
+  try{ t = new Intl.DateTimeFormat("en-US", {timeZone:z, weekday:"short", hour:"2-digit", minute:"2-digit", hour12:false, timeZoneName:"short"}).format(new Date()); }catch(e){ t = "not a zone this browser knows"; }
+  $("se-tz-now").textContent = "Show's local time now: " + t + (pc && pc !== z ? ". This PC: " + zoneLabel(pc) + "." : ". Same as this PC.");
+}
+$("se-tz").addEventListener("change", tzNow);
+setInterval(() => { if(!$("sched-edit").hidden) tzNow(); }, 15000);
+// The schedule editor (Programming, this machine only): the weekly times,
+// the season and the three lengths. Exceptions stay as the file has them.
+const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const DAY_NAMES = {mon:"Monday", tue:"Tuesday", wed:"Wednesday", thu:"Thursday", fri:"Friday", sat:"Saturday", sun:"Sunday"};
+let SCHED_DOC = null;
+function drawSchedule(doc){
+  SCHED_DOC = doc;
+  fillZones(doc.timezone || pcZone());
+  $("se-first").value = (doc.season || {}).first_date || "";
+  $("se-last").value = (doc.season || {}).last_date || "";
+  $("se-len").value = doc.show_len_s == null ? "" : doc.show_len_s;
+  $("se-guard").value = doc.guard_s == null ? "" : doc.guard_s;
+  $("se-grace").value = doc.late_grace_s == null ? 120 : doc.late_grace_s;
+  const w = doc.weekly || {};
+  $("se-days").innerHTML = `<span class="h">Night</span><span class="h">First show</span><span class="h">Minutes apart</span><span class="h">Last show ends</span>` +
+    DAYS.map(d => { const n = w[d] || {}; const on = !!w[d];
+      return `<label><input type="checkbox" data-day="${d}" ${on ? "checked" : ""}> ${DAY_NAMES[d]}</label>` +
+        `<input data-d="${d}" data-k="first_start" placeholder="17:30" value="${esc(n.first_start || "")}" ${on ? "" : "disabled"}>` +
+        `<input data-d="${d}" data-k="interval_min" type="number" min="1" placeholder="20" value="${esc(n.interval_min == null ? "" : n.interval_min)}" ${on ? "" : "disabled"}>` +
+        `<input data-d="${d}" data-k="last_end" placeholder="21:30" value="${esc(n.last_end || "")}" ${on ? "" : "disabled"}>`; }).join("");
+  $("se-days").querySelectorAll("[data-day]").forEach(c => c.addEventListener("change", () => {
+    $("se-days").querySelectorAll(`[data-d="${c.dataset.day}"]`).forEach(i => { i.disabled = !c.checked; });
+  }));
+  const ex = Object.keys(doc.exceptions || {}).length;
+  $("se-note").textContent = ex ? (ex + " date exception(s) in the file are kept as they are; edit those in the file.") : "";
+}
+function readSchedule(){
+  const doc = Object.assign({}, SCHED_DOC || {});
+  doc.timezone = $("se-tz").value;
+  doc.season = {first_date: $("se-first").value, last_date: $("se-last").value};
+  const num = (id) => { const v = $(id).value.trim(); return v === "" ? null : Number(v); };
+  doc.show_len_s = num("se-len"); doc.guard_s = num("se-guard"); doc.late_grace_s = num("se-grace");
+  for(const k of ["show_len_s", "guard_s", "late_grace_s"]) if(doc[k] === null) delete doc[k];
+  const w = {};
+  $("se-days").querySelectorAll("[data-day]").forEach(c => {
+    if(!c.checked) return;
+    const d = c.dataset.day, get = (k) => $("se-days").querySelector(`[data-d="${d}"][data-k="${k}"]`).value.trim();
+    w[d] = {first_start:get("first_start"), interval_min:Number(get("interval_min")), last_end:get("last_end")};
+  });
+  doc.weekly = w;
+  return doc;
+}
+async function loadSchedule(){
+  try{
+    const j = await getJSON("/api/remote/schedule-file", 3000);
+    drawSchedule(j.doc || {});
+    $("se-msg").textContent = j.exists ? ("From " + j.path + (j.error ? ". Not loaded by the scheduler: " + j.error : "")) : ("No file at " + j.path + " yet: these are the example's times. Save to write it.");
+  }catch(e){ $("se-msg").textContent = e.message; }
+}
+$("se-reload").addEventListener("click", loadSchedule);
+$("se-save").addEventListener("click", async () => {
+  try{ const j = await post("/api/remote/schedule-file", {doc:readSchedule()}); $("se-msg").textContent = j.text; if(j.doc) drawSchedule(j.doc); }
+  catch(e){ $("se-msg").textContent = e.message; }
+});
+// Tonight's card (1.0's Schedule screen): what is next, 1.0's words, and
+// the engine's Run warning; the editor on the show PC only, read once the
+// screen knows it is the show PC (an address ending #schedule).
+let SE_READ = false, SE_BASE = null, SE_BASE_DOC = null;
+// Unsaved edits (review of #210): the form against what it showed when
+// the file was last drawn into it (1.0's drawSchedule sets SCHED_DOC).
+function seBaseline(){
+  if(SCHED_DOC && SCHED_DOC !== SE_BASE_DOC){ SE_BASE_DOC = SCHED_DOC; SE_BASE = JSON.stringify(readSchedule()); }
+}
+function seDirty(){
+  return !!SCHED_DOC && SCHED_DOC === SE_BASE_DOC && JSON.stringify(readSchedule()) !== SE_BASE;
+}
+// 1.0's Schedule screen line: the state word and its sentence (1.0's
+// render, the same words).
+function tonightState(s){
+  const sch = s.schedule || {};
+  let word = "No schedule", label = "No schedule in this engine";
+  if(sch.attached){
+    if(sch.state === "SHOW"){ word = "Show"; label = "Show " + (sch.running || "") + " running"; }
+    else if(sch.held){ word = sch.state === "PAUSED" ? "Paused" : "On hold";
+      label = sch.state === "PAUSED" ? "Held. The show is paused." : "On hold"; }
+    else { word = sch.state || "..."; label = ""; }
+    if(sch.stop_held && sch.state !== "SHOW" && sch.state !== "PAUSED"){
+      word = "On hold"; label = "Held after Stop: press Resume."; }
+    if(sch.error) label += (label ? ". " : "") + sch.error;
+  }
+  const prl = prerollLook(s.preroll);
+  if(prl.checking && sch.attached && sch.state !== "SHOW" && sch.state !== "PAUSED"){ word = prl.word; label = prl.label; }
+  const ah = alertHoldLook(s.alert_hold);
+  if(ah){ word = ah.word; label = ah.label + (sch.error ? " " + sch.error : ""); }
+  return word + (label ? ": " + label : "");
+}
+function tonightNext(sch){
+  const nx = sch.next;
+  return nx ? ("Show " + nx.show + " at " + nx.start) :
+    (sch.delayed ? ("Show " + sch.delayed.show + " is delayed, waiting for Start now") : "None tonight");
+}
+function renderTonight(s){
+  const sch = s.schedule || {};
+  setText($("tn-state"), tonightState(s));
+  setText($("tn-next"), sch.attached ? "Next: " + tonightNext(sch) : "No schedule in this engine");
+  const rw = String(sch.run_warning || "");
+  $("tn-run-warn").hidden = !rw; setText($("tn-run-warn"), rw);
+  renderSchedule(sch.slots || []);
+  const local = !!(ME && ME.local);
+  if($("sched-edit").hidden !== !local) $("sched-edit").hidden = !local;
+  if(local && TAB === "schedule" && !SE_READ){ SE_READ = true; loadSchedule(); }
+  seBaseline();
+}
 // ---- flame groups: 1.0's hold to arm, one button per group ----
 // COPIED FROM 1.0 (selftest.py checks they stay the same, with the Arm all
 // button's id the one difference): rearmWaitFor, holding, holdLapsed,
