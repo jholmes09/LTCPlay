@@ -23278,6 +23278,11 @@ def build():
   "  const live = sch.state === \"SHOW\" || sch.state === \"PAUSED\";\n  let text = MODE_WHAT[want], locked = false;",
   "  const live = sch.state === \"SHOW\";\n  let text = MODE_WHAT[want], locked = false;"),
 
+ ("ui 2.0 Programming: a tab opened from its address never reads the show files",
+  "ltcplay/web/remote2.html",
+  "  if(local && !$(\"p-file\").options.length && Date.now() - P_FILES_AT > 5000) progFiles();\n",
+  ""),
+
  ("ui 2.0 Programming: the Run card shows on an iPad",
   "ltcplay/web/remote2.html",
   "  if($(\"p-run-card\").hidden !== !local) $(\"p-run-card\").hidden = !local;",

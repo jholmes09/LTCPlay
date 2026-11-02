@@ -3665,5 +3665,6 @@
 "ui 2.0 Programming: Loop sends the state it already has": "test_ui2_programming_tab_makes_1_0_presses",
 "ui 2.0 Programming: a flame cue fault is not said": "test_ui2_programming_tab_makes_1_0_presses",
 "ui 2.0 Programming: Programming is never locked by a live show (copy differs)": "test_ui2_programming_tab_makes_1_0_presses",
-"ui 2.0 Programming: the Run card shows on an iPad": "test_ui2_programming_tab_in_a_browser"
+"ui 2.0 Programming: the Run card shows on an iPad": "test_ui2_programming_tab_in_a_browser",
+"ui 2.0 Programming: a tab opened from its address never reads the show files": "test_ui2_programming_tab_in_a_browser"
 }

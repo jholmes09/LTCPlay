@@ -112038,8 +112038,10 @@ async function yes(){ const b = document.querySelector('#sh-row [data-i="1"]'); 
 async function no(){ const b = document.querySelector('#sh-row [data-i="0"]'); if(b) b.click(); await wait(300); }
 async function go(){
   for(let i = 0; i < 80 && !(typeof ST !== "undefined" && ST && ST.transport); i++) await wait(100);
-  document.querySelector('.tab[data-tab="prog"]').click();
-  await settle(1200);
+  // hashopen=1: the address ended #prog, so the tab opened before this
+  // screen knew it was the show PC; nothing is clicked.
+  if(!/hashopen=1/.test(location.search)) document.querySelector('.tab[data-tab="prog"]').click();
+  await wait(1500);
   const out = {first:look()};
   if(/presses=1/.test(location.search)){
     posts.length = 0;
@@ -112156,7 +112158,8 @@ def test_ui2_programming_tab_in_a_browser():
     st = _ui2_status_prog()
     for frag, sizes in (("?tour=0&presses=1", ((1366, 768),)),
                         ("?tour=0&run=1", ((1366, 768),)),
-                        ("?tour=0", ((1024, 768), (390, 844)))):
+                        ("?tour=0&hashopen=1#prog",
+                         ((1024, 768), (390, 844)))):
         got = _rack_screen_in_chromium(chrome, page, st, sizes,
                                        measure_js=_UI2_PROG_JS, frag=frag,
                                        routes=routes, posts=answers,

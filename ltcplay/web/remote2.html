@@ -1809,9 +1809,10 @@ function rateNote(st){
 }
 // The show files (1.0's loadShowFiles): the good ones, and the engine's
 // selection until someone picks another here.
-let P_PICKED = false;
+let P_PICKED = false, P_FILES_AT = 0;
 async function progFiles(){
   if(!(ME && ME.local)) return;
+  P_FILES_AT = Date.now();
   try{
     const j = await getJSON("/api/timelines", 3000);
     const ok = (j.timelines || []).filter(t => !t.error).map(t => t.file);
@@ -1860,6 +1861,10 @@ function drawProg(isSt){
   const s = ST || {}, tr = s.transport || {}, show = s.show || {};
   const local = !!(ME && ME.local);
   if($("p-run-card").hidden !== !local) $("p-run-card").hidden = !local;
+  // A tab opened before this screen knew it was the show PC (an address
+  // ending #prog): the show files are read once it knows, then every 5 s
+  // while there are none.
+  if(local && !$("p-file").options.length && Date.now() - P_FILES_AT > 5000) progFiles();
   if(local){
     const rn = rateNote(ST);
     $("p-rate").hidden = !rn; setText($("p-rate"), rn);
