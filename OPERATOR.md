@@ -2707,6 +2707,31 @@ with the same holds, confirms and refusals.
   FIRE key or Space held, the cleaning starts only with its two holds,
   and Lock is one tap per machine with Undo. "Map in 1.0" opens the
   machine map, Arrange, the checklist PDF and the rest of 1.0's page.
+- 2.0 DAY tab, Fireball, fuel and timed purge: 1.0's Fireball page,
+  its recent refills and its timed purge, the same code and presses.
+  The Fireball step (Startup, only when the show has a fireball group):
+  a pad per channel. Fuel Charge, Air Charge and Purge stay on until
+  pressed again; Valve Open and Igniter are on only while held. While
+  anything is on, the page sends a beat every 100 ms, and the engine and
+  the flame link turn everything off 0.25 s after the last one. Leaving
+  the step or the tab, hiding or closing the page, no contact, signing
+  out and every refusal turn everything off at once; losing focus lets
+  go of Valve Open and Igniter; a Hold does not end it. Nothing comes
+  back on by itself. All off and Disarm Fireball always work; Tanks are
+  empty is for admins. The pads show only whole: on a window too short
+  for them (under about 690 px of page) the step says "This window is
+  too short for the fireball pads: make it taller or use the iPad", and
+  anything on is turned off. The Fireball step is not there at Shutdown,
+  or while the show PC's status has no fireball group; 2.0 then has no
+  All off, but Stop show and Disarm flames still turn the fireball off. Nothing on this step arms: the Fireball is armed
+  by its own hold to arm. The Fuel step: Refills and notes (amber
+  when there is a fuel warning) shows the warning and Recent refills
+  with Undo (admins; it asks first, and the refill stays in the record
+  marked undone); press it again for the tanks. The Purge step: the
+  timed purge, a preset or Other seconds, and Hold to start (held like a Hold to arm: a tap,
+  letting go early, another step or tab, no contact or signing out fire
+  nothing); once it runs you may let go, it stops by itself, and
+  Stop purge here or in the line at the top ends it now.
 - The systems badge in the header names a single problem ("Stream Deck:
   check"); one tap opens the list, which starts with what to do first.
   Something not set up here reads Off.
