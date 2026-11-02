@@ -106968,11 +106968,13 @@ def test_fireball_cues_never_drive_purge():
     R = _fbq_rig([_st("fuel", "00:00:00:00", 100),
                   _st("air", "00:00:00:00", 100),
                   _st("igniter", "00:00:00:00", 100),
-                  _st("valve", "00:00:00:00", 100)])
+                  # The Valve after its Igniter has gone out (it opens only
+                  # then: final review of #201), so the shot does fire.
+                  _st("valve", "00:00:00:10", 90)])
     try:
         for state in ("empty", "charged", "unknown"):
             R.tank.tanks = {"fuel": state, "air": state}
-            for f in range(0, 120, 7):
+            for f in range(0, 120):
                 R.cue_obj = {"label": "Show"} if f == 0 else R.cue_obj
                 check(R.frame(f, base=fseq)[58] == 0, f"{state} {f}")
         try:
@@ -107135,6 +107137,10 @@ def test_fireball_cues_wiring():
         check(cues.fireball._sent(None) == bytes([7] * 512),
               "the timeline reads the flame link's show_sent (the show's "
               "own values, before the Fireball page's frame)")
+        link.landings = 7
+        check(cues.fireball._land_count() == 7,
+              "and the flame link's landing count: every landing there is "
+              "a move for the fireball (final review of #201)")
         check(cues.fireball._group == [55, 56, 57, 58, 59],
               f"it reads flamesafe's fireball group from the Startup page "
               f"(review C-4): {cues.fireball._group}")
@@ -110649,8 +110655,8 @@ def test_start_at_cue_fireball_stages_run_whole_or_not_at_all():
         stages[2:] = [_st("igniter", "00:00:13:00", 2),
                       _st("valve", "00:00:14:00", 0.2)]
         R, on = play(392)
-        check(not on and any("Valve Open was skipped: its Igniter lead did "
-                             "not run" in m for m in R.fq.messages),
+        check(not on and any("Valve Open was skipped: its Igniter has not "
+                             "gone out" in m for m in R.fq.messages),
               f"landed inside the Igniter: no gas without ignition: {on} "
               f"{R.fq.messages}")
         # From well before: every stage whole, at its time.
@@ -110824,8 +110830,8 @@ def test_start_at_cue_moves_inside_a_play_judge_the_shot_afresh():
         # (a) Back inside a long Igniter: the Igniter is landed inside, so
         # the Valve does not open.
         R, on = tl(long_shot, list(range(250, 331)) + list(range(310, 400)))
-        check(not on and any("Valve Open was skipped: its Igniter lead did "
-                             "not run" in m for m in R.fq.messages) and
+        check(not on and any("Valve Open was skipped: its Igniter has not "
+                             "gone out" in m for m in R.fq.messages) and
               any("Igniter was skipped: the show landed inside its window"
                   in m for m in R.fq.messages),
               f"(a) Back inside the Igniter: no Valve, said: {on} "
@@ -110869,8 +110875,8 @@ def test_start_at_cue_moves_inside_a_play_judge_the_shot_afresh():
               f"{on.get(57)}")
         # An FSEQ Valve held for its lead is said.
         R, on = fq(fl, list(range(250, 331)) + list(range(310, 400)))
-        check(any("The FSEQ's Valve Open was held: its Igniter lead did not "
-                  "run" in m for m in R.fq.messages),
+        check(any("The FSEQ's Valve Open was held: its Igniter has not gone "
+                  "out" in m for m in R.fq.messages),
               f"said: {R.fq.messages}")
         # From the top, an Igniter and a Valve opening on the same frame:
         # the lead is taken first, so both run.
@@ -110881,10 +110887,16 @@ def test_start_at_cue_moves_inside_a_play_judge_the_shot_afresh():
                        _st("igniter", "00:00:03:00", 0.5)])
         rigs.append(R2)
         got = [R2.frame(f) for f in range(0, 130)]
-        check([f for f, g in enumerate(got) if g[56]] == list(range(90, 96))
+        # Under the evidence rule (final review of #201) a Valve that opens
+        # on the very frame its Igniter starts has no Igniter on the wire
+        # yet: skipped whole, and said; the Igniter runs.
+        check(not [f for f, g in enumerate(got) if g[56]]
               and [f for f, g in enumerate(got) if g[57]] ==
-              list(range(90, 105)),
-              f"same frame from the top: the Igniter first, both run")
+              list(range(90, 105)) and any(
+                  "Valve Open was skipped: its Igniter has not gone out" in m
+                  for m in R2.fq.messages),
+              f"same frame from the top: the Igniter runs, the Valve is "
+              f"skipped and said: {R2.fq.messages}")
         for m in R.fq.messages + R2.fq.messages:
             _no_dashes(m, "a fireball skip")
     finally:
@@ -110934,6 +110946,161 @@ def test_start_at_cue_halt_takes_the_stop_position():
               f"the show cue compared without case: {why} {why2}")
     finally:
         shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_start_at_cue_valve_needs_its_igniter_on_the_wire():
+    section("final review of #201: through the real flame link, Valve Open "
+            "opens only after its Igniter actually went out since the "
+            "latest landing: Pause and Continue, a loop set, a Back and an "
+            "Ahead that cancel out, a tiny Ahead, and an Igniter at the top "
+            "of a show the link holds dark; on a timeline and an FSEQ show; "
+            "said in the journal; a plain play still fires the shot")
+    import json as _j
+    import shutil
+    import types
+    from ltcplay import flamelink as fl
+    from ltcplay import fireball_timeline as FT
+    from ltcplay import fireball_cues as FQ
+    good = {"ip": "127.0.0.1", "port": 5571, "universe": 1,
+            "key": "selftest-key-0123456789", "frame_stale_ms": 500}
+    works = []
+
+    def rig(stages=None, fseq=None):
+        work = tempfile.mkdtemp()
+        works.append(work)
+        store = FT.Store(work)
+        if stages is not None:
+            ok, text, _e = store.save("Show.json", "Show", 600.0,
+                                      "timeline", stages, 0, who="Andy")
+            assert ok, text
+        clk = [100.0]
+        show = {"f": None, "live": True}
+        sess = types.SimpleNamespace(timeline_path=os.path.join(
+            work, "Show.json" if stages is not None else "Plain.json"))
+        cue_obj = {"label": "Show"}
+        R = types.SimpleNamespace(clk=clk, show=show, lines=[])
+
+        def state():
+            f = show["f"]
+            if f is None:
+                return None, False
+            return _pf_tc(f / 30.0), show["live"]
+
+        def cues(tc):
+            f = int(round(_pf_secs(tc) * 30))
+            base = [0] * 512
+            for slot, r in (fseq or {}).items():
+                if f in r:
+                    base[slot - 1] = 255
+            return R.fq.apply(base, sess, "Show", f / 30.0, cue_obj)
+        link = fl.FlameLink(fl.FlameLinkConfig.parse(good), cues=cues,
+                            show_state=state, clock=lambda: clk[0])
+        link.tc_fps = 30.0
+        link.wire = []
+        link._sock = object()
+
+        def send(data):
+            link.wire.append(_j.loads(bytes(data).decode("utf-8")))
+            return True
+        link._send = send
+        R.fq = FQ.FireballCues(store, charge_get=lambda: _FbcTank(),
+                               clock=lambda: clk[0],
+                               sent_get=lambda: link.show_sent,
+                               land_get=lambda: link.landings,
+                               journal=lambda t, **k: R.lines.append(t))
+        R.fq.refresh()
+        link.release()
+        R.link = link
+        R.on = {57: [], 58: []}
+
+        def play(a, b):
+            for f in range(a, b):
+                show["f"] = f
+                link.send_frame()
+                v = [w for w in link.wire if "values" in w][-1]["values"]
+                for slot in (57, 58):
+                    if v[slot - 1]:
+                        R.on[slot].append(f)
+                clk[0] += 1 / 30.0
+
+        def still(seconds):
+            for _ in range(int(seconds * 30)):
+                link.send_frame()
+                clk[0] += 1 / 30.0
+        R.play, R.still = play, still
+        return R
+    shot = [_st("igniter", "00:00:10:00", 4),
+            _st("valve", "00:00:12:00", 0.5)]
+    fshot = {58: range(300, 420), 57: range(360, 375)}
+    try:
+        for kind in ("timeline", "FSEQ"):
+            def mk():
+                return rig(shot) if kind == "timeline" else rig(fseq=fshot)
+            # A plain play: the Igniter and then the Valve go out.
+            R = mk()
+            R.play(250, 400)
+            check(R.on[58] and R.on[57] and min(R.on[57]) >= 360 and
+                  min(R.on[58]) < min(R.on[57]),
+                  f"{kind}, a plain play: the shot fires: "
+                  f"{R.on[58][:1]} {R.on[57][:1]}")
+            # Pause at 315 for 2 s, then Continue (the playhead's landing
+            # before and after, the cue time unchanged).
+            R = mk()
+            R.play(250, 315)
+            R.link.zero()
+            R.still(2.0)
+            R.link.landing()
+            R.link.release()
+            R.link.landing()
+            R.play(315, 400)
+            check(not R.on[57], f"{kind}, Pause and Continue in the "
+                                f"Igniter: no Valve: {R.on}")
+            check(any("Valve Open" in t and "has not gone out" in t
+                      for t in R.lines), f"{kind}: said: {R.lines[-2:]}")
+            # A loop set at 317 (a landing, the position unchanged).
+            R = mk()
+            R.play(250, 317)
+            R.link.landing()
+            R.link.landing()
+            R.play(317, 400)
+            check(not R.on[57], f"{kind}, a loop set in the Igniter: no "
+                                f"Valve: {R.on[57]}")
+            # Back 5 s and Ahead 5 s (net nothing), then on.
+            R = mk()
+            R.play(250, 317)
+            for _ in range(4):
+                R.link.landing()
+            R.play(317, 400)
+            check(not R.on[57], f"{kind}, Back and Ahead that cancel out: "
+                                f"no Valve: {R.on[57]}")
+            # A tiny Ahead (one frame) through the playhead's landing.
+            R = mk()
+            R.play(250, 317)
+            R.link.landing()
+            R.play(318, 400)
+            check(not R.on[57], f"{kind}, a tiny Ahead: no Valve: "
+                                f"{R.on[57]}")
+        # The top of a show: the flame link holds an Igniter at
+        # 00:00:00:00 dark (the first timecode is a seek), so the Valve at
+        # 00:00:01:00 is held too, and said.
+        R = rig([_st("igniter", "00:00:00:00", 2),
+                 _st("valve", "00:00:01:00", 0.5)])
+        R.play(0, 80)
+        check(not R.on[58] and not R.on[57] and any(
+            "has not gone out" in t for t in R.lines),
+              f"timeline, an Igniter at the top held dark by the link: no "
+              f"Valve, said: {R.on} {R.lines[-1:]}")
+        R = rig(fseq={58: range(0, 60), 57: range(30, 45)})
+        R.play(0, 80)
+        check(not R.on[57] and any("has not gone out" in t
+                                   for t in R.lines),
+              f"FSEQ, the same: no Valve, said: {R.on} {R.lines[-1:]}")
+        for t in R.lines:
+            _no_dashes(t, "a fireball line")
+    finally:
+        for w in works:
+            shutil.rmtree(w, ignore_errors=True)
     print("  ok")
 
 
@@ -112108,6 +112275,7 @@ if __name__ == "__main__":
         test_start_at_cue_fireball_stages_run_whole_or_not_at_all,
         test_start_at_cue_moves_inside_a_play_judge_the_shot_afresh,
         test_start_at_cue_halt_takes_the_stop_position,
+        test_start_at_cue_valve_needs_its_igniter_on_the_wire,
         test_start_at_cue_fireball_lands_by_its_own_rules,
         test_start_at_cue_docs_in_plain_words,
     ]

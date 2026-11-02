@@ -2041,13 +2041,16 @@ comes in the next update; the engine side is here.
   lands is NOT started in the middle; it stays off until its next start.
   A fireball stage that would open in the first moment after the landing
   (under about 0.8 s, while the flame link settles) is skipped whole, so
-  every stage runs whole or not at all. When the fireball timeline has an
-  Igniter stage that starts at or before Valve Open, Valve Open runs only
-  if that Igniter ran first in that play (on a show on its FSEQ: Valve
-  Open is held while its Igniter was held, or was already on where the
-  show landed). Each skipped stage is said in the journal and on the
-  Fireball page, with why. Choose cues with their lead-in at least a
-  second before a fireball shot.
+  every stage runs whole or not at all. Valve Open runs only after its
+  Igniter has actually gone out in that run: the flame link must have
+  sent the Igniter since the latest landing (a start, Play from, Back,
+  Ahead, Continue or a loop). That applies when the fireball timeline has
+  an Igniter stage at or before Valve Open, and on a show on its FSEQ when
+  the Igniter is on as Valve Open opens. An Igniter at the very top of a
+  show is held dark by the flame link for its first moment, so its Valve
+  Open does not run either. Each skipped or held stage is said in the
+  journal and on the Fireball page, with why. Choose cues with their
+  lead-in at least a second before a fireball shot.
   A fuel or air charge is skipped when that tank is already charged or
   not known (never a double charge), and a charge whose window the show
   landed in is skipped too. Start at a cue never arms anything: flamesafe

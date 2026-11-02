@@ -2477,7 +2477,10 @@ def _attach_fireball_timeline(httpd):
             journal=say, group_get=fireball_slots, live_get=live_slots,
             # The show path's own sent values, before the Fireball page's
             # frame (flamelink.show_sent, third review D-F1).
-            sent_get=lambda: getattr(link, "show_sent", None))
+            sent_get=lambda: getattr(link, "show_sent", None),
+            # Every landing at the flame link (a Continue, a loop, a move)
+            # is a move for the fireball too (final review of #201).
+            land_get=lambda: getattr(link, "landings", None))
         fb.refresh()
     except Exception as e:                       # noqa: BLE001
         fb = fbc_mod.FireballCues(None, journal=say)

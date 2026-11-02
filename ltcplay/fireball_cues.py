@@ -142,6 +142,12 @@ class _Run:
         # the FSEQ turns them off; and Valve Open while its lead was held.
         self.fseq_land_hold = set()
         self.fseq_lead_held = set()   # lead slots held, or on at a landing
+        # Lead slots (58, the Igniter) seen ON THE WIRE, in what the show
+        # path actually sent, since the latest landing (final review of
+        # #201): the evidence Valve Open needs. The flame link's landing
+        # count last seen.
+        self.lead_seen = set()
+        self.land_count = None
         self.fseq_prev = {}           # slot -> on in the FSEQ last frame
         self.adopt(entry, rev, None)
 
@@ -187,7 +193,7 @@ class FireballCues:
 
     def __init__(self, store, charge_get=lambda: None, journal=None,
                  clock=time.monotonic, sent_get=None, group_get=None,
-                 live_get=None):
+                 live_get=None, land_get=None):
         self.store = store
         self._charge_get = charge_get
         self._journal = journal
@@ -198,6 +204,11 @@ class FireballCues:
         # D-F1: Andy's top-off on the composed frame read as the show's
         # charge still on). None: the charge state's last frame.
         self._sent_get = sent_get
+        # The flame link's landing count (FlameLink.landings): every
+        # Programming move, Continue, loop and Play from calls its
+        # landing(), even when the cue time does not move; each is a move
+        # here too (final review of #201). None: no link to ask.
+        self._land_get = land_get
         # flamesafe's fireball group's fire slots (off the sender, read in
         # refresh): the channels this module drives must be them.
         self._group_get = group_get
@@ -292,6 +303,17 @@ class FireballCues:
             except Exception:                    # noqa: BLE001
                 return b""
         return getattr(tr, "last_sent", b"") if tr is not None else b""
+
+    def _land_count(self):
+        """The flame link's landing count, or None. Never raises."""
+        fn = self._land_get
+        if fn is None:
+            return None
+        try:
+            v = fn()
+            return v if isinstance(v, int) else None
+        except Exception:                        # noqa: BLE001
+            return None
 
     def _gap_check(self, run):
         """Asked again after more than GAP_S (a Hold, a look over the
@@ -423,6 +445,24 @@ class FireballCues:
         # than the pause is not seen as a jump by the clock (round-7
         # review 5).
         jumped = jumped or gapped
+        # A landing at the flame link (a Continue, a loop, a move of any
+        # size) is a move, whether or not the cue time moved.
+        lc = self._land_count()
+        stable = lc is None or lc == run.land_count
+        if lc is not None and run.land_count is not None and \
+                lc != run.land_count:
+            moved = jumped = True
+            run.first_relf = None
+        run.land_count = lc
+        if moved:
+            run.lead_seen.clear()
+        elif stable and not first:
+            # What the show path sent last frame, after the flame link's
+            # own guard: an Igniter that went out is the evidence.
+            sent = self._sent(self._charge_get())
+            for slot in NEEDS_SLOT.values():
+                if len(sent) >= slot and sent[slot - 1] > 0:
+                    run.lead_seen.add(slot)
         if moved:
             # After a move, the fire stages are judged as at a fresh
             # landing (review of #201, round 2: a Back inside a long
@@ -518,13 +558,17 @@ class FireballCues:
             lead = NEEDS.get(k)
             lw = run.stages.get(lead) if lead else None
             if k not in run.started and lw is not None and \
-                    lw["s0"] <= w["s0"] and lead not in run.started:
-                # Never gas without its ignition lead (review B of #201).
-                run.skipped[k] = f"its {fbtl.STAGE_WORD[lead]} lead did " \
-                                 f"not run"
+                    lw["s0"] <= w["s0"] and \
+                    lw["slot"] not in run.lead_seen:
+                # Never gas without its ignition lead: Valve Open opens only
+                # once its Igniter has actually gone out on the wire since
+                # the latest landing (final review of #201: the flame link
+                # can hold an Igniter dark that this module turned on).
+                run.skipped[k] = f"its {fbtl.STAGE_WORD[lead]} has not " \
+                                 f"gone out"
                 self._say(f"{fbtl.STAGE_WORD[k]} was skipped: its "
-                          f"{fbtl.STAGE_WORD[lead]} lead did not run in this "
-                          f"play (never gas without ignition).")
+                          f"{fbtl.STAGE_WORD[lead]} has not gone out since "
+                          f"the show landed (never gas without ignition).")
                 continue
             if tank is not None:
                 why = self._charge_refusal(tr, tank, slot, run)
@@ -632,6 +676,7 @@ class FireballCues:
         land = run.first_relf
         settling = land is not None and not run.top_ok and \
             relf is not None and relf < land + LANDING_SETTLE_FRAMES
+        raw = list(out)
         for slot in (58, 55, 56, 57):
             on = out[slot - 1] > 0
             was = run.fseq_prev.get(slot)
@@ -661,12 +706,18 @@ class FireballCues:
                     self._say(f"The FSEQ's {word} was held: it turned on too "
                               f"soon after the landing (it would go out late "
                               f"and cut short).")
-                elif lead is not None and lead in run.fseq_lead_held:
+                elif lead is not None and (
+                        lead in run.fseq_lead_held or
+                        (raw[lead - 1] > 0 and
+                         lead not in run.lead_seen)):
+                    # Its Igniter is part of this shot (held by us, or on
+                    # in the FSEQ now) and has not gone out on the wire
+                    # since the latest landing (final review of #201).
                     run.fseq_land_hold.add(slot)
                     self._say(f"The FSEQ's {word} was held: its "
-                              f"{fbtl.STAGE_WORD[_SLOT_STAGE[lead]]} lead did "
-                              f"not run in this play (never gas without "
-                              f"ignition).")
+                              f"{fbtl.STAGE_WORD[_SLOT_STAGE[lead]]} has not "
+                              f"gone out since the show landed (never gas "
+                              f"without ignition).")
                 if slot in NEEDS_SLOT.values():
                     # A lead's own new start: held or not, from here.
                     if slot in run.fseq_land_hold:

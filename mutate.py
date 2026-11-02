@@ -21359,8 +21359,8 @@ def build():
 
  ("fireball manual: the timeline judges its charge from the composed frame",
   "ltcplay/web.py",
-  "            sent_get=lambda: getattr(link, \"show_sent\", None))",
-  "            sent_get=None)"),
+  "            sent_get=lambda: getattr(link, \"show_sent\", None),",
+  "            sent_get=None,"),
 
  ("fireball: a held pad whose pointer leaves it stays on",
   "ltcplay/web/remote.html",
@@ -22808,8 +22808,8 @@ def build():
 
  ("start at a cue: an FSEQ Valve opens while its Igniter lead was held",
   "ltcplay/fireball_cues.py",
-  "                elif lead is not None and lead in run.fseq_lead_held:",
-  "                elif False:"),
+  "                        lead in run.fseq_lead_held or\n",
+  "                        False or\n"),
 
  ("start at a cue: the landing's settle time is only the flame link's",
   "ltcplay/fireball_cues.py",
@@ -22861,10 +22861,6 @@ def build():
   "                    self._say(f\"The FSEQ's {word} was held: its \"",
   "                    (lambda *a: None)(f\"The FSEQ's {word} was held: its \""),
 
- ("start at a cue: a Valve on the Igniter's frame is taken before it",
-  "ltcplay/fireball_cues.py",
-  "            kw[1][\"s0\"], kw[0] in NEEDS))",
-  "            kw[1][\"s0\"], kw[0] not in NEEDS))"),
 
  ("start at a cue: Stop never asks for the stop position",
   "ltcplay/remote.py",
@@ -23034,6 +23030,36 @@ def build():
  ('playhead: a Pause never hears that a Stop left the rig dark (round 3)', 'ltcplay/playhead.py',
   '            if self._stopped_dark(cond):\n',
   '            if False:\n'),
+
+ ("start at a cue: Valve Open trusts that its Igniter was asked for, not that it went out",
+  "ltcplay/fireball_cues.py",
+  "                    lw[\"slot\"] not in run.lead_seen:",
+  "                    lead not in run.started:"),
+
+ ("start at a cue: a flame link landing with the cue time unchanged is not a move",
+  "ltcplay/fireball_cues.py",
+  "        lc = self._land_count()",
+  "        lc = None"),
+
+ ("start at a cue: an FSEQ Valve opens while its Igniter has not gone out",
+  "ltcplay/fireball_cues.py",
+  "                        (raw[lead - 1] > 0 and\n                         lead not in run.lead_seen)):",
+  "                        False):"),
+
+ ("start at a cue: an Igniter counts as gone out without the wire saying so",
+  "ltcplay/fireball_cues.py",
+  "                if len(sent) >= slot and sent[slot - 1] > 0:\n                    run.lead_seen.add(slot)",
+  "                if True:\n                    run.lead_seen.add(slot)"),
+
+ ("start at a cue: an Igniter seen before a landing still counts after it",
+  "ltcplay/fireball_cues.py",
+  "        if moved:\n            run.lead_seen.clear()",
+  "        if False:\n            run.lead_seen.clear()"),
+
+ ("start at a cue: the engine never hands the fireball the link's landings",
+  "ltcplay/web.py",
+  "            land_get=lambda: getattr(link, \"landings\", None))",
+  "            land_get=None)"),
 
 ]
 

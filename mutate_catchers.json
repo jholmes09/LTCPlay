@@ -3615,7 +3615,12 @@
 "start at a cue: a stage landed inside is skipped without a word": "test_start_at_cue_moves_inside_a_play_judge_the_shot_afresh",
 "start at a cue: a stage opening too soon is skipped without a word": "test_start_at_cue_moves_inside_a_play_judge_the_shot_afresh",
 "start at a cue: an FSEQ Valve held for its lead is not said": "test_start_at_cue_moves_inside_a_play_judge_the_shot_afresh",
-"start at a cue: a Valve on the Igniter's frame is taken before it": "test_start_at_cue_moves_inside_a_play_judge_the_shot_afresh",
 "start at a cue: Stop never asks for the stop position": "test_start_at_cue_halt_takes_the_stop_position",
-"start at a cue: the re-check compares the show cue with its case": "test_start_at_cue_halt_takes_the_stop_position"
+"start at a cue: the re-check compares the show cue with its case": "test_start_at_cue_halt_takes_the_stop_position",
+"start at a cue: Valve Open trusts that its Igniter was asked for, not that it went out": "test_start_at_cue_valve_needs_its_igniter_on_the_wire",
+"start at a cue: a flame link landing with the cue time unchanged is not a move": "test_start_at_cue_valve_needs_its_igniter_on_the_wire",
+"start at a cue: an FSEQ Valve opens while its Igniter has not gone out": "test_start_at_cue_valve_needs_its_igniter_on_the_wire",
+"start at a cue: an Igniter counts as gone out without the wire saying so": "test_start_at_cue_valve_needs_its_igniter_on_the_wire",
+"start at a cue: an Igniter seen before a landing still counts after it": "test_start_at_cue_valve_needs_its_igniter_on_the_wire",
+"start at a cue: the engine never hands the fireball the link's landings": "test_fireball_cues_wiring"
 }
