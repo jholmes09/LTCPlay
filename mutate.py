@@ -3162,6 +3162,11 @@ MUTATIONS = [
   "  if(part !== \"shut\" && fb && fb.available)",
   "  if(part !== \"shut\" && fb)"),
 
+ ("ui 2.0 Fireball: All off and Disarm scroll out of sight with the panel",
+  "ltcplay/web/remote2.html",
+  "#d-fb > .drow:first-child{position:sticky;",
+  "#d-fb > .drow:first-child{position:static;"),
+
  ("ui 2.0 timed purge: another step leaves the hold beating",
   "ltcplay/web/remote2.html",
   "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); tpLetGo(\"another step was chosen\"); purgeDrop(); }",

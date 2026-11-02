@@ -102780,6 +102780,8 @@ const small = sel => [...document.querySelectorAll(sel)].filter(e => e.getClient
 out.fb_layout = {excess:mainEx(), small:small("#d-fb .b, #d-fb .fb-pad"), xs:document.scrollingElement.scrollWidth - innerWidth,
   // All off and Disarm Fireball are on the screen without a scroll.
   safe_seen:["fb-alloff", "fb-disarm"].every(id => { const r = document.getElementById(id).getBoundingClientRect(), pr = document.getElementById("d-panel").getBoundingClientRect(); return r.height > 0 && r.top >= pr.top - 1 && r.bottom <= pr.bottom + 1 && r.bottom <= innerHeight; }),
+  sticky:getComputedStyle(document.querySelector("#d-fb > .drow")).position === "sticky" && document.querySelector("#d-fb > .drow").contains(document.getElementById("fb-alloff")) && document.querySelector("#d-fb > .drow").contains(document.getElementById("fb-disarm")),
+  panel_h:Math.round(document.getElementById("d-panel").getBoundingClientRect().height),
   rects:["d-panel", "fb-alloff", "fb-disarm", "d-steps", "next", "mini"].map(id => { const e = document.getElementById(id); if(!e) return id + ":none"; const r = e.getBoundingClientRect(); return id + ":" + Math.round(r.top) + "-" + Math.round(r.bottom); }).concat(["inner:" + innerHeight, "scroll:" + document.getElementById("d-panel").scrollTop])};
 let n = mark();
 h.ev(pad("valve"), "pointerdown");
@@ -102883,8 +102885,11 @@ out.buttons = since(n).filter(p => p.route !== "morning-open").map(p => p.route 
     check(m["has_step"] and m["shown"],
           f"a fireball group: the Fireball step and its pads: {m}"[:600])
     fl = m["fb_layout"]
+    # All off and Disarm Fireball: the step's first row, kept in sight
+    # (sticky) while the panel scrolls; on the screen at once wherever the
+    # panel has room for them (the runner's window can be under 500 px).
     check(fl["excess"] <= 1 and not fl["small"] and fl["xs"] <= 0 and
-          fl["safe_seen"],
+          fl["sticky"] and (fl["safe_seen"] or fl["panel_h"] < 200),
           f"the Fireball step: the page never scrolls (the step's panel "
           f"may), 56 px targets, All off and Disarm Fireball on the "
           f"screen: {fl}")
