@@ -102591,6 +102591,632 @@ def test_ui2_fuel_pump_in_a_browser():
     print("  ok")
 
 
+# ---------------------------------------------------------------------------
+# Interface 2.0's DAY tab, P8, P9, P10 (docs/REMOVE_1_0_PLAN.md): 1.0's
+# Fireball page, its fuel warning and recent refills (Undo), and its timed
+# purge, 1.0's own code with 1.0's element ids.
+# ---------------------------------------------------------------------------
+
+_UI2_B_BLOCKS = (
+    ("the Fireball page", "// ---- Fireball (Jeff, 2026-10-28; design by "
+     "Andy; fireball.py) --------", "// ---- Wave flamer cleaning", None),
+    ("the timed purge", "// ---- The timed purge (Jeff, 2026-10-29; "
+     "morning.py) ---------------------",
+     "// The banner on every screen while a timed purge runs",
+     '$("tp-banner-stop").addEventListener("click", tpStopPress);\n'),
+    ("fuWhen", "function fuWhen(ms){", "function fuSecs(s)", None),
+    ("the Undo press", '$("fu-recent").addEventListener("click", async '
+     '(ev) => {', "\n// ---- Fireball (Jeff", None),
+    ("the recent refills", "  const rec = (f.recent_refills || []);",
+     "}\nasync function fuPress", None),
+    ("the fuel warning", "  const warn = [f.config_error, f.fault]."
+     "concat(f.notes || []).filter(Boolean).join(\" \");",
+     "  $(\"fu-kinds\")", None))
+
+
+def test_ui2_day_fireball_fuel_purge_are_1_0s():
+    section("2.0's DAY tab, P8, P9, P10: the Fireball page, the fuel "
+            "warning and recent refills with Undo, and the timed purge are "
+            "1.0's code word for word (the beats, their 100 ms, every cut, "
+            "the bodies and the routes), the timed purge's one difference "
+            "1.0's banner Stop (2.0's pinned Stop purge); their sections "
+            "are shown on their steps only and the Fireball page is open "
+            "only while its step shows; the Fireball step only with a "
+            "fireball group; no dashes; OPERATOR.md and the plan")
+    one, two = _ui2_pages()
+    for what, a, b, drop in _UI2_B_BLOCKS:
+        i = one.find(a)
+        j = one.find(b, i)
+        blk = one[i:j] if 0 <= i < j else ""
+        if drop:
+            check(blk.count(drop) == 1, f"1.0's {what} has {drop!r}")
+            blk = blk.replace(drop, "")
+        check(len(blk) > 100 and blk in two,
+              f"2.0's {what} is 1.0's code, word for word ({len(blk)} "
+              f"characters)")
+    for need in ('<div id="d-fb" class="dsec" hidden>', 'id="fb-pads"',
+                 'id="fb-alloff"', 'id="fb-disarm"', 'id="fb-empty"',
+                 'id="fb-msg"', 'id="fb-armed"', 'id="fb-note"',
+                 'id="fb-block"', 'id="fb-charge"',
+                 '<div id="d-fu" class="dsec" hidden>', 'id="fu-warn"',
+                 'id="fu-undo" hidden', 'id="fu-recent"',
+                 '<div id="d-tp" class="dsec" hidden>', 'id="tp" hidden',
+                 'id="tp-presets"', 'id="tp-secs"', 'id="tp-hold"',
+                 'data-safe class="b red" id="tp-stop"', 'id="tp-st"'):
+        check(need in two, f"2.0's DAY panel has {need}")
+    check('data-safe class="b safe" id="fb-alloff"' in two and
+          'data-safe class="b safe" id="fb-disarm"' in two,
+          "All off and Disarm Fireball are safe presses (keys never held "
+          "back)")
+    ds = _js_function(two, "daySections") or ""
+    for need in ('$("d-fb").hidden = k !== "fireball";',
+                 'fireballView(k === "fireball");',
+                 'if(k === "purge") renderTimedPurge();',
+                 'if(k === "fuel") renderFuelUndo();'):
+        check(need in ds, f"daySections: {need}")
+    dv = _js_function(two, "dayView") or ""
+    dc = _js_function(two, "dayCuts") or ""
+    st_ = _js_function(two, "showTab") or ""
+    check(dv.find('if(!on) dayCuts("the page was left");') == dv.find("{") + 4
+          and dc.find("fireballView(false);") < dc.find("fireStop(why);") <
+          dc.find("tpLetGo(why);") < dc.find("purgeDrop();") and
+          "try" not in dc and
+          0 < st_.find('if(t !== "day" && TAB === "day") dayCuts(') <
+          st_.find("try{ dayView("),
+          "leaving DAY: the Fireball page, the fire key, a timed purge's "
+          "hold and this screen's selection end first, outside any try "
+          "(review of #211, 2)")
+    dg = _js_function(two, "dayGo") or ""
+    check('if(DAY_STEP === "fireball") fireballView(false);' in dg and
+          'tpLetGo("another step was chosen")' in dg,
+          "another step turns the Fireball page off and ends a timed "
+          "purge's hold")
+    sect = two[two.find('<div id="d-fb"'):two.find("<!-- The message lines")]
+    check("–" not in sect and "—" not in sect,
+          "no em or en dashes in the new sections")
+    here = os.path.dirname(os.path.abspath(__file__))
+    op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
+    i = op.find("- 2.0 DAY tab, Fireball, fuel and timed purge:")
+    para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
+    for words in ("Fireball step", "0.25 s", "a Hold does not",
+                  "Recent refills", "Undo", "admins", "timed purge",
+                  "Hold to start", "Stop purge"):
+        check(words in para, f"OPERATOR.md, 2.0 DAY, says {words!r}")
+    _no_dashes(para, "OPERATOR.md, 2.0 DAY, Fireball, fuel, timed purge")
+    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
+                encoding="utf-8").read()
+    check(all(f"| {p} | DONE" in plan for p in ("P8", "P9", "P10")),
+          "the removal plan marks P8, P9 and P10 done")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    lo = one[one.find("// LOGIC BEGIN"):one.find("// LOGIC END")]
+    js = lo + "\n" + (_js_function(two, "daySteps") or "") + \
+        "\nfunction dayList(){ return null; }\n" + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const st = {me:{}, fireball:{available:true, on:[]}};
+let s = daySteps("start", {st:st, mo:null, seen:() => false});
+t(s.some(x => x.key === "fireball" && x.state === "todo"), "a fireball group: the Fireball step: " + JSON.stringify(s));
+t(!daySteps("shut", {st:st, mo:null}).some(x => x.key === "fireball"), "never at Shutdown");
+t(!daySteps("start", {st:{me:{}, fireball:{available:false}}, mo:null}).some(x => x.key === "fireball"), "no fireball group: no step");
+t(daySteps("start", {st:{me:{}, fireball:{available:true, on:["fuel"]}}, mo:null}).find(x => x.key === "fireball").state === "live", "a channel on: live");
+console.log(JSON.stringify(out));
+"""
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    check(r.returncode == 0 and r.stdout.strip() == "[]",
+          f"the Fireball step, in node: {r.stdout[-500:]!r} "
+          f"{r.stderr[-500:]!r}")
+    print("  ok")
+
+
+_UI2_DRIVE_JS = _RACK_DRIVE_JS.replace(
+    'if(!document.querySelector("#fl-lamps .lamp")) return setTimeout(go, 50);',
+    'if(!(typeof ST !== "undefined" && ST && ST.schedule && typeof MO !== '
+    '"undefined" && MO)) return setTimeout(go, 50);')
+
+
+def _ui2_drive(chrome, page, status, steps_js, size=(1366, 768), **kw):
+    js = "<script>window.__drive = async (out, h) => {\n" + steps_js + \
+        "\n};</script>" + _UI2_DRIVE_JS
+    got = _rack_screen_in_chromium(chrome, page, status, (size,),
+                                   measure_js=js, **kw)
+    res = got[size]
+    return res[0] if isinstance(res, list) and res else str(res)
+
+
+def _ui2_page_inline():
+    one, two = _ui2_pages()
+    lo = one[one.find('<script id="remote-logic">') +
+             len('<script id="remote-logic">'):]
+    lo = lo[:lo.find("</script>")]
+    return two.replace('<script src="/remote-logic.js"></script>',
+                       "<script>" + lo + "</script>", 1)
+
+
+def _ui2_status_day():
+    st = _ui2_status_running()
+    st["schedule"].update({"state": "STANDBY", "running": None})
+    st["show"] = {"running": True, "timecode": None}
+    st["countdown"] = None
+    st["fireball"] = {"available": True, "on": [], "owner": None}
+    st["laser_arm"]["lasers"][0]["armed"] = False
+    st["flames"]["groups"] = [dict(g, armed="disarmed")
+                              for g in st["flames"]["groups"]]
+    return st
+
+
+def test_ui2_fireball_page_driven():
+    section("2.0's Fireball step pressed in a real browser (1.0's page, "
+            "1.0's code): Valve Open beats every 100 ms while held and lets "
+            "go on the lift; Fuel Charge stays on until pressed again; "
+            "losing focus lets go of the held ones only; a refusal and "
+            "signing out turn everything off and nothing comes back; a "
+            "Hold does NOT end the page; another step and another tab turn "
+            "everything off; nothing is sent while it is not armed; All off "
+            "and Disarm")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2_page_inline()
+    steps = r"""
+window.__fb = JSON.parse(document.getElementById("fb-seed").textContent);
+const realF = window.fetch;
+window.fetch = async (url, opt) => {
+  if(String(url).indexOf("/api/remote/fireball") >= 0 && String(url).indexOf("fireball-") < 0 && !(opt && opt.method === "POST"))
+    return new Response(JSON.stringify(window.__fb), {status:200, headers:{"Content-Type":"application/json"}});
+  return realF(url, opt);
+};
+const pad = k => document.querySelector('.fb-pad[data-k="' + k + '"]');
+const on = b => Object.keys(b.controls || {}).filter(k => b.controls[k]).join("+");
+const mark = () => window.__posts.length;
+const since = n => window.__posts.slice(n);
+const step = k => { const b = document.querySelector('#d-steps [data-step="' + k + '"]'); if(b) b.click(); return !!b; };
+await h.sleep(900);
+out.has_step = step("fireball");
+await h.sleep(900);
+out.shown = !document.getElementById("d-fb").hidden && !!pad("valve");
+const mainEx = () => { const m = document.querySelector("main"); return m.scrollHeight - m.clientHeight; };
+const small = sel => [...document.querySelectorAll(sel)].filter(e => e.getClientRects().length && e.getBoundingClientRect().height < 55.5).map(e => e.id || e.textContent.trim().slice(0, 16));
+out.fb_layout = {excess:mainEx(), small:small("#d-fb .b, #d-fb .fb-pad"), xs:document.scrollingElement.scrollWidth - innerWidth,
+  // All off and Disarm Fireball are on the screen without a scroll.
+  safe_seen:["fb-alloff", "fb-disarm"].every(id => { const r = document.getElementById(id).getBoundingClientRect(), pr = document.getElementById("d-panel").getBoundingClientRect(); return r.height > 0 && r.top >= pr.top - 1 && r.bottom <= pr.bottom + 1 && r.bottom <= innerHeight; }),
+  sticky:getComputedStyle(document.getElementById("fb-top")).position === "sticky" && document.getElementById("fb-top").contains(document.getElementById("fb-alloff")) && document.getElementById("fb-top").contains(document.getElementById("fb-disarm")),
+  panel_h:Math.round(document.getElementById("d-panel").getBoundingClientRect().height),
+  rects:["d-panel", "fb-alloff", "fb-disarm", "d-steps", "next", "mini"].map(id => { const e = document.getElementById(id); if(!e) return id + ":none"; const r = e.getBoundingClientRect(); return id + ":" + Math.round(r.top) + "-" + Math.round(r.bottom); }).concat(["inner:" + innerHeight, "scroll:" + document.getElementById("d-panel").scrollTop])};
+let n = mark();
+h.ev(pad("valve"), "pointerdown");
+await h.sleep(460);
+const held = since(n).filter(p => p.route === "fireball-beat").map(p => p.body);
+out.held = {n:held.length, on:held.map(on), runs:[...new Set(held.map(b => b.run))].length,
+  seqs:held.map(b => b.seq), cls:pad("valve").className, st:pad("valve").querySelector(".fb-st").textContent};
+n = mark();
+h.ev(pad("valve"), "pointerup");
+await h.sleep(350);
+out.lift = since(n).map(p => p.route + ":" + on(p.body) + ":" + !!p.body.run);
+n = mark();
+h.ev(pad("fuel"), "click");
+await h.sleep(350);
+out.fuel = since(n).filter(p => p.route === "fireball-beat").map(p => on(p.body));
+h.ev(pad("igniter"), "pointerdown");
+await h.sleep(150);
+n = mark();
+window.dispatchEvent(new Event("blur"));
+await h.sleep(250);
+out.blur = {posts:since(n).filter(p => p.route === "fireball-beat").map(p => on(p.body)),
+  fuel:pad("fuel").classList.contains("on"), ign:pad("igniter").classList.contains("on")};
+// A Hold (the strip's) does NOT end the page: Fuel keeps beating.
+n = mark();
+document.getElementById("m-hold").click();
+await h.sleep(450);
+out.hold = {hold:since(n).filter(p => p.route === "hold").length,
+  beats:since(n).filter(p => p.route === "fireball-beat" && on(p.body) === "fuel").length,
+  fuel:pad("fuel").classList.contains("on"), shown:!document.getElementById("d-fb").hidden};
+n = mark();
+h.ev(pad("fuel"), "click");
+await h.sleep(300);
+out.fuel_off = since(n).map(p => p.route + ":" + on(p.body));
+window.__answer["fireball-beat"] = b => on(b) ? [409, {error:"The Fireball is not armed. Arm it first.", cut:true}] : [200, {ok:true}];
+h.ev(pad("air"), "click");
+await h.sleep(500);
+out.refused = {air:pad("air").classList.contains("on"), msg:document.getElementById("fb-msg").textContent};
+n = mark();
+await h.sleep(400);
+out.refused.quiet = since(n).filter(p => p.route === "fireball-beat" && on(p.body)).length;
+delete window.__answer["fireball-beat"];
+// Not armed: a press sends nothing.
+window.__fb = Object.assign({}, window.__fb, {armed:"off", armed_why:"The Fireball is not armed."});
+await h.sleep(800);
+n = mark();
+h.ev(pad("valve"), "pointerdown");
+await h.sleep(300);
+h.ev(pad("valve"), "pointerup");
+out.not_armed = {posts:since(n).filter(p => p.route === "fireball-beat" && on(p.body)).length,
+  msg:document.getElementById("fb-msg").textContent};
+window.__fb = Object.assign({}, window.__fb, {armed:"armed", armed_why:""});
+await h.sleep(700);
+// Signed out while Fuel is on.
+h.ev(pad("fuel"), "click");
+await h.sleep(250);
+window.__patch = s => Object.assign(s, {me:{users_active:true, view_only:true, may:{show:false, arm:false}}});
+await h.sleep(900);
+n = mark();
+await h.sleep(300);
+out.signout = {fuel:pad("fuel").classList.contains("on"), more:since(n).filter(p => p.route === "fireball-beat" && on(p.body)).length};
+window.__patch = null;
+await h.sleep(900);
+// Another step while Air is on: everything off.
+h.ev(pad("air"), "click");
+await h.sleep(250);
+n = mark();
+step("purge");
+await h.sleep(400);
+out.other_step = {posts:since(n).filter(p => p.route === "fireball-beat").map(p => on(p.body)), air:FB_ON.air, shown:!document.getElementById("d-fb").hidden, open:FB_OPEN};
+step("fireball");
+await h.sleep(800);
+// Another tab while Fuel is on: everything off.
+h.ev(pad("fuel"), "click");
+await h.sleep(250);
+n = mark();
+document.querySelector('.tab[data-tab="show"]').click();
+await h.sleep(400);
+out.other_tab = {posts:since(n).filter(p => p.route === "fireball-beat").map(p => on(p.body)), fuel:FB_ON.fuel};
+document.querySelector('.tab[data-tab="day"]').click();
+await h.sleep(600);
+step("fireball");
+await h.sleep(800);
+n = mark();
+document.getElementById("fb-alloff").click();
+document.getElementById("fb-disarm").click();
+await h.sleep(300);
+out.buttons = since(n).filter(p => p.route !== "morning-open").map(p => p.route + (p.body.group ? ":" + p.body.group : ""));
+// More cut paths (review of #211, 4): the engine's Stop (the next beat
+// answered 409 with cut), the page hidden, closed, a held pad's pointer
+// cancelled or its capture lost.
+const lastOn = n0 => since(n0).filter(p => p.route === "fireball-beat").map(p => on(p.body));
+await h.sleep(500);
+h.ev(pad("fuel"), "click"); await h.sleep(250);
+window.__answer["fireball-beat"] = b => on(b) ? [409, {error:"Stopped: everything off. Arm again after Resume.", cut:true}] : [200, {ok:true}];
+await h.sleep(400);
+n = mark(); await h.sleep(300);
+out.stopped = {fuel:pad("fuel").classList.contains("on"), more:since(n).filter(p => p.route === "fireball-beat" && on(p.body)).length, msg:document.getElementById("fb-msg").textContent};
+delete window.__answer["fireball-beat"];
+const cutBy = async (fire) => {
+  h.ev(pad("air"), "click"); await h.sleep(250);
+  const n0 = mark(); fire(); await h.sleep(300);
+  const r = {air:FB_ON.air, first:lastOn(n0)[0]};
+  const n1 = mark(); await h.sleep(250);
+  r.more = since(n1).filter(p => p.route === "fireball-beat" && on(p.body)).length;
+  return r;
+};
+out.hidden = await cutBy(() => { Object.defineProperty(document, "hidden", {configurable:true, get:() => true}); document.dispatchEvent(new Event("visibilitychange")); });
+Object.defineProperty(document, "hidden", {configurable:true, get:() => false});
+out.pagehide = await cutBy(() => window.dispatchEvent(new Event("pagehide")));
+const heldCut = async (type) => {
+  h.ev(pad("valve"), "pointerdown"); await h.sleep(250);
+  const n0 = mark();
+  pad("valve").dispatchEvent(new PointerEvent(type, {bubbles:true, pointerId:1, pointerType:"mouse"}));
+  await h.sleep(300);
+  const r = {valve:FB_ON.valve, first:lastOn(n0)[0]};
+  const n1 = mark(); await h.sleep(250);
+  r.more = since(n1).filter(p => p.route === "fireball-beat" && on(p.body)).length;
+  return r;
+};
+out.cancel = await heldCut("pointercancel");
+out.lost = await heldCut("lostpointercapture");
+"""
+    seed = ('<script type="application/json" id="fb-seed">' +
+            json.dumps(_fb_view()) + '</script>')
+    m = _ui2_drive(chrome, page.replace("</body>", seed + "</body>", 1),
+                   _ui2_status_day(), steps, size=(1366, 1100),
+                   frag="?tour=0#day",
+                   routes={"/api/remote/fireball": _fb_view(),
+                           "/api/remote/morning": _morning_view_pico()},
+                   budget_ms=30000)
+    if not check(isinstance(m, dict) and not m.get("problems"),
+                 f"2.0's Fireball step, pressed: {m!r}"[:1500]):
+        print("  ok")
+        return
+    check(m["has_step"] and m["shown"],
+          f"a fireball group: the Fireball step and its pads: {m}"[:600])
+    fl = m["fb_layout"]
+    # All off and Disarm Fireball: the step's first row, kept in sight
+    # (sticky) while the panel scrolls; on the screen at once wherever the
+    # panel has room for them (the runner's window can be under 500 px).
+    check(fl["excess"] <= 1 and not fl["small"] and fl["xs"] <= 0 and
+          fl["sticky"],
+          f"the Fireball step: the page never scrolls (the step's panel "
+          f"may), 56 px targets, All off and Disarm Fireball on the "
+          f"screen: {fl}")
+    hd = m["held"]
+    check(hd["n"] >= 4 and all(x == "valve" for x in hd["on"]) and
+          hd["runs"] == 1 and hd["seqs"] == sorted(hd["seqs"]) and
+          "on" in hd["cls"] and hd["st"] == "ON",
+          f"Valve Open held: a beat every 100 ms, one run, in order: {hd}")
+    check(m["lift"] and m["lift"][0] == "fireball-beat::true" and
+          len(m["lift"]) == 1,
+          f"the lift: one beat with everything off, then nothing: "
+          f"{m['lift']}")
+    check(len(m["fuel"]) >= 3 and all(x == "fuel" for x in m["fuel"]),
+          f"Fuel Charge stays on, beating: {m['fuel']}")
+    check(m["blur"]["fuel"] and not m["blur"]["ign"] and
+          m["blur"]["posts"] and m["blur"]["posts"][0] == "fuel",
+          f"losing focus lets go of the Igniter at once, Fuel stays: "
+          f"{m['blur']}")
+    check(m["hold"]["hold"] == 1 and m["hold"]["beats"] >= 3 and
+          m["hold"]["fuel"] and m["hold"]["shown"],
+          f"a Hold does not end the page: Fuel keeps beating: {m['hold']}")
+    check(m["fuel_off"][:1] == ["fireball-beat:"],
+          f"Fuel pressed again: everything off: {m['fuel_off']}")
+    check(not m["refused"]["air"] and "not armed" in m["refused"]["msg"] and
+          m["refused"]["quiet"] == 0,
+          f"a refusal: everything off, said, nothing comes back: "
+          f"{m['refused']}")
+    check(m["not_armed"]["posts"] == 0 and
+          "Arm the Fireball first" in m["not_armed"]["msg"],
+          f"not armed: a press sends nothing, and says why: "
+          f"{m['not_armed']}")
+    check(not m["signout"]["fuel"] and m["signout"]["more"] == 0,
+          f"signed out: Fuel off, nothing more sent: {m['signout']}")
+    check(m["other_step"]["posts"][:1] == [""] and
+          m["other_step"]["air"] is False and not m["other_step"]["shown"],
+          f"another step: everything off: {m['other_step']}")
+    check(m["other_tab"]["posts"][:1] == [""] and
+          m["other_tab"]["fuel"] is False,
+          f"another tab: everything off: {m['other_tab']}")
+    check(m["buttons"] == ["fireball-off", "group-disarm:fireball"],
+          f"All off and Disarm Fireball: {m['buttons']}")
+    check(not m["stopped"]["fuel"] and m["stopped"]["more"] == 0 and
+          "Stopped" in m["stopped"]["msg"],
+          f"the engine's Stop (a beat answered 409, cut): everything off, "
+          f"said, nothing comes back: {m['stopped']}")
+    for k in ("hidden", "pagehide"):
+        check(m[k]["air"] is False and m[k]["first"] == "" and
+              m[k]["more"] == 0,
+              f"the page {k}: everything off at once: {m[k]}")
+    for k in ("cancel", "lost"):
+        check(m[k]["valve"] is False and m[k]["first"] == "" and
+              m[k]["more"] == 0,
+              f"a held Valve Open's pointer {k}: let go at once: {m[k]}")
+    check(m["other_step"].get("open") is False,
+          f"another step: the Fireball page stops polling: "
+          f"{m['other_step']}")
+    print("  ok")
+
+
+_UI2_FB_SIZES = ((1366, 482), (1024, 768), (768, 1024), (820, 1180),
+                 (1180, 820), (1366, 768))
+
+
+def test_ui2_fireball_pads_only_whole():
+    section("2.0's Fireball step on every screen size (review of #211, 1): "
+            "a pad is shown only whole, inside the step's panel and the "
+            "window, with nothing to scroll; a window too short for the "
+            "pads gets no pads at all and says so plainly, All off and "
+            "Disarm Fireball still there; a window turning too short "
+            "turns everything on off")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2_page_inline()
+    steps = r"""
+const q = id => document.getElementById(id);
+const step = k => { const b = document.querySelector('#d-steps [data-step="' + k + '"]'); if(b) b.click(); return !!b; };
+await h.sleep(900);
+step("fireball");
+await h.sleep(1200);
+const pan = q("d-panel"), pr = pan.getBoundingClientRect();
+const pads = [...document.querySelectorAll("#fb-pads .fb-pad")];
+const shown = el => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
+out.look = {fits:q("d-fb").classList.contains("fits"), short:shown(q("fb-short")) ? q("fb-short").textContent : "",
+  n:pads.length, shownPads:pads.filter(shown).length,
+  whole:pads.filter(shown).every(b => { const r = b.getBoundingClientRect(); return r.top >= pr.top - 1 && r.bottom <= pr.bottom + 1 && r.bottom <= innerHeight + 1 && r.top >= 0; }),
+  scroll:pan.scrollHeight - pan.clientHeight, alloff:!!q("fb-alloff") && shown(q("fb-alloff")), disarm:shown(q("fb-disarm")),
+  inner:[innerWidth, innerHeight], panel:Math.round(pr.height)};
+// A window turning too short with Fuel on: everything off.
+if(out.look.fits){
+  const pad = document.querySelector('.fb-pad[data-k="fuel"]');
+  pad.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:1}));
+  await h.sleep(300);
+  q("d-panel").style.maxHeight = "60px";
+  window.dispatchEvent(new Event("resize"));
+  await h.sleep(400);
+  out.shrunk = {fuel:FB_ON.fuel, fits:q("d-fb").classList.contains("fits"), last:window.__posts.filter(p => p.route === "fireball-beat").slice(-1).map(p => Object.keys(p.body.controls).filter(k => p.body.controls[k]).join("+"))};
+}
+"""
+    seed = ('<script type="application/json" id="fb-seed">' +
+            json.dumps(_fb_view()) + '</script>')
+    for size in _UI2_FB_SIZES:
+        m = _ui2_drive(chrome, page.replace("</body>", seed + "</body>", 1),
+                       _ui2_status_day(), steps, size=size,
+                       frag="?tour=0#day",
+                       routes={"/api/remote/fireball": _fb_view(),
+                               "/api/remote/morning": _morning_view_pico()},
+                       budget_ms=20000)
+        where = f"2.0 Fireball step, {size[0]}x{size[1]}"
+        if not check(isinstance(m, dict) and not m.get("problems") and
+                     "look" in m, f"{where}: drawn: {m!r}"[:900]):
+            continue
+        a = m["look"]
+        check(a["alloff"] and a["disarm"],
+              f"{where}: All off and Disarm Fireball are there: {a}")
+        if a["fits"]:
+            check(a["n"] == 5 and a["shownPads"] == 5 and a["whole"] and
+                  a["scroll"] <= 1 and not a["short"],
+                  f"{where}: the pads, each whole, nothing to scroll: {a}")
+            s = m.get("shrunk") or {}
+            check(s.get("fuel") is False and s.get("fits") is False and
+                  s.get("last") == [""],
+                  f"{where}: the window turning too short turns "
+                  f"everything off: {s}")
+        else:
+            check(a["shownPads"] == 0 and a["short"] ==
+                  "This window is too short for the fireball pads: make "
+                  "it taller or use the iPad.",
+                  f"{where}: too short: no pad at all, said plainly: {a}")
+        if size == (1366, 768) and not IN_CI:
+            check(a["fits"], f"{where}: the rack screen's size has room for "
+                             f"the pads: {a}")
+    print("  ok")
+
+
+def test_ui2_timed_purge_and_fuel_undo_driven():
+    section("2.0's Purge step's timed purge and Fuel step's recent refills "
+            "pressed in a real browser (1.0's code): a preset, the hold "
+            "beats purge-timed every 100 ms with 1.0's body and an early "
+            "lift sends the let go, so nothing fires; started, it stops "
+            "beating; Stop purge; another step ends a hold; the fuel "
+            "warning; Undo asks first, then posts fuel-undo {id}; no Undo "
+            "for someone who may not")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2_page_inline()
+    mo = _morning_view_pico(selected=("m1",))
+    mo["timed_settings"] = {"presets": [2, 5, 10, 20, 30], "default_s": 5,
+                            "max_s": 30, "min_s": 1, "hold_s": 1.0}
+    mo["timed"] = None
+    fu = {"units": [{"id": "G1", "name": "Ground 1", "shows_left": 3,
+                     "percent": 40, "refill_soon": False, "color": "",
+                     "locked": False, "status": "ok"}],
+          "unit_ids": ["G1"], "may_refill": True, "may_undo": True,
+          "refill_why": "", "undo_why": "", "fault": "",
+          "config_error": "", "notes": ["Ground 2 has no tank size yet."],
+          "recent_refills": [{"id": 3, "at_ms": 1793600000000,
+                              "who": "Jeff", "units": ["G1"]}]}
+    steps = r"""
+const mark = () => window.__posts.length;
+const since = n => window.__posts.slice(n);
+const step = k => { const b = document.querySelector('#d-steps [data-step="' + k + '"]'); if(b) b.click(); return !!b; };
+const bare = b => { const o = Object.assign({}, b); delete o.seen; delete o.run; delete o.seq; delete o.inst; return o; };
+await h.sleep(900);
+out.purge_step = step("purge");
+await h.sleep(900);
+out.tp_shown = !document.getElementById("d-tp").hidden && !document.getElementById("tp").hidden;
+{ const m = document.querySelector("main");
+  out.tp_layout = {excess:m.scrollHeight - m.clientHeight, small:[...document.querySelectorAll("#d-tp .b, #tp-presets button, #tp-secs")].filter(e => e.getClientRects().length && e.getBoundingClientRect().height < 55.5).map(e => e.id || e.textContent.trim()), xs:document.scrollingElement.scrollWidth - innerWidth}; }
+const pre = document.querySelector('#tp-presets [data-s="10"]');
+if(pre) pre.click();
+await h.sleep(200);
+const hb = document.getElementById("tp-hold");
+out.word = hb.textContent;
+let n = mark();
+h.ev(hb, "pointerdown");
+await h.sleep(450);
+h.ev(hb, "pointerup");
+await h.sleep(300);
+const tb = since(n).filter(p => p.route === "purge-timed");
+out.early = {n:tb.length, holds:tb.map(p => p.body.hold), secs:[...new Set(tb.map(p => p.body.seconds))],
+  runs:[...new Set(tb.map(p => p.body.run))].length, seqs:tb.map(p => p.body.seq), msg:document.getElementById("tp-st").textContent};
+await h.sleep(300);
+n = mark();
+await h.sleep(300);
+out.quiet = since(n).filter(p => p.route === "purge-timed").length;
+// The engine says it started: the beats stop, the finger may lift.
+window.__answer["purge-timed"] = b => [200, b.hold ? {ok:true, started:true, text:"Timed purge started."} : {ok:true}];
+n = mark();
+h.ev(hb, "pointerdown");
+await h.sleep(500);
+const st1 = since(n).filter(p => p.route === "purge-timed").length;
+await h.sleep(400);
+out.started = {beats:st1, more:since(n).filter(p => p.route === "purge-timed").length - st1, msg:document.getElementById("tp-st").textContent};
+h.ev(hb, "pointerup");
+delete window.__answer["purge-timed"];
+await h.sleep(300);
+n = mark();
+document.getElementById("tp-stop").click();
+await h.sleep(300);
+out.stop = since(n).map(p => p.route);
+// Another step while holding: the hold ends.
+n = mark();
+h.ev(hb, "pointerdown");
+await h.sleep(250);
+step("fuel");
+await h.sleep(400);
+const tl = since(n).filter(p => p.route === "purge-timed");
+out.left = tl.length ? tl[tl.length - 1].body.hold : null;
+out.left_n = tl.length;
+await h.sleep(300);
+n = mark();
+await h.sleep(300);
+out.left_quiet = since(n).filter(p => p.route === "purge-timed").length;
+// The Fuel step: the warning, the recent refills, Undo, one button away.
+await h.sleep(2500);
+out.fu_closed = {d_fu:document.getElementById("d-fu").hidden, btn:document.getElementById("d-fu-rec").textContent.trim(), tanks:!document.getElementById("d-fuel").hidden};
+document.getElementById("d-fu-rec").click();
+await h.sleep(400);
+out.fu = {shown:!document.getElementById("d-fu").hidden, warn:document.getElementById("fu-warn").hidden ? "" : document.getElementById("fu-warn").textContent,
+  undo:!document.getElementById("fu-undo").hidden, rec:document.getElementById("fu-recent").textContent};
+n = mark();
+const ub = document.querySelector('#fu-recent [data-undo="3"]');
+if(ub) ub.click();
+await h.sleep(300);
+out.undo_sheet = {open:!document.getElementById("sheet").hidden, h:document.getElementById("sh-h").textContent, posts:since(n).filter(p => p.route !== "morning-open").length};
+const yes = document.querySelector('#sh-row [data-i="1"]');
+if(yes) yes.click();
+await h.sleep(400);
+out.undo = since(n).filter(p => p.route !== "morning-open").map(p => [p.route, bare(p.body)]);
+"""
+    m = _ui2_drive(chrome, page, _ui2_status_day(), steps, size=(1366, 768),
+                   frag="?tour=0#day",
+                   routes={"/api/remote/morning": mo,
+                           "/api/remote/fuel": fu},
+                   budget_ms=30000)
+    if not check(isinstance(m, dict) and not m.get("problems"),
+                 f"2.0's timed purge and fuel undo, pressed: {m!r}"[:1500]):
+        print("  ok")
+        return
+    check(m["purge_step"] and m["tp_shown"] and
+          m["word"].startswith("Hold to purge") and "for 10 s" in m["word"],
+          f"the Purge step shows 1.0's timed purge; a preset chosen: "
+          f"{m['tp_shown']} {m['word']!r}")
+    tl_ = m["tp_layout"]
+    check(tl_["excess"] <= 1 and not tl_["small"] and tl_["xs"] <= 0,
+          f"the Purge step with the timed purge fits: no scroll, 56 px "
+          f"targets: {tl_}")
+    e = m["early"]
+    check(e["n"] >= 4 and e["holds"][:-1] == [True] * (e["n"] - 1) and
+          e["holds"][-1] is False and e["secs"] == [10] and
+          e["runs"] == 1 and e["seqs"] == sorted(e["seqs"]) and
+          "Nothing was fired" in e["msg"] and m["quiet"] == 0,
+          f"held: purge-timed every 100 ms with 1.0's body, an early lift "
+          f"sends the let go and nothing more: {e} {m['quiet']}")
+    check(m["started"]["beats"] >= 1 and m["started"]["more"] == 0 and
+          "You can let go" in m["started"]["msg"],
+          f"started: the beats stop, the page says so: {m['started']}")
+    check("purge-stop" in m["stop"], f"Stop purge: {m['stop']}")
+    check(m["left"] is False and m["left_n"] >= 2 and m["left_quiet"] == 0,
+          f"another step ends the hold: {m['left']} {m['left_n']} "
+          f"{m['left_quiet']}")
+    check(m["fu_closed"] == {"d_fu": True, "btn": "Refills and notes (1 note)",
+                             "tanks": True},
+          f"the Fuel step: the tanks, and Refills and notes one button "
+          f"away, saying a note waits: {m['fu_closed']}")
+    check(m["fu"]["shown"] and
+          m["fu"]["warn"] == "Ground 2 has no tank size yet." and
+          m["fu"]["undo"] and "Jeff refilled G1" in m["fu"]["rec"],
+          f"the Fuel step: 1.0's warning and recent refills: {m['fu']}")
+    check(m["undo_sheet"]["open"] and
+          m["undo_sheet"]["h"] == "Undo this refill?" and
+          m["undo_sheet"]["posts"] == 0 and
+          m["undo"] == [["fuel-undo", {"id": 3}]],
+          f"Undo asks first, then posts 1.0's body: {m['undo_sheet']} "
+          f"{m['undo']}")
+    print("  ok")
+
+
 def test_ui2_calm_screens_and_brand():
     section("interface 2.0 when the show cannot act (Jeff, 2026-10-29): "
             "signed out, Run off, no contact or off the show PC, every "
@@ -107665,42 +108291,6 @@ _UI2_C_BLOCKS = (
 ''')))
 
 
-_UI2C_DRIVE_JS = _RACK_DRIVE_JS.replace(
-    'if(!document.querySelector("#fl-lamps .lamp")) return setTimeout(go, 50);',
-    'if(!(typeof ST !== "undefined" && ST && ST.schedule && typeof MO !== '
-    '"undefined" && MO)) return setTimeout(go, 50);')
-
-
-def _ui2c_drive(chrome, page, status, steps_js, size=(1366, 768), **kw):
-    """_rack_drive for 2.0: waits for the status and the Startup view."""
-    js = "<script>window.__drive = async (out, h) => {\n" + steps_js + \
-        "\n};</script>" + _UI2C_DRIVE_JS
-    got = _rack_screen_in_chromium(chrome, page, status, (size,),
-                                   measure_js=js, **kw)
-    res = got[size]
-    return res[0] if isinstance(res, list) and res else str(res)
-
-
-def _ui2c_page():
-    one, two = _ui2_pages()
-    lo = one[one.find('<script id="remote-logic">') +
-             len('<script id="remote-logic">'):]
-    lo = lo[:lo.find("</script>")]
-    return two.replace('<script src="/remote-logic.js"></script>',
-                       "<script>" + lo + "</script>", 1)
-
-
-def _ui2c_status():
-    st = _ui2_status_running()
-    st["schedule"].update({"state": "STANDBY", "running": None})
-    st["show"] = {"running": True, "timecode": None}
-    st["countdown"] = None
-    st["laser_arm"]["lasers"][0]["armed"] = False
-    st["flames"]["groups"] = [dict(g, armed="disarmed")
-                              for g in st["flames"]["groups"]]
-    return st
-
-
 def test_ui2_arrange_and_switches_are_1_0s():
     section("2.0, P11 and P13: the ARRANGE block, the machine map, the "
             "announcement output picker, and Arming from a screen with Live "
@@ -107810,7 +108400,7 @@ def test_ui2_map_and_arrange_driven():
               "no Chromium or Chrome on this CI runner")
         print("  ok")
         return
-    page = _ui2c_page()
+    page = _ui2_page_inline()
     steps = r"""
 const mark = () => window.__posts.length;
 const since = n => window.__posts.slice(n);
@@ -107880,7 +108470,7 @@ ME.local = false; await h.sleep(900);
 out.ipad = {arrange:!q("mo-arrange").hidden, map:!q("d-mapsec").hidden};
 ME.local = true;
 """
-    m = _ui2c_drive(chrome, page, _ui2c_status(), steps, size=(1366, 768),
+    m = _ui2_drive(chrome, page, _ui2_status_day(), steps, size=(1366, 768),
                    frag="?tour=0#day",
                    routes={"/api/remote/morning":
                            _morning_view_pico(selected=("m1",))},
@@ -107937,8 +108527,8 @@ def test_ui2_show_machine_switches_driven():
               "no Chromium or Chrome on this CI runner")
         print("  ok")
         return
-    page = _ui2c_page()
-    st = _ui2c_status()
+    page = _ui2_page_inline()
+    st = _ui2_status_day()
     st["arming"] = {"enabled": False, "needs_s": 2.0, "fresh_s": 1.0,
                     "holds": []}
     st["live_flame"] = {"on": False, "available": True}
@@ -107992,7 +108582,7 @@ ME.local = false; await h.sleep(900);
 out.ipad = {arming:!q("arming-card").hidden, ann:!q("annout-card").hidden, lf_on:!q("lf-on").hidden, lf_card:!q("lf-card").hidden};
 ME.local = true;
 """
-    m = _ui2c_drive(chrome, page, st, steps, size=(1366, 768),
+    m = _ui2_drive(chrome, page, st, steps, size=(1366, 768),
                    frag="?tour=0#day",
                    routes={"/api/remote/morning": _morning_view_pico(),
                            "/api/remote/announce-outputs": outs,
@@ -114202,6 +114792,10 @@ if __name__ == "__main__":
         test_ui2_show_tab_in_a_browser,
         test_ui2_day_makes_only_1_0_presses,
         test_ui2_day_tab_in_a_browser,
+        test_ui2_day_fireball_fuel_purge_are_1_0s,
+        test_ui2_fireball_page_driven,
+        test_ui2_fireball_pads_only_whole,
+        test_ui2_timed_purge_and_fuel_undo_driven,
         test_ui2_calm_screens_and_brand,
         test_config_watch_supervisor_and_rack_screen_note,
         test_fireball_timeline_model,

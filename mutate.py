@@ -3141,6 +3141,62 @@ MUTATIONS = [
   "  const got = await cueRead(\"start\");\n  if(got && got.ch){",
   "  const got = null;\n  if(got && got.ch){"),
 
+ # interface 2.0's DAY tab: P8 Fireball, P9 fuel undo, P10 timed purge
+ ("ui 2.0 Fireball: the beat comes every 300 ms instead of 1.0's 100",
+  "ltcplay/web/remote2.html",
+  "  FB_BEAT = setTimeout(() => fbBeat(false), 100);",
+  "  FB_BEAT = setTimeout(() => fbBeat(false), 300);"),
+
+ ("ui 2.0 Fireball: the Fireball page keeps polling after its step is left",
+  "ltcplay/web/remote2.html",
+  "  fireballView(k === \"fireball\");\n",
+  "  fireballView(true);\n"),
+
+ ("ui 2.0 Fireball: leaving DAY does not cut the Fireball page first",
+  "ltcplay/web/remote2.html",
+  "function dayCuts(why){\n  fireballView(false);\n",
+  "function dayCuts(why){\n"),
+
+ ("ui 2.0 Fireball: pads drawn on a window too short for them",
+  "ltcplay/web/remote2.html",
+  "  const ok = pan.scrollHeight <= pan.clientHeight + 1 && gr.bottom <= Math.min(innerHeight, pr.bottom) + 1;",
+  "  const ok = true;"),
+
+ ("ui 2.0 Fireball: a window turning too short leaves channels on",
+  "ltcplay/web/remote2.html",
+  "    if(fbAny()) fbCut(\"this window is too short for the fireball pads\");",
+  "    if(false) fbCut(\"this window is too short for the fireball pads\");"),
+
+ ("ui 2.0 Fireball: the step is offered without a fireball group",
+  "ltcplay/web/remote2.html",
+  "  if(part !== \"shut\" && fb && fb.available)",
+  "  if(part !== \"shut\" && fb)"),
+
+ ("ui 2.0 Fireball: All off and Disarm scroll out of sight with the panel",
+  "ltcplay/web/remote2.html",
+  "#fb-top{position:sticky;",
+  "#fb-top{position:static;"),
+
+ ("ui 2.0 timed purge: another step leaves the hold beating",
+  "ltcplay/web/remote2.html",
+  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); tpLetGo(\"another step was chosen\"); purgeDrop(); }",
+  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); purgeDrop(); }"),
+
+ ("ui 2.0 timed purge: the hold beats every 300 ms instead of 1.0's 100",
+  "ltcplay/web/remote2.html",
+  "  TP_BEAT = setTimeout(tpBeat, 100);",
+  "  TP_BEAT = setTimeout(tpBeat, 300);"),
+
+ ("ui 2.0 fuel: Refills and notes never shows",
+  "ltcplay/web/remote2.html",
+  "    $(\"d-fu-rec\").hidden = !(nWarn || hasRec);",
+  "    $(\"d-fu-rec\").hidden = true;"),
+
+ ("ui 2.0 fuel: Undo goes with no question",
+  "ltcplay/web/remote2.html",
+  "  if(await confirmBox(\"Undo this refill?\",",
+  "  if(true || await confirmBox(\"Undo this refill?\","),
+
  # the fuel pump on interface 2.0 (2026-10-30)
  ("ui 2.0: Pump off is disabled with no contact",
   "ltcplay/web/remote2.html",
@@ -20034,12 +20090,12 @@ def build():
   "      $(\"wc-hold\").addEventListener(ev, () => { if(false) wcLetGo(\"you let go before the hold was complete\"); });\n    }\n    $(\"wc-hold\").addEventListener(\"contextmenu\", e => e.preventDefault());\n    $(\"wc-stop\")"),
 
  ("ui2 day: leaving DAY keeps this screen's purge selection", "ltcplay/web/remote2.html",
-  "    MO_OPEN = false; clearTimeout(MO_TIMER); fireStop(\"the page was left\");\n    purgeDrop();\n  }",
-  "    MO_OPEN = false; clearTimeout(MO_TIMER); fireStop(\"the page was left\");\n  }"),
+  "    MO_OPEN = false; clearTimeout(MO_TIMER);\n    purgeDrop();\n  }",
+  "    MO_OPEN = false; clearTimeout(MO_TIMER);\n  }"),
 
  ("ui2 day: leaving the Purge step keeps this screen's selection", "ltcplay/web/remote2.html",
-  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); purgeDrop(); }",
-  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); }"),
+  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); tpLetGo(\"another step was chosen\"); purgeDrop(); }",
+  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); tpLetGo(\"another step was chosen\"); }"),
 
  ("ui2 day: a double tap on Tick ticks twice", "ltcplay/web/remote2.html",
   "      if(DAY_TICK_BUSY || monoNow() - DAY_TICK_AT < DAY_TICK_QUIET_MS) return;\n",
@@ -20057,8 +20113,8 @@ def build():
 
  ("ui2 day: the Purge step dropping out keeps this screen's selection",
   "ltcplay/web/remote2.html",
-  "    if(DAY_STEP === \"purge\"){ fireStop(\"the Purge step went\"); purgeDrop(); }",
-  "    if(DAY_STEP === \"purge\"){ fireStop(\"the Purge step went\"); }"),
+  "    if(DAY_STEP === \"purge\"){ fireStop(\"the Purge step went\"); tpLetGo(\"the Purge step went\"); purgeDrop(); }",
+  "    if(DAY_STEP === \"purge\"){ fireStop(\"the Purge step went\"); tpLetGo(\"the Purge step went\"); }"),
 
  ("ui2 page: Programming playback firing flames is not pinned",
   "ltcplay/web/remote2.html",
@@ -20100,8 +20156,8 @@ def build():
   ""),
 
  ("ui2 day: Next marks Purge done after a look", "ltcplay/web/remote2.html",
-  "[\"fuel\", \"lasers\", \"locks\", \"locks-shut\"].includes(cur.key)",
-  "[\"fuel\", \"purge\", \"lasers\", \"locks\", \"locks-shut\"].includes(cur.key)"),
+  "[\"fuel\", \"lasers\", \"locks\", \"locks-shut\", \"fireball\"].includes(cur.key)",
+  "[\"fuel\", \"purge\", \"lasers\", \"locks\", \"locks-shut\", \"fireball\"].includes(cur.key)"),
 
  ("ui2 page: announcements with no output picked read Off", "ltcplay/web/remote2.html",
   "const SYS_OFF = /^(none|none set up|not set up|stopped|",
@@ -23323,8 +23379,8 @@ def build():
 
  ("ui 2.0 Arrange: leaving the Purge step stays arranging",
   "ltcplay/web/remote2.html",
-  "  if(DAY_STEP === \"purge\") mapOff();\n  DAY_STEP = k;",
-  "  DAY_STEP = k;"),
+  "  if(DAY_STEP === \"purge\") mapOff();\n  if(DAY_STEP === \"fireball\") fireballView(false);\n  DAY_STEP = k;",
+  "  if(DAY_STEP === \"fireball\") fireballView(false);\n  DAY_STEP = k;"),
 
  ("ui 2.0 Arrange: leaving DAY stays arranging",
   "ltcplay/web/remote2.html",
