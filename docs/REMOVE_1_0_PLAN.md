@@ -41,8 +41,8 @@ Routes are under `/api/remote/` unless they start with `/api/`. A route 2.0 alre
 | PR | Work item | Controls | Routes 2.0 does not call yet | Depends on | Risk |
 |---|---|---|---|---|---|
 | 0 | Shared rules in their own file (`ltcplay/web/remote_rules.js`). THIS PR. | 0 | none | none | Low. Served pages byte for byte the same. Later edits to the file get two cold reviews. |
-| P1 | Run card: show file picker, Show or Programming mode, Run in Programming | 4 | `show-select`; `/api/start` with `on_lost: hold` | 0 | Medium. Run starts the show engine. Show machine only. |
-| P2 | Programming transport: Play from (timecode or cue), Back 10 s, Back 5 s, Ahead 5 s, Ahead 10 s, Pause, Continue, Set A, Set B, Loop, Follow timecode again; flames follow line and fault | 12 | `play-from`, `jump`, `pause`, `continue`, `mark-a`, `mark-b`, `loop`, `follow` | P1 | High. Flame cues follow Programming playback. Safety review. |
+| P1 | DONE (2.0 Schedule tab, Programming cards). Run card: show file picker, Show or Programming mode, Run in Programming | 4 | `show-select`; `/api/start` with `on_lost: hold` | 0 | Medium. Run starts the show engine. Show machine only. |
+| P2 | DONE (2.0 Schedule tab, Programming cards). Programming transport: Play from (timecode or cue), Back 10 s, Back 5 s, Ahead 5 s, Ahead 10 s, Pause, Continue, Set A, Set B, Loop, Follow timecode again; flames follow line and fault | 12 | `play-from`, `jump`, `pause`, `continue`, `mark-a`, `mark-b`, `loop`, `follow` | P1 | High. Flame cues follow Programming playback. Safety review. |
 | P3 | Schedule tab: tonight's shows, tap for notes, Run warning | 2 | none (status) | 0 | Low. Read only. |
 | P4 | Schedule editor: time zone, season start and end, show nights, show length, gap before a show, late start allowed, Save, Reload | 11 | `schedule-file` (GET, POST) | P3 | High. Schedule rules (#196 reviews), saving during the night. |
 | P5 | Users: change own password, user list (role, reset, remove), add a person, clear sign-in lockouts | 9 | `my-password`, `users` (POST), `clear-lockouts` | 0 | Medium. Last admin rule, passwords. |

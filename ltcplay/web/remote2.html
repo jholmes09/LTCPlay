@@ -375,6 +375,19 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 #pf-msg.ok{color:var(--green)}
 @media (max-width:700px){ .pfrow{grid-template-columns:minmax(0,1fr) minmax(172px,1fr)} .pfrow.head{display:none} }
 .seg .b.on{border-color:var(--gold);background:#3a2c10}
+/* Programming (P1, P2): 1.0's Show file and Programming session cards. */
+.pline{color:var(--muted);line-height:1.3}
+.pline b{color:var(--cream)}
+.pline.warn{color:#FFD08A}
+.pline.bad{border:2px solid var(--amber);border-radius:10px;padding:6px 10px;color:var(--cream);overflow-wrap:anywhere}
+#p-msg:empty,#p-mode-what:empty{display:none}
+.pbar{display:flex;gap:var(--gap);flex-wrap:wrap;min-width:0}
+.pbar select.f,.pbar input.f{flex:2 1 14em;min-width:0;width:auto}
+.pbar .b{flex:1 1 9em}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:var(--gap);min-width:0}
+.ptc{font-family:var(--mono);font-size:var(--tc-fs);font-weight:700;font-variant-numeric:tabular-nums}
+#p-mode .b.now{box-shadow:inset 0 -4px 0 var(--green)}
+#p-run .lbl small:empty{display:none}
 /* The fireball timeline editor (Schedule): rows, a preview bar. */
 .card.fbt{flex-direction:column;align-items:stretch}
 .fbt-h,.fbt-pick,.fbt-foot,.fbt-ask{display:flex;align-items:center;gap:var(--gap);flex-wrap:wrap;min-width:0}
@@ -644,6 +657,55 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   <section class="pane" id="t-schedule" hidden>
     <div class="cards">
       <div class="card"><div class="t"><b>Tonight's shows</b><span>Times and notes.</span></div><a class="b blue" href="/remote1#tonight"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
+      <!-- PROGRAMMING (docs/REMOVE_1_0_PLAN.md P1 and P2): 1.0's
+           Programming screen, here on the Schedule tab (the header has no
+           room for a fifth tab; #prog opens it): its Show file card (Show
+           or Programming, the show file, Run; the show machine only) and
+           its Programming session card (Play from, Back and Ahead, Pause
+           and Continue, the A/B loop, Follow timecode again). Every press
+           is 1.0's own: the same route, body, confirm and refusal
+           (selftest.py checks them against 1.0); the engine decides the
+           rest (Remote.programming, the flame cues'
+           programming_move_refusal). -->
+      <div class="cards" id="t-prog">
+        <div class="card col" id="p-run-card" hidden>
+          <div class="t"><b>Show file, on this machine</b><span>Nothing reaches the rig until Run.</span></div>
+          <div class="seg" id="p-mode" role="radiogroup" aria-label="Mode Run starts"><button type="button" class="b" role="radio" data-mode="show">Show</button><button type="button" class="b" role="radio" data-mode="programming">Programming</button></div>
+          <div class="pline" id="p-mode-what"></div>
+          <div class="pline warn" id="p-rate" hidden></div>
+          <div class="pbar"><select class="f" id="p-file" aria-label="Show file (nothing reaches the rig until Run)" title="Nothing reaches the rig until Run"></select>
+            <button class="b green" id="p-run" data-mode="run"><svg class="i"><use href="#i-power"/></svg><span class="lbl"><span id="p-run-l">Run</span><small id="p-run-s"></small></span></button></div>
+        </div>
+        <div class="card col" id="p-tr">
+          <div class="t"><b>Programming session</b><span id="p-state"></span></div>
+          <div class="pline warn" id="p-why" hidden></div>
+          <div class="ptc" id="p-tc">--:--:--:--</div>
+          <div class="pbar"><input class="f" id="p-at" placeholder="00:01:30:00" inputmode="text" autocomplete="off" aria-label="Play from: a timecode or a cue name">
+            <button class="b green" id="p-play" data-tr><svg class="i"><use href="#i-play"/></svg>Play from</button></div>
+          <div class="pgrid">
+            <button class="b" data-tr data-jump="-10"><svg class="i"><use href="#i-left"/></svg>Back 10 s</button>
+            <button class="b" data-tr data-jump="-5"><svg class="i"><use href="#i-left"/></svg>Back 5 s</button>
+            <button class="b" data-tr data-jump="5"><svg class="i"><use href="#i-right"/></svg>Ahead 5 s</button>
+            <button class="b" data-tr data-jump="10"><svg class="i"><use href="#i-right"/></svg>Ahead 10 s</button>
+          </div>
+          <div class="pgrid">
+            <button data-safe class="b amber" id="p-pause" data-tr><svg class="i"><use href="#i-pause"/></svg>Pause</button>
+            <button class="b green" id="p-cont" data-tr><svg class="i"><use href="#i-play"/></svg>Continue</button>
+          </div>
+          <div class="pgrid">
+            <button class="b" id="p-a" data-tr><svg class="i"><use href="#i-check"/></svg>Set A</button>
+            <button class="b" id="p-b" data-tr><svg class="i"><use href="#i-check"/></svg>Set B</button>
+            <button class="b" id="p-loop" data-tr><svg class="i"><use href="#i-reset"/></svg><span id="p-loop-l">Loop on</span></button>
+            <button class="b" id="p-follow" data-tr><svg class="i"><use href="#i-clock"/></svg><span id="p-follow-l">Follow timecode again</span></button>
+          </div>
+          <!-- The show's flame cues follow Programming playback (no switch:
+               Jeff, 2026-10-29): 1.0's line, and a flame cue fault in full. -->
+          <div class="pline" id="p-pf-line" hidden></div>
+          <div class="pline bad" id="p-pf-warn" role="alert" hidden></div>
+          <div class="pline" id="p-msg" role="status"></div>
+        </div>
+        <div class="card"><div class="t"><b>More programming</b><span>Schedule rules, show folder, network.</span></div><a class="b blue" href="/remote1#programming"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
+      </div>
       <!-- The fireball timeline (fireball_timeline.py, Jeff 2026-10-30):
            per show file, a start timecode and a duration for each stage.
            Editing is the Settings row (admins), by who never by when: a
@@ -690,7 +752,6 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <button class="b redline" id="pf-replace" hidden><svg class="i"><use href="#i-warn"/></svg>Replace the file</button></div>
         <div id="pf-rows"></div>
         <div id="pf-msg" role="status"></div></div>
-      <div class="card"><div class="t"><b>Programming</b><span>Show file, rehearsal, schedule rules.</span></div><a class="b blue" href="/remote1#programming"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
       <div class="card"><div class="t"><b>Users</b><span>People, roles, audit log.</span></div><a class="b blue" href="/remote1#users"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
     </div>
   </section>
@@ -973,6 +1034,9 @@ async function confirmBox(q, detail, yes, cls, flip, safe){
 const TABS = ["show", "day", "schedule", "settings"];
 let TAB = "show", LAST_TOUCH = Date.now();
 function showTab(t){
+  // #prog: 1.0's Programming screen, on the Schedule tab.
+  const prog = t === "prog";
+  if(prog) t = "schedule";
   if(!TABS.includes(t)) t = "show";
   TAB = t;
   document.body.dataset.tab = t;
@@ -980,7 +1044,8 @@ function showTab(t){
   TABS.forEach(k => { $("t-" + k).hidden = k !== t; });
   document.querySelectorAll(".tab").forEach(b => { b.classList.toggle("on", b.dataset.tab === t); b.setAttribute("aria-selected", b.dataset.tab === t ? "true" : "false"); });
   if(t === "settings"){ loadUiDefault(); loadPlayFrom(); }
-  if(t === "schedule") fbtOpen();
+  if(t === "schedule"){ fbtOpen(); progFiles(); try{ drawProg(stale()); }catch(e){} }
+  if(prog) try{ $("t-prog").scrollIntoView(); }catch(e){}
   if(t === "show") layoutGroups();
   $("mini").hidden = t === "show";
 }
@@ -1499,6 +1564,7 @@ function renderStale(){
     else { setText($("cd-l"), "Next show"); setText($("cd-v"), sch.attached ? "None tonight" : "No schedule"); }
   }
   drawTransport(isSt);
+  try{ drawProg(isSt); }catch(e){}
   // Arming needs live state: a hold under way stops the moment it is not
   // (1.0's renderStale, the same rules).
   const hp = holdLapsed();
@@ -1572,7 +1638,7 @@ function stopTapDone2(id){
   delete STOP_TAPS2[id];
   const b = $(id);
   if(b) b.classList.remove("tap1");
-  try{ drawTransport(stale()); renderMini(stale()); }catch(e){}
+  try{ drawTransport(stale()); renderMini(stale()); drawProg(stale()); }catch(e){}
 }
 function stopTap2(id, e){
   const kind = stopTapKind(e);
@@ -1586,7 +1652,7 @@ function stopTap2(id, e){
     if(t) clearTimeout(t.timer);
     STOP_TAPS2[id] = {prev:step.next, timer:setTimeout(() => stopTapDone2(id), STOP_TAP_MS)};
     say("Tap Stop again to stop.", "Tap Stop show again to stop everything and hold the schedule.", "warn");
-    try{ drawTransport(stale()); renderMini(stale()); }catch(e1){}
+    try{ drawTransport(stale()); renderMini(stale()); drawProg(stale()); }catch(e1){}
     return;
   }
   stopTapDone2(id);
@@ -1708,6 +1774,190 @@ async function press(route, extra){
   }
   return j;
 }
+
+// ---- PROGRAMMING (P1, P2): 1.0's Programming screen, the same presses ----
+// Show or Programming (Jeff, 2026-10-23): which mode Run starts. The
+// engine's existing modes, unchanged: Show is a Run (the scheduler starts
+// each show; scrubbing off); Programming is a Run as a rehearsal (on_lost
+// "hold", remote.programming(): the scrubbing controls work and the
+// scheduler starts no show).
+// COPIED FROM 1.0 (selftest.py checks they stay the same): MODE_WHAT,
+// runModeNow, runModeView, rateNote.
+const MODE_WHAT = {
+  show: "<b>Show:</b> the scheduler starts each show at its time. Scrubbing is off.",
+  programming: "<b>Programming:</b> a rehearsal. Play from, jump and loop work; the scheduler starts no show."};
+let RUN_MODE = null;
+function runModeNow(st){
+  const mo = modeLook(st);
+  return mo.cls === "prog" ? "programming" : (mo.cls === "show" ? "show" : null);
+}
+function runModeView(st, want){
+  const s = st || {}, sch = s.schedule || {};
+  const now = runModeNow(st);
+  const live = sch.state === "SHOW" || sch.state === "PAUSED";
+  let text = MODE_WHAT[want], locked = false;
+  if(want === "programming" && live){
+    locked = true;
+    text = "<b>Programming is locked:</b> a scheduled show is live (" + esc(sch.state) + "). Press Hold to pause it now; Programming opens once the show has ended. Then Stop, and Run here in Programming.";
+  } else if(now && now !== want){
+    text += " Now running in " + (now === "show" ? "Show" : "Programming") + ": press Stop, then Run, to switch.";
+  } else if(now === want){
+    text += " Running now.";
+  }
+  return {now, text, locked};
+}
+function rateNote(st){
+  return String((st && st.show && st.show.rate_note) || "");
+}
+// The show files (1.0's loadShowFiles): the good ones, and the engine's
+// selection until someone picks another here.
+let P_PICKED = false, P_FILES_AT = 0;
+async function progFiles(){
+  if(!(ME && ME.local)) return;
+  P_FILES_AT = Date.now();
+  try{
+    const j = await getJSON("/api/timelines", 3000);
+    const ok = (j.timelines || []).filter(t => !t.error).map(t => t.file);
+    const sel = $("p-file"), cur = sel.value;
+    const html = ok.map(f => `<option value="${esc(f)}">${esc(f)}</option>`).join("");
+    if(sel.dataset.html !== html){ sel.dataset.html = html; sel.innerHTML = html; if(cur && ok.includes(cur)) sel.value = cur; }
+    const pick = ST && ST.selected_show;
+    if(pick && ok.includes(pick) && !P_PICKED) sel.value = pick;
+  }catch(e){ say("Show files not readable.", e.message, "bad"); }
+}
+$("p-file").addEventListener("change", () => {
+  P_PICKED = true;
+  post("/api/remote/show-select", {file: $("p-file").value}).catch(e => { say(short8(e.message, "Not chosen. Tap Details."), e.message, "bad"); });
+});
+document.querySelectorAll("#p-mode [data-mode]").forEach(b => b.addEventListener("click", () => { RUN_MODE = b.dataset.mode; drawProg(stale()); }));
+// What the Programming cards show, every 250 ms while Schedule is open.
+function progFlipped(){
+  const t = Math.max(FLIPPED.go || 0, FLIPPED.prun || 0);
+  return !!t && Date.now() - t < FLIP_LOCK_MS;
+}
+function progBits(st){
+  // 1.0's Programming session line, word for word.
+  const tr = (st && st.transport) || {}, show = (st && st.show) || {};
+  const bits = [];
+  if(tr.playhead === "show_audio") bits.push(tr.paused ? "Paused on the show audio" : tr.playing ? "Playing on the show audio" : "Stopped. Play from a timecode to start the show audio");
+  else if(tr.freerun) bits.push(tr.paused ? "Paused" : "Playing on this machine's clock");
+  else if(show.running) bits.push("Following timecode");
+  if(tr.marks && (tr.marks.a || tr.marks.b)) bits.push("A " + (tr.marks.a || "none") + ", B " + (tr.marks.b || "none"));
+  if(tr.loop) bits.push("Looping " + tr.loop[0] + " to " + tr.loop[1]);
+  return bits.join(". ");
+}
+// The show's flame cues in Programming (1.0's renderProgFlames): one
+// plain line, and any flame cue fault in full while a Play from cannot
+// send them. The engine decides everything.
+function progFlames(st){
+  const pf = (st && st.programming_flames) || {};
+  const tr = (st && st.transport) || {};
+  const on = pf.available === true;
+  const line = !on ? "" : pf.follows === false && tr.programming ? "This show follows timecode, so no flames fire from Programming here." : String(pf.line || "");
+  const fault = String((st && st.flames && st.flames.cues_fault) || "");
+  const warn = on && tr.programming && fault ? "Flame cues are not going out, so nothing fires from Play from: " + fault : "";
+  return {on, line, warn};
+}
+function drawProg(isSt){
+  if(TAB !== "schedule") return;
+  const s = ST || {}, tr = s.transport || {}, show = s.show || {};
+  const local = !!(ME && ME.local);
+  if($("p-run-card").hidden !== !local) $("p-run-card").hidden = !local;
+  // A tab opened before this screen knew it was the show PC (an address
+  // ending #prog): the show files are read once it knows, then every 5 s
+  // while there are none.
+  if(local && !$("p-file").options.length && Date.now() - P_FILES_AT > 5000) progFiles();
+  if(local){
+    const rn = rateNote(ST);
+    $("p-rate").hidden = !rn; setText($("p-rate"), rn);
+    if(RUN_MODE === null && ST) RUN_MODE = runModeNow(ST) || "show";
+    const v = runModeView(ST, RUN_MODE || "show");
+    document.querySelectorAll("#p-mode [data-mode]").forEach(b => {
+      const on = b.dataset.mode === (RUN_MODE || "show");
+      b.classList.toggle("on", on);
+      b.classList.toggle("now", b.dataset.mode === v.now);
+      b.setAttribute("aria-checked", on ? "true" : "false");
+    });
+    const el = $("p-mode-what");
+    if(el.dataset.html !== v.text){ el.dataset.html = v.text; el.innerHTML = v.text; }
+    el.classList.toggle("warn", v.locked);
+    // Run, or Stop or Run off in its place (1.0's runLook): one Stop at a
+    // time, never held back; Run and Run off wait out the lock after Stop
+    // turned back into them, and need the Show row.
+    const b = $("p-run"), rk = runLook(ST, isSt);
+    if(b.dataset.mode !== rk.mode){ if(b.dataset.mode === "stop") FLIPPED.prun = Date.now(); b.dataset.mode = rk.mode; }
+    if(STOP_TAPS2["p-run"] && rk.mode !== "stop") stopTapDone2("p-run");
+    const tap = rk.mode === "stop" && !!STOP_TAPS2["p-run"];
+    setText($("p-run-l"), HALT_BUSY ? "Stopping" : tap ? "Tap again" : rk.label);
+    setText($("p-run-s"), HALT_BUSY ? "wait" : tap ? "to stop" : rk.sub);
+    const cls = "b " + (rk.mode === "run" ? "green" : "red") + (tap ? " tap1" : "");
+    if(b.className !== cls) b.className = cls;
+    setIcon(b.querySelector("svg"), rk.mode === "run" ? "power" : "stop");
+    b.title = rk.mode === "stop" ? STOP_TITLE : rk.mode === "runoff" ? RUN_OFF_CONFIRM : "";
+    b.disabled = HALT_BUSY || (rk.mode !== "stop" && (progFlipped() || !mayRow(ST, "show")));
+  }
+  setText($("p-tc"), isSt ? "--:--:--:--" : (show.timecode || "--:--:--:--"));
+  const why = isSt ? "No contact: nothing here can be pressed." : tr.programming ? "" : String(tr.why || "");
+  $("p-why").hidden = !why; setText($("p-why"), why);
+  setText($("p-state"), isSt ? "Not known: no contact" : progBits(ST));
+  setText($("p-loop-l"), tr.loop ? "Loop off" : "Loop on");
+  $("p-loop").dataset.on = tr.loop ? "1" : "";
+  setText($("p-follow-l"), tr.playhead === "show_audio" ? "Stop the show audio" : "Follow timecode again");
+  // 1.0's controlStates and its sign-in lock: fresh, a programming
+  // session, and the Show row.
+  const can = controlStates(ST, isSt).transport && mayRow(ST, "show");
+  document.querySelectorAll("#t-prog [data-tr]").forEach(el => { el.disabled = !can; });
+  const pf = progFlames(ST);
+  $("p-pf-line").hidden = !pf.on; setText($("p-pf-line"), pf.line);
+  $("p-pf-warn").hidden = !pf.warn; setText($("p-pf-warn"), pf.warn);
+}
+// A Programming press: 1.0's press(), its answer also in the card.
+async function progSaid(pr){
+  const j = await pr;
+  setText($("p-msg"), j ? String(j.text || "Done.") : (MSG_FULL || $("msg-t").textContent));
+  return j;
+}
+$("p-play").addEventListener("click", () => progSaid(press("play-from", {at:$("p-at").value})));
+document.querySelectorAll("#t-prog [data-jump]").forEach(b =>
+  b.addEventListener("click", () => progSaid(press("jump", {seconds:Number(b.dataset.jump)}))));
+$("p-pause").addEventListener("click", () => progSaid(press("pause", {})));
+$("p-cont").addEventListener("click", () => progSaid(press("continue", {})));
+$("p-a").addEventListener("click", () => progSaid(press("mark-a", {})));
+$("p-b").addEventListener("click", () => progSaid(press("mark-b", {})));
+$("p-loop").addEventListener("click", () => progSaid(press("loop", {on: !$("p-loop").dataset.on})));
+$("p-follow").addEventListener("click", () => progSaid(press("follow", {})));
+// Run (1.0's b-run): decided from the mode seen at touch-down
+// (pressDecision); Stop is the double tap, Run off asks first, and Run
+// asks first, in Show or in Programming, with 1.0's body.
+$("p-run").addEventListener("pointerdown", () => { DOWN_MODE.prun = $("p-run").dataset.mode; });
+$("p-run").addEventListener("keydown", e => {
+  if(e.repeat && (e.key === "Enter" || e.key === " ")) e.preventDefault();
+  else if(e.key === "Enter" || e.key === " ") DOWN_MODE.prun = $("p-run").dataset.mode;
+});
+$("p-run").addEventListener("click", async ev => {
+  const now = runLook(ST, stale()).mode;
+  const seen = DOWN_MODE.prun || $("p-run").dataset.mode;
+  DOWN_MODE.prun = null;
+  const d = pressDecision(seen, now, now === "stop" ? null : Math.max(FLIPPED.go || 0, FLIPPED.prun || 0) || null, Date.now(), HALT_BUSY);
+  if(d.act === "none"){ say("Nothing done. Look, then press again.", d.say, "warn"); return; }
+  if(d.act === "stop") return stopTap2("p-run", ev);
+  if(d.act === "runoff"){
+    // Run off: not an emergency control (Stop is), so it asks first.
+    const sure = await confirmBox("Turn Run off?", RUN_OFF_CONFIRM, "Yes, Run off", "red");
+    if(!sure) return;
+    if(runLook(ST, stale()).mode !== "runoff"){ say("The show changed. Nothing done.", "The show changed while you answered, so nothing was done.", "warn"); return; }
+    return pressStop("run-off");
+  }
+  const f = $("p-file").value;
+  if(!f){ say("No show file found.", "No show file in the show folder.", "bad"); return; }
+  const prog = RUN_MODE === "programming";
+  const v = runModeView(ST, RUN_MODE || "show");
+  if(v.locked){ say("Programming is locked.", "Programming is locked while a scheduled show is live. Press Hold to pause it now; Programming opens once the show has ended.", "warn"); return; }
+  if(!(await confirmBox(prog ? "Run in Programming?" : "Press Run?", prog ? "Run " + f + " as a rehearsal. Play from, jump and loop work, and the scheduler starts no show." : "Run " + f + ". The scheduler then starts each show by itself.", "Yes, Run", "green"))) return;
+  if(HALT_BUSY || runLook(ST, stale()).mode !== "run"){ say("The show changed. Nothing started.", "The show changed while you answered, so nothing was started.", "warn"); return; }
+  try{ const j = await post("/api/start", prog ? {timeline:f, on_lost:"hold"} : {timeline:f}); say(prog ? "Running in Programming." : "Running. Shows start on time.", j.banner || "Running.", "ok"); }
+  catch(e){ say("Run was refused.", e.message, "bad"); }
+});
 
 // ---- flame groups: 1.0's hold to arm, one button per group ----
 // COPIED FROM 1.0 (selftest.py checks they stay the same, with the Arm all
