@@ -104056,7 +104056,10 @@ def test_fireball_timeline_docs_in_plain_words():
                  "Purge (59) is never a stage", "by hand only",
                  "All Fireball Safety (77)", "HH:MM:SS:FF",
                  "30 frames a second", "no longest duration",
-                 "Igniter is independent", "**FSEQ**", "**Timeline**",
+                 # No longer "Igniter is independent" (review of #201):
+                 # Valve Open needs its Igniter to have gone out first.
+                 "Valve Open needs its Igniter first", "**FSEQ**",
+                 "**Timeline**",
                  "Settings row", "never by when", "during a show",
                  "never falls back to its FSEQ",
                  "every save is refused", "replaces it on purpose",
@@ -107200,10 +107203,10 @@ def test_fireball_cues_wiring():
         check(cues.fireball._sent(None) == bytes([7] * 512),
               "the timeline reads the flame link's show_sent (the show's "
               "own values, before the Fireball page's frame)")
-        link.landings = 7
+        link.landings, link.guard_gen = 3, 7
         check(cues.fireball._land_count() == 7,
-              "and the flame link's landing count: every landing there is "
-              "a move for the fireball (final review of #201)")
+              "and the flame link's guard generation (a landing or a seek "
+              "it saw itself): a move for the fireball (review of #201)")
         check(cues.fireball._group == [55, 56, 57, 58, 59],
               f"it reads flamesafe's fireball group from the Startup page "
               f"(review C-4): {cues.fireball._group}")
@@ -107587,6 +107590,14 @@ t(/HH:MM:SS:FF/.test(c.errors.igniter) && /seconds above 0/.test(c.errors.ignite
 t(c.errors.valve === "Start is after the end of the show.", "a start past the show: " + c.errors.valve);
 c = fbtCheck([{k:"fuel", used:true, start:"00:00:01:00", dur:"36000"}], 300);
 t(c.stages.length === 1 && c.stages[0].dur_s === 36000, "no longest length (Jeff)");
+// A Valve Open less than 3 frames after its Igniter: a warning under the
+// Valve, never a refusal (review of #201).
+c = fbtCheck([{k:"igniter", used:true, start:"00:00:05:00", dur:"1"}, {k:"valve", used:true, start:"00:00:05:00", dur:"0.5"}], 300);
+t(c.stages.length === 2 && !Object.keys(c.errors).length && /own frame: it never runs/.test(c.warning) && /at least 3 frames/.test(c.warning), "same frame: warned, not refused: " + c.warning);
+c = fbtCheck([{k:"igniter", used:true, start:"00:00:05:00", dur:"1"}, {k:"valve", used:true, start:"00:00:05:02", dur:"0.5"}], 300);
+t(/2 frames after the Igniter/.test(c.warning), "2 frames: warned: " + c.warning);
+c = fbtCheck([{k:"igniter", used:true, start:"00:00:05:00", dur:"1"}, {k:"valve", used:true, start:"00:00:05:03", dur:"0.5"}], 300);
+t(c.warning === "", "3 frames: no warning");
 c = fbtCheck([{k:"fuel", used:true, start:"00:00:01:00", dur:"-1"}, {k:"air", used:true, start:"00:00:01:00", dur:"x"}, {k:"valve", used:true, start:"00:00:01:00", dur:"Infinity"}], 300);
 t(c.errors.fuel && c.errors.air && c.errors.valve && !c.stages.length, "negative, words, infinity: refused");
 t(fbtDur("2,5") === 2.5 && fbtDur("2.5") === 2.5 && fbtDur(" 3 ") === 3 && fbtDur(".5") === 0.5, "a point or a comma before the decimals");
@@ -111070,7 +111081,7 @@ def test_start_at_cue_valve_needs_its_igniter_on_the_wire():
         R.fq = FQ.FireballCues(store, charge_get=lambda: _FbcTank(),
                                clock=lambda: clk[0],
                                sent_get=lambda: link.show_sent,
-                               land_get=lambda: link.landings,
+                               land_get=lambda: link.guard_gen,
                                journal=lambda t, **k: R.lines.append(t))
         R.fq.refresh()
         link.release()
@@ -111091,7 +111102,21 @@ def test_start_at_cue_valve_needs_its_igniter_on_the_wire():
             for _ in range(int(seconds * 30)):
                 link.send_frame()
                 clk[0] += 1 / 30.0
-        R.play, R.still = play, still
+
+        def stall(sends, catch_up):
+            """The show clock's last frame frozen for `sends` sends at
+            40 Hz (a clock-thread stall), then caught up `catch_up`
+            frames."""
+            f = show["f"]
+            for _ in range(sends):
+                link.send_frame()
+                v = [w for w in link.wire if "values" in w][-1]["values"]
+                for slot in (57, 58):
+                    if v[slot - 1]:
+                        R.on[slot].append(f)
+                clk[0] += 0.025
+            return f + catch_up
+        R.play, R.still, R.stall = play, still, stall
         return R
     shot = [_st("igniter", "00:00:10:00", 4),
             _st("valve", "00:00:12:00", 0.5)]
@@ -111144,6 +111169,37 @@ def test_start_at_cue_valve_needs_its_igniter_on_the_wire():
             R.play(318, 400)
             check(not R.on[57], f"{kind}, a tiny Ahead: no Valve: "
                                 f"{R.on[57]}")
+        # Review of #201, last round: the clock stalls (its last frame
+        # frozen for a few sends) and catches up; the flame link sees a
+        # seek and holds the Igniter dark. Every freeze length and catch up
+        # size, from inside the Igniter before the Valve: never Valve Open
+        # on a frame without the Igniter, never before the Igniter went
+        # out.
+        bad = []
+        for kind in ("timeline", "FSEQ"):
+            for sends in range(1, 15):
+                for jump in range(0, 17):
+                    R = rig(shot) if kind == "timeline" else rig(fseq=fshot)
+                    R.play(250, 340)
+                    at = R.stall(sends, jump)
+                    R.play(at, 400)
+                    v, ig = R.on[57], set(R.on[58])
+                    if v and (any(f not in ig for f in v) or
+                              min(v) <= min(ig)):
+                        bad.append((kind, sends, jump, v[:2]))
+        check(not bad, f"a stalled clock catching up never lets Valve Open "
+                       f"out with the Igniter dark: {bad[:6]} "
+                       f"({len(bad)} cases)")
+        # Two shots in one FSEQ cue: the first fires; the second's Valve on
+        # its Igniter's own frame is held (the first Igniter's evidence
+        # ends when the FSEQ turns it off).
+        R = rig(fseq={58: list(range(300, 330)) + list(range(400, 430)),
+                      57: list(range(310, 316)) + list(range(400, 406))})
+        R.play(250, 450)
+        check([f for f in R.on[57] if f < 350] == list(range(310, 316)) and
+              not [f for f in R.on[57] if f >= 350],
+              f"two FSEQ shots: the first fires, the second's same-frame "
+              f"Valve is held: {R.on[57]}")
         # The top of a show: the flame link holds an Igniter at
         # 00:00:00:00 dark (the first timecode is a seek), so the Valve at
         # 00:00:01:00 is held too, and said.
@@ -111164,6 +111220,92 @@ def test_start_at_cue_valve_needs_its_igniter_on_the_wire():
     finally:
         for w in works:
             shutil.rmtree(w, ignore_errors=True)
+    print("  ok")
+
+
+def test_start_at_cue_same_frame_valve_is_said():
+    section("review of #201, last round: a Valve Open less than 3 frames "
+            "after its Igniter is warned about (the validator, a save's "
+            "note and journal line, never a refusal); every shot lost to "
+            "the Igniter rule is a fault line and is counted per show for "
+            "the page's Fireball line")
+    import shutil
+    import types
+    from ltcplay import fireball_timeline as FT
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+
+    def st(ig, va):
+        return [{"stage": "igniter", "start": ig, "dur_s": 1.0},
+                {"stage": "valve", "start": va, "dur_s": 0.5}]
+    w0 = FT.lead_warning(st("00:00:05:00", "00:00:05:00"))
+    w2 = FT.lead_warning(st("00:00:05:00", "00:00:05:02"))
+    check("own frame" in w0 and "never runs" in w0 and
+          "at least 3 frames" in w0 and "2 frames after" in w2 and
+          FT.lead_warning(st("00:00:05:00", "00:00:05:03")) == "" and
+          FT.lead_warning(st("00:00:05:10", "00:00:05:00")) == "" and
+          FT.lead_warning([{"stage": "valve", "start": "00:00:01:00",
+                            "dur_s": 1}]) == "",
+          f"the validator's warning: {w0!r} {w2!r}")
+    _no_dashes(w0, "the lead warning")
+    # A save with it: saved, with the note in its answer and a fault line.
+    work = tempfile.mkdtemp()
+    journal = []
+    try:
+        class _Svc:
+            conductor = None
+            machine = types.SimpleNamespace(state="IDLE")
+
+            def journal_press(self, *a, **kw):
+                journal.append((a, kw))
+        ctl = types.SimpleNamespace(session=None, folder=work,
+                                    state=lambda: {})
+        rm = RM.Remote(ctl, _Svc(), folder=work, log=lambda t_: None)
+        matrix = U.normalise_matrix(None)
+        rm.users = types.SimpleNamespace(
+            active=lambda: True, matrix=lambda: matrix,
+            may=lambda role, perm: U.allowed(matrix, role, perm))
+        open(os.path.join(work, "Show.json"), "w").close()
+        rm.fireball_show_info = lambda show: ("Show", 120.0, "")
+        c = RM.Ctx(True, "127.0.0.1", session={"name": "Jeff",
+                                               "role": "admin"})
+        code, out, _h = rm.post("/api/remote/fireball-timeline-save",
+                                {"show": "Show.json", "rev": 0,
+                                 "source": "timeline",
+                                 "stages": st("00:00:05:00", "00:00:05:00")},
+                                c)
+        check(code == 200 and out.get("ok") and "Note: Valve Open starts "
+              "on the Igniter's own frame" in out["text"] and
+              out.get("warning") == w0 and
+              any("Valve Open starts" in str(a) and kw.get("fault")
+                  for a, kw in journal),
+              f"saved, with the note and a fault line: {code} {out} "
+              f"{journal[-1:]}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    # Lost shots: a fault line each, counted per show, on the page.
+    R = _fbq_rig([_st("igniter", "00:00:03:00", 0.5),
+                  _st("valve", "00:00:03:00", 0.2)])
+    try:
+        for f in range(0, 130):
+            R.frame(f)
+        got = R.fq.view().get("shots")
+        check(got == ["Show.json: 1 fireball shot skipped: Valve Open needs "
+                      "its Igniter to go out first"],
+              f"counted for the show's play, in words: {got}")
+        check(any("has not gone out" in t and k.get("fault")
+                  for t, k in R.lines), f"a fault line: {R.lines[-1:]}")
+        R.cue_obj = {"label": "Show"}
+        for f in range(0, 130):
+            R.frame(f)
+        check(R.fq.view()["shots"] == got, "the latest play's count")
+    finally:
+        shutil.rmtree(R.work, ignore_errors=True)
+    here = os.path.dirname(os.path.abspath(__file__))
+    one = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+               encoding="utf-8").read()
+    check("if(tl && tl.shots && tl.shots.length) said.push(tl.shots.join("
+          "\" \"));" in one, "the page's Fireball line shows the counts")
     print("  ok")
 
 
@@ -112340,6 +112482,7 @@ if __name__ == "__main__":
         test_start_at_cue_moves_inside_a_play_judge_the_shot_afresh,
         test_start_at_cue_halt_takes_the_stop_position,
         test_start_at_cue_valve_needs_its_igniter_on_the_wire,
+        test_start_at_cue_same_frame_valve_is_said,
         test_start_at_cue_fireball_lands_by_its_own_rules,
         test_start_at_cue_docs_in_plain_words,
     ]

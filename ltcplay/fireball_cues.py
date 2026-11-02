@@ -115,6 +115,7 @@ class _Run:
         self.label = label
         self.source = entry["source"] if entry else fbtl.DEFAULT_SOURCE
         self.cue = (entry or {}).get("cue") or ""
+        self.show = ""           # the show file (FireballCues sets it)
         self.rev = None
         self.stages = {}         # stage -> {"slot", "s0", "s1"} (frames)
         self.started = set()     # stages that have had their channel on
@@ -224,6 +225,10 @@ class FireballCues:
         self._run = None
         self._lock = threading.Lock()
         self.messages = []        # the last few skips, for the screens
+        # Shots lost to the Igniter rule in each show's latest play
+        # (show file -> count; _shot_skipped, shots_view).
+        self.shots_skipped = {}
+        self._shot_run = {}
         self.fault = ""
         self._said_fault = ""
         if store is not None:
@@ -303,6 +308,26 @@ class FireballCues:
             except Exception:                    # noqa: BLE001
                 return b""
         return getattr(tr, "last_sent", b"") if tr is not None else b""
+
+    def _shot_skipped(self, run):
+        """One more shot of this play's show lost because its Valve had no
+        Igniter on the wire before it: counted per show, for the page's
+        Fireball line (shots_view)."""
+        show = run.show or "this show"
+        with self._lock:
+            if self._shot_run.get(show) is not run:
+                self._shot_run[show] = run
+                self.shots_skipped[show] = 0
+            self.shots_skipped[show] += 1
+
+    def shots_view(self):
+        """One line per show whose latest play lost a fireball shot to the
+        Igniter rule, for the page's Fireball line."""
+        with self._lock:
+            got = dict(self.shots_skipped)
+        return [f"{show}: {n} fireball shot{'s' if n != 1 else ''} "
+                f"skipped: Valve Open needs its Igniter to go out first"
+                for show, n in sorted(got.items()) if n]
 
     def _land_count(self):
         """The flame link's landing count, or None. Never raises."""
@@ -423,6 +448,7 @@ class FireballCues:
         run = self._run
         if run is None or run.cue_obj is not cue_obj or run.label != label:
             run = self._run = _Run(cue_obj, label, entry, rev)
+            run.show = show
             self.messages = []
         gapped = self._gap_check(run)
         first, run.first = run.first, False
@@ -566,9 +592,11 @@ class FireballCues:
                 # can hold an Igniter dark that this module turned on).
                 run.skipped[k] = f"its {fbtl.STAGE_WORD[lead]} has not " \
                                  f"gone out"
+                self._shot_skipped(run)
                 self._say(f"{fbtl.STAGE_WORD[k]} was skipped: its "
                           f"{fbtl.STAGE_WORD[lead]} has not gone out since "
-                          f"the show landed (never gas without ignition).")
+                          f"the show landed (never gas without ignition).",
+                          fault=True)
                 continue
             if tank is not None:
                 why = self._charge_refusal(tr, tank, slot, run)
@@ -683,6 +711,11 @@ class FireballCues:
             run.fseq_prev[slot] = on
             if not on:
                 run.fseq_land_hold.discard(slot)
+                if slot in NEEDS_SLOT.values():
+                    # The FSEQ turned this Igniter off: its shot is over,
+                    # and the next shot's Valve needs its own Igniter to
+                    # go out first (final review of #201).
+                    run.lead_seen.discard(slot)
                 continue
             if landed or was is None:
                 # On at the landing (or not seen before): not a new start.
@@ -714,10 +747,11 @@ class FireballCues:
                     # in the FSEQ now) and has not gone out on the wire
                     # since the latest landing (final review of #201).
                     run.fseq_land_hold.add(slot)
+                    self._shot_skipped(run)
                     self._say(f"The FSEQ's {word} was held: its "
                               f"{fbtl.STAGE_WORD[_SLOT_STAGE[lead]]} has not "
                               f"gone out since the show landed (never gas "
-                              f"without ignition).")
+                              f"without ignition).", fault=True)
                 if slot in NEEDS_SLOT.values():
                     # A lead's own new start: held or not, from here.
                     if slot in run.fseq_land_hold:
@@ -797,5 +831,6 @@ class FireballCues:
         run = self._run
         return {"fault": self.fault, "messages": list(self.messages),
                 "source": run.source if run is not None else None,
-                "rev": self._plan[0] if self._plan else None}
+                "rev": self._plan[0] if self._plan else None,
+                "shots": self.shots_view()}
 

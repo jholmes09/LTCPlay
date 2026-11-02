@@ -23058,7 +23058,7 @@ def build():
 
  ("start at a cue: the engine never hands the fireball the link's landings",
   "ltcplay/web.py",
-  "            land_get=lambda: getattr(link, \"landings\", None))",
+  "            land_get=lambda: getattr(link, \"guard_gen\", None))",
   "            land_get=None)"),
 
  ('scheduler: Resume hands the next tick a show past its late limit to miss', 'ltcplay/schedule.py',
@@ -23076,6 +23076,56 @@ def build():
   '                if s.start <= now:\n'
   '                    _hold_back(tx, s)\n'
   '    back = m.held_from'),
+
+ ("flame link: a seek it sees itself does not start the guard generation again",
+  "ltcplay/flamelink.py",
+  "        self.seeks += 1\n        self.guard_gen += 1",
+  "        self.seeks += 1"),
+
+ ("flame link: a landing does not start the guard generation again",
+  "ltcplay/flamelink.py",
+  "    def _seek_reset(self):\n        self.guard_gen += 1",
+  "    def _seek_reset(self):\n        pass"),
+
+ ("start at a cue: the engine hands the fireball only the link's landings",
+  "ltcplay/web.py",
+  "            land_get=lambda: getattr(link, \"guard_gen\", None))",
+  "            land_get=lambda: getattr(link, \"landings\", None))"),
+
+ ("start at a cue: an FSEQ Igniter's evidence outlives its shot",
+  "ltcplay/fireball_cues.py",
+  "                    run.lead_seen.discard(slot)\n                continue",
+  "                    pass\n                continue"),
+
+ ("start at a cue: a shot lost to the Igniter rule is not counted",
+  "ltcplay/fireball_cues.py",
+  "            self.shots_skipped[show] += 1",
+  "            pass"),
+
+ ("start at a cue: a Valve skipped for its Igniter is not a fault line",
+  "ltcplay/fireball_cues.py",
+  "                          f\"the show landed (never gas without ignition).\",\n                          fault=True)",
+  "                          f\"the show landed (never gas without ignition).\",\n                          fault=False)"),
+
+ ("fireball timeline: a Valve on its Igniter's frame is not warned about",
+  "ltcplay/fireball_timeline.py",
+  "    if ig is None or va is None or va < ig or va >= ig + LEAD_FRAMES:",
+  "    if True:"),
+
+ ("fireball timeline: a save with a same-frame Valve says nothing",
+  "ltcplay/remote.py",
+  "        warn = fbtl_mod.lead_warning((entry or {}).get(\"stages\") or ())",
+  "        warn = \"\""),
+
+ ("ui2 page: the fireball editor never warns about a same-frame Valve",
+  "ltcplay/web/remote2.html",
+  "  if(at.igniter !== undefined && at.valve !== undefined && at.valve >= at.igniter && at.valve < at.igniter + 3){",
+  "  if(false){"),
+
+ ("rack screen: the Fireball line never shows the lost shots",
+  "ltcplay/web/remote.html",
+  "  if(tl && tl.shots && tl.shots.length) said.push(tl.shots.join(\" \"));\n",
+  ""),
 
 ]
 

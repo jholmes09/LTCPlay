@@ -5300,7 +5300,18 @@ class Remote:
         if not ok:
             return 409, {"error": text + " Nothing was changed."
                          if "Nothing" not in text else text}
-        return 200, {"ok": True, "text": text, "entry": entry}
+        # Saved; a shot whose Valve would never run is said (review of
+        # #201: a Valve Open needs its Igniter to have gone out first).
+        from . import fireball_timeline as fbtl_mod
+        warn = fbtl_mod.lead_warning((entry or {}).get("stages") or ())
+        if warn:
+            text = f"{text} Note: {warn}"
+            self._journal(who or "system", device or "engine",
+                          "fireball timeline", "warning",
+                          f"Fireball timeline for {show}: {warn}",
+                          fault=True)
+        return 200, {"ok": True, "text": text, "entry": entry,
+                     "warning": warn}
 
     def hazers_view(self, fl):
         """The status's "hazers": hazers.Hazers.view, and the display only

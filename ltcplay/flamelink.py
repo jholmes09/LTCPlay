@@ -891,6 +891,12 @@ class FlameLink:
         self._steady_since = None
         self._blocked = self._guarded()
         self.seeks = 0
+        # Every time the seek guard starts again (a seek it saw itself, a
+        # landing, each frame a landing is still open): what a channel did
+        # before says nothing about whether it may go out now. The fireball
+        # timeline judges its shots afresh on every change (fireball_cues,
+        # final review of #201).
+        self.guard_gen = 0
         self.cues = cues
         self.show_state = show_state
         self._journal = journal
@@ -1800,6 +1806,10 @@ class FlameLink:
 
     # -- Programming transport moves (playhead.py) ----------------------------
     def _seek_reset(self):
+        self.guard_gen += 1
+        self._seek_reset_now()
+
+    def _seek_reset_now(self):
         """The seek guard as a new link has it: the next timecode is a
         landing and every channel waits to be seen at zero."""
         self._seek_last = None
@@ -2140,6 +2150,7 @@ class FlameLink:
 
     def _seek(self, frm, to):
         self.seeks += 1
+        self.guard_gen += 1
         self._steady_since = None
         self._blocked = self._guarded()
         if frm is not None:

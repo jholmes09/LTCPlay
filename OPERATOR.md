@@ -992,8 +992,7 @@ that long. The stages, in this order:
   is flamesafe's own slot: it writes it from the arm state.
 - **What is checked.** A start is a real timecode inside the show; a
   duration is a number of seconds above 0. There is no longest duration
-  and no order between the stages: the Igniter is independent. A stage
-  left out is never on. A stage that would run past the end of the show
+  and no order between the stages. A stage left out is never on. A stage that would run past the end of the show
   ends there. Anything wrong is refused in a sentence and nothing is
   saved.
 - **Source.** Each show file is either **FSEQ** (as today, and the
@@ -1084,8 +1083,32 @@ FSEQ:
   still guarded for every show, whatever is wired to them. Purge (59) is
   always zero, and Fuel (55) and Air (56) each get one charge until a
   shot (57) or a Purge empties the record again.
-- Valve Open (57), the Igniter (58) and every other channel of an FSEQ
-  show are exactly as before.
+- Valve Open (57) and the Igniter (58) of an FSEQ show follow the rules
+  below (whole or not at all after a landing; Valve Open needs its
+  Igniter to have gone out first). Every other channel of an FSEQ show is
+  exactly as before.
+
+### Valve Open needs its Igniter first (every play, every show)
+
+Valve Open runs only after its Igniter has actually gone out in that run:
+the flame link must have sent the Igniter since it last started its guard
+again (a start, Play from, Back, Ahead, Continue, a loop, or the show
+timecode jumping by itself, for example after a stall). This holds on
+every play, not only a start at a cue. It applies when the timeline has an
+Igniter starting at or before Valve Open, and on a show on its FSEQ when
+the Igniter is on as Valve Open opens; on an FSEQ show the Igniter counts
+only until the FSEQ turns it off, so each shot needs its own.
+
+- **A Valve on the Igniter's own frame never runs.** The Igniter has not
+  gone out yet when the Valve would open. Start Valve Open at least 3
+  frames (0.1 s) after the Igniter. The fireball timeline editor (2.0
+  Settings) shows this under Valve Open, and a save that has it says so
+  (it is still saved). An FSEQ made in xLights with the two starting
+  together loses that shot the same way.
+- **Every lost shot is loud.** Each is a fault line in the journal, and
+  the Fireball line on the Morning and Startup page says, per show, "N
+  fireball shots skipped: Valve Open needs its Igniter to go out first"
+  for that show's latest play.
 
 ### In a show set to Timeline
 

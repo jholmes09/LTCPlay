@@ -35,8 +35,12 @@ Only well-formedness is checked, and every refusal is a plain sentence:
     past the end of the show simply ends there;
   - each stage at most once. A stage left out is never on.
 
-There are no interlocks. "Igniter is independent": the stages are
-independent windows, with no order and no overlap rule between them.
+The stages are independent windows, with no order and no overlap rule
+between them, with one exception the show path applies (fireball_cues.py,
+review of #201): Valve Open runs only after its Igniter has actually gone
+out on the wire in that run, when the timeline has an Igniter starting at
+or before it. A Valve Open that starts on the Igniter's own frame (or one
+frame after it) therefore never runs; a save says so (lead_warning).
 
 Source per show
 ===============
@@ -153,6 +157,30 @@ def parse_duration(v):
 
 def _seconds_text(v):
     return f"{v:g} s"
+
+
+# Valve Open should start at least this many frames after its Igniter
+# (0.1 s): on the same frame it never runs (the Igniter has not gone out
+# yet), and one frame is the least the show path can see.
+LEAD_FRAMES = 3
+
+
+def lead_warning(stages):
+    """A sentence when Valve Open starts less than LEAD_FRAMES after the
+    Igniter (both used), else "". A warning, never a refusal: the save
+    goes through, and the show path skips such a shot (fireball_cues)."""
+    try:
+        by = {st["stage"]: parse_tc(st["start"]) for st in stages or ()}
+    except Exception:                            # noqa: BLE001
+        return ""
+    ig, va = by.get("igniter"), by.get("valve")
+    if ig is None or va is None or va < ig or va >= ig + LEAD_FRAMES:
+        return ""
+    how = "on the Igniter's own frame" if va == ig else \
+        f"{va - ig} frame{'s' if va - ig != 1 else ''} after the Igniter"
+    return (f"Valve Open starts {how}: it never runs, because the Igniter "
+            f"has not gone out yet. Start it at least {LEAD_FRAMES} frames "
+            f"(0.1 s) after the Igniter.")
 
 
 def check_stages(stages, show_len_s=None):
