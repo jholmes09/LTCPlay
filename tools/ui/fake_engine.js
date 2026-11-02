@@ -213,10 +213,11 @@ class FakeEngine {
     this.posts = [];
     this.dead = false;
     Object.assign(this, dayState(name, this.st));
-    this.html = fs.readFileSync(path.join(REPO, "ltcplay", "web", "remote.html"), "utf8");
+    // The shared rules file, written into 1.0 as web.py's remote1_page does.
+    this.logic = fs.readFileSync(path.join(REPO, "ltcplay", "web", "remote_rules.js"), "utf8");
+    this.html = fs.readFileSync(path.join(REPO, "ltcplay", "web", "remote.html"), "utf8")
+      .replace('<script src="/remote-logic.js"></script>', () => '<script id="remote-logic">' + this.logic + "</script>");
     this.html2 = fs.readFileSync(path.join(REPO, "ltcplay", "web", "remote2.html"), "utf8");
-    const a = this.html.indexOf('<script id="remote-logic">'), b = this.html.indexOf("</script>", a);
-    this.logic = this.html.slice(a + '<script id="remote-logic">'.length, b);
     this.uiDefault = 1;
   }
   setScenario(name){ this.name = name; this.st = baseStatus(); (SCENARIOS[name] || (s => s))(this.st); this.holds = {}; }
