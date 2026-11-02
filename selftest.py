@@ -107637,6 +107637,411 @@ go();
 """
 
 
+# ---------------------------------------------------------------------------
+# Interface 2.0, P11 and P13 (docs/REMOVE_1_0_PLAN.md): 1.0's machine map
+# and Arrange mode on DAY's Purge step, and 1.0's show machine switches
+# (Arming from a screen, Live flame programming On, the announcement
+# output and its test tone) on the Programming cards. 1.0's own code.
+# ---------------------------------------------------------------------------
+
+_UI2_C_BLOCKS = (
+    ("the ARRANGE block", "// ARRANGE BEGIN.", "// ARRANGE END", ()),
+    ("the machine map", "  // The field: every machine where the layout "
+     "puts it.", "  // The fire key's state.", ()),
+    ("the announcement output picker", "// The announcement output "
+     "picker: the engine's list of outputs", "// The Show network card",
+     ()),
+    ("Arming from a screen and Live flame programming",
+     "// What the switch lets screens do: every one of it",
+     "// The show's flame cues in Programming",
+     ('''  const ban = $("lf-banner");
+  ban.hidden = !on;
+  if(on){
+    const map = (lf.map || []).map(m => "universe " + m.universe + " to slots " + m.slots).join(", ");
+    const rx = lf.receiving ? "receiving xLights" : ("no xLights data for " + (lf.last_data_s || 0) + " s");
+    $("lf-banner-text").textContent = "xLights drives the flames through flamesafe. Only an armed group fires. " + rx + "; source: " + ((lf.sender && lf.sender.from) || ("none yet, allowed " + (lf.source || "this PC"))) + "; map fingerprint " + (lf.fingerprint || "?") + " (" + (map || "") + "). Turned on by " + (lf.who || "someone") + ".";
+  }
+''', '''$("lf-banner-off").addEventListener("click", liveFlameOff);
+''')))
+
+
+_UI2C_DRIVE_JS = _RACK_DRIVE_JS.replace(
+    'if(!document.querySelector("#fl-lamps .lamp")) return setTimeout(go, 50);',
+    'if(!(typeof ST !== "undefined" && ST && ST.schedule && typeof MO !== '
+    '"undefined" && MO)) return setTimeout(go, 50);')
+
+
+def _ui2c_drive(chrome, page, status, steps_js, size=(1366, 768), **kw):
+    """_rack_drive for 2.0: waits for the status and the Startup view."""
+    js = "<script>window.__drive = async (out, h) => {\n" + steps_js + \
+        "\n};</script>" + _UI2C_DRIVE_JS
+    got = _rack_screen_in_chromium(chrome, page, status, (size,),
+                                   measure_js=js, **kw)
+    res = got[size]
+    return res[0] if isinstance(res, list) and res else str(res)
+
+
+def _ui2c_page():
+    one, two = _ui2_pages()
+    lo = one[one.find('<script id="remote-logic">') +
+             len('<script id="remote-logic">'):]
+    lo = lo[:lo.find("</script>")]
+    return two.replace('<script src="/remote-logic.js"></script>',
+                       "<script>" + lo + "</script>", 1)
+
+
+def _ui2c_status():
+    st = _ui2_status_running()
+    st["schedule"].update({"state": "STANDBY", "running": None})
+    st["show"] = {"running": True, "timecode": None}
+    st["countdown"] = None
+    st["laser_arm"]["lasers"][0]["armed"] = False
+    st["flames"]["groups"] = [dict(g, armed="disarmed")
+                              for g in st["flames"]["groups"]]
+    return st
+
+
+def test_ui2_arrange_and_switches_are_1_0s():
+    section("2.0, P11 and P13: the ARRANGE block, the machine map, the "
+            "announcement output picker, and Arming from a screen with Live "
+            "flame programming are 1.0's code word for word (the one "
+            "difference 1.0's live flame banner, 2.0's pinned line); 1.0's "
+            "ids; Arrange, Arming from a screen and the announcement output "
+            "on the show PC only; leaving the Purge step, the map or DAY "
+            "leaves Arrange mode; no stub left that says nothing is ever "
+            "arranging; OPERATOR.md and the plan")
+    one, two = _ui2_pages()
+    for what, a, b, drops in _UI2_C_BLOCKS:
+        i = one.find(a)
+        j = one.find(b, i)
+        blk = one[i:j] if 0 <= i < j else ""
+        for d in drops:
+            check(blk.count(d) == 1, f"1.0's {what} has the dropped part "
+                                     f"{d[:40]!r}")
+            blk = blk.replace(d, "")
+        check(len(blk) > 300 and blk in two,
+              f"2.0's {what} is 1.0's code, word for word ({len(blk)} "
+              f"characters)")
+    check("const ARRANGE = false;" not in two and
+          "function arrangeBlocked(){ return false; }" not in two and
+          two.count("function openBeatBody(") == 1 and
+          two.count("const BEAT_INST =") == 1,
+          "2.0's stubs (no Arrange mode) are gone; one open beat, 1.0's")
+    end = two.rsplit("// END OF THE COPY.", 1)
+    check(len(end) == 2 and "// ARRANGE BEGIN." in end[0],
+          "the ARRANGE block is inside 2.0's copied region")
+    for need in ('<div id="d-mapsec" hidden>', 'id="mo-arrange-bar" hidden>'
+                 '<b>ARRANGING: arming disabled</b>', 'id="mo-arr-save"',
+                 'id="mo-arr-reset"', 'id="mo-arr-cancel"',
+                 'id="mo-arrange" hidden', 'id="mo-field"',
+                 '<div class="card col" id="arming-card" hidden>',
+                 'id="sa-on"', 'data-safe class="b safe" id="sa-off"',
+                 'id="sa-now"', 'id="sa-what"', 'id="sa-msg"',
+                 '<div class="card col" id="lf-card">', 'id="lf-on"',
+                 'data-safe class="b safe" id="lf-off"', 'id="lf-now"',
+                 'id="lf-what"', 'id="lf-msg"',
+                 '<div class="card col" id="annout-card" hidden>',
+                 'id="annout-pick"', 'id="annout-save"', 'id="annout-tone"',
+                 'id="annout-msg"'):
+        check(need in two, f"2.0 has {need}")
+    dm = _js_function(two, "dayMap") or ""
+    check('$("mo-arrange").hidden = !(ME && ME.local);' in dm and
+          "renderField(MO" in dm and "renderArrange();" in dm,
+          "the map draws 1.0's field and Arrange bar; Arrange on the show "
+          "PC only")
+    check('if(ARRANGE) arrangeExit("left");' in
+          (_js_function(two, "mapOff") or "") and
+          "mapOff();" in (_js_function(two, "dayView") or "") and
+          'if(DAY_STEP === "purge") mapOff();' in
+          (_js_function(two, "dayGo") or ""),
+          "leaving DAY or the Purge step leaves Arrange mode (1.0's "
+          "arrangeExit(\"left\"))")
+    check('if(ARRANGE){ kk.className = "key"; kk.textContent = '
+          'ARRANGE_BANNER; }' in two,
+          "while arranging, the fire key line says so")
+    rs = _js_function(two, "renderSwitches") or ""
+    check('$("arming-card").hidden = !local;' in rs and
+          "const an = !local || !L.show;" in rs,
+          "Arming from a screen and the announcement output: the show PC "
+          "only (1.0's whoami and renderAnnounce)")
+    for p in ('post("/api/remote/screen-arming", {on: true})',
+              'post("/api/remote/screen-arming", {on: false})',
+              'post("/api/remote/live-flame", {on: true, confirmed: true})',
+              'post("/api/remote/announce-test-tone", {})',
+              'post("/api/remote/announce-output", JSON.parse(v))',
+              'getJSON("/api/remote/announce-outputs", 3000)',
+              'await moPress("layout", {positions: positions});',
+              'await moPress("layout", {reset: true});'):
+        check(p in one and p in two, f"1.0 and 2.0 both press {p}")
+    sect = two[two.find('<div class="card col" id="arming-card"'):
+               two.find('<div class="card"><div class="t"><b>More '
+                        'programming</b>')]
+    sect += two[two.find('<div id="d-mapsec"'):two.find('<div id="mo-field"')]
+    check(len(sect) > 500 and "–" not in sect and "—" not in sect,
+          "no em or en dashes on the new cards")
+    here = os.path.dirname(os.path.abspath(__file__))
+    op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
+    i = op.find("- 2.0 machine map, Arrange and the show machine switches:")
+    para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
+    for words in ("Map", "Arrange", "Save layout", "Reset layout", "Cancel",
+                  "show PC only", "Arming from a screen", "Live flame",
+                  "Test tone", "nothing arms", "Settings"):
+        check(words in para, f"OPERATOR.md, 2.0 map and switches, says "
+                             f"{words!r}")
+    _no_dashes(para, "OPERATOR.md, 2.0 map and switches")
+    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
+                encoding="utf-8").read()
+    check("| P11 | DONE" in plan and "| P13 | DONE" in plan,
+          "the removal plan marks P11 and P13 done")
+    print("  ok")
+
+
+def test_ui2_map_and_arrange_driven():
+    section("2.0's machine map and Arrange mode pressed in a real browser "
+            "(1.0's code): a machine tap is 1.0's purge select; Arrange "
+            "(the show PC only) tells the engine at once, clears this "
+            "screen's selection, shows the banner and the key line, holds "
+            "back every tap and the Space bar; a drag and Save layout send "
+            "the new place; Cancel sends nothing; Reset asks first; leaving "
+            "the step leaves Arrange; an iPad gets no Arrange")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2c_page()
+    steps = r"""
+const mark = () => window.__posts.length;
+const since = n => window.__posts.slice(n);
+const step = k => { const b = document.querySelector('#d-steps [data-step="' + k + '"]'); if(b) b.click(); return !!b; };
+const q = id => document.getElementById(id);
+const mach = id => document.querySelector('#mo-field .mach[data-id="' + id + '"]');
+const pe = (el, type, x, y) => el.dispatchEvent(new PointerEvent(type, {bubbles:true, cancelable:true, pointerId:7, pointerType:"mouse", isPrimary:true, buttons:type === "pointerup" ? 0 : 1, clientX:x, clientY:y}));
+await h.sleep(900);
+step("purge");
+await h.sleep(700);
+q("d-map").click();
+await h.sleep(700);
+out.map = {shown:!q("d-mapsec").hidden, groups_hidden:q("mo-groups").hidden, n:document.querySelectorAll("#mo-field .mach").length,
+  arrange:!q("mo-arrange").hidden, bar:!q("mo-arrange-bar").hidden};
+let n = mark();
+const m4 = mach("m4");
+const r = m4.getBoundingClientRect();
+pe(m4, "pointerdown", r.left + 10, r.top + 10); pe(m4, "pointerup", r.left + 10, r.top + 10);
+await h.sleep(300);
+out.tap = since(n).filter(p => p.route === "purge-select").map(p => p.body);
+// Arrange.
+n = mark();
+q("mo-arrange").click();
+await h.sleep(400);
+out.enter = {beats:since(n).filter(p => p.route === "morning-open").map(p => p.body.arranging), clear:since(n).filter(p => p.route === "purge-clear").length,
+  bar:!q("mo-arrange-bar").hidden, arrange_dis:q("mo-arrange").disabled, key:(q("mo-key") || {}).textContent};
+// While arranging: a tap picks up, never arms; Space fires nothing.
+n = mark();
+const fr = q("mo-field").getBoundingClientRect(), r2 = mach("m4").getBoundingClientRect();
+pe(mach("m4"), "pointerdown", r2.left + 10, r2.top + 10);
+window.dispatchEvent(new PointerEvent("pointermove", {bubbles:true, pointerId:7, pointerType:"mouse", buttons:1, clientX:fr.left + fr.width * 0.3, clientY:fr.top + fr.height * 0.4}));
+await h.sleep(100);
+window.dispatchEvent(new PointerEvent("pointerup", {bubbles:true, pointerId:7, pointerType:"mouse", buttons:0, clientX:fr.left + fr.width * 0.3, clientY:fr.top + fr.height * 0.4}));
+await h.sleep(200);
+document.dispatchEvent(new KeyboardEvent("keydown", {key:" ", code:"Space", bubbles:true}));
+await h.sleep(300);
+document.dispatchEvent(new KeyboardEvent("keyup", {key:" ", code:"Space", bubbles:true}));
+out.held = since(n).filter(p => ["purge-select", "purge-fire", "lock"].includes(p.route)).map(p => p.route);
+n = mark();
+q("mo-arr-save").click();
+await h.sleep(500);
+const lay = since(n).filter(p => p.route === "layout").map(p => p.body);
+out.save = {n:lay.length, m4:lay.length ? lay[0].positions.m4 : null, beat:since(n).filter(p => p.route === "morning-open").map(p => p.body.arranging), bar:!q("mo-arrange-bar").hidden};
+// Cancel sends nothing.
+q("mo-arrange").click(); await h.sleep(300);
+n = mark();
+q("mo-arr-cancel").click(); await h.sleep(400);
+out.cancel = since(n).filter(p => p.route === "layout").length;
+// Reset asks first.
+q("mo-arrange").click(); await h.sleep(300);
+n = mark();
+q("mo-arr-reset").click(); await h.sleep(300);
+out.reset_sheet = {open:!q("sheet").hidden, posts:since(n).filter(p => p.route === "layout").length};
+const yes = document.querySelector('#sh-row [data-i="1"]'); if(yes) yes.click();
+await h.sleep(500);
+out.reset = since(n).filter(p => p.route === "layout").map(p => p.body.reset);
+// Leaving the step leaves Arrange (no save).
+q("mo-arrange").click(); await h.sleep(300);
+n = mark();
+step("lasers") || step("locks");
+await h.sleep(500);
+out.left = {arrange:ARRANGE, layout:since(n).filter(p => p.route === "layout").length, beat:since(n).filter(p => p.route === "morning-open").map(p => p.body.arranging)};
+// An iPad: no Arrange.
+step("purge"); await h.sleep(500);
+if(q("d-mapsec").hidden){ q("d-map").click(); await h.sleep(500); }
+ME.local = false; await h.sleep(900);
+out.ipad = {arrange:!q("mo-arrange").hidden, map:!q("d-mapsec").hidden};
+ME.local = true;
+"""
+    m = _ui2c_drive(chrome, page, _ui2c_status(), steps, size=(1366, 768),
+                   frag="?tour=0#day",
+                   routes={"/api/remote/morning":
+                           _morning_view_pico(selected=("m1",))},
+                   budget_ms=30000)
+    if not check(isinstance(m, dict) and not m.get("problems"),
+                 f"2.0's map and Arrange, pressed: {m!r}"[:1500]):
+        print("  ok")
+        return
+    check(m["map"]["shown"] and m["map"]["groups_hidden"] and
+          m["map"]["n"] >= 6 and m["map"]["arrange"] and not m["map"]["bar"],
+          f"Map: 1.0's field in the group buttons' place, Arrange on the "
+          f"show PC: {m['map']}")
+    check(len(m["tap"]) == 1 and m["tap"][0].get("machine") == "m4" and
+          m["tap"][0].get("on") is True,
+          f"a machine tap is 1.0's purge select: {m['tap']}")
+    e = m["enter"]
+    check(e["beats"][:1] == [True] and e["clear"] == 1 and e["bar"] and
+          e["arrange_dis"] and e["key"] == "ARRANGING: arming disabled",
+          f"Arrange: the engine hears at once, this screen's selection is "
+          f"cleared, the banner and the key line say so: {e}")
+    check(m["held"] == [],
+          f"while arranging, a tap and the Space bar send nothing that "
+          f"arms or fires: {m['held']}")
+    sv = m["save"]
+    check(sv["n"] == 1 and sv["m4"] and abs(sv["m4"]["x"] - 30) < 2 and
+          abs(sv["m4"]["y"] - 40) < 2 and False not in [] and
+          sv["beat"][:1] == [False] and not sv["bar"],
+          f"a drag and Save layout: the new place sent, the mode ended "
+          f"first: {sv}")
+    check(m["cancel"] == 0, f"Cancel sends nothing: {m['cancel']}")
+    check(m["reset_sheet"]["open"] and m["reset_sheet"]["posts"] == 0 and
+          m["reset"] == [True],
+          f"Reset asks first, then sends reset: {m['reset_sheet']} "
+          f"{m['reset']}")
+    check(m["left"]["arrange"] is False and m["left"]["layout"] == 0 and
+          False in m["left"]["beat"],
+          f"leaving the step leaves Arrange, nothing saved: {m['left']}")
+    check(not m["ipad"]["arrange"],
+          f"an iPad gets no Arrange: {m['ipad']}")
+    print("  ok")
+
+
+def test_ui2_show_machine_switches_driven():
+    section("2.0's show machine switches pressed in a real browser (1.0's "
+            "code): Arming from a screen asks first and posts on true, "
+            "Turn off posts on false at once; Live flame On asks first and "
+            "posts on true and confirmed, its On on the show PC only, Off "
+            "only while on; both On buttons off for a sign-in without "
+            "Settings; the announcement output's list, Save and Test tone; "
+            "an iPad gets neither show PC card")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2c_page()
+    st = _ui2c_status()
+    st["arming"] = {"enabled": False, "needs_s": 2.0, "fresh_s": 1.0,
+                    "holds": []}
+    st["live_flame"] = {"on": False, "available": True}
+    outs = {"device": "MOTU M4", "outputs": [
+        {"name": "MOTU M4", "label": "MOTU M4 (WASAPI, 4 ch)",
+         "picked": True},
+        {"name": "Speakers", "label": "Speakers (WASAPI, 2 ch)"}]}
+    steps = r"""
+const mark = () => window.__posts.length;
+const since = n => window.__posts.slice(n);
+const q = id => document.getElementById(id);
+const yes = async () => { const b = document.querySelector('#sh-row [data-i="1"]'); if(b) b.click(); await h.sleep(400); };
+const bare = b => { const o = Object.assign({}, b); delete o.seen; return o; };
+document.querySelector('.tab[data-tab="schedule"]').click();
+await h.sleep(1200);
+out.cards = {arming:!q("arming-card").hidden, lf:!q("lf-card").hidden, ann:!q("annout-card").hidden,
+  sa_now:q("sa-now").textContent, sa_on_dis:q("sa-on").disabled, sa_off_dis:q("sa-off").disabled,
+  lf_now:q("lf-now").textContent, lf_on:!q("lf-on").hidden && !q("lf-on").disabled, lf_off_dis:q("lf-off").disabled,
+  opts:[...q("annout-pick").options].map(o => o.textContent)};
+let n = mark();
+q("sa-on").click(); await h.sleep(300);
+out.sa_sheet = {open:!q("sheet").hidden, h:q("sh-h").textContent, posts:since(n).filter(p => p.route === "screen-arming").length};
+await yes();
+out.sa_on = since(n).filter(p => p.route === "screen-arming").map(p => bare(p.body));
+window.__patch = s => Object.assign(s, {arming:{enabled:true, holds:[]}, live_flame:{on:true, available:true}});
+await h.sleep(900);
+n = mark();
+q("sa-off").click(); await h.sleep(300);
+out.sa_off = {sheet:!q("sheet").hidden, posts:since(n).filter(p => p.route === "screen-arming").map(p => bare(p.body))};
+out.on_state = {sa_on_dis:q("sa-on").disabled, lf_on_dis:q("lf-on").disabled, lf_off_dis:q("lf-off").disabled};
+n = mark();
+q("lf-off").click(); await h.sleep(300);
+out.lf_off = since(n).filter(p => p.route === "live-flame").map(p => bare(p.body));
+window.__patch = null; await h.sleep(900);
+n = mark();
+q("lf-on").click(); await h.sleep(300);
+out.lf_sheet = {open:!q("sheet").hidden, h:q("sh-h").textContent, posts:since(n).filter(p => p.route === "live-flame").length};
+await yes();
+out.lf_on = since(n).filter(p => p.route === "live-flame").map(p => bare(p.body));
+// The announcement output: Speakers, Save; Test tone.
+n = mark();
+q("annout-pick").selectedIndex = 2; q("annout-save").click(); await h.sleep(400);
+q("annout-tone").click(); await h.sleep(400);
+out.ann = since(n).filter(p => /^announce-/.test(p.route)).map(p => [p.route, bare(p.body)]);
+// Signed in without Settings: both On buttons off.
+window.__patch = s => Object.assign(s, {me:{users_active:true, user:"Ola", may:{show:true, arm:true, settings:false}}});
+await h.sleep(900);
+out.nosettings = {sa_on:q("sa-on").disabled, lf_on:q("lf-on").disabled, sa_off:q("sa-off").disabled};
+window.__patch = null; await h.sleep(600);
+ME.local = false; await h.sleep(900);
+out.ipad = {arming:!q("arming-card").hidden, ann:!q("annout-card").hidden, lf_on:!q("lf-on").hidden, lf_card:!q("lf-card").hidden};
+ME.local = true;
+"""
+    m = _ui2c_drive(chrome, page, st, steps, size=(1366, 768),
+                   frag="?tour=0#day",
+                   routes={"/api/remote/morning": _morning_view_pico(),
+                           "/api/remote/announce-outputs": outs,
+                           "/api/timelines": {"timelines": []}},
+                   budget_ms=30000)
+    if not check(isinstance(m, dict) and not m.get("problems"),
+                 f"2.0's switches, pressed: {m!r}"[:1500]):
+        print("  ok")
+        return
+    c = m["cards"]
+    check(c["arming"] and c["lf"] and c["ann"] and c["sa_now"] == "OFF" and
+          not c["sa_on_dis"] and c["sa_off_dis"] and c["lf_now"] == "OFF"
+          and c["lf_on"] and c["lf_off_dis"] and
+          c["opts"][:1] == ["None: only through the show audio"] and
+          "MOTU M4 (WASAPI, 4 ch), picked now" in c["opts"],
+          f"the show PC: the three cards, both off, 1.0's outputs list: "
+          f"{c}")
+    check(m["sa_sheet"]["open"] and
+          m["sa_sheet"]["h"] == "Turn on arming from a screen?" and
+          m["sa_sheet"]["posts"] == 0 and m["sa_on"] == [{"on": True}],
+          f"Arming from a screen On asks first, then posts on true: "
+          f"{m['sa_sheet']} {m['sa_on']}")
+    check(not m["sa_off"]["sheet"] and
+          m["sa_off"]["posts"] == [{"on": False}],
+          f"Turn off: at once, on false: {m['sa_off']}")
+    check(m["on_state"] == {"sa_on_dis": True, "lf_on_dis": True,
+                            "lf_off_dis": False},
+          f"while on: On is off, Off works: {m['on_state']}")
+    check(m["lf_off"] == [{"on": False}], f"Live flame Off: {m['lf_off']}")
+    check(m["lf_sheet"]["open"] and
+          m["lf_sheet"]["h"] == "Turn on live flame programming?" and
+          m["lf_sheet"]["posts"] == 0 and
+          m["lf_on"] == [{"on": True, "confirmed": True}],
+          f"Live flame On asks first, then posts on true and confirmed: "
+          f"{m['lf_sheet']} {m['lf_on']}")
+    check(m["ann"] == [["announce-output", {"device": "Speakers",
+                                            "hostapi": None}],
+                       ["announce-test-tone", {}]],
+          f"the announcement output's Save and Test tone, 1.0's bodies: "
+          f"{m['ann']}")
+    check(m["nosettings"] == {"sa_on": True, "lf_on": True, "sa_off": True},
+          f"a sign-in without Settings: both On buttons off (Off is off "
+          f"only because it is off): {m['nosettings']}")
+    check(not m["ipad"]["arming"] and not m["ipad"]["ann"] and
+          not m["ipad"]["lf_on"] and m["ipad"]["lf_card"],
+          f"an iPad: no Arming from a screen, no output, Live flame On "
+          f"hidden (its Off stays): {m['ipad']}")
+    print("  ok")
+
 def test_ui2_fireball_timeline_editor():
     section("interface 2.0's fireball timeline editor (Schedule): Jeff's "
             "four stages in his order with their channels, a start and a "
@@ -113816,6 +114221,9 @@ if __name__ == "__main__":
         test_fireball_manual_and_timeline_never_double_charge,
         test_fireball_page_beats_race_the_sender,
 
+        test_ui2_arrange_and_switches_are_1_0s,
+        test_ui2_map_and_arrange_driven,
+        test_ui2_show_machine_switches_driven,
         test_ui2_fireball_timeline_editor,
         test_play_from_cue_model,
         test_play_from_cue_store,

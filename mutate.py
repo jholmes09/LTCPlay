@@ -23310,6 +23310,62 @@ def build():
   "            with self._stops_cv:\n                pass"),
 
 
+ # interface 2.0, P11 (machine map, Arrange) and P13 (show machine switches)
+ ("ui 2.0 Arrange: a machine select is not held back while arranging",
+  "ltcplay/web/remote2.html",
+  "    ((route === \"purge-select\" || route === \"laser-test\") && !off) ||",
+  "    (route === \"laser-test\" && !off) ||"),
+
+ ("ui 2.0 Arrange: offered on an iPad",
+  "ltcplay/web/remote2.html",
+  "  $(\"mo-arrange\").hidden = !(ME && ME.local);",
+  "  $(\"mo-arrange\").hidden = false;"),
+
+ ("ui 2.0 Arrange: leaving the Purge step stays arranging",
+  "ltcplay/web/remote2.html",
+  "  if(DAY_STEP === \"purge\") mapOff();\n  DAY_STEP = k;",
+  "  DAY_STEP = k;"),
+
+ ("ui 2.0 Arrange: leaving DAY stays arranging",
+  "ltcplay/web/remote2.html",
+  "  if(!on) mapOff();\n",
+  ""),
+
+ ("ui 2.0 Arrange: the fire key line does not say arranging",
+  "ltcplay/web/remote2.html",
+  "      if(ARRANGE){ kk.className = \"key\"; kk.textContent = ARRANGE_BANNER; }\n",
+  ""),
+
+ ("ui 2.0 map: the field is never drawn",
+  "ltcplay/web/remote2.html",
+  "  renderField(MO, (ST && ST.flames) || {}, MO.purge_state || {});\n",
+  ""),
+
+ ("ui 2.0 switches: Arming from a screen shown on an iPad",
+  "ltcplay/web/remote2.html",
+  "  if($(\"arming-card\").hidden !== !local) $(\"arming-card\").hidden = !local;",
+  "  $(\"arming-card\").hidden = false;"),
+
+ ("ui 2.0 switches: the announcement output shown on an iPad",
+  "ltcplay/web/remote2.html",
+  "  const an = !local || !L.show;",
+  "  const an = !L.show;"),
+
+ ("ui 2.0 switches: the outputs are never read",
+  "ltcplay/web/remote2.html",
+  "  if(t === \"schedule\" && ME && ME.local) loadAnnOutputs();\n",
+  ""),
+
+ ("ui 2.0 switches: Arming from a screen goes on with no question",
+  "ltcplay/web/remote2.html",
+  "  if(!(await confirmBox(\"Turn on arming from a screen?\", SCREEN_ARMING_ENABLES, \"Yes, turn it on\", \"go\"))) return;",
+  ""),
+
+ ("ui 2.0 switches: Live flame On for a sign-in without Settings",
+  "ltcplay/web/remote2.html",
+  "  $(\"lf-on\").disabled = on || lf.available === false || !mayRow(ST, \"settings\");",
+  "  $(\"lf-on\").disabled = on || lf.available === false;"),
+
  # interface 2.0's Schedule tab (P3, P4 of docs/REMOVE_1_0_PLAN.md)
  ("ui 2.0 Schedule: opening the tab again reloads the file over unsaved edits",
   "ltcplay/web/remote2.html",
