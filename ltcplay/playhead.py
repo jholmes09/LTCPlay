@@ -242,11 +242,6 @@ class ShowAudioPlayhead:
                 pass
         s = self._session()
         cond = self._conductor()
-        if cond is not None and getattr(cond, "latched", False):
-            # The show runner's own rule: nothing starts while an Abort
-            # stands.
-            raise PlayheadError("An Abort is standing, so nothing plays "
-                                "until someone presses Reset.")
         # Every refusal the show audio has (still loading, past the end,
         # before the first cue) before MadMapper's bank is touched.
         s.clock_play_from(show_s, check_only=True)
@@ -336,16 +331,35 @@ class ShowAudioPlayhead:
             return at
 
     def pause(self, who="", screen=""):
+        return self.pause_or_why(who, screen)[0]
+
+    def pause_or_why(self, who="", screen=""):
+        """The Pause, and why nothing was paused: the conductor's own
+        sentence when a Stop left the rig dark and its Hold only blanked
+        the lasers again (round 3 review of #199), else "". The operator
+        then reads that, never "paused ... Continue carries on"."""
         s = self._session()
         if s.clock_here() is None:
             raise PlayheadError("Nothing is playing to pause. Play from a "
                                 "timecode first.")
         cond = self._conductor()
+        why = ""
         if cond is not None:
-            self._refused(cond.hold(who, screen), "Pause")
+            r = cond.hold(who, screen)
+            self._refused(r, "Pause")
+            if self._stopped_dark(cond):
+                why = getattr(r, "sentence", "") or ("The show was stopped, "
+                                                     "so it stays dark.")
         else:
             s.clock_pause()
-        return s.clock_here()
+        return s.clock_here(), why
+
+    @staticmethod
+    def _stopped_dark(cond):
+        try:
+            return cond.snapshot().get("look") == "STOPPED_DARK"
+        except Exception:                                  # noqa: BLE001
+            return False
 
     def cont(self, who="", screen=""):
         s = self._session()
@@ -401,7 +415,9 @@ class ShowAudioPlayhead:
     def hold_press(self, who="", screen=""):
         """A Hold from any surface while Programming playback is on: the
         Programming Pause. Returns the sentence."""
-        at = self.pause(who, screen)
+        at, why = self.pause_or_why(who, screen)
+        if why:
+            return f"Programming playback was not paused: {why}"
         s = self._session()
         return (f"Programming playback paused at "
                 f"{s.tl.format(at) if at is not None else 'its frame'}: "

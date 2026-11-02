@@ -50,17 +50,18 @@ Whatever drives this engine and carries out its effects must:
    that frozen frame so receivers hold instead of timing out), then
    FADE_MUSIC_OUT. Resume: RESUME_SHOW carries on from the frozen frame,
    FADE_MUSIC_IN, and UNBLANK_LASERS only once timecode is moving again.
-   Abort (and a failed start, and a restart during a show): ZERO_FLAME_CUES
+   A Stop (and a failed start, and a restart during a show): ZERO_FLAME_CUES
    and BLANK_LASERS at once; then FADE_MUSIC_OUT, FADE_VIDEO_OUT and
    FADE_PIXELS together over their length, the whole show fading to black;
    then STOP_CONDUCTOR once the fade is done. Nothing follows: the rig stays
    dark until an operator acts or the next show starts.
-   Lasers blanked by a pause or an abort stay blanked until a RESUME_SHOW
+   Lasers blanked by a pause or a Stop stay blanked until a RESUME_SHOW
    or the next START_SHOW. The engine itself never arms or disarms
-   anything; on an operator's Abort every flame group is disarmed at once
-   as well (Jeff, 2026-09-27), and on a failed start too (Jeff,
-   2026-10-03), and that is the show conductor's job (conductor.py), not an
-   effect listed here. A show cut by a restart is not disarmed by it.
+   anything; on an operator's Stop every flame group is disarmed at once
+   as well (Jeff, 2026-09-27, for the Abort that Stop replaced), and that
+   is the engine's and the show conductor's job (remote.py, conductor.py),
+   not an effect listed here. A failed start leaves every group as it is
+   (Jeff, 2026-10-12). A show cut by a restart is not disarmed by it.
 3. Never perform anything for a refused Outcome (Outcome.refused is set).
 4. Send SHOW_CONFIRMED as soon as timecode is seen advancing after a
    START_SHOW. Until then the show counts as not yet started.
@@ -79,8 +80,9 @@ Whatever drives this engine and carries out its effects must:
    a second from the OS wall clock with a zone attached. The late rule
    counts whole seconds, so a tick has to land inside every second.
 10. Send operator events only with `who` and `screen` filled in, and send
-    Abort and End night with confirmed=True only after the operator has
-    answered the confirm question from ACTIONS.
+    Stop (STOP_SHOW) and End night with confirmed=True only after the
+    operator has answered (Stop's double tap; End night's confirm question
+    from ACTIONS).
 11. Never read flame arm state for the scheduler's sake, and never set the
     OS clock.
 """
@@ -183,8 +185,8 @@ PRESHOW_LEAD_S = 30 * 60
 # operations nothing happens at 2 AM, and
 # media shoots sometimes run at 4 or 5 AM, so 2 AM is the safe gap. It
 # replaced the 2026-10-02 default, where a night closed only when the next
-# night's preshow began (30 minutes before its first show). The Abort latch
-# is not the night's: it stays until Reset, whatever the night.
+# night's preshow began (30 minutes before its first show). A Stop's Hold
+# is not the night's: it stays until Resume, whatever the night.
 NIGHT_RESET = time(2, 0)
 
 
@@ -211,26 +213,20 @@ RESUME = "RESUME"
 SKIP_NEXT = "SKIP_NEXT"
 DELAY_NEXT = "DELAY_NEXT"
 DELAY_REST = "DELAY_REST"
-ABORT = "ABORT"
 END_NIGHT = "END_NIGHT"
-# The Stream Deck's Stop held during a scheduled show (Jeff, 2026-10-26:
-# Stop is a complete halt of everything, the show ends): the show is cut
-# short and faded to dark like an Abort, but NOTHING is latched, so no
-# Reset is needed; Run brings the rig back. The engine disarms every flame
-# group and laser itself before it sends this.
+# Stop during a scheduled show (Jeff, 2026-10-26: Stop is a complete halt
+# of everything, the show ends): the show is cut short and faded to dark,
+# NOTHING is latched, and the schedule goes on a Stop's Hold until Resume
+# (2026-10-30). The engine disarms every flame group and laser itself
+# before it sends this. There is no Abort and no Reset any more (Jeff,
+# 2026-10-30): Stop does everything Abort did, and Resume ends a Hold.
 STOP_SHOW = "STOP_SHOW"
-# Reset pressed while the schedule is on Hold (Jeff's field report,
-# 2026-10-28: "I play the show, press Hold, and Reset does nothing"). The
-# service sends the scheduler's own events with this as their detail: a
-# paused show ends (STOP_SHOW, faded to dark, nothing latched) and a Hold
-# between shows ends (RESUME); the fault flag is cleared (CLEAR_FAULT).
-# Reset never starts or continues a show itself: a delayed show still
-# waits for Start now. Only the journal's words differ.
-RESET_DETAIL = "reset"
 # A Hold that a Stop put on (Jeff, 2026-10-30): the Hold's detail starts
-# with one of these. Such a Hold is marked (Machine.stop_hold): Reset never
-# ends it (only Resume does), and it carries over the nightly reset.
-STOP_HOLD_DETAILS = ("pressed Stop", "kept the Hold of a Stop")
+# with one of these. Such a Hold is marked (Machine.stop_hold): only Resume
+# ends it, and it carries over the nightly reset. "an older version's
+# Abort" is the upgrade's: a saved Abort latch read back as a Stop's Hold.
+STOP_HOLD_DETAILS = ("pressed Stop", "kept the Hold of a Stop",
+                     "kept the Hold of an Abort")
 EDIT_MOVE = "EDIT_MOVE"
 EDIT_ADD = "EDIT_ADD"
 EDIT_REMOVE = "EDIT_REMOVE"
@@ -253,7 +249,6 @@ EVENT_ACTORS = {
     SKIP_NEXT: ("operator",),
     DELAY_NEXT: ("operator",),
     DELAY_REST: ("operator",),
-    ABORT: ("operator",),
     END_NIGHT: ("operator",),
     STOP_SHOW: ("operator",),
     EDIT_MOVE: ("operator",),
@@ -954,7 +949,7 @@ class Slot:
 # The presses that are taken whoever pressed them and wherever: see step().
 # Stop (STOP_SHOW) is a halt like them: the deck's Stop with no operator
 # chosen still stops the show.
-ALWAYS_TAKEN = frozenset((ABORT, HOLD_ON, STOP_SHOW))
+ALWAYS_TAKEN = frozenset((HOLD_ON, STOP_SHOW))
 
 
 @dataclass(frozen=True)
@@ -963,7 +958,7 @@ class Event:
     actor: str
     detail: str = ""         # what a device reported, in words
     minutes: int = 0         # Delay next / Delay the rest
-    confirmed: bool = False  # Abort and End night
+    confirmed: bool = False  # Stop and End night
     show: int = 0            # which show an edit or an end is about
     at: str = ""             # a wall clock time for an edit, "18:25"
     screen: str = ""         # operator events: which screen, from config
@@ -973,10 +968,6 @@ class Event:
     # on the operator list, so the list check is not asked of it. Every
     # other rule (state, confirm, the screen named) applies as before.
     surface: bool = False
-    # TICK, BOOT_DONE, START_NOW, HOLD_ON and RESUME: the show conductor is
-    # latched after an Abort and nobody has pressed Reset. Filled in by the
-    # service, never by an operator; always False without a conductor.
-    latched: bool = False
     # SHOW_FAILED only: the performer refused the start before it sent
     # anything to the rig (Run not pressed, auto_start off, the conductor
     # latched). Nothing started, so nothing is faded or stopped: the
@@ -1047,20 +1038,12 @@ class Machine:
     resumed_from: str = ""       # the state saved before a restart
     rule_id: str = ""            # which rule tonight was built from
     operators: tuple = DEFAULT_OPERATORS   # who may press things
-    # The rig was left dark by a show stopped early (Abort, a failed start,
+    # The rig was left dark by a show stopped early (a Stop, a failed start,
     # a restart during a show) and nothing has brought a look back since.
     # Kept in tonight's file, so a restart stays dark too (Jeff: after a
     # stopped show the rig stays dark until the operator acts). Set and
     # cleared only by _enter.
     dark: bool = False
-    # An operator's Abort was sent to the show conductor and nobody has
-    # pressed Reset since. Kept in tonight's file so a restart (which brings
-    # up a fresh conductor that remembers nothing) still misses every show
-    # and refuses Start now until Reset (Jeff: after an Abort the rig stays
-    # dark until the operator acts). Set and cleared ONLY by
-    # schedule_service, and only with a conductor attached; the engine
-    # carries it and reads Event.latched instead.
-    abort_latched: bool = False
     # An operator pressed Close for the night tonight. Kept in tonight's
     # file and across every rebuild (a save, a restart), so a saved
     # schedule never opens the night again, even when nothing was left to
@@ -1081,9 +1064,9 @@ class Machine:
     # PR #196, round 2).
     next_first: object = None
     # The schedule's Hold was put on by a Stop (Jeff, 2026-10-30): only an
-    # operator's Resume (or a show started by hand) ends it; Reset does not,
-    # and it carries over the nightly reset. Kept in tonight's file. True
-    # only while state is HOLD: _enter clears it on leaving HOLD.
+    # operator's Resume (or a show started by hand) ends it, and it carries
+    # over the nightly reset. Kept in tonight's file. True only while state
+    # is HOLD: _enter clears it on leaving HOLD.
     stop_hold: bool = False
 
     @property
@@ -1305,8 +1288,8 @@ def _operator_name(ev):
 
 
 def _pressed(ev, what):
-    """"Andy pressed Abort on the Rack screen", or, with no operator chosen,
-    "Abort pressed on the Rack screen with no operator chosen"."""
+    """"Andy pressed Stop on the Rack screen", or, with no operator chosen,
+    "Stop pressed on the Rack screen with no operator chosen"."""
     if ev.who.strip():
         return f"{ev.who.strip()} pressed {what}{_screen(ev)}"
     return f"{what} pressed{_screen(ev)} with no operator chosen"
@@ -1340,7 +1323,7 @@ def _verb(ev):
         HOLD_ON: "Hold", RESUME: "Resume", SKIP_NEXT: "Skip next",
         DELAY_NEXT: f"Delay next +{ev.minutes}",
         DELAY_REST: f"Delay the rest of the night +{ev.minutes}",
-        ABORT: "Abort show", END_NIGHT: "Close for the night",
+        END_NIGHT: "Close for the night",
         STOP_SHOW: "Stop",
         EDIT_MOVE: "move of a show", EDIT_ADD: "added show",
         EDIT_REMOVE: "removal of a show",
@@ -1555,16 +1538,9 @@ def _miss(tx, s, why):
             show=s.n, actor="scheduler")
 
 
+# A show missed while an older version's Abort latch stood said this; a
+# saved list may still carry it as a MISSED show's reason.
 LATCHED_MISSED = "MISSED (aborted, not Reset)"
-
-
-def _miss_latched(tx, s):
-    tx.set_slot(s.n, status=MISSED, reason=LATCHED_MISSED)
-    tx.note("miss", "missed", LATCHED_MISSED,
-            f"Show {s.n} at {clock(_local(tx.m, s.start))} missed: the show "
-            f"was aborted and has not been Reset, so the rig stays dark. "
-            f"Press Reset; after that the next show starts on schedule, "
-            f"and Start now works again.", show=s.n, actor="scheduler")
 
 
 def _hold_back(tx, s, extra=0):
@@ -1655,12 +1631,6 @@ def _sweep(tx, held=None):
         if tx.ev.settle:
             break
         if state in (IDLE, STANDBY) and _guard_left(tx.m, now) == 0:
-            if tx.ev.latched:
-                # Jeff: after an Abort the rig stays dark until the
-                # operator acts. Reset is that act; until it, a show that
-                # comes due does not start and is not a failed start.
-                _miss_latched(tx, s)
-                continue
             _fire(tx, s)
         break
 
@@ -1705,13 +1675,11 @@ def _boot_done(m, ev, now):
     tx.m = replace(tx.m, paused_at=None)
     _sweep(tx, held=(was == HOLD))
     # A restart never brings back a look a stopped show took away: if the
-    # rig was dark before it (an Abort, a failed start, a show cut by an
+    # rig was dark before it (a Stop, a failed start, a show cut by an
     # earlier restart, and nobody has acted since), it stays dark until an
     # operator acts or the next show starts (Jeff's rule; before 2026-10-02
     # a restart brought the intermission loop back on its own).
-    # An Abort nobody has Reset (ev.latched, from the service) is dark too,
-    # on any night: the latch outlives the night it was pressed on.
-    dark = cut or m.dark or ev.latched
+    dark = cut or m.dark
     stayed = ""
     if not tx.m.waiting():
         _enter(tx, CLOSING)
@@ -1724,11 +1692,11 @@ def _boot_done(m, ev, now):
         _enter(tx, STANDBY, after_stop=dark)
         why = "shows have already passed tonight"
     elif dark:
-        # Every show is still to come, but an Abort has not been Reset: no
+        # Every show is still to come, but the rig was left dark: no
         # preshow look and no intermission loop, the rig waits dark.
         _enter(tx, STANDBY, after_stop=True)
-        why = ("an Abort has not been Reset, so the rig waits dark rather "
-               "than showing the preshow look")
+        why = ("the rig was left dark, so it waits dark rather than "
+               "showing the preshow look")
     elif _in_preshow_lead(tx.m, now):
         _enter(tx, STANDBY)
         why = (f"within {fmt_span(PRESHOW_LEAD_S)} of the first show, so the "
@@ -1736,11 +1704,7 @@ def _boot_done(m, ev, now):
     else:
         _enter(tx, IDLE)
         why = "before the first show"
-    if ev.latched:
-        stayed = (" The rig stays dark: an Abort has not been Reset. No show "
-                  "starts and Start now is refused until an operator presses "
-                  "Reset.")
-    elif tx.m.dark and not cut:
+    if tx.m.dark and not cut:
         stayed = (" The rig stays dark, as it was before the restart: the "
                   "last show was stopped early and nobody has acted since. "
                   "The next show, or an operator, brings it back.")
@@ -1943,7 +1907,7 @@ def _closing_done(m, ev, now):
 def _start_now(m, ev, now):
     """Start now has no restriction except that it does nothing while a show
     is running or paused (refused in step). It ignores guard_s, and it works
-    straight after an Abort. It starts the DELAYED show if there is one;
+    straight after a Stop. It starts the DELAYED show if there is one;
     otherwise it inserts an EXTRA show and runs it now.
 
     Jeff, 2026-10-02: Start now runs an extra show. The next scheduled slot
@@ -1958,10 +1922,6 @@ def _start_now(m, ev, now):
     Start now inside the 2 minute guard after a show needs no cooldown:
     decided (Jeff, 2026-10-03). The extra show and the guard as built
     stand."""
-    if ev.latched:
-        return _refuse(m, ev, now, "The show was aborted and has not been "
-                                   "Reset. Press Reset first; nothing "
-                                   "starts until then.")
     tx = _Tx(m, ev, now)
     d = m.delayed()
     if d is not None and not str(ev.detail or "").startswith(
@@ -2001,15 +1961,11 @@ def _hold(m, ev, now):
         return tx.done()
     stop = str(ev.detail or "").startswith(STOP_HOLD_DETAILS)
     tx.m = replace(tx.m, held_from=m.state, stop_hold=stop)
-    # While an Abort has not been Reset, a Hold (an operator's, or an
-    # announcement's) keeps the rig dark: only Reset ends the Abort (Jeff:
-    # after an Abort the rig stays dark until the operator acts, and Reset
-    # is that act). Before 2026-10-02 it brought the intermission loop back.
-    # A Stop's Hold is dark too (cold review of #191 round 2, item 5): no
-    # look is asked for; the engine takes the idle look down with the
+    # A Stop's Hold is dark (cold review of #191 round 2, item 5): no look
+    # is asked for; the engine takes the idle look down with the
     # conductor's Stop. Resume clears the dark flag (the rig stays dark
     # until the next show starts: nothing brings the intermission back).
-    _enter(tx, HOLD, after_stop=ev.latched or stop)
+    _enter(tx, HOLD, after_stop=stop)
     if ev.detail:
         text = (f"{_operator_name(ev)} {ev.detail}. No show starts by "
                 f"itself until Resume; a show whose time passes meanwhile "
@@ -2018,9 +1974,6 @@ def _hold(m, ev, now):
         text = (f"{_pressed(ev, 'Hold')}. No show "
                 f"starts by itself until Resume; a show whose time passes "
                 f"meanwhile is delayed and waits for Start now.")
-    if ev.latched:
-        text += (" The rig stays dark: the show was aborted and has not "
-                 "been Reset.")
     tx.note(HOLD_ON, "done", "schedule on hold", text)
     return tx.done()
 
@@ -2046,31 +1999,14 @@ def _resume(m, ev, now):
         # that the first show is now inside the preshow lead: either way
         # Resume lands in the intermission, not the preshow look.
         back = STANDBY
-    if ev.latched:
-        # Still aborted and not Reset: back to waiting, dark (IDLE is the
-        # preshow look, which never stays dark).
-        back = STANDBY
-    reset = ev.detail == RESET_DETAIL
-    if reset:
-        # Reset never starts a show (Jeff's field report, 2026-10-28;
-        # review of #144, F1): a show whose time has come, even one still
-        # inside the late grace that the next tick would start, waits as a
-        # delayed show for Start now, exactly as if the Hold were still on.
-        for s in list(tx.m.pending()):
-            if lateness_s(s.start, now) < 0:
-                break
-            _hold_back(tx, s)
     tx.m = replace(tx.m, held_from="")
-    _enter(tx, back, after_stop=ev.latched)
+    _enter(tx, back)
     nxt, d = tx.m.next_slot(), tx.m.delayed()
     tx.note(RESUME, "done", "schedule resumed",
-            f"{_operator_name(ev)} pressed "
-            f"{'Reset' if reset else 'Resume'}{_screen(ev)}."
-            + (" The schedule is no longer on hold. Reset starts nothing "
-               "by itself." if reset else "")
+            f"{_operator_name(ev)} pressed Resume{_screen(ev)}."
             + (f" The delayed show {d.n} still waits for Start now."
                if d else "")
-            + (_resume_words(tx, nxt, now, reset)
+            + (_resume_words(tx, nxt, now)
                if nxt else " There are no more scheduled shows tonight."))
     return tx.done()
 
@@ -2078,26 +2014,24 @@ def _resume(m, ev, now):
 RESUME_MARGIN_S = 5
 
 
-def _resume_starts_next(tx, nxt, now, reset):
+def _resume_starts_next(tx, nxt, now):
     """What the next tick will do with `nxt` after this Resume, as far as
-    the engine can tell: "yes" (a state a show starts from, nothing
-    aborted, no guard left, not a Reset, and more than RESUME_MARGIN_S of
-    its late limit left), "close" (the same but within RESUME_MARGIN_S of
+    the engine can tell: "yes" (a state a show starts from, no guard
+    left, and more than RESUME_MARGIN_S of its late limit left), "close" (the same but within RESUME_MARGIN_S of
     the limit: it may still start, or be MISSED a second later), or "no".
     Delta reviews of PR #202: Resume at exactly 120 s said "starts now" and
     the show was MISSED a tick later."""
     m = tx.m
     late = lateness_s(nxt.start, now)
-    if (reset or tx.ev.latched or m.abort_latched or
-            m.state not in (IDLE, STANDBY) or nxt.status != PENDING or
+    if (m.state not in (IDLE, STANDBY) or nxt.status != PENDING or
             _guard_left(m, now) != 0 or not 0 <= late <= m.late_grace_s):
         return "no"
     return "yes" if late <= m.late_grace_s - RESUME_MARGIN_S else "close"
 
 
-def _resume_words(tx, nxt, now, reset):
+def _resume_words(tx, nxt, now):
     m = tx.m
-    how = _resume_starts_next(tx, nxt, now, reset)
+    how = _resume_starts_next(tx, nxt, now)
     at = clock(_local(m, nxt.start))
     if how == "yes":
         return (f" Show {nxt.n}, due at {at}, is still inside its late "
@@ -2277,60 +2211,34 @@ NOTHING_SENT_TO_RIG = (
     "Nothing was sent to the rig for it: no fade, no blank, no MadMapper "
     "or BEYOND command and no flame cue, and every flame group stays as it "
     "was.")
-ABORT_CONFIRM_DISARM = ("Every flame cue goes to zero and every flame group "
-                        "is disarmed at once.")
-
-
-def _abort(m, ev, now):
-    n = m.running
-    return _show_stopped(
-        m, ev, now, ABORTED, "ABORTED (operator)",
-        f"{_pressed(ev, 'Abort')} during show {n}. "
-        f"Flame cues zeroed and lasers blanked; music, video and pixels "
-        f"fading to black over {ABORT_FADE_S:g} s, then MadMapper stopped. "
-        f"{NOTHING_DISARMED}",
-        _abort_effects(n), abort=True)
 
 
 def _stop_show(m, ev, now):
     """Stop during a show (every Stop: a screen's double tap, an iPad, the
-    Stream Deck's Stop held): the show ends now, faded to dark as an Abort
-    is, and nothing is latched. Stop also holds (Jeff, 2026-10-30): with a
-    show still to come the schedule goes on HOLD, dark (held_from STANDBY),
-    so no later show starts by itself until Resume; Run is left alone.
-    After the last show of the night it leaves the night as an Abort does
-    (STANDBY and dark, and the next tick closes it; review of #130, 2).
-    The engine disarms the flame groups and lasers itself before this and
-    journals how that went, so this line claims only what the scheduler
-    does. Reset's end of a paused show (RESET_DETAIL) does not hold."""
+    Stream Deck's Stop held): the show ends now, faded to dark, and
+    nothing is latched. Stop also holds (Jeff, 2026-10-30): with a show
+    still to come the schedule goes on HOLD, dark (held_from STANDBY), so
+    no later show starts by itself until Resume; Run is left alone. After
+    the last show of the night it leaves the night STANDBY and dark, and
+    the next tick closes it (review of #130, 2). The engine disarms the
+    flame groups and lasers itself before this and journals how that went,
+    so this line claims only what the scheduler does. The slot's status is
+    ABORTED (a show cut short), its reason STOPPED (operator Stop)."""
     n = m.running
-    if ev.detail == RESET_DETAIL:
-        return _show_stopped(
-            m, ev, now, ABORTED, "ENDED (Reset during Hold)",
-            f"{_pressed(ev, 'Reset')} while show {n} was paused on Hold. "
-            f"Show {n} has ended: flame cues zeroed and lasers blanked; "
-            f"music, video and pixels fading to black over "
-            f"{ABORT_FADE_S:g} s, then MadMapper stopped. No flame group is "
-            f"disarmed and nothing is latched. Reset starts nothing: the "
-            f"rig stays dark until Start now or the next show's time, and "
-            f"only while Run is pressed.",
-            _abort_effects(n), abort=True)
     held = m.waiting()
     return _show_stopped(
         m, ev, now, ABORTED, "STOPPED (operator Stop)",
         f"{_pressed(ev, 'Stop')} during show {n}. Flame cues zeroed and "
         f"lasers blanked; music, video and pixels fading to black over "
-        f"{ABORT_FADE_S:g} s, then MadMapper stopped. Nothing is latched: "
-        f"no Reset is needed. "
+        f"{ABORT_FADE_S:g} s, then MadMapper stopped. Nothing is latched. "
         + (f"The schedule is on Hold: no show starts by itself until "
            f"Resume; a show whose time passes meanwhile is delayed and "
            f"waits for Start now." if held else
            f"There are no more shows tonight, so the night closes; the "
            f"Stop's Hold stands until Resume, so no show starts by itself "
            f"on a later night."),
-        # As an Abort leaves the night (never straight to closing; the
-        # latch is not set here, only an Abort's conductor call sets it,
-        # schedule_service), but on HOLD while a show is still to come.
+        # Never straight to closing, and on HOLD while a show is still to
+        # come.
         _abort_effects(n), abort=True, hold=True)
 
 
@@ -2858,7 +2766,6 @@ ALLOWED = {
     SKIP_NEXT: _LIVE,
     DELAY_NEXT: _LIVE,
     DELAY_REST: _LIVE,
-    ABORT: frozenset((SHOW, PAUSED)),
     END_NIGHT: frozenset((IDLE, STANDBY, HOLD)),
     STOP_SHOW: frozenset((SHOW, PAUSED)),
     EDIT_MOVE: _LIVE,
@@ -2873,7 +2780,7 @@ _HANDLERS = {
     CLEAR_FAULT: _clear_fault, CLOSING_DONE: _closing_done,
     START_NOW: _start_now, HOLD_ON: _hold, RESUME: _resume,
     SKIP_NEXT: _skip_next, DELAY_NEXT: lambda m, e, n: _delay(m, e, n, False),
-    DELAY_REST: lambda m, e, n: _delay(m, e, n, True), ABORT: _abort,
+    DELAY_REST: lambda m, e, n: _delay(m, e, n, True),
     END_NIGHT: _end_night, STOP_SHOW: _stop_show, EDIT_MOVE: _edit_move, EDIT_ADD: _edit_add,
     EDIT_REMOVE: _edit_remove,
 }
@@ -2889,8 +2796,8 @@ def _why_not(m, ev):
         return "The scheduler has already started."
     if st == PAUSED and k in (SHOW_ENDED, SHOW_FAILED):
         return (f"Show {m.running} is paused, so it has neither ended nor "
-                f"failed to start. Resume or Abort it first.")
-    if k in (SHOW_CONFIRMED, SHOW_ENDED, SHOW_FAILED, ABORT, STOP_SHOW):
+                f"failed to start. Resume or Stop it first.")
+    if k in (SHOW_CONFIRMED, SHOW_ENDED, SHOW_FAILED, STOP_SHOW):
         return f"No show is running; the scheduler is in {st}."
     if k == CLOSING_DONE:
         return f"The scheduler is not closing; it is in {st}."
@@ -2909,7 +2816,7 @@ def _why_not(m, ev):
     if k == END_NIGHT:
         if st in (SHOW, PAUSED):
             how = "paused" if st == PAUSED else "running"
-            return (f"Show {m.running} is {how}. Abort it first, then "
+            return (f"Show {m.running} is {how}. Stop it first, then "
                     f"Close for the night.")
         return "The night has already been closed."
     if k in (SKIP_NEXT, DELAY_NEXT, DELAY_REST, EDIT_MOVE, EDIT_ADD,
@@ -2928,11 +2835,11 @@ def step(m, ev, now):
     log line, and the machine unchanged."""
     _check_event(ev)
     now = _utc(_aware(now))
-    # Abort and Hold are never refused for who pressed them or where (the
-    # coordinator for Jeff, 2026-10-03, PR #43 fix round 1): no operator
-    # chosen, a blank screen or a name not on the list still stops the
-    # show, and the journal says so. Start now, Resume, Reset and every
-    # edit still name someone on the list and a screen.
+    # Stop and Hold are never refused for who pressed them or where (the
+    # coordinator for Jeff, 2026-10-03, PR #43 fix round 1, for the Abort
+    # that Stop replaced): no operator chosen, a blank screen or a name not
+    # on the list still stops the show, and the journal says so. Start now,
+    # Resume and every edit still name someone on the list and a screen.
     if ev.actor == "operator" and ev.kind in ALWAYS_TAKEN:
         pass
     elif ev.actor == "operator" and not (ev.who.strip() and
@@ -2955,7 +2862,7 @@ def step(m, ev, now):
                        f"from the list. Nothing was changed.")
     if m.state not in ALLOWED[ev.kind]:
         return _refuse(m, ev, now, _why_not(m, ev))
-    if ev.kind in (ABORT, END_NIGHT, STOP_SHOW) and not ev.confirmed:
+    if ev.kind in (END_NIGHT, STOP_SHOW) and not ev.confirmed:
         return _refuse(m, ev, now, f"{_verb(ev)} has to be confirmed first. "
                                    f"Nothing was changed.")
     if ev.kind == CLEAR_FAULT and not m.faults:
@@ -2965,13 +2872,19 @@ def step(m, ev, now):
 
 # ------------------------------------------------ tonight, as data --
 
-# Format 4 (2026-10-02) is format 3 plus `dark` and `abort_latched`, each
-# written only when true. A night that is neither is still written as
-# format 3, byte for byte as before, so an older ltcplay can still read it.
-# A night that IS dark or latched is written as format 4, which an older
-# ltcplay refuses ("not a saved night this version can read") and sets
-# aside, rather than reading the night and quietly dropping the dark or the
-# Abort latch: that would bring the rig back up after a restart.
+# Format 4 (2026-10-02) is format 3 plus `dark` (and, until 2026-10-30,
+# `abort_latched`), each written only when true. A night that is neither is
+# still written as format 3, byte for byte as before, so an older ltcplay
+# can still read it. A night that IS dark is written as format 4, which an
+# older ltcplay refuses ("not a saved night this version can read") and
+# sets aside, rather than reading the night and quietly dropping the dark:
+# that would bring the rig back up after a restart.
+#
+# The upgrade (Abort removed, Jeff, 2026-10-30): a list saved with
+# `abort_latched` true is still read, never refused or set aside, and the
+# Abort it carries becomes a Stop's Hold (dark, and nothing starts by
+# itself until Resume): abort_latch_in(). This version never writes
+# `abort_latched`.
 TONIGHT_FORMAT = 4
 # A list with a show on the next day (a night past midnight, PR #196):
 # an older ltcplay reads every show as on the night's own date, so it is
@@ -2988,7 +2901,15 @@ TONIGHT_KEYS = frozenset((
 # refuses the file and sets it aside rather than reading a closed night as
 # open, or a Stop's Hold as a plain one.
 TONIGHT_OPTIONAL = frozenset(("dark", "abort_latched", "closed_by_operator",
-                              "stop_hold"))
+                              "stop_hold", "stop_held"))
+# `stop_held` (simulation review B of #199, M3) is the service's own
+# record that a Stop's Hold stands, whatever the state (HOLD, CLOSING,
+# OFF): a second copy of ltcplay_stop_hold.json, so a restart tonight or
+# on the next night keeps the Hold when that file could not be written.
+# The machine never reads it (schedule_service.py does); written only
+# when true, on format 4 or later.
+# Read, never written: an older version's Abort latch (the upgrade above).
+TONIGHT_LEGACY = frozenset(("abort_latched",))
 SLOT_KEYS = frozenset((
     "n", "start", "status", "reason", "origin", "planned", "fired_at",
     "confirmed_at", "ended_at", "paused_s"))
@@ -3004,8 +2925,7 @@ def machine_to_doc(m):
     tonight is kept: the slots, their statuses and edits, when the last show
     ended, hold and faults. show_len_s, guard_s, late_grace_s and the zone
     always come from the rule file, never from here. Pure."""
-    marked = (m.dark or m.abort_latched or m.closed_by_operator or
-              m.stop_hold)
+    marked = m.dark or m.closed_by_operator or m.stop_hold
     next_day = any(t is not None and t.astimezone(m.tz).date() != m.date
                    for s in m.slots for t in (s.start, s.planned))
     doc = {
@@ -3025,8 +2945,6 @@ def machine_to_doc(m):
     }
     if m.dark:
         doc["dark"] = True
-    if m.abort_latched:
-        doc["abort_latched"] = True
     if m.closed_by_operator:
         doc["closed_by_operator"] = True
     if m.stop_hold:
@@ -3208,10 +3126,23 @@ def machine_from_doc(doc, rule, d, now, notes=None):
         base, slots=tuple(slots), running=doc["running"],
         last_end=last_end, held_from=doc["held_from"], faults=tuple(doc["faults"]),
         shows_started=doc["shows_started"], resumed_from=state,
-        rule_id=str(doc["rule_id"]), dark=doc.get("dark", False),
-        abort_latched=doc.get("abort_latched", False),
+        rule_id=str(doc["rule_id"]),
+        # An older version's Abort latch is a Stop's Hold now (the
+        # upgrade): dark, and marked as the Stop's while it is a Hold. The
+        # service keeps it standing on every later state too
+        # (abort_latch_in, its Stop's Hold file).
+        dark=doc.get("dark", False) or abort_latch_in(doc),
         closed_by_operator=doc.get("closed_by_operator", False),
-        stop_hold=doc.get("stop_hold", False) and state == HOLD)
+        stop_hold=(doc.get("stop_hold", False) or abort_latch_in(doc))
+        and state == HOLD)
+
+
+def abort_latch_in(doc):
+    """True when a saved list (a dict as read from tonight's file) carries
+    an older version's Abort latch (`abort_latched` true, format 4 or 5).
+    The upgrade reads it as a Stop's Hold (Jeff, 2026-10-30: Abort is
+    removed; every Stop holds until Resume). Never raises. Pure."""
+    return isinstance(doc, dict) and doc.get("abort_latched") is True
 
 
 UNREADABLE = "MISSED (tonight's record was unreadable)"
@@ -3276,7 +3207,6 @@ def _carried(fresh, saved, slots, running):
                    last_end=saved.last_end, held_from=saved.held_from,
                    faults=saved.faults, shows_started=saved.shows_started,
                    resumed_from=saved.resumed_from, dark=saved.dark,
-                   abort_latched=saved.abort_latched,
                    closed_by_operator=saved.closed_by_operator,
                    never_opened=saved.never_opened,
                    stop_hold=saved.stop_hold)
@@ -3614,10 +3544,6 @@ ACTIONS = (
      "event": DELAY_REST, "minutes": 5, "confirm": None},
     {"id": "delay_rest_10", "label": "Delay the rest of the night +10",
      "event": DELAY_REST, "minutes": 10, "confirm": None},
-    {"id": "abort", "label": "Abort show", "event": ABORT, "minutes": 0,
-     "confirm": ("Abort show {show}? " + ABORT_CONFIRM_DISARM +
-                 " Lasers, video, pixels and music fade to black and "
-                 "MadMapper stops.")},
     {"id": "end_night", "label": "Close for the night", "event": END_NIGHT,
      "minutes": 0,
      "confirm": ("Close for the night? Every show still to come tonight is "

@@ -34,3 +34,9 @@ windows | a marker CSV misses renders named .FSEQ | glob on Windows matches with
 # whole point of having both.
 all | the allow-list no longer checks for OSC special characters | the exact-match check right after it already excludes every string that could contain one (BRIGHTNESS_ADDR itself has none), so no input exists today where removing this specific check changes the function's answer; kept as an explicit, self-documenting rule for a future BRIGHTNESS_ADDR that might not be so simple
 all | _send()'s guard is removed, so anything can reach the socket | _Socket.send() enforces the identical allow-list one layer down and is never bypassed by this mutation, so every caller still sees the same refusal; test_beyond_lowest_level_socket_also_enforces_allow_list proves that lower layer directly
+
+# -- schedule_service.py: Resume's halting() check is made twice by design
+# (round 3 review of #199, 2): once before the press's tick, once under the
+# scheduler's lock. Removing the first alone is not observable while the
+# second refuses the same press with the same answer.
+all | scheduler: Resume lands in the middle of a Stop | the check under the lock (round 2 of cold review A of #199, 3) refuses the same Resume with the same sentence and journal line; the first check only keeps the press's tick from running during a Stop

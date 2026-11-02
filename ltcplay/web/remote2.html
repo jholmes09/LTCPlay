@@ -732,7 +732,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <dt>STOP SHOW</dt><dd>Tap twice. Rig goes dark. Holds until Resume.</dd>
     <dt>HOLD</dt><dd>Pauses the schedule. Resume carries on.</dd>
     <dt>E-STOP</dt><dd>The hardware e-stop is the emergency stop.</dd>
-    <dt>RESET</dt><dd>Clears an Abort. Then arm again.</dd>
+    <dt>RESUME</dt><dd>Carries on after a Hold or a Stop.</dd>
   </dl>
   <h3>Five common fixes</h3>
   <dl>
@@ -1081,17 +1081,16 @@ function pinItems(st){
   if(out.length > 1) out.forEach(p => { if(p.key === "pf") p.btn = "Stop Programming"; });
   return out;
 }
-// The big button: the next step, one of Reset, Resume, Run show, Start
-// now. Each press is 1.0's own press.
+// The big button: the next step, one of Resume, Run show, Start now. Each
+// press is 1.0's own press.
 function goLook(st, isStaleNow, local, waiting){
   if(!st) return {mode:"none", label:"Start now", icon:"play", tone:"green", off:true, why:"Waiting"};
   const sch = st.schedule || {};
   const fresh = !isStaleNow;
   let L;
-  if(sch.attached && sch.aborted) L = {mode:"reset", label:"Reset", icon:"reset", tone:"amber", off:!fresh, why:fresh ? "Clears the Abort" : "No contact"};
   // A Stop's Hold (Jeff, 2026-10-30): it stands until Resume, also when
   // nothing is held right now (the night closing, over, or without shows).
-  else if(sch.stop_held && !isLive(st)) L = {mode:"resume", label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "Held after Stop" : "No contact"};
+  if(sch.stop_held && !isLive(st)) L = {mode:"resume", label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "Held after Stop" : "No contact"};
   else if(isHeld(st)) L = {mode:"resume", label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "Carries on" : "No contact"};
   else if(isLive(st)) L = {mode:"live", label:"Show running", icon:"play", tone:"green", off:true, why:"Hold pauses it"};
   // A rehearsal: the scheduler starts nothing, so nothing to start here.
@@ -1117,8 +1116,6 @@ function nextStep(st, isStaleNow, local, items){
   if(isStaleNow) return {tone:"bad", icon:"x", text:"No contact. Stop, Hold, Disarm still work."};
   const sch = st.schedule || {};
   const bad = (items || []).filter(i => i.tone === "bad");
-  if(sch.attached && sch.aborted && !bad.some(i => i.key === "stop" || i.key === "dis-fail"))
-    return {tone:"bad", icon:"x", text:"Aborted. Press Reset when it is safe."};
   // A flame disarm that did not happen: Stop's own words (the e-stop).
   if(bad.some(i => i.key === "stop")) return {tone:"bad", icon:"warn", text:"Flames NOT disarmed. Use the e-stop."};
   if(bad.some(i => i.key === "dis-fail")) return {tone:"bad", icon:"warn", text:"Disarm NOT done. Use Deck or e-stop."};
@@ -1180,7 +1177,6 @@ function inactiveNow(st, isStaleNow){
 function pillLook(st, isStaleNow, items){
   if(!st || isStaleNow) return {cls:"bad", icon:"x", text:"No contact"};
   const sch = st.schedule || {};
-  if(sch.attached && sch.aborted) return {cls:"bad", icon:"x", text:"ABORTED"};
   const pins = pinItems(st);
   if(pins.length) return {cls:"bad", icon:"flame", text:pins[0].pill};
   if(st.alert_hold && st.alert_hold.held === true) return {cls:"warn", icon:"pause", text:"HELD: ALERT"};
@@ -1536,7 +1532,7 @@ function drawTransport(isSt){
   setIcon(b.querySelector("svg"), lk.icon);
   setText($("go-l"), HALT_BUSY ? "Stopping" : lk.label);
   setText($("go-why"), HALT_BUSY ? "wait" : (lk.why || ""));
-  b.disabled = HALT_BUSY || (lk.off && !lk.blocked) || (lk.mode !== "reset" && lk.mode !== "resume" && !!FLIPPED.go && Date.now() - FLIPPED.go < FLIP_LOCK_MS);
+  b.disabled = HALT_BUSY || (lk.off && !lk.blocked) || (lk.mode !== "resume" && !!FLIPPED.go && Date.now() - FLIPPED.go < FLIP_LOCK_MS);
   // Hold: never held back (1.0: controlStates hold true). Lit while a show
   // is live or the schedule runs.
   const live = isLive(ST);
@@ -1606,11 +1602,10 @@ $("b-go").addEventListener("click", async () => {
   const lk = goLook(ST, stale(), !!(ME && ME.local), START_WAITING);
   const seen = DOWN_MODE.go || $("b-go").dataset.mode;
   DOWN_MODE.go = null;
-  const d = pressDecision(seen, lk.mode, (lk.mode === "reset" || lk.mode === "resume") ? null : FLIPPED.go, Date.now(), HALT_BUSY);
+  const d = pressDecision(seen, lk.mode, lk.mode === "resume" ? null : FLIPPED.go, Date.now(), HALT_BUSY);
   if(d.act === "none"){ say("Nothing done. Look, then press again.", d.say, "warn"); return; }
   if(lk.blocked){ say("Start now would be refused.", "Start now would be refused: " + lk.blocked.replace(/\.$/, "") + ".", "warn"); return; }
   if(lk.off) return;
-  if(d.act === "reset") return press("reset");
   if(d.act === "resume") return press("resume");
   if(d.act === "run") return runShow();
   if(d.act === "start") return startNow();
@@ -1690,7 +1685,7 @@ $("b-runoff").addEventListener("click", async () => {
   return pressStop("run-off");
 });
 // A press: 1.0's press(), the answer in a few words.
-const PRESS_SAID = {"hold":"Held.", "resume":"Resumed.", "reset":"Reset. Now arm again.", "start-now":"Starting.",
+const PRESS_SAID = {"hold":"Held.", "resume":"Resumed.", "start-now":"Starting.",
   "disarm-all":"Every flame group disarmed.", "group-disarm":"Disarmed."};
 async function press(route, extra){
   let j = null;
@@ -1806,8 +1801,7 @@ async function armBeat(h, p){
     // said plainly (Jeff, 2026-10-26).
     const fl = (ST && ST.flames) || {};
     const g = (fl.groups || [])[p.group];
-    const said = holdRefusalWords(e.code, rearmLeftMs(g, LAST_OK === null ? 0 : Date.now() - LAST_OK, fl.age_ms),
-      !!(ST && ST.schedule && ST.schedule.aborted));
+    const said = holdRefusalWords(e.code, rearmLeftMs(g, LAST_OK === null ? 0 : Date.now() - LAST_OK, fl.age_ms));
     if(said) REARM_REFUSED_AT[p.group] = {at:Date.now(), text:said};
     if(!h.all){
       if(said){
@@ -1872,7 +1866,6 @@ function armShort(text){
   if(/real state is not known/.test(t)) return "Not armed: flame state unknown.";
   if(/Already armed/.test(t)) return "Already armed.";
   if(/re-arm wait/.test(t)) return "Wait, then hold again.";
-  if(/Abort is standing/.test(t)) return "Press Reset first.";
   if(/^Hold stopped: let go/.test(t)) return "Let go: not armed.";
   if(/^Hold stopped/.test(t)) return "Hold stopped. Tap Details.";
   if(/^Armed/i.test(t)) return "Armed.";
@@ -1886,23 +1879,21 @@ window.addEventListener("blur", () => armStop("the page lost focus"));
 // What a group's tile says: an icon, a word, a short line.
 const LAMP_SHORT = {"dirty edge":"DIRTY EDGE", "chatter":"CHATTER", "arm input stale":"NO SIGNAL",
   "arm input has never asserted":"NEVER ARMED", "safety program fault":"FAULT"};
-function tileLook(g, c, leftMs, aborted){
+function tileLook(g, c, leftMs){
   const r = String(g.reason || "");
   const lost = /^Show program/.test(r);
   if(c === "unknown") return {cls:"unknown", icon:"x", word:"UNKNOWN"};
   if(c === "armed") return {cls:"armed", icon:"flame", word:"ARMED"};
   if(c === "disarmed") return lost ? {cls:"held", icon:"warn", word:"SHOW LOST"} : {cls:"disarmed", icon:"shield", word:"OFF"};
   if(lost) return {cls:"held", icon:"warn", word:"SHOW LOST"};
-  if(aborted) return {cls:"held", icon:"x", word:"ABORTED"};
   if(leftMs > 0 || Number(g.dwell_s) > 0) return {cls:"held", icon:"clock", word:"WAIT " + Math.max(1, Math.ceil(Math.max(leftMs, (Number(g.dwell_s) || 0) * 1000) / 1000))};
   if(/cycle/i.test(r)) return {cls:"held", icon:"reset", word:"ARM AGAIN"};
   return {cls:"held", icon:"warn", word:LAMP_SHORT[r] || "HELD BACK"};
 }
 // The button's words: what one press (or hold) does now.
-function armLabel(mode, c, leftMs, aborted, as){
+function armLabel(mode, c, leftMs, as){
   if(mode === "disarm") return {icon:"shield", text:"Disarm", cls:"safe"};
   if(mode === "lamp") return {icon:"lock", text:"Arming off", cls:""};
-  if(aborted) return {icon:"reset", text:"Press Reset", cls:""};
   if(leftMs > 0) return {icon:"clock", text:"Wait " + (Math.ceil(leftMs / 100) / 10).toFixed(1) + " s", cls:""};
   // Signed out: Sign in; signed in without the right: says so (review of
   // #175).
@@ -2254,14 +2245,13 @@ function renderGroups(fl){
     layoutGroups();
   }
   const on = !!(ST && ST.arming && ST.arming.enabled);
-  const aborted = !!(ST && ST.schedule && ST.schedule.aborted);
   const gm = (ST && ST.morning && ST.morning.group_machines) || {};
   groups.forEach((g, i) => {
     const el = box.querySelector(`[data-lamp="${i}"]`);
     if(!el) return;
     const c = lampClass(g, fl);
     const left = rearmLeftMs(g, LAST_OK === null ? 0 : Date.now() - LAST_OK, fl.age_ms);
-    const look = tileLook(g, c, left, aborted && c !== "armed");
+    const look = tileLook(g, c, left);
     el.className = "tile " + look.cls;
     setText(el.querySelector(".tn"), g.name + (g.deck_key === false ? " (no Deck key)" : ""));
     setIcon(el.querySelector(".ts svg"), look.icon);
@@ -2275,12 +2265,12 @@ function renderGroups(fl){
     const mode = armButtonMode(g, c, on);
     if(mode === "disarm"){ setArmMode(ab, mode, c); return; }
     ab.dataset.mode = mode;
-    const lab = armLabel(mode, c, left, aborted, as);
+    const lab = armLabel(mode, c, left, as);
     ab.className = "b armb " + lab.cls;
     setIcon(ab.querySelector("svg"), lab.icon);
     setText(ab.querySelector(".act"), lab.text);
     if(!holding(i)) ab.disabled = !as.ok;
-    if(on && c !== "armed" && c !== "unknown" && left > 0 && !aborted && !holding(i)) ab.disabled = true;
+    if(on && c !== "armed" && c !== "unknown" && left > 0 && !holding(i)) ab.disabled = true;
     const ref = REARM_REFUSED_AT[i];
   });
 }
@@ -2292,7 +2282,7 @@ function renderGroups(fl){
 function renderAllButtons(isSt){
   const b = $("b-armall");
   // Lit only when 1.0 offers Arm all and its hold would not be refused at
-  // once (an Abort standing, live flame programming one group at a time).
+  // once (live flame programming one group at a time).
   const can = (HOLD && HOLD.all) || (allButtonMode(ST, isSt) === "arm" && !armAllRefusal(ST));
   if(!(HOLD && HOLD.all)) b.disabled = !can || !mayRow(ST, "arm");
   // Why it is off, in a word or two (the cell is narrow; the SHOW tab must
@@ -2634,7 +2624,7 @@ $("wx").addEventListener("click", () => {
 const QHELP = {
   next: ["Next step", [["This line", "Says what to do next."], ["A red Stop here", "Stops a live mode: cleaning, live flame or Programming flames."]]],
   transport: ["Show controls", [["Run show", "Turns tonight's show on. Shows start on time."], ["Start now", "Starts the next show early."],
-    ["Resume", "Carries on after a Hold."], ["Reset", "Clears an Abort. Then arm again."],
+    ["Resume", "Carries on after a Hold or a Stop."],
     ["Hold", "Pauses the schedule. Resume carries on."], ["Stop show", "Tap twice. Ends everything and holds the schedule. Resume when safe."]]],
   alert: ["Alerts", [["The box", "What is wrong, and what to do."], ["Details", "The full message from the show PC."],
     ["Acknowledge", "Clears the alert. Changes nothing on the rig."], ["Arrows", "The other alerts."],
