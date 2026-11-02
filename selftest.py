@@ -113097,6 +113097,355 @@ def test_ui2_programming_tab_in_a_browser():
     print("  ok")
 
 
+# ---------------------------------------------------------------------------
+# Interface 2.0's Schedule tab (docs/REMOVE_1_0_PLAN.md P3 and P4): 1.0's
+# Schedule screen (tonight's shows, a tap for notes, the Run warning) and
+# its schedule editor (the show PC only), 1.0's own code.
+# ---------------------------------------------------------------------------
+
+_UI2_TONIGHT_MARKS = ("// The Schedule tab (Jeff, 2026-10-23: tapping a show "
+                      "did nothing", "// What a lamp reads, in the Stream "
+                      "Deck")
+_UI2_SCHED_MARKS = ("// The time zone (Jeff, 2026-10-23): a dropdown",
+                    "// Start now, or Stop in its place")
+
+
+def _ui2_block(src, marks):
+    i = src.find(marks[0])
+    j = src.find(marks[1], i)
+    return src[i:j] if 0 <= i < j else ""
+
+
+def test_ui2_schedule_tab_makes_1_0_presses():
+    section("2.0's Schedule tab (P3, P4): tonight's shows with a tap for "
+            "notes and the engine's Run warning, and the schedule editor "
+            "on the show PC only, each 1.0's own code copied word for word "
+            "with 1.0's element ids, the same schedule-file route and body "
+            "(GET, and POST {doc}), the same fields and limits; no dashes; "
+            "OPERATOR.md and the plan say it")
+    one, two = _ui2_pages()
+    sched = two[two.find('<section class="pane" id="t-schedule"'):]
+    sched = sched[:sched.find("</section>")]
+    t1, s1 = _ui2_block(one, _UI2_TONIGHT_MARKS), _ui2_block(one, _UI2_SCHED_MARKS)
+    check(len(t1) > 500 and len(s1) > 2000,
+          f"1.0's two blocks are read: {len(t1)} {len(s1)}")
+    check(t1 in two, "2.0's tonight list and its tap are 1.0's code, word "
+                     "for word (slotNotes, renderSchedule, toggleSlot, the "
+                     "tap's three listeners)")
+    check(s1 in two, "2.0's schedule editor is 1.0's code, word for word "
+                     "(the zones, drawSchedule, readSchedule, loadSchedule, "
+                     "Save and Reload)")
+    for need in ('id="tonight"', 'id="tn-run-warn"', 'id="tn-next"',
+                 'id="sched-edit" hidden', 'id="se-days"', 'id="se-save"',
+                 'id="se-reload"', 'id="se-msg"', 'id="se-note"',
+                 'id="se-tz-now"', "Tap a show to see its notes."):
+        check(need in sched, f"the Schedule tab has {need}")
+    # Each field: 1.0's id, type and limits.
+    for fid in ("se-tz", "se-first", "se-last", "se-len", "se-guard",
+                "se-grace"):
+        def attrs(src):
+            m = re.search(r'<(input|select)\b[^>]*\bid="' + fid + r'"[^>]*>',
+                          src)
+            if not m:
+                return None
+            tag = m.group(0)
+            return (m.group(1),) + tuple(
+                (re.search(k + r'="([^"]*)"', tag) or [None, None])[1]
+                for k in ("type", "min", "max"))
+        check(attrs(one) is not None and attrs(one) == attrs(sched),
+              f"{fid}: 1.0's field and limits: {attrs(one)} {attrs(sched)}")
+    check("/remote1#tonight" not in two,
+          "the Open in 1.0 link for tonight's shows is gone")
+    check('<span>Show folder, network.</span>' in two,
+          "More programming no longer sends schedule rules to 1.0")
+    for p in ('getJSON("/api/remote/schedule-file", 3000)',
+              'post("/api/remote/schedule-file", {doc:readSchedule()})'):
+        check(p in one and p in two, f"1.0 and 2.0 both press {p}")
+    rt = _js_function(two, "renderTonight") or ""
+    check('$("sched-edit").hidden = !local' in rt and
+          "sch.run_warning" in rt and "renderSchedule(sch.slots" in rt,
+          "the editor is on the show PC only; the Run warning and the list "
+          "are drawn each status")
+    pane = sched[sched.find('id="tn-card"'):sched.find('<div class="cards" '
+                                                       'id="t-prog">')]
+    check("\u2013" not in pane and "\u2014" not in pane,
+          "no em or en dashes on the Schedule tab's new cards")
+    here = os.path.dirname(os.path.abspath(__file__))
+    op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
+    i = op.find("- 2.0 Schedule tab:")
+    para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
+    for need in ("and the Fire &amp; Ice settings say it performs",
+                 "Any times work:", "is overwritten, so Reload first"):
+        check(need in sched, f"the editor says, as 1.0 does: {need!r}")
+    for words in ("tap a show", "Run warning", "show PC only",
+                  "Save the schedule", "Reload from the file",
+                  "Late start allowed", "exceptions",
+                  "Unsaved schedule", "is overwritten"):
+        check(words in para, f"OPERATOR.md, 2.0 Schedule tab, says "
+                             f"{words!r}")
+    _no_dashes(para, "OPERATOR.md, 2.0 Schedule tab")
+    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
+                encoding="utf-8").read()
+    check("| P3 | DONE" in plan and "| P4 | DONE" in plan,
+          "the removal plan marks P3 and P4 done")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    a = one.find("  const nx = sch.next;\n  const nextText =")
+    b = one.find(";", one.find('"None tonight"', a)) + 1
+    js = (_js_function(two, "tonightNext") + "\nfunction next1(sch){\n" +
+          one[a:b] + "\n  return nextText; }\n" + r"""
+const out = [];
+for(const sch of [{}, {next:{show:4, start:"19:30"}}, {delayed:{show:3}}, {next:{show:5, start:"20:00"}, delayed:{show:3}}])
+  if(tonightNext(sch) !== next1(sch)) out.push([sch, tonightNext(sch), next1(sch)]);
+console.log(JSON.stringify(out));
+""")
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    check(r.returncode == 0 and r.stdout.strip() == "[]",
+          f"Next is 1.0's words: {r.stdout[-400:]!r} {r.stderr[-400:]!r}")
+    print("  ok")
+
+
+def _ui2_status_tonight():
+    st = _ui2_status_running()
+    st["schedule"].update({
+        "state": "STANDBY", "running": None,
+        "next": {"show": 5, "start": "19:50", "in_s": 1500},
+        "run_warning": "Run is off: show 5 at 19:50 will not start until "
+                       "Run is pressed.",
+        "slots": [
+            {"show": 3, "start": "19:10", "status": "DONE"},
+            {"show": 4, "start": "19:32", "planned": "19:30",
+             "status": "DONE", "reason": "Held 2 minutes."},
+            {"show": 5, "start": "19:50", "status": "PENDING"},
+            {"show": 6, "start": "20:10", "status": "PENDING",
+             "origin": "edit"}]})
+    st["show"] = {"running": False, "timecode": None}
+    st["countdown"] = None
+    st["laser_arm"]["lasers"][0]["armed"] = False
+    st["flames"]["groups"] = [dict(g, armed="disarmed")
+                              for g in st["flames"]["groups"]]
+    return st
+
+
+_UI2_SCHED_FILE = {
+    "path": "C:\\Users\\show\\AppData\\ltcplay_schedule.json",
+    "exists": True, "error": "",
+    "doc": {"timezone": "America/New_York",
+            "season": {"first_date": "2026-11-01",
+                       "last_date": "2026-12-31"},
+            "weekly": {"fri": {"first_start": "18:00", "interval_min": 30,
+                               "last_end": "21:30"}},
+            "show_len_s": 900, "guard_s": 60, "late_grace_s": 120,
+            "exceptions": {"2026-12-24": {"closed": True}}}}
+
+_UI2_SCHED_JS = r"""
+<script>
+(function(){
+const posts = [], gets = [];
+const realFetch = window.fetch;
+const tl = [];
+window.fetch = function(u, o){
+  if(/schedule-file/.test(String(u)) && !(o && o.method === "POST")) gets.push(String(u));
+  if(/\/api\/timelines/.test(String(u))) tl.push(String(u));
+  if(o && o.method === "POST") posts.push({u:String(u), b:JSON.parse(String(o.body || "{}"))});
+  if(window.__mod && /\/api\/remote\/status/.test(String(u)))
+    return realFetch.apply(this, arguments).then(r => r.json()).then(j => { window.__mod(j); return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}}); });
+  return realFetch.apply(this, arguments);
+};
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const q = id => document.getElementById(id);
+function shown(el){
+  if(!el || !el.getClientRects().length) return false;
+  for(let p = el; p; p = p.parentElement){ if(p.hidden) return false; }
+  return getComputedStyle(el).visibility !== "hidden";
+}
+function look(){
+  const ctl = [...document.querySelectorAll("#tn-card .slot, #sched-edit .b, #sched-edit select, #sched-edit input:not([type=checkbox]), #sched-edit label")].filter(shown);
+  return {slots:[...document.querySelectorAll("#tonight .slot")].map(e => e.querySelector("b").textContent + " " + e.querySelector(".t").textContent + " " + e.querySelector(".s").textContent + " | " + e.querySelector(".r").textContent),
+    next:q("tn-next").textContent, state:q("tn-state").textContent, tab:TAB, warn:shown(q("tn-run-warn")) ? q("tn-run-warn").textContent : "",
+    editor:shown(q("sched-edit")), tz:q("se-tz").value, first:q("se-first").value, last:q("se-last").value,
+    len:q("se-len").value, guard:q("se-guard").value, grace:q("se-grace").value,
+    days:[...document.querySelectorAll("#se-days [data-day]")].filter(c => c.checked).map(c => c.dataset.day),
+    sat_off:[...document.querySelectorAll('#se-days [data-d="sat"]')].every(i => i.disabled),
+    msg:q("se-msg").textContent, note:q("se-note").textContent,
+    small:ctl.filter(e => e.getBoundingClientRect().height < 55.5).map(e => e.id || e.textContent.trim().slice(0, 20)),
+    off:ctl.filter(e => e.getBoundingClientRect().right > innerWidth + 0.5).map(e => e.id || e.textContent.trim().slice(0, 20)),
+    xscroll:document.scrollingElement.scrollWidth - innerWidth};
+}
+async function go(){
+  for(let i = 0; i < 80 && !(typeof ST !== "undefined" && ST && ST.schedule); i++) await wait(100);
+  if(!/hashopen=1/.test(location.search)) document.querySelector('.tab[data-tab="schedule"]').click();
+  await wait(1500);
+  const out = {first:look(), gets:gets.length, tl:tl.length};
+  if(/keep=1/.test(location.search)){
+    // Review of #210: unsaved edits survive a return to SHOW (a new
+    // alert), the tab opened again never reloads them away, and the page
+    // says so; Reload is the one way back to the file.
+    q("se-len").value = "777"; q("se-len").dispatchEvent(new Event("input", {bubbles:true}));
+    window.__mod = j => { j.alerts = [{id:99, kind:"deck", text:"Stream Deck: not plugged in.", severity:"fault", since:0, options:["Acknowledge"], booth:"", pulse:false}]; };
+    await wait(1500);
+    out.after_alert = {tab:TAB, say:q("msg-t").textContent};
+    document.querySelector('.tab[data-tab="schedule"]').click(); await wait(800);
+    out.back = {len:q("se-len").value, gets:gets.length};
+    q("se-reload").click(); await wait(600);
+    out.reloaded = {len:q("se-len").value, gets:gets.length};
+    // Typing counts as a touch: a show due within 2 minutes, a minute and
+    // more of typing, still on Schedule; then a minute untouched: SHOW.
+    window.__mod = j => { j.alerts = [{id:99, kind:"deck", text:"Stream Deck: not plugged in.", severity:"fault", since:0, options:["Acknowledge"], booth:"", pulse:false}]; j.schedule.next = {show:5, start:"19:50", in_s:90}; };
+    for(let i = 0; i < 8; i++){ await wait(10000); q("se-guard").dispatchEvent(new KeyboardEvent("keydown", {key:"5", bubbles:true})); }
+    out.typing_tab = TAB;
+    await wait(70000);
+    out.idle_tab = TAB;
+  }
+  if(/presses=1/.test(location.search)){
+    const slot = () => document.querySelectorAll("#tonight .slot")[2];
+    const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:1, clientX:10, clientY:10};
+    slot().dispatchEvent(new PointerEvent("pointerdown", o)); slot().dispatchEvent(new PointerEvent("pointerup", o)); await wait(400);
+    out.open = look().slots[2];
+    slot().dispatchEvent(new PointerEvent("pointerdown", o)); slot().dispatchEvent(new PointerEvent("pointerup", o)); await wait(400);
+    out.closed = look().slots[2];
+    posts.length = 0;
+    q("se-save").click(); await wait(500);
+    out.save1 = posts.map(p => [p.u, p.b]); out.msg1 = q("se-msg").textContent;
+    const sat = document.querySelector('#se-days [data-day="sat"]');
+    sat.checked = true; sat.dispatchEvent(new Event("change")); await wait(100);
+    const f = k => document.querySelector('#se-days [data-d="sat"][data-k="' + k + '"]');
+    f("first_start").value = "17:30"; f("interval_min").value = "20"; f("last_end").value = "22:10";
+    q("se-grace").value = "90";
+    posts.length = 0; q("se-save").click(); await wait(500);
+    out.save2 = posts.map(p => [p.u, p.b]);
+    const g0 = gets.length; q("se-reload").click(); await wait(500);
+    out.reload = gets.length - g0; out.after_reload = look();
+    ME.local = false; await wait(800); out.ipad = look(); ME.local = true;
+  }
+  const pre = document.createElement("pre"); pre.id = "rack-measure";
+  pre.textContent = JSON.stringify(out);
+  document.body.appendChild(pre);
+}
+go();
+})();
+</script>
+"""
+
+
+def test_ui2_schedule_tab_in_a_browser():
+    section("2.0's Schedule tab drawn and pressed (P3, P4): tonight's shows "
+            "with 1.0's notes, a tap opens and closes them, the Run warning "
+            "and Next; on the show PC the editor is read from schedule-file "
+            "(also when the address opened the tab), filled, Save posts "
+            "1.0's {doc} with the exceptions kept, a night switched on and "
+            "its times, Reload reads again; an iPad gets no editor; 56 px "
+            "targets, nothing off the side")
+    one, two = _ui2_pages()
+    lo = one[one.find('<script id="remote-logic">') +
+             len('<script id="remote-logic">'):]
+    lo = lo[:lo.find("</script>")]
+    page = two.replace('<script src="/remote-logic.js"></script>',
+                       "<script>" + lo + "</script>", 1)
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  ok")
+        return
+    routes = {"/api/brand": {"show": "x"},
+              "/api/remote/schedule-file": _UI2_SCHED_FILE,
+              "/api/timelines": {"timelines": []}}
+    answers = {"/api/remote/schedule-file": {
+        "ok": True, "text": "Saved. Tonight's list was rebuilt."}}
+    for frag, sizes in (("?tour=0&presses=1", ((1366, 768),)),
+                        ("?tour=0&keep=1", ((1366, 768),)),
+                        ("?tour=0&hashopen=1#schedule",
+                         ((1024, 768), (390, 844)))):
+        got = _rack_screen_in_chromium(chrome, page, _ui2_status_tonight(),
+                                       sizes, measure_js=_UI2_SCHED_JS,
+                                       frag=frag, routes=routes,
+                                       posts=answers, budget_ms=200000)
+        for (w, h), r in got.items():
+            where = f"2.0 Schedule tab, {w}x{h} {frag}"
+            if not check(isinstance(r, dict) and "first" in r,
+                         f"{where}: drawn and measured: {r!r}"[:900]):
+                continue
+            a = r["first"]
+            check(a["slots"] == [
+                    "Show 3 19:10 DONE | ",
+                    "Show 4 19:32 DONE | Held 2 minutes. Planned for 19:30, "
+                    "moved to 19:32.",
+                    "Show 5 19:50 PENDING | ",
+                    "Show 6 20:10 PENDING | Added for tonight only."] and
+                  a["next"] == "Next: Show 5 at 19:50" and
+                  a["warn"].startswith("Run is off: show 5"),
+                  f"{where}: tonight's shows with 1.0's notes, Next and "
+                  f"the Run warning: {a}")
+            check(a["editor"] and r["gets"] >= 1 and
+                  a["tz"] == "America/New_York" and
+                  a["first"] == "2026-11-01" and a["last"] == "2026-12-31"
+                  and a["len"] == "900" and a["guard"] == "60" and
+                  a["grace"] == "120" and a["days"] == ["fri"] and
+                  a["sat_off"] and a["msg"].startswith("From C:") and
+                  a["note"].startswith("1 date exception"),
+                  f"{where}: the editor read and filled from "
+                  f"schedule-file: {a}")
+            check(not a["small"] and not a["off"] and a["xscroll"] <= 0,
+                  f"{where}: 56 px targets, nothing off the side: {a}")
+            check(a["state"] == "STANDBY",
+                  f"{where}: 1.0's state line on the tonight card: "
+                  f"{a['state']!r}")
+            if "keep=1" in frag:
+                check(r["after_alert"] == {
+                        "tab": "show", "say": "Unsaved schedule edits kept."},
+                      f"{where}: a new alert sends the page to SHOW and says "
+                      f"the unsaved edits are kept: {r['after_alert']}")
+                check(r["back"] == {"len": "777", "gets": r["gets"]},
+                      f"{where}: Schedule opened again: the edit is still "
+                      f"there, the file is not read again: {r['back']}")
+                check(r["reloaded"] == {"len": "900",
+                                        "gets": r["gets"] + 1},
+                      f"{where}: Reload reads the file and drops the edit: "
+                      f"{r['reloaded']}")
+                check(r["typing_tab"] == "schedule" and
+                      r["idle_tab"] == "show",
+                      f"{where}: typing counts as a touch near a show; a "
+                      f"minute untouched goes back to SHOW: "
+                      f"{r['typing_tab']} {r['idle_tab']}")
+                continue
+            if "presses=1" not in frag:
+                continue
+            check(r["gets"] == 1 and r["tl"] == 1,
+                  f"{where}: one tap on Schedule reads the schedule file "
+                  f"and the show files once each: {r['gets']} {r['tl']}")
+            check(r["open"].endswith("| No notes for this show.") and
+                  r["closed"].endswith("| "),
+                  f"{where}: a tap opens a show's notes and closes them: "
+                  f"{r['open']!r} {r['closed']!r}")
+            doc = dict(_UI2_SCHED_FILE["doc"])
+            check(r["save1"] == [["/api/remote/schedule-file",
+                                  {"doc": doc}]] and
+                  r["msg1"] == "Saved. Tonight's list was rebuilt.",
+                  f"{where}: Save posts 1.0's {{doc}}, the exceptions kept, "
+                  f"and says the engine's answer: {r['save1']} "
+                  f"{r['msg1']!r}")
+            d2 = dict(doc, late_grace_s=90, weekly=dict(doc["weekly"], sat={
+                "first_start": "17:30", "interval_min": 20,
+                "last_end": "22:10"}))
+            got2 = r["save2"][0][1]["doc"] if r["save2"] else {}
+            check(got2 == d2,
+                  f"{where}: a night switched on and the late start sent: "
+                  f"{got2}")
+            check(r["reload"] == 1 and r["after_reload"]["days"] == ["fri"],
+                  f"{where}: Reload reads the file again: {r['reload']} "
+                  f"{r['after_reload']['days']}")
+            check(not r["ipad"]["editor"] and len(r["ipad"]["slots"]) == 4,
+                  f"{where}: an iPad gets tonight's shows, no editor: "
+                  f"{r['ipad']}")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
@@ -113986,6 +114335,8 @@ if __name__ == "__main__":
         test_start_at_cue_docs_in_plain_words,
         test_ui2_programming_tab_makes_1_0_presses,
         test_ui2_programming_tab_in_a_browser,
+        test_ui2_schedule_tab_makes_1_0_presses,
+        test_ui2_schedule_tab_in_a_browser,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):

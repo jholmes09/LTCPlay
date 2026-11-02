@@ -2636,6 +2636,30 @@ with the same holds, confirms and refusals.
   flames (flames only; the lasers' tile has its own Disarm lasers); the
   announcements and the wind along the bottom. Tap "Announce" for what
   the announcements do. Run show is the 1.0 Run in Show mode, on the show PC only.
+- 2.0 Schedule tab: 1.0's Schedule screen and its schedule editor, the
+  same code. Tonight's shows, two columns: tap a show to see its notes
+  (why it moved, how it was added, a late warning), tap again to close
+  them. "Next:" says the next show, and the engine's Run warning shows in
+  amber when Run is off with a show to come. On the show PC only, the
+  card "Schedule: the show times": the time zone (with the show's local
+  time now), the season's first and last date, the show nights (tick a
+  night, then its first show, minutes apart and when the last show ends),
+  the show length, the gap before a show and Late start allowed (seconds,
+  120 unless set, at most 300). Save the schedule writes the schedule
+  file and loads it at once (tonight's list is rebuilt; nothing is
+  started); the engine checks every rule and says what it refused or
+  anything to know. Reload from the file reads it again (changes not saved
+  are dropped). Date exceptions in the file are kept as they are; the card
+  says how many. Edits not yet saved stay in the form when the screen
+  goes back to SHOW by itself (a new alert, or a minute untouched near a
+  show; typing counts as a touch), and the footer says "Unsaved schedule
+  edits kept"; opening Schedule again never reads the file over them. A
+  save writes the whole schedule: a save from another window or iPad
+  since this one read the file is overwritten, so press Reload from the
+  file first if someone else may have changed it (1.0 is the same). The
+  card's first line is 1.0's state line (STANDBY, On hold, Held after
+  Stop, Checking, Held for an alert). iPads and laptops see tonight's
+  shows only.
 - 2.0 Programming (Schedule tab): 1.0's Programming screen, the same
   presses, on the Schedule tab (there is no room in the header for a tab
   of its own; `/remote2#prog` opens it). On the show PC, the Show file
