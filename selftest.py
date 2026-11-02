@@ -111413,8 +111413,7 @@ def test_start_at_cue_same_frame_valve_is_said():
     finally:
         shutil.rmtree(R.work, ignore_errors=True)
     here = os.path.dirname(os.path.abspath(__file__))
-    one = open(os.path.join(here, "ltcplay", "web", "remote.html"),
-               encoding="utf-8").read()
+    one = remote1_text()
     check("if(tl && tl.shots && tl.shots.length) said.push(tl.shots.join("
           "\" \"));" in one, "the page's Fireball line shows the counts")
     print("  ok")
