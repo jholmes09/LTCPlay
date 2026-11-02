@@ -559,7 +559,6 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <button class="tab on" data-tab="show" role="tab"><svg class="i"><use href="#i-play"/></svg>Show</button>
     <button class="tab" data-tab="day" role="tab"><svg class="i"><use href="#i-sun"/></svg>Day</button>
     <button class="tab" data-tab="schedule" role="tab"><svg class="i"><use href="#i-list"/></svg>Schedule</button>
-    <button class="tab" data-tab="prog" role="tab"><svg class="i"><use href="#i-reset"/></svg>Programming</button>
     <button class="tab" data-tab="settings" role="tab" hidden><svg class="i"><use href="#i-gear"/></svg>Settings</button>
   </nav>
   <div class="hright">
@@ -658,6 +657,55 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   <section class="pane" id="t-schedule" hidden>
     <div class="cards">
       <div class="card"><div class="t"><b>Tonight's shows</b><span>Times and notes.</span></div><a class="b blue" href="/remote1#tonight"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
+      <!-- PROGRAMMING (docs/REMOVE_1_0_PLAN.md P1 and P2): 1.0's
+           Programming screen, here on the Schedule tab (the header has no
+           room for a fifth tab; #prog opens it): its Show file card (Show
+           or Programming, the show file, Run; the show machine only) and
+           its Programming session card (Play from, Back and Ahead, Pause
+           and Continue, the A/B loop, Follow timecode again). Every press
+           is 1.0's own: the same route, body, confirm and refusal
+           (selftest.py checks them against 1.0); the engine decides the
+           rest (Remote.programming, the flame cues'
+           programming_move_refusal). -->
+      <div class="cards" id="t-prog">
+        <div class="card col" id="p-run-card" hidden>
+          <div class="t"><b>Show file, on this machine</b><span>Nothing reaches the rig until Run.</span></div>
+          <div class="seg" id="p-mode" role="radiogroup" aria-label="Mode Run starts"><button type="button" class="b" role="radio" data-mode="show">Show</button><button type="button" class="b" role="radio" data-mode="programming">Programming</button></div>
+          <div class="pline" id="p-mode-what"></div>
+          <div class="pline warn" id="p-rate" hidden></div>
+          <div class="pbar"><select class="f" id="p-file" aria-label="Show file (nothing reaches the rig until Run)" title="Nothing reaches the rig until Run"></select>
+            <button class="b green" id="p-run" data-mode="run"><svg class="i"><use href="#i-power"/></svg><span class="lbl"><span id="p-run-l">Run</span><small id="p-run-s"></small></span></button></div>
+        </div>
+        <div class="card col" id="p-tr">
+          <div class="t"><b>Programming session</b><span id="p-state"></span></div>
+          <div class="pline warn" id="p-why" hidden></div>
+          <div class="ptc" id="p-tc">--:--:--:--</div>
+          <div class="pbar"><input class="f" id="p-at" placeholder="00:01:30:00" inputmode="text" autocomplete="off" aria-label="Play from: a timecode or a cue name">
+            <button class="b green" id="p-play" data-tr><svg class="i"><use href="#i-play"/></svg>Play from</button></div>
+          <div class="pgrid">
+            <button class="b" data-tr data-jump="-10"><svg class="i"><use href="#i-left"/></svg>Back 10 s</button>
+            <button class="b" data-tr data-jump="-5"><svg class="i"><use href="#i-left"/></svg>Back 5 s</button>
+            <button class="b" data-tr data-jump="5"><svg class="i"><use href="#i-right"/></svg>Ahead 5 s</button>
+            <button class="b" data-tr data-jump="10"><svg class="i"><use href="#i-right"/></svg>Ahead 10 s</button>
+          </div>
+          <div class="pgrid">
+            <button data-safe class="b amber" id="p-pause" data-tr><svg class="i"><use href="#i-pause"/></svg>Pause</button>
+            <button class="b green" id="p-cont" data-tr><svg class="i"><use href="#i-play"/></svg>Continue</button>
+          </div>
+          <div class="pgrid">
+            <button class="b" id="p-a" data-tr><svg class="i"><use href="#i-check"/></svg>Set A</button>
+            <button class="b" id="p-b" data-tr><svg class="i"><use href="#i-check"/></svg>Set B</button>
+            <button class="b" id="p-loop" data-tr><svg class="i"><use href="#i-reset"/></svg><span id="p-loop-l">Loop on</span></button>
+            <button class="b" id="p-follow" data-tr><svg class="i"><use href="#i-clock"/></svg><span id="p-follow-l">Follow timecode again</span></button>
+          </div>
+          <!-- The show's flame cues follow Programming playback (no switch:
+               Jeff, 2026-10-29): 1.0's line, and a flame cue fault in full. -->
+          <div class="pline" id="p-pf-line" hidden></div>
+          <div class="pline bad" id="p-pf-warn" role="alert" hidden></div>
+          <div class="pline" id="p-msg" role="status"></div>
+        </div>
+        <div class="card"><div class="t"><b>More programming</b><span>Schedule rules, show folder, network.</span></div><a class="b blue" href="/remote1#programming"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
+      </div>
       <!-- The fireball timeline (fireball_timeline.py, Jeff 2026-10-30):
            per show file, a start timecode and a duration for each stage.
            Editing is the Settings row (admins), by who never by when: a
@@ -689,55 +737,6 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <button class="b" id="fbt-drop">Discard my changes</button>
         </div>
       </div>
-    </div>
-  </section>
-  <!-- PROGRAMMING (docs/REMOVE_1_0_PLAN.md P1 and P2): 1.0's Programming
-       screen, its Show file card (Show or Programming, the show file,
-       Run; the show machine only) and its Programming session card (Play
-       from, Back and Ahead, Pause and Continue, the A/B loop, Follow
-       timecode again). Every press is 1.0's own: the same route, body,
-       confirm and refusal (selftest.py checks them against 1.0); the
-       engine decides the rest (Remote.programming, the flame cues'
-       programming_move_refusal). -->
-  <section class="pane" id="t-prog" hidden>
-    <div class="cards">
-      <div class="card col" id="p-run-card" hidden>
-        <div class="t"><b>Show file, on this machine</b><span>Nothing reaches the rig until Run.</span></div>
-        <div class="seg" id="p-mode" role="radiogroup" aria-label="Mode Run starts"><button type="button" class="b" role="radio" data-mode="show">Show</button><button type="button" class="b" role="radio" data-mode="programming">Programming</button></div>
-        <div class="pline" id="p-mode-what"></div>
-        <div class="pline warn" id="p-rate" hidden></div>
-        <div class="pbar"><select class="f" id="p-file" aria-label="Show file (nothing reaches the rig until Run)" title="Nothing reaches the rig until Run"></select>
-          <button class="b green" id="p-run" data-mode="run"><svg class="i"><use href="#i-power"/></svg><span class="lbl"><span id="p-run-l">Run</span><small id="p-run-s"></small></span></button></div>
-      </div>
-      <div class="card col" id="p-tr">
-        <div class="t"><b>Programming session</b><span id="p-state"></span></div>
-        <div class="pline warn" id="p-why" hidden></div>
-        <div class="ptc" id="p-tc">--:--:--:--</div>
-        <div class="pbar"><input class="f" id="p-at" placeholder="00:01:30:00" inputmode="text" autocomplete="off" aria-label="Play from: a timecode or a cue name">
-          <button class="b green" id="p-play" data-tr><svg class="i"><use href="#i-play"/></svg>Play from</button></div>
-        <div class="pgrid">
-          <button class="b" data-tr data-jump="-10"><svg class="i"><use href="#i-left"/></svg>Back 10 s</button>
-          <button class="b" data-tr data-jump="-5"><svg class="i"><use href="#i-left"/></svg>Back 5 s</button>
-          <button class="b" data-tr data-jump="5"><svg class="i"><use href="#i-right"/></svg>Ahead 5 s</button>
-          <button class="b" data-tr data-jump="10"><svg class="i"><use href="#i-right"/></svg>Ahead 10 s</button>
-        </div>
-        <div class="pgrid">
-          <button data-safe class="b amber" id="p-pause" data-tr><svg class="i"><use href="#i-pause"/></svg>Pause</button>
-          <button class="b green" id="p-cont" data-tr><svg class="i"><use href="#i-play"/></svg>Continue</button>
-        </div>
-        <div class="pgrid">
-          <button class="b" id="p-a" data-tr><svg class="i"><use href="#i-check"/></svg>Set A</button>
-          <button class="b" id="p-b" data-tr><svg class="i"><use href="#i-check"/></svg>Set B</button>
-          <button class="b" id="p-loop" data-tr><svg class="i"><use href="#i-reset"/></svg><span id="p-loop-l">Loop on</span></button>
-          <button class="b" id="p-follow" data-tr><svg class="i"><use href="#i-clock"/></svg><span id="p-follow-l">Follow timecode again</span></button>
-        </div>
-        <!-- The show's flame cues follow Programming playback (no switch:
-             Jeff, 2026-10-29): 1.0's line, and a flame cue fault in full. -->
-        <div class="pline" id="p-pf-line" hidden></div>
-        <div class="pline bad" id="p-pf-warn" role="alert" hidden></div>
-        <div class="pline" id="p-msg" role="status"></div>
-      </div>
-      <div class="card"><div class="t"><b>More programming</b><span>Schedule rules, show folder, network.</span></div><a class="b blue" href="/remote1#programming"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
     </div>
   </section>
   <section class="pane" id="t-settings" hidden>
@@ -1032,9 +1031,12 @@ async function confirmBox(q, detail, yes, cls, flip, safe){
 }
 
 // ---- tabs ----
-const TABS = ["show", "day", "schedule", "prog", "settings"];
+const TABS = ["show", "day", "schedule", "settings"];
 let TAB = "show", LAST_TOUCH = Date.now();
 function showTab(t){
+  // #prog: 1.0's Programming screen, on the Schedule tab.
+  const prog = t === "prog";
+  if(prog) t = "schedule";
   if(!TABS.includes(t)) t = "show";
   TAB = t;
   document.body.dataset.tab = t;
@@ -1042,8 +1044,8 @@ function showTab(t){
   TABS.forEach(k => { $("t-" + k).hidden = k !== t; });
   document.querySelectorAll(".tab").forEach(b => { b.classList.toggle("on", b.dataset.tab === t); b.setAttribute("aria-selected", b.dataset.tab === t ? "true" : "false"); });
   if(t === "settings"){ loadUiDefault(); loadPlayFrom(); }
-  if(t === "schedule") fbtOpen();
-  if(t === "prog"){ progFiles(); try{ drawProg(stale()); }catch(e){} }
+  if(t === "schedule"){ fbtOpen(); progFiles(); try{ drawProg(stale()); }catch(e){} }
+  if(prog) try{ $("t-prog").scrollIntoView(); }catch(e){}
   if(t === "show") layoutGroups();
   $("mini").hidden = t === "show";
 }
@@ -1828,7 +1830,7 @@ $("p-file").addEventListener("change", () => {
   post("/api/remote/show-select", {file: $("p-file").value}).catch(e => { say(short8(e.message, "Not chosen. Tap Details."), e.message, "bad"); });
 });
 document.querySelectorAll("#p-mode [data-mode]").forEach(b => b.addEventListener("click", () => { RUN_MODE = b.dataset.mode; drawProg(stale()); }));
-// What the Programming tab shows, every 250 ms while it is open.
+// What the Programming cards show, every 250 ms while Schedule is open.
 function progFlipped(){
   const t = Math.max(FLIPPED.go || 0, FLIPPED.prun || 0);
   return !!t && Date.now() - t < FLIP_LOCK_MS;
@@ -1857,7 +1859,7 @@ function progFlames(st){
   return {on, line, warn};
 }
 function drawProg(isSt){
-  if(TAB !== "prog") return;
+  if(TAB !== "schedule") return;
   const s = ST || {}, tr = s.transport || {}, show = s.show || {};
   const local = !!(ME && ME.local);
   if($("p-run-card").hidden !== !local) $("p-run-card").hidden = !local;

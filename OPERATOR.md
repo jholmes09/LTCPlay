@@ -2545,7 +2545,8 @@ only as a one-line note.
 ## Interface 2.0 (being tried, 1.0 stays)
 
 The page above is interface 1.0. Interface 2.0 is a new look on the same
-program: its SHOW, Day and Programming tabs do what 1.0 does, and what 2.0
+program: its SHOW and Day tabs and its Programming cards (on the Schedule
+tab) do what 1.0 does, and what 2.0
 does not have yet opens the 1.0 page ("Open in 1.0"). Nothing else
 changes: every 2.0 button sends exactly what the same 1.0 button sends,
 with the same holds, confirms and refusals.
@@ -2610,8 +2611,10 @@ with the same holds, confirms and refusals.
   flames (flames only; the lasers' tile has its own Disarm lasers); the
   announcements and the wind along the bottom. Tap "Announce" for what
   the announcements do. Run show is the 1.0 Run in Show mode, on the show PC only.
-- 2.0 Programming tab: 1.0's Programming screen, the same presses. On the
-  show PC, the Show file card: Show or Programming (which mode Run
+- 2.0 Programming (Schedule tab): 1.0's Programming screen, the same
+  presses, on the Schedule tab (there is no room in the header for a tab
+  of its own; `/remote2#prog` opens it). On the show PC, the Show file
+  card: Show or Programming (which mode Run
   starts), the show file, and Run. Run asks first ("Press Run?" in Show,
   "Run in Programming?" in Programming); Programming is a rehearsal (Play
   from, jump and loop work, the scheduler starts no show). Programming is

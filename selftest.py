@@ -111804,12 +111804,12 @@ def test_start_at_cue_docs_in_plain_words():
 
 
 # ---------------------------------------------------------------------------
-# Interface 2.0's Programming tab (docs/REMOVE_1_0_PLAN.md P1 and P2): 1.0's
+# Interface 2.0's Programming cards (docs/REMOVE_1_0_PLAN.md P1 and P2): 1.0's
 # Show file card and Programming session card, the same presses.
 # ---------------------------------------------------------------------------
 
 def test_ui2_programming_tab_makes_1_0_presses():
-    section("2.0's Programming tab (P1, P2): 1.0's Show file card (Show or "
+    section("2.0's Programming cards (P1, P2, on the Schedule tab): 1.0's Show file card (Show or "
             "Programming, the show file, Run, Stop and Run off in its "
             "place) and its Programming session card (Play from, Back and "
             "Ahead, Pause, Continue, Set A and B, Loop, Follow timecode "
@@ -111817,13 +111817,15 @@ def test_ui2_programming_tab_makes_1_0_presses():
             "copied word for word, and the session line and the flame cue "
             "lines 1.0's; no dashes")
     one, two = _ui2_pages()
-    pane = two[two.find('<section class="pane" id="t-prog"'):]
-    pane = pane[:pane.find("</section>")]
+    sched = two[two.find('<section class="pane" id="t-schedule"'):]
+    sched = sched[:sched.find("</section>")]
+    pane = sched[sched.find('<div class="cards" id="t-prog">'):]
     sets = two[two.find('<section class="pane" id="t-settings"'):]
     sets = sets[:sets.find("</section>")]
-    check('<button class="tab" data-tab="prog" role="tab">' in two and
-          'const TABS = ["show", "day", "schedule", "prog", "settings"];'
-          in two, "2.0 has a Programming tab")
+    check('<div class="cards" id="t-prog">' in sched and
+          'const prog = t === "prog";\n  if(prog) t = "schedule";' in two,
+          "2.0's Programming cards are on the Schedule tab, and #prog "
+          "opens them (the header has no room for a fifth tab)")
     for need in ('id="p-run-card" hidden', 'id="p-mode"',
                  'data-mode="show"', 'data-mode="programming"',
                  'id="p-file"', 'id="p-run" data-mode="run"', 'id="p-at"',
@@ -111833,16 +111835,16 @@ def test_ui2_programming_tab_makes_1_0_presses():
                  'id="p-b" data-tr', 'id="p-loop" data-tr',
                  'id="p-follow" data-tr', 'id="p-pf-line" hidden',
                  'id="p-pf-warn" role="alert" hidden'):
-        check(need in pane, f"the Programming tab has {need}")
+        check(need in pane, f"the Programming cards have {need}")
     check(pane.count(" data-tr") == 11,
           f"11 session controls follow 1.0's transport rule: "
           f"{pane.count(' data-tr')}")
     check("/remote1#programming" in pane and
           "/remote1#programming" not in sets,
-          "the 1.0 link for the rest of Programming moved to the tab; the "
-          "Settings card is gone")
+          "the 1.0 link for the rest of Programming moved to the cards; "
+          "the Settings card is gone")
     check("–" not in pane and "—" not in pane,
-          "no em or en dashes on the Programming tab")
+          "no em or en dashes on the Programming cards")
     # 1.0's mode words and rules, copied word for word.
     for n in ("runModeNow", "runModeView", "rateNote"):
         f1, f2 = _js_function(one, n), _js_function(two, n)
@@ -111906,15 +111908,15 @@ def test_ui2_programming_tab_makes_1_0_presses():
           "lock; Run follows 1.0's runLook")
     here = os.path.dirname(os.path.abspath(__file__))
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
-    i = op.find("- 2.0 Programming tab:")
+    i = op.find("- 2.0 Programming (Schedule tab):")
     para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
     for words in ("Run asks first", "refused while a scheduled show is live",
                   "Stop (tap twice)", "Run off", "Play from", "Set A",
                   "Follow timecode again", "flame cue fault", "Show row",
                   "More programming"):
-        check(words in para, f"OPERATOR.md, 2.0 Programming tab, says "
+        check(words in para, f"OPERATOR.md, 2.0 Programming, says "
                              f"{words!r}")
-    _no_dashes(para, "OPERATOR.md, 2.0 Programming tab")
+    _no_dashes(para, "OPERATOR.md, 2.0 Programming")
     plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
                 encoding="utf-8").read()
     check("| P1 | DONE" in plan and "| P2 | DONE" in plan,
@@ -112032,15 +112034,16 @@ function look(){
     small:small, off:off, header_overlap:hover, xscroll:document.scrollingElement.scrollWidth - innerWidth};
 }
 // A new alert brings the screen back to SHOW (a flame cue fault is one):
-// the Programming tab is opened again after each change.
-async function settle(ms){ await wait(ms || 900); document.querySelector('.tab[data-tab="prog"]').click(); await wait(300); }
+// the Schedule tab (the Programming cards) is opened again after each
+// change.
+async function settle(ms){ await wait(ms || 900); document.querySelector('.tab[data-tab="schedule"]').click(); await wait(300); }
 async function yes(){ const b = document.querySelector('#sh-row [data-i="1"]'); if(b) b.click(); await wait(400); }
 async function no(){ const b = document.querySelector('#sh-row [data-i="0"]'); if(b) b.click(); await wait(300); }
 async function go(){
   for(let i = 0; i < 80 && !(typeof ST !== "undefined" && ST && ST.transport); i++) await wait(100);
   // hashopen=1: the address ended #prog, so the tab opened before this
   // screen knew it was the show PC; nothing is clicked.
-  if(!/hashopen=1/.test(location.search)) document.querySelector('.tab[data-tab="prog"]').click();
+  if(!/hashopen=1/.test(location.search)) document.querySelector('.tab[data-tab="schedule"]').click();
   await wait(1500);
   const out = {first:look()};
   if(/presses=1/.test(location.search)){
@@ -112124,7 +112127,7 @@ go();
 
 
 def test_ui2_programming_tab_in_a_browser():
-    section("2.0's Programming tab drawn and pressed (P1, P2): each session "
+    section("2.0's Programming cards drawn and pressed (P1, P2, on the Schedule tab): each session "
             "control posts 1.0's body, its answer said in the card; Loop "
             "says Loop off once on; a flame cue fault is shown in full; "
             "signed out or with no contact nothing in the session is "
@@ -112165,7 +112168,7 @@ def test_ui2_programming_tab_in_a_browser():
                                        routes=routes, posts=answers,
                                        budget_ms=60000)
         for (w, h), r in got.items():
-            where = f"2.0 Programming tab, {w}x{h} {frag}"
+            where = f"2.0 Programming cards, {w}x{h} {frag}"
             if not check(isinstance(r, dict) and "first" in r,
                          f"{where}: drawn and measured: {r!r}"[:900]):
                 continue
