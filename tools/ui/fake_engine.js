@@ -95,7 +95,7 @@ const SCENARIOS = {
     s.flames.groups.forEach(g => g.armed = "armed");
     s.laser_arm.lasers.forEach(l => l.armed = true); s.subsystems[3].word = "armed"; },
   held: s => { SCENARIOS.running(s); Object.assign(s.schedule, {state: "PAUSED", held: true}); s.countdown.running = false; },
-  aborted: s => { SCENARIOS.running(s); Object.assign(s.schedule, {state: "STANDBY", running: null, aborted: true});
+  stop_held: s => { SCENARIOS.running(s); Object.assign(s.schedule, {state: "HOLD", running: null, held: true, stop_held: true});
     s.show.running = false; s.flames.groups.forEach(g => { g.armed = "held"; g.reason = "Disarmed by the show's Stop. Cycle the arm to re-arm."; });
     s.laser_arm.lasers.forEach(l => l.armed = false); s.countdown = {kind: "next", label: "Next show", s: 1500, running: true}; },
   alerts_open: s => { const p = FX("status_pico"); s.alerts = p.alerts; s.flames.cues_fault = p.flames.cues_fault;
@@ -251,9 +251,8 @@ class FakeEngine {
       }
       case "/api/remote/signout": s.me = me(null, null); return ok("Signed out.");
       case "/api/remote/hold": sch.held = true; if(sch.state === "SHOW") sch.state = "PAUSED"; return ok("Held.");
-      case "/api/remote/resume": sch.held = false; if(sch.state === "PAUSED") sch.state = "SHOW"; s.alert_hold = {held: false};
+      case "/api/remote/resume": sch.held = false; sch.stop_held = false; if(sch.state === "PAUSED") sch.state = "SHOW"; else if(sch.state === "HOLD") sch.state = "STANDBY"; s.alert_hold = {held: false};
         if(s.announce) s.announce.playing = null; return ok("Resumed.");
-      case "/api/remote/reset": sch.aborted = false; s.flames.groups.forEach(g => { g.armed = "disarmed"; g.wanted = false; delete g.reason; }); return ok("Reset.");
       case "/api/remote/start-now": sch.state = "SHOW"; sch.running = (sch.next || {}).show || 1; sch.held = false;
         s.show = {running: true, show: "Fire and Ice", timecode: "01:00:01:00", state: "playing"}; s.countdown = {kind: "left", label: "Time left", s: 440, running: true}; return ok("Started.");
       case "/api/start": s.show = Object.assign({}, s.show || {}, {running: true, starting: false, show: "Fire and Ice", timeline: body.timeline, state: "idle"});

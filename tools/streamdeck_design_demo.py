@@ -3,6 +3,11 @@
 A design demo only. It drives the real deck plugged into the Mac, and it is
 connected to nothing else: no show, no flames, no lasers.
 
+A historical demo of the 2026-09 key layout. The real deck has had no Hold
+or Abort key since 2026-10-26, and Abort and Reset were removed from
+LTC Player on 2026-10-30 (Stop does what Abort did). The ABORT and RESET
+keys below are this demo's own pretend keys; nothing they do is sent.
+
 Two looks, switched by writing a word into sd_demo_cmd.txt:
   a   every key has its own ring of marquee dots, no solid outline; the chase
       runs around the outside of the whole deck, lighting the outer dots

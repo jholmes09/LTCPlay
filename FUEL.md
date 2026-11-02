@@ -44,7 +44,7 @@ Flame time goes in one of three piles:
 
 - **Shows.** A show is a performance, started by the schedule or by hand
   (Run, Start now). It counts once its timecode has run 30 seconds, whether
-  it plays to the end or is aborted. Time on Hold does not count toward the
+  it plays to the end or is stopped. Time on Hold does not count toward the
   30 seconds, and a short break in the timecode does not split one show into
   two. A start that fails, and anything in a Programming session, is not a
   show.

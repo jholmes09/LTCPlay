@@ -20,8 +20,8 @@ back, each a whole soak of its own in a stamped folder under
 scheduler, the show conductor, the flame link), the real `flamesafe.exe`,
 the deck program with a virtual Stream Deck (or the real Mini if plugged
 in), a 7 min 24 s show every 15 minutes, every group armed by the
-exerciser through the screen's arm-hold, a Hold every 2 minutes, an Abort
-and Reset on every other show.
+exerciser through the screen's arm-hold, a Hold every 2 minutes, a Stop
+and its Resume on every other show (Abort and Reset until 2026-10-30).
 
 The soak's own schedule and `ltcplay_fire_ice.json` (in each block's
 folder) carry `"soak_only": true`. Only the engine the soak starts itself
@@ -91,7 +91,7 @@ soak_summary.py`, or collect the evidence and run it where Python is):
    or needed a recovery command.
 2. Zero flame violations: `flame-violations.txt` empty in every block (the
    soak's judge: a group's channels nonzero only while flamesafe reports it
-   armed, fire only during a show, never in a Hold, never after an Abort).
+   armed, fire only during a show, never in a Hold, never after a Stop).
 3. Flat memory: no program's RSS grows faster than 10 MB per hour in any
    block (the soak's own MEM_GROWTH_MB_H); the summary prints the worst
    slope per program.

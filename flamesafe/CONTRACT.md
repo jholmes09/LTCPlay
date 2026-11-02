@@ -10,6 +10,12 @@ Both directions are UDP datagrams on loopback. Each datagram is one JSON
 object, UTF-8, no framing. A datagram that is not exactly as written here is
 rejected with a reason and changes nothing. flamesafe never raises on input.
 
+A word on "Abort" in this page: ltcplay's Abort was removed on 2026-10-30
+(Jeff). Its `disarm_all` is now sent by every Stop, and the Stream Deck
+has had no Abort key since 2026-10-26. The wire messages are unchanged;
+older sections keep the name they were written with ("Disarm every
+group" below says more).
+
 ## Version 2: the shared key
 
 Any local process can write a datagram to a loopback port. In version 1 a
@@ -1015,7 +1021,7 @@ every heartbeat; any failure lets the hold go and is journaled):
   else, and says how to turn it on, refuses a screen's per-group Disarm
   (Disarm every flame group and the Stream Deck still work), and `ltc deck`
   takes no screen hold (the engine answers `enabled` false);
-- no Abort standing, the Stream Deck program heard within 2 s, this device
+- the Stream Deck program heard within 2 s, this device
   not in Arrange mode on the Morning page, and not every machine of the
   group locked out (2026-10-22): each is refused by the deck or flamesafe
   anyway, and the engine says it by name before a hold fills its bar. What
@@ -1051,6 +1057,13 @@ either. If the deck process is not running, nothing reads the screen
 holds and nothing arms.
 
 ## Disarm every group: the show program's Abort (added 2026-10-02)
+
+**Since 2026-10-30 (Jeff): the show program has no Abort.** Every Stop
+(the rack screen's and the iPad's double tap, the Stream Deck's held
+Stop) sends this same `disarm_all`, and nothing latches. The message,
+its fields and every rule below are unchanged; where this document says
+"the show program's Abort" (or "a screen Abort"), read the show's Stop.
+Older text keeps the name it was written with.
 
 Jeff, 2026-09-27: "on Abort, flame cues zero and every group disarms
 instantly". The Stream Deck's Abort already does this on the arm link. The

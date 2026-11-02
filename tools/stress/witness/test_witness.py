@@ -356,6 +356,29 @@ class TestChecker(unittest.TestCase):
         self.assertIn("WHILE ABORT LATCHED", r)
         self.assertIn("ARMED WITHOUT PRESS", r)   # the Abort disarmed it
 
+    def test_a_stop_disarms_like_the_old_abort_and_latches_nothing(self):
+        """A journal from after 2026-10-30: the show conductor's Stop
+        disarms every group (as the removed Abort did) and latches
+        nothing."""
+        j, w = self.j, self.w
+        j.fs_line(T0 - timedelta(minutes=5), "start",
+                  "flame universe 1 to 127.0.0.1:5568")
+        j.rec(T0, "start", "The show started", to_state="SHOW")
+        j.rec(T0 + timedelta(seconds=2), "arm",
+              "Stream Deck: front row arm pressed (held 3.0 s) by Andy.",
+              actor="operator")
+        w.armed_fire(T0 + timedelta(seconds=3), 2.0)
+        j.rec(T0 + timedelta(seconds=10), "stop",
+              "Stop, asked for by Andy on the Rack screen.", to_state="HOLD")
+        j.fs_line(T0 + timedelta(seconds=10), "disarm-all",
+                  "the show program's Stop disarmed every group")
+        # armed again on the wire with no new press: the Stop disarmed it
+        w.armed_fire(T0 + timedelta(seconds=20), 0.5, fire=0)
+        w.close()
+        r = rules(run_check(self.d))
+        self.assertIn("ARMED WITHOUT PRESS", r)
+        self.assertNotIn("WHILE ABORT LATCHED", r)
+
     def test_a_purge_on_record_allows_fire_between_shows(self):
         j, w = self.j, self.w
         j.fs_line(T0 - timedelta(minutes=5), "start", "flame universe 1")
@@ -963,6 +986,22 @@ class TestLaserChecker(unittest.TestCase):
         self.assertIn("Verdict: PASS", text)
         self.assertIn("LASER LISTENER: 4 OSC message(s)", text)
         self.assertNotIn("UNVERIFIED", text)
+
+    def test_a_stop_needs_its_blank_as_the_abort_did(self):
+        """The show conductor's Stop (2026-10-30) is judged like the
+        removed Abort: its blank must be heard."""
+        j, l = self.j, self.l
+        j.fs_line(T0 - timedelta(minutes=5), "start", "flame universe 1")
+        j.rec(T0 - timedelta(minutes=4), "lasers",
+              "Lasers are blanked by OSC: BEYOND's brightness 0 or 100 "
+              "(beyond_blank \"osc\").", outcome="blank_mode", actor="system")
+        j.rec(T0, "start", "The show started", to_state="SHOW")
+        l.unblank(T0 + timedelta(seconds=1))
+        j.rec(T0 + timedelta(seconds=10), "stop",
+              "Stop, asked for by Andy on the Rack screen.", to_state="HOLD")
+        res = self.run_laser()
+        self.assertEqual(res["laser"]["aborts"], 1)
+        self.assertIn("LASER BLANK MISSING", rules(res))
 
     def test_blank_missing_after_abort(self):
         self.base_show(blank_at_abort=False)

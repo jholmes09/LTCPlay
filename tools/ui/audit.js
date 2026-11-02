@@ -25,7 +25,7 @@ const NO_SCROLL = ["1920x1080", "1366x768", "1280x800", "1024x768", "820x1180", 
 // [scenario, view(hash), extra action]
 const CASES = process.env.ONLY_CASES ? JSON.parse(process.env.ONLY_CASES) : [
   ["idle_operator", "show"], ["ready", "show"], ["signed_out", "show"], ["show_pending", "show"], ["running", "show"],
-  ["held", "show"], ["aborted", "show"], ["alerts_open", "show"], ["alerts_open", "show", "alert_next"],
+  ["held", "show"], ["stop_held", "show"], ["alerts_open", "show"], ["alerts_open", "show", "alert_next"],
   ["armed_groups", "show"], ["locked", "show"], ["announcing", "show"], ["alert_hold", "show"],
   ["live_flame", "show"], ["getting_started", "show"], ["stale", "show"], ["admin", "show"],
   ["running", "show", "stop_confirm"], ["running", "show", "help"], ["idle_operator", "show", "coach"],
@@ -42,7 +42,7 @@ const CASES = process.env.ONLY_CASES ? JSON.parse(process.env.ONLY_CASES) : [
 ];
 const CASES_1 = [
   ["idle_operator", "show"], ["signed_out", "show"], ["show_pending", "show"], ["running", "show"],
-  ["held", "show"], ["aborted", "show"], ["alerts_open", "show"], ["alerts_open", "show", "expand_alerts"],
+  ["held", "show"], ["stop_held", "show"], ["alerts_open", "show"], ["alerts_open", "show", "expand_alerts"],
   ["armed_groups", "show"], ["locked", "show"], ["announcing", "show"], ["alert_hold", "show"],
   ["live_flame", "show"], ["getting_started", "show"], ["stale", "show"], ["hazers_on", "show"],
   ["idle_operator", "tonight"], ["admin", "programming"], ["idle_operator", "programming"], ["programming", "programming"],

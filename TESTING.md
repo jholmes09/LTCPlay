@@ -7,7 +7,7 @@ Written 2026-10-06, after the audit that simplified it.
 ## The three layers
 
 1. **selftest.py** is the suite: 377 checks of the program, from LTC
-   decoding to the show conductor's Abort. It runs in about 3.5 minutes on
+   decoding to the show conductor's Stop. It runs in about 3.5 minutes on
    a laptop and 4 to 6 minutes on a CI runner. Every PR runs it on ubuntu
    and on windows (the show PC's OS). `python3 selftest.py` runs it by
    hand; its last line is "all checks passed in N s" or a count of
@@ -15,7 +15,7 @@ Written 2026-10-06, after the audit that simplified it.
 
 2. **mutate.py** is the proof that the suite is honest. It breaks the
    program on purpose, one line at a time (973 breakages, each a real
-   show-night failure: "Abort's flame cut waits for the executor", "a new
+   show-night failure: "Stop's flame cut waits for the executor", "a new
    socket for every frame"), and requires the suite to fail under each.
    A mutation the suite does not notice is a guarantee nobody is testing.
    A mutation is caught only when the suite fails under it twice. The
@@ -129,8 +129,8 @@ next fixes it first; nothing is tagged while it is red.
 ## Running things by hand
 
 - The suite: `python3 selftest.py`.
-- One mutation or a few: `python3 mutate.py abort` runs every mutation
-  whose name contains "abort".
+- One mutation or a few: `python3 mutate.py stop` runs every mutation
+  whose name contains "stop".
 - What a change would run: `python3 mutate.py --changed origin/main
   --list` (or `--files ltcplay/conductor.py,selftest.py --list` with no
   git).
@@ -162,7 +162,7 @@ tree until it says "tree restored byte for byte".
 ## Real time in the suite
 
 A handful of checks still read the clock, because what they prove is a
-thread handoff: Abort does not wait behind a slow BEYOND, a hung
+thread handoff: Stop does not wait behind a slow BEYOND, a hung
 announcement, a stuck disk. They are written one way: the test stalls
 the thing that must not be waited on (300 ms to 3 s, or until the test
 lets it go), and the bound is half that stall or less. A wait on the
@@ -185,7 +185,7 @@ scarce resource. The order that pays, from the audit:
    (the setting that goes to the show), all programs, arming exercised:
    the configuration the show will actually run.
 2. The same with the Stream Deck plugged in and the real operator flow
-   (sign in, arm by holding, Hold, Resume, Abort, Reset) at least once
+   (sign in, arm by holding, Hold, Resume, Stop) at least once
    per block, by hand, with the soak's judge watching flamesafe's sACN.
 3. A 24 hour run, containment ON, unattended, for the slow leaks: memory,
    handles, the journal's disk use, the 120-day pruning, MadMapper's

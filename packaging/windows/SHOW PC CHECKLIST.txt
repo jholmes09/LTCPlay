@@ -161,9 +161,9 @@ CHANGING THE FLAME GROUPS (at tech)
 [ ] In showpc.json, "show_mode" is "fire_ice" (it is, unless someone
     changed it). That runs the scheduler, the show conductor and the flame
     link, and starts the Stream Deck program on the engine's own address,
-    so the deck's Stop reaches the show and the deck shows an Abort from
-    any screen (the deck has no Hold or Abort key since 2026-10-26: those
-    are the Rack screen's). With
+    so the deck's Stop reaches the show (the deck has no Hold key since
+    2026-10-26: Hold is the Rack screen's; there is no Abort anywhere
+    since 2026-10-30). With
     "plain", the Stream Deck program is not started at all.
 [ ] The rack screen page opens maximized on the show monitor, with
     Minimize, Maximize and Close in its title bar. If it
@@ -176,7 +176,7 @@ CHANGING THE FLAME GROUPS (at tech)
     Andy, Dallen, Dave and Jared each sign in once and choose their own
     password (no password is shipped). Sign in on the rack screen before
     a show so the audit log names who pressed what. Nobody needs to be
-    signed in for Abort, Hold, Stop or a disarm.
+    signed in for Stop, Hold or a disarm.
 [ ] Audit upload (when Jeff's server is ready): Users screen, Audit log:
     server address (https://), token, time (03:30), tick "Send ... every
     night", Save, then "Send now" and check "Last upload".

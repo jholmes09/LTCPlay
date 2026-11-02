@@ -64,10 +64,10 @@ SHOW MODE (showpc.json "show_mode")
       conductor, the flame link and the show runner all run, with
       ltcplay_fire_ice.json beside the schedule file (flamesafe_config,
       flame_controller). The Stream Deck program is started with the
-      engine's own address, so its Abort, Hold, Resume and Reset reach the
-      show conductor.
+      engine's own address, so its Stop, Hold and Resume reach the show
+      conductor.
   "plain": the engine alone, no scheduler. The Stream Deck program is NOT
-      started: with no show conductor its Abort could only disarm flames.
+      started: with no show conductor its Stop could only disarm flames.
   %LOCALAPPDATA%\\ltcplay\\logs\\        one log per program, and this one's
   %PROGRAMDATA%\\LTC Player\\stop        present: stay stopped (see --task)
   %PROGRAMDATA%\\LTC Player\\stop-refused  why the last stop was refused
@@ -178,7 +178,7 @@ def load_settings():
         # The rack screen page (/remote), maximized on this monitor:
         # 1 is the main display, 2 the next one Windows lists, and so on.
         "page_monitor": 1,
-        # Extra room under the page's Abort bar, in the page's own pixels,
+        # Extra room at the bottom of the page, in the page's own pixels,
         # for a window that still reaches under the taskbar (0: none; the
         # page also measures it by itself, 2026-10-26).
         "page_bottom_pad": 0,
@@ -840,7 +840,7 @@ def wanted_args(settings):
     url = f"http://127.0.0.1:{port}"
     if mode != "fire_ice":
         out["deck"] = (None, "the Stream Deck program is not started: its "
-                       "Abort, Hold, Resume and Reset need the engine's show "
+                       "Stop, Hold and Resume need the engine's show "
                        "conductor, which runs only with show_mode "
                        "\"fire_ice\" in showpc.json")
     elif not settings["run_deck"]:
@@ -1853,7 +1853,7 @@ def _write_refusal(why):
 
 
 RACK_PAGE = "/remote"     # the rack screen page ("Rack screen")
-# The most room the page keeps under its Abort bar (CSS px), whatever
+# The most room the page keeps at its bottom edge (CSS px), whatever
 # showpc.json page_bottom_pad says; the page caps it the same (PAD_MAX).
 PAGE_BOTTOM_PAD_MAX = 160
 
@@ -1881,7 +1881,7 @@ def work_area(monitor_rect, work_rect):
     """The window's rectangle on one display: its WORK AREA (rcWork, the
     display less the taskbar and any docked bars), never the whole display
     (Jeff, 2026-10-26: sized to the monitor, the window ran 96 px under the
-    always-on-top taskbar and cut the ABORT bar in half). A work area that
+    always-on-top taskbar and cut the bottom of the page off). A work area that
     is empty or not inside the display is the display."""
     ml, mt, mr, mb = monitor_rect[:4]
     wl, wt, wr, wb = work_rect[:4]

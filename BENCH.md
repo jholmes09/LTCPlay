@@ -2,7 +2,7 @@
 
 This branch puts the pieces together so the real rig can be tested on the
 Windows Pico before each piece is merged: the show conductor (Hold, Resume,
-Abort), the BEYOND laser link, the MadMapper video link, the show scheduler,
+Stop), the BEYOND laser link, the MadMapper video link, the show scheduler,
 and the show audio clock. GPL at Dollywood is not affected: none of this
 loads unless ltcplay is started with a schedule.
 
@@ -54,7 +54,7 @@ What each setting does:
   - `false` (the default, and what to start with): the scheduler only
     decides. At show time it writes "Not performed, dry run" in the journal,
     and the show "ends" on the scheduler's own clock. Nothing is started.
-    Hold, Resume and Abort still reach the show conductor, but it only acts
+    Hold, Resume and Stop still reach the show conductor, but it only acts
     on a show that is actually playing.
   - `true`: at each scheduled show time ltcplay selects the MadMapper show
     bank and starts the show audio, which starts the timecode, which starts
@@ -63,7 +63,7 @@ What each setting does:
     are blanked and the pixels go black. It only starts a show if **Run has
     been pressed** on the ltcplay page; otherwise the show is recorded as a
     failed start and nothing reaches the rig. It also does not start a show
-    while an Abort is still latched (see open questions below).
+    while a Stop's Hold stands (until Resume).
   - Only the exact words `true` or `false` are accepted.
 - `show_cue`: which cue in the show file is the show. Leave it out to use
   the first cue.
@@ -112,12 +112,12 @@ needs its stems under `clock.audio.cues`.
 
 ## What is real on this branch
 
-- **Lasers (BEYOND)**: Hold, Abort, intermission and preshow send a real
+- **Lasers (BEYOND)**: Hold, Stop, intermission and preshow send a real
   blank. Lasers come back only once the timecode is moving and only while
   the scheduler is in a show, never in intermission, and only while every
   laser is armed on the Morning and Shutdown page (Jeff, 2026-10-22,
   MORNING.md "Lasers: arm and disarm"). Every engine start is disarmed and
-  sends BEYOND's DisableLaserOutput; Abort and Hold disarm and send it too. Abort blanks them at
+  sends BEYOND's DisableLaserOutput; Stop and Hold disarm and send it too. Stop blanks them at
   once (Jeff and Andy, 2026-10-04: BEYOND only accepts on or off).
 - **How the lasers are blanked** (`beyond_blank` in ltcplay_fire_ice.json):
   `"osc"` (brightness 0 or 100 on BEYOND's
@@ -133,12 +133,12 @@ needs its stems under `clock.audio.cues`.
   light it goes back to the show's own timecode on the next frame, the
   exact held frame after a Hold. **Andy: leave hour 23 empty in the BEYOND
   show, and keep BEYOND's "keep running when timecode stops" OFF.**
-- **Video (MadMapper)**: Hold and Abort fade every surface to black; Resume
-  and show start bring them back; Abort then stops the show bank.
+- **Video (MadMapper)**: Hold and Stop fade every surface to black; Resume
+  and show start bring them back; Stop then stops the show bank.
 - **Music and timecode**: Hold fades the show audio over 0.25 s and freezes
-  the timecode where it stops; Resume fades back in; Abort fades over 1 s
+  the timecode where it stops; Resume fades back in; Stop fades over 1 s
   and stops.
-- **Pixels**: Hold and Abort put the pixels to black **at once** (the pixel
+- **Pixels**: Hold and Stop put the pixels to black **at once** (the pixel
   output has no fade), and Resume and show start bring back the look that
   was there before.
 
@@ -165,15 +165,11 @@ needs its stems under `clock.audio.cues`.
   safe state, and it means no fire can be tested through ltcplay yet. Every
   flame step the conductor takes is written in the journal saying it reached
   nothing.
-- **Abort from the screen cannot disarm flame groups.** The flamesafe link
-  has no disarm message yet. Every screen Abort writes a fault line saying
-  so. The Stream Deck's own Abort (PR #31, not on this branch) disarms
-  through its own link.
-- **No buttons for Hold, Resume or Abort.** This branch adds no page button
-  or route that presses them. They come from the Stream Deck (PR #31) once it
-  is plugged in. Until then the bench can test the
-  scheduled preshow, show start, show end and closing; Hold, Resume and
-  Abort are proven by the selftest with fake devices.
+- **Abort is removed** (Jeff, 2026-10-30): Stop, Hold and Resume are the
+  show's controls, on the rack screen, the iPad and the Stream Deck, and
+  the hardware e-stop is the emergency layer. (This branch's first notes
+  said a screen's Abort could not disarm flame groups and had no button;
+  both are long gone.)
 - **Announcements** (Jeff, 2026-10-26): the rack screen's three buttons and
   the Stream Deck's page 2. Between shows a press holds the schedule first
   (Resume carries on); during a show it plays over the show and pauses,

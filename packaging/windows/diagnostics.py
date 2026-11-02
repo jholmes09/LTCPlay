@@ -4,7 +4,7 @@ bundle (send this to Jeff)").
 
 What goes in: the programs' logs (live and rotated), the supervisor's log,
 the settings (showpc.json, flamesafe.json, the schedule, the Fire & Ice
-settings, the remote page's settings), tonight's files and the Abort latch,
+settings, the remote page's settings), tonight's files and an older version's Abort latch file,
 the night journals of the last 14 nights, what each program says with
 --version, the VERSION stamp, the sign-in task, the stop files, the newest
 Setup logs, and a few lines about this PC (Windows version, disks, time

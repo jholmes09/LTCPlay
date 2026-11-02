@@ -20,7 +20,7 @@ rack screen routes on 127.0.0.1 only.
 | `witness/collect_evidence.ps1`, `Collect witness evidence.cmd` | zips the evidence to the Desktop (no media, no keys) for the checker and the summary elsewhere | the Pico |
 | `soak/Start 48h soak.ps1`, `SOAK PLAN.md`, `soak_summary.py` | the 48 HOUR SOAK: registers and starts the installed unattended soak with containment on, watches it, stops it; the plan and pass criteria; the summary generator | the Pico (start, status, stop); Python for the summary |
 | `breakit/breakit.ps1`, `BREAK-IT TABLE.md` | BREAK-IT: 12 faults on purpose, each logged and undoable, with the expected result of each | the Pico, elevated PowerShell |
-| `rehearsals/rehearsals.ps1` | STAGE 4: 20+ back-to-back scheduled shows with random Aborts and Resets through the rack screen routes | the Pico |
+| `rehearsals/rehearsals.ps1` | STAGE 4: 20+ back-to-back scheduled shows with random Stops (and the Resume after each) through the rack screen routes | the Pico |
 | `sheets/PASS-FAIL sheets.html` | one printable PASS/FAIL sheet per stage, 1 to 5 | any browser; print, one page each |
 | `PASTE PROMPT.md` | the message Jeff pastes into the Windows session on the Pico to install the newest bench build, start the witness and the soak, and report back; it refuses without Jeff's word DISCONNECTED | Jeff |
 
@@ -161,19 +161,19 @@ universes that is about 6800 packets a second on this PC.
    once the Morning page build is installed, deletes and corrupts the
    lockout file and the morning config, closes the page mid-purge, starts
    a show under a held purge, and (step 13) turns a laser test on, starts
-   a show and Aborts it with the listener judging. Each row has flames
+   a show and Stops it with the listener judging. Each row has flames
    off, banner, journal line, recovery. Pass: every row as the table
    says, and the checker PASSes (nothing is armed, so any nonzero slot is
    a FAIL; the laser rules PASS or read UNVERIFIED only for the expected
    "blanking not set up").
 3. **Purge and lockout hammering** (sheet 3): the Morning page's purge
    and locks worked hard by hand and from the deck, witnessed; the laser
-   tests switched on, Aborted, locked and started over with the listener
+   tests switched on, Stopped, locked and started over with the listener
    recording; the checker with `--locked-slots` and the machine log.
 4. **Dress rehearsals** (`rehearsals.ps1`): 20+ scheduled shows back to
-   back with random Aborts and Resets; the checker must show fire only in
-   SHOW, nothing while an Abort stood, every armed slot backed by a press,
-   and, from the listener, BEYOND's blank within 2 s of every Abort and
+   back with random Stops (and the Resume each needs); the checker must
+   show fire only in SHOW, every armed slot backed by a press, and, from
+   the listener, BEYOND's blank within 2 s of every Stop and
    the lasers restored only inside SHOW.
 5. **Staged real hardware with Andy** (sheet 5): gas OFF first, the real
    node as the destination, Andy's eyes on the node's channels; gas ON
@@ -190,7 +190,7 @@ universes that is about 6800 packets a second on this PC.
   fall of each slot with its group's name, gaps, STREAM STOPPED. The
   listener's `laser.log` reads the same way: `listen: OSC on
   127.0.0.1:8100`, then one line per message, `BLANK:` (brightness 0,
-  what every Abort, Hold and intermission must produce), `UNBLANK:`
+  what every Stop, Hold and intermission must produce), `UNBLANK:`
   (brightness 100, only inside a show once the timecode moves), `TEST ON
   Laser 1:` / `TEST OFF Laser 1:` (the Morning page's test, the exact
   address and value from ltcplay_morning.json), `OTHER:` (anything else:
@@ -226,4 +226,4 @@ universes that is about 6800 packets a second on this PC.
   ltcplay_fire_ice.json the conductor sends no blank anywhere, the engine
   says "Lasers: blanking not set up" (EXPECTED while BEYOND is absent, not
   a FAIL) and the listener hears only the Morning page's test messages;
-  the blank-after-Abort rules then read UNVERIFIED, never PASS.
+  the blank-after-Stop rules then read UNVERIFIED, never PASS.
