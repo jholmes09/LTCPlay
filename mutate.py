@@ -23217,6 +23217,42 @@ def build():
   "            with self._stops_cv:\n                pass"),
 
 
+ # interface 2.0's Schedule tab (P3, P4 of docs/REMOVE_1_0_PLAN.md)
+ ("ui 2.0 Schedule: the Run warning is not shown",
+  "ltcplay/web/remote2.html",
+  "  $(\"tn-run-warn\").hidden = !rw; setText($(\"tn-run-warn\"), rw);",
+  "  $(\"tn-run-warn\").hidden = true;"),
+
+ ("ui 2.0 Schedule: the editor shows on an iPad",
+  "ltcplay/web/remote2.html",
+  "  if($(\"sched-edit\").hidden !== !local) $(\"sched-edit\").hidden = !local;",
+  "  $(\"sched-edit\").hidden = false;"),
+
+ ("ui 2.0 Schedule: the editor is never read when the address opened the tab",
+  "ltcplay/web/remote2.html",
+  "  if(local && TAB === \"schedule\" && !SE_READ){ SE_READ = true; loadSchedule(); }\n",
+  ""),
+
+ ("ui 2.0 Schedule: Save drops what the editor does not show (the exceptions)",
+  "ltcplay/web/remote2.html",
+  "  const doc = Object.assign({}, SCHED_DOC || {});\n  doc.timezone",
+  "  const doc = {};\n  doc.timezone"),
+
+ ("ui 2.0 Schedule: a tap never opens a show's notes",
+  "ltcplay/web/remote2.html",
+  "  if(el) toggleSlot(el.dataset.k);\n});",
+  "});"),
+
+ ("ui 2.0 Schedule: Next names the wrong show",
+  "ltcplay/web/remote2.html",
+  "  return nx ? (\"Show \" + nx.show + \" at \" + nx.start) :",
+  "  return nx ? (\"Show \" + nx.start) :"),
+
+ ("ui 2.0 Schedule: the tonight list is not drawn",
+  "ltcplay/web/remote2.html",
+  "  try{ renderTonight(s); }catch(e){}\n",
+  ""),
+
  # interface 2.0's Programming tab (P1, P2 of docs/REMOVE_1_0_PLAN.md)
  ("ui 2.0 Programming: Run in Programming starts a Show run (no on_lost hold)",
   "ltcplay/web/remote2.html",
