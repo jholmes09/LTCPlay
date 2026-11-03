@@ -47806,8 +47806,11 @@ def test_every_show_start_clears_the_pixels():
           f"once it lasts it is a CUES FAULT on the screens and in the "
           f"journal: {cues.fault!r}")
     # The rack screen's words (reviews of PR #171): only buttons the Fire
-    # & Ice screens have (1.0: Stop on the Show file card, then Run; 2.0:
-    # Open in 1.0), never the GPL page's Black, Preshow or Auto, nor the
+    # & Ice screens have (1.0: Stop on the Show file card, then Run; 2.0
+    # has its own Show file card since P1, and its old screen link still
+    # opens 1.0's: the engine's "On 2.0, Open in 1.0 first." is engine text,
+    # left for R1, docs/REMOVE_1_0_PLAN.md), never the GPL page's Black,
+    # Preshow or Auto, nor the
     # Programming card's "Follow timecode again" / "Stop the show audio";
     # short as a whole, no sentence over eight words; "black", never
     # "blackout".
@@ -47820,7 +47823,10 @@ def test_every_show_start_clears_the_pixels():
     check("Programming: Show file card, Stop, then Run." in said and
           "Open in 1.0" in said and len(said.split()) <= 30 and
           'label:"Stop"' in rack and 'label:"Run"' in rack and
-          "Show file, on this machine" in rack and "Open in 1.0" in rack2
+          "Show file, on this machine" in rack and
+          '<div class="card col" id="p-run-card" hidden>' in rack2 and
+          "<b>Show file, on this machine</b>" in rack2 and
+          'id="to1" href="/ui?v=1"' in rack2
           and "Follow timecode" not in said and "Auto" not in said and
           "Black" not in said and "blackout" not in said and
           "show audio" not in said and
@@ -113408,8 +113414,6 @@ def test_ui2_programming_tab_makes_1_0_presses():
     sched = two[two.find('<section class="pane" id="t-schedule"'):]
     sched = sched[:sched.find("</section>")]
     pane = sched[sched.find('<div class="cards" id="t-prog">'):]
-    sets = two[two.find('<section class="pane" id="t-settings"'):]
-    sets = sets[:sets.find("</section>")]
     check('<div class="cards" id="t-prog">' in sched and
           'const prog = t === "prog";\n  if(prog) t = "schedule";' in two,
           "2.0's Programming cards are on the Schedule tab, and #prog "
@@ -113430,10 +113434,9 @@ def test_ui2_programming_tab_makes_1_0_presses():
     check(pane.count(" data-tr") == 11,
           f"11 session controls follow 1.0's transport rule: "
           f"{pane.count(' data-tr')}")
-    check("/remote1#programming" in pane and
-          "/remote1#programming" not in sets,
-          "the 1.0 link for the rest of Programming moved to the cards; "
-          "the Settings card is gone")
+    check("/remote1#programming" not in two,
+          "no 1.0 link for Programming is left: the show PC's tools are "
+          "on the cards (P14, P15)")
     check("–" not in pane and "—" not in pane,
           "no em or en dashes on the Programming cards")
     # 1.0's mode words and rules, copied word for word.
@@ -113955,8 +113958,10 @@ def test_ui2_schedule_tab_makes_1_0_presses():
               f"{fid}: 1.0's field and limits: {attrs(one)} {attrs(sched)}")
     check("/remote1#tonight" not in two,
           "the Open in 1.0 link for tonight's shows is gone")
-    check('<span>Show folder, network.</span>' in two,
-          "More programming no longer sends schedule rules to 1.0")
+    check("/remote1#programming" not in two and
+          '<div class="card col" id="folders" hidden>' in two,
+          "the rest of Programming (the show folder, the network) is on "
+          "the Schedule tab, not in 1.0")
     for p in ('getJSON("/api/remote/schedule-file", 3000)',
               'post("/api/remote/schedule-file", {doc:readSchedule()})'):
         check(p in one and p in two, f"1.0 and 2.0 both press {p}")
@@ -114612,6 +114617,358 @@ out.viewer = {admin:!g("u-admin").hidden, audit:!g("u-audit").hidden, save:!g("u
               f"{where}: signed out off the show PC: the sign in form, no "
               f"users list, no audit card, who may do what read only: "
               f"{v}")
+    print("  ok")
+
+
+def _ui2_tools_copies(one):
+    """The show PC's tools (P12, P14, P15, P16): each piece of 1.0's code
+    2.0 copies, as it must read in 2.0, with the named differences: a
+    question's Yes is 2.0's green (1.0's "start"), 1.0's Programming screen
+    is the Schedule tab, Run's show file is p-file, Reload engine answers in
+    its own card, and Getting started has no fitting around the flame
+    groups. [(what, text)]; a text is "" when 1.0's own was not found."""
+    def fn(name):
+        m = re.search(r"^(async )?function " + name + r"\(", one, re.M)
+        if not m:
+            return ""
+        j = one.find("\n}\n", m.start())
+        return one[m.start():j + 3] if j > 0 else ""
+
+    def blk(start, end="\n});\n"):
+        i = one.find(start)
+        j = one.find(end, i)
+        return one[i:j + len(end)] if 0 <= i < j and \
+            one.count(start) == 1 else ""
+
+    def sub(text, a, b, n=1):
+        return text.replace(a, b) if text.count(a) == n else ""
+    ps = ("the Programming screen", "the Schedule tab")
+    fit = "  try{ fitSetup(); }catch(e){}\n"
+    out = [(n, fn(n)) for n in (
+        "fill", "makeOffered", "checkWords", "loadFolders", "loadDeckOp",
+        "renderNetwork", "loadNetwork", "saveNetwork", "cfgNote",
+        "setWarn")]
+    out += [("renderSetupFold", sub(fn("renderSetupFold"), fit, "")),
+            ("renderSetup", sub(sub(fn("renderSetup"), fit, ""), ps[0],
+                                ps[1], 2)),
+            ("setupFolderWords", sub(fn("setupFolderWords"), ps[0], ps[1])),
+            ("makeShowFile", sub(sub(fn("makeShowFile"),
+                                     '"Yes, make it", "start"',
+                                     '"Yes, make it", "green"'),
+                                 "    await loadShowFiles(j.file);\n",
+                                 "    await progFiles();\n    if(j.file && "
+                                 "[...$(\"p-file\").options].some(o => "
+                                 "o.value === j.file)){ $(\"p-file\").value"
+                                 " = j.file; P_PICKED = true; }\n")),
+            ("Open a folder", blk('document.querySelectorAll("[data-open]")'
+                                  '.forEach(', "\n}));\n")),
+            ("Make a show file", '$("fo-make").addEventListener("click", '
+                                 'makeShowFile);\n'
+             if '$("fo-make").addEventListener("click", makeShowFile);'
+             in one else ""),
+            ("Check the show file", sub(blk('$("fo-check").addEventListener('),
+                                        '$("run-file")', '$("p-file")')),
+            ("Use this folder", sub(blk('$("fo-save").addEventListener('),
+                                    '"Yes, use it", "start"',
+                                    '"Yes, use it", "green"')),
+            ("Choose (Stream Deck operator)",
+             blk('$("b-deck-op").addEventListener(')),
+            ("Use (an address)", blk('$("net-uses").addEventListener(')),
+            ("Restart the engine",
+             sub(blk('$("net-restart").addEventListener('),
+                 '"Yes, restart", "start"', '"Yes, restart", "green"')),
+            ("Reload engine",
+             sub(sub(blk('$("cfg-reload").addEventListener('),
+                     '"Yes, reload", "start"', '"Yes, reload", "green"'),
+                 '$("ctl-msg")', '$("cfg-msg")', 2)),
+            ("Check the rig", blk('$("rc-run").addEventListener(')),
+            ("Close this window", blk('$("info-exit").addEventListener('))]
+    for ln in ('$("net-pick").addEventListener("change", () => { '
+               'if($("net-pick").value) $("net-addr").value = '
+               '$("net-pick").value; });',
+               '$("net-save").addEventListener("click", () => '
+               'saveNetwork($("net-addr").value));',
+               '$("info-close").addEventListener("click", () => { '
+               '$("info").hidden = true; });',
+               '$("info").addEventListener("click", e => { if(e.target === '
+               '$("info")) $("info").hidden = true; });',
+               'document.addEventListener("keydown", e => { if(e.key === '
+               '"Escape"){ $("info").hidden = true; } });',
+               '$("mo-verify").addEventListener("click", () => moPress('
+               '"checklist-verify", {}, "mo-cmsg"));',
+               # 1.0's render(): the rig check card and the settings note
+               '  rcard.hidden = !s.preroll || !(ME && ME.local);\n'
+               '  if(s.preroll){\n    $("rc-now").textContent = prl.now;\n'
+               '    $("rc-warn").hidden = !prl.warn;\n'
+               '    $("rc-warn").textContent = prl.warn;\n'
+               '    $("rc-items").textContent = prl.items.join(". ");\n'
+               '    $("rc-run").disabled = prl.checking;\n  }',
+               '  const cn = cfgNote(s.config_changed);\n'
+               '  setWarn("cfg-note", cn.text);\n'
+               '  $("cfg-reload").hidden = !cn.offer || !mayRow(s, '
+               '"settings");',
+               # 1.0's whoami: these cards on the show PC only
+               '  $("admin").hidden = !ME.local;',
+               '  $("deck-op").hidden = !ME.local;',
+               '  $("folders").hidden = !ME.local;',
+               '  $("info-device").textContent = ME.device || "";',
+               '  if(ME.local) loadFolders();',
+               # 1.0's renderMode: the info panel's flamesafe line
+               '  $("info-flames").textContent = unconf ? "flamesafe\'s '
+               'config is not yet confirmed by Andy'):
+        out.append((ln[:60], ln if ln in one else ""))
+    return out
+
+
+def test_ui2_show_pc_tools_are_1_0s():
+    section("2.0's show PC tools, P12, P14, P15, P16: the checklists' "
+            "Verify records, today's PDF and Export all (links that "
+            "download, for an iPad's Safari 15), the Show network with "
+            "Restart the engine, Settings changed with Reload engine, the "
+            "Stream Deck operator, the rig check card, the Show folder and "
+            "Getting started, and the info panel are 1.0's code word for "
+            "word, the differences named; the show PC's cards on the show "
+            "PC only, as 1.0; no 1.0 link left for them; no dashes; "
+            "OPERATOR.md and the plan")
+    one, two = _ui2_pages()
+    for what, text in _ui2_tools_copies(one):
+        check(len(text) > 20 and text in two,
+              f"2.0's {what} is 1.0's code, word for word "
+              f"({len(text)} characters)")
+    # The downloads: 1.0's addresses, as links that download.
+    pdf1 = ('"/api/remote/checklist-pdf?date=" + encodeURIComponent((MO && '
+            'MO.checklists && MO.checklists.show_date) || "")')
+    check(pdf1 in one and ("const pdf = " + pdf1 + ";") in two and
+          'if($("mo-pdf").getAttribute("href") !== pdf) '
+          '$("mo-pdf").setAttribute("href", pdf);' in two,
+          "Download today's PDF: 1.0's address, with today's show date")
+    check('window.location.href = "/api/remote/checklist-export";' in one
+          and '<a class="b" id="mo-export" href="/api/remote/checklist-'
+              'export" download target="_blank" rel="noopener">' in two and
+          '<a class="b" id="mo-pdf" href="/api/remote/checklist-pdf?date=" '
+          'download target="_blank" rel="noopener">' in two,
+          "the PDF and Export all are links that download (Safari 15 "
+          "saves them; a home screen app opens them in Safari)")
+    # Where they are, and who sees them.
+    st_ = _js_function(two, "showTab") or ""
+    check('if(t === "schedule" && ME && ME.local){ loadNetwork(); '
+          'loadDeckOp(); loadFolders(); }' in st_,
+          "the Schedule tab reads the network, the deck operator and the "
+          "folder on the show PC, as 1.0's Programming screen")
+    rs = _js_function(two, "renderStale") or ""
+    wh = _js_function(two, "whoami") or ""
+    check("try{ renderTools(isSt); }catch(e){}" in rs and
+          "try{ toolsWhoami(); }catch(e){}" in wh,
+          "the tools are drawn every tick and placed at start")
+    for need in ('<div class="card col" id="setup" hidden>',
+                 '<div class="card col" id="folders" hidden>',
+                 '<div class="card col" id="deck-op" hidden>',
+                 '<div class="card col" id="admin" hidden>',
+                 '<div class="card col" id="rigcheck" hidden>',
+                 '<div class="card col" id="cfg-card" hidden>',
+                 '<button class="b redline" id="net-restart" hidden>',
+                 '<button class="b blue" id="cfg-reload" hidden>',
+                 'id="su-make" hidden>', 'id="nofile" hidden>'):
+        check(need in two, f"2.0 has {need}")
+    ii = one.find('<div id="info" hidden>')
+    ij = one.find('</div>\n</div>\n', ii) + 13
+    info = one[ii:ij]
+    check(ii > 0 and info.count("the Programming screen") == 2 and
+          info.replace("the Programming screen", "the Schedule tab") in two,
+          "the info panel is 1.0's, its Programming screen the Schedule tab")
+    hp = two[two.find('$("help").addEventListener('):]
+    hp = hp[:hp.find("\n});\n")]
+    check('{label:"This LTC Player", value:"info", cls:"blue", '
+          'icon:"info"}' in hp and 'if(v === "info") openInfo();' in hp,
+          "Help opens the info panel")
+    # No 1.0 link left for these, and 1.0's own Programming words gone.
+    check("/remote1#morning" not in two and
+          "/remote1#programming" not in two and 'id="d-more"' not in two,
+          "no More in 1.0 or More programming link left")
+    tools = two[two.find("<!-- GETTING STARTED (P15)"):
+                two.find('<div class="card col" id="tn-card">')]
+    tools += two[two.find("<!-- THE SHOW PC'S TOOLS"):
+                 two.find("<!-- The fireball timeline")]
+    check(len(tools) > 3000, f"the tools' markup is read ({len(tools)})")
+    _no_dashes(tools, "2.0's show PC tools")
+    _no_dashes(info, "the info panel")
+    here = os.path.dirname(os.path.abspath(__file__))
+    op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
+    i = op.find("- 2.0 show PC tools:")
+    para = " ".join((op[i:op.find("\n- ", i + 3)] if i >= 0 else "")
+                    .split())
+    for words in ("Verify records", "Download today's PDF", "Export all",
+                  "iPad", "Show network", "Restart the engine",
+                  "Reload engine", "Stream Deck operator", "Check the rig",
+                  "Show folder", "Getting started", "This LTC Player",
+                  "Close this window", "show PC only"):
+        check(words in para, f"OPERATOR.md, 2.0 show PC tools, says "
+                             f"{words!r}")
+    _no_dashes(para, "OPERATOR.md, 2.0 show PC tools")
+    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
+                encoding="utf-8").read()
+    check(all(f"| {p} | DONE" in plan for p in
+              ("P12", "P14", "P15", "P16")),
+          "the removal plan marks P12, P14, P15 and P16 done")
+    check("## Left before R1" in plan,
+          "the removal plan says what is left before R1")
+    print("  ok")
+
+
+def test_ui2_show_pc_tools_driven():
+    section("2.0's show PC tools pressed in a real browser (P12, P14, P15, "
+            "P16): the checklist's Verify records posts 1.0's body and "
+            "the PDF link carries today's show date; on the Schedule tab "
+            "Getting started says 1 of 3 done and offers Make a show file; "
+            "Check the show file posts /api/check {timeline}; Use this "
+            "folder asks, then posts show-folder {path}; Open the show "
+            "folder posts open-folder; Choose posts the scheduler's "
+            "operator with 1.0's body; Use an address posts network; "
+            "Restart the engine and Reload engine ask, then post "
+            "reload-engine; Check the rig posts preroll-check; Help opens "
+            "the info panel with the version and Close this window posts "
+            "screen close; 56 px targets, nothing off the side")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2_page_inline()
+    st = _ui2_status_day()
+    st["version"] = "2.0.7 (test)"
+    st["setup"] = {"ready": False, "show_files": 0,
+                   "show_folder": "C:\\Shows\\Fire", "show_folder_exists": True,
+                   "show_folder_renders": 3, "schedule_ok": True,
+                   "schedule_path": "C:\\LTC\\schedule.json",
+                   "flamesafe_connected": False, "deck_heard": False}
+    st["programs"] = {}
+    st["preroll"] = {"state": "passed", "items": [
+        {"name": "Audio", "ok": True}, {"name": "Network", "ok": True}]}
+    st["config_changed"] = {"text": "flamesafe.json changed on disk.",
+                            "reload": {"offered": True}}
+    routes = {"/api/brand": {"show": "x"},
+              "/api/remote/morning": _morning_view_pico(),
+              "/api/timelines": {"timelines": [{"file": "Fire.json"}]},
+              "/api/remote/setup": {"show_folder": "C:\\Shows\\Fire",
+                                    "show_files": 0,
+                                    "show_folder_exists": True,
+                                    "settings_folder": "C:\\LTC",
+                                    "kiosk_closable": True},
+              "/api/remote/network": {"lines": ["Saved: nothing yet."],
+                                      "url": "", "saved": "",
+                                      "candidates": ["10.20.0.5"],
+                                      "restart": {"needed": True,
+                                                  "offered": True},
+                                      "port": 7878},
+              "/api/schedule/operator": {"operators": ["Jeff", "Sam"],
+                                         "current_operator": ""}}
+    steps = r"""
+const g = id => document.getElementById(id);
+const mark = () => window.__posts.length;
+const since = n => window.__posts.slice(n).map(p => { const b = Object.assign({}, p.body); delete b.seen; return [p.route.replace(/^.*\/api\//, "/api/").replace(/^\/api\/remote\//, ""), b]; })
+  .filter(p => p[0] !== "morning-open");
+const press = async (el, ms) => { const n = mark(); el.click(); await h.sleep(ms || 300); return since(n); };
+const yes = async (el, word) => { const n = mark(); el.click(); await h.sleep(300);
+  const b = [...document.querySelectorAll("#sh-row button")].find(x => x.textContent.trim() === word);
+  const asked = !!b; if(b) b.click(); await h.sleep(300); return {asked:asked, posts:since(n)}; };
+const vis = el => el.getClientRects().length > 0;
+const small = sel => [...document.querySelectorAll(sel)].filter(e => vis(e) && e.getBoundingClientRect().height < 55.5).map(e => e.id || e.textContent.trim());
+// P12 on DAY: the checklist step.
+const st = document.querySelector('#d-steps [data-step="startlist"]');
+if(st) st.click();
+await h.sleep(400);
+out.pdf = (g("mo-pdf") || {getAttribute:() => null}).getAttribute("href");
+out.dl = [g("mo-pdf") && g("mo-pdf").hasAttribute("download"), g("mo-export") && g("mo-export").getAttribute("href")];
+out.verify = g("mo-verify") ? await press(g("mo-verify")) : null;
+out.daySmall = small("#d-ctl .b");
+// The Schedule tab: Getting started and the show PC's cards.
+location.hash = "schedule";
+await h.sleep(900);
+out.cards = ["setup", "folders", "deck-op", "admin", "rigcheck", "cfg-card"].filter(id => !g(id).hidden);
+out.sum = g("su-sum").textContent; out.make = !g("su-make").hidden;
+out.fo = g("fo-now").textContent;
+out.deckPick = [...g("deck-op-pick").options].map(o => o.textContent);
+out.rc = g("rc-now").textContent;
+out.cfg = [g("cfg-note").textContent, !g("cfg-reload").hidden];
+window.__answer["/api/check"] = b => [200, {cues:[{name:"a"}], problems:[], notes:[]}];
+out.check = await press(g("fo-check"));
+out.checked = g("fo-checked").textContent;
+g("fo-path").value = "D:\\Other";
+out.folder = await yes(g("fo-save"), "Yes, use it");
+out.open = await press(document.querySelector('#folders [data-open="show"]'));
+g("deck-op-pick").value = "Sam";
+out.deck = await press(g("b-deck-op"));
+out.restart = await yes(g("net-restart"), "Yes, restart");
+const use = g("net-uses").querySelector("button[data-addr]");
+out.use = use ? await press(use) : null;
+out.reload = await yes(g("cfg-reload"), "Yes, reload");
+out.rig = await press(g("rc-run"));
+out.small = small("#t-schedule .b, #t-schedule input.f, #t-schedule select.f");
+out.xs = document.scrollingElement.scrollWidth - innerWidth;
+// P16: Help, This LTC Player.
+g("help").click();
+await h.sleep(300);
+{ const b = [...document.querySelectorAll("#sh-row button")].find(x => x.textContent.trim() === "This LTC Player"); if(b) b.click(); }
+await h.sleep(400);
+out.info = {shown:!g("info").hidden, vers:g("info-version").textContent, dev:g("info-device").textContent,
+  set:g("info-settings").textContent, exit:!g("info-exit").hidden, mode:g("info-mode").textContent};
+out.close = await press(g("info-exit"));
+g("info-close").click();
+await h.sleep(100);
+out.closed = g("info").hidden;
+"""
+    m = _ui2_drive(chrome, page, st, steps, size=(1366, 1100),
+                   frag="?tour=0#day", routes=routes, budget_ms=60000)
+    if not check(isinstance(m, dict) and not m.get("problems"),
+                 f"2.0's show PC tools, pressed: {m!r}"[:1500]):
+        print("  ok")
+        return
+    check(m["pdf"] == "/api/remote/checklist-pdf?date=2026-10-26" and
+          m["dl"] == [True, "/api/remote/checklist-export"] and
+          m["verify"] == [["checklist-verify", {}]] and not m["daySmall"],
+          f"the checklist: Verify records posts 1.0's body, the PDF and "
+          f"Export all download from 1.0's addresses: {m['pdf']} "
+          f"{m['dl']} {m['verify']} {m['daySmall']}")
+    check(m["cards"] == ["setup", "folders", "deck-op", "admin",
+                         "rigcheck", "cfg-card"] and
+          m["sum"] == "1 of 3 done" and m["make"] and
+          "C:\\Shows\\Fire" in m["fo"] and
+          m["deckPick"] == ["Jeff", "Sam"] and
+          m["rc"] == "Last check passed" and
+          m["cfg"][0].startswith("flamesafe.json changed on disk.") and
+          m["cfg"][1],
+          f"the show PC's cards, read and drawn: {m['cards']} {m['sum']!r} "
+          f"{m['fo']!r} {m['deckPick']} {m['rc']!r} {m['cfg']}")
+    check(m["check"] == [["/api/check", {"timeline": "Fire.json"}]] and
+          m["checked"].startswith("Check of Fire.json: 1 cue(s)."),
+          f"Check the show file: {m['check']} {m['checked']!r}")
+    check(m["folder"] == {"asked": True, "posts": [
+              ["show-folder", {"path": "D:\\Other"}]]},
+          f"Use this folder asks, then posts 1.0's body: {m['folder']}")
+    check(m["open"] == [["open-folder", {"which": "show"}]],
+          f"Open the show folder: {m['open']}")
+    check(m["deck"] == [["/api/schedule/operator",
+                         {"who": "Sam", "screen": "Rack screen"}]],
+          f"Choose: the scheduler's operator, 1.0's body: {m['deck']}")
+    check(m["use"] == [["network", {"address": "10.20.0.5"}]],
+          f"Use an address: {m['use']}")
+    check(m["restart"] == {"asked": True,
+                           "posts": [["reload-engine", {}]]} and
+          m["reload"] == {"asked": True, "posts": [["reload-engine", {}]]},
+          f"Restart the engine and Reload engine ask, then post: "
+          f"{m['restart']} {m['reload']}")
+    check(m["rig"] == [["preroll-check", {}]],
+          f"Check the rig: {m['rig']}")
+    check(not m["small"] and m["xs"] <= 0,
+          f"56 px targets, nothing off the side: {m['small']} {m['xs']}")
+    i = m["info"]
+    check(i["shown"] and i["vers"] == "LTC Player 2.0.7 (test)" and
+          i["dev"] == "this PC (rack screen)" and i["set"] == "C:\\LTC" and
+          i["exit"] and i["mode"] and
+          m["close"] == [["screen", {"action": "close"}]] and m["closed"],
+          f"Help opens the info panel; Close this window posts 1.0's body; "
+          f"Back closes it: {i} {m['close']}")
     print("  ok")
 
 
@@ -115513,6 +115870,8 @@ if __name__ == "__main__":
         test_ui2_schedule_tab_in_a_browser,
         test_ui2_users_audit_are_1_0s,
         test_ui2_users_audit_driven,
+        test_ui2_show_pc_tools_are_1_0s,
+        test_ui2_show_pc_tools_driven,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):
