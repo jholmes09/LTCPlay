@@ -47806,8 +47806,11 @@ def test_every_show_start_clears_the_pixels():
           f"once it lasts it is a CUES FAULT on the screens and in the "
           f"journal: {cues.fault!r}")
     # The rack screen's words (reviews of PR #171): only buttons the Fire
-    # & Ice screens have (1.0: Stop on the Show file card, then Run; 2.0:
-    # Open in 1.0), never the GPL page's Black, Preshow or Auto, nor the
+    # & Ice screens have (1.0: Stop on the Show file card, then Run; 2.0
+    # has its own Show file card since P1, and its old screen link still
+    # opens 1.0's: the engine's "On 2.0, Open in 1.0 first." is engine text,
+    # left for R1, docs/REMOVE_1_0_PLAN.md), never the GPL page's Black,
+    # Preshow or Auto, nor the
     # Programming card's "Follow timecode again" / "Stop the show audio";
     # short as a whole, no sentence over eight words; "black", never
     # "blackout".
@@ -47820,7 +47823,10 @@ def test_every_show_start_clears_the_pixels():
     check("Programming: Show file card, Stop, then Run." in said and
           "Open in 1.0" in said and len(said.split()) <= 30 and
           'label:"Stop"' in rack and 'label:"Run"' in rack and
-          "Show file, on this machine" in rack and "Open in 1.0" in rack2
+          "Show file, on this machine" in rack and
+          '<div class="card col" id="p-run-card" hidden>' in rack2 and
+          "<b>Show file, on this machine</b>" in rack2 and
+          'id="to1" href="/ui?v=1"' in rack2
           and "Follow timecode" not in said and "Auto" not in said and
           "Black" not in said and "blackout" not in said and
           "show audio" not in said and
