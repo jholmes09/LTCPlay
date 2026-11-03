@@ -600,7 +600,8 @@ configured list, required), the device and address the engine saw, seq,
 `prev` (the previous record's hash) and `hash` (SHA-256 over `prev` plus
 the record's canonical JSON). Nothing is edited in place; a correction is
 a new record. `ltc checklist-verify` and the page's Verify both walk the
-chain. A completed routine writes a per-day record (`records/<date>/
+chain (Verify, Download today's PDF and Export all are on the old
+screen, 1.0, for now: "Old screen" at the top of 2.0, the default). A completed routine writes a per-day record (`records/<date>/
 checklist_<id>_<date>.json` and `.pdf`, pure Python PDF, page numbers,
 the verification result), kept out of log pruning (`journal.prune` only
 touches `nights/`) and out of the diagnostics bundle except as a count.

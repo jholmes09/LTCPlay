@@ -730,7 +730,9 @@ def main(installer, version=""):
         # The shared rules written into both screens (ltcplay/web/
         # remote_rules.js; web.RULES_SERVED_MARK): a package without the
         # file fails here, not on the night.
-        for path in ("/remote", "/remote2"):
+        # /remote is 2.0 by default (Jeff, 2026-11-02); /remote1 is the
+        # old screen, still served until 1.0 is removed.
+        for path in ("/remote", "/remote1", "/remote2"):
             st, body = get(path)
             check(st == 200 and "function armState(" in body,
                   f"GET {path} is not served with the screen rules "

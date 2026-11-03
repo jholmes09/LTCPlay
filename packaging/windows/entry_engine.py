@@ -53,7 +53,7 @@ def _self_check():
     why = web.rules_self_check()
     if why:
         raise RuntimeError(why)
-    yield "rack screen rules present (/remote and /remote2)"
+    yield "rack screen rules present (/remote, /remote1 and /remote2)"
     icons = sorted({name for name, _ in web.ICONS.values()})
     missing = [n for n in icons
                if not os.path.isfile(os.path.join(web.ICONS_DIR, n)) or

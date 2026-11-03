@@ -41515,10 +41515,18 @@ def test_fire_ice_serves_the_rack_screen_not_the_old_page():
               "the rack screen is served and never links the old page")
         # Stop is the engine's complete halt, from any screen (Jeff,
         # 2026-10-28): Remote.stop_press, the Stream Deck's Stop.
-        check('id="b-run"' in str(page) and '"/api/start"' in str(page)
+        # /remote is 2.0 (Jeff, 2026-11-02): its Run (Run show, Run in
+        # Programming) and Stop; the old screen keeps its own at /remote1.
+        check('id="p-run"' in str(page) and 'id="b-go"' in str(page) and
+              '"/api/start"' in str(page)
               and '"/api/remote/stop"' in str(page),
               "the rack screen has Run and Stop of its own, through the "
               "engine's own guarded routes")
+        st, _h, old = _ask(httpd, "GET", "/remote1", client=local)
+        check(st == 200 and "index.html" not in str(old) and
+              'id="b-run"' in str(old) and '"/api/start"' in str(old)
+              and '"/api/remote/stop"' in str(old),
+              "and the old screen too, at /remote1")
     finally:
         httpd.server_close()
         shutil.rmtree(folder, ignore_errors=True)
@@ -52235,7 +52243,8 @@ def test_remote_no_sign_in_over_the_network():
             st, _h, out = R.ask("POST", path, {"who": "Andy", "pin": "2468",
                                                "device": "iPad"})
             check(st == 404, f"{path} does not exist: {st} {out}")
-        st, _h, out = R.ask("GET", "/")
+        # (1.0, the old screen: /remote1 since 2.0 became the default.)
+        st, _h, out = R.ask("GET", "/remote1")
         # Users (2026-10-20): signing in is optional and lives on its own
         # Users screen; the show screen has no sign-in, PIN or picker.
         page = str(out)
@@ -52361,8 +52370,8 @@ def test_remote_network_session_reaches_only_remote_routes():
         st, _h, out = R.ask("GET", "/api/remote/status")
         check(st == 200, "the remote page's own status still answers")
         st, _h, out = R.ask("GET", "/")
-        check(st == 200 and "<title>Show remote</title>" in str(out),
-              "and the remote page itself")
+        check(st == 200 and "<title>Show remote 2.0</title>" in str(out),
+              "and the remote page itself (2.0, the default)")
         st, _h, out = R.ask("GET", "/brand/logo_small.png")
         check(st in (200, 404), f"and the logo route: {st}")
         # The machine itself keeps every route, the deck's journal too.
@@ -52454,7 +52463,7 @@ def test_web_page_icons():
         # Every HTML page the engine serves: the operator page on "/", the
         # rack screen and iPad remote on "/remote" (the Startup page and
         # the rest are views of it).
-        for path in ("/", "/remote"):
+        for path in ("/", "/remote", "/remote1", "/remote2"):
             st, h, body = fetch(path)
             page = body.decode("utf-8", "replace")
             head = page.split("</head>")[0]
@@ -52696,8 +52705,11 @@ def test_remote_localhost_unaffected_and_proxies_refused():
         check(st == 200 and "<title>Show remote</title>" not in str(out),
               "loopback still gets the operator page at /")
         st, _h, out = _ask(R.httpd, "GET", "/remote", client=loop)
+        check(st == 200 and "<title>Show remote 2.0</title>" in str(out),
+              "and the remote page (2.0, the default) at /remote")
+        st, _h, out = _ask(R.httpd, "GET", "/remote1", client=loop)
         check(st == 200 and "<title>Show remote</title>" in str(out),
-              "and the remote page at /remote")
+              "and the old screen at /remote1")
         st, _h, out = _ask(R.httpd, "GET", "/api/remote/whoami", client=loop)
         check(out["local"] is True and out["device"] == "Rack screen",
               f"whoami says it is the machine itself: {out}")
@@ -100840,6 +100852,155 @@ def _js_balanced(code):
     return depth == 0
 
 
+def test_ui2_is_the_default_screen():
+    section("2.0 is the default screen (Jeff, 2026-11-02): the show PC's "
+            "rack window and an iPad on iPadOS 15 Safari get 2.0 at /remote "
+            "and / with no choice made; the old screen link remembers 1.0 "
+            "and opens /remote1, Try 2.0 forgets it; the rack-screen keeper "
+            "still opens /remote and still finds the window by its title; "
+            "the emergency page without the rules is unchanged")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import web as web_mod
+    from ltcplay import showwindows as sw
+    import shutil
+    one, two = _ui2_pages()
+    lo = one[one.find('<script id="remote-logic">'):]
+    lo = lo[:lo.find("</script>") + len("</script>")]
+    two_s = two.replace('<script src="/remote-logic.js"></script>', lo, 1)
+    ipad = ("Mozilla/5.0 (iPad; CPU OS 15_0 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 "
+            "Mobile/15E148 Safari/604.1")
+    ipad_desk = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                 "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 "
+                 "Safari/605.1.15")
+    edge = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 "
+            "Edg/130.0.0.0")
+    loop = ("127.0.0.1", 5000)
+    R = _RemoteRig(S)
+    try:
+        def page(path, cookie="", **kw):
+            hd = dict(kw.pop("headers", None) or {})
+            if cookie:
+                hd["Cookie"] = cookie
+            st, h, out = R.ask("GET", path, headers=hd, **kw)
+            return st, h, out if isinstance(out, str) else None
+
+        n0 = len(R.svc.journal)
+        # The show PC's rack window: Edge, on the machine itself.
+        st, _h, out = page("/remote", client=loop,
+                           headers={"User-Agent": edge})
+        check(st == 200 and out == two_s,
+              f"the show PC's /remote with no choice is 2.0: {st}")
+        # The iPad on the show Wi-Fi: its home screen icon opens / (the
+        # manifest's start_url), Safari may also ask as a desktop.
+        for ua in (ipad, ipad_desk):
+            for path in ("/", "/remote"):
+                st, _h, out = page(path, headers={"User-Agent": ua})
+                check(st == 200 and out == two_s,
+                      f"an iPad (iPadOS 15 Safari) GET {path} with no "
+                      f"choice is 2.0: {st} {ua[13:30]}")
+        man = os.path.join(web_mod.ICONS_DIR, "manifest.webmanifest")
+        with open(man, encoding="utf-8") as fh:
+            check(json.load(fh).get("start_url") == "/",
+                  "the iPad's home screen icon still opens /")
+        # One tap each way, as a browser does it: the cookie it is given
+        # and the address it is sent to.
+        st, h, _o = R.ask("GET", "/ui?v=1",
+                          headers={"Sec-Fetch-Site": "same-origin",
+                                   "User-Agent": ipad})
+        ck = (h.get("set-cookie") or [""])[0].split(";")[0]
+        to = (h.get("location") or [""])[0]
+        check(st == 302 and ck == "ltcplay_ui=1" and to == "/remote1",
+              f"the old screen link: remembered, then /remote1: {st} {h}")
+        st, _h, out = page(to, ck)
+        check(st == 200 and out == one, "it opens 1.0")
+        for path in ("/remote", "/"):
+            st, _h, out = page(path, ck, headers={"User-Agent": ipad})
+            check(st == 200 and out == one,
+                  f"that screen keeps 1.0 at {path} afterwards")
+        st, h, _o = R.ask("GET", "/ui?v=2",
+                          headers={"Sec-Fetch-Site": "same-origin",
+                                   "Cookie": ck})
+        ck2 = (h.get("set-cookie") or [""])[0]
+        to = (h.get("location") or [""])[0]
+        check(st == 302 and ck2.startswith("ltcplay_ui=;") and
+              "Max-Age=0" in ck2 and to == "/remote",
+              f"Try 2.0: the choice cleared, back to /remote: {st} {h}")
+        st, _h, out = page(to)
+        check(st == 200 and out == two_s, "and /remote is 2.0 again")
+        check(len(R.svc.journal) == n0,
+              "choosing a screen journals nothing and presses nothing")
+        # The emergency paths: 2.0 carries its own Stop; without the rules
+        # 2.0 is still served whole at /remote, and the old screen is the
+        # plain page that points to /remote2.
+        check('id="broken-stop"' in two_s and
+              "function stopTapStep2(" in two_s and
+              two_s.count("function stopTapStep(") == 1,
+              "the default page carries the rules and its own Stop")
+        keep = web_mod.REMOTE_RULES
+        tmp = tempfile.mkdtemp(prefix="ltcdefault-")
+        try:
+            web_mod.REMOTE_RULES = os.path.join(tmp, "missing.js")
+            import contextlib
+            import io
+            with contextlib.redirect_stdout(io.StringIO()):
+                st, _h, out = page("/remote")
+                st1, _h1, out1 = page("/remote", "ltcplay_ui=1")
+                st2, _h2, out2 = page("/remote1")
+        finally:
+            web_mod.REMOTE_RULES = keep
+            web_mod._RULES_FAULT_SAID[0] = False
+            shutil.rmtree(tmp, ignore_errors=True)
+        check(st == 200 and out == two,
+              f"without the rules /remote is 2.0 as it is, its own Stop: "
+              f"{st}")
+        check(st1 == 503 and st2 == 503 and out1 == out2 ==
+              web_mod.RULES_MISSING_PAGE and 'href="/remote2"' in out1,
+              f"and the old screen is the plain page pointing to /remote2: "
+              f"{st1} {st2}")
+    finally:
+        R.close()
+    # The rack-screen keeper (Windows): the supervisor opens /remote, which
+    # is now 2.0, and the window keeper finds that window by its title.
+    root = os.path.dirname(os.path.abspath(__file__))
+    sp = os.path.join(root, "packaging", "windows")
+    sys.path.insert(0, sp)
+    was_bc = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        import supervisor as _sup
+        cmd = _sup.rack_page_command(7878, 1, [(0, 0, 1920, 1080)],
+                                     r"C:\Edge\msedge.exe", r"C:\p")
+        check(_sup.RACK_PAGE == "/remote" and cmd and
+              cmd[1] == "--app=http://127.0.0.1:7878/remote",
+              f"the rack screen still opens /remote: {_sup.RACK_PAGE} "
+              f"{cmd and cmd[1]}")
+    finally:
+        sys.dont_write_bytecode = was_bc
+        sys.path.remove(sp)
+        sys.modules.pop("supervisor", None)
+    for title, want in (("Show remote 2.0", True),
+                        ("Show remote 2.0 - Microsoft Edge", True),
+                        ("Show remote", True),
+                        ("Fire and Ice remote", True),
+                        ("Show remote - Microsoft Edge", True),
+                        ("Show remote 3.0", False),
+                        ("Remote Desktop Connection", False)):
+        got = bool(re.search(sw.RACK_TITLE, title))
+        check(got == want, f"the window keeper "
+                           f"{'finds' if want else 'leaves'} {title!r}: "
+                           f"{got}")
+    t2 = re.search(r"<title>([^<]*)</title>", two).group(1)
+    check(re.search(sw.RACK_TITLE, t2) and
+          'document.title = SHOW_NAME ? SHOW_NAME + " remote" : '
+          '"Show remote";' in two,
+          f"2.0's own titles are ones the keeper finds: {t2!r}")
+    print("  ok")
+
+
 def test_ui2_runs_on_ipados15():
     section("2.0 runs on iPadOS 15 and later: no script on a served page "
             "(the pages, /remote-logic.js and the 2.0 page as served) uses "
@@ -100954,13 +101115,13 @@ def test_ui2_runs_on_ipados15():
 
 
 def test_ui2_pages_served_and_switched():
-    section("interface 2.0 (Jeff, 2026-10-28): /remote is still 1.0 byte "
-            "for byte unless this screen chose 2.0 (its own cookie, one "
-            "tap each way) or the show machine's default says 2.0; "
-            "/remote1 and /remote2 are always that page; /remote-logic.js "
-            "is the shared rules file; the same network, Host, proxy and other-"
-            "site rules; the default is set on the show machine only, with "
-            "Settings, and changes nothing on the rig")
+    section("interface 2.0 is the default screen (Jeff, 2026-11-02): "
+            "/remote is 2.0 byte for byte for every screen unless this "
+            "screen chose the old screen (its own cookie ltcplay_ui=1, one "
+            "tap each way); /remote1 and /remote2 are always that page; "
+            "/remote-logic.js is the shared rules file; the same network, "
+            "Host, proxy and other-site rules; the old ui-default setting "
+            "is still set on the show machine only and no longer decides")
     S = _sched()
     if S is None:
         return
@@ -100989,48 +101150,70 @@ def test_ui2_pages_served_and_switched():
             return st, h, out if isinstance(out, str) else None
 
         n0 = len(R.svc.journal)
-        # Nobody chose: 1.0, from the network and on the machine itself.
+        # Nobody chose: 2.0, from the network and on the machine itself
+        # (Jeff, 2026-11-02), byte for byte what /remote2 serves.
         for path in ("/remote", "/"):
             st, h, out = page(path)
-            check(st == 200 and out == one,
-                  f"GET {path} from the network with no choice is 1.0, "
-                  f"byte for byte as served before the rules moved: {st}")
+            check(st == 200 and out == two_s and
+                  h.get("content-type") == ["text/html; charset=utf-8"],
+                  f"GET {path} from the network with no choice is 2.0, "
+                  f"byte for byte /remote2: {st}")
         st, _h, out = page("/remote", client=loop)
-        check(st == 200 and out == one, f"and on the show machine: {st}")
+        check(st == 200 and out == two_s, f"and on the show machine: {st}")
         for path, want in (("/remote1", one), ("/remote2", two_s)):
             for c in (("10.20.0.44", 50000), loop):
                 st, h, out = page(path, client=c)
                 check(st == 200 and out == want and
                       h.get("content-type") == ["text/html; charset=utf-8"],
                       f"GET {path} from {c[0]} is always that page: {st}")
-        # A screen's own choice: its cookie, and only its own.
+        # A screen's own choice: its cookie, and only its own. Only an
+        # exact ltcplay_ui=1 keeps the old screen; anything else is 2.0.
         for cookie, want, why in (
-                ("ltcplay_ui=2", two_s, "chose 2.0"),
+                ("ltcplay_ui=2", two_s, "chose 2.0 before it was the default"),
                 ("ltcplay_user=abcdefghijklmnop0123; ltcplay_ui=2", two_s,
                  "chose 2.0, beside a sign-in cookie"),
                 ("ltcplay_ui=1", one, "chose 1.0"),
-                ("ltcplay_ui=3", one, "a choice that is not 1 or 2"),
-                ("ltcplay_ui=2x", one, "a damaged choice"),
-                ("xltcplay_ui=2", one, "another cookie's name")):
+                ("ltcplay_user=abcdefghijklmnop0123; ltcplay_ui=1", one,
+                 "chose 1.0, beside a sign-in cookie"),
+                ("ltcplay_ui=", two_s, "had its choice cleared"),
+                ("ltcplay_ui=3", two_s, "a choice that is not 1 or 2"),
+                ("ltcplay_ui=1x", two_s, "a damaged choice"),
+                ("xltcplay_ui=1", two_s, "another cookie's name")):
             st, _h, out = page("/remote", headers={"Cookie": cookie})
             check(st == 200 and out == want,
                   f"/remote for a screen that {why} ({cookie}): "
                   f"{'2.0' if out == two_s else '1.0' if out == one else st}")
-        st, _h, out = page("/", headers={"Cookie": "ltcplay_ui=2"})
-        check(st == 200 and out == two_s,
+        st, _h, out = page("/", headers={"Cookie": "ltcplay_ui=1"})
+        check(st == 200 and out == one,
               "the iPad's / follows its choice too")
-        st, _h, out = page("/remote1", headers={"Cookie": "ltcplay_ui=2"})
-        check(st == 200 and out == one, "/remote1 is 1.0 whatever the choice")
+        for ck in ("ltcplay_ui=1", "ltcplay_ui=2", ""):
+            hd = {"Cookie": ck} if ck else {}
+            st, _h, out = page("/remote1", headers=hd)
+            check(st == 200 and out == one,
+                  f"/remote1 is 1.0 whatever the choice ({ck or 'none'})")
+            st, _h, out = page("/remote2", headers=hd)
+            check(st == 200 and out == two_s,
+                  f"/remote2 is 2.0 whatever the choice ({ck or 'none'})")
         # The switch: one link each way, a cookie in that browser only.
+        # The old screen link (2.0) remembers 1.0 and opens /remote1; Try
+        # 2.0 (1.0) forgets it and goes back to /remote, the default.
+        st, h, _out = R.ask("GET", "/ui?v=1")
+        ck = (h.get("set-cookie") or [""])[0]
+        check(st == 302 and h.get("location") == ["/remote1"] and
+              ck.startswith("ltcplay_ui=1;") and
+              "SameSite=Strict" in ck and "Path=/" in ck and
+              "Max-Age=31536000" in ck,
+              f"/ui?v=1: the old screen, remembered on this screen: "
+              f"{st} {h}")
+        st, h, _out = R.ask("GET", "/ui?v=2")
+        ck = (h.get("set-cookie") or [""])[0]
+        check(st == 302 and h.get("location") == ["/remote"] and
+              ck.startswith("ltcplay_ui=;") and
+              "SameSite=Strict" in ck and "Path=/" in ck and
+              "Max-Age=0" in ck,
+              f"/ui?v=2: the choice cleared, back to /remote (2.0): "
+              f"{st} {h}")
         for v in ("2", "1"):
-            st, h, _out = R.ask("GET", f"/ui?v={v}")
-            ck = (h.get("set-cookie") or [""])[0]
-            check(st == 302 and h.get("location") == ["/remote"] and
-                  ck.startswith(f"ltcplay_ui={v};") and
-                  "SameSite=Strict" in ck and "Path=/" in ck and
-                  "Max-Age=" in ck,
-                  f"/ui?v={v}: back to /remote with that choice "
-                  f"remembered on this screen: {st} {h}")
             for sfs in ("same-origin", "none"):
                 st, _h, _o = R.ask("GET", f"/ui?v={v}",
                                    headers={"Sec-Fetch-Site": sfs})
@@ -101078,7 +101261,9 @@ def test_ui2_pages_served_and_switched():
               "function armState(" in out and "<script" not in out,
               f"/remote-logic.js is the rules 1.0 is served with, "
               f"whole: {st} {h.get('content-type')}")
-        # The default: the show machine only, Settings, 1 or 2.
+        # The old default setting (ui-default, removed with 1.0, R1): still
+        # the show machine only, Settings, 1 or 2, but it no longer decides
+        # which page /remote serves (Jeff, 2026-11-02).
         st, _h, out = R.ask("GET", "/api/remote/ui-default")
         check(st == 403, f"the default is not read from the network: {st}")
         st, _h, out = R.ask("GET", "/api/remote/ui-default", client=loop)
@@ -101106,7 +101291,7 @@ def test_ui2_pages_served_and_switched():
                   for r in list(R.svc.journal)[n0:]),
               "and the change is journaled")
         st, _h, out = page("/remote")
-        check(out == two_s, "a screen that has not chosen now gets 2.0")
+        check(out == two_s, "a screen that has not chosen gets 2.0")
         st, _h, out = page("/remote", client=loop)
         check(out == two_s, "the rack screen too, at the same /remote")
         st, _h, out = page("/remote", headers={"Cookie": "ltcplay_ui=1"})
@@ -101115,8 +101300,13 @@ def test_ui2_pages_served_and_switched():
         check(out == {"default": 2}, f"the default reads back: {out}")
         st, _h, out = R.ask("POST", "/api/remote/ui-default",
                             {"default": 1}, client=loop)
-        check(st == 200 and page("/remote")[2] == one,
-              f"and back to 1: {st} {out}")
+        check(st == 200 and page("/remote")[2] == two_s and
+              page("/remote", client=loop)[2] == two_s and
+              page("/")[2] == two_s,
+              f"a saved default of 1 no longer sends a screen that has not "
+              f"chosen to 1.0: {st} {out}")
+        st, _h, out = page("/remote", headers={"Cookie": "ltcplay_ui=1"})
+        check(out == one, "and a screen that chose 1.0 still keeps it")
         # A preference never breaks the settings file, and a broken file
         # never breaks the page.
         path = os.path.join(R.work, remote_mod.SETTINGS_FILE)
@@ -101128,8 +101318,8 @@ def test_ui2_pages_served_and_switched():
               f"and the other settings still read: {s}")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("{ not json")
-        check(R.remote.ui_default() == 1 and page("/remote")[2] == one,
-              "a settings file that cannot be read serves 1.0")
+        check(R.remote.ui_default() == 1 and page("/remote")[2] == two_s,
+              "a settings file that cannot be read still serves 2.0")
         os.remove(path)
         # The role matrix: Settings, admin by default; never a safety press.
         check(users_mod.classify("/api/remote/ui-default",
@@ -101208,10 +101398,10 @@ def test_remote_rules_file():
     check("why = web.rules_self_check()\n    if why:\n"
           "        raise RuntimeError(why)\n" in eng,
           "the installed engine's --self-check fails without the rules")
-    check('for path in ("/remote", "/remote2"):' in smoke and
+    check('for path in ("/remote", "/remote1", "/remote2"):' in smoke and
           '"function armState(" in body' in smoke,
-          "the installer smoke test asks /remote and /remote2 for the "
-          "rules mark")
+          "the installer smoke test asks /remote, /remote1 and /remote2 "
+          "for the rules mark")
 
     def logic_now():
         """remote_logic(), or what it raised: it must never raise."""
@@ -101326,12 +101516,16 @@ def test_remote_rules_file():
         with open(put_bad, "wb") as fh:
             fh.write(enc[:200] + b"\xff\xfe" + enc[200:])
         with contextlib.redirect_stdout(io.StringIO()):
-            st1, _h, out1 = R.ask("GET", "/remote")
+            st1, _h, out1 = R.ask("GET", "/remote1")
             st2, _h, out2 = R.ask("GET", "/remote2")
             st3, _h, out3 = R.ask("GET", "/remote-logic.js")
+            st4, _h, out4 = R.ask("GET", "/remote")
         check(st1 == 503 and isinstance(out1, str) and words in out1,
-              f"a rules file that is not UTF-8: GET /remote is the plain "
-              f"page: {st1}")
+              f"a rules file that is not UTF-8: GET /remote1 (the old "
+              f"screen) is the plain page: {st1}")
+        check(st4 == 200 and out4 == two_file,
+              f"and GET /remote (2.0 by default, Jeff 2026-11-02) is 2.0 "
+              f"as it is, its own Stop with it: {st4}")
         check(st2 == 200 and out2 == two_file,
               f"and GET /remote2 is 2.0 as it is, its own Stop with it: "
               f"{st2}")
@@ -101419,20 +101613,20 @@ def test_ui2_page_makes_only_1_0_presses():
             r'\b(?:press|annPress)\("([a-z-]+)"', src)}
         return out
     r1, r2 = routes(one), routes(two)
-    # 2.0's own routes, which 1.0 has no button for: the default interface
-    # and the play-from cue list (Settings), the fuel pump (2026-10-30:
+    # 2.0's own routes, which 1.0 has no button for: the play-from cue
+    # list (Settings; its Default interface card went when 2.0 became the
+    # default screen, Jeff 2026-11-02), the fuel pump (2026-10-30:
     # 1.0 is being retired and gets no new controls, FIREBALL_TIMELINE_
     # DESIGN, section 4) and the fireball timeline's save (Jeff,
     # 2026-10-30; 2.0 only, no 1.0 page edits it).
     # Start at a cue (play-from cues part 3, the Resume sheet): 1.0 has no
     # button for it either.
-    check(r2 - r1 == {"/api/remote/ui-default",
-                      "/api/remote/play-from-cues-save",
+    check(r2 - r1 == {"/api/remote/play-from-cues-save",
                       "/api/remote/fuel-pump",
                       "/api/remote/fireball-timeline-save",
                       "/api/remote/start-at-cue"} and
           '"/api/remote/play-from-cues?show="' in two,
-          f"2.0 adds five routes, the default interface, the play-from "
+          f"2.0 adds four routes, the play-from "
           f"cue list, the fuel pump, the fireball timeline's save and "
           f"start at a cue: "
           f"{sorted(r2 - r1)}")
@@ -101517,10 +101711,17 @@ def test_ui2_page_makes_only_1_0_presses():
     tour = _js_function(two, "coachMaybe") or ""
     check("isLive(ST)" in tour and '"armed"' in tour and "stale()" in tour,
           f"the tour never starts over a live show: {tour[:200]!r}")
-    # 1.0: one tap to 2.0, nothing else of it changed.
-    check(one.count("/ui?v=2") == 1 and two.count("/ui?v=1") == 1 and
-          'aria-label="Back to 1.0"' in two,
-          "Try 2.0 on 1.0 and Back to 1.0 on 2.0, once each")
+    # 1.0: one tap to 2.0, nothing else of it changed. 2.0: the old
+    # screen in plain words (Jeff, 2026-11-02), in the header on every tab
+    # and spelled out on the Schedule and Settings tabs.
+    old = "Open the old screen (for Users, Audit, Network and the rest)"
+    check(one.count("/ui?v=2") == 1 and two.count('href="/ui?v=1"') == 3 and
+          two.count("/ui?v=1") == 3 and
+          f'id="to1" href="/ui?v=1" aria-label="{old}" title="{old}"' in two
+          and two.count(f'</svg>{old}</a>') == 2 and
+          "Back to 1.0" not in two,
+          "Try 2.0 on 1.0; the old screen link on 2.0's header and, in "
+          "full words, on its Schedule and Settings tabs")
     import shutil
     node = shutil.which("node")
     if not node:
@@ -114786,6 +114987,7 @@ if __name__ == "__main__":
         test_config_watch_reloads_only_what_is_safe_and_is_quick,
         test_config_watch_on_the_status_and_reload_engine,
         test_ui2_pages_served_and_switched,
+        test_ui2_is_the_default_screen,
         test_remote_rules_file,
         test_ui2_runs_on_ipados15,
         test_ui2_page_makes_only_1_0_presses,

@@ -58,7 +58,10 @@ user's name, like "unsigned", "system" and "nobody".
 
 ## Signing in
 
-The small button at the top right of the rack screen says who is signed
+The Users screen is on the old screen (interface 1.0) for now: on 2.0,
+the rack screen's default, tap "Old screen" at the top first ("Try 2.0"
+comes back). 2.0 has its own sign in at the top right too.
+The small button at the top right of the old screen says who is signed
 in ("Signed out" when nobody is). Press it to get to the Users screen:
 pick your name, type your password, Sign in. Sign out is on the same
 screen. The show screen itself has no sign-in on it and still fits one

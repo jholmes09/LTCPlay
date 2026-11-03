@@ -19938,17 +19938,55 @@ def build():
   "            or route in UI_ROUTES\n",
   ""),
 
- ("ui2: a screen's own choice of page is ignored", "ltcplay/web.py",
-  '            if k == UI_COOKIE and v in ("1", "2"):',
+ # 2.0 is the default screen (Jeff, 2026-11-02): only a screen's own
+ # ltcplay_ui=1 keeps the old screen; the links both ways.
+ ("ui2 default: a screen that chose the old screen gets 2.0", "ltcplay/web.py",
+  '            if k == UI_COOKIE and v == "1":',
   "            if False:"),
 
- ("ui2: a junk choice cookie picks 2.0", "ltcplay/web.py",
-  '            if k == UI_COOKIE and v in ("1", "2"):\n                return int(v)',
-  '            if k == UI_COOKIE:\n                return 2'),
+ ("ui2 default: a junk choice cookie keeps the old screen", "ltcplay/web.py",
+  '            if k == UI_COOKIE and v == "1":',
+  '            if k == UI_COOKIE and v != "2":'),
 
- ("ui2: the show machine's default interface is ignored", "ltcplay/web.py",
-  "            return 2 if rm is not None and rm.ui_default() == 2 else 1",
-  "            return 1"),
+ ("ui2 default: /remote is still 1.0 with no choice made", "ltcplay/web.py",
+  "                return 1\n        return 2\n",
+  "                return 1\n        return 1\n"),
+
+ ("ui2 default: the old screen link does not remember the choice", "ltcplay/web.py",
+  '                "Set-Cookie": f"{UI_COOKIE}=1; SameSite=Strict; Path=/; "\n'
+  '                              f"Max-Age=31536000"})',
+  '                "Set-Cookie": f"{UI_COOKIE}=1; SameSite=Strict; Path=/; "\n'
+  '                              f"Max-Age=0"})'),
+
+ ("ui2 default: the old screen link lands on /remote", "ltcplay/web.py",
+  '                "Location": "/remote1",',
+  '                "Location": "/remote",'),
+
+ ("ui2 default: Try 2.0 leaves the old screen remembered", "ltcplay/web.py",
+  '            "Set-Cookie": f"{UI_COOKIE}=; SameSite=Strict; Path=/; "\n'
+  '                          f"Max-Age=0"})',
+  '            "Set-Cookie": f"{UI_COOKIE}=1; SameSite=Strict; Path=/; "\n'
+  '                          f"Max-Age=31536000"})'),
+
+ ("ui2 default: 2.0's header link opens /remote1 without remembering it",
+  "ltcplay/web/remote2.html",
+  '<a class="hb" id="to1" href="/ui?v=1"',
+  '<a class="hb" id="to1" href="/remote1"'),
+
+ ("ui2 default: the Schedule tab's old screen card skips remembering it",
+  "ltcplay/web/remote2.html",
+  'id="old-sched"><div class="t"><b>The old screen</b><span>Some things are only there for now. Its Try 2.0 button comes back here.</span></div><a class="b blue" href="/ui?v=1">',
+  'id="old-sched"><div class="t"><b>The old screen</b><span>Some things are only there for now. Its Try 2.0 button comes back here.</span></div><a class="b blue" href="/remote1">'),
+
+ ("ui2 default: the rack screen opens the old screen",
+  "packaging/windows/supervisor.py",
+  'RACK_PAGE = "/remote"     #',
+  'RACK_PAGE = "/remote1"    #'),
+
+ ("ui2 default: the installer smoke test skips the old screen's rules",
+  "packaging/windows/ci_smoke.py",
+  'for path in ("/remote", "/remote1", "/remote2"):',
+  'for path in ("/remote", "/remote2"):'),
 
  ("ui2: a link from another site's page switches the page", "ltcplay/web.py",
   "            return self._send(403, {\"error\": \"A switch from another site's \"\n"
