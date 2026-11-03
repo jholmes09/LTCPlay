@@ -71,7 +71,6 @@ With bundle E (P12, P14, P15, P16) and #214 (P5, P6, P7), every port is done: 2.
 | Item | What is left |
 |---|---|
 | 2.0's old screen links | The header's "Old screen" and the Schedule and Settings tabs' "Open the old screen (for Users, Audit, Network and the rest)" cards. R1 removes them; their words are pinned by `test_ui2_page_makes_only_1_0_presses`. |
-| The engine's own 1.0 words | `fire_ice.py` `LOOK_IN_SHOW` (the cues fault for a look left in Programming) says "On 2.0, Open in 1.0 first.": 2.0 has had the Show file card since P1, so this sentence is wrong today. It is engine text (no engine change in the port PRs): change it in R1 or a small engine PR, with its tests. |
 | Jeff's yes | R1 deletes 1.0 only after Jeff says so. |
 
 Then R1 (delete 1.0) and R2 (the docs say 2.0 only). Practice mode is not part of 1.0 and not needed for R1.

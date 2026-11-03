@@ -1799,7 +1799,8 @@ whatever ended the show before:
   the Programming screen such a look stays through Play from. To clear
   it in 1.0: press Stop on the "Show file, on this machine" card, then
   Run (Run starts with no look on the pixels). That card is only on the
-  show machine's own screen. 2.0 has no Show file card: use Open in 1.0.
+  show machine's own screen. On 2.0 the same card, with the same Stop and
+  Run, is on the Schedule tab.
   The Programming card's "Follow timecode again" button does not clear a
   look, and while the show audio is the playhead it reads "Stop the show
   audio" and stops playback.
@@ -1825,10 +1826,10 @@ first show frame went out on the pixels 0.21 s after the start was sent."
 **If the pixels are ever on a look while a show plays** (anything but a
 Hold's or a Stop's own fade), after 1.5 s the rack screen and the Stream
 Deck show it as a flame cues fault: "CUES FAULT: pixels show black, not
-the show. Programming: Show file card, Stop, then Run. On 2.0, Open in
-1.0 first. Scheduled show: tell Jeff." That Stop is the one on the "Show
-file, on this machine" card (it ends playback and turns Run off), not
-"Stop the show audio". 2.0 shows it as "Flame cues are off" with the
+the show. Programming: Show file card, Stop, then Run. On 2.0: the
+Schedule tab's Show file card. Scheduled show: tell Jeff." That Stop is
+the one on the "Show file, on this machine" card (it ends playback and
+turns Run off), not "Stop the show audio". 2.0 shows it as "Flame cues are off" with the
 full text behind a tap. It is display only.
 
 **Other flame cue faults while a show plays.** The flame cues are cut from

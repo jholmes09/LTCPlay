@@ -45753,11 +45753,19 @@ def test_fire_ice_flame_cut_round2_of_177():
         lines = []
         c5._journal = lambda t, **k: lines.append((t, k.get("fault")))
         c5._cuts[paths[0]].ensure(0, 899)
+        said5 = set()
         for k in range(0, 900, 7):
             c5(_fi_at(clk, int(k * 25 * 30 // 1000)))
+            if c5.fault:
+                said5.add(c5.fault)
         bad_lines = [t for t, f in lines if f and "could not be read" in t]
         check(len(bad_lines) == 1,
               f"a render missing its tail: one line for it: {bad_lines}")
+        # And one sentence on the screens for it, the same in every piece
+        # (no frame number in it): the journal alone no longer shows this,
+        # it journals a fault once while it stays set.
+        check(len(said5) == 1,
+              f"a render missing its tail: one fault text for it: {said5}")
         c5.close()
         # A block that fails for a reason that is not the render's bytes
         # (memory): uncut, tried again later, then cut. A corrupt block
@@ -47806,27 +47814,27 @@ def test_every_show_start_clears_the_pixels():
           f"once it lasts it is a CUES FAULT on the screens and in the "
           f"journal: {cues.fault!r}")
     # The rack screen's words (reviews of PR #171): only buttons the Fire
-    # & Ice screens have (1.0: Stop on the Show file card, then Run; 2.0
-    # has its own Show file card since P1, and its old screen link still
-    # opens 1.0's: the engine's "On 2.0, Open in 1.0 first." is engine text,
-    # left for R1, docs/REMOVE_1_0_PLAN.md), never the GPL page's Black,
-    # Preshow or Auto, nor the
-    # Programming card's "Follow timecode again" / "Stop the show audio";
-    # short as a whole, no sentence over eight words; "black", never
-    # "blackout".
+    # & Ice screens have (1.0: Stop on the Show file card, then Run; 2.0:
+    # the same card on its Schedule tab, since #208, never "Open in 1.0"),
+    # never the GPL page's Black, Preshow or Auto, nor the Programming
+    # card's "Follow timecode again" / "Stop the show audio"; short as a
+    # whole, no sentence over eight words; "black", never "blackout".
     said = cues.faults_now()
     rack = remote1_text()
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "ltcplay", "web", "remote2.html"),
               encoding="utf-8") as fh:
         rack2 = fh.read()
+    # 2.0's Schedule tab: from its pane to the next one.
+    sched2 = rack2[rack2.find('id="t-schedule"'):]
+    sched2 = sched2[:sched2.find('<section class="pane"')]
     check("Programming: Show file card, Stop, then Run." in said and
-          "Open in 1.0" in said and len(said.split()) <= 30 and
+          "On 2.0: the Schedule tab's Show file card." in said and
+          "Open in 1.0" not in said and len(said.split()) <= 30 and
           'label:"Stop"' in rack and 'label:"Run"' in rack and
           "Show file, on this machine" in rack and
-          '<div class="card col" id="p-run-card" hidden>' in rack2 and
-          "<b>Show file, on this machine</b>" in rack2 and
-          'id="to1" href="/ui?v=1"' in rack2
+          '<div class="card col" id="p-run-card" hidden>' in sched2 and
+          "<b>Show file, on this machine</b>" in sched2
           and "Follow timecode" not in said and "Auto" not in said and
           "Black" not in said and "blackout" not in said and
           "show audio" not in said and
@@ -51522,7 +51530,8 @@ def test_mutate_mutant_limit_follows_the_baseline():
     # The rule itself: three times the baseline, never under the old 300 s,
     # never over the ceiling.
     for base, want in ((0, 300), (60, 300), (100, 300), (150, 450),
-                       (280, 840), (600, 1800), (5000, 1800)):
+                       (280, 840), (600, 1800), (1800, 5400),
+                       (5000, 5400)):
         check(mutate.mutant_timeout(base) == want,
               f"baseline {base} s: mutant limit "
               f"{mutate.mutant_timeout(base)} s, want {want} s")
@@ -79621,7 +79630,7 @@ def test_rack_screen_locks_controls_signed_out_in_a_browser():
                            "view_only": False,
                            "may": {p: True for p in perms}})
     # One draw each, the short window signed out and the show PC's screen
-    # signed in: the Windows runner's 20 minutes are nearly all used, and
+    # signed in: the Windows runner's time is nearly all used, and
     # the sign-in and sign-out flip test draws both sizes again.
     for label, st, sizes in (("signed out", out_st, ((1366, 600),)),
                              ("signed in", in_st, ((1920, 1080),))):
@@ -103015,7 +103024,13 @@ out.held = {n:held.length, on:held.map(on), runs:[...new Set(held.map(b => b.run
 n = mark();
 h.ev(pad("valve"), "pointerup");
 await h.sleep(350);
-out.lift = since(n).map(p => p.route + ":" + on(p.body) + ":" + !!p.body.run);
+// The page's own open beat (morning-open, every 500 ms while DAY is up)
+// can land in any window: these lists are the Fireball's beats only, and
+// anything else but that open beat is kept apart and must be empty.
+const fbOnly = n0 => since(n0).filter(p => p.route === "fireball-beat");
+const notFb = n0 => since(n0).filter(p => p.route !== "fireball-beat" && p.route !== "morning-open").map(p => p.route);
+out.lift = fbOnly(n).map(p => p.route + ":" + on(p.body) + ":" + !!p.body.run);
+out.lift_other = notFb(n);
 n = mark();
 h.ev(pad("fuel"), "click");
 await h.sleep(350);
@@ -103037,7 +103052,8 @@ out.hold = {hold:since(n).filter(p => p.route === "hold").length,
 n = mark();
 h.ev(pad("fuel"), "click");
 await h.sleep(300);
-out.fuel_off = since(n).map(p => p.route + ":" + on(p.body));
+out.fuel_off = fbOnly(n).map(p => p.route + ":" + on(p.body));
+out.fuel_off_other = notFb(n);
 window.__answer["fireball-beat"] = b => on(b) ? [409, {error:"The Fireball is not armed. Arm it first.", cut:true}] : [200, {ok:true}];
 h.ev(pad("air"), "click");
 await h.sleep(500);
@@ -103155,10 +103171,13 @@ out.lost = await heldCut("lostpointercapture");
           hd["runs"] == 1 and hd["seqs"] == sorted(hd["seqs"]) and
           "on" in hd["cls"] and hd["st"] == "ON",
           f"Valve Open held: a beat every 100 ms, one run, in order: {hd}")
+    # Fireball beats only: the page's own open beat (morning-open) can
+    # land in the window on a slow runner (Windows); any other post is
+    # still a failure (lift_other, fuel_off_other).
     check(m["lift"] and m["lift"][0] == "fireball-beat::true" and
-          len(m["lift"]) == 1,
+          len(m["lift"]) == 1 and m["lift_other"] == [],
           f"the lift: one beat with everything off, then nothing: "
-          f"{m['lift']}")
+          f"{m['lift']} {m['lift_other']}")
     check(len(m["fuel"]) >= 3 and all(x == "fuel" for x in m["fuel"]),
           f"Fuel Charge stays on, beating: {m['fuel']}")
     check(m["blur"]["fuel"] and not m["blur"]["ign"] and
@@ -103168,8 +103187,10 @@ out.lost = await heldCut("lostpointercapture");
     check(m["hold"]["hold"] == 1 and m["hold"]["beats"] >= 3 and
           m["hold"]["fuel"] and m["hold"]["shown"],
           f"a Hold does not end the page: Fuel keeps beating: {m['hold']}")
-    check(m["fuel_off"][:1] == ["fireball-beat:"],
-          f"Fuel pressed again: everything off: {m['fuel_off']}")
+    check(m["fuel_off"][:1] == ["fireball-beat:"] and
+          m["fuel_off_other"] == [],
+          f"Fuel pressed again: everything off: {m['fuel_off']} "
+          f"{m['fuel_off_other']}")
     check(not m["refused"]["air"] and "not armed" in m["refused"]["msg"] and
           m["refused"]["quiet"] == 0,
           f"a refusal: everything off, said, nothing comes back: "

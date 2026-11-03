@@ -7,8 +7,9 @@ Written 2026-10-06, after the audit that simplified it.
 ## The three layers
 
 1. **selftest.py** is the suite: 377 checks of the program, from LTC
-   decoding to the show conductor's Stop. It runs in about 3.5 minutes on
-   a laptop and 4 to 6 minutes on a CI runner. Every PR runs it on ubuntu
+   decoding to the show conductor's Stop. On a CI runner it takes about
+   15 to 20 minutes on ubuntu and 25 to 35 on windows (2026-11-03; the
+   job limits are 45 and 60 minutes). Every PR runs it on ubuntu
    and on windows (the show PC's OS). `python3 selftest.py` runs it by
    hand; its last line is "all checks passed in N s" or a count of
    failures, each with a sentence.
@@ -36,7 +37,7 @@ Written 2026-10-06, after the audit that simplified it.
 
 | When | What | How long | Required to merge |
 |---|---|---|---|
-| Every push to a PR | selftest on ubuntu and windows | 5 to 7 min | yes (both) |
+| Every push to a PR | selftest on ubuntu and windows | 15 to 20 min (ubuntu), 25 to 35 min (windows); limits 45 and 60 | yes (both) |
 | A PR marked ready for review, and every push to it after | the 32 mutate shards, each running only the mutations this PR can have changed the result of (below) | seconds for a doc or UI change; 10 to 90 min for a change to a safety file | yes (all 32) |
 | A push to main | the same, against the previous main | as above | not applicable |
 | A release tag (`gpl-...` or a tech build) | every mutation, ubuntu and windows | 4 to 6 hours | the tag is not cut until it is green |
@@ -112,10 +113,10 @@ forces every way it can end red and checks the sentence is there.
 - `The suite FAILS with nothing mutated`: the baseline is red on that
   runner; see the selftest job, the shard measured nothing.
 - `INFRASTRUCTURE FAILURE`: the suite with nothing mutated did not finish
-  inside 30 minutes, twice (it is run once more by itself after the first
+  inside 90 minutes, twice (it is run once more by itself after the first
   time). The runner, not the code: no mutation ran and none was missed;
   re-run the shard. A mutant's own suite is stopped at three times that
-  shard's measured baseline, never under 300 s or over 30 minutes; a
+  shard's measured baseline, never under 300 s or over 90 minutes; a
   mutant stopped there counts as caught (it made the suite hang), and the
   job summary's "baseline time / mutant limit" column gives both numbers.
 - `shard N/32 TIMED OUT`: the shard ran out of its 340 minutes (the

@@ -10216,11 +10216,12 @@ def build():
   '            self._set("pixels", UNKNOWN)\n            return clear()\n',
   '            return clear()\n'),
 
- ("pixels: a start refused by an Abort just before the hand-over plays "
-  "the music anyway",
-  'ltcplay/fire_ice.py',
-  '        elif to_show(lambda: self.show.pixels_for_show(what)) is None:\n            return None\n',
-  '        else:\n            to_show(lambda: self.show.pixels_for_show(what))\n'),
+ # ("pixels: a start refused by an Abort just before the hand-over plays
+ # the music anyway") is retired (PR #216): since the Abort latch went
+ # (aee2141) pixels_to_show never refuses and pixels_for_show never returns
+ # None, so the branch it broke cannot run and the mutation could not be
+ # caught. A Stop at that moment is "fire & ice: a Stop during the hand-over
+ # lets the show start go out", below.
 
  ('pixels: a Stop while the cue was starting leaves the hand-over armed', 'ltcplay/fire_ice.py',
   '                           action="stop", outcome="failed")\n'
@@ -10265,6 +10266,12 @@ def build():
   'ltcplay/fire_ice.py',
   '                "Programming: Show file card, Stop, then Run. "\n',
   '                "Programming screen: press Follow timecode. "\n'),
+
+ ("pixels: the look-in-show CUES FAULT sends a 2.0 screen to 1.0, not to "
+  "2.0's own Show file card on its Schedule tab",
+  'ltcplay/fire_ice.py',
+  '                "On 2.0: the Schedule tab\'s Show file card. "\n',
+  '                "On 2.0, Open in 1.0 first. "\n'),
 
  ("pixels: a look set through the engine during a start's hand-over is "
   "lifted by the first show frame",
@@ -23859,10 +23866,16 @@ _LAST_STOP = _PerThread(["", False])
 # just ran on this runner, never under MUTANT_FLOOR (the old 300 s, so no
 # mutant is stopped sooner than before) and never over MUTANT_CEILING (so a
 # hung mutant costs a bounded time, twice over in CI).
-SUITE_TIMEOUT = 1800
+# 1800 s became too short on 2026-11-03 (PR #216): the suite alone takes 16
+# to 20 minutes on ubuntu (27 to 35 on windows), and with --jobs 3 three
+# baselines share one runner, so every shard of that run stopped at 1800 s
+# with nothing mutated. 5400 s is half again the selftest job's longest
+# limit (60 minutes, windows). The ceiling stays equal to it, so a mutant
+# is never stopped sooner than a clean baseline is allowed to take.
+SUITE_TIMEOUT = 5400
 MUTANT_FACTOR = 3
 MUTANT_FLOOR = 300
-MUTANT_CEILING = 1800
+MUTANT_CEILING = 5400
 
 
 def mutant_timeout(baseline_seconds):
