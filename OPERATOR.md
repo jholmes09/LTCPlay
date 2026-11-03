@@ -2574,8 +2574,8 @@ Schedule (with the Programming cards and, on the show PC, its tools) and
 Settings. Stop show, Hold and Disarm flames are one tap away on every
 tab, and the hardware e-stop always works.
 
-- An old "remote1" or "ui" address no longer opens anything; open
-  `/remote`. A `ui_default` left in `ltcplay_remote.json` is ignored.
+- An old `/remote1` or `/ui` address opens the screen (`/remote`). A
+  `ui_default` left in `ltcplay_remote.json` is ignored.
 - Settings, "Play-from cues" (on the show PC, by someone with
   Settings, admins): a list of named points in a show file to play the
   show from later. Saving the list sends nothing to the rig and starts

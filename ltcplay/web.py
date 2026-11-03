@@ -40,11 +40,14 @@ USER_ERRORS = (SessionError, audio_mod.DeviceError, ValueError,
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = os.path.join(HERE, "web", "index.html")
 # The screen (remote2.html): /remote, and the show network's /. /remote2
-# is the same page, kept for old bookmarks. /remote-logic.js is its pure
-# rules (web/remote_rules.js), also written into the page as it is served.
+# is the same page, kept for old bookmarks; the first screen's old
+# addresses (/remote1, /ui?v=1 or 2) send a browser to /remote and set
+# nothing. /remote-logic.js is its pure rules (web/remote_rules.js), also
+# written into the page as it is served.
 REMOTE2_PAGE = os.path.join(HERE, "web", "remote2.html")
 REMOTE_RULES = os.path.join(HERE, "web", "remote_rules.js")
-UI_ROUTES = ("/remote2", "/remote-logic.js")
+UI_ROUTES = ("/remote2", "/remote-logic.js", "/remote1", "/ui")
+OLD_SCREEN_ROUTES = ("/remote1", "/ui")
 LOGIC_OPEN = '<script id="remote-logic">'
 LOGIC_TAG = '<script src="/remote-logic.js"></script>'
 
@@ -1500,6 +1503,11 @@ class Handler(BaseHTTPRequestHandler):
                 # Fire & Ice (Jeff, 2026-10-04): the rack screen is the one
                 # operator screen. The old operator page stays for the GPL
                 # path only; nothing in this mode serves or links to it.
+                return self._send(302, b"", "text/plain",
+                                  headers={"Location": "/remote"})
+            if route in OLD_SCREEN_ROUTES:
+                # The first screen is removed (R1): an old bookmark or link
+                # lands on the screen. No cookie, nothing else.
                 return self._send(302, b"", "text/plain",
                                   headers={"Location": "/remote"})
             if route == "/remote-logic.js":

@@ -3605,5 +3605,11 @@
 "ui 2.0 Users: the header's Sign out leaves a typed token in the pane": "test_ui2_users_audit_driven",
 "ui 2.0 Users: the header's Sign out does not read the open pane again": "test_ui2_users_audit_driven",
 "ui 2.0 Users: who may do what's boxes are 40 px": "test_ui2_users_audit_driven",
-"rules: /remote-logic.js serves the screen page instead of its rules": "test_ui2_screen_served"
+"rules: /remote-logic.js serves the screen page instead of its rules": "test_ui2_screen_served",
+"fireball page: signed out is not view only": "test_fireball_and_cleaning_rules",
+"fireball page: the Fireball disarming leaves a toggle on": "test_fireball_and_cleaning_rules",
+"fireball page: a stale page keeps beating": "test_fireball_and_cleaning_rules",
+"cleaning page: any truthy hold runs it": "test_fireball_and_cleaning_rules",
+"R1: the first screen's old addresses send nowhere": "test_ui2_screen_served",
+"R1: the first screen's old addresses send to the old page": "test_ui2_screen_served"
 }

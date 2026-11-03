@@ -52147,8 +52147,10 @@ def test_remote_localhost_unaffected_and_proxies_refused():
         st, _h, out = _ask(R.httpd, "GET", "/remote", client=loop)
         check(st == 200 and "<title>Show remote 2.0</title>" in str(out),
               "and the remote page (2.0, the default) at /remote")
-        st, _h, out = _ask(R.httpd, "GET", "/remote1", client=loop)
-        check(st == 404, f"and the first screen's /remote1 is gone: {st}")
+        st, h, out = _ask(R.httpd, "GET", "/remote1", client=loop)
+        check(st == 302 and h.get("location") == ["/remote"],
+              f"and the first screen's /remote1 sends it to /remote: {st} "
+              f"{h}")
         st, _h, out = _ask(R.httpd, "GET", "/api/remote/whoami", client=loop)
         check(out["local"] is True and out["device"] == "Rack screen",
               f"whoami says it is the machine itself: {out}")
@@ -54999,6 +55001,86 @@ t(/stays locked out/.test(unlockRefusal({name:"G1", group:"ground"}, {connected:
         check(bad == [], f"the Stop double tap, in node: {bad}")
     check("touchstart" not in page,
           "no gesture stands in front of Stop")
+    print("  ok")
+
+
+def test_fireball_and_cleaning_rules():
+    section("the Fireball's and the wave flamer cleaning's rules "
+            "(remote_rules.js), run in node: fireballBody turns on only "
+            "what is the JSON word true; fireballState cuts on a stale page "
+            "or signed out, and cuts a toggle left on while the Fireball "
+            "is not armed; cleaningBody holds only on true; cleaningState "
+            "and cleaningWords say what the button may do and where a run "
+            "is (the first screen's page tests, kept as rule tests)")
+    rules = rules_text()
+    for f in ("function fireballBody(", "function fireballState(",
+              "function cleaningBody(", "function cleaningState(",
+              "function cleaningWords("):
+        check(f in rules, f"the rules have {f}")
+    bad = _page_logic_in_node(rules, r"""
+const V = (o) => Object.assign({available:true, armed:"armed", blocked:"", owner:null, mine:false, armed_why:"not armed why"}, o || {});
+const off = {fuel:false, air:false, valve:false, igniter:false, purge:false};
+let b = fireballBody({fuel:true, valve:true, air:1, purge:"true"}, "r1", 7, true);
+t(JSON.stringify(b) === JSON.stringify({controls:{fuel:true, air:false, valve:true, igniter:false, purge:false}, run:"r1", seq:7, change:true}), "the body: only true is on: " + JSON.stringify(b));
+t(fireballBody(off, undefined, 1).run === null, "no run: null");
+let s = fireballState(V(), off, false, false);
+t(s.ok && !s.cut && s.armed && /Valve Open and Igniter are on only while held/.test(s.text), "armed, fresh: a press may start: " + JSON.stringify(s));
+s = fireballState(V({armed:"off"}), off, false, false);
+t(!s.ok && !s.cut && /nothing on this page arms/.test(s.text) && s.block === "Arm the Fireball first.", "not armed: nothing may start, says why: " + JSON.stringify(s));
+s = fireballState(V({armed:"off"}), Object.assign({}, off, {fuel:true, purge:true}), false, false);
+t(s.text === "Turn Fuel, Purge off before arming." && s.cut, "not armed with a toggle on: says turn it off before arming, and cuts: " + JSON.stringify(s));
+s = fireballState(V(), Object.assign({}, off, {valve:true}), true, false);
+t(!s.ok && s.cut && /not live/.test(s.cut), "a stale page: cut: " + JSON.stringify(s));
+s = fireballState(V(), Object.assign({}, off, {air:true}), false, true);
+t(!s.ok && /view only/.test(s.cut), "signed out: cut: " + JSON.stringify(s));
+s = fireballState(V({blocked:"a scheduled show is live (SHOW)"}), off, false, false);
+t(!s.ok && s.block === "Not available now: a scheduled show is live (SHOW)" && !s.cut, "a show live: says why: " + JSON.stringify(s));
+s = fireballState(V({owner:"iPad at 10.20.0.44", mine:false}), off, false, false);
+t(!s.ok && /One screen at a time/.test(s.block), "another screen has it: " + JSON.stringify(s));
+s = fireballState(V({owner:"Rack screen", mine:true}), Object.assign({}, off, {fuel:true}), false, false);
+t(s.ok && !s.cut, "this screen has it: fine");
+s = fireballState(V({available:false, problem:"no group named fireball"}), off, false, false);
+t(!s.ok && s.block === "no group named fireball", "no group: says why");
+s = fireballState(null, off, false, false);
+t(!s.ok, "nothing read yet: nothing may start");
+""")
+    check(bad == [] or bad is None, f"the Fireball rules, in node: {bad}")
+    bad = _page_logic_in_node(rules, r"""
+const V = (o) => Object.assign({available:true, state:"idle", running:false, mine:false, holder:null, blocked:""}, o || {});
+let b = cleaningBody(true, "r1", 4, true);
+t(JSON.stringify(b) === JSON.stringify({hold:true, run:"r1", seq:4, change:true}), "the body: " + JSON.stringify(b));
+t(cleaningBody(1, "r1", 5).hold === false && cleaningBody("true", "r", 1).hold === false, "only the JSON word true holds");
+let s = cleaningState(V(), false, false, false);
+t(s.ok && !s.cut && !s.block && s.word === "Hold to start the cleaning" && !s.na, "idle, fresh: a hold may start: " + JSON.stringify(s));
+s = cleaningState(V(), true, false, false);
+t(s.word === "Keep holding..." && !s.cut, "holding: keep holding");
+s = cleaningState(V({blocked:"a scheduled show is live (SHOW)"}), false, false, false);
+t(!s.ok && s.block === "Not available now: a scheduled show is live (SHOW)" && s.na, "a blocker says why: " + JSON.stringify(s));
+s = cleaningState(V({state:"starting", mine:true}), true, true, false);
+t(!s.ok && /not live/.test(s.cut), "a stale page while holding: the hold ends: " + JSON.stringify(s));
+s = cleaningState(V({state:"starting", mine:true}), true, false, true);
+t(/view only/.test(s.cut), "signed out while holding: the hold ends: " + JSON.stringify(s));
+s = cleaningState(V({state:"starting", mine:false, holder:"iPad at 10.20.0.44"}), false, false, false);
+t(!s.ok && /One screen at a time/.test(s.block), "another screen is holding: " + JSON.stringify(s));
+s = cleaningState(V({state:"phase1", running:true}), false, false, false);
+t(!s.ok && s.na && /running on its own/.test(s.block) && s.word === "Phase 1 runs on its own: you can let go", "phase 1: nothing to hold, says so: " + JSON.stringify(s));
+s = cleaningState(V({state:"phase1", running:true}), true, false, true);
+t(!s.cut, "phase 1 running: nothing to cut on the page");
+s = cleaningState(V({state:"paused", running:true}), false, false, false);
+t(s.ok && s.word === "Hold to start the purge bursts", "paused: a hold may start the purge bursts: " + JSON.stringify(s));
+s = cleaningState(V({state:"paused", running:true, blocked:"x"}), false, false, false);
+t(!s.ok && s.block === "Not available now: x", "paused and blocked: says why");
+s = cleaningState(V({state:"phase2", running:true}), false, false, false);
+t(!s.ok && /Press Stop/.test(s.block) && s.word === "Firing the leftover fuel", "phase 2: Stop ends it: " + JSON.stringify(s));
+s = cleaningState(V({available:false, problem:"no group named wave flamer"}), false, false, false);
+t(!s.ok && s.block === "no group named wave flamer", "no group: says why");
+t(!cleaningState(null, false, false, false).ok, "nothing read yet: nothing starts");
+const w = cleaningWords({phase:1, text:"Pressurizing: armed 3 s, 1 of 3", next:"Disarm", bursts:0, left_s:1.25, elapsed_s:4.7});
+t(w === "Phase 1 of 2: Pressurizing: armed 3 s, 1 of 3 (1.3 s left). Next: Disarm. Running 4 s.", "the words: " + w);
+const w2 = cleaningWords({phase:2, text:"Purge bursts: 1 s on, 1 s off", next:"Press Stop to end", bursts:7, left_s:null, elapsed_s:40});
+t(w2 === "Phase 2 of 2: Purge bursts: 1 s on, 1 s off. Next: Press Stop to end. Bursts: 7. Running 40 s.", "the burst words: " + w2);
+""")
+    check(bad == [] or bad is None, f"the cleaning rules, in node: {bad}")
     print("  ok")
 
 
@@ -95923,7 +96005,7 @@ def test_ui2_is_the_default_screen():
     section("the one screen (R1: the first screen is removed): the show "
             "PC's rack window and an iPad on iPadOS 15 Safari get it at "
             "/remote and /, also with an old screen choice still in a "
-            "cookie; /ui and /remote1 are gone; the rack-screen keeper "
+            "cookie; /ui and /remote1 send to /remote; the rack-screen keeper "
             "still opens /remote and still finds the window by its title; "
             "without the rules the screen is still served, its own Stop "
             "with it")
@@ -95983,10 +96065,10 @@ def test_ui2_is_the_default_screen():
         for path in ("/ui?v=1", "/ui?v=2", "/remote1"):
             st, h, out = R.ask("GET", path,
                                headers={"Sec-Fetch-Site": "same-origin"})
-            check(st in (403, 404) and not h.get("set-cookie") and
-                  not h.get("location"),
-                  f"GET {path} is gone, sets nothing and sends nowhere: "
-                  f"{st} {h}")
+            check(st == 302 and not h.get("set-cookie") and
+                  h.get("location") == ["/remote"],
+                  f"GET {path} sends the browser to /remote and sets "
+                  f"nothing: {st} {h}")
         check(len(R.svc.journal) == n0,
               "opening the screen journals nothing and presses nothing")
         # The emergency paths: the screen carries its own Stop; without the
@@ -96168,8 +96250,9 @@ def test_ui2_screen_served():
     section("the one screen (R1): /remote, the show network's / and /remote2 "
             "(old bookmarks) are remote2.html byte for byte with its rules "
             "written in, for every screen, whatever a cookie says; "
-            "/remote-logic.js is the rules file; /remote1, /ui and the "
-            "ui-default setting are gone (a stored ui_default is ignored); "
+            "/remote-logic.js is the rules file; /remote1 and /ui send a "
+            "browser to /remote and set nothing; the ui-default setting is "
+            "gone (a stored ui_default is ignored); "
             "the same network, Host, proxy and other-site rules")
     S = _sched()
     if S is None:
@@ -96213,15 +96296,18 @@ def test_ui2_screen_served():
                 st, _h, out = page(path, headers={"Cookie": cookie})
                 check(st == 200 and out == two_s,
                       f"{path} with {cookie}: the screen: {st}")
-        # The first screen's addresses are gone: never a page, a cookie or
-        # a redirect.
+        # The first screen's old addresses send a browser to /remote:
+        # never a page or a cookie.
         for path in ("/remote1", "/ui", "/ui?v=1", "/ui?v=2"):
             for c in (("10.20.0.44", 50000), loop):
                 st, h, out = R.ask("GET", path, client=c)
-                check(st in (403, 404) and not h.get("set-cookie") and
-                      not h.get("location") and
+                check(st == 302 and not h.get("set-cookie") and
+                      h.get("location") == ["/remote"] and
                       "<html" not in str(out).lower(),
-                      f"GET {path} from {c[0]} is gone: {st}")
+                      f"GET {path} from {c[0]} goes to /remote: {st} {h}")
+            st, _h, _o = R.ask("GET", path, host="evil.example:7878")
+            check(st == 403, f"GET {path} under another host name is "
+                             f"refused: {st}")
         check(len(R.svc.journal) == n0,
               "opening the screen journals nothing and presses nothing")
         # The same posture as /remote: Host, proxies, the network list.
@@ -96233,12 +96319,13 @@ def test_ui2_screen_served():
                                headers={"X-Forwarded-For": "1.2.3.4"})
             check(st == 403, f"GET {path} through a proxy is refused: {st}")
         check(all(web_mod.network_may_reach(p) for p in
-                  ("/remote", "/remote2", "/remote-logic.js")) and
+                  ("/remote", "/remote2", "/remote-logic.js", "/remote1",
+                   "/ui")) and
               not any(web_mod.network_may_reach(p) for p in
-                      ("/remote1", "/ui", "/remote3", "/ui/x", "/remote2/x",
+                      ("/remote3", "/ui/x", "/remote2/x", "/remote1/x",
                        "/remote-logic", "/remote.html", "/remote2.html")),
-              "network_may_reach: the screen's addresses and nothing of the "
-              "first screen")
+              "network_may_reach: the screen's addresses and the first "
+              "screen's old ones (which only send to /remote)")
         for path in ("/remote3", "/remote2.html", "/web/remote2.html"):
             st, _h, _o = R.ask("GET", path)
             check(st in (403, 404), f"GET {path} from the network: {st}")
@@ -96439,11 +96526,14 @@ def test_remote_rules_file():
         st, _h, out = R.ask("GET", "/remote")
         check(st == 200 and isinstance(out, str) and
               web_mod.RULES_SERVED_MARK in out, f"GET /remote: {st}")
-        for gone in ("/remote1", "/ui?v=1", "/ui?v=2", "/ui",
-                     "/api/remote/ui-default"):
-            st, _h, out = R.ask("GET", gone)
-            check(st in (403, 404) and "<html" not in str(out).lower(),
-                  f"GET {gone} is gone: {st} {out!r:.80}")
+        for old in ("/remote1", "/ui?v=1", "/ui?v=2", "/ui"):
+            st, h, out = R.ask("GET", old)
+            check(st == 302 and h.get("location") == ["/remote"] and
+                  not h.get("set-cookie"),
+                  f"GET {old} sends the browser to /remote: {st} {h}")
+        st, _h, out = R.ask("GET", "/api/remote/ui-default")
+        check(st in (403, 404) and "<html" not in str(out).lower(),
+              f"GET /api/remote/ui-default is gone: {st} {out!r:.80}")
         web_mod.REMOTE_RULES = put_bad = os.path.join(
             tempfile.mkdtemp(prefix="ltcrules-"), "latin.js")
         with open(put_bad, "wb") as fh:
@@ -110525,6 +110615,7 @@ if __name__ == "__main__":
         test_rack_screen_browser_check_retries_only_a_timeout,
         test_rack_screen_says_the_rearm_wait,
         test_rack_screen_has_no_abort_and_stop_taps_like_it_did,
+        test_fireball_and_cleaning_rules,
         test_rack_screen_one_button_per_flame_group,
         test_rack_screen_arm_all_and_disarm_all_toggle,
         test_rack_screen_one_laser_pill,

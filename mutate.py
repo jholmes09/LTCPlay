@@ -19076,6 +19076,14 @@ def build():
   'RACK_PAGE = "/remote"     #',
   'RACK_PAGE = "/remote1"    #'),
 
+ ("R1: the first screen's old addresses send nowhere", "ltcplay/web.py",
+  "            if route in OLD_SCREEN_ROUTES:\n",
+  "            if False:\n"),
+
+ ("R1: the first screen's old addresses send to the old page", "ltcplay/web.py",
+  '                                  headers={"Location": "/remote"})\n            if route == "/remote-logic.js":',
+  '                                  headers={"Location": "/remote1"})\n            if route == "/remote-logic.js":'),
+
  ("rules: /remote-logic.js serves the screen page instead of its rules", "ltcplay/web.py",
   "        with open(REMOTE_RULES, encoding=\"utf-8\") as fh:\n"
   "            logic = fh.read()\n",
