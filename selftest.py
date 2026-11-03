@@ -108502,10 +108502,39 @@ def test_ui2_arrange_and_switches_are_1_0s():
             "leaves Arrange mode; no stub left that says nothing is ever "
             "arranging; OPERATOR.md and the plan")
     one, two = _ui2_pages()
+    # The ARRANGE block's three 2.0 changes (review of #212, 1 and 4):
+    # outside Arrange a machine is chosen by a tap (machUp), never by a
+    # press, and the Arrange button keeps its icon. Everything else is 1.0's.
+    w2, d2, u2 = (_js_function(two, n) or "" for n in ("wireMachine",
+                                                       "machDown", "machUp"))
+    w1, d1 = _js_function(one, "wireMachine") or "", \
+        _js_function(one, "machDown") or ""
+    i2 = two.find(d2) + len(d2)
+    d2x = two[two.find(d2):two.find(u2) + len(u2)] if d2 and u2 else ""
+    arr_sub = ((w1, w2), (d1, d2x),
+               ('  if(ab){ ab.disabled = ARRANGE; ab.textContent = '
+                '"Arrange"; }', '  if(ab){ ab.disabled = ARRANGE; }'))
+    check("moPress(" not in d2 and "dragStart(e, m)" in d2 and
+          'moPress("purge-select", {machine:m.id, on: !sel});' in u2 and
+          "MACH_TAP_PX" in u2 and "MACH_TAP_MS" in u2 and
+          'el.addEventListener("pointerup", e => machUp(e, m));' in w2 and
+          "const MACH_TAP_PX = 8, MACH_TAP_MS = 600;" in two,
+          "outside Arrange a press never chooses a machine: only a tap "
+          "under 8 px and 600 ms does, with 1.0's body")
+    check(".mach{" in two and "touch-action:pan-y" in
+          two[two.find(".mach{"):two.find("}", two.find(".mach{"))] and
+          ".mach.drag{touch-action:none}" in two,
+          "a tile lets a swipe scroll; only while arranging does it hold "
+          "the pointer")
     for what, a, b, drops in _UI2_C_BLOCKS:
         i = one.find(a)
         j = one.find(b, i)
         blk = one[i:j] if 0 <= i < j else ""
+        if what == "the ARRANGE block":
+            for o_, n_ in arr_sub:
+                check(o_ and blk.count(o_) == 1,
+                      f"1.0's ARRANGE block has {o_[:40]!r}")
+                blk = blk.replace(o_, n_)
         for d in drops:
             check(blk.count(d) == 1, f"1.0's {what} has the dropped part "
                                      f"{d[:40]!r}")
@@ -108518,6 +108547,13 @@ def test_ui2_arrange_and_switches_are_1_0s():
           two.count("function openBeatBody(") == 1 and
           two.count("const BEAT_INST =") == 1,
           "2.0's stubs (no Arrange mode) are gone; one open beat, 1.0's")
+    lz = _js_function(two, "lzTileClick") or ""
+    check(0 < lz.find('if(arrangeBlocked("laser-arm", {on:true})) return null;')
+          < lz.find("confirmBox("),
+          "an Arm all lasers is held back in Arrange mode before its "
+          "question, as 1.0's lzClick")
+    check("if(ARRANGE) mapOff();\n      try{ const r = await post(\"/api/remote/signout\""
+          in two, "signing out ends Arrange mode")
     end = two.rsplit("// END OF THE COPY.", 1)
     check(len(end) == 2 and "// ARRANGE BEGIN." in end[0],
           "the ARRANGE block is inside 2.0's copied region")
@@ -108622,12 +108658,27 @@ const r = m4.getBoundingClientRect();
 pe(m4, "pointerdown", r.left + 10, r.top + 10); pe(m4, "pointerup", r.left + 10, r.top + 10);
 await h.sleep(300);
 out.tap = since(n).filter(p => p.route === "purge-select").map(p => p.body);
+// Review of #212, 1: a tile lets a swipe scroll (touch-action pan-y), and
+// a press is never a choice: a swipe the browser takes (pointercancel), a
+// drag of 40 px, or a press held 700 ms chooses nothing.
+out.touch = getComputedStyle(mach("m5")).touchAction;
+n = mark();
+const r5 = mach("m5").getBoundingClientRect();
+pe(mach("m5"), "pointerdown", r5.left + 10, r5.top + 10);
+mach("m5").dispatchEvent(new PointerEvent("pointercancel", {bubbles:true, pointerId:7, pointerType:"touch"}));
+await h.sleep(150);
+pe(mach("m5"), "pointerdown", r5.left + 10, r5.top + 10); pe(mach("m5"), "pointerup", r5.left + 10, r5.top + 50);
+await h.sleep(150);
+pe(mach("m5"), "pointerdown", r5.left + 10, r5.top + 10); await h.sleep(700); pe(mach("m5"), "pointerup", r5.left + 10, r5.top + 10);
+await h.sleep(200);
+out.swipes = since(n).filter(p => p.route === "purge-select").length;
 // Arrange.
 n = mark();
 q("mo-arrange").click();
 await h.sleep(400);
 out.enter = {beats:since(n).filter(p => p.route === "morning-open").map(p => p.body.arranging), clear:since(n).filter(p => p.route === "purge-clear").length,
-  bar:!q("mo-arrange-bar").hidden, arrange_dis:q("mo-arrange").disabled, key:(q("mo-key") || {}).textContent};
+  bar:!q("mo-arrange-bar").hidden, arrange_dis:q("mo-arrange").disabled, key:(q("mo-key") || {}).textContent,
+  key_title:(q("mo-key") || {}).title, touch:getComputedStyle(mach("m4")).touchAction, icon:!!q("mo-arrange").querySelector("svg")};
 // While arranging: a tap picks up, never arms; Space fires nothing.
 n = mark();
 const fr = q("mo-field").getBoundingClientRect(), r2 = mach("m4").getBoundingClientRect();
@@ -108658,6 +108709,22 @@ out.reset_sheet = {open:!q("sheet").hidden, posts:since(n).filter(p => p.route =
 const yes = document.querySelector('#sh-row [data-i="1"]'); if(yes) yes.click();
 await h.sleep(500);
 out.reset = since(n).filter(p => p.route === "layout").map(p => p.body.reset);
+out.icon_after = !!q("mo-arrange").querySelector("svg");
+// A window too short for the bar and the field: Arrange is not started,
+// and one turning too short leaves it (review of #212, 5).
+q("d-panel").style.maxHeight = "120px";
+n = mark();
+q("mo-arrange").click(); await h.sleep(400);
+out.short = {arrange:ARRANGE, msg:q("mo-msg").textContent, beats:since(n).filter(p => p.route === "morning-open" && p.body.arranging).length};
+q("d-panel").style.maxHeight = "";
+await h.sleep(300);
+q("mo-arrange").click(); await h.sleep(300);
+const was = ARRANGE;
+q("d-panel").style.maxHeight = "120px";
+await h.sleep(600);
+out.shrunk = {was:was, arrange:ARRANGE, msg:q("mo-msg").textContent};
+q("d-panel").style.maxHeight = "";
+await h.sleep(300);
 // Leaving the step leaves Arrange (no save).
 q("mo-arrange").click(); await h.sleep(300);
 n = mark();
@@ -108671,7 +108738,9 @@ ME.local = false; await h.sleep(900);
 out.ipad = {arrange:!q("mo-arrange").hidden, map:!q("d-mapsec").hidden};
 ME.local = true;
 """
-    m = _ui2_drive(chrome, page, _ui2_status_day(), steps, size=(1366, 768),
+    # A tall window: Arrange needs room for its bar and the field, and
+    # the CI runner's page is shorter than its window.
+    m = _ui2_drive(chrome, page, _ui2_status_day(), steps, size=(1366, 1100),
                    frag="?tour=0#day",
                    routes={"/api/remote/morning":
                            _morning_view_pico(selected=("m1",))},
@@ -108687,6 +108756,22 @@ ME.local = true;
     check(len(m["tap"]) == 1 and m["tap"][0].get("machine") == "m4" and
           m["tap"][0].get("on") is True,
           f"a machine tap is 1.0's purge select: {m['tap']}")
+    check(m["touch"] == "pan-y" and m["swipes"] == 0,
+          f"a tile lets a swipe scroll; a swipe the browser takes, a 40 px "
+          f"drag or a 700 ms press chooses nothing: {m['touch']} "
+          f"{m['swipes']}")
+    check(m["enter"]["touch"] == "none" and m["enter"]["icon"] and
+          m["icon_after"] and
+          m["enter"]["key_title"] == "Save layout or Cancel first",
+          f"while arranging a tile holds the pointer for the drag; the "
+          f"Arrange button keeps its icon; the key line's title is 1.0's: "
+          f"{m['enter']} {m['icon_after']}")
+    check(m["short"]["arrange"] is False and m["short"]["beats"] == 0 and
+          m["short"]["msg"].startswith("This window is too short to "
+                                       "arrange") and
+          m["shrunk"]["was"] is True and m["shrunk"]["arrange"] is False,
+          f"a window too short: Arrange is not started; one turning too "
+          f"short leaves it: {m['short']} {m['shrunk']}")
     e = m["enter"]
     check(e["beats"][:1] == [True] and e["clear"] == 1 and e["bar"] and
           e["arrange_dis"] and e["key"] == "ARRANGING: arming disabled",
@@ -108697,7 +108782,7 @@ ME.local = true;
           f"arms or fires: {m['held']}")
     sv = m["save"]
     check(sv["n"] == 1 and sv["m4"] and abs(sv["m4"]["x"] - 30) < 2 and
-          abs(sv["m4"]["y"] - 40) < 2 and False not in [] and
+          abs(sv["m4"]["y"] - 40) < 2 and
           sv["beat"][:1] == [False] and not sv["bar"],
           f"a drag and Save layout: the new place sent, the mode ended "
           f"first: {sv}")

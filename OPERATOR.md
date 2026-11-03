@@ -2676,9 +2676,13 @@ operator, the Show folder and Getting started, and the Info panel.
 - 2.0 machine map, Arrange and the show machine switches: 1.0's own
   code and presses. On DAY's Purge step, Map shows the field (every
   machine where the layout puts it) in the group buttons' place; a tap
-  on a machine arms it for the purge, as a group button does. Arrange
-  (show PC only) is 1.0's Arrange mode: while it is on nothing arms,
-  fires, locks or lights anything (the fire key line says so, a tap
+  on a machine arms it for the purge, as a group button does (a tap:
+  a swipe that starts on a machine scrolls and chooses nothing). Arrange
+  (its button is shown on the show PC only; the engine saves a layout
+  for anyone with the show files permission, from any device, as on
+  1.0) is 1.0's Arrange mode. It needs room for its bar and the field:
+  on a window too short it says so and does not start. While it is on
+  nothing arms, fires, locks or lights anything (the fire key line says so, a tap
   picks a machine up instead), and the only ways out are Save layout,
   Cancel, Reset layout (asks first) and leaving the step, the Map or
   DAY (unsaved moves are forgotten). On the Programming cards (Schedule

@@ -23405,6 +23405,41 @@ def build():
 
 
  # interface 2.0, P11 (machine map, Arrange) and P13 (show machine switches)
+ ("ui 2.0 map: a swipe that starts on a machine chooses it",
+  "ltcplay/web/remote2.html",
+  "  if(Math.hypot(e.clientX - t.x, e.clientY - t.y) >= MACH_TAP_PX || performance.now() - t.at >= MACH_TAP_MS) return;",
+  "  if(performance.now() - t.at >= MACH_TAP_MS) return;"),
+
+ ("ui 2.0 map: a long press chooses a machine",
+  "ltcplay/web/remote2.html",
+  "  if(Math.hypot(e.clientX - t.x, e.clientY - t.y) >= MACH_TAP_PX || performance.now() - t.at >= MACH_TAP_MS) return;",
+  "  if(Math.hypot(e.clientX - t.x, e.clientY - t.y) >= MACH_TAP_PX) return;"),
+
+ ("ui 2.0 map: a tile blocks the page's scroll outside Arrange",
+  "ltcplay/web/remote2.html",
+  "  cursor:pointer;touch-action:pan-y;",
+  "  cursor:pointer;touch-action:none;"),
+
+ ("ui 2.0 Arrange: started on a window too short for its bar",
+  "ltcplay/web/remote2.html",
+  "function arrangeRoom(){ return $(\"d-panel\").clientHeight >= ARRANGE_MIN_PX; }",
+  "function arrangeRoom(){ return true; }"),
+
+ ("ui 2.0 Arrange: the button loses its icon",
+  "ltcplay/web/remote2.html",
+  "  if(ab){ ab.disabled = ARRANGE; }",
+  "  if(ab){ ab.disabled = ARRANGE; ab.textContent = \"Arrange\"; }"),
+
+ ("ui 2.0 Arrange: Arm all lasers is not held back while arranging",
+  "ltcplay/web/remote2.html",
+  "  if(arrangeBlocked(\"laser-arm\", {on:true})) return null;\n  if(!(await confirmBox(\"Arm all \"",
+  "  if(!(await confirmBox(\"Arm all \""),
+
+ ("ui 2.0 Arrange: signing out stays arranging",
+  "ltcplay/web/remote2.html",
+  "      if(ARRANGE) mapOff();\n      try{ const r = await post(\"/api/remote/signout\"",
+  "      try{ const r = await post(\"/api/remote/signout\""),
+
  ("ui 2.0 Arrange: a machine select is not held back while arranging",
   "ltcplay/web/remote2.html",
   "    ((route === \"purge-select\" || route === \"laser-test\") && !off) ||",

@@ -383,7 +383,9 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 #mo-field .edge.top{top:6px} #mo-field .edge.bot{bottom:6px;text-align:right}
 .mach{position:absolute;transform:translate(-50%,-50%);width:clamp(132px,11vw,176px);min-height:56px;border-radius:10px;
   border:2px solid var(--line);background:var(--panel2);color:var(--cream);padding:5px 6px 4px;text-align:center;
-  cursor:pointer;touch-action:none;-webkit-user-select:none;user-select:none}
+  cursor:pointer;touch-action:pan-y;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+/* Only while arranging does a press on a tile hold the pointer (a drag). */
+.mach.drag{touch-action:none}
 .mach b,.mach .w,.mach .k{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mach .w{font-weight:800;text-transform:uppercase}
 .mach .k,.mach .wait{color:var(--muted);font-size:calc(var(--fs) - 6px)}
@@ -395,7 +397,7 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 .mach.locked{border-style:dashed;color:var(--muted)}
 .mach.drag{border-color:var(--cream);cursor:grab}
 .mach.lift{cursor:grabbing;z-index:5;box-shadow:0 0 0 3px var(--cream),0 10px 28px rgba(0,0,0,.7)}
-#mo-arrange-bar{display:flex;flex-wrap:wrap;align-items:center;gap:var(--gap);border:2px solid var(--amber);background:rgba(245,160,30,.16);border-radius:12px;padding:6px 10px}
+#mo-arrange-bar{position:sticky;top:0;z-index:2;display:flex;flex-wrap:wrap;align-items:center;gap:var(--gap);border:2px solid var(--amber);background:rgba(245,160,30,.16);border-radius:12px;padding:6px 10px}
 #mo-arrange-bar[hidden]{display:none}
 #mo-arrange-bar b{flex:1 1 auto;color:var(--amber)}
 #mo-arrange-bar .pline{flex:1 1 100%}
@@ -3592,6 +3594,8 @@ async function lzTileClick(){
   const ids = ls.map(x => x.id);
   const why = lzArmRefusal(la, ls, LZ_STALE);
   if(why){ say("Lasers not armed.", "Not armed: " + why + ". Nothing was armed.", "bad"); return null; }
+  // 1.0's lzClick: Arrange mode holds an arm back.
+  if(arrangeBlocked("laser-arm", {on:true})) return null;
   if(!(await confirmBox("Arm all " + ls.length + " lasers?", "Output starts when all are armed.", "Arm", "green"))) return null;
   return lzPress({lasers:ids, on:true, confirmed:true});
 }
@@ -3762,6 +3766,8 @@ async function openSignIn(){
     if(v === "users") location.href = "/remote1#users";
     if(v === "out"){
       if(HOLD) armStop("Signed out");
+      // Signing out ends Arrange mode too (the engine refuses its presses anyway).
+      if(ARRANGE) mapOff();
       try{ const r = await post("/api/remote/signout", {}); say("Signed out.", r.text, "ok"); }catch(e){ say("Not signed out.", e.message, "bad"); }
       if(ST && ST.me && ST.me.users_active){
         const no = {}; Object.keys(ST.me.may || {}).forEach(k => { no[k] = false; });
@@ -3995,6 +4001,11 @@ function openBeatBody(leaving){ return actor(Object.assign({arranging: ARRANGE, 
 // hold-to-arm, this page only); in Arrange mode a press picks it up.
 function wireMachine(el, m){
   el.addEventListener("pointerdown", e => machDown(e, m));
+  // 2.0 (review of #212, 1): outside Arrange mode a machine is chosen by a
+  // deliberate tap, never by a press, so a swipe that starts on a tile
+  // scrolls the page and chooses nothing.
+  el.addEventListener("pointerup", e => machUp(e, m));
+  el.addEventListener("pointercancel", () => { MACH_TAP = null; });
   // Capture lost by any route the window did not see (released outside
   // the window, taken by the browser): the drag ends there too.
   el.addEventListener("lostpointercapture", () => {
@@ -4002,8 +4013,17 @@ function wireMachine(el, m){
   });
 }
 function machDown(e, m){
-  e.preventDefault();
-  if(ARRANGE){ dragStart(e, m); return; }
+  if(ARRANGE){ e.preventDefault(); dragStart(e, m); return; }
+  MACH_TAP = {id:m.id, x:e.clientX, y:e.clientY, at:performance.now(), pointerId:e.pointerId};
+}
+// A tap: let go on the same tile, moved under MACH_TAP_PX, within
+// MACH_TAP_MS. Then 1.0's press, the same route and body.
+let MACH_TAP = null;
+const MACH_TAP_PX = 8, MACH_TAP_MS = 600;
+function machUp(e, m){
+  const t = MACH_TAP; MACH_TAP = null;
+  if(ARRANGE || !t || t.id !== m.id || t.pointerId !== e.pointerId) return;
+  if(Math.hypot(e.clientX - t.x, e.clientY - t.y) >= MACH_TAP_PX || performance.now() - t.at >= MACH_TAP_MS) return;
   const sel = ((MO.purge_state || {}).selected || []).includes(m.id);
   moPress("purge-select", {machine:m.id, on: !sel});
 }
@@ -4093,7 +4113,7 @@ function renderArrange(){
     $("mo-arr-reset").addEventListener("click", arrangeReset);
   }
   const ab = $("mo-arrange");
-  if(ab){ ab.disabled = ARRANGE; ab.textContent = "Arrange"; }
+  if(ab){ ab.disabled = ARRANGE; }
 }
 // ARRANGE END
 // The machine map (1.0's renderMorning, these lines of it word for
@@ -4608,7 +4628,19 @@ function dayMap(k){
   renderField(MO, (ST && ST.flames) || {}, MO.purge_state || {});
   renderArrange();
 }
-$("mo-arrange").addEventListener("click", arrangeEnter);
+// Arrange needs room for its bar, with Save layout and Cancel, and some
+// of the field (review of #212, 5): on a window too short, it is not
+// started, and a window turning too short leaves it (unsaved moves are
+// forgotten, as when the page is left).
+const ARRANGE_SHORT_WORDS = "This window is too short to arrange the machines: make it taller or use the show PC.";
+const ARRANGE_MIN_PX = 240;
+function arrangeRoom(){ return $("d-panel").clientHeight >= ARRANGE_MIN_PX; }
+function arrangeTry(){
+  if(!arrangeRoom()){ $("mo-msg").textContent = ARRANGE_SHORT_WORDS; renderMorning(); return; }
+  arrangeEnter();
+}
+$("mo-arrange").addEventListener("click", arrangeTry);
+setInterval(() => { if(ARRANGE && !arrangeRoom()){ arrangeExit("left"); $("mo-msg").textContent = ARRANGE_SHORT_WORDS; } }, 250);
 // A step's controls: built when the step is chosen, updated on each render.
 function dayBuild(k){
   const box = $("d-ctl");
@@ -4802,6 +4834,7 @@ function dayUpdate(k){
       kk.textContent = purge.timed ? "TIMED PURGE: " + timedLeft((mo.timed || {}).left_s) + " left" : purge.firing ? "FIRING" : !mo.purge_enabled ? "Purge off here" : mo.live_refusal ? "Not now" : anySel ? "Deck FIRE, or hold Space" : "Pick a group first";
       // 1.0's: while arranging, the key says so and nothing fires.
       if(ARRANGE){ kk.className = "key"; kk.textContent = ARRANGE_BANNER; }
+      kk.title = ARRANGE ? "Save layout or Cancel first" : "";
     }
   }
   if(k === "lasers"){
