@@ -2579,13 +2579,13 @@ with the same holds, confirms and refusals. Stop show, Hold and Disarm
 flames work the same on both, and the hardware e-stop always works.
 
 Interface 1.0 is now "the old screen". It stays until everything in it
-is in 2.0 (docs/REMOVE_1_0_PLAN.md). Some things are only on the old
-screen for now: Users, Who may do what and the Audit log.
+is in 2.0 (docs/REMOVE_1_0_PLAN.md). Nothing is only on the old
+screen any more: everything it does is in 2.0 too.
 
 - To get there: "Old screen" at the top of 2.0 on every tab, or "Open
   the old screen (for Users, Audit, Network and the rest)" on the
-  Schedule and Settings tabs. Some 2.0 cards also have "Open in 1.0",
-  which opens that part of the old screen once.
+  Schedule and Settings tabs. No 2.0 card opens a part of the old screen
+  any more.
 - The old screen link is remembered on that screen only (a cookie in that
   browser): it keeps showing the old screen, even at `/remote`, until
   someone taps "Try 2.0" in the old screen's header. Try 2.0 forgets the
@@ -2783,6 +2783,21 @@ screen for now: Users, Who may do what and the Audit log.
   - Help, This LTC Player: the version, this screen, where the settings
     and logs are, the mode, how to leave this window, and on the show PC
     Close this window.
+- 2.0 Users: 1.0's Users screen, the same code and presses. Open it
+  from Settings (Users, Open) or from the header: tap your name, then
+  Users in the Signed in sheet. Signed in shows who you are, Sign out,
+  and your own password (Change). Users (admins, on the show PC only):
+  each person's role, Reset password (it asks for a temporary one;
+  leave it empty and they choose their own at their next sign-in),
+  Remove (it asks first; their audit lines stay), Add a person, and
+  Clear sign-in lockouts. The last admin cannot be removed or made
+  something else. Who may do what: everyone can read it; admins on the
+  show PC change it and press Save who may do what. Stop, Hold and every
+  disarm always work, for everyone. Audit log (show PC only): its state,
+  Check the chain now, the nightly upload (server, shared token, time,
+  days kept), Idle sign out, sign out after the last show, Save, and
+  Send now. The shared token is never shown: the field says only whether one
+  is saved, and a token typed there is cleared after Save.
 - The systems badge in the header names a single problem ("Stream Deck:
   check"); one tap opens the list, which starts with what to do first.
   Something not set up here reads Off.

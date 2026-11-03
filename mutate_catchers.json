@@ -3751,5 +3751,22 @@
 "ui 2.0 tools: Close this window is offered off the show PC": "test_ui2_show_pc_tools_are_1_0s",
 "ui 2.0 tools: Check the show file checks the typed folder": "test_ui2_show_pc_tools_driven",
 "ui 2.0 tools: Getting started never shows": "test_ui2_show_pc_tools_driven",
-"ui 2.0 tools: Help has no info panel": "test_ui2_show_pc_tools_driven"
+"ui 2.0 tools: Help has no info panel": "test_ui2_show_pc_tools_driven",
+"ui 2.0 Users: Remove goes with no question": "test_ui2_users_audit_driven",
+"ui 2.0 Users: the users list is shown off the show PC": "test_ui2_users_audit_are_1_0s",
+"ui 2.0 Users: who may do what is editable off the show PC": "test_ui2_users_audit_are_1_0s",
+"ui 2.0 Users: the audit card is shown off the show PC": "test_ui2_users_audit_driven",
+"ui 2.0 Users: the shared token is written into its field": "test_ui2_users_audit_are_1_0s",
+"ui 2.0 Users: opening the pane does not read the users": "test_ui2_users_audit_driven",
+"ui 2.0 Users: the pane is not a tab": "test_ui2_users_audit_driven",
+"ui 2.0 Users: the signed-in sheet still opens 1.0": "test_ui2_users_audit_are_1_0s",
+"ui 2.0 Users: Sign out on the pane leaves the header button as it was": "test_ui2_users_audit_are_1_0s",
+"ui 2.0 Users: a bad last show time is saved anyway": "test_ui2_users_audit_driven",
+"ui 2.0 Users: the pane's buttons are smaller than 56 px": "test_ui2_users_audit_driven",
+"ui 2.0 Users: the pane's rows do not stack on a phone": "test_ui2_users_audit_driven",
+"ui 2.0 Users: the sheet's Users leaves an open pane unread": "test_ui2_users_audit_driven",
+"ui 2.0 Users: the header's Sign out leaves the pane as it was": "test_ui2_users_audit_driven",
+"ui 2.0 Users: the header's Sign out leaves a typed token in the pane": "test_ui2_users_audit_driven",
+"ui 2.0 Users: the header's Sign out does not read the open pane again": "test_ui2_users_audit_driven",
+"ui 2.0 Users: who may do what's boxes are 40 px": "test_ui2_users_audit_driven"
 }

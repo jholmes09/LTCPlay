@@ -47,9 +47,9 @@ Routes are under `/api/remote/` unless they start with `/api/`. A route 2.0 alre
 | P2 | DONE (2.0 Schedule tab, Programming cards). Programming transport: Play from (timecode or cue), Back 10 s, Back 5 s, Ahead 5 s, Ahead 10 s, Pause, Continue, Set A, Set B, Loop, Follow timecode again; flames follow line and fault | 12 | `play-from`, `jump`, `pause`, `continue`, `mark-a`, `mark-b`, `loop`, `follow` | P1 | High. Flame cues follow Programming playback. Safety review. |
 | P3 | DONE (2.0 Schedule tab). Schedule tab: tonight's shows, tap for notes, Run warning | 2 | none (status) | 0 | Low. Read only. |
 | P4 | DONE (2.0 Schedule tab, show PC only). Schedule editor: time zone, season start and end, show nights, show length, gap before a show, late start allowed, Save, Reload | 11 | `schedule-file` (GET, POST) | P3 | High. Schedule rules (#196 reviews), saving during the night. |
-| P5 | Users: change own password, user list (role, reset, remove), add a person, clear sign-in lockouts | 9 | `my-password`, `users` (POST), `clear-lockouts` | 0 | Medium. Last admin rule, passwords. |
-| P6 | Who may do what (role matrix), Save | 2 | `role-matrix` | P5 | High. Decides who may arm. Safety review. |
-| P7 | Audit log: chain state, Check the chain, nightly upload settings, Send now, idle sign out, sign out after the last show | 11 | `audit-verify`, `audit-settings`, `audit-upload-now`, `idle-signout`, `last-show-signout` | P5 | Medium. Token field. |
+| P5 | DONE (2.0 Users pane, opened from Settings and the signed-in sheet). Users: change own password, user list (role, reset, remove), add a person, clear sign-in lockouts | 9 | `my-password`, `users` (POST), `clear-lockouts` | 0 | Medium. Last admin rule, passwords. |
+| P6 | DONE (2.0 Users pane, opened from Settings and the signed-in sheet). Who may do what (role matrix), Save | 2 | `role-matrix` | P5 | High. Decides who may arm. Safety review. |
+| P7 | DONE (2.0 Users pane, opened from Settings and the signed-in sheet). Audit log: chain state, Check the chain, nightly upload settings, Send now, idle sign out, sign out after the last show | 11 | `audit-verify`, `audit-settings`, `audit-upload-now`, `idle-signout`, `last-show-signout` | P5 | Medium. Token field. |
 | P8 | DONE (2.0 DAY, Fireball step). Fireball page: armed state, per channel hold pads, All off, Disarm Fireball, charge record, Tanks are empty | 6 plus one pad per channel | `fireball`, `fireball-beat`, `fireball-off`, `fireball-charge-empty` | 0 | High. Fires channels by hold and heartbeat. Safety review. |
 | P9 | DONE (2.0 DAY, Fuel step). Fuel: recent refills, Undo (admins), fuel warning | 2 | `fuel-undo` | 0 | Low. |
 | P10 | DONE (2.0 DAY, Purge step). Timed purge: presets, other seconds, hold to start, Stop purge, time left | 5 | `purge-timed` | 0 | High. Fires for a set time. Safety review. |
@@ -66,13 +66,13 @@ Totals: 16 port PRs (P1 to P16) with 95 or more controls, 42 routes 2.0 does not
 
 ## Left before R1
 
-With bundle E (P12, P14, P15, P16), 2.0 has every port but one:
+With bundle E (P12, P14, P15, P16) and #214 (P5, P6, P7), every port is done: 2.0 calls every route 1.0 calls, and no 2.0 card or sheet opens a part of 1.0. What is left before R1 deletes 1.0:
 
-| Item | State | What is left |
-|---|---|---|
-| P5, P6, P7 Users, Who may do what, Audit log | PR #214, in review | Merge it. Then 2.0 calls every route 1.0 calls (`my-password`, `users` POST, `clear-lockouts`, `role-matrix`, `audit-verify`, `audit-settings`, `audit-upload-now`, `idle-signout`, `last-show-signout` are the only ones it does not call today). |
-| 2.0's links to 1.0 | Stay until R1 | The header's "Old screen", the Schedule and Settings tabs' "Open the old screen" cards, and (until #214) Settings' Users "Open in 1.0" and the signed-in sheet's "Users in 1.0". No other 2.0 link opens 1.0. |
-| Jeff's yes | Needed | R1 deletes 1.0 only after Jeff says so. |
+| Item | What is left |
+|---|---|
+| 2.0's old screen links | The header's "Old screen" and the Schedule and Settings tabs' "Open the old screen (for Users, Audit, Network and the rest)" cards. R1 removes them; their words are pinned by `test_ui2_page_makes_only_1_0_presses`. |
+| The engine's own 1.0 words | `fire_ice.py` `LOOK_IN_SHOW` (the cues fault for a look left in Programming) says "On 2.0, Open in 1.0 first.": 2.0 has had the Show file card since P1, so this sentence is wrong today. It is engine text (no engine change in the port PRs): change it in R1 or a small engine PR, with its tests. |
+| Jeff's yes | R1 deletes 1.0 only after Jeff says so. |
 
 Then R1 (delete 1.0) and R2 (the docs say 2.0 only). Practice mode is not part of 1.0 and not needed for R1.
 
