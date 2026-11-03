@@ -337,8 +337,10 @@ class FakeEngine {
         const r = this.onPost(p, body);
         return route.fulfill({status: r.code, contentType: "application/json", body: JSON.stringify(r.body)});
       }
-      if(p === "/" || p === "/remote" || p === "/remote1") return route.fulfill({status: 200, contentType: "text/html; charset=utf-8", body: this.html});
-      if(p === "/remote2") return route.fulfill({status: 200, contentType: "text/html; charset=utf-8", body: this.html2});
+      // 2.0 is the default screen (Jeff, 2026-11-02): / and /remote are 2.0,
+      // /remote1 the old screen.
+      if(p === "/remote1") return route.fulfill({status: 200, contentType: "text/html; charset=utf-8", body: this.html});
+      if(p === "/" || p === "/remote" || p === "/remote2") return route.fulfill({status: 200, contentType: "text/html; charset=utf-8", body: this.html2});
       if(p === "/remote-logic.js") return route.fulfill({status: 200, contentType: "application/javascript; charset=utf-8", body: this.logic});
       if(p === "/api/remote/ui-default") return route.fulfill({status: 200, contentType: "application/json", body: JSON.stringify({default: this.uiDefault})});
       if(p.startsWith("/brand/") && process.env.NOFONT) return route.fulfill({status: 404, body: "{}"});

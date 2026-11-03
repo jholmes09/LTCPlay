@@ -83,6 +83,18 @@ version of every program. It holds NO show files, no audio or video, no
 renders and no PIN, password, token or key files. Take the bundle before
 you restart or reinstall, so the logs that show the fault are still in it.
 
+## The rack screen: 2.0, and the old screen
+
+The rack screen opens on interface 2.0 (Jeff, 2026-11-02), and so does
+every iPad and laptop. Some things are still only on the old screen
+(1.0): Users and the audit log, Getting started, the Programming cards
+for Show network, Show folder and Arming from a screen, Restart the
+engine, the Stream Deck operator and the "i" button. To get there, tap
+"Old screen" at the top of 2.0 (or "Open the old screen (for Users,
+Audit, Network and the rest)" on its Schedule tab). That screen then
+stays on the old screen until "Try 2.0" in its header is tapped. Stop
+show, Hold and Disarm flames are on both.
+
 ## Users, sign-in and the audit log
 
 The first start of this version makes Jeff and Andy (admins) and Dallen,

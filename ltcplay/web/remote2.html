@@ -638,7 +638,11 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <button class="hb" id="sys" aria-label="Systems: tap for what to check"><svg class="i"><use href="#i-dot-ok"/></svg><span>Checking</span><svg class="i chev" aria-hidden="true"><use href="#i-right"/></svg></button>
     <button class="hb" id="user"><svg class="i"><use href="#i-user"/></svg><span>Sign in</span></button>
     <button class="hb" id="help"><svg class="i"><use href="#i-help"/></svg><span>Help</span></button>
-    <a class="hb" id="to1" href="/ui?v=1" aria-label="Back to 1.0"><svg class="i"><use href="#i-back"/></svg><span class="long">Back to 1.0</span><span class="short">1.0</span></a>
+    <!-- 2.0 is the default screen (Jeff, 2026-11-02). The old screen (1.0)
+         keeps what 2.0 does not have yet; this link remembers it on this
+         screen only (a cookie), then opens /remote1. Its Try 2.0 comes
+         back. -->
+    <a class="hb" id="to1" href="/ui?v=1" aria-label="Open the old screen (for Users, Audit, Network and the rest)" title="Open the old screen (for Users, Audit, Network and the rest)"><svg class="i"><use href="#i-back"/></svg><span class="long">Old screen</span><span class="short">Old</span></a>
   </div>
 </header>
 <!-- What to do next, on every tab; a live hazard (cleaning, live flame,
@@ -874,12 +878,12 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <button class="b" id="fbt-drop">Discard my changes</button>
         </div>
       </div>
+      <!-- The old screen, in plain words (Jeff, 2026-11-02). -->
+      <div class="card col" id="old-sched"><div class="t"><b>The old screen</b><span>Some things are only there for now. Its Try 2.0 button comes back here.</span></div><a class="b blue" href="/ui?v=1"><svg class="i"><use href="#i-back"/></svg>Open the old screen (for Users, Audit, Network and the rest)</a></div>
     </div>
   </section>
   <section class="pane" id="t-settings" hidden>
     <div class="cards">
-      <div class="card" id="set-ui"><div class="t"><b>Default interface</b><span id="set-ui-t">For screens that have not chosen.</span></div>
-        <div class="seg"><button class="b" id="set-ui-1" data-v="1">1.0</button><button class="b" id="set-ui-2" data-v="2">2.0</button></div></div>
       <div class="card col" id="set-pf"><div class="t"><b>Play-from cues</b><span id="pf-t">Named points in a show to play it from. Saving sends nothing to the rig.</span></div>
         <div class="pfbar"><select class="f" id="pf-show" aria-label="Show file"></select>
           <button class="b" id="pf-add"><svg class="i"><use href="#i-list"/></svg>Add cue</button>
@@ -890,6 +894,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
         <div id="pf-rows"></div>
         <div id="pf-msg" role="status"></div></div>
       <div class="card"><div class="t"><b>Users</b><span>People, roles, audit log.</span></div><a class="b blue" href="/remote1#users"><svg class="i"><use href="#i-open"/></svg>Open in 1.0</a></div>
+      <div class="card col" id="old-set"><div class="t"><b>The old screen</b><span>Some things are only there for now. Its Try 2.0 button comes back here.</span></div><a class="b blue" href="/ui?v=1"><svg class="i"><use href="#i-back"/></svg>Open the old screen (for Users, Audit, Network and the rest)</a></div>
     </div>
   </section>
 </main>
@@ -1183,7 +1188,7 @@ function showTab(t){
   try{ dayView(t === "day"); }catch(e){}
   TABS.forEach(k => { $("t-" + k).hidden = k !== t; });
   document.querySelectorAll(".tab").forEach(b => { b.classList.toggle("on", b.dataset.tab === t); b.setAttribute("aria-selected", b.dataset.tab === t ? "true" : "false"); });
-  if(t === "settings"){ loadUiDefault(); loadPlayFrom(); }
+  if(t === "settings") loadPlayFrom();
   if(t === "schedule"){ fbtOpen(); progFiles(); try{ drawProg(stale()); }catch(e){} if(ME && ME.local && !SE_READ){ SE_READ = true; loadSchedule(); } }
   if(prog) try{ $("t-prog").scrollIntoView(); }catch(e){}
   if(t === "show") layoutGroups();
@@ -4537,21 +4542,6 @@ window.addEventListener("blur", () => { if(WC_HOLD) wcLetGo("the page lost focus
 document.addEventListener("visibilitychange", () => { if(document.hidden && WC_HOLD) wcLetGo("the page was hidden"); });
 window.addEventListener("pagehide", () => wcLetGo("the page closed"));
 $("mo-lkundo-go").addEventListener("click", lockUndo);
-
-// ---- Settings: the default interface (admin, the show PC only) ----
-async function loadUiDefault(){
-  try{
-    const j = await getJSON("/api/remote/ui-default", 3000);
-    ["1", "2"].forEach(v => $("set-ui-" + v).classList.toggle("on", String(j.default) === v));
-    setText($("set-ui-t"), "Screens that have not chosen get " + (j.default === 2 ? "2.0" : "1.0") + ".");
-  }catch(e){ setText($("set-ui-t"), short8(e.message, "Not readable here.")); }
-}
-["set-ui-1", "set-ui-2"].forEach(id => $(id).addEventListener("click", async () => {
-  const v = Number($(id).dataset.v);
-  try{ const j = await post("/api/remote/ui-default", {default:v}); say("Default is now " + v + ".0.", j.text, "ok"); }
-  catch(e){ say("Not changed.", e.message, "bad"); }
-  loadUiDefault();
-}));
 
 // ---- The fireball timeline (fireball_timeline.py; Jeff, 2026-10-30) ----
 // Per show file: each stage's start on the show cue's own time
