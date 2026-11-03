@@ -2580,9 +2580,7 @@ flames work the same on both, and the hardware e-stop always works.
 
 Interface 1.0 is now "the old screen". It stays until everything in it
 is in 2.0 (docs/REMOVE_1_0_PLAN.md). Some things are only on the old
-screen for now: Users, Who may do what, the Audit log, checklist Verify,
-PDF and Export, the Show network, Restart the engine, the Stream Deck
-operator, the Show folder and Getting started, and the Info panel.
+screen for now: Users, Who may do what and the Audit log.
 
 - To get there: "Old screen" at the top of 2.0 on every tab, or "Open
   the old screen (for Users, Audit, Network and the rest)" on the
@@ -2765,6 +2763,26 @@ operator, the Show folder and Getting started, and the Info panel.
   letting go early, another step or tab, no contact or signing out fire
   nothing); once it runs you may let go, it stops by itself, and
   Stop purge here or in the line at the top ends it now.
+- 2.0 show PC tools: 1.0's own, the same code and presses.
+  - DAY, the Startup and Shutdown checklist steps: Verify records,
+    Download today's PDF and Export all. The two downloads are links: on
+    an iPad, Safari saves the file and stays on this page; a screen
+    added to the iPad's home screen opens it in Safari.
+  - Schedule tab, top: Getting started (only on a fresh install, until a
+    show file and a schedule exist), its three steps, Make a show file,
+    and Change it and Set the show times, which go to their cards below.
+  - Schedule tab, below the Programming cards, on the show PC only: Settings
+    changed (when a settings file changed on disk; Reload engine, asks
+    first, refused while a show runs or a flame group is armed, for
+    someone who may change settings), Rig check (pre-roll) with Check the
+    rig, the Show folder (Make a show file, Check the show file, Use this
+    folder, which asks first and restarts the engine, Open the show and
+    settings folders), the Stream Deck operator (Choose), and the Show
+    network (the address to type on an iPad, Use, Save address, and
+    Restart the engine when the saved address needs it; it asks first).
+  - Help, This LTC Player: the version, this screen, where the settings
+    and logs are, the mode, how to leave this window, and on the show PC
+    Close this window.
 - The systems badge in the header names a single problem ("Stream Deck:
   check"); one tap opens the list, which starts with what to do first.
   Something not set up here reads Off.
