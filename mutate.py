@@ -23633,6 +23633,101 @@ def build():
   "  if($(\"p-run-card\").hidden !== !local) $(\"p-run-card\").hidden = !local;",
   "  $(\"p-run-card\").hidden = false;"),
 
+ # 2.0's show PC tools: P12, P14, P15, P16 (1.0's code)
+ ("ui 2.0 tools: the Stream Deck operator card is shown off the show PC",
+  "ltcplay/web/remote2.html",
+  "  $(\"deck-op\").hidden = !ME.local;",
+  "  $(\"deck-op\").hidden = false;"),
+
+ ("ui 2.0 tools: the Show network card is shown off the show PC",
+  "ltcplay/web/remote2.html",
+  "  $(\"admin\").hidden = !ME.local;",
+  "  $(\"admin\").hidden = false;"),
+
+ ("ui 2.0 tools: the Show folder card is shown off the show PC",
+  "ltcplay/web/remote2.html",
+  "  $(\"folders\").hidden = !ME.local;",
+  "  $(\"folders\").hidden = false;"),
+
+ ("ui 2.0 tools: Restart the engine goes with no question",
+  "ltcplay/web/remote2.html",
+  "  if(!(await confirmBox(\"Restart the engine?\",",
+  "  if(false && !(await confirmBox(\"Restart the engine?\","),
+
+ ("ui 2.0 tools: Reload engine goes with no question",
+  "ltcplay/web/remote2.html",
+  "  if(!(await confirmBox(\"Reload the engine?\",",
+  "  if(false && !(await confirmBox(\"Reload the engine?\","),
+
+ ("ui 2.0 tools: Use this folder goes with no question",
+  "ltcplay/web/remote2.html",
+  "  if(!(await confirmBox(\"Use this show folder?\",",
+  "  if(false && !(await confirmBox(\"Use this show folder?\","),
+
+ ("ui 2.0 tools: Reload engine is offered without the settings permission",
+  "ltcplay/web/remote2.html",
+  "  $(\"cfg-reload\").hidden = !cn.offer || !mayRow(s, \"settings\");",
+  "  $(\"cfg-reload\").hidden = !cn.offer;"),
+
+ ("ui 2.0 tools: Restart the engine is live without the settings permission",
+  "ltcplay/web/remote2.html",
+  "  $(\"net-restart\").disabled = !r.offered || !mayRow(ST, \"settings\");",
+  "  $(\"net-restart\").disabled = !r.offered;"),
+
+ ("ui 2.0 tools: the Stream Deck operator is chosen with another screen name",
+  "ltcplay/web/remote2.html",
+  "await post(\"/api/schedule/operator\", {who:$(\"deck-op-pick\").value, screen:\"Rack screen\"});",
+  "await post(\"/api/schedule/operator\", {who:$(\"deck-op-pick\").value, screen:\"2.0\"});"),
+
+ ("ui 2.0 tools: today's PDF loses its date",
+  "ltcplay/web/remote2.html",
+  "    const pdf = \"/api/remote/checklist-pdf?date=\" + encodeURIComponent((MO && MO.checklists && MO.checklists.show_date) || \"\");",
+  "    const pdf = \"/api/remote/checklist-pdf?date=\";"),
+
+ ("ui 2.0 tools: Export all navigates the page instead of downloading",
+  "ltcplay/web/remote2.html",
+  "href=\"/api/remote/checklist-export\" download target=\"_blank\" rel=\"noopener\">",
+  "href=\"/api/remote/checklist-export\">"),
+
+ ("ui 2.0 tools: Verify records does nothing",
+  "ltcplay/web/remote2.html",
+  "    $(\"mo-verify\").addEventListener(\"click\", () => moPress(\"checklist-verify\", {}, \"mo-cmsg\"));\n",
+  ""),
+
+ ("ui 2.0 tools: the rig check card is shown off the show PC",
+  "ltcplay/web/remote2.html",
+  "  rcard.hidden = !s.preroll || !(ME && ME.local);",
+  "  rcard.hidden = !s.preroll;"),
+
+ ("ui 2.0 tools: the cards are never drawn",
+  "ltcplay/web/remote2.html",
+  "  try{ renderTools(isSt); }catch(e){}\n",
+  ""),
+
+ ("ui 2.0 tools: the Schedule tab never reads the network or the deck",
+  "ltcplay/web/remote2.html",
+  "  if(t === \"schedule\" && ME && ME.local){ loadNetwork(); loadDeckOp(); loadFolders(); }\n",
+  ""),
+
+ ("ui 2.0 tools: Close this window is offered off the show PC",
+  "ltcplay/web/remote2.html",
+  "    $(\"info-exit\").hidden = !(ME && ME.local && j.kiosk_closable);",
+  "    $(\"info-exit\").hidden = !j.kiosk_closable;"),
+
+ ("ui 2.0 tools: Check the show file checks the typed folder",
+  "ltcplay/web/remote2.html",
+  "  const f = $(\"p-file\").value;\n  if(!f){ $(\"fo-checked\")",
+  "  const f = $(\"fo-path\").value;\n  if(!f){ $(\"fo-checked\")"),
+
+ ("ui 2.0 tools: Getting started never shows",
+  "ltcplay/web/remote2.html",
+  "  card.hidden = !!su.ready;",
+  "  card.hidden = true;"),
+
+ ("ui 2.0 tools: Help has no info panel",
+  "ltcplay/web/remote2.html",
+  "  if(v === \"info\") openInfo();\n",
+  ""),
  # 2.0's Users pane: 1.0's Users screen, who may do what and the audit log (P5, P6, P7)
  ("ui 2.0 Users: Remove goes with no question",
   "ltcplay/web/remote2.html",

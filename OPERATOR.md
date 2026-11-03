@@ -2580,14 +2580,13 @@ with the same holds, confirms and refusals. Stop show, Hold and Disarm
 flames work the same on both, and the hardware e-stop always works.
 
 Interface 1.0 is now "the old screen". It stays until everything in it
-is in 2.0 (docs/REMOVE_1_0_PLAN.md). Some things are only on the old
-screen for now: checklist Verify, PDF and Export, the Show network, Restart the engine, the Stream Deck
-operator, the Show folder and Getting started, and the Info panel.
+is in 2.0 (docs/REMOVE_1_0_PLAN.md). Nothing is only on the old
+screen any more: everything it does is in 2.0 too.
 
 - To get there: "Old screen" at the top of 2.0 on every tab, or "Open
   the old screen (for Users, Audit, Network and the rest)" on the
-  Schedule and Settings tabs. Some 2.0 cards also have "Open in 1.0",
-  which opens that part of the old screen once.
+  Schedule and Settings tabs. No 2.0 card opens a part of the old screen
+  any more.
 - The old screen link is remembered on that screen only (a cookie in that
   browser): it keeps showing the old screen, even at `/remote`, until
   someone taps "Try 2.0" in the old screen's header. Try 2.0 forgets the
@@ -2765,6 +2764,26 @@ operator, the Show folder and Getting started, and the Info panel.
   letting go early, another step or tab, no contact or signing out fire
   nothing); once it runs you may let go, it stops by itself, and
   Stop purge here or in the line at the top ends it now.
+- 2.0 show PC tools: 1.0's own, the same code and presses.
+  - DAY, the Startup and Shutdown checklist steps: Verify records,
+    Download today's PDF and Export all. The two downloads are links: on
+    an iPad, Safari saves the file and stays on this page; a screen
+    added to the iPad's home screen opens it in Safari.
+  - Schedule tab, top: Getting started (only on a fresh install, until a
+    show file and a schedule exist), its three steps, Make a show file,
+    and Change it and Set the show times, which go to their cards below.
+  - Schedule tab, below the Programming cards, on the show PC only: Settings
+    changed (when a settings file changed on disk; Reload engine, asks
+    first, refused while a show runs or a flame group is armed, for
+    someone who may change settings), Rig check (pre-roll) with Check the
+    rig, the Show folder (Make a show file, Check the show file, Use this
+    folder, which asks first and restarts the engine, Open the show and
+    settings folders), the Stream Deck operator (Choose), and the Show
+    network (the address to type on an iPad, Use, Save address, and
+    Restart the engine when the saved address needs it; it asks first).
+  - Help, This LTC Player: the version, this screen, where the settings
+    and logs are, the mode, how to leave this window, and on the show PC
+    Close this window.
 - 2.0 Users: 1.0's Users screen, the same code and presses. Open it
   from Settings (Users, Open) or from the header: tap your name, then
   Users in the Signed in sheet. Signed in shows who you are, Sign out,
