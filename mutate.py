@@ -23535,6 +23535,67 @@ def build():
   "ltcplay/web/remote2.html",
   "  if($(\"p-run-card\").hidden !== !local) $(\"p-run-card\").hidden = !local;",
   "  $(\"p-run-card\").hidden = false;"),
+
+ # 2.0's Users pane: 1.0's Users screen, who may do what and the audit log (P5, P6, P7)
+ ("ui 2.0 Users: Remove goes with no question",
+  "ltcplay/web/remote2.html",
+  "    if(window.confirm(\"Remove \" + b.dataset.remove + \"? Their audit lines stay.\")) uAdmin({op:\"remove\", name:b.dataset.remove});",
+  "    if(true || window.confirm(\"Remove \" + b.dataset.remove + \"? Their audit lines stay.\")) uAdmin({op:\"remove\", name:b.dataset.remove});"),
+
+ ("ui 2.0 Users: the users list is shown off the show PC",
+  "ltcplay/web/remote2.html",
+  "  $(\"u-admin\").hidden = !(UV.local && UV.may_admin && UV.active !== undefined);",
+  "  $(\"u-admin\").hidden = !(UV.may_admin && UV.active !== undefined);"),
+
+ ("ui 2.0 Users: who may do what is editable off the show PC",
+  "ltcplay/web/remote2.html",
+  "  const edit = !!(UV.local && UV.may_admin);",
+  "  const edit = !!UV.may_admin;"),
+
+ ("ui 2.0 Users: the audit card is shown off the show PC",
+  "ltcplay/web/remote2.html",
+  "  $(\"u-audit\").hidden = !UV.local;",
+  "  $(\"u-audit\").hidden = false;"),
+
+ ("ui 2.0 Users: the shared token is written into its field",
+  "ltcplay/web/remote2.html",
+  "    $(\"au-tok\").placeholder = u.token_set ?",
+  "    $(\"au-tok\").value = u.token || \"\";\n    $(\"au-tok\").placeholder = u.token_set ?"),
+
+ ("ui 2.0 Users: opening the pane does not read the users",
+  "ltcplay/web/remote2.html",
+  "  if(t === \"users\") loadUsers();\n",
+  ""),
+
+ ("ui 2.0 Users: the pane is not a tab",
+  "ltcplay/web/remote2.html",
+  "const TABS = [\"show\", \"day\", \"schedule\", \"settings\", \"users\"];",
+  "const TABS = [\"show\", \"day\", \"schedule\", \"settings\"];"),
+
+ ("ui 2.0 Users: the signed-in sheet still opens 1.0",
+  "ltcplay/web/remote2.html",
+  "    if(v === \"users\") location.hash = \"users\";",
+  "    if(v === \"users\") location.href = \"/remote1#users\";"),
+
+ ("ui 2.0 Users: Sign out on the pane leaves the header button as it was",
+  "ltcplay/web/remote2.html",
+  "  renderUser();\n  loadUsers();\n});",
+  "  loadUsers();\n});"),
+
+ ("ui 2.0 Users: a bad last show time is saved anyway",
+  "ltcplay/web/remote2.html",
+  "  if(lastShow === null){\n    uMsg(\"au-msg\", \"Sign out after the last show",
+  "  if(false){\n    uMsg(\"au-msg\", \"Sign out after the last show"),
+
+ ("ui 2.0 Users: the pane's buttons are smaller than 56 px",
+  "ltcplay/web/remote2.html",
+  "#t-users button{font:inherit;min-height:56px;",
+  "#t-users button{font:inherit;min-height:40px;"),
+
+ ("ui 2.0 Users: the pane's rows do not stack on a phone",
+  "ltcplay/web/remote2.html",
+  "@media (max-width:600px){ #t-users .row > *{flex:1 1 100% !important} }\n",
+  ""),
 ]
 
 

@@ -3714,5 +3714,17 @@
 "ui2 default: 2.0's header link opens /remote1 without remembering it": "test_ui2_page_makes_only_1_0_presses",
 "ui2 default: the Schedule tab's old screen card skips remembering it": "test_ui2_page_makes_only_1_0_presses",
 "ui2 default: the rack screen opens the old screen": "test_ui2_is_the_default_screen",
-"ui2 default: the installer smoke test skips the old screen's rules": "test_remote_rules_file"
+"ui2 default: the installer smoke test skips the old screen's rules": "test_remote_rules_file",
+"ui 2.0 Users: Remove goes with no question": "test_ui2_users_audit_driven",
+"ui 2.0 Users: the users list is shown off the show PC": "test_ui2_users_audit_are_1_0s",
+"ui 2.0 Users: who may do what is editable off the show PC": "test_ui2_users_audit_are_1_0s",
+"ui 2.0 Users: the audit card is shown off the show PC": "test_ui2_users_audit_driven",
+"ui 2.0 Users: the shared token is written into its field": "test_ui2_users_audit_are_1_0s",
+"ui 2.0 Users: opening the pane does not read the users": "test_ui2_users_audit_driven",
+"ui 2.0 Users: the pane is not a tab": "test_ui2_users_audit_driven",
+"ui 2.0 Users: the signed-in sheet still opens 1.0": "test_ui2_users_audit_are_1_0s",
+"ui 2.0 Users: Sign out on the pane leaves the header button as it was": "test_ui2_users_audit_are_1_0s",
+"ui 2.0 Users: a bad last show time is saved anyway": "test_ui2_users_audit_driven",
+"ui 2.0 Users: the pane's buttons are smaller than 56 px": "test_ui2_users_audit_driven",
+"ui 2.0 Users: the pane's rows do not stack on a phone": "test_ui2_users_audit_driven"
 }
