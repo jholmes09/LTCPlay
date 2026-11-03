@@ -51522,7 +51522,8 @@ def test_mutate_mutant_limit_follows_the_baseline():
     # The rule itself: three times the baseline, never under the old 300 s,
     # never over the ceiling.
     for base, want in ((0, 300), (60, 300), (100, 300), (150, 450),
-                       (280, 840), (600, 1800), (5000, 1800)):
+                       (280, 840), (600, 1800), (1800, 5400),
+                       (5000, 5400)):
         check(mutate.mutant_timeout(base) == want,
               f"baseline {base} s: mutant limit "
               f"{mutate.mutant_timeout(base)} s, want {want} s")
