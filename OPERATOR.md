@@ -2234,16 +2234,14 @@ Turning it off puts every controller back on the live stream immediately.
 
 ## The iPad
 
-Once, on the show machine: open the old screen
-(http://127.0.0.1:7878/remote1, or "Old screen" at the top of 2.0),
-press Programming, and pick this machine's show Wi-Fi address under "Show
-network". On a Mac, start it with the show network on (Run ltcplay, answer
+Once, on the show machine: open the Schedule tab and pick this machine's
+show Wi-Fi address on the "Show network, on this machine" card. On a Mac, start it with the show network on (Run ltcplay, answer
 y to the iPad question). There is no PIN.
 
 ### Open the page from your Mac or iPad
 
-On the Windows show PC the "Show network, on this machine" card on
-Programming (on the old screen, `/remote1`, until 2.0 has it) says it all in plain words: the address saved (or none), where
+On the Windows show PC the "Show network, on this machine" card on the
+Schedule tab says it all in plain words: the address saved (or none), where
 the engine is listening, whether the Windows Firewall rule is there,
 whether Windows calls that network Public or Private (with what to do
 when it is Public), and the address to type on the other machine, for
@@ -2567,35 +2565,17 @@ from the screen: the Stream Deck's group keys and Stop, and the hardware
 e-stop, are), it stays on the screen as a banner until it is seen, never
 only as a one-line note.
 
-## Interface 2.0, the default screen (1.0 is the old screen)
+## The screen
 
-Interface 2.0 is the default screen on every device (Jeff, 2026-11-02):
-the rack screen, every iPad and every laptop get it at `/remote` and at
-the show network address with no choice made. It is a new look on the
-same program: its SHOW and Day tabs, its Schedule tab and its
-Programming cards (on the Schedule tab) do what 1.0 does. Nothing else
-changes: every 2.0 button sends exactly what the same 1.0 button sends,
-with the same holds, confirms and refusals. Stop show, Hold and Disarm
-flames work the same on both, and the hardware e-stop always works.
+There is one screen, on every device: the rack screen, every iPad and
+every laptop get it at `/remote` and at the show network address
+(`/remote2` is the same page, for old bookmarks). Its tabs are SHOW, Day,
+Schedule (with the Programming cards and, on the show PC, its tools) and
+Settings. Stop show, Hold and Disarm flames are one tap away on every
+tab, and the hardware e-stop always works.
 
-Interface 1.0 is now "the old screen". It stays until everything in it
-is in 2.0 (docs/REMOVE_1_0_PLAN.md). Nothing is only on the old
-screen any more: everything it does is in 2.0 too.
-
-- To get there: "Old screen" at the top of 2.0 on every tab, or "Open
-  the old screen (for Users, Audit, Network and the rest)" on the
-  Schedule and Settings tabs. No 2.0 card opens a part of the old screen
-  any more.
-- The old screen link is remembered on that screen only (a cookie in that
-  browser): it keeps showing the old screen, even at `/remote`, until
-  someone taps "Try 2.0" in the old screen's header. Try 2.0 forgets the
-  choice and goes back to 2.0. The rack screen, each iPad and each laptop
-  choose for themselves. The rack window's address stays `/remote`.
-- `/remote1` is always the old screen and `/remote2` is always 2.0,
-  whatever a screen chose.
-- The "Default interface" card is gone from 2.0 Settings. A
-  `ui_default` saved in `ltcplay_remote.json` earlier is kept but no
-  longer decides anything.
+- An old "remote1" or "ui" address no longer opens anything; open
+  `/remote`. A `ui_default` left in `ltcplay_remote.json` is ignored.
 - 2.0 Settings, "Play-from cues" (on the show PC, by someone with
   Settings, admins): a list of named points in a show file to play the
   show from later. Saving the list sends nothing to the rig and starts
@@ -2710,8 +2690,8 @@ screen any more: everything it does is in 2.0 too.
   says why it refuses one, and its answer is shown under the card. While
   the show's flame cues follow Programming playback, a move needs the show
   PC or Settings, as on 1.0, and the card says how the flames follow; a
-  flame cue fault is shown there in full. "More programming" opens 1.0 for
-  the schedule rules, the show folder and the network.
+  flame cue fault is shown there in full. The show folder, the network
+  and the other show PC tools are cards further down the Schedule tab.
 - Anything live that has to be stopped by hand (the wave flamer cleaning,
   live flame programming) sits in the next-step
   line with its own red Stop, on every tab, never behind another alert,
@@ -2736,8 +2716,9 @@ screen any more: everything it does is in 2.0 too.
   each with its mark, and one big Next. Every press is the 1.0 Startup,
   Fuel and Shutdown pages' own: a purge fires only with the Stream Deck's
   FIRE key or Space held, the cleaning starts only with its two holds,
-  and Lock is one tap per machine with Undo. "Map in 1.0" opens the
-  machine map, Arrange, the checklist PDF and the rest of 1.0's page.
+  and Lock is one tap per machine with Undo. The Purge step has the
+  machine map and Arrange; the checklist steps have Verify records, the
+  PDF and Export all.
 - 2.0 DAY tab, Fireball, fuel and timed purge: 1.0's Fireball page,
   its recent refills and its timed purge, the same code and presses.
   The Fireball step (Startup, only when the show has a fireball group):

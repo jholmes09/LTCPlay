@@ -65,9 +65,9 @@ import time
 MADMAPPER = ("madmapper*.exe",)     # madmapperwatch.IMAGES
 BEYOND = ("beyond*.exe",)           # beyondwatch.IMAGES
 EDGE = ("msedge.exe",)
-# The rack screen page's own title: "<show> remote" (remote.html's
-# loadBrand) or "Show remote 2.0" (remote2.html), as an Edge app window
-# shows it.
+# The rack screen page's own title: "<show> remote" (remote2.html's
+# loadBrand) or "Show remote 2.0" (its title before the brand loads), as
+# an Edge app window shows it.
 RACK_TITLE = r"(?i)\bremote( 2\.0)?( - [^-]*Edge)?$"
 EDGE_TOL = 2              # px: a window this close to a display's edges fills it
 WS_CAPTION = 0x00C00000

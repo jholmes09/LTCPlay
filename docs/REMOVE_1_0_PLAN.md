@@ -59,22 +59,19 @@ Routes are under `/api/remote/` unless they start with `/api/`. A route 2.0 alre
 | P14 | DONE (2.0 Schedule tab, show PC cards; Reload engine in its own Settings changed card). Show machine tools: show network address, Save, Restart the engine, settings changed on disk with Reload engine, Stream Deck operator, rig check card (Check the rig, items) | 8 | `network` (GET, POST), `reload-engine`, `/api/schedule/operator` (GET, POST); `preroll-check` from a card | 0 | Medium. Engine restart. |
 | P15 | DONE (2.0 Schedule tab: Getting started at the top, the Show folder card on the show PC). Show folder and Getting started: folder path, Use this folder, Make a show file, Check the show file, open show and settings folders, the three setup steps | 7 | `show-folder`, `show-file-new`, `/api/check`, `open-folder`, `setup` | P1 | Medium. Fresh install flow. |
 | P16 | DONE (2.0 Help, This LTC Player). Info panel: version, screen, settings path, mode, how to leave the window, Close this window | 2 | `screen` | 0 | Low. |
-| R1 | Remove 1.0: `remote.html`, `/remote1`, `/ui`, the `ltcplay_ui` cookie, `ui-default` (its Settings card already went with the default switch), 2.0's old screen links (header "Old screen", the Schedule and Settings cards, every "Open in 1.0"), the 1.0 window title | 0 | removes routes | P1 to P16; Jeff's yes | High. About 80 selftest reads of 1.0, about 200 mutations on `remote.html`, the parity tables become fixed tables. |
+| R1 | DONE (1.0 deleted; its copied code pinned in tools/pins/remote1_copied.txt; the route table fixed in selftest.py `_UI2_ROUTES`). Remove 1.0: `remote.html`, `/remote1`, `/ui`, the `ltcplay_ui` cookie, `ui-default` (its Settings card already went with the default switch), 2.0's old screen links (header "Old screen", the Schedule and Settings cards, every "Open in 1.0"), the 1.0 window title | 0 | removes routes | P1 to P16; Jeff's yes | High. About 80 selftest reads of 1.0, about 200 mutations on `remote.html`, the parity tables become fixed tables. |
 | R2 | Docs: OPERATOR.md, USERS.md, MORNING.md, FUEL.md, TESTING.md say 2.0 only | 0 | none | R1 | Low. |
 
 Totals: 16 port PRs (P1 to P16) with 95 or more controls, 42 routes 2.0 does not call yet, and 4 new bodies on routes it already calls (`/api/start`, the open beat, `preroll-check`, `live-flame`). With this PR and R1, R2: 19 PRs.
 
-## Left before R1
+## Left after R1
 
-With bundle E (P12, P14, P15, P16) and #214 (P5, P6, P7), every port is done: 2.0 calls every route 1.0 calls, and no 2.0 card or sheet opens a part of 1.0. What is left before R1 deletes 1.0:
+R1 is done: the first screen and everything that served it are gone. Left:
 
 | Item | What is left |
 |---|---|
-| 2.0's old screen links | The header's "Old screen" and the Schedule and Settings tabs' "Open the old screen (for Users, Audit, Network and the rest)" cards. R1 removes them; their words are pinned by `test_ui2_page_makes_only_1_0_presses`. |
-| The engine's own 1.0 words | `fire_ice.py` `LOOK_IN_SHOW` (the cues fault for a look left in Programming) says "On 2.0, Open in 1.0 first.": 2.0 has had the Show file card since P1, so this sentence is wrong today. It is engine text (no engine change in the port PRs): change it in R1 or a small engine PR, with its tests. |
-| Jeff's yes | R1 deletes 1.0 only after Jeff says so. |
-
-Then R1 (delete 1.0) and R2 (the docs say 2.0 only). Practice mode is not part of 1.0 and not needed for R1.
+| The engine's own 1.0 words | `fire_ice.py` `LOOK_IN_SHOW` says "On 2.0, Open in 1.0 first." PR #216 changes it. |
+| R2 | The docs say one screen in plain words, and this plan becomes a short done note. |
 
 ## Proposed order
 
