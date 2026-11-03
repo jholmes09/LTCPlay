@@ -97837,7 +97837,7 @@ def test_ui2_day_fireball_fuel_purge_are_1_0s():
             "1.0's banner Stop (2.0's pinned Stop purge); their sections "
             "are shown on their steps only and the Fireball page is open "
             "only while its step shows; the Fireball step only with a "
-            "fireball group; no dashes; OPERATOR.md and the plan")
+            "fireball group; no dashes; OPERATOR.md")
     one, two = _ui2_pages()
     for what, a, b, drop in _UI2_B_BLOCKS:
         i = one.find(a)
@@ -97891,17 +97891,13 @@ def test_ui2_day_fireball_fuel_purge_are_1_0s():
           "no em or en dashes in the new sections")
     here = os.path.dirname(os.path.abspath(__file__))
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
-    i = op.find("- 2.0 DAY tab, Fireball, fuel and timed purge:")
+    i = op.find("- DAY tab, Fireball, fuel and timed purge.")
     para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
     for words in ("Fireball step", "0.25 s", "a Hold does not",
                   "Recent refills", "Undo", "admins", "timed purge",
                   "Hold to start", "Stop purge"):
         check(words in para, f"OPERATOR.md, 2.0 DAY, says {words!r}")
     _no_dashes(para, "OPERATOR.md, 2.0 DAY, Fireball, fuel, timed purge")
-    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
-                encoding="utf-8").read()
-    check(all(f"| {p} | DONE" in plan for p in ("P8", "P9", "P10")),
-          "the removal plan marks P8, P9 and P10 done")
     import shutil
     node = shutil.which("node")
     if not node:
@@ -100041,7 +100037,7 @@ def test_fireball_timeline_docs_in_plain_words():
                  "show folder's own spelling", "differ only by case",
                  "ltcplay_fireball_timeline.json",
                  "fireball_timeline_history",
-                 "Interface 2.0, the Schedule tab, Fireball timeline",
+                 "the Schedule tab, Fireball timeline",
                  "nothing is sent", "Sign in to edit", "Admins only",
                  "Arming off here", "Hold, Stop show and Disarm flames "
                  "stay at full strength", "Saved elsewhere: Revert",
@@ -103508,7 +103504,7 @@ def test_ui2_arrange_and_switches_are_1_0s():
             "ids; Arrange, Arming from a screen and the announcement output "
             "on the show PC only; leaving the Purge step, the map or DAY "
             "leaves Arrange mode; no stub left that says nothing is ever "
-            "arranging; OPERATOR.md and the plan")
+            "arranging; OPERATOR.md")
     one, two = _ui2_pages()
     # The ARRANGE block's three 2.0 changes (review of #212, 1 and 4):
     # outside Arrange a machine is chosen by a tap (machUp), never by a
@@ -103616,7 +103612,7 @@ def test_ui2_arrange_and_switches_are_1_0s():
           "no em or en dashes on the new cards")
     here = os.path.dirname(os.path.abspath(__file__))
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
-    i = op.find("- 2.0 machine map, Arrange and the show machine switches:")
+    i = op.find("- Machine map, Arrange and the show machine switches.")
     para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
     for words in ("Map", "Arrange", "Save layout", "Reset layout", "Cancel",
                   "show PC only", "Arming from a screen", "Live flame",
@@ -103624,10 +103620,6 @@ def test_ui2_arrange_and_switches_are_1_0s():
         check(words in para, f"OPERATOR.md, 2.0 map and switches, says "
                              f"{words!r}")
     _no_dashes(para, "OPERATOR.md, 2.0 map and switches")
-    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
-                encoding="utf-8").read()
-    check("| P11 | DONE" in plan and "| P13 | DONE" in plan,
-          "the removal plan marks P11 and P13 done")
     print("  ok")
 
 
@@ -106312,7 +106304,7 @@ def test_play_from_cue_card_in_2_0():
             f"{n} presses nothing and starts nothing")
     here = os.path.dirname(os.path.abspath(__file__))
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
-    a = op.find('- 2.0 Settings, "Play-from cues"')
+    a = op.find('- Settings, "Play-from cues"')
     para = op[a:op.find("\n- ", a + 3)]
     for words in ("sends nothing to the rig", "ltcplay_play_from.json",
                   "play_from_history", "at least 1", "2 when left",
@@ -106548,10 +106540,6 @@ def test_ui2_resume_from_a_cue():
     check("comes in the next update" not in sec,
           "OPERATOR.md no longer says the sheet is still to come")
     _no_dashes(sec, "OPERATOR.md, Start at a cue")
-    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
-                encoding="utf-8").read()
-    check("| Resume show N sheet (play-from step 3) | DONE" in plan,
-          "the removal plan marks the Resume sheet done")
     node = shutil.which("node")
     if not node:
         check(not IN_CI, "node is missing on this CI runner")
@@ -108495,7 +108483,7 @@ def test_ui2_programming_tab_makes_1_0_presses():
           "lock; Run follows 1.0's runLook")
     here = os.path.dirname(os.path.abspath(__file__))
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
-    i = op.find("- 2.0 Programming (Schedule tab):")
+    i = op.find("- Programming (Schedule tab):")
     para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
     for words in ("Run asks first", "refused while a scheduled show is live",
                   "Stop (tap twice)", "Run off", "Play from", "Set A",
@@ -108504,10 +108492,6 @@ def test_ui2_programming_tab_makes_1_0_presses():
         check(words in para, f"OPERATOR.md, 2.0 Programming, says "
                              f"{words!r}")
     _no_dashes(para, "OPERATOR.md, 2.0 Programming")
-    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
-                encoding="utf-8").read()
-    check("| P1 | DONE" in plan and "| P2 | DONE" in plan,
-          "the removal plan marks P1 and P2 done")
     import shutil
     node = shutil.which("node")
     if not node:
@@ -108917,7 +108901,7 @@ def test_ui2_schedule_tab_makes_1_0_presses():
             "on the show PC only, each 1.0's own code copied word for word "
             "with 1.0's element ids, the same schedule-file route and body "
             "(GET, and POST {doc}), the same fields and limits; no dashes; "
-            "OPERATOR.md and the plan say it")
+            "OPERATOR.md says it")
     one, two = _ui2_pages()
     sched = two[two.find('<section class="pane" id="t-schedule"'):]
     sched = sched[:sched.find("</section>")]
@@ -108969,7 +108953,7 @@ def test_ui2_schedule_tab_makes_1_0_presses():
           "no em or en dashes on the Schedule tab's new cards")
     here = os.path.dirname(os.path.abspath(__file__))
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
-    i = op.find("- 2.0 Schedule tab:")
+    i = op.find("- Schedule tab:")
     para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
     for need in ("and the Fire &amp; Ice settings say it performs",
                  "Any times work:", "is overwritten, so Reload first"):
@@ -108981,10 +108965,6 @@ def test_ui2_schedule_tab_makes_1_0_presses():
         check(words in para, f"OPERATOR.md, 2.0 Schedule tab, says "
                              f"{words!r}")
     _no_dashes(para, "OPERATOR.md, 2.0 Schedule tab")
-    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
-                encoding="utf-8").read()
-    check("| P3 | DONE" in plan and "| P4 | DONE" in plan,
-          "the removal plan marks P3 and P4 done")
     import shutil
     node = shutil.which("node")
     if not node:
@@ -109274,7 +109254,7 @@ def test_ui2_users_audit_are_1_0s():
             "lockForSignIn the documented differences; opened from #users "
             "(the signed-in sheet and the Settings card), no 1.0 link "
             "left; the token and address never written into a field; no "
-            "dashes; OPERATOR.md and the plan")
+            "dashes; OPERATOR.md")
     one, two = _ui2_pages()
     mk, code, chip = _ui2_users_parts(one)
     p = two.find('<section class="pane" id="t-users" hidden>')
@@ -109341,7 +109321,7 @@ def test_ui2_users_audit_are_1_0s():
     _no_dashes(pane, "2.0's Users pane")
     here = os.path.dirname(os.path.abspath(__file__))
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
-    i = op.find("- 2.0 Users:")
+    i = op.find("- Users: the Users pane.")
     para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
     for words in ("Settings", "Signed in", "your own password",
                   "Who may do what", "admins", "the show PC",
@@ -109352,10 +109332,6 @@ def test_ui2_users_audit_are_1_0s():
     _no_dashes(para, "OPERATOR.md, 2.0 Users")
     check("only on the old\nscreen for now: Users" not in op,
           "OPERATOR.md no longer says Users is only on the old screen")
-    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
-                encoding="utf-8").read()
-    check(all(f"| {p} | DONE" in plan for p in ("P5", "P6", "P7")),
-          "the removal plan marks P5, P6 and P7 done")
     print("  ok")
 
 
@@ -109722,7 +109698,7 @@ def test_ui2_show_pc_tools_are_1_0s():
             "Getting started, and the info panel are 1.0's code word for "
             "word, the differences named; the show PC's cards on the show "
             "PC only, as 1.0; no 1.0 link left for them; no dashes; "
-            "OPERATOR.md and the plan")
+            "OPERATOR.md")
     one, two = _ui2_pages()
     for what, text in _ui2_tools_copies(one):
         check(len(text) > 20 and text in two,
@@ -109787,7 +109763,7 @@ def test_ui2_show_pc_tools_are_1_0s():
     _no_dashes(info, "the info panel")
     here = os.path.dirname(os.path.abspath(__file__))
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
-    i = op.find("- 2.0 show PC tools:")
+    i = op.find("- Show PC tools.")
     para = " ".join((op[i:op.find("\n- ", i + 3)] if i >= 0 else "")
                     .split())
     for words in ("Verify records", "Download today's PDF", "Export all",
@@ -109798,13 +109774,6 @@ def test_ui2_show_pc_tools_are_1_0s():
         check(words in para, f"OPERATOR.md, 2.0 show PC tools, says "
                              f"{words!r}")
     _no_dashes(para, "OPERATOR.md, 2.0 show PC tools")
-    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
-                encoding="utf-8").read()
-    check(all(f"| {p} | DONE" in plan for p in
-              ("P12", "P14", "P15", "P16")),
-          "the removal plan marks P12, P14, P15 and P16 done")
-    check("| R1 | DONE" in plan and "## Left after R1" in plan,
-          "the removal plan marks R1 done and says what is left")
     print("  ok")
 
 

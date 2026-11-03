@@ -231,8 +231,7 @@ The fuel pump is not on this page and is never purged. It is one DMX
 channel on the flame universe (Jeff: channel 100, on at 255), a
 passthrough "switch" in `flamesafe.json`, not a flame group: it has no
 safety slot and is never armed. Andy turns it on by hand, from the
-engine's fuel pump route (its button on Interface 2.0's SHOW tab comes in
-its own update), for a run time he sets first (5:00 unless he sets
+engine's fuel pump route (the Fuel pump row on the SHOW tab), for a run time he sets first (5:00 unless he sets
 another, ten minutes at most), and it turns off by itself at the end of
 it. Stop and the sign-in that started it signing out turn it off;
 Hold does not. OPERATOR.md, "The fireball's
