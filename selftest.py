@@ -101551,8 +101551,17 @@ def test_ui2_page_makes_only_1_0_presses():
                 '<link rel="apple-touch-icon" href="/apple-touch-icon.png"',
                 '<link rel="manifest" href="/manifest.webmanifest"'):
         check(tag in head2, f"2.0 names its icon in <head>: {tag}")
+    # 1.0's Users screen (P7) names the audit server's address in words:
+    # its label and its field's example, nothing loaded.
+    um = _ui2_users_parts(one)[0]
+    check(re.findall(r"https?://[^\s\"<)]*", um) == [
+              "https://", "https://audit.example.com/ltc"] and
+          "Server address (https://)</label>" in um and
+          'placeholder="https://audit.example.com/ltc">' in um,
+          "1.0's Users screen names the audit server only in words")
+    two_ = two.replace(um, "")
     check(not re.search(r"(?:src|href)=\"(?:https?:)?//", two) and
-          "http://" not in two and "https://" not in two,
+          "http://" not in two_ and "https://" not in two_,
           "2.0 loads nothing from off the show network")
     check("\u2013" not in two and "\u2014" not in two,
           "2.0 has no em or en dashes")
@@ -114236,6 +114245,376 @@ def test_ui2_schedule_tab_in_a_browser():
     print("  ok")
 
 
+# 1.0's Users screen in 2.0 (P5, P6, P7): its markup from the u-sign card to
+# the audit card's end, and its code from the Users comment to Fuel's.
+_UI2_USERS_MARK = ('    <section class="card" id="u-sign">',
+                   '  </section>\n\n  <!-- Programming: everything not '
+                   'needed during a show. -->')
+_UI2_USERS_CODE = ("// Users and the audit log (users.py, audit.py; USERS.md)",
+                   "// ---- Fuel (Jeff, 2026-10-26")
+
+
+def _ui2_users_parts(one):
+    i = one.find(_UI2_USERS_MARK[0])
+    j = one.find(_UI2_USERS_MARK[1], i)
+    mk = one[i:j] if 0 <= i < j else ""
+    a = one.find(_UI2_USERS_CODE[0])
+    b = one.find(_UI2_USERS_CODE[1], a)
+    code = one[a:b] if 0 <= a < b else ""
+    c1 = code.find("function renderUserChip(){")
+    c2 = code.find("setInterval(renderUserChip, 1000);\n")
+    chip = code[c1:c2 + len("setInterval(renderUserChip, 1000);\n")] \
+        if 0 <= c1 < c2 else ""
+    return mk, code, chip
+
+
+def test_ui2_users_audit_are_1_0s():
+    section("2.0's Users pane, P5, P6, P7: 1.0's Users screen (sign in "
+            "and your own password, the users, who may do what, the audit "
+            "log and its upload, idle sign out, sign out after the last "
+            "show) is 1.0's markup and code word for word, the chip and "
+            "lockForSignIn the documented differences; opened from #users "
+            "(the signed-in sheet and the Settings card), no 1.0 link "
+            "left; the token and address never written into a field; no "
+            "dashes; OPERATOR.md and the plan")
+    one, two = _ui2_pages()
+    mk, code, chip = _ui2_users_parts(one)
+    p = two.find('<section class="pane" id="t-users" hidden>')
+    check(len(mk) > 3000 and 'id="u-audit"' in mk and mk in two and
+          0 < p < two.find(mk) < two.find('id="t-settings"'),
+          f"2.0's Users pane is 1.0's Users screen, word for word "
+          f"({len(mk)} characters)")
+    check('[hidden]{display:none !important}' in two,
+          "a hidden card stays hidden on the pane (1.0's admin and audit "
+          "cards)")
+    check(len(chip) > 500 and code.count(chip) == 1,
+          f"1.0's Users code has its chip ({len(chip)} characters)")
+    old = "  renderUserChip();\n  lockForSignIn();\n"
+    check(code.count(old) == 1, "1.0's Sign out redraws its chip and locks")
+    want = code.replace(chip, "").replace(old, "  renderUser();\n")
+    check(len(want) > 8000 and want in two,
+          f"2.0's Users code is 1.0's, word for word, without the chip "
+          f"and with 2.0's renderUser after Sign out ({len(want)} "
+          f"characters)")
+    f1, f2 = _js_function(one, "fill"), _js_function(two, "fill")
+    check(f1 and f1 == f2, f"2.0's fill is 1.0's: {f2!r}")
+    check(not re.search(r"\b(?:renderUserChip|lockForSignIn)\(", two) and
+          'id="nav-user"' not in two,
+          "2.0 has no 1.0 chip and no lockForSignIn")
+    for r in ("users", "signin", "signout", "my-password", "role-matrix",
+              "audit-verify", "audit-settings", "idle-signout",
+              "last-show-signout", "audit-upload-now"):
+        check(f'"/api/remote/{r}"' in want,
+              f"the Users pane posts 1.0's route {r}")
+    check('"/api/remote/" + (route || "users")' in want and
+          'uAdmin({}, "clear-lockouts")' in want,
+          "the users list and Clear sign-in lockouts post 1.0's routes")
+    check('const TABS = ["show", "day", "schedule", "settings", "users"];'
+          in two and 'data-tab="users"' not in two,
+          "the Users pane is a tab without a tab button")
+    st_ = _js_function(two, "showTab") or ""
+    check('if(t === "users") loadUsers();' in st_,
+          "opening the Users pane reads the users")
+    osi = _js_function(two, "openSignIn") or ""
+    check('{label:"Users", value:"users", cls:"blue", icon:"user"}' in osi
+          and 'if(v === "users"){ if(location.hash === "#users") '
+              'showTab("users"); else location.hash = "users"; }' in osi,
+          "the signed-in sheet's Users opens the pane, and reads it again "
+          "when it is already open (review of #214, 3)")
+    uso = _js_function(two, "usersSignedOut") or ""
+    check(osi.find("renderUser();") < osi.find("usersSignedOut();") and
+          '["u-pw", "u-new", "u-old", "u-new1", "ua-pw", "au-tok"]'
+          '.forEach(id => { $(id).value = ""; });' in uso and
+          'if(TAB === "users") loadUsers();' in uso,
+          "the header's Sign out clears what was typed in the Users pane "
+          "and reads an open pane again (review of #214, 2)")
+    check('<a class="b blue" id="set-users" href="#users">' in two and
+          "/remote1#users" not in two and "Users in 1.0" not in two,
+          "Settings' Users card opens the pane; no 1.0 Users link left")
+    # No secret is shown: the token and the server address are never
+    # written into their fields, only cleared.
+    put = re.findall(r'\$\("au-(tok|url)"\)\.value = ([^;]+);', two)
+    check(put == [("tok", '""')],
+          f"the token is only ever cleared, the address never filled: "
+          f"{put}")
+    check('<input id="au-tok" type="password" autocomplete="off"' in two,
+          "the token field is a password field")
+    pane = two[p:two.find('<section class="pane" id="t-settings"')]
+    _no_dashes(pane, "2.0's Users pane")
+    here = os.path.dirname(os.path.abspath(__file__))
+    op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
+    i = op.find("- 2.0 Users:")
+    para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
+    for words in ("Settings", "Signed in", "your own password",
+                  "Who may do what", "admins", "the show PC",
+                  "Audit log", "Check the chain", "Send now",
+                  "Idle sign out", "after the last show",
+                  "never shown"):
+        check(words in para, f"OPERATOR.md, 2.0 Users, says {words!r}")
+    _no_dashes(para, "OPERATOR.md, 2.0 Users")
+    check("only on the old\nscreen for now: Users" not in op,
+          "OPERATOR.md no longer says Users is only on the old screen")
+    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
+                encoding="utf-8").read()
+    check(all(f"| {p} | DONE" in plan for p in ("P5", "P6", "P7")),
+          "the removal plan marks P5, P6 and P7 done")
+    print("  ok")
+
+
+_UI2_USERS_VIEW = {
+    "active": True, "local": True, "may_admin": True, "may_settings": True,
+    "me": {"name": "Jeff", "role": "admin"}, "names": ["Jeff", "Sam"],
+    "users": [{"name": "Jeff", "role": "admin", "password_set": True,
+               "temporary": False, "locked_s": 0},
+              {"name": "Sam", "role": "operator", "password_set": True,
+               "temporary": True, "locked_s": 30}],
+    "roles": ["admin", "operator", "viewer"],
+    "columns": ["admin", "operator", "viewer", "signed_out"],
+    "perms": [{"key": "show", "label": "Start now"},
+              {"key": "arm", "label": "Arm flames"},
+              {"key": "users", "label": "Users"}],
+    "safety": "Stop, Hold and every disarm work for everyone.",
+    "matrix": {"admin": {"show": True, "arm": True, "users": True},
+               "operator": {"show": True, "arm": True, "users": False},
+               "viewer": {"show": False, "arm": False, "users": False},
+               "signed_out": {"show": False, "arm": False,
+                              "users": False}},
+    "fixed": [["admin", "users"], ["signed_out", "users"]],
+    "audit": {"writer": {"written": 12, "lost": 0, "fault": ""},
+              "chain": None,
+              "upload": {"enabled": True, "host": "audit.example",
+                         "time": "03:30", "keep_days": 120,
+                         "token_set": True, "pending_days": []}},
+    "idle_signout_min": 15, "signout_after_last_show_min": 10}
+
+
+def test_ui2_users_audit_driven():
+    section("2.0's Users pane pressed in a real browser (P5, P6, P7): the "
+            "signed-in sheet's Users opens it and reads the users; each "
+            "control posts 1.0's route and body (role, reset, clear, "
+            "remove after 1.0's question, add, lockouts, own password, "
+            "who may do what, check the chain, the audit settings with "
+            "idle and last show sign out, Send now, Sign out); a bad "
+            "last show time posts nothing; typed secrets are cleared; a "
+            "screen off the show PC gets 1.0's limits; 56 px targets, "
+            "nothing off the side, rows stacked on a phone")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2_page_inline()
+    st = _ui2_status_day()
+    st["me"] = {"local": True, "users_active": True, "user": "Jeff",
+                "role": "admin", "view_only": False,
+                "may": {k: True for k in ("show", "arm", "unlock",
+                                          "checklist", "show_files",
+                                          "settings", "users")}}
+    viewer = dict(_UI2_USERS_VIEW, local=False, may_admin=False,
+                  may_settings=False, me={})
+    steps = r"""
+const g = id => document.getElementById(id);
+const mark = () => window.__posts.length;
+const since = n => window.__posts.slice(n).map(p => { const b = Object.assign({}, p.body); delete b.seen; return [p.route, b]; });
+const press = async (el, ms) => { const n = mark(); el.click(); await h.sleep(ms || 250); return since(n); };
+const vis = el => el.getClientRects().length > 0;
+let gets = 0;
+const f0 = window.fetch;
+window.fetch = (u, o) => {
+  if(String(u).indexOf("/api/remote/users") >= 0 && !(o && o.method === "POST")){
+    gets++;
+    if(window.__usersOut) return Promise.resolve(new Response(JSON.stringify(OUTVIEW), {status:200, headers:{"Content-Type":"application/json"}}));
+  }
+  return f0(u, o);
+};
+await h.sleep(400);
+g("user").click();
+await h.sleep(300);
+const ub = [...document.querySelectorAll("#sh-row button")].find(b => b.textContent.trim() === "Users");
+out.sheet = !!ub;
+if(ub) ub.click();
+await h.sleep(700);
+out.open = {tab:document.body.dataset.tab, hash:location.hash, shown:!g("t-users").hidden, gets:gets,
+  admin:!g("u-admin").hidden, audit:!g("u-audit").hidden, signedIn:!g("u-in").hidden, me:g("u-me").textContent,
+  rows:[...g("u-list").querySelectorAll("tr")].map(r => r.cells[0].textContent + "|" + r.cells[2].textContent),
+  fixed:[...g("u-matrix").querySelectorAll("input[disabled]")].map(c => c.dataset.c + "/" + c.dataset.p),
+  tok:[g("au-tok").type, g("au-tok").value, g("au-tok").placeholder, g("au-url").value],
+  idle:g("au-idle").value, last:g("au-lastshow").value, save:!g("um-save").hidden};
+out.small = [...document.querySelectorAll("#t-users button, #t-users input, #t-users select")]
+  .filter(e => vis(e) && e.getBoundingClientRect().height < 55.5).map(e => e.id || e.textContent.trim());
+out.xs = document.scrollingElement.scrollWidth - innerWidth;
+out.stack = [...document.querySelectorAll("#t-users .row")].filter(vis).map(r => [...r.children].filter(vis)
+  .filter(c => c.getBoundingClientRect().width < r.clientWidth - 2).length);
+if(innerWidth < 600) return;
+// Users again from the sheet while the pane is open: read again.
+{ const n0 = gets; g("user").click(); await h.sleep(300);
+  const b = [...document.querySelectorAll("#sh-row button")].find(x => x.textContent.trim() === "Users");
+  if(b) b.click(); await h.sleep(500); out.again = gets - n0; }
+// The header's Sign out with the pane open: typed secrets cleared, the
+// pane read again and showing nobody signed in.
+["u-old", "u-new1", "ua-pw", "au-tok"].forEach(id => { g(id).value = "typed1"; });
+{ const n0 = gets; window.__usersOut = true; g("user").click(); await h.sleep(300);
+  const b = [...document.querySelectorAll("#sh-row button")].find(x => x.textContent.trim() === "Sign out");
+  if(b) b.click(); await h.sleep(600);
+  out.hdrOut = {gets:gets - n0, left:["u-old", "u-new1", "ua-pw", "au-tok"].map(id => g(id).value).join(""),
+    signedIn:!g("u-in").hidden, form:!g("u-form").hidden};
+  window.__usersOut = false; await loadUsers(); await h.sleep(200); }
+const sel = g("u-list").querySelector('[data-role="Sam"]');
+sel.value = "viewer";
+{ const n = mark(); sel.dispatchEvent(new Event("change")); await h.sleep(250); out.role = since(n); }
+window.prompt = () => "";
+out.clear = await press(g("u-list").querySelector('[data-reset="Sam"]'));
+window.prompt = () => "temp123";
+out.reset = await press(g("u-list").querySelector('[data-reset="Sam"]'));
+window.prompt = () => null;
+out.resetNo = await press(g("u-list").querySelector('[data-reset="Sam"]'));
+window.confirm = () => false;
+out.removeNo = await press(g("u-list").querySelector('[data-remove="Sam"]'));
+let asked = "";
+window.confirm = q => { asked = q; return true; };
+out.remove = await press(g("u-list").querySelector('[data-remove="Sam"]'));
+out.asked = asked;
+g("ua-name").value = "Kim"; g("ua-role").value = "operator"; g("ua-pw").value = "secret1";
+out.add = await press(g("ua-add"));
+out.addLeft = g("ua-pw").value;
+out.lockouts = await press(g("u-clear"));
+g("u-old").value = "oldpw1"; g("u-new1").value = "newpw1";
+out.chg = await press(g("u-chg"));
+out.chgLeft = g("u-old").value + g("u-new1").value;
+g("u-matrix").querySelector('input[data-c="operator"][data-p="arm"]').checked = false;
+out.matrix = await press(g("um-save"));
+out.verify = await press(g("au-verify"));
+out.vmsg = g("au-msg").textContent;
+g("au-lastshow").value = "abc";
+out.bad = await press(g("au-save"));
+out.badMsg = g("au-msg").textContent;
+g("au-lastshow").value = "20"; g("au-idle").value = "5"; g("au-tok").value = "tok";
+out.saved = await press(g("au-save"), 500);
+out.tokLeft = g("au-tok").value;
+out.now = await press(g("au-now"));
+window.__patch = s => Object.assign(s, {me:Object.assign({}, s.me, {user:null, role:null, view_only:true})});
+out.out = await press(g("u-out"), 400);
+out.chip = g("user").querySelector("span").textContent;
+window.fetch = (u, o) => (String(u).indexOf("/api/remote/users") >= 0 && !(o && o.method === "POST")) ?
+  Promise.resolve(new Response(JSON.stringify(VIEWER), {status:200, headers:{"Content-Type":"application/json"}})) : f0(u, o);
+await loadUsers();
+out.viewer = {admin:!g("u-admin").hidden, audit:!g("u-audit").hidden, save:!g("um-save").hidden,
+  live:[...g("u-matrix").querySelectorAll("input")].filter(c => !c.disabled).length,
+  form:!g("u-form").hidden, names:[...g("u-name").options].map(o => o.textContent)};
+""".replace("OUTVIEW", json.dumps(dict(_UI2_USERS_VIEW, me={}))).replace(
+        "VIEWER", json.dumps(viewer))
+    js = "<script>window.__drive = async (out, h) => {\n" + steps + \
+        "\n};</script>" + _UI2_DRIVE_JS.replace(
+            ' && typeof MO !== "undefined" && MO', '', 1)
+    got = _rack_screen_in_chromium(
+        chrome, page, st, ((1366, 1100), (390, 844)), measure_js=js,
+        frag="?tour=0", routes={"/api/remote/users": _UI2_USERS_VIEW,
+                                "/api/brand": {"show": "x"}},
+        budget_ms=60000)
+    for (w, hh), res in got.items():
+        r = res[0] if isinstance(res, list) and res else res
+        where = f"2.0 Users pane, {w}x{hh}"
+        if not check(isinstance(r, dict) and "open" in r and
+                     not r.get("problems"),
+                     f"{where}: drawn and pressed: {r!r}"[:900]):
+            continue
+        o = r["open"]
+        check(r["sheet"] and o["tab"] == "users" and o["hash"] == "#users"
+              and o["shown"] and o["gets"] >= 1,
+              f"{where}: the signed-in sheet's Users opens the pane and "
+              f"reads the users: {o}")
+        check(o["admin"] and o["audit"] and o["signedIn"] and
+              o["me"] == "Jeff (admin)" and
+              o["rows"] == ["Jeff|set", "Sam|temporary, locked 30 s"] and
+              o["fixed"] == ["admin/users", "signed_out/users"] and
+              o["save"],
+              f"{where}: an admin on the show PC: 1.0's users, their "
+              f"passwords' state and the fixed rows locked: {o}")
+        check(o["tok"] == ["password", "", "saved (type to replace)", ""]
+              and o["idle"] == "15" and o["last"] == "10",
+              f"{where}: the token and address are not shown; idle and "
+              f"last show sign out filled: {o}")
+        check(not r["small"] and r["xs"] <= 0,
+              f"{where}: 56 px targets, nothing off the side: "
+              f"{r['small']} {r['xs']}")
+        if w < 600:
+            check(r["stack"] and not any(r["stack"]),
+                  f"{where}: on a phone each row's fields and buttons "
+                  f"stack, one full width line each: {r['stack']}")
+            continue
+        check(r["again"] >= 1,
+              f"{where}: Users from the sheet with the pane open reads "
+              f"it again: {r['again']}")
+        ho = r["hdrOut"]
+        check(ho["gets"] >= 1 and ho["left"] == "" and not ho["signedIn"]
+              and ho["form"],
+              f"{where}: the header's Sign out clears the pane's typed "
+              f"passwords and token and reads it again, signed out: {ho}")
+        check(r["role"] == [["users", {"op": "role", "name": "Sam",
+                                       "role": "viewer"}]],
+              f"{where}: a role is set with 1.0's body: {r['role']}")
+        check(r["clear"] == [["users", {"op": "clear-password",
+                                        "name": "Sam"}]] and
+              r["reset"] == [["users", {"op": "password", "name": "Sam",
+                                        "password": "temp123"}]] and
+              r["resetNo"] == [],
+              f"{where}: Reset password: empty clears it, a value sets a "
+              f"temporary one, Cancel sends nothing: {r['clear']} "
+              f"{r['reset']} {r['resetNo']}")
+        check(r["removeNo"] == [] and
+              r["remove"] == [["users", {"op": "remove", "name": "Sam"}]]
+              and r["asked"] == "Remove Sam? Their audit lines stay.",
+              f"{where}: Remove asks 1.0's question first: {r['remove']} "
+              f"{r['asked']!r}")
+        check(r["add"] == [["users", {"op": "add", "name": "Kim",
+                                      "role": "operator",
+                                      "password": "secret1"}]] and
+              r["addLeft"] == "",
+              f"{where}: Add posts 1.0's body and clears the password: "
+              f"{r['add']}")
+        check(r["lockouts"] == [["clear-lockouts", {}]],
+              f"{where}: Clear sign-in lockouts: {r['lockouts']}")
+        check(r["chg"] == [["my-password", {"old": "oldpw1",
+                                            "new": "newpw1"}]] and
+              r["chgLeft"] == "",
+              f"{where}: your own password, typed passwords cleared: "
+              f"{r['chg']}")
+        m = (r["matrix"] or [[None, {}]])[0][1].get("matrix", {})
+        check(len(r["matrix"]) == 1 and r["matrix"][0][0] == "role-matrix"
+              and m.get("operator", {}).get("arm") is False and
+              "users" not in m.get("admin", {}) and
+              "users" not in m.get("signed_out", {}),
+              f"{where}: Save who may do what posts the open boxes only: "
+              f"{r['matrix']}")
+        check(r["verify"] == [["audit-verify", {}]] and
+              r["vmsg"] == "The chain holds.",
+              f"{where}: Check the chain now: {r['verify']} {r['vmsg']!r}")
+        check(r["bad"] == [] and r["badMsg"].startswith(
+                  "Sign out after the last show has to be a whole number"),
+              f"{where}: a bad last show time posts nothing: {r['bad']}")
+        check(r["saved"] == [
+                  ["audit-settings", {"enabled": True, "time": "03:30",
+                                      "keep_days": 120, "token": "tok"}],
+                  ["idle-signout", {"minutes": 5}],
+                  ["last-show-signout", {"minutes": 20}]] and
+              r["tokLeft"] == "",
+              f"{where}: Save posts 1.0's three bodies and clears the "
+              f"token: {r['saved']}")
+        check(r["now"] == [["audit-upload-now", {}]],
+              f"{where}: Send now: {r['now']}")
+        check(r["out"] == [["signout", {}]] and r["chip"] == "Sign in",
+              f"{where}: Sign out on the pane signs out and the header "
+              f"says so: {r['out']} {r['chip']!r}")
+        v = r["viewer"]
+        check(not v["admin"] and not v["audit"] and not v["save"] and
+              v["live"] == 0 and v["form"] and v["names"] == ["Jeff", "Sam"],
+              f"{where}: signed out off the show PC: the sign in form, no "
+              f"users list, no audit card, who may do what read only: "
+              f"{v}")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
@@ -115132,6 +115511,8 @@ if __name__ == "__main__":
         test_ui2_programming_tab_in_a_browser,
         test_ui2_schedule_tab_makes_1_0_presses,
         test_ui2_schedule_tab_in_a_browser,
+        test_ui2_users_audit_are_1_0s,
+        test_ui2_users_audit_driven,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):
