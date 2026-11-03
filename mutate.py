@@ -23404,6 +23404,97 @@ def build():
   "            with self._stops_cv:\n                pass"),
 
 
+ # interface 2.0, P11 (machine map, Arrange) and P13 (show machine switches)
+ ("ui 2.0 map: a swipe that starts on a machine chooses it",
+  "ltcplay/web/remote2.html",
+  "  if(Math.hypot(e.clientX - t.x, e.clientY - t.y) >= MACH_TAP_PX || performance.now() - t.at >= MACH_TAP_MS) return;",
+  "  if(performance.now() - t.at >= MACH_TAP_MS) return;"),
+
+ ("ui 2.0 map: a long press chooses a machine",
+  "ltcplay/web/remote2.html",
+  "  if(Math.hypot(e.clientX - t.x, e.clientY - t.y) >= MACH_TAP_PX || performance.now() - t.at >= MACH_TAP_MS) return;",
+  "  if(Math.hypot(e.clientX - t.x, e.clientY - t.y) >= MACH_TAP_PX) return;"),
+
+ ("ui 2.0 map: a tile blocks the page's scroll outside Arrange",
+  "ltcplay/web/remote2.html",
+  "  cursor:pointer;touch-action:pan-y;",
+  "  cursor:pointer;touch-action:none;"),
+
+ ("ui 2.0 Arrange: started on a window too short for its bar",
+  "ltcplay/web/remote2.html",
+  "function arrangeRoom(){ return $(\"d-panel\").clientHeight >= ARRANGE_MIN_PX; }",
+  "function arrangeRoom(){ return true; }"),
+
+ ("ui 2.0 Arrange: the button loses its icon",
+  "ltcplay/web/remote2.html",
+  "  if(ab){ ab.disabled = ARRANGE; }",
+  "  if(ab){ ab.disabled = ARRANGE; ab.textContent = \"Arrange\"; }"),
+
+ ("ui 2.0 Arrange: Arm all lasers is not held back while arranging",
+  "ltcplay/web/remote2.html",
+  "  if(arrangeBlocked(\"laser-arm\", {on:true})) return null;\n  if(!(await confirmBox(\"Arm all \"",
+  "  if(!(await confirmBox(\"Arm all \""),
+
+ ("ui 2.0 Arrange: signing out stays arranging",
+  "ltcplay/web/remote2.html",
+  "      if(ARRANGE) mapOff();\n      try{ const r = await post(\"/api/remote/signout\"",
+  "      try{ const r = await post(\"/api/remote/signout\""),
+
+ ("ui 2.0 Arrange: a machine select is not held back while arranging",
+  "ltcplay/web/remote2.html",
+  "    ((route === \"purge-select\" || route === \"laser-test\") && !off) ||",
+  "    (route === \"laser-test\" && !off) ||"),
+
+ ("ui 2.0 Arrange: offered on an iPad",
+  "ltcplay/web/remote2.html",
+  "  $(\"mo-arrange\").hidden = !(ME && ME.local);",
+  "  $(\"mo-arrange\").hidden = false;"),
+
+ ("ui 2.0 Arrange: leaving the Purge step stays arranging",
+  "ltcplay/web/remote2.html",
+  "  if(DAY_STEP === \"purge\") mapOff();\n  if(DAY_STEP === \"fireball\") fireballView(false);\n  DAY_STEP = k;",
+  "  if(DAY_STEP === \"fireball\") fireballView(false);\n  DAY_STEP = k;"),
+
+ ("ui 2.0 Arrange: leaving DAY stays arranging",
+  "ltcplay/web/remote2.html",
+  "  if(!on) mapOff();\n",
+  ""),
+
+ ("ui 2.0 Arrange: the fire key line does not say arranging",
+  "ltcplay/web/remote2.html",
+  "      if(ARRANGE){ kk.className = \"key\"; kk.textContent = ARRANGE_BANNER; }\n",
+  ""),
+
+ ("ui 2.0 map: the field is never drawn",
+  "ltcplay/web/remote2.html",
+  "  renderField(MO, (ST && ST.flames) || {}, MO.purge_state || {});\n",
+  ""),
+
+ ("ui 2.0 switches: Arming from a screen shown on an iPad",
+  "ltcplay/web/remote2.html",
+  "  if($(\"arming-card\").hidden !== !local) $(\"arming-card\").hidden = !local;",
+  "  $(\"arming-card\").hidden = false;"),
+
+ ("ui 2.0 switches: the announcement output shown on an iPad",
+  "ltcplay/web/remote2.html",
+  "  const an = !local || !L.show;",
+  "  const an = !L.show;"),
+
+ ("ui 2.0 switches: the outputs are never read",
+  "ltcplay/web/remote2.html",
+  "  if(t === \"schedule\" && ME && ME.local) loadAnnOutputs();\n",
+  ""),
+
+ ("ui 2.0 switches: Arming from a screen goes on with no question",
+  "ltcplay/web/remote2.html",
+  "  if(!(await confirmBox(\"Turn on arming from a screen?\", SCREEN_ARMING_ENABLES, \"Yes, turn it on\", \"go\"))) return;",
+  ""),
+
+ ("ui 2.0 switches: Live flame On for a sign-in without Settings",
+  "ltcplay/web/remote2.html",
+  "  $(\"lf-on\").disabled = on || lf.available === false || !mayRow(ST, \"settings\");",
+  "  $(\"lf-on\").disabled = on || lf.available === false;"),
+
  # interface 2.0's Schedule tab (P3, P4 of docs/REMOVE_1_0_PLAN.md)
  ("ui 2.0 Schedule: opening the tab again reloads the file over unsaved edits",
   "ltcplay/web/remote2.html",

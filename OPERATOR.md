@@ -2673,6 +2673,26 @@ operator, the Show folder and Getting started, and the Info panel.
   card's first line is 1.0's state line (STANDBY, On hold, Held after
   Stop, Checking, Held for an alert). iPads and laptops see tonight's
   shows only.
+- 2.0 machine map, Arrange and the show machine switches: 1.0's own
+  code and presses. On DAY's Purge step, Map shows the field (every
+  machine where the layout puts it) in the group buttons' place; a tap
+  on a machine arms it for the purge, as a group button does (a tap:
+  a swipe that starts on a machine scrolls and chooses nothing). Arrange
+  (its button is shown on the show PC only; the engine saves a layout
+  for anyone with the show files permission, from any device, as on
+  1.0) is 1.0's Arrange mode. It needs room for its bar and the field:
+  on a window too short it says so and does not start. While it is on
+  nothing arms, fires, locks or lights anything (the fire key line says so, a tap
+  picks a machine up instead), and the only ways out are Save layout,
+  Cancel, Reset layout (asks first) and leaving the step, the Map or
+  DAY (unsaved moves are forgotten). On the Programming cards (Schedule
+  tab): Arming from a screen (show PC only; Turn on asks first and
+  needs Settings, Turn off works at once), Live flame programming (Turn
+  on on the show PC only, asks first and needs Settings; Turn off from
+  anywhere, also from the line at the top) and the announcement output
+  (show PC only: the output, Save, Test tone, Settings). Nothing on
+  them arms anything by itself: arming is still the Stream Deck's hold
+  to arm and flamesafe's rules.
 - 2.0 Programming (Schedule tab): 1.0's Programming screen, the same
   presses, on the Schedule tab (there is no room in the header for a tab
   of its own; `/remote2#prog` opens it). On the show PC, the Show file
