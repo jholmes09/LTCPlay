@@ -2418,7 +2418,7 @@
 "rack screen: live flame programming with its one-group setting unsaid allows Arm all": "test_schedule_conductor_calls_after_the_save_and_off_the_lock",
 "rack screen: some lasers armed reads output dark": "test_rack_screen_one_laser_pill",
 "rack screen: the Video lamp is green with a wrong heartbeat track": "test_madmapper_heartbeat_follows_the_real_show_length",
-"rack screen: the banners are never folded": "test_announce_rack_screen_page_logic",
+"rack screen: the banners are never folded": "test_rack_screen_banners_never_squeeze_the_flame_controls",
 "rack screen: the finger that armed a group disarms it on the way up": "test_rack_screen_one_button_per_flame_group",
 "rack screen: the folded line does not name the faults": "test_rack_screen_banners_never_squeeze_the_flame_controls",
 "rack screen: the laser pill leaves out LINK LOST": "test_rack_screen_one_laser_pill",

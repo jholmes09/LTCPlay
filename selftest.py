@@ -55177,6 +55177,7 @@ t(machineCountLine({name:"cat-walk"}, "armed", null) === "" && machineCountLine(
 t(machineCountLine({name:"front row"}, "armed", {"front row":{machines:3, locked:1, lock:"pending"}}) === "armed 3 of 3 machines, 1 lock pending", "a lock flamesafe does not hold yet: counted in, said pending");
 t(machineCountLine({name:"front row"}, "disarmed", {"front row":{machines:3, locked:1, lock:"untrusted"}}) === "armed 0 of 3 machines; lockout not trusted", "the lockout not trusted: said");
 t(machineCountLine({name:"cat-walk", safeties_up:[true, false]}, "armed", gm) === "" && machineCountLine({name:"cat-walk", safeties_up:[true]}, "armed", gm) === "armed 4 of 4 machines", "two safeties: their own count; one: the machine count");
+t(safetyLine({name:"cat-walk", safeties_up:[true]}, "armed") === "" && safetyLine({name:"wave flamer", safeties_up:[true, false]}, "armed") === "wave flamer: 1 of 2 safeties up; ARMED", "the safety line: only for a group with two or more safeties");
 """)
     if bad is not None:
         check(bad == [], f"the machine count, in node: {bad}")
