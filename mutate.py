@@ -10216,11 +10216,12 @@ def build():
   '            self._set("pixels", UNKNOWN)\n            return clear()\n',
   '            return clear()\n'),
 
- ("pixels: a start refused by an Abort just before the hand-over plays "
-  "the music anyway",
-  'ltcplay/fire_ice.py',
-  '        elif to_show(lambda: self.show.pixels_for_show(what)) is None:\n            return None\n',
-  '        else:\n            to_show(lambda: self.show.pixels_for_show(what))\n'),
+ # ("pixels: a start refused by an Abort just before the hand-over plays
+ # the music anyway") is retired (PR #216): since the Abort latch went
+ # (aee2141) pixels_to_show never refuses and pixels_for_show never returns
+ # None, so the branch it broke cannot run and the mutation could not be
+ # caught. A Stop at that moment is "fire & ice: a Stop during the hand-over
+ # lets the show start go out", below.
 
  ('pixels: a Stop while the cue was starting leaves the hand-over armed', 'ltcplay/fire_ice.py',
   '                           action="stop", outcome="failed")\n'

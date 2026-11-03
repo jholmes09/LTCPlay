@@ -45753,11 +45753,19 @@ def test_fire_ice_flame_cut_round2_of_177():
         lines = []
         c5._journal = lambda t, **k: lines.append((t, k.get("fault")))
         c5._cuts[paths[0]].ensure(0, 899)
+        said5 = set()
         for k in range(0, 900, 7):
             c5(_fi_at(clk, int(k * 25 * 30 // 1000)))
+            if c5.fault:
+                said5.add(c5.fault)
         bad_lines = [t for t, f in lines if f and "could not be read" in t]
         check(len(bad_lines) == 1,
               f"a render missing its tail: one line for it: {bad_lines}")
+        # And one sentence on the screens for it, the same in every piece
+        # (no frame number in it): the journal alone no longer shows this,
+        # it journals a fault once while it stays set.
+        check(len(said5) == 1,
+              f"a render missing its tail: one fault text for it: {said5}")
         c5.close()
         # A block that fails for a reason that is not the render's bytes
         # (memory): uncut, tried again later, then cut. A corrupt block

@@ -2302,7 +2302,6 @@
 "pixels: a show start never takes the closing black off (Jeff's dark shows, 2026-10-29)": "test_every_show_start_clears_the_pixels",
 "pixels: a show start puts the idle look to black until the show is confirmed (the blink)": "test_every_show_start_clears_the_pixels",
 "pixels: a show that ended unconfirmed leaves its start's hand-over armed": "test_hold_and_stop_black_the_pixels_after_a_start",
-"pixels: a start refused by an Abort just before the hand-over plays the music anyway": "test_hold_and_stop_black_the_pixels_after_a_start",
 "pixels: a start the clock refused leaves its hand-over armed": "test_hold_and_stop_black_the_pixels_after_a_start",
 "pixels: an older show's end cancels a newer start's hand-over": "test_hold_and_stop_black_the_pixels_after_a_start",
 "pixels: cancel_show_handoff ends whatever hand-over is waiting": "test_the_show_takes_over_the_pixels_on_its_first_frame",
