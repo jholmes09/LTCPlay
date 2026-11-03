@@ -8633,11 +8633,9 @@ def build():
   "        self._disarm()\n"
   "        faded = False"),
 
- ("scheduler fix round: conductor: a stopped show latches",
-  "ltcplay/conductor.py",
-  "            self._accept(\"Show stopped\", STOPPED_DARK, who, screen,",
-  "            self._latched = True\n"
-  "            self._accept(\"Show stopped\", STOPPED_DARK, who, screen,"),
+ # ("scheduler fix round: conductor: a stopped show latches") is retired
+ # (2026-11-03): since the Abort latch went (aee2141) nothing in the
+ # conductor reads a latch, so setting one changes nothing to catch.
 
  ("scheduler fix round: conductor: leaving the show cuts a stopped show's "
   "fade short",
@@ -15977,10 +15975,13 @@ def build():
   "            return True",
   "        if tc is None:\n            self._seek_reset()\n            return True"),
 
+ # Re-pointed (2026-11-03): breaking only send_frame's first landing check
+ # was never caught, because its later `dropped` check zeros the same frame;
+ # a landing that no frame can see breaks both.
  ("programming flames: a frame read across a landing goes out with its values",
   "ltcplay/flamelink.py",
-  "            if lgen != self._land_gen:",
-  "            if False:"),
+  "                self._land_gen += 1\n",
+  ""),
 
  ("programming flames: the playhead never finds the flame link",
   "ltcplay/playhead.py",
@@ -17370,11 +17371,8 @@ def build():
   '            if False:\n'
   "                # A Stop (stop(): the removed Abort's sequence, no latch)."),
 
- ("conductor: Stop latches like an Abort",
-  "ltcplay/conductor.py",
-  '                line = self._accept("Stop", STOPPED_DARK, who, screen,',
-  '                self._latched = True\n'
-  '                line = self._accept("Stop", STOPPED_DARK, who, screen,'),
+ # ("conductor: Stop latches like an Abort") is retired (2026-11-03), as
+ # "a stopped show latches" above: no conductor code reads a latch any more.
 
  ('conductor: a second Stop starts a new fade', 'ltcplay/conductor.py',
   '            again = (not force_new and not music_since and\n',
