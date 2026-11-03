@@ -4,7 +4,8 @@ name: selftest
 # is written up in TESTING.md; the short version:
 #
 #   selftest   every PR, every push to main, every tag: the whole suite on
-#              ubuntu and windows, about 5 minutes each
+#              ubuntu and windows, about 15 to 20 minutes on ubuntu and
+#              25 to 35 on windows (2026-11-03), limits 45 and 60
 #   changes    works out which mutations the diff can have changed the
 #              result of (mutate.py --changed: the mutations of the files
 #              the diff touches, every flamesafe, conductor and flame link
@@ -57,7 +58,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 35 || 20 }}
+    # Measured 2026-11-03: ubuntu 16 to 20 minutes, windows 27 to 35 (one
+    # good run was cancelled at its old 35 minute limit). The limits leave
+    # room for a slow runner; a hung test still ends the job.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 45 }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6

@@ -1219,10 +1219,11 @@ LOOK_IN_SHOW_FAULT_S = 1.5
 # GPL page's). In 1.0 what clears a look in Programming is Stop on the
 # "Show file, on this machine" card (it ends Run and sends black), then
 # Run (a new player, no look); that card is on the show machine only.
-# 2.0 has no Show file card: it sends you to 1.0 ("Open in 1.0").
+# 2.0 has the same card, with the same Stop and Run, on its Schedule tab
+# (#208), so the words send a 2.0 screen there, never to 1.0.
 LOOK_IN_SHOW = ("CUES FAULT: pixels show {look}, not the show. "
                 "Programming: Show file card, Stop, then Run. "
-                "On 2.0, Open in 1.0 first. "
+                "On 2.0: the Schedule tab's Show file card. "
                 "Scheduled show: tell Jeff.")
 # The look in plain words.
 LOOK_BUTTONS = {"blackout": "black", "preshow": "preshow"}

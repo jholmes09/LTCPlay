@@ -10266,6 +10266,12 @@ def build():
   '                "Programming: Show file card, Stop, then Run. "\n',
   '                "Programming screen: press Follow timecode. "\n'),
 
+ ("pixels: the look-in-show CUES FAULT sends a 2.0 screen to 1.0, not to "
+  "2.0's own Show file card on its Schedule tab",
+  'ltcplay/fire_ice.py',
+  '                "On 2.0: the Schedule tab\'s Show file card. "\n',
+  '                "On 2.0, Open in 1.0 first. "\n'),
+
  ("pixels: a look set through the engine during a start's hand-over is "
   "lifted by the first show frame",
   'ltcplay/web.py',
