@@ -21335,6 +21335,13 @@ def test_streamdeck_announce_presses_never_queue_behind_or_ahead_of_stop():
               f"Stop went out while the Play was still waiting: {posted}")
         check("/api/remote/announce-play" not in posted,
               "the Play was indeed still waiting")
+        # Stop has a thread of its own anyway; a press on the main queue
+        # (an Acknowledge) shows the Play is not on that queue either.
+        eng.acknowledge(who="Andy")
+        acked = wait_for(lambda: "/api/remote/alert" in posted, timeout=5)
+        check(acked and "/api/remote/announce-play" not in posted,
+              f"an Acknowledge went out while the Play was still waiting: "
+              f"{posted}")
         gate.set()
         check(wait_for(lambda: "/api/remote/announce-play" in posted,
                        timeout=5), f"then the Play: {posted}")
@@ -40902,6 +40909,27 @@ def test_upgrade_reads_an_old_abort_latch_as_a_stops_hold():
     check(svc.stop_held(),
           "an older night's Abort nobody Reset is a Stop's Hold tonight")
     svc.stop()
+
+    # 5. Only the most recent earlier night counts: an Abort two nights
+    # back, with a plain night saved after it, holds nothing tonight.
+    work = tempfile.mkdtemp()
+    old_night(work)
+    os.replace(SV.tonight_path(d, work),
+               SV.tonight_path(date(2026, 11, 12), work))
+    plain = old_night(work, latched=False)
+    plain.pop("stop_held", None)
+    plain.pop("dark", None)
+    with open(SV.tonight_path(date(2026, 11, 13), work), "w") as fh:
+        json.dump(plain, fh)
+    os.remove(SV.tonight_path(d, work))
+    now = [_den(S, 17, 0)]
+    svc = _svc(S, work, now, conductor=_RecCond(S))
+    svc.start(thread=False)
+    _settle(svc)
+    check(not svc.stop_held(),
+          "an Abort on an older night, with a plain night saved after it, "
+          "is no Stop's Hold tonight: the most recent night is read")
+    svc.stop()
     print("  ok")
 
 
@@ -59589,12 +59617,19 @@ def test_remote_transport_on_the_show_audio():
               "Play from" in R.svc._start_cancel[1],
               f"Play from did not cancel a waiting Start now: {st} {out} "
               f"{R.svc._start_cancel}")
+        # The schedule already on Hold, so the scheduler's own Hold (which
+        # cancels the wait too) is not pressed again: the Programming Hold
+        # itself must cancel it.
+        R.svc.operator_press("hold", "Andy", "iPad", surface=True)
+        R.settle()
+        held_before = R.svc.machine.state
         g0 = R.svc._start_cancel[0]
         st, _h, out = R.ask("POST", "/api/remote/hold", {"seen": R.seen()})
         R.settle()
-        check(st == 200 and R.svc._start_cancel[0] > g0,
+        check(held_before == "HOLD" and st == 200 and
+              R.svc._start_cancel[0] > g0,
               f"a Programming Hold did not cancel a waiting Start now: "
-              f"{st} {out} {R.svc._start_cancel}")
+              f"{held_before} {st} {out} {R.svc._start_cancel}")
         st, _h, out = R.ask("POST", "/api/remote/continue",
                             {"seen": R.seen()})
         R.settle()
@@ -70156,6 +70191,25 @@ def test_flamesafe_multi_safety_ltcplay_side():
             except FI.FireIceConfigError as e:
                 check("—" not in str(e) and "–" not in str(e),
                       f"fire_ice refuses {why}: {e}")
+        # flamesafe itself refuses an empty list in its own words, not
+        # through a later rule tripping over it. In a process of its own,
+        # as flamesafe always runs (selftest.py never imports it).
+        g = [dict(x) for x in ex["groups"]]
+        g[2]["safety"] = []
+        probe = ("import json, sys\n"
+                 "from flamesafe import config\n"
+                 "try:\n"
+                 "    config.from_dict(json.loads(sys.stdin.read()))\n"
+                 "    print('ACCEPTED')\n"
+                 "except config.ConfigError as e:\n"
+                 "    print('REFUSED', e)\n")
+        pr = subprocess.run([sys.executable, "-c", probe], cwd=here,
+                            input=_json.dumps(dict(ex, groups=g)),
+                            capture_output=True, text=True, timeout=60)
+        check(pr.stdout.startswith("REFUSED") and
+              "safety is an empty list" in pr.stdout,
+              f"flamesafe refuses an empty safety list, saying so: "
+              f"{pr.stdout.strip()} {pr.stderr.strip()[-300:]}")
         # The deck: the same three keys, the same names, whatever a
         # group's safety is.
         fs3 = fs_with(three)
@@ -108375,7 +108429,7 @@ _FBT_FLOW_JS = r"""
 const posts = [];
 const V = {rev:4, show_len_s:300.0, error:"", show_problem:"", default_source:"fseq",
   entry:{source:"fseq", stages:[{stage:"fuel", start:"00:00:01:00", dur_s:1.0}], edited_by:"Andy", edited_at:""}};
-let lists = 0, other = null, saveAnswer = null, readMode = "ok";
+let lists = 0, other = null, saveAnswer = null, readMode = "ok", moreShows = [];
 const realFetch = window.fetch;
 const J = (o, code) => new Response(JSON.stringify(o), {status:code || 200, headers:{"Content-Type":"application/json"}});
 const saved = () => { V.rev += 1; return J({ok:true, text:"Saved.", entry:{rev:V.rev}}); };
@@ -108388,7 +108442,7 @@ window.fetch = function(u, o){
       setTimeout(() => res(saveAnswer ? saveAnswer() : saved()), 800);
     });
   }
-  if(u.indexOf("/api/timelines") >= 0){ lists++; return Promise.resolve(J({timelines:[{file:"Show.json"}, {file:"Other.json"}]})); }
+  if(u.indexOf("/api/timelines") >= 0){ lists++; return Promise.resolve(J({timelines:[{file:"Show.json"}, {file:"Other.json"}].concat(moreShows)})); }
   if(u.indexOf("/api/remote/fireball-timeline?") >= 0){
     if(u.indexOf("Other.json") >= 0) return new Promise(r => { other = () => r(J(Object.assign({}, V, {rev:9, entry:{source:"timeline", stages:[]}}))); });
     if(readMode === "fail") return Promise.resolve(J({error:"Not readable now"}, 503));
@@ -108417,9 +108471,13 @@ async function go(){
   typeIn(row("igniter").querySelector(".du"), "0.5");
   typeIn(row("fuel").querySelector(".du"), "2,5");
   // Back to the tab and its read fails: the unsaved edit stays, Retry.
+  // A show file added meanwhile is in the list once the tab opens.
   readMode = "fail";
-  tab("day"); await wait(300); tab("schedule"); await wait(900);
-  res.f1 = {dur:du(), retry:shown("fbt-retry"), save:save(), msg:q("fbt-msg").textContent, locked:locked()};
+  tab("day"); await wait(300);
+  moreShows = [{file:"Added.json"}];
+  tab("schedule"); await wait(900);
+  res.f1 = {dur:du(), retry:shown("fbt-retry"), save:save(), msg:q("fbt-msg").textContent, locked:locked(), lists:lists,
+    added:[...q("fbt-show").options].some(o => o.value === "Added.json")};
   // Retry, and while that read is on its way nothing may be typed or saved.
   readMode = "slow"; V.rev = 5;
   q("fbt-retry").click(); await wait(200);
@@ -109248,8 +109306,13 @@ console.log(JSON.stringify(out));
               "Press Revert" in b1["msg"] and b1["posts"] == 0,
               f"someone saved meanwhile (the tab left and opened): the "
               f"edit stays, Save waits for Revert, nothing sent: {b1}")
-        check(b1["lists"] > res["lists0"],
-              f"the show list is read again when the tab opens: {b1}")
+        # Before Retry: the tab opening alone reads the list again, so
+        # a show file added meanwhile is offered (other parts of the
+        # Schedule tab read /api/timelines too, so the count alone
+        # cannot tell).
+        check(res["f1"]["lists"] > res["lists0"] and res["f1"]["added"],
+              f"the show list is read again when the tab opens: "
+              f"{res['lists0']} {res['f1']}")
         ar = res["ask_rev"]
         check(ar["shown"] and ar["dur"] == "2,5" and
               "Your changes are not saved." in ar["q"] and
