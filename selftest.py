@@ -70192,17 +70192,24 @@ def test_flamesafe_multi_safety_ltcplay_side():
                 check("—" not in str(e) and "–" not in str(e),
                       f"fire_ice refuses {why}: {e}")
         # flamesafe itself refuses an empty list in its own words, not
-        # through a later rule tripping over it (its own suite runs in
-        # test_flamesafe_in_its_own_process; this is the same rule here).
-        from flamesafe import config as FSC
+        # through a later rule tripping over it. In a process of its own,
+        # as flamesafe always runs (selftest.py never imports it).
         g = [dict(x) for x in ex["groups"]]
         g[2]["safety"] = []
-        try:
-            FSC.from_dict(dict(ex, groups=g))
-            check(False, "flamesafe accepted an empty safety list")
-        except FSC.ConfigError as e:
-            check("safety is an empty list" in str(e),
-                  f"flamesafe refuses an empty safety list, saying so: {e}")
+        probe = ("import json, sys\n"
+                 "from flamesafe import config\n"
+                 "try:\n"
+                 "    config.from_dict(json.loads(sys.stdin.read()))\n"
+                 "    print('ACCEPTED')\n"
+                 "except config.ConfigError as e:\n"
+                 "    print('REFUSED', e)\n")
+        pr = subprocess.run([sys.executable, "-c", probe], cwd=here,
+                            input=_json.dumps(dict(ex, groups=g)),
+                            capture_output=True, text=True, timeout=60)
+        check(pr.stdout.startswith("REFUSED") and
+              "safety is an empty list" in pr.stdout,
+              f"flamesafe refuses an empty safety list, saying so: "
+              f"{pr.stdout.strip()} {pr.stderr.strip()[-300:]}")
         # The deck: the same three keys, the same names, whatever a
         # group's safety is.
         fs3 = fs_with(three)
