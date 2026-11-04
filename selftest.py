@@ -20151,6 +20151,24 @@ def test_announce_plays_through_the_show_audio():
     check(st["playing"] is None and
           [j for j in svc.journal if j["outcome"] == "failed"],
           "an announcement the show audio stopped playing is marked failed")
+    # The interface dropped by its driver mid-announcement: the bus is
+    # stopped with the show's audio, so nothing of it is left playing
+    # into the next stream (or said to be playing meanwhile).
+    svc.play(A.DELAYED, "Andy", "rack screen")
+    eng.pump(1)
+    check(eng.proc.bus.state == sa.PLAYING, "setup: the announcement plays")
+    eng.proc.stream.running = False
+    eng.proc.step(1.0)
+    dropped = (eng.proc.stream is None, eng.proc.bus.state,
+               eng.proc.bus.pcm is None)
+    eng.proc.step(eng.proc.next_try + 0.01)
+    check(dropped == (True, sa.IDLE, True) and eng.device_open(),
+          f"a dropped stream stops the announcement bus too, and the "
+          f"interface opens again: {dropped} {eng.device_open()}")
+    svc.status()
+    t[0] += A.STALL_S + 1.0
+    svc.status()
+    eng.show(level=0.25)                # the show again, on the new stream
     # The audio process restarting mid-announcement (its shared memory
     # starts again from nothing): failed at once, said plainly, with no
     # wait for the stall watchdog.
@@ -27552,10 +27570,12 @@ def test_beyond_allow_list_rejects_everything_but_brightness():
     link, socks, steps = _beyond_link()
 
     def refused(address, value=0.0):
+        # Refused by _send() itself, not only by the socket layer below it
+        # (each guard is checked on its own: the lowest-level test below).
         try:
             link._send(address, value)
-        except B.BeyondConfigError:
-            return True
+        except B.BeyondConfigError as e:
+            return str(e).startswith("beyond.py refuses to send")
         return False
 
     variants = ("/beyond/general/BlackOut", "/beyond/general/MasterPause",
@@ -42955,8 +42975,10 @@ def test_refused_starts_say_why_and_what_to_press():
     n.c.close()
     n.link.close()
 
-    # Hold, and Stop, end the wait: nothing starts.
-    for how in ("hold", "stop"):
+    # Hold, and Stop, end the wait: nothing starts. "hold again": the
+    # schedule already on Hold (Start now works from there), so the Hold
+    # press is refused by the schedule and its own press must end the wait.
+    for how in ("hold", "stop", "hold again"):
         n = _fi_night(armed=False)
         S, svc = n.S, n.svc
         clk = _fi_show_cue(n)
@@ -42964,10 +42986,13 @@ def test_refused_starts_say_why_and_what_to_press():
         svc.START_WAIT_S = 5.0
         n.now[0] = _den(S, 17, 56)
         svc.tick()
+        if how == "hold again":
+            svc.operator_press("hold", "Andy", "Rack screen")
+            check(svc.machine.state == S.HOLD, "setup: on Hold")
 
         def press_later(how=how, svc=svc):
             time.sleep(0.3)
-            if how == "hold":
+            if how.startswith("hold"):
                 svc.operator_press("hold", "Andy", "Rack screen")
             else:
                 svc.cancel_start_wait("Stop was pressed on the Rack screen")
@@ -67750,11 +67775,11 @@ def test_flamesafe_multi_safety_ltcplay_side():
             except FI.FireIceConfigError as e:
                 check("—" not in str(e) and "–" not in str(e),
                       f"fire_ice refuses {why}: {e}")
-        # flamesafe itself refuses an empty list in its own words, not
-        # through a later rule tripping over it. In a process of its own,
-        # as flamesafe always runs (selftest.py never imports it).
-        g = [dict(x) for x in ex["groups"]]
-        g[2]["safety"] = []
+        # flamesafe itself refuses a bad safety list in its own words, not
+        # through a later rule tripping over it: empty, a slot out of range
+        # in the list, and a fire slot that is a later safety slot (not
+        # only the first). In a process of its own, as flamesafe always
+        # runs (selftest.py never imports it).
         probe = ("import json, sys\n"
                  "from flamesafe import config\n"
                  "try:\n"
@@ -67762,13 +67787,20 @@ def test_flamesafe_multi_safety_ltcplay_side():
                  "    print('ACCEPTED')\n"
                  "except config.ConfigError as e:\n"
                  "    print('REFUSED', e)\n")
-        pr = subprocess.run([sys.executable, "-c", probe], cwd=here,
-                            input=_json.dumps(dict(ex, groups=g)),
-                            capture_output=True, text=True, timeout=60)
-        check(pr.stdout.startswith("REFUSED") and
-              "safety is an empty list" in pr.stdout,
-              f"flamesafe refuses an empty safety list, saying so: "
-              f"{pr.stdout.strip()} {pr.stderr.strip()[-300:]}")
+        for bad, says in (([], "safety is an empty list"),
+                          ([6, 12, 600], "safety slot 600 is not a slot "
+                                         "between 1 and 512"),
+                          ([6, 12, 1], "fire slot 1 is also its safety "
+                                       "slot")):
+            g = [dict(x) for x in ex["groups"]]
+            g[2]["safety"] = bad
+            pr = subprocess.run([sys.executable, "-c", probe], cwd=here,
+                                input=_json.dumps(dict(ex, groups=g)),
+                                capture_output=True, text=True, timeout=60)
+            check(pr.stdout.startswith("REFUSED") and says in pr.stdout,
+                  f"flamesafe refuses the safety list {bad}, saying "
+                  f"{says!r}: {pr.stdout.strip()} "
+                  f"{pr.stderr.strip()[-300:]}")
         # The deck: the same three keys, the same names, whatever a
         # group's safety is.
         fs3 = fs_with(three)
@@ -93278,6 +93310,15 @@ def test_preroll_continue_anyway_starts_now_with_failed_outputs_off():
     r2 = svc.continue_anyway("Andy", "Rack screen")
     check(r2["ok"] is False and svc.machine.state != S.SHOW,
           f"after the show, the old failure cannot start another: {r2}")
+    # The next show's check, once queued, ends the last Continue anyway
+    # (pr.continued) before it has a verdict: the used failure itself
+    # still refuses (preroll's "consumed").
+    kept = n.pr.continued
+    n.pr.continued = None
+    r2 = svc.continue_anyway("Andy", "Rack screen")
+    n.pr.continued = kept
+    check(r2["ok"] is False and svc.machine.state != S.SHOW,
+          f"a used failure, the Continue over: still refused: {r2}")
     n.results.clear()
     n.ran.clear()
     n.now[0] = _den(S, 18, 19, 50)

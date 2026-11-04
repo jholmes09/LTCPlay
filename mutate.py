@@ -4764,12 +4764,11 @@ MUTATIONS = [
   "    return any(value == v for v in ALLOWED_VALUES)",
   "    return True"),
 
- ("the allow-list no longer checks for OSC special characters",
-  "ltcplay/beyond.py",
-  "    if any(c in _SPECIAL_CHARS for c in address):\n"
-  "        return False\n"
-  "    if address != BRIGHTNESS_ADDR:",
-  "    if address != BRIGHTNESS_ADDR:"),
+ # ('the allow-list no longer checks for OSC special characters')
+ # is retired (2026-11-04); it could not be caught:
+ # _allowed()'s exact-match check already refuses every address
+ # with one of these characters (its docstring says so), so the mutated
+ # allow-list refuses the same addresses.
 
  ("_send()'s guard is removed, so anything can reach the socket",
   'ltcplay/beyond.py',
@@ -10077,16 +10076,10 @@ def build():
   '            self.fault = "" if (ok or noop) else f"{name.title()}: {text}"',
   '            self.fault = ""'),
 
- ("fix round 2: a press's answer says nothing was disarmed",
-  'ltcplay/schedule_service.py',
-  '        # The answer the page, the iPad and the deck see says what the\n'
-  '        # journal says (fix round 2, E: it said "nothing was disarmed"\n'
-  '        # while the conductor did disarm).\n'
-  '        text = " ".join(self._reworded(le).text for le in out.log if le.text)',
-  '        # The answer the page, the iPad and the deck see says what the\n'
-  '        # journal says (fix round 2, E: it said "nothing was disarmed"\n'
-  '        # while the conductor did disarm).\n'
-  '        text = " ".join(le.text for le in out.log if le.text)'),
+ # ("fix round 2: a press's answer says nothing was disarmed")
+ # is retired (2026-11-04); it could not be caught:
+ # _reworded() returns its line unchanged since Abort went, so the
+ # mutated join is the same text.
 
  ("pixels: a show start never takes the closing black off (Jeff's dark "
   "shows, 2026-10-29)",
@@ -10754,10 +10747,10 @@ def build():
   '    def _http_fetch(self, path):\n        try:\n            with urllib.request.urlopen(self.base_url + path,'),
 
  # -- review of #48: a Reset pressed before an Abort never ends it, whatever order they reach the scheduler --
- ("rereview: the screen's Abort and Reset carry no press order",
-  'ltcplay/remote.py',
-  '        pressed = stamp() if stamp is not None else None\n',
-  '        pressed = None\n'),
+ # ("rereview: the screen's Abort and Reset carry no press order")
+ # is retired (2026-11-04); it could not be caught:
+ # the press order it drops (Remote._press's stamp) feeds only the
+ # scheduler's _press_stamp, which nothing reads since Abort and Reset went.
 
  # -- #46's Windows run, 2026-10-08: a Reset the conductor answered while the
  # Abort pressed after it was still saving tonight.json found the latch set
@@ -16761,11 +16754,11 @@ def build():
   "        tx.m = replace(tx.m, held_from=STANDBY, stop_hold=True)\n"
   "        _enter(tx, HOLD)"),
 
- ('scheduler: Resume lands in the middle of a Stop', 'ltcplay/schedule_service.py',
-  '        gen = None\n'
-  '        if kind == sch.RESUME and self.halting():',
-  '        gen = None\n'
-  '        if False:'),
+ # ('scheduler: Resume lands in the middle of a Stop')
+ # is retired (2026-11-04); it could not be caught:
+ # the same refusal, words and journal line, is made again under the
+ # lock (round 2 of cold review A of #199, 3), so dropping the early check
+ # changes nothing a Resume's caller sees (only a tick runs first).
 
  ("halt: Stop between shows does not hold the schedule",
   "ltcplay/remote.py",
@@ -18596,9 +18589,12 @@ def build():
   '        if state not in ("SHOW", "PAUSED"):\n            self._degraded_over(off_seq)\n',
   ''),
 
- ('continue anyway: it can be pressed again for another show', 'ltcplay/schedule_service.py',
-  '        if pr is not None and pr.continued is not None:\n            # Once per failed check',
-  '        if False:\n            # Once per failed check'),
+ # ('continue anyway: it can be pressed again for another show')
+ # is retired (2026-11-04); it could not be caught:
+ # pr.continued is set together with preroll.consume() and cleared
+ # only when a new show's check is queued, so the used failure's own
+ # "consumed" refuses whenever this would. That guard is "continue anyway:
+ # a used failure can be continued again".
 
  ('continue anyway: a used failure can be continued again', 'ltcplay/preroll.py',
   '            if r is None or r["state"] != "failed" or r.get("consumed"):',
@@ -20247,10 +20243,12 @@ def build():
   "            if unk and not self._charge_in_flight(self._clock()):",
   "            if unk:"),
 
- ("fireball charge: a charge the page holds does not keep the mark (round 10)",
-  "ltcplay/fireball_charge.py",
-  "        return any(self._manual_by(k, now) is not None for k in TANK_WORD)",
-  "        return False"),
+ # ("fireball charge: a charge the page holds does not keep the mark (round
+ # 10)") is retired (2026-11-04): it could not be caught. Every page press
+ # that holds a tank (note_manual) also asks for the mark (charge_ready),
+ # which renews _pending_asked_at at the same moment, and both windows are
+ # half a second, so the "asked lately" test above already keeps the mark
+ # whenever the page's hold is fresh. Removing that ask is its own mutation.
 
  ("fireball charge: a charge on the wire does not keep the mark (round 10)",
   "ltcplay/fireball_charge.py",
