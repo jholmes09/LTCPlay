@@ -62753,6 +62753,39 @@ def test_stop_hold_round3():
               f"{R.svc.machine.state}")
     finally:
         R.close()
+    import types as _types_mod
+    # L1 in the scheduler's own rule: the Stop's Hold put back by the
+    # engine while a Start now waits (another thread's tick, between the
+    # wait and the lock) is not a press and never cancels it.
+    R = _RemoteRig(S)
+    try:
+        sv = R.svc
+        calls = [0]
+
+        def blocked_then_put_back():
+            calls[0] += 1
+            if calls[0] == 1:
+                return {"text": "the show audio is still loading",
+                        "loading": True}
+            if calls[0] == 2:
+                with sv._locked():
+                    sv._apply(S.Event(
+                        S.HOLD_ON, "system", who="LTC Player",
+                        screen="engine",
+                        detail=sv.STOP_HOLD_CARRIED_EARLIER))
+            return None
+        sv.performer = _types_mod.SimpleNamespace(
+            start_blocked=blocked_then_put_back,
+            start_show=lambda n, who="", stops=None: None)
+        sv.dry_run = False
+        r = sv.operator_press("start-now", "Andy", "Rack screen",
+                              confirmed=True, preroll=False)
+        check(calls[0] >= 2 and r.get("ok") is True and
+              not r.get("cancelled"),
+              f"the Stop's Hold put back while Start now waits does not "
+              f"cancel it: {calls[0]} {r}")
+    finally:
+        R.close()
     # M2: the Hold that comes back after a Start now's show is dark.
     R = _RemoteRig(S)
     try:
