@@ -1,4 +1,5 @@
 {
+"deck hold: the Hold key ignores the scheduler on hold": "test_streamdeck_start_key_during_a_show",
 "_send()'s guard is removed, so anything can reach the socket": "test_beyond_allow_list_rejects_everything_but_brightness",
 "show audio: a dropped stream leaves the announcement bus playing": "test_announce_plays_through_the_show_audio",
 "Hold does not end a Start now waiting for the show audio": "test_refused_starts_say_why_and_what_to_press",

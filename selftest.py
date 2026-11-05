@@ -36098,6 +36098,15 @@ def test_streamdeck_start_key_during_a_show():
         check(faces[0] == (["PAUSED"], sd.CHAMPAGNE, sd.PAUSED_BG),
               f"held with the audio lost: still PAUSED, the operator's own "
               f"Hold: {faces[0]}")
+        # The scheduler PAUSED before the conductor's look says HELD: the
+        # scheduler's word comes first (held_provider), PAUSED at once.
+        eng.look = "PLAYING"
+        c.held_provider = lambda: True
+        c.draw(fonts, blink_on=True, chase=0)
+        c.held_provider = lambda: None
+        check(faces[0] == (["PAUSED"], sd.CHAMPAGNE, sd.PAUSED_BG),
+              f"the scheduler paused, the conductor not yet HELD: PAUSED: "
+              f"{faces[0]}")
         eng.look = "PLAYING"
         eng.lost = False
         c.draw(fonts, blink_on=True, chase=0)
