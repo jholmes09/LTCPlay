@@ -36098,6 +36098,15 @@ def test_streamdeck_start_key_during_a_show():
         check(faces[0] == (["PAUSED"], sd.CHAMPAGNE, sd.PAUSED_BG),
               f"held with the audio lost: still PAUSED, the operator's own "
               f"Hold: {faces[0]}")
+        # The scheduler PAUSED before the conductor's look says HELD: the
+        # scheduler's word comes first (held_provider), PAUSED at once.
+        eng.look = "PLAYING"
+        c.held_provider = lambda: True
+        c.draw(fonts, blink_on=True, chase=0)
+        c.held_provider = lambda: None
+        check(faces[0] == (["PAUSED"], sd.CHAMPAGNE, sd.PAUSED_BG),
+              f"the scheduler paused, the conductor not yet HELD: PAUSED: "
+              f"{faces[0]}")
         eng.look = "PLAYING"
         eng.lost = False
         c.draw(fonts, blink_on=True, chase=0)
@@ -59917,6 +59926,17 @@ def test_screen_arming_is_off_unless_switched_on():
     real = (sd.ScreenKeys, sd.run_forever, sd.Controller)
     try:
         fs, _show, _doc = _fi_flame_files(work)
+        # Free ports for ltc deck's own sockets: mutate.py runs three
+        # suites at once on one runner, and the file's fixed status port
+        # was then in use by another copy of this test (Address already
+        # in use, a shard 22 baseline).
+        import json as _j3
+        with open(fs, encoding="utf-8") as fh:
+            doc = _j3.load(fh)
+        doc["link"]["status_port"] = _free_udp_port()
+        doc["link"]["arm_port"] = _free_udp_port()
+        with open(fs, "w", encoding="utf-8") as fh:
+            _j3.dump(doc, fh)
 
         class Keys:
             def __init__(self, *a, **k):
@@ -62751,6 +62771,39 @@ def test_stop_hold_round3():
               "just before it started" not in str(out),
               f"Start now after a Stop starts its show: {st} {out} "
               f"{R.svc.machine.state}")
+    finally:
+        R.close()
+    import types as _types_mod
+    # L1 in the scheduler's own rule: the Stop's Hold put back by the
+    # engine while a Start now waits (another thread's tick, between the
+    # wait and the lock) is not a press and never cancels it.
+    R = _RemoteRig(S)
+    try:
+        sv = R.svc
+        calls = [0]
+
+        def blocked_then_put_back():
+            calls[0] += 1
+            if calls[0] == 1:
+                return {"text": "the show audio is still loading",
+                        "loading": True}
+            if calls[0] == 2:
+                with sv._locked():
+                    sv._apply(S.Event(
+                        S.HOLD_ON, "system", who="LTC Player",
+                        screen="engine",
+                        detail=sv.STOP_HOLD_CARRIED_EARLIER))
+            return None
+        sv.performer = _types_mod.SimpleNamespace(
+            start_blocked=blocked_then_put_back,
+            start_show=lambda n, who="", stops=None: None)
+        sv.dry_run = False
+        r = sv.operator_press("start-now", "Andy", "Rack screen",
+                              confirmed=True, preroll=False)
+        check(calls[0] >= 2 and r.get("ok") is True and
+              not r.get("cancelled"),
+              f"the Stop's Hold put back while Start now waits does not "
+              f"cancel it: {calls[0]} {r}")
     finally:
         R.close()
     # M2: the Hold that comes back after a Start now's show is dark.
