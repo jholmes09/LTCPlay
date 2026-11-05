@@ -59926,6 +59926,17 @@ def test_screen_arming_is_off_unless_switched_on():
     real = (sd.ScreenKeys, sd.run_forever, sd.Controller)
     try:
         fs, _show, _doc = _fi_flame_files(work)
+        # Free ports for ltc deck's own sockets: mutate.py runs three
+        # suites at once on one runner, and the file's fixed status port
+        # was then in use by another copy of this test (Address already
+        # in use, a shard 22 baseline).
+        import json as _j3
+        with open(fs, encoding="utf-8") as fh:
+            doc = _j3.load(fh)
+        doc["link"]["status_port"] = _free_udp_port()
+        doc["link"]["arm_port"] = _free_udp_port()
+        with open(fs, "w", encoding="utf-8") as fh:
+            _j3.dump(doc, fh)
 
         class Keys:
             def __init__(self, *a, **k):
