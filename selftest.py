@@ -40252,6 +40252,29 @@ def test_schedule_delayed_night_closes_at_the_2am_reset():
           f"once it has ended, Saturday closes with show 12 DONE and Sunday "
           f"begins: {svc.machine.date} {sat['slots'][11]['status']}")
     svc.stop()
+
+    # A show paused (a Hold during it) past the next night's preshow: the
+    # hand over has come (its planned end and guard are long past), yet a
+    # running or paused show is never set aside: the night stays.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 39)]
+    svc = _svc(S, work, now, rule=_two_nights())
+    svc.start(thread=False)
+    now[0] = _den(S, 21, 40)
+    svc.tick()
+    now[0] = _den(S, 21, 40, 2)
+    _confirm(S, svc)
+    now[0] = _den(S, 21, 41)
+    svc._apply(_op(S, S.HOLD_ON))
+    check(svc.machine.state == S.PAUSED and svc.machine.running == 12,
+          f"setup: show 12 paused: {svc.machine.state}")
+    now[0] = _den(S, 17, 58, d=(2026, 11, 15))
+    svc.tick()
+    check(str(svc.machine.date) == "2026-11-14" and
+          svc.machine.state == S.PAUSED and svc.machine.running == 12,
+          f"a paused show past the next night's preshow is never set aside: "
+          f"{svc.machine.date} {svc.machine.state} {svc.machine.running}")
+    svc.stop()
     print("  ok")
 
 

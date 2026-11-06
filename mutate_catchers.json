@@ -2780,7 +2780,7 @@
 "scheduler 2 AM reset: 02:00 itself still belongs to last night (<=)": "test_schedule_restart_keeps_tonight",
 "scheduler 2 AM reset: a first show before 2 AM is accepted": "test_schedule_expands_the_season",
 "scheduler 2 AM reset: a night ends at its own date's reset, not the next day's": "test_schedule_night_reset_boundary",
-"scheduler 2 AM reset: a show running at the reset is cut by it": "test_schedule_conductor_calls_after_the_save_and_off_the_lock",
+"scheduler 2 AM reset: a show running at the reset is cut by it": "test_schedule_delayed_night_closes_at_the_2am_reset",
 "scheduler 2 AM reset: the night is read on UTC, not the local clock": "test_schedule_restart_keeps_tonight",
 "scheduler 2 AM reset: the nightly reset is at 1 AM": "test_schedule_expands_the_season",
 "scheduler 2 AM reset: the nightly reset is at 3 AM": "test_schedule_expands_the_season",
