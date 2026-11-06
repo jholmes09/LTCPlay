@@ -3048,7 +3048,10 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             httpd_schedule, control, fire_ice, madmapper=httpd.madmapper,
             beyond=httpd.beyond, announce=httpd.announce,
             journal=_beyond_journal(httpd_schedule),
-            alert_pixels=httpd.remote.alert_pixels)
+            alert_pixels=httpd.remote.alert_pixels,
+            # Programming playback may light the lasers (Jeff, 2026-11-06):
+            # asked only when the show's own gate says no.
+            programming_lasers=httpd.remote.programming_lasers_refusal)
         httpd.conductor = wiring.conductor
         httpd.fire_ice = wiring
         # Every laser starts disarmed (Jeff, 2026-10-22): the blank and
@@ -3134,6 +3137,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                 logs_dir=os.path.join(httpd.remote.folder, "logs"),
                 laser_output=_laser_output,
                 laser_blockers=httpd.remote.laser_arm_blockers,
+                laser_enable_blockers=httpd.remote.laser_enable_blockers,
                 laser_blank=_laser_blank, night_state=_night_state,
                 audit=getattr(httpd.remote, "audit", None))
             httpd.remote.morning = httpd.morning

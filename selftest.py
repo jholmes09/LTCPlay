@@ -34216,6 +34216,10 @@ class _CondRig:
         self.slow = {}
         self.slow_by = None
         self.on_call = {}      # name -> fn: a press landing mid call
+        # The show clock's timecode (timecode_frame): moving on the fake
+        # time (30 frames a second) while tc_moving, else tc_frozen.
+        self.tc_moving = False
+        self.tc_frozen = None
 
     def _rec(self, name, *args):
         self.calls.append((name, args, self.now()))
@@ -34255,6 +34259,9 @@ class _CondRig:
     def lasers_restore(self):
         return self._rec("lasers_restore")
 
+    def lasers_output_off(self):
+        return self._rec("lasers_output_off")
+
     def video_fade_out(self, s):
         return self._rec("video_fade_out", s)
 
@@ -34292,6 +34299,11 @@ class _CondRig:
         # Held but not yet frozen reads False; resuming but not yet moving
         # still reads True (the timecode is still frozen).
         return self.moving_at is not None
+
+    def timecode_frame(self):
+        if self.tc_moving:
+            return int(self.now() * 30)
+        return self.tc_frozen
 
     def pixels_fade_out(self, s):
         return self._rec("pixels_fade_out", s)
@@ -42660,7 +42672,8 @@ def test_lasers_blanking_not_set_up_is_loud():
 
 
 def _fi_night(performs=True, session=True, flames=True, armed=True,
-              work=None, auto_start="when_run_pressed"):
+              work=None, auto_start="when_run_pressed",
+              programming_lasers=None):
     """A Fire & Ice night: the real scheduler service on a fake wall clock,
     the real conductor built by fire_ice.attach() on fake time, the real
     ConductorDevices on real BEYOND and MadMapper links whose sockets write
@@ -42703,7 +42716,8 @@ def _fi_night(performs=True, session=True, flames=True, armed=True,
     w = F.attach(svc, control, cfg, madmapper=(link, None), beyond=bey,
                  journal=journal,
                  flame_link=_FiFlames(calls, T) if flames else None,
-                 threaded=False, clock=T.now, waiter=T.wait)
+                 threaded=False, clock=T.now, waiter=T.wait,
+                 programming_lasers=programming_lasers)
     from ltcplay import laserarm as LA
     c = w.conductor
 
@@ -59150,8 +59164,8 @@ def test_programming_playhead_drives_the_show_path():
             order.append(("play", name, wait))
     rig.mm = MM()
     real_ss, real_ms = c.show_starting, c.music_started
-    c.show_starting = lambda *a: (order.append(("show_starting",) + a),
-                                  real_ss(*a))[1]
+    c.show_starting = lambda *a, **k: (order.append(("show_starting",) + a),
+                                       real_ss(*a, **k))[1]
     c.music_started = lambda: (order.append(("music_started",)),
                                real_ms())[1]
     calls = []
@@ -59387,7 +59401,7 @@ def test_programming_playhead_drives_the_show_path():
     # The show start refused after the cue began (a Stop landing): the
     # music is stopped again.
     real_ss2 = c.show_starting
-    c.show_starting = lambda *a: C.failed("a Stop landed")
+    c.show_starting = lambda *a, **k: C.failed("a Stop landed")
     try:
         ph.play_from(3600.0)
         check(False, "a refused show start was reported as played")
@@ -59417,6 +59431,663 @@ def test_programming_playhead_drives_the_show_path():
         check(not re.search(r"\b" + word + r"\b", body),
               f"playhead.py calls {word} itself")
     _ = SessionError
+    print("  ok")
+
+
+def test_programming_lasers_gate_in_fire_ice_attach():
+    import types
+    section("lasers in Programming (Jeff, 2026-11-06): fire_ice.attach's "
+            "laser gate asks Programming only when the show's own state gate "
+            "says no, never in SHOW or PAUSED; the laser arm is asked after "
+            "it as for a show; a Programming Pause through the real BEYOND "
+            "link blanks and switches the laser output off and disarms "
+            "nothing")
+    asked = []
+    answer = {"v": None}
+
+    def programming():
+        asked.append(1)
+        v = answer["v"]
+        if isinstance(v, Exception):
+            raise v
+        return v
+    n = _fi_night(programming_lasers=programming)
+    if n.S is None:
+        return
+    c, svc = n.c, n.svc
+    real_machine = svc.machine
+    try:
+        # A scheduled show: the show's own gate decides, Programming is
+        # never asked (it raises if it is).
+        answer["v"] = RuntimeError("Programming asked during a show")
+        for st in ("SHOW", "PAUSED"):
+            svc.machine = types.SimpleNamespace(state=st)
+            del asked[:]
+            # PAUSED: this rig's arm blockers keep the lasers dark (a
+            # Hold); the point is that Programming is never asked.
+            want = c.laser_gate() if st == "PAUSED" else None
+            check(c.laser_gate() == want and not asked,
+                  f"{st}: the show's gate asked Programming "
+                  f"({len(asked)} asks)")
+            answer["v"] = "a Programming no"
+            check(c.laser_gate() == want and not asked,
+                  f"{st}: a Programming no changed a show's gate")
+            answer["v"] = RuntimeError("Programming asked during a show")
+        # Out of a show: Programming's own answer, then the arm.
+        for st in ("IDLE", "OFF", "BOOT", "STANDBY", None):
+            svc.machine = types.SimpleNamespace(state=st)
+            answer["v"] = None
+            check(c.laser_gate() is None,
+                  f"{st}: Programming said yes and every laser is armed, "
+                  f"but the gate said {c.laser_gate()!r}")
+            for no in ("not now", "", RuntimeError("boom")):
+                answer["v"] = no
+                why = c.laser_gate()
+                check(why is not None and why.endswith("stay dark."),
+                      f"{st}: Programming said {no!r} and the gate said "
+                      f"{why!r}")
+        svc.machine = types.SimpleNamespace(state="IDLE")
+        answer["v"] = None
+        n.arm.disarm(["laser-2"], who="Andy")
+        why = c.laser_gate()
+        check(why is not None and why.startswith(
+                  "the lasers are not armed: not every laser is armed"),
+              f"Programming's yes skipped the laser arm: {why!r}")
+        check(n.arm.arm(["laser-2"], who="Andy", confirmed=True)[0],
+              "laser 2 armed again")
+        n.arm._jobs.clear()
+        # The real BEYOND link: a Programming Pause blanks, switches the
+        # laser output off, and every laser stays armed; a Hold disarms.
+        n.sess.clock.play("Show")
+        c.music_started()
+        c.show_starting("Andy", "Programming screen")
+        c.run_pending()
+        del n.calls[:]
+        r = c.hold("Andy", "Programming screen", disarm_lasers=False)
+        check(r.ok and r.sentence.startswith(
+                  "Pause: flames to zero, lasers blanked and BEYOND's laser "
+                  "output off (the lasers stay armed)"),
+              f"the Pause's sentence: {r}")
+        c.run_pending()
+        log = _fi_log(n.calls)
+        check(log[:3] == [("flames", "zero"), ("lasers", "dark"),
+                          ("laser output", "off")],
+              f"a Programming Pause is not flames zero, blank, output off: "
+              f"{log}")
+        check(n.arm.armed_ids() == ["laser-1", "laser-2"] and
+              c.lasers_kept_armed(),
+              f"a Programming Pause disarmed: {n.arm.armed_ids()}")
+        r = c.hold("Andy", "Stream Deck")
+        n.arm.run_pending()
+        check(n.arm.armed_ids() == [] and not c.lasers_kept_armed(),
+              "a Hold during a Programming Pause did not disarm every laser")
+        # The show clock's timecode as the conductor reads it.
+        n.sess.clock._last_frame = 1234
+        check(n.w.show.timecode_frame() == 1234,
+              "FireIceShow.timecode_frame is not the clock's last frame")
+    finally:
+        svc.machine = real_machine
+    # Without programming_lasers (every caller but web.serve): today's gate.
+    n2 = _fi_night()
+    n2.svc.machine = types.SimpleNamespace(state="IDLE")
+    why = n2.c.laser_gate()
+    check(why == "the show state is IDLE, so the lasers stay dark.",
+          f"attach() with no programming_lasers changed the gate: {why!r}")
+    print("  ok")
+
+
+def test_programming_lasers_engine_refusal_and_blockers():
+    import types
+    section("lasers in Programming: the engine's yes needs a Programming "
+            "session, the playback Play from started, IDLE, OFF or BOOT and "
+            "no laser test; a Programming Pause keeps armed lasers armed "
+            "against the arm's watcher, never against a Hold, CLOSING or an "
+            "announcement, and a new arm is still refused")
+    from ltcplay.remote import Remote, PROGRAMMING_LASER_STATES
+    check(PROGRAMMING_LASER_STATES == ("IDLE", "OFF", "BOOT"),
+          f"the Programming laser states: {PROGRAMMING_LASER_STATES}")
+    st = {"prog": (True, ""), "active": True, "look": "HELD", "kept": True,
+          "tests": set()}
+
+    class Cond:
+        @property
+        def _look(self):
+            return st["look"]
+
+        def lasers_kept_armed(self):
+            k = st["kept"]
+            if isinstance(k, Exception):
+                raise k
+            return k
+    machine = types.SimpleNamespace(state="IDLE")
+    r = types.SimpleNamespace(
+        schedule=types.SimpleNamespace(machine=machine, conductor=Cond()),
+        playhead=types.SimpleNamespace(active=lambda: st["active"]),
+        morning=types.SimpleNamespace(
+            lasers=types.SimpleNamespace(on=st["tests"])))
+
+    def programming():
+        p = st["prog"]
+        if isinstance(p, Exception):
+            raise p
+        return p
+    r.programming = programming
+    for name in ("laser_arm_blockers", "laser_enable_blockers",
+                 "_programming_pause_keeps_lasers",
+                 "programming_lasers_refusal"):
+        setattr(r, name, getattr(Remote, name).__get__(r))
+    refusal = r.programming_lasers_refusal
+    for s_ in ("IDLE", "OFF", "BOOT"):
+        machine.state = s_
+        check(refusal() is None, f"{s_}: Programming refused the lasers: "
+                                 f"{refusal()!r}")
+    for s_ in ("STANDBY", "HOLD", "CLOSING", "SHOW", "PAUSED", None):
+        machine.state = s_
+        want = (f"the show state is {s_ or 'unknown'}, and Programming "
+                f"lights the lasers only before or after the night (IDLE, "
+                f"OFF, BOOT)")
+        check(refusal() == want, f"{s_}: {refusal()!r}")
+    machine.state = "IDLE"
+    st["active"] = False
+    check(refusal() == "no Programming playback started by Play from is "
+                       "playing", f"not active: {refusal()!r}")
+    st["active"] = True
+    st["prog"] = (False, "This show was started in Show mode.")
+    check(refusal() == "This show was started in Show mode.",
+          f"not Programming: {refusal()!r}")
+    st["prog"] = ValueError("no session")
+    check(refusal() == "Programming could not be asked (ValueError: no "
+                       "session)", f"an error: {refusal()!r}")
+    st["prog"] = (True, "")
+    st["tests"].add("l1")
+    check(refusal() == "a laser calibration test is on",
+          f"a laser test on: {refusal()!r}")
+    st["tests"].clear()
+    # The arm's refusal is unchanged: a Programming Pause is a Hold for a
+    # NEW arm. Only the lighting blockers let it through.
+    hold = "the show is on Hold; press Resume first, then arm"
+    check(r.laser_arm_blockers() == hold,
+          f"a new arm during a Programming Pause: {r.laser_arm_blockers()!r}")
+    check(r.laser_enable_blockers() == "",
+          f"armed lasers do not survive a Programming Pause: "
+          f"{r.laser_enable_blockers()!r}")
+    for key, val, label in (("look", "DARK", "an announcement's DARK"),
+                            ("kept", False, "a Hold that disarms"),
+                            ("kept", RuntimeError("x"), "a conductor error"),
+                            ("active", False, "playback not Play from's"),
+                            ("prog", (False, "no"), "not Programming")):
+        old = st[key]
+        st[key] = val
+        check(r.laser_enable_blockers() == hold,
+              f"{label}: the Pause's exemption still applied: "
+              f"{r.laser_enable_blockers()!r}")
+        st[key] = old
+    for s_, want in (("HOLD", hold), ("PAUSED", hold),
+                     ("CLOSING", hold)):
+        machine.state = s_
+        check(r.laser_enable_blockers() == want,
+              f"{s_}: the Pause's exemption still applied: "
+              f"{r.laser_enable_blockers()!r}")
+    machine.state = "IDLE"
+    st["look"] = "PLAYING"
+    check(r.laser_enable_blockers() == "" and r.laser_arm_blockers() == "",
+          "nothing blocks a playing Programming show")
+    print("  ok")
+
+
+def _prog_laser_rig():
+    """The real conductor (selftest _cond rig) with a real LaserArm whose
+    arm refusal and lighting blockers are remote.py's own (on a stand-in
+    Remote), a laser gate composed as fire_ice.attach composes it, and the
+    real Programming playhead on a fake show audio session whose clock
+    reports its last timecode frame."""
+    import types
+    from ltcplay import conductor as C
+    from ltcplay import laserarm as LA
+    from ltcplay.playhead import ShowAudioPlayhead
+    from ltcplay.remote import Remote
+
+    class Sess:
+        running = True
+
+        def __init__(self):
+            self.tl = types.SimpleNamespace(
+                cues=[], format=lambda s: f"T{s:.1f}")
+            self.at = None
+            self._cue = None
+            self._last_frame = None
+            self.paused = False
+
+        def playhead_clock(self):
+            return self
+
+        @property
+        def playing(self):
+            return self.at is not None
+
+        def clock_play_from(self, s, check_only=False):
+            if not check_only:
+                self.at = s
+                self._cue = {"label": "Show", "position_s": 3600.0}
+                self._last_frame = None
+            return None, s
+
+        def clock_seek(self, s):
+            self.at = s
+            self._last_frame = None
+            return s
+
+        def clock_here(self):
+            return self.at
+
+        def clock_set_loop(self, a, b):
+            return None if a is None else (a, b)
+
+        def clock_halt(self):
+            self.at = None
+            self._cue = None
+    box = {}
+    machine = types.SimpleNamespace(state="IDLE")
+    tests = types.SimpleNamespace(on=set())
+    remote = types.SimpleNamespace(morning=types.SimpleNamespace(
+        lasers=tests))
+    for name in ("laser_arm_blockers", "laser_enable_blockers",
+                 "_programming_pause_keeps_lasers",
+                 "programming_lasers_refusal"):
+        setattr(remote, name, getattr(Remote, name).__get__(remote))
+    remote.programming = lambda: (True, "")
+    out = _FakeLaserOutput()
+    arm = LA.LaserArm([("l1", "Laser 1"), ("l2", "Laser 2")],
+                      output=lambda: out, threaded=False,
+                      sleep=lambda s: None,
+                      blockers=lambda: remote.laser_arm_blockers(),
+                      enable_blockers=lambda: remote.laser_enable_blockers())
+    state_gate = C.laser_gate_for(lambda: machine.state)
+
+    def gate():
+        why = state_gate()
+        if why is not None and remote.programming_lasers_refusal() \
+                is not None:
+            return why
+        why = arm.may_enable()
+        return None if why is None else f"the lasers are not armed: {why}"
+    c, rig, T, lines = _cond(gate=gate, lasers_disarm=lambda r_, w, s:
+                             arm.disarm_all(r_, w, s, defer=True),
+                             hold_gate=lambda w, s, d: (None, 0),
+                             announcer=lambda *a: None)
+    arm.on_permitted = c.lasers_armed
+    arm.blank_now = c.lasers_dark_now
+    svc = types.SimpleNamespace(conductor=c, machine=machine)
+    remote.schedule = svc
+    sess = Sess()
+    tnow = [1000.0]
+    notes = []
+    ph = ShowAudioPlayhead(types.SimpleNamespace(session=sess), svc,
+                           clock=lambda: tnow[0],
+                           journal=lambda t, o: notes.append((o, t)))
+    ph.lasers_refusal = remote.programming_lasers_refusal
+    remote.playhead = ph
+    arm.run_pending()
+    check(arm.arm(["l1", "l2"], who="Andy", confirmed=True)[0],
+          "setup: every laser armed")
+    arm.run_pending()
+    del out.calls[:]
+    box.update(c=c, rig=rig, T=T, lines=lines, arm=arm, out=out, ph=ph,
+               sess=sess, machine=machine, tnow=tnow, notes=notes,
+               remote=remote, tests=tests, C=C)
+    return types.SimpleNamespace(**box)
+
+
+def _prog_lit(g, at=3630.0):
+    """Play from with the timecode moving: the lasers lit."""
+    g.rig.tc_moving = True
+    g.ph.play_from(at, "Andy", "Programming screen")
+    g.c.run_pending()
+    g.sess._last_frame = 100
+    check(g.c.lasers_lit(), f"setup: the lasers were not lit by Play from: "
+                            f"{g.rig.names()}")
+    del g.rig.calls[:]
+
+
+def test_programming_lasers_follow_the_playhead():
+    section("lasers in Programming (Jeff, 2026-11-06): Play from lights them "
+            "through the gate only once the timecode moves; Back and Ahead "
+            "send nothing; a frozen timecode blanks them; the Programming "
+            "Pause blanks and switches the output off and keeps them armed, "
+            "Continue lights them again; a disarm, a lockout, a Hold or a "
+            "failed blank while paused leaves them dark; Stop leaves them "
+            "dark and disarmed")
+    from ltcplay import playhead as PH
+    check(PH.FROZEN_S == 0.5, f"the frozen-timecode guard: {PH.FROZEN_S}")
+    g = _prog_laser_rig()
+    C, c, rig, ph = g.C, g.c, g.rig, g.ph
+    check(C.START_CONFIRM_S == 2.0, f"START_CONFIRM_S {C.START_CONFIRM_S}")
+    # The blocker (cold review): Play from never lights the lasers before
+    # the timecode is seen moving.
+    g.rig.tc_moving = False
+    ph.play_from(3630.0, "Andy", "Programming screen")
+    c.run_pending()
+    names = rig.names()
+    check("lasers_restore" not in names and "lasers_blank" in names and
+          "flames_release" in names,
+          f"Play from lit the lasers on a frozen timecode: {names}")
+    check(any(t == "The show clock's timecode was not seen moving within "
+                   "2 s of Play from, so the lasers stay dark. Pause, then "
+                   "Continue, or Play from again, to try again." and f
+              for t, f in g.lines), f"journal: {g.lines[-4:]}")
+    ph.follow("Andy", "Programming screen")
+    c.run_pending()
+    # A frame that is sent but never changes (a frozen clock) is not
+    # moving either.
+    del rig.calls[:]
+    rig.tc_frozen = 42
+    ph.play_from(3630.0, "Andy", "Programming screen")
+    c.run_pending()
+    check("lasers_restore" not in rig.names(),
+          f"Play from lit the lasers on one frozen frame: {rig.names()}")
+    ph.follow("Andy", "Programming screen")
+    c.run_pending()
+    rig.tc_frozen = None
+    del rig.calls[:]
+    rig.tc_moving = True
+    ph.play_from(3630.0, "Andy", "Programming screen")
+    c.run_pending()
+    names = rig.names()
+    check("lasers_restore" in names and "flames_release" in names and
+          names.index("lasers_restore") < names.index("flames_release"),
+          f"Play from with the timecode moving: {names}")
+    check(c.lasers_lit(), "the record does not say the lasers are lit")
+    # Back, Ahead and the loop send the lasers nothing (no blank across a
+    # jump, Jeff 2026-11-06).
+    del rig.calls[:]
+    g.sess._last_frame = 10
+    ph.jump(-5)
+    g.sess._last_frame = 11
+    ph.jump(5)
+    ph.loop(3601.0, 3603.0)
+    g.sess._last_frame = 12
+    g.tnow[0] += 0.25
+    check(ph.poll() is None and not rig.calls,
+          f"a move touched the lasers: {rig.names()}")
+    # The frozen-frame guard: timecode moving, nothing; not moving for
+    # FROZEN_S, blanked.
+    for f in (13, 14):
+        g.sess._last_frame = f
+        g.tnow[0] += 0.25
+        check(ph.poll() is None, "a moving timecode was guarded")
+    g.tnow[0] += 0.25
+    check(ph.poll() is None, "guarded before FROZEN_S")
+    g.tnow[0] += 0.25
+    check(ph.poll() == "lasers_dark" and rig.names() == ["lasers_blank"] and
+          not c.lasers_lit(),
+          f"a frozen timecode left the lasers lit: {rig.names()}")
+    check(g.notes[-1][0] == "lasers_dark" and g.notes[-1][1].startswith(
+              "Programming playback: the timecode has not moved for 0.5 s, "
+              "and a frozen laser frame is a static beam, so the lasers "
+              "were blanked. Pause, then Continue, or Play from again, to "
+              "bring them back."), f"journal: {g.notes[-1]}")
+    g.tnow[0] += 0.25
+    check(ph.poll() is None, "the guard blanked twice")
+    # The Programming Pause: blank and output off, every laser armed, the
+    # arm's watcher does not disarm, a new arm is refused.
+    _prog_lit(g)
+    at, why = ph.pause_or_why("Andy", "Programming screen",
+                              keep_lasers_if=lambda: True)
+    c.run_pending()
+    names = rig.names()
+    check(names[:4] == ["flames_zero", "lasers_blank", "lasers_output_off",
+                        "music_hold"] and why == "",
+          f"the Programming Pause: {names} {why!r}")
+    g.arm.tick("IDLE")
+    g.arm.run_pending()
+    check(g.arm.armed_ids() == ["l1", "l2"] and c.lasers_kept_armed(),
+          f"the Programming Pause disarmed: {g.arm.armed_ids()}")
+    check(not any("disarm" in str(x) for x in g.out.calls),
+          f"the arm sent a disarm: {g.out.calls}")
+    # Continue: the lasers come back through the gate once the timecode
+    # moves, then the flame cues.
+    g.T.t += 1.0
+    del rig.calls[:]
+    ph.cont("Andy", "Programming screen")
+    c.run_pending()
+    names = rig.names()
+    check(names[0] == "music_resume" and "lasers_restore" in names and
+          names.index("lasers_restore") < names.index("flames_release"),
+          f"Continue did not light the armed lasers again: {names}")
+    # A disarm while paused: dark on Continue, and no new arm while held.
+    del rig.calls[:]
+    ph.pause_or_why("Andy", "Programming screen",
+                    keep_lasers_if=lambda: True)
+    c.run_pending()
+    g.arm.disarm(["l2"], who="Andy")
+    g.arm.run_pending()
+    ok, text = g.arm.arm(["l2"], who="Andy", confirmed=True)
+    check(not ok and "the show is on Hold; press Resume first, then arm"
+          in text, f"a new arm during a Programming Pause: {ok} {text}")
+    g.T.t += 1.0
+    del rig.calls[:]
+    ph.cont("Andy", "Programming screen")
+    c.run_pending()
+    check("lasers_restore" not in rig.names() and
+          "lasers_blank" in rig.names(),
+          f"Continue lit a disarmed laser: {rig.names()}")
+    check(g.arm.arm(["l2"], who="Andy", confirmed=True)[0],
+          "laser 2 armed again once playing")
+    g.arm.run_pending()
+    c.run_pending()
+    check(c.lasers_lit(), f"arming every laser during playback did not "
+                          f"light them: {rig.names()}")
+    # A lockout while paused: the watcher disarms, Continue stays dark.
+    del rig.calls[:]
+    ph.pause_or_why("Andy", "Programming screen",
+                    keep_lasers_if=lambda: True)
+    c.run_pending()
+    g.arm._locked = lambda lid: lid == "l1"
+    g.arm.tick("IDLE")
+    g.arm.run_pending()
+    check(g.arm.armed_ids() == [], f"a lockout while paused left lasers "
+                                   f"armed: {g.arm.armed_ids()}")
+    g.arm._locked = lambda lid: False
+    g.T.t += 1.0
+    ph.cont("Andy", "Programming screen")
+    c.run_pending()
+    check("lasers_restore" not in rig.names(),
+          f"Continue lit lasers after a lockout: {rig.names()}")
+    check(g.arm.arm(["l1", "l2"], who="Andy", confirmed=True)[0],
+          "armed again")
+    g.arm.run_pending()
+    c.run_pending()
+    # A Pause whose output off does not get out disarms after all.
+    _prog_lit(g)
+    rig.fail.add("lasers_output_off")
+    ph.pause_or_why("Andy", "Programming screen",
+                    keep_lasers_if=lambda: True)
+    c.run_pending()
+    g.arm.run_pending()
+    rig.fail.discard("lasers_output_off")
+    check(g.arm.armed_ids() == [] and not c.lasers_kept_armed(),
+          f"a Pause that could not switch the output off left the lasers "
+          f"armed: {g.arm.armed_ids()}")
+    check(any(t.startswith("The Pause's laser blank or BEYOND's laser "
+                           "output off did not get out, so every laser was "
+                           "disarmed after all.") and f
+              for t, f in g.lines), f"journal: {g.lines[-4:]}")
+    g.T.t += 1.0
+    ph.cont("Andy", "Programming screen")
+    c.run_pending()
+    check(g.arm.arm(["l1", "l2"], who="Andy", confirmed=True)[0],
+          "armed again")
+    g.arm.run_pending()
+    c.run_pending()
+    # The Pause keeps them armed only for the playback Play from started.
+    _prog_lit(g)
+    ours = ph._ours
+    ph._ours = None
+    ph.pause_or_why("Andy", "Programming screen",
+                    keep_lasers_if=lambda: True)
+    c.run_pending()
+    g.arm.run_pending()
+    check(g.arm.armed_ids() == [],
+          "a Pause of playback Play from did not start kept the lasers "
+          "armed")
+    ph._ours = ours
+    g.T.t += 1.0
+    ph.cont("Andy", "Programming screen")
+    c.run_pending()
+    check(g.arm.arm(["l1", "l2"], who="Andy", confirmed=True)[0],
+          "armed again")
+    g.arm.run_pending()
+    c.run_pending()
+    # Not a Programming session at the press: the Hold that disarms.
+    _prog_lit(g)
+    ph.pause_or_why("Andy", "Programming screen",
+                    keep_lasers_if=lambda: False)
+    c.run_pending()
+    g.arm.run_pending()
+    check(g.arm.armed_ids() == [], "a Pause outside Programming kept the "
+                                   "lasers armed")
+    g.T.t += 1.0
+    ph.cont("Andy", "Programming screen")
+    c.run_pending()
+    check(g.arm.arm(["l1", "l2"], who="Andy", confirmed=True)[0],
+          "armed again")
+    g.arm.run_pending()
+    c.run_pending()
+    # The Hold button (any surface) disarms as always.
+    _prog_lit(g)
+    ph.hold_press("Andy", "Stream Deck")
+    c.run_pending()
+    g.arm.run_pending()
+    check(g.arm.armed_ids() == [] and not c.lasers_kept_armed(),
+          "the Hold button during Programming did not disarm")
+    g.T.t += 1.0
+    ph.cont("Andy", "Programming screen")
+    c.run_pending()
+    check(g.arm.arm(["l1", "l2"], who="Andy", confirmed=True)[0],
+          "armed again")
+    g.arm.run_pending()
+    c.run_pending()
+    # Stop: dark and disarmed.
+    _prog_lit(g)
+    c.stop("Andy", "rack screen")
+    c.run_pending()
+    g.arm.run_pending()
+    ph.abort_press("Andy", "rack screen")
+    c.run_pending()
+    check(g.arm.armed_ids() == [] and "lasers_blank" in rig.names() and
+          "lasers_restore" not in rig.names() and not c.lasers_lit(),
+          f"Stop did not leave the lasers dark and disarmed: "
+          f"{rig.names()} {g.arm.armed_ids()}")
+    print("  ok")
+
+
+def test_programming_pause_keeps_lasers_only_from_a_fresh_hold():
+    section("conductor: hold(disarm_lasers=False) keeps the lasers armed "
+            "only from a Hold it accepts itself; the 'already on hold' and "
+            "'stopped' answers never do, a Hold that disarms ends it, and a "
+            "scheduled show's Hold still disarms every laser")
+    C = _cond_mod()
+    disarms = []
+    c, rig, T, lines = _cond(lasers_disarm=lambda r, w, s: disarms.append(r))
+    _cond_live(c, rig)
+    r = c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(disarms == ["Hold pressed by Andy on the rack screen"] and
+          r.sentence.startswith("Hold: flames to zero and lasers blanked, "
+                                "then the music fades over 0.25 s") and
+          "lasers_output_off" not in rig.names(),
+          f"a show's Hold changed: {disarms} {r} {rig.names()}")
+    r = c.hold("Andy", "Programming screen", disarm_lasers=False)
+    check(not c.lasers_kept_armed() and r.sentence.startswith(
+              "Already on hold."),
+          f"the 'already on hold' answer kept the lasers armed: {r}")
+    check(len(disarms) == 1, "a Pause while held disarmed")
+    T.t += 1.0
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    del disarms[:]
+    c.hold("Andy", "Programming screen", disarm_lasers=False)
+    check(c.lasers_kept_armed() and not disarms,
+          "a fresh Programming Pause did not keep the lasers armed")
+    c.run_pending()
+    c.hold("Andy", "Programming screen", disarm_lasers=False)
+    check(c.lasers_kept_armed(), "a second Pause ended the first's keep")
+    c.hold("Andy", "Stream Deck")
+    check(not c.lasers_kept_armed() and len(disarms) == 1,
+          "a Hold during a Programming Pause did not end the keep")
+    c.stop("Andy", "rack screen")
+    c.run_pending()
+    r = c.hold("Andy", "Programming screen", disarm_lasers=False)
+    check(not c.lasers_kept_armed() and r.sentence.startswith(
+              "The show was stopped, so there is nothing to hold"),
+          f"the 'stopped' answer kept the lasers armed: {r}")
+    print("  ok")
+
+
+def test_programming_lasers_dark_when_the_night_moves_on():
+    section("lasers in Programming: lit, then the schedule leaves IDLE, OFF "
+            "or BOOT: intermission (STANDBY), a restart's dark (BOOT), "
+            "CLOSING and entering OFF all leave them dark, and so does the "
+            "playhead's watch when nothing at all reaches the conductor")
+    # IDLE to STANDBY: the scheduler's intermission().
+    g = _prog_laser_rig()
+    _prog_lit(g)
+    g.machine.state = "STANDBY"
+    g.c.intermission("the scheduler", "")
+    g.c.run_pending()
+    check("lasers_blank" in g.rig.names() and not g.c.lasers_lit(),
+          f"STANDBY: {g.rig.names()}")
+    # BOOT: a restart's dark sequence, show_stopped().
+    g = _prog_laser_rig()
+    g.machine.state = "BOOT"
+    _prog_lit(g)
+    g.c.show_stopped("the scheduler", "")
+    g.c.run_pending()
+    check("lasers_blank" in g.rig.names() and not g.c.lasers_lit(),
+          f"BOOT dark again: {g.rig.names()}")
+    # CLOSING: the arm's watcher disarms every laser, and the watch blanks.
+    g = _prog_laser_rig()
+    _prog_lit(g)
+    g.machine.state = "CLOSING"
+    g.arm.tick("CLOSING")
+    g.arm.run_pending()
+    check(g.arm.armed_ids() == [] and "disable" in g.out.calls and
+          "lasers_blank" in g.rig.names() and not g.c.lasers_lit(),
+          f"CLOSING left lasers armed or lit: {g.arm.armed_ids()} "
+          f"{g.out.calls} {g.rig.names()}")
+    # Entering OFF: the night over disarms.
+    g = _prog_laser_rig()
+    _prog_lit(g)
+    g.arm.tick("IDLE")
+    g.machine.state = "OFF"
+    g.arm.tick("OFF")
+    g.arm.run_pending()
+    check(g.arm.armed_ids() == [] and "disable" in g.out.calls and
+          "lasers_blank" in g.rig.names() and not g.c.lasers_lit(),
+          f"entering OFF left lasers armed or lit: {g.arm.armed_ids()} "
+          f"{g.rig.names()}")
+    # Nothing reaches the conductor: the watch blanks them.
+    g = _prog_laser_rig()
+    _prog_lit(g)
+    g.machine.state = "STANDBY"
+    g.tnow[0] += 0.25
+    g.sess._last_frame = 101
+    check(g.ph.poll() == "lasers_dark" and g.rig.names() == ["lasers_blank"]
+          and not g.c.lasers_lit(),
+          f"STANDBY with nothing told: {g.rig.names()}")
+    check(g.notes[-1][1].startswith(
+              "Programming playback: the lasers may no longer be lit here: "
+              "the show state is STANDBY, and Programming lights the lasers "
+              "only before or after the night (IDLE, OFF, BOOT), so the "
+              "lasers were blanked."), f"journal: {g.notes[-1]}")
+    # A laser test switched on while lit: the same.
+    g = _prog_laser_rig()
+    _prog_lit(g)
+    g.tests.on.add("l1")
+    g.tnow[0] += 0.25
+    g.sess._last_frame = 101
+    check(g.ph.poll() == "lasers_dark" and not g.c.lasers_lit(),
+          "a laser test came on and the lasers stayed lit")
     print("  ok")
 
 
@@ -84367,6 +85038,26 @@ def test_laser_arm_through_web_serve():
         la = httpd.morning.laser_arm
         check(httpd.fire_ice.laser_arm is la and svc.dry_run,
               "ltc serve built the arm and handed it on; a dry run")
+        # Lasers in Programming (Jeff, 2026-11-06): ltc serve hands the
+        # laser gate the engine's Programming check, the playhead's watch
+        # the same, and the arm the engine's lighting blockers.
+        R = httpd.remote
+        check(httpd.fire_ice.programming_lasers ==
+              R.programming_lasers_refusal and
+              R.playhead.lasers_refusal == R.programming_lasers_refusal and
+              httpd.morning._laser_enable_blockers ==
+              R.laser_enable_blockers and
+              la._enable_blockers == httpd.morning._arm_enable_blockers,
+              "ltc serve did not wire the lasers in Programming")
+        m_ = httpd.morning
+        real_b, real_e = m_._laser_blockers, m_._laser_enable_blockers
+        m_._laser_blockers = lambda: "held for a new arm"
+        m_._laser_enable_blockers = lambda: ""
+        check(la.refusal(["laser-1"]) == "held for a new arm" and
+              la._blocked(enable=True) == "",
+              f"the Morning page mixed up the arm's refusal and its "
+              f"lighting blockers: {la.refusal(['laser-1'])!r}")
+        m_._laser_blockers, m_._laser_enable_blockers = real_b, real_e
         # Open BEYOND looks for BEYOND where the beyond block says it is
         # (review of PR #125, P2-9): ltc serve hands the host on.
         check(httpd.remote.beyond_host == "127.0.0.2",
@@ -90427,10 +91118,10 @@ class _PfConductor:
     def music_started(self):
         pass
 
-    def show_starting(self, who="", screen=""):
+    def show_starting(self, who="", screen="", **kw):
         self.link.release()
 
-    def hold(self, who="", screen=""):
+    def hold(self, who="", screen="", **kw):
         self.link.zero()
         c = self.clk
         c.frozen = c.pos()
@@ -115767,6 +116458,11 @@ if __name__ == "__main__":
         test_remote_scrubbing_only_in_a_programming_session,
         test_audio_master_play_from_a_point_and_move,
         test_programming_playhead_drives_the_show_path,
+        test_programming_lasers_gate_in_fire_ice_attach,
+        test_programming_lasers_engine_refusal_and_blockers,
+        test_programming_lasers_follow_the_playhead,
+        test_programming_pause_keeps_lasers_only_from_a_fresh_hold,
+        test_programming_lasers_dark_when_the_night_moves_on,
         test_remote_transport_on_the_show_audio,
         test_session_playhead_loop_stays_in_its_cue,
         test_player_free_run_pause_and_loop,

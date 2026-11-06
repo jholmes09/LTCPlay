@@ -15,13 +15,21 @@ everything follows it exactly as it follows a show.
               audio (now from a sample part way in, Session.clock_play_from),
               conductor.music_started(), then conductor.show_starting(),
               the call the scheduler makes once a show is confirmed: video
-              and pixels up, the lasers through the laser gate, the flame
-              cues released.
+              and pixels up, then, once the timecode is seen moving
+              (confirm_moving), the lasers through the laser gate, and the
+              flame cues released.
   Back, Ahead the clock's seek (Session.clock_seek): the audio starts on the
               new sample, the timecode on the new frame, the pixels follow.
               Paused, the frozen frame moves and Continue plays from it.
-  Pause       conductor.hold(): the show's own Hold, unchanged.
-  Continue    conductor.resume(): the show's own Resume, unchanged.
+              Nothing is sent to the lasers: BEYOND follows the timecode.
+  Pause       conductor.hold(disarm_lasers=False) from the Programming
+              screen (Jeff, 2026-11-06): the show's Hold, except that the
+              lasers are blanked and BEYOND's laser output switched off
+              while every laser stays armed. Any other Hold (the Hold
+              button on any surface, an announcement) disarms as always.
+  Continue    conductor.resume(): the show's own Resume, unchanged; armed
+              lasers come back through the laser gate once the timecode
+              moves.
   A/B loop    the clock's loop: past B it seeks to A, like Back.
   Follow      conductor.intermission() (flame cues zero, lasers blanked),
               then the clock's stop.
@@ -45,9 +53,23 @@ Used only when the running show's clock can start part way and move
 (Session.playhead_clock: this machine is the clock, AudioMaster). Anything
 else (GPL, a show that follows timecode) keeps the free run, as before.
 
-The lasers stay dark in Programming: the laser gate lights them only while
-a scheduled show is live (SHOW or PAUSED), and Programming is locked then.
-BEYOND's own timeline still follows the timecode.
+The lasers follow the playhead too (Jeff, 2026-11-06), through the same
+laser gate a show uses: fire_ice.attach asks remote.programming_lasers_
+refusal when the show's own state gate says no, which allows them only
+while this playback is the one Play from started, the schedule is IDLE,
+OFF or BOOT (never STANDBY: no lasers during intermission) and no laser
+test is on; then the laser arm decides, as in a show: every laser armed
+by an operator on the Morning page, none locked out. Nothing here arms.
+
+Two guards in the watch (poll), for lasers the record says are lit:
+  - the lasers may no longer be lit here (the schedule left IDLE, OFF or
+    BOOT, a show took over, a laser test came on), whether or not
+    anything told the conductor: blanked at once;
+  - the timecode has not moved for FROZEN_S (a move whose audio has not
+    started, a stalled clock): blanked at once, because a frozen laser
+    frame is a static beam. This is a frozen-frame guard only: a move
+    whose timecode carries on is never blanked. They stay dark until
+    Pause and Continue, or Play from.
 
 Review of #142, the ways playback ends that are not this module's own:
 
@@ -72,6 +94,8 @@ import time
 
 WATCHDOG_S = 60.0     # no operator page for this long: playback stops
 POLL_S = 0.25
+FROZEN_S = 0.5        # lasers lit and the timecode not moving this long:
+                      # the lasers are blanked (a static beam otherwise)
 
 
 class PlayheadError(ValueError):
@@ -104,6 +128,12 @@ class ShowAudioPlayhead:
         self._ours = None
         self._seen = clock()
         self._thread = None
+        # remote.Remote.programming_lasers_refusal, set by the engine: lit
+        # lasers it says no to are blanked by the watch. None: not asked.
+        self.lasers_refusal = None
+        # The last timecode frame the watch saw, and when it changed.
+        self._tc_frame = None
+        self._tc_at = clock()
 
     def _note(self, text, outcome):
         if self._journal is not None:
@@ -145,6 +175,14 @@ class ShowAudioPlayhead:
         clk = self.clock()
         with self._lock:
             self._ours = (s, getattr(clk, "_cue", None))
+        self._tc_reset()
+
+    def _tc_reset(self):
+        """Every move (Play from, Back, Ahead, the loop, Continue) starts
+        the frozen-timecode guard's count again."""
+        with self._lock:
+            self._tc_frame = object()
+            self._tc_at = self._clock()
 
     # -- what is there ------------------------------------------------------
     def _session(self):
@@ -297,7 +335,7 @@ class ShowAudioPlayhead:
             told = getattr(cond, "music_started", None)
             if told is not None:
                 told()
-            r = cond.show_starting(who, screen)
+            r = cond.show_starting(who, screen, confirm_moving=True)
             if getattr(r, "ok", True) is False:
                 # An Abort landed while the cue was starting (the show
                 # runner's rule): the music stops here too.
@@ -326,18 +364,29 @@ class ShowAudioPlayhead:
                 at = s.clock_seek(max(0.0, here + float(seconds)))
             finally:
                 self._landing()
+                self._tc_reset()
             if was:
                 self._adopt(s)      # a move into another cue is ours too
             return at
 
-    def pause(self, who="", screen=""):
-        return self.pause_or_why(who, screen)[0]
+    def pause(self, who="", screen="", keep_lasers_if=None):
+        return self.pause_or_why(who, screen, keep_lasers_if)[0]
 
-    def pause_or_why(self, who="", screen=""):
+    def pause_or_why(self, who="", screen="", keep_lasers_if=None):
         """The Pause, and why nothing was paused: the conductor's own
         sentence when a Stop left the rig dark and its Hold only blanked
         the lasers again (round 3 review of #199), else "". The operator
-        then reads that, never "paused ... Continue carries on"."""
+        then reads that, never "paused ... Continue carries on".
+        `keep_lasers_if` (the Programming screen's Pause only, Jeff
+        2026-11-06): () -> True while this is a Programming session. Then,
+        and only while the playback is the one Play from started (active,
+        asked here at the press, with no other move in between), the
+        conductor's Hold keeps the lasers armed (disarm_lasers False).
+        Anything else, an error included, is the Hold that disarms."""
+        with self._op:
+            return self._pause_or_why(who, screen, keep_lasers_if)
+
+    def _pause_or_why(self, who, screen, keep_lasers_if):
         s = self._session()
         if s.clock_here() is None:
             raise PlayheadError("Nothing is playing to pause. Play from a "
@@ -345,7 +394,16 @@ class ShowAudioPlayhead:
         cond = self._conductor()
         why = ""
         if cond is not None:
-            r = cond.hold(who, screen)
+            keep = False
+            if keep_lasers_if is not None:
+                try:
+                    keep = keep_lasers_if() is True and self.active()
+                except Exception:                   # noqa: BLE001
+                    keep = False
+            if keep:
+                r = cond.hold(who, screen, disarm_lasers=False)
+            else:
+                r = cond.hold(who, screen)
             self._refused(r, "Pause")
             if self._stopped_dark(cond):
                 why = getattr(r, "sentence", "") or ("The show was stopped, "
@@ -375,6 +433,7 @@ class ShowAudioPlayhead:
                 s.clock_resume()
         finally:
             self._landing()
+            self._tc_reset()
         return s.clock_here()
 
     def loop(self, a, b, who="", screen=""):
@@ -391,6 +450,7 @@ class ShowAudioPlayhead:
             return s.clock_set_loop(a, b)
         finally:
             self._landing()
+            self._tc_reset()
 
     def follow(self, who="", screen="", only=None):
         """Stop the playhead: the conductor's out-of-the-show look first
@@ -476,6 +536,7 @@ class ShowAudioPlayhead:
                        "lasers dark), so the next start releases the flame "
                        "cues again.", "ended")
             return "ended"
+        guarded = self._laser_guard(clk)
         if self._clock() - self._seen > WATCHDOG_S:
             if self.follow("the Programming watchdog", "", only=ours) \
                     is False:
@@ -484,7 +545,51 @@ class ShowAudioPlayhead:
                        f"page has been open for {WATCHDOG_S:g} s. Press "
                        f"Play from to carry on.", "watchdog")
             return "watchdog"
-        return None
+        return guarded
+
+    def _laser_guard(self, clk):
+        """The watch's two laser guards (module docstring), only for lasers
+        the conductor's record says are lit: "lasers_dark" when it blanked
+        them (conductor.lasers_dark_now, the same blank a Stop sends at the
+        press), else None. Never raises."""
+        now = self._clock()
+        frame = getattr(clk, "_last_frame", None)
+        with self._lock:
+            if frame != self._tc_frame:
+                self._tc_frame = frame
+                self._tc_at = now
+            still = now - self._tc_at
+        cond = self._conductor()
+        try:
+            lit = cond.lasers_lit() is True
+        except Exception:                           # noqa: BLE001
+            lit = False
+        if not lit:
+            return None
+        why = None
+        fn = self.lasers_refusal
+        if fn is not None:
+            try:
+                no = fn()
+            except Exception as e:                  # noqa: BLE001
+                no = f"Programming could not be asked ({type(e).__name__})"
+            if no is not None:
+                why = f"the lasers may no longer be lit here: {no}"
+        if why is None and still >= FROZEN_S:
+            why = (f"the timecode has not moved for {still:.1f} s, and a "
+                   f"frozen laser frame is a static beam")
+        if why is None:
+            return None
+        try:
+            r = cond.lasers_dark_now(f"Programming: {why}")
+            ok = getattr(r, "ok", False) is True
+        except Exception:                           # noqa: BLE001
+            ok = False
+        self._note(f"Programming playback: {why}, so the lasers were "
+                   f"blanked{'' if ok else ' (the blank did NOT get out)'}"
+                   f". Pause, then Continue, or Play from again, to bring "
+                   f"them back.", "lasers_dark")
+        return "lasers_dark"
 
     def settle_conductor(self):
         """Let the conductor's latest request land (a schedule Hold's step

@@ -2386,7 +2386,7 @@ audio from that point, then the rig comes up for the show). Back 10 s,
 Back 5 s, Ahead 5 s and Ahead 10 s move the audio, the timecode and the
 pixels at once; while paused they move the paused point, and Continue
 plays from there. Pause is the show's own Hold (flame cues to zero,
-lasers blanked and disarmed, music and timecode frozen) and Continue its
+lasers blanked, music and timecode frozen) and Continue its
 own Resume. The A/B loop jumps the audio back to mark A each time it
 passes mark B; both marks have to be in the same cue. Stop the show
 audio (the button that says Follow timecode again on other shows) takes
@@ -2412,9 +2412,35 @@ Nothing on the screen arms anything. Flame cues still go only to groups
 an operator has armed, through flamesafe, and nothing fires for half a
 second after a jump, a loop, Play from or Continue; a cue you jump over is not
 played, and a flame already on where you land stays off until it ends.
-The lasers stay dark in Programming: the laser gate lights them only
-while a scheduled show is live. BEYOND's own timeline still follows the
-timecode, so its position moves with the playhead.
+The lasers follow the playhead too, by the same rules as a show. They
+light only when every laser is armed on the Morning and Shutdown page and
+none is locked out, and only before or after the night (the schedule in
+IDLE, OFF or BOOT). They stay dark during intermission (STANDBY), on Hold,
+while the night closes, and while a laser calibration test is on. Nothing
+on the Programming screen arms them.
+
+- Play from: the lasers come up once the timecode is moving, never on a
+  frozen frame. If it is not moving within 2 seconds they stay dark.
+- Back, Ahead and the A/B loop: the lasers are not blanked for the jump.
+  BEYOND follows the timecode to the new place.
+- If the timecode stops moving for half a second while the lasers are lit
+  (a jump whose audio has not started, a stalled clock), the lasers are
+  blanked at once, because a frozen laser frame is a static beam. This is
+  only a safety guard for a frozen frame. Pause, then Continue, or Play
+  from again, brings them back.
+- Pause on the Programming screen blanks the lasers and switches BEYOND's
+  laser output off, but every laser stays armed. (The blank is the one a
+  Hold sends: brightness 0, or with "beyond_blank" set to "timecode"
+  BEYOND's timecode moved to the black zone, brightness not touched.) Continue lights them
+  again once the timecode moves, if they are all still armed. While
+  paused, a laser can be disarmed or locked out (it then stays dark), but
+  not armed: arm it after Continue, as after a Hold in a show.
+- Hold (the Hold button on any screen or the Stream Deck), an
+  announcement, Stop and Disarm all lasers still disarm every laser and
+  leave them dark, as in a show.
+- If the schedule moves on while the lasers are lit (into intermission,
+  the night closing), they are blanked, even if nothing else told the
+  show conductor.
 
 There is no switch for flames in Programming (the old "Fire flames while
 scrubbing" was removed): while you play here, the show's own flame cues go
