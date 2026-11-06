@@ -846,6 +846,32 @@ restarted. Within about 5 seconds of the edit, the rack screen shows a note
   with an older copy of `flamesafe.json`, its log says which programs were
   left behind and when each started.
 
+### "Flame settings file broken": flamesafe.json is not valid JSON
+
+A typing slip in `flamesafe.json` (a missing comma, a stray bracket) used
+to stop flamesafe and the Stream Deck program over and over, and the rack
+screen never opened. Now:
+
+- LTC Player still starts and the rack screen opens. Its alert slot shows
+  "Flame settings file broken." in red; tap it for the whole sentence: the
+  file, the line and column where it is broken, and the last good copy.
+- Flames are off. flamesafe and the Stream Deck program are not started
+  on that file, and the engine runs without its flame link: no flame group
+  can be armed from any screen (with flamesafe stopped, the flame
+  controller gets nothing to fire with). Stop and Hold still work for the
+  show. The slot also says flamesafe is not connected and there is no
+  flame link here: both are expected until the file is fixed.
+- The start message says the flamesafe config is invalid, and
+  `flamesafe.log` (in LTC Player's logs folder) says the same sentence.
+- The last good copy is `flamesafe.last-good.json`, beside
+  `flamesafe.json`. LTC Player writes it only after flamesafe has run on
+  a file for 20 seconds, so a file flamesafe refused never becomes it.
+- To fix it: correct the line the screen names, or copy
+  `flamesafe.last-good.json` over `flamesafe.json` by hand (nothing copies
+  it back by itself). flamesafe and the Stream Deck program start on their
+  own once the file is valid; then stop LTC Player and start it again, so
+  the engine reads the file too.
+
 ## The hazers
 
 Jeff, 2026-10-29. The three haze machines share the flame universe, but

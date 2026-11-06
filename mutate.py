@@ -23847,7 +23847,7 @@ def build():
  ('flamesafe bad json: flamesafe.log never says why it is not started',
   'packaging/windows/supervisor.py',
   '        program_log_line("flamesafe", why_not)\n',
-  ''),
+  '        pass\n'),
 
  ('flamesafe bad json: the start message does not say flames are off',
   'packaging/windows/supervisor.py',
