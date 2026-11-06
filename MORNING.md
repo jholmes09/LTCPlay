@@ -231,8 +231,7 @@ The fuel pump is not on this page and is never purged. It is one DMX
 channel on the flame universe (Jeff: channel 100, on at 255), a
 passthrough "switch" in `flamesafe.json`, not a flame group: it has no
 safety slot and is never armed. Andy turns it on by hand, from the
-engine's fuel pump route (its button on Interface 2.0's SHOW tab comes in
-its own update), for a run time he sets first (5:00 unless he sets
+engine's fuel pump route (the Fuel pump row on the SHOW tab), for a run time he sets first (5:00 unless he sets
 another, ten minutes at most), and it turns off by itself at the end of
 it. Stop and the sign-in that started it signing out turn it off;
 Hold does not. OPERATOR.md, "The fireball's
@@ -362,8 +361,8 @@ fires a slot only for a group it reports ARMED.
   Stream Deck the group is wanted; once it has ended, the closed page's
   selection is cleared and the deck lets go of the group as before.
 - **The countdown** is the engine's (`left_s` in the status and on
-  deck-input): the rack screen's Startup page, a banner on every 1.0
-  screen, 2.0's pinned line and pill, and the Stream Deck's key 0
+  deck-input): the Day tab's Purge step, the screen's pinned line and
+  pill, and the Stream Deck's key 0
   (PURGING and the seconds).
 
 ### Lockout: one writer, enforced where the wire is written
@@ -600,8 +599,8 @@ configured list, required), the device and address the engine saw, seq,
 `prev` (the previous record's hash) and `hash` (SHA-256 over `prev` plus
 the record's canonical JSON). Nothing is edited in place; a correction is
 a new record. `ltc checklist-verify` and the page's Verify both walk the
-chain (Verify, Download today's PDF and Export all are on the old
-screen, 1.0, for now: "Old screen" at the top of 2.0, the default). A completed routine writes a per-day record (`records/<date>/
+chain (Verify records, Download today's PDF and Export all are on the
+Day tab's checklist steps). A completed routine writes a per-day record (`records/<date>/
 checklist_<id>_<date>.json` and `.pdf`, pure Python PDF, page numbers,
 the verification result), kept out of log pruning (`journal.prune` only
 touches `nights/`) and out of the diagnostics bundle except as a count.
@@ -758,7 +757,7 @@ still hold.
   has an entry that makes `fireKeyLapsed` never end a press (T3). The event wiring (one
   keydown starts the heartbeats; keyup, blur, visibilitychange, pagehide and
   leaving the page stop them; `purge-clear` goes when the page is left) is
-  checked by STRING PRESENCE in `remote.html` only: the selftest has no
+  checked by STRING PRESENCE in `remote2.html` only: the selftest has no
   browser, so that wiring is proven present, not proven to behave. The
   engine and the flame link do not rely on it: both let go 0.25 s after the
   last heartbeat on their own clocks, and flamesafe's `fire_hold_ms` stands

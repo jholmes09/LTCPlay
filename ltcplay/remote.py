@@ -293,14 +293,6 @@ REMOVED_ROUTES = {
 # Programming, Announcement output; Settings permission (users.py).
 LOCAL_ONLY = frozenset(("network", "screen-arming", "announce-output",
                         "announce-test-tone", "preroll-check"))
-# Interface 2.0 (Jeff, 2026-10-28): which page /remote serves a screen that
-# has not chosen one with its own ltcplay_ui cookie (web.py). 1 is the page
-# every screen had (remote.html), 2 is remote2.html. Read and set on the
-# show machine itself only (never from the network), the role matrix's
-# Settings to set it (users.py). A preference, never a safety setting: a
-# value that is not 1 or 2 reads as 1 and never breaks the settings file.
-UI_DEFAULT_ROUTE = "ui-default"
-UI_VERSIONS = (1, 2)
 # Operator announcements (announce.py; Jeff, 2026-10-26): the rack screen's
 # three buttons and its Stop, and the Stream Deck's page 2 keys, which post
 # here from this machine. One press plays (no double tap). From the show
@@ -643,7 +635,7 @@ def load_settings(folder=None):
     # always 5 minutes.
     out = {"show_network_address": None, "flamesafe_config": None,
            "screen_arming": False, "purge_arming": True, "booth_alert": None,
-           "alert_pixels": None, "ui_default": 1,
+           "alert_pixels": None,
            "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
            "purge_timed_s": TIMED_DEFAULT_S,
            "pump_max_s": PUMP_MAX_DEFAULT_S,
@@ -666,7 +658,7 @@ def settings_from_doc(doc, path, out=None):
         out = {"show_network_address": None, "flamesafe_config": None,
                "screen_arming": False, "purge_arming": True,
                "booth_alert": None, "alert_pixels": None,
-               "ui_default": 1, "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
+               "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
                "purge_timed_s": TIMED_DEFAULT_S,
                "pump_max_s": PUMP_MAX_DEFAULT_S,
                "path": path}
@@ -723,9 +715,6 @@ def settings_from_doc(doc, path, out=None):
                                           f"{path} booth_alert")
     if doc.get("alert_pixels") is not None:
         out["alert_pixels"] = check_alert_pixels(doc["alert_pixels"], path)
-    v = doc.get("ui_default")
-    out["ui_default"] = v if (isinstance(v, int) and not isinstance(v, bool)
-                              and v in UI_VERSIONS) else 1
     return out
 
 
@@ -1954,10 +1943,6 @@ class Remote:
                          else self.schedule_file_view())
         if name == "whoami":
             return 200, self.whoami(ctx)
-        if name == UI_DEFAULT_ROUTE:
-            if not ctx.local:
-                return 403, {"error": "Only on the show machine itself."}
-            return 200, {"default": self.ui_default()}
         if name in USER_GET_ROUTES:
             return self.users_get(ctx)
         if name == "deck-input":
@@ -2023,12 +2008,6 @@ class Remote:
                                       "and this window are set on the show "
                                       "machine itself, not from here."}, {}
             return (*self.setup_post(name, body),) + ({},)
-        if name == UI_DEFAULT_ROUTE:
-            if not ctx.local:
-                return 403, {"error": "The default interface is set on the "
-                                      "show machine itself, not from here. "
-                                      "Nothing was changed."}, {}
-            return (*self.set_ui_default(body, ctx),) + ({},)
         if name in LOCAL_ONLY and not ctx.local:
             what = ("Arming from a screen is switched on and off"
                     if name == "screen-arming" else
@@ -2636,46 +2615,6 @@ class Remote:
             note = ("Saved. Quit the Web ltcplay window and start it again "
                     "on the show network to use it.")
         return 200, dict(view, ok=True, note=note)
-
-    def ui_default(self):
-        """1 or 2: the page /remote serves a screen with no ltcplay_ui
-        cookie of its own (web.py). 1 whenever the settings file cannot be
-        read: the page every screen had."""
-        try:
-            v = load_settings(self.folder).get("ui_default")
-        except Exception:                        # noqa: BLE001
-            return 1
-        return v if (isinstance(v, int) and not isinstance(v, bool)
-                     and v in UI_VERSIONS) else 1
-
-    def set_ui_default(self, body, ctx):
-        """POST ui-default {"default": 1|2}, on the show machine only (the
-        role matrix's Settings, users.py). Only the JSON numbers 1 and 2;
-        anything else changes nothing. Changes which page a screen that has
-        not chosen gets; nothing on the rig."""
-        v = body.get("default")
-        if not isinstance(v, int) or isinstance(v, bool) or \
-                v not in UI_VERSIONS:
-            return 400, {"error": "default has to be 1 or 2. Nothing was "
-                                  "changed."}
-        # Who: the signed-in person or "unsigned", never a name in the body.
-        who = ctx.user or "unsigned"
-        screen = ctx.screen
-        try:
-            save_settings(self.folder, ui_default=v)
-        except ValueError as e:
-            return 409, {"error": f"{e} The default interface was not "
-                                  f"changed."}
-        except OSError as e:
-            return 500, {"error": f"ltcplay_remote.json could not be "
-                                  f"written ({e}). The default interface "
-                                  f"was not changed."}
-        self._journal(who, screen, "interface default", str(v),
-                      f"{who} set the default interface to {v}.0 on the "
-                      f"{screen}.")
-        return 200, {"ok": True, "default": v,
-                     "text": f"Screens that have not chosen now get {v}.0. "
-                             f"Each screen can still switch for itself."}
 
     def set_screen_arming(self, body, ctx):
         """POST screen-arming {"on": true|false}, on the show machine only

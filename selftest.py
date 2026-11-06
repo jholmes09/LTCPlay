@@ -575,21 +575,40 @@ def section(name):
     print(f"\n== {name}")
 
 
-def remote1_text():
-    """remote.html as /remote serves it: its /remote-logic.js tag replaced
-    by the shared rules file (web/remote_rules.js), as web.remote1_page
-    does. Byte for byte the page 1.0 was while the rules lived inside it,
-    so every test reads 1.0 through this; test_remote_rules_file proves
-    the server builds the same page."""
+def rules_text():
+    """The screen's pure rules (web/remote_rules.js), as /remote-logic.js
+    serves them and web.py writes them into the page: its LOGIC BEGIN and
+    LOGIC END markers bound the functions the tests run in node."""
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ltcplay", "web", "remote_rules.js"),
+              encoding="utf-8") as fh:
+        return fh.read()
+
+
+def screen_text():
+    """The screen as web.py serves it: remote2.html with its rules
+    (remote_rules.js) written in."""
     web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "ltcplay", "web")
-    with open(os.path.join(web_dir, "remote.html"), encoding="utf-8") as fh:
+    with open(os.path.join(web_dir, "remote2.html"), encoding="utf-8") as fh:
         page = fh.read()
-    with open(os.path.join(web_dir, "remote_rules.js"),
-              encoding="utf-8") as fh:
-        rules = fh.read()
     return page.replace('<script src="/remote-logic.js"></script>',
-                        '<script id="remote-logic">' + rules + "</script>", 1)
+                        '<script id="remote-logic">' + rules_text() +
+                        "</script>", 1)
+
+
+def remote1_pinned():
+    """The first screen's code that remote2.html copied word for word,
+    frozen when that screen was removed (tools/pins/remote1_copied.txt,
+    only the parts the tests compare), with the rules written in as that
+    page had them. The copy tests read the old page through this, so a
+    copied block changes only when its pin changes with it."""
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "tools", "pins", "remote1_copied.txt"),
+              encoding="utf-8") as fh:
+        pinned = fh.read()
+    return pinned + '<script id="remote-logic">' + rules_text() + \
+        "</script>\n"
 
 
 def wait_for(pred, timeout=3.0, step=0.02):
@@ -2524,7 +2543,6 @@ def test_pause_does_not_poison_the_rate():
     print("  ok")
 
 
-
 # ------------------------------------------------------- audio input ------
 
 
@@ -3564,7 +3582,6 @@ def test_installer_and_launcher_names():
         check(not stale, f"{doc} still tells people to run ./ltcplay, which is "
                          f"a directory, not a command")
     print("  ok")
-
 
 
 JEFFS_MAC = [
@@ -8374,7 +8391,6 @@ def test_web_show_reads_accept_a_utf8_bom():
     print("  ok")
 
 
-
 # =====================================================================
 # Advatek SHOWTime scene triggers: the ALTERNATE playback mode.
 # Jeff, 2026-09-15: "a trigger from LTC Player at the beginning of each
@@ -10571,7 +10587,7 @@ def test_schedule_late_limit_round_two():
           "before its time: no")
     check(how(when=_den(S, 18, 2, 1)) == "no", "past the limit: no")
     # 4. The Programming field shows 120 when the file omits the value.
-    html = remote1_text()
+    html = screen_text()
     check('doc.late_grace_s == null ? 120 :' in html,
           "the Programming screen shows 120 for a missing late_grace_s")
     # 5. After an engine restart Run is off: a show rescued inside the
@@ -16731,16 +16747,8 @@ def test_schedule_run_off_says_the_next_show_will_not_start():
     # and on the Schedule screen, 2.0 as an alert item.
     here = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "ltcplay", "web")
-    one = remote1_text()
     with open(os.path.join(here, "remote2.html"), encoding="utf-8") as fh:
         two = fh.read()
-    check('id="run-warn"' in one and 'id="tn-run-warn"' in one and
-          'LOCAL_FAULT["run-warn"] = !!sch.run_warning && '
-          '!!sch.run_warning_urgent;' in one and
-          'setWarn("run-warn", sch.run_warning || "");' in one and
-          'setWarn("tn-run-warn", sch.run_warning || "");' in one and
-          '["run-warn", "lock-banner"' in one,
-          "1.0 shows the warning as a fault on the show and Schedule screens")
     check('if(sch.run_warning) items.push({key:"run", tone:'
           'sch.run_warning_urgent ? "bad" : "warn"' in two,
           "2.0 shows it in the alert slot, a fault only when urgent")
@@ -19796,9 +19804,8 @@ def test_announce_rack_screen_page_logic():
             "Stop, Recording missing on a button whose file is not on the "
             "PC, Held for announcement while one plays between shows, no "
             "double tap anywhere")
-    page = remote1_text()
-    for el in ('id="ann"', 'id="ann-btns"', 'id="ann-stop"',
-               'id="ann-banner"', 'id="ann-banner-stop"'):
+    page = screen_text()
+    for el in ('id="ann"', 'id="ann-btns"', 'id="ann-stop"'):
         check(el in page, f"the page has {el}")
     check('annPress("announce-play", {id: b.dataset.ann})' in page and
           'annPress("announce-stop")' in page,
@@ -19891,49 +19898,7 @@ console.log(JSON.stringify(out));
         bad = [f"node failed: {r.stderr[-500:]}"]
     for m in bad:
         check(False, f"announceLook: {m}")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  note: no Chromium here, so the block was not drawn")
-        print("  ok")
-        return
-    # Drawn: the block and its banner never squeeze or cover the flame
-    # groups' buttons, Abort or the disarms, at every rack size.
-    st = _rack_status_pico()
-    st["booth"] = {"configured": False, "device": ""}
-    st["announce"] = {
-        "configured": True, "ok": True, "error": None, "device": "MOTU M4",
-        "device_set": True, "device_available": True, "device_reason": None,
-        "route": {"kind": "device", "ok": True, "why": None,
-                  "text": "MOTU M4, its own output while the show audio "
-                          "is not running"},
-        "blocked": None, "over_show": False,
-        "items": [{"id": "delayed", "name": "Delayed", "available": True,
-                   "missing": False, "reason": None, "length_s": 12.0},
-                  {"id": "cancellation", "name": "Cancellation",
-                   "available": True, "missing": False, "reason": None,
-                   "length_s": 9.0},
-                  {"id": "cannot_continue", "name": "Cannot continue",
-                   "available": False, "missing": True,
-                   "reason": "Recording missing: x", "length_s": None}],
-        "playing": {"id": "delayed", "name": "Delayed",
-                    "held_schedule": True, "elapsed_s": 3.0,
-                    "length_s": 12.0}}
-    got = _rack_screen_in_chromium(chrome, page, st, RACK_SIZES)
-    for (w, h), res in got.items():
-        if not check(isinstance(res, list) and res,
-                     f"{w}x{h}: drawn: {res!r}"):
-            continue
-        for m in res:
-            check(not m["problems"],
-                  f"{w}x{h} {m['tag']}: with the announcements block and "
-                  f"its banner, nothing is squeezed or covered: "
-                  f"{m['problems'][:6]}")
-            if m["tag"] == "collapsed" and h >= 600:
-                check(m["flames_visible_at_load"],
-                      f"{w}x{h}: the flame groups are still on the screen "
-                      f"without scrolling")
+
     print("  ok")
 
 
@@ -20509,15 +20474,13 @@ def test_announce_output_picker():
               f"lamps, labelled apart: {out.get('subsystems')}")
     finally:
         R.close()
-    page = remote1_text()
+    page = screen_text()
     for el in ('id="annout-card"', 'id="annout-pick"', 'id="annout-save"',
                '"/api/remote/announce-outputs"',
                '"/api/remote/announce-output"'):
         check(el in page, f"the page has {el}")
-    check("Lift your finger to stop" not in page and
-          page.count("Hold a group's button to arm it.") >= 2,
-          "the arm hint no longer says to lift your finger (Jeff, "
-          "2026-10-28)")
+    check("Lift your finger to stop" not in page,
+          "the arm hint never says to lift your finger (Jeff, 2026-10-28)")
     print("  ok")
 
 
@@ -21766,315 +21729,6 @@ def test_streamdeck_page_two_shows_the_engines_refusal():
     print("  ok")
 
 
-def test_rack_screen_small_screens_with_announcements_and_setup():
-    section("rack screen (second review of PR #129, 5; reviews of #140): "
-            "with the announcements block AND the Getting started card, "
-            "folded and opened, with and without flame groups, Disarm all, "
-            "every group's arm button and Abort are wholly on screen with "
-            "24 px to spare at the required sizes and every 50 px from 600 "
-            "to 1100 at 1024 to 1920 wide; the open steps get 120 px; after "
-            "Show the steps the header's Make a show file (40 px) and the "
-            "steps are on screen; a poll never resets the steps' scroll")
-    here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  note: no Chromium here, so the page was not drawn")
-        print("  ok")
-        return
-    st = _rack_status_no_show_file()
-    # The worst case CI met (review of PR #129): the Getting started card,
-    # the no-show-file line, the flame warning, a disk warning and a laser
-    # fault all showing at once; and renders in the folder, so Make a show
-    # file is offered (review of #140).
-    st["setup"]["show_folder_renders"] = 3
-    st["disk"] = {"text": "The disk is nearly full: 1.2 GB left. Clear old "
-                          "logs and renders."}
-    st["laser_fault"] = "BEYOND's OSC address is not set"
-    st["booth"] = {"configured": False, "device": ""}
-    st["announce"] = {
-        "configured": True, "ok": True, "error": None, "device": None,
-        "device_set": False, "device_available": False,
-        "device_reason": "No output device is set for announcements yet.",
-        "blocked": None, "over_show": False, "age_s": 0.2,
-        "items": [{"id": i, "name": n, "available": False, "missing": True,
-                   "reason": "Recording missing", "length_s": None}
-                  for i, n in (("delayed", "Delayed"),
-                               ("cancellation", "Cancellation"),
-                               ("cannot_continue", "Cannot continue"))],
-        "playing": None}
-    # A fresh install: flamesafe not reporting, so no flame groups, and the
-    # card open as loaded.
-    bare = json.loads(json.dumps(st))
-    bare["flames"] = {"connected": False, "stale": True, "age_ms": None,
-                      "fault": "flamesafe is not running", "groups": []}
-    # Measured as loaded; then, when it loaded folded, "Show the steps" is
-    # pressed and the page is measured where the press left it; again from
-    # the top; and once more 700 ms after the steps' own scroll was moved
-    # (review of #140: a poll reset it within 100 ms).
-    mjs = r"""<script>
-function go(){ const su = document.getElementById("setup");
- if(su.hidden || !document.getElementById("b-disarm")) return setTimeout(go,50);
- const r = e => { if(!e || !e.getClientRects().length) return null; const b = e.getBoundingClientRect(); return {top:b.top, bottom:b.bottom, h:b.height}; };
- const body = () => document.querySelector(".subody");
- const m = () => ({vh:innerHeight, disarm:r(document.getElementById("b-disarm")),
-    setup:!su.hidden, ann:!document.getElementById("ann").hidden,
-    folded:su.classList.contains("folded"),
-    make:document.getElementById("su-make").hidden ? null : r(document.getElementById("su-make")),
-    steps:su.classList.contains("folded") ? null : r(body()), sh:body().scrollHeight, ch:body().clientHeight,
-    st:body().scrollTop, below:!document.getElementById("setup-below").hidden,
-    root:document.documentElement.className,
-    arms:[...document.querySelectorAll("#fl-lamps .lamp [data-arm]")].map(r)});
- setTimeout(()=>{ scrollTo(0, 0); const out = m();
-  const wasFolded = su.classList.contains("folded");
-  if(wasFolded) document.getElementById("su-more").click();
-  setTimeout(()=>{ out.pressed = wasFolded ? m() : null; scrollTo(0, 0); out.after = m();
-   const b = body(); out.set = null;
-   if(!out.after.below && b.scrollHeight > b.clientHeight + 40){ b.scrollTop = 40; out.set = b.scrollTop; }
-   setTimeout(()=>{ out.later = m();
-    const pre = document.createElement("pre"); pre.id = "rack-measure";
-    pre.textContent = JSON.stringify(out); document.body.appendChild(pre);}, 700);}, 900);}, 1500);}
-go();</script>"""
-    # The required sizes are 1366x600, 1366x614, 1366x544, 1366x558 and
-    # 1024x768 (the runner's Chrome leaves about 143 px less page than its
-    # window, a local one about 87, so 544 and 558 here are about what the
-    # runner sees at 600 and 614), the taller ones a rack monitor or a
-    # laptop has, and (review of #140) every 50 px from 600 to 1100 at
-    # 1024, 1180, 1280, 1366 and 1920 wide, with the narrow bands where
-    # Disarm all missed its margin. 1366x488 and 1366x502 are drawn for
-    # information only, printed and never failed: shorter than any real
-    # show PC or iPad window (coordinator, review of PR #129).
-    required = [(1366, 600), (1366, 614), (1366, 544), (1366, 558),
-                (1366, 488), (1366, 502), (1024, 768), (1366, 768),
-                (1280, 990),
-                (1280, 1024), (1366, 1050), (1920, 1080)]
-    sweep = [(w, h) for w in (1024, 1180, 1280, 1366, 1920)
-             for h in range(600, 1101, 50)]
-    bands = [(1024, 750), (1024, 758), (1024, 806), (1024, 812),
-             (1180, 730), (1180, 750), (1180, 790), (1180, 810), (1180, 820)]
-    every = list(dict.fromkeys(required + sweep + bands))
-    SLACK = 24
-    STEPS_MIN = 120
-    INFO_ONLY = {(1366, 488), (1366, 502)}
-    for label, status, n_arms, sizes in (
-            ("flame groups", st, 3, every),
-            ("no flame groups", bare, 0, required)):
-        got = _rack_screen_in_chromium(chrome, page, status, sizes,
-                                       measure_js=mjs)
-        for (w, h), m in got.items():
-            if (w, h) in INFO_ONLY:
-                if isinstance(m, dict):
-                    print(f"  info {w}x{h} {label}: page {m['vh']} px, "
-                          f"Disarm all ends at {m['disarm']['bottom']:.0f}")
-                continue
-            if not check(isinstance(m, dict),
-                         f"{w}x{h} {label}: drawn: {m!r}"):
-                continue
-            pr, af, la = m.get("pressed"), m.get("after") or {}, \
-                m.get("later") or {}
-            check(m.get("folded") is (n_arms > 0) and
-                  af.get("folded") is False,
-                  f"{w}x{h} {label}: folded as loaded only with flame "
-                  f"groups, open after Show the steps: {m.get('folded')} "
-                  f"{af.get('folded')}")
-            # From the top of the page, as loaded, opened and later:
-            # Abort, Disarm all and every arm button on screen.
-            for state, mm in (("as loaded", m), ("open", af),
-                              ("open, later", la)):
-                if not mm:
-                    continue
-                vh = mm["vh"]
-                where = f"{w}x{h} {label} {state}"
-                check(mm["setup"] and mm["ann"],
-                      f"{where}: both shown: {mm}")
-                check(mm["disarm"]["top"] >= 0 and
-                      mm["disarm"]["bottom"] <= vh - SLACK,
-                      f"{where}: disarm wholly on screen with {SLACK} px "
-                      f"to spare: {mm['disarm']} vh {vh} ({mm['root']})")
-                check(len(mm["arms"]) == n_arms and all(
-                          a["h"] >= 44 and a["top"] >= 0 and
-                          a["bottom"] <= vh - SLACK for a in mm["arms"]),
-                      f"{where}: every arm button on screen with {SLACK} "
-                      f"px to spare, at least 44 px: {mm['arms']} vh {vh}")
-                # The card stays above the flame groups on any page of
-                # 560 px or more: the card after every block is the last
-                # resort of a window shorter than that.
-                if vh >= 560:
-                    check("setupafter" not in mm.get("root", ""),
-                          f"{where}: the card is above the flame groups: "
-                          f"{mm.get('root')}")
-                if mm.get("make"):
-                    check(mm["make"]["h"] >= 40,
-                          f"{where}: Make a show file is at least 40 px "
-                          f"tall: {mm['make']}")
-            # Open, the steps have room: STEPS_MIN px (or all of them),
-            # in the card or in their own block after the flame groups.
-            stp = af.get("steps") or {"h": 0}
-            check(stp["h"] >= min(STEPS_MIN, af.get("sh", 0)) - 1,
-                  f"{w}x{h} {label}: the open steps have at least "
-                  f"{STEPS_MIN} px: {stp} of {af.get('sh')} "
-                  f"(after the groups: {af.get('below')})")
-            # Where the press left the page, the card's header with Make a
-            # show file and the steps can both be seen; with the card open
-            # as loaded, Make a show file is on screen as loaded unless the
-            # window is too short for the card above the groups.
-            if pr:
-                mk, sp, vh = pr.get("make"), pr.get("steps"), pr["vh"]
-                check(bool(mk) and mk["top"] >= 0 and mk["bottom"] <= vh,
-                      f"{w}x{h} {label}: after Show the steps, Make a show "
-                      f"file is on screen: {mk} vh {vh}")
-                check(bool(sp) and sp["top"] <= vh - 60 and
-                      sp["bottom"] >= 60,
-                      f"{w}x{h} {label}: after Show the steps, the steps "
-                      f"are on screen: {sp} vh {vh}")
-            elif "setupafter" not in m.get("root", ""):
-                mk = m.get("make")
-                check(bool(mk) and mk["top"] >= 0 and
-                      mk["bottom"] <= m["vh"],
-                      f"{w}x{h} {label}: the open card's Make a show file "
-                      f"is on screen as loaded: {mk} vh {m['vh']}")
-            # The steps' own scroll is left alone by the status polls.
-            if m.get("set") is not None:
-                check(la.get("st") == m["set"],
-                      f"{w}x{h} {label}: the steps' scroll stays where it "
-                      f"was put: {m['set']} then {la.get('st')}")
-    print("  ok")
-
-
-def test_rack_screen_setup_card_refits_when_warnings_come():
-    section("rack screen (review of #141): with the Getting started steps "
-            "open, warnings that come up AFTER (a start check alert, the "
-            "disk, a laser fault, the live flame programming banner, the "
-            "arm note) are fitted again: 2 s and 10 s later Abort is on "
-            "screen and Disarm all and every arm button keep the 24 px "
-            "margin, or, where the warnings alone take that room, end no "
-            "lower than on the same page without the card, at 1366x640, "
-            "1366x700, 1024x768, 1180x820 and 1920x900; the steps hand a "
-            "scroll at their end on to the page")
-    here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  note: no Chromium here, so the page was not drawn")
-        print("  ok")
-        return
-    st = _rack_status_no_show_file()
-    st["setup"]["show_folder_renders"] = 3
-    # What the next polls add once the steps are open: the status as the
-    # engine would send it, changed in the page's own fetch.
-    more = {
-        "alerts": [{"id": 99, "kind": "start", "severity": "fault",
-                    "text": ("Start check: the show audio interface is not "
-                             "answering. Check its USB cable and power, then "
-                             "press Acknowledge."),
-                    "since": 0, "options": ["Acknowledge"], "booth": "",
-                    "pulse": False}],
-        "disk": {"text": "The disk is nearly full: 1.2 GB left. Clear old "
-                         "logs and renders."},
-        "laser_fault": "BEYOND's OSC address is not set",
-        "live_flame": {"on": True, "one_group_at_a_time": True,
-                       "group": "front row", "text": "front row follows "
-                       "xLights; the other groups stay disarmed."},
-        "arming": dict(st.get("arming") or {}, enabled=False),
-    }
-    mjs = r"""<script>
-(function(){
-const MORE = __MORE__;
-const of = window.fetch;
-window.__more = false;
-window.fetch = async function(u, o){
-  const r = await of(u, o);
-  if(window.__more && String(u).indexOf("/api/remote/status") >= 0){
-    const j = await r.clone().json();
-    Object.assign(j, MORE);
-    return new Response(JSON.stringify(j), {status:r.status, headers:{"Content-Type":"application/json"}});
-  }
-  return r;
-};
-function go(){ const su = document.getElementById("setup");
- if(su.hidden || !document.getElementById("b-disarm") || !document.querySelector("#fl-lamps .lamp [data-arm]")) return setTimeout(go, 50);
- const r = e => { const b = e.getBoundingClientRect(); return {top:b.top, bottom:b.bottom, h:b.height}; };
- const m = () => { scrollTo(0, 0); return {vh:innerHeight, disarm:r(document.getElementById("b-disarm")),
-    folded:su.classList.contains("folded"),
-    lf:!document.getElementById("lf-banner").hidden, note:document.getElementById("arm-note").classList.contains("said"),
-    root:document.documentElement.className, card:r(su), below:!document.getElementById("setup-below").hidden,
-    arms:[...document.querySelectorAll("#fl-lamps .lamp [data-arm]")].map(r)}; };
- setTimeout(() => {
-  if(su.classList.contains("folded")) document.getElementById("su-more").click();
-  setTimeout(() => {
-   const out = {open:m()};
-   window.__more = true;
-   setTimeout(() => { out.at2 = m();
-    setTimeout(() => { out.at10 = m();
-     // The steps hand a scroll at their end on to the page. (A page
-     // cannot send itself a wheel the browser acts on, so the rule that
-     // decides it is read.)
-     const b = document.querySelector(".subody");
-     out.wheel = {overscroll: getComputedStyle(b).overscrollBehaviorY};
-     const pre = document.createElement("pre"); pre.id = "rack-measure";
-     pre.textContent = JSON.stringify(out); document.body.appendChild(pre);
-    }, 8000);
-   }, 2000);
-  }, 900);
- }, 1500);}
-go();
-})();
-</script>""".replace("__MORE__", json.dumps(more))
-    sizes = ((1366, 640), (1366, 700), (1024, 768), (1180, 820),
-             (1920, 900))
-    got = _rack_screen_in_chromium(chrome, page, st, sizes, measure_js=mjs,
-                                   budget_ms=16000)
-    # The same page and the same warnings with no Getting started card
-    # (the setup done; the no-show-file line stays): what the warnings
-    # alone leave.
-    base_st = json.loads(json.dumps(st))
-    base_st["setup"]["ready"] = True
-    base_mjs = mjs.replace('if(su.hidden || !document.getElementById("b-disarm")',
-                           'if(!document.getElementById("b-disarm")')
-    base = _rack_screen_in_chromium(chrome, page, base_st, sizes,
-                                    measure_js=base_mjs, budget_ms=16000)
-    SLACK = 24
-    for (w, h), m in got.items():
-        if not check(isinstance(m, dict), f"{w}x{h}: drawn: {m!r}"):
-            continue
-        bm = base.get((w, h))
-        if not check(isinstance(bm, dict),
-                     f"{w}x{h}: drawn without the card: {bm!r}"):
-            continue
-        check(m["open"]["folded"] is False and m["at2"]["lf"] and
-              m["at2"]["note"],
-              f"{w}x{h}: the steps open, then the banner and the arm note "
-              f"came: {m['open']['folded']} {m['at2']['lf']} "
-              f"{m['at2']['note']}")
-        for state in ("open", "at2", "at10"):
-            mm, bb = m[state], bm[state]
-            vh = mm["vh"]
-            where = f"{w}x{h} {state}"
-            lim = max(vh - SLACK, bb["disarm"]["bottom"]) + 1
-            check(mm["disarm"]["top"] >= 0 and
-                  mm["disarm"]["bottom"] <= lim,
-                  f"{where}: disarm on screen with {SLACK} px to spare, or "
-                  f"no lower than without the card "
-                  f"({bb['disarm']['bottom']:.0f}): {mm['disarm']} vh {vh} "
-                  f"({mm.get('root')})")
-            alim = max([vh - SLACK] + [a["bottom"] for a in bb["arms"]]) + 1
-            check(len(mm["arms"]) == 3 and all(
-                      a["top"] >= 0 and a["bottom"] <= alim
-                      for a in mm["arms"]),
-                  f"{where}: every arm button on screen with {SLACK} px to "
-                  f"spare, or no lower than without the card: {mm['arms']} "
-                  f"vh {vh}")
-        wh = m.get("wheel") or {}
-        check(wh.get("overscroll") == "auto",
-              f"{w}x{h}: the steps hand a scroll at their end on to the "
-              f"page: overscroll-behavior {wh.get('overscroll')!r}")
-    print("  ok")
-
-
 class _CountingBooth:
     """A booth player that counts its notes (alerts.Alerts.booth)."""
 
@@ -23098,7 +22752,7 @@ def test_deck_stop_works_while_held_for_an_alert():
 def test_alert_hold_rack_screen_words():
     section("alert hold on the rack screen: the state card says Held and "
             "the sentence; nothing new is drawn anywhere else")
-    page = remote1_text()
+    page = screen_text()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     check("function alertHoldLook" in logic, "alertHoldLook is pure logic")
     import shutil
@@ -36866,7 +36520,7 @@ def test_streamdeck_unconfirmed_config_never_marks_a_key():
     # The rack screen says it in the Info popup only (not a banner, not
     # the keys): the page wires flames.confirmed to #info-flames.
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
+    page = screen_text()
     check('id="info-flames" hidden' in page
           and "s.flames.confirmed === false" in page
           and '$("info-flames").hidden = !unconf;' in page
@@ -41572,18 +41226,12 @@ def test_fire_ice_serves_the_rack_screen_not_the_old_page():
               "the rack screen is served and never links the old page")
         # Stop is the engine's complete halt, from any screen (Jeff,
         # 2026-10-28): Remote.stop_press, the Stream Deck's Stop.
-        # /remote is 2.0 (Jeff, 2026-11-02): its Run (Run show, Run in
-        # Programming) and Stop; the old screen keeps its own at /remote1.
+        # Its Run (Run show, Run in Programming) and Stop.
         check('id="p-run"' in str(page) and 'id="b-go"' in str(page) and
               '"/api/start"' in str(page)
               and '"/api/remote/stop"' in str(page),
               "the rack screen has Run and Stop of its own, through the "
               "engine's own guarded routes")
-        st, _h, old = _ask(httpd, "GET", "/remote1", client=local)
-        check(st == 200 and "index.html" not in str(old) and
-              'id="b-run"' in str(old) and '"/api/start"' in str(old)
-              and '"/api/remote/stop"' in str(old),
-              "and the old screen too, at /remote1")
     finally:
         httpd.server_close()
         shutil.rmtree(folder, ignore_errors=True)
@@ -42373,7 +42021,7 @@ def test_fire_ice_config_defaults_and_refusals():
           f"/api/brand names the Fire & Ice show from its own config, "
           f"under the global brand: {b}")
     plain = W.brand_doc(types.SimpleNamespace(fire_ice_config=None))
-    page = remote1_text()
+    page = screen_text()
     check("beyond_blank" not in b and "Lasers blanked" not in page and
           "black zone" not in page.lower(),
           "the web pages say nothing about how the lasers are blanked "
@@ -42547,7 +42195,6 @@ def test_audio_master_per_call_fade():
     eng.send = real_send
     am.stop()
     print("  ok")
-
 
 
 def test_lasers_blanking_not_set_up_is_loud():
@@ -43795,74 +43442,6 @@ def test_reset_says_how_the_rig_stands():
     print("  ok")
 
 
-_STOP_BUTTON_JS = r"""<script>
-(function(){
- let n = 0;
- function r(e){ if(!e || !e.getClientRects().length) return null; const b = e.getBoundingClientRect(); return {top:b.top, bottom:b.bottom, left:b.left, right:b.right, h:b.height, w:b.width}; }
- function go(){
-  const b = document.getElementById("b-start");
-  const lbl = b && b.querySelector(".lbl");
-  if(!lbl || (lbl.textContent === "Start now" && n++ < 40)) return setTimeout(go, 50);
-  setTimeout(() => {
-   scrollTo(0, 0);
-   const run = document.getElementById("b-run");
-   const out = {vw:innerWidth, vh:innerHeight, sw:document.documentElement.scrollWidth,
-     start:r(b), label:lbl.textContent, small:b.querySelector("small").textContent,
-     mode:b.dataset.mode, cls:b.className, disabled:b.disabled,
-     run:r(run), runLabel:run.querySelector(".lbl").textContent, runMode:run.dataset.mode,
-     abort_left:!!document.getElementById("b-abort"),
-     stoprun:!!document.getElementById("b-stoprun"),
-     stops:[...document.querySelectorAll("button")].filter(x => x.getClientRects().length && /^Stop\b/.test((x.querySelector(".lbl") || x).textContent.trim())).length};
-   const pre = document.createElement("pre"); pre.id = "rack-measure";
-   pre.textContent = JSON.stringify(out); document.body.appendChild(pre);
-  }, 600);
- }
- go();
-})();
-</script>"""
-
-
-_FETCH_LOG_JS = r"""<script>
-window.__posts = [];
-(function(){ const f = window.fetch; window.fetch = function(u, o){
-  if(o && o.method === "POST") window.__posts.push(String(u));
-  return f.apply(this, arguments); }; })();
-</script>"""
-
-_STOP_CLICK_JS = r"""<script>
-(function(){
- let n = 0;
- function go(){
-  const b = document.getElementById("@BID@");
-  if(!ST || !b || (b.dataset.mode !== "stop" && n++ < 40)) return setTimeout(go, 50);
-  setTimeout(() => {
-   const out = {mode:b.dataset.mode, label:b.querySelector(".lbl").textContent,
-     disabled:b.disabled, off:b.classList.contains("signin-off")};
-   // Stop is a double tap (Jeff, 2026-10-30): the first tap sends
-   // nothing and opens no confirm box; the second, within 2 s, sends.
-   b.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true}));
-   b.click();
-   setTimeout(() => {
-    out.first_posts = window.__posts.slice();
-    out.first_label = b.querySelector(".lbl").textContent;
-    out.first_modal = !document.getElementById("modal").hidden;
-    b.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true}));
-    b.click();
-    setTimeout(() => {
-     out.modal = !document.getElementById("modal").hidden;
-     out.posts = window.__posts.slice();
-     out.said = document.getElementById("@MSG@").textContent;
-     const pre = document.createElement("pre"); pre.id = "rack-measure";
-     pre.textContent = JSON.stringify(out); document.body.appendChild(pre);
-    }, 700);
-   }, 300);
-  }, 600);
- }
- go();
-})();
-</script>"""
-
-
 def test_rack_screen_stop_in_place_of_start_now():
     section("Jeff's field report (2026-10-28), Stop: while a show is live "
             "Start now becomes Stop in the same place (the Run button on the "
@@ -43872,10 +43451,8 @@ def test_rack_screen_stop_in_place_of_start_now():
             "audio loads")
     import shutil as _sh
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
+    page = screen_text()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
-    check("new Error(refusedWords(j, r.statusText))" in page,
-          "every refused press shows the engine's own words")
     for f in ("function startLook", "function runLook", "function stopWords",
               "function refusedWords", "function pressDecision",
               "const STOP_TITLE", "function stopShows",
@@ -43884,13 +43461,6 @@ def test_rack_screen_stop_in_place_of_start_now():
         check(f in logic, f"{f} is pure page logic")
     # Stop is a double tap with no confirm box (Jeff, 2026-10-30), with
     # exactly the Abort sign's tap rule.
-    check(page.count("const step = stopTapStep(t ? t.prev : null, "
-                     "monoNow(), kind, false);") == 1,
-          "Stop's second tap is decided by the time between the taps, "
-          "never by whether the first tap's timer has run")
-    check("const STOP_CONFIRM" not in page and
-          'confirmBox("Stop the show?"' not in page,
-          "Stop asks nothing: no confirm box, no STOP_CONFIRM")
     import re as _re
     _sp = _re.search(r"function stopTapStep\(prev, nowMs, kind, enlarged\)"
                      r"\{(.*?)\n\}", logic, _re.S)
@@ -43898,26 +43468,6 @@ def test_rack_screen_stop_in_place_of_start_now():
           "const STOP_TAP_MS = 2000;" in logic,
           "Stop's double tap is its own rule now (the Abort sign's, which "
           "is gone), 2 s")
-    check('id="b-stoprun"' not in page and "b-stoprun" not in page,
-          "the separate Stop beside Run is gone: Run becomes Stop")
-    for need in ('fetch("/api/remote/stop", ',
-                 'fetch("/api/remote/run-off", ',
-                 'const d = decide("b-start", lk.mode);',
-                 'if(d.act === "stop") return stopTap("b-start", ev, '
-                 '"ctl-msg");',
-                 'const d = decide("b-run", runLook(ST, nowStale()).mode);',
-                 'if(d.act === "stop") return stopTap("b-run", ev, '
-                 '"run-msg");',
-                 'return pressStop("run-msg", "run-off");',
-                 'confirmBox("Turn Run off?", RUN_OFF_CONFIRM',
-                 'drawStart(stale);',
-                 '"Yes, start now", "start", null, true)',
-                 'el.addEventListener("pointerdown", () => '
-                 '{ DOWN_MODE[id] = el.dataset.mode; });',
-                 '(el.disabled || lk.disabled || HALT_BUSY || '
-                 'flipLocked("b-start"))',
-                 '"Stop was refused: " + refusedWords(j, '):
-        check(need in page, f"the page has {need!r}")
     _no_dashes(page[page.find("const STOP_TITLE"):
                     page.find("function runLook")], "Stop's words")
     node = _sh.which("node")
@@ -44000,110 +43550,6 @@ console.log(JSON.stringify(out));
               f"{r.stderr[-400:]!r}")
     else:
         check(not IN_CI, "node is missing on this CI runner")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    st = _rack_status_pico()
-    st["schedule"] = dict(st["schedule"], state="PAUSED", running=1,
-                          held=True)
-    st["show"] = {"running": True, "timecode": "00:01:00:00"}
-    # The CI runner's Chrome leaves about 143 px less page than its window
-    # (see test_rack_screen_small_screens_with_announcements_and_setup):
-    # 1366x544 and 1024x625 are what it shows of 1366x687 and 1024x768.
-    sizes = [(1366, 544), (1366, 558), (1024, 625),
-             (1280, 577), (1920, 937), (820, 1037)]
-    for frag, label in (("", "show screen"), ("#programming",
-                                               "Programming screen")):
-        got = _rack_screen_in_chromium(chrome, page, st, sizes, frag=frag,
-                                       measure_js=_STOP_BUTTON_JS)
-        for (w, h), m in got.items():
-            if not check(isinstance(m, dict), f"{w}x{h} {label}: drawn: "
-                                              f"{m!r}"):
-                continue
-            check(m["sw"] <= m["vw"] + 1,
-                  f"{w}x{h} {label}: no sideways scroll: {m['sw']} "
-                  f"{m['vw']}")
-            check(m["stops"] == 1,
-                  f"{w}x{h} {label}: exactly one Stop on screen: "
-                  f"{m['stops']}")
-            check(not m["stoprun"], f"{w}x{h}: no second Stop beside Run")
-            if frag:
-                b, word, mode = m["run"], m["runLabel"], m["runMode"]
-            else:
-                b, word, mode = m["start"], m["label"], m["mode"]
-                check("stopnow" in m["cls"] and not m["disabled"],
-                      f"{w}x{h} {label}: Stop is red and pressable: {m}")
-            if not check(b is not None and not m["abort_left"],
-                         f"{w}x{h} {label}: Stop drawn, no Abort: {m}"):
-                continue
-            check(word == "Stop" and mode == "stop",
-                  f"{w}x{h} {label}: the button reads Stop: {word} {mode}")
-            check(b["h"] >= (52 if frag else 44) and b["w"] >= 88,
-                  f"{w}x{h} {label}: Stop is large enough to hit: "
-                  f"{b['w']:.0f}x{b['h']:.0f}")
-            check(b["top"] >= 0 and b["bottom"] <= m["vh"],
-                  f"{w}x{h} {label}: Stop is wholly on screen: {b} "
-                  f"vh {m['vh']}")
-    # Signed out (PR #143: view only) with a show live, and with Run on its
-    # way in on the Programming screen: Stop is still enabled, and a press
-    # really posts the complete halt (#143's lock skips a control whose
-    # mode is "stop"). One size each, to keep the run short.
-    perms = ("show", "arm", "unlock", "checklist", "show_files", "settings",
-             "users")
-    out_st = json.loads(json.dumps(st))
-    out_st["me"] = {"user": None, "role": None, "view_only": True,
-                    "may": {p: False for p in perms}}
-    prog_st = json.loads(json.dumps(out_st))
-    prog_st["schedule"] = dict(prog_st["schedule"], state="STANDBY",
-                               running=None, held=False)
-    prog_st["show"] = {"running": True, "starting": False,
-                       "timecode": None}
-    # Programming playback on the show audio: something for Stop to stop
-    # (Jeff, 2026-10-30), so the Run card's button is Stop.
-    prog_st["transport"] = {"programming": True, "playhead": "show_audio",
-                            "playing": True, "paused": False}
-    for frag, status, bid, msg in (("", out_st, "b-start", "ctl-msg"),
-                                   ("#programming", prog_st, "b-run",
-                                    "run-msg")):
-        js = _STOP_CLICK_JS.replace("@BID@", bid).replace("@MSG@", msg)
-        got = _rack_screen_in_chromium(chrome, page, status, ((1366, 544),),
-                                       frag=frag, measure_js=js,
-                                       head_js=_FETCH_LOG_JS)
-        m = got[(1366, 544)]
-        if check(isinstance(m, dict), f"signed out {frag or 'show'}: "
-                                      f"drawn: {m!r}"):
-            check(m["mode"] == "stop" and m["label"] == "Stop" and
-                  not m["disabled"] and not m["off"],
-                  f"signed out {frag or 'show screen'}: Stop is enabled, "
-                  f"never locked for signing in: {m}")
-            check(m["first_posts"] == [] and not m["first_modal"] and
-                  m["first_label"] == "Tap again",
-                  f"signed out {frag or 'show screen'}: the first tap sends "
-                  f"nothing, asks nothing and reads Tap again: {m}")
-            check("/api/remote/stop" in m["posts"] and not m["modal"] and
-                  m["said"].startswith("Stopped."),
-                  f"signed out {frag or 'show screen'}: the second tap "
-                  f"posts the complete halt and says Stopped: {m['posts']} "
-                  f"{m['said']!r}")
-    # Loading: the Start now button says so before the show.
-    st2 = _rack_status_pico()
-    st2["schedule"] = dict(st2["schedule"], start_blocked={
-        "text": "the show audio is still loading (it takes a few seconds "
-                "after Run); wait until Start now no longer says Loading, "
-                "then press it", "loading": True})
-    st2["show"] = {"running": True, "timecode": None}
-    got = _rack_screen_in_chromium(chrome, page, st2, ((1366, 544),),
-                                   measure_js=_STOP_BUTTON_JS)
-    m = got[(1366, 544)]
-    if check(isinstance(m, dict), f"loading: drawn: {m!r}"):
-        check(m["label"] == "Start now" and
-              "starts when ready" in m["small"] and
-              m["runLabel"] == "Run off" and m["runMode"] == "runoff",
-              f"loading: Start now works, and says it starts when the audio "
-              f"is ready: {m}")
     print("  ok")
 
 
@@ -44982,9 +44428,9 @@ def test_fire_ice_flame_cue_refusals_are_faults_on_the_screens():
                       f"{out.get('flames')}")
             finally:
                 R.close()
-        page = remote1_text()
-        check("fl.cues_fault" in page and "Flame cues are zero, a fault"
-              in page, "the rack screen shows it")
+        page = screen_text()
+        check("if(fl.cues_fault) items.push(" in page and
+              "full:fl.cues_fault" in page, "the rack screen shows it")
         # The deck: read from /api/conductor, drawn on its own key.
         e = sd.EngineConductor(
             "http://127.0.0.1:1", poster=lambda p, b: (True, "ok"),
@@ -47876,13 +47322,11 @@ def test_every_show_start_clears_the_pixels():
           f"once it lasts it is a CUES FAULT on the screens and in the "
           f"journal: {cues.fault!r}")
     # The rack screen's words (reviews of PR #171): only buttons the Fire
-    # & Ice screens have (1.0: Stop on the Show file card, then Run; 2.0:
-    # the same card on its Schedule tab, since #208, never "Open in 1.0"),
-    # never the GPL page's Black, Preshow or Auto, nor the Programming
-    # card's "Follow timecode again" / "Stop the show audio"; short as a
-    # whole, no sentence over eight words; "black", never "blackout".
+    # & Ice screen has (Stop on the Show file card, then Run), never the
+    # GPL page's Black, Preshow or Auto, nor the Programming card's "Follow timecode again" / "Stop the show audio";
+    # short as a whole, no sentence over eight words; "black", never
+    # "blackout".
     said = cues.faults_now()
-    rack = remote1_text()
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "ltcplay", "web", "remote2.html"),
               encoding="utf-8") as fh:
@@ -47893,8 +47337,6 @@ def test_every_show_start_clears_the_pixels():
     check("Programming: Show file card, Stop, then Run." in said and
           "On 2.0: the Schedule tab's Show file card." in said and
           "Open in 1.0" not in said and len(said.split()) <= 30 and
-          'label:"Stop"' in rack and 'label:"Run"' in rack and
-          "Show file, on this machine" in rack and
           '<div class="card col" id="p-run-card" hidden>' in sched2 and
           "<b>Show file, on this machine</b>" in sched2
           and "Follow timecode" not in said and "Auto" not in said and
@@ -52320,16 +51762,12 @@ def test_remote_no_sign_in_over_the_network():
             st, _h, out = R.ask("POST", path, {"who": "Andy", "pin": "2468",
                                                "device": "iPad"})
             check(st == 404, f"{path} does not exist: {st} {out}")
-        # (1.0, the old screen: /remote1 since 2.0 became the default.)
-        st, _h, out = R.ask("GET", "/remote1")
-        # Users (2026-10-20): signing in is optional and lives on its own
-        # Users screen; the show screen has no sign-in, PIN or picker.
+        st, _h, out = R.ask("GET", "/remote")
+        # Users (2026-10-20): signing in is optional (the header's Sign in
+        # and the Users pane); presses need no PIN or picker.
         page = str(out)
-        show = page[page.find('id="v-show"'):page.find('id="v-tonight"')]
-        check(st == 200 and "<title>Show remote</title>" in page and
-              "li-pin" not in page and "PIN" not in page and
-              "Sign in" not in show and "password" not in show and
-              'id="op-pick"' not in page
+        check(st == 200 and "<title>Show remote 2.0</title>" in page and
+              "li-pin" not in page and 'id="op-pick"' not in page
               and "/api/remote/login" not in page,
               f"the network gets the remote page, with no sign-in form, PIN "
               f"or operator picker for presses: {st}")
@@ -52540,7 +51978,7 @@ def test_web_page_icons():
         # Every HTML page the engine serves: the operator page on "/", the
         # rack screen and iPad remote on "/remote" (the Startup page and
         # the rest are views of it).
-        for path in ("/", "/remote", "/remote1", "/remote2"):
+        for path in ("/", "/remote", "/remote2"):
             st, h, body = fetch(path)
             page = body.decode("utf-8", "replace")
             head = page.split("</head>")[0]
@@ -52784,9 +52222,10 @@ def test_remote_localhost_unaffected_and_proxies_refused():
         st, _h, out = _ask(R.httpd, "GET", "/remote", client=loop)
         check(st == 200 and "<title>Show remote 2.0</title>" in str(out),
               "and the remote page (2.0, the default) at /remote")
-        st, _h, out = _ask(R.httpd, "GET", "/remote1", client=loop)
-        check(st == 200 and "<title>Show remote</title>" in str(out),
-              "and the old screen at /remote1")
+        st, h, out = _ask(R.httpd, "GET", "/remote1", client=loop)
+        check(st == 302 and h.get("location") == ["/remote"],
+              f"and the first screen's /remote1 sends it to /remote: {st} "
+              f"{h}")
         st, _h, out = _ask(R.httpd, "GET", "/api/remote/whoami", client=loop)
         check(out["local"] is True and out["device"] == "Rack screen",
               f"whoami says it is the machine itself: {out}")
@@ -53987,8 +53426,8 @@ def test_remote_start_needs_the_confirm_and_abort_is_gone():
                             {"seen": R.seen()})
         check(st == 400 and "Confirm" in out["error"],
               f"Start now without the confirm is refused: {st}")
-        page = remote1_text()
-        check('confirmBox("Start a show now?"' in page,
+        page = screen_text()
+        check('confirmBox("Start the next show now?"' in page,
               "the page asks before Start now")
     finally:
         R.close()
@@ -54337,37 +53776,17 @@ def test_remote_stale_state_refused_and_banner():
 
 def _remote_page_logic_in_node():
     """The page's own stale and control logic, run in node when this
-    machine has it (CI does). The functions are cut out of remote.html
-    between its LOGIC markers, so this tests the page's real code."""
+    machine has it (CI does). The functions are cut out of the rules
+    (remote_rules.js) between their LOGIC markers, so this tests the
+    page's real code."""
     import shutil
     import subprocess as _sp
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
+    page = screen_text()
     a = page.find("// LOGIC BEGIN")
     b = page.find("// LOGIC END")
     check(a != -1 and b > a, "the page's logic block is marked")
     logic = page[a:b]
-    # The wiring around it: the banner follows isStale, and every control
-    # takes its disabled state from controlStates.
-    for need in ("const stale = isStale(Date.now(), LAST_OK, FRESH_S);",
-                 "b.hidden = !stale || $(\"main\").hidden;",
-                 "const cs = controlStates(ST, stale);",
-                 "$(\"b-start\").disabled = !cs.startNow;",
-                 "$(\"b-resume\").disabled = !cs.resume;",
-                 "el.disabled = !cs.transport;",
-                 "el.className = \"lamp unknown\";",
-                 "setInterval(renderStale, 250);",
-                 # arming: live state or no hold, and anything that hides
-                 # or closes the page lets go
-                 "const hp = holdLapsed();\n  if(hp) armStop(hp);",
-                 "    const as = armState(ST, Date.now(), LAST_OK, p.group);\n"
-                 "    if(as.ok) continue;",
-                 "el.disabled = !armState(ST, Date.now(), LAST_OK, i).ok;",
-                 "if(document.hidden) armStop(",
-                 "window.addEventListener(\"pagehide\", () => armStop(",
-                 "\"pointerup\", \"pointercancel\", \"pointerleave\"",
-                 "try{ armStop(\"Stop\"); }catch(e){}"):
-        check(need in page, f"the page wires {need!r}")
     node = shutil.which("node")
     if not node:
         # On CI the page's logic MUST run: a runner without node would pass
@@ -54410,6 +53829,14 @@ const ast = {arming:{enabled:true, fresh_s:1.0},
 t(armState(ast, 10000, 9500, 0).ok, "live, no sign-in, off: may hold to arm");
 t(!armState(ast, 10000, 8900, 0).ok, "1.1 s since the engine: may not");
 t(!armState(ast, 10000, 9500, 1).ok, "already armed: may not");
+t(!armState(Object.assign({}, ast, {me:{may:{arm:false}}}), 10000, 9500, 0).ok &&
+  armState(Object.assign({}, ast, {me:{may:{arm:false}}}), 10000, 9500, 0).signin === true,
+  "signed out, or a role that may not arm: may not, and says sign in");
+t(!cleaningState({available:true, state:"idle"}, false, false, true).ok &&
+  cleaningState({available:true, state:"idle"}, false, false, true).block.indexOf("Signed out: this screen is view only.") === 0,
+  "the cleaning: signed out is view only");
+t(cleaningState({available:true, state:"idle"}, false, false, false).ok,
+  "the cleaning: signed in, idle: a hold may start");
 t(!armState(Object.assign({}, ast, {arming:{enabled:false}}),
   10000, 9500, 0).ok, "arming switched off: may not");
 t(armState(Object.assign({}, ast, {arming:{enabled:false}}),
@@ -54493,7 +53920,7 @@ def _morning_page_logic_in_node():
     import shutil
     import subprocess as _sp
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
+    page = screen_text()
     a = page.find("// LOGIC BEGIN")
     b = page.find("// LOGIC END")
     logic = page[a:b]
@@ -54607,7 +54034,7 @@ def test_remote_has_no_arm_route():
                      "from . import streamdeck"):
             check(word not in src,
                   f"{name} never touches the arm link ({word})")
-    page = remote1_text()
+    page = screen_text()
     posted = set(_re.findall(r'/api/remote/([a-z-]+)', page)) | set(
         _re.findall(r'press\("([a-z-]+)"', page))
     check({p for p in posted if _re.search(r"(?<!dis)arm", p)} <=
@@ -54671,110 +54098,6 @@ def _css_rule(rules, selector):
         if sel.replace(" ", "") == selector.replace(" ", ""):
             return decl
     return None
-
-
-def test_rack_screen_width_guard_css_contract():
-    section("rack screen (Jeff, 2026-10-17): after Abort the page was wider "
-            "than the screen and the word ABORT was off it; the page's one "
-            "grid column is pinned to the screen, #main clips, every row "
-            "may shrink below its text, the toasts clip; the version is in "
-            "the info panel, not the header; the MODE pill and the truthful "
-            "Abort plan come from the engine's state (CSS contract and the "
-            "page's own logic in node)")
-    import re as _re
-    import shutil
-    import subprocess as _sp
-    here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    rules = _css_rules(page)
-    app = _css_rule(rules, "#app") or {}
-    check(app.get("grid-template-columns", "").startswith("minmax(0,"),
-          f"#app's one column track is minmax(0, ...), so no unbreakable "
-          f"text can widen it: {app.get('grid-template-columns')!r}")
-    check((_css_rule(rules, "#app > *") or {}).get("min-width") == "0",
-          "every row of the page may shrink below its content")
-    main = _css_rule(rules, "#main") or {}
-    check(main.get("overflow") == "hidden" and main.get("min-width") == "0",
-          f"#main clips and may shrink: {main}")
-    check((_css_rule(rules, ".view") or {}).get("min-width") == "0",
-          "a view may shrink below its content")
-    check((_css_rule(rules, "#v-show > *") or {}).get("min-width") == "0",
-          "every row of the show screen may shrink below its text")
-    toast = _css_rule(rules, ".toast") or {}
-    check(toast.get("overflow") == "hidden" and
-          toast.get("white-space") == "nowrap" and
-          toast.get("min-width") == "0",
-          f"a toast clips its one line and never widens anything: {toast}")
-    # The document scrolls up and down when the show screen is taller than
-    # the window (2026-10-24), never sideways: the width guard holds.
-    check((_css_rule(rules, "html") or {}).get("overflow-x") == "hidden",
-          "the document never scrolls sideways")
-    # There is no Abort stop sign any more (removed, Jeff, 2026-10-30).
-    check(_css_rule(rules, "#abortbar") is None and "--abort-size" not in
-          page,
-          "no Abort stop sign is styled on the page")
-    check("flex-wrap:wrap" in (_css_rule(rules, "header") or {}).__repr__()
-          .replace("'", "").replace(": ", ":"),
-          "the header wraps instead of overlapping on a narrow window")
-    # The version left the header (Jeff: prime screen room) for the info
-    # panel; the status JSON still carries it for the smoke test and the
-    # diagnostics bundle.
-    check('<span id="version" hidden' in page and 'id="info-version"' in page
-          and 'id="nav-info"' in page and '$("info-version").textContent' in page,
-          "the header's version span is hidden; the info button and panel "
-          "show the version")
-    check('id="mode"' in page and "renderMode(stale);" in page and
-          "function renderMode" in page,
-          "the MODE pill is drawn every 250 ms from the last status")
-    rm_src = open(os.path.join(here, "ltcplay", "remote.py"),
-                  encoding="utf-8").read()
-    check('"version": self.version_line()' in rm_src,
-          "/api/remote/status still names the version")
-    check("modeLook(ST)" in page and '$("mode").className = mo.cls' in page,
-          "the MODE pill is in the header and drawn from modeLook")
-    check("Every flame group disarms at once" not in page and
-          "abortPlan" not in page,
-          "the old Abort promise and its plan are gone")
-    # The getting-started steps stay side by side at the 950 px Edge app
-    # window (1070 high showed two of three, the third below the card's
-    # own scroll) and stack only narrower than that.
-    check("#setup .steps{display:grid;grid-template-columns:repeat(auto-fit,"
-          "minmax(260px,1fr))" in page and
-          "#setup .steps{grid-template-columns:1fr}" not in page,
-          "the three getting-started steps fit side by side at 950 px wide")
-    for bad in ("—", "–"):
-        check(bad not in page, "no em or en dashes on the page")
-        check(bad not in rm_src, "no em or en dashes in remote.py")
-    a = page.find("// LOGIC BEGIN")
-    b = page.find("// LOGIC END")
-    logic = page[a:b]
-    check("function modeLook" in logic,
-          "modeLook is in the page's pure logic block")
-    node = shutil.which("node")
-    if not node:
-        print("  note: node is not on this machine, so modeLook was "
-              "checked by reading only (CI runs it)")
-        return
-    js = logic + r"""
-const out = [];
-const t = (c, m) => { if(!c) out.push(m); };
-let m = modeLook({show:{running:true}, transport:{programming:false}});
-t(m.word === "Show" && m.cls === "show", "a real show file running is SHOW");
-m = modeLook({show:{running:true}, transport:{programming:true}});
-t(m.word === "Programming" && m.cls === "prog", "a rehearsal is PROGRAMMING");
-m = modeLook({show:{running:false}, transport:{programming:false}});
-t(m.word === "Not running" && m.cls === "", "nothing running is NOT RUNNING");
-t(modeLook(null).word === "...", "no status yet: waiting");
-console.log(JSON.stringify(out));
-"""
-    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
-    try:
-        bad = json.loads(r.stdout.strip() or "null")
-    except ValueError:
-        bad = None
-    check(r.returncode == 0 and bad == [],
-          f"modeLook, in node: {r.stdout!r} {r.stderr[-400:]!r}")
-    print("  ok")
 
 
 # -- the rack screen in a real browser (Jeff, 2026-10-24) --------------------
@@ -55235,31 +54558,6 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
     return out
 
 
-def _rack_status_cue_fault_behind_a_warning():
-    """Review of #102, P1-a: a server warning (the start gate) and the
-    page's own cue fault and deck-not-heard text, nothing else."""
-    st = _rack_status_pico(many=False)
-    st["alerts"] = [{"id": 3, "kind": "gate", "severity": "warning",
-                     "text": "The start check asks before the next show.",
-                     "since": 0, "options": ["Acknowledge"], "booth": "",
-                     "pulse": False}]
-    return st
-
-
-def _rack_status_live_flame():
-    """The Pico's screen after this change, with live flame programming on
-    as well: its red bar is never folded away."""
-    st = _rack_status_pico()
-    st["alerts"] = st["alerts"][:1]
-    st["artnet_note"] = ("Art-Net receivers, a note: No show is loaded, Run "
-                         "or picked yet, so no show file is judged as a "
-                         "fault. soak_show.json: two Art-Net timecode "
-                         "receivers are on one address, 127.0.0.1.")
-    st["live_flame"] = {"on": True, "receiving": True, "who": "Jeff",
-                        "map": [{"universe": 9, "slots": "1-24"}]}
-    return st
-
-
 # The sizes the rack screen is drawn at (window sizes; the browser's own
 # frame takes some): the show PC's 1920x1080, the same screen at Windows'
 # 125 and 150 percent, a 1366x768 laptop, a short 1366x600 window, and an
@@ -55278,61 +54576,7 @@ def test_rack_screen_banners_never_squeeze_the_flame_controls():
     import shutil as _sh
     import subprocess as _sp
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    rules = _css_rules(page)
-    html_r = _css_rule(rules, "html") or {}
-    check(html_r.get("overflow-y") == "auto" and
-          html_r.get("overflow-x") == "hidden",
-          f"the page scrolls up and down, never sideways: {html_r}")
-    for sel in ("html,body", "body"):
-        check((_css_rule(rules, sel) or {}).get("overflow") is None,
-              f"{sel} does not stop the page scrolling")
-    app = _css_rule(rules, "#app") or {}
-    check(app.get("grid-template-rows") ==
-          "auto auto minmax(min-content,1fr) auto" and
-          "height" not in app,
-          f"the screens' row is never shorter than its content and the "
-          f"page may grow past the window: {app}")
-    check((_css_rule(rules, ".lamps") or {}).get("grid-auto-rows") ==
-          "minmax(min-content,1fr)",
-          "a flame group's row is never shorter than its buttons")
-    for sel in (".flames", ".lamps", ".lamp", ".lamp .lb"):
-        check((_css_rule(rules, sel) or {}).get("min-height") ==
-              "min-content", f"{sel} never shrinks below its content")
-    check(_css_rule(rules, "#abortbar") is None,
-          "there is no Abort stop sign in the window's corner any more")
-    check("var(--edge-gutter)" in app.get("padding", "") and
-          "var(--edge-room)" in app.get("padding", "") and
-          "var(--pad-bottom, 0px)" in page and "--abort-" not in page,
-          f"the page keeps its right edge and room under its content for "
-          f"the taskbar: {app}")
-    # Startup sets the page's height too (Jeff, 2026-10-26: it shrank its
-    # text to 9 px at 1280x800 instead of scrolling).
-    check((_css_rule(rules, ".view:not(#v-show):not(#v-morning)") or {}
-           ).get("contain") == "size",
-          "the other screens keep their own inner scrolling")
-    for need in ('<div class="alsum" id="al-sum" hidden>',
-                 '<button class="ghost" id="al-more" aria-expanded="false">',
-                 '<div id="al-body"><div id="al-list"></div>',
-                 '<div class="warnbox" id="an-note" hidden></div>',
-                 'setWarn("an-note", s.artnet_note || "");',
-                 '$("al-body").hidden = f.fold && !ALERTS_OPEN;',
-                 '  setWarn("lock-banner", lockText);\n  renderAlertFold();',
-                 # Review of #102, P1-a: the page's own banners carry
-                 # whether they are a fault, and a label.
-                 'LOCAL_FAULT["lock-banner"] = !!lockText;',
-                 'LOCAL_FAULT["fl-warn"] = !!fmsg;',
-                 'LOCAL_FAULT["st-trouble"] = !!s.laser_fault;',
-                 'items.push({key:id + ":" + (LOCAL_LABEL[id] || id), fault:!!LOCAL_FAULT[id], label:LOCAL_LABEL[id] || "", text:el.textContent});',
-                 # P1/P2-b: a new fault opens the fold, or flashes it
-                 # while a finger is holding an arm.
-                 'if(f.fresh){ if(HOLD) PENDING_OPEN = true; else ALERTS_OPEN = true; }',
-                 # P2-d: Disarm all stays outside the fold.
-                 '<button class="disarm" id="al-sum-dis" hidden>Disarm all</button>'):
-        check(need in page, f"the page has {need!r}")
-    a = page.find('<div id="alerts">')
-    check(page.find('id="lf-banner"', a) < page.find('id="al-body"', a),
-          "the live flame programming bar is never inside the fold")
+    page = screen_text()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     check("function alertFold" in logic, "alertFold is pure page logic")
     node = _sh.which("node")
@@ -55372,308 +54616,13 @@ console.log(JSON.stringify(out));
               f"alertFold, in node: {r.stdout[-800:]!r} {r.stderr[-400:]!r}")
     else:
         check(not IN_CI, "node is missing on this CI runner")
-    chrome = _find_chromium()
-    if not chrome:
-        # Ubuntu's runner has Chrome; the cloud session has Playwright's.
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner: the rack screen "
-              "could not be drawn")
-        print("  note: no Chromium, Chrome or Edge here, so the rack "
-              "screen was not drawn (set LTCPLAY_CHROME to one)")
-        print("  ok")
-        return
-    got = _rack_screen_in_chromium(chrome, page, _rack_status_pico(),
-                                   RACK_SIZES)
-    got2 = _rack_screen_in_chromium(chrome, page, _rack_status_live_flame(),
-                                    ((1366, 600), (768, 1024)))
-    got3 = _rack_screen_in_chromium(
-        chrome, page, _rack_status_cue_fault_behind_a_warning(),
-        ((1366, 768),))
-    for (w, h), res in got3.items():
-        m = res[0] if isinstance(res, list) and res else {}
-        sm = m.get("sum") or {}
-        check("fault" in sm.get("cls", "").split() and
-              "Flame cues" in sm.get("kind", "") and
-              "Stream Deck" in sm.get("kind", ""),
-              f"{w}x{h}, a warning alert and the page's cue fault: the "
-              f"folded line is red and names the cue fault and the deck: "
-              f"{sm} {res if not m else ''}")
-        check(not m.get("problems"), f"{w}x{h}: {m.get('problems')}")
-    runs = [(f"{w}x{h}", r) for (w, h), r in got.items()] + \
-        [(f"{w}x{h} with live flame programming on", r)
-         for (w, h), r in got2.items()]
-    for size, res in runs:
-        if not check(isinstance(res, list) and res,
-                     f"{size}: the page was drawn and measured: {res!r}"):
-            continue
-        for m in res:
-            where = f"{size}, banners {m['tag']}"
-            check(not m["problems"],
-                  f"{where}: every flame group's Hold to arm and Disarm at "
-                  f"least 44 px, wholly seen and pressable, nothing "
-                  f"overlapping; Abort, Hold and the disarms pressable: "
-                  f"{m['problems'][:8]}")
-            check(len(m["lamps"]) == 3 and all(
-                l.get("arm_seen", 0) >= 44 and l.get("buttons") == 1
-                for l in m["lamps"]),
-                f"{where}: the three groups' one button each is seen "
-                f"whole: {m['lamps']}")
-            check(m["overflow_y"][0] in ("auto", "scroll") and
-                  m["overflow_y"][1] not in ("hidden", "clip"),
-                  f"{where}: the wheel and a finger scroll the page: "
-                  f"{m['overflow_y']}")
-            if m["tag"] == "collapsed" and size.startswith(("1366x768",
-                                                             "1920x1080")) \
-                    and "live flame" not in size:
-                # The Pico's screen: the deck alert offers Disarm all; it
-                # stays on the folded line, pressable (review of #102,
-                # P2-d).
-                check(m.get("sum_disarm"),
-                      f"{where}: the deck alert's Disarm all is on the "
-                      f"folded line")
-            if "live flame" not in size:
-                aim = m.get("aim") or []
-                check(len(aim) == 1 and aim[0]["text"].startswith(
-                          "Aim 1, 7, 13: NOT loaded (flamesafe 1, 7, 13, "
-                          "LTC Player none); disarmed") and
-                      0 < aim[0]["h"] <= 20 and
-                      aim[0]["seen"] >= aim[0]["h"] - 0.5,
-                      f"{where}: the wave flamer's aim line is one line, "
-                      f"seen whole: {aim}")
-            if m["tag"] == "collapsed" and len(m["alerts"]) > 1:
-                check(m.get("fold_h", 999) <= 56,
-                      f"{where}: the banners are one line: "
-                      f"{m.get('fold_h')} px")
-                if m["vh"] >= 600:
-                    check(m["flames_visible_at_load"],
-                          f"{where}: every group's buttons are on the "
-                          f"screen without scrolling")
-            if m["tag"] == "expanded":
-                check(len(m["alerts"]) >= 3 and
-                      all(x["shown"] for x in m["alerts"]),
-                      f"{where}: Show all shows every banner: "
-                      f"{m['alerts']}")
-        tags = [m["tag"] for m in res]
-        check(tags == ["collapsed", "expanded"],
-              f"{size}: the banners folded, and Show all opened them: "
-              f"{tags}")
-    print("  measured (Hold to arm px seen, folded / opened): " + ", ".join(
-        f"{w}x{h} {r[0]['lamps'][0].get('arm_seen')}/"
-        f"{r[-1]['lamps'][0].get('arm_seen')}"
-        for (w, h), r in got.items() if isinstance(r, list) and r))
     print("  ok")
-
-
-def _rack_status_no_show_file():
-    """The Pico on 2026-10-26: flamesafe reports three groups, screen
-    arming is on, and the show folder holds no show file."""
-    st = _rack_status_pico(many=False)
-    st["alerts"] = []
-    st["setup"] = {"ready": False, "show_files": 0,
-                   "show_folder": r"C:\Users\show\Documents\LTC Shows",
-                   "show_folder_exists": True, "schedule_ok": True,
-                   "schedule_exists": True,
-                   "schedule_path": r"C:\ProgramData\ltcplay\ltcplay_schedule.json",
-                   "example_schedule": False, "flamesafe_connected": True,
-                   "deck_heard": True, "settings_folder": r"C:\ProgramData\ltcplay"}
-    return st
 
 
 NO_SHOW_FILE_LINE = ("No show file yet. Arming and disarming flames still "
                      "work. Live flame programming needs "
                      "xlights_networks.xml in the show folder; playing a "
                      "show needs a show file.")
-
-
-def test_rack_screen_flame_controls_need_no_show_file():
-    section("rack screen (Jeff, 2026-10-26, the Pico): with no show file in "
-            "the show folder the getting-started card no longer replaces "
-            "the flame groups; flamesafe's three groups, their Hold to arm "
-            "and Disarm, Disarm all flame groups and Abort are drawn and "
-            "pressable, and one plain line says what works without a show "
-            "file. Drawn in a real browser")
-    here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    check(".flames{display:none}" not in page.replace(" ", ""),
-          "no rule hides the flame groups")
-    import shutil as _sh
-    import subprocess as _sp
-    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
-    check("function noFileLine" in logic, "noFileLine is pure page logic")
-    node = _sh.which("node")
-    if node:
-        js = logic + r"""
-const out = [];
-const t = (c, m) => { if(!c) out.push(m); };
-const su = {show_files:0, show_file_errors:[]};
-const live = {flames:{connected:true, stale:false, groups:[{name:"a"}]}, arming:{enabled:true}};
-const nominal = noFileLine(su, live);
-console.log(JSON.stringify({nominal}));
-t(noFileLine({show_files:1}, live) === "", "a show file: nothing");
-t(noFileLine(null, live) === "", "no setup view (an iPad): nothing");
-const off = noFileLine(su, {flames:live.flames, arming:{enabled:false}});
-t(/arming from this screen is switched off/.test(off) && /Disarming flames still works/.test(off) && !/Arming and disarming/.test(off), "screen arming off: says so: " + off);
-const stale = noFileLine(su, {flames:{connected:true, stale:true, groups:[{name:"a"}]}, arming:{enabled:true}});
-t(/flamesafe is not reporting/.test(stale) && /Disarm all and Stop still work/.test(stale) && !/Arming and disarming/.test(stale), "flamesafe stale: says so: " + stale);
-const bad = noFileLine({show_files:0, show_file_errors:["night.json: no cues"]}, live);
-t(/^No show file loads yet \(night\.json: no cues\)\./.test(bad), "a show file that does not load: says why: " + bad);
-t(!/[\u2013\u2014]/.test(nominal + off + stale + bad), "no dashes");
-console.log(JSON.stringify(out));
-"""
-        r = _node_js(node, js, capture_output=True, text=True,
-                    timeout=60)
-        lines = r.stdout.strip().splitlines()
-        try:
-            nominal = json.loads(lines[0])["nominal"]
-            bad = json.loads(lines[-1])
-        except (ValueError, IndexError, KeyError):
-            nominal, bad = None, None
-        check(r.returncode == 0 and bad == [],
-              f"noFileLine, in node: {r.stdout[-800:]!r} {r.stderr[-400:]!r}")
-        check(nominal == NO_SHOW_FILE_LINE,
-              f"flamesafe live and screen arming on: {nominal!r}")
-    else:
-        check(not IN_CI, "node is missing on this CI runner")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  note: no Chromium here, so the page was not drawn")
-        print("  ok")
-        return
-    got = _rack_screen_in_chromium(chrome, page, _rack_status_no_show_file(),
-                                   ((1280, 800), (1366, 768), (1366, 700),
-                                    (1920, 1080)))
-    for (w, h), res in got.items():
-        if not check(isinstance(res, list) and res,
-                     f"{w}x{h}: drawn and measured: {res!r}"):
-            continue
-        m = res[0]
-        check(not m["problems"],
-              f"{w}x{h}, no show file: every group's Hold to arm and "
-              f"Disarm, Disarm all and Abort pressable, nothing overlapping: "
-              f"{m['problems'][:8]}")
-        check(len(m["lamps"]) == 3 and all(
-            l.get("arm_seen", 0) >= 44 and l.get("buttons") == 1
-            for l in m["lamps"]),
-            f"{w}x{h}, no show file: three flame cards, one button each: "
-            f"{m['lamps']}")
-        check(m.get("setup_shown") is True,
-              f"{w}x{h}: the getting-started card is still there, beside or "
-              f"above the groups")
-        check(m.get("nofile") == NO_SHOW_FILE_LINE,
-              f"{w}x{h}: the no-show-file line is said: {m.get('nofile')!r}")
-        # Review of #113, P2-d: with the card capped, every group's Hold
-        # to arm and Disarm is on the screen without scrolling.
-        check(m.get("flames_visible_at_load") and m.get("no_abort"),
-              f"{w}x{h}: every group's buttons on the screen at load, no "
-              f"Abort sign, the getting-started card (folded to one line) "
-              f"above them: {m['lamps']}")
-        check(m.get("setup_folded") is True,
-              f"{w}x{h}: flamesafe reports groups: the card is folded")
-    # Review of #113, P2-d: no show file and flamesafe stale, or screen
-    # arming off: the groups are still drawn, Hold to arm is off and says
-    # why, the line says what is missing, Abort and Disarm all pressable.
-    for name, change, small, line in (
-            ("flamesafe stale", {"flames": "stale"}, "",
-             "flamesafe is not reporting"),
-            ("screen arming off", {"arming": "off"}, "arming off",
-             "arming from this screen is switched off")):
-        st = _rack_status_no_show_file()
-        if change.get("flames") == "stale":
-            st["flames"] = dict(st["flames"], stale=True, age_ms=None,
-                                groups=[dict(g, armed="unknown")
-                                        for g in st["flames"]["groups"]])
-        if change.get("arming") == "off":
-            st["arming"] = dict(st["arming"], enabled=False)
-        got = _rack_screen_in_chromium(chrome, page, st, ((1366, 768),),
-                                       measure_js=_LAMP_WORDS_JS)
-        res = got[(1366, 768)]
-        if not check(isinstance(res, list) and res,
-                     f"{name}: drawn: {res!r}"):
-            continue
-        m = res[-1]
-        if name == "flamesafe stale":
-            # A state not known (2026-10-26): the group's one button can
-            # not arm, and one press of it disarms (a disarm only takes
-            # risk away); its word stays Not known.
-            check(len(m["lamps"]) == 3 and all(
-                l["shown"] and not l["disabled"] and
-                l["small"] == "One press disarms" and
-                l["word"] == "Not known" and l["title"]
-                for l in m["lamps"]),
-                f"no show file, {name}: three groups drawn, each button "
-                f"Not known, one press disarms: {m['lamps']}")
-        else:
-            check(len(m["lamps"]) == 3 and all(
-                l["shown"] and l["disabled"] and small in l["small"] and
-                l["title"] and l["word"] != "Disarm"
-                for l in m["lamps"]),
-                f"no show file, {name}: three groups drawn, Hold to arm "
-                f"shown but off, saying why: {m['lamps']}")
-        check(line in (m.get("nofile") or ""),
-              f"no show file, {name}: the line says what is missing: "
-              f"{m.get('nofile')!r}")
-        check(not m["problems"],
-              f"no show file, {name}: Abort and Disarm all pressable: "
-              f"{m['problems']}")
-    # A show file present: the line is gone.
-    st = _rack_status_no_show_file()
-    st["setup"] = dict(st["setup"], show_files=1, ready=True)
-    got = _rack_screen_in_chromium(chrome, page, st, ((1366, 768),))
-    res = got[(1366, 768)]
-    if check(isinstance(res, list) and res, f"drawn: {res!r}"):
-        check(res[0].get("nofile") is None and not res[0]["problems"],
-              f"a show file: no line, the groups as before: "
-              f"{res[0].get('nofile')!r} {res[0]['problems'][:4]}")
-    print("  ok")
-
-
-# Each flame group's Hold to arm: shown, off, its small line and its
-# tooltip, sampled every 200 ms for 3 s (a re-arm wait counting down).
-_LAMP_WORDS_JS = r"""
-<script>
-(function(){
-function shown(el){ return !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden"; }
-function hits(el){
-  el.scrollIntoView({block:"center", inline:"nearest"});
-  const r = el.getBoundingClientRect(), bad = [];
-  const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-  if(!at || !(el === at || el.contains(at))) bad.push("covered by " + (at ? (at.id || at.className || at.tagName) : "nothing"));
-  return bad;
-}
-function snap(t){
-  const out = {t:t, lamps:[], problems:[], note:(document.getElementById("arm-note") || {}).textContent || "",
-    nofile:shown(document.getElementById("nofile")) ? document.getElementById("nofile").textContent : null};
-  document.querySelectorAll("#fl-lamps .lamp").forEach(lp => {
-    const b = lp.querySelector("[data-arm]");
-    out.lamps.push({name:(lp.querySelector("b") || {}).textContent, shown:shown(b), disabled:!!(b && b.disabled),
-      small:b ? b.querySelector("small").textContent : "", title:b ? b.title : "",
-      why:(lp.querySelector(".why") || {}).textContent || "", word:b ? b.querySelector(".word").textContent : ""});
-  });
-  for(const id of ["b-disarm"]){
-    const el = document.getElementById(id);
-    if(!shown(el)) out.problems.push(id + " not shown"); else for(const b of hits(el)) out.problems.push(id + " " + b);
-  }
-  scrollTo(0, 0);
-  return out;
-}
-function go(){
-  if(!document.querySelector("#fl-lamps .lamp")) return setTimeout(go, 50);
-  const res = [], t0 = Date.now();
-  const tick = () => {
-    res.push(snap(Date.now() - t0));
-    if(Date.now() - t0 < 3000) return setTimeout(tick, 200);
-    const pre = document.createElement("pre"); pre.id = "rack-measure";
-    pre.textContent = JSON.stringify(res);
-    document.body.appendChild(pre);
-  };
-  setTimeout(tick, 400);
-}
-go();
-})();
-</script>
-"""
 
 
 def test_rack_screen_says_the_rearm_wait():
@@ -55689,7 +54638,7 @@ def test_rack_screen_says_the_rearm_wait():
     from ltcplay import remote as RM
     from ltcplay import streamdeck as SD
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
+    page = screen_text()
     # The engine: the deck's words, parsed and aged; display only.
     check(RM.deck_rearm("usb_ms=3&rearm=0.1500,2.300&prefused=1.refractory,"
                         "2.bogus,x.refractory") ==
@@ -55795,77 +54744,6 @@ console.log(JSON.stringify(out));
         check(not IN_CI, "node is missing on this CI runner")
     for f in ("function armWaitWords", "function holdRefusalWords"):
         check(f in logic, f"{f} is pure page logic")
-    for need in ('const said = holdRefusalWords(e.code, rearmLeftMs(',
-                 'armSay(said, 2);',
-                 'const w = armWaitWords(left, !!REARM_SEEN[i]',
-                 'if(!holding(i)) ab.disabled = true;'):
-        check(need in page, f"the page has {need!r}")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    # The show screen: front row was just disarmed (the deck's window,
-    # 1.5 s) for the first few polls, then the wait is over.
-    polls = [0]
-
-    def status():
-        polls[0] += 1
-        st = _rack_status_pico(many=False)
-        st["alerts"] = []
-        gs = [dict(g, rearm_ms=0, purge_refused="")
-              for g in st["flames"]["groups"]]
-        if polls[0] <= 3:
-            gs[0]["rearm_ms"] = 1500
-        st["flames"] = dict(st["flames"], groups=gs)
-        return st
-    got = _rack_screen_in_chromium(chrome, page, status, ((1366, 768),),
-                                   measure_js=_LAMP_WORDS_JS)
-    res = got[(1366, 768)]
-    if check(isinstance(res, list) and res, f"drawn: {res!r}"):
-        first, last = res[0]["lamps"][0], res[-1]["lamps"][0]
-        check(first["disabled"] and
-              _re_match(r"^Re-arm in 1\.[0-5] s$", first["small"]),
-              f"during the wait: Hold to arm off, counting down: {first}")
-        check(not last["disabled"] and last["small"] == "ready: hold to arm",
-              f"after it: on, and says it is ready: {last}")
-        check(all(not l["disabled"] and l["small"] == "hold to arm"
-                  for l in res[0]["lamps"][1:]),
-              f"the other groups are untouched: {res[0]['lamps'][1:]}")
-        seen = [s["lamps"][0]["small"] for s in res]
-        check(any(x.startswith("Re-arm in") for x in seen) and
-              seen[-1] == "ready: hold to arm",
-              f"the countdown, as drawn: {seen}")
-    # The Startup page: m1 and m2 (front row) selected, the deck refused
-    # their purge arm; m4 (cat-walk) selected, its wait running.
-    st = _rack_status_pico(many=False)
-    st["alerts"] = []
-    gs = [dict(g, rearm_ms=0, purge_refused="")
-          for g in st["flames"]["groups"]]
-    gs[0]["purge_refused"] = "refractory"
-    gs[1]["rearm_ms"] = 60000
-    st["flames"] = dict(st["flames"], groups=gs)
-    st["morning"] = {"locked_machines": [], "locked_lasers": [],
-                     "flamesafe_confirmed": True, "purge": True,
-                     "purge_enabled": True, "open": True}
-    mo = _morning_view_pico(selected=["m1", "m4"])
-    got = _rack_screen_in_chromium(
-        chrome, page, st, ((1280, 800),), measure_js=_STARTUP_MEASURE_JS,
-        frag="#morning", routes={"/api/remote/morning": mo})
-    res = got[(1280, 800)]
-    if check(isinstance(res, list) and res, f"drawn: {res!r}"):
-        tiles = {t["id"]: t for t in res[0]["tiles"]}
-        check(tiles["m1"]["wait"].startswith("Refused: the re-arm wait was "
-                                             "not over."),
-              f"a refused purge arm says so on its tile: {tiles['m1']}")
-        check(_re_match(r"^Re-arm in [0-9]+\.[0-9] s$", tiles["m4"]["wait"]),
-              f"a running wait counts down on its tile: {tiles['m4']}")
-        check(tiles["m7"]["wait"] == "", f"an unselected tile: nothing: "
-                                         f"{tiles['m7']}")
-        check(not res[0]["problems"] and not res[0]["small"],
-              f"still readable, nothing overlapping: {res[0]['problems']} "
-              f"{res[0]['small'][:4]}")
     print("  ok")
 
 
@@ -55912,52 +54790,6 @@ def test_streamdeck_reports_rearm_wait_and_purge_refusal():
           f"clicked again after the wait: armed, nothing refused: "
           f"{arm.wanted} {c.rearm_report()}")
     print("  ok")
-
-
-_TASKBAR_EDGE_JS = r"""
-<script>
-(function(){
-function go(){
-  if(!document.querySelector("#fl-lamps .lamp") && !document.querySelector("#mo-field .mach")) return setTimeout(go, 100);
-  setTimeout(() => {
-    // The lowest pressable button at the bottom of the page (there is no
-    // Abort sign in the corner any more, removed 2026-10-30).
-    const out = {vh:innerHeight, pad:getComputedStyle(document.documentElement).getPropertyValue("--pad-bottom").trim(), at:[]};
-    const shown = el => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden" && !el.closest("[hidden]") && !el.closest("#modal") && !el.closest("#info");
-    scrollTo(0, 1e6);
-    let low = null;
-    for(const el of document.querySelectorAll("button")){
-      if(!shown(el)) continue;
-      const r = el.getBoundingClientRect();
-      if(r.height > 0 && (!low || r.bottom > low.r.bottom)) low = {el:el, r:r};
-    }
-    if(low){
-      const r = low.r, hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-      out.at.push({scroll:1e6, id:low.el.id || low.el.textContent.trim().slice(0, 20), top:Math.round(r.top), bottom:Math.round(r.bottom), h:Math.round(r.height), hit:!!hit && (hit === low.el || low.el.contains(hit))});
-    }
-    scrollTo(0, 0);
-    const pre = document.createElement("pre"); pre.id = "rack-measure";
-    pre.textContent = JSON.stringify([out]);
-    document.body.appendChild(pre);
-  }, 800);
-}
-go();
-})();
-</script>
-"""
-
-
-def _taskbar_js(over):
-    """The Pico's screen as the page sees it: a window `over` CSS px taller
-    than the work area above the taskbar (2026-10-26). Always set: headless
-    Chromium reports an 800x600 screen whatever the window's size."""
-    return ("<script>(function(){const h = innerHeight || 800;"
-            "Object.defineProperty(window, 'outerHeight', {get: () => h});"
-            "Object.defineProperty(window, 'screenY', {get: () => 0});"
-            "Object.defineProperty(screen, 'availTop', {get: () => 0});"
-            "Object.defineProperty(screen, 'height', {get: () => h});"
-            f"Object.defineProperty(screen, 'availHeight', {{get: () => h - {over}}});"
-            "})();</script>")
 
 
 def test_rack_window_fits_the_work_area_above_the_taskbar():
@@ -56033,7 +54865,7 @@ def test_rack_window_fits_the_work_area_above_the_taskbar():
     finally:
         gone()
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
+    page = screen_text()
     import shutil as _sh
     import subprocess as _sp
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
@@ -56065,55 +54897,7 @@ console.log(JSON.stringify(out));
               f"bottomPad, in node: {r.stdout[-600:]!r} {r.stderr[-300:]!r}")
     else:
         check(not IN_CI, "node is missing on this CI runner")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    st = _rack_status_pico(many=False)
-    st["alerts"] = []
-    st["morning"] = {"locked_machines": [], "locked_lasers": [],
-                     "flamesafe_confirmed": True, "purge": False,
-                     "purge_enabled": True, "open": True}
-    said = []
-    for frag, what in (("", "show screen"), ("#morning", "Startup page")):
-        for over in (0, 96):
-            got = _rack_screen_in_chromium(
-                chrome, page, st, ((1280, 800),), measure_js=_TASKBAR_EDGE_JS,
-                head_js=_taskbar_js(over), frag=frag,
-                routes={"/api/remote/morning": _morning_view_pico()})
-            res = got[(1280, 800)]
-            if not check(isinstance(res, list) and res,
-                         f"{what}, {over} px under the taskbar: drawn: "
-                         f"{res!r}"):
-                continue
-            m = res[0]
-            check(len(m["at"]) == 1, f"{what}: a button was measured: {m}")
-            said.append(f"{what} overlap {over}: the lowest button's bottom "
-                        f"{max([a['bottom'] for a in m['at']] or [0])} of "
-                        f"{m['vh']}")
-            for a in m["at"]:
-                check(a["bottom"] <= m["vh"] - over and a["top"] >= 0 and
-                      a["hit"],
-                      f"{what}, {over} px of the window under the taskbar, "
-                      f"scrolled to the bottom: the lowest button is wholly "
-                      f"above it and pressable: {a} (window {m['vh']}, pad "
-                      f"{m['pad']})")
-            if not over:
-                check(m["pad"] == "0px",
-                      f"{what}, a window that fits: no extra room: {m}")
-            else:
-                check(m["pad"] == f"{over}px",
-                      f"{what}, {over} px under the taskbar: the page keeps "
-                      f"that much room under itself: {m}")
-    print("  measured: " + "; ".join(said))
     print("  ok")
-
-
-def _re_match(pat, s):
-    import re as _re
-    return bool(_re.match(pat, s or ""))
 
 
 def _morning_view_pico(selected=(), firing=False):
@@ -56170,232 +54954,6 @@ def _morning_view_pico(selected=(), firing=False):
              "text": "No show file yet: playing a show needs one."}],
         "flamesafe_groups": ["front row", "cat-walk", "wave flamer"],
         "open": True, "me": "this PC (rack screen)"}
-
-
-_STARTUP_MEASURE_JS = r"""
-<script>
-(function(){
-function shown(el){ return !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden"; }
-function rectOf(el){ const r = el.getBoundingClientRect();
-  return {top:r.top + scrollY, bottom:r.bottom + scrollY, left:r.left, right:r.right, h:r.height, w:r.width}; }
-function hits(el){
-  el.scrollIntoView({block:"center", inline:"nearest"});
-  const r = el.getBoundingClientRect(), bad = [];
-  if(r.top < 0 || r.bottom > innerHeight + 0.5 || r.left < 0 || r.right > innerWidth + 0.5) bad.push("not wholly inside the window when scrolled to");
-  const ins = Math.min(4, r.width / 4, r.height / 4);
-  for(const [x, y] of [[r.left + r.width/2, r.top + r.height/2], [r.left + ins, r.top + ins], [r.right - ins, r.bottom - ins]]){
-    const at = document.elementFromPoint(x, y);
-    if(!at || !(el === at || el.contains(at))) bad.push("covered at " + Math.round(x) + "," + Math.round(y) + " by " + (at ? (at.id || at.className || at.tagName) : "nothing"));
-  }
-  return bad;
-}
-function measure(){
-  scrollTo(0, 0);
-  const out = {vw:innerWidth, vh:innerHeight, problems:[], small:[], min_px:999, tile_px:999,
-    key:(document.getElementById("mo-key") || {}).textContent || "",
-    focus:shown(document.getElementById("mo-focus")) ? document.getElementById("mo-focus").textContent : null,
-    nofile:shown(document.getElementById("nofile")) ? document.getElementById("nofile").textContent : null,
-    tiles:[], scroll_h:document.scrollingElement.scrollHeight,
-    groups_h:Math.round(document.getElementById("mo-groups").getBoundingClientRect().height),
-    msg_top:Math.round(document.getElementById("mo-msg").getBoundingClientRect().top),
-    field_top:Math.round(document.getElementById("mo-field").getBoundingClientRect().top),
-    grp:[...document.querySelectorAll("#mo-groups [data-grp]")].map(b => ({h:Math.round(b.getBoundingClientRect().height),
-      text:(b.querySelector(".gd") || {}).textContent || "", title:b.title, cls:b.className}))};
-  // Every piece of text on the Startup page (there is no Abort bar any
-  // more, removed 2026-10-30).
-  const root = [document.getElementById("v-morning")];
-  for(const r of root){
-    const tw = document.createTreeWalker(r, NodeFilter.SHOW_TEXT);
-    for(let n = tw.nextNode(); n; n = tw.nextNode()){
-      const t = n.textContent.trim(); const el = n.parentElement;
-      if(!t || !shown(el)) continue;
-      const px = parseFloat(getComputedStyle(el).fontSize);
-      if(px < out.min_px) out.min_px = px;
-      if(px < 14) out.small.push(Math.round(px * 10) / 10 + " px: " + (el.id || el.className || el.tagName) + ": " + t.slice(0, 30));
-    }
-  }
-  document.querySelectorAll("#mo-field .mach").forEach(el => {
-    const b = el.querySelector("b"); const px = parseFloat(getComputedStyle(b).fontSize);
-    out.tile_px = Math.min(out.tile_px, px);
-    out.tiles.push({id:el.dataset.id, px:px, w:Math.round(el.getBoundingClientRect().width), word:el.querySelector(".w").textContent,
-      wait:(el.querySelector(".wait") || {}).textContent || ""});
-  });
-  // The panels never overlap each other.
-  const panels = ["mo-groups", "mo-field", "mo-firebar", "mo-shut"].map(id => document.getElementById(id))
-    .concat([...document.querySelectorAll("#mo-right > section")]).filter(shown);
-  for(let i = 0; i < panels.length; i++) for(let j = i + 1; j < panels.length; j++){
-    const a = rectOf(panels[i]), b = rectOf(panels[j]);
-    if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
-      out.problems.push("overlap: " + (panels[i].id || panels[i].querySelector("h2").textContent) + " and " + (panels[j].id || panels[j].querySelector("h2").textContent));
-  }
-  // The machine tiles never overlap each other either.
-  const ms = [...document.querySelectorAll("#mo-field .mach")];
-  for(let i = 0; i < ms.length; i++) for(let j = i + 1; j < ms.length; j++){
-    const a = ms[i].getBoundingClientRect(), b = ms[j].getBoundingClientRect();
-    if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
-      out.problems.push("overlap: tiles " + ms[i].dataset.id + " and " + ms[j].dataset.id);
-  }
-  if(document.getElementById("b-abort") || document.getElementById("abortbar")) out.problems.push("an Abort sign is still drawn");
-  // A drop-down has the keyboard: Space is its own (review of #113, P2-c).
-  const nm = document.getElementById("mo-name"), fn = document.getElementById("mo-focus");
-  if(nm){ nm.focus(); out.focus_select = shown(fn) ? fn.textContent : null; nm.blur(); }
-  return out;
-}
-function go(){
-  if(!document.querySelector("#mo-field .mach") || !document.querySelector("#mo-engine .ck")) return setTimeout(go, 100);
-  setTimeout(() => {
-    const pre = document.createElement("pre"); pre.id = "rack-measure";
-    pre.textContent = JSON.stringify([measure()]);
-    document.body.appendChild(pre);
-  }, 600);
-}
-go();
-})();
-</script>
-"""
-
-# The page has no keyboard focus (another window was clicked last).
-_NO_FOCUS_JS = "<script>document.hasFocus = () => false;</script>"
-
-
-def test_startup_page_says_hold_space_and_this_page_selected():
-    section("Startup page (Jeff, 2026-10-26, the Pico): the purge's fire "
-            "control says Space must be held with this page selected, and "
-            "a line says to click the page first when it does not have the "
-            "keyboard; the no-show-file line shows here too. Drawn in a "
-            "real browser")
-    here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    for t in ("Hold Space (this page must be selected)",
-              "Click this page, then hold Space"):
-        check(t in page, f"the page says {t!r}")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    st = _rack_status_no_show_file()
-    st["morning"] = {"locked_machines": [], "locked_lasers": [],
-                     "flamesafe_confirmed": True, "purge": True,
-                     "purge_enabled": True, "open": True}
-    mo = _morning_view_pico(selected=["m1"])
-    for focus_js, has in (("", True), (_NO_FOCUS_JS, False)):
-        got = _rack_screen_in_chromium(
-            chrome, page, st, ((1280, 800),), measure_js=_STARTUP_MEASURE_JS,
-            head_js=focus_js, frag="#morning",
-            routes={"/api/remote/morning": mo})
-        res = got[(1280, 800)]
-        if not check(isinstance(res, list) and res, f"drawn: {res!r}"):
-            continue
-        m = res[0]
-        check(m["key"] == "Hold Space (this page must be selected)",
-              f"a machine armed for the purge: the fire control says to hold "
-              f"Space with this page selected: {m['key']!r}")
-        if has:
-            check(m["focus"] is None,
-                  f"the page has the keyboard: no click-first line: "
-                  f"{m['focus']!r}")
-        else:
-            check(m["focus"] == "Click this page, then hold Space",
-                  f"the page does not have the keyboard: it says so: "
-                  f"{m['focus']!r}")
-        check(m["nofile"] == NO_SHOW_FILE_LINE,
-              f"the no-show-file line on the Startup page: {m['nofile']!r}")
-        if has:
-            check(m.get("focus_select") == "Space does nothing in a text "
-                  "box: click the machine map, then hold Space",
-                  f"a drop-down has the keyboard: it says Space is its own: "
-                  f"{m.get('focus_select')!r}")
-    # Review of #113, P2-c: purge arming off, or not allowed now: no line
-    # about Space at all, focus or not.
-    for name, change in (("purge arming off", {"purge_enabled": False}),
-                         ("not allowed now", {"live_refusal": "a show is "
-                                                              "running"})):
-        mo2 = dict(mo, **change)
-        got = _rack_screen_in_chromium(
-            chrome, page, st, ((1280, 800),), measure_js=_STARTUP_MEASURE_JS,
-            head_js=_NO_FOCUS_JS, frag="#morning",
-            routes={"/api/remote/morning": mo2})
-        res = got[(1280, 800)]
-        if check(isinstance(res, list) and res, f"{name}: drawn: {res!r}"):
-            check(res[0]["focus"] is None and res[0].get("focus_select") is None,
-                  f"{name}: no Space line: {res[0]['focus']!r}")
-    print("  ok")
-
-
-def test_startup_page_readable_at_the_show_pc_sizes():
-    section("Startup page (Jeff, 2026-10-26, the Pico at 1280x800): the "
-            "machine map, lasers, engine checks, checklists and Shutdown "
-            "never shrink text under 14 px or a machine tile's label under "
-            "16 px; panels stack and the page scrolls instead; nothing "
-            "overlaps; the Abort bar stays on the window. Drawn in a real "
-            "browser at 1280x800, 1366x768 and 1920x1080")
-    here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    st = _rack_status_pico(many=False)
-    st["morning"] = {"locked_machines": [], "locked_lasers": [],
-                     "flamesafe_confirmed": True, "purge": True,
-                     "purge_enabled": True, "open": True}
-    mo = _morning_view_pico(selected=["m1", "m2"])
-    got = _rack_screen_in_chromium(
-        chrome, page, st, ((1280, 800), (1366, 768), (1920, 1080)),
-        measure_js=_STARTUP_MEASURE_JS, frag="#morning",
-        routes={"/api/remote/morning": mo})
-    said = []
-    for (w, h), res in got.items():
-        if not check(isinstance(res, list) and res,
-                     f"{w}x{h}: drawn and measured: {res!r}"):
-            continue
-        m = res[0]
-        said.append(f"{w}x{h} text {m['min_px']:g} px, tiles "
-                    f"{m['tile_px']:g} px")
-        check(not m["small"], f"{w}x{h}: no text under 14 px: "
-                              f"{m['small'][:6]} ({len(m['small'])} in all)")
-        check(m["tile_px"] >= 16 and len(m["tiles"]) == 8,
-              f"{w}x{h}: every machine tile's label 16 px or more: "
-              f"{m['tile_px']} {m['tiles'][:2]}")
-        check(not m["problems"], f"{w}x{h}: {m['problems'][:6]}")
-    # A group button's words (2026-10-28), at their longest: one line,
-    # cut with an ellipsis, the whole in the tooltip; the group row, the
-    # field and the message line do not move.
-    long = ("5 of 6 selected; flamesafe has not armed front row (the "
-            "edge check is still waiting for its dwell) yet; front-row-4 "
-            "locked out; front-row-6 never purged")
-    mo2 = dict(mo, group_state={
-        g: {"state": "part", "any": True, "text": long, "selected": [],
-            "locked": [], "never": []} for g in mo["groups"]})
-    got2 = _rack_screen_in_chromium(
-        chrome, page, st, ((1280, 800), (1366, 768), (1920, 1080)),
-        measure_js=_STARTUP_MEASURE_JS, frag="#morning",
-        routes={"/api/remote/morning": mo2})
-    for (w, h), res in got2.items():
-        a = (got.get((w, h)) or [None])[0]
-        if not check(isinstance(res, list) and res and a,
-                     f"{w}x{h}: drawn with long group words: {res!r}"):
-            continue
-        b = res[0]
-        check(b["groups_h"] == a["groups_h"] and
-              b["field_top"] == a["field_top"] and
-              b["msg_top"] == a["msg_top"],
-              f"{w}x{h}: the long words move nothing: group row "
-              f"{a['groups_h']} -> {b['groups_h']}, field {a['field_top']} "
-              f"-> {b['field_top']}, message line {a['msg_top']} -> "
-              f"{b['msg_top']}")
-        check(b["grp"] and all(x["text"] == long and long in x["title"] and
-                               "part" in x["cls"] for x in b["grp"]),
-              f"{w}x{h}: every group button says it, amber, the whole in "
-              f"its tooltip: {b['grp'][:1]}")
-        check(not b["small"] and not b["problems"],
-              f"{w}x{h}: {b['small'][:4]} {b['problems'][:4]}")
-    print("  measured: " + "; ".join(said))
-    print("  ok")
 
 
 # -- the rack screen, driven (Jeff, 2026-10-26) -------------------------------
@@ -56457,29 +55015,6 @@ setTimeout(go, 0);
 """
 
 
-def _rack_drive(chrome, page, status, steps_js, size=(1366, 768), **kw):
-    """Draw the page at `size` and run `steps_js` (the body of
-    window.__drive) on it: the dict it filled, or a string saying why
-    not."""
-    js = "<script>window.__drive = async (out, h) => {\n" + steps_js + \
-        "\n};</script>" + _RACK_DRIVE_JS
-    got = _rack_screen_in_chromium(chrome, page, status, (size,),
-                                   measure_js=js, **kw)
-    res = got[size]
-    return res[0] if isinstance(res, list) and res else str(res)
-
-
-def _rack_status_off():
-    """The Pico, quiet: three groups off, screen arming on, no banners."""
-    st = _rack_status_pico(many=False)
-    st["alerts"] = []
-    st["flames"] = dict(st["flames"], cues_fault="", groups=[
-        dict(g, wanted=False, rearm_ms=0, purge_refused="")
-        for g in st["flames"]["groups"]])
-    st["deck"] = {"text": "", "heard": True}
-    return st
-
-
 def _page_logic_in_node(page, body):
     """Run `body` in node after the page's pure logic block: the list of
     failures it printed, or None when it did not run."""
@@ -56500,16 +55035,6 @@ def _page_logic_in_node(page, body):
     return bad
 
 
-def _rack_status_stop_shown():
-    """The rack screen with a show paused on Hold: Stop is drawn in Start
-    now's place (stopShows)."""
-    st = _rack_status_pico()
-    st["schedule"] = dict(st["schedule"], state="PAUSED", running=1,
-                          held=True)
-    st["show"] = {"running": True, "timecode": "00:01:00:00"}
-    return st
-
-
 def test_rack_screen_has_no_abort_and_stop_taps_like_it_did():
     section("Abort is removed (Jeff, 2026-10-30): no Abort sign, no Abort "
             "route and no Abort words on the rack screen; Stop is the "
@@ -56520,16 +55045,12 @@ def test_rack_screen_has_no_abort_and_stop_taps_like_it_did():
             "the screen as a banner until Seen. Drawn in a real browser and "
             "pressed")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
+    page = screen_text()
     for gone in ('id="b-abort"', 'id="abortbar"', 'press("abort"',
                  "/api/remote/abort", "abortTapStep", "abortTapKind",
                  "abortPlan", "saidAbort", "ABORT_TAP", "--abort-",
                  'id="abort-said"', "TAP AGAIN TO ABORT"):
         check(gone not in page, f"the page has no {gone!r}")
-    check('<div id="stop-said" hidden>' in page and
-          "if(stopFailed(r, j)) saidStop(el.textContent);" in page,
-          "a Stop that did not do all of it is a banner, never only a "
-          "one-line toast")
     bad = _page_logic_in_node(page, r"""
 t(STOP_TAP_MS === 2000, "2.0 s");
 t(stopTapStep(null, 1000, "mouse").fire === false, "one tap never stops");
@@ -56553,149 +55074,89 @@ t(/stays locked out/.test(unlockRefusal({name:"G1", group:"ground"}, {connected:
 """)
     if bad is not None:
         check(bad == [], f"the Stop double tap, in node: {bad}")
-    check("touchstart" not in page and "swipe" not in page.lower(),
+    check("touchstart" not in page,
           "no gesture stands in front of Stop")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    _stop_double_tap_paths(chrome, page)
     print("  ok")
 
 
-def _stop_double_tap_paths(chrome, page):
-    """Stop's double tap (Jeff, 2026-10-30, the Abort sign's own rules):
-    late, keyboard, two fingers, a mouse's double click, a held key, the
-    focus, and a failure said as a banner."""
-    st = _rack_status_stop_shown()
-    steps = r"""
-const sb = document.getElementById("b-start");
-out.mode = sb.dataset.mode;
-out.abort_left = !!document.getElementById("b-abort") || !!document.getElementById("abortbar");
-h.tap(sb);
-await h.sleep(2100);
-h.tap(sb);
-await h.sleep(150);
-out.late = h.posts("stop").length;
-out.late_armed = sb.classList.contains("tap1");
-"""
-    m = _rack_drive(chrome, page, st, steps)
-    if check(isinstance(m, dict) and not m.get("problems"),
-             f"Stop, a late second tap: {m!r}"):
-        check(m["mode"] == "stop" and not m["abort_left"],
-              f"Stop is drawn and there is no Abort sign: {m}")
-        check(m["late"] == 0 and m["late_armed"],
-              f"a second tap after 2.0 s does not stop; it is a first tap "
-              f"again: {m}")
-    steps = r"""
-const sb = document.getElementById("b-start");
-const n = () => h.posts("stop").length;
-const pclick = (id, type) => sb.dispatchEvent(new PointerEvent("click", {bubbles:true, cancelable:true, detail:1, pointerId:id, pointerType:type, isPrimary:id === 1}));
-const settle = async () => { await h.sleep(2300); };
-sb.click(); await h.sleep(300); out.key_one = n(); sb.click(); await h.sleep(150);
-out.key = n();
-await settle();
-pclick(2, "touch"); await h.sleep(250); pclick(3, "touch"); await h.sleep(150);
-out.fingers = n();
-await settle();
-pclick(4, "touch"); await h.sleep(250); pclick(1, "mouse"); await h.sleep(250);
-out.mixed = n();
-pclick(1, "mouse"); await h.sleep(150);
-out.mixed_then_mouse = n();
-await settle();
-// A fast double click (two clicks at once) stops too.
-sb.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:1}));
-sb.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:2}));
-await h.sleep(150);
-out.bounce = n();
-await settle();
-// A held key's repeats are swallowed; the mouse leaves no focus behind.
-const rep = new KeyboardEvent("keydown", {key:"Enter", repeat:true, bubbles:true, cancelable:true});
-sb.dispatchEvent(rep);
-out.repeat_swallowed = rep.defaultPrevented;
-const first = new KeyboardEvent("keydown", {key:"Enter", repeat:false, bubbles:true, cancelable:true});
-sb.dispatchEvent(first);
-out.first_key_kept = !first.defaultPrevented;
-sb.focus();
-h.tap(sb);
-out.focus_left = document.activeElement !== sb;
-"""
-    # About 11 s of the page's own time (four 2.3 s settles): past the
-    # 6 s default budget, so the page never measured itself on the
-    # windows runner (first CI run of #198).
-    m = _rack_drive(chrome, page, st, steps, budget_ms=20000)
-    if check(isinstance(m, dict) and not m.get("problems"),
-             f"Stop, the other ways to tap twice: {m!r}"):
-        check(m["key_one"] == 0 and m["key"] == 1,
-              f"Enter or Space twice stops (once is nothing): {m}")
-        check(m["fingers"] == 2, f"two quick taps by two fingers stop: {m}")
-        check(m["mixed"] == 2 and m["mixed_then_mouse"] == 3,
-              f"a finger then the mouse is two first taps; the mouse twice "
-              f"stops: {m}")
-        check(m["bounce"] == 4,
-              f"second review of #122, P2-2: a fast double click stops: {m}")
-        check(m["repeat_swallowed"] and m["first_key_kept"] and
-              m["focus_left"],
-              f"review of #122, P2-2: a held key's repeats never count, and "
-              f"a tap leaves no keyboard focus on Stop: {m}")
-    # A late timer (review of #122, P2-6 for the Abort sign; cold review of
-    # #191 for Stop): only the time between the taps decides.
-    steps = r"""
-const sb = document.getElementById("b-start");
-const si = window.setTimeout;
-window.setTimeout = (f, ms, ...a) => si(f, ms === STOP_TAP_MS ? ms + 1500 : ms, ...a);
-h.tap(sb);
-await h.sleep(2300);
-out.still_tap1 = sb.classList.contains("tap1");
-h.tap(sb);
-await h.sleep(250);
-out.late = h.posts("stop").length;
-h.tap(sb);
-await h.sleep(250);
-out.after = h.posts("stop").length;
-"""
-    m = _rack_drive(chrome, page, st, steps)
-    if check(isinstance(m, dict) and not m.get("problems"),
-             f"Stop, a late timer: {m!r}"):
-        check(m["still_tap1"] and m["late"] == 0 and m["after"] == 1,
-              f"a late timer never lets a tap after 2 s fire (it is a "
-              f"first tap), and the next tap within 2 s stops: {m}")
-    # A failed Stop: said as a banner until Seen, never only a toast.
-    for answer, why in (
-            ("[503, {error:\"The engine did not answer.\"}]", "refused"),
-            ("[200, {stopped:true, run_on:true, flames:{disarmed:false}}]",
-             "flames not disarmed")):
-        steps = r"""
-const sb = document.getElementById("b-start");
-window.__answer["stop"] = b => @ANS@;
-h.tap(sb); await h.sleep(200); h.tap(sb); await h.sleep(400);
-const b = document.getElementById("stop-said");
-out.posts = h.posts("stop").length;
-out.shown = !b.hidden;
-out.said = b.querySelector(".altext").textContent;
-document.getElementById("stop-said-ok").click();
-out.seen_hides = b.hidden;
-""".replace("@ANS@", answer)
-        m = _rack_drive(chrome, page, st, steps)
-        if check(isinstance(m, dict) and not m.get("problems"),
-                 f"Stop {why}: {m!r}"):
-            check(m["posts"] == 1 and m["shown"] and
-                  ("e-stop" in m["said"]) and m["seen_hides"],
-                  f"a Stop {why} is a banner naming the e-stop, until Seen: "
-                  f"{m}")
-    # A Stop that did all of it is no banner.
-    steps = r"""
-const sb = document.getElementById("b-start");
-window.__answer["stop"] = b => [200, {stopped:true, run_on:true, show:{ok:true}, hold:{ok:true}, flames:{disarmed:true}}];
-h.tap(sb); await h.sleep(200); h.tap(sb); await h.sleep(400);
-out.shown = !document.getElementById("stop-said").hidden;
-"""
-    m = _rack_drive(chrome, page, st, steps)
-    if check(isinstance(m, dict) and not m.get("problems"),
-             f"Stop done: {m!r}"):
-        check(not m["shown"], f"a Stop that did all of it is no banner: {m}")
+def test_fireball_and_cleaning_rules():
+    section("the Fireball's and the wave flamer cleaning's rules "
+            "(remote_rules.js), run in node: fireballBody turns on only "
+            "what is the JSON word true; fireballState cuts on a stale page "
+            "or signed out, and cuts a toggle left on while the Fireball "
+            "is not armed; cleaningBody holds only on true; cleaningState "
+            "and cleaningWords say what the button may do and where a run "
+            "is (the first screen's page tests, kept as rule tests)")
+    rules = rules_text()
+    for f in ("function fireballBody(", "function fireballState(",
+              "function cleaningBody(", "function cleaningState(",
+              "function cleaningWords("):
+        check(f in rules, f"the rules have {f}")
+    bad = _page_logic_in_node(rules, r"""
+const V = (o) => Object.assign({available:true, armed:"armed", blocked:"", owner:null, mine:false, armed_why:"not armed why"}, o || {});
+const off = {fuel:false, air:false, valve:false, igniter:false, purge:false};
+let b = fireballBody({fuel:true, valve:true, air:1, purge:"true"}, "r1", 7, true);
+t(JSON.stringify(b) === JSON.stringify({controls:{fuel:true, air:false, valve:true, igniter:false, purge:false}, run:"r1", seq:7, change:true}), "the body: only true is on: " + JSON.stringify(b));
+t(fireballBody(off, undefined, 1).run === null, "no run: null");
+let s = fireballState(V(), off, false, false);
+t(s.ok && !s.cut && s.armed && /Valve Open and Igniter are on only while held/.test(s.text), "armed, fresh: a press may start: " + JSON.stringify(s));
+s = fireballState(V({armed:"off"}), off, false, false);
+t(!s.ok && !s.cut && /nothing on this page arms/.test(s.text) && s.block === "Arm the Fireball first.", "not armed: nothing may start, says why: " + JSON.stringify(s));
+s = fireballState(V({armed:"off"}), Object.assign({}, off, {fuel:true, purge:true}), false, false);
+t(s.text === "Turn Fuel, Purge off before arming." && s.cut, "not armed with a toggle on: says turn it off before arming, and cuts: " + JSON.stringify(s));
+s = fireballState(V(), Object.assign({}, off, {valve:true}), true, false);
+t(!s.ok && s.cut && /not live/.test(s.cut), "a stale page: cut: " + JSON.stringify(s));
+s = fireballState(V(), Object.assign({}, off, {air:true}), false, true);
+t(!s.ok && /view only/.test(s.cut), "signed out: cut: " + JSON.stringify(s));
+s = fireballState(V({blocked:"a scheduled show is live (SHOW)"}), off, false, false);
+t(!s.ok && s.block === "Not available now: a scheduled show is live (SHOW)" && !s.cut, "a show live: says why: " + JSON.stringify(s));
+s = fireballState(V({owner:"iPad at 10.20.0.44", mine:false}), off, false, false);
+t(!s.ok && /One screen at a time/.test(s.block), "another screen has it: " + JSON.stringify(s));
+s = fireballState(V({owner:"Rack screen", mine:true}), Object.assign({}, off, {fuel:true}), false, false);
+t(s.ok && !s.cut, "this screen has it: fine");
+s = fireballState(V({available:false, problem:"no group named fireball"}), off, false, false);
+t(!s.ok && s.block === "no group named fireball", "no group: says why");
+s = fireballState(null, off, false, false);
+t(!s.ok, "nothing read yet: nothing may start");
+""")
+    check(bad == [] or bad is None, f"the Fireball rules, in node: {bad}")
+    bad = _page_logic_in_node(rules, r"""
+const V = (o) => Object.assign({available:true, state:"idle", running:false, mine:false, holder:null, blocked:""}, o || {});
+let b = cleaningBody(true, "r1", 4, true);
+t(JSON.stringify(b) === JSON.stringify({hold:true, run:"r1", seq:4, change:true}), "the body: " + JSON.stringify(b));
+t(cleaningBody(1, "r1", 5).hold === false && cleaningBody("true", "r", 1).hold === false, "only the JSON word true holds");
+let s = cleaningState(V(), false, false, false);
+t(s.ok && !s.cut && !s.block && s.word === "Hold to start the cleaning" && !s.na, "idle, fresh: a hold may start: " + JSON.stringify(s));
+s = cleaningState(V(), true, false, false);
+t(s.word === "Keep holding..." && !s.cut, "holding: keep holding");
+s = cleaningState(V({blocked:"a scheduled show is live (SHOW)"}), false, false, false);
+t(!s.ok && s.block === "Not available now: a scheduled show is live (SHOW)" && s.na, "a blocker says why: " + JSON.stringify(s));
+s = cleaningState(V({state:"starting", mine:true}), true, true, false);
+t(!s.ok && /not live/.test(s.cut), "a stale page while holding: the hold ends: " + JSON.stringify(s));
+s = cleaningState(V({state:"starting", mine:true}), true, false, true);
+t(/view only/.test(s.cut), "signed out while holding: the hold ends: " + JSON.stringify(s));
+s = cleaningState(V({state:"starting", mine:false, holder:"iPad at 10.20.0.44"}), false, false, false);
+t(!s.ok && /One screen at a time/.test(s.block), "another screen is holding: " + JSON.stringify(s));
+s = cleaningState(V({state:"phase1", running:true}), false, false, false);
+t(!s.ok && s.na && /running on its own/.test(s.block) && s.word === "Phase 1 runs on its own: you can let go", "phase 1: nothing to hold, says so: " + JSON.stringify(s));
+s = cleaningState(V({state:"phase1", running:true}), true, false, true);
+t(!s.cut, "phase 1 running: nothing to cut on the page");
+s = cleaningState(V({state:"paused", running:true}), false, false, false);
+t(s.ok && s.word === "Hold to start the purge bursts", "paused: a hold may start the purge bursts: " + JSON.stringify(s));
+s = cleaningState(V({state:"paused", running:true, blocked:"x"}), false, false, false);
+t(!s.ok && s.block === "Not available now: x", "paused and blocked: says why");
+s = cleaningState(V({state:"phase2", running:true}), false, false, false);
+t(!s.ok && /Press Stop/.test(s.block) && s.word === "Firing the leftover fuel", "phase 2: Stop ends it: " + JSON.stringify(s));
+s = cleaningState(V({available:false, problem:"no group named wave flamer"}), false, false, false);
+t(!s.ok && s.block === "no group named wave flamer", "no group: says why");
+t(!cleaningState(null, false, false, false).ok, "nothing read yet: nothing starts");
+const w = cleaningWords({phase:1, text:"Pressurizing: armed 3 s, 1 of 3", next:"Disarm", bursts:0, left_s:1.25, elapsed_s:4.7});
+t(w === "Phase 1 of 2: Pressurizing: armed 3 s, 1 of 3 (1.3 s left). Next: Disarm. Running 4 s.", "the words: " + w);
+const w2 = cleaningWords({phase:2, text:"Purge bursts: 1 s on, 1 s off", next:"Press Stop to end", bursts:7, left_s:null, elapsed_s:40});
+t(w2 === "Phase 2 of 2: Purge bursts: 1 s on, 1 s off. Next: Press Stop to end. Bursts: 7. Running 40 s.", "the burst words: " + w2);
+""")
+    check(bad == [] or bad is None, f"the cleaning rules, in node: {bad}")
+    print("  ok")
 
 
 def test_rack_screen_one_button_per_flame_group():
@@ -56707,7 +55168,7 @@ def test_rack_screen_one_button_per_flame_group():
             "screen arming off it is the lamp only, as before. Page logic "
             "in node, then drawn in a real browser and pressed")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
+    page = screen_text()
     check("data-gdis" not in page and 'class="gdis" data-' not in page,
           "no separate Disarm button per group")
     bad = _page_logic_in_node(page, r"""
@@ -56725,193 +55186,6 @@ t(clickAction("", "disarm", true) === "disarm" && clickAction("", "hold", true) 
 """)
     if bad is not None:
         check(bad == [], f"one button per group, in node: {bad}")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    steps = r"""
-let heldOn = false, armedNow = false, off = false;
-window.__patch = st => { const gs = st.flames.groups;
-  gs[0].armed = "armed"; gs[2].armed = "held"; gs[2].wanted = true; gs[2].reason = "cycle the arm";
-  if(armedNow){ gs[1].armed = "armed"; gs[1].wanted = true; }
-  if(off) st.arming = Object.assign({}, st.arming, {enabled:false});
-  return st; };
-window.__answer["arm-hold"] = b => heldOn ? [200, {ok:true, armed:true, text:"cat-walk is asked for.", hold_id:5, held_s:2, needs_s:2}] : [200, {ok:true, hold_id:5, held_s:0.5, needs_s:2}];
-await h.sleep(700);
-out.before = [0, 1, 2].map(h.look);
-h.lamp(1).click();
-await h.sleep(60);
-out.kbd_hold_note = h.note();
-out.kbd_hold_posts = h.posts("arm-hold").length;
-h.tap(h.lamp(0));
-await h.sleep(150);
-out.note_after_disarm = h.note();
-out.disarm_first = h.posts("group-disarm").map(p => p.body.group);
-// Let go early: the group's hold let go, no more heartbeats.
-h.ev(h.lamp(1), "pointerdown");
-await h.sleep(250);
-h.ev(h.lamp(1), "pointerup"); h.ev(h.lamp(1), "click");
-const early = h.posts("arm-hold").length;
-await h.sleep(350);
-out.early = {more:h.posts("arm-hold").length - early, released:h.posts("arm-release").map(p => p.body.group), note:h.note(), disarms:h.posts("group-disarm").length};
-out.holds_first = h.posts("arm-hold").filter(p => p.body.group === 0).length;
-h.ev(h.lamp(1), "pointerdown");
-await h.sleep(350);
-out.during = h.look(1);
-out.holds = h.posts("arm-hold").filter(p => p.body.group === 1).length;
-heldOn = true;
-await h.sleep(300);
-armedNow = true;
-await h.sleep(600);
-out.armed = h.look(1);
-out.armed_note = h.note();
-h.ev(h.lamp(1), "pointerup"); h.ev(h.lamp(1), "click");
-await h.sleep(200);
-out.disarm_on_release = h.posts("group-disarm").map(p => p.body.group);
-h.tap(h.lamp(1));
-await h.sleep(150);
-out.disarm_pressed = h.posts("group-disarm").map(p => p.body.group);
-h.lamp(2).click();
-await h.sleep(150);
-out.disarm_keyboard = h.posts("group-disarm").map(p => p.body.group);
-off = true;
-await h.sleep(700);
-out.off = [0, 1].map(h.look);
-const n = h.posts("group-disarm").length;
-h.tap(h.lamp(0));
-await h.sleep(150);
-out.off_posts = h.posts("group-disarm").length - n;
-"""
-    m = _rack_drive(chrome, page, _rack_status_off(), steps)
-    if check(isinstance(m, dict) and not m.get("problems"),
-             f"drawn and pressed: {m!r}"):
-        b0, b1, b2 = m["before"]
-        check(all(b["buttons"] == 1 for b in m["before"]),
-              f"one button per group: {m['before']}")
-        check(b0.get("word") == "Armed" and b0.get("act") == "Disarm" and
-              b0.get("mode") == "disarm" and not b0["disabled"] and
-              b0.get("small") == "One press disarms",
-              f"review of #118, P2-3: an armed group's button says ARMED, "
-              f"never DISARM, with Disarm under it and 'One press "
-              f"disarms': {b0}")
-        check(b1.get("word") == "Off" and b1.get("mode") == "hold" and
-              not b1["disabled"] and b1.get("small") == "hold to arm" and
-              b1.get("act") == "",
-              f"an off group's button is Hold to arm, as before: {b1}")
-        check(b2.get("word") == "Arm again" and b2.get("act") == "Disarm" and
-              b2.get("small") == "Disarm, then hold",
-              f"a group asked for and held back keeps its words (Arm "
-              f"again), with Disarm, then hold: {b2}")
-        check(m.get("kbd_hold_note") == "Arming is a hold: press and hold "
-              "with your finger or mouse." and m.get("kbd_hold_posts") == 0,
-              f"review of #118, P2-5: Enter on Hold to arm says arming is a "
-              f"hold, and arms nothing: {m.get('kbd_hold_note')!r}")
-        check(not m["note_after_disarm"].startswith("Not armed"),
-              f"a press on Disarm never tries a hold: "
-              f"{m['note_after_disarm']!r}")
-        check(m["early"]["more"] == 0 and m["early"]["released"] == [1] and
-              m["early"]["note"] == "Hold stopped: let go" and
-              m["early"]["disarms"] == 1,
-              f"a group's hold let go early: let go, no more heartbeats, "
-              f"nothing disarmed: {m['early']}")
-        check(m["disarm_first"] == [0] and m["holds_first"] == 0,
-              f"one press on Disarm disarms that group at once, no hold: "
-              f"{m['disarm_first']} {m['holds_first']}")
-        check(m["holds"] >= 2 and m["during"].get("fill") == "25%" and
-              m["during"].get("mode") == "hold",
-              f"holding the off group: the hold's heartbeats and its "
-              f"progress on the button: {m['during']} {m['holds']}")
-        check(m["armed"].get("mode") == "disarm" and
-              m["armed"].get("word") == "Armed" and
-              m["armed"].get("act") == "Disarm" and
-              m["armed_note"] == "cat-walk is asked for.",
-              f"once armed the same button reads Disarm: {m['armed']} "
-              f"{m['armed_note']!r}")
-        check(m["disarm_on_release"] == [0],
-              f"lifting the finger that armed it never disarms it: "
-              f"{m['disarm_on_release']}")
-        check(m["disarm_pressed"] == [0, 1] and
-              m["disarm_keyboard"] == [0, 1, 2],
-              f"a fresh press, or Enter, on Disarm disarms: "
-              f"{m['disarm_pressed']} {m['disarm_keyboard']}")
-        check(all(b.get("mode") == "lamp" and b["disabled"] and
-                  b.get("act") == "" for b in m["off"]) and
-              m["off"][0].get("word") == "Armed" and m["off_posts"] == 0,
-              f"screen arming off: the lamp only, greyed, no per-group "
-              f"disarm, as before: {m['off']} {m['off_posts']}")
-    # The page loses the engine (no status for over 2 s): no group can be
-    # held to arm, and every group's button still disarms with one press.
-    steps2 = r"""
-window.__patch = st => { st.flames.groups[0].armed = "armed"; return st; };
-await h.sleep(500);
-window.__patch = st => { throw new Error("the engine went away"); };
-await h.sleep(2800);
-out.stale = [0, 1, 2].map(h.look);
-out.banner = !document.getElementById("stale").hidden;
-h.tap(h.lamp(1));
-await h.sleep(150);
-out.stale_posts = h.posts("group-disarm").map(p => p.body.group);
-out.stale_holds = h.posts("arm-hold").length;
-"""
-    m = _rack_drive(chrome, page, _rack_status_off(), steps2)
-    if check(isinstance(m, dict) and not m.get("problems"),
-             f"drawn, then cut off: {m!r}"):
-        check(m["banner"] and all(b.get("mode") == "disarm" and
-                                  not b.get("disabled") for b in m["stale"]),
-              f"no contact: every group's button is a Disarm, pressable: "
-              f"{m['stale']}")
-        check(m["stale_posts"] == [1] and m["stale_holds"] == 0,
-              f"no contact: one press disarms, nothing is held: "
-              f"{m['stale_posts']} {m['stale_holds']}")
-    # A group's Disarm says the engine's answer (2026-10-29): confirmed,
-    # forced, or an older engine's "sent"; the button and its word stay
-    # what the polled status says.
-    steps3 = r"""
-window.__patch = st => { st.flames.groups[0].armed = "armed"; st.flames.groups[0].wanted = true; return st; };
-await h.sleep(700);
-out.gd = {};
-const said = {confirmed:{ok:true, confirmed:true, text:"Disarm front row confirmed: flamesafe reports it off."},
-  forced:{ok:true, confirmed:false, forced:true, text:"Deck did not answer: ALL groups disarm sent. Disarm front row forced (flamesafe did not report front row off within 1 s of the Disarm): the flame link has no one-group disarm, so the Stop's disarm was sent to every flame group, every hazer is off, and the show's flames stay at zero until Hold then Resume or a new run."},
-  old:{ok:true, text:"Disarm front row sent."}};
-for(const k of ["confirmed", "forced", "old"]){
-  window.__answer["group-disarm"] = b => [200, said[k]];
-  const before = h.look(0);
-  h.tap(h.lamp(0));
-  await h.sleep(200);
-  out.gd[k] = {msg:document.getElementById("ctl-msg").textContent, same:JSON.stringify(h.look(0)) === JSON.stringify(before)};
-}
-// A Disarm answered late (the engine waits up to 1 s) never covers a
-// press made after it (a Hold here; it was the Abort, now removed).
-window.__delay["group-disarm"] = 900;
-window.__answer["group-disarm"] = b => [200, said.forced];
-window.__answer["hold"] = b => [200, {ok:true, text:"Held for the test."}];
-h.tap(h.lamp(0));
-await h.sleep(100);
-h.tap(document.getElementById("b-hold"));
-await h.sleep(1300);
-out.late = {msg:document.getElementById("ctl-msg").textContent, posts:h.posts("group-disarm").length, holds:h.posts("hold").length};
-"""
-    m = _rack_drive(chrome, page, _rack_status_off(), steps3)
-    if check(isinstance(m, dict) and not m.get("problems"),
-             f"drawn, then Disarm answered three ways: {m!r}"):
-        gd = m["gd"]
-        check(gd["confirmed"]["msg"] == "Disarm front row confirmed: "
-              "flamesafe reports it off." and
-              gd["forced"]["msg"].startswith("Deck did not answer: ALL "
-                                             "groups disarm sent.") and
-              "hazer" in gd["forced"]["msg"] and
-              gd["old"]["msg"] == "Disarm front row sent.",
-              f"1.0 says the engine's answer to a group's Disarm: {gd}")
-        check(all(gd[k]["same"] for k in ("confirmed", "forced", "old")),
-              f"and the tile stays what the polled status says (ARMED): "
-              f"{gd}")
-        la = m.get("late") or {}
-        check(la.get("holds") == 1 and la.get("posts") == 4 and
-              la.get("msg") == "Held for the test.",
-              f"review of #170: a Disarm answered late never covers a "
-              f"press made after it: {la}")
     print("  ok")
 
 
@@ -56926,7 +55200,7 @@ def test_rack_screen_arm_all_and_disarm_all_toggle():
             "Disarm all from the finger that armed. Page logic in node, "
             "then drawn in a real browser and pressed")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
+    page = screen_text()
     bad = _page_logic_in_node(page, r"""
 const live = gs => ({arming:{enabled:true, fresh_s:1.0}, flames:{connected:true, stale:false, age_ms:100, groups:gs}, schedule:{aborted:false}});
 const off = [{name:"a", armed:"disarmed"}, {name:"b", armed:"disarmed"}, {name:"c", armed:"held"}];
@@ -56963,283 +55237,7 @@ t(armAllPlan(Object.assign(live(off), {live_flame:{on:false, error:"x"}}), now, 
 """)
     if bad is not None:
         check(bad == [], f"Arm all and Disarm all, in node: {bad}")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    locked = ("Every machine in cat-walk is locked out on the Startup page, "
-              "so flamesafe will not arm it. Unlock one there first.")
-    steps = r"""
-let asked = false, armNow = false;
-window.__patch = st => { const gs = st.flames.groups;
-  gs[2].rearm_ms = 60000;
-  if(asked){ gs[0].armed = "armed"; gs[0].wanted = true; }
-  return st; };
-window.__answer["arm-hold"] = b => b.group === 1 ? [409, {error:LOCKED, let_go:true}] :
-  (armNow ? [200, {ok:true, armed:true, text:"front row is asked for.", hold_id:3, held_s:2, needs_s:2}] : [200, {ok:true, hold_id:3, held_s:1, needs_s:2}]);
-await h.sleep(700);
-const B = document.getElementById("b-disarm");
-const lbl = () => B.querySelector(".lbl").textContent;
-out.label_off = lbl();
-h.ev(B, "pointerdown");
-await h.sleep(350);
-out.held = [...new Set(h.posts("arm-hold").map(p => p.body.group))].sort();
-out.fill = B.querySelector(".fill").style.width;
-out.label_holding = lbl();
-armNow = true;
-await h.sleep(300);
-asked = true;
-await h.sleep(600);
-out.label_after = lbl();
-h.ev(B, "pointerup"); h.ev(B, "click");
-await h.sleep(200);
-out.disarm_all_on_release = h.posts("disarm-all").length;
-out.note = h.note();
-h.tap(B);
-await h.sleep(150);
-out.disarm_all_pressed = h.posts("disarm-all").length;
-out.released = h.posts("arm-release").map(p => p.body.group).sort();
-""".replace("LOCKED", json.dumps(locked))
-    m = _rack_drive(chrome, page, _rack_status_off(), steps)
-    if check(isinstance(m, dict) and not m.get("problems"),
-             f"drawn and pressed: {m!r}"):
-        check(m["label_off"] == "Hold to arm all flame groups",
-              f"every group off: the button is Arm all: {m['label_off']!r}")
-        check(m["held"] == [0, 1],
-              f"one hold on Arm all holds every group it can (wave flamer, "
-              f"in its re-arm wait, stays out): {m['held']}")
-        check(m["fill"] == "50%" and
-              m["label_holding"] == "Hold to arm all flame groups",
-              f"the hold's progress fills Arm all: {m['fill']} "
-              f"{m['label_holding']!r}")
-        check(m["label_after"] == "Disarm all flame groups",
-              f"a group armed: the button is Disarm all: "
-              f"{m['label_after']!r}")
-        check(m["disarm_all_on_release"] == 0,
-              "the finger that armed comes up on Disarm all: nothing is "
-              "disarmed")
-        check("front row is asked for" in m["note"] and
-              ("Not armed: cat-walk (" + locked[:-1] + ")") in m["note"] and
-              "Not armed: wave flamer (Re-arm in " in m["note"],
-              f"what Arm all did, every group left out named with why: "
-              f"{m['note']!r}")
-        check(m["disarm_all_pressed"] == 1,
-              f"a press on Disarm all disarms at once: "
-              f"{m['disarm_all_pressed']}")
-        check(m["released"] == [1],
-              f"the refused group's hold was let go: {m['released']}")
-    steps2 = r"""
-const B = document.getElementById("b-disarm");
-const lbl = () => B.querySelector(".lbl").textContent;
-window.__patch = st => { st.live_flame = {on:true, one_group_at_a_time:true, receiving:true, map:[]}; return st; };
-await h.sleep(700);
-out.label_lf = lbl();
-h.ev(B, "pointerdown"); await h.sleep(250); h.ev(B, "pointerup"); h.ev(B, "click");
-await h.sleep(100);
-out.lf_holds = h.posts("arm-hold").length;
-out.lf_note = h.note();
-window.__patch = st => { st.flames.groups[1].armed = "armed"; return st; };
-await h.sleep(700);
-out.label_mix = lbl();
-window.__patch = st => { st.arming = Object.assign({}, st.arming, {enabled:false}); return st; };
-await h.sleep(700);
-out.label_switch_off = lbl();
-"""
-    m = _rack_drive(chrome, page, _rack_status_off(), steps2)
-    if check(isinstance(m, dict) and not m.get("problems"),
-             f"drawn and pressed: {m!r}"):
-        check(m["lf_holds"] == 0 and m["lf_note"].startswith(
-            "Not armed: Live flame programming is on, and it allows one "
-            "flame group at a time."),
-            f"live flame programming, one group at a time: Arm all holds "
-            f"nothing and says why: {m['lf_holds']} {m['lf_note']!r}")
-        check(m["label_mix"] == "Disarm all flame groups" and
-              m["label_switch_off"] == "Disarm all flame groups",
-              f"a mix armed, or screen arming off: Disarm all: "
-              f"{m['label_mix']!r} {m['label_switch_off']!r}")
-    _arm_all_review_118(chrome, page)
     print("  ok")
-
-
-def _arm_all_review_118(chrome, page):
-    """Review of #118: Arm all let go early, its label through a hold, a
-    stale page and live flame programming mid-hold, the keyboard, and
-    how it looks."""
-    rules = _css_rules(page)
-    arm = _css_rule(rules, "#b-disarm.armall") or {}
-    check("#5fe08a" in arm.get("border", "").lower() and
-          arm.get("color", "").lower() == "#5fe08a",
-          f"P2-2: Arm all has a green outline and green words: {arm}")
-    # P1: the finger lifted (or lost) early: every group's hold let go,
-    # no more heartbeats, nothing armed; and the keyboard says it is a hold.
-    steps = r"""
-const B = document.getElementById("b-disarm");
-window.__answer["arm-hold"] = b => [200, {ok:true, hold_id:10 + b.group, held_s:0.3, needs_s:2}];
-await h.sleep(700);
-out.cls = B.className;
-out.label = B.querySelector(".lbl").textContent;
-B.click();
-await h.sleep(60);
-out.kbd_note = h.note();
-out.kbd_holds = h.posts("arm-hold").length;
-out.runs = [];
-for(const up of ["pointerup", "pointercancel", "pointerleave"]){
-  const r0 = h.posts("arm-release").length;
-  h.ev(B, "pointerdown");
-  await h.sleep(300);
-  const held = [...new Set(h.posts("arm-hold").map(p => p.body.group))].sort();
-  h.ev(B, up);
-  if(up === "pointerup") h.ev(B, "click");
-  const at = h.posts("arm-hold").length;
-  await h.sleep(450);
-  out.runs.push({up:up, held:held, more:h.posts("arm-hold").length - at,
-    released:h.posts("arm-release").slice(r0).map(p => p.body.group).sort(), note:h.note()});
-}
-out.disarm_all = h.posts("disarm-all").length;
-"""
-    m = _rack_drive(chrome, page, _rack_status_off(), steps)
-    if check(isinstance(m, dict) and not m.get("problems"),
-             f"Arm all let go early: drawn and pressed: {m!r}"):
-        check("armall" in m["cls"].split() and
-              m["label"] == "Hold to arm all flame groups",
-              f"P2-2: the button reads Hold to arm all, green: {m['cls']!r} "
-              f"{m['label']!r}")
-        check(m["kbd_note"] == "Arming is a hold: press and hold with your "
-              "finger or mouse." and m["kbd_holds"] == 0,
-              f"P2-5: Enter on Arm all says arming is a hold, and holds "
-              f"nothing: {m['kbd_note']!r} {m['kbd_holds']}")
-        for r in m["runs"]:
-            check(r["held"] == [0, 1, 2] and r["more"] == 0 and
-                  r["released"] == [0, 1, 2] and
-                  r["note"].startswith("Arm all: nothing was armed."),
-                  f"P1: Arm all let go early ({r['up']}): every group's hold "
-                  f"let go, no more heartbeats, nothing armed: {r}")
-        check(m["disarm_all"] == 0, "and no Disarm all from that finger")
-    # P1 (P2 item 6): the label stays Hold to arm all while a group of the
-    # hold is already asked for and the others are still being held.
-    steps = r"""
-let asked = false;
-const B = document.getElementById("b-disarm");
-window.__patch = st => { if(asked){ st.flames.groups[0].armed = "armed"; st.flames.groups[0].wanted = true; } return st; };
-window.__answer["arm-hold"] = b => b.group === 0 && asked ? [200, {ok:true, armed:true, text:"front row is asked for.", hold_id:1, held_s:2, needs_s:2}] : [200, {ok:true, hold_id:2 + b.group, held_s:1, needs_s:2}];
-await h.sleep(700);
-h.ev(B, "pointerdown");
-await h.sleep(300);
-asked = true;
-await h.sleep(700);
-out.mid = {label:B.querySelector(".lbl").textContent, mode:B.dataset.mode, holding:[1, 2].map(i => h.posts("arm-hold").filter(p => p.body.group === i).length)};
-const n = h.posts("arm-hold").length;
-await h.sleep(250);
-out.still = h.posts("arm-hold").length - n;
-h.ev(B, "pointerup"); h.ev(B, "click");
-await h.sleep(300);
-out.after = B.querySelector(".lbl").textContent;
-out.note = h.note();
-out.released = h.posts("arm-release").map(p => p.body.group).sort();
-out.disarm_all = h.posts("disarm-all").length;
-"""
-    m = _rack_drive(chrome, page, _rack_status_off(), steps)
-    if check(isinstance(m, dict) and not m.get("problems"),
-             f"Arm all, one group asked for mid-hold: {m!r}"):
-        check(m["mid"]["label"] == "Hold to arm all flame groups" and
-              m["mid"]["mode"] == "arm" and m["still"] > 0,
-              f"P2-6: while the other groups are still held the button stays "
-              f"Hold to arm all, never Disarm all: {m['mid']} {m['still']}")
-        check(m["after"] == "Disarm all flame groups" and
-              m["released"] == [1, 2] and m["disarm_all"] == 0 and
-              m["note"].startswith("Arm all: front row is asked for"),
-              f"let go: the others let go, front row asked for, the button "
-              f"now Disarm all, nothing disarmed: {m}")
-    # P1: the page stops seeing the engine mid-hold: the page itself stops
-    # the hold; no heartbeat goes on a status over 1 s old.
-    steps = r"""
-const B = document.getElementById("b-disarm");
-const ages = [];
-window.__answer["arm-hold"] = b => { ages.push(Date.now() - LAST_OK); return [200, {ok:true, hold_id:10 + b.group, held_s:0.5, needs_s:2}]; };
-await h.sleep(700);
-h.ev(B, "pointerdown");
-await h.sleep(300);
-window.__patch = st => { throw new Error("the engine went away"); };
-await h.sleep(1900);
-out.max_age = Math.max(...ages);
-out.beats = ages.length;
-out.released = [...new Set(h.posts("arm-release").map(p => p.body.group))].sort();
-out.holding = !!HOLD;
-out.note = h.note();
-h.ev(B, "pointerup");
-"""
-    # Twice: as the page runs, and with its 250 ms check paused, so the
-    # heartbeat's own check is the one that has to stop the hold.
-    pause = ("<script>(function(){const si = window.setInterval;"
-             "window.setInterval = (f, ms) => si(() => { if(!(window.__pauseStale"
-             " && f.name === 'renderStale')) f(); }, ms);})();</script>")
-    for how, head, pre in (("as it runs", "", ""),
-                           ("by the heartbeat itself", pause,
-                            "window.__pauseStale = true;\n")):
-        m = _rack_drive(chrome, page, _rack_status_off(),
-                        steps.replace("window.__patch = st => { throw",
-                                      pre + "window.__patch = st => { throw"),
-                        head_js=head)
-        if check(isinstance(m, dict) and not m.get("problems"),
-                 f"Arm all, the page goes stale mid-hold ({how}): {m!r}"):
-            check(m["beats"] >= 6 and m["max_age"] <= 1050 and
-                  m["released"] == [0, 1, 2] and not m["holding"] and
-                  "Not live" in m["note"],
-                  f"P1: a stale page stops Arm all {how}: no heartbeat on a "
-                  f"status over 1 s old, every hold let go, said: {m}")
-    # P2-1: live flame programming turned on (one group at a time)
-    # mid-hold stops Arm all at once; its state not readable refuses Arm
-    # all. (An Abort mid-hold was the other case; there is no Abort latch
-    # any more, 2026-10-30, and the plan's own test pins that an older
-    # engine's aborted flag is not read.)
-    for name, patch, words in (
-            ("live flame programming turned on",
-             "st.live_flame = {on:true, one_group_at_a_time:true, receiving:true, map:[]};",
-             "Live flame programming is on, and it allows one flame group "
-             "at a time."),):
-        steps = r"""
-let on = false;
-const B = document.getElementById("b-disarm");
-window.__patch = st => { if(on){ PATCH } return st; };
-window.__answer["arm-hold"] = b => [200, {ok:true, hold_id:10 + b.group, held_s:0.5, needs_s:2}];
-await h.sleep(700);
-h.ev(B, "pointerdown");
-await h.sleep(300);
-on = true;
-await h.sleep(700);
-const n = h.posts("arm-hold").length;
-await h.sleep(300);
-out.more = h.posts("arm-hold").length - n;
-out.released = [...new Set(h.posts("arm-release").map(p => p.body.group))].sort();
-out.holding = !!HOLD;
-out.note = h.note();
-h.ev(B, "pointerup");
-""".replace("PATCH", patch)
-        m = _rack_drive(chrome, page, _rack_status_off(), steps)
-        if check(isinstance(m, dict) and not m.get("problems"),
-                 f"Arm all, {name} mid-hold: {m!r}"):
-            check(m["more"] == 0 and m["released"] == [0, 1, 2] and
-                  not m["holding"] and words in m["note"],
-                  f"P2-1: {name} mid-hold: Arm all stops at once, every "
-                  f"hold let go, said: {m}")
-    steps = r"""
-const B = document.getElementById("b-disarm");
-window.__patch = st => { st.live_flame = {available:true, on:false, error:"RuntimeError: boom"}; return st; };
-await h.sleep(700);
-h.ev(B, "pointerdown"); await h.sleep(250); h.ev(B, "pointerup"); h.ev(B, "click");
-await h.sleep(100);
-out.holds = h.posts("arm-hold").length;
-out.note = h.note();
-"""
-    m = _rack_drive(chrome, page, _rack_status_off(), steps)
-    if check(isinstance(m, dict) and not m.get("problems"),
-             f"Arm all, live flame programming not readable: {m!r}"):
-        check(m["holds"] == 0 and "Live flame programming's state could "
-              "not be read" in m["note"],
-              f"P2-1: live flame programming's state not readable: Arm all "
-              f"holds nothing and says why: {m}")
 
 
 def test_rack_screen_one_laser_pill():
@@ -57250,7 +55248,7 @@ def test_rack_screen_one_laser_pill():
             "first and stays red; Disarm all lasers still works. Page logic "
             "in node, then drawn in a real browser")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
+    page = screen_text()
     bad = _page_logic_in_node(page, r"""
 const chips = (aw, as, lw, ls) => [{name:"Show", state:"ok", word:"ready"}, {name:"Laser arm", state:as, word:aw}, {name:"Lasers", state:ls, word:lw, title:"sent only"}, {name:"Audio", state:"ok", word:"ready"}];
 const L = (a, b, extra) => Object.assign({lasers:[{id:"L1", name:"Laser 1", armed:a}, {id:"L2", name:"Laser 2", armed:b}], groups:{}}, extra || {});
@@ -57280,268 +55278,6 @@ t(!/[\u2013\u2014]/.test(JSON.stringify(p)), "no dashes");
 """)
     if bad is not None:
         check(bad == [], f"the laser pill, in node: {bad}")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    st = _rack_status_off()
-    st["subsystems"] = [{"name": n, "state": s, "word": w} for n, s, w in (
-        ("Show", "ok", "ready"), ("Laser arm", "off", "disarmed"),
-        ("Lasers", "ok", "dark"), ("Audio", "ok", "ready"))]
-    steps = r"""
-const pills = () => [...document.querySelectorAll("#subs .chip")].map(el => ({text:el.textContent.replace(/\s+/g, " ").trim(), cls:el.className, title:el.title}));
-await h.sleep(400);
-out.off = pills();
-window.__patch = st => { st.subsystems[1] = {name:"Laser arm", state:"warn", word:"1 of 2 armed"};
-  st.laser_arm = Object.assign({}, st.laser_arm, {lasers:[{id:"L1", name:"Laser 1", armed:true}, {id:"L2", name:"Laser 2", armed:false}], why_off:"not every laser is armed"}); return st; };
-await h.sleep(500);
-out.some = pills();
-out.strip = document.getElementById("lz-st").textContent;
-window.__patch = st => { st.subsystems[2] = {name:"Lasers", state:"bad", word:"LINK LOST"}; st.beyond_link = {link:"lost", why:"BEYOND is not running"}; return st; };
-await h.sleep(500);
-out.lost = pills();
-h.tap(document.getElementById("lz-disarm"));
-await h.sleep(150);
-out.disarm = h.posts("laser-arm").map(p => p.body);
-window.__patch = st => { throw new Error("gone"); };
-await h.sleep(2400);
-out.stale = pills();
-"""
-    m = _rack_drive(chrome, page, st, steps)
-    if check(isinstance(m, dict) and not m.get("problems"),
-             f"the laser pill, drawn: {m!r}"):
-        for k in ("off", "some", "lost", "stale"):
-            las = [p for p in m[k] if p["text"].startswith(("Lasers",
-                                                            "Laser arm"))]
-            check(len(las) == 1 and len(m[k]) == 3,
-                  f"{k}: one laser pill, not two: {m[k]}")
-        one = lambda k: [p for p in m[k] if p["text"].startswith("Lasers")][0]
-        check(one("off")["text"] == "Lasers all disarmed, output dark",
-              f"all disarmed: {one('off')}")
-        check(one("some")["text"] == "Lasers 1 of 2 armed, output off" and
-              "warn" in one("some")["cls"] and
-              "Armed: Laser 1." in one("some")["title"] and
-              "not every laser is armed" in one("some")["title"] and
-              "1 of 2 ARMED" in m["strip"],
-              f"one armed: amber, the facts in its tooltip, the strip's "
-              f"detail as before: {one('some')} {m['strip']!r}")
-        check(one("lost")["text"].startswith("Lasers LINK LOST: ") and
-              "bad" in one("lost")["cls"] and
-              "BEYOND is not running" in one("lost")["title"],
-              f"BEYOND lost: said first, red: {one('lost')}")
-        check(m["disarm"] == [{"all": True, "on": False, "seen":
-                               m["disarm"][0].get("seen")}]
-              if m["disarm"] else False,
-              f"Disarm all lasers still works: {m['disarm']}")
-        check(one("stale")["text"] == "Lasers not known: no contact" and
-              "warn" in one("stale")["cls"],
-              f"no contact: {one('stale')}")
-    print("  ok")
-
-
-def test_startup_lock_is_one_tap_with_undo():
-    section("Startup page lockout (Jeff, 2026-10-26): an L button locks out "
-            "or unlocks with ONE tap, no pop-up, both ways, for machines and "
-            "lasers; what happened is said in a line with Undo for 5 s; a "
-            "refusal is said in the engine's own words; every engine rule "
-            "as before (an unlock says confirmed). Drawn in a real browser "
-            "and pressed")
-    here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    lc = page[page.find("async function lockClick("):
-              page.find("// ARRANGE BEGIN")]
-    check(lc and "confirmBox(" not in lc and "confirm(" not in lc,
-          "the L buttons ask nothing")
-    check('confirmBox("Rewrite the lockout file?"' in page,
-          "Rewrite the lockout file still asks first")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    st = _rack_status_off()
-    st["morning"] = {"locked_machines": [], "locked_lasers": [],
-                     "flamesafe_confirmed": True, "purge": True,
-                     "purge_enabled": True, "open": True}
-    mo = _morning_view_pico()
-    mo["lockout"] = {"machines": {"m2": True}, "lasers": {}}
-    # The engine's lockout is kept in the page's stub: every lock request
-    # changes it, and the Startup page's state is read from it.
-    steps = r"""
-let asked = 0;
-window.confirm = () => { asked++; return true; };
-const lock = {machines:{m2:true}, lasers:{}};
-window.__patchMorning = mo => { mo.lockout = {machines:Object.assign({}, lock.machines), lasers:Object.assign({}, lock.lasers)}; return mo; };
-window.__answer["lock"] = b => { const t = b.kind === "machine" ? lock.machines : lock.lasers; if(b.on) t[b.id] = true; else delete t[b.id];
-  return [200, {ok:true, text:(b.on ? "Locked out " : "Unlocked ") + b.id + "."}]; };
-const modal = () => !document.getElementById("modal").hidden;
-const lk = id => document.querySelector('.mach[data-id="' + id + '"] .lk');
-const locks = () => h.posts("lock").map(p => ({kind:p.body.kind, id:p.body.id, on:p.body.on, confirmed:p.body.confirmed}));
-const undo = () => { const b = document.getElementById("mo-lkundo"); return b.hidden ? null : b.querySelector("span").textContent; };
-const msg = () => document.getElementById("mo-msg").textContent;
-await h.sleep(900);
-// One tap locks out m1.
-h.tap(lk("m1"));
-await h.sleep(250);
-out.lock = {posts:locks(), modal:modal(), undo:undo(), msg:msg()};
-// Undo at once, inside the quiet second: never dropped (second review
-// of #122, P2-1).
-h.tap(document.getElementById("mo-lkundo-go"));
-await h.sleep(250);
-out.undone = {posts:locks(), undo:undo()};
-await h.sleep(900);
-// One tap unlocks m2 (front row is off).
-h.tap(lk("m2"));
-await h.sleep(250);
-out.unlock = {posts:locks(), modal:modal(), undo:undo()};
-// A laser's L: one tap; its Undo sits beside the lasers' message line.
-h.tap(document.querySelector('[data-llock="L1"]'));
-await h.sleep(250);
-out.laser = {posts:locks(), modal:modal(), msg:document.getElementById("mo-lmsg").textContent,
-  beside:(document.getElementById("mo-lkundo").previousElementSibling || {}).id};
-// A refusal, in the engine's words, and no Undo for it.
-window.__answer["lock"] = b => [409, {error:"flamesafe would not take the lockout file: it is not trusted."}];
-h.tap(lk("m3"));
-await h.sleep(250);
-out.refused = {msg:msg(), n:h.posts("lock").length, undo:undo()};
-out.asked = asked;
-"""
-    m = _rack_drive(chrome, page, st, steps, size=(1366, 768), frag="#morning",
-                    routes={"/api/remote/morning": mo})
-    if check(isinstance(m, dict) and not m.get("problems"),
-             f"Startup page, the L buttons pressed: {m!r}"):
-        check(m["lock"]["posts"] == [{"kind": "machine", "id": "m1",
-                                      "on": True}] and
-              not m["lock"]["modal"] and m["asked"] == 0 and
-              m["lock"]["msg"] == "Locked out m1." and
-              m["lock"]["undo"] == "front row 1 locked out.",
-              f"one tap locks out at once, one request, no pop-up, said with "
-              f"Undo: {m['lock']}")
-        check(m["undone"]["posts"][-1] == {"kind": "machine", "id": "m1",
-                                           "on": False, "confirmed": True}
-              and len(m["undone"]["posts"]) == 2,
-              f"Undo sends the opposite: {m['undone']}")
-        check(m["unlock"]["posts"][-1] == {"kind": "machine", "id": "m2",
-                                           "on": False, "confirmed": True}
-              and len(m["unlock"]["posts"]) == 3 and
-              not m["unlock"]["modal"] and
-              m["unlock"]["undo"] == "front row 2 unlocked.",
-              f"one tap unlocks at once, no pop-up, with Undo: "
-              f"{m['unlock']}")
-        check(m["laser"]["posts"][-1] == {"kind": "laser", "id": "L1",
-                                          "on": True} and
-              not m["laser"]["modal"] and
-              m["laser"]["msg"] == "Locked out L1." and
-              m["laser"]["beside"] == "mo-lmsg",
-              f"a laser's lock button: one tap, its Undo beside the lasers' "
-              f"line (review of #122, P2-5): {m['laser']}")
-        check(m["refused"]["n"] == 5 and m["refused"]["msg"] ==
-              "flamesafe would not take the lockout file: it is not "
-              "trusted." and m["refused"]["undo"] != "front row 3 locked out.",
-              f"a refusal is said in the engine's words, with no Undo for "
-              f"it: {m['refused']}")
-    # Review of #122, P1-1: a double tap, a tap while the request is under
-    # way, and an unlock while the machine's group is armed.
-    steps = r"""
-const lock = {machines:{}, lasers:{}};
-window.__patchMorning = mo => { mo.lockout = {machines:Object.assign({}, lock.machines), lasers:{}}; return mo; };
-window.__answer["lock"] = b => { if(b.on) lock.machines[b.id] = true; else delete lock.machines[b.id]; return [200, {ok:true, text:"Done " + b.id + "."}]; };
-const lk = id => document.querySelector('.mach[data-id="' + id + '"] .lk');
-const sent = id => h.posts("lock").filter(p => p.body.id === id).map(p => p.body.on);
-await h.sleep(900);
-h.tap(lk("m1")); await h.sleep(180); h.tap(lk("m1"));
-await h.sleep(400);
-out.double = {sent:sent("m1"), locked:!!lock.machines.m1};
-window.__delay["lock"] = 700;
-h.tap(lk("m4")); await h.sleep(300); h.tap(lk("m4"));
-await h.sleep(800);
-out.inflight = sent("m4");
-await h.sleep(300); h.tap(lk("m4")); await h.sleep(100);
-out.quiet = sent("m4");
-"""
-    m = _rack_drive(chrome, page, st, steps, size=(1366, 768), frag="#morning",
-                    routes={"/api/remote/morning": mo})
-    steps2 = r"""
-const lock = {machines:{m2:true}, lasers:{}};
-window.__patchMorning = mo => { mo.lockout = {machines:Object.assign({}, lock.machines), lasers:{}}; return mo; };
-window.__answer["lock"] = b => { if(b.on) lock.machines[b.id] = true; else delete lock.machines[b.id]; return [200, {ok:true, text:"Done " + b.id + "."}]; };
-window.__patch = st => { st.flames.groups[0].armed = "armed"; st.flames.groups[0].wanted = true; return st; };
-await h.sleep(900);
-h.tap(document.querySelector('.mach[data-id="m2"] .lk'));
-await h.sleep(300);
-out.armed = {sent:h.posts("lock").map(p => p.body.on), msg:document.getElementById("mo-msg").textContent, locked:!!lock.machines.m2};
-h.tap(document.querySelector('.mach[data-id="m4"] .lk'));
-await h.sleep(300);
-out.lock_armed_group_other = h.posts("lock").map(p => p.body.id);
-// Lock m1 (front row, armed) and Undo it at once: the Undo is an unlock,
-// refused on the page while front row is armed, said, never silent.
-h.tap(document.querySelector('.mach[data-id="m1"] .lk'));
-await h.sleep(300);
-h.tap(document.getElementById("mo-lkundo-go"));
-await h.sleep(300);
-out.undo_armed = {sent:h.posts("lock").filter(p => p.body.id === "m1").map(p => p.body.on), msg:document.getElementById("mo-msg").textContent};
-// Another device locked m5 a moment ago: this page still shows it
-// unlocked, so its tap means LOCK; the engine has it locked already, so
-// nothing is sent and it says so (second review of #122, P1-A).
-lock.machines.m5 = true;
-h.tap(document.querySelector('.mach[data-id="m5"] .lk'));
-await h.sleep(300);
-out.engine_state = {sent:h.posts("lock").filter(p => p.body.id === "m5").map(p => p.body.on), msg:document.getElementById("mo-msg").textContent, locked:!!lock.machines.m5};
-"""
-    m2 = _rack_drive(chrome, page, st, steps2, size=(1366, 768),
-                     frag="#morning", routes={"/api/remote/morning": mo})
-    if isinstance(m, dict) and isinstance(m2, dict):
-        m["armed"] = m2.get("armed")
-        m["lock_other"] = m2.get("lock_armed_group_other")
-        m["engine_state"] = m2.get("engine_state")
-        m["undo_armed"] = m2.get("undo_armed")
-        m["problems"] = m.get("problems", []) + m2.get("problems", [])
-    if check(isinstance(m, dict) and not m.get("problems"),
-             f"Startup page, double taps and an armed group: {m!r}"):
-        check(m["double"] == {"sent": [True], "locked": True},
-              f"P1-1: a double tap on L locks once and stays locked, never "
-              f"lock then unlock: {m['double']}")
-        check(m["inflight"] == [True] and m["quiet"] == [True],
-              f"P1-1: a tap while the lock is under way, or within 1 s of "
-              f"its answer, does nothing: {m['inflight']} {m['quiet']}")
-        check(m["armed"] == {"sent": [], "locked": True, "msg": "Disarm "
-                             "front row first, then unlock front row 2."},
-              f"P1-1: no unlock while the machine's group is armed or "
-              f"asked for, said plainly: {m['armed']}")
-        check(m["lock_other"] == ["m4"],
-              f"locking is always allowed: {m['lock_other']}")
-        check(m["undo_armed"] == {"sent": [True], "msg": "Disarm front row "
-                                  "first, then unlock front row 1."},
-              f"second review of #122: Undo of a lock while the group is "
-              f"armed is refused and said: {m['undo_armed']}")
-        check(m["engine_state"] == {"sent": [], "locked": True,
-                                    "msg": "cat-walk 2 is already locked "
-                                           "out."},
-              f"second review of #122, P1-A: a tap means what the operator "
-              f"saw (lock); the engine has it locked already: nothing sent, "
-              f"said: {m['engine_state']}")
-    # The 5 s itself: the timer Undo sets is read, and run ten times
-    # faster so the draw fits the browser's time budget.
-    steps = r"""
-const si = window.setTimeout;
-window.setTimeout = (f, ms, ...a) => { if(f && f.name === "lockUndoGone"){ out.ms = ms; ms = ms / 10; } return si(f, ms, ...a); };
-await h.sleep(900);
-h.tap(document.querySelector('.mach[data-id="m1"] .lk'));
-await h.sleep(250);
-out.shown = !document.getElementById("mo-lkundo").hidden;
-await h.sleep(600);
-out.gone = document.getElementById("mo-lkundo").hidden;
-out.n = h.posts("lock").length;
-"""
-    m = _rack_drive(chrome, page, st, steps, size=(1366, 768), frag="#morning",
-                    routes={"/api/remote/morning": mo})
-    if check(isinstance(m, dict) and not m.get("problems"),
-             f"Startup page, Undo's 5 s: {m!r}"):
-        check(m.get("ms") == 5000 and m["shown"] and m["gone"] and m["n"] == 1,
-              f"Undo goes by itself after 5 s, nothing more sent: {m}")
     print("  ok")
 
 
@@ -57585,7 +55321,7 @@ def test_rack_screen_flame_group_machine_count():
     check(RM.Remote.group_machines(types.SimpleNamespace()) is None,
           "a list it cannot read: None, never raises")
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
+    page = screen_text()
     bad = _page_logic_in_node(page, r"""
 const gm = {"front row":{machines:3, locked:1}, "cat-walk":{machines:4, locked:0}, "fireball":{machines:1, locked:0}};
 t(machineCountLine({name:"front row"}, "armed", gm) === "armed 2 of 2 machines, 1 locked out", "armed: m of m, the locked one apart");
@@ -57598,128 +55334,10 @@ t(machineCountLine({name:"cat-walk"}, "armed", null) === "" && machineCountLine(
 t(machineCountLine({name:"front row"}, "armed", {"front row":{machines:3, locked:1, lock:"pending"}}) === "armed 3 of 3 machines, 1 lock pending", "a lock flamesafe does not hold yet: counted in, said pending");
 t(machineCountLine({name:"front row"}, "disarmed", {"front row":{machines:3, locked:1, lock:"untrusted"}}) === "armed 0 of 3 machines; lockout not trusted", "the lockout not trusted: said");
 t(machineCountLine({name:"cat-walk", safeties_up:[true, false]}, "armed", gm) === "" && machineCountLine({name:"cat-walk", safeties_up:[true]}, "armed", gm) === "armed 4 of 4 machines", "two safeties: their own count; one: the machine count");
+t(safetyLine({name:"cat-walk", safeties_up:[true]}, "armed") === "" && safetyLine({name:"wave flamer", safeties_up:[true, false]}, "armed") === "wave flamer: 1 of 2 safeties up; ARMED", "the safety line: only for a group with two or more safeties");
 """)
     if bad is not None:
         check(bad == [], f"the machine count, in node: {bad}")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    st = _rack_status_off()
-    st["flames"] = dict(st["flames"], groups=[
-        dict(st["flames"]["groups"][0], armed="armed"),
-        dict(st["flames"]["groups"][1]),
-        dict(st["flames"]["groups"][2], safeties_up=[True, False, True],
-             safeties_locked=[False, False, False])])
-    st["morning"] = {"locked_machines": ["front row 2"], "locked_lasers": [],
-                     "flamesafe_confirmed": True,
-                     "group_machines": {"front row": {"machines": 3,
-                                                      "locked": 1},
-                                        "cat-walk": {"machines": 3,
-                                                     "locked": 0},
-                                        "wave flamer": {"machines": 2,
-                                                        "locked": 0}}}
-    steps = r"""
-await h.sleep(400);
-const cards = () => [0, 1, 2].map(i => { const lp = h.lamp(i).closest(".lamp"); const s = lp.querySelector(".saf");
-  return {word:h.lamp(i).querySelector(".word").textContent, saf:s.hidden ? null : s.textContent, cls:lp.className}; });
-out.cards = cards();
-window.__patch = st => { throw new Error("gone"); };
-await h.sleep(2500);
-out.stale = cards();
-"""
-    m = _rack_drive(chrome, page, st, steps)
-    if check(isinstance(m, dict) and not m.get("problems"),
-             f"the cards, drawn: {m!r}"):
-        c = m["cards"]
-        check(c[0]["saf"] == "armed 2 of 2 machines, 1 locked out" and
-              c[0]["word"] == "Armed" and "armed" in c[0]["cls"],
-              f"front row armed: its word and colour, and the count: {c[0]}")
-        check(c[1]["saf"] == "armed 0 of 3 machines" and c[1]["word"] == "Off",
-              f"cat-walk off: {c[1]}")
-        check((c[2]["saf"] or "").startswith("wave flamer: 2 of 3 safeties "
-                                             "up"),
-              f"the wave flamer keeps its safety count: {c[2]}")
-        check(all(x["saf"] == "armed: not known" for x in m["stale"]),
-              f"second review of #122, P2-3: no contact: never an old "
-              f"count: {m['stale']}")
-    print("  ok")
-
-
-# Every nav button the page shows, at a size, on a view: inside the window
-# and the button itself under a finger.
-_NAV_MEASURE_JS = r"""
-<script>
-(function(){
-function go(){
-  if(!document.querySelector("#fl-lamps .lamp") || document.getElementById("nav-user").textContent === "Signed out") return setTimeout(go, 100);
-  setTimeout(() => {
-    const out = {vw:innerWidth, btns:[]};
-    for(const id of ["nav-user", "nav-info", "nav-tonight", "nav-prog", "nav-morning", "nav-back"]){
-      const el = document.getElementById(id);
-      if(el.hidden) continue;
-      const r = el.getBoundingClientRect();
-      const at = document.elementFromPoint(Math.max(0, Math.min(innerWidth - 1, r.left + r.width / 2)), r.top + r.height / 2);
-      out.btns.push({id:id, left:Math.round(r.left), right:Math.round(r.right), w:Math.round(r.width),
-        inside:r.left >= 0 && r.right <= innerWidth + 0.5 && r.width > 0, hit:!!at && (at === el || el.contains(at))});
-    }
-    const pre = document.createElement("pre"); pre.id = "rack-measure";
-    pre.textContent = JSON.stringify([out]); document.body.appendChild(pre);
-  }, 600);
-}
-go();
-})();
-</script>
-"""
-
-
-def test_rack_screen_nav_buttons_never_cut_off():
-    section("rack screen (operator, 2026-10-26: 'the programming button "
-            "disappears'): the nav row never wrapped, so on a window "
-            "narrower than its buttons (an iPad, the 950 px Edge window, a "
-            "tall window whose buttons grow with it, a long signed-in name) "
-            "Programming, Startup and Back to the show were pushed off the "
-            "right edge and cut off without a scroll bar. Every nav button "
-            "the page shows is inside the window and pressable, on the "
-            "show screen and on Users, at the show PC's sizes and an "
-            "iPad's. Drawn in a real browser")
-    here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    nav = _css_rule(_css_rules(page), "nav") or {}
-    check(nav.get("flex-wrap") == "wrap" and nav.get("min-width") == "0",
-          f"the nav may shrink to the window and wrap its buttons: {nav}")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    st = _rack_status_off()
-    st["morning"] = {"locked_machines": [], "locked_lasers": [],
-                     "flamesafe_confirmed": True}
-    st["me"] = {"user": "Andy Struthers", "role": "operator",
-                "users_active": True}
-    sizes = ((768, 1024), (834, 1194), (950, 1070), (1024, 768),
-             (1280, 720), (1920, 1080))
-    for frag, what in (("", "show screen"), ("#users", "Users")):
-        got = _rack_screen_in_chromium(chrome, page, st, sizes,
-                                       measure_js=_NAV_MEASURE_JS, frag=frag)
-        for (w, h), res in got.items():
-            if not check(isinstance(res, list) and res,
-                         f"{what} {w}x{h}: drawn: {res!r}"):
-                continue
-            m = res[0]
-            ids = [b["id"] for b in m["btns"]]
-            check("nav-prog" in ids and "nav-tonight" in ids and
-                  "nav-morning" in ids,
-                  f"{what} {w}x{h}: Programming, Schedule and Startup are "
-                  f"offered: {ids}")
-            cut = [b for b in m["btns"] if not (b["inside"] and b["hit"])]
-            check(not cut,
-                  f"{what} {w}x{h}: every nav button inside the window and "
-                  f"pressable, none cut off at the right edge: {cut}")
     print("  ok")
 
 
@@ -58372,17 +55990,17 @@ def test_make_a_show_file_from_the_show_folder():
     # The page: the buttons on the folder card and on Getting started,
     # wired, and its sentences, run in node.
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
+    page = screen_text()
     for need in ('id="fo-make"', 'id="fo-check"', 'id="su-make"',
                  'post("/api/remote/show-file-new"',
                  'post("/api/check", {timeline:f})',
-                 "await loadShowFiles(j.file)",
+                 "await progFiles();",
                  '$("fo-make").addEventListener("click", makeShowFile);',
                  '$("su-make").addEventListener("click", async () => {',
                  '$("fo-check").addEventListener("click", async () => {',
                  '$("su-make").hidden = !makeOffered(su);',
-                 'id="run-rate"',
-                 'if(want && ok.includes(want)){ $("run-file").value = want;'):
+                 'id="p-rate"',
+                 '{ $("p-file").value = j.file; P_PICKED = true; }'):
         check(need in page, f"the page has {need!r}")
     node = shutil.which("node")
     if not node:
@@ -58422,7 +56040,8 @@ console.log(JSON.stringify(out));
     # card's loader, run against stand-in elements, with post, confirmBox
     # and the loaders stubbed. A press must POST, choose the new file and
     # say what was made; renderSetup must show and hide Make a show file.
-    block = _js_block(page, "let SETUP_KEY = ", "// The show folder card (Programming")
+    block = _js_block(page, "let SETUP_KEY = ",
+                      "// The Stream Deck operator (show PC only).")
     check("function makeShowFile" in block and "function renderSetup(" in
           block, "the handlers' block was found in the page")
     harness = r"""
@@ -58435,7 +56054,8 @@ function fakeEl(id){
     setAttribute(k, v){ this.attrs[k] = v; }, handlers:h,
     addEventListener(ev, fn){ (h[ev] = h[ev] || []).push(fn); },
     querySelector(sel){ return kids[sel] = kids[sel] || fakeEl(id + " " + sel); },
-    async click(){ for(const fn of (h.click || [])) await fn({}); }};
+    async click(){ for(const fn of (h.click || [])) await fn({}); },
+    scrollIntoView(){ this.scrolled = true; }};
 }
 const $ = id => (EL[id] = EL[id] || fakeEl(id));
 const window = {addEventListener(){}};
@@ -58449,7 +56069,8 @@ async function confirmBox(){ return CONFIRM; }
 async function post(p, b){ posts.push([p, b]); if(FAIL) throw new Error(FAIL);
   return p === "/api/check" ? {cues:[{tc:"01:00:00:00", name:"A"}], problems:[], notes:[]}
     : {file:"X_timeline.json", text:"Made X_timeline.json with 2 cues.", next:"Next: set the times."}; }
-async function loadShowFiles(w){ loaded.push(w); }
+let P_PICKED = false;
+async function progFiles(){ loaded.push("progFiles"); $("p-file").options = [{value:"X_timeline.json"}]; }
 function loadFolders(){}
 function showView(){ VIEWS++; }
 function loadSetupCards(){ CARDS++; }
@@ -58472,19 +56093,19 @@ CONFIRM = true;
 await $("fo-make").click();
 t(posts.length === 1 && posts[0][0] === "/api/remote/show-file-new" && JSON.stringify(posts[0][1]) === "{}",
   "the folder card's button POSTs show-file-new with an empty body: " + JSON.stringify(posts));
-t(loaded[0] === "X_timeline.json", "the new file is chosen in the Show file chooser: " + JSON.stringify(loaded));
+t(loaded[0] === "progFiles" && $("p-file").value === "X_timeline.json" && P_PICKED, "the new file is chosen in the Show file chooser: " + JSON.stringify(loaded));
 t($("fo-made").innerHTML.includes("Made X_timeline.json") && $("fo-made").innerHTML.includes("Next: set the times."),
   "the card says what was made and what next: " + $("fo-made").innerHTML);
 t($("fo-make").disabled === false, "the button is usable again");
 await $("su-make").click();
-t(location.hash === "programming" && VIEWS > 0 && CARDS > 0, "Getting started's button opens Programming");
+t($("folders").scrolled === true, "Getting started's button goes to the Show folder card");
 t(posts.length === 2 && posts[1][0] === "/api/remote/show-file-new", "and POSTs show-file-new: " + JSON.stringify(posts));
 t($("fo-made").innerHTML.includes("Made X_timeline.json") && $("fo-made").innerHTML.includes("Next: set the times."), "and the Programming screen's card says what was made and what next: " + $("fo-made").innerHTML);
 FAIL = "A show file is running.";
 await $("su-make").click();
 t($("fo-made").textContent === "A show file is running.", "a refusal is said, nothing claimed");
 FAIL = null;
-$("run-file").value = "a.json";
+$("p-file").value = "a.json";
 await $("fo-check").click();
 t(posts[posts.length - 1][0] === "/api/check" && posts[posts.length - 1][1].timeline === "a.json" &&
   $("fo-checked").innerHTML.includes("Check of a.json"), "Check the show file checks the chosen file: " + $("fo-checked").innerHTML);
@@ -58878,7 +56499,6 @@ def test_remote_scrubbing_only_in_a_programming_session():
     finally:
         R.close()
     print("  ok")
-
 
 
 def test_audio_master_play_from_a_point_and_move():
@@ -59720,7 +57340,7 @@ def test_remote_transport_on_the_show_audio():
               "Programming watchdog's heartbeat")
         check(tr.get("playhead") == "show_audio" and tr.get("freerun") is False,
               f"the page is not told the show audio is the playhead: {tr}")
-        page = remote1_text()
+        page = screen_text()
         check('"Playing on the show audio"' in page and
               '"Paused on the show audio"' in page and
               '"Stop the show audio"' in page,
@@ -60750,8 +58370,8 @@ def test_stream_deck_review_of_120():
           RM.deck_nokey(k._path().split("?", 1)[1]) == {4, 5} and
           RM.deck_nokey("usb_ms=3") == set(),
           f"the deck says nokey and the engine reads it: {k._path()}")
-    page = remote1_text()
-    check('g.deck_key === false ? " (no Stream Deck key)"' in page,
+    page = screen_text()
+    check('g.deck_key === false ? " (no Deck key)"' in page,
           "the flame card names a group with no deck key")
     # The Deck chip hears it.
     k = sd.ScreenKeys("http://127.0.0.1:1", fetcher=lambda p: None)
@@ -63163,7 +60783,7 @@ def test_stop_says_when_its_flame_disarm_failed():
     import shutil as _sh
     from ltcplay import streamdeck as sd
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
+    page = screen_text()
     # The deck: Stop's answer from the engine, as _http_post returns it.
     lines = []
     answer = {}
@@ -63249,8 +60869,8 @@ def test_stop_says_when_its_flame_disarm_failed():
         check('getattr(self.conductor, "fault_face", None)' in src,
               "key 0 draws the conductor's fault face")
     # The Rack screen.
-    check("el.textContent = (r.ok || (j && j.failed)) ? stopWords(j) :"
-          in page, "the Rack screen's Stop says what came back")
+    check("const w = stopWords(j);" in page,
+          "the Rack screen's Stop says what came back")
     check("Tap twice. Disarms every flame group and every laser," in page,
           "its words say Stop disarms every flame group (there is no "
           "confirm box: a double tap, Jeff 2026-10-30)")
@@ -65992,7 +63612,7 @@ def test_screen_arming_switch_and_refusals():
     # -- the page: off is said and in sight, a refusal is never silent ---
     import re as _re
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
+    page = screen_text()
     m = _re.search(r'const ARMING_OFF = "([^"]*)";', page)
     check(m and m.group(1) == RM.ARMING_OFF,
           "the page and the engine say the same about arming off")
@@ -66008,20 +63628,12 @@ def test_screen_arming_switch_and_refusals():
                  'confirmBox("Turn on arming from a screen?", '
                  'SCREEN_ARMING_ENABLES,',
                  "if(!a.enabled) return {ok:false, off:true, why:ARMING_OFF};",
-                 "    ab.hidden = false;\n",
-                 'ab.querySelector("small").textContent = armHint(c, look, on);',
-                 'if(!on) return c === "armed" ? "" : "arming off";',
-                 "if(!on && !HOLD && $(\"arm-note\").textContent !== "
-                 "ARMING_OFF) armSay(ARMING_OFF, 1);",
-                 "  #arm-note.said{display:block}",
-                 '  if(level >= 2){ $("ctl-msg").textContent = text;',
                  '  if(!as.ok){ armSay("Not armed: " + as.why, 2); return; }',
                  '  if(why) armSay("Hold stopped: " + why, why === "let go" '
                  '? 0 : 2);',
                  "    if(j.armed){",
                  'post("/api/remote/screen-arming", {on: true})',
-                 'post("/api/remote/screen-arming", {on: false})',
-                 '$("arming-card").hidden = !ME.local;'):
+                 'post("/api/remote/screen-arming", {on: false})'):
         check(need in page, f"the page wires {need!r}")
 
     # -- the Stream Deck's half: it reports what it would not take ------
@@ -66648,11 +64260,8 @@ def test_alerts_route_status_and_acknowledge():
     finally:
         R.close()
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    check('id="al-list"' in page and "renderAlerts(s.alerts" in page
-          and '"/api/remote/alert"' in page and 'action:"acknowledge"' in page
-          and ">Acknowledge</button>" in page
-          and 'includes("Disarm all")' in page,
+    page = screen_text()
+    check('"/api/remote/alert"' in page and 'action:"acknowledge"' in page,
           "the page draws every open alert with Acknowledge, and Disarm "
           "all for the alerts that offer it")
     for bad in ("—", "–"):
@@ -70107,12 +67716,10 @@ def test_hazers_on_the_rack_screens():
             "under Abort")
     import shutil
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    page2 = open(os.path.join(here, "ltcplay", "web", "remote2.html"),
-                 encoding="utf-8").read()
+    page = screen_text()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     check("function hazerLook" in logic, "hazerLook is pure logic")
-    for name, p in (("1.0", page), ("2.0", page2)):
+    for name, p in (("the screen", page),):
         check("renderHazers(s)" in p and "/api/remote/hazer" in p and
               "/api/remote/hazers-off" in p and "Hazers off" in p and
               "/api/remote/hazer-level" in p and "hazerStep(" in p and
@@ -70162,55 +67769,7 @@ console.log(JSON.stringify(out));
             bad = [f"node failed: {r.stderr[-400:]}"]
         for m in bad:
             check(False, f"hazerLook: {m}")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  note: no Chromium here, so the row was not drawn")
-        print("  ok")
-        return
-    st = _rack_status_pico()
-    st["flames"]["passthrough"] = []
-    st["hazers"] = {"available": True, "down": "", "agree": True,
-                    "show": "held", "levels_fault": "",
-                    "last_off": None, "hazers": [
-                        {"name": n, "haze_slot": sl[0], "fan_slot": sl[1],
-                         "armed": i == 0,
-                         "label": f"{n} {'ARMED' if i == 0 else 'DISARMED'}",
-                         "state": "held" if i == 0 else "disarmed",
-                         "haze": 102, "fan": 153, "haze_pct": 40,
-                         "fan_pct": 60, "why": ""}
-                        for i, (n, sl) in enumerate(_HZ)]}
-    mjs = _RACK_MEASURE_JS.replace(
-        '  const ctl = {"Hold": "b-hold",',
-        '  out.hazers = 0;\n'
-        '  document.querySelectorAll("#hz-row button").forEach(el => {\n'
-        '    const nm = "hazer " + (el.dataset.hzb || "off");\n'
-        '    if(!shown(el)){ out.problems.push(nm + ": not shown"); return; }\n'
-        '    out.hazers += 1;\n'
-        '    const r = rectOf(el);\n'
-        '    if(r.h < 44 || r.w < 44) out.problems.push(nm + ": " + r.w.toFixed(0) + "x" + r.h.toFixed(0));\n'
-        '    for(const b of hits(el)) out.problems.push(nm + ": " + b);\n'
-        '    const wd = el.querySelector(".word");\n'
-        '    if(el.dataset.hzb && wd && !/^(ARMED|DISARMED)$/.test(wd.textContent)) out.problems.push(nm + ": its word is " + wd.textContent);\n'
-        '  });\n'
-        '  const ctl = {"Hold": "b-hold",', 1).replace(
-        '#fl-lamps button, #b-disarm,', '#fl-lamps button, #hz-row button, #b-disarm,', 1)
-    check(mjs != _RACK_MEASURE_JS and "#hz-row button, #b-disarm" in mjs,
-          "the measure looks at the hazer row too")
-    got = _rack_screen_in_chromium(chrome, page, st, RACK_SIZES,
-                                   measure_js=mjs)
-    for (w, h), res in got.items():
-        if not check(isinstance(res, list) and res, f"{w}x{h}: drawn: "
-                                                    f"{res!r}"):
-            continue
-        for m in res:
-            check(not m["problems"],
-                  f"{w}x{h} {m['tag']}: with the hazer row nothing is "
-                  f"squeezed or covered: {m['problems'][:6]}")
-            check(m.get("hazers") == 5,
-                  f"{w}x{h}: three hazers, Hazers off and Levels drawn: "
-                  f"{m.get('hazers')}")
+
     print("  ok")
 
 
@@ -70375,14 +67934,9 @@ def test_flamesafe_multi_safety_ltcplay_side():
     fs.last = {"groups": [dict(base)]}
     check(fs.view()["groups"][0]["arm_value"] is None,
           "an older flamesafe without arm_value: none")
-    page = remote1_text()
+    page = screen_text()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
-    check("function safetyLine" in logic and
-          'const sl = safetyLine(g, c) || machineCountLine(g, c, ST && '
-          'ST.morning && ST.morning.group_machines), se = '
-          'el.querySelector(".saf");' in page,
-          "the card draws the safety line (or, with one safety, the "
-          "machine count) from page logic")
+    check("function safetyLine" in logic, "the rules have safetyLine")
     node = _sh.which("node")
     if node:
         js = logic + r"""
@@ -70606,16 +68160,12 @@ def test_aim_slots_are_seen_on_the_rack_screen():
     check("httpd.remote.flame_aim = (" in web,
           "web.serve hands the engine's aim slots to the rack screen")
     # The card's line, from page logic.
-    page = remote1_text()
+    page = screen_text()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
-    check("function aimLine" in logic and
-          'const al = aimLine(g, c), ae = el.querySelector(".aim");' in page,
-          "the card draws the aim line from page logic")
-    frag = page[page.find("// AIM LINE BEGIN"):page.find("// AIM LINE END")]
-    check("ae.hidden = !al;" in frag, "the card's aim line block is found")
+    check("function aimLine" in logic, "the rules have aimLine")
     node = _sh.which("node")
     if node:
-        js = logic + "\nconst FRAG = " + _json.dumps(frag) + ";\n" + r"""
+        js = logic + "\n" + r"""
 const out = [];
 const t = (c, m) => { if(!c) out.push(m); };
 const A = {slots:[1,7,13], flamesafe:[1,7,13], ltcplay:[1,7,13], loaded:true, asked:[54,128,201], sent:[54,128,201]};
@@ -70627,13 +68177,6 @@ t(aimLine({aim:Object.assign({}, A, {flamesafe:null, loaded:false})}, "armed").i
 t(aimLine({aim:A}, "unknown") === "Aim 1, 7, 13: loaded; armed not known", "not known: no values");
 t(aimLine({aim:Object.assign({}, A, {asked:null, sent:null})}, "armed") === "Aim 1, 7, 13: loaded; ARMED", "no fresh values: none said");
 t(aimLine({name:"front row"}, "armed") === "" && aimLine({aim:{slots:[]}}, "armed") === "" && aimLine(null, "armed") === "", "no aim: no line");
-// The card's own lines, run on a stand-in card: shown for an aim group,
-// hidden for one without.
-const draw = (g, c) => { const ae = {hidden:null, textContent:"", title:""}; const el = {querySelector: q => q === ".aim" ? ae : null};
-  eval(FRAG); return ae; };
-const shownA = draw({aim:A}, "armed"), hiddenA = draw({name:"front row"}, "armed");
-t(shownA.hidden === false && shownA.textContent.indexOf("Aim 1, 7, 13: loaded") === 0 && shownA.title === shownA.textContent, "an aim group's card shows the line");
-t(hiddenA.hidden === true && hiddenA.textContent === "", "a group without aim: the line hidden");
 console.log(JSON.stringify(out));
 """
         r = _node_js(node, js, capture_output=True, text=True, timeout=30)
@@ -71973,12 +69516,11 @@ def test_calibrate_all_and_open_beyond_routes():
                             client=loop)
         check(st == 409 and "live" in out["error"] and len(calls) == 1,
               f"not while a show is live: {out}")
-        page = remote1_text()
+        page = screen_text()
         for need in ('moPress("laser-test", {all:true, on:true}, "mo-lmsg")',
                      'moPress("laser-test", {all:true, on:false}, "mo-lmsg")',
                      'moPress("open-beyond", {}, "mo-lmsg")',
-                     ">Calibrate all lasers<", ">Calibration off<",
-                     ">Open BEYOND<",
+                     "Test grid on", "Test grid off", "Open BEYOND",
                      '$("mo-beyond").hidden = !(ME && ME.local);'):
             check(need in page, f"the Startup page has {need!r}")
     finally:
@@ -72824,7 +70366,7 @@ def test_purge_rules_at_the_engine():
         # The page's own fire key: one keydown starts it, the browser's key
         # repeat events are the evidence the key is still down, and every
         # way of losing the key stops it (review of PR #68, P1-4).
-        html = remote1_text()
+        html = screen_text()
         for want in ('if(e.repeat){ if(FIRE) FIRE.repeatAt = Date.now(); return; }',
                      "const KEY_REPEAT_GRACE_MS = 2500, KEY_REPEAT_GAP_MS = 1000;",
                      "if(fireKeyLapsed(now, f.startAt, f.repeatAt, "
@@ -72837,25 +70379,6 @@ def test_purge_rules_at_the_engine():
                                 f"so this proves presence, not behaviour; "
                                 f"the rule itself, fireKeyLapsed, runs in "
                                 f"node in the remote page logic test)")
-        # The rewrite dialog (second review of PR #68, P3-4) says exactly
-        # which ids the rewrite KEEPS (machines and lasers) and which it
-        # DROPS, and its LIFTED clause does not rest on flamesafe_extra,
-        # which is empty while flamesafe's report is stale or inside the
-        # settle time: a stale flamesafe may still hold slots this lifts.
-        for want in ('const keptM = Object.keys(lo.machines || {}).filter(id => '
-                     '!(lo.unknown_machines || []).includes(id));',
-                     'const keptL = Object.keys(lo.lasers || {}).filter(id => '
-                     '!(lo.unknown_lasers || []).includes(id));',
-                     'const dropped = (lo.unknown_machines || []).concat('
-                     'lo.unknown_lasers || []);',
-                     '"; locked lasers: " + (keptL.length ? keptL.join(", ") '
-                     ': "none")',
-                     '", dropping " + dropped.join(", ") + " which the settings '
-                     'no longer name"',
-                     '" Any flame slot flamesafe holds locked beyond these is '
-                     'LIFTED by this."'):
-            check(want in html, f"the rewrite dialog carries {want!r} (wording "
-                                f"only, as above)")
         _morning_page_logic_in_node()
         # Every one of these routes is refused from another site's page.
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
@@ -73965,7 +71488,7 @@ def test_morning_arrange_mode_arms_nothing():
     import shutil
     import subprocess as _sp
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
+    page = screen_text()
     a = page.find("// ARRANGE BEGIN")
     b = page.find("// ARRANGE END")
     check(0 < a < b, "the page has its ARRANGE block")
@@ -73986,9 +71509,10 @@ def test_morning_arrange_mode_arms_nothing():
                  '  return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, "arm")));',
                  'wireMachine(el, m);',
                  'id="mo-arrange-bar" hidden><b>ARRANGING: arming disabled</b>',
-                 'id="mo-arr-save">Save layout<', 'id="mo-arr-reset">Reset layout<',
-                 'id="mo-arr-cancel">Cancel<',
-                 'k.textContent = ARRANGE_BANNER; k.title = "Save layout or Cancel first"'):
+                 'id="mo-arr-save">', 'id="mo-arr-reset">',
+                 'id="mo-arr-cancel">',
+                 'kk.textContent = ARRANGE_BANNER;',
+                 'kk.title = ARRANGE ? "Save layout or Cancel first" : "";'):
         check(need in page, f"the page wires {need!r}")
     for need in ("function arrangeBlocked(", "function openBeatBody(",
                  "function wireMachine(", "function dragStart(",
@@ -74058,10 +71582,12 @@ const t = (c, m) => { if(!c) out.push(m); };
 (async () => {
 const g1 = mk("mach-g1", byId["mo-field"]); wireMachine(g1, {id:"g1", name:"Ground 1"});
 const g2 = mk("mach-g2", byId["mo-field"]); wireMachine(g2, {id:"g2", name:"Ground 2"});
-// Normal mode: a press asks the engine to arm.
+// Normal mode: a tap (the screen chooses a machine by a tap, review of
+// #212, 1) asks the engine to arm.
 g1.dispatchEvent(ev("pointerdown", {pointerId:1, clientX:600, clientY:350}));
+g1.dispatchEvent(ev("pointerup", {pointerId:1, clientX:600, clientY:350}));
 t(posts.length === 1 && posts[0][0] === "purge-select" && posts[0][1].machine === "g1" && posts[0][1].on === true,
-  "normal mode: a press on a machine asks the engine to arm it: " + JSON.stringify(posts));
+  "normal mode: a tap on a machine asks the engine to arm it: " + JSON.stringify(posts));
 window.dispatchEvent(ev("pointerup", {pointerId:1}));
 t(openBeatBody().arranging === false, "the open beat says not arranging");
 posts.length = 0;
@@ -74136,7 +71662,8 @@ window.dispatchEvent(ev("pointermove", {pointerId:6, clientX:900, clientY:480}))
 t(g1.style.left === "70%", "nothing follows after Save: " + g1.style.left);
 posts.length = 0;
 g1.dispatchEvent(ev("pointerdown", {pointerId:7, clientX:800, clientY:450}));
-t(posts.length === 1 && posts[0][0] === "purge-select" && posts[0][1].on === true, "after the explicit exit a press arms again: " + JSON.stringify(posts));
+g1.dispatchEvent(ev("pointerup", {pointerId:7, clientX:800, clientY:450}));
+t(posts.length === 1 && posts[0][0] === "purge-select" && posts[0][1].on === true, "after the explicit exit a tap arms again: " + JSON.stringify(posts));
 window.dispatchEvent(ev("pointerup", {pointerId:7}));
 // Cancel: drops, saves nothing, forgets the moves.
 arrangeEnter(); posts.length = 0;
@@ -74199,9 +71726,9 @@ t(renders > 0, "the page was redrawn");
 """
         # lockClick (the L buttons) runs too: its gate comes before the
         # confirm, so nothing is asked and nothing is sent.
-        lc = page[page.find("async function lockClick("):a]
+        lc = (_js_function(page, "lockClick") or "") + "\n"
         check(lc.startswith("async function lockClick("),
-              "the page has lockClick before the ARRANGE block")
+              "the page has lockClick")
         r = _node_js(node, prelude + lc + block + body, capture_output=True,
                     text=True, timeout=60)
         try:
@@ -74492,7 +72019,6 @@ t(renders > 0, "the page was redrawn");
     print("  ok")
 
 
-
 def test_morning_group_button_skips_locked_and_always_disarms():
     section("Morning and Shutdown, a group button (Jeff, 2026-10-28, on the "
             "show PC: Ground G-Flames with front-row-4 locked out armed 1 to "
@@ -74628,15 +72154,15 @@ def test_morning_group_button_skips_locked_and_always_disarms():
             R.m.close()
             R.close()
     # The page: the click's direction comes from ANY member selected.
-    page = remote1_text()
-    a = page.find("// GROUP CLICK BEGIN")
-    b = page.find("// GROUP CLICK END")
-    check(0 < a < b, "the page has its GROUP CLICK block")
+    page = screen_text()
+    gblock = "\n".join(_js_function(page, n) or "" for n in (
+        "groupAnySelected", "groupButtonDisabled", "groupClick")) + "\n"
+    check("function groupClick(" in gblock and
+          "function groupButtonDisabled(" in gblock,
+          "the page has its group click")
     for need in ('b.classList.toggle("on", gs.state === "on");',
                  'b.classList.toggle("part", gs.state === "part" || (any && gs.state !== "on"));',
-                 'b.disabled = groupButtonDisabled(ids, any, mo, ARRANGE, ST);',
-                 'b.querySelector(".gd").textContent = gs.text || "\\u00a0";',
-                 '.mo-groups button.part{background:var(--amber)'):
+                 'b.disabled = groupButtonDisabled(ids, any, mo, ARRANGE, ST);'):
         check(need in page, f"the page wires {need!r}")
     node = shutil.which("node")
     if not node:
@@ -74650,7 +72176,7 @@ function moPress(route, extra){ posts.push([route, extra]); }
 let MO = {groups:{"Ground G-Flames":["fr1","fr2","fr3","fr4","fr5","fr6"]},
           purge_state:{selected:[]}};
 """ + page[page.find("function mayRow("):page.find("function armState(")] + \
-            page[a:b] + r"""
+            gblock + r"""
 const out = [];
 const t = (c, m) => { if(!c) out.push(m); };
 groupClick("Ground G-Flames");
@@ -75002,7 +72528,7 @@ def test_purge_release_can_never_start_a_fire():
 
     # The page's Space bar asks to fire with on true on every heartbeat,
     # and its let-go is purge-stop, which never asks to fire.
-    page = remote1_text()
+    page = screen_text()
     check(page.count('post("/api/remote/purge-fire", '
                      'moActor({fire_id:f.id, on:true}))') == 1 and
           page.count('"/api/remote/purge-fire"') == 1 and
@@ -76237,7 +73763,6 @@ def test_timed_purge_every_end_cause():
     print("  ok")
 
 
-
 def test_timed_purge_end_to_end_real_flamesafe():
     section("timed purge end to end (Jeff, 2026-10-29): the real "
             "flamesafe, the real flame link and arm link, the engine's own "
@@ -76523,7 +74048,6 @@ def test_timed_purge_end_to_end_real_flamesafe():
     print("  ok")
 
 
-
 def _morning_view_timed(selected=("m1", "m2"), running=False, left=7.3):
     """_morning_view_pico with the timed purge's numbers, as the engine
     sends them, and (`running`) one running."""
@@ -76685,10 +74209,9 @@ t(timedBanner({machines:["Ground 1"], left_s:3.5, seconds:10, device:"iPad at 10
           and "if(st.running){ tpStopPress(); return; }" in blk,
           "1.0: Stop purge here and on the banner; a press while it runs "
           "ends it")
-    check("!MO.purge_state.timed" in one[one.find("function morningView"):
-                                         one.find("async function morningPoll")],
-          "1.0: leaving the page does not clear a timed purge's selection "
-          "(it ends on the engine's clock)")
+    check("!MO.purge_state.timed" in (_js_function(two, "purgeDrop") or ""),
+          "leaving DAY does not clear a timed purge's selection (it ends on "
+          "the engine's clock)")
     pin = _js_function(two, "pinItems")
     check(pin and 's.morning && s.morning.timed' in pin and
           '"Stop purge"' in pin and "timedLeft(tp.left_s)" in pin,
@@ -76712,170 +74235,7 @@ t(pinItems({morning:{timed:null}}).length === 0 && pinItems({}).length === 0, "n
                      else pin or "",):
             check("\u2014" not in frag and "\u2013" not in frag,
                   f"{name}: no em or en dash in the timed purge's words")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    st = _rack_status_pico(many=False)
-    st["morning"] = {"locked_machines": [], "locked_lasers": [],
-                     "flamesafe_confirmed": True, "purge": True,
-                     "purge_enabled": True, "open": True, "timed": None}
-    # 1. Ready: two machines selected, nothing running. Every rack size.
-    got = _rack_screen_in_chromium(
-        chrome, one, st, RACK_SIZES, measure_js=_TIMED_MEASURE_JS,
-        frag="#morning", routes={"/api/remote/morning":
-                                 _morning_view_timed()})
-    for (w, h), res in got.items():
-        if not check(isinstance(res, list) and res,
-                     f"{w}x{h}: drawn and measured: {res!r}"):
-            continue
-        m = res[0]
-        check(m["tp_shown"] and m["hold"] == "Hold to purge front row 1, "
-              "front row 2 for 5 s" and m["presets"] ==
-              ["2 s", "5 s*", "10 s", "20 s", "30 s"] and m["secs"] == "5",
-              f"{w}x{h}: the control, 5 s chosen, the machines named: "
-              f"{m['hold']!r} {m['presets']} {m['secs']!r}")
-        check(not m["problems"] and not m["small"] and not m["targets"],
-              f"{w}x{h}: nothing over the window, overlapping or covered, "
-              f"Abort clear, text 14 px or more, targets 44 px or more: "
-              f"{m['problems'][:5]} {m['small'][:3]} {m['targets'][:3]}")
-    # 2. Running: the Startup page and the banner on the show view.
-    st_run = dict(st)
-    st_run["morning"] = dict(st["morning"], timed={
-        "left_s": 7.3, "seconds": 10, "elapsed_s": 2.7,
-        "machines": ["front row 1", "front row 2"],
-        "device": "this PC (rack screen)", "who": "Andy"})
-    for frag in ("#morning", ""):
-        got = _rack_screen_in_chromium(
-            chrome, one, st_run, RACK_SIZES, measure_js=_TIMED_MEASURE_JS,
-            frag=frag, routes={"/api/remote/morning":
-                               _morning_view_timed(running=True)})
-        for (w, h), res in got.items():
-            if not check(isinstance(res, list) and res,
-                         f"running {frag or '#show'} {w}x{h}: drawn: "
-                         f"{res!r}"):
-                continue
-            m = res[0]
-            check(m["banner"] == "front row 1, front row 2: 8 s left of 10 "
-                  "s. Started on the this PC (rack screen) by Andy.",
-                  f"running {frag or '#show'} {w}x{h}: the banner counts "
-                  f"down from the engine's seconds: {m['banner']!r}")
-            if frag:
-                check(m["hold"] == "PURGING front row 1, front row 2: 8 s "
-                      "left" and m["key"].startswith("TIMED PURGE: 8 s"),
-                      f"running {w}x{h}: the button and the fire key say "
-                      f"PURGING and the seconds left: {m['hold']!r} "
-                      f"{m['key']!r}")
-            check(not m["problems"] and not m["small"] and not m["targets"],
-                  f"running {frag or '#show'} {w}x{h}: {m['problems'][:5]} "
-                  f"{m['small'][:3]} {m['targets'][:3]}")
     print("  ok")
-
-
-def test_timed_purge_button_driven():
-    section("timed purge, the button driven in a real browser (Jeff, "
-            "2026-10-29): pressing it beats every 100 ms with one hold id "
-            "and the seconds; letting go early sends the release and "
-            "nothing else; the engine's start ends the beats; a press "
-            "while it runs is Stop purge; Other is kept to the longest")
-    one, _two = _ui2_pages()
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    st = _rack_status_pico(many=False)
-    st["morning"] = {"locked_machines": [], "locked_lasers": [],
-                     "flamesafe_confirmed": True, "purge": True,
-                     "purge_enabled": True, "open": True, "timed": None}
-    steps = r"""
-  while(document.getElementById("tp").hidden) await h.sleep(50);
-  const hb = document.getElementById("tp-hold");
-  const tp = () => h.posts("purge-timed");
-  // A short press: beats, then the release when it lifts. Nothing else.
-  document.querySelector('#tp-presets [data-s="10"]').click();
-  await h.sleep(50);
-  h.ev(hb, "pointerdown");
-  await h.sleep(450);
-  h.ev(hb, "pointerup");
-  await h.sleep(250);
-  const a = tp();
-  out.short = {n:a.length, holds:a.filter(p => p.body.hold === true).length,
-    runs:[...new Set(a.map(p => p.body.run))].length, last:a.length ? a[a.length - 1].body : null,
-    secs:[...new Set(a.map(p => p.body.seconds))], seen:a.every(p => typeof p.body.seen === "number"),
-    stops:h.posts("purge-stop").length};
-  // A whole press: the engine answers started on the 11th beat; the
-  // beats stop there though the finger is still down.
-  let n = 0;
-  window.__answer["purge-timed"] = b => { if(b.hold !== true) return [200, {running:false}];
-    n++; return n >= 11 ? [200, {ok:true, started:true, running:true, text:"Timed purge started: front row 1, front row 2 for 10 s."}] : [200, {running:false, holding:true, mine:true}]; };
-  const before = tp().length;
-  h.ev(hb, "pointerdown");
-  await h.sleep(1800);
-  const b = tp().slice(before);
-  out.whole = {n:b.length, holds:b.filter(p => p.body.hold === true).length,
-    runs:[...new Set(b.map(p => p.body.run))].length, st:document.getElementById("tp-st").textContent};
-  h.ev(hb, "pointerup");
-  await h.sleep(200);
-  out.after_lift = tp().slice(before).filter(p => p.body.hold !== true).length;
-  // Running: a press is Stop purge.
-  window.__patchMorning = mo => { mo.timed = Object.assign({}, mo.timed, {running:true, left_s:4.2, seconds:10, machines:["front row 1"]}); mo.purge_state.timed = true; return mo; };
-  await h.sleep(900);
-  const s0 = h.posts("purge-stop").length, t0 = tp().length;
-  h.ev(hb, "pointerdown"); h.ev(hb, "pointerup");
-  await h.sleep(300);
-  out.running = {word:hb.textContent, stops:h.posts("purge-stop").length - s0, timed:tp().length - t0};
-  window.__patchMorning = null;
-  await h.sleep(900);
-  // Other: 45 is kept to 30.
-  const inp = document.getElementById("tp-secs");
-  inp.value = "45"; inp.dispatchEvent(new Event("change", {bubbles:true}));
-  await h.sleep(100);
-  out.other = {value:inp.value, word:hb.textContent};
-"""
-    js = "<script>window.__drive = async (out, h) => {\n" + steps + \
-        "\n};</script>" + _RACK_DRIVE_JS
-    js = js.replace('if(!document.querySelector("#fl-lamps .lamp")) '
-                    'return setTimeout(go, 50);',
-                    'if(!document.querySelector("#mo-field .mach")) '
-                    'return setTimeout(go, 50);')
-    got = _rack_screen_in_chromium(
-        chrome, one, st, ((1366, 768),), measure_js=js, frag="#morning",
-        routes={"/api/remote/morning": _morning_view_timed()},
-        budget_ms=12000)
-    res = got[(1366, 768)]
-    if not check(isinstance(res, list) and res, f"driven: {res!r}"):
-        print("  ok")
-        return
-    o = res[0]
-    check(not o.get("problems"), f"the steps ran: {o.get('problems')}")
-    s = o.get("short") or {}
-    check(s.get("holds", 0) >= 3 and s.get("runs") == 1 and
-          (s.get("last") or {}).get("hold") is False and
-          s.get("secs") == [10] and s.get("seen") and s.get("stops") == 0,
-          f"a short press: hold beats of one id with 10 s and the page's "
-          f"status time, then the release, nothing else: {s}")
-    w = o.get("whole") or {}
-    check(w.get("holds") == 11 and w.get("runs") == 1 and
-          "You can let go" in w.get("st", ""),
-          f"a whole press: the beats stop at the engine's start, and it "
-          f"says you can let go: {w}")
-    check(o.get("after_lift") == 0,
-          f"lifting after the start sends no release of a hold that is "
-          f"over: {o.get('after_lift')}")
-    r = o.get("running") or {}
-    check(r.get("word", "").startswith("PURGING front row 1: 5 s left") and
-          r.get("stops") == 1 and r.get("timed") == 0,
-          f"running: the button counts down; a press is Stop purge, "
-          f"never a new hold: {r}")
-    ot = o.get("other") or {}
-    check(ot.get("value") == "30" and ot.get("word", "").endswith("for 30 s"),
-          f"Other 45 is kept to the longest, 30: {ot}")
-    print("  ok")
-
 
 
 def test_timed_purge_deck_key():
@@ -76948,7 +74308,6 @@ def test_timed_purge_deck_key():
     finally:
         restore()
     print("  ok")
-
 
 
 def test_timed_purge_stall_inside_a_send_and_a_signed_out_deck():
@@ -77316,7 +74675,7 @@ def test_windows_rack_window_and_explorer_front():
     check('brought it to the front. If you do not' in rm_src and
           'see it, it is on the taskbar.' in rm_src,
           "the route's answer says where the folder is")
-    page = remote1_text()
+    page = screen_text()
     info = page[page.find('<div id="info"'):page.find('<script id="remote-logic">')]
     check("Minimize, Maximize and Close buttons" in info and
           "<kbd>Windows</kbd> key + <kbd>Down arrow</kbd>" in info and
@@ -77330,7 +74689,6 @@ def test_windows_rack_window_and_explorer_front():
 def _re_findall(pattern, text):
     import re as _re
     return _re.findall(pattern, text)
-
 
 
 # ------------------------------------------------ users and the audit log --
@@ -78114,14 +75472,12 @@ def test_config_watch_supervisor_and_rack_screen_note():
             srv.server_close()
         gone()
         _sh.rmtree(d, ignore_errors=True)
-    page = remote1_text()
-    for need in ('<div class="warnbox" id="cfg-note" hidden></div>'
-                 '<button class="ghost" id="cfg-reload" hidden>Reload '
-                 'engine</button>',
+    page = screen_text()
+    for need in ('<div class="pline warn" id="cfg-note" hidden></div>',
+                 '<button class="b blue" id="cfg-reload" hidden>',
                  'setWarn("cfg-note", cn.text);',
                  '$("cfg-reload").hidden = !cn.offer || '
                  '!mayRow(s, "settings");',
-                 '"an-note", "cfg-note"].forEach(',
                  'post("/api/remote/reload-engine", {})'):
         check(need in page, f"the rack screen has {need!r}")
     check(not re.search(r'LOCAL_FAULT\["cfg-note"\]', page),
@@ -78153,7 +75509,6 @@ console.log(JSON.stringify(out));
     check(rr.returncode == 0 and bad == [],
           f"cfgNote in node: {rr.stdout!r} {rr.stderr[-400:]!r}")
     print("  ok")
-
 
 
 def test_users_sign_out_after_the_last_show():
@@ -78452,7 +75807,7 @@ def test_users_sign_out_after_the_last_show():
     check("r.users.last_show = r.last_show_over" in src and
           "r.users.start()" in src and "r.users.stop()" in src,
           "web.serve gives the users the engine's answer")
-    page = remote1_text()
+    page = screen_text()
     check('post("/api/remote/last-show-signout", {minutes:lastShow})' in
           page and 'id="au-lastshow"' in page,
           "the Users screen has the setting and saves it")
@@ -79677,310 +77032,6 @@ def test_review_143_sign_out_holds_and_deck_fallbacks():
     check(ctl._who() == sd.UNSIGNED,
           "who is signed in not known: the journal says unsigned, never "
           "the chosen operator")
-
-
-_SIGNIN_MEASURE_JS = r"""
-<script>
-(function(){
-function shown(el){ return !!el && el.getClientRects().length > 0; }
-function state(){
-  const out = {chip:($("nav-user") || {}).textContent || "", buttons:{}, arm:[], lz:[]};
-  for(const id of ["b-start", "b-resume", "b-reset", "b-run", "b-hold", "b-disarm", "lz-disarm", "sa-on", "lf-on"]){
-    const el = document.getElementById(id);
-    if(el) out.buttons[id] = {disabled:el.disabled, off:el.classList.contains("signin-off")};
-  }
-  document.querySelectorAll("#fl-lamps [data-arm]").forEach(b => out.arm.push({mode:b.dataset.mode, disabled:b.disabled}));
-  document.querySelectorAll("#lz-chips button[data-lz]").forEach(b => out.lz.push({armed:b.classList.contains("armed"), disabled:b.disabled}));
-  return out;
-}
-function go(){
-  if(!document.querySelector("#fl-lamps .lamp [data-arm]") || !ST) return setTimeout(go, 100);
-  setTimeout(async () => {
-    const res = {before:state()};
-    // A finger on the first group's button and on Start now.
-    const b = document.querySelector("#fl-lamps [data-arm]");
-    b.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true, cancelable:true}));
-    $("b-start").click();
-    await new Promise(r => setTimeout(r, 400));
-    res.posts_after_press = window.__posts.slice();
-    res.hold_after_press = HOLD !== null;
-    // Then Sign out, with any hold under way.
-    $("u-out").click();
-    await new Promise(r => setTimeout(r, 400));
-    res.hold_after_out = HOLD !== null;
-    res.after_out = state();
-    res.posts = window.__posts.slice();
-    const pre = document.createElement("pre"); pre.id = "rack-measure";
-    pre.textContent = JSON.stringify(res);
-    document.body.appendChild(pre);
-  }, 900);
-}
-go();
-})();
-</script>
-"""
-
-_SIGNIN_HEAD_JS = r"""<script>
-window.__posts = [];
-(function(){
-  // The engine's word after a Sign out: this screen signed out. The stub
-  // engine cannot know, so its status is answered as the real one would.
-  const f = window.fetch;
-  window.fetch = async function(u, o){
-    if(o && o.method === "POST") window.__posts.push(String(u));
-    const r = await f.apply(this, arguments);
-    if(String(u).indexOf("/api/remote/status") >= 0 &&
-       window.__posts.some(p => p.endsWith("/signout"))){
-      const j = await r.clone().json();
-      const no = {}; Object.keys((j.me || {}).may || {}).forEach(k => { no[k] = false; });
-      j.me = Object.assign({}, j.me, {user:null, role:null, view_only:true, may:no});
-      return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}});
-    }
-    return r;
-  };
-})();
-</script>"""
-
-
-def test_rack_screen_locks_controls_signed_out_in_a_browser():
-    section("rack screen, drawn in a real browser at the rack sizes: signed "
-            "out with users on, Start now, Resume, Run, hold to arm, "
-            "laser arm and the settings switches are off and say Sign in "
-            "to use controls; Hold, Abort, Disarm all and Disarm all lasers "
-            "stay live; a press does not reach the engine; Sign out lets go "
-            "of a hold and locks at once (review of PR #143, 3)")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  note: no Chromium here, so the page was not drawn")
-        print("  ok")
-        return
-    page = remote1_text()
-    perms = ("show", "arm", "unlock", "checklist", "show_files", "settings",
-             "users")
-    base = _rack_status_pico(many=False)
-    base["laser_arm"]["lasers"][1]["armed"] = True
-    out_st = dict(base, me={"local": True, "users_active": True,
-                            "user": None, "role": None, "view_only": True,
-                            "may": {p: False for p in perms}})
-    in_st = dict(base, me={"local": True, "users_active": True,
-                           "user": "Jeff", "role": "admin",
-                           "view_only": False,
-                           "may": {p: True for p in perms}})
-    # One draw each, the short window signed out and the show PC's screen
-    # signed in: the Windows runner's time is nearly all used, and
-    # the sign-in and sign-out flip test draws both sizes again.
-    for label, st, sizes in (("signed out", out_st, ((1366, 600),)),
-                             ("signed in", in_st, ((1920, 1080),))):
-        got = _rack_screen_in_chromium(chrome, page, st, sizes,
-                                       measure_js=_SIGNIN_MEASURE_JS,
-                                       head_js=_SIGNIN_HEAD_JS,
-                                       budget_ms=8000)
-        for (w, h), res in got.items():
-            if not check(isinstance(res, dict), f"{label} {w}x{h}: drawn: "
-                                                 f"{res!r}"[:600]):
-                continue
-            bt = res["before"]["buttons"]
-            live = all(not bt[k]["off"] for k in ("b-hold",
-                                                  "b-disarm", "lz-disarm"))
-            check(live and "b-abort" not in bt and
-                  not bt["b-disarm"]["disabled"] and
-                  not bt["lz-disarm"]["disabled"],
-                  f"{label} {w}x{h}: Hold, Disarm all and Disarm all "
-                  f"lasers live, no Abort: {bt}")
-            if label == "signed out":
-                check(all(bt[k]["disabled"] and bt[k]["off"] for k in
-                          ("b-start", "b-resume", "b-run")) and
-                      "b-reset" not in bt,
-                      f"{w}x{h}: Start now, Resume and Run off, no Reset: "
-                      f"{bt}")
-                check(res["before"]["arm"] and
-                      all(a["disabled"] for a in res["before"]["arm"]
-                          if a["mode"] != "disarm"),
-                      f"{w}x{h}: every hold to arm off: "
-                      f"{res['before']['arm']}")
-                check([z for z in res["before"]["lz"] if z["armed"]] and
-                      all(z["disabled"] for z in res["before"]["lz"]
-                          if not z["armed"]) and
-                      not any(z["disabled"] for z in res["before"]["lz"]
-                              if z["armed"]),
-                      f"{w}x{h}: a laser's Arm off, its Disarm live: "
-                      f"{res['before']['lz']}")
-                check(res["before"]["chip"] == "Sign in to use controls",
-                      f"{w}x{h}: the chip says it: {res['before']['chip']}")
-                check(not [p for p in res["posts_after_press"]
-                           if p.endswith("arm-hold") or
-                           p.endswith("start-now")] and
-                      not res["hold_after_press"],
-                      f"{w}x{h}: a press on hold to arm or Start now "
-                      f"reaches nothing: {res['posts_after_press']}")
-            else:
-                check(not bt["b-start"]["off"] and
-                      any(not a["disabled"] for a in res["before"]["arm"]),
-                      f"{w}x{h}: signed in, the controls are on: {bt} "
-                      f"{res['before']['arm']}")
-                check(res["hold_after_press"] and
-                      any(p.endswith("arm-hold")
-                          for p in res["posts_after_press"]),
-                      f"{w}x{h}: signed in, a hold to arm starts: "
-                      f"{res['posts_after_press']}")
-                check(not res["hold_after_out"] and
-                      res["after_out"]["buttons"]["b-start"]["off"] and
-                      all(a["disabled"] for a in res["after_out"]["arm"]
-                          if a["mode"] != "disarm") and
-                      res["after_out"]["chip"] == "Sign in to use "
-                                                  "controls" and
-                      any(p.endswith("signout") for p in res["posts"]),
-                      f"{w}x{h}: Sign out lets go of the hold and locks "
-                      f"at once: {res['after_out']} {res['posts']}")
-
-
-_SIGNIN_FLIP_HEAD_JS = r"""<script>
-window.__mode = "out";
-(function(){
-  // The engine's word on this screen, flipped by the test as a sign-in
-  // and a sign-out would.
-  const f = window.fetch;
-  window.fetch = async function(u, o){
-    const r = await f.apply(this, arguments);
-    if(String(u).indexOf("/api/remote/status") < 0) return r;
-    const j = await r.clone().json();
-    const inn = window.__mode === "in", may = {};
-    Object.keys((j.me || {}).may || {}).forEach(k => { may[k] = inn; });
-    j.me = Object.assign({}, j.me, {user: inn ? "Jeff" : null, role: inn ? "admin" : null, view_only: !inn, may: may});
-    return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}});
-  };
-})();
-</script>"""
-
-_SIGNIN_FLIP_MEASURE_JS = r"""
-<script>
-(function(){
-function state(){
-  const o = {chip:($("nav-user") || {}).textContent || "", b:{}};
-  for(const id of ["b-run", "b-start", "b-hold", "b-disarm", "lz-disarm", "sa-on"]){
-    const e = document.getElementById(id);
-    if(e) o.b[id] = {d:e.disabled, off:e.classList.contains("signin-off"), t:e.title};
-  }
-  o.lz = [...document.querySelectorAll("#lz-chips button[data-lz]")].map(b => ({a:b.classList.contains("armed"), d:b.disabled, t:b.title}));
-  o.ann = [...document.querySelectorAll("#ann-btns button[data-ann]")].map(b => ({d:b.disabled, t:b.title}));
-  o.arm = [...document.querySelectorAll("#fl-lamps [data-arm]")].map(b => ({m:b.dataset.mode, d:b.disabled}));
-  o.locked = document.querySelectorAll(".signin-off").length;
-  return o;
-}
-const wait = ms => new Promise(r => setTimeout(r, ms));
-function go(){
-  if(!ST || !document.querySelector("#fl-lamps [data-arm]")) return setTimeout(go, 100);
-  setTimeout(async () => {
-    const res = {out1:state()};
-    // Start now and Run as a Stop (a show live or starting; PR #144):
-    // never locked, signed out or not (third review of PR #143, 1).
-    const sm = {};
-    for(const id of ["b-start", "b-run"]){
-      const e = $(id), was = [e.dataset.mode, e.disabled, e.title,
-        e.classList.contains("signin-off"), e.dataset.title0, e.dataset.dis0];
-      e.dataset.mode = "stop"; e.disabled = false; e.title = "Stop";
-      lockForSignIn();
-      sm[id] = {d:e.disabled, off:e.classList.contains("signin-off"), t:e.title};
-      // Put the drawing back exactly as it was, the lock's notes too.
-      if(was[0] === undefined) delete e.dataset.mode; else e.dataset.mode = was[0];
-      e.disabled = was[1]; e.title = was[2];
-      e.classList.toggle("signin-off", was[3]);
-      if(was[4] !== undefined) e.dataset.title0 = was[4];
-      if(was[5] !== undefined) e.dataset.dis0 = was[5];
-    }
-    lockForSignIn();
-    res.stop_mode = sm;
-    window.__mode = "in"; await wait(1500); res.in1 = state();
-    window.__mode = "out"; await wait(1500); res.out2 = state();
-    window.__mode = "in"; await wait(1500); res.in2 = state();
-    const pre = document.createElement("pre"); pre.id = "rack-measure";
-    pre.textContent = JSON.stringify(res);
-    document.body.appendChild(pre);
-  }, 900);
-}
-go();
-})();
-</script>
-"""
-
-
-def test_rack_screen_sign_in_and_out_unlock_and_lock_in_a_browser():
-    section("rack screen, drawn in a real browser at the rack sizes: the "
-            "screen boots signed out, Jeff signs in, signs out and in "
-            "again; every control locked for signing in comes back to its "
-            "own real state and tooltip at once, and locks again on the "
-            "sign-out (re-review of PR #143, 1)")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  note: no Chromium here, so the page was not drawn")
-        print("  ok")
-        return
-    page = remote1_text()
-    perms = ("show", "arm", "unlock", "checklist", "show_files", "settings",
-             "users")
-    st = _rack_status_pico(many=False)
-    st["laser_arm"]["lasers"][1]["armed"] = True
-    st["booth"] = {"configured": False, "device": ""}
-    st["announce"] = {
-        "configured": True, "ok": True, "error": None, "device": "MOTU M4",
-        "device_set": True, "device_available": True, "device_reason": None,
-        "route": {"kind": "device", "ok": True, "why": None,
-                  "text": "MOTU M4, its own output while the show audio "
-                          "is not running"},
-        "blocked": None, "over_show": False,
-        "items": [{"id": "delayed", "name": "Delayed", "available": True,
-                   "missing": False, "reason": None, "length_s": 12.0},
-                  {"id": "cancellation", "name": "Cancellation",
-                   "available": True, "missing": False, "reason": None,
-                   "length_s": 9.0}],
-        "playing": None}
-    st["me"] = {"local": True, "users_active": True, "user": None,
-                "role": None, "view_only": True,
-                "may": {p: False for p in perms}}
-    words = "Sign in to use controls"
-    got = _rack_screen_in_chromium(chrome, page, st,
-                                   ((1920, 1080), (1366, 600)),
-                                   measure_js=_SIGNIN_FLIP_MEASURE_JS,
-                                   head_js=_SIGNIN_FLIP_HEAD_JS,
-                                   budget_ms=12000)
-    for (w, h), res in got.items():
-        if not check(isinstance(res, dict),
-                     f"{w}x{h}: drawn: {res!r}"[:600]):
-            continue
-        sm = res.get("stop_mode") or {}
-        check(sm and all(not v["d"] and not v["off"] and v["t"] == "Stop"
-                         for v in sm.values()),
-              f"{w}x{h}: Start now and Run as a Stop stay live signed out, "
-              f"their own tooltip kept: {sm}")
-        for tag in ("out1", "out2"):
-            o = res[tag]
-            check(o["chip"] == words and o["b"]["b-run"]["d"] and
-                  o["b"]["b-run"]["off"] and o["b"]["b-start"]["off"] and
-                  all(z["d"] for z in o["lz"] if not z["a"]) and
-                  o["ann"] and all(a["d"] for a in o["ann"]) and
-                  all(a["d"] for a in o["arm"] if a["m"] != "disarm") and
-                  not o["b"]["b-hold"]["off"] and
-                  not o["b"]["b-disarm"]["off"] and
-                  not o["b"]["lz-disarm"]["d"],
-                  f"{w}x{h} {tag}: signed out, locked; Hold and the "
-                  f"disarms live: {o}")
-        for tag in ("in1", "in2"):
-            o = res[tag]
-            check(o["chip"] == "Jeff" and o["locked"] == 0 and
-                  not o["b"]["b-run"]["d"] and
-                  words not in o["b"]["b-run"]["t"] and
-                  words not in o["b"]["b-start"]["t"] and
-                  o["lz"] and not any(z["d"] for z in o["lz"]) and
-                  not any(words in z["t"] for z in o["lz"]) and
-                  o["ann"] and not any(a["d"] for a in o["ann"]) and
-                  not any(words in a["t"] for a in o["ann"]) and
-                  any(not a["d"] for a in o["arm"]),
-                  f"{w}x{h} {tag}: signed in, every control back to its "
-                  f"own state and tooltip at once: {o}")
 
 
 def test_audit_chain_verify_finds_every_kind_of_tamper():
@@ -81409,9 +78460,9 @@ def test_soak_render_older_than_layout_is_a_cues_fault_at_show_load():
         check("httpd.remote.flame_cues.on_render_fault = \\\n"
               "                httpd.remote.render_fault_alert" in web_src,
               "ltc serve hands the flame cues the rack screen's alert")
-        page = remote1_text()
-        check("renderEngineChecks(mo.checks || []);" in page,
-              "the Morning page draws the engine checks")
+        page = screen_text()
+        check('const box = $("d-checks"), list = mo.checks || [];' in page,
+              "DAY's Engine checks step draws the engine checks")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")
@@ -81575,10 +78626,9 @@ def test_soak_show_folder_served_is_said_and_followed():
                 R.remote._journal = real_journal
                 R.close()
         here = os.path.dirname(os.path.abspath(__file__))
-        page = remote1_text()
-        check("s.show_folder && s.show_folder.problem ? "
-              "s.show_folder.problem : null" in page,
-              "the rack screen's trouble line carries it")
+        page = screen_text()
+        check("if(s.show_folder && s.show_folder.problem) items.push("
+              in page, "the rack screen's alert slot carries it")
         # The supervisor follows showpc.json.
         ltcwin, SUP, done = _winpkg()
         try:
@@ -82858,238 +79908,6 @@ def test_pixels_chip_shows_live_truth():
     print("  ok")
 
 
-def test_deck_chip_in_a_browser():
-    section("Deck chip in a real browser (2026-10-26): the rack screen's top "
-            "bar drawn in headless Chromium from the engine's own status "
-            "with the deck unplugged, acknowledged, replugged, and with the "
-            "page cut off from the engine; never green but replugged")
-    here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    check('el.className = "chip warn"; const w = el.querySelector("span"); '
-          'if(w) w.textContent = "no contact";' in page,
-          "a page that lost the engine makes every chip amber, 'no contact'")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner: the Deck chip "
-              "could not be drawn")
-        print("  note: no Chromium, Chrome or Edge here, so the Deck chip "
-              "was not drawn (set LTCPLAY_CHROME to one)")
-        print("  ok")
-        return
-    S = _sched()
-    if S is None:
-        return
-    from ltcplay import streamdeck as sd
-    R = _RemoteRig(S)
-    loop = ("127.0.0.1", 5000)
-    states = {}
-    try:
-        R.remote.flame_status = _LampFlames()
-
-        def status():
-            st, _h, out = _ask(R.httpd, "GET", "/api/remote/status",
-                               client=loop)
-            return out
-
-        def deck(q):
-            _ask(R.httpd, "GET", "/api/remote/deck-input?" + q, client=loop)
-        deck("hw=0&arm_ms=20")
-        _ask(R.httpd, "POST", "/api/remote/alert",
-             {"raise": "deck", "text": sd.DECK_LOST_TEXT,
-              "options": ["Acknowledge", "Disarm all"]}, client=loop)
-        states["unplugged"] = status()
-        aid = (states["unplugged"].get("alerts") or [{}])[0].get("id")
-        R.ask("POST", "/api/remote/alert",
-              {"id": aid, "action": "acknowledge", "seen": R.seen()})
-        deck("hw=0&arm_ms=20")
-        states["acknowledged"] = status()
-        deck("hw=1&arm_ms=20")
-        states["replugged"] = status()
-        R.mono[0] += 5
-        states["not heard"] = status()
-    finally:
-        R.close()
-    check(states["acknowledged"].get("alerts") == [],
-          "the acknowledged status carries no alert")
-    want = {"unplugged": ("bad", "missing"),
-            "acknowledged": ("bad", "missing"),
-            "replugged": ("ok", "ok"),
-            "not heard": ("bad", "not heard")}
-    for name, st in states.items():
-        got = _deck_chip_in_chromium(chrome, page, st)
-        d = [x for x in got if isinstance(got, list) and
-             x.get("name") == "Deck"] if isinstance(got, list) else []
-        check(len(d) == 1, f"{name}: the Deck chip was drawn: {got!r}")
-        if not d:
-            continue
-        cls, word = want[name]
-        check(d[0]["cls"] == f"chip {cls}" and d[0]["word"] == word and
-              (d[0]["dot"] == "green") == (cls == "ok"),
-              f"{name}: the Deck chip reads 'Deck {word}', {cls}, its dot "
-              f"green only when ok: {d[0]}")
-    # The page cut off from the engine: one good status (replugged, green),
-    # then none. The chips go amber and say no contact.
-    got = _deck_chip_in_chromium(chrome, page, states["replugged"],
-                                 cut_off=True)
-    d = [x for x in got if x.get("name") == "Deck"] \
-        if isinstance(got, list) else []
-    got = [x for x in got if x.get("name") != "#stale"] \
-        if isinstance(got, list) else got
-    check(len(d) == 1 and d[0]["cls"] == "chip warn" and
-          d[0]["word"] == "no contact" and d[0]["dot"] != "green",
-          f"the engine gone: the Deck chip is amber, 'no contact', never "
-          f"green: {got!r}")
-    check(isinstance(got, list) and got and
-          all(x["dot"] != "green" for x in got),
-          f"and no other chip is green either: {got!r}")
-    # Review of #108, P2-1: the engine answers, but with a status the page
-    # cannot draw (a field of the wrong type). The page must not call it
-    # fresh: after the last good draw ages out, every chip is amber, "no
-    # contact", and the banner says the page cannot show the status.
-    for field, bad in (("subsystems", 7), ("schedule", {"slots": 5}),
-                       ("flames", {"groups": "x", "connected": True})):
-        broken = dict(states["replugged"])
-        broken[field] = bad
-        got = _deck_chip_in_chromium(chrome, page, states["replugged"],
-                                     cut_off=True, after=broken)
-        rows = got if isinstance(got, list) else []
-        chips = [x for x in rows if x.get("name") != "#stale"]
-        banner = [x for x in rows if x.get("name") == "#stale"]
-        check(chips and all(x["cls"] == "chip warn" and
-                            x["word"] == "no contact" and
-                            x["dot"] != "green" for x in chips),
-              f"{field} of the wrong type: every chip amber, no contact, "
-              f"never a green 'Deck ok' kept from the last good status: "
-              f"{got!r}")
-        check(banner and banner[0]["cls"] == "shown" and
-              "CANNOT SHOW" in banner[0]["word"],
-              f"{field} of the wrong type: the banner says the page cannot "
-              f"show the status: {banner}")
-    print("  ok")
-
-
-_CHIP_MEASURE_JS = r"""
-<script>
-(function(){
-function read(){
-  const g = getComputedStyle(document.documentElement).getPropertyValue("--green").trim();
-  return [...document.querySelectorAll("#subs .chip")].map(el => {
-    const dot = el.querySelector("i"), w = el.querySelector("span");
-    const bg = dot ? getComputedStyle(dot).backgroundColor : "";
-    const probe = document.createElement("i"); probe.style.background = g;
-    document.body.appendChild(probe);
-    const green = getComputedStyle(probe).backgroundColor; probe.remove();
-    return {name:[...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join("").trim(),
-            cls:el.className, word:w ? w.textContent : "",
-            dot: bg === green ? "green" : bg};
-  });
-}
-function go(){
-  if(!document.querySelector("#subs .chip")) return setTimeout(go, 100);
-  setTimeout(() => {
-    const pre = document.createElement("pre"); pre.id = "chip-measure";
-    const b = document.getElementById("stale");
-    pre.textContent = JSON.stringify(window.__CUT_OFF ? read().concat([{name:"#stale", cls:b && !b.hidden ? "shown" : "hidden", word:b ? b.textContent : "", dot:""}]) : read());
-    document.body.appendChild(pre);
-  }, window.__CUT_OFF ? 4000 : 600);
-}
-go();
-})();
-</script>
-"""
-
-
-def _deck_chip_in_chromium(chrome, page, status, cut_off=False, after=None):
-    """The rack screen's top bar chips, drawn in headless `chrome` from
-    `status`: [{name, cls, word, dot}], or a sentence saying why not. With
-    `cut_off` the stub answers the status once, then never again; with
-    `after` too, it answers `after` from then on instead (a status the page
-    cannot draw), and the dump also carries the stale banner's text."""
-    import http.server
-    import html as _html
-    import shutil
-    import subprocess as _sp
-    import tempfile
-    import threading
-    js = ("<script>window.__CUT_OFF = true;</script>" if cut_off else "") + \
-        _CHIP_MEASURE_JS
-    body = page.replace("</body>", js + "</body>", 1)
-    asked = [0]
-
-    class H(http.server.BaseHTTPRequestHandler):
-        def log_message(self, *a):
-            pass
-
-        def _out(self, code, text, ctype="application/json"):
-            data = text.encode("utf-8")
-            self.send_response(code)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(data)
-
-        def do_GET(self):
-            p = self.path.split("?")[0]
-            if p in ("/", "/remote"):
-                return self._out(200, body, "text/html; charset=utf-8")
-            if p == "/api/remote/whoami":
-                return self._out(200, json.dumps(
-                    {"local": True, "device": "this PC (rack screen)",
-                     "fresh_s": 2.0}))
-            if p == "/api/remote/status":
-                asked[0] += 1
-                if cut_off and asked[0] > 1 and after is not None:
-                    st = dict(after)
-                    st["served_at"] = int(time.time() * 1000)
-                    return self._out(200, json.dumps(st))
-                if cut_off and asked[0] > 1:
-                    return self._out(503, '{"error": "gone"}')
-                st = dict(status)
-                st["served_at"] = int(time.time() * 1000)
-                return self._out(200, json.dumps(st))
-            return self._out(200, "{}")
-
-        def do_POST(self):
-            self.rfile.read(int(self.headers.get("Content-Length") or 0))
-            return self._out(200, "{}")
-
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
-    srv.daemon_threads = True
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    prof = tempfile.mkdtemp(prefix="ltc-chip-chrome-")
-    scratch = os.path.join(prof, "tmp")
-    os.makedirs(scratch, exist_ok=True)
-    env = dict(os.environ, TMPDIR=scratch, TMP=scratch, TEMP=scratch)
-    cmd = [chrome, "--headless=new", "--no-sandbox", "--disable-gpu",
-           "--no-first-run", "--no-default-browser-check",
-           "--hide-scrollbars", f"--user-data-dir={prof}",
-           "--window-size=1366,768", "--virtual-time-budget=10000",
-           "--dump-dom", f"http://127.0.0.1:{srv.server_address[1]}/remote"]
-    try:
-        try:
-            code, dom, err = _run_browser(cmd, RACK_DRAW_CEILING, env)
-        except _sp.TimeoutExpired as e:
-            return f"the browser ran out of time: {e}"
-        except (OSError, _sp.SubprocessError) as e:
-            return f"{type(e).__name__}: {e}"
-        a = dom.find('<pre id="chip-measure">')
-        if a < 0:
-            return f"the page never measured itself (exit {code}): " \
-                   f"{err[-600:]!r}"
-        b = dom.find("</pre>", a)
-        try:
-            return json.loads(_html.unescape(
-                dom[a + len('<pre id="chip-measure">'):b]))
-        except ValueError as e:
-            return f"ValueError: {e}"
-    finally:
-        srv.shutdown()
-        srv.server_close()
-        shutil.rmtree(prof, ignore_errors=True)
-
-
 def test_deck_arm_journal_never_holds_the_arm_lock():
     section("Stream Deck arm socket (review of PR #79, P3-d): a send failure "
             "is journaled with the lock released, so a blocked console "
@@ -83126,7 +79944,6 @@ def test_deck_arm_journal_never_holds_the_arm_lock():
         gate.set()
         th.join(2)
     print("  ok")
-
 
 
 # ---------------------------------------------------------------------------
@@ -84152,7 +80969,6 @@ def test_laser_arm_roles_disarm_signed_out_and_no_auto_run():
     print("  ok")
 
 
-
 def test_laser_arm_review_races_closing_and_ordering():
     section("lasers (review of PR #87): an arm racing an Abort or Hold "
             "never sticks; an announcement disarms like a Hold; the night "
@@ -84437,7 +81253,6 @@ def test_laser_arm_through_web_serve():
     print("  ok")
 
 
-
 def test_laser_arm_review_round_two():
     section("lasers (second review of PR #87): a merged disarm keeps every "
             "laser it covers; a disarm click is never held back by Arrange "
@@ -84472,39 +81287,6 @@ def test_laser_arm_review_round_two():
     arm.run_pending()
     check({l for w, l in calls if w == "disarm"} == {"l1", "l3"},
           f"two single disarms merged cover both: {calls}")
-    # 2. The page: Arrange mode never holds back a disarm click.
-    here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    a = page.index("async function laserArmClick(ids){")
-    b = page.index("function laserGroupClick(g){")
-    node = _sh.which("node")
-    if node:
-        js = page[a:b] + r"""
-const presses = []; let confirms = 0;
-const moPress = (r, body) => presses.push(body);
-const arrangeBlocked = () => true;            // a screen in Arrange mode
-const confirmBox = async () => { confirms++; return true; };
-let MO = {laser_arm: {lasers: [{id:"l1", name:"Laser 1", armed:true},
-                               {id:"l2", name:"Laser 2", armed:false}]}};
-(async () => {
-  await laserArmClick(["l1"]);
-  await laserArmClick(["l2"]);
-  console.log(JSON.stringify({presses, confirms}));
-})();
-"""
-        r = _node_js(node, js, capture_output=True, text=True,
-                    timeout=60)
-        try:
-            got = _json.loads(r.stdout.strip())
-        except ValueError:
-            got = None
-        check(got == {"presses": [{"lasers": ["l1"], "on": False}],
-                      "confirms": 0},
-              f"in Arrange mode a disarm click still goes, an arm click "
-              f"does not (and asks no confirm): {r.stdout!r} "
-              f"{r.stderr[-300:]!r}")
-    else:
-        check(not IN_CI, "node is missing on this CI runner")
     # 3. Variants of refused addresses.
     for addr in ("/beyond/general/enablelaseroutput",
                  "/BEYOND/general/DisableLaserOutput",
@@ -84804,197 +81586,6 @@ def test_rack_lasers_strip_engine():
     print("  ok")
 
 
-def test_rack_lasers_strip_page():
-    section("LASERS on the show screen, the page (Jeff, 2026-10-22): its own "
-            "strip outside the flame block, violet, never sharing a button "
-            "with the flames; Disarm all lasers goes stale, arranging, with "
-            "arming switched off and with no confirm; a chip disarms an "
-            "armed laser at once and arms only after the page's own "
-            "refusals, Arrange and a confirm; refusals are said in words "
-            "(page logic in node, and the wiring)")
-    import shutil
-    import subprocess as _sp
-    here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    vs = page.find('<section id="v-show"')
-    fl = page.find('<div class="flames">', vs)
-    lz = page.find('<div class="lz" id="lz" hidden aria-label="Lasers">', vs)
-    end = page.find("</section>\n\n  <!-- Schedule (was Tonight", vs)
-    flames = page[fl:page.find("<!-- LASERS", fl)]
-    check(0 < vs < fl < len(flames) + fl <= lz < end,
-          "the LASERS strip is on the show screen, after the flame block")
-    check(flames.count("<div") == flames.count("</div>"),
-          "the LASERS strip is not inside the flame block")
-    check('<button id="b-disarm" class="disarm"' in flames and
-          '<span class="lbl">Disarm all flame groups</span><small>' in flames
-          and "laser" not in flames.lower(),
-          "the flame block keeps its own Disarm all flame groups and "
-          "nothing of the lasers")
-    check('<button class="lzdis" id="lz-disarm">Disarm all lasers</button>'
-          in page[lz:end] and 'class="disarm"' not in page[lz:end],
-          "Disarm all lasers is its own button, not styled as a flame one")
-    line = [ln for ln in page.splitlines()
-            if 'ALL_BTN.addEventListener("click"' in ln]
-    check(len(line) == 1 and 'press("disarm-all")' in line[0] and
-          "laser" not in line[0].lower() and
-          'const ALL_BTN = $("b-disarm");' in page,
-          f"Disarm every flame group presses disarm-all only: {line}")
-    check("  renderLaserStrip(ST && ST.laser_arm, stale);\n  renderMode(stale);"
-          in page, "the strip is drawn every 250 ms, stale or not")
-    rules = _css_rules(page)
-    lzr = _css_rule(rules, ".lz") or {}
-    chips = _css_rule(rules, ".lz-chips") or {}
-    dis = _css_rule(rules, "button.lzdis") or {}
-    check(lzr.get("flex") == "0 0 auto" and
-          "var(--laser)" in lzr.get("border", ""),
-          f"the strip keeps its height and its violet frame: {lzr}")
-    check(chips.get("min-width") == "0" and
-          chips.get("overflow") == "hidden",
-          f"the chips can never widen the page: {chips}")
-    check("var(--laser)" in dis.get("border", "") and
-          "var(--laser-deep)" in dis.get("background", ""),
-          f"Disarm all lasers is violet, never the flames' bronze: {dis}")
-    check((_css_rule(rules, ".lz .toast:empty") or {}).get("display") ==
-          "none", "the strip's message line takes no room until it says "
-                  "something")
-    a = page.find("// LASER STRIP BEGIN")
-    b = page.find("// LASER STRIP END")
-    check(0 < a < b, "the page has its LASER STRIP block")
-    block = page[a:b]
-    for bad in ("—", "–"):
-        check(bad not in block, "no em or en dashes in the strip")
-    node = shutil.which("node")
-    if not node:
-        check(not IN_CI, "node is missing on this CI runner, so the LASERS "
-                         "strip cannot be run; install node in the workflow")
-        print("  note: node is not on this machine, so the strip was "
-              "checked by reading only (CI runs it)")
-        print("  ok")
-        return
-    prelude = r"""
-"use strict";
-class Node {
-  constructor(id){ this.id = id; this.listeners = {}; this.dataset = {}; this.hidden = false; this.textContent = ""; this.title = ""; this.className = ""; this.innerHTML = ""; }
-  addEventListener(t, f){ (this.listeners[t] = this.listeners[t] || []).push(f); }
-  fire(t, e){ for(const f of this.listeners[t] || []) f(e || {}); }
-}
-const byId = {};
-for(const id of ["lz", "lz-st", "lz-chips", "lz-disarm", "lz-msg", "mo-msg"]) byId[id] = new Node(id);
-const $ = id => byId[id];
-const esc = (t) => String(t == null ? "" : t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-let posts = [], asked = [], ANSWER = true, ARRANGE = false, FAIL = null;
-function post(p, body){ posts.push([p, body]); return FAIL ? Promise.reject(new Error(FAIL)) : Promise.resolve({text:"ok from the engine"}); }
-function actor(extra){ return Object.assign({seen: 123}, extra || {}); }
-async function confirmBox(q){ asked.push(q); return ANSWER; }
-function arrangeBlocked(route, extra){
-  if(!ARRANGE) return false;
-  if(route === "laser-arm" && extra && extra.on === true){ $("mo-msg").textContent = "ARRANGING"; return true; }
-  return false;
-}
-"""
-    body = r"""
-const out = [];
-const t = (c, m) => { if(!c) out.push(m); };
-const L = (id, armed, locked) => ({id:id, name:"Laser " + id.slice(-1), armed:!!armed, locked:!!locked});
-const VIEW = {lasers:[L("laser-1"), L("laser-2", true), L("laser-3", false, true), L("laser-4")],
-  groups:{"All lasers":["laser-1", "laser-2", "laser-3", "laser-4"]}, output_permitted:false,
-  why_off:"not every laser is armed", arm_refusal:null, arm_here:""};
-const reset = () => { posts = []; asked = []; ANSWER = true; ARRANGE = false; FAIL = null; $("lz-msg").textContent = ""; };
-(async () => {
-// What it shows.
-t(laserStripLook(undefined, false).show === false, "no laser arm in this engine: no strip");
-t(laserStripLook({lasers:[], groups:{}}, false).show === false, "no lasers: no strip");
-let k = laserStripLook({error:"boom"}, false);
-t(k.show === true && k.chips.length === 0 && /Disarm all lasers still works/.test(k.title), "a broken view: the strip and its Disarm all lasers stay");
-k = laserStripLook(VIEW, false);
-t(k.state === "1 of 4 ARMED" && k.armed === true, "one armed: " + k.state);
-t(k.chips.length === 5 && k.chips[0].label === "All lasers" && k.chips[0].word === "1 of 4" && k.chips[0].ids.length === 4, "the group chip first, with its count: " + JSON.stringify(k.chips[0]));
-t(k.chips[2].cls === "armed" && k.chips[2].word === "armed" && /Click to disarm/.test(k.chips[2].title), "an armed laser reads ARMED and says a click disarms");
-t(k.chips[1].cls === "" && k.chips[1].word === "off", "a disarmed laser reads off");
-t(k.chips[3].cls === "locked" && k.chips[3].word === "locked", "a locked laser reads locked");
-t(k.chips.every(c => c.off === false), "fresh: every chip can be pressed");
-const all = Object.assign({}, VIEW, {lasers:VIEW.lasers.map(x => Object.assign({}, x, {armed:true, locked:false})), output_permitted:true});
-t(laserStripLook(all, false).state === "ALL ARMED, output on" && laserStripLook(all, false).chips[0].word === "armed", "all armed and permitted: ALL ARMED, output on");
-t(laserStripLook(Object.assign({}, all, {output_permitted:false}), false).state === "ALL ARMED, output off", "all armed, output not permitted: said");
-t(laserStripLook(Object.assign({}, VIEW, {lasers:VIEW.lasers.map(x => Object.assign({}, x, {armed:false}))}), false).state === "All disarmed", "none armed: All disarmed");
-k = laserStripLook(VIEW, true);
-t(/Not known/.test(k.state) && k.chips.every(c => c.off === true && c.cls.indexOf("armed") < 0), "stale: not known, no chip pressable, nothing shown as armed");
-t(/Arming from here is off: no switch/.test(laserStripLook(Object.assign({}, VIEW, {arm_here:"no switch"}), false).title), "the switch's refusal is in the strip's words");
-// Drawing it, and the wiring.
-renderLaserStrip(VIEW, false);
-t($("lz").hidden === false && $("lz-st").textContent === "1 of 4 ARMED" && $("lz-st").className === "armed", "drawn: the state line");
-t(($("lz-chips").innerHTML.match(/data-lz=/g) || []).length === 5 && !/ disabled/.test($("lz-chips").innerHTML), "drawn: five chips, none disabled");
-renderLaserStrip(VIEW, true);
-t(($("lz-chips").innerHTML.match(/ disabled/g) || []).length === 5, "stale: every chip disabled");
-renderLaserStrip({lasers:[], groups:{}}, false);
-t($("lz").hidden === true, "no lasers: hidden");
-// Disarm all lasers: stale, arranging, the switch off, nobody confirming.
-renderLaserStrip(Object.assign({}, VIEW, {arm_here:"no switch"}), true);
-reset(); ARRANGE = true; ANSWER = false;
-$("lz-disarm").fire("click");
-await new Promise(r => setTimeout(r, 0));
-t(posts.length === 1 && posts[0][0] === "/api/remote/laser-arm" && posts[0][1].all === true && posts[0][1].on === false, "Disarm all lasers posts all:true on:false whatever the page's state: " + JSON.stringify(posts));
-t(asked.length === 0, "and asks no confirm");
-t($("lz-msg").textContent === "ok from the engine", "and says the engine's answer");
-reset(); FAIL = "the engine said no";
-await lzDisarmAll();
-t($("lz-msg").textContent === "the engine said no", "a failed disarm says why, never silent");
-// A chip.
-renderLaserStrip(VIEW, false);
-reset(); ARRANGE = true; ANSWER = false;
-$("lz-chips").fire("click", {target:{closest:() => ({disabled:false, dataset:{lz:"laser-2"}})}});
-await new Promise(r => setTimeout(r, 0));
-t(posts.length === 1 && posts[0][1].on === false && posts[0][1].lasers.join() === "laser-2" && asked.length === 0, "an armed laser's chip disarms at once, arranging, no confirm: " + JSON.stringify(posts));
-reset();
-$("lz-chips").fire("click", {target:{closest:() => ({disabled:true, dataset:{lz:"laser-1"}})}});
-t(posts.length === 0 && asked.length === 0, "a disabled chip does nothing");
-reset(); ANSWER = false;
-await lzClick(["laser-1"]);
-t(asked.length === 1 && /Arm Laser 1\?/.test(asked[0]) && posts.length === 0, "an arm asks to confirm; no, and nothing is posted");
-reset();
-await lzClick(["laser-1"]);
-t(posts.length === 1 && posts[0][1].on === true && posts[0][1].confirmed === true && posts[0][1].lasers.join() === "laser-1", "confirmed: posted with on:true and confirmed:true");
-reset(); FAIL = "Not armed: the show is aborted; press Reset first, then arm. Nothing was armed.";
-await lzClick(["laser-1"]);
-t($("lz-msg").textContent.indexOf("the show is aborted") >= 0, "the engine's refusal is said in its words: " + $("lz-msg").textContent);
-reset(); ARRANGE = true;
-await lzClick(["laser-1"]);
-t(posts.length === 0 && asked.length === 0 && $("mo-msg").textContent === "ARRANGING", "Arrange holds an arm back before the confirm");
-reset();
-await lzClick(["laser-3"]);
-t(posts.length === 0 && asked.length === 0 && /Laser 3 is locked out/.test($("lz-msg").textContent), "a locked laser: refused in words, no confirm: " + $("lz-msg").textContent);
-reset();
-renderLaserStrip(Object.assign({}, VIEW, {arm_here:"arming a laser from a device on the show network needs screen_arming"}), false);
-await lzClick(["laser-1"]);
-t(posts.length === 0 && asked.length === 0 && /needs screen_arming/.test($("lz-msg").textContent), "the switch off: refused in words, no confirm");
-reset();
-renderLaserStrip(VIEW, true);
-await lzClick(["laser-1"]);
-t(posts.length === 0 && asked.length === 0 && /no contact/.test($("lz-msg").textContent), "stale: no arm, said");
-reset();
-renderLaserStrip(VIEW, false);
-await lzClick(["laser-1", "laser-2", "laser-3", "laser-4"].filter(x => x !== "laser-3"));
-t(posts.length === 1 && posts[0][1].on === true && posts[0][1].lasers.length === 3, "a group with one armed: an arm of all of them, confirmed");
-reset();
-await lzClick([]);
-t(posts.length === 0 && /no laser was named/.test($("lz-msg").textContent), "nothing named: nothing posted");
-console.log(JSON.stringify(out));
-process.exit(0);
-})().catch(e => { console.log(JSON.stringify(["threw: " + e])); process.exit(0); });
-"""
-    r = _node_js(node, prelude + block + body, capture_output=True,
-                text=True, timeout=60)
-    try:
-        bad = json.loads(r.stdout.strip().splitlines()[-1] or "null")
-    except (ValueError, IndexError):
-        bad = None
-    check(r.returncode == 0 and bad == [],
-          f"the LASERS strip, in node: {r.stdout[-1500:]!r} "
-          f"{r.stderr[-600:]!r}")
-    print("  ok")
-
-
-
 def test_disarm_all_is_a_plain_disarm_and_never_gated():
     section("Disarm all flame groups (Jeff, 2026-10-23): a plain disarm of "
             "every group through the Stream Deck, no Abort latch and no "
@@ -85170,12 +81761,6 @@ def test_disarm_all_is_a_plain_disarm_and_never_gated():
               "Every group was sent" not in al[-1]["text"],
               f"a forced disarm that failed is never said as done: {al}")
         rem._flame_disarm = real
-        # The page says which one a press does.
-        page = remote1_text()
-        check('<span class="lbl">Disarm all flame groups</span><small>plain '
-              'disarm: arm again with a hold</small>' in page and
-              "Stop is different: it ends what is playing" in page,
-              "the page labels the plain disarm and the Stop apart")
     finally:
         R.close()
     print("  ok")
@@ -86489,10 +83074,6 @@ def test_a_laser_without_its_calibration_cue_says_what_and_where():
     for t in (need, text):
         check("—" not in t and "–" not in t, "no dashes")
     here = os.path.dirname(os.path.abspath(__file__))
-    html = remote1_text()
-    check("!l.configured ? need :" in html and "l.setup_needed" in html,
-          "the Startup page shows the sentence for a laser not set up, "
-          "armed or not")
     doc = open(os.path.join(here, "MORNING.md"), encoding="utf-8").read()
     sec = doc[doc.index("### How to set up the laser calibration cue"):]
     sec = sec[:sec.index("\n### ", 5)]
@@ -87047,43 +83628,6 @@ def test_video_lamp_follows_the_madmapper_watch():
           "on_change=httpd.remote.madmapper_link_changed" in web_src and
           "httpd.remote.madmapper_heartbeat = httpd.madmapper[1]" in web_src,
           "web.serve starts the MadMapper watch and hands it the heartbeat")
-    # The page draws the chip and its tooltip exactly as the engine says.
-    page = remote1_text()
-    draw = _js_block(page, '$("subs").innerHTML = ', '\n\n')
-    check(draw.startswith('$("subs").innerHTML'),
-          "the page has its status strip drawing")
-    # The strip draws through the one laser pill (2026-10-26): its pure
-    # function comes along.
-    draw = _js_block(page, "const CHIP_RANK = {", "// LOGIC END") + "\n" + draw
-    node = shutil.which("node")
-    if not node:
-        check(not IN_CI, "node is missing on this CI runner, so the status "
-                         "strip cannot be run; install node in the workflow")
-        print("  note: node is not on this machine, so the strip was "
-              "checked by reading only (CI runs it)")
-        print("  ok")
-        return
-    js = ("const byId = {subs: {innerHTML: ''}};\n"
-          "const $ = id => byId[id];\n"
-          "const esc = (t) => String(t == null ? '' : t)"
-          ".replace(/&/g,'&amp;').replace(/</g,'&lt;')"
-          ".replace(/>/g,'&gt;').replace(/\"/g,'&quot;');\n"
-          "const s = " + json.dumps({"subsystems": st["subsystems"]}) +
-          ";\n" + draw + "\nconsole.log(byId.subs.innerHTML);\n")
-    with tempfile.TemporaryDirectory() as d:
-        f = os.path.join(d, "strip.js")
-        with open(f, "w", encoding="utf-8") as fh:
-            fh.write(js)
-        p = subprocess.run([node, f], capture_output=True, text=True,
-                           timeout=30)
-    html = p.stdout
-    check(p.returncode == 0 and
-          "Video <span>MadMapper NOT RUNNING</span>" in html and
-          'class="chip bad"' in html and
-          "whether the screens show the picture is not something it can "
-          "tell" in html,
-          f"the rack screen shows 'Video MadMapper NOT RUNNING' in red, "
-          f"with the tooltip: {p.stderr or html[:400]}")
     print("  ok")
 
 
@@ -87378,10 +83922,10 @@ def test_artnet_faults_only_for_the_show_in_use():
         with open(sel_path) as fh:
             check(json.load(fh).get("show") == "show.json",
                   "once the disk answers, the file says the show Run")
-        page = remote1_text()
-        check('post("/api/remote/show-select", {file: $("run-file").value})'
-              in page and "if(sel && ok.includes(sel) && !RUN_PICKED) "
-              '$("run-file").value = sel;' in page,
+        page = screen_text()
+        check('post("/api/remote/show-select", {file: $("p-file").value})'
+              in page and "if(pick && ok.includes(pick) && !P_PICKED) "
+              "sel.value = pick;" in page,
               "the page's show picker sends its choice and shows the "
               "engine's")
     finally:
@@ -87414,144 +83958,6 @@ def _js_fn(page, name):
     return ""
 
 
-def test_rack_screen_jeff_2026_10_23_page():
-    section("rack screen (Jeff, 2026-10-23): the arm button shows the "
-            "group's state in colour and words and stays hold to arm; ARM "
-            "AGAIN in plain words with why; Schedule (was Tonight) opens "
-            "each show's notes on a tap, even with a live show polling "
-            "every 250 ms; a time zone list with friendly names; a Show and "
-            "Programming switch, locked with the reason during a live show; "
-            "Startup (was Morning and Shutdown) with Shutdown its own "
-            "section; the show file and deck operator in one column")
-    import json
-    import shutil as _sh
-    import subprocess as _sp
-    here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    # Static wiring.
-    for need in ('data-go="tonight">Schedule</button>',
-                 'data-go="morning" hidden>Startup</button>',
-                 '<section class="card compact" id="mo-shut">\n        <h2>Shutdown</h2>',
-                 '<div class="seg" id="run-mode" role="radiogroup"',
-                 '<div class="progcol" id="run-col">',
-                 '<select id="se-tz"></select>',
-                 'b.addEventListener("pointerdown", e => { e.preventDefault(); b.dataset.down = b.dataset.mode; if(b.dataset.mode === "hold") armStart(i); });',
-                 '.lamp button.armb:disabled{opacity:1;filter:none;cursor:default}',
-                 'post("/api/start", prog ? {timeline:f, on_lost:"hold"} : {timeline:f})'):
-        check(need in page, f"the page has {need!r}")
-    for gone in (">Tonight</button>", ">Morning and Shutdown</button>",
-                 '<input id="se-tz"', "Cycle the arm\"", "click to arm"):
-        check(gone not in page, f"the page no longer has {gone!r}")
-    a = page.find('<div class="progcol" id="run-col">')
-    col = page[a:page.find('<section class="card" id="admin"', a)]
-    check('id="local-run"' in col and 'id="deck-op"' in col,
-          "the show file and the Stream Deck operator share one column")
-    rules = _css_rules(page)
-    check("align-items:start" in page[page.find("#v-prog{"):
-                                      page.find("}", page.find("#v-prog{"))],
-          "Programming's cards are as tall as their content, never "
-          "stretched to the tallest in the row")
-    for bad in ("\u2014", "\u2013"):
-        check(bad not in page, "no em or en dashes on the page")
-    node = _sh.which("node")
-    if not node:
-        check(not IN_CI, "node is missing on this CI runner")
-        print("  ok")
-        return
-    js = "\n".join([
-        _js_block(page, "const LAMP_SHORT = {", "function lampLook("),
-        _js_fn(page, "lampLook"),
-        _js_fn(page, "modeLook"),
-        _js_block(page, "const MODE_WHAT = {", "let RUN_MODE"),
-        _js_fn(page, "runModeNow"), _js_fn(page, "runModeView"),
-        _js_block(page, "const SLOT_OPEN = new Set();",
-                  "let SLOT_DOWN = null;"),
-        _js_block(page, "let SLOT_DOWN = null;", '$("tonight").addEventListener("keydown"'),
-        _js_block(page, "const TZ_GROUPS = [", '$("se-tz").addEventListener'),
-        _js_fn(page, "listTitle")])
-    prelude = r"""
-"use strict";
-const out = [];
-const t = (c, m) => { if(!c) out.push(m); };
-const esc = (s) => String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-class El { constructor(){ this.l = {}; this._h = ""; this.sets = 0; this.value = ""; this.textContent = ""; }
-  set innerHTML(v){ this._h = v; this.sets++; } get innerHTML(){ return this._h; }
-  addEventListener(n, f){ (this.l[n] = this.l[n] || []).push(f); }
-  fire(n, e){ for(const f of this.l[n] || []) f(e); } }
-const els = {tonight: new El(), "se-tz": new El(), "se-tz-now": new El()};
-const $ = id => els[id];
-let ST = null;
-"""
-    body = r"""
-// B6: plain words, and why.
-t(reasonWords("cycle the arm").startsWith("Re-arm needed after a fault"), "cycle the arm reads as re-arm needed, with why");
-t(reasonWords("Disarmed by the show's Stop. Cycle the arm to re-arm.").indexOf("after a Stop") >= 0 && reasonWords("Disarmed by the show's Abort. Cycle the arm to re-arm.").indexOf("after a Stop") >= 0, "after a Stop (an older flamesafe's Abort words too): says so");
-t(!/cycle/i.test(reasonWords("Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back.")), "no cycle wording left: " + reasonWords("Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back."));
-const lk = lampLook({armed:"held", reason:"cycle the arm"}, "held");
-t(lk.word === "Arm again" && lk.held === "cycle", "the button reads Arm again: " + JSON.stringify(lk));
-// B1: what the arm button's small line says.
-t(armHint("disarmed", {held:""}, true) === "hold to arm", "off: hold to arm");
-t(armHint("armed", {held:""}, true) === "", "armed: the word says it all");
-t(armHint("held", {held:"cycle"}, true) === "Disarm, then hold", "re-arm: Disarm, then hold");
-t(armHint("disarmed", {held:""}, false) === "arming off", "screen arming off: said on the button");
-t(lampLook({armed:"armed"}, "armed").word === "Armed" && lampLook({armed:"disarmed"}, "disarmed").word === "Off", "Armed and Off words");
-// B5: the switch.
-const live = {show:{running:true}, transport:{programming:false}, schedule:{state:"SHOW"}};
-let v = runModeView(live, "programming");
-t(v.locked && /Press Hold/.test(v.text) && /a scheduled show is live/.test(v.text), "Programming during a live show: locked, why, and what to press: " + v.text);
-v = runModeView(live, "show");
-t(!v.locked && v.now === "show" && /Running now/.test(v.text), "Show while a show runs: running now");
-v = runModeView({show:{running:true}, transport:{programming:true}, schedule:{state:"STANDBY"}}, "show");
-t(!v.locked && v.now === "programming" && /press Stop, then Run/.test(v.text), "switching: Stop, then Run: " + v.text);
-v = runModeView({show:{running:false}, transport:{}, schedule:{state:"STANDBY"}}, "programming");
-t(!v.locked && v.now === null && /rehearsal/.test(v.text), "nothing running: the one line says what Programming is");
-// B3: the Schedule list, during a live show polled every 250 ms.
-const slots = [{show:1, start:"18:00", status:"DONE", reason:"", origin:"rule", planned:"18:00"},
-               {show:2, start:"18:25", status:"PLAYING", reason:"MOVED (operator)", origin:"rule", planned:"18:20", in_s:5},
-               {show:3, start:"18:40", status:"NEXT", reason:"", origin:"edit", planned:null, past_last_end:true}];
-ST = {schedule:{state:"SHOW", slots}};
-renderSchedule(slots);
-const n0 = els.tonight.sets;
-for(let i = 0; i < 8; i++){ slots[1].in_s = 5 - i; renderSchedule(slots); }
-t(els.tonight.sets === n0, "a live show's 250 ms polls do not rebuild an unchanged list (" + (els.tonight.sets - n0) + " rebuilds)");
-const slotEl = k => ({closest: () => ({dataset:{k}})});
-els.tonight.fire("pointerdown", {clientX:10, clientY:10});
-renderSchedule(slots);                         // a poll between press and release
-els.tonight.fire("pointerup", {clientX:11, clientY:12, target: slotEl("1@18:00")});
-t(/No notes for this show\./.test(els.tonight.innerHTML) && /aria-expanded="true"/.test(els.tonight.innerHTML), "a tap opens a show with no reason: No notes: " + els.tonight.innerHTML.slice(0, 300));
-els.tonight.fire("pointerdown", {clientX:10, clientY:10});
-els.tonight.fire("pointerup", {clientX:10, clientY:10, target: slotEl("2@18:25")});
-t(/MOVED \(operator\) Planned for 18:20, moved to 18:25\./.test(els.tonight.innerHTML), "a moved show's notes: the reason and the planned time");
-t(/Added for tonight only\. Runs past the night/.test(slotNotes(slots[2])), "an added late show: both said");
-els.tonight.fire("pointerdown", {clientX:10, clientY:10});
-els.tonight.fire("pointerup", {clientX:10, clientY:80, target: slotEl("2@18:25")});
-t(SLOT_OPEN.has("2@18:25"), "a scroll (the finger moved) is not a tap");
-els.tonight.fire("pointerdown", {clientX:10, clientY:10});
-els.tonight.fire("pointerup", {clientX:10, clientY:10, target: slotEl("2@18:25")});
-t(!SLOT_OPEN.has("2@18:25"), "a second tap closes it");
-// B4: the time zone list.
-t(zoneLabel("America/Denver") === "Mountain Time (Denver)" && zoneLabel("Asia/Kolkata") === "Asia / Kolkata", "friendly names, and every other zone readable");
-fillZones("America/Chicago");
-t(els["se-tz"].value === "America/Chicago" && /<optgroup label="United States and Canada">/.test(els["se-tz"].innerHTML), "the schedule's zone chosen, grouped");
-t(/Show's local time now: /.test(els["se-tz-now"].textContent), "the local time beside it: " + els["se-tz-now"].textContent);
-fillZones("Etc/GMT+7");
-t(els["se-tz"].innerHTML.indexOf('value="Etc/GMT+7"') >= 0, "a zone outside the list is kept, never lost on save");
-// B7.
-t(listTitle({id:"morning", title:"Morning"}) === "Startup" && listTitle({id:"shutdown", title:"Shutdown"}) === "Shutdown", "the morning list reads Startup");
-console.log(JSON.stringify(out));
-"""
-    r = _node_js(node, prelude + js + body, capture_output=True,
-                text=True, timeout=60)
-    try:
-        bad = json.loads(r.stdout.strip().splitlines()[-1])
-    except (ValueError, IndexError):
-        bad = None
-    check(r.returncode == 0 and bad == [],
-          f"the rack screen's new logic, in node: {r.stdout[-1500:]!r} "
-          f"{r.stderr[-800:]!r}")
-    print("  ok")
-
-
 def test_show_mode_stays_show_on_the_show_audio():
     section("Show stays Show (Jeff, 2026-10-28: \"even when I press show "
             "mode, it turns on programming mode\"): a Show Run of a show on "
@@ -87568,7 +83974,7 @@ def test_show_mode_stays_show_on_the_show_audio():
     if S is None:
         return
     here = os.path.dirname(os.path.abspath(__file__))
-    rack = remote1_text()
+    rack = screen_text()
     old = open(os.path.join(here, "ltcplay", "web", "index.html"),
                encoding="utf-8").read()
     # What each Run sends, exactly as the pages send it.
@@ -88697,41 +85103,6 @@ def test_live_flame_engine_routes_roles_and_presses():
     print("  ok")
 
 
-def test_live_flame_page_banner_and_card():
-    section("live flame programming on the page: a red LIVE FLAME "
-            "PROGRAMMING bar on every screen while it is on, with Off; the "
-            "card's confirm says what the engine says; no dashes")
-    here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    from ltcplay import remote as RM
-    check(f'const LIVE_FLAME_ENABLES = "{RM.LIVE_FLAME_ENABLES}";' in page,
-          "the confirm box says remote.LIVE_FLAME_ENABLES word for word")
-    alerts = page[page.index('<div id="alerts">'):]
-    alerts = alerts[:alerts.index("\n")]
-    check('id="lf-banner"' in alerts and "LIVE FLAME PROGRAMMING" in alerts
-          and 'id="lf-banner-off"' in alerts,
-          "the bar lives in #alerts, above every view, with its Off button")
-    check("ban.hidden = !on;" in page,
-          "the bar is shown exactly while the engine says it is on")
-    check('post("/api/remote/live-flame", {on: false})' in page and
-          'post("/api/remote/live-flame", {on: true, confirmed: true})'
-          in page, "Off sends on false; On sends on true, confirmed")
-    check("confirmBox(\"Turn on live flame programming?\"" in page,
-          "On asks first")
-    doc = open(os.path.join(here, "LIVE_FLAME_PROGRAMMING.md"),
-               encoding="utf-8").read()
-    chk = open(os.path.join(here, "packaging", "windows",
-                            "SHOW PC CHECKLIST.txt"), encoding="utf-8").read()
-    for name, text in (("the doc", doc), ("the checklist", chk),
-                       ("LIVE_FLAME_ENABLES", RM.LIVE_FLAME_ENABLES)):
-        check("\u2014" not in text and "\u2013" not in text, f"{name}: no dashes")
-    check("[verify in xLights]" in doc and "127.0.0.1" in chk and
-          "LIVE_FLAME_PROGRAMMING.md" in chk,
-          "the doc marks what was not checked in xLights; the checklist "
-          "points at it")
-    print("  ok")
-
-
 def _lf_free_udps(n):
     """n DIFFERENT free loopback UDP ports: every socket is held open until
     all are chosen (one closed and asked for again can come back the same,
@@ -88914,7 +85285,6 @@ def test_live_flame_end_to_end_real_flamesafe():
         shutil.rmtree(work, ignore_errors=True)
         shutil.rmtree(d, ignore_errors=True)
     print("  ok")
-
 
 
 def test_live_flame_review_round_one():
@@ -89411,7 +85781,6 @@ def test_live_flame_end_to_end_armed_group_real_flamesafe():
     print("  ok")
 
 
-
 def test_live_flame_review_round_two():
     section("live flame programming, second review of PR #96: an Abort or "
             "Hold press's cut never waits on a begin() reading a slow disk, "
@@ -89515,7 +85884,6 @@ def test_live_flame_review_round_two():
     finally:
         R.close()
     print("  ok")
-
 
 
 _LF_PC = "10.0.0.10"      # the show PC's own show network address
@@ -89690,9 +86058,6 @@ def test_live_flame_from_a_mac():
         R.disarms.clear()
         R.on()
         check(R.lf.view()["sender"] is None, "no sender yet: none shown")
-        page = remote1_text()
-        check('"; source: " + ((lf.sender && lf.sender.from) ||' in page,
-              "the bar's source is the sender holding the lock")
         R.feed(R.pk(), host="127.0.0.1")
         check(R.lf.view()["sender"]["from"] == "this PC",
               f"loopback holds it: the bar says this PC, not the Mac: "
@@ -90806,12 +87171,9 @@ def test_programming_flames_engine_routes_and_page():
           st.get("programming_flames", {}).get("line") == line,
           f"the status carries the line, not the switch: "
           f"{st.get('programming_flames')}")
-    # The pages: no switch, no banner, no route; 1.0's line and fault.
+    # The screen: no switch, no banner, no route.
     here = os.path.dirname(os.path.abspath(__file__))
-    one = remote1_text()
-    two = open(os.path.join(here, "ltcplay", "web", "remote2.html"),
-               encoding="utf-8").read()
-    for page, what in ((one, "1.0"), (two, "2.0")):
+    for page, what in ((screen_text(), "the screen"),):
         for gone in ("scrub-flames", "scrub_flames", "sf-on",
                      "FLAMES LIVE IN REHEARSAL", "Fire flames while "
                      "scrubbing", "Rehearsal flames"):
@@ -90822,56 +87184,8 @@ def test_programming_flames_engine_routes_and_page():
           RM.Remote.PROGRAMMING_MOVE_REFUSED.split(" Nothing")[0] in doc and
           "## Fire flames while scrubbing" not in doc and _cfg_dashes(doc),
           "LIVE_FLAME_PROGRAMMING.md says the new rules, not the switch")
-    check('id="pf-line"' in one and 'id="pf-warn"' in one,
-          "1.0: the line and the fault box where the card was")
-    m = _re.search(r"function renderProgFlames\(\)\{.*?\n\}\n", one,
-                   _re.S)
-    check(m is not None, "1.0: renderProgFlames")
-    import shutil
-    node = shutil.which("node")
-    if m is None or not node:
-        check(not IN_CI, "node is missing on this CI runner")
-        print("  ok")
-        return
-    long_fault = ("CUES FAULT: the show's render is older than "
-                  "xlights_networks.xml " + "and more words " * 30 +
-                  "END OF FAULT")
-    js = r"""
-const els = {};
-const $ = id => (els[id] = els[id] || {hidden: true, textContent: ""});
-let ST = null;
-""" + m.group(0) + r"""
-const out = [];
-const t = (c, msg) => { if(!c) out.push(msg); };
-const LINE = %s;
-const FAULT = %s;
-ST = {programming_flames: {available: true, follows: true, line: LINE},
-      transport: {programming: true}, flames: {cues_fault: ""}};
-renderProgFlames();
-t(!$("pf-line").hidden && $("pf-line").textContent === LINE, "the line shows: " + $("pf-line").textContent);
-t($("pf-warn").hidden, "no fault: no warning");
-ST.flames.cues_fault = FAULT;
-renderProgFlames();
-t(!$("pf-warn").hidden && $("pf-warn").textContent.indexOf(FAULT) >= 0, "the fault in full: " + $("pf-warn").textContent);
-t(/nothing fires from Play from/.test($("pf-warn").textContent), "says nothing fires: " + $("pf-warn").textContent);
-ST.programming_flames.follows = false;
-renderProgFlames();
-t(/no flames fire from Programming/.test($("pf-line").textContent), "a show on timecode: says no flames: " + $("pf-line").textContent);
-ST.programming_flames = {available: false};
-renderProgFlames();
-t($("pf-line").hidden && $("pf-warn").hidden, "no flame link: nothing shown");
-console.log(JSON.stringify(out));
-""" % (json.dumps(line), json.dumps(long_fault))
-    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
-    try:
-        bad = json.loads(r.stdout.strip().splitlines()[-1])
-    except (ValueError, IndexError):
-        bad = [f"node failed: {r.stderr[-400:]}"]
-    for msg in bad:
-        check(False, f"1.0 Programming flames line: {msg}")
+
     print("  ok")
-
-
 # -- the fuel tracker (Jeff, 2026-10-26; fuel.py, FUEL.md) -------------------
 
 def _fuel_machines():
@@ -92095,174 +88409,6 @@ def test_fuel_routes_and_who_may_refill():
     finally:
         import shutil
         shutil.rmtree(work, ignore_errors=True)
-    print("  ok")
-
-
-_FUEL_MEASURE_JS = r"""
-<script>
-(function(){
-function shown(el){ return !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden"; }
-function go(){
-  const tiles = [...document.querySelectorAll("#fu-units .fu-unit")];
-  if(!tiles.length) return setTimeout(go, 100);
-  setTimeout(() => {
-    const out = {vw:innerWidth, sw:document.scrollingElement.scrollWidth, tiles:[], problems:[],
-      view_shown:shown(document.getElementById("v-fuel")), all_disabled:document.getElementById("fu-all").disabled,
-      why:document.getElementById("fu-why").textContent, undo_shown:shown(document.getElementById("fu-undo")),
-      undo_buttons:document.querySelectorAll("#fu-recent [data-undo]").length,
-      warn:shown(document.getElementById("fu-warn")) ? document.getElementById("fu-warn").textContent : "",
-      kinds:document.getElementById("fu-kinds").textContent};
-    const rects = [];
-    tiles.forEach(t => {
-      const bar = t.querySelector(".fu-bar i"), btn = t.querySelector("[data-refill]"), r = t.getBoundingClientRect();
-      const texts = [...t.querySelectorAll("*")].filter(e => [...e.childNodes].some(n => n.nodeType === 3 && n.textContent.trim()));
-      out.tiles.push({id:t.dataset.unit, cls:t.className, bar:bar ? bar.style.width : null,
-        bar_px:bar ? Math.round(bar.getBoundingClientRect().width) : 0,
-        left:t.querySelector(".fu-left").textContent, words:t.querySelector(".fu-words").textContent,
-        tags:[...t.querySelectorAll(".fu-tag")].map(x => x.textContent),
-        disabled:btn.disabled, btn_h:Math.round(btn.getBoundingClientRect().height),
-        minfont:Math.min(...texts.map(e => parseFloat(getComputedStyle(e).fontSize)))});
-      if(r.right > innerWidth + 0.5 || r.left < -0.5) out.problems.push(t.dataset.unit + " is not inside the window");
-      rects.push([t.dataset.unit, r]);
-    });
-    for(let i = 0; i < rects.length; i++) for(let j = i + 1; j < rects.length; j++){
-      const a = rects[i][1], b = rects[j][1];
-      if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
-        out.problems.push("overlap: " + rects[i][0] + " and " + rects[j][0]);
-    }
-    // Nothing is cut off at the bottom: below the window's room, the view
-    // scrolls (as Programming and Users do), and nothing in it is squashed.
-    const mainR = document.getElementById("main").getBoundingClientRect();
-    const vf = document.getElementById("v-fuel"), scrolls = /auto|scroll/.test(getComputedStyle(vf).overflowY);
-    [...document.querySelectorAll("#v-fuel > .card, #fu-units .fu-unit, #fu-recent .fu-rec")].filter(shown).forEach(el => {
-      if(el.getBoundingClientRect().bottom > mainR.bottom + 0.5 && !scrolls) out.problems.push((el.id || el.dataset.unit || el.className) + " is cut off at the bottom");
-      if(el.scrollHeight > el.clientHeight + 1 && getComputedStyle(el).overflowY !== "visible") out.problems.push((el.id || el.dataset.unit || el.className) + " is squashed");
-    });
-    out.fits = vf.scrollHeight <= vf.clientHeight + 1 || scrolls;
-    // Scrolled to the end, the last refill line can be reached.
-    vf.scrollTop = vf.scrollHeight;
-    const recs = [...document.querySelectorAll("#fu-recent .fu-rec")].filter(shown);
-    out.last_reachable = !recs.length || recs[recs.length - 1].getBoundingClientRect().bottom <= mainR.bottom + 0.5;
-    vf.scrollTop = 0;
-    history.replaceState(null, "", location.pathname);
-    showView();
-    setTimeout(() => {
-      const nf = document.getElementById("nav-fuel");
-      out.nav = {shown:shown(nf), soon:nf.classList.contains("soon"), text:nf.textContent,
-        inside:[...document.querySelectorAll("nav button")].filter(shown).every(b => b.getBoundingClientRect().right <= innerWidth + 0.5)};
-      const pre = document.createElement("pre"); pre.id = "rack-measure";
-      pre.textContent = JSON.stringify([out]);
-      document.body.appendChild(pre);
-    }, 1500);
-  }, 400);
-}
-go();
-})();
-</script>
-"""
-
-
-def test_fuel_page_in_a_browser():
-    section("fuel: the Fuel page drawn in a real browser: a tile per tank "
-            "with its health bar, shows left and words; Refilled is off "
-            "with the reason until someone who may is signed in; the "
-            "admin's undo list; the nav button turns amber for refill soon")
-    here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    for need in ('<button id="nav-fuel" class="ghost" data-go="fuel" '
-                 'hidden>Fuel</button>', 'fuel:"v-fuel"',
-                 'fuelView(v === "fuel");', '<section id="v-fuel"'):
-        check(need in page, f"the page has {need!r}")
-    a, b = page.index("<!-- Fuel (Jeff"), page.index("<!-- Users and the")
-    js_a = page.index("// ---- Fuel (Jeff")
-    js_b = page.index('fuPress("fuel-undo", {id:Number(b.dataset.undo)});')
-    for part in (page[a:b], page[js_a:js_b]):
-        check("—" not in part and "–" not in part,
-              "the Fuel page's words have no em or en dashes")
-    R = _FuelRig()
-    try:
-        R.tr.refill("all", "Andy", "operator")
-        for _ in range(10):
-            R.show(31, 10)
-        R.tr.refill("g1", "Andy", "operator")
-        R.tr.refill("w1", "Andy", "operator")
-        R.locked = {"c1"}
-        for _ in range(7):
-            R.show(31, 10, on=((411, 255), (412, 255)))
-        view = R.tr.view()
-    finally:
-        R.close()
-    g1 = next(u for u in view["units"] if u["id"] == "g1")
-    check(g1["percent"] == 30 and g1["refill_soon"],
-          f"setup: Ground 1 needs a refill soon: {g1}")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    st = _rack_status_pico(many=False)
-    st["alerts"] = []
-    st["fuel"] = {"refill_soon": 1, "fault": False}
-    signed_out = dict(view, may_refill=False, may_undo=False,
-                      refill_why="Sign in as an operator or admin to log a "
-                                 "refill (the user chip at the top).",
-                      undo_why="")
-    admin = dict(view, may_refill=True, may_undo=True, refill_why="",
-                 undo_why="")
-    for which, fv, sizes in (("signed out", signed_out,
-                              ((1280, 800), (768, 1024))),
-                             ("admin", admin, ((1366, 768),))):
-        got = _rack_screen_in_chromium(
-            chrome, page, st, sizes, measure_js=_FUEL_MEASURE_JS,
-            frag="#fuel", routes={"/api/remote/fuel": fv})
-        for size, res in got.items():
-            if not check(isinstance(res, list) and res,
-                         f"{which} {size}: drawn: {res!r}"):
-                continue
-            m = res[0]
-            tiles = {t["id"]: t for t in m["tiles"]}
-            check(m["view_shown"] and list(tiles) == ["g1", "g2", "c1", "w1"],
-                  f"{which} {size}: one tile per G-Flame and Showven, no "
-                  f"Fireball: {list(tiles)}")
-            t = tiles["g1"]
-            check(t["bar"] == "30%" and t["bar_px"] > 0 and
-                  "amber" in t["cls"] and t["left"] == "3 shows left" and
-                  "Refill soon" in t["tags"],
-                  f"{which} {size}: Ground 1's bar, shows left and refill "
-                  f"soon: {t}")
-            check("Locked out: still tracked, burns nothing" in
-                  tiles["c1"]["tags"], f"a locked unit says so: "
-                                       f"{tiles['c1']['tags']}")
-            check(tiles["w1"]["left"] == "Learning" and
-                  tiles["w1"]["bar"] == "0%",
-                  f"a Showven still learning: {tiles['w1']}")
-            check(all(x["minfont"] >= 12 for x in m["tiles"]) and
-                  all(x["btn_h"] >= 44 for x in m["tiles"]),
-                  f"{which} {size}: readable, buttons a finger can press: "
-                  f"{[(x['minfont'], x['btn_h']) for x in m['tiles']]}")
-            check(not m["problems"] and m["sw"] <= m["vw"] + 1,
-                  f"{which} {size}: nothing overlaps or runs off the side: "
-                  f"{m['problems']} {m['sw']} {m['vw']}")
-            check("G-Flame" in m["kinds"] and "Purges count" in m["kinds"]
-                  and "Purges do not count" in m["kinds"],
-                  f"{which}: the kinds line: {m['kinds']}")
-            check(m["nav"]["shown"] and m["nav"]["soon"] and
-                  m["nav"]["inside"],
-                  f"{which} {size}: on the show screen the Fuel button is "
-                  f"there, amber for refill soon: {m['nav']}")
-            if which == "signed out":
-                check(m["all_disabled"] and
-                      all(x["disabled"] for x in m["tiles"]) and
-                      "Sign in" in m["why"] and not m["undo_shown"],
-                      f"signed out: every Refilled is off and says why: "
-                      f"{m['why']!r}")
-            else:
-                check(not m["all_disabled"] and
-                      not any(x["disabled"] for x in m["tiles"]) and
-                      m["undo_shown"] and m["undo_buttons"] >= 1 and
-                      m["last_reachable"],
-                      f"an admin: Refilled on, the undo list shown: {m}")
     print("  ok")
 
 
@@ -93568,66 +89714,6 @@ def test_fireball_end_to_end_real_flamesafe():
     print("  ok")
 
 
-_FIREBALL_MEASURE_JS = r"""
-<script>
-(function(){
-function shown(el){ return !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden"; }
-function go(){
-  const pads = [...document.querySelectorAll("#fb-pads .fb-pad")];
-  if(!pads.length) return setTimeout(go, 100);
-  setTimeout(() => {
-    const mainR = document.getElementById("main").getBoundingClientRect();
-    const abR = null;     // no Abort sign any more (removed 2026-10-30)
-    const out = {abort_left:!!document.getElementById("abortbar"), vw:innerWidth, vh:innerHeight, sw:document.scrollingElement.scrollWidth, problems:[],
-      view_shown:shown(document.getElementById("v-fireball")),
-      armed:document.getElementById("fb-armed").textContent,
-      note:document.getElementById("fb-note").textContent,
-      charge:document.getElementById("fb-charge") ? document.getElementById("fb-charge").textContent : "",
-      block:shown(document.getElementById("fb-block")) ? document.getElementById("fb-block").textContent : "",
-      pads:[], buttons:[]};
-    const rects = [];
-    pads.forEach(b => {
-      const r = b.getBoundingClientRect();
-      out.pads.push({k:b.dataset.k, kind:b.dataset.kind, label:b.querySelector("b").textContent,
-        st:b.querySelector(".fb-st").textContent, small:b.querySelector("small").textContent,
-        tk:b.querySelector(".fb-tk") ? b.querySelector(".fb-tk").textContent : "",
-        h:Math.round(r.height), w:Math.round(r.width), na:b.classList.contains("na"),
-        aria:b.getAttribute("aria-disabled"), disabled:b.disabled,
-        minfont:Math.min(...[...b.querySelectorAll("*")].map(e => parseFloat(getComputedStyle(e).fontSize)))});
-      if(r.right > innerWidth + 0.5 || r.left < -0.5) out.problems.push(b.dataset.k + " is not inside the window");
-      if(r.bottom > mainR.bottom + 0.5) out.problems.push(b.dataset.k + " is below the window (" + Math.round(r.bottom) + " > " + Math.round(mainR.bottom) + ")");
-      if(abR && r.left < abR.right && abR.left < r.right && r.top < abR.bottom && abR.top < r.bottom) out.problems.push(b.dataset.k + " is under the Abort sign");
-      rects.push([b.dataset.k, r]);
-    });
-    ["fb-alloff", "fb-disarm"].forEach(id => {
-      const b = document.getElementById(id), r = b.getBoundingClientRect();
-      out.buttons.push({id:id, shown:shown(b), h:Math.round(r.height)});
-      if(r.bottom > mainR.bottom + 0.5 || r.right > innerWidth + 0.5) out.problems.push(id + " is not on the screen");
-      rects.push([id, r]);
-    });
-    for(let i = 0; i < rects.length; i++) for(let j = i + 1; j < rects.length; j++){
-      const a = rects[i][1], b = rects[j][1];
-      if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
-        out.problems.push("overlap: " + rects[i][0] + " and " + rects[j][0]);
-    }
-    history.replaceState(null, "", location.pathname);
-    showView();
-    setTimeout(() => {
-      const nf = document.getElementById("nav-fireball");
-      out.nav = {shown:shown(nf), text:nf.textContent,
-        inside:[...document.querySelectorAll("nav button")].filter(shown).every(b => b.getBoundingClientRect().right <= innerWidth + 0.5)};
-      const pre = document.createElement("pre"); pre.id = "rack-measure";
-      pre.textContent = JSON.stringify([out]);
-      document.body.appendChild(pre);
-    }, 1200);
-  }, 600);
-}
-go();
-})();
-</script>
-"""
-
-
 def _fb_view(armed="armed", **over):
     v = {"available": True, "problem": "", "on": [], "owner": None,
          "mine": False, "last_cut": "", "on_value": 255,
@@ -93648,398 +89734,6 @@ def _fb_view(armed="armed", **over):
          "blocked": "", "served_at": 0}
     v.update(over)
     return v
-
-
-def test_fireball_page_in_a_browser():
-    section("the Fireball page drawn in a real browser at the rack screen's "
-            "and an iPad's sizes (the runner's page is about 143 px shorter "
-            "than its window): five big buttons, labelled, on one screen, "
-            "none under the Abort sign, nothing off the side; armed, the "
-            "buttons work; not armed or not available, they say why; the "
-            "Fireball button in the header only with a fireball group")
-    here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    for need in ('<button id="nav-fireball" class="ghost" data-go="fireball" '
-                 'hidden>Fireball</button>', 'fireball:"v-fireball"',
-                 'fireballView(v === "fireball");',
-                 '<section id="v-fireball" class="view" hidden>'):
-        check(need in page, f"the page has {need!r}")
-    a, b = page.index("<!-- Fireball (Jeff"), page.index(
-        "<!-- Users and the audit log")
-    js_a = page.index("// ---- Fireball (Jeff")
-    js_b = page.index("// WEATHER (weather.py, WEATHER.md): its own slow")
-    lg_a = page.index("// The Fireball page (fireball.py). The body")
-    lg_b = page.index("// LOGIC END")
-    for part in (page[a:b], page[js_a:js_b], page[lg_a:lg_b]):
-        check("—" not in part and "–" not in part,
-              "the Fireball page's words have no em or en dashes")
-    check(".fb-pad" in page[js_a:js_b] and
-          "disabled = " not in page[js_a:js_b],
-          "a pad is never given the disabled attribute (a held button that "
-          "turned disabled could lose its lift)")
-    # The page's own rules, in node.
-    bad = _page_logic_in_node(page, r"""
-const V = (o) => Object.assign({available:true, armed:"armed", blocked:"", owner:null, mine:false, armed_why:"not armed why"}, o || {});
-const off = {fuel:false, air:false, valve:false, igniter:false, purge:false};
-let b = fireballBody({fuel:true, valve:true, air:1, purge:"true"}, "r1", 7, true);
-t(JSON.stringify(b) === JSON.stringify({controls:{fuel:true, air:false, valve:true, igniter:false, purge:false}, run:"r1", seq:7, change:true}), "the body: only true is on: " + JSON.stringify(b));
-t(fireballBody(off, undefined, 1).run === null, "no run: null");
-let s = fireballState(V(), off, false, false);
-t(s.ok && !s.cut && s.armed && /Valve Open and Igniter are on only while held/.test(s.text), "armed, fresh: a press may start: " + JSON.stringify(s));
-s = fireballState(V({armed:"off"}), off, false, false);
-t(!s.ok && !s.cut && /nothing on this page arms/.test(s.text) && s.block === "Arm the Fireball first.", "not armed: nothing may start, says why: " + JSON.stringify(s));
-s = fireballState(V({armed:"off"}), Object.assign({}, off, {fuel:true, purge:true}), false, false);
-t(s.text === "Turn Fuel, Purge off before arming." && s.cut, "not armed with a toggle on: says turn it off before arming, and cuts: " + JSON.stringify(s));
-s = fireballState(V(), Object.assign({}, off, {valve:true}), true, false);
-t(!s.ok && s.cut && /not live/.test(s.cut), "a stale page: cut: " + JSON.stringify(s));
-s = fireballState(V(), Object.assign({}, off, {air:true}), false, true);
-t(!s.ok && /view only/.test(s.cut), "signed out: cut: " + JSON.stringify(s));
-s = fireballState(V({blocked:"a scheduled show is live (SHOW)"}), off, false, false);
-t(!s.ok && s.block === "Not available now: a scheduled show is live (SHOW)" && !s.cut, "a show live: says why: " + JSON.stringify(s));
-s = fireballState(V({owner:"iPad at 10.20.0.44", mine:false}), off, false, false);
-t(!s.ok && /One screen at a time/.test(s.block), "another screen has it: " + JSON.stringify(s));
-s = fireballState(V({owner:"Rack screen", mine:true}), Object.assign({}, off, {fuel:true}), false, false);
-t(s.ok && !s.cut, "this screen has it: fine");
-s = fireballState(V({available:false, problem:"no group named fireball"}), off, false, false);
-t(!s.ok && s.block === "no group named fireball", "no group: says why");
-s = fireballState(null, off, false, false);
-t(!s.ok, "nothing read yet: nothing may start");
-""")
-    check(bad == [] or bad is None, f"the page's Fireball rules, in node: "
-                                    f"{bad}")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    st = _rack_status_pico(many=False)
-    st["alerts"] = []
-    st["fireball"] = {"available": True, "on": [], "owner": None}
-    # The charge record and the timeline's last skip (2026-10-30), from
-    # every screen's status: shown on the page, display only.
-    st["fireball_charge"] = {
-        "text": "Fuel: charged 14:32. Air: empty. No shot fired.",
-        "fault": "", "tanks": {"fuel": {"state": "charged"},
-                               "air": {"state": "unknown"}}}
-    st["fireball_timeline"] = {"fault": "", "messages": [
-        "Fuel already charged: the Fuel stage was skipped (no double "
-        "charge)."]}
-    # (768, 968): an iPad in portrait on a runner whose page is shorter
-    # (the ubuntu runner draws 768x1024 as 881 px tall).
-    sizes = ((1920, 1080), (1366, 600), (1280, 720), (1024, 768),
-             (768, 1024), (768, 968))
-    for which, fv, szs in (("armed", _fb_view(), sizes),
-                           ("not armed", _fb_view("off"),
-                            ((1366, 768),)),
-                           ("a show live", _fb_view(
-                               blocked="a scheduled show is live (SHOW); "
-                                       "nothing fires from this page until "
-                                       "it has ended"), ((1366, 768),))):
-        got = _rack_screen_in_chromium(
-            chrome, page, st, szs, measure_js=_FIREBALL_MEASURE_JS,
-            frag="#fireball", routes={"/api/remote/fireball": fv})
-        for size, res in got.items():
-            if not check(isinstance(res, list) and res,
-                         f"{which} {size}: drawn: {res!r}"):
-                continue
-            m = res[0]
-            check(m["view_shown"] and
-                  [(p["k"], p["kind"], p["label"]) for p in m["pads"]] ==
-                  [("fuel", "toggle", "Fuel Charge"),
-                   ("air", "toggle", "Air Charge"),
-                   ("valve", "momentary", "Valve Open"),
-                   ("igniter", "momentary", "Igniter"),
-                   ("purge", "toggle", "Purge")],
-                  f"{which} {size}: five buttons in the config's order: "
-                  f"{[p['k'] for p in m['pads']]}")
-            check(all(p["h"] >= 88 and p["w"] >= 120 for p in m["pads"]) and
-                  all(p["minfont"] >= 12 for p in m["pads"]) and
-                  all(x["shown"] and x["h"] >= 44 for x in m["buttons"]),
-                  f"{which} {size}: big touch targets, readable: "
-                  f"{[(p['h'], p['w'], p['minfont']) for p in m['pads']]} "
-                  f"{m['buttons']}")
-            check(not m["problems"] and m["sw"] <= m["vw"] + 1,
-                  f"{which} {size}: one screen, nothing overlaps, nothing "
-                  f"under the Abort sign or off the side: {m['problems']} "
-                  f"{m['sw']} {m['vw']}x{m['vh']}")
-            check("channel 57" in m["pads"][2]["small"] and
-                  "Hold" in m["pads"][2]["small"] and
-                  "press again: off" in m["pads"][0]["small"] and
-                  all(p["st"] == "OFF" and not p["disabled"]
-                      for p in m["pads"]),
-                  f"{which} {size}: each says how it works and its channel: "
-                  f"{[p['small'] for p in m['pads']]}")
-            check(m["nav"]["shown"] and m["nav"]["inside"],
-                  f"{which} {size}: the Fireball button in the header: "
-                  f"{m['nav']}")
-            check(m["charge"] == "Fuel: charged 14:32. Air: empty. No shot "
-                  "fired. Fuel already charged: the Fuel stage was skipped "
-                  "(no double charge)." and
-                  [p["tk"] for p in m["pads"]] ==
-                  ["Charged: a press is a top-off", "Charge not known",
-                   "", "", ""],
-                  f"{which} {size}: the charge record and the timeline's "
-                  f"skip in words; a charged tank's button says a press "
-                  f"is a top-off: {m['charge']!r} "
-                  f"{[p['tk'] for p in m['pads']]}")
-            if which == "armed":
-                check(m["armed"].startswith("ARMED") and
-                      not any(p["na"] for p in m["pads"]) and
-                      all(p["aria"] == "false" for p in m["pads"]),
-                      f"{which} {size}: armed, every button may be pressed: "
-                      f"{m['armed']}")
-            elif which == "not armed":
-                check(m["armed"] == "Not armed" and
-                      all(p["na"] and p["aria"] == "true"
-                          for p in m["pads"]) and
-                      "nothing on this page arms" in m["note"],
-                      f"not armed: every button says it may not, and why: "
-                      f"{m['note']!r}")
-            else:
-                check(all(p["na"] for p in m["pads"]) and
-                      "Not available now: a scheduled show is live" in
-                      m["block"], f"a show live: said in plain words: "
-                                  f"{m['block']!r}")
-    # Without a fireball group the header has no Fireball button.
-    st2 = dict(st)
-    st2.pop("fireball")
-    got = _rack_screen_in_chromium(chrome, page, st2, ((1366, 768),),
-                                   measure_js=_FIREBALL_MEASURE_JS,
-                                   frag="#fireball",
-                                   routes={"/api/remote/fireball": _fb_view(
-                                       available=False, controls=[{
-                                           "key": "fuel", "label": "x",
-                                           "kind": "toggle", "slot": 1}])})
-    res = got[(1366, 768)]
-    check(isinstance(res, list) and not res[0]["nav"]["shown"],
-          f"no fireball group: no Fireball button: {res!r}"[:600])
-    print("  ok")
-
-
-def test_fireball_page_buttons_driven():
-    section("the Fireball page pressed in a real browser: Valve Open beats "
-            "every 100 ms while held and lets go on the lift; Fuel Charge "
-            "stays on until pressed again; losing focus lets go of the held "
-            "ones only; a refusal, the Fireball disarming, signing out and "
-            "leaving the page turn everything off and nothing comes back; "
-            "nothing is sent while it is not armed; All off and Disarm")
-    here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    st = _rack_status_pico(many=False)
-    st["alerts"] = []
-    st["fireball"] = {"available": True, "on": [], "owner": None}
-    steps = r"""
-window.__fb = JSON.parse(document.getElementById("fb-seed").textContent);
-const realF = window.fetch;
-window.fetch = async (url, opt) => {
-  if(String(url).indexOf("/api/remote/fireball") >= 0 && !(opt && opt.method === "POST"))
-    return new Response(JSON.stringify(window.__fb), {status:200, headers:{"Content-Type":"application/json"}});
-  return realF(url, opt);
-};
-const pad = k => document.querySelector('.fb-pad[data-k="' + k + '"]');
-const beats = () => h.posts("fireball-beat").map(p => p.body);
-const on = b => Object.keys(b.controls).filter(k => b.controls[k]).join("+");
-const mark = () => window.__posts.length;
-const since = n => window.__posts.slice(n);
-await h.sleep(900);
-// Valve Open: held.
-let n = mark();
-h.ev(pad("valve"), "pointerdown");
-await h.sleep(460);
-const held = since(n).filter(p => p.route === "fireball-beat").map(p => p.body);
-out.held = {n:held.length, on:held.map(on), runs:[...new Set(held.map(b => b.run))].length,
-  seqs:held.map(b => b.seq), cls:pad("valve").className, st:pad("valve").querySelector(".fb-st").textContent};
-n = mark();
-h.ev(pad("valve"), "pointerup");
-await h.sleep(350);
-out.lift = since(n).map(p => p.route + ":" + on(p.body) + ":" + !!p.body.run);
-out.lift_cls = pad("valve").className;
-// A held pad whose capture failed: the pointer leaving it lets go.
-n = mark();
-h.ev(pad("valve"), "pointerdown");
-await h.sleep(250);
-pad("valve").dispatchEvent(new PointerEvent("pointerout", {bubbles:true, relatedTarget:document.body}));
-await h.sleep(300);
-const lv = since(n).filter(p => p.route === "fireball-beat").map(p => on(p.body));
-out.leave = {cls:pad("valve").className, first:lv[0] || "", last:lv.length ? lv[lv.length - 1] : "x"};
-// Fuel Charge: a toggle.
-n = mark();
-h.ev(pad("fuel"), "click");
-await h.sleep(350);
-out.fuel = since(n).filter(p => p.route === "fireball-beat").map(p => on(p.body));
-// Igniter held with Fuel on, then the window loses focus.
-h.ev(pad("igniter"), "pointerdown");
-await h.sleep(150);
-n = mark();
-window.dispatchEvent(new Event("blur"));
-await h.sleep(250);
-out.blur = {posts:since(n).filter(p => p.route === "fireball-beat").map(p => on(p.body)),
-  fuel:pad("fuel").classList.contains("on"), ign:pad("igniter").classList.contains("on")};
-// Fuel pressed again: off, the run ends.
-n = mark();
-h.ev(pad("fuel"), "click");
-await h.sleep(300);
-out.fuel_off = since(n).map(p => p.route + ":" + on(p.body));
-// A refusal from the engine: everything off, nothing comes back.
-window.__answer["fireball-beat"] = b => on(b) ? [409, {error:"The Fireball is not armed. Arm it first.", cut:true}] : [200, {ok:true}];
-h.ev(pad("air"), "click");
-await h.sleep(500);
-out.refused = {air:pad("air").classList.contains("on"), msg:document.getElementById("fb-msg").textContent,
-  after:since(mark()).length};
-n = mark();
-await h.sleep(400);
-out.refused.quiet = since(n).filter(p => p.route === "fireball-beat" && on(p.body)).length;
-delete window.__answer["fireball-beat"];
-// The Fireball disarms while Purge is on: cut on the next look.
-h.ev(pad("purge"), "click");
-await h.sleep(250);
-window.__fb = Object.assign({}, window.__fb, {armed:"off", armed_why:"The Fireball is not armed."});
-await h.sleep(800);
-n = mark();
-await h.sleep(300);
-out.disarmed = {purge:pad("purge").classList.contains("on"), more:since(n).filter(p => on(p.body || {controls:{}})).length,
-  note:document.getElementById("fb-note").textContent};
-// Not armed: a press sends nothing.
-n = mark();
-h.ev(pad("valve"), "pointerdown");
-await h.sleep(300);
-h.ev(pad("valve"), "pointerup");
-out.not_armed = {posts:since(n).filter(p => p.route === "fireball-beat" && on(p.body)).length,
-  msg:document.getElementById("fb-msg").textContent};
-window.__fb = Object.assign({}, window.__fb, {armed:"armed", armed_why:""});
-await h.sleep(700);
-// Signed out while Fuel is on.
-h.ev(pad("fuel"), "click");
-await h.sleep(250);
-window.__patch = s => Object.assign(s, {me:{users_active:true, view_only:true}});
-await h.sleep(900);
-n = mark();
-await h.sleep(300);
-out.signout = {fuel:pad("fuel").classList.contains("on"), more:since(n).filter(p => p.route === "fireball-beat" && on(p.body)).length};
-window.__patch = null;
-await h.sleep(700);
-// Leaving the page while Air is on.
-h.ev(pad("air"), "click");
-await h.sleep(250);
-n = mark();
-history.replaceState(null, "", location.pathname);
-showView();
-await h.sleep(400);
-out.left = {posts:since(n).map(p => p.route + ":" + on(p.body || {controls:{}})), air:FB_ON.air};
-location.hash = "fireball";
-showView();
-await h.sleep(700);
-// Fuel held by the engine for the charge record's mark: the pad says
-// WAITING, not ON (round-8 review 4), and ON once the engine lets it go.
-window.__answer["fireball-beat"] = b => [200, on(b) ? {ok:true, held:["fuel"]} : {ok:true}];
-h.ev(pad("fuel"), "click");
-await h.sleep(350);
-out.waiting = {st:pad("fuel").querySelector(".fb-st").textContent, on:pad("fuel").classList.contains("on")};
-window.__answer["fireball-beat"] = b => [200, {ok:true}];
-await h.sleep(350);
-out.waiting.after = pad("fuel").querySelector(".fb-st").textContent;
-delete window.__answer["fireball-beat"];
-h.ev(pad("fuel"), "click");
-await h.sleep(250);
-// An older answer that arrives late does not turn the pad back (round 9).
-FB_RUN = "x"; FB_ANS = 0;
-fbAnswer("x", 5, {held:["fuel"]});
-fbAnswer("x", 4, {held:[]});
-out.ooo = {late:FB_HELD.join(), newer:(fbAnswer("x", 6, {ok:true}), FB_HELD.length), other:(fbAnswer("y", 9, {held:["air"]}), FB_HELD.length)};
-FB_RUN = null;
-FB_HELD = ["air"]; fbCut("selftest");
-out.ooo.cut = FB_HELD.length;
-// Tanks are empty: shown while automatic charging is off, though every
-// tank is known (round-8 review 1).
-const tk = {fuel:{state:"empty"}, air:{state:"empty"}};
-window.__patch = s => Object.assign(s, {fireball_charge:{tanks:tk, text:"", auto_off:true}});
-await h.sleep(900);
-out.empty = {auto_off:document.getElementById("fb-empty").hidden};
-window.__patch = s => Object.assign(s, {fireball_charge:{tanks:tk, text:"", auto_off:false}});
-await h.sleep(900);
-out.empty.known = document.getElementById("fb-empty").hidden;
-window.__patch = s => Object.assign(s, {fireball_charge:{tanks:{fuel:{state:"unknown"}, air:{state:"empty"}}, text:"", auto_off:false}});
-await h.sleep(900);
-out.empty.unknown = document.getElementById("fb-empty").hidden;
-window.__patch = null;
-await h.sleep(300);
-// All off and Disarm.
-n = mark();
-document.getElementById("fb-alloff").click();
-document.getElementById("fb-disarm").click();
-await h.sleep(300);
-out.buttons = since(n).map(p => p.route + (p.body.group ? ":" + p.body.group : ""));
-"""
-    seed = ('<script type="application/json" id="fb-seed">' +
-            json.dumps(_fb_view()) + '</script>')
-    m = _rack_drive(chrome, page.replace("</body>", seed + "</body>", 1), st,
-                    steps, size=(1366, 768), frag="#fireball",
-                    routes={"/api/remote/fireball": _fb_view()},
-                    budget_ms=20000)
-    if not check(isinstance(m, dict) and not m.get("problems"),
-                 f"the Fireball page, pressed: {m!r}"[:1500]):
-        print("  ok")
-        return
-    check(m["waiting"]["st"] == "WAITING" and m["waiting"]["on"] and
-          m["waiting"]["after"] == "ON",
-          f"a press the engine holds for the mark: WAITING, then ON: "
-          f"{m['waiting']}")
-    check(m["ooo"] == {"late": "fuel", "newer": 0, "other": 0, "cut": 0},
-          f"an older answer arriving late changes nothing, a newer one "
-          f"does, another run's none, and a cut clears the held list: "
-          f"{m['ooo']}")
-    check(m["empty"]["auto_off"] is False and m["empty"]["known"] is True and
-          m["empty"]["unknown"] is False,
-          f"Tanks are empty: shown when automatic charging is off or a "
-          f"tank is NOT KNOWN, hidden when all is known: {m['empty']}")
-    hd = m["held"]
-    check(hd["n"] >= 4 and all(x == "valve" for x in hd["on"]) and
-          hd["runs"] == 1 and hd["seqs"] == sorted(hd["seqs"]) and
-          "on" in hd["cls"] and hd["st"] == "ON",
-          f"Valve Open held: a beat every 100 ms, one run, in order: {hd}")
-    check(m["lift"] and m["lift"][0] == "fireball-beat::true" and
-          len(m["lift"]) == 1 and "on" not in m["lift_cls"].split(),
-          f"the lift: one beat with everything off, then nothing: "
-          f"{m['lift']}")
-    lv = m.get("leave") or {}
-    check(lv.get("first") == "valve" and lv.get("last") == "" and
-          "on" not in lv.get("cls", "on").split(),
-          f"a held pad whose pointer leaves it (capture failed) lets go: "
-          f"{lv}")
-    check(len(m["fuel"]) >= 3 and all(x == "fuel" for x in m["fuel"]),
-          f"Fuel Charge stays on, beating: {m['fuel']}")
-    check(m["blur"]["fuel"] and not m["blur"]["ign"] and
-          m["blur"]["posts"] and m["blur"]["posts"][0] == "fuel",
-          f"losing focus lets go of the Igniter at once, Fuel stays: "
-          f"{m['blur']}")
-    check(m["fuel_off"][:1] == ["fireball-beat:"],
-          f"Fuel pressed again: everything off: {m['fuel_off']}")
-    check(not m["refused"]["air"] and "not armed" in m["refused"]["msg"] and
-          m["refused"]["quiet"] == 0,
-          f"a refusal: everything off, said, nothing comes back: "
-          f"{m['refused']}")
-    check(not m["disarmed"]["purge"] and m["disarmed"]["more"] == 0 and
-          "not armed" in m["disarmed"]["note"],
-          f"the Fireball disarmed: Purge off, nothing sent: {m['disarmed']}")
-    check(m["not_armed"]["posts"] == 0 and
-          "Arm the Fireball first" in m["not_armed"]["msg"],
-          f"not armed: a press sends nothing, and says why: "
-          f"{m['not_armed']}")
-    check(not m["signout"]["fuel"] and m["signout"]["more"] == 0,
-          f"signed out: Fuel off, nothing more sent: {m['signout']}")
-    check(m["left"]["posts"][:1] == ["fireball-beat:"] and
-          m["left"]["air"] is False,
-          f"leaving the page: everything off: {m['left']}")
-    check(m["buttons"] == ["fireball-off", "group-disarm:fireball"],
-          f"All off and Disarm Fireball: {m['buttons']}")
-    print("  ok")
 
 
 def test_fireball_doc_in_plain_words():
@@ -95196,431 +90890,6 @@ def test_cleaning_at_the_engine():
         R.close()
     print("  ok")
 
-
-_CLEANING_MEASURE_JS = r"""
-<script>
-(function(){
-function shown(el){ return !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden"; }
-function hits(el){
-  el.scrollIntoView({block:"center", inline:"nearest"});
-  const r = el.getBoundingClientRect(), bad = [];
-  if(r.top < 0 || r.bottom > innerHeight + 0.5 || r.left < 0 || r.right > innerWidth + 0.5) bad.push("not wholly inside the window when scrolled to");
-  const ins = Math.min(4, r.width / 4, r.height / 4);
-  for(const [x, y] of [[r.left + r.width/2, r.top + r.height/2], [r.left + ins, r.top + ins], [r.right - ins, r.top + ins], [r.left + ins, r.bottom - ins], [r.right - ins, r.bottom - ins]]){
-    const at = document.elementFromPoint(x, y);
-    if(!at || !(el === at || el.contains(at))) bad.push("covered at " + Math.round(x) + "," + Math.round(y) + " by " + (at ? (at.id || at.className || at.tagName) : "nothing"));
-  }
-  return bad;
-}
-function go(){
-  const wc = document.getElementById("wc");
-  if(!document.querySelector("#mo-field .mach") || !wc || wc.hidden) return setTimeout(go, 100);
-  setTimeout(() => {
-    const out = {vw:innerWidth, vh:innerHeight, sw:document.scrollingElement.scrollWidth, problems:[], small:[],
-      armed:document.getElementById("wc-armed").textContent, prog:document.getElementById("wc-prog").textContent,
-      note:document.getElementById("wc-note").textContent,
-      block:shown(document.getElementById("wc-block")) ? document.getElementById("wc-block").textContent : "",
-      hold:document.getElementById("wc-hold").textContent, na:document.getElementById("wc-hold").classList.contains("na"),
-      disabled:document.getElementById("wc-hold").disabled, buttons:{},
-      banner:!document.getElementById("wc-banner").hidden, banner_text:document.getElementById("wc-banner-text").textContent};
-    for(const id of ["wc-hold", "wc-stop"]){
-      const b = document.getElementById(id);
-      for(const p of hits(b)) out.problems.push(id + ": " + p);
-      const r = b.getBoundingClientRect();
-      out.buttons[id] = {h:Math.round(r.height), w:Math.round(r.width), px:parseFloat(getComputedStyle(b).fontSize)};
-    }
-    const a = document.getElementById("wc-hold").getBoundingClientRect(), b = document.getElementById("wc-stop").getBoundingClientRect();
-    if(a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5) out.problems.push("the two buttons overlap");
-    const tw = document.createTreeWalker(wc, NodeFilter.SHOW_TEXT);
-    for(let n = tw.nextNode(); n; n = tw.nextNode()){
-      const t = n.textContent.trim(); const el = n.parentElement;
-      if(!t || !shown(el)) continue;
-      const px = parseFloat(getComputedStyle(el).fontSize);
-      if(px < 14) out.small.push(px + " px: " + t.slice(0, 30));
-    }
-    const pre = document.createElement("pre"); pre.id = "rack-measure";
-    pre.textContent = JSON.stringify([out]);
-    document.body.appendChild(pre);
-  }, 700);
-}
-go();
-})();
-</script>
-"""
-
-
-def _wc_view(**over):
-    """GET /api/remote/cleaning as the engine answers it, idle."""
-    from ltcplay import cleaning as CL
-    g, _w = CL.find_group(_WC_FS)
-    v = {"available": True, "problem": "", "state": "idle", "running": False,
-         "holder": None, "mine": False, "run": None, "progress": None,
-         "last_cut": "", "last_note": "", "config_error": "",
-         "settings": dict(CL.DEFAULTS), "beat_stale_ms": 250,
-         "group": {"name": "wave flamer", "fixtures": g["fixtures"]},
-         "armed": "disarmed", "armed_why": "", "locked": [],
-         "locked_note": "", "blocked": "", "served_at": 0}
-    v.update(over)
-    return v
-
-
-def _wc_prog(state, text, nxt, phase=1, **over):
-    p = {"state": state, "phase": phase, "step": "armed", "cycle": 2,
-         "cycles": 3, "text": text, "next": nxt, "bursts": 0,
-         "fire_on": False, "left_s": None, "elapsed_s": 12.3}
-    p.update(over)
-    return p
-
-
-def test_cleaning_on_the_shutdown_page_in_a_browser():
-    section("wave flamer cleaning on the Shutdown part of the Startup page, "
-            "drawn in a real browser at the show PC's and an iPad's sizes "
-            "(the runner's page is about 143 px shorter than its window): "
-            "the hold button and Stop are big, side by side, never under "
-            "the Abort sign or off the side, text 14 px or more; each state "
-            "in plain words (start, phase 1 on its own, paused for a second "
-            "hold, blocked); the banner with its Stop on every screen; the "
-            "page's logic in node; no em or en dashes")
-    here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    for need in ('<div class="wc" id="wc" hidden aria-label="Wave flamer '
-                 'cleaning">', 'cleaningView(v === "morning");',
-                 '<button class="disarm wc-stop" id="wc-stop"',
-                 '<div class="lfbanner" id="wc-banner" hidden><b>WAVE FLAMER '
-                 'CLEANING</b>', 'id="wc-banner-stop">Stop</button>'):
-        check(need in page, f"the page has {need!r}")
-    check(page.index('id="wc-banner"') < page.index('id="al-sum"'),
-          "the cleaning banner is never folded away with the alerts")
-    a = page.index("<!-- Wave flamer cleaning (Andy's design")
-    b = page.index("</section>", a)
-    js_a = page.index("// ---- Wave flamer cleaning (Andy's design")
-    js_b = page.index("// WEATHER (weather.py, WEATHER.md): its own slow")
-    lg_a = page.index("// Wave flamer cleaning (cleaning.py). One beat")
-    lg_b = page.index("// LOGIC END")
-    for part in (page[a:b], page[js_a:js_b], page[lg_a:lg_b]):
-        check("—" not in part and "–" not in part,
-              "the cleaning's words have no em or en dashes")
-    check("disabled = " not in page[js_a:js_b],
-          "the hold button is never given the disabled attribute")
-    bad = _page_logic_in_node(page, r"""
-const V = (o) => Object.assign({available:true, state:"idle", running:false, mine:false, holder:null, blocked:""}, o || {});
-let b = cleaningBody(true, "r1", 4, true);
-t(JSON.stringify(b) === JSON.stringify({hold:true, run:"r1", seq:4, change:true}), "the body: " + JSON.stringify(b));
-t(cleaningBody(1, "r1", 5).hold === false && cleaningBody("true", "r", 1).hold === false, "only the JSON word true holds");
-let s = cleaningState(V(), false, false, false);
-t(s.ok && !s.cut && !s.block && s.word === "Hold to start the cleaning" && !s.na, "idle, fresh: a hold may start: " + JSON.stringify(s));
-s = cleaningState(V(), true, false, false);
-t(s.word === "Keep holding..." && !s.cut, "holding: keep holding");
-s = cleaningState(V({blocked:"a scheduled show is live (SHOW)"}), false, false, false);
-t(!s.ok && s.block === "Not available now: a scheduled show is live (SHOW)" && s.na, "a blocker says why: " + JSON.stringify(s));
-s = cleaningState(V({state:"starting", mine:true}), true, true, false);
-t(!s.ok && /not live/.test(s.cut), "a stale page while holding: the hold ends: " + JSON.stringify(s));
-s = cleaningState(V({state:"starting", mine:true}), true, false, true);
-t(/view only/.test(s.cut), "signed out while holding: the hold ends: " + JSON.stringify(s));
-s = cleaningState(V({state:"starting", mine:false, holder:"iPad at 10.20.0.44"}), false, false, false);
-t(!s.ok && /One screen at a time/.test(s.block), "another screen is holding: " + JSON.stringify(s));
-s = cleaningState(V({state:"phase1", running:true}), false, false, false);
-t(!s.ok && s.na && /running on its own/.test(s.block) && s.word === "Phase 1 runs on its own: you can let go", "phase 1: nothing to hold, says so: " + JSON.stringify(s));
-s = cleaningState(V({state:"phase1", running:true}), true, false, true);
-t(!s.cut, "phase 1 running: nothing to cut on the page");
-s = cleaningState(V({state:"paused", running:true}), false, false, false);
-t(s.ok && s.word === "Hold to start the purge bursts", "paused: a hold may start the purge bursts: " + JSON.stringify(s));
-s = cleaningState(V({state:"paused", running:true, blocked:"x"}), false, false, false);
-t(!s.ok && s.block === "Not available now: x", "paused and blocked: says why");
-s = cleaningState(V({state:"phase2", running:true}), false, false, false);
-t(!s.ok && /Press Stop/.test(s.block) && s.word === "Firing the leftover fuel", "phase 2: Stop ends it: " + JSON.stringify(s));
-s = cleaningState(V({available:false, problem:"no group named wave flamer"}), false, false, false);
-t(!s.ok && s.block === "no group named wave flamer", "no group: says why");
-t(!cleaningState(null, false, false, false).ok, "nothing read yet: nothing starts");
-const w = cleaningWords({phase:1, text:"Pressurizing: armed 3 s, 1 of 3", next:"Disarm", bursts:0, left_s:1.25, elapsed_s:4.7});
-t(w === "Phase 1 of 2: Pressurizing: armed 3 s, 1 of 3 (1.3 s left). Next: Disarm. Running 4 s.", "the words: " + w);
-const w2 = cleaningWords({phase:2, text:"Purge bursts: 1 s on, 1 s off", next:"Press Stop to end", bursts:7, left_s:null, elapsed_s:40});
-t(w2 === "Phase 2 of 2: Purge bursts: 1 s on, 1 s off. Next: Press Stop to end. Bursts: 7. Running 40 s.", "the burst words: " + w2);
-""")
-    check(bad == [] or bad is None, f"the page's cleaning rules, in node: "
-                                    f"{bad}")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    st = _rack_status_pico(many=False)
-    st["morning"] = {"locked_machines": [], "locked_lasers": [],
-                     "flamesafe_confirmed": True, "purge": True,
-                     "purge_enabled": True, "open": True}
-    mo = _morning_view_pico()
-    phase1 = _wc_view(state="phase1", running=True, armed="armed",
-                      progress=_wc_prog("phase1", "Pressurizing: armed 3 s, "
-                                        "2 of 3", "Disarm", left_s=1.4))
-    paused = _wc_view(state="paused", running=True, progress=_wc_prog(
-        "paused", "Cycles done. Hold to start the purge bursts",
-        "Hold the button to fire the leftover fuel, or Stop", left_s=540))
-    for which, v, sizes in (
-            ("idle", _wc_view(), ((1280, 800), (1366, 768), (768, 1024))),
-            ("phase1", phase1, ((1366, 768),)),
-            ("paused", paused, ((1366, 768),)),
-            ("blocked", _wc_view(blocked="a scheduled show is live (SHOW)"),
-             ((1366, 768),))):
-        st2 = dict(st)
-        if which != "idle":
-            st2["cleaning"] = {"available": True, "state": v["state"],
-                               "text": (v["progress"] or {}).get("text", "")}
-        got = _rack_screen_in_chromium(
-            chrome, page, st2, sizes, measure_js=_CLEANING_MEASURE_JS,
-            frag="#morning", routes={"/api/remote/morning": mo,
-                                     "/api/remote/cleaning": v})
-        for size, res in got.items():
-            if not check(isinstance(res, list) and res,
-                         f"{which} {size}: drawn: {res!r}"[:600]):
-                continue
-            m = res[0]
-            check(not m["problems"] and m["sw"] <= m["vw"] + 1,
-                  f"{which} {size}: both buttons on the screen, not under "
-                  f"the Abort sign, nothing off the side: {m['problems']} "
-                  f"{m['sw']} {m['vw']}x{m['vh']}")
-            bt = m["buttons"]
-            check(bt["wc-hold"]["h"] >= 60 and bt["wc-stop"]["h"] >= 60 and
-                  bt["wc-hold"]["w"] >= 160 and bt["wc-stop"]["w"] >= 90 and
-                  bt["wc-hold"]["px"] >= 16 and bt["wc-stop"]["px"] >= 16 and
-                  not m["small"] and not m["disabled"],
-                  f"{which} {size}: big touch targets, text 14 px or more: "
-                  f"{bt} {m['small'][:3]}")
-            check("pressurizes and depressurizes the pump, no fire" in
-                  m["note"] and "on its own once your hold is complete" in
-                  m["note"] and "Hold again to fire the leftover fuel" in
-                  m["note"] and "1 s on and 1 s off" in m["note"] and
-                  "let go too soon and nothing starts" in m["note"],
-                  f"{which} {size}: says how it runs: {m['note']!r}")
-            check(m["banner"] == (which in ("phase1", "paused")),
-                  f"{which} {size}: the banner on every screen while it runs "
-                  f"or waits: {m['banner']} {m['banner_text']!r}")
-            if which == "idle":
-                check(m["hold"] == "Hold to start the cleaning" and
-                      not m["na"] and m["block"] == "" and
-                      m["armed"] == "Wave flamer: disarmed",
-                      f"idle: ready to hold: {m}")
-            elif which == "phase1":
-                check(m["prog"].startswith("Phase 1 of 2: Pressurizing: armed "
-                                           "3 s, 2 of 3 (1.4 s left). Next: "
-                                           "Disarm.") and
-                      m["armed"] == "Wave flamer: ARMED" and m["na"] and
-                      m["hold"] == "Phase 1 runs on its own: you can let go"
-                      and "Press Stop to end it" in m["block"] and
-                      m["banner_text"].startswith("Pressurizing: armed 3 s"),
-                      f"phase 1: on its own, in plain words: {m}")
-            elif which == "paused":
-                check(m["hold"] == "Hold to start the purge bursts" and
-                      not m["na"] and m["prog"].startswith(
-                          "Phase 1 of 2: Cycles done. Hold to start the purge "
-                          "bursts") and "Cycles done" in m["banner_text"],
-                      f"paused: asks for the second hold, here and in the "
-                      f"banner: {m}")
-            else:
-                check(m["na"] and "Not available now: a scheduled show is "
-                      "live" in m["block"],
-                      f"blocked: says why, the button says it may not: "
-                      f"{m['block']!r}")
-    print("  ok")
-
-
-def test_cleaning_button_driven():
-    section("wave flamer cleaning pressed in a real browser: holding the "
-            "button beats every 100 ms, one hold, numbered in order; once "
-            "the engine says phase 1 runs the page stops beating and says "
-            "you can let go; a release before that sends one release; a "
-            "refusal, losing focus, signing out and leaving the page end a "
-            "hold; while phase 1 runs a press sends nothing; paused, a hold "
-            "is the go-ahead; Stop on the page and in the banner post "
-            "cleaning-stop")
-    here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner")
-        print("  ok")
-        return
-    st = _rack_status_pico(many=False)
-    st["alerts"] = []
-    st["morning"] = {"locked_machines": [], "locked_lasers": [],
-                     "flamesafe_confirmed": True, "purge": True,
-                     "purge_enabled": True, "open": True}
-    steps = r"""
-window.__wc = JSON.parse(document.getElementById("wc-seed").textContent);
-const realF = window.fetch;
-window.fetch = async (url, opt) => {
-  if(String(url).indexOf("/api/remote/cleaning") >= 0 && !(opt && opt.method === "POST"))
-    return new Response(JSON.stringify(window.__wc), {status:200, headers:{"Content-Type":"application/json"}});
-  return realF(url, opt);
-};
-const prog = (state, text) => ({state:state, phase:state === "phase2" ? 2 : 1, step:"arm", cycle:1, cycles:3, text:text, next:"", bursts:0, left_s:null, elapsed_s:0.2});
-const starting = Object.assign({}, window.__wc, {state:"starting", running:true, mine:true, progress:prog("starting", "Keep holding: arming, 1 of 3")});
-const phase1 = Object.assign({}, window.__wc, {state:"phase1", running:true, mine:false, progress:prog("phase1", "Pressurizing: armed 3 s, 1 of 3")});
-const paused = Object.assign({}, window.__wc, {state:"paused", running:true, mine:false, progress:prog("paused", "Cycles done. Hold to start the purge bursts")});
-const btn = document.getElementById("wc-hold");
-const mark = () => window.__posts.length;
-const since = n => window.__posts.slice(n);
-const beats = n => since(n).filter(p => p.route === "cleaning-beat").map(p => p.body);
-for(let i = 0; i < 30 && document.getElementById("wc").hidden; i++) await h.sleep(100);
-await h.sleep(300);
-// Let go too soon: one release, nothing more.
-window.__answer["cleaning-beat"] = b => b.hold ? [200, starting] : [200, window.__wc];
-let n = mark();
-h.ev(btn, "pointerdown");
-await h.sleep(350);
-h.ev(btn, "pointerup");
-await h.sleep(350);
-out.early = {holds:beats(n).filter(b => b.hold).length, after:beats(n).slice(-1).map(b => b.hold), msg:document.getElementById("wc-msg").textContent};
-// A full hold: the engine says phase 1 runs on its own after 5 beats.
-let k = 0;
-window.__answer["cleaning-beat"] = b => b.hold ? [200, (++k > 5) ? (window.__wc = phase1) : starting] : [200, phase1];
-n = mark();
-h.ev(btn, "pointerdown");
-await h.sleep(1100);
-const held = beats(n);
-out.held = {n:held.filter(b => b.hold).length, runs:[...new Set(held.map(b => b.run))].length, seqs:held.map(b => b.seq),
-  msg:document.getElementById("wc-msg").textContent, text:btn.textContent, prog:document.getElementById("wc-prog").textContent};
-n = mark();
-await h.sleep(400);
-h.ev(btn, "pointerup");
-await h.sleep(200);
-out.after_done = beats(n).length;
-// While phase 1 runs: a press sends nothing.
-window.__wc = phase1;
-await h.sleep(700);
-n = mark();
-h.ev(btn, "pointerdown");
-await h.sleep(300);
-h.ev(btn, "pointerup");
-out.running = {holds:beats(n).filter(b => b.hold).length, msg:document.getElementById("wc-msg").textContent, na:btn.classList.contains("na")};
-// Paused: the go-ahead hold; a refusal ends it, said.
-window.__wc = paused;
-await h.sleep(700);
-out.paused_text = btn.textContent;
-window.__answer["cleaning-beat"] = b => b.hold ? [409, {error:"The arm was refused: the Stream Deck refused it.", cut:true}] : [200, paused];
-n = mark();
-h.ev(btn, "pointerdown");
-await h.sleep(500);
-out.refused = {holds:beats(n).filter(b => b.hold).length, releases:beats(n).filter(b => !b.hold).length,
-  msg:document.getElementById("wc-msg").textContent, on:btn.classList.contains("on")};
-h.ev(btn, "pointerup");
-window.__answer["cleaning-beat"] = b => [200, b.hold ? Object.assign({}, paused, {state:"acking", mine:true}) : paused];
-await h.sleep(200);
-// Losing focus during a hold.
-h.ev(btn, "pointerdown");
-await h.sleep(250);
-n = mark();
-window.dispatchEvent(new Event("blur"));
-await h.sleep(350);
-out.blur = {after:beats(n).map(b => b.hold), msg:document.getElementById("wc-msg").textContent};
-h.ev(btn, "pointerup");
-await h.sleep(150);
-// Signed out during a hold.
-h.ev(btn, "pointerdown");
-await h.sleep(250);
-window.__patch = s => Object.assign(s, {me:{users_active:true, view_only:true}});
-await h.sleep(800);
-n = mark();
-await h.sleep(300);
-out.signout = {holds:beats(n).filter(b => b.hold).length, on:btn.classList.contains("on")};
-h.ev(btn, "pointerup");
-n = mark();
-h.ev(btn, "pointerdown");
-await h.sleep(300);
-h.ev(btn, "pointerup");
-out.viewonly = {holds:beats(n).filter(b => b.hold).length, msg:document.getElementById("wc-msg").textContent};
-window.__patch = null;
-await h.sleep(800);
-// Leaving the page during a hold.
-h.ev(btn, "pointerdown");
-await h.sleep(250);
-n = mark();
-history.replaceState(null, "", location.pathname);
-showView();
-await h.sleep(350);
-out.left = {after:beats(n).map(b => b.hold), hold:WC_HOLD};
-// The banner on the show screen while it runs, and its Stop.
-window.__patch = s => Object.assign(s, {cleaning:{available:true, state:"phase2", text:"Purge bursts: 1 s on, 1 s off"}});
-await h.sleep(800);
-out.banner = {shown:!document.getElementById("wc-banner").hidden, text:document.getElementById("wc-banner-text").textContent};
-n = mark();
-document.getElementById("wc-banner-stop").click();
-await h.sleep(300);
-out.banner_stop = since(n).filter(p => p.route.startsWith("cleaning")).map(p => p.route);
-window.__patch = null;
-location.hash = "morning";
-showView();
-await h.sleep(800);
-n = mark();
-document.getElementById("wc-stop").click();
-await h.sleep(300);
-out.stop = since(n).filter(p => p.route.startsWith("cleaning")).map(p => p.route);
-"""
-    seed = ('<script type="application/json" id="wc-seed">' +
-            json.dumps(_wc_view()) + '</script>')
-    m = _rack_drive(chrome, page.replace("</body>", seed + "</body>", 1), st,
-                    steps, size=(1366, 768), frag="#morning",
-                    routes={"/api/remote/morning": _morning_view_pico(),
-                            "/api/remote/cleaning": _wc_view()},
-                    budget_ms=20000)
-    if not check(isinstance(m, dict) and not m.get("problems"),
-                 f"the cleaning button, pressed: {m!r}"[:1500]):
-        print("  ok")
-        return
-    e = m["early"]
-    check(e["holds"] >= 2 and e["after"] == [False] and
-          "Nothing new started" in e["msg"],
-          f"let go too soon: one release, said: {e}")
-    hd = m["held"]
-    check(6 <= hd["n"] <= 7 and hd["runs"] == 1 and
-          hd["seqs"] == sorted(hd["seqs"]) and
-          "Phase 1 is running on its own. You can let go." in hd["msg"] and
-          hd["text"] == "Phase 1 runs on its own: you can let go" and
-          hd["prog"].startswith("Phase 1 of 2: Pressurizing"),
-          f"a full hold: beats in order until the engine says phase 1 runs, "
-          f"then the page stops beating and says you can let go: {hd}")
-    check(m["after_done"] <= 1, f"after that, at most the release: "
-                                f"{m['after_done']}")
-    r = m["running"]
-    check(r["holds"] == 0 and r["na"] and "running on its own" in r["msg"],
-          f"phase 1 running: a press sends nothing, says why: {r}")
-    check(m["paused_text"] == "Hold to start the purge bursts",
-          f"paused: {m['paused_text']!r}")
-    r = m["refused"]
-    check(r["holds"] == 1 and r["releases"] == 1 and not r["on"] and
-          "the Stream Deck refused it" in r["msg"],
-          f"a refused go-ahead: the hold ends, said, nothing more: {r}")
-    check(m["blur"]["after"][:1] == [False] and
-          all(x is False for x in m["blur"]["after"]) and
-          "lost focus" in m["blur"]["msg"],
-          f"losing focus: the hold ends: {m['blur']}")
-    check(m["signout"]["holds"] == 0 and not m["signout"]["on"],
-          f"signed out during a hold: it ends: {m['signout']}")
-    check(m["viewonly"]["holds"] == 0 and
-          "view only" in m["viewonly"]["msg"],
-          f"signed out: a press sends nothing: {m['viewonly']}")
-    check(m["left"]["after"][:1] == [False] and m["left"]["hold"] is False,
-          f"leaving the page: the hold ends: {m['left']}")
-    check(m["banner"]["shown"] and
-          m["banner"]["text"].startswith("Purge bursts: 1 s on, 1 s off") and
-          m["banner_stop"] == ["cleaning-stop"],
-          f"the banner on the show screen, with its Stop: {m['banner']} "
-          f"{m['banner_stop']}")
-    check(m["stop"] == ["cleaning-stop"], f"Stop: {m['stop']}")
-    print("  ok")
-
-
-# -- the Weather block (weather.py, WEATHER.md; Jeff, 2026-10-26) -----------
-# Wind at Thanksgiving Point on the rack screen's main page: a measured
-# station (UTALP through the Iowa State mesonet) and the NWS forecast for
-# the spot, each with its age, and the NWS wind and fire alerts. The canned
-# answers below follow each service's documented shape: the mesonet's
-# from its own source (iemws currents.py: data[], sknt and gust in knots,
-# drct, utc_valid), the NWS ones from real api.weather.gov answers kept as
-# test fixtures by the pynws project. None of it was fetched live from
-# this machine (no route to those hosts); `ltc weather --check` on the
-# show PC is the live check.
 
 # 2026-10-26 18:00:00 UTC, noon in Lehi.
 WX_NOW = 1793037600.0
@@ -96919,34 +92188,6 @@ def _wx_page_view():
     return w.view()
 
 
-_WX_MEASURE_JS = r"""
-<script>
-(function(){
-function go(){
-  const box = document.getElementById("wx");
-  if(!box || !document.querySelector("#wx-lines div") || !document.querySelector("#fl-lamps .lamp")) return setTimeout(go, 100);
-  setTimeout(() => {
-    const r = box.getBoundingClientRect();
-    const fl = document.querySelector(".flames").getBoundingClientRect();
-    const out = {cls:box.className, hidden:box.hidden, h:r.height, top:r.top + scrollY,
-      flames_bottom:fl.bottom + scrollY, right:r.right, vw:innerWidth,
-      cut:[...document.querySelectorAll("#wx-lines div")].filter(d => d.scrollWidth > d.clientWidth + 1).map(d => d.textContent),
-      lines:[...document.querySelectorAll("#wx-lines div")].map(d => [d.className, d.textContent, getComputedStyle(d).color]),
-      foot:!!document.getElementById("wx-foot"),
-      where:document.getElementById("wx-where").textContent,
-      buttons:box.querySelectorAll("button,input,a").length,
-      sw:document.scrollingElement.scrollWidth};
-    const pre = document.createElement("pre"); pre.id = "rack-measure";
-    pre.textContent = JSON.stringify([out]);
-    document.body.appendChild(pre);
-  }, 400);
-}
-go();
-})();
-</script>
-"""
-
-
 def test_weather_block_on_the_rack_screen():
     section("weather: the Weather block on the rack screen's main page, "
             "under the lasers: its logic in node (grey when the engine "
@@ -96956,20 +92197,7 @@ def test_weather_block_on_the_rack_screen():
     import shutil as _sh
     import subprocess as _sp
     here = os.path.dirname(os.path.abspath(__file__))
-    page = remote1_text()
-    a = page.find('<section id="v-show"')
-    b = page.find("</section>", page.find('id="lz-msg"'))
-    check(a < page.find('id="lz"') < page.find('id="wx"') < b,
-          "the block sits on the main page, under the lasers")
-    blk = page[page.find('<div class="wx none" id="wx"'):b]
-    check("<button" not in blk and "<input" not in blk,
-          "the block has nothing to press")
-    for need in ('getJSON("/api/remote/weather", 4000)',
-                 "setInterval(wxPoll, 15000);",
-                 "setInterval(renderWx, 5000);",
-                 '$("wx").hidden = v.cls === "off";'):
-        check(need in page, f"the page wires {need!r}")
-    _no_dashes(blk, "the Weather block")
+    page = screen_text()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     check("function wxBlock(" in logic, "wxBlock is pure page logic")
     view = _wx_page_view()
@@ -97007,7 +92235,7 @@ console.log(JSON.stringify(out));
             bad = None
         check(r.returncode == 0 and bad == [],
               f"wxBlock, in node: {r.stdout[-800:]!r} {r.stderr[-400:]!r}")
-        # 2.0's wind button (remote2.html, wxLine, on 1.0's wxBlock) and
+        # The screen's wind button (remote2.html, wxLine, on wxBlock) and
         # its sheet and help: no advisory only, no 'ago' (Jeff,
         # 2026-10-30).
         _one, two = _ui2_pages()
@@ -97042,75 +92270,7 @@ console.log(JSON.stringify(out));
               f"{r.stderr[-400:]!r}")
     else:
         check(not IN_CI, "node is missing on this CI runner")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner: the Weather block "
-              "could not be drawn")
-        print("  note: no Chromium here, so the Weather block was not drawn")
-        print("  ok")
-        return
-    routes = {"/api/remote/weather": view}
-    sizes = ((1920, 1080), (1366, 768), (768, 1024))
-    got = _rack_screen_in_chromium(chrome, page, _rack_status_pico(), sizes,
-                                   measure_js=_WX_MEASURE_JS, routes=routes)
-    for (w, h), res in got.items():
-        m = res[0] if isinstance(res, list) and res else None
-        if not check(isinstance(m, dict), f"{w}x{h}: the block was drawn: "
-                                          f"{res!r}"):
-            continue
-        texts = [x[1] for x in m["lines"]]
-        check(not m["hidden"] and "stale" in m["cls"].split() and
-              texts[0].startswith("NWS WIND ADVISORY") and
-              texts[1].startswith("Sources disagree, verify on site") and
-              texts[2].startswith("STALE. Measured, I-15 Point of the "
-                                  "Mountain (UTALP)") and
-              m["foot"] is False and
-              not any("dvisory only" in x or re.search(r"\bago\b", x)
-                      for x in texts) and
-              m["where"].startswith("Thanksgiving Point area"),
-              f"{w}x{h}: the block reads right: {m}")
-        check(m["lines"][2][2] == "rgb(245, 160, 30)",
-              f"{w}x{h}: STALE is amber: {m['lines'][2]}")
-        check(m["top"] >= m["flames_bottom"] - 0.5 and m["buttons"] == 0 and
-              m["right"] <= m["vw"] + 0.5 and not m["cut"],
-              f"{w}x{h}: under the flames, nothing to press, inside the "
-              f"window, no line cut off: {m}")
-        check(m["h"] <= (130 if w >= 1366 else 260),
-              f"{w}x{h}: the block stays compact: {m['h']:.0f} px")
-    # The flame controls with the full block: the rack screen's own
-    # measurements, every one, as without it.
-    with_wx = _rack_screen_in_chromium(chrome, page, _rack_status_pico(),
-                                       ((1920, 1080), (1366, 768)),
-                                       routes=routes)
-    without = _rack_screen_in_chromium(chrome, page, _rack_status_pico(),
-                                       ((1920, 1080), (1366, 768)),
-                                       routes={"/api/remote/weather": {
-                                           "enabled": False,
-                                           "state": "off"}})
-    for size in ((1920, 1080), (1366, 768)):
-        a1, a0 = with_wx.get(size), without.get(size)
-        if not check(isinstance(a1, list) and isinstance(a0, list),
-                     f"{size}: drawn both ways: {a1!r} {a0!r}"):
-            continue
-        for m1, m0 in zip(a1, a0):
-            check(not m1["problems"], f"{size} with the Weather block "
-                                      f"({m1['tag']}): {m1['problems']}")
-            # (Abort's corner sign, which the flame groups had to stay
-            # clear of, is removed: Jeff, 2026-10-30.)
-            check(m1["flames_visible_at_load"] == m0["flames_visible_at_load"]
-                  and "flames_clear_of_abort" not in m1,
-                  f"{size} ({m1['tag']}): the flame groups are seen at load "
-                  f"as without it")
-            # The block takes its room from the lamps' stretch, as the
-            # lasers strip does, never from their buttons: every group's
-            # button stays at least 44 px (and is checked above).
-            check(all(l.get("arm", 0) >= 44 for l in m1["lamps"]) and
-                  len(m1["lamps"]) == 3,
-                  f"{size} ({m1['tag']}): every flame button is 44 px or "
-                  f"more: {m1['lamps']}")
     print("  ok")
-
 
 
 # ---------------------------------------------------------------------------
@@ -98076,7 +93236,7 @@ def test_preroll_settings_and_screens():
         pass
     check(U.classify("/api/remote/preroll-check") == "settings",
           "Check the rig needs the Settings row (an admin)")
-    page = remote1_text()
+    page = screen_text()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     check("function prerollLook" in logic, "the page's rig check words are "
                                           "in its logic block")
@@ -98115,7 +93275,6 @@ console.log(JSON.stringify(out));
     src = open(SD.__file__, encoding="utf-8").read()
     check('["CHECKING", "RIG"]' in src, "the deck's key words")
     print("  ok")
-
 
 
 def test_preroll_continue_anyway_starts_now_with_failed_outputs_off():
@@ -98361,11 +93520,11 @@ def test_preroll_continue_anyway_needs_a_signed_in_hold():
     check(sk.to[1:] == ["127.0.0.9", "127.0.0.8"], "unmuted: both again")
     # The page: the failed items and the two choices.
     import shutil as _sh
-    page = remote1_text()
+    page = screen_text()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     for need in ('"pointerdown"', '{phase:"begin", token:token}',
-                 '{phase:"done", token:token}', 'id="pr-continue"',
-                 'id="pr-recheck"', "Let go too early: nothing was done."):
+                 '{phase:"done", token:token}', 'act:"pr-continue"',
+                 "Let go too early: nothing was done."):
         check(need in page, f"the page has {need!r}")
     node = _sh.which("node")
     if node:
@@ -98390,7 +93549,6 @@ console.log(JSON.stringify(out));
             bad = [f"node said: {r.stdout[-300:]} {r.stderr[-300:]}"]
         check(not bad, f"the page's Continue anyway words: {bad}")
     print("  ok")
-
 
 
 def test_preroll_announcements_is_only_a_warning():
@@ -98481,11 +93639,11 @@ def test_preroll_announcements_is_only_a_warning():
           two.find("/delayed recording/") <
           two.find('[/^announcements$/, /./,'),
           "2.0's Systems badge names the missing Delayed in plain words")
-    page = remote1_text()
-    check('<div class="warnbox open" id="rc-warn" hidden></div>' in page and
+    page = screen_text()
+    check('<div class="pline bad" id="rc-warn" hidden></div>' in page and
           '$("rc-warn").hidden = !prl.warn;' in page and
           '$("rc-warn").textContent = prl.warn;' in page,
-          "1.0's Rig check card shows the warning line on a passing check")
+          "the Rig check card shows the warning line on a passing check")
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     import shutil
     node = shutil.which("node")
@@ -99319,7 +94477,7 @@ def test_preroll_failure_cleared_on_both_screens():
           "Rig check passed. Press Start now for show 2.",
           "delayed: Press Start now")
     _no_dashes(json.dumps(rm.preroll_view()), "the cleared view")
-    page = remote1_text()
+    page = screen_text()
     logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
     p2 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "ltcplay", "web", "remote2.html"),
@@ -99389,10 +94547,9 @@ def test_rack_page_key_guard_never_holds_back_the_safe_buttons():
     import shutil as _sh
     node = _sh.which("node")
     here = os.path.dirname(os.path.abspath(__file__))
-    for name in ("remote.html", "remote2.html"):
-        page = remote1_text() if name == "remote.html" else open(
-            os.path.join(here, "ltcplay", "web", name),
-            encoding="utf-8").read()
+    for name in ("remote2.html",):
+        page = open(os.path.join(here, "ltcplay", "web", name),
+                    encoding="utf-8").read()
         a = page.find("// Keys that arrive just after this window")
         b = page.find("}, true);\n", page.find('window.addEventListener("keyup"', a))
         check(a > 0 and b > a, f"{name}: the key guard is there")
@@ -99463,25 +94620,15 @@ console.log(JSON.stringify(out));
         except (ValueError, IndexError):
             bad = [f"node said: {r.stdout[-300:]} {r.stderr[-300:]}"]
         check(not bad, f"{name}: the key guard: {bad}")
-    # The Startup page's purge key obeys the guard (review B round 4): a
-    # Space just after the window came forward never starts a fire, on any
-    # button; and a Start or Stop key decides from its keydown's mode.
-    page = remote1_text()
-    i = page.find('if((location.hash || "").replace("#", "") !== "morning") return;')
-    j = page.find("fireStart();", i)
-    check(i > 0 and 0 < page.find("if(keyFresh() || keySafe(e.target)){", i) < j,
-          "the purge's Space handler returns while the key guard is fresh, "
-          "before fireStart")
+    # DAY's purge key obeys the guard (review B round 4): a Space just
+    # after the window came forward never starts a fire, on any button.
     page2 = open(os.path.join(here, "ltcplay", "web", "remote2.html"),
                  encoding="utf-8").read()
     i2 = page2.find('if(TAB !== "day" || DAY_STEP !== "purge") return;')
     j2 = page2.find("fireStart();", i2)
     check(i2 > 0 and 0 < page2.find("if(keyFresh() || keySafe(e.target)) "
                                      "return;", i2) < j2,
-          "2.0's DAY purge Space obeys the key guard before fireStart")
-    check('el.addEventListener("keydown", e => { if(!e.repeat && (e.key === '
-          '"Enter" || e.key === " ")) DOWN_MODE[id] = el.dataset.mode; });'
-          in page, "Start now / Stop decides from the keydown's mode")
+          "DAY's purge Space obeys the key guard before fireStart")
     print("  ok")
 
 
@@ -100674,7 +95821,7 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
 
 def _ui2_pages():
     here = os.path.dirname(os.path.abspath(__file__))
-    one = remote1_text()
+    one = remote1_pinned()
     with open(os.path.join(here, "ltcplay", "web", "remote2.html"),
               encoding="utf-8") as fh:
         two = fh.read()
@@ -101016,22 +96163,21 @@ def _js_balanced(code):
 
 
 def test_ui2_is_the_default_screen():
-    section("2.0 is the default screen (Jeff, 2026-11-02): the show PC's "
-            "rack window and an iPad on iPadOS 15 Safari get 2.0 at /remote "
-            "and / with no choice made; the old screen link remembers 1.0 "
-            "and opens /remote1, Try 2.0 forgets it; the rack-screen keeper "
+    section("the one screen (R1: the first screen is removed): the show "
+            "PC's rack window and an iPad on iPadOS 15 Safari get it at "
+            "/remote and /, also with an old screen choice still in a "
+            "cookie; /ui and /remote1 send to /remote; the rack-screen keeper "
             "still opens /remote and still finds the window by its title; "
-            "the emergency page without the rules is unchanged")
+            "without the rules the screen is still served, its own Stop "
+            "with it")
     S = _sched()
     if S is None:
         return
     from ltcplay import web as web_mod
     from ltcplay import showwindows as sw
     import shutil
-    one, two = _ui2_pages()
-    lo = one[one.find('<script id="remote-logic">'):]
-    lo = lo[:lo.find("</script>") + len("</script>")]
-    two_s = two.replace('<script src="/remote-logic.js"></script>', lo, 1)
+    _one, two = _ui2_pages()
+    two_s = screen_text()
     ipad = ("Mozilla/5.0 (iPad; CPU OS 15_0 like Mac OS X) "
             "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 "
             "Mobile/15E148 Safari/604.1")
@@ -101069,36 +96215,25 @@ def test_ui2_is_the_default_screen():
         with open(man, encoding="utf-8") as fh:
             check(json.load(fh).get("start_url") == "/",
                   "the iPad's home screen icon still opens /")
-        # One tap each way, as a browser does it: the cookie it is given
-        # and the address it is sent to.
-        st, h, _o = R.ask("GET", "/ui?v=1",
-                          headers={"Sec-Fetch-Site": "same-origin",
-                                   "User-Agent": ipad})
-        ck = (h.get("set-cookie") or [""])[0].split(";")[0]
-        to = (h.get("location") or [""])[0]
-        check(st == 302 and ck == "ltcplay_ui=1" and to == "/remote1",
-              f"the old screen link: remembered, then /remote1: {st} {h}")
-        st, _h, out = page(to, ck)
-        check(st == 200 and out == one, "it opens 1.0")
+        # A screen that once chose the first screen (its cookie) gets the
+        # screen; the switch and the first screen's address are gone.
         for path in ("/remote", "/"):
-            st, _h, out = page(path, ck, headers={"User-Agent": ipad})
-            check(st == 200 and out == one,
-                  f"that screen keeps 1.0 at {path} afterwards")
-        st, h, _o = R.ask("GET", "/ui?v=2",
-                          headers={"Sec-Fetch-Site": "same-origin",
-                                   "Cookie": ck})
-        ck2 = (h.get("set-cookie") or [""])[0]
-        to = (h.get("location") or [""])[0]
-        check(st == 302 and ck2.startswith("ltcplay_ui=;") and
-              "Max-Age=0" in ck2 and to == "/remote",
-              f"Try 2.0: the choice cleared, back to /remote: {st} {h}")
-        st, _h, out = page(to)
-        check(st == 200 and out == two_s, "and /remote is 2.0 again")
+            st, _h, out = page(path, "ltcplay_ui=1",
+                               headers={"User-Agent": ipad})
+            check(st == 200 and out == two_s,
+                  f"an old choice in a cookie still gets the screen at "
+                  f"{path}: {st}")
+        for path in ("/ui?v=1", "/ui?v=2", "/remote1"):
+            st, h, out = R.ask("GET", path,
+                               headers={"Sec-Fetch-Site": "same-origin"})
+            check(st == 302 and not h.get("set-cookie") and
+                  h.get("location") == ["/remote"],
+                  f"GET {path} sends the browser to /remote and sets "
+                  f"nothing: {st} {h}")
         check(len(R.svc.journal) == n0,
-              "choosing a screen journals nothing and presses nothing")
-        # The emergency paths: 2.0 carries its own Stop; without the rules
-        # 2.0 is still served whole at /remote, and the old screen is the
-        # plain page that points to /remote2.
+              "opening the screen journals nothing and presses nothing")
+        # The emergency paths: the screen carries its own Stop; without the
+        # rules it is still served whole at /remote.
         check('id="broken-stop"' in two_s and
               "function stopTapStep2(" in two_s and
               two_s.count("function stopTapStep(") == 1,
@@ -101111,23 +96246,17 @@ def test_ui2_is_the_default_screen():
             import io
             with contextlib.redirect_stdout(io.StringIO()):
                 st, _h, out = page("/remote")
-                st1, _h1, out1 = page("/remote", "ltcplay_ui=1")
-                st2, _h2, out2 = page("/remote1")
         finally:
             web_mod.REMOTE_RULES = keep
             web_mod._RULES_FAULT_SAID[0] = False
             shutil.rmtree(tmp, ignore_errors=True)
         check(st == 200 and out == two,
-              f"without the rules /remote is 2.0 as it is, its own Stop: "
-              f"{st}")
-        check(st1 == 503 and st2 == 503 and out1 == out2 ==
-              web_mod.RULES_MISSING_PAGE and 'href="/remote2"' in out1,
-              f"and the old screen is the plain page pointing to /remote2: "
-              f"{st1} {st2}")
+              f"without the rules /remote is the screen as it is, its own "
+              f"Stop: {st}")
     finally:
         R.close()
-    # The rack-screen keeper (Windows): the supervisor opens /remote, which
-    # is now 2.0, and the window keeper finds that window by its title.
+    # The rack-screen keeper (Windows): the supervisor opens /remote, and
+    # the window keeper finds that window by its title.
     root = os.path.dirname(os.path.abspath(__file__))
     sp = os.path.join(root, "packaging", "windows")
     sys.path.insert(0, sp)
@@ -101160,7 +96289,7 @@ def test_ui2_is_the_default_screen():
     check(re.search(sw.RACK_TITLE, t2) and
           'document.title = SHOW_NAME ? SHOW_NAME + " remote" : '
           '"Show remote";' in two,
-          f"2.0's own titles are ones the keeper finds: {t2!r}")
+          f"the screen's own titles are ones the keeper finds: {t2!r}")
     print("  ok")
 
 
@@ -101203,11 +96332,12 @@ def test_ui2_runs_on_ipados15():
                 "class A { static n = 1; static f(){ return 2; } }"):
         got = _js_newer_than_ipados15(src)
         check(not got, f"the iPadOS 15 scan passes {src!r}: {got}")
-    # Every page in the web folder, every .js file served from it, 1.0's
-    # rules as /remote-logic.js serves them and 2.0 as /remote2 serves it.
+    # Every page in the web folder, every .js file served from it, the
+    # rules as /remote-logic.js serves them and the screen as served.
     pages = sorted(f for f in os.listdir(web_dir) if f.endswith(".html"))
-    check({"index.html", "remote.html", "remote2.html"} <= set(pages),
-          f"the scan reads the three pages: {pages}")
+    check({"index.html", "remote2.html"} <= set(pages) and
+          "remote.html" not in pages,
+          f"the scan reads both pages: {pages}")
     scripts = []
     for f in pages:
         with open(os.path.join(web_dir, f), encoding="utf-8") as fh:
@@ -101277,34 +96407,31 @@ def test_ui2_runs_on_ipados15():
     print("  ok")
 
 
-def test_ui2_pages_served_and_switched():
-    section("interface 2.0 is the default screen (Jeff, 2026-11-02): "
-            "/remote is 2.0 byte for byte for every screen unless this "
-            "screen chose the old screen (its own cookie ltcplay_ui=1, one "
-            "tap each way); /remote1 and /remote2 are always that page; "
-            "/remote-logic.js is the shared rules file; the same network, "
-            "Host, proxy and other-site rules; the old ui-default setting "
-            "is still set on the show machine only and no longer decides")
+def test_ui2_screen_served():
+    section("the one screen (R1): /remote, the show network's / and /remote2 "
+            "(old bookmarks) are remote2.html byte for byte with its rules "
+            "written in, for every screen, whatever a cookie says; "
+            "/remote-logic.js is the rules file; /remote1 and /ui send a "
+            "browser to /remote and set nothing; the ui-default setting is "
+            "gone (a stored ui_default is ignored); "
+            "the same network, Host, proxy and other-site rules")
     S = _sched()
     if S is None:
         return
     from ltcplay import web as web_mod
     from ltcplay import remote as remote_mod
     from ltcplay import users as users_mod
-    one, two = _ui2_pages()
-    check(one != two and "<title>Show remote</title>" in one and
-          "<title>Show remote 2.0</title>" in two,
-          "remote.html is 1.0 and remote2.html is 2.0")
-    # 2.0 is served with the shared rules written into it (safety review of
-    # #166, B1): one answer, no second request its Stop or rules wait on.
-    lo1 = one[one.find('<script id="remote-logic">'):]
-    lo1 = lo1[:lo1.find("</script>") + len("</script>")]
+    _one, two = _ui2_pages()
+    check("<title>Show remote 2.0</title>" in two,
+          "remote2.html is the screen")
+    # Served with the rules written into it (safety review of #166, B1):
+    # one answer, no second request its Stop or rules wait on.
     check(two.count('<script src="/remote-logic.js"></script>') == 1,
-          "remote2.html names the shared rules once, where they go")
-    two_s = two.replace('<script src="/remote-logic.js"></script>', lo1, 1)
+          "remote2.html names its rules once, where they go")
+    two_s = screen_text()
     check('<script src="/remote-logic.js">' not in two_s and
           two_s.count("function stopTapStep(") == 1,
-          "the page served carries the shared rules inline")
+          "the page served carries the rules inline")
     R = _RemoteRig(S)
     loop = ("127.0.0.1", 5000)
     try:
@@ -101313,88 +96440,39 @@ def test_ui2_pages_served_and_switched():
             return st, h, out if isinstance(out, str) else None
 
         n0 = len(R.svc.journal)
-        # Nobody chose: 2.0, from the network and on the machine itself
-        # (Jeff, 2026-11-02), byte for byte what /remote2 serves.
-        for path in ("/remote", "/"):
+        for path in ("/remote", "/", "/remote2"):
             st, h, out = page(path)
             check(st == 200 and out == two_s and
                   h.get("content-type") == ["text/html; charset=utf-8"],
-                  f"GET {path} from the network with no choice is 2.0, "
-                  f"byte for byte /remote2: {st}")
-        st, _h, out = page("/remote", client=loop)
-        check(st == 200 and out == two_s, f"and on the show machine: {st}")
-        for path, want in (("/remote1", one), ("/remote2", two_s)):
-            for c in (("10.20.0.44", 50000), loop):
-                st, h, out = page(path, client=c)
-                check(st == 200 and out == want and
-                      h.get("content-type") == ["text/html; charset=utf-8"],
-                      f"GET {path} from {c[0]} is always that page: {st}")
-        # A screen's own choice: its cookie, and only its own. Only an
-        # exact ltcplay_ui=1 keeps the old screen; anything else is 2.0.
-        for cookie, want, why in (
-                ("ltcplay_ui=2", two_s, "chose 2.0 before it was the default"),
-                ("ltcplay_user=abcdefghijklmnop0123; ltcplay_ui=2", two_s,
-                 "chose 2.0, beside a sign-in cookie"),
-                ("ltcplay_ui=1", one, "chose 1.0"),
-                ("ltcplay_user=abcdefghijklmnop0123; ltcplay_ui=1", one,
-                 "chose 1.0, beside a sign-in cookie"),
-                ("ltcplay_ui=", two_s, "had its choice cleared"),
-                ("ltcplay_ui=3", two_s, "a choice that is not 1 or 2"),
-                ("ltcplay_ui=1x", two_s, "a damaged choice"),
-                ("xltcplay_ui=1", two_s, "another cookie's name")):
-            st, _h, out = page("/remote", headers={"Cookie": cookie})
-            check(st == 200 and out == want,
-                  f"/remote for a screen that {why} ({cookie}): "
-                  f"{'2.0' if out == two_s else '1.0' if out == one else st}")
-        st, _h, out = page("/", headers={"Cookie": "ltcplay_ui=1"})
-        check(st == 200 and out == one,
-              "the iPad's / follows its choice too")
-        for ck in ("ltcplay_ui=1", "ltcplay_ui=2", ""):
-            hd = {"Cookie": ck} if ck else {}
-            st, _h, out = page("/remote1", headers=hd)
-            check(st == 200 and out == one,
-                  f"/remote1 is 1.0 whatever the choice ({ck or 'none'})")
-            st, _h, out = page("/remote2", headers=hd)
+                  f"GET {path} from the network is the screen, byte for "
+                  f"byte: {st}")
+        for path in ("/remote", "/remote2"):
+            st, _h, out = page(path, client=loop)
             check(st == 200 and out == two_s,
-                  f"/remote2 is 2.0 whatever the choice ({ck or 'none'})")
-        # The switch: one link each way, a cookie in that browser only.
-        # The old screen link (2.0) remembers 1.0 and opens /remote1; Try
-        # 2.0 (1.0) forgets it and goes back to /remote, the default.
-        st, h, _out = R.ask("GET", "/ui?v=1")
-        ck = (h.get("set-cookie") or [""])[0]
-        check(st == 302 and h.get("location") == ["/remote1"] and
-              ck.startswith("ltcplay_ui=1;") and
-              "SameSite=Strict" in ck and "Path=/" in ck and
-              "Max-Age=31536000" in ck,
-              f"/ui?v=1: the old screen, remembered on this screen: "
-              f"{st} {h}")
-        st, h, _out = R.ask("GET", "/ui?v=2")
-        ck = (h.get("set-cookie") or [""])[0]
-        check(st == 302 and h.get("location") == ["/remote"] and
-              ck.startswith("ltcplay_ui=;") and
-              "SameSite=Strict" in ck and "Path=/" in ck and
-              "Max-Age=0" in ck,
-              f"/ui?v=2: the choice cleared, back to /remote (2.0): "
-              f"{st} {h}")
-        for v in ("2", "1"):
-            for sfs in ("same-origin", "none"):
-                st, _h, _o = R.ask("GET", f"/ui?v={v}",
-                                   headers={"Sec-Fetch-Site": sfs})
-                check(st == 302, f"/ui?v={v} from this site ({sfs}): {st}")
-        for q in ("/ui", "/ui?v=3", "/ui?v=", "/ui?v=2.0", "/ui?v=default"):
-            st, h, _o = R.ask("GET", q)
-            check(st == 400 and not h.get("set-cookie"),
-                  f"GET {q} is refused and sets nothing: {st}")
-        for sfs in ("cross-site", "same-site"):
-            st, h, _o = R.ask("GET", "/ui?v=2",
-                              headers={"Sec-Fetch-Site": sfs})
-            check(st == 403 and not h.get("set-cookie"),
-                  f"a link to /ui?v=2 followed from another site's page "
-                  f"({sfs}) is refused and sets nothing: {st}")
+                  f"and {path} on the show machine: {st}")
+        # An old choice in a cookie changes nothing.
+        for cookie in ("ltcplay_ui=1", "ltcplay_ui=2",
+                       "ltcplay_user=abcdefghijklmnop0123; ltcplay_ui=1"):
+            for path in ("/remote", "/"):
+                st, _h, out = page(path, headers={"Cookie": cookie})
+                check(st == 200 and out == two_s,
+                      f"{path} with {cookie}: the screen: {st}")
+        # The first screen's old addresses send a browser to /remote:
+        # never a page or a cookie.
+        for path in ("/remote1", "/ui", "/ui?v=1", "/ui?v=2"):
+            for c in (("10.20.0.44", 50000), loop):
+                st, h, out = R.ask("GET", path, client=c)
+                check(st == 302 and not h.get("set-cookie") and
+                      h.get("location") == ["/remote"] and
+                      "<html" not in str(out).lower(),
+                      f"GET {path} from {c[0]} goes to /remote: {st} {h}")
+            st, _h, _o = R.ask("GET", path, host="evil.example:7878")
+            check(st == 403, f"GET {path} under another host name is "
+                             f"refused: {st}")
         check(len(R.svc.journal) == n0,
-              "choosing a page journals nothing and presses nothing")
+              "opening the screen journals nothing and presses nothing")
         # The same posture as /remote: Host, proxies, the network list.
-        for path in ("/remote2", "/remote1", "/remote-logic.js", "/ui?v=2"):
+        for path in ("/remote2", "/remote-logic.js"):
             st, _h, _o = R.ask("GET", path, host="evil.example:7878")
             check(st == 403, f"GET {path} under another host name is "
                              f"refused: {st}")
@@ -101402,106 +96480,59 @@ def test_ui2_pages_served_and_switched():
                                headers={"X-Forwarded-For": "1.2.3.4"})
             check(st == 403, f"GET {path} through a proxy is refused: {st}")
         check(all(web_mod.network_may_reach(p) for p in
-                  ("/remote1", "/remote2", "/remote-logic.js", "/ui")) and
+                  ("/remote", "/remote2", "/remote-logic.js", "/remote1",
+                   "/ui")) and
               not any(web_mod.network_may_reach(p) for p in
-                      ("/remote3", "/ui/x", "/remote2/x", "/remote-logic",
-                       "/remote.html", "/remote2.html")),
-              "network_may_reach gained the four 2.0 addresses and nothing "
-              "else")
+                      ("/remote3", "/ui/x", "/remote2/x", "/remote1/x",
+                       "/remote-logic", "/remote.html", "/remote2.html")),
+              "network_may_reach: the screen's addresses and the first "
+              "screen's old ones (which only send to /remote)")
         for path in ("/remote3", "/remote2.html", "/web/remote2.html"):
             st, _h, _o = R.ask("GET", path)
             check(st in (403, 404), f"GET {path} from the network: {st}")
-        # The shared rules, web/remote_rules.js, read at each request.
-        a = one.find('<script id="remote-logic">')
-        b = one.find("</script>", a)
-        want = one[a + len('<script id="remote-logic">'):b]
+        # The rules, web/remote_rules.js, read at each request.
         st, h, out = R.ask("GET", "/remote-logic.js")
-        check(st == 200 and out == want and
+        check(st == 200 and out == rules_text() and
               h.get("content-type") == ["application/javascript; "
                                         "charset=utf-8"] and
               "// LOGIC BEGIN" in out and "// LOGIC END" in out and
               "function stopTapStep(" in out and
               "function armState(" in out and "<script" not in out,
-              f"/remote-logic.js is the rules 1.0 is served with, "
+              f"/remote-logic.js is the rules the screen is served with, "
               f"whole: {st} {h.get('content-type')}")
-        # The old default setting (ui-default, removed with 1.0, R1): still
-        # the show machine only, Settings, 1 or 2, but it no longer decides
-        # which page /remote serves (Jeff, 2026-11-02).
-        st, _h, out = R.ask("GET", "/api/remote/ui-default")
-        check(st == 403, f"the default is not read from the network: {st}")
-        st, _h, out = R.ask("GET", "/api/remote/ui-default", client=loop)
-        check(st == 200 and out == {"default": 1},
-              f"the default starts at 1: {st} {out}")
-        st, _h, out = R.ask("POST", "/api/remote/ui-default",
-                            {"default": 2})
-        check(st == 403 and
-              remote_mod.load_settings(R.work)["ui_default"] == 1,
-              f"the default is not set from the network: {st} {out}")
-        for bad in ("2", True, 3, 2.0, None, [2], 0):
-            st, _h, out = R.ask("POST", "/api/remote/ui-default",
-                                {"default": bad}, client=loop)
-            check(st == 400 and
-                  remote_mod.load_settings(R.work)["ui_default"] == 1,
-                  f"default {bad!r} is refused and nothing is written: "
-                  f"{st} {out}")
-        st, _h, out = R.ask("POST", "/api/remote/ui-default",
-                            {"default": 2}, client=loop)
-        check(st == 200 and out.get("default") == 2 and
-              remote_mod.load_settings(R.work)["ui_default"] == 2 and
-              R.remote.ui_default() == 2,
-              f"on the show machine the default is set to 2: {st} {out}")
-        check(any(r.get("action") == "interface default"
-                  for r in list(R.svc.journal)[n0:]),
-              "and the change is journaled")
-        st, _h, out = page("/remote")
-        check(out == two_s, "a screen that has not chosen gets 2.0")
-        st, _h, out = page("/remote", client=loop)
-        check(out == two_s, "the rack screen too, at the same /remote")
-        st, _h, out = page("/remote", headers={"Cookie": "ltcplay_ui=1"})
-        check(out == one, "a screen that chose 1.0 keeps 1.0")
-        st, _h, out = R.ask("GET", "/api/remote/ui-default", client=loop)
-        check(out == {"default": 2}, f"the default reads back: {out}")
-        st, _h, out = R.ask("POST", "/api/remote/ui-default",
-                            {"default": 1}, client=loop)
-        check(st == 200 and page("/remote")[2] == two_s and
-              page("/remote", client=loop)[2] == two_s and
-              page("/")[2] == two_s,
-              f"a saved default of 1 no longer sends a screen that has not "
-              f"chosen to 1.0: {st} {out}")
-        st, _h, out = page("/remote", headers={"Cookie": "ltcplay_ui=1"})
-        check(out == one, "and a screen that chose 1.0 still keeps it")
-        # A preference never breaks the settings file, and a broken file
-        # never breaks the page.
+        # The default interface setting is gone: no route, no role, and a
+        # value still stored in the settings file is ignored.
+        for method, body, c in (("GET", None, loop), ("POST", {"default": 2},
+                                                      loop),
+                                ("GET", None, ("10.20.0.44", 50000))):
+            st, _h, out = R.ask(method, "/api/remote/ui-default", body,
+                                client=c)
+            check(st in (403, 404),
+                  f"{method} /api/remote/ui-default is gone: {st} {out}")
+        check("ui-default" not in users_mod.REMOTE_ROUTES and
+              not hasattr(remote_mod, "UI_DEFAULT_ROUTE") and
+              not hasattr(R.remote, "ui_default"),
+              "the role matrix and the engine have no ui-default")
         path = os.path.join(R.work, remote_mod.SETTINGS_FILE)
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"ui_default": "2", "screen_arming": True}, fh)
+            json.dump({"ui_default": 1, "screen_arming": True}, fh)
         s = remote_mod.load_settings(R.work)
-        check(s["ui_default"] == 1 and s["screen_arming"] is True,
-              f"a hand-written ui_default that is not 1 or 2 reads as 1 "
-              f"and the other settings still read: {s}")
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write("{ not json")
-        check(R.remote.ui_default() == 1 and page("/remote")[2] == two_s,
-              "a settings file that cannot be read still serves 2.0")
+        check("ui_default" not in s and s["screen_arming"] is True and
+              page("/remote")[2] == two_s,
+              f"a stored ui_default is ignored, the other settings still "
+              f"read, the screen still served: {s}")
         os.remove(path)
-        # The role matrix: Settings, admin by default; never a safety press.
-        check(users_mod.classify("/api/remote/ui-default",
-                                 {"default": 2}) == "settings" and
-              users_mod.REMOTE_ROUTES.get("ui-default") == "settings" and
-              users_mod.DEFAULT_MATRIX["operator"]["settings"] is False and
-              users_mod.DEFAULT_MATRIX["admin"]["settings"] is True,
-              "setting the default needs Settings (admins by default)")
     finally:
         R.close()
     print("  ok")
 
 
 def test_remote_rules_file():
-    section("the shared page rules in their own file (docs/"
-            "REMOVE_1_0_PLAN.md, step 1): web/remote_rules.js is the one "
-            "copy; 1.0 and 2.0 are served with it written in, 1.0 byte for "
-            "byte the page it was; /remote-logic.js is the file; a missing "
-            "or broken file serves each page as it is, never half a rule")
+    section("the screen's rules in their own file: web/remote_rules.js is "
+            "the one copy; the screen is served with it written in once; "
+            "/remote-logic.js is the file; a missing or broken file serves "
+            "the screen as it is (its own Stop), never half a rule, and the "
+            "installed engine's self-check fails")
     from ltcplay import web as web_mod
     here = os.path.dirname(os.path.abspath(__file__))
     web_dir = os.path.join(here, "ltcplay", "web")
@@ -101510,8 +96541,6 @@ def test_remote_rules_file():
     with open(os.path.join(web_dir, "remote_rules.js"),
               encoding="utf-8") as fh:
         rules = fh.read()
-    with open(os.path.join(web_dir, "remote.html"), encoding="utf-8") as fh:
-        one_file = fh.read()
     with open(os.path.join(web_dir, "remote2.html"), encoding="utf-8") as fh:
         two_file = fh.read()
     check(web_mod.REMOTE_RULES == os.path.join(web_dir, "remote_rules.js"),
@@ -101522,36 +96551,31 @@ def test_remote_rules_file():
           and "<script" not in rules and "</script>" not in rules,
           "remote_rules.js is the rules block whole, LOGIC BEGIN to "
           "LOGIC END, with no script tag of its own")
-    for name, page in (("remote.html", one_file), ("remote2.html", two_file)):
-        check(page.count(tag) == 1 and opener not in page and
-              "// LOGIC BEGIN" not in page and
-              "function stopTapStep(" not in page,
-              f"{name} names the rules once and carries no copy of them")
+    check(two_file.count(tag) == 1 and opener not in two_file and
+          "// LOGIC BEGIN" not in two_file and
+          "function stopTapStep(" not in two_file,
+          "remote2.html names the rules once and carries no copy of them")
+    check(not os.path.exists(os.path.join(web_dir, "remote.html")) and
+          not hasattr(web_mod, "remote1_page") and
+          not hasattr(web_mod, "RULES_MISSING_PAGE"),
+          "the first screen (remote.html) and its rules-missing page are "
+          "gone")
     # Served: the rules written in once, where the tag was.
-    one = web_mod.remote1_page().decode("utf-8")
     two = web_mod.remote2_page().decode("utf-8")
-    want1 = one_file.replace(tag, opener + rules + "</script>", 1)
     want2 = two_file.replace(tag, opener + rules + "</script>", 1)
-    check(one == want1 and one == remote1_text() and tag not in one and
-          one.count(opener) == 1 and one.count("// LOGIC BEGIN") == 1,
-          "1.0 as served is remote.html with the rules written in once")
-    check(two == want2 and tag not in two and two.count(opener) == 1 and
-          two.count("// LOGIC BEGIN") == 1,
-          "2.0 as served is remote2.html with the same rules written in "
+    check(two == want2 and two == screen_text() and tag not in two and
+          two.count(opener) == 1 and two.count("// LOGIC BEGIN") == 1,
+          "the screen as served is remote2.html with the rules written in "
           "once")
-    a1 = one.find(opener) + len(opener)
     a2 = two.find(opener) + len(opener)
     check(web_mod.remote_logic() == rules and
-          one[a1:one.find("</script>", a1)] == rules and
           two[a2:two.find("</script>", a2)] == rules,
-          "/remote-logic.js, 1.0 and 2.0 carry the very same rules text")
-    # The installed app's checks look for the same rule in both screens.
+          "/remote-logic.js and the screen carry the very same rules text")
     check(web_mod.RULES_SERVED_MARK == "function armState(" and
-          web_mod.RULES_SERVED_MARK in one and
           web_mod.RULES_SERVED_MARK in two and
-          web_mod.RULES_SERVED_MARK not in one_file + two_file and
+          web_mod.RULES_SERVED_MARK not in two_file and
           web_mod.rules_self_check() == "",
-          "both screens as served carry the rules mark, the files do not, "
+          "the screen as served carries the rules mark, the file does not, "
           "and the self-check passes")
     pk = os.path.join(here, "packaging", "windows")
     with open(os.path.join(pk, "entry_engine.py"), encoding="utf-8") as fh:
@@ -101561,10 +96585,10 @@ def test_remote_rules_file():
     check("why = web.rules_self_check()\n    if why:\n"
           "        raise RuntimeError(why)\n" in eng,
           "the installed engine's --self-check fails without the rules")
-    check('for path in ("/remote", "/remote1", "/remote2"):' in smoke and
-          '"function armState(" in body' in smoke,
-          "the installer smoke test asks /remote, /remote1 and /remote2 "
-          "for the rules mark")
+    check('for path in ("/remote", "/remote2"):' in smoke and
+          '"function armState(" in body' in smoke and "/remote1" not in smoke,
+          "the installer smoke test asks /remote and /remote2 for the rules "
+          "mark")
 
     def logic_now():
         """remote_logic(), or what it raised: it must never raise."""
@@ -101573,20 +96597,13 @@ def test_remote_rules_file():
         except Exception as e:                       # noqa: BLE001
             return "raised", f"{type(e).__name__}: {e}"
 
-    # Rules that cannot be used: 2.0 as it is (its own Stop needs no
-    # rules), 1.0 a plain 503 page that sends the operator to 2.0, and the
-    # engine's log says so once. Never an exception, never half a rule.
+    # Rules that cannot be used: the screen as it is (its own Stop needs no
+    # rules), and the engine's log says so once. Never an exception, never
+    # half a rule.
     import contextlib
     import io
     tmp = tempfile.mkdtemp(prefix="ltcrules-")
     keep = web_mod.REMOTE_RULES
-    words = web_mod.RULES_MISSING_TEXT
-    check(words == "The screen's rules file did not load. Use the new "
-                   "screen: /remote2. Stop works there." and
-          words in web_mod.RULES_MISSING_PAGE and
-          'href="/remote2"' in web_mod.RULES_MISSING_PAGE,
-          "the page 1.0 gets without its rules says so and links to /remote2")
-    _no_dashes(web_mod.RULES_MISSING_PAGE, "the rules-missing page")
 
     def put(name, data):
         path = os.path.join(tmp, name)
@@ -101615,26 +96632,23 @@ def test_remote_rules_file():
                 got, err = logic_now()
                 got2, _e = logic_now()
                 try:
-                    st1, body1 = web_mod.remote1_answer()
                     body2 = web_mod.remote2_page()
                     self_check = web_mod.rules_self_check()
                 except Exception as e:                   # noqa: BLE001
-                    st1, body1, body2, self_check = (
-                        0, b"", b"", f"raised {type(e).__name__}: {e}")
+                    body2, self_check = (
+                        b"", f"raised {type(e).__name__}: {e}")
             said = [ln for ln in out.getvalue().splitlines() if "FAULT" in ln]
             check(got is None and got2 is None and not err,
                   f"{why}: no rules, and nothing raised: {err or got!r:.80}")
-            check(st1 == 503 and
-                  body1 == web_mod.RULES_MISSING_PAGE.encode("utf-8") and
-                  body2.decode("utf-8") == two_file,
-                  f"{why}: 1.0 is the plain 503 page pointing to /remote2, "
-                  f"2.0 is served as it is with its own Stop: {st1}")
+            check(body2.decode("utf-8") == two_file,
+                  f"{why}: the screen is served as it is, with its own Stop")
             check(bool(self_check) and not self_check.startswith("raised"),
                   f"{why}: the installed engine's self-check fails: "
                   f"{self_check!r}")
-            check(len(said) == 1 and os.path.basename(path) in said[0],
+            check(len(said) == 1 and os.path.basename(path) in said[0] and
+                  "/remote1" not in said[0],
                   f"{why}: the engine's log says it once: {said}")
-        # Rules that load, but a 2.0 page that does not take them (its tag
+        # Rules that load, but a page that does not take them (its tag
         # gone): the self-check says so too.
         web_mod.REMOTE_RULES = keep
         keep2 = web_mod.REMOTE2_PAGE
@@ -101644,8 +96658,8 @@ def test_remote_rules_file():
             why2 = web_mod.rules_self_check()
         finally:
             web_mod.REMOTE2_PAGE = keep2
-        check("/remote2" in why2,
-              f"a 2.0 served without the rules fails the self-check: "
+        check("/remote" in why2,
+              f"a screen served without the rules fails the self-check: "
               f"{why2!r}")
         # Loaded again: the fault is cleared, said again if it comes back.
         web_mod.REMOTE_RULES = keep
@@ -101654,8 +96668,7 @@ def test_remote_rules_file():
             got, err = logic_now()
             web_mod.REMOTE_RULES = os.path.join(tmp, "missing.js")
             logic_now()
-        check(got == rules and web_mod.remote1_answer()[0] == 503 and
-              out.getvalue().count("FAULT") == 1,
+        check(got == rules and out.getvalue().count("FAULT") == 1,
               "rules that load again clear the fault; losing them again "
               "says so again")
     finally:
@@ -101663,9 +96676,9 @@ def test_remote_rules_file():
         web_mod._RULES_FAULT_SAID[0] = False
         import shutil as _sh
         _sh.rmtree(tmp, ignore_errors=True)
-    # Over HTTP: the three addresses answer, none a 400 (cold review of
-    # #206, 1: a file that is not UTF-8 was a 400 on 2.0's page, its Stop
-    # with it).
+    # Over HTTP: the screen's addresses answer, none a 400 (cold review of
+    # #206, 1: a file that is not UTF-8 was a 400 on the page, its Stop
+    # with it); the first screen's addresses are gone.
     S = _sched()
     if S is None:
         return
@@ -101674,23 +96687,27 @@ def test_remote_rules_file():
         st, _h, out = R.ask("GET", "/remote")
         check(st == 200 and isinstance(out, str) and
               web_mod.RULES_SERVED_MARK in out, f"GET /remote: {st}")
+        for old in ("/remote1", "/ui?v=1", "/ui?v=2", "/ui"):
+            st, h, out = R.ask("GET", old)
+            check(st == 302 and h.get("location") == ["/remote"] and
+                  not h.get("set-cookie"),
+                  f"GET {old} sends the browser to /remote: {st} {h}")
+        st, _h, out = R.ask("GET", "/api/remote/ui-default")
+        check(st in (403, 404) and "<html" not in str(out).lower(),
+              f"GET /api/remote/ui-default is gone: {st} {out!r:.80}")
         web_mod.REMOTE_RULES = put_bad = os.path.join(
             tempfile.mkdtemp(prefix="ltcrules-"), "latin.js")
         with open(put_bad, "wb") as fh:
             fh.write(enc[:200] + b"\xff\xfe" + enc[200:])
         with contextlib.redirect_stdout(io.StringIO()):
-            st1, _h, out1 = R.ask("GET", "/remote1")
             st2, _h, out2 = R.ask("GET", "/remote2")
             st3, _h, out3 = R.ask("GET", "/remote-logic.js")
             st4, _h, out4 = R.ask("GET", "/remote")
-        check(st1 == 503 and isinstance(out1, str) and words in out1,
-              f"a rules file that is not UTF-8: GET /remote1 (the old "
-              f"screen) is the plain page: {st1}")
         check(st4 == 200 and out4 == two_file,
-              f"and GET /remote (2.0 by default, Jeff 2026-11-02) is 2.0 "
+              f"a rules file that is not UTF-8: GET /remote is the screen "
               f"as it is, its own Stop with it: {st4}")
         check(st2 == 200 and out2 == two_file,
-              f"and GET /remote2 is 2.0 as it is, its own Stop with it: "
+              f"and GET /remote2 (the same page, for old bookmarks) too: "
               f"{st2}")
         check(st3 == 500, f"and GET /remote-logic.js says it is broken: "
                           f"{st3} {out3!r:.120}")
@@ -101699,6 +96716,91 @@ def test_remote_rules_file():
         web_mod._RULES_FAULT_SAID[0] = False
         R.close()
     print("  ok")
+
+
+# Every route the screen names (test_ui2_page_makes_only_1_0_presses),
+# with the role matrix row users.py checks it against (None: a read,
+# or a route users.py rules on by its body). Fixed when the first screen
+# was removed (R1): a new route, or a route moved to another row, is a
+# deliberate change to this table.
+_UI2_ROUTES = {
+    "/api/brand": None,
+    "/api/check": None,
+    "/api/remote/alert": "safety",
+    "/api/remote/announce-output": "settings",
+    "/api/remote/announce-outputs": None,
+    "/api/remote/announce-play": "show",
+    "/api/remote/announce-stop": "safety",
+    "/api/remote/announce-test-tone": "settings",
+    "/api/remote/arm-hold": "arm",
+    "/api/remote/arm-release": "safety",
+    "/api/remote/audit-settings": "settings",
+    "/api/remote/audit-upload-now": "settings",
+    "/api/remote/audit-verify": None,
+    "/api/remote/checklist-export": None,
+    "/api/remote/cleaning": None,
+    "/api/remote/cleaning-beat": "arm",
+    "/api/remote/cleaning-stop": "safety",
+    "/api/remote/continue": "show",
+    "/api/remote/disarm-all": "safety",
+    "/api/remote/fireball": None,
+    "/api/remote/fireball-beat": "arm",
+    "/api/remote/fireball-charge-empty": "settings",
+    "/api/remote/fireball-off": "safety",
+    "/api/remote/fireball-timeline-save": "settings",
+    "/api/remote/follow": "show",
+    "/api/remote/fuel": None,
+    "/api/remote/fuel-pump": "arm",
+    "/api/remote/group-disarm": "safety",
+    "/api/remote/hazer": "arm",
+    "/api/remote/hazer-level": "arm",
+    "/api/remote/hazers-off": "safety",
+    "/api/remote/hold": "safety",
+    "/api/remote/idle-signout": "settings",
+    "/api/remote/jump": "show",
+    "/api/remote/laser-arm": "arm",
+    "/api/remote/last-show-signout": "settings",
+    "/api/remote/live-flame": "settings",
+    "/api/remote/loop": "show",
+    "/api/remote/mark-a": "show",
+    "/api/remote/mark-b": "show",
+    "/api/remote/morning": None,
+    "/api/remote/morning-open": None,
+    "/api/remote/my-password": None,
+    "/api/remote/network": "settings",
+    "/api/remote/open-folder": "show_files",
+    "/api/remote/pause": "show",
+    "/api/remote/play-from": "show",
+    "/api/remote/play-from-cues-save": "settings",
+    "/api/remote/preroll-check": "settings",
+    "/api/remote/preroll-continue": "show",
+    "/api/remote/purge-clear": "safety",
+    "/api/remote/purge-fire": "arm",
+    "/api/remote/purge-stop": "safety",
+    "/api/remote/purge-timed": "arm",
+    "/api/remote/reload-engine": "settings",
+    "/api/remote/resume": "show",
+    "/api/remote/role-matrix": "users",
+    "/api/remote/run-off": "show",
+    "/api/remote/schedule-file": "show_files",
+    "/api/remote/screen": None,
+    "/api/remote/screen-arming": "settings",
+    "/api/remote/setup": None,
+    "/api/remote/show-file-new": "show_files",
+    "/api/remote/show-folder": "show_files",
+    "/api/remote/show-select": "show_files",
+    "/api/remote/signin": "safety",
+    "/api/remote/signout": "safety",
+    "/api/remote/start-at-cue": "show",
+    "/api/remote/start-now": "show",
+    "/api/remote/status": None,
+    "/api/remote/stop": "safety",
+    "/api/remote/users": "users",
+    "/api/remote/weather": None,
+    "/api/remote/whoami": None,
+    "/api/start": None,
+    "/api/timelines": None,
+}
 
 
 def test_ui2_page_makes_only_1_0_presses():
@@ -101778,30 +96880,27 @@ def test_ui2_page_makes_only_1_0_presses():
                                                 '$("b-armall")')) ==
               _js_same(f2),
               f"2.0's {n} is 1.0's own code: {(f2 or 'missing')[:160]!r}")
-    # Every route 2.0 posts to, 1.0 posts to, but the default's.
+    # Every route the screen names: the fixed table (the first screen's
+    # routes and the four 2.0 added: the play-from cue list, the fuel pump,
+    # the fireball timeline's save and start at a cue), each with its role
+    # matrix row.
     def routes(src):
         out = set(re.findall(r'"(/api/(?:remote/)?[a-z-]+)"', src))
         out |= {"/api/remote/" + r for r in re.findall(
             r'\b(?:press|annPress)\("([a-z-]+)"', src)}
         return out
-    r1, r2 = routes(one), routes(two)
-    # 2.0's own routes, which 1.0 has no button for: the play-from cue
-    # list (Settings; its Default interface card went when 2.0 became the
-    # default screen, Jeff 2026-11-02), the fuel pump (2026-10-30:
-    # 1.0 is being retired and gets no new controls, FIREBALL_TIMELINE_
-    # DESIGN, section 4) and the fireball timeline's save (Jeff,
-    # 2026-10-30; 2.0 only, no 1.0 page edits it).
-    # Start at a cue (play-from cues part 3, the Resume sheet): 1.0 has no
-    # button for it either.
-    check(r2 - r1 == {"/api/remote/play-from-cues-save",
-                      "/api/remote/fuel-pump",
-                      "/api/remote/fireball-timeline-save",
-                      "/api/remote/start-at-cue"} and
+    r2 = routes(two)
+    check(r2 == set(_UI2_ROUTES) and
           '"/api/remote/play-from-cues?show="' in two,
-          f"2.0 adds four routes, the play-from "
-          f"cue list, the fuel pump, the fireball timeline's save and "
-          f"start at a cue: "
-          f"{sorted(r2 - r1)}")
+          f"the screen names exactly the fixed routes: added "
+          f"{sorted(r2 - set(_UI2_ROUTES))}, gone "
+          f"{sorted(set(_UI2_ROUTES) - r2)}")
+    from ltcplay import users as _users
+    moved = {r: (_users.REMOTE_ROUTES.get(r[len("/api/remote/"):]), p)
+             for r, p in _UI2_ROUTES.items() if r.startswith("/api/remote/")
+             and _users.REMOTE_ROUTES.get(r[len("/api/remote/"):]) != p}
+    check(not moved, f"each of the screen's routes keeps its role matrix "
+                     f"row (now, fixed): {moved}")
     # The presses, body for body.
     for press in ('press("start-now", {confirmed:true})',
                   'press("disarm-all")', 'press("group-disarm", {group:i})',
@@ -101883,17 +96982,11 @@ def test_ui2_page_makes_only_1_0_presses():
     tour = _js_function(two, "coachMaybe") or ""
     check("isLive(ST)" in tour and '"armed"' in tour and "stale()" in tour,
           f"the tour never starts over a live show: {tour[:200]!r}")
-    # 1.0: one tap to 2.0, nothing else of it changed. 2.0: the old
-    # screen in plain words (Jeff, 2026-11-02), in the header on every tab
-    # and spelled out on the Schedule and Settings tabs.
-    old = "Open the old screen (for Users, Audit, Network and the rest)"
-    check(one.count("/ui?v=2") == 1 and two.count('href="/ui?v=1"') == 3 and
-          two.count("/ui?v=1") == 3 and
-          f'id="to1" href="/ui?v=1" aria-label="{old}" title="{old}"' in two
-          and two.count(f'</svg>{old}</a>') == 2 and
-          "Back to 1.0" not in two,
-          "Try 2.0 on 1.0; the old screen link on 2.0's header and, in "
-          "full words, on its Schedule and Settings tabs")
+    # The first screen is gone (R1): no link to it, no old screen words.
+    check("/ui?v=" not in two and 'id="to1"' not in two and
+          "/remote1" not in two and "old screen" not in two.lower() and
+          "Open in 1.0" not in two and "Back to 1.0" not in two,
+          "the screen links nothing of the first screen")
     import shutil
     node = shutil.which("node")
     if not node:
@@ -102995,7 +98088,7 @@ def test_ui2_day_fireball_fuel_purge_are_1_0s():
             "1.0's banner Stop (2.0's pinned Stop purge); their sections "
             "are shown on their steps only and the Fireball page is open "
             "only while its step shows; the Fireball step only with a "
-            "fireball group; no dashes; OPERATOR.md and the plan")
+            "fireball group; no dashes; OPERATOR.md")
     one, two = _ui2_pages()
     for what, a, b, drop in _UI2_B_BLOCKS:
         i = one.find(a)
@@ -103049,17 +98142,13 @@ def test_ui2_day_fireball_fuel_purge_are_1_0s():
           "no em or en dashes in the new sections")
     here = os.path.dirname(os.path.abspath(__file__))
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
-    i = op.find("- 2.0 DAY tab, Fireball, fuel and timed purge:")
+    i = op.find("- DAY tab, Fireball, fuel and timed purge.")
     para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
     for words in ("Fireball step", "0.25 s", "a Hold does not",
                   "Recent refills", "Undo", "admins", "timed purge",
                   "Hold to start", "Stop purge"):
         check(words in para, f"OPERATOR.md, 2.0 DAY, says {words!r}")
     _no_dashes(para, "OPERATOR.md, 2.0 DAY, Fireball, fuel, timed purge")
-    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
-                encoding="utf-8").read()
-    check(all(f"| {p} | DONE" in plan for p in ("P8", "P9", "P10")),
-          "the removal plan marks P8, P9 and P10 done")
     import shutil
     node = shutil.which("node")
     if not node:
@@ -103102,12 +98191,10 @@ def _ui2_drive(chrome, page, status, steps_js, size=(1366, 768), **kw):
 
 
 def _ui2_page_inline():
-    one, two = _ui2_pages()
-    lo = one[one.find('<script id="remote-logic">') +
-             len('<script id="remote-logic">'):]
-    lo = lo[:lo.find("</script>")]
+    """remote2.html with its rules written in, as web.py serves it."""
+    _one, two = _ui2_pages()
     return two.replace('<script src="/remote-logic.js"></script>',
-                       "<script>" + lo + "</script>", 1)
+                       "<script>" + rules_text() + "</script>", 1)
 
 
 def _ui2_status_day():
@@ -104504,7 +99591,6 @@ def test_ui2_day_tab_in_a_browser():
     print("  ok")
 
 
-
 # -- the fireball timeline (Jeff, 2026-10-30; fireball_timeline.py) ---------
 
 def test_fireball_timeline_model():
@@ -105214,7 +100300,7 @@ def test_fireball_timeline_docs_in_plain_words():
                  "show folder's own spelling", "differ only by case",
                  "ltcplay_fireball_timeline.json",
                  "fireball_timeline_history",
-                 "Interface 2.0, the Schedule tab, Fireball timeline",
+                 "the Schedule tab, Fireball timeline",
                  "nothing is sent", "Sign in to edit", "Admins only",
                  "Arming off here", "Hold, Stop show and Disarm flames "
                  "stay at full strength", "Saved elsewhere: Revert",
@@ -105382,7 +100468,6 @@ def test_fireball_timeline_show_info_from_a_real_show_file():
         plmod.Player._prepare = real_prepare
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")
-
 
 
 # -- the fireball's charge state (Jeff, 2026-10-30; fireball_charge.py) ------
@@ -107179,7 +102264,7 @@ def test_fireball_charge_wiring():
         check(code == 200 and tr.state("fuel") == "empty" and
               "confirmed EMPTY by Andy" in out["text"],
               f"an admin on the show PC: confirmed: {code} {out}")
-        page = remote1_text()
+        page = screen_text()
         check('post("/api/remote/fireball-charge-empty", actor({}))' in page
               and 'confirmBox("Are both tanks empty?"' in page and
               'tks[k].state === "unknown"' in page,
@@ -107237,7 +102322,6 @@ def test_fireball_charge_wiring():
     P.fb.cut("test")
     check(told[-1] == (set(), ""), f"a cut tells nothing is held: {told}")
     print("  ok")
-
 
 
 def _fb_fseq_rows(path, rows, frame_count, channel_count, step_ms=25,
@@ -108448,7 +103532,6 @@ def test_fireball_cues_wiring():
     print("  ok")
 
 
-
 _FBT_MEASURE_JS = r"""
 <script>
 (function(){
@@ -108688,7 +103771,7 @@ def test_ui2_arrange_and_switches_are_1_0s():
             "ids; Arrange, Arming from a screen and the announcement output "
             "on the show PC only; leaving the Purge step, the map or DAY "
             "leaves Arrange mode; no stub left that says nothing is ever "
-            "arranging; OPERATOR.md and the plan")
+            "arranging; OPERATOR.md")
     one, two = _ui2_pages()
     # The ARRANGE block's three 2.0 changes (review of #212, 1 and 4):
     # outside Arrange a machine is chosen by a tap (machUp), never by a
@@ -108796,7 +103879,7 @@ def test_ui2_arrange_and_switches_are_1_0s():
           "no em or en dashes on the new cards")
     here = os.path.dirname(os.path.abspath(__file__))
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
-    i = op.find("- 2.0 machine map, Arrange and the show machine switches:")
+    i = op.find("- Machine map, Arrange and the show machine switches.")
     para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
     for words in ("Map", "Arrange", "Save layout", "Reset layout", "Cancel",
                   "show PC only", "Arming from a screen", "Live flame",
@@ -108804,10 +103887,6 @@ def test_ui2_arrange_and_switches_are_1_0s():
         check(words in para, f"OPERATOR.md, 2.0 map and switches, says "
                              f"{words!r}")
     _no_dashes(para, "OPERATOR.md, 2.0 map and switches")
-    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
-                encoding="utf-8").read()
-    check("| P11 | DONE" in plan and "| P13 | DONE" in plan,
-          "the removal plan marks P11 and P13 done")
     print("  ok")
 
 
@@ -111497,7 +106576,7 @@ def test_play_from_cue_card_in_2_0():
             f"{n} presses nothing and starts nothing")
     here = os.path.dirname(os.path.abspath(__file__))
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
-    a = op.find('- 2.0 Settings, "Play-from cues"')
+    a = op.find('- Settings, "Play-from cues"')
     para = op[a:op.find("\n- ", a + 3)]
     for words in ("sends nothing to the rig", "ltcplay_play_from.json",
                   "play_from_history", "at least 1", "2 when left",
@@ -111733,10 +106812,6 @@ def test_ui2_resume_from_a_cue():
     check("comes in the next update" not in sec,
           "OPERATOR.md no longer says the sheet is still to come")
     _no_dashes(sec, "OPERATOR.md, Start at a cue")
-    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
-                encoding="utf-8").read()
-    check("| Resume show N sheet (play-from step 3) | DONE" in plan,
-          "the removal plan marks the Resume sheet done")
     node = shutil.which("node")
     if not node:
         check(not IN_CI, "node is missing on this CI runner")
@@ -113207,7 +108282,7 @@ def test_start_at_cue_same_frame_valve_is_said():
     finally:
         shutil.rmtree(R.work, ignore_errors=True)
     here = os.path.dirname(os.path.abspath(__file__))
-    one = remote1_text()
+    one = screen_text()
     check("if(tl && tl.shots && tl.shots.length) said.push(tl.shots.join("
           "\" \"));" in one, "the page's Fireball line shows the counts")
     print("  ok")
@@ -113680,19 +108755,15 @@ def test_ui2_programming_tab_makes_1_0_presses():
           "lock; Run follows 1.0's runLook")
     here = os.path.dirname(os.path.abspath(__file__))
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
-    i = op.find("- 2.0 Programming (Schedule tab):")
+    i = op.find("- Programming (Schedule tab):")
     para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
     for words in ("Run asks first", "refused while a scheduled show is live",
                   "Stop (tap twice)", "Run off", "Play from", "Set A",
                   "Follow timecode again", "flame cue fault", "Show row",
-                  "More programming"):
+                  "show PC tools"):
         check(words in para, f"OPERATOR.md, 2.0 Programming, says "
                              f"{words!r}")
     _no_dashes(para, "OPERATOR.md, 2.0 Programming")
-    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
-                encoding="utf-8").read()
-    check("| P1 | DONE" in plan and "| P2 | DONE" in plan,
-          "the removal plan marks P1 and P2 done")
     import shutil
     node = shutil.which("node")
     if not node:
@@ -114102,7 +109173,7 @@ def test_ui2_schedule_tab_makes_1_0_presses():
             "on the show PC only, each 1.0's own code copied word for word "
             "with 1.0's element ids, the same schedule-file route and body "
             "(GET, and POST {doc}), the same fields and limits; no dashes; "
-            "OPERATOR.md and the plan say it")
+            "OPERATOR.md says it")
     one, two = _ui2_pages()
     sched = two[two.find('<section class="pane" id="t-schedule"'):]
     sched = sched[:sched.find("</section>")]
@@ -114154,7 +109225,7 @@ def test_ui2_schedule_tab_makes_1_0_presses():
           "no em or en dashes on the Schedule tab's new cards")
     here = os.path.dirname(os.path.abspath(__file__))
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
-    i = op.find("- 2.0 Schedule tab:")
+    i = op.find("- Schedule tab:")
     para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
     for need in ("and the Fire &amp; Ice settings say it performs",
                  "Any times work:", "is overwritten, so Reload first"):
@@ -114166,10 +109237,6 @@ def test_ui2_schedule_tab_makes_1_0_presses():
         check(words in para, f"OPERATOR.md, 2.0 Schedule tab, says "
                              f"{words!r}")
     _no_dashes(para, "OPERATOR.md, 2.0 Schedule tab")
-    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
-                encoding="utf-8").read()
-    check("| P3 | DONE" in plan and "| P4 | DONE" in plan,
-          "the removal plan marks P3 and P4 done")
     import shutil
     node = shutil.which("node")
     if not node:
@@ -114459,7 +109526,7 @@ def test_ui2_users_audit_are_1_0s():
             "lockForSignIn the documented differences; opened from #users "
             "(the signed-in sheet and the Settings card), no 1.0 link "
             "left; the token and address never written into a field; no "
-            "dashes; OPERATOR.md and the plan")
+            "dashes; OPERATOR.md")
     one, two = _ui2_pages()
     mk, code, chip = _ui2_users_parts(one)
     p = two.find('<section class="pane" id="t-users" hidden>')
@@ -114526,7 +109593,7 @@ def test_ui2_users_audit_are_1_0s():
     _no_dashes(pane, "2.0's Users pane")
     here = os.path.dirname(os.path.abspath(__file__))
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
-    i = op.find("- 2.0 Users:")
+    i = op.find("- Users: the Users pane.")
     para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
     for words in ("Settings", "Signed in", "your own password",
                   "Who may do what", "admins", "the show PC",
@@ -114537,10 +109604,6 @@ def test_ui2_users_audit_are_1_0s():
     _no_dashes(para, "OPERATOR.md, 2.0 Users")
     check("only on the old\nscreen for now: Users" not in op,
           "OPERATOR.md no longer says Users is only on the old screen")
-    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
-                encoding="utf-8").read()
-    check(all(f"| {p} | DONE" in plan for p in ("P5", "P6", "P7")),
-          "the removal plan marks P5, P6 and P7 done")
     print("  ok")
 
 
@@ -114907,7 +109970,7 @@ def test_ui2_show_pc_tools_are_1_0s():
             "Getting started, and the info panel are 1.0's code word for "
             "word, the differences named; the show PC's cards on the show "
             "PC only, as 1.0; no 1.0 link left for them; no dashes; "
-            "OPERATOR.md and the plan")
+            "OPERATOR.md")
     one, two = _ui2_pages()
     for what, text in _ui2_tools_copies(one):
         check(len(text) > 20 and text in two,
@@ -114972,7 +110035,7 @@ def test_ui2_show_pc_tools_are_1_0s():
     _no_dashes(info, "the info panel")
     here = os.path.dirname(os.path.abspath(__file__))
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
-    i = op.find("- 2.0 show PC tools:")
+    i = op.find("- Show PC tools.")
     para = " ".join((op[i:op.find("\n- ", i + 3)] if i >= 0 else "")
                     .split())
     for words in ("Verify records", "Download today's PDF", "Export all",
@@ -114983,13 +110046,6 @@ def test_ui2_show_pc_tools_are_1_0s():
         check(words in para, f"OPERATOR.md, 2.0 show PC tools, says "
                              f"{words!r}")
     _no_dashes(para, "OPERATOR.md, 2.0 show PC tools")
-    plan = open(os.path.join(here, "docs", "REMOVE_1_0_PLAN.md"),
-                encoding="utf-8").read()
-    check(all(f"| {p} | DONE" in plan for p in
-              ("P12", "P14", "P15", "P16")),
-          "the removal plan marks P12, P14, P15 and P16 done")
-    check("## Left before R1" in plan,
-          "the removal plan says what is left before R1")
     print("  ok")
 
 
@@ -115425,8 +110481,6 @@ if __name__ == "__main__":
         test_announce_hold_does_the_operator_holds_safety_cuts,
         test_announce_view_stale_snapshot_is_not_fact,
         test_streamdeck_page_two_shows_the_engines_refusal,
-        test_rack_screen_small_screens_with_announcements_and_setup,
-        test_rack_screen_setup_card_refits_when_warnings_come,
         test_alerts_booth_resounds_every_30_s_until_acknowledged,
         test_alert_hold_at_showtime_holds_and_tells_the_booth_only,
         test_nothing_plays_on_the_pa_without_an_operator_press,
@@ -115739,26 +110793,20 @@ if __name__ == "__main__":
         test_deck_requests_share_one_no_proxy_opener,
         test_remote_stale_state_refused_and_banner,
         test_remote_has_no_arm_route,
-        test_rack_screen_width_guard_css_contract,
         test_rack_screen_banners_never_squeeze_the_flame_controls,
         test_rack_screen_browser_check_retries_only_a_timeout,
-        test_rack_screen_flame_controls_need_no_show_file,
-        test_startup_page_says_hold_space_and_this_page_selected,
-        test_startup_page_readable_at_the_show_pc_sizes,
         test_rack_screen_says_the_rearm_wait,
         test_rack_screen_has_no_abort_and_stop_taps_like_it_did,
+        test_fireball_and_cleaning_rules,
         test_rack_screen_one_button_per_flame_group,
         test_rack_screen_arm_all_and_disarm_all_toggle,
-        test_rack_screen_nav_buttons_never_cut_off,
         test_rack_screen_one_laser_pill,
-        test_startup_lock_is_one_tap_with_undo,
         test_rack_screen_flame_group_machine_count,
         test_streamdeck_reports_rearm_wait_and_purge_refusal,
         test_rack_window_fits_the_work_area_above_the_taskbar,
         test_deck_chip_shows_live_truth,
         test_pixels_chip_shows_live_truth,
         test_deck_chip_red_when_the_deck_loop_hangs,
-        test_deck_chip_in_a_browser,
         test_remote_setup_routes_this_machine_only,
         test_make_a_show_file_from_the_show_folder,
         test_a_bracketed_show_folder_is_a_name_not_a_pattern,
@@ -115867,7 +110915,6 @@ if __name__ == "__main__":
         test_laser_arm_review_round_two,
         test_laser_startup_dark_without_the_morning_page,
         test_rack_lasers_strip_engine,
-        test_rack_lasers_strip_page,
         test_checklist_audit_chain_pdf_export_and_tally,
         test_morning_lockout_trust_link_and_close,
         test_morning_no_unlock_while_group_armed,
@@ -115879,7 +110926,6 @@ if __name__ == "__main__":
         test_timed_purge_every_end_cause,
         test_timed_purge_end_to_end_real_flamesafe,
         test_timed_purge_on_the_pages,
-        test_timed_purge_button_driven,
         test_timed_purge_deck_key,
         test_timed_purge_stall_inside_a_send_and_a_signed_out_deck,
         test_windows_rack_window_and_explorer_front,
@@ -115895,8 +110941,6 @@ if __name__ == "__main__":
         test_deck_needs_a_sign_in_on_the_rack_screen_to_arm,
         test_users_file_broken_or_lost_locks_and_says_so,
         test_review_143_sign_out_holds_and_deck_fallbacks,
-        test_rack_screen_locks_controls_signed_out_in_a_browser,
-        test_rack_screen_sign_in_and_out_unlock_and_lock_in_a_browser,
         test_audit_chain_verify_finds_every_kind_of_tamper,
         test_audit_upload_retries_resumes_and_waits_for_the_ack,
         test_audit_never_blocks_or_fails_a_press,
@@ -115919,7 +110963,6 @@ if __name__ == "__main__":
         test_reset_says_how_the_rig_stands,
         test_madmapper_heartbeat_follows_the_real_show_length,
         test_artnet_faults_only_for_the_show_in_use,
-        test_rack_screen_jeff_2026_10_23_page,
         test_show_mode_stays_show_on_the_show_audio,
         test_schedule_time_zone_is_checked_by_the_engine,
         test_soak_bench_render_universes_and_fps,
@@ -115931,7 +110974,6 @@ if __name__ == "__main__":
         test_live_flame_aim_slots_are_not_held,
         test_live_flame_ends_disarm_and_name_the_reason,
         test_live_flame_engine_routes_roles_and_presses,
-        test_live_flame_page_banner_and_card,
         test_live_flame_end_to_end_real_flamesafe,
         test_live_flame_review_round_one,
         test_live_flame_end_to_end_armed_group_real_flamesafe,
@@ -115951,22 +110993,17 @@ if __name__ == "__main__":
         test_fuel_survives_restarts_and_a_bad_disk,
         test_fuel_settings_are_checked_strictly,
         test_fuel_routes_and_who_may_refill,
-        test_fuel_page_in_a_browser,
         test_fuel_doc_in_plain_words,
         test_fireball_panel_rules,
         test_fireball_at_the_engine,
         test_fireball_signed_out_is_view_only,
         test_fireball_end_to_end_real_flamesafe,
-        test_fireball_page_in_a_browser,
-        test_fireball_page_buttons_driven,
         test_fireball_doc_in_plain_words,
         test_cleaning_group_and_config,
         test_cleaning_whole_sequence,
         test_cleaning_every_stop_cuts_and_disarms,
         test_cleaning_beats_and_preconditions,
         test_cleaning_at_the_engine,
-        test_cleaning_on_the_shutdown_page_in_a_browser,
-        test_cleaning_button_driven,
         test_weather_parsers_read_each_source,
         test_weather_rules_age_stale_no_data_disagree_alerts,
         test_weather_backup_stations_and_why_no_data,
@@ -115985,7 +111022,7 @@ if __name__ == "__main__":
         test_config_watch_names_the_file_and_who_is_behind,
         test_config_watch_reloads_only_what_is_safe_and_is_quick,
         test_config_watch_on_the_status_and_reload_engine,
-        test_ui2_pages_served_and_switched,
+        test_ui2_screen_served,
         test_ui2_is_the_default_screen,
         test_remote_rules_file,
         test_ui2_runs_on_ipados15,

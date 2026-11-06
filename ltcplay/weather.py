@@ -128,7 +128,7 @@ MAX_BYTES = 4_000_000     # an answer bigger than this is refused
 RETRY_FIRST_S = 60.0      # a failed try: again after 1, 2, 4 ... min
 POINTS_EVERY_S = 24 * 3600.0
 # The page greys the whole block when it has not heard from the engine for
-# this long (remote.html, wxBlock).
+# this long (remote_rules.js, wxBlock).
 PAGE_DEAD_S = 60
 
 NWS = "https://api.weather.gov"
