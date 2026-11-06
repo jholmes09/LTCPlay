@@ -734,6 +734,18 @@ def keep_last_good(p, path, now):
             f"written ({e}); the one before stays")
 
 
+def say_not_started(name, p, why_not):
+    """Why a program is not started, said once per change in
+    supervisor.log, and for flamesafe in flamesafe.log too: where an
+    operator looks for flamesafe's trouble (Jeff, 2026-11-06)."""
+    if why_not == p.said_why_not:
+        return
+    log(why_not)
+    if name == "flamesafe":
+        program_log_line("flamesafe", why_not)
+    p.said_why_not = why_not
+
+
 def program_log_line(name, text):
     """One line in a program's own log (flamesafe.log) while it is not
     running, so the reason is where an operator looks. Never raises."""
@@ -1829,12 +1841,7 @@ def run_loop(open_page=False):
                     keep_last_good(p, settings["flamesafe_config"], now)
                 continue
             if args is None:
-                if why_not != p.said_why_not:
-                    log(why_not)
-                    if n == "flamesafe":
-                        # Where an operator looks for flamesafe's trouble.
-                        program_log_line("flamesafe", why_not)
-                    p.said_why_not = why_not
+                say_not_started(n, p, why_not)
                 continue
             p.said_why_not = ""
             if now >= p.next_try and not ENDING.is_set():
