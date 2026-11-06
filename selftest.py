@@ -48903,6 +48903,30 @@ def test_flamesafe_bad_json_starts_with_flames_off():
                 f"flamesafe is not started. flamesafe.log in "
                 f"{SUP.log_dir()} says what to do."),
                 f"the start message says it: {note!r}")
+            # Starting LTC Player: the page opens, then the message says
+            # flames are off and why (never only "did not answer").
+            told, opened = [], []
+            saved_ = (SUP.load_settings, SUP.supervisor_running,
+                      SUP.engine_answers, SUP.open_page_now, SUP.tell,
+                      SUP.QUIET)
+            try:
+                SUP.load_settings = lambda: settings
+                SUP.supervisor_running = lambda: True
+                SUP.engine_answers = lambda port: True
+                SUP.open_page_now = lambda port: opened.append(port)
+                SUP.tell = lambda text, error=False, **k: told.append(
+                    (text, error))
+                SUP.QUIET = False
+                rc = SUP.cmd_start()
+            finally:
+                (SUP.load_settings, SUP.supervisor_running,
+                 SUP.engine_answers, SUP.open_page_now, SUP.tell,
+                 SUP.QUIET) = saved_
+            check(rc == 0 and opened == [7878] and told == [
+                      ("LTC Player has started, with flames off." + note,
+                       True)],
+                  f"LTC Player starts: the page, then the message: {rc} "
+                  f"{opened} {told}")
             # Fixed: flamesafe and the deck start again on their own.
             with open(fs, "wb") as fh:
                 fh.write(ok1)
@@ -81971,6 +81995,9 @@ def test_artnet_receivers_one_address_each_and_on_this_pc():
     check(len(same) == 1 and "MadMapper and BEYOND are both 10.250.1.1"
           in same[0] and FIXW in same[0] and DMX in same[0],
           f"the same address twice is one collision: {same}")
+    check(same[0].endswith("Then set each program's Art-Net input to that "
+                           "address, not the Show LAN address."),
+          f"and says to set each program's Art-Net input to it: {same[0]}")
 
     # Loopback aliases: one address on port 6454.
     for other in ("localhost", "LocalHost", "127.0.0.2", "127.1.2.3"):

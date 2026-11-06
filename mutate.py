@@ -23810,6 +23810,69 @@ def build():
   "ltcplay/web/remote2.html",
   "#t-users input[type=checkbox]{width:56px;height:56px;",
   "#t-users input[type=checkbox]{width:40px;height:40px;"),
+
+ # flamesafe.json that is not valid JSON (Jeff, 2026-11-06): the engine
+ # starts with flames off and says where; the supervisor starts neither
+ # flamesafe nor the deck; the last good copy.
+ ('flamesafe bad json: the engine refuses to start on it, so no rack screen',
+  'ltcplay/cli.py',
+  '            if fs_problem:\n                fire_ice.flamesafe_config = None\n',
+  '            if False:\n                fire_ice.flamesafe_config = None\n'),
+
+ ('flamesafe bad json: a config named on the command line is still used',
+  'ltcplay/cli.py',
+  '        if bad:\n            fs_problem = fs_problem or bad\n            flamesafe_config = None\n',
+  '        if False:\n            fs_problem = fs_problem or bad\n            flamesafe_config = None\n'),
+
+ ('flamesafe bad json: the rack screen is never told',
+  'ltcplay/cli.py',
+  '            remote_.flamesafe_problem = fs_problem\n',
+  '            pass\n'),
+
+ ('flamesafe bad json: the status leaves it out',
+  'ltcplay/remote.py',
+  'out["flamesafe_config_error"] = str(self.flamesafe_problem or "")',
+  'out["flamesafe_config_error"] = ""'),
+
+ ("flamesafe bad json: 2.0's alert slot does not show it",
+  'ltcplay/web/remote2.html',
+  '  if(s.flamesafe_config_error) items.push({key:"fscfg", tone:"bad", what:"Flame settings file broken.", do:"Flames are off. Tap here.", full:s.flamesafe_config_error});\n',
+  ''),
+
+ ('flamesafe bad json: the supervisor starts flamesafe and the deck on it in a loop',
+  'packaging/windows/supervisor.py',
+  '    fs_bad = flamesafecheck.json_problem(fs) if fs_ok else None\n',
+  '    fs_bad = None\n'),
+
+ ('flamesafe bad json: flamesafe.log never says why it is not started',
+  'packaging/windows/supervisor.py',
+  '        program_log_line("flamesafe", why_not)\n',
+  ''),
+
+ ('flamesafe bad json: the start message does not say flames are off',
+  'packaging/windows/supervisor.py',
+  '            if note:\n                tell("LTC Player has started, with flames off." + note,',
+  '            if False:\n                tell("LTC Player has started, with flames off." + note,'),
+
+ ('flamesafe last good: kept before flamesafe has run on it',
+  'packaging/windows/supervisor.py',
+  '            now - p.started < flamesafecheck.LAST_GOOD_AFTER_S:',
+  '            False:'),
+
+ ('flamesafe last good: bytes that are not JSON are kept',
+  'ltcplay/flamesafecheck.py',
+  '    if bytes_problem(raw, path) is not None:\n        return None\n    good = last_good_path(path)',
+  '    good = last_good_path(path)'),
+
+ ("flamesafe bad json: the line and column are not the error's",
+  'ltcplay/flamesafecheck.py',
+  '"line": e.lineno, "column": e.colno,',
+  '"line": 1, "column": 1,'),
+
+ ("art-net: the same address twice does not say to set each program's input",
+  'ltcplay/artnodes.py',
+  ' Then set each "\n       "program\'s Art-Net input to that address, not the Show LAN address.")',
+  '")'),
 ]
 
 
