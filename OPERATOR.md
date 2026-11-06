@@ -863,9 +863,14 @@ screen never opened. Now:
   flame link here: both are expected until the file is fixed.
 - The start message says the flamesafe config is invalid, and
   `flamesafe.log` (in LTC Player's logs folder) says the same sentence.
+- A file saved "UTF-8 with BOM" (an older Notepad does) counts as broken
+  too: flamesafe refuses it. Save it as UTF-8 without BOM.
 - The last good copy is `flamesafe.last-good.json`, beside
   `flamesafe.json`. LTC Player writes it only after flamesafe has run on
-  a file for 20 seconds, so a file flamesafe refused never becomes it.
+  a file for 20 seconds, and only while the file still holds what
+  flamesafe started on, so a file flamesafe refused never becomes it. The
+  screen says when it was saved: it may be older than your recent edits
+  (a channel moved since, for example), so check it before you use it.
 - To fix it: correct the line the screen names, or copy
   `flamesafe.last-good.json` over `flamesafe.json` by hand (nothing copies
   it back by itself). flamesafe and the Stream Deck program start on their
