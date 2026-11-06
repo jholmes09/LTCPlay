@@ -61,7 +61,9 @@ OFF or BOOT (never STANDBY: no lasers during intermission) and no laser
 test is on; then the laser arm decides, as in a show: every laser armed
 by an operator on the Morning page, none locked out. Nothing here arms.
 
-Two guards in the watch (poll), for lasers the record says are lit:
+Two guards in the watch (poll), for lasers the record says are lit, or
+does not know (a blank or restore that did not get out), checked every
+POLL_S, so a guard acts within FROZEN_S + POLL_S (about 0.75 s):
   - the lasers may no longer be lit here (the schedule left IDLE, OFF or
     BOOT, a show took over, a laser test came on), whether or not
     anything told the conductor: blanked at once;
@@ -134,6 +136,7 @@ class ShowAudioPlayhead:
         # The last timecode frame the watch saw, and when it changed.
         self._tc_frame = None
         self._tc_at = clock()
+        self._unknown_noted = False
 
     def _note(self, text, outcome):
         if self._journal is not None:
@@ -560,11 +563,16 @@ class ShowAudioPlayhead:
                 self._tc_at = now
             still = now - self._tc_at
         cond = self._conductor()
+        # Lit, or not known (UNKNOWN: a blank or restore that did not get
+        # out; cold review of #223): both are guarded, so a failed blank
+        # is sent again while the reason stands.
         try:
             lit = cond.lasers_lit() is True
+            maybe = cond.lasers_maybe_lit() is True
         except Exception:                           # noqa: BLE001
-            lit = False
-        if not lit:
+            lit = maybe = False
+        if not maybe:
+            self._unknown_noted = False
             return None
         why = None
         fn = self.lasers_refusal
@@ -585,6 +593,11 @@ class ShowAudioPlayhead:
             ok = getattr(r, "ok", False) is True
         except Exception:                           # noqa: BLE001
             ok = False
+        if not lit and self._unknown_noted:
+            # Not known: the blank is sent again at every pass while the
+            # reason stands, but the journal says so once.
+            return "lasers_dark"
+        self._unknown_noted = True
         self._note(f"Programming playback: {why}, so the lasers were "
                    f"blanked{'' if ok else ' (the blank did NOT get out)'}"
                    f". Pause, then Continue, or Play from again, to bring "

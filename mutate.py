@@ -14323,10 +14323,9 @@ def build():
  ('lasers: re-arming runs the whole up sequence, not only the lasers',
   'ltcplay/conductor.py',
   '        if want.get("lasers_only"):\n'
-  '            # lasers_armed(): the show is up already; only the lasers.\n'
-  '            self._restore_lasers(gen, progress)\n'
-  '            return\n',
-  ''),
+  '            # lasers_armed(): the show is up already; only the lasers. A\n',
+  '        if False:\n'
+  '            # lasers_armed(): the show is up already; only the lasers. A\n'),
  ("lasers: the conductor's laser gate ignores the arm",
   'ltcplay/fire_ice.py',
   '        why = arm_gate()\n'
@@ -14368,8 +14367,7 @@ def build():
   '                (name == "laser-test" and body.get("on") is True)) and \\'),
  ('lasers: arming is allowed while the show is on Hold',
   'ltcplay/remote.py',
-  '        if state in ("PAUSED", "HOLD") or \\\n'
-  '                getattr(cond, "_look", None) in ("HELD", "DARK"):',
+  '        if state in ("PAUSED", "HOLD") or look in ("HELD", "DARK"):',
   '        if False:'),
  ('lasers: with no schedule, arming is allowed',
   'ltcplay/remote.py',
@@ -23838,7 +23836,7 @@ def build():
   'ltcplay/conductor.py',
   '        # Already on hold: nothing new starts, but the lasers are blanked\n',
   '        if not disarm_lasers:\n'
-  '            self._keep_gen = self._gen\n'
+  '            self._lookstate = (self._look, True)\n'
   '        # Already on hold: nothing new starts, but the lasers are blanked\n'),
 
  ("programming lasers: a Hold that disarms leaves a Pause's keep in force",
@@ -23846,7 +23844,7 @@ def build():
   '            if disarm_lasers:\n'
   '                # A Hold that disarms ends any Programming Pause\'s keeping\n'
   '                # of the arm, whichever branch below it takes.\n'
-  '                self._keep_gen = None\n',
+  '                self._lookstate = (self._look, False)\n',
   ''),
 
  ("programming lasers: a scheduled show's Hold no longer disarms",
@@ -23880,23 +23878,24 @@ def build():
 
  ("programming lasers: the Pause exemption covers an announcement's DARK",
   'ltcplay/remote.py',
-  '        if getattr(cond, "_look", None) != "HELD":\n',
-  '        if getattr(cond, "_look", None) not in ("HELD", "DARK"):\n'),
+  '        if look != "HELD":\n',
+  '        if look not in ("HELD", "DARK"):\n'),
 
  ("programming lasers: the Pause exemption ignores CLOSING",
   'ltcplay/remote.py',
-  '        if getattr(m, "state", None) in ("PAUSED", "HOLD", "CLOSING"):\n',
-  '        if getattr(m, "state", None) in ("PAUSED", "HOLD"):\n'),
+  '        if state in ("PAUSED", "HOLD", "CLOSING"):\n',
+  '        if state in ("PAUSED", "HOLD"):\n'),
 
  ("programming lasers: the Pause exemption ignores the schedule's Hold",
   'ltcplay/remote.py',
-  '        if getattr(m, "state", None) in ("PAUSED", "HOLD", "CLOSING"):\n',
-  '        if getattr(m, "state", None) in ("PAUSED", "CLOSING"):\n'),
+  '        if state in ("PAUSED", "HOLD", "CLOSING"):\n',
+  '        if state in ("PAUSED", "CLOSING"):\n'),
 
  ("programming lasers: the Pause exemption ignores the conductor's keep",
   'ltcplay/remote.py',
-  '        if not callable(kept) or kept() is not True:\n',
-  '        if not callable(kept):\n'),
+  '        if keep is not True:\n'
+  '            return False\n',
+  ''),
 
  ("programming lasers: a new arm is allowed during a Programming Pause",
   'ltcplay/laserarm.py',
@@ -23987,6 +23986,47 @@ def build():
   'ltcplay/playhead.py',
   '        guarded = self._laser_guard(clk)\n',
   '        guarded = None\n'),
+
+ ("programming lasers: arming during Programming playback lights the "
+  "lasers on a frozen timecode",
+  'ltcplay/conductor.py',
+  '                         confirm_moving=self._programming_start)\n',
+  '                         confirm_moving=False)\n'),
+
+ ("programming lasers: a re-arm's relight skips the timecode wait",
+  'ltcplay/conductor.py',
+  '            if want.get("confirm_moving") and \\\n'
+  '                    not self._timecode_moving(gen, START_CONFIRM_S):\n',
+  '            if False:\n'),
+
+ ("programming lasers: the Pause's keep is written after its look and "
+  "journal line",
+  'ltcplay/conductor.py',
+  '        self._lookstate = (look, params.get("keep_lasers_armed") is True)\n'
+  '        self._look = look\n'
+  '        line = ((f"{label}, asked for by {self._who(who, screen)}.",),\n'
+  '                dict(action=label.lower(), who=who, screen=screen))\n'
+  '        if not quiet:\n'
+  '            self._note(*line[0], **line[1])\n',
+  '        self._lookstate = (look, False)\n'
+  '        self._look = look\n'
+  '        line = ((f"{label}, asked for by {self._who(who, screen)}.",),\n'
+  '                dict(action=label.lower(), who=who, screen=screen))\n'
+  '        if not quiet:\n'
+  '            self._note(*line[0], **line[1])\n'
+  '        self._lookstate = (look, params.get("keep_lasers_armed") is True)\n'),
+
+ ("programming lasers: the blockers read the look and the keep apart",
+  'ltcplay/remote.py',
+  '            snap = cond.look_and_keep()\n'
+  '            look, keep = snap[0], snap[1] is True\n',
+  '            look = cond._look\n'
+  '            keep = cond.look_and_keep()[1] is True\n'),
+
+ ("programming lasers: the watch ignores lasers whose record is UNKNOWN",
+  'ltcplay/playhead.py',
+  '            maybe = cond.lasers_maybe_lit() is True\n',
+  '            maybe = lit\n'),
 ]
 
 

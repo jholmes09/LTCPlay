@@ -2425,16 +2425,22 @@ on the Programming screen arms them.
   BEYOND follows the timecode to the new place.
 - If the timecode stops moving for half a second while the lasers are lit
   (a jump whose audio has not started, a stalled clock), the lasers are
-  blanked at once, because a frozen laser frame is a static beam. This is
-  only a safety guard for a frozen frame. Pause, then Continue, or Play
-  from again, brings them back.
+  blanked, because a frozen laser frame is a static beam. The check runs
+  four times a second, so the blank comes within about 0.75 seconds of the
+  last frame. This is only a safety guard for a frozen frame. Pause, then
+  Continue, or Play from again, brings them back. Arming the lasers on the
+  Morning page during playback lights them only once the timecode moves,
+  the same as Play from.
 - Pause on the Programming screen blanks the lasers and switches BEYOND's
   laser output off, but every laser stays armed. (The blank is the one a
   Hold sends: brightness 0, or with "beyond_blank" set to "timecode"
   BEYOND's timecode moved to the black zone, brightness not touched.) Continue lights them
   again once the timecode moves, if they are all still armed. While
   paused, a laser can be disarmed or locked out (it then stays dark), but
-  not armed: arm it after Continue, as after a Hold in a show.
+  not armed: arm it after Continue, as after a Hold in a show. If the
+  lasers were armed a moment before the Pause, BEYOND's laser output may
+  be switched on again just after the Pause switched it off; the lasers
+  stay blanked all the same, and nothing lights them until Continue.
 - Hold (the Hold button on any screen or the Stream Deck), an
   announcement, Stop and Disarm all lasers still disarm every laser and
   leave them dark, as in a show.

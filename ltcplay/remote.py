@@ -6011,11 +6011,13 @@ class Remote:
         except Exception:                        # noqa: BLE001
             return None
 
-    def laser_arm_blockers(self):
+    def laser_arm_blockers(self, look=None):
         """Why no laser may be armed (nor BEYOND's laser output switched
         on) right now, or "": a Hold (a Stop's too) until Resume, the
         night closing, and no schedule at all (the show state
-        unknown). Plain reads, never a lock: the laser gate asks this."""
+        unknown). Plain reads, never a lock: the laser gate asks this.
+        `look`: the conductor's look already read (laser_enable_blockers),
+        else read here."""
         svc = self.schedule
         m = getattr(svc, "machine", None)
         if m is None:
@@ -6023,8 +6025,9 @@ class Remote:
                     "so no laser may be armed")
         cond = getattr(svc, "conductor", None)
         state = getattr(m, "state", None)
-        if state in ("PAUSED", "HOLD") or \
-                getattr(cond, "_look", None) in ("HELD", "DARK"):
+        if look is None:
+            look = getattr(cond, "_look", None)
+        if state in ("PAUSED", "HOLD") or look in ("HELD", "DARK"):
             return "the show is on Hold; press Resume first, then arm"
         if state == "CLOSING":
             return "the night is closing"
@@ -6039,32 +6042,39 @@ class Remote:
         NEW arm is still refused during that Pause (laser_arm_blockers is
         the arm's refusal, unchanged). Never raises: an error is a
         blocker. Plain reads, never a lock."""
-        why = self.laser_arm_blockers()
+        svc = self.schedule
+        m = getattr(svc, "machine", None)
+        if m is None:
+            return self.laser_arm_blockers()
+        cond = getattr(svc, "conductor", None)
+        # The conductor's look and its keep as ONE read (look_and_keep),
+        # never the look and then the keep (cold review of #223, M2).
+        try:
+            snap = cond.look_and_keep()
+            look, keep = snap[0], snap[1] is True
+        except Exception:                           # noqa: BLE001
+            look, keep = getattr(cond, "_look", None), False
+        state = getattr(m, "state", None)
+        why = self.laser_arm_blockers(look=look)
         if not why:
             return why
         try:
-            if self._programming_pause_keeps_lasers():
+            if self._programming_pause_keeps_lasers(state, look, keep):
                 return ""
         except Exception:                           # noqa: BLE001
             pass
         return why
 
-    def _programming_pause_keeps_lasers(self):
-        """True only while the conductor's look is a Programming Pause's
-        HELD that kept the lasers armed, the schedule is not on Hold,
-        paused or closing, and the Programming playback Play from started
-        is still the one on the show audio."""
-        svc = self.schedule
-        m = getattr(svc, "machine", None)
-        cond = getattr(svc, "conductor", None)
-        if m is None or cond is None:
+    def _programming_pause_keeps_lasers(self, state, look, keep):
+        """True only while `look` (the conductor's, read once with `keep`)
+        is a Programming Pause's HELD that kept the lasers armed, the
+        schedule is not on Hold, paused or closing, and the Programming
+        playback Play from started is still the one on the show audio."""
+        if state in ("PAUSED", "HOLD", "CLOSING"):
             return False
-        if getattr(m, "state", None) in ("PAUSED", "HOLD", "CLOSING"):
+        if look != "HELD":
             return False
-        if getattr(cond, "_look", None) != "HELD":
-            return False
-        kept = getattr(cond, "lasers_kept_armed", None)
-        if not callable(kept) or kept() is not True:
+        if keep is not True:
             return False
         ph = getattr(self, "playhead", None)
         return bool(self.programming()[0] and ph is not None and

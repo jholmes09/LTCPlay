@@ -3799,5 +3799,10 @@
 "programming lasers: the watch never blanks a frozen timecode": "test_programming_lasers_follow_the_playhead",
 "programming lasers: the watch never blanks lasers Programming may no longer light": "test_programming_lasers_dark_when_the_night_moves_on",
 "programming lasers: the watch's laser guard never runs": "test_programming_lasers_follow_the_playhead",
-"fire & ice: the laser gate does not follow the scheduler": "test_programming_lasers_gate_in_fire_ice_attach"
+"fire & ice: the laser gate does not follow the scheduler": "test_programming_lasers_gate_in_fire_ice_attach",
+"programming lasers: arming during Programming playback lights the lasers on a frozen timecode": "test_programming_lasers_follow_the_playhead",
+"programming lasers: a re-arm's relight skips the timecode wait": "test_programming_lasers_follow_the_playhead",
+"programming lasers: the Pause's keep is written after its look and journal line": "test_programming_pause_keep_has_no_window_and_unknown_is_guarded",
+"programming lasers: the blockers read the look and the keep apart": "test_programming_lasers_engine_refusal_and_blockers",
+"programming lasers: the watch ignores lasers whose record is UNKNOWN": "test_programming_pause_keep_has_no_window_and_unknown_is_guarded"
 }
