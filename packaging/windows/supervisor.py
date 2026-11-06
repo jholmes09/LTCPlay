@@ -613,6 +613,7 @@ class Program:
         self.said_why_not = ""
         self.out = None
         self.config_bytes = None
+        self.config_path = None
         self.last_good_kept = False
 
     def alive(self):
@@ -646,11 +647,13 @@ class Program:
         # flamesafe's config as it is started on: the last good copy is
         # these bytes once flamesafe has run on them (keep_last_good).
         self.config_bytes = None
+        self.config_path = None
         self.last_good_kept = False
         if self.name == "flamesafe" and args:
             try:
                 with open(args[0], "rb") as fh:
                     self.config_bytes = fh.read()
+                self.config_path = os.path.abspath(args[0])
             except OSError:
                 self.config_bytes = None
         env.pop(ltcwin.FLAMESAFE_ENV, None)
@@ -714,18 +717,26 @@ class Program:
                 f"was NOT forced to quit.")
 
 
-def keep_last_good(p, path, now):
+def keep_last_good(p, now):
     """flamesafe has run LAST_GOOD_AFTER_S on the config it was started on
-    (p.config_bytes): those bytes become the last good copy beside it
-    (flamesafecheck.save_last_good), once per start. A file flamesafe
-    refused never gets here: it exits within seconds. Never raises."""
-    if p.last_good_kept or p.config_bytes is None or \
+    (p.config_path, read as p.config_bytes then): those bytes become the
+    last good copy beside it (flamesafecheck.save_last_good), once per
+    start, and only while the file still holds them (an edit since is not
+    what flamesafe ran). A file flamesafe refused never gets here: it exits
+    within seconds. Never raises."""
+    if p.last_good_kept or p.config_bytes is None or not p.config_path or \
             now - p.started < flamesafecheck.LAST_GOOD_AFTER_S:
         return
     p.last_good_kept = True
+    path = p.config_path
     try:
-        got = flamesafecheck.save_last_good(os.path.abspath(path),
-                                            p.config_bytes)
+        with open(path, "rb") as fh:
+            if fh.read() != p.config_bytes:
+                log(f"{os.path.basename(path)} changed since flamesafe "
+                    f"started on it, so it is not kept as the last good "
+                    f"copy")
+                return
+        got = flamesafecheck.save_last_good(path, p.config_bytes)
         if got:
             log(f"flamesafe has run on {os.path.basename(path)}: kept as "
                 f"the last good copy, {got}")
@@ -1838,7 +1849,7 @@ def run_loop(open_page=False):
                 p._forget()
             if p.alive():
                 if n == "flamesafe":
-                    keep_last_good(p, settings["flamesafe_config"], now)
+                    keep_last_good(p, now)
                 continue
             if args is None:
                 say_not_started(n, p, why_not)
@@ -2524,8 +2535,19 @@ def self_check():
     yield f"settings: {settings_path()}"
     # A valid JSON object stands in for flamesafe.json (flamesafe and the
     # deck are not started on a file that is not valid JSON).
+    import shutil
     import tempfile
     tmp = tempfile.mkdtemp(prefix="ltcplay-self-check-")
+    try:
+        for line in _self_check_flamesafe(tmp):
+            yield line
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    for line in _self_check_rest():
+        yield line
+
+
+def _self_check_flamesafe(tmp):
     fs_probe = os.path.join(tmp, "flamesafe.json")
     with open(fs_probe, "w", encoding="utf-8") as fh:
         fh.write("{}")
@@ -2554,13 +2576,11 @@ def self_check():
             "line 3, column 3" not in want["flamesafe"][1]:
         raise RuntimeError(f"a flamesafe.json that is not valid JSON would "
                            f"start flamesafe or the deck: {want}")
-    try:
-        os.remove(fs_probe)
-        os.rmdir(tmp)
-    except OSError:
-        pass
     yield ("a flamesafe.json that is not valid JSON starts neither "
            "flamesafe nor the deck, and says the line and column")
+
+
+def _self_check_rest():
     yield f"control folder: {control_dir()}"
     task_xml("EXAMPLE\\user")
     yield "the sign-in task can be written"

@@ -1457,8 +1457,19 @@ def _cmd_serve(args):
             # say where the file is broken. Never a guessed config.
             fs_problem = _flamesafe_json_problem(fire_ice.flamesafe_config)
             if fs_problem:
+                # Every place still has to name the same file (P1-4),
+                # checked before this one is set aside: a different file
+                # named elsewhere is refused as before, never run.
+                _same, _why = _one_flamesafe_config(args, fire_ice)
+                if _why:
+                    _say_refused(_why)
+                    return _err(_why)
+                # Only the flamesafe config goes. The flame controller
+                # stays named: the pixel output still never sends its
+                # channels, and a show with it Active is still refused
+                # (fire_ice.build, check_flame_controllers). No flame link
+                # is built without a flamesafe config.
                 fire_ice.flamesafe_config = None
-                fire_ice.flame_controller = None
             _soak_why = fire_ice_mod.soak_refusal(fire_ice)
             if _soak_why:
                 # The soak kit's settings, left behind: refused where the

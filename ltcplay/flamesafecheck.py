@@ -26,6 +26,7 @@ own (packaging/windows/ltcplay.spec), as it does showwindows.py.
 """
 import json
 import os
+import time
 
 LAST_GOOD_TAG = ".last-good"
 # flamesafe exits within a second or two on a config it refuses; one that
@@ -55,8 +56,15 @@ def json_problem(path):
 def bytes_problem(raw, path=""):
     """json_problem for a file's bytes already read. Never raises."""
     full = os.path.abspath(str(path)) if path else ""
+    if raw.startswith(b"\xef\xbb\xbf"):
+        # flamesafe reads the file as strict UTF-8 and refuses a BOM
+        # (flamesafe/config.load), as an older Notepad saves it.
+        return {"path": full, "line": 1, "column": 1,
+                "what": "it was saved with a byte-order mark (BOM); save it "
+                        "as UTF-8 without BOM"}
     try:
-        text = raw.decode("utf-8-sig")
+        # Exactly as flamesafe reads it: strict UTF-8, no BOM.
+        text = raw.decode("utf-8")
     except UnicodeDecodeError as e:
         line = raw[:e.start].count(b"\n") + 1
         col = e.start - (raw.rfind(b"\n", 0, e.start) + 1) + 1
@@ -83,9 +91,18 @@ def sentence(problem):
     path = problem["path"]
     name = os.path.basename(path) or "flamesafe.json"
     good = last_good_path(path)
-    back = (f"Fix it, or copy the last good copy back over it: {good}. "
-            if os.path.isfile(good) else
-            "Fix it (there is no last good copy yet). ")
+    if os.path.isfile(good):
+        try:
+            when = time.strftime("%Y-%m-%d %H:%M",
+                                 time.localtime(os.path.getmtime(good)))
+        except OSError:
+            when = "at a time that cannot be read"
+        back = (f"Fix it, or copy the last good copy back over it: {good}, "
+                f"saved {when}. It may be older than recent edits (a "
+                f"channel moved since, for example): check it before you "
+                f"use it. ")
+    else:
+        back = "Fix it (there is no last good copy yet). "
     return (f"{name} is not valid JSON at line {problem['line']}, column "
             f"{problem['column']} ({problem['what']}): {path}. Flames are "
             f"off: flamesafe is not running and no flame group can be "
@@ -111,5 +128,7 @@ def save_last_good(path, raw):
     tmp = good + ".tmp"
     with open(tmp, "wb") as fh:
         fh.write(raw)
+        fh.flush()
+        os.fsync(fh.fileno())
     os.replace(tmp, good)
     return good
