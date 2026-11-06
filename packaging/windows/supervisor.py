@@ -2522,9 +2522,14 @@ def self_check():
             raise RuntimeError(f"{EXE[n]} is missing from {ltcwin.app_dir()}")
     yield "all three programs are beside it"
     yield f"settings: {settings_path()}"
-    # Any file that exists stands in for flamesafe.json (frozen, __file__
-    # is not on disk).
-    probe = {"port": DEFAULT_PORT, "flamesafe_config": sys.executable,
+    # A valid JSON object stands in for flamesafe.json (flamesafe and the
+    # deck are not started on a file that is not valid JSON).
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="ltcplay-self-check-")
+    fs_probe = os.path.join(tmp, "flamesafe.json")
+    with open(fs_probe, "w", encoding="utf-8") as fh:
+        fh.write("{}")
+    probe = {"port": DEFAULT_PORT, "flamesafe_config": fs_probe,
              "run_flamesafe": True, "run_deck": True,
              "show_folder": control_dir(),
              "show_mode": "fire_ice", "schedule": r"C:\x\ltcplay_schedule.json"}
@@ -2541,6 +2546,21 @@ def self_check():
         raise RuntimeError(f"plain mode would start the deck or the "
                            f"scheduler: {want}")
     yield "fire_ice mode runs the scheduler and the deck; plain runs neither"
+    probe["show_mode"] = "fire_ice"
+    with open(fs_probe, "w", encoding="utf-8") as fh:
+        fh.write("{\n  \"a\": 1\n  \"b\": 2\n}")
+    want = wanted_args(probe)
+    if want["flamesafe"][0] is not None or want["deck"][0] is not None or \
+            "line 3, column 3" not in want["flamesafe"][1]:
+        raise RuntimeError(f"a flamesafe.json that is not valid JSON would "
+                           f"start flamesafe or the deck: {want}")
+    try:
+        os.remove(fs_probe)
+        os.rmdir(tmp)
+    except OSError:
+        pass
+    yield ("a flamesafe.json that is not valid JSON starts neither "
+           "flamesafe nor the deck, and says the line and column")
     yield f"control folder: {control_dir()}"
     task_xml("EXAMPLE\\user")
     yield "the sign-in task can be written"
