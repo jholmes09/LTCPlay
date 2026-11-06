@@ -23816,8 +23816,8 @@ def build():
  # flamesafe nor the deck; the last good copy.
  ('flamesafe bad json: the engine refuses to start on it, so no rack screen',
   'ltcplay/cli.py',
-  '            if fs_problem:\n                fire_ice.flamesafe_config = None\n',
-  '            if False:\n                fire_ice.flamesafe_config = None\n'),
+  '            if fs_problem:\n                # Every place still has to name',
+  '            if False:\n                # Every place still has to name'),
 
  ('flamesafe bad json: a config named on the command line is still used',
   'ltcplay/cli.py',
@@ -23873,6 +23873,31 @@ def build():
   'ltcplay/artnodes.py',
   ' Then set each "\n       "program\'s Art-Net input to that address, not the Show LAN address.")',
   '")'),
+
+ ('flamesafe bad json: the flame controller is dropped too, so the pixel output may send it',
+  'ltcplay/cli.py',
+  '                fire_ice.flamesafe_config = None\n',
+  '                fire_ice.flamesafe_config = None\n                fire_ice.flame_controller = None\n'),
+
+ ('flamesafe bad json: another file named elsewhere is not refused first',
+  'ltcplay/cli.py',
+  '                _same, _why = _one_flamesafe_config(args, fire_ice)\n                if _why:\n',
+  '                _same, _why = _one_flamesafe_config(args, fire_ice)\n                if False:\n'),
+
+ ('flamesafe bad json: a byte-order mark is taken, though flamesafe refuses it',
+  'ltcplay/flamesafecheck.py',
+  '    if raw.startswith(b"\\xef\\xbb\\xbf"):',
+  '    if False:'),
+
+ ('flamesafe last good: the banner does not say when the copy was saved',
+  'ltcplay/flamesafecheck.py',
+  '{good}, "\n                f"saved {when}. It may be older',
+  '{good}. "\n                f"It may be older'),
+
+ ('flamesafe last good: a file edited since flamesafe started on it is kept',
+  'packaging/windows/supervisor.py',
+  '            if fh.read() != p.config_bytes:',
+  '            if False:'),
 ]
 
 

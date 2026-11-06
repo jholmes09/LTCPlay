@@ -1,4 +1,9 @@
 {
+"flamesafe last good: a file edited since flamesafe started on it is kept": "test_flamesafe_bad_json_starts_with_flames_off",
+"flamesafe last good: the banner does not say when the copy was saved": "test_flamesafe_bad_json_starts_with_flames_off",
+"flamesafe bad json: a byte-order mark is taken, though flamesafe refuses it": "test_flamesafe_bad_json_starts_with_flames_off",
+"flamesafe bad json: another file named elsewhere is not refused first": "test_flamesafe_bad_json_starts_with_flames_off",
+"flamesafe bad json: the flame controller is dropped too, so the pixel output may send it": "test_flamesafe_bad_json_starts_with_flames_off",
 "art-net: the same address twice does not say to set each program's input": "test_artnet_receivers_one_address_each_and_on_this_pc",
 "flamesafe bad json: the line and column are not the error's": "test_flamesafe_bad_json_starts_with_flames_off",
 "flamesafe last good: bytes that are not JSON are kept": "test_flamesafe_bad_json_starts_with_flames_off",

@@ -48755,12 +48755,22 @@ def test_flamesafe_bad_json_starts_with_flames_off():
               f"the screens' words, no last good copy: {FC.sentence(bad)!r}")
         check(FC.bytes_problem(b"[1, 2]", fs)["what"] ==
               "the file is not one JSON object { ... }" and
-              FC.bytes_problem(b"\xef\xbb\xbf{}", fs) is None and
               FC.bytes_problem(b'{"a": "\xff"}', fs)["what"] ==
               "a character that is not UTF-8" and
               FC.json_problem(os.path.join(work, "none.json")) is None,
-              "a list is not a config; a BOM is fine; a byte that is not "
-              "UTF-8 is said; a missing file is said where it is used")
+              "a list is not a config; a byte that is not UTF-8 is said; a "
+              "missing file is said where it is used")
+        # A byte-order mark (an older Notepad's "UTF-8"): flamesafe reads
+        # strict UTF-8 and refuses it, so it counts as broken here too.
+        bom = os.path.join(work, "bom.json")
+        with open(bom, "wb") as fh:
+            fh.write(b'\xef\xbb\xbf{"groups": []}')
+        check(FC.json_problem(bom) == {
+                  "path": os.path.abspath(bom), "line": 1, "column": 1,
+                  "what": "it was saved with a byte-order mark (BOM); save "
+                          "it as UTF-8 without BOM"},
+              f"a file saved with a BOM is said, with what to do: "
+              f"{FC.json_problem(bom)}")
         # 2. The last good copy: only valid JSON, written once, replaced.
         check(FC.save_last_good(fs, broken) is None and
               not os.path.exists(good),
@@ -48770,11 +48780,17 @@ def test_flamesafe_bad_json_starts_with_flames_off():
               open(good, "rb").read() == ok1 and
               FC.save_last_good(fs, ok1) is None,
               "valid bytes are kept, and the same bytes again write nothing")
+        import time as _time
+        stamp = _time.mktime((2026, 11, 2, 18, 40, 0, 0, 0, -1))
+        os.utime(good, (stamp, stamp))
         check(FC.sentence(bad) == want.replace(
                   "Fix it (there is no last good copy yet). ",
                   f"Fix it, or copy the last good copy back over it: "
-                  f"{good}. "),
-              f"with a last good copy the screens name it: "
+                  f"{good}, saved 2026-11-02 18:40. It may be older than "
+                  f"recent edits (a channel moved since, for example): "
+                  f"check it before you use it. "),
+              f"with a last good copy the screens name it, when it was "
+              f"saved, and that it may be older than recent edits: "
               f"{FC.sentence(bad)!r}")
         check("–" not in want and "—" not in want,
               "no em or en dashes")
@@ -48818,10 +48834,12 @@ def test_flamesafe_bad_json_starts_with_flames_off():
                 fi = seen.get("fire_ice")
                 check(seen and seen.get("flamesafe_config") is None and
                       fi is not None and fi.flamesafe_config is None and
-                      fi.flame_controller is None,
+                      fi.flame_controller == "Flames",
                       f"--flamesafe-config {named}: the engine starts with no "
-                      f"flame link and no flamesafe config: "
-                      f"{sorted(seen)} {fi and fi.flamesafe_config}")
+                      f"flame link and no flamesafe config, the flame "
+                      f"controller still named (the pixel output never sends "
+                      f"it): {sorted(seen)} {fi and fi.flamesafe_config} "
+                      f"{fi and fi.flame_controller}")
             check(f"FLAMES OFF: {FC.sentence(bad)}" in out.getvalue(),
                   f"its own log says it: {out.getvalue()[-600:]!r}")
             # The rack screen's red line: set on the remote it serves.
@@ -48845,6 +48863,60 @@ def test_flamesafe_bad_json_starts_with_flames_off():
                   FC.sentence(bad),
                   f"the rack screen gets the sentence: "
                   f"{got and got[0].remote.flamesafe_problem!r}")
+
+            def start_out(folder, env=None):
+                del got[:]
+                o = io.StringIO()
+                saved_env = os.environ.get(cli_mod.FLAMESAFE_ENV)
+                if env:
+                    os.environ[cli_mod.FLAMESAFE_ENV] = env
+                try:
+                    with contextlib.redirect_stdout(o), \
+                            contextlib.redirect_stderr(o):
+                        try:
+                            rc = cli_mod._cmd_serve(types.SimpleNamespace(
+                                folder=folder, schedule=rule, announce=None,
+                                port=0, bind="127.0.0.1", token=None,
+                                no_browser=True, network=False,
+                                flamesafe_config=None))
+                        except AttributeError:
+                            rc = "served"
+                finally:
+                    os.environ.pop(cli_mod.FLAMESAFE_ENV, None)
+                    if saved_env is not None:
+                        os.environ[cli_mod.FLAMESAFE_ENV] = saved_env
+                return rc, o.getvalue()
+            # showpc.json naming another, valid file: still the one-config
+            # refusal (P1-4), never a start on the other file.
+            os.makedirs(os.path.join(work, "o"))
+            other, _sh, _d = _fi_flame_files(os.path.join(work, "o"))
+            rc, said = start_out(work, env=other)
+            check(rc not in (0, None, "served") and not got and
+                  "different flamesafe configs" in said,
+                  f"another file named in showpc.json: refused as before: "
+                  f"{rc!r} {said[-300:]!r}")
+            # An Active flame controller in a show's layout: still refused
+            # at startup with flamesafe.json broken.
+            os.makedirs(os.path.join(work, "a"))
+            _fs2, show2, _d2 = _fi_flame_files(os.path.join(work, "a"),
+                                               state="Active")
+            folder2 = os.path.join(work, "a", "folder")
+            os.makedirs(folder2)
+            with open(os.path.join(folder2, "fi_timeline.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"name": "fi", "fps": 30, "show_dir": show2,
+                           "cues": [{"tc": "01:00:00:00",
+                                     "fseq": "Show.fseq", "name": "Show"}]},
+                          fh)
+            with open(F.config_path_for(rule), "w") as fh:
+                json.dump({"flamesafe_config": fs,
+                           "flame_controller": "Flames",
+                           "beyond_blank": "osc"}, fh)
+            rc, said = start_out(folder2)
+            check(rc not in (0, None, "served") and not got and
+                  "fi_timeline.json" in said and "Active" in said,
+                  f"an Active flame controller is still refused with "
+                  f"flamesafe.json broken: {rc!r} {said[-300:]!r}")
         finally:
             web_mod.serve = real_serve
         R = _RemoteRig(S)
@@ -48937,19 +49009,33 @@ def test_flamesafe_bad_json_starts_with_flames_off():
                   f"a valid file: both start, no note: {want_['flamesafe']}")
             # The last good copy: once flamesafe has run on its bytes.
             p = types.SimpleNamespace(last_good_kept=False, config_bytes=ok1,
+                                      config_path=os.path.abspath(fs),
                                       started=100.0)
-            SUP.keep_last_good(p, fs, 100.0 + FC.LAST_GOOD_AFTER_S - 1)
+            SUP.keep_last_good(p, 100.0 + FC.LAST_GOOD_AFTER_S - 1)
             check(not os.path.exists(good) and not p.last_good_kept,
                   "not before flamesafe has run LAST_GOOD_AFTER_S on it")
-            SUP.keep_last_good(p, fs, 100.0 + FC.LAST_GOOD_AFTER_S)
+            # The file edited since flamesafe started on it: not what
+            # flamesafe ran, so not kept.
+            q = types.SimpleNamespace(last_good_kept=False,
+                                      config_bytes=b'{"older": 1}',
+                                      config_path=os.path.abspath(fs),
+                                      started=0.0)
+            SUP.keep_last_good(q, 1000.0)
+            check(not os.path.exists(good),
+                  "a file edited since flamesafe started on it is not kept")
+            SUP.keep_last_good(p, 100.0 + FC.LAST_GOOD_AFTER_S)
             check(os.path.exists(good) and open(good, "rb").read() == ok1
                   and p.last_good_kept,
                   "then its bytes are the last good copy")
             check(FC.LAST_GOOD_AFTER_S == 20.0, "after 20 s")
             os.remove(good)
+            with open(fs, "wb") as fh:
+                fh.write(broken)
             p = types.SimpleNamespace(last_good_kept=False,
-                                      config_bytes=broken, started=0.0)
-            SUP.keep_last_good(p, fs, 1000.0)
+                                      config_bytes=broken,
+                                      config_path=os.path.abspath(fs),
+                                      started=0.0)
+            SUP.keep_last_good(p, 1000.0)
             check(not os.path.exists(good),
                   "bytes that are not JSON never become the last good copy")
         finally:
