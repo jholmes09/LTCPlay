@@ -161,13 +161,21 @@ class LaserArm:
                  output=lambda: None, blockers=lambda: "", blank_now=None,
                  per_laser=None, on_permitted=None, journal=None,
                  audit=None, threaded=True, clock=time.monotonic,
-                 sleep=time.sleep, wall=time.time):
+                 sleep=time.sleep, wall=time.time, enable_blockers=None):
         self.order = [lid for lid, _n in lasers]
         self.names = dict(lasers)
         self.groups = dict(groups or {})
         self._locked = locked
         self._output = output
         self._blockers = blockers
+        # What keeps the lasers from being LIT (may_enable: the laser
+        # gate, the Blanking's per-packet check and the watcher's
+        # disarm-on-blocker), when that differs from what refuses a new
+        # ARM (refusal). None: the same `blockers` for both. The one
+        # difference today is a Programming Pause (Jeff, 2026-11-06,
+        # remote.laser_enable_blockers): lasers already armed stay armed
+        # through it, but a new arm is still refused as in a show's Hold.
+        self._enable_blockers = enable_blockers
         self.blank_now = blank_now
         self.per_laser = per_laser
         self.on_permitted = on_permitted
@@ -230,8 +238,11 @@ class LaserArm:
             return f"the laser blanking could not be read ({err})"
         return v
 
-    def _blocked(self):
-        v, err = _ask(self._blockers)
+    def _blocked(self, enable=False):
+        fn = self._blockers
+        if enable and self._enable_blockers is not None:
+            fn = self._enable_blockers
+        v, err = _ask(fn)
         if err is not None:
             return f"the show state could not be read ({err})"
         if v is None or v == "":
@@ -286,7 +297,7 @@ class LaserArm:
                   if self._is_locked(lid)]
         if locked:
             return f"{', '.join(locked)} locked out"
-        blocked = self._blocked()
+        blocked = self._blocked(enable=True)
         if blocked:
             return blocked
         return None

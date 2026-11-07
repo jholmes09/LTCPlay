@@ -840,39 +840,16 @@ MUTATIONS = [
  ("remote: the page enables stale-state controls", "ltcplay/web/remote_rules.js",
   "  const fresh = !stale && !!st;", "  const fresh = !!st;"),
 
- ("remote: the page never shows the stale banner", "ltcplay/web/remote.html",
-  "  b.hidden = !stale || $(\"main\").hidden;", "  b.hidden = true;"),
-
  ("remote: the page calls a 2.5 s old status fresh", "ltcplay/web/remote_rules.js",
   "  return (nowMs - lastOkMs) > freshS * 1000;",
   "  return (nowMs - lastOkMs) > freshS * 2000;"),
 
  # The width guard (Jeff, 2026-10-17): without it the Abort's answer
  # widened the page past the screen and the word ABORT slid off it.
- ("remote: the page's column track may grow past the screen again",
-  "ltcplay/web/remote.html",
-  "display:grid;grid-template-columns:minmax(0,1fr);\n",
-  "display:grid;\n"),
-
- ("remote: #main no longer clips what is wider than the screen",
-  "ltcplay/web/remote.html",
-  "#main{min-height:0;min-width:0;position:relative;overflow:hidden}",
-  "#main{min-height:0;position:relative}"),
-
- ("remote: a toast may widen the page again", "ltcplay/web/remote.html",
-  ".toast{font-size:clamp(13px,1.6vh,16px);color:var(--cream);min-height:1.3em;min-width:0;\n  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
-  ".toast{font-size:clamp(13px,1.6vh,16px);color:var(--cream);min-height:1.3em;\n  white-space:nowrap}"),
-
  ("remote: the MODE pill is drawn from the screen that is open, not the engine",
   "ltcplay/web/remote_rules.js",
   "  if(show.running && tr.programming)\n",
   "  if(location.hash === \"#programming\")\n"),
-
- ("remote: the getting-started steps stack at the 950 px window, the third "
-  "below the card's own scroll",
-  "ltcplay/web/remote.html",
-  "#setup .steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}",
-  "#setup .steps{display:grid;grid-template-columns:1fr;gap:10px}"),
 
  ("remote: a stale flame lamp still reads armed", "ltcplay/remote.py",
   "            for g in groups:\n                g[\"armed\"] = \"unknown\"",
@@ -1300,14 +1277,6 @@ MUTATIONS = [
  ("arm: the page arms on an old flamesafe status", "ltcplay/web/remote_rules.js",
   "fl.age_ms === undefined || fl.age_ms > 1000)",
   "fl.age_ms === undefined || fl.age_ms > 100000)"),
-
- ("arm: the page keeps holding when it goes stale", "ltcplay/web/remote.html",
-  "  const hp = holdLapsed();\n  if(hp) armStop(hp);",
-  "  const hp = holdLapsed();\n  if(false) armStop(hp);"),
-
- ("arm: closing the page does not let go", "ltcplay/web/remote.html",
-  "window.addEventListener(\"pagehide\", () => armStop(\"the page closed\"));",
-  ""),
 
  ("flame link: aim slots are held by the zero-first rule again",
   "ltcplay/flamelink.py",
@@ -3322,11 +3291,6 @@ MUTATIONS = [
   "ltcplay/streamdeck.py",
   "            self._key5_hold.release()\n            self._fire_release(\"the rig is aborted\")",
   "            self._fire_release(\"the rig is aborted\")"),
-
- ("ui 1.0: arming a hazer is not greyed for a role that may not arm",
-  "ltcplay/web/remote.html",
-  "    b.disabled = !look.armed && !mayArm;",
-  "    b.disabled = false;"),
 
  ("ui 2.0: arming a hazer is not greyed for a role that may not arm",
   "ltcplay/web/remote2.html",
@@ -6384,6 +6348,8 @@ def build():
   "ltcplay/conductor.py",
   "        self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
   "                   self.devices.lasers_blank)\n"
+  "        if want.get(\"keep_lasers_armed\"):\n"
+  "            self._pause_output_off(gen, want, progress)\n"
   "        froze = a[\"music\"] in (MUSIC_PLAYING, UNKNOWN)\n"
   "        self._step(gen, \"music\", MUSIC_HELD, \"music fading\", progress,\n"
   "                   self.show.music_hold, fade, only_from=(MUSIC_PLAYING,\n"
@@ -6393,7 +6359,9 @@ def build():
   "                   self.show.music_hold, fade, only_from=(MUSIC_PLAYING,\n"
   "                                                          UNKNOWN))\n"
   "        self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
-  "                   self.devices.lasers_blank)\n"),
+  "                   self.devices.lasers_blank)\n"
+  "        if want.get(\"keep_lasers_armed\"):\n"
+  "            self._pause_output_off(gen, want, progress)\n"),
 
  ("conductor: the real device layer says it is wired without BEYOND or "
   "MadMapper",
@@ -6529,8 +6497,10 @@ def build():
   "(finding C)",
   "ltcplay/conductor.py",
   "                self._video_cancel()\n"
-  "                self._accept(\"Hold\"",
-  "                self._accept(\"Hold\""),
+  "                if disarm_lasers:\n"
+  "                    self._accept(\"Hold\"",
+  "                if disarm_lasers:\n"
+  "                    self._accept(\"Hold\""),
 
  ('conductor: Stop does not stop a running video fade at the press (finding C)', 'ltcplay/conductor.py',
   '                self._video_cancel()\n'
@@ -9255,11 +9225,6 @@ def build():
   "lateness can add up from show to show. Saved as it is.",
   "Saved as it is."),
 
- ("late limit 2 min: the Programming field is blank for a missing grace",
-  "ltcplay/web/remote.html",
-  "doc.late_grace_s == null ? 120 :",
-  "doc.late_grace_s == null ? \"\" :"),
-
  ("late limit 2 min: a night is handed over while a show can still start inside its grace",
   "ltcplay/schedule.py",
   "                e = s.start + need + timedelta(seconds=m.late_grace_s)\n",
@@ -11125,33 +11090,6 @@ def build():
   """            state = ("on" if ms and len(on) == len(ms) and not waiting else""",
   """            state = ("on" if ms and len(on) == len(ms) else"""),
 
- ("morning page: a group click arms again unless every member is selected",
-  "ltcplay/web/remote.html",
-  "  const any = groupAnySelected(ids, MO.purge_state || {});\n"
-  "  moPress(\"purge-select\", {machines: ids, group: g, on: !any});",
-  "  const any = ids.every(id => ((MO.purge_state || {}).selected || []).includes(id));\n"
-  "  moPress(\"purge-select\", {machines: ids, group: g, on: !any});"),
-
- ("morning page: a group button cannot disarm with purge arming off",
-  "ltcplay/web/remote.html",
-  "  return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, \"arm\")));",
-  "  return !ids.length || !mo.purge_enabled || (!any && (arrange || !mayRow(st, \"arm\")));"),
-
- ("morning page: a group button cannot disarm in Arrange mode or signed out",
-  "ltcplay/web/remote.html",
-  "  return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, \"arm\")));",
-  "  return !ids.length || arrange || !mayRow(st, \"arm\") || (!any && !mo.purge_enabled);"),
-
- ("morning page: a group button's words grow it and push the page down",
-  "ltcplay/web/remote.html",
-  ".mo-groups button .gd{display:block;max-width:100%;white-space:nowrap;",
-  ".mo-groups button .gd{display:block;max-width:100%;white-space:normal;"),
-
- ("morning page: a group button flamesafe still holds armed is drawn grey",
-  "ltcplay/web/remote.html",
-  '    b.classList.toggle("part", gs.state === "part" || (any && gs.state !== "on"));',
-  '    b.classList.toggle("part", any && gs.state !== "on");'),
-
  ("morning: a group flamesafe still holds armed shows grey once cleared",
   "ltcplay/morning.py",
   """            if still:
@@ -11586,11 +11524,6 @@ def build():
   "ltcplay/remote.py",
   "                if dl and not dl[0].get(\"available\"):",
   "                if False:"),
-
- ("no PA: a passing rig check hides its warning on 1.0's card",
-  "ltcplay/web/remote.html",
-  '    $("rc-warn").hidden = !prl.warn;',
-  '    $("rc-warn").hidden = true;'),
 
  ("no PA: an account may take one of the engine's names",
   "ltcplay/users.py",
@@ -12177,51 +12110,6 @@ def build():
  # machine followed the mouse for ever, and the next click ARMED it). Each
  # of these takes one guard away; the selftest's node DOM test and the
  # engine's route test must notice every one.
- ("morning page: in Arrange mode a press on a machine still arms it",
-  "ltcplay/web/remote.html",
-  '''  if(ARRANGE){ dragStart(e, m); return; }''',
-  '''  if(ARRANGE){ dragStart(e, m); }'''),
-
- ("morning page: letting go never ends the drag, so the machine keeps "
-  "following the pointer",
-  "ltcplay/web/remote.html",
-  '''window.addEventListener("pointerup", () => dragEnd("let go"));''',
-  ''''''),
-
- ("morning page: Save layout leaves the machine on the pointer",
-  "ltcplay/web/remote.html",
-  '''  dragEnd(how === "save" ? "Save layout" : how === "cancel" ? "Cancel" : how === "reset" ? "Reset layout" : "the page was left");''',
-  ''''''),
-
- ("morning page: Escape does not drop a held machine",
-  "ltcplay/web/remote.html",
-  '''document.addEventListener("keydown", e => { if(e.key === "Escape" && DRAG) dragEnd("Escape", true); });''',
-  ''''''),
-
- ("morning page: the window losing focus leaves the machine on the pointer",
-  "ltcplay/web/remote.html",
-  '''window.addEventListener("blur", () => dragEnd("the window lost focus"));''',
-  ''''''),
-
- ("morning page: the Space bar fires while arranging",
-  "ltcplay/web/remote.html",
-  '''  if(arrangeBlocked("purge-fire", {})) return;        // the Space bar, while arranging''',
-  ''''''),
-
- ("morning page: a group button, a lock or a laser test goes while arranging "
-  "(the gate every press meets is gone)",
-  "ltcplay/web/remote.html",
-  '''  if(arrangeBlocked(route, extra)) return;
-  try{''',
-  '''  try{'''),
-
- ("morning page: Arrange mode holds nothing back",
-  "ltcplay/web/remote.html",
-  '''  if(!ARRANGE) return false;
-  const off = extra && extra.on === false;''',
-  '''  if(true) return false;
-  const off = extra && extra.on === false;'''),
-
  ("windows: the rack screen opens as a kiosk again (no Minimize, and "
   "Explorer opens behind it)",
   "packaging/windows/supervisor.py",
@@ -12241,78 +12129,6 @@ def build():
   "ltcplay/remote.py",
   '''    if reuse and not new:''',
   '''    if False:'''),
-
- ("morning page: the open beat never tells the engine the screen is arranging",
-  "ltcplay/web/remote.html",
-  '''Object.assign({arranging: ARRANGE, inst: BEAT_INST''',
-  '''Object.assign({arranging: false, inst: BEAT_INST'''),
-
- ("morning page: Save layout does not leave Arrange mode, so arming stays off "
-  "and the banner stays",
-  "ltcplay/web/remote.html",
-  '''  ARRANGE = false; ARRANGE_POS = {};
-  // The page and the engine hear''',
-  '''  ARRANGE_POS = {};
-  // The page and the engine hear'''),
-
- ("morning page: pointercancel no longer ends a drag",
-  "ltcplay/web/remote.html",
-  '''window.addEventListener("pointercancel", () => dragEnd("the pointer was cancelled"));''',
-  '''window.addEventListener("pointercancel", () => {});'''),
-
- ("morning page: pagehide no longer ends a drag",
-  "ltcplay/web/remote.html",
-  '''window.addEventListener("pagehide", () => dragEnd("the page closed"));''',
-  '''window.addEventListener("pagehide", () => {});'''),
-
- ("morning page: the page going hidden no longer ends a drag",
-  "ltcplay/web/remote.html",
-  '''document.addEventListener("visibilitychange", () => { if(document.hidden) dragEnd("the page was hidden"); });''',
-  '''document.addEventListener("visibilitychange", () => {});'''),
-
- ("morning page: leaving the Morning page stays in Arrange mode",
-  "ltcplay/web/remote.html",
-  '''    arrangeExit("left");''',
-  '''    void 0;'''),
-
- ("morning page: entering Arrange does not stop a fire press",
-  "ltcplay/web/remote.html",
-  '''  fireStop("Arrange mode");''',
-  '''  void 0;'''),
-
- ("morning page: entering Arrange keeps this screen's purge selection armed",
-  "ltcplay/web/remote.html",
-  '''    post("/api/remote/purge-clear", actor({})).catch(() => {});
-  $("mo-msg").textContent = "Press a machine and move it''',
-  '''    void 0;
-  $("mo-msg").textContent = "Press a machine and move it'''),
-
- ("morning page: an L lock button locks or unlocks while arranging",
-  "ltcplay/web/remote.html",
-  '''  if(arrangeBlocked("lock", {})) return;        // before anything is sent''',
-  '''  // gate gone'''),
-
- ("morning page: the group buttons stay live while arranging",
-  "ltcplay/web/remote.html",
-  '''  return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, "arm")));''',
-  '''  return !ids.length || (!any && (!mo.purge_enabled || !mayRow(st, "arm")));'''),
-
- ("morning page: a bare mouse (no button down) still drags the machine",
-  "ltcplay/web/remote.html",
-  '''  if(ev.pointerType === "mouse" && ev.buttons === 0){ dragEnd("the button was already up"); return; }''',
-  '''  if(false){ dragEnd("the button was already up"); return; }'''),
-
- ("morning page: losing pointer capture does not end the drag",
-  "ltcplay/web/remote.html",
-  '''    if(DRAG && DRAG.el === el && !(el.hasPointerCapture && el.hasPointerCapture(DRAG.pointerId))) dragEnd("the pointer was released");''',
-  '''    void 0;'''),
-
- ("morning page: the banner still says arranging while Save is in flight",
-  "ltcplay/web/remote.html",
-  '''  post("/api/remote/morning-open", openBeatBody(how === "left")).catch(() => {});
-  renderMorning();
-  if(how === "save") await moPress''',
-  '''  if(how === "save") await moPress'''),
 
  ("morning: one window's ordinary beat clears another window's Arrange mode",
   "ltcplay/morning.py",
@@ -12360,11 +12176,6 @@ def build():
   "ltcplay/morning.py",
   '''                           mark_open=body.get("leaving") is not True)''',
   '''                           mark_open=True)'''),
-
- ("morning page: the beat sent on leaving the page does not say so",
-  "ltcplay/web/remote.html",
-  '''openBeatBody(how === "left")''',
-  '''openBeatBody(false)'''),
 
  ("morning: a screen in Arrange mode can still arm or unlock at the engine",
   "ltcplay/morning.py",
@@ -12509,11 +12320,6 @@ def build():
   "ltcplay/streamdeck.py",
   '''            body["on"] = True''',
   '''            pass'''),
-
- ("page: the Space bar's fire heartbeat stops saying on true",
-  "ltcplay/web/remote.html",
-  '''moActor({fire_id:f.id, on:true})''',
-  '''moActor({fire_id:f.id})'''),
 
  ("morning: one window's beat numbers are counted against another window's",
   "ltcplay/morning.py",
@@ -13338,37 +13144,9 @@ def build():
   '        if u is not None and (u.get("active") is True or u.get("stale")):',
   '        if False:'),
 
- ('page: a sign-in leaves Run locked', 'ltcplay/web/remote.html',
-  '      el.disabled = el.dataset.dis0 === "1";\n',
-  ''),
-
- ('page: a Stop is locked signed out', 'ltcplay/web/remote.html',
-  '  return offs.filter(el => el && el.dataset.mode !== "stop");',
-  '  return offs.filter(Boolean);'),
-
- ("page: a sign-in leaves the sign-in tooltip", 'ltcplay/web/remote.html',
-  '    el.title = el.dataset.title0 || "";\n',
-  ''),
-
- ('page: signed out leaves Start now on', 'ltcplay/web/remote.html',
-  '    offs.push($("b-start"), $("b-resume"), $("b-run"),',
-  '    offs.push($("b-resume"), $("b-run"),'),
-
  ('page: signed out may hold to arm', 'ltcplay/web/remote_rules.js',
   '  if(!mayRow(st, "arm")) return {ok:false, signin:true, why:SIGN_IN_WORDS};\n',
   ''),
-
- ("page: signed out may arm a laser", 'ltcplay/web/remote.html',
-  '    offs.push(...[...document.querySelectorAll("#lz-chips button[data-lz]")].filter(b => !b.classList.contains("armed")));',
-  '    offs.push(...[...document.querySelectorAll("#lz-chips button[data-lz]")].filter(b => false));'),
-
- ('page: a laser Disarm is locked signed out', 'ltcplay/web/remote.html',
-  '    offs.push(...[...document.querySelectorAll("#lz-chips button[data-lz]")].filter(b => !b.classList.contains("armed")));',
-  '    offs.push(...document.querySelectorAll("#lz-chips button[data-lz]"));'),
-
- ('page: the chip never says view only', 'ltcplay/web/remote.html',
-  '  b.textContent = me.user ? me.user : (viewOnly ? "Sign in to use controls" : "Signed out");',
-  '  b.textContent = me.user ? me.user : "Signed out";'),
 
  ("web: the page's open-beats are written to the audit log", 'ltcplay/web.py',
   '                                         "/api/remote/morning-open",\n                                         "/api/schedule/deck-event")):',
@@ -13757,23 +13535,6 @@ def build():
   '            return "bad", "not arming"',
   '            return "warn", "not arming"'),
 
- ('rack screen: a status the page cannot draw is still called fresh',
-  'ltcplay/web/remote.html',
-  '        LAST_OK = before;',
-  '        ;'),
-
- ('rack screen: a stale page reads the status before greying its chips',
-  'ltcplay/web/remote.html',
-  '  if(stale){\n'
-  '    // The top bar\'s chips first',
-  '  if(stale && false){\n'
-  '    // The top bar\'s chips first'),
-
- ('deck lamp: a page that lost the engine keeps its chips green',
-  'ltcplay/web/remote.html',
-  '    document.querySelectorAll(".chip").forEach(el => { el.className = "chip warn"; const w = el.querySelector("span"); if(w) w.textContent = "no contact"; });',
-  '    document.querySelectorAll(".chip").forEach(el => { });'),
-
  ('deck hold: a Hold the engine found already done is ENGINE FAULT',
   'ltcplay/streamdeck.py',
   '        noop = (not ok and name in ("hold", "resume") and\n'
@@ -13934,26 +13695,6 @@ def build():
   '                      if now - t > SCREEN_REFUSED_KEEP_S]',
   '                      if False]'),
 
- ('screen arm: the page hides the button while arming is off',
-  'ltcplay/web/remote.html',
-  '    ab.hidden = false;\n',
-  '    ab.hidden = !on;\n'),
-
- ('screen arm: the page says arming off nowhere',
-  'ltcplay/web/remote.html',
-  '  if(!on && !HOLD && $("arm-note").textContent !== ARMING_OFF) armSay(ARMING_OFF, 1);',
-  '  if(false) armSay(ARMING_OFF, 1);'),
-
- ('screen arm: a refusal is said only where a short window hides it',
-  'ltcplay/web/remote.html',
-  '  if(level >= 2){ $("ctl-msg").textContent = text;',
-  '  if(false){ $("ctl-msg").textContent = text;'),
-
- ('screen arm: the page reads the deck taking the hold as nothing',
-  'ltcplay/web/remote.html',
-  '    if(j.armed){',
-  '    if(false){'),
-
  ('screen arm: the hold is credited without the deck\'s word',
   'ltcplay/remote.py',
   '                    took = mine and \\\n'
@@ -14012,11 +13753,6 @@ def build():
   'ltcplay/remote.py',
   '                    pg.clear("arming from a screen was switched off")',
   '                    pass'),
-
- ('screen arm: the confirm box says less than the switch does',
-  'ltcplay/web/remote.html',
-  'confirmBox("Turn on arming from a screen?", SCREEN_ARMING_ENABLES,',
-  'confirmBox("Turn on arming from a screen?", "Hold to arm.",'),
 
  ('screen arm: the page says nothing when arming is off',
   'ltcplay/web/remote_rules.js',
@@ -14196,10 +13932,10 @@ def build():
   '            return f"{\', \'.join(locked)} locked out"'),
  ('lasers: the output may come on while blocked (latched, held, closing)',
   'ltcplay/laserarm.py',
-  '        blocked = self._blocked()\n'
+  '        blocked = self._blocked(enable=True)\n'
   '        if blocked:\n'
   '            return blocked',
-  '        blocked = self._blocked()\n'
+  '        blocked = self._blocked(enable=True)\n'
   '        if False:\n'
   '            return blocked'),
  ('lasers: the output may come on with blanking not set up',
@@ -14317,10 +14053,9 @@ def build():
  ('lasers: re-arming runs the whole up sequence, not only the lasers',
   'ltcplay/conductor.py',
   '        if want.get("lasers_only"):\n'
-  '            # lasers_armed(): the show is up already; only the lasers.\n'
-  '            self._restore_lasers(gen, progress)\n'
-  '            return\n',
-  ''),
+  '            # lasers_armed(): the show is up already; only the lasers. A\n',
+  '        if False:\n'
+  '            # lasers_armed(): the show is up already; only the lasers. A\n'),
  ("lasers: the conductor's laser gate ignores the arm",
   'ltcplay/fire_ice.py',
   '        why = arm_gate()\n'
@@ -14362,8 +14097,7 @@ def build():
   '                (name == "laser-test" and body.get("on") is True)) and \\'),
  ('lasers: arming is allowed while the show is on Hold',
   'ltcplay/remote.py',
-  '        if state in ("PAUSED", "HOLD") or \\\n'
-  '                getattr(cond, "_look", None) in ("HELD", "DARK"):',
+  '        if state in ("PAUSED", "HOLD") or look in ("HELD", "DARK"):',
   '        if False:'),
  ('lasers: with no schedule, arming is allowed',
   'ltcplay/remote.py',
@@ -14406,11 +14140,6 @@ def build():
   'ltcplay/users.py',
   '        if name == "laser-arm" and body.get("on") is not True:',
   '        if False:'),
- ('lasers: Arrange mode on the page lets a laser arm through',
-  'ltcplay/web/remote.html',
-  ' ||\n'
-  '    (route === "laser-arm" && extra && extra.on === true);',
-  ';'),
  ("lasers: the page reads ALL ARMED without the engine's word",
   'ltcplay/web/remote_rules.js',
   '  if(la.output_permitted) return "Lasers: ALL ARMED.',
@@ -14505,12 +14234,6 @@ def build():
   '                        w["ids"] = list(dict.fromkeys(list(w["ids"]) +\n'
   '                                                      list(ids)))',
   '                        pass'),
- ('lasers: Arrange mode on the page holds back a disarm click',
-  'ltcplay/web/remote.html',
-  '  if(all){ moPress("laser-arm", {lasers: ids, on:false}, "mo-lmsg"); return; }\n'
-  '  if(arrangeBlocked("laser-arm", {on:true})) return;',
-  '  if(arrangeBlocked("laser-arm", {on:true})) return;\n'
-  '  if(all){ moPress("laser-arm", {lasers: ids, on:false}, "mo-lmsg"); return; }'),
  ("lasers: a trailing slash gets a refused address into a laser's lists",
   'ltcplay/lasertest.py',
   '    return a.rstrip("/")',
@@ -14536,73 +14259,6 @@ def build():
   '            # The laser arm FIRST'),
 
  # -- LASERS on the show screen (Jeff, 2026-10-22) --
- ('rack lasers: Disarm all lasers waits for a fresh status',
-  'ltcplay/web/remote.html',
-  '  return lzPress({all:true, on:false});',
-  '  if(LZ_STALE) return null;\n  return lzPress({all:true, on:false});'),
- ('rack lasers: Arrange mode holds back Disarm all lasers',
-  'ltcplay/web/remote.html',
-  '  return lzPress({all:true, on:false});',
-  '  if(arrangeBlocked("laser-arm", {on:true})) return null;\n'
-  '  return lzPress({all:true, on:false});'),
- ('rack lasers: Disarm all lasers asks for a confirm',
-  'ltcplay/web/remote.html',
-  '  return lzPress({all:true, on:false});',
-  '  return confirmBox("Disarm all lasers?", "", "Disarm", "").then(ok => ok ? '
-  'lzPress({all:true, on:false}) : null);'),
- ('rack lasers: the screen arming switch holds back Disarm all lasers',
-  'ltcplay/web/remote.html',
-  '  return lzPress({all:true, on:false});',
-  '  if((LZ || {}).arm_here) return null;\n  return lzPress({all:true, on:false});'),
- ('rack lasers: Disarm all lasers sends a body that is not a disarm',
-  'ltcplay/web/remote.html',
-  '  return lzPress({all:true, on:false});',
-  '  return lzPress({all:true, on:true});'),
- ('rack lasers: Disarm all lasers is not wired',
-  'ltcplay/web/remote.html',
-  '$("lz-disarm").addEventListener("click", lzDisarmAll);',
-  ''),
- ("rack lasers: an armed laser's chip arms instead of disarming",
-  'ltcplay/web/remote.html',
-  '  if(ls.length && ls.every(x => x.armed)) return lzPress({lasers:ids, on:false});',
-  ''),
- ('rack lasers: a chip arms with no confirm',
-  'ltcplay/web/remote.html',
-  '  if(!(await confirmBox("Arm " + names + "?", LZ_ARM_NOTE, "Arm", "start"))) return null;',
-  ''),
- ('rack lasers: Arrange mode lets a chip arm',
-  'ltcplay/web/remote.html',
-  '  if(arrangeBlocked("laser-arm", {on:true})) return null;\n'
-  '  const names',
-  '  const names'),
- ('rack lasers: a chip arms on a stale status',
-  'ltcplay/web/remote.html',
-  '  if(stale) return "no contact with the engine, so the lasers\' state is not known";',
-  ''),
- ('rack lasers: a chip asks to arm with the screen arming switch off',
-  'ltcplay/web/remote.html',
-  '  if(la && la.arm_here) return la.arm_here;',
-  ''),
- ('rack lasers: a chip asks to arm a locked laser',
-  'ltcplay/web/remote.html',
-  '  if(locked.length) return locked.join(", ")',
-  '  if(false) return locked.join(", ")'),
- ('rack lasers: the page never asks its own refusals before an arm',
-  'ltcplay/web/remote.html',
-  '  const why = lzArmRefusal(la, ls, LZ_STALE);',
-  '  const why = "";'),
- ('rack lasers: a stale status leaves the chips pressable',
-  'ltcplay/web/remote.html',
-  '  }).concat(ls.map(x => ({ids:[x.id], off:stale,',
-  '  }).concat(ls.map(x => ({ids:[x.id], off:false,'),
- ('rack lasers: the show screen never draws the strip',
-  'ltcplay/web/remote.html',
-  '  renderLaserStrip(ST && ST.laser_arm, stale);\n',
-  ''),
- ('rack lasers: the chips may widen the page',
-  'ltcplay/web/remote.html',
-  '.lz-chips{display:flex;flex-wrap:wrap;gap:6px;min-width:0;overflow:hidden;',
-  '.lz-chips{display:flex;flex-wrap:wrap;gap:6px;'),
  ('rack lasers: the status leaves the strip out',
   'ltcplay/remote.py',
   '            out["laser_arm"] = self.rack_laser_view(m, ctx)',
@@ -14750,10 +14406,6 @@ def build():
   'ltcplay/lasertest.py',
   '                "setup_needed": (None if self.mechanism != "none" and\n',
   '                "setup_needed": (None if True or self.mechanism != "none" and\n'),
- ('laser test: the Startup page hides what a laser not set up needs',
-  'ltcplay/web/remote.html',
-  '      !l.configured ? need :\n',
-  '      false ? need :\n'),
  ('madmapper watch: MadMapper exiting raises no alert',
   'ltcplay/remote.py',
   '                self.alerts.raise_("video", text)',
@@ -14892,9 +14544,6 @@ def build():
   'ltcplay/remote.py',
   '        if ok:\n            alert = (f"{lead}: ALL groups disarm sent.',
   '        if True:\n            alert = (f"{lead}: ALL groups disarm sent.'),
- ('rack screen: a late Disarm answer covers a press made after it', 'ltcplay/web/remote.html',
-  '  if(seq >= (SAID_SEQ[el.id] || 0)){',
-  '  if(true){'),
  ('ui2 page: a forced Disarm is said as done',
   'ltcplay/web/remote2.html',
   '    const forced = route === "group-disarm" && j.forced === true;\n',
@@ -14986,42 +14635,6 @@ def build():
   'ltcplay/web.py',
   '        httpd.remote.reserve_disarm_ids()',
   '        pass'),
- ('schedule tab: the list is rebuilt on every status poll again',
-  'ltcplay/web/remote.html',
-  '  if(key === SLOT_KEY) return;',
-  '  if(false) return;'),
- ('schedule tab: a tap is read only as a click on one element again',
-  'ltcplay/web/remote.html',
-  '  if(el) toggleSlot(el.dataset.k);\n});',
-  '  if(false) toggleSlot(el.dataset.k);\n});'),
- ('schedule tab: a show with no reason opens to nothing',
-  'ltcplay/web/remote.html',
-  '(notes || "No notes for this show.")',
-  'notes'),
- ('mode switch: Programming is offered during a live show',
-  'ltcplay/web/remote.html',
-  '  if(want === "programming" && live){',
-  '  if(false){'),
- ('mode switch: Run in Programming starts a Show',
-  'ltcplay/web/remote.html',
-  'post("/api/start", prog ? {timeline:f, on_lost:"hold"} : {timeline:f})',
-  'post("/api/start", {timeline:f})'),
- ('arm button: a refused hold greys the state out',
-  'ltcplay/web/remote.html',
-  '.lamp button.armb:disabled{opacity:1;filter:none;cursor:default}\n',
-  ''),
- ('arm again: flamesafe\'s cycle the arm is shown as it is',
-  'ltcplay/web/remote.html',
-  '  if(REASON_WORDS[r]) return REASON_WORDS[r];',
-  '  if(false) return REASON_WORDS[r];'),
- ('arm again: the button does not say Disarm, then hold',
-  'ltcplay/web/remote.html',
-  '  if(look.held === "cycle") return "Disarm, then hold";\n',
-  ''),
- ('time zone: the schedule\'s own zone is not the one chosen',
-  'ltcplay/web/remote.html',
-  '  sel.value = want || "America/Denver";',
-  '  sel.value = "America/Denver";'),
  ('arm again: the Stream Deck key says CYCLE ARM again',
   'ltcplay/streamdeck.py',
   '    "cycle the arm": "ARM AGAIN",',
@@ -15289,10 +14902,6 @@ def build():
   'ltcplay/web.py',
   '                if _rm is not None and hasattr(_rm, "live_flame_end"):',
   '                if False:'),
- ('live flame: the page never shows the red bar',
-  'ltcplay/web/remote.html',
-  '  ban.hidden = !on;',
-  '  ban.hidden = true;'),
  ('live flame: another controller sending to this PC is taken',
   'ltcplay/flameprog.py',
   '                if sends and (dest.startswith("127.") or',
@@ -15502,40 +15111,10 @@ def build():
  # -- the rack screen's banners never squeeze the flame controls (Jeff,
  # 2026-10-24, the show PC): caught by the page's CSS contract and by the
  # page drawn in headless Chromium (selftest.py, RACK_SIZES).
- ("rack screen: the flame groups' rows give their room to banners again",
-  "ltcplay/web/remote.html",
-  "  grid-auto-rows:minmax(min-content,1fr);gap:8px}",
-  "  grid-auto-rows:minmax(0,1fr);gap:8px}"),
-
- ("rack screen: the flame block shrinks below its content again",
-  "ltcplay/web/remote.html",
-  ".flames{flex:1 0 auto;min-height:min-content;",
-  ".flames{flex:1 1 auto;min-height:0;"),
-
- ("rack screen: the screens' row may shrink to nothing again",
-  "ltcplay/web/remote.html",
-  "  grid-template-rows:auto auto minmax(min-content,1fr) auto;",
-  "  grid-template-rows:auto auto minmax(0,1fr) auto;"),
-
- ("rack screen: the page cannot be scrolled again",
-  "ltcplay/web/remote.html",
-  "html{height:100%;overflow-x:hidden;overflow-y:auto}",
-  "html{height:100%;overflow:hidden}"),
-
  ("rack screen: the banners are never folded",
   "ltcplay/web/remote_rules.js",
   "  if(list.length < 2) return {fold:false, n:list.length, fresh:fresh, keys:keys};",
   "  if(list.length < 99) return {fold:false, n:list.length, fresh:fresh, keys:keys};"),
-
- ("rack screen: the fold is never drawn",
-  "ltcplay/web/remote.html",
-  "  setWarn(\"lock-banner\", lockText);\n  renderAlertFold();",
-  "  setWarn(\"lock-banner\", lockText);"),
-
- ("rack screen: Show all never opens the banners",
-  "ltcplay/web/remote.html",
-  "  $(\"al-body\").hidden = f.fold && !ALERTS_OPEN;",
-  "  $(\"al-body\").hidden = f.fold;"),
 
  # The rack screen, 2026-10-26: ABORT a stop sign in the corner, one
  # button per flame group, Arm all and Disarm all one two-way button, and
@@ -15561,11 +15140,6 @@ def build():
   '  if(!on) return "lamp";\n  if(c === "unknown") return "disarm";',
   '  if(c === "unknown") return "disarm";'),
 
- ("rack screen: a Disarm button is held back by a stale page",
-  "ltcplay/web/remote.html",
-  '    if(el.dataset.mode === "disarm"){ el.disabled = false; return; }\n',
-  ''),
-
  ("rack screen: a mix of armed groups shows Arm all",
   "ltcplay/web/remote_rules.js",
   '  if(gs.some(g => g.wanted || (g.armed !== "disarmed" && g.armed !== "held"))) return "disarm";',
@@ -15587,70 +15161,15 @@ def build():
   ''),
 
  # Review of #118: the follow-up's guards.
- ("rack screen: letting go of Arm all early does not let go",
-  "ltcplay/web/remote.html",
-  '  ALL_BTN.addEventListener(ev, () => { if(HOLD && HOLD.all) armStop("let go"); }));',
-  '  ALL_BTN.addEventListener(ev, () => {}));'),
-
- ("rack screen: a stale page never stops an Arm all hold",
-  "ltcplay/web/remote.html",
-  '    if(HOLD.all && g && (g.armed === "armed" || g.wanted) && as.why === "Already armed or asked for.") continue;',
-  '    if(HOLD.all) continue;'),
-
- ("rack screen: an Arm all heartbeat goes on a stale status",
-  "ltcplay/web/remote.html",
-  '    const why = holdLapsed();\n    if(why){ armStop(why); return; }',
-  '    const why = "";'),
-
- ("rack screen: Arm all reads Disarm all while it is still arming",
-  "ltcplay/web/remote.html",
-  'const mode = (HOLD && HOLD.all) ? "arm" : allButtonMode(ST, stale);',
-  'const mode = allButtonMode(ST, stale);'),
-
- ("rack screen: live flame programming turned on mid-hold does not stop Arm all",
-  "ltcplay/web/remote.html",
-  '  if(HOLD.all){ const no = armAllRefusal(ST); if(no) return no; }\n',
-  ''),
-
  ("rack screen: live flame programming not readable allows Arm all",
   "ltcplay/web/remote_rules.js",
   '  if(lf.error) return LF_UNKNOWN_WORDS;\n',
   ''),
 
- ("rack screen: an armed group's button reads DISARM, not ARMED",
-  "ltcplay/web/remote.html",
-  '  el.querySelector(".act").textContent = "Disarm";',
-  '  el.querySelector(".word").textContent = "Disarm";'),
-
- ("rack screen: Enter on Arm all says nothing",
-  "ltcplay/web/remote.html",
-  ' else if(e.detail === 0 && ALL_BTN.dataset.mode === "arm") armSay(KEY_HOLD_WORDS, 2);',
-  ''),
-
- ("rack screen: Arm all looks like Disarm all",
-  "ltcplay/web/remote.html",
-  '#b-disarm.armall{border:3px solid #5FE08A;color:#5FE08A;',
-  '#b-disarm.armall{'),
-
- ("rack screen: letting go of a group's Hold to arm early does not let go",
-  "ltcplay/web/remote.html",
-  'b.addEventListener(ev, () => { if(holding(i) && !HOLD.all) armStop("let go"); }));',
-  'b.addEventListener(ev, () => {}));'),
-
- ("rack screen: a press on a group's Disarm tries a hold",
-  "ltcplay/web/remote.html",
-  'if(b.dataset.mode === "hold") armStart(i); });',
-  'armStart(i); });'),
-
  ("rack screen: a group whose state is not known shows Hold to arm",
   "ltcplay/web/remote_rules.js",
   '  if(c === "unknown") return "disarm";\n  if(g && (g.armed',
   '  if(c === "unknown") return "hold";\n  if(g && (g.armed'),
-
- ("rack screen: a page with no contact leaves its buttons as they were",
-  "ltcplay/web/remote.html",
-  '    if(stale) setArmMode(el, armOn ? "disarm" : "lamp", "unknown");\n',
-  ''),
 
  ("rack screen: Arm all offered while a group is not known",
   "ltcplay/web/remote_rules.js",
@@ -15666,11 +15185,6 @@ def build():
   "ltcplay/web/remote_rules.js",
   'if(keyboard) return nowMode === "disarm" ? "disarm" : "";',
   'if(keyboard) return "";'),
-
- ("rack screen: letting go of Arm all never tells the engine",
-  "ltcplay/web/remote.html",
-  '    if(h.all){ p.end = "out"; p.why = why ? "Hold stopped: " + why : "Hold stopped"; }\n    post("/api/remote/arm-release", {group:p.group}).catch(() => {});',
-  '    if(h.all){ p.end = "out"; p.why = why ? "Hold stopped: " + why : "Hold stopped"; continue; }\n    post("/api/remote/arm-release", {group:p.group}).catch(() => {});'),
 
  # The Abort double tap and the one laser pill (Jeff, 2026-10-26).
  ('rack screen: a finger then the mouse is a Stop', 'ltcplay/web/remote_rules.js',
@@ -15700,73 +15214,15 @@ def build():
   '    "",'),
 
  # One-tap lockout on the Startup page (Jeff, 2026-10-26).
- ("startup page: an L button asks before it locks again",
-  "ltcplay/web/remote.html",
-  '    const j = await moPress("lock", lockBody(kind, id, on), msg);',
-  '    if(!(await confirmBox("Lock out " + name + "?", "", "Lock out", ""))) return;\n    const j = await moPress("lock", lockBody(kind, id, on), msg);'),
-
- ("startup page: an unlock is sent without saying it is confirmed",
-  "ltcplay/web/remote.html",
-  " : {kind:kind, id:id, on:false, confirmed:true}; }",
-  " : {kind:kind, id:id, on:false}; }"),
-
- ("startup page: a lock or unlock offers no Undo",
-  "ltcplay/web/remote.html",
-  '    if(j) lockUndoOffer(kind, id, name, on);',
-  ''),
-
- ("startup page: Undo does the same again instead of the opposite",
-  "ltcplay/web/remote.html",
-  '  await lockClick(u.kind, u.id, u.name, !u.on);',
-  '  await lockClick(u.kind, u.id, u.name, u.on);'),
-
- ("startup page: Undo never goes away",
-  "ltcplay/web/remote.html",
-  "  LOCK_UNDO.timer = setTimeout(lockUndoGone, LOCK_UNDO_MS);",
-  ""),
-
- ("startup page: a refused lock offers an Undo",
-  "ltcplay/web/remote.html",
-  "  }catch(e){ el.textContent = e.message; return null; }",
-  "  }catch(e){ el.textContent = e.message; return {}; }"),
-
  # Review of #122.
- ("startup page: a second tap on L while the first is under way flips it back",
-  'ltcplay/web/remote.html',
-  '  if(LOCK_BUSY[key] && want === undefined) return;\n',
-  ''),
-
- ("startup page: an L button is free again at once after its answer",
-  "ltcplay/web/remote.html",
-  "    setTimeout(() => { delete LOCK_BUSY[key]; }, LOCK_QUIET_MS);",
-  "    delete LOCK_BUSY[key];"),
-
- ("startup page: an L tap never asks the engine before it sends",
-  'ltcplay/web/remote.html',
-  '    try{ fresh = await getJSON("/api/remote/morning", 1500); }catch(e){ fresh = null; }',
-  '    fresh = MO;'),
-
  ("startup page: a machine is unlocked while its flame group is armed",
   "ltcplay/web/remote_rules.js",
   '  if(g && (g.armed === "armed" || g.wanted)) return "Disarm " + m.group + " first, then unlock " + m.name + ".";',
   ''),
 
- ("startup page: a laser lock's Undo sits under the machine map",
-  "ltcplay/web/remote.html",
-  '  if(at && bar.previousElementSibling !== at) at.insertAdjacentElement("afterend", bar);',
-  ''),
-
  ('rack screen: a fast double tap on Stop waits for a third', 'ltcplay/web/remote_rules.js',
   '    if(nowMs - prev.at <= STOP_TAP_MS || enlarged) return {fire:true, next:null};',
   '    if((nowMs - prev.at <= STOP_TAP_MS && nowMs - prev.at > 100) || enlarged) return {fire:true, next:null};'),
-
- ('rack screen: a held Enter on Stop counts again and again', 'ltcplay/web/remote.html',
-  '  el.addEventListener("keydown", e => { if(e.repeat && (e.key === "Enter" || e.key === " ")) e.preventDefault(); });',
-  '  el.addEventListener("keydown", e => { });'),
-
- ('rack screen: a tap leaves keyboard focus on Stop', 'ltcplay/web/remote.html',
-  'if(kind !== "key") $(id).blur();',
-  'if(false) $(id).blur();'),
 
  ("rack screen: the laser pill says output on when it is only allowed",
   "ltcplay/web/remote_rules.js",
@@ -15789,32 +15245,12 @@ def build():
   '  const n = c === "armed" ? m : 0;',
   "  const n = 0;"),
 
- ("rack screen: the machine count is never drawn",
-  "ltcplay/web/remote.html",
-  "    const sl = safetyLine(g, c) || machineCountLine(g, c, ST && ST.morning && ST.morning.group_machines), se",
-  "    const sl = safetyLine(g, c), se"),
-
  ("remote: the group machine count never counts a lockout",
   "ltcplay/remote.py",
   "                if x.id in locked:\n                    g[\"locked\"] += 1",
   "                if False:\n                    g[\"locked\"] += 1"),
 
  # Second review of #122.
- ("startup page: a tap sends what the engine has, not what the operator saw",
-  "ltcplay/web/remote.html",
-  "    if(on === isLocked(fresh)){",
-  "    if(false){"),
-
- ("startup page: Undo is dropped inside the quiet second",
-  "ltcplay/web/remote.html",
-  "  if(LOCK_BUSY[key] && want === undefined) return;",
-  "  if(LOCK_BUSY[key]) return;"),
-
- ("startup page: Undo unlocks a machine whose group is armed",
-  "ltcplay/web/remote.html",
-  '    if(!on && kind === "machine"){\n      const why = unlockRefusal(',
-  '    if(!on && kind === "machine" && want === undefined){\n      const why = unlockRefusal('),
-
  ("startup page: an unlock goes while flamesafe is not connected",
   "ltcplay/web/remote_rules.js",
   "  if(!fl.connected || fl.stale) return",
@@ -15834,11 +15270,6 @@ def build():
   "ltcplay/morning.py",
   "        if not fl or fl.get(\"stale\") or not fl.get(\"connected\"):",
   "        if not fl:"),
-
- ("rack screen: a page with no contact keeps an old machine count",
-  "ltcplay/web/remote.html",
-  '      if(sf){ sf.hidden = false; sf.textContent = "armed: not known"; sf.title = ""; }\n',
-  ''),
 
  ("rack screen: a lock flamesafe does not hold yet is counted out",
   "ltcplay/web/remote_rules.js",
@@ -15875,28 +15306,8 @@ def build():
   '  if(!g || c === "unknown" || (g.safeties_up || []).length >= 2) return "";',
   '  if(!g || c === "unknown" || (g.safeties_up || []).length > 2) return "";'),
 
- ("rack screen: the nav buttons are cut off at the right edge again",
-  "ltcplay/web/remote.html",
-  "nav{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;flex:0 1 auto;min-width:0;max-width:100%;",
-  "nav{display:flex;gap:8px;flex:0 0 auto;"),
-
- ("rack screen: the Art-Net note is never shown",
-  "ltcplay/web/remote.html",
-  "  setWarn(\"an-note\", s.artnet_note || \"\");",
-  "  setWarn(\"an-note\", \"\");"),
-
  # Review of #102: the folded line is red and names every fault, a new
  # fault opens it, and the deck alert's Disarm all stays outside it.
- ("rack screen: a lockout is folded as a note",
-  "ltcplay/web/remote.html",
-  '  LOCAL_FAULT["lock-banner"] = !!lockText;',
-  '  LOCAL_FAULT["lock-banner"] = false;'),
-
- ("rack screen: the cue fault and the deck not heard are folded as a note",
-  "ltcplay/web/remote.html",
-  '  LOCAL_FAULT["fl-warn"] = !!fmsg;',
-  '  LOCAL_FAULT["fl-warn"] = false;'),
-
  ("rack screen: the folded line does not name the faults",
   "ltcplay/web/remote_rules.js",
   '      (faults.length === 1 ? "Fault: " : faults.length + " faults: ") + faults.join(", "),',
@@ -15906,16 +15317,6 @@ def build():
   "ltcplay/web/remote_rules.js",
   "  const fresh = !!seen && keys.some(k => !seen.has(k));",
   "  const fresh = false;"),
-
- ("rack screen: a fresh fault never opens the fold",
-  "ltcplay/web/remote.html",
-  "  if(f.fresh){ if(HOLD) PENDING_OPEN = true; else ALERTS_OPEN = true; }",
-  ""),
-
- ("rack screen: the deck alert's Disarm all is behind Show all",
-  "ltcplay/web/remote.html",
-  '  $("al-sum-dis").hidden = !f.fold || ALERTS_OPEN ||',
-  '  $("al-sum-dis").hidden = true ||'),
 
  # -- the render's end (2026-10-24): a tiny overrun is zero and no fault;
  # past the end the output is zero always.
@@ -16049,21 +15450,6 @@ def build():
   "ltcplay/remote.py",
   "        for view in (self.live_flame_view, self.programming_flames_view):",
   "        for view in (self.live_flame_view,):"),
-
- ("programming flames: the Programming screen cuts the cue fault short",
-  "ltcplay/web/remote.html",
-  "  $(\"pf-warn\").textContent = warn;",
-  "  $(\"pf-warn\").textContent = warn.slice(0, 80);"),
-
- ("programming flames: the Programming screen never shows a cue fault",
-  "ltcplay/web/remote.html",
-  "  const warn = on && tr.programming && fault ?",
-  "  const warn = false && fault ?"),
-
- ("programming flames: the Programming screen never shows the line",
-  "ltcplay/web/remote.html",
-  "  $(\"pf-line\").hidden = !on;",
-  "  $(\"pf-line\").hidden = true;"),
 
  # The fuel tracker (fuel.py, FUEL.md, Jeff 2026-10-26).
  ("fuel: the flame link's observer is told before the frame went",
@@ -16233,16 +15619,6 @@ def build():
   "ltcplay/remote.py",
   "                out[\"fuel\"] = self.fuel.summary()",
   "                pass"),
-
- ("fuel: the page never draws the health bar",
-  "ltcplay/web/remote.html",
-  "<i style=\"width:${pct}%\"></i>",
-  "<i></i>"),
-
- ("fuel: the page offers Refilled to someone who may not",
-  "ltcplay/web/remote.html",
-  "<button data-refill=\"${esc(u.id)}\" ${f.may_refill ? \"\" : \"disabled\"}",
-  "<button data-refill=\"${esc(u.id)}\""),
 
  ("fuel: a group flamesafe reports not armed burns",
   "ltcplay/fuel.py",
@@ -16463,16 +15839,6 @@ def build():
   "            remote.fuel.close()",
   "        try:\n            remote.fuel.close()\n        finally:\n"
   "            _close_before()"),
-
- ("fuel: the Fuel page cannot scroll, so its lower tiles are cut off",
-  "ltcplay/web/remote.html",
-  "#v-fuel{overflow:auto;display:flex;",
-  "#v-fuel{display:flex;"),
-
- ("fuel: the Fuel button never turns amber",
-  "ltcplay/web/remote.html",
-  "  $(\"nav-fuel\").classList.toggle(\"soon\", !!(s.fuel && (s.fuel.refill_soon || s.fuel.fault)));",
-  ""),
 
  # The Weather block (weather.py, WEATHER.md; 2026-10-26). Display only;
  # each is a way the wind readout could mislead an operator.
@@ -16864,11 +16230,6 @@ def build():
   "  if(!/^[0-9]{1,4}$/.test(t)) return null;",
   "  if(!/^[0-9]{1,4}$/.test(t)) return 0;"),
 
- ("last show sign out: Save sends minutes it could not read (P2-7)",
-  "ltcplay/web/remote.html",
-  "  if(lastShow === null){",
-  "  if(false){"),
-
  ("last show sign out: a night closed at its reset loses its sign-out (P2-8)",
   "ltcplay/remote.py",
   "            if seen is not None and seen[\"night\"] != str(m.date):",
@@ -16950,11 +16311,6 @@ def build():
   "                    still_ok=self._live_or_broken if on else None)",
   "                    still_ok=None)"),
 
- ("calibrate all: the page's button sends nothing",
-  "ltcplay/web/remote.html",
-  "$(\"mo-cal-on\").addEventListener(\"click\", () => moPress(\"laser-test\", {all:true, on:true}, \"mo-lmsg\"));",
-  "$(\"mo-cal-on\").addEventListener(\"click\", () => {});"),
-
  # Sign everyone out after the last show (users.py, remote.py; Jeff,
  # 2026-10-26).
  ("last show sign out: off by default",
@@ -17032,11 +16388,6 @@ def build():
   "ltcplay/web/remote_rules.js",
   "  if(f && f.disarmed === false) return STOP_DISARM_FAILED;\n",
   ""),
-
- ("Rack screen: Stop's answer is not read",
-  "ltcplay/web/remote.html",
-  "el.textContent = (r.ok || (j && j.failed)) ? stopWords(j) :",
-  "el.textContent = (r.ok || (j && j.failed)) ? \"Stopped.\" :"),
 
  ("Rack screen: the Stop confirm does not say it disarms the flames",
   "ltcplay/web/remote_rules.js",
@@ -17472,11 +16823,6 @@ def build():
   "                return None\n"
   "            d = st.get(\"disarm_all\")"),
 
- ("Rack screen: Stop fires on its first tap",
-  "ltcplay/web/remote.html",
-  '  if(!step.fire){\n    if(t) clearTimeout(t.timer);\n    STOP_TAPS[id] =',
-  '  if(false){\n    if(t) clearTimeout(t.timer);\n    STOP_TAPS[id] ='),
-
  ("Rack screen: Stop's late second tap is a first tap again",
   "ltcplay/web/remote_rules.js",
   '    if(nowMs - prev.at <= STOP_TAP_MS || enlarged) return {fire:true, next:null};',
@@ -17603,11 +16949,6 @@ def build():
   '            # A Stop landed while the cue was starting',
   '        if False:\n'
   '            # A Stop landed while the cue was starting'),
-
- ("Rack screen: Stop's second tap is decided by its timer, not the time",
-  "ltcplay/web/remote.html",
-  "  const step = stopTapStep(t ? t.prev : null, monoNow(), kind, false);",
-  "  const step = stopTapStep(t ? t.prev : null, monoNow(), kind, !!t);"),
 
  ("Rack screen: the Run card ignores lost contact (B2)",
   "ltcplay/web/remote_rules.js",
@@ -17915,18 +17256,6 @@ def build():
   "        out = write_new_show_file(settings_mod.folder(),\n                                  starter_base(args.show_dir), doc)",
   "        out = os.path.join(settings_mod.folder(),\n                           starter_base(args.show_dir) + \"_timeline.json\")\n        with open(out, \"w\") as fh:\n            json.dump(doc, fh, indent=2)"),
 
- ("Getting started never offers Make a show file", "ltcplay/web/remote.html",
-  "  $(\"su-make\").hidden = !makeOffered(su);",
-  "  $(\"su-make\").hidden = true;"),
-
- ("Getting started always offers Make a show file", "ltcplay/web/remote.html",
-  "  $(\"su-make\").hidden = !makeOffered(su);",
-  "  $(\"su-make\").hidden = false;"),
-
- ("Getting started offers Make a show file with no renders", "ltcplay/web/remote.html",
-  "  return !!su && su.show_files === 0 && su.show_folder_renders > 0;",
-  "  return !!su && su.show_files === 0;"),
-
  ("the setup view never counts the renders for Make a show file", "ltcplay/remote.py",
   "                \"show_folder_renders\": self._renders_in(folder) if not files",
   "                \"show_folder_renders\": 0 if not files"),
@@ -17991,35 +17320,6 @@ def build():
   "        late = self._new_show_refusal()",
   "        late = None"),
 
- ("the folder card's Make a show file does nothing", "ltcplay/web/remote.html",
-  "$(\"fo-make\").addEventListener(\"click\", makeShowFile);\n",
-  ""),
-
- ("Getting started's Make a show file does nothing", "ltcplay/web/remote.html",
-  "$(\"su-make\").addEventListener(\"click\", async () => {\n  location.hash = \"programming\";",
-  "$(\"su-make-off\") && (async () => {\n  location.hash = \"programming\";"),
-
- ("the folder card's Check the show file does nothing", "ltcplay/web/remote.html",
-  "$(\"fo-check\").addEventListener(\"click\", async () => {",
-  "$(\"fo-check-off\") && (async () => {"),
-
- ("Make a show file's button returns before it posts", "ltcplay/web/remote.html",
-  "async function makeShowFile(){\n  if(!(await confirmBox(",
-  "async function makeShowFile(){\n  return null;\n  if(!(await confirmBox("),
-
- ("Getting started hides Make a show file after deciding to offer it", "ltcplay/web/remote.html",
-  "  $(\"su-make\").hidden = !makeOffered(su);\n",
-  "  $(\"su-make\").hidden = !makeOffered(su);\n  $(\"su-make\").hidden = true;\n"),
-
- ("Getting started's Make a show file never makes one",
-  'ltcplay/web/remote.html',
-  '  // Show folder card (fo-made), where this press has gone.\n  await makeShowFile();',
-  '  // Show folder card (fo-made), where this press has gone.\n  const j = null;'),
-
- ("Make a show file does not choose the new file on the page", "ltcplay/web/remote.html",
-  "    await loadShowFiles(j.file);\n",
-  "    await loadShowFiles();\n"),
-
  ('the rack screen never says the timecode runs at another rate',
   'ltcplay/remote.py',
   '        if not (count_off or speed_off or drop_off):\n            return ""',
@@ -18043,18 +17343,6 @@ def build():
   "    tmp = os.path.join(dest, f\"~{os.urandom(4).hex()}.new\")",
   "    tmp = os.path.join(dest, f\".{base}_timeline.{os.getpid()}.new\")"),
 
- ("the Getting started card pushes Disarm all off the screen when opened", "ltcplay/web/remote.html",
-  "  if($(\"v-show\").hidden) return;\n  const key = fitKey();",
-  "  return;\n  const key = fitKey();"),
-
- ("the open Getting started card is moved below the flame groups again", "ltcplay/web/remote.html",
-  "#setup.folded .subody{display:none}",
-  "#setup.folded .subody{display:none}\n@media (max-height:900px){#setup:not(.folded){order:9}}"),
-
- ("Make a show file is only in the steps, not the card's header", "ltcplay/web/remote.html",
-  "<button id=\"su-make\" hidden>Make a show file</button><button class=\"ghost\" id=\"su-more\"",
-  "<button class=\"ghost\" id=\"su-more\""),
-
  ("the rate note states a rate after the timecode stops", "ltcplay/remote.py",
   "        if not cs.get(\"running\") or rate is None or fps is None or \\\n                not arriving:",
   "        if not cs.get(\"running\") or rate is None or fps is None:"),
@@ -18066,43 +17354,6 @@ def build():
  ("ltc init calls an asked-for 30 fps the default", "ltcplay/cli.py",
   "    why = \"it was asked for\" if args.fps is not None else \"that is the default\"",
   "    why = (\"it was asked for\" if str(fps) != str(INIT_FPS)\n           else \"that is the default\")"),
-
- ("the Getting started fit runs on every poll and resets the steps' scroll", "ltcplay/web/remote.html",
-  "  if(!force && key === FIT_KEY) return;",
-  ""),
-
- ("the open Getting started steps may have no room at all", "ltcplay/web/remote.html",
-  "const FIT_SLACK = 30, STEPS_MIN = 120;",
-  "const FIT_SLACK = 30, STEPS_MIN = 0;"),
-
- ("the short-window rules are never used for the Getting started card", "ltcplay/web/remote.html",
-  "  if(fitOver() > 0.5) root.classList.add(\"setupafter\");",
-  "  root.classList.remove(\"tight\");\n  if(fitOver() > 0.5) root.classList.add(\"setupafter\");"),
-
- ("Show the steps leaves the page where it was", "ltcplay/web/remote.html",
-  "    try{ $(\"setup\").scrollIntoView({block: below || after ? \"start\" : \"nearest\"}); }catch(e){}",
-  ""),
-
- ("Make a show file is 32 px tall on a short window again", "ltcplay/web/remote.html",
-  "#setup .surow #su-make{min-height:40px}",
-  ""),
-
- ("the open steps never move after the flame groups", "ltcplay/web/remote.html",
-  "      card.style.maxHeight = \"\";\n      stepsHome(false);",
-  "      fitCap();"),
-
- ("warnings that come with the Getting started steps open are never fitted", "ltcplay/web/remote.html",
-  "    card.classList.contains(\"folded\"), SETUP_KEY, Math.round(cr.top + scrollY), dis, arm]);",
-  "    card.classList.contains(\"folded\"), SETUP_KEY, 0, 0, 0]);"),
-
- ("the card's 40 percent cap starves the open steps again", "ltcplay/web/remote.html",
-  "    if(cr.height < minH - 0.5) card.style.maxHeight = minH + \"px\";",
-  ""),
-
- ("the short-window rules make the controls taller on a short window", "ltcplay/web/remote.html",
-  ":where(html.tight) .ctl button{min-height:44px}",
-  "html.tight .ctl button{min-height:44px}"),
-
 
  # aim slots seen (2026-10-28): the start lines, the status frame, the
  # rack screen's aim line and alert, the Startup page's file; fuel burns
@@ -18171,11 +17422,6 @@ def build():
   "ltcplay/web/remote_rules.js",
   "  let t = \"Aim \" + j(a.slots) + \": \" + (a.loaded ? \"loaded\" :",
   "  let t = \"Aim \" + j(a.slots) + \": \" + (true ? \"loaded\" :"),
-
- ("aim seen: the card never shows the aim line",
-  "ltcplay/web/remote.html",
-  "    ae.hidden = !al;",
-  "    ae.hidden = true;"),
 
  ("aim seen: the Startup page error leaves out the flamesafe file",
   "ltcplay/morning.py",
@@ -18272,7 +17518,7 @@ def build():
   "        if a < 0:"),
 
  ("Play from never starts the show (no conductor show start)", "ltcplay/playhead.py",
-  "            r = cond.show_starting(who, screen)\n            if getattr(r, \"ok\", True) is False:",
+  "            r = cond.show_starting(who, screen, confirm_moving=True)\n            if getattr(r, \"ok\", True) is False:",
   "            r = None\n            if getattr(r, \"ok\", True) is False:"),
 
  ("Play from leaves MadMapper on whatever bank it was", "ltcplay/playhead.py",
@@ -18416,9 +17662,6 @@ def build():
   '  if(sch.state === "SHOW" || sch.state === "PAUSED") return true;\n  // The rig is up',
   '  if(false) return true;\n  // The rig is up'),
 
- ("Rack screen: Stop is not the complete halt", "ltcplay/web/remote.html",
-  ': await fetch("/api/remote/stop", ', ': await fetch("/api/stop", '),
-
  ("Stop from a screen does not disarm or end the show", "ltcplay/remote.py",
   "        h = self.halt(who, screen, how=\"pressed\")\n",
   "        h = {}\n"),
@@ -18481,11 +17724,6 @@ def build():
   "            if gen is not None and (self._start_cancel[0] != gen or\n"
   "                                    self.halting()):",
   "            if False:"),
-
- ("Rack screen: Start now is not off while a halt runs",
-  "ltcplay/web/remote.html",
-  "    (el.disabled || lk.disabled || HALT_BUSY || flipLocked(\"b-start\"));",
-  "    (el.disabled || lk.disabled || flipLocked(\"b-start\"));"),
 
  ("Start now's lock re-check runs before the tick's alert Hold",
   "ltcplay/schedule_service.py",
@@ -18706,27 +17944,6 @@ def build():
   "        finally:\n"
   "            remote.fireball.close()"),
 
- ("fireball page: a held button is not let go on the lift",
-  "ltcplay/web/remote.html",
-  "    const b = e.target.closest && e.target.closest(\".fb-pad\"); if(!b || b.dataset.kind !== \"momentary\") return;\n"
-  "    fbPress(b.dataset.k, false);",
-  "    const b = e.target.closest && e.target.closest(\".fb-pad\"); if(!b || b.dataset.kind !== \"momentary\") return;"),
-
- ("fireball page: losing focus holds the valve on",
-  "ltcplay/web/remote.html",
-  "window.addEventListener(\"blur\", () => fbRelease(\"the page lost focus\"));\n",
-  ""),
-
- ("fireball page: leaving the page leaves the channels on",
-  "ltcplay/web/remote.html",
-  "  if(!on && FB_OPEN){ FB_OPEN = false; clearTimeout(FB_TIMER); fbCut(\"the page was left\"); }",
-  "  if(!on && FB_OPEN){ FB_OPEN = false; clearTimeout(FB_TIMER); }"),
-
- ("fireball page: a refused beat leaves the channels on",
-  "ltcplay/web/remote.html",
-  "  catch(e){ if(run === FB_RUN) fbCut(e.message); }",
-  "  catch(e){}"),
-
  ("fireball page: signed out is not view only",
   "ltcplay/web/remote_rules.js",
   "  else if(viewOnly) out.block = \"Signed out: this screen is view only. Sign in to use the Fireball controls.\";\n",
@@ -18743,13 +17960,6 @@ def build():
   "  else if(viewOnly)",
   "  if(false) out.block = \"\";\n"
   "  else if(viewOnly)"),
-
- ("fireball page: a toggle is on while held only",
-  "ltcplay/web/remote.html",
-  "  const b = e.target.closest(\".fb-pad\"); if(!b || b.dataset.kind !== \"toggle\") return;\n"
-  "  fbPress(b.dataset.k, !FB_ON[b.dataset.k]);",
-  "  const b = e.target.closest(\".fb-pad\"); if(!b || b.dataset.kind !== \"toggle\") return;\n"
-  "  fbPress(b.dataset.k, true);"),
 
  # Wave flamer cleaning (cleaning.py, MORNING.md, OPERATOR.md; Andy's
  # design, 2026-10-28): a dead-man sequence on the Shutdown page.
@@ -19023,25 +18233,10 @@ def build():
   "                out[\"cleaning\"] = self.cleaning.summary()",
   "                pass"),
 
- ("cleaning page: letting go before the hold completes does not end it",
-  "ltcplay/web/remote.html",
-  "  $(\"wc-hold\").addEventListener(ev, () => { if(WC_HOLD) wcLetGo(\"you let go before the hold was complete\"); });",
-  "  $(\"wc-hold\").addEventListener(ev, () => {});"),
-
  ("cleaning page: signed out is not view only",
   "ltcplay/web/remote_rules.js",
   "  else if(viewOnly) out.block = \"Signed out: this screen is view only. Sign in to start the cleaning.\";\n",
   ""),
-
- ("cleaning page: the banner never shows",
-  "ltcplay/web/remote.html",
-  "  $(\"wc-banner\").hidden = !on;",
-  "  $(\"wc-banner\").hidden = true;"),
-
- ("cleaning page: the page keeps beating after the hold completes",
-  "ltcplay/web/remote.html",
-  "    if(j.state === \"phase1\" || j.state === \"phase2\"){",
-  "    if(false){"),
 
  ("cleaning: phase 2 starts before flamesafe says armed",
   "ltcplay/cleaning.py",
@@ -19098,30 +18293,10 @@ def build():
   "        if False:\n"
   "            # Armed or asked for during a go-ahead that never completed:"),
 
- ("cleaning page: losing focus does not stop it",
-  "ltcplay/web/remote.html",
-  "window.addEventListener(\"blur\", () => { if(WC_HOLD) wcLetGo(\"the page lost focus\"); });\n",
-  ""),
-
- ("cleaning page: leaving the page leaves it running",
-  "ltcplay/web/remote.html",
-  "  if(!on && WC_OPEN){ WC_OPEN = false; clearTimeout(WC_TIMER); wcLetGo(\"the page was left\"); }",
-  "  if(!on && WC_OPEN){ WC_OPEN = false; clearTimeout(WC_TIMER); }"),
-
- ("cleaning page: a refused beat keeps beating",
-  "ltcplay/web/remote.html",
-  "  }catch(e){ if(run === WC_RUN) wcLetGo(e.message.replace(/[.\\s]+$/, \"\")); }",
-  "  }catch(e){}"),
-
  ("cleaning page: any truthy hold runs it",
   "ltcplay/web/remote_rules.js",
   "  return {hold:hold === true, run:",
   "  return {hold:!!hold, run:"),
-
- ("cleaning page: a blocked button still starts",
-  "ltcplay/web/remote.html",
-  "  if(!st.ok){ $(\"wc-msg\").textContent = st.block; return; }\n  WC_HOLD = true;",
-  "  WC_HOLD = true;"),
 
  # Settings changed on disk (Jeff's field report 2026-10-28, item 11):
  # configwatch.py, its notice, the live reload of the announcements, Reload
@@ -19289,16 +18464,6 @@ def build():
   "packaging/windows/supervisor.py",
   "             progs[n].started_wall < changed]\n",
   "             progs[n].started_wall < 0]\n"),
-
- ("rack screen: Reload engine shown when not offered",
-  "ltcplay/web/remote.html",
-  "  $(\"cfg-reload\").hidden = !cn.offer || !mayRow(s, \"settings\");\n",
-  "  $(\"cfg-reload\").hidden = false;\n"),
-
- ("rack screen: the settings note leaves out flamesafe's own restart",
-  "ltcplay/web/remote.html",
-  "    (r.flamesafe ? \", so for a changed flamesafe.json stop LTC Player and start it again.\" : \".\");\n",
-  "    \".\";\n"),
 
  # Show stays Show (Jeff, 2026-10-28: "even when I press show mode, it
  # turns on programming mode").
@@ -19727,33 +18892,9 @@ def build():
   '        return True, 0, "ltcplay_fire_ice.json could not be read"\n    if not isinstance',
   '        return True, 0, ""\n    if not isinstance'),
 
- ('key guard: Hold is held back after focus (1.0)', 'ltcplay/web/remote.html',
-  '<button data-safe id="b-hold" class="hold">',
-  '<button id="b-hold" class="hold">'),
-
  ('key guard: Stop is held back after focus (2.0)', 'ltcplay/web/remote2.html',
   '<button data-safe class="b red nostop" id="b-stop">',
   '<button class="b red nostop" id="b-stop">'),
-
- ('key guard: a Stop or Disarm two-way button is held back', 'ltcplay/web/remote.html',
-  '  return m === "stop" || m === "disarm" ||',
-  '  return false ||'),
-
- ("key guard: a purge's release is dropped after focus", 'ltcplay/web/remote.html',
-  '  if(KEY_GUARD.passed.has(k)){ KEY_GUARD.passed.delete(k); return; }',
-  '  if(false){ KEY_GUARD.passed.delete(k); return; }'),
-
- ('key guard: data-safe is ignored', 'ltcplay/web/remote.html',
-  '  if(b.dataset && b.dataset.safe !== undefined) return true;',
-  '  if(false) return true;'),
-
- ('key guard: a Space on the Startup page fires a purge right after focus', 'ltcplay/web/remote.html',
-  '  if(keyFresh() || keySafe(e.target)){',
-  '  if(false){'),
-
- ('key guard: a key held across a blur is let through after', 'ltcplay/web/remote.html',
-  'window.addEventListener("blur", () => { KEY_GUARD.passed.clear(); });',
-  'window.addEventListener("blur", () => {});'),
 
  ('mm output watch: a switched-off watch keeps alerting', 'ltcplay/showwindows.py',
   '            if self._config is not None and not self._config[0]:',
@@ -19774,10 +18915,6 @@ def build():
  ('rack keeper: an unowned dialog of the covering program is buried', 'ltcplay/showwindows.py',
   '                    w.get("owner") or w.get("pid") == c.get("pid"))):',
   '                    w.get("owner"))):'),
-
- ('key guard: the listed safe buttons are held back', 'ltcplay/web/remote.html',
-  '  if(KEY_SAFE_IDS.includes(b.id)) return true;',
-  '  if(false) return true;'),
 
  ("key guard: 2.0's DAY purge fires on a Space right after focus", 'ltcplay/web/remote2.html',
   '  if(keyFresh() || keySafe(e.target)) return;\n  if(fireKeyNotOurs(e)) return;',
@@ -19932,85 +19069,34 @@ def build():
   '            if v in ("failed", "cleared"):',
   '            if v == "failed":'),
 
- # -- interface 2.0 (Jeff, 2026-10-28): /remote2 beside 1.0, the per-screen
- # switch, the default set on the show machine only, 1.0's own rules served,
- # and the SHOW tab's presses kept 1.0's --
+ # -- the screen (remote2.html) and its rules, served (R1: the first screen
+ # and its switch are removed) --
  ("ui2: the show network cannot reach the 2.0 page", "ltcplay/web.py",
   "            or route in UI_ROUTES\n",
   ""),
 
- # 2.0 is the default screen (Jeff, 2026-11-02): only a screen's own
- # ltcplay_ui=1 keeps the old screen; the links both ways.
- ("ui2 default: a screen that chose the old screen gets 2.0", "ltcplay/web.py",
-  '            if k == UI_COOKIE and v == "1":',
-  "            if False:"),
-
- ("ui2 default: a junk choice cookie keeps the old screen", "ltcplay/web.py",
-  '            if k == UI_COOKIE and v == "1":',
-  '            if k == UI_COOKIE and v != "2":'),
-
- ("ui2 default: /remote is still 1.0 with no choice made", "ltcplay/web.py",
-  "                return 1\n        return 2\n",
-  "                return 1\n        return 1\n"),
-
- ("ui2 default: the old screen link does not remember the choice", "ltcplay/web.py",
-  '                "Set-Cookie": f"{UI_COOKIE}=1; SameSite=Strict; Path=/; "\n'
-  '                              f"Max-Age=31536000"})',
-  '                "Set-Cookie": f"{UI_COOKIE}=1; SameSite=Strict; Path=/; "\n'
-  '                              f"Max-Age=0"})'),
-
- ("ui2 default: the old screen link lands on /remote", "ltcplay/web.py",
-  '                "Location": "/remote1",',
-  '                "Location": "/remote",'),
-
- ("ui2 default: Try 2.0 leaves the old screen remembered", "ltcplay/web.py",
-  '            "Set-Cookie": f"{UI_COOKIE}=; SameSite=Strict; Path=/; "\n'
-  '                          f"Max-Age=0"})',
-  '            "Set-Cookie": f"{UI_COOKIE}=1; SameSite=Strict; Path=/; "\n'
-  '                          f"Max-Age=31536000"})'),
-
- ("ui2 default: 2.0's header link opens /remote1 without remembering it",
-  "ltcplay/web/remote2.html",
-  '<a class="hb" id="to1" href="/ui?v=1"',
-  '<a class="hb" id="to1" href="/remote1"'),
-
- ("ui2 default: the Schedule tab's old screen card skips remembering it",
-  "ltcplay/web/remote2.html",
-  'id="old-sched"><div class="t"><b>The old screen</b><span>Some things are only there for now. Its Try 2.0 button comes back here.</span></div><a class="b blue" href="/ui?v=1">',
-  'id="old-sched"><div class="t"><b>The old screen</b><span>Some things are only there for now. Its Try 2.0 button comes back here.</span></div><a class="b blue" href="/remote1">'),
-
+ # The rack window opens the screen at /remote.
  ("ui2 default: the rack screen opens the old screen",
   "packaging/windows/supervisor.py",
   'RACK_PAGE = "/remote"     #',
   'RACK_PAGE = "/remote1"    #'),
 
- ("ui2 default: the installer smoke test skips the old screen's rules",
-  "packaging/windows/ci_smoke.py",
-  'for path in ("/remote", "/remote1", "/remote2"):',
-  'for path in ("/remote", "/remote2"):'),
+ ("R1: the first screen's old addresses send nowhere", "ltcplay/web.py",
+  "            if route in OLD_SCREEN_ROUTES:\n",
+  "            if False:\n"),
 
- ("ui2: a link from another site's page switches the page", "ltcplay/web.py",
-  "            return self._send(403, {\"error\": \"A switch from another site's \"\n"
-  "                                             \"page was refused.\"})",
-  "            pass"),
+ ("R1: the first screen's old addresses send to the old page", "ltcplay/web.py",
+  '                                  headers={"Location": "/remote"})\n            if route == "/remote-logic.js":',
+  '                                  headers={"Location": "/remote1"})\n            if route == "/remote-logic.js":'),
 
- ("ui2: /ui sets any value it is given", "ltcplay/web.py",
-  '        if v not in ("1", "2"):\n            return self._send(400, {"error": "v has to be 1 or 2."})',
-  '        if not v:\n            return self._send(400, {"error": "v has to be 1 or 2."})'),
-
- ("ui2: /remote-logic.js serves the whole of 1.0", "ltcplay/web.py",
+ ("rules: /remote-logic.js serves the screen page instead of its rules", "ltcplay/web.py",
   "        with open(REMOTE_RULES, encoding=\"utf-8\") as fh:\n"
   "            logic = fh.read()\n",
-  "        with open(REMOTE_PAGE, encoding=\"utf-8\") as fh:\n"
+  "        with open(REMOTE2_PAGE, encoding=\"utf-8\") as fh:\n"
   "            logic = fh.read()\n"),
 
- # The shared rules in their own file (docs/REMOVE_1_0_PLAN.md, step 1):
- # 1.0 is still served whole, byte for byte the page it was.
- ("rules: 1.0 is served without the shared rules written in",
-  "ltcplay/web.py",
-  "    return 200, _with_rules(REMOTE_PAGE, logic)\n",
-  "    with open(REMOTE_PAGE, \"rb\") as fh:\n        return 200, fh.read()\n"),
-
+ # The rules in their own file, never served half (docs/REMOVE_1_0_PLAN.md,
+ # step 1).
  ("rules: a rules file with a closing script tag is written into the pages",
   "ltcplay/web.py",
   "    if \"</script\" in logic.lower():\n"
@@ -20038,11 +19124,6 @@ def build():
   "ltcplay/web.py",
   "    if gone:\n",
   "    if False:\n"),
-
- ("rules: 1.0 without its rules is served with no Stop that works",
-  "ltcplay/web.py",
-  "    if logic is None:\n        return 503, RULES_MISSING_PAGE.encode(\"utf-8\")\n",
-  "    if logic is None:\n        return 200, _with_rules(REMOTE_PAGE, None)\n"),
 
  ("rules: a rules file that did not load is never said in the log",
   "ltcplay/web.py",
@@ -20073,26 +19154,6 @@ def build():
   "ltcplay/web.py",
   "        page = page.replace(LOGIC_TAG, LOGIC_OPEN + logic + \"</script>\", 1)",
   "        page = page.replace(LOGIC_TAG, LOGIC_OPEN + logic + \"</script>\" + LOGIC_OPEN + logic + \"</script>\", 1)"),
-
- ("ui2: the default interface is set from the network", "ltcplay/remote.py",
-  "            if not ctx.local:\n                return 403, {\"error\": \"The default interface is set on the \"",
-  "            if False:\n                return 403, {\"error\": \"The default interface is set on the \""),
-
- ("ui2: the default interface is read from the network", "ltcplay/remote.py",
-  "        if name == UI_DEFAULT_ROUTE:\n            if not ctx.local:\n                return 403, {\"error\": \"Only on the show machine itself.\"}",
-  "        if name == UI_DEFAULT_ROUTE:\n            if False:\n                return 403, {\"error\": \"Only on the show machine itself.\"}"),
-
- ("ui2: the default interface takes any value", "ltcplay/remote.py",
-  "        if not isinstance(v, int) or isinstance(v, bool) or \\\n                v not in UI_VERSIONS:",
-  "        if v is None:"),
-
- ("ui2: a hand-written ui_default that is not 1 or 2 is kept", "ltcplay/remote.py",
-  "    out[\"ui_default\"] = v if (isinstance(v, int) and not isinstance(v, bool)\n                              and v in UI_VERSIONS) else 1",
-  "    out[\"ui_default\"] = v if v is not None else 1"),
-
- ("ui2: setting the default interface needs no role", "ltcplay/users.py",
-  '    "ui-default": "settings",',
-  '    "ui-default": None,'),
 
  ("ui2 page: the broken page's Stop fires on its first tap", 'ltcplay/web/remote2.html',
   '  const step = stopTapStep2(CORE_TAP, monoNow(), kind, false);\n'
@@ -20524,25 +19585,10 @@ def build():
   "            left = self.purge_timed_left()\n            if left is not None:",
   "            left = self.purge_timed_left()\n            if False:"),
 
- ("timed purge page: a press while it runs is not Stop purge",
-  "ltcplay/web/remote.html",
-  "  if(st.running){ tpStopPress(); return; }",
-  ""),
-
  ("timed purge page: Other is not kept to the longest",
   "ltcplay/web/remote_rules.js",
   "  return Math.min(max, Math.max(min, n));",
   "  return n;"),
-
- ("timed purge page: the start beats stop before the engine's start",
-  "ltcplay/web/remote.html",
-  "    if(j.started || j.running){",
-  "    if(true){"),
-
- ("timed purge page: leaving the page clears its selection (and ends it)",
-  "ltcplay/web/remote.html",
-  " && !MO.purge_state.timed)",
-  ")"),
 
  ("ui2 page: a running timed purge is not pinned",
   "ltcplay/web/remote2.html",
@@ -21186,31 +20232,6 @@ def build():
   "        return self._file_get is not None",
   "        return False"),
 
- ("fireball page: Tanks are empty stays hidden while automatic charging is off (round 8)",
-  "ltcplay/web/remote.html",
-  "!(chk && chk.auto_off || Object.keys(tks).some(",
-  "!(Object.keys(tks).some("),
-
- ("fireball page: a held press shows ON, not WAITING (round 8)",
-  "ltcplay/web/remote.html",
-  "(FB_HELD.indexOf(b.dataset.k) >= 0 ? \"WAITING\" : \"ON\")",
-  "\"ON\""),
-
- ("fireball page: the beat's held answer is ignored (round 8)",
-  "ltcplay/web/remote.html",
-  "FB_HELD = Array.isArray(j && j.held) ? j.held : [];",
-  "FB_HELD = [];"),
-
- ("fireball page: an older answer arriving late is used (round 9)",
-  "ltcplay/web/remote.html",
-  "if(run !== FB_RUN || seq < FB_ANS) return;",
-  "if(run !== FB_RUN) return;"),
-
- ("fireball page: a cut leaves the held list (round 9)",
-  "ltcplay/web/remote.html",
-  "  FB_HELD = [];\n  for(const k in FB_ON) FB_ON[k] = false;",
-  "  for(const k in FB_ON) FB_ON[k] = false;"),
-
  ("fireball manual: an overtaken beat carries no held list (round 9)",
   "ltcplay/fireball.py",
   "# nothing about what is held now, and is not used.\n"
@@ -21624,11 +20645,6 @@ def build():
   "            sent_get=lambda: getattr(link, \"show_sent\", None),",
   "            sent_get=None,"),
 
- ("fireball: a held pad whose pointer leaves it stays on",
-  "ltcplay/web/remote.html",
-  "$(\"fb-pads\").addEventListener(\"pointerout\", e => {",
-  "$(\"fb-pads\").addEventListener(\"x-pointerout\", e => {"),
-
  ("fireball manual: the page's frame is not limited to the fireball's slots",
   "ltcplay/flamelink.py",
   "            keep = bytearray(UNIVERSE_SIZE)\n"
@@ -21720,16 +20736,6 @@ def build():
   "ltcplay/fireball.py",
   "            link.set_manual_slots(group[\"fire\"])",
   "            pass"),
-
- ("fireball manual: the page shows no charge record",
-  "ltcplay/web/remote.html",
-  "  $(\"fb-charge\").textContent = said.filter(Boolean).join(\" \");",
-  "  $(\"fb-charge\").textContent = \"\";"),
-
- ("fireball manual: a charged tank's button does not say top-off",
-  "ltcplay/web/remote.html",
-  "tk.state === \"charged\" ? \"Charged: a press is a top-off\"",
-  "tk.state === \"charged\" ? \"\""),
 
  # -- the fireball timeline editor on 2.0 (remote2.html, 2026-10-30) -----
  ("fireball editor: an operator may save the timeline",
@@ -22253,21 +21259,6 @@ def build():
  ("Run off: the remote status drops the warning",
   "ltcplay/remote.py",
   "                    \"run_warning\": st.get(\"run_warning\"),\n",
-  ""),
-
- ("Run off: rack screen 1.0 does not show the warning on the show screen",
-  "ltcplay/web/remote.html",
-  "  setWarn(\"run-warn\", sch.run_warning || \"\");\n",
-  ""),
-
- ("Run off: rack screen 1.0's warning is not a fault",
-  "ltcplay/web/remote.html",
-  "  LOCAL_FAULT[\"run-warn\"] = !!sch.run_warning && !!sch.run_warning_urgent;\n",
-  "  LOCAL_FAULT[\"run-warn\"] = false;\n"),
-
- ("Run off: rack screen 1.0's Schedule screen does not show the warning",
-  "ltcplay/web/remote.html",
-  "  setWarn(\"tn-run-warn\", sch.run_warning || \"\");\n",
   ""),
 
  ("Run off: rack screen 2.0 does not show the warning",
@@ -23140,14 +22131,6 @@ def build():
   'CONTROL_ROUTES = ("start-now", "hold", "resume", "abort",\n'
   '                  "disarm-all", "stop", "run-off", "start-at-cue")'),
 
- ('rack screen: a Stop that did not do all of it is only a toast', 'ltcplay/web/remote.html',
-  '    if(stopFailed(r, j)) saidStop(el.textContent);\n',
-  ""),
-
- ('rack screen: a Stop whose flame disarm failed is no banner', 'ltcplay/web/remote.html',
-  '  return stopWords(j) === STOP_DISARM_FAILED || ((j && j.failed) || []).length > 0;',
-  '  return ((j && j.failed) || []).length > 0;'),
-
  ("ui2 page: the broken page's Stop posts nothing", 'ltcplay/web/remote2.html',
   '    const r = await fetch("/api/remote/stop", {method:"POST", credentials:"same-origin", cache:"no-store",\n'
   '      headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify({seen:seen})});',
@@ -23180,10 +22163,6 @@ def build():
  ("resume: a Resume from a Stop's Hold leaves the fault flag up (Reset used to clear it)", 'ltcplay/schedule_service.py',
   '        if ended and self.machine is not None and self.machine.faults:',
   '        if False:'),
-
- ("rack screen: a Stop no longer lets go of the page's own arm hold (the removed Abort's tap did)", 'ltcplay/web/remote.html',
-  '  try{ armStop("Stop"); }catch(e){}\n',
-  ""),
 
  ("page: the old page can bring the rig up while a Stop's Hold stands (the removed Abort latch's rule)", 'ltcplay/web.py',
   '                self._stop_held():\n'
@@ -23375,11 +22354,6 @@ def build():
   "ltcplay/web/remote2.html",
   "  if(at.igniter !== undefined && at.valve !== undefined && at.valve >= at.igniter && at.valve < at.igniter + 3){",
   "  if(false){"),
-
- ("rack screen: the Fireball line never shows the lost shots",
-  "ltcplay/web/remote.html",
-  "  if(tl && tl.shots && tl.shots.length) said.push(tl.shots.join(\" \"));\n",
-  ""),
 
  ("fireball cues: a lost shot is counted though nothing reaches a tank",
   "ltcplay/fireball_cues.py",
@@ -23898,6 +22872,219 @@ def build():
   'packaging/windows/supervisor.py',
   '            if fh.read() != p.config_bytes:',
   '            if False:'),
+ # Lasers follow Programming playback (Jeff, 2026-11-06).
+ ("programming lasers: Play from lights the lasers before the timecode "
+  "moves",
+  'ltcplay/playhead.py',
+  '            r = cond.show_starting(who, screen, confirm_moving=True)\n',
+  '            r = cond.show_starting(who, screen)\n'),
+
+ ("programming lasers: the conductor skips the Play from timecode wait",
+  'ltcplay/conductor.py',
+  '        elif want.get("confirm_moving") and \\\n'
+  '                not self._timecode_moving(gen, START_CONFIRM_S):\n',
+  '        elif False:\n'),
+
+ ("programming lasers: one frozen timecode frame counts as moving",
+  'ltcplay/conductor.py',
+  '            return f != seen[0]\n',
+  '            return True\n'),
+
+ ("programming lasers: the 'already on hold' answer keeps the lasers armed",
+  'ltcplay/conductor.py',
+  '        # Already on hold: nothing new starts, but the lasers are blanked\n',
+  '        if not disarm_lasers:\n'
+  '            self._lookstate = (self._look, True)\n'
+  '        # Already on hold: nothing new starts, but the lasers are blanked\n'),
+
+ ("programming lasers: a Hold that disarms leaves a Pause's keep in force",
+  'ltcplay/conductor.py',
+  '            if disarm_lasers:\n'
+  '                # A Hold that disarms ends any Programming Pause\'s keeping\n'
+  '                # of the arm, whichever branch below it takes.\n'
+  '                self._lookstate = (self._look, False)\n',
+  ''),
+
+ ("programming lasers: a scheduled show's Hold no longer disarms",
+  'ltcplay/conductor.py',
+  '    def hold(self, who="", screen="", *, disarm_lasers=True):\n',
+  '    def hold(self, who="", screen="", *, disarm_lasers=False):\n'),
+
+ ("programming lasers: the Pause sends no laser output off",
+  'ltcplay/conductor.py',
+  '        if want.get("keep_lasers_armed"):\n'
+  '            self._pause_output_off(gen, want, progress)\n',
+  ''),
+
+ ("programming lasers: a Pause that cannot make the lasers dark leaves "
+  "them armed",
+  'ltcplay/conductor.py',
+  '        self._disarm_lasers("Pause (the lasers could not be made dark)",\n'
+  '                            want.get("who", ""), want.get("screen", ""))\n',
+  '        pass\n'),
+
+ ("programming lasers: the Pause's output off sends EnableLaserOutput",
+  'ltcplay/conductor.py',
+  '        method = ("output_disable" if hasattr(self.beyond, "output_disable")\n',
+  '        method = ("output_enable" if hasattr(self.beyond, "output_disable")\n'),
+
+ ("programming lasers: the transport keeps the lasers armed without the "
+  "active() check",
+  'ltcplay/playhead.py',
+  '                    keep = keep_lasers_if() is True and self.active()\n',
+  '                    keep = keep_lasers_if() is True\n'),
+
+ ("programming lasers: the Pause exemption covers an announcement's DARK",
+  'ltcplay/remote.py',
+  '        if look != "HELD":\n',
+  '        if look not in ("HELD", "DARK"):\n'),
+
+ ("programming lasers: the Pause exemption ignores CLOSING",
+  'ltcplay/remote.py',
+  '        if state in ("PAUSED", "HOLD", "CLOSING"):\n',
+  '        if state in ("PAUSED", "HOLD"):\n'),
+
+ ("programming lasers: the Pause exemption ignores the schedule's Hold",
+  'ltcplay/remote.py',
+  '        if state in ("PAUSED", "HOLD", "CLOSING"):\n',
+  '        if state in ("PAUSED", "CLOSING"):\n'),
+
+ ("programming lasers: the Pause exemption ignores the conductor's keep",
+  'ltcplay/remote.py',
+  '        if keep is not True:\n'
+  '            return False\n',
+  ''),
+
+ ("programming lasers: a new arm is allowed during a Programming Pause",
+  'ltcplay/laserarm.py',
+  '        if enable and self._enable_blockers is not None:\n',
+  '        if self._enable_blockers is not None:\n'),
+
+ ("programming lasers: the arm's watcher disarms through a Programming "
+  "Pause",
+  'ltcplay/laserarm.py',
+  '        blocked = self._blocked(enable=True)\n',
+  '        blocked = self._blocked()\n'),
+
+ ("programming lasers: the Morning page never uses the lighting blockers",
+  'ltcplay/morning.py',
+  '        if enable and self._laser_enable_blockers is not None:\n',
+  '        if False:\n'),
+
+ ("programming lasers: Programming's yes skips the laser arm",
+  'ltcplay/fire_ice.py',
+  '        if why is not None and programming_gate() is not None:\n'
+  '            return why\n'
+  '        why = arm_gate()\n',
+  '        if why is not None:\n'
+  '            return why if programming_gate() is not None else None\n'
+  '        why = arm_gate()\n'),
+
+ ("programming lasers: Programming replaces the show's state gate",
+  'ltcplay/fire_ice.py',
+  '        if why is not None and programming_gate() is not None:\n',
+  '        if programming_gate() is not None:\n'),
+
+ ("programming lasers: an error asking Programming lights the lasers",
+  'ltcplay/fire_ice.py',
+  '            return f"Programming could not be asked ({type(e).__name__})"\n',
+  '            return None\n'),
+
+ ("programming lasers: ltc serve does not hand the gate Programming",
+  'ltcplay/web.py',
+  '            programming_lasers=httpd.remote.programming_lasers_refusal)',
+  '            programming_lasers=None)'),
+
+ ("programming lasers: ltc serve does not hand the arm the lighting "
+  "blockers",
+  'ltcplay/web.py',
+  '                laser_enable_blockers=httpd.remote.laser_enable_blockers,\n',
+  ''),
+
+ ("programming lasers: STANDBY lights the lasers in Programming",
+  'ltcplay/remote.py',
+  'PROGRAMMING_LASER_STATES = ("IDLE", "OFF", "BOOT")\n',
+  'PROGRAMMING_LASER_STATES = ("IDLE", "OFF", "BOOT", "STANDBY")\n'),
+
+ ("programming lasers: playback Play from did not start lights the lasers",
+  'ltcplay/remote.py',
+  '            if ph is None or not ph.active():\n',
+  '            if ph is None:\n'),
+
+ ("programming lasers: a laser test on does not keep them dark",
+  'ltcplay/remote.py',
+  '            if tests is not None and getattr(tests, "on", None):\n',
+  '            if False:\n'),
+
+ ("programming lasers: an error in the engine's Programming check is a yes",
+  'ltcplay/remote.py',
+  '            return (f"Programming could not be asked "\n'
+  '                    f"({type(e).__name__}: {e})")\n',
+  '            return None\n'),
+
+ ("programming lasers: the playhead's watch never asks the engine",
+  'ltcplay/remote.py',
+  '        self.playhead.lasers_refusal = self.programming_lasers_refusal\n',
+  ''),
+
+ ("programming lasers: the watch never blanks a frozen timecode",
+  'ltcplay/playhead.py',
+  '        if why is None and still >= FROZEN_S:\n',
+  '        if False:\n'),
+
+ ("programming lasers: the watch never blanks lasers Programming may no "
+  "longer light",
+  'ltcplay/playhead.py',
+  '            if no is not None:\n'
+  '                why = f"the lasers may no longer be lit here: {no}"\n',
+  '            if False:\n'
+  '                why = f"the lasers may no longer be lit here: {no}"\n'),
+
+ ("programming lasers: the watch's laser guard never runs",
+  'ltcplay/playhead.py',
+  '        guarded = self._laser_guard(clk)\n',
+  '        guarded = None\n'),
+
+ ("programming lasers: arming during Programming playback lights the "
+  "lasers on a frozen timecode",
+  'ltcplay/conductor.py',
+  '                         confirm_moving=self._programming_start)\n',
+  '                         confirm_moving=False)\n'),
+
+ ("programming lasers: a re-arm's relight skips the timecode wait",
+  'ltcplay/conductor.py',
+  '            if want.get("confirm_moving") and \\\n'
+  '                    not self._timecode_moving(gen, START_CONFIRM_S):\n',
+  '            if False:\n'),
+
+ ("programming lasers: the Pause's keep is written after its look and "
+  "journal line",
+  'ltcplay/conductor.py',
+  '        self._lookstate = (look, params.get("keep_lasers_armed") is True)\n'
+  '        self._look = look\n'
+  '        line = ((f"{label}, asked for by {self._who(who, screen)}.",),\n'
+  '                dict(action=label.lower(), who=who, screen=screen))\n'
+  '        if not quiet:\n'
+  '            self._note(*line[0], **line[1])\n',
+  '        self._lookstate = (look, False)\n'
+  '        self._look = look\n'
+  '        line = ((f"{label}, asked for by {self._who(who, screen)}.",),\n'
+  '                dict(action=label.lower(), who=who, screen=screen))\n'
+  '        if not quiet:\n'
+  '            self._note(*line[0], **line[1])\n'
+  '        self._lookstate = (look, params.get("keep_lasers_armed") is True)\n'),
+
+ ("programming lasers: the blockers read the look and the keep apart",
+  'ltcplay/remote.py',
+  '            snap = cond.look_and_keep()\n'
+  '            look, keep = snap[0], snap[1] is True\n',
+  '            look = cond._look\n'
+  '            keep = cond.look_and_keep()[1] is True\n'),
+
+ ("programming lasers: the watch ignores lasers whose record is UNKNOWN",
+  'ltcplay/playhead.py',
+  '            maybe = cond.lasers_maybe_lit() is True\n',
+  '            maybe = lit\n'),
 ]
 
 

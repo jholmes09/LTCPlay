@@ -2121,6 +2121,7 @@ class Morning:
                  laser_port=None, logs_dir=None, socket_factory=None,
                  threaded=True, transport=None, laser_output=lambda: None,
                  laser_blockers=lambda: "", laser_blank=None,
+                 laser_enable_blockers=None,
                  night_state=lambda: None, audit=None):
         from . import checklist as checklist_mod
         self.folder = folder
@@ -2190,11 +2191,16 @@ class Morning:
         # disarmed, and BEYOND's laser output is switched off at once.
         self._night_state = night_state
         self._laser_blockers = laser_blockers
+        # The engine's own "may the lasers be lit" blockers, when they
+        # differ from what refuses a new arm (remote.laser_enable_blockers:
+        # a Programming Pause keeps armed lasers armed). None: the same.
+        self._laser_enable_blockers = laser_enable_blockers
         self.laser_arm = laserarm.LaserArm(
             [(l.id, l.name) for l in self.cfg.lasers],
             groups=self.cfg.laser_groups,
             locked=lambda lid: self.lockout.is_locked("laser", lid),
             output=laser_output, blockers=self._arm_blockers,
+            enable_blockers=self._arm_enable_blockers,
             blank_now=laser_blank, per_laser=self.lasers, journal=journal,
             audit=audit, threaded=threaded, clock=clock, wall=wall)
         logs_dir = logs_dir or os.path.join(folder, "logs")
@@ -2242,11 +2248,18 @@ class Morning:
             return f"{lock_problem}; nothing fires from this page until then."
         return self._live_sentence()
 
-    def _arm_blockers(self):
+    def _arm_enable_blockers(self):
+        """laserarm.LaserArm's `enable_blockers`: _arm_blockers, with the
+        engine's lighting blockers (laser_enable_blockers) in place of its
+        arming ones when the engine gives them."""
+        return self._arm_blockers(enable=True)
+
+    def _arm_blockers(self, enable=False):
         """Why no laser may be armed, nor BEYOND's laser output switched on,
         right now (laserarm.LaserArm's `blockers`): this page's settings or
         lockout cannot be trusted, then the engine's own (an Abort latch,
-        a Hold, the night closing). "" when nothing blocks."""
+        a Hold, the night closing). "" when nothing blocks. `enable`: the
+        engine's lighting blockers instead (_arm_enable_blockers)."""
         if self.config_error:
             return (f"ltcplay_morning.json could not be read "
                     f"({self.config_error})")
@@ -2256,6 +2269,8 @@ class Morning:
         state, err = laserarm._ask(self._night_state)
         if err is None and state in laserarm.CLOSING_STATES:
             return "the night is closing"
+        if enable and self._laser_enable_blockers is not None:
+            return self._laser_enable_blockers() or ""
         return self._laser_blockers() or ""
 
     def lasers_disarm_now(self, why, who="", screen=""):

@@ -160,6 +160,10 @@ ANNOUNCE_FADE_S = 0.25    # an announcement's fade to black. The handoff
 ANNOUNCE_DARK_S = 0.5     # "waits about 0.5 s in the dark"
 CONFIRM_S = 0.5           # beyond the fade, how long the clock has to say
                           # it froze (Hold) or is moving again (Resume)
+START_CONFIRM_S = 2.0     # a Programming Play from (show_starting with
+                          # confirm_moving): how long the timecode has to
+                          # be seen moving before the lasers are asked for;
+                          # past it they stay dark (Jeff, 2026-11-06)
 POLL_S = 0.02             # how often the clock is asked while waiting
 SLOW_CALL_S = 0.1         # a device call slower than this is a fault
 GATE_TIMEOUT_S = 1.0      # a laser gate that has not answered by then is
@@ -210,7 +214,13 @@ AGAIN = "(re-sent, already dark)"
 UNLOCKED_OUTPUTS = frozenset(("lasers",))
 
 # Scheduler states in which the lasers may be lit (schedule.py's names),
-# plus the rehearsal page's own. Anything else, None included, is dark.
+# plus "REHEARSAL", a state name kept for a rehearsal page that was never
+# built: nothing in this repo returns it today (the state function is the
+# scheduler's machine state). Anything else, None included, is dark.
+# Programming playback (playhead.py) does not add a state here: its own
+# allowance is fire_ice.attach's `programming_lasers` (remote.py's
+# PROGRAMMING_LASER_STATES: IDLE, OFF and BOOT only), asked only when this
+# gate says no.
 LASER_STATES = frozenset(("SHOW", "PAUSED", "REHEARSAL"))
 
 
@@ -291,6 +301,13 @@ class DeviceOutputs:
         """BEYOND brightness back to the show level (100)."""
         raise NotImplementedError
 
+    def lasers_output_off(self):
+        """BEYOND's laser output switched off (DisableLaserOutput), with
+        nothing else changed: a Programming Pause (Conductor.hold with
+        disarm_lasers False), which keeps the arm as it is. Only ever
+        turns output off."""
+        raise NotImplementedError
+
     def video_fade_out(self, seconds):
         """Every MadMapper surface's opacity to 0 over `seconds` (0 means at
         once), starting from wherever the opacity is now, never from a
@@ -325,6 +342,9 @@ class NotWiredDevices(DeviceOutputs):
 
     def lasers_restore(self):
         return self._nothing("Laser restore")
+
+    def lasers_output_off(self):
+        return self._nothing("Laser output off")
 
     def video_fade_out(self, seconds):
         return self._nothing("Video fade")
@@ -437,6 +457,15 @@ class ConductorDevices(DeviceOutputs):
             return failed("Laser restore stopped part way: a newer request "
                           "came in first.")
         return r
+
+    def lasers_output_off(self):
+        """BEYOND's DisableLaserOutput: beyondtc.Blanking's output_disable
+        (the conductor's BEYOND in Fire & Ice), or beyond.Beyond's own
+        disable_output. A Programming Pause's second half, after the
+        blank (Conductor.hold with disarm_lasers False)."""
+        method = ("output_disable" if hasattr(self.beyond, "output_disable")
+                  else "disable_output")
+        return self._beyond("Laser output off", method, self._BLANK_FAILED)
 
     # -- video: madmapper.py -------------------------------------------------
     def _madmapper(self, what, send, value=None, seconds=0.0):
@@ -641,6 +670,14 @@ class ShowOutputs:
     def music_frozen(self):
         raise NotImplementedError
 
+    def timecode_frame(self):
+        """The frame number the show clock last sent, or None (nothing sent
+        yet since a start or a move, or no clock to ask). A Programming
+        Play from (show_starting with confirm_moving) counts the timecode
+        as moving once two different frames have been read. This default
+        never reads moving, so the lasers stay dark for a start that asks."""
+        return None
+
     def pixels_fade_out(self, seconds):
         raise NotImplementedError
 
@@ -747,6 +784,22 @@ class Conductor:
         # outside the lock only records its outcome if nothing newer has.
         self._ver = dict.fromkeys(self._applied, 0)
         self._restore_gen = None     # the generation a laser restore is for
+        # (look, keep): the look asked for, and whether it is a Programming
+        # Pause that kept the lasers armed (hold with disarm_lasers False).
+        # Written as ONE tuple in the same step as the look (_accept), so a
+        # reader without the lock (the laser arm's 10 Hz watcher, through
+        # remote.laser_enable_blockers) never sees the Pause's HELD without
+        # its keep, nor a Resume's new request with the Pause's look
+        # (cold review of #223, M2). Only a fresh Hold accepted by that
+        # Pause sets keep; every newer request and every Hold that
+        # disarms ends it.
+        self._lookstate = (None, False)
+        # The show now up was started by a Programming Play from
+        # (show_starting with confirm_moving), kept through its Pause and
+        # Continue until the next start: a laser arm's relight
+        # (lasers_armed) then waits for the timecode to move too (cold
+        # review of #223, M1).
+        self._programming_start = False
         self._async_seq = {}         # output -> the device's latest seq
         self._async = frozenset(getattr(devices, "async_outputs", ()) or ())
         # Continue anyway (preroll.py, Jeff 2026-10-28): the outputs left
@@ -780,11 +833,24 @@ class Conductor:
             self._thread.start()
 
     # -- requests: each returns a Result at once ----------------------------
-    def hold(self, who="", screen=""):
+    def hold(self, who="", screen="", *, disarm_lasers=True):
+        """The show's Hold. `disarm_lasers` False is the Programming
+        screen's Pause only (Jeff, 2026-11-06; playhead.pause_or_why): the
+        lasers are blanked and BEYOND's laser output switched off exactly
+        when a Hold blanks them, but every laser stays armed, so Continue
+        lights them again through the laser gate. Every other caller (a
+        scheduled show's Hold, the Hold button on any surface, an
+        announcement) leaves it True: every laser disarmed at the press
+        (ruling 3), as always."""
         # Every laser disarmed first, whatever happens next (ruling 3):
         # a disarm only takes risk away, so it is never refused.
-        self._disarm_lasers("Hold", who, screen)
+        if disarm_lasers:
+            self._disarm_lasers("Hold", who, screen)
         with self._lock:
+            if disarm_lasers:
+                # A Hold that disarms ends any Programming Pause's keeping
+                # of the arm, whichever branch below it takes.
+                self._lookstate = (self._look, False)
             held = self._look in HOLDING_LOOKS
             # A Stop (its sequence still running or done) stands: a Hold
             # that lands after it (a call already in the scheduler's line,
@@ -803,10 +869,17 @@ class Conductor:
                 # Stop a video fade-up (a Resume's) where it is, now, so
                 # the picture never rises after the press (finding C).
                 self._video_cancel()
-                self._accept("Hold", HELD, who, screen, fade_s=fade)
-                return done(f"Hold: flames to zero and lasers blanked, then "
-                            f"the music fades over {fade:g} s and the show "
-                            f"freezes.")
+                if disarm_lasers:
+                    self._accept("Hold", HELD, who, screen, fade_s=fade)
+                    return done(f"Hold: flames to zero and lasers blanked, "
+                                f"then the music fades over {fade:g} s and "
+                                f"the show freezes.")
+                self._accept("Pause", HELD, who, screen, fade_s=fade,
+                             keep_lasers_armed=True)
+                return done(f"Pause: flames to zero, lasers blanked and "
+                            f"BEYOND's laser output off (the lasers stay "
+                            f"armed), then the music fades over {fade:g} s "
+                            f"and the show freezes.")
         if stopped:
             return done(f"The show was stopped, so there is nothing to "
                         f"hold: it stays dark. {self._reblank('Hold')}")
@@ -828,13 +901,19 @@ class Conductor:
             return done("Resume: the music fades back in; lasers and flame "
                         "cues come back once the timecode is moving.")
 
-    def show_starting(self, who="", screen="", stops=None, fade_s=0.0):
+    def show_starting(self, who="", screen="", stops=None, fade_s=0.0,
+                      confirm_moving=False):
         """A show cue has just started: bring back whatever a previous Stop
         or announcement left dark (lasers only through the gate).
         `fade_s`: the video comes up over this long (Start at a cue,
         play_from.LANDING_FADE_S, after landing_video_dark); 0, every other
         start, as before. It only slows the video up: the lasers still
-        wait for the gate and the flame cues still come last."""
+        wait for the gate and the flame cues still come last.
+        `confirm_moving`: the Programming screen's Play from only
+        (playhead.py): the lasers are asked for only once the show clock's
+        timecode is seen moving (timecode_frame), as a Resume waits for
+        it; not within START_CONFIRM_S, they stay dark. A scheduled start
+        is already confirmed by its timecode and never passes it."""
         with self._lock:
             # `stops`: the Stop count when the scheduler decided this
             # start (its ordered line). Without it, a Stop since the music
@@ -856,8 +935,10 @@ class Conductor:
                 fade = max(0.0, min(float(fade_s or 0.0), ABORT_FADE_S))
             except (TypeError, ValueError):
                 fade = 0.0
+            self._programming_start = confirm_moving is True
             self._accept("Show start", PLAYING, who, screen, fade_s=fade,
-                         resume=False)
+                         resume=False,
+                         confirm_moving=confirm_moving is True)
             if fade:
                 return done(f"The rig comes up for the show, the video "
                             f"fading in over {fade:g} s.")
@@ -1024,10 +1105,40 @@ class Conductor:
                     self._applied["flames"] != LIVE:
                 return done("The lasers are armed; they light at the next "
                             "show start or Resume, through the laser gate.")
+            # A Programming Play from's show: the relight waits for the
+            # timecode to move, as that start did (M1); a scheduled show,
+            # exactly as before.
             self._accept("Lasers armed", PLAYING, who, screen, fade_s=0.0,
-                         resume=False, lasers_only=True)
+                         resume=False, lasers_only=True,
+                         confirm_moving=self._programming_start)
             return done("The lasers are armed and come back through the "
                         "laser gate.")
+
+    def lasers_kept_armed(self):
+        """True while the latest request is a Programming Pause that kept
+        the lasers armed (hold with disarm_lasers False) and the look is
+        still its HELD. remote.laser_enable_blockers asks it, so the laser
+        arm's watcher does not disarm armed lasers for that Pause. A plain
+        read, no lock (the arm asks it from the laser gate)."""
+        look, keep = self._lookstate
+        return keep is True and look == HELD
+
+    def look_and_keep(self):
+        """(look, keep) as ONE read: the look asked for and whether it is a
+        Programming Pause that kept the lasers armed. No lock."""
+        return self._lookstate
+
+    def lasers_maybe_lit(self):
+        """True while the record says the lasers were lit, or does not know
+        (UNKNOWN: a blank or restore that did not get out). A plain read,
+        no lock: the Programming playhead's guards ask it."""
+        return self._applied.get("lasers") in (LIT, UNKNOWN)
+
+    def lasers_lit(self):
+        """True while the record says the lasers were lit (the last laser
+        command that landed was a restore). A plain read, no lock: the
+        Programming playhead's guards ask it four times a second."""
+        return self._applied.get("lasers") == LIT
 
     def announce(self, ann_id, who="", screen=""):
         with self._lock:
@@ -1165,6 +1276,7 @@ class Conductor:
         want = {"label": label, "look": look, "who": who, "screen": screen}
         want.update(params)
         self._want = want
+        self._lookstate = (look, params.get("keep_lasers_armed") is True)
         self._look = look
         line = ((f"{label}, asked for by {self._who(who, screen)}.",),
                 dict(action=label.lower(), who=who, screen=screen))
@@ -1363,6 +1475,8 @@ class Conductor:
                    self.show.flames_zero)
         self._step(gen, "lasers", BLACK, "lasers blanked", progress,
                    self.devices.lasers_blank)
+        if want.get("keep_lasers_armed"):
+            self._pause_output_off(gen, want, progress)
         froze = a["music"] in (MUSIC_PLAYING, UNKNOWN)
         self._step(gen, "music", MUSIC_HELD, "music fading", progress,
                    self.show.music_hold, fade, only_from=(MUSIC_PLAYING,
@@ -1405,7 +1519,22 @@ class Conductor:
         moves) the lasers through the gate and the flame cues last."""
         fade, a = want["fade_s"], self._applied
         if want.get("lasers_only"):
-            # lasers_armed(): the show is up already; only the lasers.
+            # lasers_armed(): the show is up already; only the lasers. A
+            # Programming Play from's show waits for the timecode to move
+            # first, as its start did (cold review of #223, M1).
+            if want.get("confirm_moving") and \
+                    not self._timecode_moving(gen, START_CONFIRM_S):
+                with self._lock:
+                    self._check(gen)
+                self._note(f"The lasers were armed, but the show clock's "
+                           f"timecode was not seen moving within "
+                           f"{START_CONFIRM_S:g} s, so the lasers stay dark. "
+                           f"Pause, then Continue, or Play from again, to "
+                           f"try again.", fault=True, action="lasers",
+                           outcome="unconfirmed")
+                self._step(gen, "lasers", BLACK, "lasers blanked", progress,
+                           self.devices.lasers_blank)
+                return
             self._restore_lasers(gen, progress)
             return
         if want.get("resume"):
@@ -1434,6 +1563,30 @@ class Conductor:
                            outcome="unconfirmed")
                 return
             progress.append("timecode moving")
+        elif want.get("confirm_moving") and \
+                not self._timecode_moving(gen, START_CONFIRM_S):
+            # A Programming Play from whose timecode is not seen moving:
+            # the lasers stay dark (a frozen frame is a static beam); the
+            # flame cues are released as before (the flame link's own
+            # seek guard follows the timecode).
+            with self._lock:
+                self._check(gen)
+            self._note(f"The show clock's timecode was not seen moving "
+                       f"within {START_CONFIRM_S:g} s of Play from, so the "
+                       f"lasers stay dark. Pause, then Continue, or Play "
+                       f"from again, to try again.", fault=True,
+                       action="lasers", outcome="unconfirmed")
+            self._step(gen, "lasers", BLACK, "lasers blanked", progress,
+                       self.devices.lasers_blank)
+            if "flames" in off:
+                progress.append("flame cues left at zero (the flame link "
+                                "failed the rig check)")
+                return
+            self._step(gen, "flames", LIVE, "flame cues released", progress,
+                       self.show.flames_release)
+            return
+        elif want.get("confirm_moving"):
+            progress.append("timecode moving")
         if "flames" in off:
             self._restore_lasers(gen, progress)
             progress.append("flame cues left at zero (the flame link failed "
@@ -1442,6 +1595,38 @@ class Conductor:
         self._restore_lasers(gen, progress)
         self._step(gen, "flames", LIVE, "flame cues released", progress,
                    self.show.flames_release)
+
+    def _pause_output_off(self, gen, want, progress):
+        """A Programming Pause (hold with disarm_lasers False), right after
+        its blank: BEYOND's laser output off too, so the Pause leaves BEYOND
+        as dark as a Hold's disarm does. If the blank or the output off did
+        not get out, every laser is disarmed after all (the arm's own
+        sender then retries its dark): a Pause that cannot make the lasers
+        dark never leaves them armed."""
+        with self._lock:
+            self._check(gen)
+        fn = getattr(self.devices, "lasers_output_off", None)
+        if fn is None:
+            r = failed("Laser output off: this device layer cannot switch "
+                       "BEYOND's laser output.")
+        else:
+            r = self._call("BEYOND's laser output off for the Pause", fn)
+        progress.append("laser output off" if r.ok else
+                        "laser output off (FAILED)")
+        with self._lock:
+            blank_ok = self._applied["lasers"] == BLACK
+        if r.ok and blank_ok:
+            return
+        with self._lock:
+            if self._gen == gen:
+                self._lookstate = (self._look, False)
+        self._note("The Pause's laser blank or BEYOND's laser output off "
+                   "did not get out, so every laser was disarmed after "
+                   "all. Arm them again on the Morning page once BEYOND "
+                   "answers.", fault=True, action="lasers",
+                   outcome="pause_disarmed")
+        self._disarm_lasers("Pause (the lasers could not be made dark)",
+                            want.get("who", ""), want.get("screen", ""))
 
     def _run_between(self, gen, want, progress):
         """BETWEEN: flame cues zero, lasers blanked. Nothing else."""
@@ -1580,6 +1765,23 @@ class Conductor:
             return
         self._step(gen, "lasers", LIT, "lasers back", progress,
                    self.devices.lasers_restore)
+
+    def _timecode_moving(self, gen, timeout):
+        """True once the show clock has sent two different frames
+        (ShowOutputs.timecode_frame) within `timeout`; False otherwise,
+        including a clock that cannot say."""
+        fn = getattr(self.show, "timecode_frame", None)
+        seen = []
+
+        def moving():
+            f = fn() if fn is not None else None
+            if f is None:
+                return False
+            if not seen:
+                seen.append(f)
+                return False
+            return f != seen[0]
+        return self._await(gen, moving, timeout)
 
     def _ask_gate(self, gen):
         """The laser gate's answer: None (lasers may light) or why not."""

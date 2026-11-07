@@ -14,12 +14,11 @@
 <link rel="manifest" href="/manifest.webmanifest">
 <meta name="theme-color" content="#070605">
 <style>
-/* INTERFACE 2.0 (Jeff, 2026-10-28). The SHOW screen only; the other tabs
-   open the 1.0 page for now. 1.0 (remote.html) is unchanged and one tap
-   away. Every press here is a press 1.0 already makes: the same route, the
-   same body, the same hold. The pure rules (stale, arming, the Stop double
-   tap, Start and Stop) are 1.0's own, served from remote.html by
-   /remote-logic.js, never copied. selftest.py checks both.
+/* THE SCREEN (Jeff, 2026-10-28): the rack screen, the iPads and the
+   laptops. The pure rules (stale, arming, the Stop double tap, Start and
+   Stop) are remote_rules.js, served by /remote-logic.js and written into
+   this page by web.py, never copied here. Code marked as 1.0's was copied
+   from the first screen, now removed; selftest.py pins each copy.
    Rules: no scrolling on SHOW; text 20 px and up on SHOW; targets 56 px and
    up on SHOW; one colour per meaning (green live or armed, amber held or
    waiting, red fault or danger, grey off or safe, blue information); an
@@ -606,9 +605,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 }
 
 /* ---- narrower screens: iPad portrait, small laptops ---- */
-#to1 .short{display:none}
 @media (max-width:1100px){
-  #to1 .long{display:none} #to1 .short{display:inline}
   #d-steps .st{padding:0 8px;gap:6px;font-size:18px}
   .tab{padding:0 8px;gap:6px} .hb{padding:0 8px;gap:6px} #tabs{gap:2px} .hright{gap:4px}
   header{row-gap:4px}
@@ -709,11 +706,6 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <button class="hb" id="sys" aria-label="Systems: tap for what to check"><svg class="i"><use href="#i-dot-ok"/></svg><span>Checking</span><svg class="i chev" aria-hidden="true"><use href="#i-right"/></svg></button>
     <button class="hb" id="user"><svg class="i"><use href="#i-user"/></svg><span>Sign in</span></button>
     <button class="hb" id="help"><svg class="i"><use href="#i-help"/></svg><span>Help</span></button>
-    <!-- 2.0 is the default screen (Jeff, 2026-11-02). The old screen (1.0)
-         keeps what 2.0 does not have yet; this link remembers it on this
-         screen only (a cookie), then opens /remote1. Its Try 2.0 comes
-         back. -->
-    <a class="hb" id="to1" href="/ui?v=1" aria-label="Open the old screen (for Users, Audit, Network and the rest)" title="Open the old screen (for Users, Audit, Network and the rest)"><svg class="i"><use href="#i-back"/></svg><span class="long">Old screen</span><span class="short">Old</span></a>
   </div>
 </header>
 <!-- What to do next, on every tab; a live hazard (cleaning, live flame,
@@ -1051,8 +1043,6 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <button class="b" id="fbt-drop">Discard my changes</button>
         </div>
       </div>
-      <!-- The old screen, in plain words (Jeff, 2026-11-02). -->
-      <div class="card col" id="old-sched"><div class="t"><b>The old screen</b><span>Some things are only there for now. Its Try 2.0 button comes back here.</span></div><a class="b blue" href="/ui?v=1"><svg class="i"><use href="#i-back"/></svg>Open the old screen (for Users, Audit, Network and the rest)</a></div>
     </div>
   </section>
   <!-- Users, who may do what and the audit log (P5, P6, P7): 1.0's Users
@@ -1143,7 +1133,6 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
         <div id="pf-rows"></div>
         <div id="pf-msg" role="status"></div></div>
       <div class="card"><div class="t"><b>Users</b><span>People, who may do what, audit log.</span></div><a class="b blue" id="set-users" href="#users"><svg class="i"><use href="#i-user"/></svg>Open</a></div>
-      <div class="card col" id="old-set"><div class="t"><b>The old screen</b><span>Some things are only there for now. Its Try 2.0 button comes back here.</span></div><a class="b blue" href="/ui?v=1"><svg class="i"><use href="#i-back"/></svg>Open the old screen (for Users, Audit, Network and the rest)</a></div>
     </div>
   </section>
 </main>
@@ -1292,8 +1281,8 @@ function ui2Whole(){
 window.addEventListener("load", () => { if(!ui2Whole()) $("broken").hidden = false; });
 setInterval(() => { if(!ui2Whole()) $("broken").hidden = false; }, 1000);
 </script>
-<!-- The pure rules, 1.0's own (remote.html's remote-logic block), served
-     by web.py. Never copied here. -->
+<!-- The pure rules (remote_rules.js), written in by web.py as the page is
+     served; this tag is their fallback. Never copied here. -->
 <script src="/remote-logic.js"></script>
 <script>
 "use strict";

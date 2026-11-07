@@ -520,7 +520,7 @@ says "Hold to purge (the machines) for (the seconds)", the same as a Hold
 to arm: a tap does nothing, let go too soon and nothing fires. Once it
 says it started you can let go: the machines fire for those seconds and
 stop by themselves, even if the page or the iPad is closed. The rack
-screen, every screen's banner, 2.0's top line and the Stream Deck's key 0
+screen, the line at the top of every tab and the Stream Deck's key 0
 (PURGING and the seconds) count down. To end it early press Stop purge
 (on the Startup page or the banner, from any screen, signed in or
 not), or Stop or Hold; Start now, Run, a disarm of one of
@@ -887,14 +887,14 @@ channel, and is either ARMED or DISARMED.
 - **Arming.** On the show screen, the Hazers row under the flame groups:
   Hazer 1, Hazer 2 and Hazer 3, each reading ARMED (green) or DISARMED.
   One tap arms, the next disarms. No hold: a hazer is not a flame. On
-  Interface 2.0 on a narrow screen the row is one Hazers tile; its Hazers
+  a narrow screen the row is one Hazers tile; its Hazers
   button opens the hazers, with each one's arm button. On the Stream
   Deck: the hazers page, keys 1 to 3 arm and disarm, key 4 is HAZERS OFF,
   key 5 BACK. Open it with key 5 on the arm keys page: a tap if no
   announcements are set up; with announcements, a tap is still
   ANNOUNCE, and a hold (0.7 s, the ring fills) is the hazers. The
   announcements page's key 5 is always BACK.
-- **Levels.** Levels on the show screen (Hazers on 2.0's tile): each
+- **Levels.** Levels on the show screen (Hazers on the narrow tile): each
   hazer's Haze and Fan, 0 to 100 percent, 5 a tap. **Same for all
   hazers** sets every hazer at once. They take effect at once, during a
   show too, and are kept on the show PC (ltcplay_hazers.json in the
@@ -927,7 +927,7 @@ he triggers it."
 - **What it is.** One DMX channel on the flame universe (channel 100, on
   at 255), not a flame: no safety channel, no hold to arm. flamesafe
   writes the on value itself; the show file never drives it.
-- **On the screen.** Interface 2.0, the SHOW tab, the Fuel pump row
+- **On the screen.** The SHOW tab, the Fuel pump row
   under the hazers: the pump's state ("Off", "Pump on: 4:12 left", or
   "Waiting for flamesafe", or "flamesafe has it on" when flamesafe still
   passes it with LTC Player off: press Pump off), the run time field, **Fuel pump: On** and
@@ -935,7 +935,7 @@ he triggers it."
   be pressed it is greyed and says why in a few words. Pump off is never
   greyed. The row is there only when `flamesafe.json` lists a pump.
   When On cannot be pressed, the line under the row says why in full.
-  Interface 1.0 and the Stream Deck have no pump control. Every Stop
+  The Stream Deck has no pump control. Every Stop
   that is carried out turns the pump off (a screen's
   double tap Stop and the Stream Deck's Stop always are); a Hold never
   does, and neither does a Stop's Hold standing on later nights. A Stop
@@ -1050,7 +1050,7 @@ that long. The stages, in this order:
   own spelling of its name ("show.json" typed on a Mac or Windows PC is
   saved as "Show.json"); two files whose names differ only by case are
   refused: rename one.
-- **Where: Interface 2.0, the Schedule tab, Fireball timeline.** Pick
+- **Where: the Schedule tab, Fireball timeline.** Pick
   the show file, then FSEQ or Timeline. Each stage is one row: tap its
   name to use it or leave it out, type its start (HH:MM:SS:FF) and its
   length in seconds (2.5 or 2,5; 1,000 is refused as unclear: write 1000
@@ -1132,8 +1132,8 @@ only until the FSEQ turns it off, so each shot needs its own.
 
 - **A Valve on the Igniter's own frame never runs.** The Igniter has not
   gone out yet when the Valve would open. Start Valve Open at least 3
-  frames (0.1 s) after the Igniter. The fireball timeline editor (2.0
-  Settings) shows this under Valve Open, and a save that has it says so
+  frames (0.1 s) after the Igniter. The fireball timeline editor
+  (Schedule tab) shows this under Valve Open, and a save that has it says so
   (it is still saved). An FSEQ made in xLights with the two starting
   together loses that shot the same way.
 - **Every lost shot is said.** Each is a line in the journal, and the
@@ -1620,8 +1620,8 @@ show time has gone by it is red at once. On a Hold
 it says "Press Run, then Resume.". During a Programming Run
 (Run reads as pressed, but the schedule starts nothing over a rehearsal)
 it says "A Programming Run is in force: the 22:50 show (show 5) will NOT
-start. Press Stop, choose Show, then Run." It is a banner on 1.0's show
-screen and Schedule screen, an alert on 2.0's show screen, and part of the
+start. Press Stop, choose Show, then Run." It is an alert on the SHOW
+tab, a line on the Schedule tab, and part of the
 answer to a schedule save.
 It goes as soon as Run is pressed.
 
@@ -1631,14 +1631,14 @@ Jeff, 2026-10-28 and 2026-10-30. Each screen has one Stop, where Stop
 has always been, and it is there only while there is something for it to
 stop:
 
-- **Stop.** On the show screen (1.0), Start now turns into a red **Stop**
+- **Stop.** On the SHOW tab, **Stop show** is there, solid red,
   while a show is live (playing, or paused on Hold), while the rig is
   being checked before a show, while Start now waits for the show audio,
   while Programming playback plays, and during a rehearsal Run (the
   Programming mode) while its timecode is moving. On the Programming screen, Run
-  turns into **Stop** at those same times. In 2.0, **Stop show** sits in
-  the SHOW tab's controls and in the strip on every other tab, solid red,
-  and its place is empty when nothing is playing. With no contact with
+  turns into **Stop** at those same times. Stop show sits in the SHOW
+  tab's controls and in the strip on every other tab, and its place is
+  empty when nothing is playing. With no contact with
   the engine (what is playing is not known) Stop is always there.
 - **Stop is a double tap**, with no pop-up: the first tap only changes the
   button (it pulses and reads Tap again) and sends nothing; a second tap
@@ -1695,7 +1695,7 @@ stop:
   press Resume.") or, if any part did not work, which part, and what to
   press. If the engine refuses, it says why in its own words.
 - **Run off** is on the Programming screen's Run button: with Run on and
-  nothing playing, the button reads Run off. In 2.0 it is in Stop's place
+  nothing playing, the button reads Run off. It is also in Stop's place
   on the SHOW tab at those times, in full colour. It asks first, then does
   a Stop and stops playback, so Run is off. Run off needs the Show
   permission; Stop never does. Right after Stop turns back into Start
@@ -1827,11 +1827,10 @@ whatever ended the show before:
 - on Start now and a scheduled start, also a black or preshow look put
   on the pixel output before the start. The Fire & Ice screens have no
   Black or Preshow button; only the engine's override can set one. On
-  the Programming screen such a look stays through Play from. To clear
-  it in 1.0: press Stop on the "Show file, on this machine" card, then
-  Run (Run starts with no look on the pixels). That card is only on the
-  show machine's own screen. On 2.0 the same card, with the same Stop and
-  Run, is on the Schedule tab.
+  the Programming cards such a look stays through Play from. To clear
+  it: press Stop on the "Show file, on this machine" card (Schedule tab),
+  then Run (Run starts with no look on the pixels). That card is only on
+  the show machine's own screen.
   The Programming card's "Follow timecode again" button does not clear a
   look, and while the show audio is the playhead it reads "Stop the show
   audio" and stops playback.
@@ -1860,8 +1859,8 @@ Deck show it as a flame cues fault: "CUES FAULT: pixels show black, not
 the show. Programming: Show file card, Stop, then Run. On 2.0: the
 Schedule tab's Show file card. Scheduled show: tell Jeff." That Stop is
 the one on the "Show file, on this machine" card (it ends playback and
-turns Run off), not "Stop the show audio". 2.0 shows it as "Flame cues are off" with the
-full text behind a tap. It is display only.
+turns Run off), not "Stop the show audio". The screen shows it as "Flame
+cues are off" with the full text behind a tap. It is display only.
 
 **Other flame cue faults while a show plays.** The flame cues are cut from
 the show's render on a thread of their own, a little ahead of the show. A
@@ -2049,12 +2048,12 @@ choices:
 
 ## Start at a cue (play-from cues, Show mode)
 
-Start at a cue starts the show part way, at one of the cues saved on 2.0
+Start at a cue starts the show part way, at one of the cues saved in
 Settings ("Play-from cues"), instead of from the top. It is Start now with
 a starting point: everything Start now does and refuses, it does and
 refuses too.
 
-- **On 2.0, after a Stop:** tap Resume. When the show file running has
+- **After a Stop:** tap Resume. When the show file running has
   saved cues, a sheet asks what to do: **Resume** (carries on the
   schedule, as always), **Resume show 4 from Finale** (the cue the engine
   offers, at or before where show 4 stopped; the sheet says where it
@@ -2062,7 +2061,7 @@ refuses too.
   and time). A cue then asks once more, like Start now ("Resume show 4
   from Finale?", with the time it plays from), and starts only on
   **Yes, start**. Cancel sends nothing.
-- **On 2.0, any time Start now is offered:** its question has
+- **Any time Start now is offered:** its question has
   **From a cue** beside Yes, start now: pick any saved cue, then Yes,
   start.
 - With no saved cues for the show file running, Resume and Start now are
@@ -2134,7 +2133,7 @@ refuses too.
   tonight's only: forgotten at the night change, at Close for the night
   and when Run goes off.
 - **The cue is checked again at the start.** If the cue was changed or
-  deleted on 2.0 Settings after it was chosen (for example while the rig
+  deleted in Settings after it was chosen (for example while the rig
   check failed), Start at a cue and Continue anyway are refused and
   nothing starts: choose the cue again.
 - **The journal** says who pressed it, on which screen, the cue, its time
@@ -2266,16 +2265,14 @@ Turning it off puts every controller back on the live stream immediately.
 
 ## The iPad
 
-Once, on the show machine: open the old screen
-(http://127.0.0.1:7878/remote1, or "Old screen" at the top of 2.0),
-press Programming, and pick this machine's show Wi-Fi address under "Show
-network". On a Mac, start it with the show network on (Run ltcplay, answer
+Once, on the show machine: open the Schedule tab and pick this machine's
+show Wi-Fi address on the "Show network, on this machine" card. On a Mac, start it with the show network on (Run ltcplay, answer
 y to the iPad question). There is no PIN.
 
 ### Open the page from your Mac or iPad
 
-On the Windows show PC the "Show network, on this machine" card on
-Programming (on the old screen, `/remote1`, until 2.0 has it) says it all in plain words: the address saved (or none), where
+On the Windows show PC the "Show network, on this machine" card on the
+Schedule tab says it all in plain words: the address saved (or none), where
 the engine is listening, whether the Windows Firewall rule is there,
 whether Windows calls that network Public or Private (with what to do
 when it is Public), and the address to type on the other machine, for
@@ -2417,7 +2414,7 @@ audio from that point, then the rig comes up for the show). Back 10 s,
 Back 5 s, Ahead 5 s and Ahead 10 s move the audio, the timecode and the
 pixels at once; while paused they move the paused point, and Continue
 plays from there. Pause is the show's own Hold (flame cues to zero,
-lasers blanked and disarmed, music and timecode frozen) and Continue its
+lasers blanked, music and timecode frozen) and Continue its
 own Resume. The A/B loop jumps the audio back to mark A each time it
 passes mark B; both marks have to be in the same cue. Stop the show
 audio (the button that says Follow timecode again on other shows) takes
@@ -2443,9 +2440,41 @@ Nothing on the screen arms anything. Flame cues still go only to groups
 an operator has armed, through flamesafe, and nothing fires for half a
 second after a jump, a loop, Play from or Continue; a cue you jump over is not
 played, and a flame already on where you land stays off until it ends.
-The lasers stay dark in Programming: the laser gate lights them only
-while a scheduled show is live. BEYOND's own timeline still follows the
-timecode, so its position moves with the playhead.
+The lasers follow the playhead too, by the same rules as a show. They
+light only when every laser is armed on the Morning and Shutdown page and
+none is locked out, and only before or after the night (the schedule in
+IDLE, OFF or BOOT). They stay dark during intermission (STANDBY), on Hold,
+while the night closes, and while a laser calibration test is on. Nothing
+on the Programming screen arms them.
+
+- Play from: the lasers come up once the timecode is moving, never on a
+  frozen frame. If it is not moving within 2 seconds they stay dark.
+- Back, Ahead and the A/B loop: the lasers are not blanked for the jump.
+  BEYOND follows the timecode to the new place.
+- If the timecode stops moving for half a second while the lasers are lit
+  (a jump whose audio has not started, a stalled clock), the lasers are
+  blanked, because a frozen laser frame is a static beam. The check runs
+  four times a second, so the blank comes within about 0.75 seconds of the
+  last frame. This is only a safety guard for a frozen frame. Pause, then
+  Continue, or Play from again, brings them back. Arming the lasers on the
+  Morning page during playback lights them only once the timecode moves,
+  the same as Play from.
+- Pause on the Programming screen blanks the lasers and switches BEYOND's
+  laser output off, but every laser stays armed. (The blank is the one a
+  Hold sends: brightness 0, or with "beyond_blank" set to "timecode"
+  BEYOND's timecode moved to the black zone, brightness not touched.) Continue lights them
+  again once the timecode moves, if they are all still armed. While
+  paused, a laser can be disarmed or locked out (it then stays dark), but
+  not armed: arm it after Continue, as after a Hold in a show. If the
+  lasers were armed a moment before the Pause, BEYOND's laser output may
+  be switched on again just after the Pause switched it off; the lasers
+  stay blanked all the same, and nothing lights them until Continue.
+- Hold (the Hold button on any screen or the Stream Deck), an
+  announcement, Stop and Disarm all lasers still disarm every laser and
+  leave them dark, as in a show.
+- If the schedule moves on while the lasers are lit (into intermission,
+  the night closing), they are blanked, even if nothing else told the
+  show conductor.
 
 There is no switch for flames in Programming (the old "Fire flames while
 scrubbing" was removed): while you play here, the show's own flame cues go
@@ -2599,36 +2628,18 @@ from the screen: the Stream Deck's group keys and Stop, and the hardware
 e-stop, are), it stays on the screen as a banner until it is seen, never
 only as a one-line note.
 
-## Interface 2.0, the default screen (1.0 is the old screen)
+## The screen
 
-Interface 2.0 is the default screen on every device (Jeff, 2026-11-02):
-the rack screen, every iPad and every laptop get it at `/remote` and at
-the show network address with no choice made. It is a new look on the
-same program: its SHOW and Day tabs, its Schedule tab and its
-Programming cards (on the Schedule tab) do what 1.0 does. Nothing else
-changes: every 2.0 button sends exactly what the same 1.0 button sends,
-with the same holds, confirms and refusals. Stop show, Hold and Disarm
-flames work the same on both, and the hardware e-stop always works.
+There is one screen, on every device: the rack screen, every iPad and
+every laptop get it at `/remote` and at the show network address
+(`/remote2` is the same page, for old bookmarks). Its tabs are SHOW, Day,
+Schedule (with the Programming cards and, on the show PC, its tools) and
+Settings. Stop show, Hold and Disarm flames are one tap away on every
+tab, and the hardware e-stop always works.
 
-Interface 1.0 is now "the old screen". It stays until everything in it
-is in 2.0 (docs/REMOVE_1_0_PLAN.md). Nothing is only on the old
-screen any more: everything it does is in 2.0 too.
-
-- To get there: "Old screen" at the top of 2.0 on every tab, or "Open
-  the old screen (for Users, Audit, Network and the rest)" on the
-  Schedule and Settings tabs. No 2.0 card opens a part of the old screen
-  any more.
-- The old screen link is remembered on that screen only (a cookie in that
-  browser): it keeps showing the old screen, even at `/remote`, until
-  someone taps "Try 2.0" in the old screen's header. Try 2.0 forgets the
-  choice and goes back to 2.0. The rack screen, each iPad and each laptop
-  choose for themselves. The rack window's address stays `/remote`.
-- `/remote1` is always the old screen and `/remote2` is always 2.0,
-  whatever a screen chose.
-- The "Default interface" card is gone from 2.0 Settings. A
-  `ui_default` saved in `ltcplay_remote.json` earlier is kept but no
-  longer decides anything.
-- 2.0 Settings, "Play-from cues" (on the show PC, by someone with
+- An old `/remote1` or `/ui` address opens the screen (`/remote`). A
+  `ui_default` left in `ltcplay_remote.json` is ignored.
+- Settings, "Play-from cues" (on the show PC, by someone with
   Settings, admins): a list of named points in a show file to play the
   show from later. Saving the list sends nothing to the rig and starts
   nothing; starting a show from a cue is "Start at a cue" (below, in its
@@ -2669,8 +2680,7 @@ screen any more: everything it does is in 2.0 too.
   is named too. Anyone signed in can read the list; saving it from an
   iPad also needs Arming from a screen on. With no users set up, the show
   PC reads the list but nobody can save it until an admin exists.
-  This card is 2.0's own: 1.0 has no button for it.
-- The 2.0 SHOW screen, top to bottom: one line that says what to do next;
+- The SHOW tab, top to bottom: one line that says what to do next;
   the show state, the timecode and the time left; the big button for the
   next step (Run show, Start now or Resume; Resume and Start now offer
   the saved play-from cues, see Start at a cue), Hold and Stop show; one
@@ -2678,9 +2688,8 @@ screen any more: everything it does is in 2.0 too.
   per flame group and one for the lasers, with Hold: arm flames and Disarm
   flames (flames only; the lasers' tile has its own Disarm lasers); the
   announcements and the wind along the bottom. Tap "Announce" for what
-  the announcements do. Run show is the 1.0 Run in Show mode, on the show PC only.
-- 2.0 Schedule tab: 1.0's Schedule screen and its schedule editor, the
-  same code. Tonight's shows, two columns: tap a show to see its notes
+  the announcements do. Run show is Run in Show mode, on the show PC only.
+- Schedule tab: tonight's shows and the schedule editor. Tonight's shows, two columns: tap a show to see its notes
   (why it moved, how it was added, a late warning), tap again to close
   them. "Next:" says the next show, and the engine's Run warning shows in
   amber when Run is off with a show to come. On the show PC only, the
@@ -2699,18 +2708,17 @@ screen any more: everything it does is in 2.0 too.
   edits kept"; opening Schedule again never reads the file over them. A
   save writes the whole schedule: a save from another window or iPad
   since this one read the file is overwritten, so press Reload from the
-  file first if someone else may have changed it (1.0 is the same). The
-  card's first line is 1.0's state line (STANDBY, On hold, Held after
+  file first if someone else may have changed it. The
+  card's first line is the state line (STANDBY, On hold, Held after
   Stop, Checking, Held for an alert). iPads and laptops see tonight's
   shows only.
-- 2.0 machine map, Arrange and the show machine switches: 1.0's own
-  code and presses. On DAY's Purge step, Map shows the field (every
+- Machine map, Arrange and the show machine switches. On DAY's Purge step, Map shows the field (every
   machine where the layout puts it) in the group buttons' place; a tap
   on a machine arms it for the purge, as a group button does (a tap:
   a swipe that starts on a machine scrolls and chooses nothing). Arrange
   (its button is shown on the show PC only; the engine saves a layout
-  for anyone with the show files permission, from any device, as on
-  1.0) is 1.0's Arrange mode. It needs room for its bar and the field:
+  for anyone with the show files permission, from any device) is
+  Arrange mode. It needs room for its bar and the field:
   on a window too short it says so and does not start. While it is on
   nothing arms, fires, locks or lights anything (the fire key line says so, a tap
   picks a machine up instead), and the only ways out are Save layout,
@@ -2723,8 +2731,7 @@ screen any more: everything it does is in 2.0 too.
   (show PC only: the output, Save, Test tone, Settings). Nothing on
   them arms anything by itself: arming is still the Stream Deck's hold
   to arm and flamesafe's rules.
-- 2.0 Programming (Schedule tab): 1.0's Programming screen, the same
-  presses, on the Schedule tab (there is no room in the header for a tab
+- Programming (Schedule tab): the Programming cards, on the Schedule tab (there is no room in the header for a tab
   of its own; `/remote2#prog` opens it). On the show PC, the Show file
   card: Show or Programming (which mode Run
   starts), the show file, and Run. Run asks first ("Press Run?" in Show,
@@ -2741,9 +2748,9 @@ screen any more: everything it does is in 2.0 too.
   Programming run, with contact, signed in with the Show row; the engine
   says why it refuses one, and its answer is shown under the card. While
   the show's flame cues follow Programming playback, a move needs the show
-  PC or Settings, as on 1.0, and the card says how the flames follow; a
-  flame cue fault is shown there in full. "More programming" opens 1.0 for
-  the schedule rules, the show folder and the network.
+  PC or Settings, and the card says how the flames follow; a
+  flame cue fault is shown there in full. The show folder, the network
+  and the other show PC tools are cards further down the Schedule tab.
 - Anything live that has to be stopped by hand (the wave flamer cleaning,
   live flame programming) sits in the next-step
   line with its own red Stop, on every tab, never behind another alert,
@@ -2759,19 +2766,18 @@ screen any more: everything it does is in 2.0 too.
   whole it says "Page not fully loaded. Reload it." across the top, with
   its own Stop show button, which still works (a double tap).
 - The rig check before a show: the big button says Checking rig while it
-  runs. When it fails, the alert slot says so and its button is 1.0's
+  runs. When it fails, the alert slot says so and its button is
   "Hold: continue anyway" (a hold; a tap does nothing). On the show PC the
   alert's details have Check again.
 - DAY tab: the day as steps. Startup (sign in, rig checks, the startup
   list, fuel, purge, laser test, locks) or Shutdown (the shutdown list,
   wave flamer cleaning, locks, sign out); only the steps that apply now,
-  each with its mark, and one big Next. Every press is the 1.0 Startup,
-  Fuel and Shutdown pages' own: a purge fires only with the Stream Deck's
+  each with its mark, and one big Next. A purge fires only with the Stream Deck's
   FIRE key or Space held, the cleaning starts only with its two holds,
-  and Lock is one tap per machine with Undo. "Map in 1.0" opens the
-  machine map, Arrange, the checklist PDF and the rest of 1.0's page.
-- 2.0 DAY tab, Fireball, fuel and timed purge: 1.0's Fireball page,
-  its recent refills and its timed purge, the same code and presses.
+  and Lock is one tap per machine with Undo. The Purge step has the
+  machine map and Arrange; the checklist steps have Verify records, the
+  PDF and Export all.
+- DAY tab, Fireball, fuel and timed purge.
   The Fireball step (Startup, only when the show has a fireball group):
   a pad per channel. Fuel Charge, Air Charge and Purge stay on until
   pressed again; Valve Open and Igniter are on only while held. While
@@ -2785,7 +2791,7 @@ screen any more: everything it does is in 2.0 too.
   for them (under about 690 px of page) the step says "This window is
   too short for the fireball pads: make it taller or use the iPad", and
   anything on is turned off. The Fireball step is not there at Shutdown,
-  or while the show PC's status has no fireball group; 2.0 then has no
+  or while the show PC's status has no fireball group; there is then no
   All off, but Stop show and Disarm flames still turn the fireball off. Nothing on this step arms: the Fireball is armed
   by its own hold to arm. The Fuel step: Refills and notes (amber
   when there is a fuel warning) shows the warning and Recent refills
@@ -2795,7 +2801,7 @@ screen any more: everything it does is in 2.0 too.
   letting go early, another step or tab, no contact or signing out fire
   nothing); once it runs you may let go, it stops by itself, and
   Stop purge here or in the line at the top ends it now.
-- 2.0 show PC tools: 1.0's own, the same code and presses.
+- Show PC tools.
   - DAY, the Startup and Shutdown checklist steps: Verify records,
     Download today's PDF and Export all. The two downloads are links: on
     an iPad, Safari saves the file and stays on this page; a screen
@@ -2815,7 +2821,7 @@ screen any more: everything it does is in 2.0 too.
   - Help, This LTC Player: the version, this screen, where the settings
     and logs are, the mode, how to leave this window, and on the show PC
     Close this window.
-- 2.0 Users: 1.0's Users screen, the same code and presses. Open it
+- Users: the Users pane. Open it
   from Settings (Users, Open) or from the header: tap your name, then
   Users in the Signed in sheet. Signed in shows who you are, Sign out,
   and your own password (Change). Users (admins, on the show PC only):
