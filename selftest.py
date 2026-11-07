@@ -59604,6 +59604,10 @@ def test_conductor_line_stop_is_urgent_and_supersedes():
     stop = mk("stop", 20)
     t0 = time.monotonic()
     q.put(stop)
+    # A Resume decided after the Stop (seq 21), queued while the Stop waits
+    # its URGENT_WAIT_S: only what was decided before the Stop is dropped.
+    later = mk("resume", 21)
+    q.put(later)
     check(stop.done.wait(3), "the Stop answered while the line was stuck")
     took = time.monotonic() - t0
     check(0.2 <= took < 1.5 and ran == ["stop"],
@@ -59617,8 +59621,9 @@ def test_conductor_line_stop_is_urgent_and_supersedes():
           f"intermission: {overtook}")
     gate.set()
     q.flush(3)
-    check(ran == ["stop", "slow", "intermission"],
-          f"the intermission still ran, in order: {ran}")
+    check(ran == ["stop", "slow", "intermission", "resume"],
+          f"the intermission and the Resume decided after the Stop still "
+          f"ran, in order: {ran}")
     # The service journals a Stop that went ahead, as a Stop.
     S = _sched()
     if S is None:

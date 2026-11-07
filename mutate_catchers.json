@@ -2793,7 +2793,7 @@
 "scheduler fix round 2: a hung conductor request is a fault every tick": "test_schedule_conductor_line_stuck_or_dead_is_loud",
 "scheduler fix round 2: a hung conductor request is silent": "test_schedule_conductor_line_stuck_or_dead_is_loud",
 "scheduler fix round 2: a latched night with every show to come shows the preshow look": "test_schedule_restart_after_a_stopped_show_stays_dark",
-"scheduler fix round 2: an Abort that goes ahead drops later Resets too": "test_schedule_conductor_calls_after_the_save_and_off_the_lock",
+"scheduler fix round 2: an Abort that goes ahead drops later Resets too": "test_conductor_line_stop_is_urgent_and_supersedes",
 "scheduler fix round 2: an open night is looked for only one day back": "test_schedule_restart_across_the_2am_reset",
 "scheduler fix round 2: conductor: a stopped show leaves the music playing": "test_conductor_failed_start_leaves_groups_as_they_are",
 "scheduler fix round 2: every conductor call is made as the scheduler": "test_schedule_conductor_wiring_details",
