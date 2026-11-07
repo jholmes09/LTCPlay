@@ -213,12 +213,9 @@ class FakeEngine {
     this.posts = [];
     this.dead = false;
     Object.assign(this, dayState(name, this.st));
-    // The shared rules file, written into 1.0 as web.py's remote1_page does.
+    // The screen's rules file (/remote-logic.js).
     this.logic = fs.readFileSync(path.join(REPO, "ltcplay", "web", "remote_rules.js"), "utf8");
-    this.html = fs.readFileSync(path.join(REPO, "ltcplay", "web", "remote.html"), "utf8")
-      .replace('<script src="/remote-logic.js"></script>', () => '<script id="remote-logic">' + this.logic + "</script>");
     this.html2 = fs.readFileSync(path.join(REPO, "ltcplay", "web", "remote2.html"), "utf8");
-    this.uiDefault = 1;
   }
   setScenario(name){ this.name = name; this.st = baseStatus(); (SCENARIOS[name] || (s => s))(this.st); this.holds = {}; }
   // The real engine's hold registry (remote.py arm_hold): one hold per
@@ -258,7 +255,6 @@ class FakeEngine {
         s.show = {running: true, show: "Fire and Ice", timecode: "01:00:01:00", state: "playing"}; s.countdown = {kind: "left", label: "Time left", s: 440, running: true}; return ok("Started.");
       case "/api/start": s.show = Object.assign({}, s.show || {}, {running: true, starting: false, show: "Fire and Ice", timeline: body.timeline, state: "idle"});
         if(sch.start_blocked) sch.start_blocked = null; return {code: 200, body: {ok: true, banner: "Running " + body.timeline + "."}};
-      case "/api/remote/ui-default": this.uiDefault = body.default; return ok("Set.");
       case "/api/remote/stop": this.dropHolds(); sch.state = "STANDBY"; sch.running = null; s.show = {running: false};
         s.flames.groups.forEach(g => g.armed = "disarmed"); return ok("Stopped.");
       case "/api/remote/disarm-all": this.dropHolds(); s.flames.groups.forEach(g => { g.armed = "disarmed"; g.wanted = false; }); return ok("Disarmed.");
@@ -337,12 +333,9 @@ class FakeEngine {
         const r = this.onPost(p, body);
         return route.fulfill({status: r.code, contentType: "application/json", body: JSON.stringify(r.body)});
       }
-      // 2.0 is the default screen (Jeff, 2026-11-02): / and /remote are 2.0,
-      // /remote1 the old screen.
-      if(p === "/remote1") return route.fulfill({status: 200, contentType: "text/html; charset=utf-8", body: this.html});
+      // The screen: / and /remote (and /remote2, the same page).
       if(p === "/" || p === "/remote" || p === "/remote2") return route.fulfill({status: 200, contentType: "text/html; charset=utf-8", body: this.html2});
       if(p === "/remote-logic.js") return route.fulfill({status: 200, contentType: "application/javascript; charset=utf-8", body: this.logic});
-      if(p === "/api/remote/ui-default") return route.fulfill({status: 200, contentType: "application/json", body: JSON.stringify({default: this.uiDefault})});
       if(p.startsWith("/brand/") && process.env.NOFONT) return route.fulfill({status: 404, body: "{}"});
       if(p.startsWith("/brand/logo") && this.name === "no_logo") return route.fulfill({status: 404, body: "{}"});
       if(p.startsWith("/brand/")){

@@ -151,7 +151,7 @@ next fixes it first; nothing is tagged while it is red.
   when a sweep gets slow.
 - The rack screen drawn in a real browser (2026-10-24): the suite finds
   Chromium, Chrome or Edge by itself (set `LTCPLAY_CHROME` to one to
-  choose), draws remote.html headless at seven window sizes with five
+  choose), draws remote2.html headless at several window sizes with five
   banners and measures every flame group's Hold to arm and Disarm. With
   no browser it says so and skips; on the ubuntu CI runner a missing
   browser is a failure.

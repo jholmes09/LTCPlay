@@ -727,12 +727,10 @@ def main(installer, version=""):
         st, body = get("/remote")
         check(st == 200 and "<html" in body.lower() and "<title>" in body,
               f"GET /remote (the rack screen page): {st} {body[:120]!r}")
-        # The shared rules written into both screens (ltcplay/web/
-        # remote_rules.js; web.RULES_SERVED_MARK): a package without the
-        # file fails here, not on the night.
-        # /remote is 2.0 by default (Jeff, 2026-11-02); /remote1 is the
-        # old screen, still served until 1.0 is removed.
-        for path in ("/remote", "/remote1", "/remote2"):
+        # The screen's rules written into it (ltcplay/web/remote_rules.js;
+        # web.RULES_SERVED_MARK): a package without the file fails here,
+        # not on the night. /remote2 is the same page, for old bookmarks.
+        for path in ("/remote", "/remote2"):
             st, body = get(path)
             check(st == 200 and "function armState(" in body,
                   f"GET {path} is not served with the screen rules "
