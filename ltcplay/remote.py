@@ -1755,6 +1755,10 @@ class Remote:
         # and removes it when it is fine again). Read at most every 30 s.
         self.disk_file = os.path.join(settings_folder(), DISK_FILE)
         self._disk = (None, 0.0)
+        # flamesafe's config is not valid JSON (cli.serve, Jeff
+        # 2026-11-06): the sentence for the screens' red line, "" when it
+        # is fine. This engine then has no flame link and no flame groups.
+        self.flamesafe_problem = ""
         # The alert service (alerts.py, 2026-10-12): the rack screen's
         # banners, the booth note and the blue pulse. web.serve gives it
         # the booth player and the pulse's pixel range from the settings;
@@ -8219,6 +8223,7 @@ class Remote:
                                           cue_now)
         out["audio_interface"] = self.audio_interface_view()
         out["disk"] = self.disk_view()
+        out["flamesafe_config_error"] = str(self.flamesafe_problem or "")
         out["deck"] = self.deck_view()
         out["programs"] = self.programs_view()
         if ctx.local:
