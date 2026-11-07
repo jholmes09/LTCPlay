@@ -274,6 +274,11 @@ LIVE_FLAME_ENABLES = (
 # that plays from the show audio, Programming playback is the show's own
 # path, so its flame cues go to flamesafe whenever it plays; flamesafe
 # fires only armed groups. The Programming screen says so in one line.
+# The scheduler states in which Programming playback may light the lasers
+# (Jeff, 2026-11-06): before the night (BOOT, IDLE) and after it (OFF).
+# Never intermission (STANDBY), a Hold, CLOSING, or a live show (where the
+# show's own laser gate decides, conductor.LASER_STATES).
+PROGRAMMING_LASER_STATES = ("IDLE", "OFF", "BOOT")
 PROGRAMMING_FLAMES_LINE = ("Flames follow the show while you play here. "
                            "Only armed groups fire. Hold or Stop ends "
                            "it.")
@@ -1677,6 +1682,11 @@ class Remote:
             journal=lambda text, outcome: self._journal(
                 "", "Programming screen", "programming playback", outcome,
                 text))
+        # Lasers lit while Programming may no longer light them (the
+        # schedule left IDLE, OFF or BOOT, a laser test came on) are
+        # blanked by the playhead's watch, whether or not anything told
+        # the conductor (Jeff, 2026-11-06).
+        self.playhead.lasers_refusal = self.programming_lasers_refusal
         # Start now asks again under the scheduler's lock, after its tick
         # and any wait for the show audio (a Play from may have landed).
         if schedule is not None and hasattr(schedule, "start_veto"):
@@ -3638,7 +3648,14 @@ class Remote:
                     at = p.nudge(secs)
                 said = f"jumped {secs:+g} s to {tl.format(at)}"
             elif name == "pause" and ph is not None:
-                at, why = ph.pause_or_why(who, screen)
+                # The Programming screen's Pause keeps armed lasers armed
+                # (Jeff, 2026-11-06), only while this is a Programming
+                # session and the playback is the one Play from started:
+                # asked again by the playhead at the press itself, with
+                # its own active() check (a Hold that disarms otherwise).
+                at, why = ph.pause_or_why(
+                    who, screen,
+                    keep_lasers_if=lambda: self.programming()[0])
                 said = (f"not paused at {tl.format(at)}: {why}" if why
                         else f"paused at {tl.format(at)}")
             elif name == "continue" and ph is not None:
@@ -5933,11 +5950,13 @@ class Remote:
         except Exception:                        # noqa: BLE001
             return None
 
-    def laser_arm_blockers(self):
+    def laser_arm_blockers(self, look=None):
         """Why no laser may be armed (nor BEYOND's laser output switched
         on) right now, or "": a Hold (a Stop's too) until Resume, the
         night closing, and no schedule at all (the show state
-        unknown). Plain reads, never a lock: the laser gate asks this."""
+        unknown). Plain reads, never a lock: the laser gate asks this.
+        `look`: the conductor's look already read (laser_enable_blockers),
+        else read here."""
         svc = self.schedule
         m = getattr(svc, "machine", None)
         if m is None:
@@ -5945,12 +5964,89 @@ class Remote:
                     "so no laser may be armed")
         cond = getattr(svc, "conductor", None)
         state = getattr(m, "state", None)
-        if state in ("PAUSED", "HOLD") or \
-                getattr(cond, "_look", None) in ("HELD", "DARK"):
+        if look is None:
+            look = getattr(cond, "_look", None)
+        if state in ("PAUSED", "HOLD") or look in ("HELD", "DARK"):
             return "the show is on Hold; press Resume first, then arm"
         if state == "CLOSING":
             return "the night is closing"
         return ""
+
+    def laser_enable_blockers(self):
+        """Why the lasers may not be LIT right now (laserarm.LaserArm's
+        enable_blockers, through morning.py), or "": laser_arm_blockers,
+        except that a Programming Pause that kept the lasers armed (Jeff,
+        2026-11-06; conductor.hold with disarm_lasers False) is not a Hold
+        here, so the arm's watcher leaves armed lasers armed through it. A
+        NEW arm is still refused during that Pause (laser_arm_blockers is
+        the arm's refusal, unchanged). Never raises: an error is a
+        blocker. Plain reads, never a lock."""
+        svc = self.schedule
+        m = getattr(svc, "machine", None)
+        if m is None:
+            return self.laser_arm_blockers()
+        cond = getattr(svc, "conductor", None)
+        # The conductor's look and its keep as ONE read (look_and_keep),
+        # never the look and then the keep (cold review of #223, M2).
+        try:
+            snap = cond.look_and_keep()
+            look, keep = snap[0], snap[1] is True
+        except Exception:                           # noqa: BLE001
+            look, keep = getattr(cond, "_look", None), False
+        state = getattr(m, "state", None)
+        why = self.laser_arm_blockers(look=look)
+        if not why:
+            return why
+        try:
+            if self._programming_pause_keeps_lasers(state, look, keep):
+                return ""
+        except Exception:                           # noqa: BLE001
+            pass
+        return why
+
+    def _programming_pause_keeps_lasers(self, state, look, keep):
+        """True only while `look` (the conductor's, read once with `keep`)
+        is a Programming Pause's HELD that kept the lasers armed, the
+        schedule is not on Hold, paused or closing, and the Programming
+        playback Play from started is still the one on the show audio."""
+        if state in ("PAUSED", "HOLD", "CLOSING"):
+            return False
+        if look != "HELD":
+            return False
+        if keep is not True:
+            return False
+        ph = getattr(self, "playhead", None)
+        return bool(self.programming()[0] and ph is not None and
+                    ph.active())
+
+    def programming_lasers_refusal(self):
+        """None while Programming playback may light the lasers (Jeff,
+        2026-11-06; fire_ice.attach's programming_lasers, asked only when
+        the show's own laser gate says no), else why not. The laser arm is
+        asked after this, as for a show. Also the Programming playhead's
+        guard (playhead.py): lasers lit while this says no are blanked.
+        Never raises; plain reads, never a lock."""
+        try:
+            ok, why = self.programming()
+            if not ok:
+                return why or "this is not a Programming session"
+            ph = getattr(self, "playhead", None)
+            if ph is None or not ph.active():
+                return ("no Programming playback started by Play from is "
+                        "playing")
+            m = getattr(self.schedule, "machine", None)
+            state = getattr(m, "state", None)
+            if state not in PROGRAMMING_LASER_STATES:
+                return (f"the show state is {state or 'unknown'}, and "
+                        f"Programming lights the lasers only before or "
+                        f"after the night (IDLE, OFF, BOOT)")
+            tests = getattr(getattr(self, "morning", None), "lasers", None)
+            if tests is not None and getattr(tests, "on", None):
+                return "a laser calibration test is on"
+            return None
+        except Exception as e:                      # noqa: BLE001
+            return (f"Programming could not be asked "
+                    f"({type(e).__name__}: {e})")
 
     def _lasers_dark_now(self, what="Stop pressed on a screen"):
         """(ok or None, sentence): the conductor's laser blank, on this

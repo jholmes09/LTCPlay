@@ -475,6 +475,17 @@ class FireIceShow(C.ShowOutputs):
             return None
         return self._frozen
 
+    def timecode_frame(self):
+        """The frame the show clock last sent (AudioMaster's own record:
+        None after a start or a move until the audio is heard and a frame
+        goes out), or None with no clock. Taking no lock (clock_nolock):
+        the conductor asks it while it waits for a Programming Play from's
+        timecode to move."""
+        clk = self.clock_nolock()
+        if clk is None:
+            return None
+        return getattr(clk, "_last_frame", None)
+
     # -- pixels: the player's override ---------------------------------------
     def _player(self):
         s = self._session()
@@ -3417,12 +3428,15 @@ class Wiring:
 
 def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
            journal=None, flame_link=None, threaded=True, alert_pixels=None,
-           **conductor_kw):
+           programming_lasers=None, **conductor_kw):
     """Build the real Conductor and attach it to the scheduler service
     `svc`. `madmapper` is web.serve's (link, watchdog) pair or None,
     `beyond` its Beyond or None. Call before svc.start(), so the first tick
     already reaches the conductor. `threaded` False and `conductor_kw`
-    (clock, waiter) are the selftest's: nothing runs on its own then."""
+    (clock, waiter) are the selftest's: nothing runs on its own then.
+    `programming_lasers`: () -> None while Programming playback may light
+    the lasers (remote.Remote.programming_lasers_refusal), else why not;
+    None (every caller but web.serve) keeps today's gate exactly."""
     link = madmapper[0] if madmapper is not None else None
     built_link = None
     # A finished show's held timecode frame never goes to BEYOND, whatever
@@ -3557,9 +3571,22 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
     blanking.arm_check = arm_gate
     state_gate = C.laser_gate_for(state)
 
+    def programming_gate():
+        """None only when Programming playback may light the lasers (Jeff,
+        2026-11-06): asked only when the show's own state gate says no, so
+        a scheduled show's gate is exactly as before. Anything but a real
+        None, an error included, is a no."""
+        if programming_lasers is None:
+            return "no Programming playback here"
+        try:
+            why = programming_lasers()
+        except Exception as e:
+            return f"Programming could not be asked ({type(e).__name__})"
+        return None if why is None else (str(why) or "no")
+
     def laser_gate():
         why = state_gate()
-        if why is not None:
+        if why is not None and programming_gate() is not None:
             return why
         why = arm_gate()
         if why is not None:
@@ -3591,7 +3618,11 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
     if journal is not None:
         journal(f"Fire & Ice show conductor built: {cfg.summary()}.",
                 action="fire_ice", outcome="built")
-    return Wiring(conductor, show, devices, runner, built_link, arm_slot)
+    wiring = Wiring(conductor, show, devices, runner, built_link, arm_slot)
+    # What the laser gate asks for Programming playback (None: nothing),
+    # kept for the engine's own check that ltc serve handed it in.
+    wiring.programming_lasers = programming_lasers
+    return wiring
 
 
 def build_blanking(cfg, beyond, journal=None, threaded=True):
