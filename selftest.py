@@ -39318,6 +39318,14 @@ def test_conductor_a_failed_stop_blank_can_be_sent_again():
     c.hold("Andy", "rack screen")
     c.run_pending()
     check(c.snapshot()["applied"]["lasers"] == C.UNKNOWN, "hold blank lost")
+    # A second Hold while BEYOND is still down: the blank is sent again
+    # and does not get out, and the answer says so, never "dark".
+    r = c.hold("Andy", "rack screen")
+    check("Already on hold" in r.sentence and
+          "did not get out: the lasers may still be lit" in r.sentence and
+          "the lasers are dark" not in r.sentence,
+          f"a second Hold with BEYOND still down says the lasers may still "
+          f"be lit (finding B): {r.sentence}")
     down[0] = False
     del vals[:]
     r = c.hold("Andy", "rack screen")
