@@ -8754,10 +8754,10 @@ def build():
   "                    \"trouble\": t[\"text\"] if t else None,\n",
   "                    \"trouble\": None,\n"),
 
- ("scheduler fix round 2: Abort waits behind a hung conductor request",
-  "ltcplay/schedule_service.py",
-  "            urgent = call.method in self.URGENT and (",
-  "            urgent = call.method == \"stop\" and ("),
+ # ('scheduler fix round 2: Abort waits behind a hung conductor request')
+ # is retired (2026-11-08); it could not be caught: URGENT is ("stop",) since Abort went, so `call.method == "stop"` is
+ # the same test; a Stop not waiting behind a hung request is
+ # test_conductor_line_stop_is_urgent_and_supersedes.
 
  ("scheduler fix round 2: an Abort that goes ahead drops later Resets too",
   "ltcplay/schedule_service.py",
@@ -9412,11 +9412,9 @@ def build():
   "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,\n"
   "                         fade_s=ABORT_FADE_S)"),
 
- ("failed start: the conductor latches a failed start",
-  "ltcplay/conductor.py",
-  "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,",
-  "            self._latched = True\n"
-  "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,"),
+ # ('failed start: the conductor latches a failed start')
+ # is retired (2026-11-08); it could not be caught: the conductor has no latch since Abort and Reset went (aee2141): nothing
+ # reads _latched, so setting it changes nothing to catch.
 
  ("a failed start raises no alert", "ltcplay/schedule_service.py",
   "                    self.alert_sink(\"start\", alert)",

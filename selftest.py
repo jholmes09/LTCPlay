@@ -14111,6 +14111,26 @@ def test_schedule_after_midnight_review_c():
           svc.machine.slot(1).status in (S.RUNNING, S.DONE),
           f"Friday's 17:30 show runs: {listed(svc)[:2]}")
     svc.stop()
+    # The same inside the hold limit (a show at or after the next night's
+    # first show, but early enough that hold_limit alone would let it hold
+    # the night): Thursday 22:00 to 01:30, Friday's first show 04:00, and
+    # "04:30 tomorrow" added on Thursday: Friday's 04:00 show still runs.
+    d7 = doc({"thu": nt("22:00", 20, "01:30"), "fri": nt("04:00", 20,
+                                                         "05:00")})
+    svc, now = mk(d7, at(THU, 22, 0))
+    run(svc, now, at(THU, 23, 10))
+    o = svc._apply(_op(S, S.EDIT_ADD, at="04:30 tomorrow"))
+    added = max(svc.machine.slots, key=lambda x: x.n)
+    check(not o.refused and added.start == at(FRI, 4, 30) and
+          added.start <= S.hold_limit(svc.machine),
+          f"setup: 04:30 tomorrow added, inside the hold limit: "
+          f"{o.refused!r} {added.start} {S.hold_limit(svc.machine)}")
+    run(svc, now, at(FRI, 4, 2), step=60)
+    check(svc.machine.date == date(*FRI) and
+          svc.machine.slot(1).status in (S.RUNNING, S.DONE),
+          f"Friday's 04:00 show runs; Thursday's 04:30 add never held "
+          f"Thursday open: {svc.machine.date} {listed(svc)[:1]}")
+    svc.stop()
     # Review B's case: Tuesday 22:00 to 01:30, "20:30 tomorrow", Wednesday's
     # shows from 18:00 are not missed.
     TUE, WED = (2026, 11, 10), (2026, 11, 11)
@@ -34601,6 +34621,24 @@ def test_conductor_rehearsal_hold_is_instant():
     c.run_pending()
     holds = [x for x in rig.calls if x[0] == "music_hold"]
     check(holds[-1][1] == (0.25,), f"production fades again: {holds}")
+    # A show start with no music_started before it (a caller that never
+    # says so): the start itself records the music as playing, so the
+    # Hold after it still freezes the music.
+    c, rig, T, lines = _cond()
+    c.stop("Andy", "rack screen")
+    c.run_pending()
+    c._stopped_since_music = False      # as an older caller left it
+    check(c.show_starting("Andy", "rack screen").ok,
+          "setup: a show start with no music_started")
+    c.run_pending()
+    check(c.snapshot()["applied"]["music"] == C.MUSIC_PLAYING,
+          f"the start records the music as playing: "
+          f"{c.snapshot()['applied']['music']}")
+    del rig.calls[:]
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(rig.first("music_hold") is not None,
+          f"and the Hold after it freezes the music: {rig.names(0)}")
     print("  ok")
 
 
@@ -39318,6 +39356,14 @@ def test_conductor_a_failed_stop_blank_can_be_sent_again():
     c.hold("Andy", "rack screen")
     c.run_pending()
     check(c.snapshot()["applied"]["lasers"] == C.UNKNOWN, "hold blank lost")
+    # A second Hold while BEYOND is still down: the blank is sent again
+    # and does not get out, and the answer says so, never "dark".
+    r = c.hold("Andy", "rack screen")
+    check("Already on hold" in r.sentence and
+          "did not get out: the lasers may still be lit" in r.sentence and
+          "the lasers are dark" not in r.sentence,
+          f"a second Hold with BEYOND still down says the lasers may still "
+          f"be lit (finding B): {r.sentence}")
     down[0] = False
     del vals[:]
     r = c.hold("Andy", "rack screen")
@@ -40263,6 +40309,29 @@ def test_schedule_delayed_night_closes_at_the_2am_reset():
           sat["slots"][11]["status"] == S.DONE,
           f"once it has ended, Saturday closes with show 12 DONE and Sunday "
           f"begins: {svc.machine.date} {sat['slots'][11]['status']}")
+    svc.stop()
+
+    # A show paused (a Hold during it) past the next night's preshow: the
+    # hand over has come (its planned end and guard are long past), yet a
+    # running or paused show is never set aside: the night stays.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 39)]
+    svc = _svc(S, work, now, rule=_two_nights())
+    svc.start(thread=False)
+    now[0] = _den(S, 21, 40)
+    svc.tick()
+    now[0] = _den(S, 21, 40, 2)
+    _confirm(S, svc)
+    now[0] = _den(S, 21, 41)
+    svc._apply(_op(S, S.HOLD_ON))
+    check(svc.machine.state == S.PAUSED and svc.machine.running == 12,
+          f"setup: show 12 paused: {svc.machine.state}")
+    now[0] = _den(S, 17, 58, d=(2026, 11, 15))
+    svc.tick()
+    check(str(svc.machine.date) == "2026-11-14" and
+          svc.machine.state == S.PAUSED and svc.machine.running == 12,
+          f"a paused show past the next night's preshow is never set aside: "
+          f"{svc.machine.date} {svc.machine.state} {svc.machine.running}")
     svc.stop()
     print("  ok")
 
@@ -58864,6 +58933,14 @@ def test_screen_arm_engine_rules():
         R.ask("POST", "/api/remote/disarm-all", {})
         check(R.remote.deck_input()["holds"] == [],
               "Disarm every flame group lets every hold go")
+        let_go = [r for r in R.svc.journal
+                  if r.get("action") == "arm hold" and
+                  r.get("outcome") == "cancelled" and
+                  "pressed disarm-all" in r.get("text", "")]
+        check(let_go,
+              f"and says the hold was let go for it, at the press (not "
+              f"only cleared by the disarm itself): "
+              f"{[r.get('text') for r in let_go]}")
         # Letting go releases only your own hold.
         st, _h, out = _hold(R, "front row")
         R.ask("POST", "/api/remote/arm-release", {"group": "front row"},
@@ -59915,6 +59992,10 @@ def test_conductor_line_stop_is_urgent_and_supersedes():
     stop = mk("stop", 20)
     t0 = time.monotonic()
     q.put(stop)
+    # A Resume decided after the Stop (seq 21), queued while the Stop waits
+    # its URGENT_WAIT_S: only what was decided before the Stop is dropped.
+    later = mk("resume", 21)
+    q.put(later)
     check(stop.done.wait(3), "the Stop answered while the line was stuck")
     took = time.monotonic() - t0
     check(0.2 <= took < 1.5 and ran == ["stop"],
@@ -59928,8 +60009,9 @@ def test_conductor_line_stop_is_urgent_and_supersedes():
           f"intermission: {overtook}")
     gate.set()
     q.flush(3)
-    check(ran == ["stop", "slow", "intermission"],
-          f"the intermission still ran, in order: {ran}")
+    check(ran == ["stop", "slow", "intermission", "resume"],
+          f"the intermission and the Resume decided after the Stop still "
+          f"ran, in order: {ran}")
     # The service journals a Stop that went ahead, as a Stop.
     S = _sched()
     if S is None:
