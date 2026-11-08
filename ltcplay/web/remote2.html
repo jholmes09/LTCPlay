@@ -1702,6 +1702,9 @@ function alertItems(st){
   else { const prl = prerollLook(s.preroll); if(prl.trouble) items.push({key:"pr-trouble", tone:"warn", what:"Rig check failed.", do:"Tap here for details.", full:prl.trouble}); }
   (s.alerts || []).forEach(a => items.push({key:"a" + a.id, tone:a.severity === "fault" ? "bad" : "warn",
     what:ALERT_WHAT[a.kind] || "Alert.", do:ALERT_DO[a.kind] || "Tap here for details.", full:a.text, act:"ack", id:a.id}));
+  // flamesafe.json not valid JSON (Jeff, 2026-11-06): flames are off and
+  // the engine runs without its flame link; the file, line and column.
+  if(s.flamesafe_config_error) items.push({key:"fscfg", tone:"bad", what:"Flame settings file broken.", do:"Flames are off. Tap here.", full:s.flamesafe_config_error});
   const fl = s.flames || {};
   if(!fl.connected) items.push({key:"fl-off", tone:"bad", what:"Flame state not known.", do:"Disarm and Stop work.", full:fl.why || "flamesafe is not connected."});
   else if(fl.stale) items.push({key:"fl-stale", tone:"bad", what:"Flame state not live.", do:"Disarm and Stop work.", full:"flamesafe has not reported for " + (fl.age_ms == null ? "ever" : (fl.age_ms / 1000).toFixed(1) + " s") + "."});

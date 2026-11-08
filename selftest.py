@@ -48119,11 +48119,12 @@ def test_fire_ice_review_hand_mutations():
     SV.save_rule(rule, _sched_doc())
     with open(F.config_path_for(rule), "w") as fh:
         _json.dump({"flamesafe_config": bad}, fh)
-    served = []
+    served, served_kw = [], []
     real_serve = web_mod.serve
 
     def no_serve(*a, **k):
         served.append(a)
+        served_kw.append(k)
         raise RuntimeError("serve was reached")
     web_mod.serve = no_serve
     try:
@@ -48143,10 +48144,13 @@ def test_fire_ice_review_hand_mutations():
         rc = serve_with(good)
         check(served, f"setup: a good flamesafe config gets as far as "
                       f"binding: {rc!r}")
+        # Not valid JSON (Jeff, 2026-11-06): the engine starts anyway, with
+        # no flame link and no flamesafe config (test_flamesafe_bad_json_*).
         rc = serve_with(bad)
-        check(rc not in (0, None) and not served,
-              f"ltc serve stops on flamesafe's config before binding: "
-              f"{rc!r} served={bool(served)}")
+        check(served and served_kw[-1].get("flamesafe_config") is None and
+              served_kw[-1]["fire_ice"].flamesafe_config is None,
+              f"ltc serve on flamesafe's config that is not JSON: it starts "
+              f"with flames off: {rc!r} served={bool(served)}")
         # A file every other check reads fine (valid JSON, the example's
         # groups, destination and universe) whose link block only the flame
         # link's own check refuses: a listen address that is not loopback.
@@ -48167,6 +48171,336 @@ def test_fire_ice_review_hand_mutations():
     finally:
         web_mod.serve = real_serve
         import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_flamesafe_bad_json_starts_with_flames_off():
+    section("flamesafe.json that is not valid JSON (Jeff, 2026-11-06): the "
+            "engine and the rack screen still start, with no flame link and "
+            "no flame groups, and the screens say the file, line and "
+            "column; the supervisor starts neither flamesafe nor the deck, "
+            "says why in flamesafe.log and in the start message, and keeps "
+            "a last good copy only of a file flamesafe has run on")
+    import io
+    import contextlib
+    import shutil
+    import tempfile
+    import types
+    from ltcplay import flamesafecheck as FC
+    work = tempfile.mkdtemp()
+    try:
+        fs = os.path.join(work, "flamesafe.json")
+        good = os.path.join(work, "flamesafe.last-good.json")
+        broken = b'{\n  "groups": []\n  "link": {}\n}\n'
+        with open(fs, "wb") as fh:
+            fh.write(broken)
+        # 1. Where it is broken: the JSON error's own line and column.
+        bad = FC.json_problem(fs)
+        check(bad == {"path": os.path.abspath(fs), "line": 3, "column": 3,
+                      "what": "Expecting ',' delimiter"},
+              f"the problem: the file, line 3, column 3: {bad}")
+        check(FC.last_good_path(fs) == good,
+              f"the last good copy sits beside it: {FC.last_good_path(fs)}")
+        want = (f"flamesafe.json is not valid JSON at line 3, column 3 "
+                f"(Expecting ',' delimiter): {os.path.abspath(fs)}. Flames "
+                f"are off: flamesafe is not running and no flame group can "
+                f"be armed. Fix it (there is no last good copy yet). Then "
+                f"start LTC Player again. flamesafe.log says the same.")
+        check(FC.sentence(bad) == want,
+              f"the screens' words, no last good copy: {FC.sentence(bad)!r}")
+        check(FC.bytes_problem(b"[1, 2]", fs)["what"] ==
+              "the file is not one JSON object { ... }" and
+              FC.bytes_problem(b'{"a": "\xff"}', fs)["what"] ==
+              "a character that is not UTF-8" and
+              FC.json_problem(os.path.join(work, "none.json")) is None,
+              "a list is not a config; a byte that is not UTF-8 is said; a "
+              "missing file is said where it is used")
+        # A byte-order mark (an older Notepad's "UTF-8"): flamesafe reads
+        # strict UTF-8 and refuses it, so it counts as broken here too.
+        bom = os.path.join(work, "bom.json")
+        with open(bom, "wb") as fh:
+            fh.write(b'\xef\xbb\xbf{"groups": []}')
+        check(FC.json_problem(bom) == {
+                  "path": os.path.abspath(bom), "line": 1, "column": 1,
+                  "what": "it was saved with a byte-order mark (BOM); save "
+                          "it as UTF-8 without BOM"},
+              f"a file saved with a BOM is said, with what to do: "
+              f"{FC.json_problem(bom)}")
+        # 2. The last good copy: only valid JSON, written once, replaced.
+        check(FC.save_last_good(fs, broken) is None and
+              not os.path.exists(good),
+              "bytes that are not valid JSON never become the last good copy")
+        ok1 = b'{"groups": [], "n": 1}\n'
+        check(FC.save_last_good(fs, ok1) == good and
+              open(good, "rb").read() == ok1 and
+              FC.save_last_good(fs, ok1) is None,
+              "valid bytes are kept, and the same bytes again write nothing")
+        import time as _time
+        stamp = _time.mktime((2026, 11, 2, 18, 40, 0, 0, 0, -1))
+        os.utime(good, (stamp, stamp))
+        check(FC.sentence(bad) == want.replace(
+                  "Fix it (there is no last good copy yet). ",
+                  f"Fix it, or copy the last good copy back over it: "
+                  f"{good}, saved 2026-11-02 18:40. It may be older than "
+                  f"recent edits (a channel moved since, for example): "
+                  f"check it before you use it. "),
+              f"with a last good copy the screens name it, when it was "
+              f"saved, and that it may be older than recent edits: "
+              f"{FC.sentence(bad)!r}")
+        check("–" not in want and "—" not in want,
+              "no em or en dashes")
+        # 3. The engine starts, with flames off, and says it.
+        from ltcplay import cli as cli_mod, web as web_mod
+        from ltcplay import fire_ice as F
+        from ltcplay import schedule_service as SV
+        S = _sched()
+        if S is None:
+            return
+        rule = os.path.join(work, SV.RULE_FILE)
+        SV.save_rule(rule, _sched_doc())
+        with open(F.config_path_for(rule), "w") as fh:
+            json.dump({"flamesafe_config": fs,
+                       "flame_controller": "Flames"}, fh)
+        seen = {}
+        real_serve = web_mod.serve
+
+        def fake_serve(*a, **k):
+            seen.update(k)
+            # Enough of an httpd for the line after serve; the next one
+            # (httpd.schedule) stops the start here.
+            return types.SimpleNamespace(remote=types.SimpleNamespace(
+                flamesafe_problem=""), bind_address="127.0.0.1")
+        web_mod.serve = fake_serve
+        out = io.StringIO()
+        try:
+            for named in (None, fs):
+                seen.clear()
+                args = types.SimpleNamespace(
+                    folder=work, schedule=rule, announce=None, port=0,
+                    bind="127.0.0.1", token=None, no_browser=True,
+                    network=False, flamesafe_config=named)
+                httpd = None
+                with contextlib.redirect_stdout(out), \
+                        contextlib.redirect_stderr(out):
+                    try:
+                        cli_mod._cmd_serve(args)
+                    except AttributeError:
+                        pass
+                fi = seen.get("fire_ice")
+                check(seen and seen.get("flamesafe_config") is None and
+                      fi is not None and fi.flamesafe_config is None and
+                      fi.flame_controller == "Flames",
+                      f"--flamesafe-config {named}: the engine starts with no "
+                      f"flame link and no flamesafe config, the flame "
+                      f"controller still named (the pixel output never sends "
+                      f"it): {sorted(seen)} {fi and fi.flamesafe_config} "
+                      f"{fi and fi.flame_controller}")
+            check(f"FLAMES OFF: {FC.sentence(bad)}" in out.getvalue(),
+                  f"its own log says it: {out.getvalue()[-600:]!r}")
+            # The rack screen's red line: set on the remote it serves.
+            got = []
+
+            def fake_serve2(*a, **k):
+                h = types.SimpleNamespace(remote=types.SimpleNamespace(
+                    flamesafe_problem=""), bind_address="127.0.0.1")
+                got.append(h)
+                return h
+            web_mod.serve = fake_serve2
+            with contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    cli_mod._cmd_serve(types.SimpleNamespace(
+                        folder=work, schedule=rule, announce=None, port=0,
+                        bind="127.0.0.1", token=None, no_browser=True,
+                        network=False, flamesafe_config=None))
+                except AttributeError:
+                    pass
+            check(got and got[0].remote.flamesafe_problem ==
+                  FC.sentence(bad),
+                  f"the rack screen gets the sentence: "
+                  f"{got and got[0].remote.flamesafe_problem!r}")
+
+            def start_out(folder, env=None):
+                del got[:]
+                o = io.StringIO()
+                saved_env = os.environ.get(cli_mod.FLAMESAFE_ENV)
+                if env:
+                    os.environ[cli_mod.FLAMESAFE_ENV] = env
+                try:
+                    with contextlib.redirect_stdout(o), \
+                            contextlib.redirect_stderr(o):
+                        try:
+                            rc = cli_mod._cmd_serve(types.SimpleNamespace(
+                                folder=folder, schedule=rule, announce=None,
+                                port=0, bind="127.0.0.1", token=None,
+                                no_browser=True, network=False,
+                                flamesafe_config=None))
+                        except AttributeError:
+                            rc = "served"
+                finally:
+                    os.environ.pop(cli_mod.FLAMESAFE_ENV, None)
+                    if saved_env is not None:
+                        os.environ[cli_mod.FLAMESAFE_ENV] = saved_env
+                return rc, o.getvalue()
+            # showpc.json naming another, valid file: still the one-config
+            # refusal (P1-4), never a start on the other file.
+            os.makedirs(os.path.join(work, "o"))
+            other, _sh, _d = _fi_flame_files(os.path.join(work, "o"))
+            rc, said = start_out(work, env=other)
+            check(rc not in (0, None, "served") and not got and
+                  "different flamesafe configs" in said,
+                  f"another file named in showpc.json: refused as before: "
+                  f"{rc!r} {said[-300:]!r}")
+            # An Active flame controller in a show's layout: still refused
+            # at startup with flamesafe.json broken.
+            os.makedirs(os.path.join(work, "a"))
+            _fs2, show2, _d2 = _fi_flame_files(os.path.join(work, "a"),
+                                               state="Active")
+            folder2 = os.path.join(work, "a", "folder")
+            os.makedirs(folder2)
+            with open(os.path.join(folder2, "fi_timeline.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"name": "fi", "fps": 30, "show_dir": show2,
+                           "cues": [{"tc": "01:00:00:00",
+                                     "fseq": "Show.fseq", "name": "Show"}]},
+                          fh)
+            with open(F.config_path_for(rule), "w") as fh:
+                json.dump({"flamesafe_config": fs,
+                           "flame_controller": "Flames",
+                           "beyond_blank": "osc"}, fh)
+            rc, said = start_out(folder2)
+            check(rc not in (0, None, "served") and not got and
+                  "fi_timeline.json" in said and "Active" in said,
+                  f"an Active flame controller is still refused with "
+                  f"flamesafe.json broken: {rc!r} {said[-300:]!r}")
+        finally:
+            web_mod.serve = real_serve
+        R = _RemoteRig(S)
+        try:
+            st, _h, s0 = R.ask("GET", "/api/remote/status")
+            R.remote.flamesafe_problem = FC.sentence(bad)
+            st1, _h, s1 = R.ask("GET", "/api/remote/status")
+            check(s0.get("flamesafe_config_error") == "" and
+                  s1.get("flamesafe_config_error") == FC.sentence(bad),
+                  f"the status carries it for the screens: "
+                  f"{s0.get('flamesafe_config_error')!r} "
+                  f"{s1.get('flamesafe_config_error')!r}")
+        finally:
+            R.close()
+        two = _ui2_pages()[1]
+        check('if(s.flamesafe_config_error) items.push({key:"fscfg", '
+              'tone:"bad", what:"Flame settings file broken.", do:"Flames '
+              'are off. Tap here.", full:s.flamesafe_config_error});' in two,
+              "2.0's alert slot shows it in red, the whole sentence behind "
+              "a tap")
+        # 4. The supervisor: neither flamesafe nor the deck, said where an
+        # operator looks.
+        os.remove(good)
+        W, SUP, gone = _winpkg()
+        old_local = os.environ.get("LOCALAPPDATA")
+        try:
+            os.environ["LOCALAPPDATA"] = work
+            settings = {"show_folder": os.path.join(work, "shows"),
+                        "flamesafe_config": fs, "port": 7878,
+                        "run_flamesafe": True, "run_deck": True,
+                        "show_mode": "fire_ice",
+                        "schedule": os.path.join(work, "s.json")}
+            want_ = SUP.wanted_args(settings)
+            check(want_["flamesafe"] == (None, "flamesafe is not started: "
+                                         + FC.sentence(bad)) and
+                  want_["deck"] == (None, "the Stream Deck program is not "
+                                    "started: flamesafe's config is not "
+                                    "valid JSON (flamesafe.log says where)")
+                  and want_["engine"][0] is not None,
+                  f"bad JSON: no flamesafe, no deck, the engine runs: "
+                  f"{want_['flamesafe']} {want_['deck']}")
+            p = types.SimpleNamespace(said_why_not="")
+            for _ in range(2):
+                SUP.say_not_started("flamesafe", p,
+                                    want_["flamesafe"][1])
+            flog = os.path.join(SUP.log_dir(), "flamesafe.log")
+            text = open(flog, encoding="utf-8").read() \
+                if os.path.exists(flog) else ""
+            check(text.count("LTC Player: flamesafe is not started: "
+                             + FC.sentence(bad)) == 1,
+                  f"flamesafe.log says why, once: {text[-400:]!r}")
+            note = SUP.flamesafe_start_note(settings)
+            check(note == (
+                f"\n\nThe flamesafe config is invalid: flamesafe.json is not "
+                f"valid JSON at line 3, column 3. Flames are off and "
+                f"flamesafe is not started. flamesafe.log in "
+                f"{SUP.log_dir()} says what to do."),
+                f"the start message says it: {note!r}")
+            # Starting LTC Player: the page opens, then the message says
+            # flames are off and why (never only "did not answer").
+            told, opened = [], []
+            saved_ = (SUP.load_settings, SUP.supervisor_running,
+                      SUP.engine_answers, SUP.open_page_now, SUP.tell,
+                      SUP.QUIET)
+            try:
+                SUP.load_settings = lambda: settings
+                SUP.supervisor_running = lambda: True
+                SUP.engine_answers = lambda port: True
+                SUP.open_page_now = lambda port: opened.append(port)
+                SUP.tell = lambda text, error=False, **k: told.append(
+                    (text, error))
+                SUP.QUIET = False
+                rc = SUP.cmd_start()
+            finally:
+                (SUP.load_settings, SUP.supervisor_running,
+                 SUP.engine_answers, SUP.open_page_now, SUP.tell,
+                 SUP.QUIET) = saved_
+            check(rc == 0 and opened == [7878] and told == [
+                      ("LTC Player has started, with flames off." + note,
+                       True)],
+                  f"LTC Player starts: the page, then the message: {rc} "
+                  f"{opened} {told}")
+            # Fixed: flamesafe and the deck start again on their own.
+            with open(fs, "wb") as fh:
+                fh.write(ok1)
+            want_ = SUP.wanted_args(settings)
+            check(want_["flamesafe"][0] == [os.path.abspath(fs)] and
+                  want_["deck"][0] is not None and
+                  SUP.flamesafe_start_note(settings) == "",
+                  f"a valid file: both start, no note: {want_['flamesafe']}")
+            # The last good copy: once flamesafe has run on its bytes.
+            p = types.SimpleNamespace(last_good_kept=False, config_bytes=ok1,
+                                      config_path=os.path.abspath(fs),
+                                      started=100.0)
+            SUP.keep_last_good(p, 100.0 + FC.LAST_GOOD_AFTER_S - 1)
+            check(not os.path.exists(good) and not p.last_good_kept,
+                  "not before flamesafe has run LAST_GOOD_AFTER_S on it")
+            # The file edited since flamesafe started on it: not what
+            # flamesafe ran, so not kept.
+            q = types.SimpleNamespace(last_good_kept=False,
+                                      config_bytes=b'{"older": 1}',
+                                      config_path=os.path.abspath(fs),
+                                      started=0.0)
+            SUP.keep_last_good(q, 1000.0)
+            check(not os.path.exists(good),
+                  "a file edited since flamesafe started on it is not kept")
+            SUP.keep_last_good(p, 100.0 + FC.LAST_GOOD_AFTER_S)
+            check(os.path.exists(good) and open(good, "rb").read() == ok1
+                  and p.last_good_kept,
+                  "then its bytes are the last good copy")
+            check(FC.LAST_GOOD_AFTER_S == 20.0, "after 20 s")
+            os.remove(good)
+            with open(fs, "wb") as fh:
+                fh.write(broken)
+            p = types.SimpleNamespace(last_good_kept=False,
+                                      config_bytes=broken,
+                                      config_path=os.path.abspath(fs),
+                                      started=0.0)
+            SUP.keep_last_good(p, 1000.0)
+            check(not os.path.exists(good),
+                  "bytes that are not JSON never become the last good copy")
+        finally:
+            if old_local is None:
+                os.environ.pop("LOCALAPPDATA", None)
+            else:
+                os.environ["LOCALAPPDATA"] = old_local
+            gone()
+    finally:
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")
 
@@ -79581,6 +79915,9 @@ def test_artnet_receivers_one_address_each_and_on_this_pc():
     check(len(same) == 1 and "MadMapper and BEYOND are both 10.250.1.1"
           in same[0] and FIXW in same[0] and DMX in same[0],
           f"the same address twice is one collision: {same}")
+    check(same[0].endswith("Then set each program's Art-Net input to that "
+                           "address, not the Show LAN address."),
+          f"and says to set each program's Art-Net input to it: {same[0]}")
 
     # Loopback aliases: one address on port 6454.
     for other in ("localhost", "LocalHost", "127.0.0.2", "127.1.2.3"):
@@ -111540,6 +111877,7 @@ if __name__ == "__main__":
         test_fire_ice_auto_start_off_and_start_now,
         test_fire_ice_start_rules_on_the_ordered_line,
         test_fire_ice_review_hand_mutations,
+        test_flamesafe_bad_json_starts_with_flames_off,
         test_every_show_start_clears_the_pixels,
         test_the_show_takes_over_the_pixels_on_its_first_frame,
         test_no_dark_frame_between_the_show_and_the_idle_look,
