@@ -14111,6 +14111,26 @@ def test_schedule_after_midnight_review_c():
           svc.machine.slot(1).status in (S.RUNNING, S.DONE),
           f"Friday's 17:30 show runs: {listed(svc)[:2]}")
     svc.stop()
+    # The same inside the hold limit (a show at or after the next night's
+    # first show, but early enough that hold_limit alone would let it hold
+    # the night): Thursday 22:00 to 01:30, Friday's first show 04:00, and
+    # "04:30 tomorrow" added on Thursday: Friday's 04:00 show still runs.
+    d7 = doc({"thu": nt("22:00", 20, "01:30"), "fri": nt("04:00", 20,
+                                                         "05:00")})
+    svc, now = mk(d7, at(THU, 22, 0))
+    run(svc, now, at(THU, 23, 10))
+    o = svc._apply(_op(S, S.EDIT_ADD, at="04:30 tomorrow"))
+    added = max(svc.machine.slots, key=lambda x: x.n)
+    check(not o.refused and added.start == at(FRI, 4, 30) and
+          added.start <= S.hold_limit(svc.machine),
+          f"setup: 04:30 tomorrow added, inside the hold limit: "
+          f"{o.refused!r} {added.start} {S.hold_limit(svc.machine)}")
+    run(svc, now, at(FRI, 4, 2), step=60)
+    check(svc.machine.date == date(*FRI) and
+          svc.machine.slot(1).status in (S.RUNNING, S.DONE),
+          f"Friday's 04:00 show runs; Thursday's 04:30 add never held "
+          f"Thursday open: {svc.machine.date} {listed(svc)[:1]}")
+    svc.stop()
     # Review B's case: Tuesday 22:00 to 01:30, "20:30 tomorrow", Wednesday's
     # shows from 18:00 are not missed.
     TUE, WED = (2026, 11, 10), (2026, 11, 11)
