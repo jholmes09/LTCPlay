@@ -34621,6 +34621,24 @@ def test_conductor_rehearsal_hold_is_instant():
     c.run_pending()
     holds = [x for x in rig.calls if x[0] == "music_hold"]
     check(holds[-1][1] == (0.25,), f"production fades again: {holds}")
+    # A show start with no music_started before it (a caller that never
+    # says so): the start itself records the music as playing, so the
+    # Hold after it still freezes the music.
+    c, rig, T, lines = _cond()
+    c.stop("Andy", "rack screen")
+    c.run_pending()
+    c._stopped_since_music = False      # as an older caller left it
+    check(c.show_starting("Andy", "rack screen").ok,
+          "setup: a show start with no music_started")
+    c.run_pending()
+    check(c.snapshot()["applied"]["music"] == C.MUSIC_PLAYING,
+          f"the start records the music as playing: "
+          f"{c.snapshot()['applied']['music']}")
+    del rig.calls[:]
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(rig.first("music_hold") is not None,
+          f"and the Hold after it freezes the music: {rig.names(0)}")
     print("  ok")
 
 
