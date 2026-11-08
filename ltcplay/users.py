@@ -242,6 +242,11 @@ REMOTE_ROUTES = {
     # The charge record (fireball_charge.py): an admin confirms NOT KNOWN
     # tanks are empty.
     "fireball-charge-empty": "settings",
+    # Fireball practice (fireball_practice.py): open, Step and the beat
+    # that keeps it open are arm presses (the engine also asks the Show
+    # row, and the show PC or an admin); Done only takes risk away
+    # (classify).
+    "fireball-practice": "arm",
     # These depend on the body: see classify().
     "fireball-beat": "arm", "cleaning-beat": "arm",
     "purge-select": "arm", "purge-fire": "arm", "laser-test": "unlock",
@@ -301,6 +306,11 @@ def classify(route, body=None):
             return "arm" if purge_fire_wanted(raw) else "safety"
         if name == "purge-select" and \
                 body.get("on") is False:
+            return "safety"
+        if name == "fireball-practice" and body.get("action") not in (
+                "open", "step", "beat"):
+            # Done, or anything the engine does not open or step with,
+            # only ends practice.
             return "safety"
         if name == "fireball-beat":
             # A beat with every channel off only turns things off.

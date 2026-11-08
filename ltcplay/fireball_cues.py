@@ -56,9 +56,32 @@ The rules
     new times, unless its new start is already behind the cue time: then
     it is not started late ("moved into the past: not fired").
 
+Fireball practice (fireball_practice.py)
+========================================
+
+While practice is open (practice_open), only the play practice bound
+(practice: its token, the clock's cue dict and a hash of this show's
+entry) is fired, and only by stricter rules than a show's. Every other
+play sends all zeros and sets practice_fault, which practice turns into
+a Stop. A practice play:
+
+  - fires the token's own stages (the entry as checked) and never takes
+    an edit made after its check;
+  - zeroes every flame slot but the fireball's (55 to 59);
+  - fires its whole shot or nothing: at every landing until the first
+    stage goes out, a stage starting within PRACTICE_MARGIN_FRAMES of
+    where it landed skips every stage of the play (the write-ahead mark
+    is asked LEAD_FRAMES ahead, the landing guard needs
+    LANDING_SETTLE_FRAMES); after a stage went out, any move, gap or
+    landing skips every stage of the play.
+
+Nothing changes for any play while practice is not open.
+
 The sender's work here is memory only; the file is read on the flame
 cues' reading thread (refresh) and when a save is made (publish).
 """
+import hashlib
+import json
 import os
 import threading
 import time
@@ -105,6 +128,27 @@ NEEDS = {"valve": "igniter"}
 FIRE_STAGES = ("igniter", "valve")
 NEEDS_SLOT = {57: 58}           # the same on an FSEQ show: 57 needs 58
 _SLOT_STAGE = {s: k for k, s in fbtl.STAGE_SLOT.items()}
+# Fireball practice: no stage of a practice play may start this close to
+# where the play last landed (the write-ahead mark's lead, and the landing
+# guard's settle), or nothing of it fires.
+PRACTICE_MARGIN_FRAMES = max(LEAD_FRAMES, LANDING_SETTLE_FRAMES)
+PRACTICE_TOO_LATE = ("Practice step started too late: nothing fired. Use a "
+                     "longer lead-in.")
+PRACTICE_CUT = ("Practice step moved or stopped part way: every stage left "
+                "in it was skipped.")
+PRACTICE_NOT_OURS = ("a play started while Fireball practice is open that is "
+                     "not its step")
+PRACTICE_CHANGED = ("the fireball timeline changed between the step's check "
+                    "and its first frame")
+
+
+def entry_hash(entry):
+    """A short hash of what fires in one show's timeline entry (source,
+    cue and stages): the pin a practice step is checked and fired by."""
+    e = entry or {}
+    text = json.dumps({"source": e.get("source"), "cue": e.get("cue"),
+                       "stages": e.get("stages") or []}, sort_keys=True)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 class _Run:
@@ -150,6 +194,7 @@ class _Run:
         self.lead_seen = set()
         self.land_count = None
         self.fseq_prev = {}           # slot -> on in the FSEQ last frame
+        self.practice = None          # fireball practice's token, or None
         self.adopt(entry, rev, None)
 
     def adopt(self, entry, rev, relf):
@@ -231,6 +276,13 @@ class FireballCues:
         self._shot_run = {}
         self.fault = ""
         self._said_fault = ""
+        # Fireball practice (fireball_practice.py): open, the token of the
+        # play it bound, a play that is not that one, and the practice
+        # play's state as of its last frame (run_view).
+        self.practice_open = False
+        self.practice = None
+        self.practice_fault = ""
+        self.practice_snap = None
         if store is not None:
             store.on_saved.append(lambda *_a: self.refresh())
 
@@ -278,11 +330,52 @@ class FireballCues:
         for a show set to it. Memory only. Never raises: anything it
         cannot work out is 55 to 59 zero."""
         try:
-            return self._apply(out, session, label, rel, cue_obj)
+            res = self._apply(out, session, label, rel, cue_obj)
         except Exception as e:                   # noqa: BLE001
             self._fault(f"the fireball timeline failed "
                         f"({type(e).__name__}: {e}); no fireball")
-            return self._masked(out)
+            res = self._masked(out)
+        if self.practice_open:
+            res = self._practice_only(res)
+        return res
+
+    @staticmethod
+    def _practice_only(out):
+        """While practice is open: every flame slot but the fireball's
+        zero."""
+        if out is None:
+            return None
+        keep = [0] * len(out)
+        for s in SLOTS:
+            if 1 <= s <= len(out):
+                keep[s - 1] = out[s - 1]
+        return keep
+
+    def run_view(self):
+        """The practice play's state as of its last frame (a copy made on
+        the sender), or None."""
+        return self.practice_snap
+
+    def _practice_bind(self, run, cue_obj, show, shows):
+        """A new play while practice is open: practice's own step, or
+        refused (all zeros, practice_fault)."""
+        tok = self.practice
+        if tok is None or tok.get("cue") is not cue_obj or \
+                tok.get("show") != show:
+            self.practice_fault = PRACTICE_NOT_OURS
+            return
+        if entry_hash(shows.get(show)) != tok.get("hash"):
+            self.practice_fault = PRACTICE_CHANGED
+            return
+        run.practice = tok
+        run.adopt(tok["entry"], run.rev, None)
+
+    def _practice_snap(self, run, relf):
+        self.practice_snap = {
+            "id": run.practice.get("id"), "show": run.show,
+            "stages": {k: (w["s0"], w["s1"]) for k, w in run.stages.items()},
+            "started": sorted(run.started), "skipped": dict(run.skipped),
+            "first_relf": run.first_relf, "relf": relf}
 
     @staticmethod
     def _masked(out):
@@ -469,6 +562,13 @@ class FireballCues:
             run = self._run = _Run(cue_obj, label, entry, rev)
             run.show = show
             self.messages = []
+            if self.practice_open:
+                self._practice_bind(run, cue_obj, show, shows)
+        if self.practice_open and run.practice is None:
+            # Not practice's own step: nothing of it fires.
+            if not self.practice_fault:
+                self.practice_fault = PRACTICE_NOT_OURS
+            return None
         gapped = self._gap_check(run)
         first, run.first = run.first, False
         now = self._clock()
@@ -499,6 +599,20 @@ class FireballCues:
             moved = jumped = True
             run.first_relf = None
         run.land_count = lc
+        if run.practice is not None and (first or jumped or moved):
+            # Fireball practice: the whole shot or nothing.
+            left = [k for k in run.stages if k not in run.skipped]
+            if run.started:
+                why = PRACTICE_CUT
+            else:
+                e0 = min((w["s0"] for w in run.stages.values()),
+                         default=None)
+                why = PRACTICE_TOO_LATE if e0 is not None and \
+                    relf + PRACTICE_MARGIN_FRAMES > e0 else ""
+            if why and left:
+                for k in left:
+                    run.skipped[k] = why
+                self._say(why)
         if moved:
             run.lead_seen.clear()
         elif stable and not first:
@@ -508,7 +622,7 @@ class FireballCues:
             for slot in NEEDS_SLOT.values():
                 if len(sent) >= slot and sent[slot - 1] > 0:
                     run.lead_seen.add(slot)
-        if moved:
+        if moved and run.practice is None:
             # After a move, the fire stages are judged as at a fresh
             # landing (review of #201, round 2: a Back inside a long
             # Igniter let the Valve open while the flame link held the
@@ -539,7 +653,10 @@ class FireballCues:
         out = self._masked(out)
         if label != run.cue:
             return out
-        if rev != run.rev:
+        if rev != run.rev and run.practice is not None:
+            # A practice play keeps the stages it was checked with.
+            run.rev = rev
+        elif rev != run.rev:
             if entry is None or entry.get("source") != "timeline":
                 # Switched to the FSEQ (or its entry removed) during the
                 # play: that applies from the next cue; this play keeps
@@ -628,6 +745,8 @@ class FireballCues:
             now_on.add(slot)
             run.started.add(k)
         run.prev_on = now_on
+        if run.practice is not None:
+            self._practice_snap(run, relf)
         return out
 
     def _charge_refusal(self, tr, tank, slot, run, what=None):

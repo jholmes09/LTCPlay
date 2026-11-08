@@ -2709,6 +2709,11 @@ class ShowRunner:
         # cue's Resume offer, play_from.resume_offer): {"show", "file",
         # "cue", "frame"}, or None.
         self.stopped_at = None
+        # () -> a sentence while Fireball practice is open, or "": no
+        # show starts then, scheduled or pressed (fireball_practice.py's
+        # backstop behind the Stop's Hold and the vetoes). One attribute
+        # read, no lock. None: never asked.
+        self.practice_refusal = None
 
     def _note(self, text, **fields):
         if self._journal is not None:
@@ -2751,6 +2756,14 @@ class ShowRunner:
         or show audio that is not ready (still loading, failed to load, its
         interface missing). Reads the clock's own records without its lock:
         a guess here only words the refusal, never decides a start."""
+        fn = self.practice_refusal
+        if fn is not None:
+            try:
+                why = str(fn() or "")
+            except Exception:                    # noqa: BLE001
+                why = "Fireball practice could not be asked"
+            if why:
+                return why
         if s is None:
             return self.RUN_OFF
         if clk is None:

@@ -1007,6 +1007,12 @@ class FlameLink:
         # each frame send_frame sent. It only appends to a queue; it can
         # neither change nor hold up a frame. None: nothing is called.
         self.observer = None
+        # Fireball practice's timing record (fireball_practice.py):
+        # (mono, tc, show part, ok) of each frame, every value captured
+        # under _lock with the frame itself (mono is the very number in
+        # it), called after the observer above. Read only; it can neither
+        # change nor hold up a frame. None: nothing is called.
+        self.sent_observer = None
         # Frame timing (2026-10-29, FrameTiming): every interval between
         # two frames of the sender thread, since start, this hour and this
         # show. Only the sender thread writes them. A finished hour or show
@@ -2295,6 +2301,7 @@ class FlameLink:
                                          self._hazers_said()))
             self._last_frame_at = self._clock()
             self.show_sent = show if ok else bytes(UNIVERSE_SIZE)
+            sent_rec = (mono, tc, self.show_sent, ok)
             self._repeat_abort()
             late = self._abort_overdue()
         if late is not None:
@@ -2304,6 +2311,14 @@ class FlameLink:
             # The fuel tracker (fuel.py): told what went out, after it went.
             try:
                 obs(tc, values, ok)
+            except Exception:
+                pass
+        sobs = self.sent_observer
+        if sobs is not None:
+            # Fireball practice's record: the values captured above, under
+            # the lock, never read again here.
+            try:
+                sobs(*sent_rec)
             except Exception:
                 pass
         return ok

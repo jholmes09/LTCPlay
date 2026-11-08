@@ -2096,6 +2096,16 @@ class AudioMaster(Clock):
     def _tc_text_of(tc):
         return f"{tc[0]:02d}:{tc[1]:02d}:{tc[2]:02d}:{tc[3]:02d}"
 
+    def heard_epoch(self):
+        """(epoch, following) for Fireball practice's timing record: the
+        perf_counter time at which second 0 of the playing cue is heard,
+        or None, and whether the clock is following the audio device
+        right now (not running on this computer's clock alone). Two plain
+        attribute reads, no lock: it is asked on the flame link's sender
+        thread. Read only."""
+        e = self._epoch
+        return e, self._mode == "follow" and e is not None
+
     def _end_frames(self, cue):
         """The frame the cue's timecode ends on: the longest of its audio
         and its show length (self.lengths), never shorter than the audio."""

@@ -1246,6 +1246,9 @@ class Handler(BaseHTTPRequestHandler):
                     (short == "purge-fire" and
                      body.get("fire_id") is not None and
                      body.get("on") is True) or   # a release is logged
+                    # Fireball practice's screen beat, once a second.
+                    (short == "fireball-practice" and
+                     body.get("action") == "beat") or
                     # The Fireball page: a beat that changes nothing.
                     (short == "fireball-beat" and
                      body.get("run") is not None and
@@ -2572,6 +2575,45 @@ def _attach_fireball_charge(httpd):
     httpd.server_close = _close_charge
 
 
+def _attach_fireball_practice(httpd):
+    """Fireball practice (fireball_practice.py, design rev 5): the flame
+    link's sent_observer (the timing record), the scheduler's Resume and
+    tonight-edit vetoes and the show runner's start refusal (each one
+    attribute read). It never sends; a failure leaves it unavailable and
+    is said once."""
+    from . import fireball_practice as fp_mod
+    remote = httpd.remote
+    link = getattr(httpd.fire_ice, "flame_link", None)
+    if link is None or getattr(remote, "fireball_cues", None) is None:
+        return
+    try:
+        def _journal(text, outcome="done", who="", screen="", fault=False):
+            remote._journal(who or "system", screen or "engine",
+                            "fireball practice", outcome, text, fault=fault)
+        pr = fp_mod.Practice(remote, link_get=lambda: link, journal=_journal)
+    except Exception as e:                       # noqa: BLE001
+        print(f"Fireball practice could not be set up: "
+              f"{type(e).__name__}: {e}")
+        return
+    link.sent_observer = pr.on_sent
+    svc = getattr(remote, "schedule", None)
+    if svc is not None:
+        svc.resume_veto = pr.refusal
+        svc.edit_veto = pr.refusal
+        perf = getattr(svc, "performer", None)
+        if perf is not None:
+            perf.practice_refusal = pr.refusal
+    remote.fireball_practice = pr
+    _close_before = httpd.server_close
+
+    def _close_practice():
+        try:
+            _close_before()
+        finally:
+            pr.close()
+    httpd.server_close = _close_practice
+
+
 def _attach_cleaning(httpd):
     """Wave flamer cleaning (cleaning.py, the Shutdown page): flamesafe's
     wave flamer group, the engine's hold to arm and disarm, the Startup
@@ -3094,6 +3136,8 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         # After the fuel tracker (its observer is chained, never replaced)
         # and the Fireball page (who pressed is told here).
         _attach_fireball_charge(httpd)
+        # After the charge record and the fireball timeline it reads.
+        _attach_fireball_practice(httpd)
     if fire_ice is not None and \
             getattr(httpd.fire_ice, "flame_link", None) is not None and \
             getattr(fire_ice, "flame_controller", None):

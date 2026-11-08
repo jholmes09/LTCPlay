@@ -15384,9 +15384,9 @@ def build():
 
  ("programming flames: Play from lands only before the move",
   "ltcplay/playhead.py",
-  "                return self._play_from(show_s, who, screen)\n"
+  "                return self._play_from(show_s, who, screen, bind)\n"
   "            finally:\n                self._landing()",
-  "                return self._play_from(show_s, who, screen)\n"
+  "                return self._play_from(show_s, who, screen, bind)\n"
   "            finally:\n                pass"),
 
  ("programming flames: Back and Ahead land only before the move",
@@ -20951,8 +20951,199 @@ def build():
 
  ("fireball cues: the shot is followed by an automatic purge",
   "ltcplay/fireball_cues.py",
-  "        run.prev_on = now_on\n        return out",
-  "        run.prev_on = now_on\n        if 57 in now_on:\n            out[58] = ON_VALUE\n        return out"),
+  "        run.prev_on = now_on\n        if run.practice is not None:",
+  "        run.prev_on = now_on\n        if 57 in now_on:\n            out[58] = ON_VALUE\n        if run.practice is not None:"),
+
+ # -- Fireball practice (fireball_practice.py, design rev 5) -------------
+ ("practice: Valve Open with no Igniter lit is a step",
+  "ltcplay/fireball_practice.py",
+  "    if va is not None and (ig is None or not (",
+  "    if False and (ig is None or not ("),
+
+ ("practice: an Igniter that ends on the Valve's frame counts as lit",
+  "ltcplay/fireball_practice.py",
+  "            ig[0] + fbtl.LEAD_FRAMES <= va[0] < ig[1])):",
+  "            ig[0] + fbtl.LEAD_FRAMES <= va[0] <= ig[1])):"),
+
+ ("practice: a charge with no valve is a step",
+  "ltcplay/fireball_practice.py",
+  "    if va is None and (\"fuel\" in stages or \"air\" in stages):",
+  "    if False:"),
+
+ ("practice: Resume is not asked of practice",
+  "ltcplay/schedule_service.py",
+  "            if kind == sch.RESUME and self.resume_veto is not None:",
+  "            if False:"),
+
+ ("practice: the Resume veto is asked only with the schedule on HOLD (after the release of a Stop's Hold)",
+  "ltcplay/schedule_service.py",
+  "            if kind == sch.RESUME and self.resume_veto is not None:",
+  "            if kind == sch.RESUME and self.resume_veto is not None and self.machine is not None and self.machine.state == sch.HOLD:"),
+
+ ("practice: tonight's list may be edited while practice is open",
+  "ltcplay/schedule_service.py",
+  "        fn = self.edit_veto\n        if fn is not None:",
+  "        fn = self.edit_veto\n        if False:"),
+
+ ("practice: the first night loaded is not counted",
+  "ltcplay/schedule_service.py",
+  "                self.machine = replace(m, operators=self.operators)\n                self.night_loads += 1",
+  "                self.machine = replace(m, operators=self.operators)"),
+
+ ("practice: Start now's veto covers Programming playback only",
+  "ltcplay/remote.py",
+  "        pr = self.fireball_practice\n        if pr is not None and pr.blocking:\n            return pr.refusal()\n        try:",
+  "        pr = self.fireball_practice\n        try:"),
+
+ ("practice: Resume is not refused at the press",
+  "ltcplay/remote.py",
+  "PRACTICE_REFUSED_ROUTES = (\"start-now\", \"start-at-cue\", \"resume\",",
+  "PRACTICE_REFUSED_ROUTES = (\"start-now\", \"start-at-cue\","),
+
+ ("practice: an operator on an iPad may Step",
+  "ltcplay/remote.py",
+  "        if not (local or admin or fp.STEP_FROM_IPAD_FOR_OPERATORS):",
+  "        if False:"),
+
+ ("practice: Done is an arm press",
+  "ltcplay/users.py",
+  "        if name == \"fireball-practice\" and body.get(\"action\") not in (",
+  "        if name == \"fireball-practice\" and False and body.get(\"action\") not in ("),
+
+ ("practice: the show runner starts a show while practice is open",
+  "ltcplay/fire_ice.py",
+  "        fn = self.practice_refusal\n        if fn is not None:",
+  "        fn = self.practice_refusal\n        if False:"),
+
+ ("practice: the night's date and load are not compared",
+  "ltcplay/fireball_practice.py",
+  "        if (getattr(m, \"date\", None), getattr(svc, \"night_loads\", None)) != \\\n                b.get(\"night\"):",
+  "        if False:"),
+
+ ("practice: any Hold counts as the Stop's Hold",
+  "ltcplay/fireball_practice.py",
+  "        if st == \"HOLD\":\n            return bool(getattr(m, \"stop_hold\", False))",
+  "        if st == \"HOLD\":\n            return True"),
+
+ ("practice: the entry is not pinned (an edit before the first frame fires)",
+  "ltcplay/fireball_cues.py",
+  "        if entry_hash(shows.get(show)) != tok.get(\"hash\"):",
+  "        if False:"),
+
+ ("practice: an edit during the play reaches it",
+  "ltcplay/fireball_cues.py",
+  "        if rev != run.rev and run.practice is not None:",
+  "        if False:"),
+
+ ("practice: whole shot or nothing judged at the first frame only, not at each landing",
+  "ltcplay/fireball_cues.py",
+  "        if run.practice is not None and (first or jumped or moved):",
+  "        if run.practice is not None and first:"),
+
+ ("practice: the margin leaves out the write-ahead mark's lead",
+  "ltcplay/fireball_cues.py",
+  "PRACTICE_MARGIN_FRAMES = max(LEAD_FRAMES, LANDING_SETTLE_FRAMES)",
+  "PRACTICE_MARGIN_FRAMES = LANDING_SETTLE_FRAMES"),
+
+ ("practice: a move after a stage went out carries on",
+  "ltcplay/fireball_cues.py",
+  "            if run.started:\n                why = PRACTICE_CUT",
+  "            if run.started:\n                why = \"\""),
+
+ ("practice: a play practice did not bind fires",
+  "ltcplay/fireball_cues.py",
+  "        if self.practice_open and run.practice is None:",
+  "        if False:"),
+
+ ("practice: the other flame slots are not zeroed in a practice play",
+  "ltcplay/fireball_cues.py",
+  "        if self.practice_open:\n            res = self._practice_only(res)",
+  "        if False:\n            res = self._practice_only(res)"),
+
+ ("practice: the step's end is a Stop",
+  "ltcplay/fireball_practice.py",
+  "            ph.follow(\"Fireball practice\", \"\")",
+  "            self._stop(\"the step ended\")"),
+
+ ("practice: tanks need not be EMPTY for a step",
+  "ltcplay/fireball_practice.py",
+  "                for t in (v.get(\"tanks\") or {}).values()):\n            return REFUSE_TANKS",
+  "                for t in (v.get(\"tanks\") or {}).values()):\n            pass"),
+
+ ("practice: an arm from before practice opened counts",
+  "ltcplay/fireball_practice.py",
+  "            elif fb and self._seen_off:",
+  "            elif fb:"),
+
+ ("practice: another screen's beat keeps practice open",
+  "ltcplay/fireball_practice.py",
+  "        if owner != self.owner:\n            return False, (\"Only the screen",
+  "        if False:\n            return False, (\"Only the screen"),
+
+ ("practice: the watchdog never acts",
+  "ltcplay/fireball_practice.py",
+  "        if wb is None or self._clock() - wb > BEAT_STALE_S:\n            self._ending(\"the practice watcher stopped\")",
+  "        if False:\n            self._ending(\"the practice watcher stopped\")"),
+
+ ("practice: a Stop that did not complete counts as done",
+  "ltcplay/fireball_practice.py",
+  "            failed = code != 200 or bool((out or {}).get(\"failed\"))",
+  "            failed = code != 200"),
+
+ ("practice: ending practice sends no Stop",
+  "ltcplay/fireball_practice.py",
+  "                code, out = self._stop(f\"Fireball practice ended: \"",
+  "                code, out = (200, {}) if True else self._stop(f\"Fireball practice ended: \""),
+
+ ("practice: another group armed does not end it",
+  "ltcplay/fireball_practice.py",
+  "        if others:\n            return f\"another flame group was armed",
+  "        if False:\n            return f\"another flame group was armed"),
+
+ ("practice: the Stream Deck alert does not end it",
+  "ltcplay/fireball_practice.py",
+  "                if al is not None and any(getattr(a, \"kind\", \"\") == \"deck\"",
+  "                if al is not None and False and any(getattr(a, \"kind\", \"\") == \"deck\""),
+
+ ("practice: a second sender on the arm link does not end it",
+  "ltcplay/fireball_practice.py",
+  "        if ai.get(\"foreign_senders\") or ai.get(\"flooded\"):",
+  "        if False:"),
+
+ ("practice: a pause during the step does not end it",
+  "ltcplay/fireball_practice.py",
+  "        if clk is not None and getattr(clk, \"paused\", False):",
+  "        if False:"),
+
+ ("practice: a step may run over its time",
+  "ltcplay/fireball_practice.py",
+  "        if now - t0 > planned + OVERRUN_S:",
+  "        if False:"),
+
+ ("practice: the late sign is turned round",
+  "ltcplay/fireball_practice.py",
+  "        late = on - prog",
+  "        late = prog - on"),
+
+ ("practice: the flame link's record is never called",
+  "ltcplay/flamelink.py",
+  "                sobs(*sent_rec)",
+  "                pass"),
+
+ ("practice: a freerunning clock counts as against the audio",
+  "ltcplay/clock.py",
+  "        return e, self._mode == \"follow\" and e is not None",
+  "        return e, e is not None"),
+
+ ("practice: the play is bound after the flame cues are released",
+  "ltcplay/playhead.py",
+  "                bind(self._ours[1] if self._ours else None)",
+  "                pass"),
+
+ ("practice: a bind that fails leaves the music playing",
+  "ltcplay/playhead.py",
+  "            except Exception:\n                s.clock_halt()\n                raise",
+  "            except Exception:\n                raise"),
 
  ("fireball cues: the flame cues skip the timeline in background mode",
   "ltcplay/fire_ice.py",

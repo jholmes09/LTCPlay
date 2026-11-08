@@ -764,6 +764,18 @@ class Service:
         # remote). Asked under this lock after the tick, so a Play from
         # that landed while a Start now waited is never started over.
         self.start_veto = None
+        # () -> a sentence that refuses Resume, or "": Fireball practice
+        # while it is open (remote.fireball_practice_refusal). Asked under
+        # this lock before anything a Resume does, a Stop's Hold released
+        # with no show held included. One attribute read: it takes no lock.
+        self.resume_veto = None
+        # () -> a sentence that refuses an edit of tonight's list, or ""
+        # (Fireball practice while it is open). No lock.
+        self.edit_veto = None
+        # +1 every time a night is loaded or rebuilt onto the machine (a
+        # save followed, a restart, the nightly hand over): Fireball
+        # practice ends when it changes.
+        self.night_loads = 0
         # Start at a cue (play_from.py part 2): the cue of the press being
         # applied (operator_press, under the lock), and the failed rig
         # check a start at a cue was refused by, with its cue: (the
@@ -1223,6 +1235,7 @@ class Service:
              [f"This save undid tonight's changes: {' '.join(dropped)}"]
              if dropped else []) + list(skipped))
         self.machine = out.machine
+        self.night_loads += 1
         self._record(out, now)
         if out.machine.state == sch.OFF and out.machine.slots != m.slots \
                 and str(m.date) in self._summarised:
@@ -2270,6 +2283,7 @@ class Service:
                     self._upgrade_night_before(d)
                 m = self._boot_upgrade(m)
                 self.machine = replace(m, operators=self.operators)
+                self.night_loads += 1
                 self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
                 return True
             # The open night boots exactly as tonight's would after a
@@ -2279,6 +2293,7 @@ class Service:
             # closes it.
             old = self._boot_upgrade(old)
             self.machine = replace(old, operators=self.operators)
+            self.night_loads += 1
             self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
             # A night with a show still to run carries on (review of PR
             # #196: a show moved past the night's planned end, then a
@@ -2319,6 +2334,7 @@ class Service:
         m = self._load_tonight(d, now)
         m = self._boot_upgrade(m)
         self.machine = replace(m, operators=self.operators)
+        self.night_loads += 1
         self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
         return True
 
@@ -3945,6 +3961,15 @@ class Service:
 
     def edit_tonight(self, body):
         """Move, add or remove one of tonight's shows. Tonight only."""
+        fn = self.edit_veto
+        if fn is not None:
+            try:
+                why = str(fn() or "")
+            except Exception:                    # noqa: BLE001
+                why = "Fireball practice could not be asked"
+            if why:
+                raise ValueError(f"The edit was refused: {why} Nothing was "
+                                 f"changed.")
         op = (body or {}).get("op")
         kinds = {"move": sch.EDIT_MOVE, "add": sch.EDIT_ADD,
                  "remove": sch.EDIT_REMOVE}
@@ -4333,6 +4358,19 @@ class Service:
                                    f"{who}'s {label} was refused. "
                                    f"{sentence}")
                 return {"ok": False, "text": sentence}
+            if kind == sch.RESUME and self.resume_veto is not None:
+                # Before every branch of Resume below, the release of a
+                # Stop's Hold with nothing held among them.
+                try:
+                    veto = str(self.resume_veto() or "")
+                except Exception:                    # noqa: BLE001
+                    veto = "Fireball practice could not be asked"
+                if veto:
+                    sentence = f"Resume was refused: {veto}"
+                    self.journal_press(who, screen, "resume", "refused",
+                                       f"{who}'s Resume was refused. "
+                                       f"{sentence}")
+                    return {"ok": False, "text": sentence}
             if self.machine is None:
                 sentence = (self.error or "There is no schedule loaded, so "
                             "there is no show to press anything on.")
