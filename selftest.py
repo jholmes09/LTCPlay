@@ -58933,6 +58933,14 @@ def test_screen_arm_engine_rules():
         R.ask("POST", "/api/remote/disarm-all", {})
         check(R.remote.deck_input()["holds"] == [],
               "Disarm every flame group lets every hold go")
+        let_go = [r for r in R.svc.journal
+                  if r.get("action") == "arm hold" and
+                  r.get("outcome") == "cancelled" and
+                  "pressed disarm-all" in r.get("text", "")]
+        check(let_go,
+              f"and says the hold was let go for it, at the press (not "
+              f"only cleared by the disarm itself): "
+              f"{[r.get('text') for r in let_go]}")
         # Letting go releases only your own hold.
         st, _h, out = _hold(R, "front row")
         R.ask("POST", "/api/remote/arm-release", {"group": "front row"},
