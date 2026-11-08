@@ -29,7 +29,8 @@ import sys
 
 PORT = 6454
 FIX = ("Give each receiver its own address, for example a Windows loopback "
-       "adapter; MadMapper's DMX input counts as a receiver.")
+       "adapter; MadMapper's DMX input counts as a receiver. Then set each "
+       "program's Art-Net input to that address, not the Show LAN address.")
 LOOPBACK = "127.0.0.1"
 WSAEADDRNOTAVAIL = 10049
 

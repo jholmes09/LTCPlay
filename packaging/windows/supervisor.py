@@ -97,6 +97,17 @@ except ImportError:
             os.path.dirname(os.path.abspath(__file__)))), "ltcplay"))
         import showwindows
 
+try:
+    # ltcplay/flamesafecheck.py, carried the same way (stdlib only).
+    import flamesafecheck
+except ImportError:
+    try:
+        from ltcplay import flamesafecheck
+    except ImportError:
+        sys.path.append(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))), "ltcplay"))
+        import flamesafecheck
+
 # Global\, not the session's own namespace (locked decision 21): a second
 # supervisor started in another Windows session (a second sign-in, Remote
 # Desktop, a task running as another user) must see the first one too, or two
@@ -601,6 +612,9 @@ class Program:
         self.next_try = 0.0
         self.said_why_not = ""
         self.out = None
+        self.config_bytes = None
+        self.config_path = None
+        self.last_good_kept = False
 
     def alive(self):
         if self.proc is not None:
@@ -630,6 +644,18 @@ class Program:
         # while it starts counts as newer than its copy (2026-10-28).
         self.read = {f: config_hash(f) for f in files_read(self.name,
                                                             settings)}
+        # flamesafe's config as it is started on: the last good copy is
+        # these bytes once flamesafe has run on them (keep_last_good).
+        self.config_bytes = None
+        self.config_path = None
+        self.last_good_kept = False
+        if self.name == "flamesafe" and args:
+            try:
+                with open(args[0], "rb") as fh:
+                    self.config_bytes = fh.read()
+                self.config_path = os.path.abspath(args[0])
+            except OSError:
+                self.config_bytes = None
         env.pop(ltcwin.FLAMESAFE_ENV, None)
         if settings is not None and settings.get("flamesafe_config"):
             # One flamesafe config for all three programs (P1-4): the same
@@ -689,6 +715,58 @@ class Program:
         return (f"{EXE[self.name]} did not stop within {STOP_WAIT_S:.0f} s "
                 f"and is still running ({why or 'Ctrl-Break was sent'}). It "
                 f"was NOT forced to quit.")
+
+
+def keep_last_good(p, now):
+    """flamesafe has run LAST_GOOD_AFTER_S on the config it was started on
+    (p.config_path, read as p.config_bytes then): those bytes become the
+    last good copy beside it (flamesafecheck.save_last_good), once per
+    start, and only while the file still holds them (an edit since is not
+    what flamesafe ran). A file flamesafe refused never gets here: it exits
+    within seconds. Never raises."""
+    if p.last_good_kept or p.config_bytes is None or not p.config_path or \
+            now - p.started < flamesafecheck.LAST_GOOD_AFTER_S:
+        return
+    p.last_good_kept = True
+    path = p.config_path
+    try:
+        with open(path, "rb") as fh:
+            if fh.read() != p.config_bytes:
+                log(f"{os.path.basename(path)} changed since flamesafe "
+                    f"started on it, so it is not kept as the last good "
+                    f"copy")
+                return
+        got = flamesafecheck.save_last_good(path, p.config_bytes)
+        if got:
+            log(f"flamesafe has run on {os.path.basename(path)}: kept as "
+                f"the last good copy, {got}")
+    except OSError as e:
+        log(f"the last good copy of {os.path.basename(path)} could not be "
+            f"written ({e}); the one before stays")
+
+
+def say_not_started(name, p, why_not):
+    """Why a program is not started, said once per change in
+    supervisor.log, and for flamesafe in flamesafe.log too: where an
+    operator looks for flamesafe's trouble (Jeff, 2026-11-06)."""
+    if why_not == p.said_why_not:
+        return
+    log(why_not)
+    if name == "flamesafe":
+        program_log_line("flamesafe", why_not)
+    p.said_why_not = why_not
+
+
+def program_log_line(name, text):
+    """One line in a program's own log (flamesafe.log) while it is not
+    running, so the reason is where an operator looks. Never raises."""
+    try:
+        with open(os.path.join(log_dir(), f"{name}.log"), "a",
+                  encoding="utf-8") as fh:
+            fh.write(time.strftime("%Y-%m-%d %H:%M:%S ") + "LTC Player: "
+                     + text + "\n")
+    except OSError:
+        pass
 
 
 def priority_boost_on(settings=None):
@@ -803,11 +881,20 @@ def wanted_args(settings):
     port = settings["port"]
     fs = os.path.abspath(settings["flamesafe_config"])
     fs_ok = bool(settings["run_flamesafe"]) and os.path.isfile(fs)
+    # Not valid JSON (Jeff, 2026-11-06): flamesafe would only exit and be
+    # started again in a loop, and the deck with it. Neither is started;
+    # the engine starts with flames off and the rack screen says where.
+    fs_bad = flamesafecheck.json_problem(fs) if fs_ok else None
     out = {}
-    out["flamesafe"] = ([fs], "") if fs_ok else (
-        None, f"flamesafe is not started: no config at {fs}" if
-        settings["run_flamesafe"] else "flamesafe is switched off in "
-        "showpc.json")
+    if fs_bad is not None:
+        fs_ok = False
+        out["flamesafe"] = (None, "flamesafe is not started: "
+                            + flamesafecheck.sentence(fs_bad))
+    else:
+        out["flamesafe"] = ([fs], "") if fs_ok else (
+            None, f"flamesafe is not started: no config at {fs}" if
+            settings["run_flamesafe"] else "flamesafe is switched off in "
+            "showpc.json")
     folder = settings["show_folder"]
     try:
         os.makedirs(folder, exist_ok=True)
@@ -846,6 +933,10 @@ def wanted_args(settings):
     elif not settings["run_deck"]:
         out["deck"] = (None, "the Stream Deck program is switched off in "
                        "showpc.json")
+    elif fs_bad is not None:
+        out["deck"] = (None, "the Stream Deck program is not started: "
+                       "flamesafe's config is not valid JSON (flamesafe.log "
+                       "says where)")
     elif not fs_ok:
         out["deck"] = (None, "the Stream Deck program is not started: it "
                        "needs flamesafe's config")
@@ -1757,11 +1848,11 @@ def run_loop(open_page=False):
                 log(f"{EXE[n]} (adopted, pid {p.pid}) has stopped")
                 p._forget()
             if p.alive():
+                if n == "flamesafe":
+                    keep_last_good(p, now)
                 continue
             if args is None:
-                if why_not != p.said_why_not:
-                    log(why_not)
-                    p.said_why_not = why_not
+                say_not_started(n, p, why_not)
                 continue
             p.said_why_not = ""
             if now >= p.next_try and not ENDING.is_set():
@@ -2080,12 +2171,33 @@ def cmd_start():
     while time.monotonic() < deadline:
         if engine_answers(settings["port"]):
             open_page_now(settings["port"])
+            note = flamesafe_start_note(settings)
+            if note:
+                tell("LTC Player has started, with flames off." + note,
+                     error=True)
             return 0
         time.sleep(0.5)
     tell("LTC Player is starting, but the show page did not answer within "
          "30 seconds. Try 'LTC Player' again in a minute. The logs are in "
-         + log_dir(), error=True)
+         + log_dir() + flamesafe_start_note(settings), error=True)
     return 1
+
+
+def flamesafe_start_note(settings):
+    """"" when flamesafe's config is valid JSON (or missing: said
+    elsewhere), else the startup message's words for it (Jeff,
+    2026-11-06): flames are off and flamesafe.log says where."""
+    try:
+        fs = os.path.abspath(settings["flamesafe_config"])
+        bad = flamesafecheck.json_problem(fs)
+    except Exception:                            # noqa: BLE001
+        return ""
+    if bad is None:
+        return ""
+    return (f"\n\nThe flamesafe config is invalid: {os.path.basename(fs)} "
+            f"is not valid JSON at line {bad['line']}, column "
+            f"{bad['column']}. Flames are off and flamesafe is not started. "
+            f"flamesafe.log in {log_dir()} says what to do.")
 
 
 def cmd_page():
@@ -2421,9 +2533,25 @@ def self_check():
             raise RuntimeError(f"{EXE[n]} is missing from {ltcwin.app_dir()}")
     yield "all three programs are beside it"
     yield f"settings: {settings_path()}"
-    # Any file that exists stands in for flamesafe.json (frozen, __file__
-    # is not on disk).
-    probe = {"port": DEFAULT_PORT, "flamesafe_config": sys.executable,
+    # A valid JSON object stands in for flamesafe.json (flamesafe and the
+    # deck are not started on a file that is not valid JSON).
+    import shutil
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="ltcplay-self-check-")
+    try:
+        for line in _self_check_flamesafe(tmp):
+            yield line
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    for line in _self_check_rest():
+        yield line
+
+
+def _self_check_flamesafe(tmp):
+    fs_probe = os.path.join(tmp, "flamesafe.json")
+    with open(fs_probe, "w", encoding="utf-8") as fh:
+        fh.write("{}")
+    probe = {"port": DEFAULT_PORT, "flamesafe_config": fs_probe,
              "run_flamesafe": True, "run_deck": True,
              "show_folder": control_dir(),
              "show_mode": "fire_ice", "schedule": r"C:\x\ltcplay_schedule.json"}
@@ -2440,6 +2568,19 @@ def self_check():
         raise RuntimeError(f"plain mode would start the deck or the "
                            f"scheduler: {want}")
     yield "fire_ice mode runs the scheduler and the deck; plain runs neither"
+    probe["show_mode"] = "fire_ice"
+    with open(fs_probe, "w", encoding="utf-8") as fh:
+        fh.write("{\n  \"a\": 1\n  \"b\": 2\n}")
+    want = wanted_args(probe)
+    if want["flamesafe"][0] is not None or want["deck"][0] is not None or \
+            "line 3, column 3" not in want["flamesafe"][1]:
+        raise RuntimeError(f"a flamesafe.json that is not valid JSON would "
+                           f"start flamesafe or the deck: {want}")
+    yield ("a flamesafe.json that is not valid JSON starts neither "
+           "flamesafe nor the deck, and says the line and column")
+
+
+def _self_check_rest():
     yield f"control folder: {control_dir()}"
     task_xml("EXAMPLE\\user")
     yield "the sign-in task can be written"
