@@ -97889,6 +97889,9 @@ _UI2_ROUTES = {
     "/api/remote/fireball-charge-empty": "settings",
     "/api/remote/fireball-off": "safety",
     "/api/remote/fireball-timeline-save": "settings",
+    # Fireball practice (fireball_practice.py): open, Step and the beat are
+    # arm presses (Done is safety by its body, users.classify).
+    "/api/remote/fireball-practice": "arm",
     "/api/remote/follow": "show",
     "/api/remote/fuel": None,
     "/api/remote/fuel-pump": "arm",
@@ -104498,10 +104501,10 @@ def test_fireball_practice_plan_and_words():
                                            FQ.LANDING_SETTLE_FRAMES) == 60
           and FP.LEAD_IN_MIN_S * 30 > FQ.PRACTICE_MARGIN_FRAMES,
           "the shortest lead-in is more than the practice margin")
-    check(FP.MIN_GAP_S == 30.0 and FP.STEP_FROM_IPAD_FOR_OPERATORS is False
-          and FP.DECK_ALERT_ENDS is True and FP.COUNTS_AS_SHOW is False,
-          "Jeff's defaults: 30 s, the show PC or an admin, the deck alert "
-          "ends practice, a step is not a show")
+    check(not hasattr(FP, "MIN_GAP_S") and FP.DECK_ALERT_ENDS is False
+          and FP.COUNTS_AS_SHOW is False,
+          "Jeff's answers: no least time between shots, the deck alert is "
+          "only noted, a step is not a show")
     check(FP.LATE_OK_MS == 41.0 and FP.EARLY_OK_MS == 5.0,
           "late up to one 40 Hz period plus a Windows timer tick")
     rows = FP.stage_rows({"fuel": (300, 330), "air": (315, 345),
@@ -104926,11 +104929,8 @@ def test_fireball_practice_engine():
               f"table: {got} {G.calls[-1]} {p.state}")
         check(any("step 1" in t and "LATE 60 ms" in t for t, _k in G.lines),
               "each step's table is journaled")
-        # 30 s between two shots.
-        check("wait" in p.step_why() and "30 s between two shots" in
-              p.step_why(), p.step_why())
-        G.go(31)
-        check(p.step_why() == "", f"after 30 s: {p.step_why()}")
+        # No least time between two shots (Jeff: Andy sees to it).
+        check(p.step_why() == "", f"the next step at once: {p.step_why()}")
         # Done ends it with a Stop.
         p.done("Jeff", "Rack screen")
         check(p.state == "closed" and len(G.stops) == 2 and
@@ -104970,8 +104970,9 @@ def test_fireball_practice_engine():
         trig("a lockout", lambda g: g.lock.add(57), "locked out")
         trig("a laser", lambda g: g.lasers.append("L1"), "a laser was armed")
         trig("a hazer", lambda g: g.hz.add("Hazer 1"), "a hazer")
-        trig("the deck alert", lambda g: g.alerts.append(
-            types_ns(kind="deck")), "Stream Deck alert")
+        trig("the Stream Deck's spoof ALARM", lambda g: g.p.deck_event(
+            "spoof-alarm", "Flamesafe is honouring an arm signal this deck "
+            "did not send", True), "spoof ALARM")
         trig("a second arm sender", lambda g: g.raw["arm_input"].__setitem__(
             "foreign_senders", 1), "another sender is on the arm link")
         trig("a flood on the arm link", lambda g: g.raw["arm_input"]
@@ -105022,6 +105023,36 @@ def test_fireball_practice_engine():
         trig("ten minutes with no step", lambda g: [
             g.go(60) or g.p.tick() for _ in range(10)] and None,
             "minutes with no step")
+        # The Stream Deck unplugged (its alert): noted, never an end, and
+        # nothing disarmed for it (ruling 4).
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+        n = len(g.stops)
+        g.alerts.append(types_ns(kind="deck"))
+        g.go(0.05)
+        g.p.tick()
+        check(g.p.state == "ready" and len(g.stops) == n and
+              g.p.deck_note == FP.DECK_NOTE and
+              g.p.view()["deck_note"] == FP.DECK_NOTE and
+              g.p.step_why() == "" and
+              sum("Stream Deck alert is open" in t for t, _k in g.lines) == 1,
+              f"the deck alert: noted once, practice carries on: "
+              f"{g.p.state} {g.p.ended_why!r}")
+        g.go(0.05)
+        g.p.tick()
+        check(sum("Stream Deck alert is open" in t for t, _k in g.lines) == 1,
+              "noted once, not every pass")
+        del g.alerts[:]
+        g.go(0.05)
+        g.p.tick()
+        check(g.p.deck_note == "" and any("Stream Deck is back" in t
+                                          for t, _k in g.lines),
+              "and once when it clears")
+        g.p.deck_event("spoof-alarm", "cleared", False)
+        g.go(0.05)
+        g.p.tick()
+        check(g.p.state == "ready", "the alarm clearing ends nothing")
         # The settling after the opening Stop with nothing left tonight
         # (STANDBY, nothing waiting) is not a release: Step waits for OFF.
         g = _FbpRig()
@@ -105114,6 +105145,90 @@ def test_fireball_practice_engine():
         for g in rigs:
             g.close()
     print("  ok")
+
+
+def test_fireball_practice_counts_toward_fuel():
+    section("Fireball practice counts toward fuel like a show (Jeff, "
+            "2026-11-08): a practice step's charges and shot are recorded by "
+            "the charge record from the frames that went out (CHARGED by "
+            "the show, then EMPTY after the shot, journaled); a tank still "
+            "charged is never charged again; the engine's frame watchers "
+            "(the fuel tracker and the charge record) stay on the flame link")
+    import types
+    import shutil
+    from ltcplay import fireball_cues as FQ
+    from ltcplay import fireball_charge as FC
+    from ltcplay import fireball_practice as FP
+    from ltcplay import web as W
+    work = tempfile.mkdtemp()
+    rigs = []
+    try:
+        C = _fbc(work)
+        tr = C.tr
+        R = _fbq_rig(_fbp_stages())
+        rigs.append(R)
+        R.fq.practice_open = True
+        R.fq.practice = _fbp_token(R, FQ)
+        states = {}
+        for f in range(150, 440):
+            out = R.frame(f)
+            tr.see(bytes(out), "armed")
+            states[f] = (tr.state("fuel"), tr.state("air"))
+            if f == 340:
+                by340 = tr.tanks["fuel"]["by"]
+        tr.pump()
+        texts = " ".join(str(a[3]) for a, _k in C.lines)
+        check(states[340] == (FC.CHARGED, FC.CHARGED) and
+              by340 == "the show" and
+              states[439] == (FC.EMPTY, FC.EMPTY) and
+              "the shot was fired (Valve Open)" in texts,
+              f"the practice shot is in the charge record: charged, then "
+              f"EMPTY after the valve, journaled: {states[340]} "
+              f"{states[439]}")
+        # A tank still charged from a step that did not fire: the next
+        # practice play never charges it again.
+        R2 = _fbq_rig(_fbp_stages(), tank=_FbcTank(fuel="charged"))
+        rigs.append(R2)
+        R2.fq.practice_open = True
+        R2.fq.practice = _fbp_token(R2, FQ)
+        got = [R2.frame(f) for f in range(150, 440)]
+        check(not any(g[54] for g in got) and any(
+            "Fuel already charged" in m for m in R2.fq.messages),
+              f"no double charge in practice: {R2.fq.messages}")
+        # The wiring: practice's record goes on its own hook; the flame
+        # link's observer chain (the fuel tracker, then the charge record)
+        # is never replaced.
+        chain = lambda tc, values, ok: None            # noqa: E731
+        link = types.SimpleNamespace(observer=chain, sent_observer=None)
+        perf = types.SimpleNamespace(practice_refusal=None)
+        svc = types.SimpleNamespace(performer=perf, resume_veto=None,
+                                    edit_veto=None, deck_event_hook=None)
+        remote = types.SimpleNamespace(fireball_cues=R.fq, schedule=svc,
+                                       _journal=lambda *a, **k: None)
+        closed = []
+        httpd = types.SimpleNamespace(
+            remote=remote, fire_ice=types.SimpleNamespace(flame_link=link),
+            server_close=lambda: closed.append(1))
+        W._attach_fireball_practice(httpd)
+        pr = remote.fireball_practice
+        check(isinstance(pr, FP.Practice) and link.observer is chain and
+              link.sent_observer == pr.on_sent and
+              svc.resume_veto == pr.refusal and svc.edit_veto ==
+              pr.refusal and svc.deck_event_hook == pr.deck_event and
+              perf.practice_refusal == pr.refusal,
+              "the fuel and charge watchers stay; practice's hooks are its "
+              "own")
+        httpd.server_close()
+        check(closed == [1], "closed after what was there before it")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        for R in rigs:
+            shutil.rmtree(R.work, ignore_errors=True)
+    print("  ok")
+
+
+def js_all(page):
+    return page[page.find("// ---- Fireball practice"):]
 
 
 def types_ns(**k):
@@ -105230,17 +105345,35 @@ def test_fireball_practice_vetoes_and_wiring():
           "closed: nothing refused")
     # Who may open and Step: the show PC or an admin, the Show and Arm
     # rows; sign-in off: the show PC only.
-    def may(local, role, active=True):
+    def may(local, role, active=True, mx=None):
         f = types.SimpleNamespace(
             users_active=lambda: active,
-            users=types.SimpleNamespace(matrix=lambda: U.DEFAULT_MATRIX))
+            users=types.SimpleNamespace(
+                matrix=lambda: mx or U.DEFAULT_MATRIX))
         ctx = types.SimpleNamespace(local=local, session={"role": role}
                                     if role else None)
         return RM.Remote._practice_may(f, ctx, "Step")
     check(may(True, "operator") == "", "an operator on the show PC")
-    check("show PC or an admin" in may(False, "operator"),
-          "an operator on an iPad: refused (Jeff's default)")
+    check(may(False, "operator") == "",
+          "an operator on an iPad may Step (Jeff, 2026-11-08)")
+    check("Show and Arm" in may(False, "viewer"), "a viewer: refused")
+    no_arm = dict(U.DEFAULT_MATRIX, operator=dict(
+        U.DEFAULT_MATRIX["operator"], arm=False))
+    no_show = dict(U.DEFAULT_MATRIX, operator=dict(
+        U.DEFAULT_MATRIX["operator"], show=False))
+    check("Show and Arm" in may(True, "operator", mx=no_arm) and
+          "Show and Arm" in may(True, "operator", mx=no_show),
+          "an operator without the Arm row, or the Show row: refused")
     check(may(False, "admin") == "", "an admin anywhere")
+    # Programming's own rule for moving the playhead is not loosened: it
+    # is not what practice asks, and every other move stays refused for
+    # an operator on an iPad while flames follow it.
+    import inspect as _insp
+    src = _insp.getsource(RM.Remote._practice_may)
+    check("programming_move_refusal" not in src.split('"""')[-1] and
+          "PROGRAMMING_MOVE_REFUSED" in _insp.getsource(
+              RM.Remote.programming_move_refusal),
+          "Step does not go through the playhead's move rule, which stays")
     check("Show and Arm" in may(True, None), "signed out: refused")
     check(may(True, None, active=False) == "" and
           "sign-in is off" in may(False, None, active=False),
@@ -105356,7 +105489,8 @@ def test_fireball_practice_vetoes_and_wiring():
     check(i > page.find('id="t-schedule"') > 0 and
           'data-safe class="b safe" id="fbp-done"' in card and
           "Done, Stop, any disarm or leaving this card disarms every group."
-          in card and "The Fireball page pads stay live between steps." in
+          in card and FP.FUEL_NOTE in card and 'id="fbp-deck"' in card and
+          "Noted: " in js_all(page) and "The Fireball page pads stay live between steps." in
           card and "Timing edits go into the show's real timeline file." in
           card and "—" not in card and "–" not in card,
           "the card is on the Schedule tab, Done is a safe button, its lines")
@@ -113182,6 +113316,7 @@ if __name__ == "__main__":
         test_fireball_practice_on_the_flame_cues,
         test_fireball_practice_engine,
         test_fireball_practice_vetoes_and_wiring,
+        test_fireball_practice_counts_toward_fuel,
         test_fireball_timeline_end_to_end_real_flamesafe,
         test_fireball_manual_merged_on_the_flame_link,
         test_fireball_manual_and_timeline_never_double_charge,

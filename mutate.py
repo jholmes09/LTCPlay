@@ -21000,11 +21000,6 @@ def build():
   "PRACTICE_REFUSED_ROUTES = (\"start-now\", \"start-at-cue\", \"resume\",",
   "PRACTICE_REFUSED_ROUTES = (\"start-now\", \"start-at-cue\","),
 
- ("practice: an operator on an iPad may Step",
-  "ltcplay/remote.py",
-  "        if not (local or admin or fp.STEP_FROM_IPAD_FOR_OPERATORS):",
-  "        if False:"),
-
  ("practice: Done is an arm press",
   "ltcplay/users.py",
   "        if name == \"fireball-practice\" and body.get(\"action\") not in (",
@@ -21100,11 +21095,6 @@ def build():
   "        if others:\n            return f\"another flame group was armed",
   "        if False:\n            return f\"another flame group was armed"),
 
- ("practice: the Stream Deck alert does not end it",
-  "ltcplay/fireball_practice.py",
-  "                if al is not None and any(getattr(a, \"kind\", \"\") == \"deck\"",
-  "                if al is not None and False and any(getattr(a, \"kind\", \"\") == \"deck\""),
-
  ("practice: a second sender on the arm link does not end it",
   "ltcplay/fireball_practice.py",
   "        if ai.get(\"foreign_senders\") or ai.get(\"flooded\"):",
@@ -21144,6 +21134,31 @@ def build():
   "ltcplay/playhead.py",
   "            except Exception:\n                s.clock_halt()\n                raise",
   "            except Exception:\n                raise"),
+
+ ("practice: Step needs only the Show row, not the Arm row",
+  "ltcplay/remote.py",
+  "                       for p in (\"show\", \"arm\"))",
+  "                       for p in (\"show\",))"),
+
+ ("practice: the Stream Deck's spoof ALARM does not end it",
+  "ltcplay/fireball_practice.py",
+  "        if self.state != \"closed\" and action == \"spoof-alarm\" and fault:",
+  "        if False:"),
+
+ ("practice: the Stream Deck unplugged ends practice and disarms",
+  "ltcplay/fireball_practice.py",
+  "DECK_ALERT_ENDS = False",
+  "DECK_ALERT_ENDS = True"),
+
+ ("practice: the Stream Deck alert is not noted",
+  "ltcplay/fireball_practice.py",
+  "        if on and not self.deck_note:",
+  "        if False:"),
+
+ ("practice: a practice shot is not counted toward fuel (its record replaces the flame link's observers)",
+  "ltcplay/web.py",
+  "    link.sent_observer = pr.on_sent",
+  "    link.observer = pr.on_sent"),
 
  ("fireball cues: the flame cues skip the timeline in background mode",
   "ltcplay/fire_ice.py",

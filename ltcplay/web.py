@@ -2600,6 +2600,7 @@ def _attach_fireball_practice(httpd):
     if svc is not None:
         svc.resume_veto = pr.refusal
         svc.edit_veto = pr.refusal
+        svc.deck_event_hook = pr.deck_event
         perf = getattr(svc, "performer", None)
         if perf is not None:
             perf.practice_refusal = pr.refusal

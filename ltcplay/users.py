@@ -114,7 +114,8 @@ PERMS = (
             "keys, a purge (momentary or timed), the Fireball page's "
             "channels, the wave flamer "
             "cleaning, arming a laser, arming a hazer, the hazer levels, "
-            "turning the fuel pump on"),
+            "turning the fuel pump on, Fireball practice (open and Step, "
+            "with the Show row too)"),
     ("unlock", "Unlock a machine, turn a laser test on"),
     ("checklist", "Tick the Morning and Shutdown checklists"),
     ("show_files", "Show files and setup: the show folder, the schedule, "
@@ -135,7 +136,7 @@ SAFETY_ROWS = ("Stop, Hold, Disarm (one group or every group, "
                "locking a machine, a laser test off, live flame "
                "programming off, "
                "a hazer disarm, Hazers off, the fuel pump off, "
-               "Acknowledge, signing "
+               "Fireball practice's Done, Acknowledge, signing "
                "in and out: always, for everyone, signed in or not")
 
 # The defaults (Jeff decides; USERS.md). Signed out is view only (Jeff's

@@ -116,9 +116,9 @@ the ticks there. These are the proposed defaults:
 
 | What | admin | operator | viewer | signed out |
 |---|---|---|---|---|
-| **Stop, Hold, every disarm (flames and lasers), letting go, locking a machine, a hazer disarm, Hazers off, the fuel pump off, Acknowledge** | always | always | always | always |
+| **Stop, Hold, every disarm (flames and lasers), letting go, locking a machine, a hazer disarm, Hazers off, the fuel pump off, Fireball practice's Done, Acknowledge** | always | always | always | always |
 | Start now, Start at a cue, Resume, Run a show file, rehearsal scrubbing, playing an announcement, choosing the operator | yes | yes | no | never |
-| Arm flames and lasers (hold to arm, the deck's arm keys, a purge, momentary or timed, the Fireball page's channels, the wave flamer cleaning, arming a laser, arming a hazer, the hazer levels, turning the fuel pump on) | yes | yes | no | never |
+| Arm flames and lasers (hold to arm, the deck's arm keys, a purge, momentary or timed, the Fireball page's channels, the wave flamer cleaning, arming a laser, arming a hazer, the hazer levels, turning the fuel pump on, Fireball practice's open and Step, which need the row above too) | yes | yes | no | never |
 | Unlock a machine, turn a laser test on | yes | yes | no | never |
 | Tick the Morning and Shutdown checklists | yes | yes | no | never |
 | Show files and setup (show folder, choosing the show, opening a folder, schedule, tonight's list, layout) | yes | yes | no | never |

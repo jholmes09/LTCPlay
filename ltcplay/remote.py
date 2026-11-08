@@ -5227,11 +5227,12 @@ class Remote:
         return ""
 
     def _practice_may(self, ctx, what):
-        """"" when this request may open practice or Step (Jeff's default,
-        fireball_practice.STEP_FROM_IPAD_FOR_OPERATORS): the show PC, or
-        an admin anywhere; with users on, the Show and Arm rows too. With
-        sign-in switched off: the show PC only."""
-        from . import fireball_practice as fp
+        """"" when this request may open practice or Step (Jeff,
+        2026-11-08): anyone with the Show and Arm rows, on any screen, an
+        operator on an iPad too; asked at every press. Programming's
+        narrower rule for moving the playhead (programming_move_refusal:
+        the show PC or an admin) is not asked here and stays for every
+        other move. With sign-in switched off: the show PC only."""
         from . import users as users_mod
         local = bool(getattr(ctx, "local", False))
         if not self.users_active():
@@ -5245,15 +5246,11 @@ class Remote:
             mx = u.matrix()
             rows = all(users_mod.allowed(mx, role, p)
                        for p in ("show", "arm"))
-            admin = users_mod.allowed(mx, role, "settings")
         except Exception:                        # noqa: BLE001
             return (f"{what} was refused: the sign-in could not be "
                     f"checked. Nothing was changed.")
         if not rows:
             return (f"{what} needs the Show and Arm permissions. Nothing was "
-                    f"changed.")
-        if not (local or admin or fp.STEP_FROM_IPAD_FOR_OPERATORS):
-            return (f"{what} is for the show PC or an admin. Nothing was "
                     f"changed.")
         return ""
 

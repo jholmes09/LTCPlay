@@ -1351,9 +1351,8 @@ sent, unless:
 - A Fuel or Air stage has a Valve Open after it.
 - Both tanks are empty. If not: "Tanks charged: Purge on the Fireball page
   before the next step."
-- 30 s have passed since the last shot.
-- It is pressed on the screen that opened practice, by the show PC or an
-  admin.
+- It is pressed on the screen that opened practice, by someone who may
+  press Start now and arm (an operator on an iPad too).
 
 A step fires its whole shot or nothing. A Hold, a pause, a stall or a move
 part way through skips everything left in it; a tank left charged then
@@ -1361,13 +1360,22 @@ needs a Purge before the next step.
 
 **What ends practice**, every group and laser disarmed (a Stop): **Done**,
 Stop, any disarm, the Fireball disarmed, anything else armed, a lockout of
-the Fireball, the Stream Deck alert, a second sender on the arm or flame
-link, flamesafe not reporting for a second, a fault in the flame cues, the
+the Fireball, the Stream Deck's spoof ALARM, a second sender on the arm or
+flame link, flamesafe not reporting for a second, a fault in the flame cues, the
 fireball timeline or the charge record, a Hold or pause during a step, a
 step running over its time, the schedule leaving its Hold, Run off,
 another show file, leaving the Schedule tab for 5 s, and 10 minutes with
 no step. If the Stop does not complete, practice says so with a flames
 alert and presses Stop again every second until it does.
+
+**Only noted, never an end:** the Stream Deck unplugged or failing (its
+alert). Practice carries on and nothing is disarmed for it, as for a show
+(an unplugged deck never disarms the flames by itself); the card and the
+journal say so.
+
+**Fuel:** a step is not a show, but every charge and shot it sends is
+counted like a show's: the fuel and air charge record (and its never a
+double charge rule) and the fuel count.
 
 **The timing table.** After each step, one row per stage: the programmed
 time, the time it was sent (both in ms from the top of the show cue, on the

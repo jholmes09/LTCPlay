@@ -3674,7 +3674,6 @@
 "practice: the first night loaded is not counted": "test_fireball_practice_vetoes_and_wiring",
 "practice: Start now's veto covers Programming playback only": "test_fireball_practice_vetoes_and_wiring",
 "practice: Resume is not refused at the press": "test_fireball_practice_vetoes_and_wiring",
-"practice: an operator on an iPad may Step": "test_fireball_practice_vetoes_and_wiring",
 "practice: Done is an arm press": "test_fireball_practice_vetoes_and_wiring",
 "practice: the show runner starts a show while practice is open": "test_fireball_practice_vetoes_and_wiring",
 "practice: the night's date and load are not compared": "test_fireball_practice_engine",
@@ -3694,7 +3693,6 @@
 "practice: a Stop that did not complete counts as done": "test_fireball_practice_engine",
 "practice: ending practice sends no Stop": "test_fireball_practice_engine",
 "practice: another group armed does not end it": "test_fireball_practice_engine",
-"practice: the Stream Deck alert does not end it": "test_fireball_practice_engine",
 "practice: a second sender on the arm link does not end it": "test_fireball_practice_engine",
 "practice: a pause during the step does not end it": "test_fireball_practice_engine",
 "practice: a step may run over its time": "test_fireball_practice_engine",
@@ -3702,5 +3700,10 @@
 "practice: the flame link's record is never called": "test_fireball_practice_vetoes_and_wiring",
 "practice: a freerunning clock counts as against the audio": "test_fireball_practice_vetoes_and_wiring",
 "practice: the play is bound after the flame cues are released": "test_fireball_practice_vetoes_and_wiring",
-"practice: a bind that fails leaves the music playing": "test_fireball_practice_vetoes_and_wiring"
+"practice: a bind that fails leaves the music playing": "test_fireball_practice_vetoes_and_wiring",
+"practice: Step needs only the Show row, not the Arm row": "test_fireball_practice_vetoes_and_wiring",
+"practice: the Stream Deck's spoof ALARM does not end it": "test_fireball_practice_engine",
+"practice: the Stream Deck unplugged ends practice and disarms": "test_fireball_practice_engine",
+"practice: the Stream Deck alert is not noted": "test_fireball_practice_engine",
+"practice: a practice shot is not counted toward fuel (its record replaces the flame link's observers)": "test_fireball_practice_counts_toward_fuel"
 }

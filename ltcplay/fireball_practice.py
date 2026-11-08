@@ -37,13 +37,12 @@ under the playhead's move lock right before the play starts:
     alert, no second sender or flood on either link;
   - the schedule on the Stop's Hold (HOLD with stop_hold) or OFF with no
     show waiting, the same night and night load as when it opened;
-  - MIN_GAP_S since the last Valve Open went out;
-  - the press from the device and window that opened practice, by the
-    show PC or an admin, with the Show and Arm rows.
+  - the press from the device and window that opened practice, with the
+    Show and Arm rows (any screen; with sign-in off, the show PC).
 
 What ends practice: Done; Stop or any disarm; any arm change of any
-group or laser; a hazer; a lockout of the fireball; the Stream Deck
-alert; a second sender or flood; flamesafe not reporting for
+group or laser; a hazer; a lockout of the fireball; the Stream Deck's
+spoof ALARM; a second sender or flood; flamesafe not reporting for
 FLAMESAFE_STALE_S; the flame link not sending; a fault in the flame
 cues, the fireball timeline or the charge record; a play practice did not
 bind; a Hold or a pause during a step; the step overrunning; the schedule
@@ -52,6 +51,12 @@ or another show file; the opening screen silent for PAGE_BEAT_OFF_S;
 IDLE_OFF_S with no step; the watcher or the watchdog stopping. Ending is
 a Stop (every group and laser disarmed). A Stop that does not complete
 keeps practice ENDING: the flames alert, and a new Stop every RETRY_S.
+Only NOTED (a journal line and the card), never an end: the Stream Deck
+unplugged (its alert).
+
+Fuel: every charge and shot of a step goes out on the flame link like a
+show's, so the charge record (and its double-charge guard) and the fuel
+tracker count it as they count any Programming playback.
 
 Two threads run while practice is open: the watcher (every WATCH_S: the
 end triggers, the step's end, the timing record) and the watchdog (every
@@ -77,12 +82,21 @@ from . import fireball_timeline as fbtl
 
 NAME = "Fireball practice"
 
-# -- Jeff's open questions, as defaults that are easy to change ------------
-# (coordinator, 2026-11-08: he has not answered yet)
-MIN_GAP_S = 30.0                    # the least time between two real shots
-STEP_FROM_IPAD_FOR_OPERATORS = False   # Step: the show PC or an admin only
-DECK_ALERT_ENDS = True              # the Stream Deck alert ends practice
-COUNTS_AS_SHOW = False              # a step is Programming playback
+# -- Jeff's answers (2026-11-08) -------------------------------------------
+# No least time between two shots: Andy sees to that himself.
+# Open and Step: anyone with the Show and Arm rows, on any screen
+# (operators on an iPad too; remote._practice_may). The narrower rule for
+# moving Programming playback (the show PC or an admin) stays for every
+# other move, which practice refuses anyway.
+# The Stream Deck unplugged (its alert) is NOTED, never an end: an
+# unplugged deck must not disarm the flames by itself (ruling 4). Its spoof
+# ALARM does end practice.
+DECK_ALERT_ENDS = False
+# A step is not a show (no slot, no show count), but every charge and shot
+# it sends is counted like a show's: the frames go out through the flame
+# link, whose observers (the fuel tracker, the charge record) are never
+# touched here.
+COUNTS_AS_SHOW = False
 
 LEAD_IN_MIN_S = 4
 LEAD_IN_DEFAULT_S = 5
@@ -118,6 +132,12 @@ REFUSE_VALVE_UNLIT = ("This step is refused: Valve Open has no Igniter lit "
 REFUSE_CHARGE_NO_VALVE = ("This step is refused: it charges a tank but never "
                           "opens the valve. Nothing was sent.")
 REFUSE_TANKS = "Tanks charged: Purge on the Fireball page before the next step."
+DECK_NOTE = ("the Stream Deck alert is open (unplugged or failing). "
+             "Practice carries on and nothing is disarmed for it; Stop, "
+             "Hold and Done still work on every screen.")
+FUEL_NOTE = ("Every charge and shot of a step is counted like a show's: "
+             "the charge record (never a double charge) and the fuel "
+             "count. A step is not a show.")
 OPEN_SAYS = ("Fireball practice opened: Stop was pressed, so every group "
              "and laser is disarmed and the schedule holds until Resume.")
 REFUSED_WHILE_OPEN = "Fireball practice is open: press Done first."
@@ -249,7 +269,8 @@ class Practice:
         self._retry_at = None
         self._alerted = False
         self._stopping = False
-        self.last_valve_at = None
+        self._deck_alarm = ""
+        self.deck_note = ""
         self.last_beat = None
         self.last_activity = None
         self.watcher_beat = None
@@ -268,6 +289,33 @@ class Practice:
         """The veto's sentence while practice is open, else "". One
         attribute read: no lock, no move lock."""
         return REFUSED_WHILE_OPEN if self.state != "closed" else ""
+
+    def deck_event(self, action, text, fault):
+        """A line the Stream Deck posted (schedule_service.deck_event): its
+        spoof ALARM ends practice (the watcher, within WATCH_S). No lock."""
+        if self.state != "closed" and action == "spoof-alarm" and fault:
+            self._deck_alarm = str(text or "")[:200]
+
+    def deck_alert(self):
+        """True while the Stream Deck alert (unplugged, failing) is open."""
+        try:
+            al = getattr(self.remote, "alerts", None)
+            return al is not None and any(
+                getattr(a, "kind", "") == "deck" for a in al.open())
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def _deck_tick(self):
+        """The deck alert is noted once when it opens and once when it
+        clears: practice carries on, nothing disarms (ruling 4)."""
+        on = self.deck_alert()
+        if on and not self.deck_note:
+            self.deck_note = DECK_NOTE
+            self._note(f"Fireball practice: {DECK_NOTE}", "deck")
+        elif not on and self.deck_note:
+            self.deck_note = ""
+            self._note("Fireball practice: the Stream Deck is back.",
+                       "deck")
 
     def request_end(self, why):
         """Asked by a press that must end practice (a Hold, Follow): the
@@ -448,14 +496,10 @@ class Practice:
                 return "a hazer was switched on"
         except Exception:                        # noqa: BLE001
             return "the hazers could not be read"
-        if DECK_ALERT_ENDS:
-            try:
-                al = getattr(self.remote, "alerts", None)
-                if al is not None and any(getattr(a, "kind", "") == "deck"
-                                          for a in al.open()):
-                    return "the Stream Deck alert is open"
-            except Exception:                    # noqa: BLE001
-                return "the alerts could not be read"
+        if self._deck_alarm:
+            return f"the Stream Deck's spoof ALARM: {self._deck_alarm}"
+        if DECK_ALERT_ENDS and self.deck_alert():
+            return "the Stream Deck alert is open"
         tr = self._charge()
         if tr is None:
             return "the fireball charge record is not running"
@@ -495,6 +539,8 @@ class Practice:
         self.ended_why = ""
         self._end_asked = ""
         self._alerted = False
+        self._deck_alarm = ""
+        self.deck_note = ""
         cues = self._cues()
         cues.practice = None
         cues.practice_fault = ""
@@ -599,11 +645,6 @@ class Practice:
                 for t in (v.get("tanks") or {}).values()):
             return REFUSE_TANKS
         now = self._clock()
-        if self.last_valve_at is not None and \
-                now - self.last_valve_at < MIN_GAP_S:
-            left = MIN_GAP_S - (now - self.last_valve_at)
-            return (f"This step is refused: wait {left:.0f} s more (at least "
-                    f"{MIN_GAP_S:g} s between two shots).")
         for b in (self.watcher_beat, self.watchdog_beat):
             if self._threaded and (b is None or now - b > BEAT_STALE_S):
                 return ("This step is refused: the practice watcher is not "
@@ -788,6 +829,7 @@ class Practice:
         if self._threaded and (db is None or now - db > BEAT_STALE_S * 4):
             self._ending("the practice watchdog stopped")
             return
+        self._deck_tick()
         why = self._common_why(in_step=self.state == "step")
         if not why and self.last_beat is not None and \
                 now - self.last_beat > PAGE_BEAT_OFF_S:
@@ -846,9 +888,6 @@ class Practice:
         self._recording = False
         snap = self._cues().run_view()
         rows, edges = self._digest(plan, snap, self.mode == "live" and fb)
-        va = edges.get("valve") or {}
-        if va.get("on") is not None:
-            self.last_valve_at = now
         res = {"id": st["tok"]["id"], "rows": rows,
                "flagged": sum(1 for r in rows if r["flag"]),
                "mode": self.mode}
@@ -942,10 +981,6 @@ class Practice:
             tanks = ""
         view, _raw = self._flames()
         fb, others = self._armed(view)
-        now = self._clock()
-        gap = 0.0
-        if self.last_valve_at is not None:
-            gap = max(0.0, MIN_GAP_S - (now - self.last_valve_at))
         why = ""
         if self.state in ("arming", "ready"):
             try:
@@ -957,13 +992,12 @@ class Practice:
                 "who": self.who, "screen": self.screen,
                 "ended_why": self.ended_why, "step_why": why,
                 "tanks": tanks, "fireball_armed": fb,
-                "others_armed": others, "gap_left_s": round(gap, 1),
+                "others_armed": others, "deck_note": self.deck_note,
                 "results": list(self.results), "note": TIMING_NOTE,
                 "lead_in": {"min": LEAD_IN_MIN_S, "max": LEAD_IN_MAX_S,
                             "default": LEAD_IN_DEFAULT_S},
-                "min_gap_s": MIN_GAP_S, "late_ok_ms": LATE_OK_MS,
-                "early_ok_ms": EARLY_OK_MS,
-                "step_on_ipad": STEP_FROM_IPAD_FOR_OPERATORS}
+                "late_ok_ms": LATE_OK_MS, "early_ok_ms": EARLY_OK_MS,
+                "fuel_note": FUEL_NOTE}
 
 
 def tok_bound(p):

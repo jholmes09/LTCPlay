@@ -1068,6 +1068,8 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <button data-safe class="b safe" id="fbp-done"><svg class="i"><use href="#i-shield"/></svg>Done</button>
         </div>
         <div class="pline">Done, Stop, any disarm or leaving this card disarms every group. The Fireball page pads stay live between steps. Timing edits go into the show's real timeline file. Between steps the rig shows the between-shows look.</div>
+        <div class="pline" id="fbp-fuel">Every charge and shot of a step is counted like a show's: the charge record (never a double charge) and the fuel count. A step is not a show.</div>
+        <div class="pline bad" id="fbp-deck" hidden></div>
         <div id="fbp-table"></div>
         <div class="pline" id="fbp-note"></div>
       </div>
@@ -2184,6 +2186,8 @@ function fbpDraw(){
   $("fbp-run").hidden = st === "closed";
   $("fbp-step").disabled = !(v.yours && st === "ready" && !v.step_why) || FBP_BUSY;
   $("fbp-table").innerHTML = fbpRows((v.results || [])[0]);
+  $("fbp-deck").hidden = !v.deck_note;
+  setText($("fbp-deck"), v.deck_note ? "Noted: " + v.deck_note : "");
   setText($("fbp-note"), v.note || "");
 }
 async function fbpPress(body, ok){

@@ -776,6 +776,10 @@ class Service:
         # save followed, a restart, the nightly hand over): Fireball
         # practice ends when it changes.
         self.night_loads = 0
+        # (action, text, fault) of each line the Stream Deck posts, after
+        # it is written: Fireball practice ends on the deck's spoof ALARM.
+        # It only reads; None: nobody is told.
+        self.deck_event_hook = None
         # Start at a cue (play_from.py part 2): the cue of the press being
         # applied (operator_press, under the lock), and the failed rig
         # check a start at a cue was refused by, with its cue: (the
@@ -4620,6 +4624,12 @@ class Service:
         else:
             self._log(self.logbook.record, actor=actor, outcome="done",
                       reason=text, text=text, **kw)
+        hook = self.deck_event_hook
+        if hook is not None:
+            try:
+                hook(action, text, fault)
+            except Exception:                    # noqa: BLE001
+                pass
         return {"ok": True}
 
     # -- the web routes ---------------------------------------------------
