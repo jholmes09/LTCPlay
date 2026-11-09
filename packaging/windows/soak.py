@@ -321,6 +321,66 @@ def preflight_refusal(refuse, video_off_ok=False):
             f"stopped its programs; nothing else was started." + hint)
 
 
+# -- stopping (2026-11-09) ----------------------------------------------------
+# "Stop soak now" (--stop-now): the run stops within a second, whatever it is
+# doing, stops its own engine, flamesafe and deck, does not start again at
+# sign-in, and the scheduled task is removed by the same user (it is that
+# user's own task, registered without elevation: register_soak_task.ps1).
+STOP_NOW_FILE = "STOP_NOW"
+SOAK_TASK = "LTC Player unattended soak"
+STOP_WORD = "STOP"
+RUN_WORD = "DISCONNECTED"
+
+
+def soak_folder():
+    import supervisor as sup
+    return os.path.join(sup.appdata_dir(), "soak")
+
+
+def stop_now_requested(folder=None):
+    return os.path.exists(os.path.join(folder or soak_folder(),
+                                       STOP_NOW_FILE))
+
+
+def stop_now(folder=None, run=subprocess.run, windows=None):
+    """--stop-now: STOP_NOW (the running soak stops within a second) and
+    STOP_UNATTENDED (the task does nothing at the next sign-in) written,
+    then the task removed. Returns the lines to print."""
+    import soak_unattended
+    folder = folder or soak_folder()
+    os.makedirs(folder, exist_ok=True)
+    for p in (os.path.join(folder, STOP_NOW_FILE),
+              soak_unattended.stop_file_path(folder)):
+        with open(p, "w") as fh:
+            fh.write("stop\n")
+    out = ["Stop soak now: the soak stops within a second, stops its own "
+           "engine, flamesafe and deck, and does not start again at "
+           "sign-in."]
+    windows = ltcwin.WINDOWS if windows is None else windows
+    if windows:
+        try:
+            r = run(["schtasks", "/Delete", "/TN", SOAK_TASK, "/F"],
+                    capture_output=True, text=True, timeout=30)
+            said = " ".join(((r.stdout or "") + (r.stderr or "")).split())
+            out.append(f"The task '{SOAK_TASK}' was removed." if
+                       r.returncode == 0 else
+                       f"The task '{SOAK_TASK}' was not removed ({said or 'exit ' + str(r.returncode)}); it does nothing at sign-in while STOP_UNATTENDED is there.")
+        except Exception as e:                   # noqa: BLE001
+            out.append(f"The task '{SOAK_TASK}' could not be removed "
+                       f"({e}); it does nothing at sign-in while "
+                       f"STOP_UNATTENDED is there.")
+    return out
+
+
+def confirm_refusal(given, word, what):
+    """None when --confirm says `word` (or is not given), else the
+    sentence refusing `what`."""
+    if given is None or given == word:
+        return None
+    return (f"REFUSED. {what} needs --confirm {word} (it said "
+            f"{given!r}). Nothing was changed.")
+
+
 def resolve_audio_name(wanted, names):
     """(exact output name, sentence) for --audio-device / -AudioDevice
     `wanted` among this PC's output names (as the engine lists them): the
@@ -2026,10 +2086,20 @@ class Soak:
             note(f"{name} stopped cleanly")
             return True
         except subprocess.TimeoutExpired:
+            # The soak's own child (its outputs go to this PC only): ended,
+            # so none is left running after the soak (2026-11-09: a deck
+            # left behind, elevated, that the user could not end).
             how = why or "Ctrl-Break sent"
-            note(f"{name} did NOT stop within 20 s ({how}); it was not "
-                 f"forced to quit")
-            return False
+            try:
+                c["p"].kill()
+                c["p"].wait(10)
+                note(f"{name} did not stop within 20 s ({how}), so the soak "
+                     f"ended it (its own child)")
+                return True
+            except (OSError, subprocess.TimeoutExpired) as e:
+                note(f"{name} did NOT stop within 20 s ({how}) and could "
+                     f"not be ended ({e})")
+                return False
 
     def engine(self, route, body=None, timeout=5, signed_out=False):
         """GET (no body) or POST to the engine as the signed-in rack screen
@@ -2320,6 +2390,11 @@ class Soak:
         try:
             while time.perf_counter() - t0 < self.seconds:
                 time.sleep(0.5)
+                if stop_now_requested():
+                    self.interrupted = True
+                    self.stopped_now = True
+                    note("Stop soak now was used: stopping at once")
+                    break
                 nw = time.time()
                 if nw - last_wall > 15:
                     self.pauses.append((last_wall, nw - last_wall))
@@ -3946,6 +4021,8 @@ def main(argv=None):
         return rc
     wait = "--no-wait" not in argv
     video_off_ok = False
+    confirm = None
+    stop_requested_now = False
     seconds = None
     device = None
     fake = False
@@ -4048,6 +4125,15 @@ def main(argv=None):
             print(said)
             print(f"EXACT: {name}")
             return 0
+        elif a == "--confirm":
+            try:
+                confirm = argv[i + 1]
+            except IndexError:
+                print("--confirm takes a word")
+                return 2
+            i += 1
+        elif a == "--stop-now":
+            stop_requested_now = True
         elif a == "--unattended-off":
             import supervisor as sup
             import soak_unattended
@@ -4095,6 +4181,23 @@ def main(argv=None):
                   f"--every-min M (default {SHOW_EVERY_MIN})")
             return 2
         i += 1
+    if stop_requested_now:
+        why = confirm_refusal(confirm, STOP_WORD, "Stop soak now")
+        if why:
+            print(why)
+            return 2
+        for line in stop_now():
+            print(line)
+        return 0
+    why = confirm_refusal(confirm, RUN_WORD, "Starting the soak")
+    if why:
+        print(why)
+        return 2
+    try:
+        # A Stop soak now from an earlier run never stops this one.
+        os.remove(os.path.join(soak_folder(), STOP_NOW_FILE))
+    except OSError:
+        pass
     if track:
         try:
             audio_plan(track.get("--audio-channels", 2),
