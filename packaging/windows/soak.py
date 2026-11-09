@@ -3803,7 +3803,9 @@ class Blocks:
                 self.blocks.append(s)
                 s.run()
                 if s.interrupted:
-                    self.stopped = f"stopped by Ctrl-C in block {i}"
+                    self.stopped = (f"stopped by Stop soak now in block {i}"
+                                    if getattr(s, "stopped_now", False)
+                                    else f"stopped by Ctrl-C in block {i}")
                     break
                 before = pids
         except KeyboardInterrupt:
