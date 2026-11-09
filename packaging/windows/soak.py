@@ -867,6 +867,9 @@ class Soak:
         self.audio_worst = {}
         self.slots = {}
         self.mode = "fallback"      # or "all programs" (see choose_mode)
+        # Where the Art-Net receivers are (plan_addresses): set from this
+        # PC's settings by run(); until then one loopback receiver only.
+        self.addrs = plan_addresses("fallback", {}, lambda _ip: False)
         self.apps = {}              # name -> install path, all-programs mode
         self.app_watch = {}         # name -> soak_apps.AppWatch
         self.app_cpu = {}           # name -> [cpu %]
