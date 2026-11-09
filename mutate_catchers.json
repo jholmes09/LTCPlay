@@ -3705,5 +3705,18 @@
 "practice: the Stream Deck's spoof ALARM does not end it": "test_fireball_practice_engine",
 "practice: the Stream Deck unplugged ends practice and disarms": "test_fireball_practice_engine",
 "practice: the Stream Deck alert is not noted": "test_fireball_practice_engine",
-"practice: a practice shot is not counted toward fuel (its record replaces the flame link's observers)": "test_fireball_practice_counts_toward_fuel"
+"practice: a practice shot is not counted toward fuel (its record replaces the flame link's observers)": "test_fireball_practice_counts_toward_fuel",
+"practice: a step's play is bound after practice ended": "test_fireball_practice_engine",
+"practice: a step whose practice ended while its play started carries on": "test_fireball_practice_engine",
+"practice: the step's end turns an ended practice back to ready": "test_fireball_practice_engine",
+"practice: open turns a practice ended during its Stop back on": "test_fireball_practice_engine",
+"practice: frames before the audio's first buffer mark the table not against the audio": "test_fireball_practice_engine",
+"practice: a Stop that hangs is never pressed again": "test_fireball_practice_engine",
+"practice: the bound play is not cut when practice ends": "test_fireball_practice_engine",
+"practice: a cut practice play keeps firing": "test_fireball_practice_on_the_flame_cues",
+"practice: a Step may hold 'starting' for ever": "test_fireball_practice_engine",
+"practice: a Hold asked during opening is erased": "test_fireball_practice_engine",
+"practice: a disarm through the flame link does not end it": "test_fireball_practice_engine",
+"practice: with sign-in off an iPad may open and Step": "test_fireball_practice_vetoes_and_wiring",
+"practice: a pending mark reads as charged tanks": "test_fireball_practice_engine"
 }

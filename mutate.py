@@ -21067,8 +21067,8 @@ def build():
 
  ("practice: an arm from before practice opened counts",
   "ltcplay/fireball_practice.py",
-  "            elif fb and self._seen_off:",
-  "            elif fb:"),
+  "            elif fb and self._seen_off and \\",
+  "            elif fb and \\"),
 
  ("practice: another screen's beat keeps practice open",
   "ltcplay/fireball_practice.py",
@@ -21159,6 +21159,71 @@ def build():
   "ltcplay/web.py",
   "    link.sent_observer = pr.on_sent",
   "    link.observer = pr.on_sent"),
+
+ ("practice: a step's play is bound after practice ended",
+  "ltcplay/fireball_practice.py",
+  "                        if self.state != \"starting\" or gen != self._gen:",
+  "                        if False:"),
+
+ ("practice: a step whose practice ended while its play started carries on",
+  "ltcplay/fireball_practice.py",
+  "        if not self._cas((\"starting\",), \"step\", gen):",
+  "        if self._cas((\"starting\",), \"step\", gen) and False:"),
+
+ ("practice: the step's end turns an ended practice back to ready",
+  "ltcplay/fireball_practice.py",
+  "        if not self._cas((\"step\",), \"ready\", self._gen):\n            return",
+  "        self.state = \"ready\"\n        if False:\n            return"),
+
+ ("practice: open turns a practice ended during its Stop back on",
+  "ltcplay/fireball_practice.py",
+  "        if not self._cas((\"opening\",), \"arming\" if mode == \"live\" else\n                         \"ready\", gen):",
+  "        if not self._cas((\"opening\", \"ending\", \"closed\"), \"arming\" if mode == \"live\" else\n                         \"ready\", None):"),
+
+ ("practice: frames before the audio's first buffer mark the table not against the audio",
+  "ltcplay/fireball_practice.py",
+  "                # buffer (no epoch yet): those frames are not timed.\n                continue",
+  "                # buffer (no epoch yet): those frames are not timed.\n                against = False\n                continue"),
+
+ ("practice: a Stop that hangs is never pressed again",
+  "ltcplay/fireball_practice.py",
+  "                    self._retry_at is not None and now < self._retry_at:\n                return          # a Stop is on its way and not yet late",
+  "                    True:\n                return          # a Stop is on its way and not yet late"),
+
+ ("practice: the bound play is not cut when practice ends",
+  "ltcplay/fireball_practice.py",
+  "        self._recording = False\n        self._cut_plays()",
+  "        self._recording = False"),
+
+ ("practice: a cut practice play keeps firing",
+  "ltcplay/fireball_cues.py",
+  "        if run.practice is not None and run.practice.get(\"cut\"):",
+  "        if False:"),
+
+ ("practice: a Step may hold 'starting' for ever",
+  "ltcplay/fireball_practice.py",
+  "        if self.state == \"starting\" and self._starting_at is not None and \\",
+  "        if False and self._starting_at is not None and \\"),
+
+ ("practice: a Hold asked during opening is erased",
+  "ltcplay/fireball_practice.py",
+  "        self.ended_why = \"\"\n        self._alerted = False\n        self.deck_note = \"\"",
+  "        self.ended_why = \"\"\n        self._alerted = False\n        self.deck_note = \"\"\n        self._end_asked = \"\""),
+
+ ("practice: a disarm through the flame link does not end it",
+  "ltcplay/fireball_practice.py",
+  "        if getattr(link, \"abort_id\", None) != b.get(\"abort_id\"):",
+  "        if False:"),
+
+ ("practice: with sign-in off an iPad may open and Step",
+  "ltcplay/remote.py",
+  "        if not self.users_active():\n            if local:\n                return \"\"",
+  "        if not self.users_active():\n            if True:\n                return \"\""),
+
+ ("practice: a pending mark reads as charged tanks",
+  "ltcplay/fireball_practice.py",
+  "        if v.get(\"pending\"):\n            return REFUSE_SETTLING",
+  "        if v.get(\"pending\"):\n            return REFUSE_TANKS"),
 
  ("fireball cues: the flame cues skip the timeline in background mode",
   "ltcplay/fire_ice.py",

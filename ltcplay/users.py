@@ -245,7 +245,7 @@ REMOTE_ROUTES = {
     "fireball-charge-empty": "settings",
     # Fireball practice (fireball_practice.py): open, Step and the beat
     # that keeps it open are arm presses (the engine also asks the Show
-    # row, and the show PC or an admin); Done only takes risk away
+    # row, at every press, on any screen); Done only takes risk away
     # (classify).
     "fireball-practice": "arm",
     # These depend on the body: see classify().

@@ -33,8 +33,9 @@ under the playhead's move lock right before the play starts:
     end inside the cue;
   - both tanks EMPTY, no charge mark pending, no charge fault;
   - Live: the fireball armed AFTER practice opened, and nothing else;
-    Dry: nothing armed at all; no laser armed, no hazer on, no Stream Deck
-    alert, no second sender or flood on either link;
+    Dry: nothing armed at all; no laser armed, no hazer on, no spoof
+    ALARM from the Stream Deck, no second sender or flood on either link
+    (the Stream Deck alert, unplugged or failing, is only noted);
   - the schedule on the Stop's Hold (HOLD with stop_hold) or OFF with no
     show waiting, the same night and night load as when it opened;
   - the press from the device and window that opened practice, with the
@@ -55,8 +56,15 @@ Only NOTED (a journal line and the card), never an end: the Stream Deck
 unplugged (its alert).
 
 Fuel: every charge and shot of a step goes out on the flame link like a
-show's, so the charge record (and its double-charge guard) and the fuel
-tracker count it as they count any Programming playback.
+show's, so the charge record (and its double-charge guard) counts it as
+it counts a show's, and the fuel tracker books it as it books any
+Programming playback: in the "other" pile, which the totals include,
+never as a show.
+
+Every change of state is a compare-and-set under the lock, tied to the
+practice's generation (one per open), so an end that lands while open,
+Step or a step's end is under way is never undone by it: a step that
+finds practice ended while its play was starting presses Stop again.
 
 Two threads run while practice is open: the watcher (every WATCH_S: the
 end triggers, the step's end, the timing record) and the watchdog (every
@@ -92,10 +100,11 @@ NAME = "Fireball practice"
 # unplugged deck must not disarm the flames by itself (ruling 4). Its spoof
 # ALARM does end practice.
 DECK_ALERT_ENDS = False
-# A step is not a show (no slot, no show count), but every charge and shot
-# it sends is counted like a show's: the frames go out through the flame
-# link, whose observers (the fuel tracker, the charge record) are never
-# touched here.
+# A step is not a show (no slot, no show count). Its frames go out
+# through the flame link, whose observers are never touched here: the
+# charge record counts every charge and shot as it counts a show's, and
+# the fuel tracker books the flame time as Programming ("other"), which
+# the fuel totals include.
 COUNTS_AS_SHOW = False
 
 LEAD_IN_MIN_S = 4
@@ -116,6 +125,9 @@ TIMER_JITTER_MS = 16.0              # one Windows timer tick
 LATE_OK_MS = SEND_PERIOD_MS + TIMER_JITTER_MS
 EARLY_OK_MS = 5.0
 RESULTS_KEPT = 10
+# A Step press holds "starting" at most this long (its play start waits
+# for the show audio); longer, and practice ends.
+STARTING_MAX_S = 30.0
 RECORD_MAX = 20000
 GROUP = "fireball"
 SLOTS = fbtl.FIREBALL_FIRE_SLOTS
@@ -132,12 +144,18 @@ REFUSE_VALVE_UNLIT = ("This step is refused: Valve Open has no Igniter lit "
 REFUSE_CHARGE_NO_VALVE = ("This step is refused: it charges a tank but never "
                           "opens the valve. Nothing was sent.")
 REFUSE_TANKS = "Tanks charged: Purge on the Fireball page before the next step."
+# The charge record's mark (an automatic charge may be going out) is
+# cleared by a shot, a Purge, or PENDING_IDLE_S (5 s) with no charge asked:
+# after a dry step, or a step whose shot was skipped, that wait.
+REFUSE_SETTLING = ("The charge record is settling after the last step: Step "
+                   "again in a few seconds.")
 DECK_NOTE = ("the Stream Deck alert is open (unplugged or failing). "
              "Practice carries on and nothing is disarmed for it; Stop, "
              "Hold and Done still work on every screen.")
-FUEL_NOTE = ("Every charge and shot of a step is counted like a show's: "
-             "the charge record (never a double charge) and the fuel "
-             "count. A step is not a show.")
+FUEL_NOTE = ("Every charge and shot of a step is recorded in the fuel and "
+             "air charge record like a show's (never a double charge), and "
+             "its flame time is in the fuel totals as Programming (Other). "
+             "A step is not a show.")
 OPEN_SAYS = ("Fireball practice opened: Stop was pressed, so every group "
              "and laser is disarmed and the schedule holds until Resume.")
 REFUSED_WHILE_OPEN = "Fireball practice is open: press Done first."
@@ -279,6 +297,20 @@ class Practice:
         self._recording = False
         self._rec_clock = None
         self._threads_gen = 0
+        self._gen = 0            # one per open: every change is tied to it
+        self._stop_seq = 0
+        self._starting_at = None
+
+    def _cas(self, frm, to, gen=None):
+        """Compare and set: the state becomes `to` only while it is one of
+        `frm` and (with `gen`) practice is still the one that was opened
+        then. True when it changed."""
+        with self._lock:
+            if self.state not in frm or (gen is not None and
+                                         gen != self._gen):
+                return False
+            self.state = to
+            return True
 
     # -- what other parts ask, lock-free ---------------------------------------
     @property
@@ -526,20 +558,26 @@ class Practice:
             if self.state != "closed":
                 raise Refused("Fireball practice is already open.")
             self.state = "opening"
+            self._gen += 1
+            gen = self._gen
+            # Reset here, at the claim: a Hold or Follow asked while the
+            # opening Stop runs is kept and ends practice.
+            self._end_asked = ""
+            self._deck_alarm = ""
+            self._stopping = False
+            self._retry_at = None
         try:
             why = self._open_why()
         except Exception as e:                   # noqa: BLE001
             why = f"the engine could not be read ({type(e).__name__})"
         if why:
-            self.state = "closed"
+            self._cas(("opening",), "closed", gen)
             raise Refused(f"Fireball practice was not opened: {why}. "
                           f"Nothing was changed.")
         self.mode, self.owner, self.who, self.screen = mode, owner, who, \
             screen
         self.ended_why = ""
-        self._end_asked = ""
         self._alerted = False
-        self._deck_alarm = ""
         self.deck_note = ""
         cues = self._cues()
         cues.practice = None
@@ -558,7 +596,12 @@ class Practice:
         now = self._clock()
         self.last_beat = self.last_activity = now
         self.watcher_beat = self.watchdog_beat = now
-        self.state = "arming" if mode == "live" else "ready"
+        if not self._cas(("opening",), "arming" if mode == "live" else
+                         "ready", gen):
+            # Ended (Done, a disarm) while its own Stop ran: it stays
+            # ended; the cues' practice guards stay as that end left them.
+            return (f"Fireball practice ended while it was opening: "
+                    f"{self.ended_why or 'it was ended'}.")
         if code != 200 or (out or {}).get("failed"):
             self._ending("the Stop that opens practice did not complete",
                          stop_first=False, failed=True)
@@ -640,10 +683,12 @@ class Practice:
             return "This step is refused: the fireball is armed (Dry)."
         tr = self._charge()
         v = tr.view()
-        if v.get("pending") or v.get("releasing") or any(
+        if v.get("releasing") or any(
                 t.get("state") != "empty"
                 for t in (v.get("tanks") or {}).values()):
             return REFUSE_TANKS
+        if v.get("pending"):
+            return REFUSE_SETTLING
         now = self._clock()
         for b in (self.watcher_beat, self.watchdog_beat):
             if self._threaded and (b is None or now - b > BEAT_STALE_S):
@@ -686,9 +731,15 @@ class Practice:
                           "opened practice may Step. Nothing was sent.")
         with self._lock:
             if self.state != "ready":
-                raise Refused(self.step_why(lead_in_s) or
-                              "This step is refused. Nothing was sent.")
-            self.state = "starting"
+                busy = True
+            else:
+                busy = False
+                self.state = "starting"
+                self._starting_at = self._clock()
+                gen = self._gen
+        if busy:
+            raise Refused(self.step_why(lead_in_s) or
+                          "This step is refused. Nothing was sent.")
         ph = self._ph()
         try:
             with ph._op:
@@ -702,7 +753,13 @@ class Practice:
                 def bind(cue_obj, _tok=tok):
                     if cue_obj is None:
                         raise Refused("the play could not be bound")
-                    _tok["cue"] = cue_obj
+                    with self._lock:
+                        if self.state != "starting" or gen != self._gen:
+                            # Practice ended while this step was starting:
+                            # the play is refused before its cues go out.
+                            raise Refused("practice ended while the step "
+                                          "was starting")
+                        _tok["cue"] = cue_obj
                     self._rec.clear()
                     clk = ph.clock()
                     self._rec_clock = clk
@@ -715,8 +772,7 @@ class Practice:
             if self._cues() is not None:
                 self._cues().practice = None
             self._step = None
-            if self.state == "starting":
-                self.state = "ready"
+            self._cas(("starting",), "ready", gen)
             raise
         except Exception as e:                   # noqa: BLE001
             self._recording = False
@@ -724,8 +780,7 @@ class Practice:
             bound = tok_bound(self)
             if self._cues() is not None:
                 self._cues().practice = None
-            if self.state == "starting":
-                self.state = "ready"
+            self._cas(("starting",), "ready", gen)
             if bound:
                 # The play may have started: practice ends (Stop).
                 self._ending(f"the step could not start ({e})")
@@ -733,7 +788,15 @@ class Practice:
                               f"practice ended and every group is "
                               f"disarmed.")
             raise Refused(f"This step is refused: {e} Nothing was sent.")
-        self.state = "step"
+        if not self._cas(("starting",), "step", gen):
+            # Ended while the play was starting (Done, a disarm, the
+            # watchdog): the play is cut and stopped again.
+            tok["cut"] = True
+            self._recording = False
+            self._step = None
+            self._stop("a step that started after practice ended")
+            raise Refused("Practice ended while the step was starting: the "
+                          "step was stopped and every group is disarmed.")
         self.last_activity = self._clock()
         self._note(f"Fireball practice step {tok['id']} by "
                    f"{who or 'someone'}: played from "
@@ -767,9 +830,11 @@ class Practice:
         prev = {k: 0 for k in slot_of}
         for mono, vals, epoch, following in list(self._rec):
             if epoch is None:
-                against = False
+                # The show audio starts every play waiting for its first
+                # buffer (no epoch yet): those frames are not timed.
                 continue
             if not following:
+                # Running on this computer's clock (freerun, a return).
                 against = False
             for k, slot in slot_of.items():
                 v = vals[slot - SLOTS[0]]
@@ -823,6 +888,10 @@ class Practice:
             if self._retry_at is not None and now >= self._retry_at:
                 self._ending(self.ended_why, retry=True)
             return
+        if self.state == "starting" and self._starting_at is not None and \
+                now - self._starting_at > STARTING_MAX_S:
+            self._ending("the step took too long to start")
+            return
         if self.state in ("opening", "starting"):
             return
         db = self.watchdog_beat
@@ -845,8 +914,8 @@ class Practice:
         if self.state == "arming":
             if not fb:
                 self._seen_off = True
-            elif fb and self._seen_off:
-                self.state = "ready"
+            elif fb and self._seen_off and \
+                    self._cas(("arming",), "ready", self._gen):
                 self.last_activity = now
                 self._note("Fireball practice: the fireball is armed; Step "
                            "is ready.", "armed")
@@ -894,7 +963,8 @@ class Practice:
         self.results.appendleft(res)
         self._cues().practice = None
         self._step = None
-        self.state = "ready"
+        if not self._cas(("step",), "ready", self._gen):
+            return              # ended meanwhile: it stays ended
         self.last_activity = now
         worst = max((r["late_ms"] for r in rows if r["late_ms"] is not None),
                     default=None)
@@ -917,54 +987,88 @@ class Practice:
         except Exception as e:                   # noqa: BLE001
             return 500, {"failed": ["stop"], "error": str(e)}
 
+    def _cut_plays(self):
+        """Every practice play still bound stops firing at once (its token
+        marked cut; FireballCues sends nothing for it), whether or not a
+        Stop gets through."""
+        cues = self._cues()
+        for tok in ((self._step or {}).get("tok"),
+                    getattr(cues, "practice", None)):
+            if isinstance(tok, dict):
+                tok["cut"] = True
+
+    def _alert_once(self):
+        if self._alerted:
+            return
+        self._alerted = True
+        al = getattr(self.remote, "alerts", None)
+        try:
+            if al is not None:
+                al.raise_("flames", "Fireball practice could not complete "
+                          "its Stop: press Stop or Disarm all flame groups "
+                          "now.")
+        except Exception:                        # noqa: BLE001
+            pass
+        self._note("Fireball practice: the Stop did not complete; it is "
+                   "pressed again every second.", "failed", fault=True)
+
     def _ending(self, why, stop_first=True, failed=False, retry=False):
         """End practice: Stop (every group and laser disarmed). A Stop that
-        does not complete keeps it ENDING and is pressed again every
-        RETRY_S. No lock: the watchdog calls it too."""
-        if self.state == "closed" or self._stopping:
-            # Closed, or a Stop already on its way (the watcher's or the
-            # watchdog's): one Stop at a time.
-            return
-        first = self.state != "ending"
-        self.state = "ending"
+        fails, or has not come back within RETRY_S (one that hangs after
+        its first step, the flame disarm), keeps practice ENDING: the
+        flames alert, and Stop pressed again every RETRY_S, whoever asks
+        (the watcher or the watchdog). Never more than one new Stop per
+        RETRY_S: the claim is made under the lock."""
+        now = self._clock()
+        with self._lock:
+            if self.state == "closed":
+                return
+            if stop_first and self._stopping and \
+                    self._retry_at is not None and now < self._retry_at:
+                return          # a Stop is on its way and not yet late
+            late = stop_first and self._stopping
+            first = self.state != "ending"
+            self.state = "ending"
+            gen = self._gen
+            if first:
+                self.ended_why = why
+            if stop_first:
+                self._stopping = True
+                self._stop_seq += 1
+                seq = self._stop_seq
+            self._retry_at = now + RETRY_S
         self._recording = False
+        self._cut_plays()
         if first:
-            self.ended_why = why
             self._note(f"Fireball practice ended: {why}. Every group is "
                        f"being disarmed (Stop).", "ended")
+        if late:
+            self._alert_once()
         if stop_first:
-            self._stopping = True
             try:
                 code, out = self._stop(f"Fireball practice ended: "
                                        f"{self.ended_why}")
             finally:
-                self._stopping = False
+                with self._lock:
+                    if seq == self._stop_seq:
+                        self._stopping = False
             failed = code != 200 or bool((out or {}).get("failed"))
         if failed:
-            self._retry_at = self._clock() + RETRY_S
-            if not self._alerted:
-                self._alerted = True
-                al = getattr(self.remote, "alerts", None)
-                try:
-                    if al is not None:
-                        al.raise_("flames", "Fireball practice could not "
-                                  "complete its Stop: press Stop or "
-                                  "Disarm all flame groups now.")
-                except Exception:                # noqa: BLE001
-                    pass
-                self._note("Fireball practice: the Stop did not complete; "
-                           "it is pressed again every second.", "failed",
-                           fault=True)
+            self._alert_once()
             return
         cues = self._cues()
-        if cues is not None:
-            cues.practice = None
-            cues.practice_open = False
-            cues.practice_fault = ""
-        self._step = None
-        self._retry_at = None
-        self.state = "closed"
-        self._threads_gen += 1
+        with self._lock:
+            if self.state != "ending" or gen != self._gen:
+                return
+            if cues is not None:
+                cues.practice = None
+                cues.practice_open = False
+                cues.practice_fault = ""
+            self._step = None
+            self._retry_at = None
+            self._stopping = False
+            self.state = "closed"
+            self._threads_gen += 1
 
     def close(self):
         """The engine is stopping (its flame link already closed, so

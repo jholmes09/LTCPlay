@@ -244,8 +244,9 @@ FIREBALL_TIMELINE_POST_ROUTES = ("fireball-timeline-save",)
 # from the show network). It only changes the record; it sends nothing.
 FIREBALL_CHARGE_POST_ROUTES = ("fireball-charge-empty",)
 # Fireball practice (fireball_practice.py, design rev 5): read by anyone;
-# open and Step on the show PC or by an admin, with the Show and Arm rows;
-# Done from anywhere (it only takes things away).
+# open and Step for anyone with the Show and Arm rows, on any screen (an
+# operator on an iPad too; with sign-in off, the show PC); Done from
+# anywhere (it only takes things away).
 FIREBALL_PRACTICE_GET_ROUTES = ("fireball-practice",)
 FIREBALL_PRACTICE_POST_ROUTES = ("fireball-practice",)
 # Refused while practice is open (press Done first): every start, every

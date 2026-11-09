@@ -1374,8 +1374,11 @@ alert). Practice carries on and nothing is disarmed for it, as for a show
 journal say so.
 
 **Fuel:** a step is not a show, but every charge and shot it sends is
-counted like a show's: the fuel and air charge record (and its never a
-double charge rule) and the fuel count.
+recorded in the fuel and air charge record like a show's (and its never a
+double charge rule applies), and its flame time is in the fuel totals as
+Programming (the Other pile, which the totals include). After a dry step,
+or a step whose shot was skipped, the charge record needs a few seconds
+to settle; the card says "Step again in a few seconds" until it has.
 
 **The timing table.** After each step, one row per stage: the programmed
 time, the time it was sent (both in ms from the top of the show cue, on the

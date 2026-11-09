@@ -104573,6 +104573,21 @@ def test_fireball_practice_on_the_flame_cues():
               sorted(snap["started"]) == ["air", "fuel", "igniter", "valve"]
               and snap["skipped"] == {} and snap["first_relf"] == 150,
               f"run_view: a copy of the play's state: {snap}")
+        # A play cut by practice's end: nothing more of it, open or not.
+        R = _fbq_rig(_fbp_stages())
+        rigs.append(R)
+        R.fq.practice_open = True
+        tok = _fbp_token(R, FQ)
+        R.fq.practice = tok
+        got = run(R, range(150, 303))
+        tok["cut"] = True
+        R.fq.practice_open = False
+        after = [R.fq.apply(list(noise), R.session, "Show", f / 30.0,
+                            R.cue_obj) for f in range(303, 420)]
+        check(any(g[54] for g in got.values()) and
+              all(a is None for a in after),
+              "a cut practice play sends nothing more, even with practice "
+              "closed")
         # Another play while practice is open: all zeros, a fault.
         R = _fbq_rig(_fbp_stages())
         rigs.append(R)
@@ -104834,10 +104849,12 @@ class _FbpRig:
 def test_fireball_practice_engine():
     section("Fireball practice, the engine: open is a Stop; the Fireball "
             "armed AFTER it; Step plays the shot from its lead-in and stops "
-            "the playback without a disarm; the timing table; 30 s between "
+            "the playback without a disarm; the timing table (frames before "
+            "the audio's first buffer not timed); no least time between "
             "shots; tanks EMPTY; the opening screen only; every trigger ends "
-            "practice with one Stop; a Stop that fails is pressed again; "
-            "the watchdog")
+            "practice with one Stop; the deck alert only noted; a Stop that "
+            "fails or hangs is pressed again; an end during open, Step or a "
+            "step's end stays an end; the watchdog")
     from ltcplay import fireball_cues as FQ
     rigs = []
     try:
@@ -104883,7 +104900,10 @@ def test_fireball_practice_engine():
               "the Fireball page before the next step.", p.step_why())
         G.tanks["air"] = "empty"
         G.charge_extra = {"pending": True}
-        check(p.step_why() == FP.REFUSE_TANKS, "a pending mark: refused")
+        check(p.step_why() == FP.REFUSE_SETTLING == (
+            "The charge record is settling after the last step: Step again "
+            "in a few seconds."),
+              "a pending mark (a dry step's, say): wait for it to settle")
         G.charge_extra = {}
         # Another screen may not Step.
         try:
@@ -104903,10 +104923,17 @@ def test_fireball_practice_engine():
               f"Step: played from the lead-in, the play bound: {G.calls} "
               f"{p.state} {text}")
         # The timing record: the flame link's frames, against the epoch.
-        G.epoch[0] = 500.0
+        # As the show audio does: every play starts waiting for its first
+        # buffer (no epoch), then follows the audio.
+        G.epoch[0] = None
         base = 500.0
         on = {55: (10.010, 11.010), 56: (10.560, 11.560),
               58: (12.000, 12.500), 57: (12.170, 12.370)}
+        t = 4.9
+        while t < 5.2:
+            p.on_sent(base + t, "00:00:00:00", bytes(512), True)
+            t = round(t + 0.005, 3)
+        G.epoch[0] = 500.0
         t = 9.9
         while t < 13.0:
             vals = bytearray(512)
@@ -104924,7 +104951,8 @@ def test_fireball_practice_engine():
               p.state == "ready" and G.R.fq.practice is None and
               len(G.stops) == 1 and
               got == [("Fuel", "OK"), ("Air", "LATE 60 ms"),
-                      ("Igniter", "OK"), ("Valve Open", "OK")],
+                      ("Igniter", "OK"), ("Valve Open", "OK")] and
+              not any("not against" in r["result"] for r in res["rows"]),
               f"the step's end: playback stopped (no Stop, no disarm), the "
               f"table: {got} {G.calls[-1]} {p.state}")
         check(any("step 1" in t and "LATE 60 ms" in t for t, _k in G.lines),
@@ -105023,6 +105051,156 @@ def test_fireball_practice_engine():
         trig("ten minutes with no step", lambda g: [
             g.go(60) or g.p.tick() for _ in range(10)] and None,
             "minutes with no step")
+        # A freerunning clock: the table says it is not against the audio.
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+        g.p.step(g.owner, "Jeff", "Rack screen", 5)
+        g.epoch[0], g.epoch[1] = 500.0, False
+        for i in range(200):
+            v = bytearray(512)
+            if 100 <= i < 150:
+                v[54] = 255
+            g.p.on_sent(510.0 + i * 0.005, "00:00:00:00", bytes(v), True)
+        g.sess.here = 3600.0 + 436 / 30.0
+        g.go(0.05)
+        g.p.tick()
+        r0 = g.p.results[0]["rows"][0]
+        check(r0["result"].endswith("(not against the show audio)"),
+              f"freerun: said: {r0['result']}")
+        # Done while the step's play is starting, before it is bound: the
+        # play is refused before its cues go out; practice stays ended.
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+        real_pf = g.ph.play_from
+
+        def pf_done_first(show_s, who="", screen="", bind=None, g=g,
+                          real=real_pf):
+            g.p.done("Andy", "iPad")
+            return real(show_s, who, screen, bind=bind)
+        g.ph.play_from = pf_done_first
+        n = len(g.stops)
+        try:
+            g.p.step(g.owner, "Jeff", "Rack screen", 5)
+            check(False, "a step after Done was taken")
+        except FP.Refused as e:
+            check("practice ended while the step was starting" in str(e) and
+                  g.p.state == "closed" and len(g.stops) == n + 1 and
+                  not g.R.fq.practice_open,
+                  f"Done during Step: refused, closed, one Stop: {e} "
+                  f"{g.p.state} {len(g.stops) - n}")
+        # Done after the play was bound: the play is cut and stopped again,
+        # practice stays ended.
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+
+        def pf_done_after(show_s, who="", screen="", bind=None, g=g,
+                          real=g.ph.play_from):
+            out = real(show_s, who, screen, bind=bind)
+            g.p.done("Andy", "iPad")
+            return out
+        g.ph.play_from = pf_done_after
+        n = len(g.stops)
+        try:
+            g.p.step(g.owner, "Jeff", "Rack screen", 5)
+            check(False, "a step whose practice ended was taken")
+        except FP.Refused as e:
+            check("ended while the step was starting" in str(e) and
+                  g.p.state == "closed" and len(g.stops) == n + 2,
+                  f"Done after the bind: closed, Stopped again: {e} "
+                  f"{g.p.state} {len(g.stops) - n}")
+        # Done while the step's end runs: it stays ended.
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+        g.p.step(g.owner, "Jeff", "Rack screen", 5)
+        real_f = g.ph.follow
+
+        def follow_done(who="", screen="", only=None, g=g, real=real_f):
+            real(who, screen, only)
+            g.p.done("Andy", "iPad")
+        g.ph.follow = follow_done
+        g.sess.here = 3600.0 + 436 / 30.0
+        g.go(0.05)
+        g.p.tick()
+        check(g.p.state == "closed",
+              f"Done during the step's end: stays closed: {g.p.state}")
+        # Done while the opening Stop runs: practice stays ended, its cues'
+        # guards are not turned back on, no threads.
+        g = _FbpRig()
+        rigs.append(g)
+        real_stop = g.remote.stop_press
+        calls = [0]
+
+        def stop_done(who, screen, g=g, real=real_stop, calls=calls):
+            calls[0] += 1
+            out = real(who, screen)
+            if calls[0] == 1:
+                g.p.done("Andy", "iPad")
+            return out
+        g.remote.stop_press = stop_done
+        text = g.p.open("live", g.owner, "Jeff", "Rack screen")
+        check(g.p.state == "closed" and not g.R.fq.practice_open and
+              "ended while it was opening" in text,
+              f"Done during the opening Stop: stays ended: {g.p.state} "
+              f"{text}")
+        # A Hold asked while open is checking the engine, or while its Stop
+        # runs, is kept: it ends practice.
+        g = _FbpRig()
+        rigs.append(g)
+
+        def prog_hold(g=g):
+            g.p.request_end("Hold was pressed")
+            return True, ""
+        g.remote.programming = prog_hold
+        g.p.open("live", g.owner, "Jeff", "Rack screen")
+        g.go(0.05)
+        g.p.tick()
+        check(g.p.state == "closed" and "Hold was pressed" in g.p.ended_why,
+              f"a Hold during opening is not lost: {g.p.ended_why!r}")
+        # A Step that never comes back from its start: ended after
+        # STARTING_MAX_S.
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+        g.p.state, g.p._starting_at = "starting", g.T[0]
+        g.go(FP.STARTING_MAX_S - 1)
+        g.p.tick()
+        check(g.p.state == "starting", "a start under way is waited for")
+        g.go(2)
+        g.p.tick()
+        check(g.p.state == "closed" and "too long to start" in
+              g.p.ended_why, f"a start that hangs: {g.p.ended_why!r}")
+        # A Stop that hangs after its first step: no second Stop before
+        # RETRY_S; then the alert and a new Stop, whoever asks; the bound
+        # play is cut at once.
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+        g.p.step(g.owner, "Jeff", "Rack screen", 5)
+        tok = g.R.fq.practice
+        # As if a Stop were stuck inside stop_press on another thread.
+        g.p._stopping, g.p.state = True, "ending"
+        g.p._retry_at = g.T[0] + FP.RETRY_S
+        g.p.ended_why = "a disarm"
+        n = len(g.stops)
+        g.go(0.5)
+        g.p.watcher_beat = g.T[0]
+        g.p.dog_tick()
+        g.p.tick()
+        check(len(g.stops) == n and not g.raised,
+              "a Stop on its way and not late: no second Stop")
+        g.go(0.6)
+        g.p.watcher_beat = g.T[0] - 1          # the watcher is stuck too
+        g.p.dog_tick()
+        check(len(g.stops) == n + 1 and len(g.raised) == 1 and
+              g.p.state == "closed",
+              f"late: the alert and a new Stop from the watchdog: "
+              f"{len(g.stops) - n} {g.raised} {g.p.state}")
+        check(tok.get("cut") is True,
+              "the play practice bound is cut when practice ends")
         # The Stream Deck unplugged (its alert): noted, never an end, and
         # nothing disarmed for it (ruling 4).
         g = _FbpRig()
@@ -105241,8 +105419,8 @@ def test_fireball_practice_vetoes_and_wiring():
             "the scheduler's lock, before the release of a Stop's Hold with "
             "nothing held; tonight's edits refused; the show runner starts "
             "nothing; Start now and the other routes refused at the press; "
-            "the show PC or an admin with the Show and Arm rows; Done is "
-            "safety; the flame link's record changes no byte; the clock's "
+            "the Show and Arm rows on any screen (the show PC with sign-in "
+            "off); Done is safety; the flame link's record changes no byte; the clock's "
             "epoch; the playhead binds before the cues are released; the "
             "card and OPERATOR.md")
     import types

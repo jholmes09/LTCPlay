@@ -68,6 +68,8 @@ a Stop. A practice play:
   - fires the token's own stages (the entry as checked) and never takes
     an edit made after its check;
   - zeroes every flame slot but the fireball's (55 to 59);
+  - sends nothing at all once practice marks its token cut (practice
+    ended, or the step was refused, while the play was going);
   - fires its whole shot or nothing: at every landing until the first
     stage goes out, a stage starting within PRACTICE_MARGIN_FRAMES of
     where it landed skips every stage of the play (the write-ahead mark
@@ -568,6 +570,10 @@ class FireballCues:
             # Not practice's own step: nothing of it fires.
             if not self.practice_fault:
                 self.practice_fault = PRACTICE_NOT_OURS
+            return None
+        if run.practice is not None and run.practice.get("cut"):
+            # Practice ended (or its step was refused) while this play was
+            # going: nothing more of it fires, open or closed.
             return None
         gapped = self._gap_check(run)
         first, run.first = run.first, False
