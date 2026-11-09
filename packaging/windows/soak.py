@@ -2963,8 +2963,10 @@ class Soak:
         ups = sum(1 for _t, w, _a in self.beyond_cmds if w == "unblank")
         downs = sum(1 for _t, w, _a in self.beyond_cmds if w == "blank")
         self.beyond_lit_outside, outside = self.lit_outside()
-        ok = (self.show_starts == 0 or ups > 0) and \
-            self.beyond_lit_outside == 0
+        # The lasers come up only once a laser is armed (laserarm.py) and
+        # the soak arms none, so blanking by OSC sends no unblank at all:
+        # what is judged is that no command lights them outside a show.
+        ok = self.beyond_lit_outside == 0
         if self.mode != "fallback" or (self.bey_stats or {}).get(
                 "blank_mode") == "timecode":
             # BEYOND itself has them ("BEYOND answering"), or the lasers
@@ -2975,7 +2977,9 @@ class Soak:
                     f"{ups} unblank and {downs} blank command packets; "
                     f"{self.beyond_lit_outside} unblank(s) with no show "
                     f"running (limit 0)" + (
-                        ": " + ", ".join(outside[:8]) if outside else "")))
+                        ": " + ", ".join(outside[:8]) if outside else "")
+                    + ("; no laser is armed by the soak, so no unblank is "
+                       "expected" if not ups else "")))
         out.append(("INFO" if self.mode != "fallback" else
                     "PASS" if self.mm_packets and self.show_starts else
                     "FAIL" if self.show_starts else "NOT TESTED",
