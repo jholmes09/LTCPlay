@@ -21547,8 +21547,8 @@ def build():
 
  ("Run off: rack screen 2.0 does not show the warning",
   "ltcplay/web/remote2.html",
-  "  if(sch.run_warning) items.push({key:\"run\", tone:sch.run_warning_urgent ? \"bad\" : \"warn\", what:sch.run_warning.split(\":\")[0] + \".\", do:(sch.run_warning.split(\"will NOT start. \")[1] || \"Press Run.\"), full:sch.run_warning});\n",
-  ""),
+  "  if(sch.run_warning){\n    // Where Run is, by name",
+  "  if(false){\n    // Where Run is, by name"),
 
  # Review of PR #180 (reviewer B): an operator's close, a show whose time
  # had gone by, and tonight's delays across a save.
@@ -21820,8 +21820,8 @@ def build():
 
  ("review180: rack screen 2.0 says only Press Run, whatever the warning asks",
   "ltcplay/web/remote2.html",
-  "do:(sch.run_warning.split(\"will NOT start. \")[1] || \"Press Run.\")",
-  "do:\"Press Run.\""),
+  "do:runWarnWords(sch.run_warning.split(\"will NOT start. \")[1] || \"Press Run.\", loc)",
+  "do:runWarnWords(\"Press Run.\", loc)"),
 
  ("play-from cues: a cue right at the end of the show audio is saved",
   "ltcplay/play_from.py",
@@ -22784,8 +22784,64 @@ def build():
 
  ("ui 2.0 Schedule: the Run warning is not shown",
   "ltcplay/web/remote2.html",
-  "  $(\"tn-run-warn\").hidden = !rw; setText($(\"tn-run-warn\"), rw);",
+  "  $(\"tn-run-warn\").hidden = !rw; setText($(\"tn-run-warn\"), runWarnWords(rw, local0));",
   "  $(\"tn-run-warn\").hidden = true;"),
+
+ # The Windows stress test's fixes (#227) and their cold review.
+ ("ui2 #227: the broken page's Stop window is 2 s, not 3 s",
+  "ltcplay/web/remote2.html",
+  "const STOP_TAP_MS2 = 3000;",
+  "const STOP_TAP_MS2 = 2000;"),
+
+ ("ui2 #227: a lone Stop tap says not sent even after a Stop or Hold since",
+  "ltcplay/web/remote2.html",
+  "  if(missed === true && t && !HALT_BUSY && t.seq === HALT_SEQ){",
+  "  if(missed === true){"),
+
+ ("ui2 #227: a lone Stop tap that timed out says nothing",
+  "ltcplay/web/remote2.html",
+  "    say(STOP_MISSED_WORDS + \".\", ",
+  "    void(STOP_MISSED_WORDS + \".\", "),
+
+ ("ui2 #227: a lone Stop tap's message stays 30 s",
+  "ltcplay/web/remote2.html",
+  " to stop everything and hold the schedule.\", \"warn\", STOP_MISSED_MS);",
+  " to stop everything and hold the schedule.\", \"warn\");"),
+
+ ("ui2 #227: a Stop leaves the other buttons' first taps armed",
+  "ltcplay/web/remote2.html",
+  "  Object.keys(STOP_TAPS2).forEach(k => stopTapDone2(k));\n",
+  ""),
+
+ ("ui2 #227: Run show by the warning does not wait after a Stop",
+  "ltcplay/web/remote2.html",
+  "  if(HALT_BUSY || (FLIPPED.go && Date.now() - FLIPPED.go < FLIP_LOCK_MS)){\n    say(\"Nothing done. Look, then press again.\", \"The show has just stopped.",
+  "  if(HALT_BUSY){\n    say(\"Nothing done. Look, then press again.\", \"The show has just stopped."),
+
+ ("ui2 #227: Run show by the warning is pressed with no contact",
+  "ltcplay/web/remote2.html",
+  "  if(!runHereShown(ST, stale(), !!(ME && ME.local), START_WAITING)){",
+  "  if(!runHereShown(ST, false, !!(ME && ME.local), START_WAITING)){"),
+
+ ("ui2 #227: Run show by the warning is offered on an iPad or with no contact",
+  "ltcplay/web/remote2.html",
+  "  if(!local || isStaleNow || !/^Run is off/.test(",
+  "  if(!/^Run is off/.test("),
+
+ ("ui2 #227: Run show by the warning is offered signed out",
+  "ltcplay/web/remote2.html",
+  "  const g = goLook(st, isStaleNow, local, waiting);\n  if(g.off) return \"\";\n",
+  "  const g = goLook(st, isStaleNow, local, waiting);\n"),
+
+ ("ui2 #227: the alert slot's Run show ignores lost contact",
+  "ltcplay/web/remote2.html",
+  "runHereShown(s, stale(), loc, START_WAITING)",
+  "runHereShown(s, false, loc, START_WAITING)"),
+
+ ("ui2 #227: the Schedule tab's Run show stays with no contact",
+  "ltcplay/web/remote2.html",
+  "  const on = !!runHereShown(ST, isSt, !!(ME && ME.local), START_WAITING);",
+  "  const on = !!runHereShown(ST, false, !!(ME && ME.local), START_WAITING);"),
 
  ("ui 2.0 Schedule: the editor shows on an iPad",
   "ltcplay/web/remote2.html",

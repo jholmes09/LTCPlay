@@ -1693,7 +1693,15 @@ Run is off and a show is still to come, the rack screen says so: "Run is
 off: the 22:50 show (show 5) will NOT start. Press Run." It is amber until
 30 minutes before that show, then red, a fault. Once the night's first
 show time has gone by it is red at once. On a Hold
-it says "Press Run, then Resume.". During a Programming Run
+it says "Press Run, then Resume.". The screen names the button: "Press
+the Run show button on the main screen" on the show PC (on an iPad, "on
+the show PC's main screen"), and on the show PC, signed in with the Start
+now permission, a Run show button stands beside it, in the alert and on
+the Schedule tab: the same Run as the main screen's, asking first. It is
+there only with contact. On a Hold the main screen's big button is
+Resume, so the warning says "Press the Run show button by this warning,
+then Resume": Run does not end the Hold, and its question says so. During
+a Programming Run
 (Run reads as pressed, but the schedule starts nothing over a rehearsal)
 it says "A Programming Run is in force: the 22:50 show (show 5) will NOT
 start. Press Stop, choose Show, then Run." It is an alert on the SHOW
@@ -1716,10 +1724,12 @@ stop:
   tab's controls and in the strip on every other tab, and its place is
   empty when nothing is playing. With no contact with
   the engine (what is playing is not known) Stop is always there.
-- **Stop is a double tap**, with no pop-up: the first tap only changes the
-  button (it pulses and reads Tap again) and sends nothing; a second tap
-  within 2 seconds, with the same finger, mouse or key, sends Stop. A lone
-  tap goes back by itself after 2 seconds. A held key never counts twice.
+- **Stop is a double tap**, with no pop-up. The button says so: "Stop
+  show: tap twice". The first tap only changes the button (it pulses and
+  reads "Tap again to stop (3)", counting down) and sends nothing; a
+  second tap within 3 seconds, with the same finger, mouse or key, sends
+  Stop. A lone tap goes back by itself after 3 seconds and says "Stop not
+  sent: tap twice" a moment. A held key never counts twice.
 - **What Stop does** (everything the removed Abort did, and it latches
   nothing):
   every flame group and every laser is disarmed first, the lasers are
@@ -2105,7 +2115,8 @@ choices:
   while the show is held (it is checked once more, then starts), else
   Start now (which checks once more).
 - **Hold to continue anyway** (signed in, with the Start now permission):
-  hold the button until it fills, like Hold to arm; a tap does nothing.
+  hold the button until its dark bar has run across it (the same hold
+  time as ever), like Hold to arm; a tap does nothing.
   Its text lists exactly what is still failing. The show starts NOW, late,
   and what failed stays OFF for that one show: a failed Video gets no
   bank select, no fade up and no timecode; failed Lasers stay blanked
@@ -2396,12 +2407,15 @@ the flame groups and the status strip along the top (deck, flamesafe,
 audio, video, lasers, pixels). Stop is where Stop has always been, in
 Start now's place while there is something to stop (see Stop, Hold and
 Resume on the rack screen): a DOUBLE TAP, with no pop-up. The first tap
-only changes the button (it pulses and reads Tap again) and sends
-nothing; a second tap within 2 seconds sends Stop, however fast it comes.
+only changes the button (it pulses and reads "Tap again to stop", with
+the seconds left) and sends nothing; a second tap within 3 seconds sends
+Stop, however fast it comes.
 Any finger works, two different fingers too, or the mouse twice (a double
 click), or Enter or Space twice (holding the key down counts once); a
-finger then the mouse counts as one tap. After 2 seconds with no second
-tap the button goes back by itself and nothing happened. It works signed
+finger then the mouse counts as one tap. After 3 seconds with no second
+tap the button goes back by itself, reads "Not sent: tap twice" a
+moment (the message line says "Stop not sent: tap twice"), and nothing
+happened. It works signed
 out, and with the connection lost it still sends. A Stop that did not do
 all of it (its flame disarm failed, a part failed, it was refused, or the
 engine did not answer) stays on the screen as a banner until Seen. There
@@ -2843,7 +2857,7 @@ tab, and the hardware e-stop always works.
   its own Stop show button, which still works (a double tap).
 - The rig check before a show: the big button says Checking rig while it
   runs. When it fails, the alert slot says so and its button is
-  "Hold: continue anyway" (a hold; a tap does nothing). On the show PC the
+  "Hold to continue anyway" (a hold; a tap does nothing). On the show PC the
   alert's details have Check again.
 - DAY tab: the day as steps. Startup (sign in, rig checks, the startup
   list, fuel, purge, laser test, locks) or Shutdown (the shutdown list,
