@@ -3718,5 +3718,8 @@
 "practice: a Hold asked during opening is erased": "test_fireball_practice_engine",
 "practice: a disarm through the flame link does not end it": "test_fireball_practice_engine",
 "practice: with sign-in off an iPad may open and Step": "test_fireball_practice_vetoes_and_wiring",
-"practice: a pending mark reads as charged tanks": "test_fireball_practice_engine"
+"practice: a pending mark reads as charged tanks": "test_fireball_practice_engine",
+"practice: a Stop that came back failed is pressed again at once": "test_fireball_practice_engine",
+"practice: a person's Done waits for the retry": "test_fireball_practice_engine",
+"practice: open goes on after Done during its engine check": "test_fireball_practice_engine"
 }

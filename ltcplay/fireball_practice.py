@@ -574,34 +574,43 @@ class Practice:
             self._cas(("opening",), "closed", gen)
             raise Refused(f"Fireball practice was not opened: {why}. "
                           f"Nothing was changed.")
-        self.mode, self.owner, self.who, self.screen = mode, owner, who, \
-            screen
-        self.ended_why = ""
-        self._alerted = False
-        self.deck_note = ""
         cues = self._cues()
-        cues.practice = None
-        cues.practice_fault = ""
-        cues.practice_snap = None
-        cues.practice_open = True
+        with self._lock:
+            if self.state != "opening" or gen != self._gen:
+                # Ended (Done) while the engine was checked: it stays
+                # ended, and nothing of a later open is touched.
+                return (f"Fireball practice ended while it was opening: "
+                        f"{self.ended_why or 'it was ended'}.")
+            self.mode, self.owner, self.who, self.screen = mode, owner, \
+                who, screen
+            self.ended_why = ""
+            self._alerted = False
+            self.deck_note = ""
+            cues.practice = None
+            cues.practice_fault = ""
+            cues.practice_snap = None
+            cues.practice_open = True
         code, out = self._stop(f"{who or 'someone'} opened Fireball practice")
         svc, m = self._sched()
         link = self._link()
-        self._base = {"abort_id": getattr(link, "abort_id", None),
-                      "night": (getattr(m, "date", None),
-                                getattr(svc, "night_loads", None)),
-                      "session": self._session()}
-        self._seen_off = False
-        self._sched_reached = False
+        base = {"abort_id": getattr(link, "abort_id", None),
+                "night": (getattr(m, "date", None),
+                          getattr(svc, "night_loads", None)),
+                "session": self._session()}
         now = self._clock()
-        self.last_beat = self.last_activity = now
-        self.watcher_beat = self.watchdog_beat = now
-        if not self._cas(("opening",), "arming" if mode == "live" else
-                         "ready", gen):
-            # Ended (Done, a disarm) while its own Stop ran: it stays
-            # ended; the cues' practice guards stay as that end left them.
-            return (f"Fireball practice ended while it was opening: "
-                    f"{self.ended_why or 'it was ended'}.")
+        with self._lock:
+            if self.state != "opening" or gen != self._gen:
+                # Ended (Done, a disarm) while its own Stop ran: it stays
+                # ended; the cues' practice guards stay as that end left
+                # them, and a later open's are not touched.
+                return (f"Fireball practice ended while it was opening: "
+                        f"{self.ended_why or 'it was ended'}.")
+            self._base = base
+            self._seen_off = False
+            self._sched_reached = False
+            self.last_beat = self.last_activity = now
+            self.watcher_beat = self.watchdog_beat = now
+            self.state = "arming" if mode == "live" else "ready"
         if code != 200 or (out or {}).get("failed"):
             self._ending("the Stop that opens practice did not complete",
                          stop_first=False, failed=True)
@@ -657,7 +666,8 @@ class Practice:
     def done(self, who, screen):
         if self.state == "closed":
             return "Fireball practice is not open."
-        self._ending(f"{who or 'someone'} pressed Done on the {screen}")
+        self._ending(f"{who or 'someone'} pressed Done on the {screen}",
+                     user=True)
         return "Fireball practice ended: every group is disarmed."
 
     def step_why(self, lead_in_s=LEAD_IN_DEFAULT_S, claimed=False):
@@ -1012,20 +1022,23 @@ class Practice:
         self._note("Fireball practice: the Stop did not complete; it is "
                    "pressed again every second.", "failed", fault=True)
 
-    def _ending(self, why, stop_first=True, failed=False, retry=False):
+    def _ending(self, why, stop_first=True, failed=False, retry=False,
+                user=False):
         """End practice: Stop (every group and laser disarmed). A Stop that
         fails, or has not come back within RETRY_S (one that hangs after
         its first step, the flame disarm), keeps practice ENDING: the
         flames alert, and Stop pressed again every RETRY_S, whoever asks
         (the watcher or the watchdog). Never more than one new Stop per
-        RETRY_S: the claim is made under the lock."""
+        RETRY_S: the claim is made under the lock, whatever became of the
+        last Stop (on its way, or come back failed). `user`: a person's
+        Done, which may always press Stop again."""
         now = self._clock()
         with self._lock:
             if self.state == "closed":
                 return
-            if stop_first and self._stopping and \
+            if stop_first and not user and self.state == "ending" and \
                     self._retry_at is not None and now < self._retry_at:
-                return          # a Stop is on its way and not yet late
+                return          # the last Stop was pressed under RETRY_S ago
             late = stop_first and self._stopping
             first = self.state != "ending"
             self.state = "ending"

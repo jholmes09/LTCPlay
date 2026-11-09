@@ -105173,6 +105173,52 @@ def test_fireball_practice_engine():
         g.p.tick()
         check(g.p.state == "closed" and "too long to start" in
               g.p.ended_why, f"a start that hangs: {g.p.ended_why!r}")
+        # Done while open is still checking the engine: practice stays
+        # closed, its cues' guard is never turned on, and a later open is
+        # its own.
+        g = _FbpRig()
+        rigs.append(g)
+
+        def prog_done(g=g):
+            g.p.done("Andy", "iPad")
+            return True, ""
+        g.remote.programming = prog_done
+        text = g.p.open("live", g.owner, "Jeff", "Rack screen")
+        check(g.p.state == "closed" and not g.R.fq.practice_open and
+              g.p.owner is None and "ended while it was opening" in text,
+              f"Done during the engine check: closed, the cues' guard off, "
+              f"nothing of it kept: {g.p.state} {g.R.fq.practice_open} "
+              f"{g.p.owner} {text}")
+        g.remote.programming = lambda: (True, "")
+        g.p.open("dry", ("iPad at 10.0.0.9", "w2"), "Andy", "iPad")
+        check(g.p.state == "ready" and g.p.mode == "dry" and
+              g.p.owner == ("iPad at 10.0.0.9", "w2") and
+              g.R.fq.practice_open, "a later open is its own")
+        # A Stop that came back failed: no new Stop for RETRY_S from anyone
+        # (the watchdog included), however often it asks; Done may.
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+        g.stop_result[0] = (500, {"failed": ["show"]})
+        g.p.request_end("a disarm")
+        g.go(0.05)
+        g.p.tick()
+        n = len(g.stops)
+        check(g.p.state == "ending" and not g.p._stopping,
+              "the Stop came back failed: ending, no Stop on its way")
+        for _ in range(3):
+            g.go(0.25)
+            g.p.watcher_beat = g.T[0] - 1     # the watcher stuck elsewhere
+            g.p.dog_tick()
+        check(len(g.stops) == n,
+              f"under RETRY_S: no new Stop from the watchdog: "
+              f"{len(g.stops) - n}")
+        g.go(0.3)
+        g.p.watcher_beat = g.T[0] - 1
+        g.p.dog_tick()
+        check(len(g.stops) == n + 1, "after RETRY_S: one new Stop")
+        g.p.done("Jeff", "Rack screen")
+        check(len(g.stops) == n + 2, "a person's Done may press Stop again")
         # A Stop that hangs after its first step: no second Stop before
         # RETRY_S; then the alert and a new Stop, whoever asks; the bound
         # play is cut at once.

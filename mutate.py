@@ -21177,8 +21177,8 @@ def build():
 
  ("practice: open turns a practice ended during its Stop back on",
   "ltcplay/fireball_practice.py",
-  "        if not self._cas((\"opening\",), \"arming\" if mode == \"live\" else\n                         \"ready\", gen):",
-  "        if not self._cas((\"opening\", \"ending\", \"closed\"), \"arming\" if mode == \"live\" else\n                         \"ready\", None):"),
+  "            if self.state != \"opening\" or gen != self._gen:\n                # Ended (Done, a disarm) while its own Stop ran",
+  "            if False:\n                # Ended (Done, a disarm) while its own Stop ran"),
 
  ("practice: frames before the audio's first buffer mark the table not against the audio",
   "ltcplay/fireball_practice.py",
@@ -21187,8 +21187,8 @@ def build():
 
  ("practice: a Stop that hangs is never pressed again",
   "ltcplay/fireball_practice.py",
-  "                    self._retry_at is not None and now < self._retry_at:\n                return          # a Stop is on its way and not yet late",
-  "                    True:\n                return          # a Stop is on its way and not yet late"),
+  "                    self._retry_at is not None and now < self._retry_at:\n                return          # the last Stop was pressed under RETRY_S ago",
+  "                    True:\n                return          # the last Stop was pressed under RETRY_S ago"),
 
  ("practice: the bound play is not cut when practice ends",
   "ltcplay/fireball_practice.py",
@@ -21207,8 +21207,8 @@ def build():
 
  ("practice: a Hold asked during opening is erased",
   "ltcplay/fireball_practice.py",
-  "        self.ended_why = \"\"\n        self._alerted = False\n        self.deck_note = \"\"",
-  "        self.ended_why = \"\"\n        self._alerted = False\n        self.deck_note = \"\"\n        self._end_asked = \"\""),
+  "            self.ended_why = \"\"\n            self._alerted = False\n            self.deck_note = \"\"",
+  "            self.ended_why = \"\"\n            self._alerted = False\n            self.deck_note = \"\"\n            self._end_asked = \"\""),
 
  ("practice: a disarm through the flame link does not end it",
   "ltcplay/fireball_practice.py",
@@ -21224,6 +21224,21 @@ def build():
   "ltcplay/fireball_practice.py",
   "        if v.get(\"pending\"):\n            return REFUSE_SETTLING",
   "        if v.get(\"pending\"):\n            return REFUSE_TANKS"),
+
+ ("practice: a Stop that came back failed is pressed again at once",
+  "ltcplay/fireball_practice.py",
+  "            if stop_first and not user and self.state == \"ending\" and \\",
+  "            if stop_first and not user and self._stopping and \\"),
+
+ ("practice: a person's Done waits for the retry",
+  "ltcplay/fireball_practice.py",
+  "        self._ending(f\"{who or 'someone'} pressed Done on the {screen}\",\n                     user=True)",
+  "        self._ending(f\"{who or 'someone'} pressed Done on the {screen}\",\n                     user=False)"),
+
+ ("practice: open goes on after Done during its engine check",
+  "ltcplay/fireball_practice.py",
+  "            if self.state != \"opening\" or gen != self._gen:\n                # Ended (Done) while the engine was checked",
+  "            if False:\n                # Ended (Done) while the engine was checked"),
 
  ("fireball cues: the flame cues skip the timeline in background mode",
   "ltcplay/fire_ice.py",
