@@ -279,6 +279,30 @@ def plan_addresses(mode, cands, on_pc):
                      f"program on {SOAK_LISTEN_IP}, one address each")}
 
 
+def choose_addresses(mode, want="auto", settings=None, on_pc=None):
+    """(mode, plan) for this PC: plan_addresses for `mode`, from this PC's
+    own settings; all programs mode that cannot be set up so the engine
+    accepts it falls back to fallback mode with the reason in the plan's
+    sentence, unless --mode all asked for it (then it raises). MadMapper's
+    and BEYOND's addresses for their readiness checks (soak_apps.APPS)
+    follow the plan."""
+    from ltcplay import artnodes
+    on_pc = on_pc or artnodes.bind_probe
+    cands = pc_show_addresses(settings)
+    try:
+        plan = plan_addresses(mode, cands, on_pc)
+    except RuntimeError as e:
+        if want == "all":
+            raise
+        mode = "fallback"
+        plan = plan_addresses(mode, cands, on_pc)
+        plan["said"] = f"{e} So this run is in fallback mode. {plan['said']}"
+    if mode != "fallback":
+        soak_apps.APPS["MadMapper"]["ip"] = plan["mm"]
+        soak_apps.APPS["BEYOND"]["ip"] = plan["beyond"]
+    return mode, plan
+
+
 class Intervals:
     """Streaming statistics of the gaps between events."""
 
@@ -854,10 +878,9 @@ class Soak:
         xml = bench_networks(plan["universes"])
         with open(os.path.join(self.show_dir, "xlights_networks.xml"), "w",
                   encoding="utf-8") as fh:
-            fh.write(xml if self.mode == "fallback" else
-                     xml.replace('IP="127.0.0.1"',
-                                 f'IP="{SOAK_IP}"').replace(
-                         'ComPort="127.0.0.1"', f'ComPort="{SOAK_IP}"'))
+            # The pixels go to this program's own receiver (the one
+            # loopback receiver, plan_addresses) in both modes.
+            fh.write(xml)
         fx.write_fseq(os.path.join(self.show_dir, "bench.fseq"),
                       frame_count=int(self.show_s * plan["fps"]),
                       channel_count=plan["channels"],
@@ -882,11 +905,7 @@ class Soak:
                "cues": [{"tc": "00:00:00:00", "fseq": "bench.fseq",
                          "name": "Show"}],
                "clock": {"source": "audio_master",
-                         "artnet": {"nodes": (
-                             {"MadMapper": "127.0.0.1", "BEYOND": BEYOND_TC_IP}
-                             if self.mode == "fallback" else
-                             {"MadMapper": "127.0.0.1", "BEYOND": "127.0.0.2",
-                              "Soak": SOAK_IP})},
+                         "artnet": {"nodes": dict(self.addrs["nodes"])},
                          "audio": dict(audio, device=self.audio_name
                                        or "none found")}}
         with open(os.path.join(self.show_dir, "bench.json"), "w",
@@ -984,18 +1003,19 @@ class Soak:
             json.dump(rule, fh, indent=1)
         fi = {"scheduler_performs": True, "auto_start": "when_run_pressed",
               "show_cue": "Show",
-              "madmapper": {"host": "127.0.0.1", "port": (
+              "madmapper": {"host": (
+                  "127.0.0.1" if self.mode == "fallback"
+                  else self.addrs["mm"]), "port": (
                   MM_PORT if self.mode == "fallback" else
                   soak_apps.MADMAPPER_PORT),
                             "show_bank": "Bank-1", "surfaces": ["Quad-1"]},
               "beyond": {"host": ("127.0.0.1" if self.mode == "fallback"
-                                  else soak_apps.BEYOND_IP), "port": (
+                                  else self.addrs["beyond"]), "port": (
                   BEYOND_PORT if self.mode == "fallback" else
                   soak_apps.BEYOND_PORT)},
               "flamesafe_config": self.engine_fs_cfg,
               "flame_controller": "Flames",
-              "beyond_blank": "timecode",
-              "beyond_timecode_ip": BEYOND_TC_IP,
+              "beyond_blank": self.addrs["blank"],
               "show_name": "Ignite the Night",
               "venue": "Thanksgiving Point",
               "notes": "BENCH ONLY, written by the soak test",
@@ -1007,6 +1027,10 @@ class Soak:
               # (fire_ice.FireIceConfig), so a real install always checks.
               "preroll_s": 0,
               "soak_only": True}
+        if self.addrs["beyond_tc"]:
+            # BEYOND's timecode: the black zone goes to BEYOND's own
+            # address, the same one the show file names (plan_addresses).
+            fi["beyond_timecode_ip"] = self.addrs["beyond_tc"]
         if self.mode != "fallback":
             # MadMapper's heartbeat track (its project sends it; see the
             # checklist), read by the engine's own watchdog.
@@ -2052,6 +2076,11 @@ class Soak:
         for c in self.checks:
             note("PC check: " + c)
         note(self.choose_mode(self.want_mode))
+        mode, self.addrs = choose_addresses(
+            self.mode, self.want_mode, self.sup.load_settings())
+        if mode != self.mode:
+            self.mode, self.apps, self.app_watch = mode, {}, {}
+        note(self.addrs["said"])
         self.container = ltcwin.package_name()
         if self.container:
             note(f"WARNING: this soak runs inside another app's container "
@@ -2087,8 +2116,10 @@ class Soak:
         need = [("127.0.0.1", SACN_PORT, "flamesafe's sACN"),
                 ("127.0.0.1", self.status_port, "flamesafe's status"),
                 ("127.0.0.1", FLAME_RELAY, "the flame link relay")]
+        bey_tc = self.addrs["beyond_tc"]
         if self.mode == "fallback":
-            need += [(BEYOND_TC_IP, ARTNET_PORT, "BEYOND's timecode"),
+            need += ([(bey_tc, ARTNET_PORT, "BEYOND's timecode")]
+                     if bey_tc else []) + [
                      ("127.0.0.1", ARTNET_PORT, "Art-Net"),
                      ("127.0.0.1", BEYOND_PORT, "BEYOND's OSC"),
                      ("127.0.0.1", MM_PORT, "MadMapper's OSC")]
@@ -2097,8 +2128,9 @@ class Soak:
                  udp_listener(self.status_port, self.on_status, "status"),
                  udp_listener(FLAME_RELAY, self.on_flame, "flame relay")]
         if self.mode == "fallback":
-            socks += [udp_listener(ARTNET_PORT, self.on_beyond_tc,
-                                   "beyond timecode", ip=BEYOND_TC_IP),
+            socks += ([udp_listener(ARTNET_PORT, self.on_beyond_tc,
+                                    "beyond timecode", ip=bey_tc)]
+                      if bey_tc else []) + [
                       udp_listener(ARTNET_PORT, self.on_artnet, "artnet"),
                       udp_listener(BEYOND_PORT, self.on_beyond, "beyond"),
                       udp_listener(MM_PORT, self.on_madmapper, "madmapper")]
@@ -2113,9 +2145,9 @@ class Soak:
             # address can be listened on.
             try:
                 socks.append(udp_listener(ARTNET_PORT, self.on_artnet,
-                                          "artnet", ip=SOAK_IP))
+                                          "artnet", ip=SOAK_LISTEN_IP))
                 self.measured = (f"pixels and timecode: timed here from the "
-                                 f"copy the engine sends {SOAK_IP}:6454; "
+                                 f"copy the engine sends {SOAK_LISTEN_IP}:6454; "
                                  f"MadMapper and BEYOND: process, window and "
                                  f"OSC port held (their commands are not "
                                  f"overheard: they hold those ports)")
@@ -2124,11 +2156,11 @@ class Soak:
                     "another program"
                 self.outside_timing = False
                 self.measured = (f"pixels and timecode NOT timed from "
-                                 f"outside: {SOAK_IP}:6454 could not be "
+                                 f"outside: {SOAK_LISTEN_IP}:6454 could not be "
                                  f"listened on ({who} holds 6454); see the "
                                  f"engine's own counters. MadMapper and "
                                  f"BEYOND: process, window and OSC port held")
-                note(f"could not listen on {SOAK_IP}:6454 ({who} holds "
+                note(f"could not listen on {SOAK_LISTEN_IP}:6454 ({who} holds "
                      f"6454): pixels and timecode are not timed from "
                      f"outside in this run")
         if self.fake_audio:
@@ -2789,7 +2821,15 @@ class Soak:
             self.bey_stats = las
         las = self.bey_stats or {}
         tc = las.get("timecode") or {}
-        heard = self.mode == "fallback"
+        heard = self.mode == "fallback" and bool(
+            getattr(self, "addrs", {}).get("beyond_tc"))
+        if self.mode == "fallback" and not heard:
+            out.append(("INFO", "BEYOND's timecode blanking (black zone "
+                        "hour 23 while the lasers must be dark)",
+                        "NOT TIMED in this run: this PC has no address of "
+                        "BEYOND's own, so the lasers are blanked by OSC and "
+                        "no BEYOND timecode is sent (one Art-Net receiver "
+                        "per address, the engine's own rule)"))
         out.append((("FAIL" if self.bey_bad else "PASS") if heard else
                     "INFO",
                     "BEYOND's timecode blanking (black zone hour 23 while "
@@ -3022,10 +3062,12 @@ class Soak:
                  self, "container", "") else "Container: none (started as "
                                              "itself)"),
             f"Soak mode: {self.mode}"
-            + (" (MadMapper and BEYOND running on this PC, getting LTC "
-               "Player's real commands: MadMapper's OSC on 127.0.0.1:8000, "
-               "BEYOND's on 127.0.0.2:8100, the Art-Net timecode to both; "
-               "BEYOND's laser output may be enabled, this PC is isolated)"
+            + (f" (MadMapper and BEYOND running on this PC, getting LTC "
+               f"Player's real commands: MadMapper's OSC on "
+               f"{self.addrs['mm']}:{soak_apps.MADMAPPER_PORT}, BEYOND's on "
+               f"{self.addrs['beyond']}:{soak_apps.BEYOND_PORT}, the Art-Net "
+               f"timecode to both; BEYOND's laser output may be enabled, "
+               f"this PC is isolated)"
                if self.mode != "fallback"
                else " (MadMapper's and BEYOND's commands counted by this "
                     "program; neither program ran)"),
@@ -3623,7 +3665,9 @@ class Blocks:
             f"{ltcwin.version_line('LTC Player')}",
             "BEYOND's response to commands is checked only as far as "
             "possible: it sends nothing back, so running, its window "
-            "responding and holding its OSC port (127.0.0.2:8100) is all "
+            f"responding and holding its OSC port at its own address "
+            f"({soak_apps.APPS['BEYOND']['ip']}:{soak_apps.BEYOND_PORT}, "
+            f"that address or every address) is all "
             "that can be known. MadMapper is checked by the engine's "
             "heartbeat watchdog as well.",
             "",
@@ -3996,6 +4040,13 @@ def main(argv=None):
             ok = soak.run()
             raise _Done()
         resolved, _found, why = resolve_mode(mode)
+        if resolved == "all programs":
+            # MadMapper and BEYOND must be on addresses of their own here,
+            # or the engine refuses the soak's show (choose_addresses).
+            resolved, plan = choose_addresses(resolved, mode,
+                                              sup.load_settings())
+            if resolved != "all programs":
+                note(plan["said"])
         if resolved == "all programs":
             note(why)
             soak = Blocks(seconds, device, fake)
