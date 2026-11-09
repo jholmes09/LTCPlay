@@ -41,6 +41,8 @@ function baseStatus(){
              {name: "wave flamer", armed: "disarmed"}, {name: "fireball", armed: "disarmed"}],
     aim: {ltcplay: null, flamesafe: null, path: "", agree: true}};
   s.deck = {heard: true, age_s: 0.4, text: ""};
+  // Fireball practice (fireball_practice.py): closed unless a scenario opens it.
+  s.fireball_practice = {state: "closed", mode: "live", ended_why: ""};
   s.disarm_connected = true;
   s.arming = {enabled: true, needs_s: 2.0, fresh_s: 1.0, holds: []};
   s.laser_fault = "";
@@ -152,6 +154,8 @@ const SCENARIOS = {
   // The Stream Deck program reads the engine but does not act on a group's
   // Disarm: the engine forces the flame link's disarm_all (2026-10-29).
   deck_not_answering: s => { s.flames.groups[0].armed = "armed"; s.flames.groups[0].wanted = true; },
+  // Fireball practice open on this screen, the Fireball armed, one step's table.
+  fireball_practice: s => { s.fireball_practice = {state: "ready", mode: "live", ended_why: ""}; s.flames.groups[3].armed = "armed"; },
 };
 // The DAY tab's own state, per scenario: the morning view, fuel, cleaning.
 function dayState(name, st){
@@ -191,6 +195,19 @@ function routesFor(name, st){
   if(tm){ mo.purge_state = Object.assign({}, mo.purge_state, {timed: true, firing: true, selected: ["m1", "m2", "m3", "m4"]}); }
   r["/api/remote/morning"] = mo;
   r["/api/remote/fireball"] = FX("fireball");
+  // Fireball practice's card (GET fireball-practice), as the engine answers it.
+  const fp = st.fireball_practice || {state: "closed", mode: "live", ended_why: ""};
+  r["/api/remote/fireball-practice"] = {state: fp.state, mode: fp.mode, yours: fp.state !== "closed", who: "Dallen", screen: "iPad",
+    ended_why: fp.ended_why, step_why: "", tanks: "Fuel: empty. Air: empty.", fireball_armed: fp.state !== "closed", others_armed: [],
+    deck_note: "", results: fp.state === "closed" ? [] : [{id: 1, mode: "live", flagged: 1, rows: [
+      {stage: "fuel", word: "Fuel", programmed_tc: "00:00:10:00", programmed_ms: 10000, length_ms: 1000, sent_ms: 10010, late_ms: 10, length_sent_ms: 1000, result: "OK", flag: false},
+      {stage: "air", word: "Air", programmed_tc: "00:00:10:15", programmed_ms: 10500, length_ms: 1000, sent_ms: 10560, late_ms: 60, length_sent_ms: 1000, result: "LATE 60 ms", flag: true},
+      {stage: "igniter", word: "Igniter", programmed_tc: "00:00:12:00", programmed_ms: 12000, length_ms: 500, sent_ms: 12000, late_ms: 0, length_sent_ms: 500, result: "OK", flag: false},
+      {stage: "valve", word: "Valve Open", programmed_tc: "00:00:12:05", programmed_ms: 12166.7, length_ms: 200, sent_ms: 12170, late_ms: 3.3, length_sent_ms: 200, result: "OK", flag: false}]}],
+    note: "This is when LTC Player sent each stage to flamesafe, measured against the show audio. flamesafe adds up to 25 ms, and the igniter, valve and gas add their own delay. No software can see that.",
+    lead_in: {min: 4, max: 30, default: 5}, late_ok_ms: 41, early_ok_ms: 5,
+    fuel_note: "Every charge and shot of a step is recorded in the fuel and air charge record like a show's (never a double charge), and its flame time is in the fuel totals as Programming (Other). A step is not a show.",
+    served_at: Date.now()};
   const wx = FX("weather");
   r["/api/remote/weather"] = wx;
   const users = FX("real_users");

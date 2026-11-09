@@ -97971,6 +97971,9 @@ _UI2_ROUTES = {
     "/api/remote/fireball-charge-empty": "settings",
     "/api/remote/fireball-off": "safety",
     "/api/remote/fireball-timeline-save": "settings",
+    # Fireball practice (fireball_practice.py): open, Step and the beat are
+    # arm presses (Done is safety by its body, users.classify).
+    "/api/remote/fireball-practice": "arm",
     "/api/remote/follow": "show",
     "/api/remote/fuel": None,
     "/api/remote/fuel-pump": "arm",
@@ -104473,6 +104476,1343 @@ def test_fireball_cues_rules():
     finally:
         for R in rigs:
             shutil.rmtree(R.work, ignore_errors=True)
+    print("  ok")
+
+
+
+# ---------------------------------------------------- Fireball practice --
+# fireball_practice.py, design rev 5 (2026-11-08).
+
+def _fbp_stages():
+    return [_st("fuel", "00:00:10:00", 1), _st("air", "00:00:10:15", 1),
+            _st("igniter", "00:00:12:00", 0.5),
+            _st("valve", "00:00:12:05", 0.2)]
+
+
+def test_fireball_practice_plan_and_words():
+    section("Fireball practice: a step is the timeline's whole shot; Valve "
+            "Open without an Igniter lit is refused in every form, with the "
+            "exact words; a charge with no valve, a lead-in out of range, a "
+            "shot too near the top or past the cue, an FSEQ show: refused")
+    from ltcplay import fireball_practice as FP
+    from ltcplay import fireball_cues as FQ
+
+    def entry(stages, source="timeline"):
+        return {"source": source, "cue": "Show", "stages": stages}
+    p = FP.plan_step(entry(_fbp_stages()), 3600.0, 600.0, 5)
+    check(p["stages"]["fuel"] == (300, 330.0) and
+          p["stages"]["valve"] == (365, 371.0), f"plan: {p}")
+    check(p["start_f"] == 150 and abs(p["start_show_s"] - 3605.0) < 1e-9,
+          f"the step starts 5 s before the first stage, in show seconds "
+          f"(the cue's own start plus the cue time): {p}")
+    check(abs(p["end_f"] - (375 + 60)) < 1e-9 and
+          abs(p["end_show_s"] - (3600.0 + (375 + 60) / 30.0)) < 1e-9,
+          f"it ends 2 s after the last stage ends: {p}")
+    unlit = [
+        ("no Igniter", [_st("fuel", "00:00:10:00", 1),
+                        _st("valve", "00:00:12:05", 0.2)]),
+        ("an Igniter after the Valve", [_st("igniter", "00:00:12:10", 0.5),
+                                        _st("valve", "00:00:12:05", 0.2)]),
+        ("an Igniter over before the Valve", [
+            _st("igniter", "00:00:11:00", 0.5),
+            _st("valve", "00:00:12:05", 0.2)]),
+        ("an Igniter 2 frames before", [_st("igniter", "00:00:12:03", 0.5),
+                                        _st("valve", "00:00:12:05", 0.2)]),
+        ("an Igniter on the Valve's frame", [
+            _st("igniter", "00:00:12:05", 0.5),
+            _st("valve", "00:00:12:05", 0.2)]),
+        ("an Igniter ending on the Valve's frame", [
+            _st("igniter", "00:00:12:00", 5 / 30),
+            _st("valve", "00:00:12:05", 0.2)]),
+    ]
+    for what, st in unlit:
+        try:
+            FP.plan_step(entry(st), 0.0, 600.0, 5)
+            check(False, f"{what}: the step was not refused")
+        except FP.Refused as e:
+            check(str(e) == FP.REFUSE_VALVE_UNLIT == (
+                "This step is refused: Valve Open has no Igniter lit when it "
+                "opens. Tick Igniter, start it at least 3 frames (0.1 s) "
+                "before Valve Open, and keep it on until Valve Open starts. "
+                "Nothing was sent."), f"{what}: {e}")
+    ok = FP.plan_step(entry([_st("igniter", "00:00:12:02", 0.5),
+                             _st("valve", "00:00:12:05", 0.2)]), 0.0, 600.0,
+                      5)
+    check(ok["stages"]["valve"][0] == 365,
+          "an Igniter 3 frames before and still on: a step")
+    for what, st, want in (
+            ("Fuel with no Valve", [_st("fuel", "00:00:10:00", 1)],
+             FP.REFUSE_CHARGE_NO_VALVE),
+            ("Air and an Igniter, no Valve",
+             [_st("air", "00:00:10:00", 1), _st("igniter", "00:00:12:00", 1)],
+             FP.REFUSE_CHARGE_NO_VALVE)):
+        try:
+            FP.plan_step(entry(st), 0.0, 600.0, 5)
+            check(False, f"{what}: not refused")
+        except FP.Refused as e:
+            check(str(e) == want == ("This step is refused: it charges a "
+                                     "tank but never opens the valve. "
+                                     "Nothing was sent."), f"{what}: {e}")
+    for what, args, words in (
+            ("a 3 s lead-in", (entry(_fbp_stages()), 0.0, 600.0, 3),
+             "the lead-in is whole seconds, 4 to 30"),
+            ("a 31 s lead-in", (entry(_fbp_stages()), 0.0, 600.0, 31),
+             "the lead-in is whole seconds, 4 to 30"),
+            ("a lead-in of 4.5", (entry(_fbp_stages()), 0.0, 600.0, 4.5),
+             "the lead-in is whole seconds"),
+            ("a lead-in of True", (entry(_fbp_stages()), 0.0, 600.0, True),
+             "the lead-in is whole seconds"),
+            ("the top", (entry([_st("igniter", "00:00:05:00", 0.5),
+                                _st("valve", "00:00:05:05", 0.2)]), 0.0,
+                         600.0, 5), "too close to the top"),
+            ("past the cue", (entry(_fbp_stages()), 0.0, 13.0, 5),
+             "do not fit inside the show cue"),
+            ("an FSEQ show", (entry(_fbp_stages(), "fseq"), 0.0, 600.0, 5),
+             "not the timeline"),
+            ("no stage", (entry([]), 0.0, 600.0, 5), "no stage ticked")):
+        try:
+            FP.plan_step(*args)
+            check(False, f"{what}: not refused")
+        except FP.Refused as e:
+            check(words in str(e) and str(e).startswith(
+                "This step is refused: ") and
+                str(e).endswith("Nothing was sent."), f"{what}: {e}")
+    # The margin a practice play needs: the write-ahead mark's lead and the
+    # landing guard's settle, so the shortest lead-in clears it.
+    check(FQ.PRACTICE_MARGIN_FRAMES == max(FQ.LEAD_FRAMES,
+                                           FQ.LANDING_SETTLE_FRAMES) == 60
+          and FP.LEAD_IN_MIN_S * 30 > FQ.PRACTICE_MARGIN_FRAMES,
+          "the shortest lead-in is more than the practice margin")
+    check(not hasattr(FP, "MIN_GAP_S") and FP.DECK_ALERT_ENDS is False
+          and FP.COUNTS_AS_SHOW is False,
+          "Jeff's answers: no least time between shots, the deck alert is "
+          "only noted, a step is not a show")
+    check(FP.LATE_OK_MS == 41.0 and FP.EARLY_OK_MS == 5.0,
+          "late up to one 40 Hz period plus a Windows timer tick")
+    rows = FP.stage_rows({"fuel": (300, 330), "air": (315, 345),
+                          "igniter": (360, 375), "valve": (365, 371)},
+                         {"fuel": {"on": 10010.0, "off": 11010.0},
+                          "air": {"on": 10560.0, "off": None},
+                          "igniter": {"on": 11990.0, "off": None}},
+                         {"valve": "its Igniter has not gone out"}, True,
+                         True)
+    got = [(r["word"], r["result"], r["flag"]) for r in rows]
+    check(got == [("Fuel", "OK", False), ("Air", "LATE 60 ms", True),
+                  ("Igniter", "EARLY 10 ms", True),
+                  ("Valve Open", "Skipped: its Igniter has not gone out",
+                   True)] and rows[0]["late_ms"] == 10.0 and
+          rows[0]["length_sent_ms"] == 1000.0,
+          f"the rows, in Jeff's order: {got}")
+    rows = FP.stage_rows({"fuel": (300, 330)}, {"fuel": {"on": 10000.0}},
+                         {}, False, False)
+    check(rows[0]["result"] == "Sent, group not armed: nothing fired (not "
+          "against the show audio)", f"dry and no audio: {rows[0]}")
+    print("  ok")
+
+
+def _fbp_token(R, FQ, show="Show.json"):
+    entry = R.fq._plan[2][show]
+    return {"id": 1, "cue": R.cue_obj, "show": show, "entry": entry,
+            "hash": FQ.entry_hash(entry)}
+
+
+def test_fireball_practice_on_the_flame_cues():
+    section("Fireball practice on the flame cues: only the bound play fires "
+            "(another play, or an edit between the check and its first "
+            "frame: all zeros and a fault); every slot but 55 to 59 zero; "
+            "the whole shot or nothing at every landing; a move after a "
+            "stage went out skips the rest; an edit never reaches the play; "
+            "with practice closed nothing changes")
+    from ltcplay import fireball_cues as FQ
+    noise = [((i * 37) % 251) + 1 for i in range(512)]
+    want = {55: range(300, 330), 56: range(315, 345), 58: range(360, 375),
+            57: range(365, 371)}
+    rigs = []
+
+    def run(R, frames, land=None, jump=None):
+        out = {}
+        for f in frames:
+            if land is not None and f in land:
+                land[f]()
+            out[f] = R.frame(f, base=noise)
+        return out
+    try:
+        # The bound play: the timeline's windows, nothing else.
+        R = _fbq_rig(_fbp_stages())
+        rigs.append(R)
+        R.fq.practice_open = True
+        R.fq.practice = _fbp_token(R, FQ)
+        got = run(R, range(150, 420))
+        bad = [(f, s) for f, g in got.items() for s in (55, 56, 57, 58)
+               if (g[s - 1] == 255) != (f in want[s])]
+        others = [f for f, g in got.items()
+                  if any(g[i] for i in range(512) if not 54 <= i <= 58)]
+        check(not bad and not others and not R.fq.practice_fault,
+              f"the practice play: each stage on its window, every other "
+              f"slot zero: {bad[:4]} {others[:4]} {R.fq.practice_fault}")
+        snap = R.fq.run_view()
+        check(snap is not None and snap["id"] == 1 and
+              sorted(snap["started"]) == ["air", "fuel", "igniter", "valve"]
+              and snap["skipped"] == {} and snap["first_relf"] == 150,
+              f"run_view: a copy of the play's state: {snap}")
+        # A play cut by practice's end: nothing more of it, open or not.
+        R = _fbq_rig(_fbp_stages())
+        rigs.append(R)
+        R.fq.practice_open = True
+        tok = _fbp_token(R, FQ)
+        R.fq.practice = tok
+        got = run(R, range(150, 303))
+        tok["cut"] = True
+        R.fq.practice_open = False
+        after = [R.fq.apply(list(noise), R.session, "Show", f / 30.0,
+                            R.cue_obj) for f in range(303, 420)]
+        check(any(g[54] for g in got.values()) and
+              all(a is None for a in after),
+              "a cut practice play sends nothing more, even with practice "
+              "closed")
+        # Another play while practice is open: all zeros, a fault.
+        R = _fbq_rig(_fbp_stages())
+        rigs.append(R)
+        R.fq.practice_open = True
+        R.fq.practice = dict(_fbp_token(R, FQ), cue={"label": "Show"})
+        got = [R.fq.apply(list(noise), R.session, "Show", f / 30.0,
+                          R.cue_obj) for f in range(290, 320)]
+        check(all(g is None for g in got) and
+              R.fq.practice_fault == FQ.PRACTICE_NOT_OURS,
+              f"a play practice did not bind: nothing, and the fault: "
+              f"{R.fq.practice_fault}")
+        # No token at all: the same.
+        R = _fbq_rig(_fbp_stages())
+        rigs.append(R)
+        R.fq.practice_open = True
+        got = [R.fq.apply(list(noise), R.session, "Show", f / 30.0,
+                          R.cue_obj) for f in range(290, 300)]
+        check(all(g is None for g in got) and
+              R.fq.practice_fault == FQ.PRACTICE_NOT_OURS,
+              "no token: nothing, and the fault")
+        # The entry changed between the check and the first frame (an edit
+        # that removed the Igniter): all zeros, a fault.
+        R = _fbq_rig(_fbp_stages())
+        rigs.append(R)
+        tok = _fbp_token(R, FQ)
+        R.save([_st("fuel", "00:00:10:00", 1),
+                _st("valve", "00:00:12:05", 0.2)])
+        R.fq.refresh()
+        R.fq.practice_open = True
+        R.fq.practice = tok
+        got = [R.fq.apply(list(noise), R.session, "Show", f / 30.0,
+                          R.cue_obj) for f in range(150, 400)]
+        check(all(g is None for g in got) and
+              R.fq.practice_fault == FQ.PRACTICE_CHANGED,
+              f"an edit before the first frame: nothing, and the fault: "
+              f"{R.fq.practice_fault}")
+        # An edit DURING the play never reaches it.
+        R = _fbq_rig(_fbp_stages())
+        rigs.append(R)
+        R.fq.practice_open = True
+        R.fq.practice = _fbp_token(R, FQ)
+        got = run(R, range(150, 200))
+        R.save([_st("fuel", "00:00:10:00", 1),
+                _st("valve", "00:00:12:05", 0.2)])
+        R.fq.refresh()
+        got.update(run(R, range(200, 420)))
+        bad = [(f, s) for f, g in got.items() for s in (55, 56, 57, 58)
+               if (g[s - 1] == 255) != (f in want[s])]
+        check(not bad, f"an edit mid-play: the play keeps the stages it was "
+                       f"checked with (Igniter and all): {bad[:4]}")
+        # Too late at the first frame: nothing of it fires.
+        R = _fbq_rig(_fbp_stages())
+        rigs.append(R)
+        R.fq.practice_open = True
+        R.fq.practice = _fbp_token(R, FQ)
+        got = run(R, range(250, 420))
+        check(all(not any(g[s - 1] for s in (55, 56, 57, 58))
+                  for g in got.values()) and
+              FQ.PRACTICE_TOO_LATE in R.fq.messages,
+              f"first frame 50 frames before the shot: nothing fires: "
+              f"{R.fq.messages}")
+        # A landing (the flame link's guard starting again) 100 frames
+        # before the shot: it still fires; one 50 frames before: nothing.
+        for at, fires in ((200, True), (250, False)):
+            R = _fbq_rig(_fbp_stages())
+            rigs.append(R)
+            L = [0]
+            R.fq._land_get = lambda L=L: L[0]
+            R.fq.practice_open = True
+            R.fq.practice = _fbp_token(R, FQ)
+
+            def bump(L=L):
+                L[0] += 1
+            got = run(R, range(150, 420), land={at: bump})
+            on = any(g[56] == 255 for g in got.values())
+            check(on is fires, f"a landing at frame {at}: fires {on}, "
+                               f"wanted {fires}: {R.fq.messages}")
+        # A move after a stage went out: every stage left is skipped.
+        R = _fbq_rig(_fbp_stages())
+        rigs.append(R)
+        R.fq.practice_open = True
+        R.fq.practice = _fbp_token(R, FQ)
+        got = run(R, list(range(150, 306)) + list(range(330, 420)))
+        check(all(not got[f][55] and not got[f][56] and not got[f][57]
+                  for f in range(330, 420)) and
+              FQ.PRACTICE_CUT in R.fq.messages and
+              any(got[f][54] for f in range(300, 306)),
+              f"a jump after Fuel went out: Air, Igniter and Valve never: "
+              f"{R.fq.messages}")
+        # Practice closed: byte for byte as a rig that never heard of it.
+        A = _fbq_rig(_fbp_stages())
+        B = _fbq_rig(_fbp_stages())
+        rigs += [A, B]
+        B.fq.practice = _fbp_token(B, FQ)
+        B.fq.practice_open = False
+        frames = list(range(0, 130)) + list(range(200, 420))
+        ga = [A.frame(f, base=noise) for f in frames]
+        gb = [B.frame(f, base=noise) for f in frames]
+        check(ga == gb and any(g[56] for g in ga) and
+              all(g[0] == noise[0] for g in ga),
+              "practice closed: every frame as before, the FSEQ's other "
+              "slots untouched")
+        # Open, then closed again: the next play is a show's again.
+        C = _fbq_rig(_fbp_stages())
+        rigs.append(C)
+        C.fq.practice_open = True
+        C.fq.practice = _fbp_token(C, FQ)
+        run(C, range(150, 200))
+        C.fq.practice_open = False
+        C.fq.practice = None
+        C.cue_obj = {"label": "Show"}
+        D = _fbq_rig(_fbp_stages())
+        rigs.append(D)
+        gc = [C.frame(f, base=noise) for f in range(0, 420)]
+        gd = [D.frame(f, base=noise) for f in range(0, 420)]
+        check(gc == gd, "after practice: a new play is a show's play")
+    finally:
+        import shutil
+        for R in rigs:
+            shutil.rmtree(R.work, ignore_errors=True)
+    print("  ok")
+
+
+class _FbpRig:
+    """Fireball practice with every part it reads faked, on a clock the
+    test moves. The fireball cues are real (a _fbq_rig)."""
+
+    def __init__(self, stages=None):
+        import types
+        import threading as _th
+        from ltcplay import fireball_practice as FP
+        self.FP = FP
+        self.R = _fbq_rig(stages if stages is not None else _fbp_stages())
+        self.T = [1000.0]
+        self.A = {"Fireball": "disarmed", "Front row": "disarmed"}
+        self.raw = {"arm_input": {"foreign_senders": 0, "flooded": False},
+                    "frames": {"foreign_senders": 0, "new_sender": False,
+                               "flooded": False}}
+        self.stale = False
+        self.lock, self.lasers, self.hz, self.alerts = set(), [], set(), []
+        self.raised, self.stops, self.calls, self.lines = [], [], [], []
+        self.stop_result = [(200, {"failed": []})]
+        self.tanks = {"fuel": "empty", "air": "empty"}
+        self.charge_extra = {}
+        self.epoch = [None, True]
+        rig = self
+        self.clk = types.SimpleNamespace(paused=False, heard_epoch=lambda: (
+            rig.epoch[0], rig.epoch[1]))
+        self.sess = types.SimpleNamespace(
+            running=True, timeline_path=self.R.session.timeline_path,
+            tl=types.SimpleNamespace(cues=[types.SimpleNamespace(
+                name="Show", tc_seconds=3600.0, duration=600.0)]),
+            here=None)
+        self.sess.clock_here = lambda: rig.sess.here
+
+        class PH:
+            _op = _th.RLock()
+            playing = False
+
+            def applies(self):
+                return True
+
+            def clock(self):
+                return rig.clk
+
+            def active(self):
+                return self.playing
+
+            def play_from(self, show_s, who="", screen="", bind=None):
+                rig.calls.append(("play_from", show_s))
+                cue = {"label": "Show"}
+                if bind is not None:
+                    bind(cue)
+                rig.R.cue_obj = cue
+                self.playing = True
+                rig.sess.here = show_s
+                return show_s
+
+            def follow(self, who="", screen="", only=None):
+                rig.calls.append(("follow", who))
+                self.playing = False
+                rig.sess.here = None
+        self.ph = PH()
+        self.link = types.SimpleNamespace(
+            abort_id=1, lock_alarm="", cues=types.SimpleNamespace(fault=""),
+            sender_state=lambda: "running")
+        self.m = types.SimpleNamespace(state="HOLD", stop_hold=True,
+                                       date="2026-11-14",
+                                       waiting=lambda: True)
+        self.svc = types.SimpleNamespace(machine=self.m, night_loads=3)
+
+        class FS:
+            def view(self):
+                return {"connected": True, "stale": rig.stale,
+                        "age_ms": 2000 if rig.stale else 100,
+                        "groups": [{"name": n, "armed": a, "wanted": False}
+                                   for n, a in rig.A.items()]}
+
+            @property
+            def last(self):
+                return rig.raw
+
+        class Charge:
+            def view(self):
+                v = {"tanks": {k: {"state": s} for k, s in
+                               rig.tanks.items()},
+                     "text": "Fuel: empty. Air: empty.", "fault": "",
+                     "auto_off": False, "pending": False,
+                     "releasing": False}
+                v.update(rig.charge_extra)
+                return v
+
+        def stop(who, screen):
+            rig.stops.append((who, screen))
+            rig.link.abort_id += 1
+            for n in rig.A:
+                rig.A[n] = "disarmed"
+            rig.ph.playing = False
+            return rig.stop_result[0]
+        self.remote = types.SimpleNamespace(
+            programming=lambda: (True, ""), playhead=self.ph,
+            control=types.SimpleNamespace(session=self.sess),
+            fireball_cues=self.R.fq, fireball_charge=Charge(),
+            schedule=self.svc, flame_status=FS(),
+            morning=types.SimpleNamespace(
+                cfg=None, lockout=types.SimpleNamespace(
+                    channels=lambda cfg: set(rig.lock), file_channels=()),
+                laser_arm=types.SimpleNamespace(
+                    armed_ids=lambda: list(rig.lasers))),
+            hazers=types.SimpleNamespace(on=lambda: set(rig.hz)),
+            alerts=types.SimpleNamespace(
+                open=lambda: list(rig.alerts),
+                raise_=lambda k, t: rig.raised.append((k, t))),
+            stop_press=stop, live_flame=None, cleaning=None)
+        self.p = FP.Practice(self.remote, link_get=lambda: rig.link,
+                             journal=lambda t, **k: rig.lines.append((t, k)),
+                             clock=lambda: rig.T[0], threaded=False)
+        self.owner = ("Rack screen", "w1")
+
+    def go(self, s):
+        """s seconds on, with the opening screen's beat."""
+        self.T[0] += s
+        if self.p.state != "closed":
+            self.p.beat(self.owner)
+
+    def open_live_ready(self):
+        self.p.open("live", self.owner, "Jeff", "Rack screen")
+        self.p.tick()
+        self.A["Fireball"] = "armed"
+        self.go(0.05)
+        self.p.tick()
+        return self.p.state
+
+    def close(self):
+        import shutil
+        shutil.rmtree(self.R.work, ignore_errors=True)
+
+
+def test_fireball_practice_engine():
+    section("Fireball practice, the engine: open is a Stop; the Fireball "
+            "armed AFTER it; Step plays the shot from its lead-in and stops "
+            "the playback without a disarm; the timing table (frames before "
+            "the audio's first buffer not timed); no least time between "
+            "shots; tanks EMPTY; the opening screen only; every trigger ends "
+            "practice with one Stop; the deck alert only noted; a Stop that "
+            "fails or hangs is pressed again; an end during open, Step or a "
+            "step's end stays an end; the watchdog")
+    from ltcplay import fireball_cues as FQ
+    rigs = []
+    try:
+        G = _FbpRig()
+        rigs.append(G)
+        FP, p = G.FP, G.p
+        check(p.refusal() == "" and not p.blocking, "closed: no veto")
+        G.A["Fireball"] = "armed"          # a leftover arm from the night
+        p.open("live", G.owner, "Jeff", "Rack screen")
+        check(len(G.stops) == 1 and p.state == "arming" and
+              G.R.fq.practice_open and p.blocking and
+              p.refusal() == FP.REFUSED_WHILE_OPEN ==
+              "Fireball practice is open: press Done first.",
+              f"open: one Stop, arming, the vetoes on: {G.stops} {p.state}")
+        check(any(FP.OPEN_SAYS in t for t, _k in G.lines),
+              "open is journaled with what it did")
+        try:
+            p.open("live", G.owner, "Jeff", "Rack screen")
+            check(False, "a second open was taken")
+        except FP.Refused:
+            pass
+        # flamesafe's status still says ARMED (from before the Stop): not
+        # a fresh arm.
+        G.A["Fireball"] = "armed"
+        p.tick()
+        check(p.state == "arming",
+              "an arm from before practice opened is not a fresh arm")
+        G.A["Fireball"] = "disarmed"
+        G.go(0.05)
+        p.tick()
+        try:
+            p.step(G.owner, "Jeff", "Rack screen", 5)
+            check(False, "Step before the Fireball was armed was taken")
+        except FP.Refused as e:
+            check("Arm the fireball first" in str(e), f"{e}")
+        G.A["Fireball"] = "armed"
+        G.go(0.05)
+        p.tick()
+        check(p.state == "ready", f"armed after the Stop: ready: {p.state}")
+        # Tanks not EMPTY: refused with the card's words.
+        G.tanks["air"] = "charged"
+        check(p.step_why() == FP.REFUSE_TANKS == "Tanks charged: Purge on "
+              "the Fireball page before the next step.", p.step_why())
+        G.tanks["air"] = "empty"
+        G.charge_extra = {"pending": True}
+        check(p.step_why() == FP.REFUSE_SETTLING == (
+            "The charge record is settling after the last step: Step again "
+            "in a few seconds."),
+              "a pending mark (a dry step's, say): wait for it to settle")
+        G.charge_extra = {}
+        # Another screen may not Step.
+        try:
+            p.step(("iPad at 10.0.0.9", "w2"), "Andy", "iPad", 5)
+            check(False, "Step from another screen was taken")
+        except FP.Refused as e:
+            check("only the screen that opened practice" in str(e), f"{e}")
+        ok, _w = p.beat(("iPad at 10.0.0.9", "w2"))
+        check(not ok, "another screen's beat does not keep practice open")
+        # The step.
+        text = p.step(G.owner, "Jeff", "Rack screen", 5)
+        tok = G.R.fq.practice
+        check(G.calls[-1] == ("play_from", 3605.0) and p.state == "step" and
+              tok is not None and tok["cue"] is G.R.cue_obj and
+              tok["hash"] == FQ.entry_hash(G.R.fq._plan[2]["Show.json"]) and
+              "00:00:05:00" in text,
+              f"Step: played from the lead-in, the play bound: {G.calls} "
+              f"{p.state} {text}")
+        # The timing record: the flame link's frames, against the epoch.
+        # As the show audio does: every play starts waiting for its first
+        # buffer (no epoch), then follows the audio.
+        G.epoch[0] = None
+        base = 500.0
+        on = {55: (10.010, 11.010), 56: (10.560, 11.560),
+              58: (12.000, 12.500), 57: (12.170, 12.370)}
+        t = 4.9
+        while t < 5.2:
+            p.on_sent(base + t, "00:00:00:00", bytes(512), True)
+            t = round(t + 0.005, 3)
+        G.epoch[0] = 500.0
+        t = 9.9
+        while t < 13.0:
+            vals = bytearray(512)
+            for s, (a, b) in on.items():
+                if a <= t < b:
+                    vals[s - 1] = 255
+            p.on_sent(base + t, "00:00:00:00", bytes(vals), True)
+            t = round(t + 0.005, 3)
+        G.sess.here = 3600.0 + 436 / 30.0
+        G.go(0.05)
+        p.tick()
+        res = p.results[0] if p.results else {}
+        got = [(r["word"], r["result"]) for r in res.get("rows", [])]
+        check(G.calls[-1] == ("follow", "Fireball practice") and
+              p.state == "ready" and G.R.fq.practice is None and
+              len(G.stops) == 1 and
+              got == [("Fuel", "OK"), ("Air", "LATE 60 ms"),
+                      ("Igniter", "OK"), ("Valve Open", "OK")] and
+              not any("not against" in r["result"] for r in res["rows"]),
+              f"the step's end: playback stopped (no Stop, no disarm), the "
+              f"table: {got} {G.calls[-1]} {p.state}")
+        check(any("step 1" in t and "LATE 60 ms" in t for t, _k in G.lines),
+              "each step's table is journaled")
+        # No least time between two shots (Jeff: Andy sees to it).
+        check(p.step_why() == "", f"the next step at once: {p.step_why()}")
+        # Done ends it with a Stop.
+        p.done("Jeff", "Rack screen")
+        check(p.state == "closed" and len(G.stops) == 2 and
+              not G.R.fq.practice_open and "pressed Done" in p.ended_why,
+              f"Done: a Stop, closed: {p.state} {p.ended_why}")
+
+        # Every trigger ends practice with exactly one Stop.
+        def trig(name, act, words, mode="live", step=False):
+            g = _FbpRig()
+            rigs.append(g)
+            if mode == "live":
+                g.open_live_ready()
+            else:
+                g.p.open("dry", g.owner, "Jeff", "Rack screen")
+            if step:
+                g.p.step(g.owner, "Jeff", "Rack screen", 5)
+            n = len(g.stops)
+            act(g)
+            g.T[0] += 0.05
+            g.p.tick()
+            check(g.p.state == "closed" and len(g.stops) == n + 1 and
+                  words in g.p.ended_why and not g.R.fq.practice_open,
+                  f"{name}: ended with one Stop: {g.p.state} "
+                  f"{len(g.stops) - n} {g.p.ended_why!r}")
+        trig("another group armed",
+             lambda g: g.A.__setitem__("Front row", "armed"),
+             "another flame group was armed")
+        trig("the Fireball disarmed",
+             lambda g: g.A.__setitem__("Fireball", "disarmed"),
+             "the fireball was disarmed")
+        trig("armed during a dry run",
+             lambda g: g.A.__setitem__("Fireball", "armed"),
+             "armed during a dry run", mode="dry")
+        trig("a disarm through the link",
+             lambda g: setattr(g.link, "abort_id", g.link.abort_id + 1),
+             "every group was disarmed")
+        trig("a lockout", lambda g: g.lock.add(57), "locked out")
+        trig("a laser", lambda g: g.lasers.append("L1"), "a laser was armed")
+        trig("a hazer", lambda g: g.hz.add("Hazer 1"), "a hazer")
+        trig("the Stream Deck's spoof ALARM", lambda g: g.p.deck_event(
+            "spoof-alarm", "Flamesafe is honouring an arm signal this deck "
+            "did not send", True), "spoof ALARM")
+        trig("a second arm sender", lambda g: g.raw["arm_input"].__setitem__(
+            "foreign_senders", 1), "another sender is on the arm link")
+        trig("a flood on the arm link", lambda g: g.raw["arm_input"]
+             .__setitem__("flooded", True), "arm link")
+        trig("a new flame sender", lambda g: g.raw["frames"].__setitem__(
+            "new_sender", True), "another sender is on the flame link")
+        trig("flamesafe silent", lambda g: setattr(g, "stale", True),
+             "flamesafe has not reported")
+        trig("the link not sending", lambda g: setattr(
+            g.link, "sender_state", lambda: "stalled"), "not sending")
+        trig("a fault in the fireball timeline", lambda g: setattr(
+            g.R.fq, "fault", "broken"), "fireball timeline has a fault")
+        trig("a play practice did not bind", lambda g: setattr(
+            g.R.fq, "practice_fault", FQ.PRACTICE_NOT_OURS),
+            "refused a play")
+        trig("a charge fault", lambda g: g.charge_extra.__setitem__(
+            "fault", "cannot be saved"), "charge record has a fault")
+        trig("automatic charging off", lambda g: g.charge_extra.__setitem__(
+            "auto_off", True), "charge record")
+        trig("a tank not known", lambda g: g.tanks.__setitem__(
+            "fuel", "unknown"), "not known")
+        trig("the schedule's Hold released", lambda g: setattr(
+            g.m, "state", "STANDBY"), "left the Stop's Hold")
+        trig("the Stop's Hold lost", lambda g: setattr(
+            g.m, "stop_hold", False), "left the Stop's Hold")
+        trig("a show started", lambda g: setattr(g.m, "state", "SHOW"),
+             "a show started")
+        trig("the night loaded again", lambda g: setattr(
+            g.svc, "night_loads", 4), "loaded again")
+        trig("another night", lambda g: setattr(g.m, "date", "2026-11-15"),
+             "loaded again")
+        trig("the schedule gone", lambda g: setattr(g.svc, "machine", None),
+             "not loaded")
+        trig("Run off", lambda g: setattr(g.sess, "running", False),
+             "Run was turned off")
+        trig("a Hold pressed", lambda g: g.p.request_end(
+            "Hold was pressed"), "Hold was pressed")
+        trig("a pause during the step", lambda g: setattr(
+            g.clk, "paused", True), "a Hold or a pause", step=True)
+        trig("a CUES FAULT during the step", lambda g: setattr(
+            g.link.cues, "fault", "the render could not be read"),
+            "CUES FAULT", step=True)
+        trig("the playback ended early", lambda g: setattr(
+            g.ph, "playing", False), "ended early", step=True)
+        trig("the step overran", lambda g: g.go(20), "ran over", step=True)
+        trig("the opening screen silent",
+             lambda g: g.T.__setitem__(0, g.T[0] + 6), "stopped answering")
+        trig("ten minutes with no step", lambda g: [
+            g.go(60) or g.p.tick() for _ in range(10)] and None,
+            "minutes with no step")
+        # A freerunning clock: the table says it is not against the audio.
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+        g.p.step(g.owner, "Jeff", "Rack screen", 5)
+        g.epoch[0], g.epoch[1] = 500.0, False
+        for i in range(200):
+            v = bytearray(512)
+            if 100 <= i < 150:
+                v[54] = 255
+            g.p.on_sent(510.0 + i * 0.005, "00:00:00:00", bytes(v), True)
+        g.sess.here = 3600.0 + 436 / 30.0
+        g.go(0.05)
+        g.p.tick()
+        r0 = g.p.results[0]["rows"][0]
+        check(r0["result"].endswith("(not against the show audio)"),
+              f"freerun: said: {r0['result']}")
+        # Done while the step's play is starting, before it is bound: the
+        # play is refused before its cues go out; practice stays ended.
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+        real_pf = g.ph.play_from
+
+        def pf_done_first(show_s, who="", screen="", bind=None, g=g,
+                          real=real_pf):
+            g.p.done("Andy", "iPad")
+            return real(show_s, who, screen, bind=bind)
+        g.ph.play_from = pf_done_first
+        n = len(g.stops)
+        try:
+            g.p.step(g.owner, "Jeff", "Rack screen", 5)
+            check(False, "a step after Done was taken")
+        except FP.Refused as e:
+            check("practice ended while the step was starting" in str(e) and
+                  g.p.state == "closed" and len(g.stops) == n + 1 and
+                  not g.R.fq.practice_open,
+                  f"Done during Step: refused, closed, one Stop: {e} "
+                  f"{g.p.state} {len(g.stops) - n}")
+        # Done after the play was bound: the play is cut and stopped again,
+        # practice stays ended.
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+
+        def pf_done_after(show_s, who="", screen="", bind=None, g=g,
+                          real=g.ph.play_from):
+            out = real(show_s, who, screen, bind=bind)
+            g.p.done("Andy", "iPad")
+            return out
+        g.ph.play_from = pf_done_after
+        n = len(g.stops)
+        try:
+            g.p.step(g.owner, "Jeff", "Rack screen", 5)
+            check(False, "a step whose practice ended was taken")
+        except FP.Refused as e:
+            check("ended while the step was starting" in str(e) and
+                  g.p.state == "closed" and len(g.stops) == n + 2,
+                  f"Done after the bind: closed, Stopped again: {e} "
+                  f"{g.p.state} {len(g.stops) - n}")
+        # Done while the step's end runs: it stays ended.
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+        g.p.step(g.owner, "Jeff", "Rack screen", 5)
+        real_f = g.ph.follow
+
+        def follow_done(who="", screen="", only=None, g=g, real=real_f):
+            real(who, screen, only)
+            g.p.done("Andy", "iPad")
+        g.ph.follow = follow_done
+        g.sess.here = 3600.0 + 436 / 30.0
+        g.go(0.05)
+        g.p.tick()
+        check(g.p.state == "closed",
+              f"Done during the step's end: stays closed: {g.p.state}")
+        # Done while the opening Stop runs: practice stays ended, its cues'
+        # guards are not turned back on, no threads.
+        g = _FbpRig()
+        rigs.append(g)
+        real_stop = g.remote.stop_press
+        calls = [0]
+
+        def stop_done(who, screen, g=g, real=real_stop, calls=calls):
+            calls[0] += 1
+            out = real(who, screen)
+            if calls[0] == 1:
+                g.p.done("Andy", "iPad")
+            return out
+        g.remote.stop_press = stop_done
+        text = g.p.open("live", g.owner, "Jeff", "Rack screen")
+        check(g.p.state == "closed" and not g.R.fq.practice_open and
+              "ended while it was opening" in text,
+              f"Done during the opening Stop: stays ended: {g.p.state} "
+              f"{text}")
+        # A Hold asked while open is checking the engine, or while its Stop
+        # runs, is kept: it ends practice.
+        g = _FbpRig()
+        rigs.append(g)
+
+        def prog_hold(g=g):
+            g.p.request_end("Hold was pressed")
+            return True, ""
+        g.remote.programming = prog_hold
+        g.p.open("live", g.owner, "Jeff", "Rack screen")
+        g.go(0.05)
+        g.p.tick()
+        check(g.p.state == "closed" and "Hold was pressed" in g.p.ended_why,
+              f"a Hold during opening is not lost: {g.p.ended_why!r}")
+        # A Step that never comes back from its start: ended after
+        # STARTING_MAX_S.
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+        g.p.state, g.p._starting_at = "starting", g.T[0]
+        g.go(FP.STARTING_MAX_S - 1)
+        g.p.tick()
+        check(g.p.state == "starting", "a start under way is waited for")
+        g.go(2)
+        g.p.tick()
+        check(g.p.state == "closed" and "too long to start" in
+              g.p.ended_why, f"a start that hangs: {g.p.ended_why!r}")
+        # Done while open is still checking the engine: practice stays
+        # closed, its cues' guard is never turned on, and a later open is
+        # its own.
+        g = _FbpRig()
+        rigs.append(g)
+
+        def prog_done(g=g):
+            g.p.done("Andy", "iPad")
+            return True, ""
+        g.remote.programming = prog_done
+        text = g.p.open("live", g.owner, "Jeff", "Rack screen")
+        check(g.p.state == "closed" and not g.R.fq.practice_open and
+              g.p.owner is None and "ended while it was opening" in text,
+              f"Done during the engine check: closed, the cues' guard off, "
+              f"nothing of it kept: {g.p.state} {g.R.fq.practice_open} "
+              f"{g.p.owner} {text}")
+        g.remote.programming = lambda: (True, "")
+        g.p.open("dry", ("iPad at 10.0.0.9", "w2"), "Andy", "iPad")
+        check(g.p.state == "ready" and g.p.mode == "dry" and
+              g.p.owner == ("iPad at 10.0.0.9", "w2") and
+              g.R.fq.practice_open, "a later open is its own")
+        # A Stop that came back failed: no new Stop for RETRY_S from anyone
+        # (the watchdog included), however often it asks; Done may.
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+        g.stop_result[0] = (500, {"failed": ["show"]})
+        g.p.request_end("a disarm")
+        g.go(0.05)
+        g.p.tick()
+        n = len(g.stops)
+        check(g.p.state == "ending" and not g.p._stopping,
+              "the Stop came back failed: ending, no Stop on its way")
+        for _ in range(3):
+            g.go(0.25)
+            g.p.watcher_beat = g.T[0] - 1     # the watcher stuck elsewhere
+            g.p.dog_tick()
+        check(len(g.stops) == n,
+              f"under RETRY_S: no new Stop from the watchdog: "
+              f"{len(g.stops) - n}")
+        g.go(0.3)
+        g.p.watcher_beat = g.T[0] - 1
+        g.p.dog_tick()
+        check(len(g.stops) == n + 1, "after RETRY_S: one new Stop")
+        g.p.done("Jeff", "Rack screen")
+        check(len(g.stops) == n + 2, "a person's Done may press Stop again")
+        # A Stop that hangs after its first step: no second Stop before
+        # RETRY_S; then the alert and a new Stop, whoever asks; the bound
+        # play is cut at once.
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+        g.p.step(g.owner, "Jeff", "Rack screen", 5)
+        tok = g.R.fq.practice
+        # As if a Stop were stuck inside stop_press on another thread.
+        g.p._stopping, g.p.state = True, "ending"
+        g.p._retry_at = g.T[0] + FP.RETRY_S
+        g.p.ended_why = "a disarm"
+        n = len(g.stops)
+        g.go(0.5)
+        g.p.watcher_beat = g.T[0]
+        g.p.dog_tick()
+        g.p.tick()
+        check(len(g.stops) == n and not g.raised,
+              "a Stop on its way and not late: no second Stop")
+        g.go(0.6)
+        g.p.watcher_beat = g.T[0] - 1          # the watcher is stuck too
+        g.p.dog_tick()
+        check(len(g.stops) == n + 1 and len(g.raised) == 1 and
+              g.p.state == "closed",
+              f"late: the alert and a new Stop from the watchdog: "
+              f"{len(g.stops) - n} {g.raised} {g.p.state}")
+        check(tok.get("cut") is True,
+              "the play practice bound is cut when practice ends")
+        # The Stream Deck unplugged (its alert): noted, never an end, and
+        # nothing disarmed for it (ruling 4).
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+        n = len(g.stops)
+        g.alerts.append(types_ns(kind="deck"))
+        g.go(0.05)
+        g.p.tick()
+        check(g.p.state == "ready" and len(g.stops) == n and
+              g.p.deck_note == FP.DECK_NOTE and
+              g.p.view()["deck_note"] == FP.DECK_NOTE and
+              g.p.step_why() == "" and
+              sum("Stream Deck alert is open" in t for t, _k in g.lines) == 1,
+              f"the deck alert: noted once, practice carries on: "
+              f"{g.p.state} {g.p.ended_why!r}")
+        g.go(0.05)
+        g.p.tick()
+        check(sum("Stream Deck alert is open" in t for t, _k in g.lines) == 1,
+              "noted once, not every pass")
+        del g.alerts[:]
+        g.go(0.05)
+        g.p.tick()
+        check(g.p.deck_note == "" and any("Stream Deck is back" in t
+                                          for t, _k in g.lines),
+              "and once when it clears")
+        g.p.deck_event("spoof-alarm", "cleared", False)
+        g.go(0.05)
+        g.p.tick()
+        check(g.p.state == "ready", "the alarm clearing ends nothing")
+        # The settling after the opening Stop with nothing left tonight
+        # (STANDBY, nothing waiting) is not a release: Step waits for OFF.
+        g = _FbpRig()
+        rigs.append(g)
+        g.m.state, g.m.waiting = "STANDBY", (lambda: False)
+        g.open_live_ready()
+        check(g.p.state == "ready" and "not on the Stop's Hold yet" in
+              g.p.step_why(), f"settling: {g.p.state} {g.p.step_why()}")
+        g.m.state = "OFF"
+        g.go(0.05)
+        g.p.tick()
+        check(g.p.step_why() == "", f"OFF, nothing waiting: {g.p.step_why()}")
+        g.m.state = "STANDBY"
+        g.go(0.05)
+        g.p.tick()
+        check(g.p.state == "closed" and "left the Stop's Hold" in
+              g.p.ended_why, "after OFF, any other state ends it")
+        # A Stop that does not complete: ENDING, one alert, pressed again
+        # every second until it does.
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+        g.stop_result[0] = (500, {"failed": ["flames"]})
+        g.A["Front row"] = "armed"
+        g.go(0.05)
+        g.p.tick()
+        check(g.p.state == "ending" and len(g.raised) == 1 and
+              g.raised[0][0] == "flames" and g.R.fq.practice_open,
+              f"a failed Stop: ending, the flames alert, the cues still "
+              f"held to practice: {g.p.state} {g.raised}")
+        n = len(g.stops)
+        g.go(0.5)
+        g.p.tick()
+        check(len(g.stops) == n, "not pressed again before a second")
+        g.go(0.6)
+        g.p.tick()
+        check(len(g.stops) == n + 1 and len(g.raised) == 1 and
+              g.p.state == "ending", "pressed again, one alert")
+        g.stop_result[0] = (200, {"failed": ["lasers"]})
+        g.go(1.1)
+        g.p.tick()
+        check(g.p.state == "ending",
+              "a Stop that answers with a step that failed is not done")
+        g.stop_result[0] = (200, {"failed": []})
+        g.go(1.1)
+        g.p.tick()
+        check(g.p.state == "closed" and not g.R.fq.practice_open,
+              f"the Stop completed: closed: {g.p.state}")
+        # The watchdog: a watcher whose beat is old: a Stop.
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+        g.p.watcher_beat = g.T[0]
+        g.go(0.4)
+        g.p.dog_tick()
+        check(g.p.state == "ready", "a fresh watcher: the dog waits")
+        g.go(0.2)
+        g.p.dog_tick()
+        check(g.p.state == "closed" and "watcher stopped" in g.p.ended_why
+              and len(g.stops) == 2, f"a silent watcher: Stop: "
+                                     f"{g.p.ended_why}")
+        # An old Hold (no Stop's Hold): Step waits; the schedule never left
+        # a Stop's Hold it reached.
+        g = _FbpRig()
+        rigs.append(g)
+        g.open_live_ready()
+        g.go(0.05)
+        g.p.tick()
+        check(g.p.step_why() == "", g.p.step_why())
+        # A step whose play cannot start: refused, practice carries on.
+        g.ph.play_from = lambda *a, **k: (_ for _ in ()).throw(
+            ValueError("still loading."))
+        try:
+            g.p.step(g.owner, "Jeff", "Rack screen", 5)
+            check(False, "a failed Play from was taken")
+        except g.FP.Refused as e:
+            check("still loading" in str(e) and g.p.state == "ready" and
+                  g.R.fq.practice is None, f"{e} {g.p.state}")
+        # Opening refused when the engine is not ready for it.
+        g = _FbpRig()
+        rigs.append(g)
+        g.remote.programming = lambda: (False, "Nothing is playing.")
+        try:
+            g.p.open("live", g.owner, "Jeff", "Rack screen")
+            check(False, "open outside Programming was taken")
+        except g.FP.Refused as e:
+            check("was not opened" in str(e) and g.p.state == "closed" and
+                  not g.stops, f"{e}")
+    finally:
+        for g in rigs:
+            g.close()
+    print("  ok")
+
+
+def test_fireball_practice_counts_toward_fuel():
+    section("Fireball practice counts toward fuel like a show (Jeff, "
+            "2026-11-08): a practice step's charges and shot are recorded by "
+            "the charge record from the frames that went out (CHARGED by "
+            "the show, then EMPTY after the shot, journaled); a tank still "
+            "charged is never charged again; the engine's frame watchers "
+            "(the fuel tracker and the charge record) stay on the flame link")
+    import types
+    import shutil
+    from ltcplay import fireball_cues as FQ
+    from ltcplay import fireball_charge as FC
+    from ltcplay import fireball_practice as FP
+    from ltcplay import web as W
+    work = tempfile.mkdtemp()
+    rigs = []
+    try:
+        C = _fbc(work)
+        tr = C.tr
+        R = _fbq_rig(_fbp_stages())
+        rigs.append(R)
+        R.fq.practice_open = True
+        R.fq.practice = _fbp_token(R, FQ)
+        states = {}
+        for f in range(150, 440):
+            out = R.frame(f)
+            tr.see(bytes(out), "armed")
+            states[f] = (tr.state("fuel"), tr.state("air"))
+            if f == 340:
+                by340 = tr.tanks["fuel"]["by"]
+        tr.pump()
+        texts = " ".join(str(a[3]) for a, _k in C.lines)
+        check(states[340] == (FC.CHARGED, FC.CHARGED) and
+              by340 == "the show" and
+              states[439] == (FC.EMPTY, FC.EMPTY) and
+              "the shot was fired (Valve Open)" in texts,
+              f"the practice shot is in the charge record: charged, then "
+              f"EMPTY after the valve, journaled: {states[340]} "
+              f"{states[439]}")
+        # A tank still charged from a step that did not fire: the next
+        # practice play never charges it again.
+        R2 = _fbq_rig(_fbp_stages(), tank=_FbcTank(fuel="charged"))
+        rigs.append(R2)
+        R2.fq.practice_open = True
+        R2.fq.practice = _fbp_token(R2, FQ)
+        got = [R2.frame(f) for f in range(150, 440)]
+        check(not any(g[54] for g in got) and any(
+            "Fuel already charged" in m for m in R2.fq.messages),
+              f"no double charge in practice: {R2.fq.messages}")
+        # The wiring: practice's record goes on its own hook; the flame
+        # link's observer chain (the fuel tracker, then the charge record)
+        # is never replaced.
+        chain = lambda tc, values, ok: None            # noqa: E731
+        link = types.SimpleNamespace(observer=chain, sent_observer=None)
+        perf = types.SimpleNamespace(practice_refusal=None)
+        svc = types.SimpleNamespace(performer=perf, resume_veto=None,
+                                    edit_veto=None, deck_event_hook=None)
+        remote = types.SimpleNamespace(fireball_cues=R.fq, schedule=svc,
+                                       _journal=lambda *a, **k: None)
+        closed = []
+        httpd = types.SimpleNamespace(
+            remote=remote, fire_ice=types.SimpleNamespace(flame_link=link),
+            server_close=lambda: closed.append(1))
+        W._attach_fireball_practice(httpd)
+        pr = remote.fireball_practice
+        check(isinstance(pr, FP.Practice) and link.observer is chain and
+              link.sent_observer == pr.on_sent and
+              svc.resume_veto == pr.refusal and svc.edit_veto ==
+              pr.refusal and svc.deck_event_hook == pr.deck_event and
+              perf.practice_refusal == pr.refusal,
+              "the fuel and charge watchers stay; practice's hooks are its "
+              "own")
+        httpd.server_close()
+        check(closed == [1], "closed after what was there before it")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        for R in rigs:
+            shutil.rmtree(R.work, ignore_errors=True)
+    print("  ok")
+
+
+def js_all(page):
+    return page[page.find("// ---- Fireball practice"):]
+
+
+def types_ns(**k):
+    import types
+    return types.SimpleNamespace(**k)
+
+
+def test_fireball_practice_vetoes_and_wiring():
+    section("Fireball practice, the guards around it: Resume refused under "
+            "the scheduler's lock, before the release of a Stop's Hold with "
+            "nothing held; tonight's edits refused; the show runner starts "
+            "nothing; Start now and the other routes refused at the press; "
+            "the Show and Arm rows on any screen (the show PC with sign-in "
+            "off); Done is safety; the flame link's record changes no byte; the clock's "
+            "epoch; the playhead binds before the cues are released; the "
+            "card and OPERATOR.md")
+    import types
+    from ltcplay import fireball_practice as FP
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import fire_ice as FI
+    from ltcplay import flamelink as fl
+    from ltcplay import clock as CK
+    S = _sched()
+    if S is None:
+        return
+    import tempfile as _tf
+    import shutil
+    work = _tf.mkdtemp()
+    try:
+        now = [_den(S, 17, 30)]
+        svc = _svc(S, work, now).start(thread=False)
+        loads = svc.night_loads
+        check(loads >= 1, f"a night loaded counts: {loads}")
+        svc.operator_press("stop-hold", "Andy", "Rack screen", confirmed=True,
+                           detail="pressed Stop on the Rack screen, so the "
+                                  "schedule is on Hold")
+        check(svc.machine.state == S.HOLD and svc.machine.stop_hold,
+              "a Stop's Hold")
+        svc.resume_veto = lambda: FP.REFUSED_WHILE_OPEN
+        svc.edit_veto = lambda: FP.REFUSED_WHILE_OPEN
+        r = svc.operator_press("resume", "Andy", "Rack screen", surface=True)
+        check(not r["ok"] and r["text"] == "Resume was refused: Fireball "
+              "practice is open: press Done first." and
+              svc.machine.state == S.HOLD and svc.stop_held(),
+              f"Resume refused, the Stop's Hold stands: {r}")
+        try:
+            svc.edit_tonight({"op": "remove", "show": 1, "who": "Andy",
+                              "screen": "rack screen"})
+            check(False, "an edit of tonight was taken")
+        except ValueError as e:
+            check("Fireball practice is open" in str(e), f"{e}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    # Nothing held, a Stop's Hold standing (the night over): Resume would
+    # release it with no _apply. Refused first.
+    work = _tf.mkdtemp()
+    try:
+        now = [_den(S, 23, 30)]
+        svc = _svc(S, work, now).start(thread=False)
+        svc.tick()
+        svc.tick()
+        svc._stop_carry = {"night": "2026-11-14"}
+        svc.resume_veto = lambda: FP.REFUSED_WHILE_OPEN
+        st = svc.machine.state
+        r = svc.operator_press("resume", "Andy", "Rack screen", surface=True)
+        check(st not in (S.HOLD, S.PAUSED) and not r["ok"] and
+              "Fireball practice is open" in r["text"] and svc.stop_held(),
+              f"the night over ({st}): Resume refused, the Stop's Hold "
+              f"stands: {r}")
+        svc.resume_veto = None
+        r = svc.operator_press("resume", "Andy", "Rack screen", surface=True)
+        check(r["ok"], f"practice closed: Resume works again: {r}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    # The show runner: no start while practice is open.
+    run = FI.ShowRunner.__new__(FI.ShowRunner)
+    run.practice_refusal = lambda: FP.REFUSED_WHILE_OPEN
+    check(run._refusal(None, None) == FP.REFUSED_WHILE_OPEN,
+          "the runner refuses any start while practice is open")
+    run.practice_refusal = lambda: ""
+    check(run._refusal(None, None) == run.RUN_OFF, "closed: as before")
+    run.practice_refusal = lambda: 1 / 0
+    check("could not be asked" in run._refusal(None, None),
+          "a veto that raises refuses")
+    # The remote: routes refused at the press while practice is open.
+    P = types.SimpleNamespace(blocking=True,
+                              refusal=lambda: FP.REFUSED_WHILE_OPEN)
+    fake = types.SimpleNamespace(fireball_practice=P)
+    for name in ("start-now", "start-at-cue", "resume", "play-from", "jump",
+                 "continue", "loop", "mark-a", "mark-b", "preroll-continue",
+                 "announce-play", "schedule-file", "show-folder",
+                 "show-select", "show-file-new", "reload-engine"):
+        check(RM.Remote.fireball_practice_route_refusal(fake, name, {}) ==
+              FP.REFUSED_WHILE_OPEN, f"{name} refused while practice is open")
+    for name, body in (("stop", {}), ("hold", {}), ("disarm-all", {}),
+                       ("pause", {}), ("follow", {}),
+                       ("fireball-practice", {"action": "done"}),
+                       ("live-flame", {"on": False}),
+                       ("cleaning-beat", {"hold": False}),
+                       ("fireball-timeline-save", {})):
+        check(RM.Remote.fireball_practice_route_refusal(fake, name, body) ==
+              "", f"{name} is never refused by practice")
+    for name, body in (("live-flame", {"on": True}),
+                       ("cleaning-beat", {"hold": True})):
+        check(RM.Remote.fireball_practice_route_refusal(fake, name, body) ==
+              FP.REFUSED_WHILE_OPEN, f"{name} on: refused")
+    check(set(RM.PRACTICE_ENDS_ROUTES) == {"hold", "pause", "follow"},
+          "a Hold, a Pause and Follow end practice")
+    check(RM.Remote.programming_playback_refusal(fake) ==
+          FP.REFUSED_WHILE_OPEN, "Start now's veto says practice")
+    P.blocking = False
+    check(RM.Remote.fireball_practice_route_refusal(fake, "resume", {}) == "",
+          "closed: nothing refused")
+    # Who may open and Step: the show PC or an admin, the Show and Arm
+    # rows; sign-in off: the show PC only.
+    def may(local, role, active=True, mx=None):
+        f = types.SimpleNamespace(
+            users_active=lambda: active,
+            users=types.SimpleNamespace(
+                matrix=lambda: mx or U.DEFAULT_MATRIX))
+        ctx = types.SimpleNamespace(local=local, session={"role": role}
+                                    if role else None)
+        return RM.Remote._practice_may(f, ctx, "Step")
+    check(may(True, "operator") == "", "an operator on the show PC")
+    check(may(False, "operator") == "",
+          "an operator on an iPad may Step (Jeff, 2026-11-08)")
+    check("Show and Arm" in may(False, "viewer"), "a viewer: refused")
+    no_arm = dict(U.DEFAULT_MATRIX, operator=dict(
+        U.DEFAULT_MATRIX["operator"], arm=False))
+    no_show = dict(U.DEFAULT_MATRIX, operator=dict(
+        U.DEFAULT_MATRIX["operator"], show=False))
+    check("Show and Arm" in may(True, "operator", mx=no_arm) and
+          "Show and Arm" in may(True, "operator", mx=no_show),
+          "an operator without the Arm row, or the Show row: refused")
+    check(may(False, "admin") == "", "an admin anywhere")
+    # Programming's own rule for moving the playhead is not loosened: it
+    # is not what practice asks, and every other move stays refused for
+    # an operator on an iPad while flames follow it.
+    import inspect as _insp
+    src = _insp.getsource(RM.Remote._practice_may)
+    check("programming_move_refusal" not in src.split('"""')[-1] and
+          "PROGRAMMING_MOVE_REFUSED" in _insp.getsource(
+              RM.Remote.programming_move_refusal),
+          "Step does not go through the playhead's move rule, which stays")
+    check("Show and Arm" in may(True, None), "signed out: refused")
+    check(may(True, None, active=False) == "" and
+          "sign-in is off" in may(False, None, active=False),
+          "sign-in off: the show PC only")
+    check(U.classify("/api/remote/fireball-practice",
+                     {"action": "open"}) == "arm" and
+          U.classify("/api/remote/fireball-practice",
+                     {"action": "step"}) == "arm" and
+          U.classify("/api/remote/fireball-practice",
+                     {"action": "beat"}) == "arm" and
+          U.classify("/api/remote/fireball-practice",
+                     {"action": "done"}) == "safety" and
+          U.classify("/api/remote/fireball-practice", {}) == "safety",
+          "open, Step and the beat are arm presses; Done is safety")
+    # The flame link's record: the frame's own numbers, and not a byte of
+    # any frame changes.
+    noise = [((i * 37) % 251) + 1 for i in range(512)]
+    cfg = fl.FlameLinkConfig.parse({"port": 5571, "universe": 1,
+                                    "key": _fl_key(), "frame_stale_ms": 500})
+    sent = {}
+    seen = []
+    for with_obs in (False, True):
+        clk = [1000.0]
+        tc = [0]
+
+        def state(tc=tc):
+            return f"00:00:{tc[0] // 30:02d}:{tc[0] % 30:02d}", True
+        lk = _flk_unguarded(cfg, cues=lambda t: noise, show_state=state,
+                            clock=lambda clk=clk: clk[0])
+        lk._sock = _FlSock()
+        lk.seq = 7000          # the link starts its count at random
+        lk.release()
+        if with_obs:
+            lk.sent_observer = lambda *a: seen.append((a, bytes(
+                lk.show_sent)))
+        for _ in range(20):
+            tc[0] += 1
+            clk[0] += 0.034
+            lk.send_frame()
+        sent[with_obs] = [d for d, _a in lk._sock.sent]
+    check(sent[False] == sent[True] and len(sent[True]) == 20,
+          "the record changes no byte of any frame")
+    import json as _js
+    frames = [_js.loads(d) for d in sent[True] if b'"flame"' in d]
+    check(len(seen) == 20 and all(
+        a[0] == f["mono"] and a[1] == f["tc"] and a[3] is True and
+        a[2] == show for (a, show), f in zip(seen, frames)),
+          "each record carries its frame's own mono, timecode and show part")
+    a = CK.AudioMaster.__new__(CK.AudioMaster)
+    a._epoch, a._mode = 12.5, "follow"
+    check(a.heard_epoch() == (12.5, True), "following the audio")
+    a._mode = "freerun"
+    check(a.heard_epoch() == (12.5, False), "freerun: not against the audio")
+    a._epoch = None
+    check(a.heard_epoch() == (None, False), "no epoch")
+    # The playhead binds the play before the flame cues are released.
+    from ltcplay.playhead import ShowAudioPlayhead
+    order = []
+
+    class Sess:
+        running = True
+
+        def __init__(self):
+            self._cue = None
+            self.tl = types.SimpleNamespace(cues=[])
+
+        def playhead_clock(self):
+            return self
+
+        def clock_play_from(self, s, check_only=False):
+            if not check_only:
+                self._cue = {"label": "Show", "position_s": 0.0}
+                order.append("play")
+            return None, s
+
+        def clock_halt(self):
+            order.append("halt")
+            self._cue = None
+    cond = types.SimpleNamespace(
+        music_started=lambda: order.append("music"),
+        show_starting=lambda *a, **k: (order.append("show_starting"),
+                                       types.SimpleNamespace(ok=True))[1],
+        intermission=lambda *a, **k: None)
+    sess = Sess()
+    ph = ShowAudioPlayhead(types.SimpleNamespace(session=sess),
+                           types.SimpleNamespace(conductor=cond,
+                                                 machine=None))
+    ph._watch = lambda: None
+    got = []
+    ph.play_from(10.0, "Jeff", "Rack screen",
+                 bind=lambda c: (got.append(c), order.append("bind")))
+    check(order == ["play", "bind", "music", "show_starting"] and
+          got and got[0] is sess._cue,
+          f"bound to the clock's cue, before music_started and "
+          f"show_starting: {order}")
+    del order[:]
+
+    def bad(c):
+        raise ValueError("no")
+    try:
+        ph.play_from(10.0, "Jeff", "Rack screen", bind=bad)
+        check(False, "a bind that failed was played")
+    except ValueError:
+        pass
+    check(order == ["play", "halt"],
+          f"a bind that fails stops the music; nothing is released: {order}")
+    # The card and OPERATOR.md.
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote2.html"),
+                encoding="utf-8").read()
+    i = page.find('id="fbp"')
+    card = page[i:page.find("</section>", i)]
+    check(i > page.find('id="t-schedule"') > 0 and
+          'data-safe class="b safe" id="fbp-done"' in card and
+          "Done, Stop, any disarm or leaving this card disarms every group."
+          in card and FP.FUEL_NOTE in card and 'id="fbp-deck"' in card and
+          "Noted: " in js_all(page) and "The Fireball page pads stay live between steps." in
+          card and "Timing edits go into the show's real timeline file." in
+          card and "—" not in card and "–" not in card,
+          "the card is on the Schedule tab, Done is a safe button, its lines")
+    js = page[page.find("// ---- Fireball practice"):]
+    check('action:"beat"' in js and 'action:"done"' in js and
+          'TAB !== "schedule"' in js,
+          "the card beats only while the Schedule tab shows it")
+    doc = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
+    sec = doc[doc.find("## Fireball practice"):doc.find(
+        "## The late limit")]
+    check(sec and FP.REFUSE_VALVE_UNLIT.replace(" (0.1 s)", "") not in "" and
+          "Valve Open has no Igniter lit when it opens" in sec and
+          "Tanks charged: Purge on the Fireball page" in sec and
+          "No software can see that" in sec and "—" not in sec and
+          "–" not in sec,
+          "OPERATOR.md says what practice does, in plain words")
     print("  ok")
 
 
@@ -112278,6 +113618,11 @@ if __name__ == "__main__":
         test_fireball_cues_never_drive_purge,
         test_fireball_timeline_equals_an_equivalent_fseq,
         test_fireball_cues_wiring,
+        test_fireball_practice_plan_and_words,
+        test_fireball_practice_on_the_flame_cues,
+        test_fireball_practice_engine,
+        test_fireball_practice_vetoes_and_wiring,
+        test_fireball_practice_counts_toward_fuel,
         test_fireball_timeline_end_to_end_real_flamesafe,
         test_fireball_manual_merged_on_the_flame_link,
         test_fireball_manual_and_timeline_never_double_charge,

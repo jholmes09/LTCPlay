@@ -262,16 +262,19 @@ class ShowAudioPlayhead:
         except Exception:                           # noqa: BLE001
             pass
 
-    def play_from(self, show_s, who="", screen=""):
-        """The show start, from `show_s`. Returns show seconds."""
+    def play_from(self, show_s, who="", screen="", bind=None):
+        """The show start, from `show_s`. Returns show seconds. `bind`
+        (Fireball practice): called with the clock's new cue dict once it
+        is ours, before show_starting releases the flame cues, so the
+        play is known as practice from its first flame frame."""
         with self._op:
             self._landing()
             try:
-                return self._play_from(show_s, who, screen)
+                return self._play_from(show_s, who, screen, bind)
             finally:
                 self._landing()
 
-    def _play_from(self, show_s, who, screen):
+    def _play_from(self, show_s, who, screen, bind=None):
         # A Start now waiting for the show audio is cancelled: it must not
         # start a show over this playback (#144's wait; Start now asks
         # again under the scheduler's lock too, start_veto).
@@ -331,6 +334,14 @@ class ShowAudioPlayhead:
                 cancel()
             raise
         self._adopt(s)
+        if bind is not None:
+            # Fireball practice: the play is bound before its flame cues
+            # are released. A bind that fails stops the music here.
+            try:
+                bind(self._ours[1] if self._ours else None)
+            except Exception:
+                s.clock_halt()
+                raise
         with self._lock:
             self._seen = self._clock()
         self._watch()

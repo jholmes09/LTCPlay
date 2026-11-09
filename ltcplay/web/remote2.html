@@ -485,6 +485,10 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 .card.fbt{flex-direction:column;align-items:stretch}
 .fbt-h,.fbt-pick,.fbt-foot,.fbt-ask{display:flex;align-items:center;gap:var(--gap);flex-wrap:wrap;min-width:0}
 .fbt-h .t{flex:1 1 12em}
+/* Fireball practice's timing table. */
+.fbp-t{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.fbp-t th,.fbp-t td{padding:2px 6px;text-align:left}
+.fbp-t tr.bad td{color:var(--red-hi)}
 .fbt-pick select.f{flex:1 1 14em;min-width:0;width:auto}
 /* A field this screen may not change: greyed, with a dashed edge (the
    disabled buttons' look); the text keeps its contrast. */
@@ -1044,6 +1048,31 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
         </div>
       </div>
     </div>
+      <!-- Fireball practice (fireball_practice.py, design rev 5): open
+           (a Stop: every group disarmed, the schedule held), arm the
+           Fireball once, then Step fires the timeline's one shot again
+           and again. The engine checks everything; this card only asks. -->
+      <div class="card" id="fbp" hidden>
+        <div class="fbt-h">
+          <div class="t"><b>Fireball practice</b><span id="fbp-sub">Fire the timeline's shot and see its timing.</span></div>
+        </div>
+        <div class="pline" id="fbp-state" role="status"></div>
+        <div class="pline" id="fbp-why"></div>
+        <div class="drow" id="fbp-open">
+          <button class="b green" id="fbp-live"><svg class="i"><use href="#i-play"/></svg>Open practice (Live)</button>
+          <button class="b" id="fbp-dry"><svg class="i"><use href="#i-play"/></svg>Open practice (Dry)</button>
+        </div>
+        <div class="drow" id="fbp-run" hidden>
+          <label class="drow">Lead-in <input class="f" id="fbp-lead" type="number" inputmode="numeric" min="4" max="30" step="1" value="5" aria-label="Lead-in seconds"> s</label>
+          <button class="b green" id="fbp-step"><svg class="i"><use href="#i-play"/></svg>Step</button>
+          <button data-safe class="b safe" id="fbp-done"><svg class="i"><use href="#i-shield"/></svg>Done</button>
+        </div>
+        <div class="pline">Done, Stop, any disarm or leaving this card disarms every group. The Fireball page pads stay live between steps. Timing edits go into the show's real timeline file. Between steps the rig shows the between-shows look.</div>
+        <div class="pline" id="fbp-fuel">Every charge and shot of a step is recorded in the fuel and air charge record like a show's (never a double charge), and its flame time is in the fuel totals as Programming (Other). A step is not a show.</div>
+        <div class="pline bad" id="fbp-deck" hidden></div>
+        <div id="fbp-table"></div>
+        <div class="pline" id="fbp-note"></div>
+      </div>
   </section>
   <!-- Users, who may do what and the audit log (P5, P6, P7): 1.0's Users
        screen, word for word. Opened from #users (the signed-in sheet and
@@ -1966,6 +1995,7 @@ function renderStale(){
   try{ renderAnnounce(); }catch(e){}
   try{ renderTools(isSt); }catch(e){}
   try{ if(TAB === "schedule"){ if($("fbt").hidden) fbtOpen(true); fbtGate(isSt); } }catch(e){}
+  try{ if(TAB === "schedule" || FBP_BEAT) fbpLoad(); }catch(e){}
   // A hazer's arm goes quiet the moment contact is lost, not at the next poll.
   if(ST) try{ renderHazers(ST); }catch(e){}
   if(ST) try{ renderPump(ST); }catch(e){}
@@ -2123,6 +2153,60 @@ async function startNow(){
   try{ await press("start-now", {confirmed:true}); }
   finally{ START_WAITING = false; try{ drawTransport(false); }catch(e){} }
 }
+// ---- Fireball practice (fireball_practice.py, design rev 5) ----
+// The card reads the engine's practice; the screen that opened it beats
+// once a second while the Schedule tab shows it (leaving the tab ends
+// practice after the engine's PAGE_BEAT_OFF_S). Every rule is the
+// engine's: this card only asks and shows the answer.
+let FBP = null, FBP_BEAT = null, FBP_BUSY = false;
+const FBP_WORDS = {closed:"Closed.", opening:"Opening.", arming:"Open: arm the Fireball (hold to arm).", ready:"Ready for a step.", starting:"Starting the step.", step:"Step playing.", ending:"Ending: every group is being disarmed."};
+async function fbpLoad(){
+  if(!(ST && ST.fireball_practice)){ $("fbp").hidden = true; fbpBeat(false); return; }
+  $("fbp").hidden = false;
+  try{ FBP = await getJSON("/api/remote/fireball-practice", 1500); }catch(e){ FBP = null; }
+  fbpDraw();
+  fbpBeat(!!(FBP && FBP.yours && FBP.state !== "closed" && TAB === "schedule"));
+}
+function fbpBeat(on){
+  if(on && !FBP_BEAT){ FBP_BEAT = setInterval(() => { if(TAB !== "schedule"){ fbpBeat(false); return; } post("/api/remote/fireball-practice", actor({action:"beat"})).catch(() => {}); }, 1000); }
+  if(!on && FBP_BEAT){ clearInterval(FBP_BEAT); FBP_BEAT = null; }
+}
+function fbpRows(res){
+  if(!res) return "";
+  const head = "<tr><th>Stage</th><th>Programmed</th><th>Sent ms</th><th>Late ms</th><th>Length ms</th><th>Result</th></tr>";
+  const body = (res.rows || []).map(r => `<tr class="${r.flag ? "bad" : ""}"><td>${esc(r.word)}</td><td>${esc(r.programmed_tc)} (${esc(r.programmed_ms)})</td><td>${esc(r.sent_ms == null ? "" : r.sent_ms)}</td><td>${esc(r.late_ms == null ? "" : r.late_ms)}</td><td>${esc(r.length_ms)} / ${esc(r.length_sent_ms == null ? "" : r.length_sent_ms)}</td><td>${esc(r.result)}</td></tr>`).join("");
+  return `<div class="pline"><b>Step ${esc(res.id)}</b> (${esc(res.mode === "live" ? "Live" : "Dry")})</div><table class="fbp-t">${head}${body}</table>`;
+}
+function fbpDraw(){
+  const v = FBP || {};
+  const st = v.state || "closed";
+  setText($("fbp-state"), (FBP_WORDS[st] || st) + (st !== "closed" ? " " + (v.mode === "dry" ? "Dry: nothing may be armed." : "Live: real flame.") : (v.ended_why ? " Last ended: " + v.ended_why + "." : "")) + (v.tanks ? " " + v.tanks : ""));
+  setText($("fbp-why"), (st === "arming" || st === "ready") && v.yours ? (v.step_why || "") : (st !== "closed" && !v.yours ? "Opened on another screen." : ""));
+  $("fbp-open").hidden = st !== "closed";
+  $("fbp-run").hidden = st === "closed";
+  $("fbp-step").disabled = !(v.yours && st === "ready" && !v.step_why) || FBP_BUSY;
+  $("fbp-table").innerHTML = fbpRows((v.results || [])[0]);
+  $("fbp-deck").hidden = !v.deck_note;
+  setText($("fbp-deck"), v.deck_note ? "Noted: " + v.deck_note : "");
+  setText($("fbp-note"), v.note || "");
+}
+async function fbpPress(body, ok){
+  if(FBP_BUSY) return;
+  FBP_BUSY = true;
+  try{ const j = await post("/api/remote/fireball-practice", actor(body)); say(ok, j.text || ok, "ok"); }
+  catch(e){ say("Fireball practice: refused.", e.message, "bad"); }
+  finally{ FBP_BUSY = false; fbpLoad(); }
+}
+async function fbpOpen(mode){
+  const live = mode === "live";
+  if(!(await confirmBox("Open Fireball practice (" + (live ? "Live" : "Dry") + ")?", "This presses Stop: every group and laser disarms and the schedule holds until Resume. " + (live ? "Then arm the Fireball (hold to arm); each Step fires the timeline's shot for real." : "Nothing may be armed; each Step plays the shot with no flame."), "Open", live ? "red" : "green"))) return;
+  fbpPress({action:"open", mode:mode}, "Fireball practice is open.");
+}
+$("fbp-live").addEventListener("click", () => fbpOpen("live"));
+$("fbp-dry").addEventListener("click", () => fbpOpen("dry"));
+$("fbp-step").addEventListener("click", () => fbpPress({action:"step", lead_in_s:Math.trunc(Number($("fbp-lead").value) || 5)}, "Step sent."));
+$("fbp-done").addEventListener("click", () => fbpPress({action:"done"}, "Fireball practice ended."));
+
 // ---- Start at a cue (play-from cues part 3: the Resume sheet) ----
 // OPERATOR.md, "Start at a cue": Start now with a starting point, in Show
 // mode only, for anyone who may press Start now (the Show row), with the

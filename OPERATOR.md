@@ -1317,6 +1317,82 @@ for the record as a whole a mark, PENDING.
   sentence, for example "Fuel: charged 14:32. Air: charged 14:35. No shot
   fired." There is no pressure reading: it is never invented.
 
+## Fireball practice
+
+Fireball practice fires the show's fireball shot for real, again and again,
+and shows how close to its programmed time each stage went out. It is on
+the Schedule tab, under the Fireball timeline card. It works on the
+Programming screen's playhead, never as a show: a step adds no show to
+tonight's count.
+
+**Before you start:** on the Programming screen, choose the show file and
+press Run in Programming. The show's fireball must be set to Timeline.
+
+**Open practice.** Press **Open practice (Live)** for real flame, or
+**Open practice (Dry)** to step with nothing armed. Opening presses Stop:
+every flame group and laser is disarmed, and the schedule holds until
+Resume. Resume, Start now, Start at a cue, Play from and the other moves of
+the playhead, a schedule edit, the show file card's choices, Reload engine
+and an announcement are refused while practice is open.
+
+**Arm the Fireball** with its hold to arm (Live), once. Arm nothing else:
+another group or a laser armed, or a hazer switched on, ends practice.
+
+**Step** plays the shot: from a lead-in (5 s, or 4 to 30) before its first
+stage to 2 s after its last, then the playback stops and the Fireball stays
+armed. Press Step again for the next shot. A step is refused, with nothing
+sent, unless:
+
+- Valve Open has an Igniter lit when it opens (the Igniter starts at least
+  3 frames before it and is still on). The words: "This step is refused:
+  Valve Open has no Igniter lit when it opens. Tick Igniter, start it at
+  least 3 frames (0.1 s) before Valve Open, and keep it on until Valve Open
+  starts. Nothing was sent."
+- A Fuel or Air stage has a Valve Open after it.
+- Both tanks are empty. If not: "Tanks charged: Purge on the Fireball page
+  before the next step."
+- It is pressed on the screen that opened practice, by someone who may
+  press Start now and arm (an operator on an iPad too).
+
+A step fires its whole shot or nothing. A Hold, a pause, a stall or a move
+part way through skips everything left in it; a tank left charged then
+needs a Purge before the next step.
+
+**What ends practice**, every group and laser disarmed (a Stop): **Done**,
+Stop, any disarm, the Fireball disarmed, anything else armed, a lockout of
+the Fireball, the Stream Deck's spoof ALARM, a second sender on the arm or
+flame link, flamesafe not reporting for a second, a fault in the flame cues, the
+fireball timeline or the charge record, a Hold or pause during a step, a
+step running over its time, the schedule leaving its Hold, Run off,
+another show file, leaving the Schedule tab for 5 s, and 10 minutes with
+no step. If the Stop does not complete, practice says so with a flames
+alert and presses Stop again every second until it does.
+
+**Only noted, never an end:** the Stream Deck unplugged or failing (its
+alert). Practice carries on and nothing is disarmed for it, as for a show
+(an unplugged deck never disarms the flames by itself); the card and the
+journal say so.
+
+**Fuel:** a step is not a show, but every charge and shot it sends is
+recorded in the fuel and air charge record like a show's (and its never a
+double charge rule applies), and its flame time is in the fuel totals as
+Programming (the Other pile, which the totals include). After a dry step,
+or a step whose shot was skipped, the charge record needs a few seconds
+to settle; the card says "Step again in a few seconds" until it has.
+
+**The timing table.** After each step, one row per stage: the programmed
+time, the time it was sent (both in ms from the top of the show cue, on the
+show audio), how late it went out and its length. Up to 41 ms late (one
+frame period of the flame link, 25 ms, plus a timer tick) or 5 ms early is
+OK; anything else is flagged. This is when LTC Player sent each stage to
+flamesafe. flamesafe adds up to 25 ms, and the igniter, valve and gas add
+their own delay. No software can see that: watch the flame against the
+music.
+
+**Good to know:** the Fireball page's pads stay live between steps. An edit
+of the Fireball timeline changes the show's real timeline file, and the
+next step uses it. Between steps the rig shows the between-shows look.
+
 ## The late limit: 2 minutes
 
 (Jeff, 2026-11-01.) A show is MISSED only if it is more than 2 minutes

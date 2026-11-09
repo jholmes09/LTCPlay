@@ -243,6 +243,23 @@ FIREBALL_TIMELINE_POST_ROUTES = ("fireball-timeline-save",)
 # NOT KNOWN tanks are empty (the Settings row, signed in, screen_arming
 # from the show network). It only changes the record; it sends nothing.
 FIREBALL_CHARGE_POST_ROUTES = ("fireball-charge-empty",)
+# Fireball practice (fireball_practice.py, design rev 5): read by anyone;
+# open and Step for anyone with the Show and Arm rows, on any screen (an
+# operator on an iPad too; with sign-in off, the show PC); Done from
+# anywhere (it only takes things away).
+FIREBALL_PRACTICE_GET_ROUTES = ("fireball-practice",)
+FIREBALL_PRACTICE_POST_ROUTES = ("fireball-practice",)
+# Refused while practice is open (press Done first): every start, every
+# move of the playhead but practice's own, Resume, setup that reloads the
+# show or the schedule, and anything else that could put flame, sound or
+# a second source on the rig. A Hold, a Pause and Follow are never
+# refused: they end practice after they are done.
+PRACTICE_REFUSED_ROUTES = ("start-now", "start-at-cue", "resume",
+                           "play-from", "jump", "continue", "loop", "mark-a",
+                           "mark-b", "preroll-continue", "announce-play",
+                           "schedule-file", "show-folder", "show-select",
+                           "show-file-new", "reload-engine")
+PRACTICE_ENDS_ROUTES = ("hold", "pause", "follow")
 GET_ROUTES = ("whoami", "status", "network", "deck-input",
               "announce-outputs") + \
     MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES + \
@@ -1658,6 +1675,8 @@ class Remote:
         self.fireball_charge = None
         # fireball_cues.FireballCues, web.serve (display only here)
         self.fireball_cues = None
+        # fireball_practice.Practice, web.serve
+        self.fireball_practice = None
         self.cleaning = None         # cleaning.CleaningPanel, web.serve
         # hazers.Hazers, set by web.serve (Fire & Ice with a flame link),
         # and the "hazers" mismatch alert's sentence and id.
@@ -2002,6 +2021,8 @@ class Remote:
             return self.play_from_get(query, ctx)
         if name in FIREBALL_TIMELINE_GET_ROUTES:
             return self.fireball_timeline_get(query)
+        if name in FIREBALL_PRACTICE_GET_ROUTES:
+            return self.fireball_practice_get(ctx)
         return 404, {"error": "no such thing here"}
 
     def post(self, route, body, ctx):
@@ -2011,6 +2032,9 @@ class Remote:
         if name in REMOVED_ROUTES:
             # A page from before the change: told plainly, nothing done.
             return 410, {"error": REMOVED_ROUTES[name], "removed": True}, {}
+        why = self.fireball_practice_route_refusal(name, body)
+        if why:
+            return 409, {"ok": False, "error": why, "text": why}, {}
         if "who" in body and self.users_active():
             # A name in the body (the Morning page's checklist, the Stream
             # Deck's chosen operator) is never who pressed: the signed-in
@@ -2075,8 +2099,15 @@ class Remote:
             return (*self.fireball_timeline_save(body, ctx),) + ({},)
         if name in FIREBALL_CHARGE_POST_ROUTES:
             return (*self.fireball_charge_empty(body, ctx),) + ({},)
+        if name in FIREBALL_PRACTICE_POST_ROUTES:
+            return (*self.fireball_practice_post(body, ctx),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
-            return (*self.press(name, body, ctx),) + ({},)
+            out = self.press(name, body, ctx)
+            if name in PRACTICE_ENDS_ROUTES:
+                pr = self.fireball_practice
+                if pr is not None:
+                    pr.request_end(f"{name.capitalize()} was pressed")
+            return (*out,) + ({},)
         if name == "arm-hold":
             return (*self.arm_hold(body, ctx),) + ({},)
         if name == "arm-release":
@@ -3533,7 +3564,12 @@ class Remote:
 
     def programming_playback_refusal(self):
         """The sentence that refuses Start now and Run while Programming
-        playback is on (playhead.py), or ""."""
+        playback is on (playhead.py), or Fireball practice is open, or "".
+        Asked under the scheduler's lock (start_veto): attribute reads
+        only for practice, never a lock."""
+        pr = self.fireball_practice
+        if pr is not None and pr.blocking:
+            return pr.refusal()
         try:
             on = self.programming()[0] and self.playhead.active()
         except Exception:                           # noqa: BLE001
@@ -5174,6 +5210,96 @@ class Remote:
             cue, length, why = self.fireball_show_info(show)
             out.update(cue=cue, show_len_s=length, show_problem=why)
         return 200, out
+
+    # -- Fireball practice (fireball_practice.py) ----------------------------
+    def fireball_practice_route_refusal(self, name, body):
+        """The sentence that refuses a POST while Fireball practice is
+        open, or "". Attribute reads only."""
+        pr = self.fireball_practice
+        if pr is None or not pr.blocking:
+            return ""
+        body = body if isinstance(body, dict) else {}
+        if name in PRACTICE_REFUSED_ROUTES:
+            return pr.refusal()
+        if name == "live-flame" and body.get("on") is True:
+            return pr.refusal()
+        if name == "cleaning-beat" and body.get("hold") is True:
+            return pr.refusal()
+        return ""
+
+    def _practice_may(self, ctx, what):
+        """"" when this request may open practice or Step (Jeff,
+        2026-11-08): anyone with the Show and Arm rows, on any screen, an
+        operator on an iPad too; asked at every press. Programming's
+        narrower rule for moving the playhead (programming_move_refusal:
+        the show PC or an admin) is not asked here and stays for every
+        other move. With sign-in switched off: the show PC only."""
+        from . import users as users_mod
+        local = bool(getattr(ctx, "local", False))
+        if not self.users_active():
+            if local:
+                return ""
+            return (f"{what} is done on the show PC while sign-in is off. "
+                    f"Nothing was changed.")
+        role = (getattr(ctx, "session", None) or {}).get("role")
+        try:
+            u = self.users
+            mx = u.matrix()
+            rows = all(users_mod.allowed(mx, role, p)
+                       for p in ("show", "arm"))
+        except Exception:                        # noqa: BLE001
+            return (f"{what} was refused: the sign-in could not be "
+                    f"checked. Nothing was changed.")
+        if not rows:
+            return (f"{what} needs the Show and Arm permissions. Nothing was "
+                    f"changed.")
+        return ""
+
+    def fireball_practice_get(self, ctx):
+        pr = self.fireball_practice
+        if pr is None:
+            return 404, {"error": "Fireball practice is not set up in this "
+                                  "engine."}
+        from . import fireball as fireball_mod
+        v = pr.view(fireball_mod._owner(ctx))
+        v["served_at"] = int(self.wall() * 1000)
+        return 200, v
+
+    def fireball_practice_post(self, body, ctx):
+        """POST fireball-practice {"action": "open" (with "mode": "live" or
+        "dry"), "step" (with "lead_in_s"), "beat" or "done"}."""
+        from . import fireball as fireball_mod
+        from . import fireball_practice as fp
+        pr = self.fireball_practice
+        if pr is None:
+            return 404, {"error": "Fireball practice is not set up in this "
+                                  "engine."}
+        who, screen, _s = self._actor(ctx, body)
+        action = body.get("action")
+        owner = fireball_mod._owner(ctx)
+        if action == "done":
+            return 200, {"ok": True, "text": pr.done(who, screen)}
+        if action == "beat":
+            ok, why = pr.beat(owner)
+            return (200 if ok else 409), {"ok": ok, "text": why}
+        if action not in ("open", "step"):
+            return 400, {"error": "action is open, step, beat or done."}
+        what = "Opening Fireball practice" if action == "open" else "Step"
+        why = self._practice_may(ctx, what)
+        if why:
+            self._journal(who, screen, "fireball practice", "refused", why)
+            return 403, {"ok": False, "error": why, "text": why}
+        try:
+            if action == "open":
+                text = pr.open(body.get("mode"), owner, who, screen)
+            else:
+                lead = body.get("lead_in_s", fp.LEAD_IN_DEFAULT_S)
+                text = pr.step(owner, who, screen, lead)
+        except fp.Refused as e:
+            self._journal(who, screen, "fireball practice", "refused",
+                          str(e))
+            return 409, {"ok": False, "error": str(e), "text": str(e)}
+        return 200, {"ok": True, "text": text}
 
     def fireball_charge_empty(self, body, ctx):
         """POST fireball-charge-empty: an admin confirms the fuel and air
@@ -8361,6 +8487,13 @@ class Remote:
                 out["fireball_charge"] = {
                     "fault": f"{type(e).__name__}: {e}", "text": "",
                     "tanks": {}}
+        fbp = self.fireball_practice
+        if fbp is not None:
+            # Fireball practice (fireball_practice.py): its state, so every
+            # screen shows it is open.
+            out["fireball_practice"] = {"state": fbp.state,
+                                        "mode": fbp.mode,
+                                        "ended_why": fbp.ended_why}
         fbq = self.fireball_cues
         if fbq is not None:
             # The fireball timeline's fault and its skips (fireball_cues.py).

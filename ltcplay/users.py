@@ -114,7 +114,8 @@ PERMS = (
             "keys, a purge (momentary or timed), the Fireball page's "
             "channels, the wave flamer "
             "cleaning, arming a laser, arming a hazer, the hazer levels, "
-            "turning the fuel pump on"),
+            "turning the fuel pump on, Fireball practice (open and Step, "
+            "with the Show row too)"),
     ("unlock", "Unlock a machine, turn a laser test on"),
     ("checklist", "Tick the Morning and Shutdown checklists"),
     ("show_files", "Show files and setup: the show folder, the schedule, "
@@ -135,7 +136,7 @@ SAFETY_ROWS = ("Stop, Hold, Disarm (one group or every group, "
                "locking a machine, a laser test off, live flame "
                "programming off, "
                "a hazer disarm, Hazers off, the fuel pump off, "
-               "Acknowledge, signing "
+               "Fireball practice's Done, Acknowledge, signing "
                "in and out: always, for everyone, signed in or not")
 
 # The defaults (Jeff decides; USERS.md). Signed out is view only (Jeff's
@@ -242,6 +243,11 @@ REMOTE_ROUTES = {
     # The charge record (fireball_charge.py): an admin confirms NOT KNOWN
     # tanks are empty.
     "fireball-charge-empty": "settings",
+    # Fireball practice (fireball_practice.py): open, Step and the beat
+    # that keeps it open are arm presses (the engine also asks the Show
+    # row, at every press, on any screen); Done only takes risk away
+    # (classify).
+    "fireball-practice": "arm",
     # These depend on the body: see classify().
     "fireball-beat": "arm", "cleaning-beat": "arm",
     "purge-select": "arm", "purge-fire": "arm", "laser-test": "unlock",
@@ -301,6 +307,11 @@ def classify(route, body=None):
             return "arm" if purge_fire_wanted(raw) else "safety"
         if name == "purge-select" and \
                 body.get("on") is False:
+            return "safety"
+        if name == "fireball-practice" and body.get("action") not in (
+                "open", "step", "beat"):
+            # Done, or anything the engine does not open or step with,
+            # only ends practice.
             return "safety"
         if name == "fireball-beat":
             # A beat with every channel off only turns things off.
