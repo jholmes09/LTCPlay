@@ -435,7 +435,18 @@ function unlockRefusal(m, flames){
 // while `enlarged`. Anything else is a first tap. Two fingers are both
 // "touch". 2.0 runs these very functions, and its stop-core script keeps
 // a copy (stopTapStep2, stopTapKind2) that the selftest keeps the same.
-const STOP_TAP_MS = 2000;
+// 3 s (the Windows stress test, 2026-11-09: "Stop does nothing" twice,
+// a second tap that came too late); the button says "tap twice" and
+// counts the window down.
+const STOP_TAP_MS = 3000;
+// The words of the double tap, on every Stop show button.
+const STOP_IDLE_WORDS = "Stop show: tap twice";
+const STOP_MISSED_WORDS = "Stop not sent: tap twice";
+const STOP_MISSED_MS = 2000;
+// "Tap again to stop (3)": the first tap's whole seconds left, never 0.
+function stopArmedWords(leftMs){
+  return "Tap again to stop (" + Math.max(1, Math.ceil(Math.max(0, leftMs) / 1000)) + ")";
+}
 function stopTapStep(prev, nowMs, kind, enlarged){
   if(prev && prev.kind === kind && nowMs >= prev.at){
     if(nowMs - prev.at <= STOP_TAP_MS || enlarged) return {fire:true, next:null};
