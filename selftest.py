@@ -43607,6 +43607,7 @@ t(startLook(att("STANDBY", {running:true}, {transport:{programming:true, playhea
 t(stopTapStep(null, 1000, "touch", false).fire === false && stopTapStep({at:1000, kind:"touch"}, 3500, "touch", false).fire === true, "a second tap within 3 s fires");
 t(stopTapStep({at:1000, kind:"touch"}, 4500, "touch", false).fire === false && stopTapStep({at:1000, kind:"touch"}, 4500, "touch", true).fire === true, "later only while still showing Tap again");
 t(STOP_IDLE_WORDS === "Stop show: tap twice" && STOP_MISSED_WORDS === "Stop not sent: tap twice" && STOP_MISSED_MS === 2000, "the words: tap twice, and a lone tap says Stop was not sent");
+t(JSON.stringify(stopLines(null, false)) === '["Stop show","tap twice"]' && JSON.stringify(stopLines(2500, false)) === '["Tap again","to stop (3)"]' && JSON.stringify(stopLines(900, false)) === '["Tap again","to stop (1)"]' && JSON.stringify(stopLines(null, true)) === '["Stop not sent","tap twice"]', "Stop show's two lines");
 t(stopArmedWords(3000) === "Tap again to stop (3)" && stopArmedWords(2001) === "Tap again to stop (3)" && stopArmedWords(2000) === "Tap again to stop (2)" && stopArmedWords(10) === "Tap again to stop (1)" && stopArmedWords(-50) === "Tap again to stop (1)", "the countdown: whole seconds left, never 0: " + stopArmedWords(2000));
 t(stopTapStep({at:1000, kind:"mouse"}, 1500, "touch", false).fire === false, "a different pointer kind is a first tap");
 t(stopTapKind({pointerType:"pen"}) === "pen" && stopTapKind({detail:0}) === "key", "the tap's kind");
@@ -98530,9 +98531,12 @@ async function presses(){
   window.__live = true; await wait(1600);
   res.stop_live_shown = shown(sb) && !sb.disabled;
   res.stop_live_red = sb.className.split(" ").includes("red") && !sb.className.includes("redline");
+  res.stop_label_idle = document.getElementById("stop-l").textContent;
+  res.stop_small_idle = document.getElementById("stop-s").textContent;
   sb.click(); await wait(300);
   res.stop_after_one = n("/api/remote/stop");
   res.stop_label_one = document.getElementById("stop-l").textContent;
+  res.stop_small_one = document.getElementById("stop-s").textContent;
   res.sheet = !document.getElementById("sheet").hidden;
   sb.click(); await wait(400);
   res.stop_after_two = n("/api/remote/stop");
@@ -98604,7 +98608,9 @@ async function prPresses(){
   // The hold's progress shows: the button is marked held and its fill
   // has started across it.
   res.holding = b.classList.contains("holding");
-  res.fill_w = parseFloat(getComputedStyle(b.querySelector(".fill")).width) || 0;
+  // (Its width runs on a CSS transition, which a virtual-time browser
+  // does not advance: its target is read.)
+  res.fill_to = b.querySelector(".fill").style.width;
   b.dispatchEvent(new PointerEvent("pointerup", o)); await wait(1500);
   res.early = posts.filter(p => /preroll-continue/.test(p.u)).map(p => JSON.parse(p.b).phase);
   posts.length = 0;
@@ -100284,7 +100290,7 @@ def test_ui2_show_tab_in_a_browser():
                       f"{where}: a failed rig check offers 1.0's Continue "
                       f"anyway as a hold; a tap sends nothing: {pr}")
                 check(pr and pr["label_held"] == "Hold to continue anyway"
-                      and pr["holding"] and pr["fill_w"] > 0 and
+                      and pr["holding"] and pr["fill_to"] == "100%" and
                       pr["early"] == ["begin"],
                       f"{where}: let go early, only the begin was sent: "
                       f"{pr}")
@@ -100356,7 +100362,10 @@ def test_ui2_show_tab_in_a_browser():
                       f"{p}")
                 check(p and p["stop_live_shown"] and p["stop_live_red"] and
                       p["stop_after_one"] == 0 and not p["sheet"] and
-                      p["stop_label_one"] == "Tap again to stop (3)" and
+                      p["stop_label_one"] == "Tap again" and
+                      p["stop_small_one"] == "to stop (3)" and
+                      p["stop_label_idle"] == "Stop show" and
+                      p["stop_small_idle"] == "tap twice" and
                       p["stop_after_two"] == 1 and not p["sheet_after"],
                       f"{where}: with a show live Stop is solid red, its "
                       f"first tap sends nothing and asks nothing, its "

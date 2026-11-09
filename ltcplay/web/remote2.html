@@ -198,6 +198,10 @@ main > #mini{padding:var(--gap) var(--pad) 0}
 .tr .b{min-height:0;height:100%;font-size:calc(var(--fs) + 2px)}
 #b-go{font-size:calc(var(--fs) + 6px)}
 #b-go .lbl{display:flex;flex-direction:column;align-items:flex-start;text-align:left}
+/* Stop show's two lines: "Stop show" over "tap twice" (the Windows
+   stress test, 2026-11-09). */
+#b-stop .lbl,#m-stop .lbl{display:flex;flex-direction:column;align-items:center}
+#b-stop .lbl small:empty,#m-stop .lbl small:empty{display:none}
 .tr .q{align-self:center}
 #alert{display:flex;align-items:center;gap:var(--gap);padding:0 10px;border-radius:12px;border:2px solid var(--line);background:var(--panel)}
 #alert > svg{width:32px;height:32px}
@@ -722,7 +726,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   <!-- Off the SHOW tab: the presses that make things safe, always here. -->
   <div id="mini" hidden>
     <button data-safe class="b amber" id="m-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
-    <button data-safe class="b red nostop" id="m-stop"><svg class="i"><use href="#i-stop"/></svg><span id="m-stop-l">Stop show: tap twice</span></button>
+    <button data-safe class="b red nostop" id="m-stop"><svg class="i"><use href="#i-stop"/></svg><span class="lbl"><span id="m-stop-l">Stop show</span><small id="m-stop-s">tap twice</small></span></button>
     <button data-safe class="b safe" id="m-disf"><svg class="i"><use href="#i-shield"/></svg>Disarm flames</button>
     <button data-safe class="b safe" id="m-disl"><svg class="i"><use href="#i-shield"/></svg>Disarm lasers</button>
     <button data-safe class="b redline" id="m-snd"><svg class="i"><use href="#i-stop"/></svg>Stop sound</button>
@@ -740,7 +744,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <div class="tr">
       <button class="b green" id="b-go" data-mode="none"><svg class="i"><use href="#i-play"/></svg><span class="lbl"><span id="go-l">Start now</span><small id="go-why"></small></span></button>
       <button data-safe class="b amber" id="b-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
-      <button data-safe class="b red nostop" id="b-stop"><svg class="i"><use href="#i-stop"/></svg><span id="stop-l">Stop show: tap twice</span></button>
+      <button data-safe class="b red nostop" id="b-stop"><svg class="i"><use href="#i-stop"/></svg><span class="lbl"><span id="stop-l">Stop show</span><small id="stop-s">tap twice</small></span></button>
       <button class="b red" id="b-runoff" hidden><svg class="i"><use href="#i-power"/></svg><span>Run off</span></button>
       <button class="q" data-q="transport" aria-label="Help: show controls">?</button>
     </div>
@@ -1827,7 +1831,7 @@ function renderAlertSlot(){
   ab.hidden = !act;
   ab.dataset.act = it.act || "";
   // Continue anyway is a hold, as 1.0's: drawn as a hold button.
-  ab.className = "b " + (it.act === "pr-continue" ? "amber hold" : "blue");
+  ab.className = "b " + (it.act === "pr-continue" ? "amber hold" + (PR_HOLD ? " holding" : "") : "blue");
   setIcon(ab.querySelector("svg"), it.act === "pr-continue" ? "ring" : it.act === "run" ? "power" : "check");
   setText($("al-act-l"), act || "");
   // Continue anyway is the run permission's (1.0's engine rule); never
@@ -2122,8 +2126,10 @@ function drawStop(b, l, isSt){
   b.classList.toggle("tap1", !!STOP_TAPS2[id]);
   b.setAttribute("aria-hidden", on ? "false" : "true");
   b.tabIndex = on ? 0 : -1;
-  setText(l, HALT_BUSY ? "Stopping" : STOP_TAPS2[id] ? stopArmedWords(STOP_TAPS2[id].prev.at + STOP_TAP_MS - monoNow())
-    : STOP_MISSED[id] && Date.now() - STOP_MISSED[id] < STOP_MISSED_MS ? STOP_MISSED_WORDS : STOP_IDLE_WORDS);
+  const two = HALT_BUSY ? ["Stopping", ""] : stopLines(STOP_TAPS2[id] ? STOP_TAPS2[id].prev.at + STOP_TAP_MS - monoNow() : null,
+    !!STOP_MISSED[id] && Date.now() - STOP_MISSED[id] < STOP_MISSED_MS);
+  setText(l, two[0]);
+  setText($(l.id.replace(/-l$/, "-s")), two[1]);
   b.title = STOP_TITLE;
   b.disabled = HALT_BUSY || !on;
 }

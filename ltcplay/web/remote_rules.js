@@ -445,7 +445,19 @@ const STOP_MISSED_WORDS = "Stop not sent: tap twice";
 const STOP_MISSED_MS = 2000;
 // "Tap again to stop (3)": the first tap's whole seconds left, never 0.
 function stopArmedWords(leftMs){
-  return "Tap again to stop (" + Math.max(1, Math.ceil(Math.max(0, leftMs) / 1000)) + ")";
+  return "Tap again to stop (" + stopLeftS(leftMs) + ")";
+}
+function stopLeftS(leftMs){
+  return Math.max(1, Math.ceil(Math.max(0, leftMs) / 1000));
+}
+// The Stop show button's two lines, [big, small]: "Stop show" / "tap
+// twice"; armed, "Tap again" / "to stop (3)"; a lone tap that timed out,
+// "Stop not sent" / "tap twice". Two lines, so the words fit a portrait
+// iPad's button.
+function stopLines(armedLeftMs, missed){
+  if(armedLeftMs !== null && armedLeftMs !== undefined) return ["Tap again", "to stop (" + stopLeftS(armedLeftMs) + ")"];
+  if(missed) return ["Stop not sent", "tap twice"];
+  return ["Stop show", "tap twice"];
 }
 function stopTapStep(prev, nowMs, kind, enlarged){
   if(prev && prev.kind === kind && nowMs >= prev.at){
