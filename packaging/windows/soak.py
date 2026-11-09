@@ -142,6 +142,143 @@ def now_text(t=None):
 
 
 # --------------------------------------------------------------- stats ---
+# -- where the soak's Art-Net receivers are (2026-11-09, show PC) ------------
+# The engine refuses (as a fault, which holds every scheduled show) any two
+# Art-Net receivers on one address on port 6454, every 127.x.x.x counting as
+# one (ltcplay/artnodes.py: Windows gives every packet to one socket). That
+# check is real and stays as it is. So the soak's show names only addresses
+# it accepts: one loopback receiver at most, and every other receiver on an
+# address of its own that this PC really has (the ShowNet loopback adapters,
+# or what this PC's own settings name).
+SHOWNET = {"MadMapper": "10.250.1.1", "BEYOND": "10.250.2.1"}
+SOAK_LISTEN_IP = "127.0.0.1"
+
+
+def pc_show_addresses(settings=None, read_json=None, listdir=os.listdir):
+    """{"MadMapper": [ip, ...], "BEYOND": [ip, ...]}: the addresses this
+    PC's own settings give each program, in order: ltcplay_fire_ice.json
+    beside showpc.json's schedule (madmapper.host; beyond_timecode_ip, then
+    beyond.host), every show file's clock.artnet.nodes in the show folder
+    (a node named MadMapper or BEYOND), then the ShowNet loopbacks. Each
+    address once. Never raises."""
+    def load(path):
+        try:
+            if read_json is not None:
+                return read_json(path)
+            with open(path, encoding="utf-8-sig") as fh:
+                return json.load(fh)
+        except Exception:
+            return None
+    out = {"MadMapper": [], "BEYOND": []}
+
+    def add(app, ip):
+        if isinstance(ip, str) and ip.strip() and \
+                ip.strip() not in out[app]:
+            out[app].append(ip.strip())
+    settings = settings or {}
+    sched = settings.get("schedule")
+    if sched:
+        fi = load(os.path.join(os.path.dirname(str(sched)),
+                               "ltcplay_fire_ice.json"))
+        if isinstance(fi, dict):
+            mm = fi.get("madmapper")
+            if isinstance(mm, dict):
+                add("MadMapper", mm.get("host"))
+            add("BEYOND", fi.get("beyond_timecode_ip"))
+            by = fi.get("beyond")
+            if isinstance(by, dict):
+                add("BEYOND", by.get("host"))
+    folder = settings.get("show_folder")
+    try:
+        names = sorted(listdir(folder)) if folder else []
+    except OSError:
+        names = []
+    for n in names:
+        if not n.lower().endswith(".json"):
+            continue
+        doc = load(os.path.join(folder, n))
+        clock = doc.get("clock") if isinstance(doc, dict) else None
+        art = clock.get("artnet") if isinstance(clock, dict) else None
+        nodes = art.get("nodes") if isinstance(art, dict) else None
+        if not isinstance(nodes, dict):
+            continue
+        for name, ip in nodes.items():
+            low = str(name).strip().lower()
+            if low.startswith("madmapper"):
+                add("MadMapper", ip)
+            elif low.startswith("beyond"):
+                add("BEYOND", ip)
+    for app, ip in SHOWNET.items():
+        add(app, ip)
+    return out
+
+
+def plan_addresses(mode, cands, on_pc):
+    """Where the soak's Art-Net receivers are, for `mode` ("fallback" or
+    "all programs"), from the candidate addresses (pc_show_addresses) and
+    `on_pc(ip)`, True only for an address this PC has. Returns {"nodes",
+    "mm", "beyond", "beyond_tc", "listen", "blank", "said"}; raises
+    RuntimeError, in a sentence, when all programs mode cannot be set up so
+    the engine accepts it. Pure."""
+    from ltcplay import artnodes
+
+    def usable(ip, taken):
+        a = artnodes.resolve(ip)
+        return (a is not None and not artnodes.is_loopback(a) and
+                artnodes.port_key(a) not in taken and on_pc(a) is True)
+    if mode == "fallback":
+        # This program plays MadMapper on the one loopback address, and
+        # BEYOND on an address of BEYOND's own when this PC has one.
+        taken = {artnodes.port_key(SOAK_LISTEN_IP)}
+        by = next((ip for ip in cands.get("BEYOND", [])
+                   if usable(ip, taken)), None)
+        nodes = {"MadMapper": SOAK_LISTEN_IP}
+        if by:
+            nodes["BEYOND"] = by
+            said = (f"Art-Net receivers: this program as MadMapper on "
+                    f"{SOAK_LISTEN_IP} and as BEYOND on {by} (its own "
+                    f"address on this PC), one address each")
+        else:
+            said = (f"Art-Net receivers: this program as MadMapper on "
+                    f"{SOAK_LISTEN_IP} only. This PC has no address of "
+                    f"BEYOND's own (looked for: "
+                    f"{', '.join(cands.get('BEYOND', [])) or 'none'}), and "
+                    f"a second receiver on the loopback would be refused, "
+                    f"so BEYOND's timecode black zone is not timed and the "
+                    f"lasers are blanked by OSC in this run")
+        return {"nodes": nodes, "mm": SOAK_LISTEN_IP, "beyond": by,
+                "beyond_tc": by, "listen": SOAK_LISTEN_IP,
+                "blank": "timecode" if by else "osc", "said": said}
+    found = {}
+    taken = {artnodes.port_key(SOAK_LISTEN_IP)}
+    for app in ("MadMapper", "BEYOND"):
+        ip = next((x for x in cands.get(app, []) if usable(x, taken)), None)
+        found[app] = ip
+        if ip:
+            taken.add(artnodes.port_key(ip))
+    if not found["MadMapper"] or not found["BEYOND"]:
+        missing = [a for a in ("MadMapper", "BEYOND") if not found[a]]
+        raise RuntimeError(
+            f"All programs mode needs MadMapper and BEYOND each on an "
+            f"address of its own on this PC (the ShowNet loopbacks "
+            f"{SHOWNET['MadMapper']} and {SHOWNET['BEYOND']}, or what this "
+            f"PC's settings name), but {' and '.join(missing)} has none "
+            f"here (looked for MadMapper: "
+            f"{', '.join(cands.get('MadMapper', [])) or 'none'}; BEYOND: "
+            f"{', '.join(cands.get('BEYOND', [])) or 'none'}). The soak's "
+            f"commands would not reach the real programs. Run with --mode "
+            f"fallback, where this program plays both.")
+    nodes = {"MadMapper": found["MadMapper"], "BEYOND": found["BEYOND"],
+             "Soak": SOAK_LISTEN_IP}
+    return {"nodes": nodes, "mm": found["MadMapper"],
+            "beyond": found["BEYOND"], "beyond_tc": found["BEYOND"],
+            "listen": SOAK_LISTEN_IP, "blank": "timecode",
+            "said": (f"Art-Net receivers: MadMapper on {found['MadMapper']}, "
+                     f"BEYOND on {found['BEYOND']} (their own addresses on "
+                     f"this PC, where their OSC commands go too), and this "
+                     f"program on {SOAK_LISTEN_IP}, one address each")}
+
+
 class Intervals:
     """Streaming statistics of the gaps between events."""
 
