@@ -1576,7 +1576,7 @@ class AudioMaster(Clock):
             self.out.close()
 
     def play(self, position_s, length_s=None, label="", start_s=0.0,
-             check_only=False):
+             check_only=False, fade_in_ms=0):
         """Run a cue: its audio from the top, the timecode from 00:00:00:00
         as the first sample is heard, the pixels from `position_s`. The
         cue's length is its audio's, whatever `length_s` says.
@@ -1587,7 +1587,12 @@ class AudioMaster(Clock):
         after a lost interface sends), and the timecode starts on that
         frame, not on 00:00:00:00. 0, every show start, is the top exactly
         as before. `check_only` makes every check and refusal and starts
-        nothing (Play from asks before it moves MadMapper's bank)."""
+        nothing (Play from asks before it moves MadMapper's bank).
+
+        `fade_in_ms` (Start at a cue, play_from.LANDING_FADE_S): the audio
+        process fades the cue in over this long from its first sample, the
+        same fade a Resume sends. 0, every other start, is a hard start
+        exactly as before. The timecode is not delayed by it."""
         got = self.cues.get(label)
         if got is None:
             raise ClockConfigError(
@@ -1634,7 +1639,8 @@ class AudioMaster(Clock):
             self.cues_played += 1
             self._set_paused(False)
             self._restore_level()
-            self._send(("play", role, sample, 0, self._token))
+            fade = self._sa.fade_frames(fade_in_ms) if fade_in_ms else 0
+            self._send(("play", role, sample, fade, self._token))
             self._mode = "wait"
             self._wait_since = now
             self._event(f"timecode from {self._tc_text(first)} for "
@@ -1680,7 +1686,7 @@ class AudioMaster(Clock):
             self._pause_req = False
             self._resume_after = False
             self._kick()
-            self._event(f"Abort: the show audio fades out over "
+            self._event(f"Stopped: the show audio fades out over "
                         f"{ms / 1000.0:g} s, then the "
                         f"timecode stops")
 
@@ -2089,6 +2095,16 @@ class AudioMaster(Clock):
     @staticmethod
     def _tc_text_of(tc):
         return f"{tc[0]:02d}:{tc[1]:02d}:{tc[2]:02d}:{tc[3]:02d}"
+
+    def heard_epoch(self):
+        """(epoch, following) for Fireball practice's timing record: the
+        perf_counter time at which second 0 of the playing cue is heard,
+        or None, and whether the clock is following the audio device
+        right now (not running on this computer's clock alone). Two plain
+        attribute reads, no lock: it is asked on the flame link's sender
+        thread. Read only."""
+        e = self._epoch
+        return e, self._mode == "follow" and e is not None
 
     def _end_frames(self, cue):
         """The frame the cue's timecode ends on: the longest of its audio

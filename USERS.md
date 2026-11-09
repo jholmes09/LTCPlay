@@ -11,7 +11,7 @@ with the time, the screen it came from and whether it worked. If nobody
 is signed in it is still written down, as "unsigned". Once a night LTC
 Player can send that record to your server. Signed out, every screen is
 view only, the rack screen on the show machine too: it shows everything
-but may only Stop, Hold, Abort, Acknowledge and disarm. Signing in never
+but may only Stop, Hold, Acknowledge and disarm. Signing in never
 stands in the way of those: they work for everyone, signed in or not,
 always.
 
@@ -36,7 +36,7 @@ each person sign in once soon after the update.
 
 If `ltcplay_users.json` is ever damaged, or deleted after users were set
 up, LTC Player does not fall back to "nobody set up". Every screen shows
-an alert, every control is locked except Stop, Hold, Abort, Acknowledge
+an alert, every control is locked except Stop, Hold, Acknowledge
 and the disarms, and nobody can sign in. A good `ltcplay_users.json` put
 back in the settings folder is used at once, with no restart. To start
 over with no users: close LTC Player, remove `ltcplay_users.json` and
@@ -58,11 +58,12 @@ user's name, like "unsigned", "system" and "nobody".
 
 ## Signing in
 
-The small button at the top right of the rack screen says who is signed
-in ("Signed out" when nobody is). Press it to get to the Users screen:
-pick your name, type your password, Sign in. Sign out is on the same
-screen. The show screen itself has no sign-in on it and still fits one
-screen with no scrolling.
+The button at the top right of the screen says who is signed in ("Sign
+in" when nobody is). Press it to sign in: tap your name, type your
+password, Sign in. Signed in, the same button offers Users (the Users
+pane: your own password, the users, who may do what and the audit log)
+and Sign out. The Users pane also opens from Settings, Users. The show
+screen itself has no sign-in form on it.
 
 - Five wrong passwords in a row lock that name for 30 seconds, then 60,
   doubling up to 5 minutes at most. It is never permanent, and an admin
@@ -71,15 +72,16 @@ screen with no scrolling.
   on the Users screen); 0 means off.
 - Sign out after the last show is ON: 10 minutes after the last show of
   the night has ended, everyone who was signed in before it ended is
-  signed out, once. It waits while a show is live, on Hold, or after an
-  Abort until Reset, and while anything is armed or going on at the rig
+  signed out, once. It waits while a show is live or on Hold, and while
+  anything is armed or going on at the rig
   (a hold to arm, a purge, a laser test, an armed laser or flame group),
   then goes as soon as that is clear. A show started by hand with Start
   now counts as a show, on a night that has a show on the schedule; on a
   night with no show on the schedule it never happens. Someone who signs
   in after the last show ended stays signed in for the rest of the
-  night. The night is the schedule's own, up to its 2 AM reset, so a show
-  ending just before the reset still gets its sign-out. A blank or wrong
+  night. The night is the schedule's own, up to where it hands over to
+  the next (2 AM, or later while a show of it still has to run), so a
+  show ending just before then still gets its sign-out. A blank or wrong
   number in the box is refused and nothing is saved. An admin can change the minutes on the
   Users screen ("Sign everyone out this many minutes after the last show
   of the night"); 0 means off. The audit log says "after the last show"
@@ -114,13 +116,13 @@ the ticks there. These are the proposed defaults:
 
 | What | admin | operator | viewer | signed out |
 |---|---|---|---|---|
-| **Abort, Hold, Stop, every disarm (flames and lasers), letting go, locking a machine, a hazer disarm, Hazers off, Acknowledge** | always | always | always | always |
-| Start now, Resume, Reset, Run a show file, rehearsal scrubbing, playing an announcement, choosing the operator | yes | yes | no | never |
-| Arm flames and lasers (hold to arm, the deck's arm keys, a purge, momentary or timed, the Fireball page's channels, the wave flamer cleaning, arming a laser, arming a hazer, the hazer levels) | yes | yes | no | never |
+| **Stop, Hold, every disarm (flames and lasers), letting go, locking a machine, a hazer disarm, Hazers off, the fuel pump off, Fireball practice's Done, Acknowledge** | always | always | always | always |
+| Start now, Start at a cue, Resume, Run a show file, rehearsal scrubbing, playing an announcement, choosing the operator | yes | yes | no | never |
+| Arm flames and lasers (hold to arm, the deck's arm keys, a purge, momentary or timed, the Fireball page's channels, the wave flamer cleaning, arming a laser, arming a hazer, the hazer levels, turning the fuel pump on, Fireball practice's open and Step, which need the row above too) | yes | yes | no | never |
 | Unlock a machine, turn a laser test on | yes | yes | no | never |
 | Tick the Morning and Shutdown checklists | yes | yes | no | never |
 | Show files and setup (show folder, choosing the show, opening a folder, schedule, tonight's list, layout) | yes | yes | no | never |
-| Settings (show network, arming from a screen, moving Programming playback from an iPad while flames follow it, audit upload, idle sign out, sign out after the last show) | yes | no | no | never |
+| Settings (show network, arming from a screen, moving Programming playback from an iPad while flames follow it, audit upload, idle sign out, sign out after the last show, the play-from cues, the fireball timeline) | yes | no | no | never |
 | Users (add, remove, passwords, roles, lockouts) | yes | no | no | never |
 
 "Signed out" is view only (your field report, 2026-10-28). It replaces
@@ -134,7 +136,7 @@ The first row can never be unticked by anyone. It is not in the settings
 at all: it is written into the program.
 
 On the rack screen and the iPad, the first row's buttons never ask anyone to
-sign in: the ABORT stop sign in the bottom right corner (tap it twice), a flame group's
+sign in: Stop (tap it twice; there is no Abort any more), a flame group's
 button while it reads Disarm, and Disarm all flame groups. Arm all flame
 groups is arming: it follows the "Arm flames" row, group by group, and a
 group the screen may not arm stays out and is named.
@@ -155,7 +157,7 @@ plus which screen or window it came from.
 What is logged: every Stream Deck key going down and coming up (so holds
 and the release of FIRE are there), every button on the rack screen or an
 iPad that does something, sign-ins and sign-outs and failed ones, settings
-and user changes, shows starting and ending, Hold and Abort taking effect,
+and user changes, shows starting and ending, Hold and Stop taking effect,
 flame groups arming and disarming, machines locked out.
 
 What is never logged: passwords, anything typed into a password box, the

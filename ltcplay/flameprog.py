@@ -1152,7 +1152,7 @@ class LiveFlame:
                 except Exception:
                     pass
                 self._reset()
-                why = ("an Abort, Hold or Start now was pressed while it was "
+                why = ("a Stop, Hold or Start now was pressed while it was "
                        "starting." if isinstance(e, _CutWhileStarting) else
                        f"it could not be started ({type(e).__name__}: {e}).")
                 cut = isinstance(e, _CutWhileStarting)
@@ -1554,8 +1554,8 @@ class LiveFlame:
         try:
             if link is None or not getattr(link, "program_on", False):
                 why = self._cut_reason or (
-                    "the show zeroed or disarmed the flames (a Hold, an "
-                    "Abort, a disarm of every group or a show ending)")
+                    "the show zeroed or disarmed the flames (a Hold, a "
+                    "Stop, a disarm of every group or a show ending)")
             if not why:
                 why = self._blockers() or ""
             if not why:

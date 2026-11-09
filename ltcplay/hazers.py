@@ -146,7 +146,6 @@ class Hazers:
 
     link_get        () -> the engine's FlameLink, or None
     flames_get      () -> remote.FlameStatus.view() or None
-    abort_standing  () -> True while an Abort is latched
     show_state      () -> "playing", "held" or "idle" (the scheduled show)
     blocker         () -> why arming is refused right now, or "" (live
                     flame programming on)
@@ -155,12 +154,11 @@ class Hazers:
     audit           audit.AuditLog or None
     threaded        False for the selftest: check() by hand"""
 
-    def __init__(self, link_get, flames_get, abort_standing, show_state=None,
+    def __init__(self, link_get, flames_get, show_state=None,
                  blocker=None, folder=None, journal=None, audit=None,
                  clock=time.monotonic, threaded=True):
         self._link_get = link_get
         self._flames_get = flames_get
-        self._abort_standing = abort_standing
         self._show_state = show_state or (lambda: "idle")
         self._blocker = blocker or (lambda: "")
         self._journal = journal
@@ -266,8 +264,11 @@ class Hazers:
         pt = fl.get("passthrough")
         if not isinstance(pt, list):
             return None
+        # Hazers only: a switch (the fuel pump, 2026-10-30) is
+        # fuelpump.py's, never a hazer.
         return [(str(p.get("name", "")), list(p.get("slots") or []))
-                for p in pt if isinstance(p, dict)]
+                for p in pt if isinstance(p, dict)
+                and str(p.get("kind") or "hazer") == "hazer"]
 
     # -- why not ------------------------------------------------------------
     def down(self):
@@ -294,12 +295,6 @@ class Hazers:
 
     def refusal(self, name):
         """Why `name` may not be ARMED now, in a sentence, or ""."""
-        try:
-            if self._abort_standing():
-                return ("an Abort is standing. Press Reset, then arm it "
-                        "again.")
-        except Exception:
-            return "whether an Abort is standing could not be read."
         why = self.down()
         if why:
             return why
@@ -310,7 +305,7 @@ class Hazers:
         except Exception:
             repeating = True
         if repeating:
-            return ("an Abort or Stop is still being sent to flamesafe. "
+            return ("a Stop is still being sent to flamesafe. "
                     "Arm it again in a moment.")
         try:
             why = self._blocker() or ""
@@ -355,7 +350,7 @@ class Hazers:
         h, f = self.levels.levels.get(name, (0, 0))
         text = (f"{who or 'Someone'} armed {name} on the {screen}. It runs "
                 f"at haze {value_to_pct(h)}%, fan {value_to_pct(f)}% while "
-                f"a show plays. Abort, Stop and a lost link to flamesafe "
+                f"a show plays. Stop and a lost link to flamesafe "
                 f"disarm it.")
         self._note(who, screen, "armed", text)
         self._audit(who, screen, "hazer arm", name, "accepted", "")

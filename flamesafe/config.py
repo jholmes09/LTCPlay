@@ -36,6 +36,12 @@ PROFILE_KEYS = ("arm_value", "enable_lo", "enable_hi", "fire_at")
 # A passthrough entry (Jeff, 2026-10-29, the hazers): a device on the flame
 # universe that is not a flame.  Nothing else is allowed in one.
 PASSTHROUGH_KEYS = {"name", "haze", "fan"}
+# The second kind (Jeff, 2026-10-30, the fireball's fuel pump): one slot
+# switched between 0 and the entry's own "on" value, which flamesafe writes
+# itself, never the frame's value.  An entry with "switch" is this kind and
+# must have exactly these keys.
+SWITCH_KEYS = {"name", "switch", "on"}
+SWITCH_ON_MIN, SWITCH_ON_MAX = 1, 255
 # At most this many passthrough entries (the flame frame's hazers_on list
 # is refused longer than this, link.HAZERS_MAX).
 PASSTHROUGH_MAX = 16
@@ -197,25 +203,47 @@ class Group:
 
 
 class Passthrough:
-    """One passthrough entry (Jeff, 2026-10-29): a hazer on the flame
-    universe.  Its slots carry ltcplay's values only while the show program
-    has it switched on (the flame frame's hazers_on), the link is fresh and
-    no Abort has stood since; else zero.  It never arms, never fires and
-    never touches a group's slots: the config refuses any overlap."""
+    """One passthrough entry: a device on the flame universe that is not a
+    flame.  Two kinds:
 
-    __slots__ = ("name", "haze", "fan", "slots")
+      "hazer"  (Jeff, 2026-10-29) a haze slot and a fan slot; while it is
+               switched on they carry the show program's values;
+      "switch" (Jeff, 2026-10-30, the fireball's fuel pump) one slot; while
+               it is switched on it carries this entry's own `on` value,
+               whatever the frame holds there.
 
-    def __init__(self, name, haze, fan):
+    Either kind is switched on only while the show program has it in the
+    flame frame's hazers_on, the link is fresh and nothing has taken it
+    away since it was last seen OFF; else zero.  It never arms, never fires
+    and never touches a group's slots: the config refuses any overlap."""
+
+    __slots__ = ("name", "kind", "haze", "fan", "switch", "on", "slots")
+
+    def __init__(self, name, haze=None, fan=None, switch=None, on=None):
         self.name = str(name)
-        # The hazer's two channels by role (Jeff, 2026-10-29: the haze
-        # output and the fan). flamesafe treats them alike; the role is
-        # for the engine and the screens. Swap them in the config if a
-        # fixture is the other way round.
-        self.haze = int(haze)
-        self.fan = int(fan)
-        self.slots = [self.haze, self.fan]
+        if switch is None:
+            # The hazer's two channels by role (Jeff, 2026-10-29: the haze
+            # output and the fan). flamesafe treats them alike; the role is
+            # for the engine and the screens. Swap them in the config if a
+            # fixture is the other way round.
+            self.kind = "hazer"
+            self.haze = int(haze)
+            self.fan = int(fan)
+            self.switch = None
+            self.on = None
+            self.slots = [self.haze, self.fan]
+        else:
+            self.kind = "switch"
+            self.haze = None
+            self.fan = None
+            self.switch = int(switch)
+            self.on = int(on)
+            self.slots = [self.switch]
 
     def __repr__(self):
+        if self.kind == "switch":
+            return (f"<Passthrough {self.name!r} switch={self.switch} "
+                    f"on={self.on}>")
         return (f"<Passthrough {self.name!r} haze={self.haze} "
                 f"fan={self.fan}>")
 
@@ -708,16 +736,18 @@ def from_dict(d, source="config"):
 
 def _passthrough(d, groups):
     """The "passthrough" list (Jeff, 2026-10-29, the hazers): optional, one
-    entry per hazer, each {"name": text, "haze": slot, "fan": slot}, slots
-    1..512.  Refused unless both slots are given, are different, and are
-    slots of no group (safety, fire or aim) and of no other entry, and
-    every name is its own (no other entry and no group has it).  Left out,
-    there is none and every slot that belongs to no group is zero, as
-    before."""
+    entry per device, either a hazer {"name": text, "haze": slot, "fan":
+    slot} or (2026-10-30, the fuel pump) a switch {"name": text, "switch":
+    slot, "on": 1..255}, slots 1..512.  Refused unless every slot is given,
+    the slots are different, and are slots of no group (safety, fire or
+    aim) and of no other entry, and every name is its own (no other entry
+    and no group has it).  Left out, there is none and every slot that
+    belongs to no group is zero, as before."""
     raw = d.get("passthrough", [])
     if not isinstance(raw, list):
-        raise ConfigError("passthrough must be a list of {\"name\", "
-                          "\"haze\", \"fan\"} entries, one per hazer.")
+        raise ConfigError("passthrough must be a list of entries, each "
+                          "{\"name\", \"haze\", \"fan\"} (a hazer) or "
+                          "{\"name\", \"switch\", \"on\"} (a switch).")
     if len(raw) > PASSTHROUGH_MAX:
         raise ConfigError(f"passthrough has {len(raw)} entries; at most "
                           f"{PASSTHROUGH_MAX}.")
@@ -734,7 +764,9 @@ def _passthrough(d, groups):
     for i, e in enumerate(raw):
         if not isinstance(e, dict):
             raise ConfigError(f"passthrough entry {i + 1} is not an object.")
-        _only_known(e, PASSTHROUGH_KEYS, f"passthrough entry {i + 1}")
+        is_switch = "switch" in e
+        _only_known(e, SWITCH_KEYS if is_switch else PASSTHROUGH_KEYS,
+                    f"passthrough entry {i + 1}")
         name = e.get("name")
         if not isinstance(name, str) or not name.strip():
             raise ConfigError(f"passthrough entry {i + 1} has no name.")
@@ -746,11 +778,22 @@ def _passthrough(d, groups):
                               f"used by a group or another passthrough "
                               f"entry.")
         names.add(name)
-        for role in ("haze", "fan"):
-            if role not in e:
-                raise ConfigError(f"passthrough {name!r}: {role} is missing; "
-                                  f"give the {role} channel's slot.")
-        slots = [e.get("haze"), e.get("fan")]
+        if is_switch:
+            on = e.get("on")
+            if isinstance(on, bool) or not isinstance(on, int) or \
+                    not SWITCH_ON_MIN <= on <= SWITCH_ON_MAX:
+                raise ConfigError(f"passthrough {name!r}: on is {on!r}; give "
+                                  f"the value its slot takes when it is "
+                                  f"switched on, a whole number "
+                                  f"{SWITCH_ON_MIN} to {SWITCH_ON_MAX}.")
+            slots = [e.get("switch")]
+        else:
+            for role in ("haze", "fan"):
+                if role not in e:
+                    raise ConfigError(f"passthrough {name!r}: {role} is "
+                                      f"missing; give the {role} channel's "
+                                      f"slot.")
+            slots = [e.get("haze"), e.get("fan")]
         for s in slots:
             if isinstance(s, bool) or not isinstance(s, int) \
                     or not (1 <= s <= rules.UNIVERSE_SIZE):
@@ -765,7 +808,10 @@ def _passthrough(d, groups):
                 raise ConfigError(f"passthrough {name!r}: slot {s} is "
                                   f"already a slot of {owner[s]!r}.")
             owner[s] = name
-        out.append(Passthrough(name, slots[0], slots[1]))
+        if is_switch:
+            out.append(Passthrough(name, switch=slots[0], on=e["on"]))
+        else:
+            out.append(Passthrough(name, slots[0], slots[1]))
     return out
 
 

@@ -1482,6 +1482,11 @@ def _status_of(reason):
     for s in _FINAL:
         if r.startswith(s):
             return s
+    if r.startswith("STOPPED"):
+        # A Stop's show (status ABORTED, reason "STOPPED (operator
+        # Stop)"): every operator's ending now that Abort is removed
+        # (Jeff, 2026-10-30), never "still running".
+        return "ABORTED"
     if any(r.startswith(s) for s in _STARTED):
         return "STARTED"
     if r.startswith("DELAYED (on hold)"):

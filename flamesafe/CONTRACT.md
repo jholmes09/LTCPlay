@@ -10,6 +10,12 @@ Both directions are UDP datagrams on loopback. Each datagram is one JSON
 object, UTF-8, no framing. A datagram that is not exactly as written here is
 rejected with a reason and changes nothing. flamesafe never raises on input.
 
+A word on "Abort" in this page: ltcplay's Abort was removed on 2026-10-30
+(Jeff). Its `disarm_all` is now sent by every Stop, and the Stream Deck
+has had no Abort key since 2026-10-26. The wire messages are unchanged;
+older sections keep the name they were written with ("Disarm every
+group" below says more).
+
 ## Version 2: the shared key
 
 Any local process can write a datagram to a loopback port. In version 1 a
@@ -327,7 +333,7 @@ Per group, the two lamps of section 8 panel 5:
 |---|---|
 | `wanted` | what the arm input is asking for |
 | `armed` | the ARMED lamp: `disarmed` (dim blue), `armed` (green: the safety slot carries the arm value), `held` (amber: arm asked for and refused) |
-| `reason` | why held, in words: `cycle the arm`, `dirty edge`, `re-arm dwell`, `chatter`, `arm input stale`, `arm input has never asserted`, `safety program fault`, `Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back.`, `Show program has not answered yet: disarmed. Cycle the arm once it is running.`, `Another sender is on the arm link: a cycle cannot arm until it stops. Cycle the arm again once it has gone.` (round 4: shown instead of `cycle the arm` while `arm_input.foreign_senders` is non-zero or `arm_input.flooded` is true, and also instead of the Abort sentence), `Another sender is on the show program link, or it just changed hands: every group is disarmed and a cycle cannot arm until that has settled. Cycle the arm again once it has.` (2026-10-03, the second-copy guard: shown the same way while `frames.foreign_senders` is non-zero, `frames.new_sender` is true or `frames.flooded` is true; the arm link's sentence wins when both apply), `Disarmed by the show's Abort. Cycle the arm to re-arm.` (2026-10-02, disarm_all) |
+| `reason` | why held, in words: `cycle the arm`, `dirty edge`, `re-arm dwell`, `chatter`, `arm input stale`, `arm input has never asserted`, `safety program fault`, `Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back.`, `Show program has not answered yet: disarmed. Cycle the arm once it is running.`, `Another sender is on the arm link: a cycle cannot arm until it stops. Cycle the arm again once it has gone.` (round 4: shown instead of `cycle the arm` while `arm_input.foreign_senders` is non-zero or `arm_input.flooded` is true, and also instead of the Stop sentence), `Another sender is on the show program link, or it just changed hands: every group is disarmed and a cycle cannot arm until that has settled. Cycle the arm again once it has.` (2026-10-03, the second-copy guard: shown the same way while `frames.foreign_senders` is non-zero, `frames.new_sender` is true or `frames.flooded` is true; the arm link's sentence wins when both apply), `Disarmed by the show's Stop. Cycle the arm to re-arm.` (`Disarmed by the show's Abort. Cycle the arm to re-arm.` before 2026-10-30) (2026-10-02, disarm_all) |
 | `amber` | `flashing` when cycling the arm is the fix (`cycle the arm`, `dirty edge`, the Abort sentence); `steady` when cycling would only restart the wait or fix nothing (`re-arm dwell`, `chatter`, and every veto, the flame link's included). Empty unless held |
 | `dwell_s` | whole seconds left in the re-arm dwell, 1 or more while held for it, else 0. The lamp shows this number; the screen never counts down on its own |
 | `arm_value` | the value this group raises its safety slots to: the file's `arm_value`, or its `safety_profile`'s (added 2026-10-26). The rack screen shows it as the group name's tooltip, "Arms at N on its safety slots" |
@@ -531,7 +537,8 @@ fixture is the other way round):
 ```
 
 Refused at start (flamesafe does not start) unless: a list of at most 16
-objects with exactly `name`, `haze` and `fan`; each name 1 to 64
+objects with exactly `name`, `haze` and `fan` (or, since 2026-10-30, a
+switch with exactly `name`, `switch` and `on`: see "A switch" below); each name 1 to 64
 characters and used by no other entry and no group; `haze` and `fan` each
 a whole number 1 to 512, two different slots; no slot listed by another
 entry; and no slot that is any group's safety, fire or aim slot. Left out,
@@ -587,7 +594,7 @@ else holds, and then `why` says so), `sent` (the
 values on its slots this tick) and `why` (empty while passing, else one of:
 `switched off in the show program`, `the show program link is not fresh`,
 `not yet seen switched off by the show program since this program started:
-switch it off and on again`, `zeroed by the show's Abort: switch it off
+switch it off and on again`, `zeroed by the show's Stop: switch it off
 and on again in the show program`, `the show program link changed hands:
 switch it off and on again in the show program`, `the safety program
 faulted (an overrun or a compose fault): ...`, `a slot of it is in the
@@ -597,6 +604,67 @@ flamesafe journals one
 start line, `passthrough: Hazer 1 80, 81; ... read from <path>` (or
 `passthrough: none in <path>`), and one line when an Abort switches off a
 hazer that was on.
+
+**A switch: the fireball's fuel pump (added 2026-10-30).** Jeff: "we
+need a toggle for a fuel pump. This is something for Andy to manually
+control as needed. It does not need to be armed or disarmed but it should
+be affected by the stop button." A second entry kind, one slot that is
+either 0 or the entry's own `on` value:
+
+```json
+"passthrough": [
+  {"name": "Hazer 1", "haze": 80, "fan": 81},
+  {"name": "Fireball Fuel Pump", "switch": 100, "on": 255}
+]
+```
+
+An entry that has `switch` is a switch and must have exactly `name`,
+`switch` (a whole number 1 to 512) and `on` (a whole number 1 to 255; not
+a decimal, not true or false). Every other passthrough rule above applies
+to it unchanged: the name is its own, its slot is no group's safety, fire
+or aim slot and no other entry's slot, it counts towards the 16, and it is
+switched on and off by name in the same `hazers_on` list, with the same
+take-aways (start, stale link, change of sender, panic tick, `disarm_all`)
+and the same OFF-then-ON rule. The one difference: while it is switched on
+its slot carries **the entry's own `on` value, written by flamesafe**,
+never the value the frame carries on that slot. So no frame, whatever it
+holds there, can put any other level on the pump; the frame only says ON
+or OFF. A slot in the lockout file is zero. A Composer re-checks, when it is
+built, whatever built its Config: it refuses a switch whose `on` is not 1
+to 255, a passthrough slot outside 1 to 512, and two entries that share a
+slot. The status frame's entry for a switch
+has `kind` `"switch"`, `slots` (its one slot), `switch` and `on` in place
+of `haze` and `fan`; a hazer's entry gains `kind` `"hazer"` and is
+otherwise unchanged. The start line names it as `Fireball Fuel Pump switch
+100 at 255`.
+
+**ltcplay's side of a switch** (`ltcplay/fuelpump.py`,
+`ltcplay/flamelink.py`, 2026-10-30). LTC Player knows one switch, the fuel
+pump, and refuses a file with two. Its slot is zero in every frame the
+engine sends; the engine names it in `hazers_on` only for a run time the
+operator sets first (5 minutes unless set, 10 minutes at most; a run also
+ends when the sign-in that started it signs out), and only before that run's hard end on the link's own clock and while the
+engine's timer re-asserts it every 0.1 s (0.5 s without a beat and the
+link stops naming it). Every `disarm_all` (Stop, Abort, Disarm all's
+fallback, the cleaning's disarm, live flame programming ending) clears it
+at the link before its first copy, and the engine journals that cause;
+Hold does not, and live flame programming does not start while it runs.
+If the engine dies, flamesafe zeroes it at `frame_stale_ms` like every
+other passthrough slot.
+
+**Deploy order for a switch.** A flamesafe from before this date refuses a
+config with a switch entry (an unknown key in a passthrough entry) and
+does not start. LTC Player refuses it too (an entry without `haze` and
+`fan`) until its own fuel pump update (#188) is installed: this flamesafe
+change alone does NOT make LTC Player read a switch. Install BOTH updates
+first, then add the entry to `flamesafe.json`, then restart both.
+
+**Bench item before a pump is wired.** The pump is the first output on the
+flame universe meant to sit at a steady non-zero value. Check at the bench
+that the PixLite (or whatever DMX node carries the flame universe) drops
+every output to zero when sACN stops, and does not hold the last look:
+flamesafe's zeroing on a lost link only reaches the pump if the node
+passes the zeros, or goes to zero itself when nothing arrives.
 
 **ltcplay's side** (`ltcplay/hazers.py`, `ltcplay/flamelink.py`). The
 engine reads the same `passthrough` list from this file and holds, per
@@ -953,7 +1021,7 @@ every heartbeat; any failure lets the hold go and is journaled):
   else, and says how to turn it on, refuses a screen's per-group Disarm
   (Disarm every flame group and the Stream Deck still work), and `ltc deck`
   takes no screen hold (the engine answers `enabled` false);
-- no Abort standing, the Stream Deck program heard within 2 s, this device
+- the Stream Deck program heard within 2 s, this device
   not in Arrange mode on the Morning page, and not every machine of the
   group locked out (2026-10-22): each is refused by the deck or flamesafe
   anyway, and the engine says it by name before a hold fills its bar. What
@@ -989,6 +1057,13 @@ either. If the deck process is not running, nothing reads the screen
 holds and nothing arms.
 
 ## Disarm every group: the show program's Abort (added 2026-10-02)
+
+**Since 2026-10-30 (Jeff): the show program has no Abort.** Every Stop
+(the rack screen's and the iPad's double tap, the Stream Deck's held
+Stop) sends this same `disarm_all`, and nothing latches. The message,
+its fields and every rule below are unchanged; where this document says
+"the show program's Abort" (or "a screen Abort"), read the show's Stop.
+Older text keeps the name it was written with.
 
 Jeff, 2026-09-27: "on Abort, flame cues zero and every group disarms
 instantly". The Stream Deck's Abort already does this on the arm link. The
@@ -1078,8 +1153,10 @@ again within `min_arm_dwell_ms` of the Abort. So:
   2.0 s hold armed at +1.9 s after an Abort).
 
   A group the deck keeps asking for reads `held`,
-  flashing amber, reason `Disarmed by the show's Abort. Cycle the arm to
-  re-arm.` until it is cycled; the deck shows it as ABORTED.
+  flashing amber, reason `Disarmed by the show's Stop. Cycle the arm to
+  re-arm.` until it is cycled; the deck shows it as STOPPED. (Before
+  2026-10-30 the show program's press was called Abort and the reason
+  read `Disarmed by the show's Abort. ...`; ltcplay reads both.)
 - The status frame's top-level `disarm_all` says what flamesafe took:
   `{"accepted": count, "last_id": id or null, "last_reason": "...",
   "age_ms": ms or null}`. ltcplay compares `last_id` with the Abort it sent
@@ -1326,6 +1403,17 @@ hazer off), and a flamesafe from before this date ignores the field, so its
 hazers stay zero (fail closed). A flamesafe from before this date refuses a
 config with `passthrough` as an unknown key and does not start. Deploy and
 restart flamesafe and ltcplay together.
+
+Version 2, 2026-10-30 (passthrough switch, the fireball's fuel pump): a
+passthrough entry may be a switch, `{name, switch, on}` (see "A switch"
+under "Passthrough: the hazers"); the status frame's passthrough entries
+gain `kind`, and a switch's carries `switch` and `on` in place of `haze`
+and `fan`. No field on the flame link changed: a switch is switched by
+name in the existing `hazers_on`. A config without a switch runs exactly
+as before. A flamesafe from before this date refuses a config with a
+switch and does not start. LTC Player refuses one too, even after this
+flamesafe change: only its own fuel pump update (#188) reads a switch.
+Install both updates, then add the entry, then restart both.
 
 Version 2, 2026-10-28 (aim slots seen): the status frame gains a per group
 `aim_slots`, and flamesafe journals one `aim slots:` line at start naming

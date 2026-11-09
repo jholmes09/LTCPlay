@@ -67,6 +67,18 @@ settings and show files alone. If it says no earlier version is kept,
 download the version you want from the Releases page and run it like an
 update.
 
+After going back from the build that made the late limit 2 minutes: that
+build changed `late_grace_s` in the schedule file from 15 to 120 (once, on
+its first start), and the earlier build refuses anything over 15 and would
+schedule nothing. Open Programming, set "Late start allowed, seconds" to 15
+and save (or put 15 in `ltcplay_schedule.json`). Your file as it was before
+the change is kept as `ltcplay_schedule.pre-late-limit.json`, beside the
+schedule file (that copy is never overwritten; `ltcplay_schedule.previous.json`
+is replaced by every save). When you update to the new build again, set 120
+in Programming (or delete `ltcplay_late_limit_migrated.json` beside the
+schedule file and the next start changes a 15 to 120 once more); otherwise
+the 15 you set for the rollback stays.
+
 ## Something is wrong: send the diagnostics bundle
 
 Start menu, LTC Player, "Diagnostics bundle (send this to Jeff)". It
@@ -76,6 +88,15 @@ holds the logs, the settings, tonight's files, the night journals and the
 version of every program. It holds NO show files, no audio or video, no
 renders and no PIN, password, token or key files. Take the bundle before
 you restart or reinstall, so the logs that show the fault are still in it.
+
+## The rack screen
+
+The rack screen, every iPad and every laptop open the same screen at
+`/remote`. Getting started, the show folder, the show network, Restart
+the engine and the Stream Deck operator are cards on its Schedule tab
+(on the show PC); Users and the audit log are in the Users pane
+(Settings, Users); Help, This LTC Player says the version and how to
+leave the window.
 
 ## Users, sign-in and the audit log
 

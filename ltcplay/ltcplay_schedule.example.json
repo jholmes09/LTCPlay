@@ -12,5 +12,5 @@
   },
   "show_len_s": 440,
   "guard_s": 120,
-  "late_grace_s": 15
+  "late_grace_s": 120
 }

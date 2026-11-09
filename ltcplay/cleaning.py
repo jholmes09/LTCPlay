@@ -716,8 +716,8 @@ class CleaningPanel:
             return self._stop_run(self._aborted, zeroed=True)
         link = self._link()
         if link is None or self._gen(link) != r["gen"]:
-            return self._stop_run("the flame link was zeroed (Stop, Hold, "
-                                  "Abort or a disarm)", zeroed=True)
+            return self._stop_run("the flame link was zeroed (Stop, Hold "
+                                  "or a disarm)", zeroed=True)
         if self._count() != r["disarms"]:
             return self._stop_run("a disarm was pressed")
         if self._locked_fixtures() != r["locked"]:
@@ -862,8 +862,8 @@ class CleaningPanel:
             link.purge_set(vals)
             r["fire_on"] = on
             if self._gen(link) != r["gen"]:
-                return self._stop_run("the flame link was zeroed (Stop, Hold, "
-                                      "Abort or a disarm)", zeroed=True)
+                return self._stop_run("the flame link was zeroed (Stop, Hold "
+                                      "or a disarm)", zeroed=True)
             state, _o, fs_why = self.status()
             if state != "armed":
                 return self._stop_run("the wave flamer is not armed any more "
@@ -974,13 +974,13 @@ class CleaningPanel:
         return 200, {"ok": True, "text": "The wave flamer cleaning is "
                                          "stopped."}
 
-    def on_abort(self, who="", screen=""):
+    def on_abort(self, who="", screen="", what="Abort"):
         """Abort (Morning.on_abort, before the Abort's own flame disarm):
         never waits (review of #159, 4). The purge frame is dropped at once
         and the run marked aborted, so a beat or the watcher holding the
         panel's lock stops at its next look; the stop and its disarm run
         on a thread of their own, after the lock is free."""
-        why = f"Abort pressed by {who or screen or 'someone'}"
+        why = f"{what} pressed by {who or screen or 'someone'}"
         if self._run is None:
             return
         self._aborted = why

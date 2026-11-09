@@ -39,8 +39,9 @@ it (twice, with --expected), and the restore is proved byte for byte.
                        that failed a check (LTC_SELFTEST_FAILFAST in
                        selftest.py). --no-failfast runs every test.
     --hints FILE       mutate_catchers.json: run the test that caught each
-                       mutation last time first. A run counts only when it
-                       fails in that test, and that test passes when run
+                       mutation last time first (or several, comma
+                       separated, all first). A run counts only when it
+                       fails in one of them, and they pass when run
                        first with nothing mutated (checked once per test);
                        anything else runs again in file order. A hinted
                        catch is confirmed by a plain file-order run with no
@@ -836,69 +837,33 @@ MUTATIONS = [
   "            return None\n            return (\"The page has not shown a "
   "status yet. Wait for it to \""),
 
- ("remote: the page enables stale-state controls", "ltcplay/web/remote.html",
+ ("remote: the page enables stale-state controls", "ltcplay/web/remote_rules.js",
   "  const fresh = !stale && !!st;", "  const fresh = !!st;"),
 
- ("remote: the page never shows the stale banner", "ltcplay/web/remote.html",
-  "  b.hidden = !stale || $(\"main\").hidden;", "  b.hidden = true;"),
-
- ("remote: the page calls a 2.5 s old status fresh", "ltcplay/web/remote.html",
+ ("remote: the page calls a 2.5 s old status fresh", "ltcplay/web/remote_rules.js",
   "  return (nowMs - lastOkMs) > freshS * 1000;",
   "  return (nowMs - lastOkMs) > freshS * 2000;"),
 
  # The width guard (Jeff, 2026-10-17): without it the Abort's answer
  # widened the page past the screen and the word ABORT slid off it.
- ("remote: the page's column track may grow past the screen again",
-  "ltcplay/web/remote.html",
-  "display:grid;grid-template-columns:minmax(0,1fr);\n",
-  "display:grid;\n"),
-
- ("remote: #main no longer clips what is wider than the screen",
-  "ltcplay/web/remote.html",
-  "#main{min-height:0;min-width:0;position:relative;overflow:hidden}",
-  "#main{min-height:0;position:relative}"),
-
- ("remote: a toast may widen the page again", "ltcplay/web/remote.html",
-  ".toast{font-size:clamp(13px,1.6vh,16px);color:var(--cream);min-height:1.3em;min-width:0;\n  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
-  ".toast{font-size:clamp(13px,1.6vh,16px);color:var(--cream);min-height:1.3em;\n  white-space:nowrap}"),
-
  ("remote: the MODE pill is drawn from the screen that is open, not the engine",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  if(show.running && tr.programming)\n",
   "  if(location.hash === \"#programming\")\n"),
-
- ("remote: the Abort confirm promises a disarm with no flame link",
-  "ltcplay/web/remote.html",
-  "  if(s.disarm_connected && fl.connected)\n",
-  "  if(true)\n"),
-
- # An Abort with no show live never latches, so the first status poll after
- # it says aborted false; a banner that hides on that is gone in 250 ms and
- # only the one-line toast is left (found rendering bench-build after #68
- # and #70 merged).
- ("remote: the Abort banner goes on the first status poll after an Abort "
-  "with no show to stop",
-  "ltcplay/web/remote.html",
-  "  if(sch.aborted === false && b.dataset.latched){ b.hidden = true;",
-  "  if(sch.aborted === false && b.dataset.aborted){ b.hidden = true;"),
-
- ("remote: the getting-started steps stack at the 950 px window, the third "
-  "below the card's own scroll",
-  "ltcplay/web/remote.html",
-  "#setup .steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}",
-  "#setup .steps{display:grid;grid-template-columns:1fr;gap:10px}"),
 
  ("remote: a stale flame lamp still reads armed", "ltcplay/remote.py",
   "            for g in groups:\n                g[\"armed\"] = \"unknown\"",
   "            pass"),
 
- ("remote: Start now and Abort need no confirm", "ltcplay/remote.py",
-  "        if name in CONFIRM_ROUTES and body.get(\"confirmed\") is not True:",
-  "        if False:"),
+ ('remote: Start now needs no confirm', 'ltcplay/remote.py',
+  '        if name in CONFIRM_ROUTES and body.get("confirmed") is not True:',
+  '        if False:'),
 
- ("remote: an arm route appears", "ltcplay/remote.py",
-  "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n                  \"disarm-all\", \"stop\")",
-  "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n                  \"disarm-all\", \"stop\", \"arm\")"),
+ ('remote: an arm route appears', 'ltcplay/remote.py',
+  'CONTROL_ROUTES = ("start-now", "hold", "resume",\n'
+  '                  "disarm-all", "stop", "run-off", "start-at-cue")',
+  'CONTROL_ROUTES = ("start-now", "hold", "resume",\n'
+  '                  "disarm-all", "stop", "run-off", "start-at-cue", "arm")'),
 
  ("remote: half a request is acted on", "ltcplay/web.py",
   "            return None if \"/api/remote/\" in self.path else {}",
@@ -915,7 +880,7 @@ MUTATIONS = [
 
  ("remote: scrubbing is allowed on a show started in Show mode",
   "ltcplay/remote.py",
-  "        if not rehearsal:\n            return False, (\"This show was",
+  "        if not self._rehearsal_run(s):\n            return False, (\"This show was",
   "        if False:\n            return False, (\"This show was"),
 
  ("scheduler: a remote press from someone off the list is taken",
@@ -971,7 +936,7 @@ MUTATIONS = [
   "        live = False"),
 
  ("countdown: the page ages a held show's time left",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  if(!c.running) return {kind:c.kind, label:c.label, running:false, s:s, at:null};",
   "  if(false) return {kind:c.kind, label:c.label, running:false, s:s, at:null};"),
 
@@ -1068,7 +1033,7 @@ MUTATIONS = [
 
  # -- soak 2026-10-21 --------------------------------------------------
  ("soak: the countdown restarts from every poll and its digit flickers",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "    at = Math.min(prev.at, at);",
   "    at = at;"),
 
@@ -1092,7 +1057,7 @@ MUTATIONS = [
 
  ("soak: the screens see only a refusal, never the show-load CUES FAULT",
   "ltcplay/fire_ice.py",
-  "        return self.fault or self.render_fault_now()",
+  "        return self.fault or rf",
   "        return self.fault"),
 
  ("flame cues: a stale render is not refused while the reader is mid-pass",
@@ -1149,13 +1114,13 @@ MUTATIONS = [
 
  ("soak: FlameCues.start() starts nothing until a frame asks",
   "ltcplay/fire_ice.py",
-  "        if self._bg and self._thread is None and not self._stop.is_set():\n"
-  "            self._thread = threading.Thread(\n"
-  "                target=self._refresher, daemon=True,",
-  "        if self._bg and self._thread is None and not self._stop.is_set() \\\n"
-  "                and getattr(self, '_layout', None) is not None:\n"
-  "            self._thread = threading.Thread(\n"
-  "                target=self._refresher, daemon=True,"),
+  "        if not self._bg or self._stop.is_set():\n"
+  "            return self\n"
+  "        # From the sender",
+  "        if not self._bg or self._stop.is_set() or \\\n"
+  "                getattr(self, '_layout', None) is None:\n"
+  "            return self\n"
+  "        # From the sender"),
 
  ("soak: another show folder in showpc.json goes unsaid",
   "ltcplay/remote.py",
@@ -1241,9 +1206,11 @@ MUTATIONS = [
   "                              \"fresh\": age <= BEAT_STALE_S,",
   "                              \"fresh\": True,"),
 
- ("arm: an Abort leaves screen holds running", "ltcplay/remote.py",
-  "        if name in (\"abort\", \"disarm-all\"):\n            # No screen hold",
-  "        if False:\n            # No screen hold"),
+ ('arm: Disarm all leaves screen holds running', 'ltcplay/remote.py',
+  '        if name == "disarm-all":\n'
+  '            # No screen hold survives a disarm',
+  '        if False:\n'
+  '            # No screen hold survives a disarm'),
 
  ("arm: a group disarm leaves its hold running", "ltcplay/remote.py",
   "        self._drop_hold(i)\n        with self._arm_lock:\n"
@@ -1303,21 +1270,13 @@ MUTATIONS = [
   "            if self.arm.wanted[i]:\n                self._do_disarm(i, who=str(ev.get(\"who\") or \"\"),",
   "            if False:\n                self._do_disarm(i, who=str(ev.get(\"who\") or \"\"),"),
 
- ("arm: the page arms on a stale status", "ltcplay/web/remote.html",
+ ("arm: the page arms on a stale status", "ltcplay/web/remote_rules.js",
   "  if(isStale(nowMs, lastOkMs, a.fresh_s || 1.0)) return",
   "  if(false) return"),
 
- ("arm: the page arms on an old flamesafe status", "ltcplay/web/remote.html",
+ ("arm: the page arms on an old flamesafe status", "ltcplay/web/remote_rules.js",
   "fl.age_ms === undefined || fl.age_ms > 1000)",
   "fl.age_ms === undefined || fl.age_ms > 100000)"),
-
- ("arm: the page keeps holding when it goes stale", "ltcplay/web/remote.html",
-  "  const hp = holdLapsed();\n  if(hp) armStop(hp);",
-  "  const hp = holdLapsed();\n  if(false) armStop(hp);"),
-
- ("arm: closing the page does not let go", "ltcplay/web/remote.html",
-  "window.addEventListener(\"pagehide\", () => armStop(\"the page closed\"));",
-  ""),
 
  ("flame link: aim slots are held by the zero-first rule again",
   "ltcplay/flamelink.py",
@@ -1482,8 +1441,8 @@ MUTATIONS = [
   "        if len(shared) > 1:", "        if False:"),
 
  ("the one-frame bridge between cues is removed", "ltcplay/player.py",
-  "            if nxt is not None and self.bridge_s > 0 and \\",
-  "            if False and nxt is not None and self.bridge_s > 0 and \\"),
+  "            if (nxt is not None and self.bridge_s > 0 and\n",
+  "            if (False and nxt is not None and self.bridge_s > 0 and\n"),
 
  ("the bridge holds the first frame instead of the last", "ltcplay/player.py",
   "                self.current_frame = cue.fseq.frame_count - 1\n"
@@ -1495,8 +1454,8 @@ MUTATIONS = [
 
  ("the bridge swallows a real gap as well as a rounding one",
   "ltcplay/player.py",
-  "                    0 < nxt.tc_seconds - tc <= self.bridge_s and \\",
-  "                    0 < nxt.tc_seconds - tc and \\"),
+  "                    0 < nxt.tc_seconds - tc <= self.bridge_s and\n",
+  "                    0 < nxt.tc_seconds - tc and\n"),
 
  ("bridge_ms is ignored and always takes the default", "ltcplay/player.py",
   "        if bridge_ms is None:\n"
@@ -1621,8 +1580,8 @@ MUTATIONS = [
   "                if True:"),
 
  ("the bridge resurrects a cue that ended long ago", "ltcplay/player.py",
-  "                    tc - ended_at <= self.bridge_s:",
-  "                    True:"),
+  "                    tc - ended_at <= self.bridge_s) or \\\n",
+  "                    True) or \\\n"),
 
  ("a read hiccup sticks on HOLD for the rest of the set",
   "ltcplay/player.py",
@@ -2151,8 +2110,14 @@ MUTATIONS = [
   '        input_used = self.clock is None'),
 
  ("a Stop racing clock_play lets the clock's own error escape", 'ltcplay/session.py',
-  '        try:\n            self.clock.play(pick.tc_seconds, pick.duration, pick.name)\n        except ValueError as e:',
-  '        if True:\n            self.clock.play(pick.tc_seconds, pick.duration, pick.name)\n        if False:'),
+  '        try:\n            if part_way:\n                self.clock.play(pick.tc_seconds, pick.duration, pick.name,\n'
+  '                                start_s=float(start_s),\n'
+  '                                fade_in_ms=float(fade_in_ms))\n            else:\n'
+  '                self.clock.play(pick.tc_seconds, pick.duration, pick.name)\n        except ValueError as e:',
+  '        if True:\n            if part_way:\n                self.clock.play(pick.tc_seconds, pick.duration, pick.name,\n'
+  '                                start_s=float(start_s),\n'
+  '                                fade_in_ms=float(fade_in_ms))\n            else:\n'
+  '                self.clock.play(pick.tc_seconds, pick.duration, pick.name)\n        if False:'),
 
  ("tctest defaults to every node in the show file when --to is left off",
   'ltcplay/tctest.py',
@@ -2579,11 +2544,6 @@ MUTATIONS = [
   "            values = self._with_haze(values, False)\n            self.last_values_nonzero",
   "            self.last_values_nonzero"),
 
- ("hazers: arming while an Abort is standing",
-  "ltcplay/hazers.py",
-  "            if self._abort_standing():",
-  "            if False:"),
-
  ("hazers: arming with flamesafe's status stale",
   "ltcplay/hazers.py",
   "        if fl.get(\"stale\") or age is None or age > STATUS_FRESH_S * 1000:",
@@ -2603,11 +2563,6 @@ MUTATIONS = [
   "ltcplay/remote.py",
   "        if on and not self.may_act_from(ctx.local):",
   "        if False:"),
-
- ("hazers: an Abort press leaves the hazers armed",
-  "ltcplay/remote.py",
-  "            self.hazers_cut(f\"{who or 'someone'} pressed Abort on the \"",
-  "            (f\"{who or 'someone'} pressed Abort on the \""),
 
  ("hazers: Stop leaves the hazers armed",
   "ltcplay/remote.py",
@@ -2684,6 +2639,634 @@ MUTATIONS = [
   "            was = hz.cut()",
   "            hz.cut()\n            was = []"),
 
+ # the fuel pump (Jeff, 2026-10-30): flamesafe's switch, run by the engine
+ # the fuel pump: Jeff's ceiling of 10:00 and sign-out stops it
+ ("ui 2.0: the run time field takes more than 10:00",
+  "ltcplay/web/remote2.html",
+  "  if(secs > Math.min(v.max_s || PUMP_MAX_S, PUMP_MAX_S)) return",
+  "  if(v.max_s && secs > v.max_s) return"),
+
+ ("pump: a run may be longer than 10:00",
+  "ltcplay/fuelpump.py",
+  "    max_s = min(max_s, MAX_LIMIT_S)\n",
+  ""),
+
+ ("pump: a pump_max_s above 600 is taken as it is",
+  "ltcplay/remote.py",
+  "        out[k] = min(v, PUMP_MAX_LIMIT_S)",
+  "        out[k] = v"),
+
+ ("pump: signing out leaves the pump on",
+  "ltcplay/remote.py",
+  "                self.pump_after_signout(\n",
+  "                (\n"),
+
+ ("pump: the timer never checks its starter is still signed in",
+  "ltcplay/fuelpump.py",
+  "        gone = self._sign_in_gone(r.get(\"token\", \"\"), r.get(\"who\", \"\"))",
+  "        gone = \"\""),
+
+ ("pump: an ON whose sign-in ended on its way still starts",
+  "ltcplay/fuelpump.py",
+  "            gone = self._sign_in_gone(token, who)\n            if gone:\n                why = f\"The fuel pump was not turned on: {gone}.\"",
+  "            gone = \"\"\n            if gone:\n                why = f\"The fuel pump was not turned on: {gone}.\""),
+
+ ("pump: the reservation does not check the sign-in again",
+  "ltcplay/fuelpump.py",
+  "            gone = self._sign_in_gone(token, who)\n            if gone:\n                raise _NotStarted(gone)",
+  "            gone = \"\"\n            if gone:\n                raise _NotStarted(gone)"),
+
+ ("pump: an ON with no sign-in is taken while there are users",
+  "ltcplay/remote.py",
+  "        if self.users_active() and not (getattr(ctx, \"token\", \"\") or \"\"):",
+  "        if False:"),
+
+ ("pump: an unreadable users file reads as a sign-out",
+  "ltcplay/remote.py",
+  "        if state == \"broken\":\n            return (\"could not confirm the sign-in (users file unreadable); \"",
+  "        if False:\n            return (\"could not confirm the sign-in (users file unreadable); \""),
+
+ ("pump: a busy users lock is waited on",
+  "ltcplay/users.py",
+  "        if not self._lock.acquire(blocking=False):\n            return \"busy\", None",
+  "        if not self._lock.acquire():\n            return \"busy\", None"),
+
+ ("pump: a demotion leaves the run on",
+  "ltcplay/remote.py",
+  "        if not may:\n            return (f\"{nobody} may no longer turn the fuel pump on (their \"",
+  "        if False:\n            return (f\"{nobody} may no longer turn the fuel pump on (their \""),
+
+ ("pump: a show-PC sign-out leaves another's ended sign-in's run to the timer",
+  "ltcplay/remote.py",
+  "            if state == \"gone\":\n                starter = run.get(\"who\") or \"the person who started it\"",
+  "            if False:\n                starter = run.get(\"who\") or \"the person who started it\""),
+
+ ("pump: the link's own hard end may be past 10:00",
+  "ltcplay/flamelink.py",
+  "                s = min(s, PUMP_MAX_S)\n",
+  ""),
+
+ ("pump: a pump_max_s above 600 is written to the file",
+  "ltcplay/remote.py",
+  "            v > PUMP_MAX_LIMIT_S:\n        doc[\"pump_max_s\"] = PUMP_MAX_LIMIT_S",
+  "            v > PUMP_MAX_LIMIT_S:\n        pass"),
+
+ ("pump: another person's sign-out stops the pump",
+  "ltcplay/fuelpump.py",
+  "                mine = run is not None and token and run.get(\"token\") == token",
+  "                mine = run is not None"),
+
+ ("pump: a run keeps no sign-in",
+  "ltcplay/fuelpump.py",
+  "                 \"night\": self._night(), \"token\": token or \"\"}",
+  "                 \"night\": self._night(), \"token\": \"\"}"),
+
+ ("pump: the FSEQ's data on the pump's slot reaches it",
+  "ltcplay/flamelink.py",
+  "        if self._pump_chan is not None:\n            out[self._pump_chan] = 0\n",
+  ""),
+
+ ("pump: the flame frame never names the pump",
+  "ltcplay/flamelink.py",
+  "        if self._pump_live():\n            return self._hazers_on | {self._pump_name}",
+  "        if False:\n            return self._hazers_on | {self._pump_name}"),
+
+ ("pump: Stop and Abort leave the pump on at the link",
+  "ltcplay/flamelink.py",
+  "                self._pump_on = False\n                self._pump_until = None\n                self._hazers_on = frozenset()",
+  "                self._hazers_on = frozenset()"),
+
+ ("pump: Hold (a zero) turns the pump off",
+  "ltcplay/flamelink.py",
+  "            # No timed purge's hard end outlives a zero (review of #172).\n            self._purge_until = None\n            self._program = None",
+  "            # No timed purge's hard end outlives a zero (review of #172).\n            self._purge_until = None\n            self._pump_on = False\n            self._program = None"),
+
+ ("pump: ON is taken while an Abort is being repeated",
+  "ltcplay/flamelink.py",
+  "                if gen != self.abort_id or self.abort_repeating():",
+  "                if gen != self.abort_id:"),
+
+ ("pump: a start carrying a count from before a Stop is taken",
+  "ltcplay/flamelink.py",
+  "                if gen != self.abort_id or self.abort_repeating():",
+  "                if self.abort_repeating():"),
+
+ ("pump: the link's hard end never ends it",
+  "ltcplay/flamelink.py",
+  "            elif now >= until:\n                why = \"its time was up\"",
+  "            elif False:\n                why = \"its time was up\""),
+
+ ("pump: a stalled timer keeps it on at the link",
+  "ltcplay/flamelink.py",
+  "            elif now - beat > PUMP_HOLD_S or now < beat:",
+  "            elif False:"),
+
+ ("pump: a beat carrying a count from before a Stop keeps it on",
+  "ltcplay/flamelink.py",
+  "                if gen != self.abort_id:\n                    self._pump_on = False",
+  "                if False:\n                    self._pump_on = False"),
+
+ ("pump: the engine's deadline is not carried to the link",
+  "ltcplay/flamelink.py",
+  "                    if left < s:\n                        s = left\n                    if not s > 0:\n                        return False\n                s = min(s, PUMP_MAX_S)",
+  "                    if not s > 0:\n                        return False\n                s = min(s, PUMP_MAX_S)"),
+
+ ("pump: the engine reads a switch whose on is outside 1 to 255",
+  "ltcplay/flamelink.py",
+  "                    not SWITCH_ON_MIN <= on <= SWITCH_ON_MAX:",
+  "                    False:"),
+
+ ("pump: the engine reads a second switch",
+  "ltcplay/flamelink.py",
+  "            if switches:",
+  "            if False:"),
+
+ ("pump: the hazers count the pump as a hazer",
+  "ltcplay/hazers.py",
+  "                and str(p.get(\"kind\") or \"hazer\") == \"hazer\"]",
+  "                ]"),
+
+ ("pump: the engine's timer never ends it at its time",
+  "ltcplay/fuelpump.py",
+  "        if now >= r[\"deadline\"]:\n            return f\"its {clock_text(r['seconds'])} were up\"",
+  "        if False:\n            return f\"its {clock_text(r['seconds'])} were up\""),
+
+ ("pump: a stall between the timer's passes is not seen",
+  "ltcplay/fuelpump.py",
+  "        if now - r[\"beat\"] > BEAT_STALE_S or now < r[\"beat\"]:",
+  "        if False:"),
+
+ ("pump: a stall inside a pass is not seen",
+  "ltcplay/fuelpump.py",
+  "            elif fresh - r[\"beat\"] > BEAT_STALE_S or fresh < r[\"beat\"]:",
+  "            elif False:"),
+
+ ("pump: a Stop landing after the beat inside a pass is not seen",
+  "ltcplay/fuelpump.py",
+  "                lost = \"\" if link.pump_gen() == r[\"gen\"] else \\",
+  "                lost = \"\" if True else \\"),
+
+ ("pump: flamesafe going quiet leaves it on",
+  "ltcplay/fuelpump.py",
+  "        why = self.down()\n        if why:\n            return why.rstrip(\".\")",
+  "        why = \"\"\n        if why:\n            return why"),
+
+ ("pump: a replayed press starts it again",
+  "ltcplay/fuelpump.py",
+  "        if used:",
+  "        if False:"),
+
+ ("pump: a second ON adds time",
+  "ltcplay/fuelpump.py",
+  "            broke = \"\"\n            if running is None and self._off_gen != off0:",
+  "            broke = \"\"\n            running = None\n            if False:"),
+
+ ("pump: the run is not reserved before the second look",
+  "ltcplay/fuelpump.py",
+  "                self.run = {\"id\": rid, \"reserved\": True}",
+  "                pass"),
+
+ ("pump: cut() leaves an ON being checked free to start after it",
+  "ltcplay/fuelpump.py",
+  "                self._off_gen += 1\n                was, self.run",
+  "                was, self.run"),
+
+ ("pump: a start that raised leaves the reservation (the pump wedged)",
+  "ltcplay/fuelpump.py",
+  "                if isinstance(self.run, dict) and \"deadline\" not in \\\n                        self.run:\n                    self.run = None",
+  "                pass"),
+
+ ("pump: the screens read a reservation as a run",
+  "ltcplay/fuelpump.py",
+  "        r = self._live_run()",
+  "        r = self.run"),
+
+ ("pump: on() reads a reservation as a run",
+  "ltcplay/fuelpump.py",
+  "            return self._live_run() is not None and link is not None and \\",
+  "            return self.run is not None and link is not None and \\"),
+
+ ("pump: a run's last_off carries no count",
+  "ltcplay/fuelpump.py",
+  "            self.last_off = {\"reason\": why, \"who\": by, \"n\": self._offs,\n",
+  "            self.last_off = {\"reason\": why, \"who\": by,\n"),
+
+ ("pump: an ON from a stale or ageless screen is taken",
+  "ltcplay/remote.py",
+  "        if seen is None or seen != seen or \\\n                abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:\n            why = (\"The fuel pump was not turned on: the press came from a \"",
+  "        if False:\n            why = (\"The fuel pump was not turned on: the press came from a \""),
+
+ ("pump: a start that raised leaves the link naming the pump",
+  "ltcplay/fuelpump.py",
+  "                broke = type(e).__name__\n                try:\n                    link.pump_stop()\n                except Exception:\n                    pass",
+  "                broke = type(e).__name__"),
+
+ ("pump: the second look's refusal is not audited",
+  "ltcplay/fuelpump.py",
+  "            self._audit(who, screen, \"fuel pump on\", \"refused\", why)\n            return False, why\n        if running is not None:",
+  "            return False, why\n        if running is not None:"),
+
+ ("pump: a start that raised is not audited",
+  "ltcplay/fuelpump.py",
+  "                       f\"on the {screen}; refused: {why}\", fault=True)\n            self._audit(who, screen, \"fuel pump on\", \"refused\", why)",
+  "                       f\"on the {screen}; refused: {why}\", fault=True)"),
+
+ ("pump: the screens get no boot id",
+  "ltcplay/fuelpump.py",
+  "                \"last_off\": self.last_off, \"boot\": self.boot}",
+  "                \"last_off\": self.last_off}"),
+
+ ("pump: live flame programming starts while the pump runs",
+  "ltcplay/remote.py",
+  "        if on:\n            return (\"The fuel pump is on, and live flame",
+  "        if False:\n            return (\"The fuel pump is on, and live flame"),
+
+ ("pump: the status waits on the flame link's lock",
+  "ltcplay/fuelpump.py",
+  "                bool(link.pump_live_now())",
+  "                bool(link.pump_on)"),
+
+ ("pump: a disarm to every group is blamed on Stop or Abort",
+  "ltcplay/fuelpump.py",
+  "        return ended or (\"the disarm to every flame group was sent (a Stop, \"",
+  "        return (\"the disarm to every flame group was sent (a Stop, \""),
+
+ ("pump: the link not sending leaves it on",
+  "ltcplay/fuelpump.py",
+  "        if not snap.get(\"open\") or not snap.get(\"sending_ok\"):",
+  "        if not snap.get(\"open\"):"),
+
+ ("pump: cut() leaves it on at the link",
+  "ltcplay/fuelpump.py",
+  "            if link is not None:\n                link.pump_stop()\n            with self._lock:\n                self._off_gen += 1",
+  "            with self._lock:\n                self._off_gen += 1"),
+
+ ("pump: an ON whose checks began before a Pump off starts after it",
+  "ltcplay/fuelpump.py",
+  "            if running is None and self._off_gen != off0:",
+  "            if False:"),
+
+ ("pump: ON is taken while live flame programming is being turned on",
+  "ltcplay/remote.py",
+  "        programming = lf is not None and (getattr(lf, \"on\", False) or\n                                          getattr(lf, \"_starting\", False))",
+  "        programming = lf is not None and getattr(lf, \"on\", False)"),
+
+ ("pump: the blocker is not asked again with the run reserved",
+  "ltcplay/fuelpump.py",
+  "                try:\n                    late = self._blocker() or \"\"\n                except Exception:\n                    late = \"the engine's state could not be read.\"",
+  "                late = \"\""),
+
+ ("pump: live flame programming's own start check ignores the pump",
+  "ltcplay/remote.py",
+  "        if lf is None or not getattr(lf, \"on\", False):\n            why = self.live_flame_pump_refusal()",
+  "        if False:\n            why = self.live_flame_pump_refusal()"),
+
+ ("pump: flamesafe not passing it never ends the run",
+  "ltcplay/fuelpump.py",
+  "            elif now - since > NOT_PASSING_S:",
+  "            elif False:"),
+
+ ("pump: flamesafe passing it with the engine off is not said",
+  "ltcplay/fuelpump.py",
+  "        if not on and p and p.get(\"passing\"):",
+  "        if False:"),
+
+ ("pump: the night closing leaves it on",
+  "ltcplay/fuelpump.py",
+  "        if night in NIGHT_CLOSING:\n            return \"the night is closing\"",
+  "        if False:\n            return \"the night is closing\""),
+
+ ("pump: the night over leaves a run on",
+  "ltcplay/fuelpump.py",
+  "        if night in NIGHT_OVER and r.get(\"night\") not in NIGHT_OVER:",
+  "        if False:"),
+
+ ("pump: ON while the night closes",
+  "ltcplay/fuelpump.py",
+  "        if self._night() in NIGHT_CLOSING:\n            return \"the night is closing.\"",
+  "        if False:\n            return \"the night is closing.\""),
+
+ ("pump: on 1 at the route turns it on",
+  "ltcplay/remote.py",
+  "        on = body.get(\"on\") is True\n        if not on:\n            ok, text = pm.set(False",
+  "        on = bool(body.get(\"on\"))\n        if not on:\n            ok, text = pm.set(False"),
+
+ ("pump: a run time over pump_max_s is taken",
+  "ltcplay/fuelpump.py",
+  "    if v > max_s:",
+  "    if False:"),
+
+ ('pump: ON within 0.75 s of a Stop at the engine', 'ltcplay/fuelpump.py',
+  '        if repeating:\n'
+  '            return ("a Stop is still being sent',
+  '        if False:\n'
+  '            return ("a Stop is still being sent'),
+
+ ("pump: ON with flamesafe's status stale",
+  "ltcplay/fuelpump.py",
+  "        if fl.get(\"stale\") or age is None or age > STATUS_FRESH_S * 1000:",
+  "        if False:"),
+
+ ("pump: ON with flamesafe's pump not the engine's",
+  "ltcplay/fuelpump.py",
+  "        if sorted(theirs) != self.mine():\n            return (\"flamesafe's fuel pump",
+  "        if False:\n            return (\"flamesafe's fuel pump"),
+
+ ("pump: ON with its slot in the lockout file",
+  "ltcplay/fuelpump.py",
+  "        if locked:",
+  "        if False:"),
+
+ ("pump: ON with live flame programming on",
+  "ltcplay/remote.py",
+  "            return (\"live flame programming is on, and turning it off \"\n                    \"turns the fuel pump off. Turn it off first.\")",
+  "            return \"\""),
+
+ ("pump: the screens say on before flamesafe has taken it",
+  "ltcplay/fuelpump.py",
+  "        elif not p or not p.get(\"passing\"):",
+  "        elif False:"),
+
+ ("pump: Stop (the halt) leaves the pump on",
+  "ltcplay/remote.py",
+  "            self.pump_cut(why, who, screen)",
+  "            pass"),
+
+ ("pump: Stop on the rack screen's /api/stop leaves the pump on",
+  "ltcplay/web.py",
+  "        fn = getattr(rm, \"pump_cut\", None)",
+  "        fn = None"),
+
+ ("pump: ON from the show network without screen_arming",
+  "ltcplay/remote.py",
+  "        if not self.may_act_from(ctx.local):\n            why = (\"Turning the fuel pump on",
+  "        if False:\n            why = (\"Turning the fuel pump on"),
+
+ ("pump: ON needs no permission",
+  "ltcplay/users.py",
+  "    \"fuel-pump\": \"arm\",",
+  "    \"fuel-pump\": None,"),
+
+ ("pump: OFF needs the arm permission",
+  "ltcplay/users.py",
+  "        if name == \"fuel-pump\" and body.get(\"on\") is not True:",
+  "        if False:"),
+
+ ("pump: a pump_max_s past its limit is read",
+  "ltcplay/remote.py",
+  "        if isinstance(v, bool) or not isinstance(v, int) or v < PUMP_MIN_S:",
+  "        if False:"),
+
+ # review of #209: a Resume or Start now that waited is sent only if
+ # nothing changed (a Stop or Hold since always wins)
+ ("ui 2.0 cue: a Resume read slowly is sent after a Hold or a Stop",
+  "ltcplay/web/remote2.html",
+  "    if(read && !tapStill(mk, true)){",
+  "    if(false){"),
+
+ ("ui 2.0 cue: this page's Stop and Hold are not counted against a waiting press",
+  "ltcplay/web/remote2.html",
+  "  if(HALT_BUSY || HALT_SEQ !== mk.seq || schedSig(ST) !== mk.sig) return false;",
+  "  if(HALT_BUSY) return false;"),
+
+ ("ui 2.0 cue: a Hold press is not counted",
+  "ltcplay/web/remote2.html",
+  "  if(route === \"hold\") HALT_SEQ++;\n",
+  ""),
+
+ ("ui 2.0 cue: a cue list that came too late still sends Resume",
+  "ltcplay/web/remote2.html",
+  "  if(quick && Date.now() - mk.at > CUE_READ_MAX_MS) return false;\n",
+  ""),
+
+ ("ui 2.0 cue: Resume offers the cues after any Hold, not only a Stop's",
+  "ltcplay/web/remote2.html",
+  "  const read = sh && !isLive(ST);",
+  "  const read = !isLive(ST);"),
+
+ ("ui 2.0 cue: an offer with no show number says show null",
+  "ltcplay/web/remote2.html",
+  "o && o.show !== null && o.show !== undefined && o.show !== \"\" ? \"show \" + o.show : \"the show\"",
+  "o ? \"show \" + o.show : \"the show\""),
+
+ ("ui 2.0 cue: the landing rounds the lead-in instead of the engine's int()",
+  "ltcplay/web/remote2.html",
+  "Math.trunc(Number(c.lead_in_s) || 0) * 30));",
+  "Math.round(Number(c.lead_in_s) || 0) * 30));"),
+
+ ("ui 2.0 Programming: a late answer paints over a newer one",
+  "ltcplay/web/remote2.html",
+  "  if(n !== P_SAID) return j;\n",
+  ""),
+
+ # interface 2.0's Resume sheet (play-from cues part 3): start at a cue
+ ("ui 2.0 cue: Start at a cue goes with no question",
+  "ltcplay/web/remote2.html",
+  "  if(!(await confirmBox(title + \"?\", \"The show starts now, part way: \"",
+  "  if(false && !(await confirmBox(title + \"?\", \"The show starts now, part way: \""),
+
+ ("ui 2.0 cue: a cue starts after the show changed under the question",
+  "ltcplay/web/remote2.html",
+  "  if(!tapStill(mk, false) || cueFile(ST) !== file){",
+  "  if(false){"),
+
+ ("ui 2.0 cue: Resume's offer is made from a cue retimed since",
+  "ltcplay/web/remote2.html",
+  "cues.filter(c => c.id === rc.id && c.tc === rc.tc)[0]",
+  "cues.filter(c => c.id === rc.id)[0]"),
+
+ ("ui 2.0 cue: the cues are offered in a rehearsal",
+  "ltcplay/web/remote2.html",
+  "  if(!show.running || isRehearsal(st)) return \"\";\n  return String(show.timeline || \"\");",
+  "  if(!show.running) return \"\";\n  return String(show.timeline || \"\");"),
+
+ ("ui 2.0 cue: another show file's list is offered",
+  "ltcplay/web/remote2.html",
+  "  if(!file || !got || got.error || got.show !== file) return null;",
+  "  if(!file || !got || got.error) return null;"),
+
+ ("ui 2.0 cue: the start sends no cue time for the engine to check",
+  "ltcplay/web/remote2.html",
+  "{show:file, cue_id:c.id, tc:c.tc, lead_in_s:c.lead_in_s, confirmed:true}",
+  "{show:file, cue_id:c.id, lead_in_s:c.lead_in_s, confirmed:true}"),
+
+ ("ui 2.0 cue: the landing said ignores the lead-in",
+  "ltcplay/web/remote2.html",
+  "  return pfTc(Math.max(0, pfFrames(c.tc) - Math.trunc(Number(c.lead_in_s) || 0) * 30));",
+  "  return pfTc(Math.max(0, pfFrames(c.tc)));"),
+
+ ("ui 2.0 cue: Resume never offers the cue",
+  "ltcplay/web/remote2.html",
+  "  if(d.act === \"resume\") return resumeOrCue();",
+  "  if(d.act === \"resume\") return press(\"resume\");"),
+
+ ("ui 2.0 cue: the sheet's plain Resume does nothing",
+  "ltcplay/web/remote2.html",
+  "    if(!tapStill(mk, false)){ say(\"The show changed. Nothing done.\", \"The show changed while you answered, so nothing was done.\", \"warn\"); return; }\n    return press(\"resume\");",
+  "    return;"),
+
+ ("ui 2.0 cue: Start now never offers From a cue",
+  "ltcplay/web/remote2.html",
+  "  const got = await cueRead(\"start\");\n  if(got && got.ch){",
+  "  const got = null;\n  if(got && got.ch){"),
+
+ # interface 2.0's DAY tab: P8 Fireball, P9 fuel undo, P10 timed purge
+ ("ui 2.0 Fireball: the beat comes every 300 ms instead of 1.0's 100",
+  "ltcplay/web/remote2.html",
+  "  FB_BEAT = setTimeout(() => fbBeat(false), 100);",
+  "  FB_BEAT = setTimeout(() => fbBeat(false), 300);"),
+
+ ("ui 2.0 Fireball: the Fireball page keeps polling after its step is left",
+  "ltcplay/web/remote2.html",
+  "  fireballView(k === \"fireball\");\n",
+  "  fireballView(true);\n"),
+
+ ("ui 2.0 Fireball: leaving DAY does not cut the Fireball page first",
+  "ltcplay/web/remote2.html",
+  "function dayCuts(why){\n  fireballView(false);\n",
+  "function dayCuts(why){\n"),
+
+ ("ui 2.0 Fireball: pads drawn on a window too short for them",
+  "ltcplay/web/remote2.html",
+  "  const ok = pan.scrollHeight <= pan.clientHeight + 1 && gr.bottom <= Math.min(innerHeight, pr.bottom) + 1;",
+  "  const ok = true;"),
+
+ ("ui 2.0 Fireball: a window turning too short leaves channels on",
+  "ltcplay/web/remote2.html",
+  "    if(fbAny()) fbCut(\"this window is too short for the fireball pads\");",
+  "    if(false) fbCut(\"this window is too short for the fireball pads\");"),
+
+ ("ui 2.0 Fireball: the step is offered without a fireball group",
+  "ltcplay/web/remote2.html",
+  "  if(part !== \"shut\" && fb && fb.available)",
+  "  if(part !== \"shut\" && fb)"),
+
+ ("ui 2.0 Fireball: All off and Disarm scroll out of sight with the panel",
+  "ltcplay/web/remote2.html",
+  "#fb-top{position:sticky;",
+  "#fb-top{position:static;"),
+
+ ("ui 2.0 timed purge: another step leaves the hold beating",
+  "ltcplay/web/remote2.html",
+  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); tpLetGo(\"another step was chosen\"); purgeDrop(); }",
+  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); purgeDrop(); }"),
+
+ ("ui 2.0 timed purge: the hold beats every 300 ms instead of 1.0's 100",
+  "ltcplay/web/remote2.html",
+  "  TP_BEAT = setTimeout(tpBeat, 100);",
+  "  TP_BEAT = setTimeout(tpBeat, 300);"),
+
+ ("ui 2.0 fuel: Refills and notes never shows",
+  "ltcplay/web/remote2.html",
+  "    $(\"d-fu-rec\").hidden = !(nWarn || hasRec);",
+  "    $(\"d-fu-rec\").hidden = true;"),
+
+ ("ui 2.0 fuel: Undo goes with no question",
+  "ltcplay/web/remote2.html",
+  "  if(await confirmBox(\"Undo this refill?\",",
+  "  if(true || await confirmBox(\"Undo this refill?\","),
+
+ # the fuel pump on interface 2.0 (2026-10-30)
+ ("ui 2.0: Pump off is disabled with no contact",
+  "ltcplay/web/remote2.html",
+  "  $(\"pm-off\").disabled = false;",
+  "  $(\"pm-off\").disabled = stale();"),
+
+ ("ui 2.0: Fuel pump: On is live for a role that may not arm",
+  "ltcplay/web/remote2.html",
+  "  if(!mayRow(s, \"arm\")) return signWhy(s, \"arm\", true);\n  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return \"Arming off here\";\n  if(secs === null)",
+  "  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return \"Arming off here\";\n  if(secs === null)"),
+
+ ("ui 2.0: Fuel pump: On is live from an iPad while arming from screens is off",
+  "ltcplay/web/remote2.html",
+  "  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return \"Arming off here\";\n  if(secs === null)",
+  "  if(secs === null)"),
+
+ ("ui 2.0: Fuel pump: On is live when the engine would refuse it",
+  "ltcplay/web/remote2.html",
+  "  if(v.refusal) return short8(v.refusal, \"Not now: see below\");",
+  ""),
+
+ ("ui 2.0: Fuel pump: On is live while the pump runs",
+  "ltcplay/web/remote2.html",
+  "  if(v.on) return \"Pump is on\";",
+  ""),
+
+ ("ui 2.0: Fuel pump: On is live with a run time that is not m:ss",
+  "ltcplay/web/remote2.html",
+  "  if(secs === null) return \"Run time as m:ss\";",
+  ""),
+
+ ("ui 2.0: Pump off could start the pump",
+  "ltcplay/web/remote2.html",
+  "post(\"/api/remote/fuel-pump\", actor({on: false}))",
+  "post(\"/api/remote/fuel-pump\", actor({on: true, seconds: 300, run: String(Date.now())}))"),
+
+ ("ui 2.0: one press id for every tap of Fuel pump: On",
+  "ltcplay/web/remote2.html",
+  "  const run = String(Date.now()) + \"-\" + String(Math.random()).slice(2, 10);\n  // No answer",
+  "  const run = \"pump\";\n  // No answer"),
+
+ ("ui 2.0: a refused On keeps a longer run time",
+  "ltcplay/web/remote2.html",
+  "      // back to 5:00 as soon as On is answered; delta review of #189, 1).\n      pumpReset(ST && ST.pump);",
+  "      // back to 5:00 as soon as On is answered; delta review of #189, 1)."),
+
+ ("ui 2.0: On waits for its answer forever",
+  "ltcplay/web/remote2.html",
+  "    const j = await Promise.race([post(\"/api/remote/fuel-pump\", actor({on: true, seconds: secs, run: run})), late]);",
+  "    const j = await post(\"/api/remote/fuel-pump\", actor({on: true, seconds: secs, run: run}));"),
+
+ ("ui 2.0: On waiting for its answer says nothing",
+  "ltcplay/web/remote2.html",
+  "  PUMP_NOTE = \"Sending...\"; PUMP_NOTE_AT = Date.now();",
+  "  PUMP_NOTE_AT = Date.now();"),
+
+ ("ui 2.0: the run time keeps a longer one after a Stop or Pump off elsewhere",
+  "ltcplay/web/remote2.html",
+  "  if(offKey && offKey !== PUMP_OFF_SEEN && PUMP_OFF_SEEN !== \"\") pumpReset(v);\n",
+  ""),
+
+ ("ui 2.0: the run time keeps a longer one across an engine restart",
+  "ltcplay/web/remote2.html",
+  "  if(v.boot && PUMP_BOOT && v.boot !== PUMP_BOOT) pumpReset(v);\n",
+  ""),
+
+ ("ui 2.0: the reason On is disabled is only a tooltip",
+  "ltcplay/web/remote2.html",
+  "  $(\"pm-why\").hidden = !full;",
+  "  $(\"pm-why\").hidden = true;"),
+
+ ("ui 2.0: a second tap's already on paints over the first tap's success",
+  "ltcplay/web/remote2.html",
+  "    if(!(running && /already on/.test(e.message))) say(armShort(e.message), e.message, \"bad\");",
+  "    say(armShort(e.message), e.message, \"bad\");"),
+
+ ("ui 2.0: the run time keeps a longer one after On is answered",
+  "ltcplay/web/remote2.html",
+  "    PUMP_OK_AT = Date.now();\n    pumpReset(ST && ST.pump);",
+  "    PUMP_OK_AT = Date.now();"),
+
+ ("ui 2.0: Space on a focused Pump off is not kept from firing",
+  "ltcplay/web/remote2.html",
+  "#d-hz-off, #pm-off,",
+  "#d-hz-off,"),
+
+ ("ui 2.0: the run time keeps a longer one after the pump turns off",
+  "ltcplay/web/remote2.html",
+  "  if(PUMP_WAS_ON && !v.on){ PUMP_TYPED = false; $(\"pm-time\").value = pumpClock(v.default_s || 300); }\n",
+  ""),
+
+ ("ui 2.0: flamesafe having the pump on is not said",
+  "ltcplay/web/remote2.html",
+  "  if(v.state === \"flamesafe_on\") return \"flamesafe has it on: press Pump off\";\n",
+  ""),
+
+ ("ui 2.0: the calm tone quiets Pump off",
+  "ltcplay/web/remote2.html",
+  "body.inactive #pm-on{filter:saturate(.3)}",
+  "body.inactive #pm-on, body.inactive #pm-off{filter:saturate(.3)}"),
+
  ("deck: with announcements a tap of key 5 opens the hazers page",
   "ltcplay/streamdeck.py",
   "                if self.hazers_view():\n                    # Hazers too: a hold opens their page (tick), a tap",
@@ -2708,11 +3291,6 @@ MUTATIONS = [
   "ltcplay/streamdeck.py",
   "            self._key5_hold.release()\n            self._fire_release(\"the rig is aborted\")",
   "            self._fire_release(\"the rig is aborted\")"),
-
- ("ui 1.0: arming a hazer is not greyed for a role that may not arm",
-  "ltcplay/web/remote.html",
-  "    b.disabled = !look.armed && !mayArm;",
-  "    b.disabled = false;"),
 
  ("ui 2.0: arming a hazer is not greyed for a role that may not arm",
   "ltcplay/web/remote2.html",
@@ -2801,12 +3379,12 @@ MUTATIONS = [
   "      false ? \"Arming off here\" : \"\";"),
 
  ("ui: a hazer on Hold reads plain ARMED",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  if(armed && h.state === \"held\"){ out.state = \"ARMED, paused by Hold\";",
   "  if(false){ out.state = \"ARMED, paused by Hold\";"),
 
  ("ui: a level stepper goes past 100 percent",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  return Math.max(0, Math.min(100, v));",
   "  return Math.max(0, v);"),
 
@@ -2871,6 +3449,44 @@ MUTATIONS = [
   "        self._pt_reset(PT_ABORT)",
   "        pass"),
 
+ # passthrough switch (2026-10-30): the fireball's fuel pump
+ ("flamesafe: passthrough switch: the pump's slot carries the frame's value, not its own on",
+  "flamesafe/composer.py",
+  "                        buf[sl - 1] = (p.on if p.kind == \"switch\"\n"
+  "                                       else self._frame[sl - 1])",
+  "                        buf[sl - 1] = self._frame[sl - 1]"),
+
+ ("flamesafe: passthrough switch: an on value outside 1 to 255 loads",
+  "flamesafe/config.py",
+  "                    not SWITCH_ON_MIN <= on <= SWITCH_ON_MAX:",
+  "                    False:"),
+
+ ("flamesafe: passthrough switch: a switch entry takes a haze, fan or any other key",
+  "flamesafe/config.py",
+  "        _only_known(e, SWITCH_KEYS if is_switch else PASSTHROUGH_KEYS,",
+  "        _only_known(e, set(e) if is_switch else PASSTHROUGH_KEYS,"),
+
+ ("flamesafe: passthrough switch: a Composer takes a switch whose on is not 1 to 255",
+  "flamesafe/composer.py",
+  "            if p.kind == \"switch\" and (",
+  "            if False and ("),
+
+ ("flamesafe: passthrough switch: a Composer takes two entries on one slot",
+  "flamesafe/composer.py",
+  "        if len(pt_slots) != len(set(pt_slots)):",
+  "        if False:"),
+
+ ("flamesafe: passthrough switch: a Composer takes a slot outside 1 to 512",
+  "flamesafe/composer.py",
+  "        if bad:\n            raise ValueError(f\"passthrough slots {bad} are not 1 to \"",
+  "        if False:\n            raise ValueError(f\"passthrough slots {bad} are not 1 to \""),
+
+ ("flamesafe: passthrough switch: the switch is read as a hazer",
+  "flamesafe/config.py",
+  "        is_switch = \"switch\" in e",
+  "        is_switch = False"),
+
+
  ("flamesafe: passthrough: a change of sender leaves the hazers as they were",
   "flamesafe/composer.py",
   "                self._pt_reset(PT_NEW_SENDER)",
@@ -2888,8 +3504,8 @@ MUTATIONS = [
 
  ("flamesafe: passthrough: a hazer slot in the lockout file passes",
   "flamesafe/composer.py",
-  "                    if sl not in self._locked:\n                        buf[sl - 1] = self._frame[sl - 1]",
-  "                    if True:\n                        buf[sl - 1] = self._frame[sl - 1]"),
+  "                    if sl not in self._locked:\n                        buf[sl - 1] = (p.on if p.kind",
+  "                    if True:\n                        buf[sl - 1] = (p.on if p.kind"),
 
  ("flamesafe: passthrough: a hazer slot may be a group's slot",
   "flamesafe/config.py",
@@ -3678,7 +4294,7 @@ MUTATIONS = [
 
  ("an announcement that held nothing never says why",
   "ltcplay/announce.py",
-  '            if automatic is None and not held and not hold_note:\n'
+  '            if not held and not hold_note:\n'
   '                hold_note = no_hold_note(state)',
   '            if False:\n'
   '                hold_note = no_hold_note(state)'),
@@ -3837,9 +4453,9 @@ MUTATIONS = [
   "            if False:"),
 
  ("announcements: the test tone takes a Hold", "ltcplay/announce.py",
-  '            elif tone:\n'
+  '            if tone:\n'
   '                hold_note = "A test tone holds nothing."',
-  '            elif False:\n'
+  '            if False:\n'
   '                hold_note = "A test tone holds nothing."'),
 
  ("announcements: the default level in the show mix is 0 dB",
@@ -4148,12 +4764,11 @@ MUTATIONS = [
   "    return any(value == v for v in ALLOWED_VALUES)",
   "    return True"),
 
- ("the allow-list no longer checks for OSC special characters",
-  "ltcplay/beyond.py",
-  "    if any(c in _SPECIAL_CHARS for c in address):\n"
-  "        return False\n"
-  "    if address != BRIGHTNESS_ADDR:",
-  "    if address != BRIGHTNESS_ADDR:"),
+ # ('the allow-list no longer checks for OSC special characters')
+ # is retired (2026-11-04); it could not be caught:
+ # _allowed()'s exact-match check already refuses every address
+ # with one of these characters (its docstring says so), so the mutated
+ # allow-list refuses the same addresses.
 
  ("_send()'s guard is removed, so anything can reach the socket",
   'ltcplay/beyond.py',
@@ -5085,10 +5700,9 @@ def build():
   '                fc.dropped()\n',
   ''),
 
- ('reset: Reset says nothing about the rig again',
-  'ltcplay/remote.py',
-  '                r = self._reset_health(r, who, screen)\n',
-  ''),
+ ('resume: a Resume says nothing about the rig (it carries what Reset said)', 'ltcplay/remote.py',
+  '                r = self._resume_health(r, who, screen)\n',
+  ""),
 
  ('reset: a lost audio interface reads ready',
   'ltcplay/righealth.py',
@@ -5522,12 +6136,6 @@ def build():
   "            self._check(gen)\n            self._announcing = None\n",
   "            self._announcing = None\n"),
 
- ("conductor: Abort's flame cut waits for the executor",
-  'ltcplay/conductor.py',
-  '                self._flames_cut()\n'
-  '                # And every laser, the same way',
-  '                # And every laser, the same way'),
-
  ("conductor: Abort no longer disarms the flames at once",
   "ltcplay/conductor.py",
   "        self._applied[\"flames\"] = ZERO if r.ok else UNKNOWN\n"
@@ -5538,37 +6146,6 @@ def build():
   "ltcplay/conductor.py",
   "            if not self._applied[\"disarmed\"]:\n                self._disarm()",
   "            if False:\n                self._disarm()"),
-
- ("conductor: a second Abort starts a second fade",
-  "ltcplay/conductor.py",
-  "            latched = self._latched\n            if not latched:\n"
-  "                # The flames do not wait",
-  "            latched = False\n            if not latched:\n"
-  "                # The flames do not wait"),
-
- ("conductor: the Abort latch no longer refuses other presses",
-  "ltcplay/conductor.py",
-  "        if self._latched:\n            return self._refused(what,",
-  "        if False:\n            return self._refused(what,"),
-
- ("conductor: Reset is taken while the Abort is still fading",
-  "ltcplay/conductor.py",
-  "                    and self._done_gen != self._gen:\n",
-  "                    and False:\n"),
-
- ("conductor: Abort is taken with nothing playing",
-  "ltcplay/conductor.py",
-  "                if not self._playing():\n"
-  "                    return self._refused(\n"
-  "                        \"Abort\", \"nothing is playing",
-  "                if False:\n"
-  "                    return self._refused(\n"
-  "                        \"Abort\", \"nothing is playing"),
-
- ("conductor: Abort sends no laser blank of its own",
-  "ltcplay/conductor.py",
-  "            r = self._call(\"lasers blanked\", self.devices.lasers_blank)",
-  "            r = done(\"lasers left to the executor\")"),
 
  ("conductor: Abort never stops the video",
   "ltcplay/conductor.py",
@@ -5742,10 +6319,11 @@ def build():
   "                   progress, self.devices.lasers_blank)\n",
   ""),
 
- ("conductor: intermission cuts an Abort's fade short",
-  'ltcplay/conductor.py',
-  '            latched = self._latched\n            if not latched:\n                if self._look == STOPPED_DARK:',
-  '            latched = False\n            if not latched:\n                if self._look == STOPPED_DARK:'),
+ ("conductor: intermission cuts a Stop's fade short", 'ltcplay/conductor.py',
+  '            if self._look == STOPPED_DARK:\n'
+  '                # Darker than BETWEEN already',
+  '            if False:\n'
+  '                # Darker than BETWEEN already'),
 
  # -- the conductor wired to BEYOND and MadMapper (ConductorDevices, and
  # the lasers-dark re-send that keeps devices.py's "never assume a blank
@@ -5761,16 +6339,17 @@ def build():
   "        want[\"changed\"] = any(AGAIN not in p for p in progress)",
   "        want[\"changed\"] = bool(progress)"),
 
- ("conductor: Abort's laser blank waits for the executor, so the video "
-  "fades first (review of PR #29, finding D)",
-  "ltcplay/conductor.py",
-  "            r = self._call(\"lasers blanked\", self.devices.lasers_blank)",
-  "            r = failed(\"left to the executor\")"),
+ ("conductor: Stop's laser blank waits for the executor, so the video fades first (review of PR #29, finding D)", 'ltcplay/conductor.py',
+  '            r = self._call("lasers blanked at the Stop",\n'
+  '                           self.devices.lasers_blank)',
+  '            r = failed("left to the executor")'),
 
  ("conductor: a Hold fades the music before the lasers go dark",
   "ltcplay/conductor.py",
   "        self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
   "                   self.devices.lasers_blank)\n"
+  "        if want.get(\"keep_lasers_armed\"):\n"
+  "            self._pause_output_off(gen, want, progress)\n"
   "        froze = a[\"music\"] in (MUSIC_PLAYING, UNKNOWN)\n"
   "        self._step(gen, \"music\", MUSIC_HELD, \"music fading\", progress,\n"
   "                   self.show.music_hold, fade, only_from=(MUSIC_PLAYING,\n"
@@ -5780,7 +6359,9 @@ def build():
   "                   self.show.music_hold, fade, only_from=(MUSIC_PLAYING,\n"
   "                                                          UNKNOWN))\n"
   "        self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
-  "                   self.devices.lasers_blank)\n"),
+  "                   self.devices.lasers_blank)\n"
+  "        if want.get(\"keep_lasers_armed\"):\n"
+  "            self._pause_output_off(gen, want, progress)\n"),
 
  ("conductor: the real device layer says it is wired without BEYOND or "
   "MadMapper",
@@ -5890,15 +6471,9 @@ def build():
   "                madmapper, journal=_device_journal(httpd_schedule))",
   "            madmapper = madmapper_mod.build(madmapper)"),
 
- ("conductor: a second Abort sends no blank (finding B)",
-  "ltcplay/conductor.py",
-  "            return done(f\"Already aborted. {self._reblank('Abort')} Press \"",
-  "            return done(f\"Already aborted. Press \""),
-
- ("conductor: intermission while aborted sends no blank (finding B)",
-  "ltcplay/conductor.py",
-  "                    f\"Reset. {self._reblank('Intermission')}\")",
-  "                    f\"Reset. The rig is already dark.\")"),
+ ('conductor: a second Stop sends no blank (finding B)', 'ltcplay/conductor.py',
+  '                        f"sent again. {self._reblank(\'Stop\')}")',
+  '                        f"sent again.")'),
 
  ("conductor: a second Hold sends no blank (finding B)",
   "ltcplay/conductor.py",
@@ -5922,14 +6497,15 @@ def build():
   "(finding C)",
   "ltcplay/conductor.py",
   "                self._video_cancel()\n"
-  "                self._accept(\"Hold\"",
-  "                self._accept(\"Hold\""),
+  "                if disarm_lasers:\n"
+  "                    self._accept(\"Hold\"",
+  "                if disarm_lasers:\n"
+  "                    self._accept(\"Hold\""),
 
- ("conductor: Abort does not stop a running video fade at the press "
-  "(finding C)",
-  "ltcplay/conductor.py",
-  "                self._video_cancel()\n                blanked = threading.Event()",
-  "                blanked = threading.Event()"),
+ ('conductor: Stop does not stop a running video fade at the press (finding C)', 'ltcplay/conductor.py',
+  '                self._video_cancel()\n'
+  '                line = self._accept("Stop", STOPPED_DARK',
+  '                line = self._accept("Stop", STOPPED_DARK'),
 
  ("conductor: Abort trusts a video record that says black (finding C)",
   "ltcplay/conductor.py",
@@ -5992,12 +6568,6 @@ def build():
   "ltcplay/beyond.py",
   "        try:\n            ipaddress.IPv4Address(host)\n",
   "        try:\n            pass\n"),
-
- ("conductor: an announcement after Abort and Reset runs the Abort again "
-  "(finding E)",
-  "ltcplay/conductor.py",
-  "                look = BETWEEN if self._look == ABORTED else self._look",
-  "                look = self._look"),
 
  # -- review round 3 of PR #29: the second independent review's surviving
  # hand mutations, and its two beyond.py fixes.
@@ -6511,8 +7081,8 @@ def build():
   "        self._journal(f\"Alert ({a.severity}, {kind}): {text}\", fault=False,"),
 
  ("a second alert of the same kind opens a second banner", "ltcplay/alerts.py",
-  "        a = self._open.get(kind)\n        if a is not None:",
-  "        a = None\n        if a is not None:"),
+  "            a = self._open.get(kind)\n            if a is not None:",
+  "            a = None\n            if a is not None:"),
 
  ("Stop clears an alert like Acknowledge", "ltcplay/alerts.py",
   "        if action not in CLEARING:",
@@ -6598,7 +7168,7 @@ def build():
   "                        \"notes\": None}"),
 
  ("booth notes: the rack screen line never says the count",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  device += boothNotesText(b.notes);\n",
   ""),
 
@@ -6985,7 +7555,7 @@ def build():
  ("flamelink: zero() waits for the next tick instead of sending at once",
   "ltcplay/flamelink.py",
   '''            self._zero_gen += 1
-            return self._send_zero_frame()''',
+            return self._send_zero_frame(keep_manual=True)''',
   '''            self._zero_gen += 1
             return self._sock is not None'''),
 
@@ -7015,7 +7585,7 @@ def build():
   "ltcplay/flamelink.py",
   '''            self.zeroed = True
             self._zero_gen += 1
-            return self._send_zero_frame()''',
+            return self._send_zero_frame(keep_manual=True)''',
   '''            ok = self.send_frame()
             self.zeroed = True
             self._zero_gen += 1
@@ -7024,7 +7594,7 @@ def build():
  ("fix1: zero() asks the providers for its frame",
   "ltcplay/flamelink.py",
   '''            self._zero_gen += 1
-            return self._send_zero_frame()''',
+            return self._send_zero_frame(keep_manual=True)''',
   '''            self._zero_gen += 1
             return self.send_frame()'''),
 
@@ -7270,18 +7840,400 @@ def build():
 
  ("flame cues: a block that could not be cut is tried again",
   "ltcplay/fire_ice.py",
-  "            if b in self.blocks or b in self.errors:",
-  "            if b in self.blocks:"),
+  "        if b in self.errors:\n            t = self.slow.get(b)",
+  "        if False:\n            t = self.slow.get(b)"),
 
  ("flame cues: a block that could not be cut is a silent zero",
   "ltcplay/fire_ice.py",
-  "        if e is not None:\n            raise e",
-  "        if False:\n            raise e"),
+  "        if e is not None:\n            # With no traceback",
+  "        if False:\n            # With no traceback"),
 
  ("flame cues: a block not cut yet is a silent zero",
   "ltcplay/fire_ice.py",
-  "                    return self._zero(CUES_LOADING, fault=True)",
-  "                    return self._zero(CUES_LOADING, fault=False)"),
+  "                            else CUES_LOADING), fault=True)",
+  "                            else CUES_LOADING), fault=False)"),
+
+ # -- review of #174, round 2 follow-ups (2026-10-29)
+ ("flame cues: the cutting thread never cuts ahead",
+  "ltcplay/fire_ice.py",
+  "        while not self._stop.wait(CUT_EVERY_S):\n            self._cut_ahead()",
+  "        while not self._stop.wait(CUT_EVERY_S):\n            pass"),
+
+ ("flame cues: a dead background thread is never started again",
+  "ltcplay/fire_ice.py",
+  "        if t is not None and t.is_alive():\n            return\n"
+  "        now = self._mono()",
+  "        if t is not None:\n            return\n"
+  "        now = self._mono()"),
+
+ # -- review B of #177 (2026-10-30)
+ ("flame cues: a passing error faults its block for good",
+  "ltcplay/fire_ice.py",
+  "                    elif n > CUT_RETRIES or b in self.errors:",
+  "                    elif True:"),
+
+ ("flame cues: a missing tail journals a line for every piece",
+  "ltcplay/fire_ice.py",
+  "                short = (n, FSEQError(CUT_SHORT_TEXT))",
+  "                short = (n, FSEQError(f\"{CUT_SHORT_TEXT} at {n}\"))"),
+
+ ("flame cues: a reader stalled at Run is silent zeros for good",
+  "ltcplay/fire_ice.py",
+  "        return self._zero(why, fault=True)\n\n    def _idle",
+  "        return self._zero(why)\n\n    def _idle"),
+
+ ("flame cues: start() is not locked",
+  "ltcplay/fire_ice.py",
+  "        with self._start_lock:\n            if self._stop.is_set():",
+  "        if True:\n            if self._stop.is_set():"),
+
+ # -- review of #177 (2026-10-30)
+ ("flame cues: the uncut timer restarts at every block",
+  "ltcplay/fire_ice.py",
+  "                    key = (id(s), label)",
+  "                    key = (id(s), label, cut._block(idx) if cut is not None\n"
+  "                           else None)"),
+
+ ("flame cues: the lookahead is back to 3 s",
+  "ltcplay/fire_ice.py",
+  "CUT_AHEAD_S = 15.0",
+  "CUT_AHEAD_S = 3.0"),
+
+ ("flame cues: the playing cue is not cut before its render is published",
+  "ltcplay/fire_ice.py",
+  "        self._cut_ahead(s, cuts)\n        self._cuts = cuts",
+  "        self._cuts = cuts"),
+
+ ("flame cues: a thread that keeps dying is restarted at once every time",
+  "ltcplay/fire_ice.py",
+  "            if since is not None and n and now - since < \\",
+  "            if False and \\"),
+
+ ("flame cues: a thread that keeps dying is never a screen fault",
+  "ltcplay/fire_ice.py",
+  "            if n >= self.RESTART_FAULT_AFTER:",
+  "            if False:"),
+
+ ("flame cues: close() leaves the cutting thread running",
+  "ltcplay/fire_ice.py",
+  "        for t in (self._thread, self._cutter):",
+  "        for t in (self._thread,):"),
+
+ ("flame cues: the first missing frame of a render reads as there",
+  "ltcplay/fire_ice.py",
+  "        if sh is not None and idx >= sh[0]:",
+  "        if sh is not None and idx > sh[0]:"),
+
+ ("flame cues: a served row does not end the uncut episode",
+  "ltcplay/fire_ice.py",
+  "                self._uncut = None\n                count = span[1]",
+  "                count = span[1]"),
+
+ ("flame cues: a thread started again is still said to be gone",
+  "ltcplay/fire_ice.py",
+  "        self._start_failed.discard(attr)",
+  "        pass"),
+
+ ("flame cues: the cutting thread looks only once a second",
+  "ltcplay/fire_ice.py",
+  "        while not self._stop.wait(CUT_EVERY_S):\n            self._cut_ahead()",
+  "        while not self._stop.wait(1.0):\n            self._cut_ahead()"),
+
+ ("flame cues: a cutter that cannot start still promises the cues",
+  "ltcplay/fire_ice.py",
+  "        return bool(self._start_failed)",
+  "        return False"),
+
+ ("flame cues: every move to an uncut frame is a CUES FAULT at once",
+  "ltcplay/fire_ice.py",
+  "                    if not dead and now - u[1] < CUT_FAULT_AFTER_S:",
+  "                    if False:"),
+
+ ("flame cues: one missing frame faults its whole block",
+  "ltcplay/fire_ice.py",
+  "        if sh is not None and idx >= sh[0]:",
+  "        if sh is not None:"),
+
+ ("flame cues: an uncompressed render is copied whole to be cut",
+  "ltcplay/fire_ice.py",
+  "        self.whole = g.compression == NONE and len(g._blocks) == 1",
+  "        self.whole = False"),
+
+ ("flame cues: a cut block's channel data is kept",
+  "ltcplay/fire_ice.py",
+  "                g._cache_idx, g._cache = -1, b\"\"",
+  "                pass"),
+
+ # -- review 3 of #177 (2026-10-30)
+ ("flame cues: a one-block render is cut past its block",
+  "ltcplay/fire_ice.py",
+  "            end = self.boff + self.blen",
+  "            end = len(self.mv)"),
+
+ ("flame cues: a one-block render's missing bytes are no fault",
+  "ltcplay/fire_ice.py",
+  "            if end > len(self.mv):\n                # As _load_block",
+  "            if False:\n                # As _load_block"),
+
+ ("flame cues: a cut that keeps failing is retried forever",
+  "ltcplay/fire_ice.py",
+  "                    elif n > CUT_RETRIES or b in self.errors:",
+  "                    elif b in self.errors:"),
+
+ ("flame cues: a block's retries are never backed off further",
+  "ltcplay/fire_ice.py",
+  "CUT_RETRY_S[\n                            min(n, len(CUT_RETRY_S)) - 1], e)",
+  "CUT_RETRY_S[0], e)"),
+
+ ("flame cues: a block failing to cut waits out the grace silently",
+  "ltcplay/fire_ice.py",
+  "                    if failing is not None:",
+  "                    if False:"),
+
+ ("flame cues: a thread that keeps stopping ranks below the loading fault",
+  "ltcplay/fire_ice.py",
+  "        if self.thread_fault and (not self.fault or\n"
+  "                                  self.fault in CUES_WAITING):",
+  "        if self.thread_fault and not self.fault:"),
+
+ ("flame cues: a stopped cutter still promises the cues within a second",
+  "ltcplay/fire_ice.py",
+  "        return t is not None and not t.is_alive() and \\\n"
+  "            not self._stop.is_set()",
+  "        return False"),
+
+ ("flame cues: a cutter that keeps stopping is said to be loading",
+  "ltcplay/fire_ice.py",
+  "                        self.thread_fault or (",
+  "                        \"\" or ("),
+
+ ("flame cues: the restart count resets after 60 s with no start()",
+  "ltcplay/fire_ice.py",
+  "            if began is not None and ended is not None and \\\n"
+  "                    ended - began >= self.RESTART_RESET_S:",
+  "            if began is not None and \\\n"
+  "                    now - began >= self.RESTART_RESET_S:"),
+
+ ("flame cues: a thread that ran 60 s never starts the count again",
+  "ltcplay/fire_ice.py",
+  "                    ended - began >= self.RESTART_RESET_S:\n"
+  "                n = 0",
+  "                    ended - began >= self.RESTART_RESET_S:\n"
+  "                pass"),
+
+ ("flame cues: a dying thread's back-off never grows",
+  "ltcplay/fire_ice.py",
+  "self.RESTART_BACKOFF_S[min(n, len(\n"
+  "                        self.RESTART_BACKOFF_S)) - 1]:",
+  "self.RESTART_BACKOFF_S[0]:"),
+
+ ("flame cues: a pause or a stop does not end the uncut grace",
+  "ltcplay/fire_ice.py",
+  "        self._uncut = None\n        return self._zero(why)",
+  "        return self._zero(why)"),
+
+ ("flame cues: a new cue plays on the last cue's uncut grace",
+  "ltcplay/fire_ice.py",
+  "                    key = (id(s), label)",
+  "                    key = \"uncut\""),
+
+ ("flame cues: a new session plays on the last one's read grace",
+  "ltcplay/fire_ice.py",
+  "self._late_zero((id(s), label), CUES_READING_LAYOUT)",
+  "self._late_zero(\"read\", CUES_READING_LAYOUT)"),
+
+ ("flame cues: a fault from before shows in the read grace",
+  "ltcplay/fire_ice.py",
+  "            self.fault = \"\"\n            return None\n"
+  "        return self._zero(why, fault=True)\n\n    def _idle",
+  "            return None\n"
+  "        return self._zero(why, fault=True)\n\n    def _idle"),
+
+ ("flame cues: a failed start is journaled as a restart",
+  "ltcplay/fire_ice.py",
+  "            self._start_failed.add(attr)\n            return\n"
+  "        setattr(self, attr, nt)",
+  "            self._start_failed.add(attr)\n"
+  "        setattr(self, attr, nt)"),
+
+ ("flame cues: a thread that cannot start is never journaled",
+  "ltcplay/fire_ice.py",
+  "            if attr not in self._start_failed:\n                self._note(",
+  "            if False:\n                self._note("),
+
+ ("flame cues: a start() that waited out close() starts threads",
+  "ltcplay/fire_ice.py",
+  "            if self._stop.is_set():\n"
+  "                return self              # close() came in while we waited",
+  "            if False:\n"
+  "                return self              # close() came in while we waited"),
+
+ ("flame cues: the thread fault always clears",
+  "ltcplay/fire_ice.py",
+  "        if self.thread_fault and all(",
+  "        if self.thread_fault or True or all("),
+
+ ("flame cues: the thread fault never clears",
+  "ltcplay/fire_ice.py",
+  "            self.thread_fault = \"\"\n\n    def _cutter_dead",
+  "            pass\n\n    def _cutter_dead"),
+
+ # -- round 2 review of #177 (2026-10-30)
+ ("flame cues: a passing cut fault is kept for every later show",
+  "ltcplay/fire_ice.py",
+  "                        self.slow[b] = self.clock() + CUT_RETRY_SLOW_S",
+  "                        pass"),
+
+ ("flame cues: a data error is tried again like a passing one",
+  "ltcplay/fire_ice.py",
+  "                    if _cut_data_error(e):\n"
+  "                        # The render's own bytes are wrong: for good.",
+  "                    if False:\n"
+  "                        # The render's own bytes are wrong: for good."),
+
+ ("flame cues: a look does not end the uncut grace",
+  "ltcplay/fire_ice.py",
+  "            self._uncut = None\n            plain =",
+  "            plain ="),
+
+ ("flame cues: the back-off counts from the start, not the death",
+  "ltcplay/fire_ice.py",
+  "            since = ended if ended is not None and (\n"
+  "                last is None or ended > last) else last",
+  "            since = last"),
+
+ ("flame cues: a retry set meanwhile is not seen under the lock",
+  "ltcplay/fire_ice.py",
+  "                if not self._due(b):\n                    continue\n"
+  "                r = self.retry.get(b)",
+  "                r = self.retry.get(b)"),
+
+ ("flame cues: a first start that fails is tried on every call",
+  "ltcplay/fire_ice.py",
+  "        if tried is not None and now - tried[1] < self.RESTART_BACKOFF_S[",
+  "        if False and now - tried[1] < self.RESTART_BACKOFF_S["),
+
+ ("flame cues: a first start's recovery is not said",
+  "ltcplay/fire_ice.py",
+  "        if t is None and again:\n            self._note(",
+  "        if False:\n            self._note("),
+
+ ("flame cues: a render whose ranges disagree with its channels is read",
+  "ltcplay/fire_ice.py",
+  "            if covered != f.channel_count:",
+  "            if False:"),
+
+ ("flame cues: a cut past the frame's bytes is a shifted row",
+  "ltcplay/fire_ice.py",
+  "        if len(row) != count:",
+  "        if False:"),
+
+ ("flame cues: a garbage frame count lists every piece",
+  "ltcplay/fire_ice.py",
+  "            self.firsts = None\n            self.pieces =",
+  "            self.firsts = list(range(0, max(1, g.frame_count),\n"
+  "                                     CUT_PIECE_FRAMES))\n"
+  "            self.pieces ="),
+
+ ("flame cues: a death during a restart loses its reason",
+  "ltcplay/fire_ice.py",
+  "        setattr(self, attr, nt)\n        self._start_failed.discard(attr)",
+  "        setattr(self, attr, nt)\n        self._died.pop(attr, None)\n"
+  "        self._start_failed.discard(attr)"),
+
+ # -- round 3 review of #177 (2026-10-30)
+ ("flame cues: a cut set-up that failed for a passing reason is kept",
+  "ltcplay/fire_ice.py",
+  "                    cut.span != tuple(span) or cut.stale():",
+  "                    cut.span != tuple(span):"),
+
+ ("flame cues: a damaged render's set-up is made again",
+  "ltcplay/fire_ice.py",
+  "        c.rebuild_at = None if _cut_data_error(error) else \\",
+  "        c.rebuild_at = None if False else \\"),
+
+ ("flame cues: failed starts count as restarts",
+  "ltcplay/fire_ice.py",
+  "            self._start_tries[attr] = ((tried[0] if tried else 0) + 1, now)",
+  "            self._start_tries[attr] = ((tried[0] if tried else 0) + 1, now)\n"
+  "            self._restarts[attr] = (n, now, None)"),
+
+ ("flame cues: a kept block error pins its traceback",
+  "ltcplay/fire_ice.py",
+  "                    e = _bare(e)\n",
+  "                    pass\n"),
+
+ ("flame cues: a failed set-up's error pins its traceback",
+  "ltcplay/fire_ice.py",
+  "        c.blocks, c.errors, c.short = {}, {0: _bare(error)}, {}",
+  "        c.blocks, c.errors, c.short = {}, {0: error}, {}"),
+
+ ("flame cues: a passing cut fault is said as a damaged render",
+  "ltcplay/fire_ice.py",
+  "            if self._bg and not _cut_data_error(e):",
+  "            if False:"),
+
+ ("flame cues: a fault is journaled for each block's own words",
+  "ltcplay/fire_ice.py",
+  "        key = why if cause is None else cause",
+  "        key = why"),
+
+ ("flame cues: ranges under the header's channel count are read",
+  "ltcplay/fire_ice.py",
+  "            if covered != f.channel_count:",
+  "            if covered > f.channel_count:"),
+
+ ("flame cues: a thread's old death reason is said again",
+  "ltcplay/fire_ice.py",
+  "        why = self._died.pop(attr, \"it ended\")",
+  "        why = self._died.get(attr, \"it ended\")"),
+
+ ("flame cues: a failed slow retry is retried fast",
+  "ltcplay/fire_ice.py",
+  "                    elif n > CUT_RETRIES or b in self.errors:",
+  "                    elif n > CUT_RETRIES:"),
+
+ ("flame cues: a data error is tried again every 30 s",
+  "ltcplay/fire_ice.py",
+  "                        self.errors[b] = e\n"
+  "                        self.retry.pop(b, None)\n"
+  "                        self.slow.pop(b, None)\n",
+  "                        self.errors[b] = e\n"
+  "                        self.retry.pop(b, None)\n"
+  "                        self.slow[b] = self.clock() + CUT_RETRY_SLOW_S\n"),
+
+ ("flame cues: zstd out of memory is a damaged render",
+  "ltcplay/fire_ice.py",
+  "            return not (\"memory\" in text or \"allocat\" in text)",
+  "            return True"),
+
+ # -- final review of #177 (2026-10-30)
+ ("flame cues: a render that cannot be opened is said as a cut tried again",
+  "ltcplay/fire_ice.py",
+  "                    name = type(got).__name__\n"
+  "                    return self._zero(",
+  "                    raise got\n"
+  "                    return self._zero("),
+
+ ("flame cues: a kept error grows a traceback on every frame",
+  "ltcplay/fire_ice.py",
+  "            raise e.with_traceback(None)",
+  "            raise e"),
+
+ ("flame cues: a short render's error grows a traceback on every frame",
+  "ltcplay/fire_ice.py",
+  "            raise sh[1].with_traceback(None)",
+  "            raise sh[1]"),
+
+ ("flame cues: a start that works keeps its failed-start count",
+  "ltcplay/fire_ice.py",
+  "        self._start_tries.pop(attr, None)",
+  "        pass"),
+
+ ("flame cues: the journal counts a fault's kind, not its cue",
+  "ltcplay/fire_ice.py",
+  "        key = why if cause is None else cause",
+  "        key = why if cause is None else cause[0]"),
 
  ("flame cues: nothing is cut ahead of the show timecode",
   "ltcplay/fire_ice.py",
@@ -7414,9 +8366,8 @@ def build():
   "        if self.cfg.key == EXAMPLE_KEY:",
   "        if False:"),
 
- ("flamelink: the deck does not say ABORTED",
-  "ltcplay/streamdeck.py",
-  '''    "Disarmed by the show's Abort. Cycle the arm to re-arm.": "ABORTED",''',
+ ("flamelink: the deck does not say STOPPED for the show's Stop", 'ltcplay/streamdeck.py',
+  '    "Disarmed by the show\'s Stop. Cycle the arm to re-arm.": "STOPPED",\n',
   ""),
 
  # ---- round 5 of the safety review (PR #31) ------------------------------
@@ -7628,17 +8579,6 @@ def build():
   "        if False:\n"
   "            plan.append((\"Out of the show\", \"intermission\","),
 
- ("scheduler fix round: the Service's Reset never reaches the conductor",
-  "ltcplay/schedule_service.py",
-  "                self._calls.put(call)\n        if late:",
-  "                call.ok, call.sentence = False, \"not sent\"\n"
-  "                call.done.set()\n        if late:"),
-
- ('scheduler fix round: the Abort line still says nothing was disarmed',
-  'ltcplay/schedule_service.py',
-  '        if self.conductor is not None and le.action == sch.ABORT and \\',
-  '        if False and \\'),
-
  ("scheduler fix round: effects the conductor does not perform are "
   "journaled as performed",
   "ltcplay/schedule_service.py",
@@ -7646,12 +8586,11 @@ def build():
   "            claimed |= {e.kind for e in out.effects}"),
 
  # Item 3: a failed start goes dark, no disarm, no latch.
- ("scheduler fix round: a failed start or a cut show is an Abort again",
-  "ltcplay/schedule_service.py",
-  "            if ev.kind == sch.ABORT:\n"
-  "                plan.append((\"Abort\", \"abort\", self._ABORT_EFFECTS))",
-  "            if True:\n"
-  "                plan.append((\"Abort\", \"abort\", self._ABORT_EFFECTS))"),
+ ('scheduler fix round: a failed start or a cut show is a Stop again', 'ltcplay/schedule_service.py',
+  '            if ev.kind == sch.STOP_SHOW:\n'
+  "                # Every operator's Stop",
+  '            if True:\n'
+  "                # Every operator's Stop"),
 
  ("scheduler fix round: conductor: a stopped show disarms the flames",
   "ltcplay/conductor.py",
@@ -7663,11 +8602,9 @@ def build():
   "        self._disarm()\n"
   "        faded = False"),
 
- ("scheduler fix round: conductor: a stopped show latches",
-  "ltcplay/conductor.py",
-  "            self._accept(\"Show stopped\", STOPPED_DARK, who, screen,",
-  "            self._latched = True\n"
-  "            self._accept(\"Show stopped\", STOPPED_DARK, who, screen,"),
+ # ("scheduler fix round: conductor: a stopped show latches") is retired
+ # (2026-11-03): since the Abort latch went (aee2141) nothing in the
+ # conductor reads a latch, so setting one changes nothing to catch.
 
  ("scheduler fix round: conductor: leaving the show cuts a stopped show's "
   "fade short",
@@ -7695,16 +8632,13 @@ def build():
  # the 2 AM nightly reset; see the "2 AM reset" mutations at the end).
  ("scheduler fix round: a delayed night never closes at the 2 AM reset",
   "ltcplay/schedule_service.py",
-  "        if now < sch.night_reset(m.date, m.tz):\n"
-  "            return None",
-  "        if True:\n"
-  "            return None"),
+  "        if m.delayed() is not None and now < ends:\n            return None",
+  "        if m.delayed() is not None:\n            return None"),
 
- ("scheduler fix round: the delayed show is not missed when its night "
-  "closes at the reset",
+ ("scheduler fix round: the delayed show is not missed when its night closes at the reset",
   "ltcplay/schedule.py",
-  "    tx.set_slot(d.n, status=MISSED, reason=RESET_MISSED)",
-  "    pass"),
+  "    tx.set_slot(d.n, status=MISSED, reason=why)\n    tx.m = replace(tx.m, faults=tx.m.faults + (text,))",
+  "    tx.m = replace(tx.m, faults=tx.m.faults + (text,))"),
 
  ("scheduler fix round: a start after midnight never picks up last night",
   "ltcplay/schedule_service.py",
@@ -7717,11 +8651,10 @@ def build():
   "                       if st == sch.RUNNING and back == 1]",
   "                       if False]"),
 
- ("scheduler fix round: the 2 AM reset miss is written quietly, not as a "
-  "fault",
+ ("scheduler fix round: the 2 AM reset miss is written quietly, not as a fault",
   "ltcplay/schedule.py",
-  "    tx.note(\"miss\", \"fault\", RESET_MISSED, text, show=d.n,",
-  "    tx.note(\"miss\", \"done\", RESET_MISSED, text, show=d.n,"),
+  "    tx.note(\"miss\", \"fault\", why, text, show=d.n,",
+  "    tx.note(\"miss\", \"done\", why, text, show=d.n,"),
 
  # Item 5: a restart after a stopped show stays dark.
  ("scheduler fix round: a restart after a stopped show brings the "
@@ -7760,30 +8693,6 @@ def build():
   "        if False:"),
 
  # Coordinator's item A: after an Abort, dark until Reset.
- ("scheduler fix round: a show due while aborted starts anyway",
-  "ltcplay/schedule.py",
-  "            if tx.ev.latched:\n"
-  "                # Jeff",
-  "            if False:\n"
-  "                # Jeff"),
-
- ("scheduler fix round: Start now works while aborted",
-  "ltcplay/schedule.py",
-  "    if ev.latched:\n"
-  "        return _refuse(m, ev, now, \"The show was aborted",
-  "    if False:\n"
-  "        return _refuse(m, ev, now, \"The show was aborted"),
-
- ("scheduler fix round: the service never tells the engine it is aborted",
-  "ltcplay/schedule_service.py",
-  "        if ev.kind in self.LATCH_EVENTS and self._aborted():",
-  "        if False:"),
-
- ("scheduler fix round: an Abort still queued does not count yet",
-  "ltcplay/schedule_service.py",
-  "            self.machine = replace(self.machine, abort_latched=True)",
-  "            pass"),
-
  # The review's own survivors.
  ("scheduler fix round: the tick never moves IDLE to STANDBY at the lead",
   "ltcplay/schedule.py",
@@ -7806,78 +8715,13 @@ def build():
 
  # Item 2: the Abort latch is saved, read back, outlives the night, and
  # only Reset ends it.
- ("scheduler fix round 2: the Abort latch is never written to tonight's file",
-  "ltcplay/schedule.py",
-  "    if m.abort_latched:\n        doc[\"abort_latched\"] = True",
-  "    if False:\n        doc[\"abort_latched\"] = True"),
-
- ("scheduler fix round 2: the Abort latch is never read back",
-  "ltcplay/schedule.py",
-  "        abort_latched=doc.get(\"abort_latched\", False))",
-  "        abort_latched=False)"),
-
- ("scheduler fix round 2: the scheduler ignores its own saved Abort latch",
-  "ltcplay/schedule_service.py",
-  "        if self.machine is not None and self.machine.abort_latched:\n"
-  "            return True",
-  "        if False:\n            return True"),
-
- ("scheduler fix round 2: Reset never clears the saved Abort latch",
-  "ltcplay/schedule_service.py",
-  "        self.machine = replace(m, abort_latched=False)\n"
-  "        self._unreadable_night = None\n",
-  "        self._unreadable_night = None\n"),
-
- ("scheduler fix round 2: a Reset after a restart can never end the Abort",
-  "ltcplay/schedule_service.py",
-  "        if not ok and still:\n            return ok, said",
-  "        if not ok:\n            return ok, said"),
-
- ("scheduler fix round 2: a Reset pressed before an Abort ends it",
-  "ltcplay/schedule_service.py",
-  "        if call.seq < self._abort_seq or (\n"
-  "                pressed is not None and pressed < self._abort_pressed):",
-  "        if False:"),
-
- ("scheduler fix round 2: an unreset Abort does not make the start dark",
-  "ltcplay/schedule.py",
-  "    dark = cut or m.dark or ev.latched",
-  "    dark = cut or m.dark"),
-
  ("scheduler fix round 2: a latched night with every show to come shows "
   "the preshow look",
   "ltcplay/schedule.py",
   "    elif dark:\n        # Every show is still to come",
   "    elif False:\n        # Every show is still to come"),
 
- ("scheduler fix round 2: the Abort latch is not carried into the next night",
-  "ltcplay/schedule_service.py",
-  "        if latched and not m.abort_latched:\n"
-  "            m = replace(m, abort_latched=True)",
-  "        if False:\n            m = replace(m, abort_latched=True)"),
-
- ("scheduler fix round 2: a fresh start forgets last night's Abort latch",
-  "ltcplay/schedule_service.py",
-  "                if fresh and self._latched_before(d):",
-  "                if False:"),
-
  # Item 3: while latched, Hold, Resume and an announcement stay dark.
- ("scheduler fix round 2: Hold while aborted brings the intermission back",
-  "ltcplay/schedule.py",
-  "    _enter(tx, HOLD, after_stop=ev.latched)",
-  "    _enter(tx, HOLD)"),
-
- ("scheduler fix round 2: Resume while aborted brings the intermission back",
-  "ltcplay/schedule.py",
-  "    _enter(tx, back, after_stop=ev.latched)",
-  "    _enter(tx, back)"),
-
- ("scheduler fix round 2: Hold and Resume are never told about the latch",
-  "ltcplay/schedule_service.py",
-  "    LATCH_EVENTS = (sch.TICK, sch.BOOT_DONE, sch.START_NOW, sch.HOLD_ON,\n"
-  "                    sch.RESUME)",
-  "    LATCH_EVENTS = (sch.TICK, sch.BOOT_DONE, sch.START_NOW)"),
-
  # Item 4: a stuck or dead line is loud, and Abort does not wait behind it.
  ("scheduler fix round 2: the tick never watches the conductor's line",
   "ltcplay/schedule_service.py",
@@ -7907,19 +8751,13 @@ def build():
 
  ("scheduler fix round 2: the conductor's trouble never reaches the page",
   "ltcplay/schedule_service.py",
-  "                    \"trouble\": t[\"text\"] if t else None}",
-  "                    \"trouble\": None}"),
+  "                    \"trouble\": t[\"text\"] if t else None,\n",
+  "                    \"trouble\": None,\n"),
 
- ("scheduler fix round 2: Abort waits behind a hung conductor request",
-  "ltcplay/schedule_service.py",
-  "            urgent = call.method == \"abort\" and (",
-  "            urgent = False and ("),
-
- ("scheduler fix round 2: requests an Abort supersedes still go out after it",
-  "ltcplay/schedule_service.py",
-  "            dropped = [c for c in self._q if c.seq < call.seq and\n"
-  "                       c.method in self.SUPERSEDED_BY_ABORT]",
-  "            dropped = []"),
+ # ('scheduler fix round 2: Abort waits behind a hung conductor request')
+ # is retired (2026-11-08); it could not be caught: URGENT is ("stop",) since Abort went, so `call.method == "stop"` is
+ # the same test; a Stop not waiting behind a hung request is
+ # test_conductor_line_stop_is_urgent_and_supersedes.
 
  ("scheduler fix round 2: an Abort that goes ahead drops later Resets too",
   "ltcplay/schedule_service.py",
@@ -7933,13 +8771,6 @@ def build():
   "        except Exception as e:"),
 
  # Item 5: Reset refusals are journaled.
- ("scheduler fix round 2: a refused Reset is not journaled",
-  "ltcplay/schedule_service.py",
-  "    def _refuse_reset(self, who, screen, sentence):\n"
-  "        with self._locked():",
-  "    def _refuse_reset(self, who, screen, sentence):\n"
-  "        if False:"),
-
  # Item 6: the review's hand mutations that nothing caught.
  ("scheduler fix round 2: show_starting even while the confirmed show is "
   "paused",
@@ -7957,12 +8788,10 @@ def build():
   "        if faded:\n            self._pause(gen, fade)\n"
   "        self._step(gen, \"video\", STOPPED, \"video bank stopped\""),
 
- ("scheduler fix round 2: the 2 AM reset miss is not on the night's fault "
-  "list",
+ ("scheduler fix round 2: the 2 AM reset miss is not on the night's fault list",
   "ltcplay/schedule.py",
-  "    tx.m = replace(tx.m, faults=tx.m.faults + (text,))\n"
-  "    tx.note(\"miss\", \"fault\", RESET_MISSED",
-  "    tx.note(\"miss\", \"fault\", RESET_MISSED"),
+  "    tx.m = replace(tx.m, faults=tx.m.faults + (text,))\n    tx.note(\"miss\", \"fault\", why",
+  "    tx.note(\"miss\", \"fault\", why"),
 
  ("scheduler fix round 2: every conductor call is made as the scheduler",
   "ltcplay/schedule_service.py",
@@ -7981,13 +8810,12 @@ def build():
  # Item 7: tonight's file format.
  ("scheduler fix round 2: a dark night is written as format 3",
   "ltcplay/schedule.py",
-  "        \"format\": TONIGHT_FORMAT if marked else TONIGHT_PLAIN_FORMAT,",
-  "        \"format\": TONIGHT_PLAIN_FORMAT,"),
+  "                   TONIGHT_FORMAT if marked else TONIGHT_PLAIN_FORMAT),",
+  "                   TONIGHT_PLAIN_FORMAT),"),
 
  ("scheduler fix round 2: format 3 files may carry dark and the latch",
   "ltcplay/schedule.py",
-  "    allowed = TONIGHT_KEYS | (TONIGHT_OPTIONAL if fmt == TONIGHT_FORMAT\n"
-  "                              else frozenset())",
+  "    allowed = TONIGHT_KEYS | (TONIGHT_OPTIONAL if fmt in (\n        TONIGHT_FORMAT, TONIGHT_NEXT_DAY_FORMAT)\n                              else frozenset())",
   "    allowed = TONIGHT_KEYS | TONIGHT_OPTIONAL"),
 
  # -- PR #30 fix round 3 (third independent review), 2026-10-03. All named
@@ -7995,89 +8823,9 @@ def build():
  # them. The first group breaks the Abort latch file and the start-up
  # latch; the second is the review's own hand mutations (R3xx) that the
  # suite did not catch before this round.
- ("scheduler fix round 3: the Abort latch file is never written",
-  "ltcplay/schedule_service.py",
-  "        marker_error = self._write_latch_marker(m) if latched else None\n"
-  "        path = tonight_path(m.date, self.state_dir)\n",
-  "        marker_error = None\n"
-  "        path = tonight_path(m.date, self.state_dir)\n"),
-
- ("scheduler fix round 3: the Abort latch file is written after tonight's "
-  "list",
-  "ltcplay/schedule_service.py",
-  "        marker_error = self._write_latch_marker(m) if latched else None\n"
-  "        path = tonight_path(m.date, self.state_dir)\n"
-  "        try:\n"
-  "            write_json_atomic(path, sch.machine_to_doc(m), tries=tries)\n"
-  "        except OSError as e:\n",
-  "        path = tonight_path(m.date, self.state_dir)\n"
-  "        try:\n"
-  "            write_json_atomic(path, sch.machine_to_doc(m), tries=tries)\n"
-  "            marker_error = self._write_latch_marker(m) if latched else None\n"
-  "        except OSError as e:\n"
-  "            marker_error = self._write_latch_marker(m) if latched else None\n"),
-
- ("scheduler fix round 3: the Abort latch file is never read at start",
-  "ltcplay/schedule_service.py",
-  "        if os.path.exists(marker) and not m.abort_latched:\n",
-  "        if False:\n"),
-
- ("scheduler fix round 3: the Abort latch file latches with no conductor",
-  "ltcplay/schedule_service.py",
-  "        if self.conductor is None:\n            return m\n        whys = []",
-  "        whys = []"),
-
- ("scheduler fix round 3: an unreadable or set aside list does not latch",
-  "ltcplay/schedule_service.py",
-  "        if self._unreadable_night == m.date or os.path.exists(aside):\n",
-  "        if False:\n"),
-
- ("scheduler fix round 3: an unreadable earlier night does not latch a "
-  "fresh start",
-  "ltcplay/schedule_service.py",
-  "                action=\"load tonight\", outcome=\"still aborted\", "
-  "fault=True)\n            return True",
-  "                action=\"load tonight\", outcome=\"still aborted\", "
-  "fault=True)\n            return False"),
-
- ("scheduler fix round 3: Reset leaves the Abort latch file in place",
-  "ltcplay/schedule_service.py",
-  "            remove_latch_marker(path)\n"
-  "            self._marker_clear_pending = False",
-  "            self._marker_clear_pending = False"),
-
- ("scheduler fix round 3: Reset leaves the set aside list latching",
-  "ltcplay/schedule_service.py",
-  "                os.replace(aside, done)\n",
-  "                pass\n"),
-
- ("scheduler fix round 3: a latch that could not be saved is not said",
-  "ltcplay/schedule_service.py",
-  "        if text is not None:\n"
-  "            self._journal_line(\"system\", text, action=\"save abort latch\",",
-  "        if False:\n"
-  "            self._journal_line(\"system\", text, action=\"save abort latch\","),
-
- ("scheduler fix round 3: a failed latch save says the list holds it",
-  "ltcplay/schedule_service.py",
-  "        elif list_saved:\n            text = self.LATCH_HALF",
-  "        elif True:\n            text = self.LATCH_HALF"),
-
- ("scheduler fix round 3: a latch that could not be saved is never tried "
-  "again",
-  "ltcplay/schedule_service.py",
-  "            self._keep_latch_on_disk()\n            m = self.machine",
-  "            m = self.machine"),
-
- ("scheduler fix round 3: a Reset that overtakes an Abort in flight ends it",
-  "ltcplay/schedule_service.py",
-  "        if self._calls.aborts_beside():\n",
-  "        if False:\n"),
-
- ('scheduler fix round 3: R303 an Abort that goes ahead still sends a queued show start',
-  'ltcplay/schedule_service.py',
-  '    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting",\n                           "start_show")',
-  '    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume",\n                           "start_show")'),
+ ('scheduler fix round 3: R303 a Stop that goes ahead still sends a queued show start', 'ltcplay/schedule_service.py',
+  '    STOP_DROPS = ("hold", "resume", "show_starting", "start_show")',
+  '    STOP_DROPS = ("hold", "resume", "start_show")'),
 
  ("scheduler fix round 3: R304 an Abort waits behind a dead line",
   "ltcplay/schedule_service.py",
@@ -8089,10 +8837,9 @@ def build():
   "ltcplay/schedule_service.py",
   "        y = max(dates)", "        y = min(dates)"),
 
- ("scheduler fix round 3: R309 a schedule change rebuild drops the latch",
-  "ltcplay/schedule.py",
-  "                abort_latched=saved.abort_latched)",
-  "                abort_latched=False)"),
+ ("scheduler fix round 3: R309 a schedule change rebuild drops the Stop's Hold", 'ltcplay/schedule.py',
+  '                   stop_hold=saved.stop_hold)',
+  '                   stop_hold=False)'),
 
  ("scheduler fix round 3: R312 a hung conductor request is a fault only "
   "after 30 s",
@@ -8117,18 +8864,6 @@ def build():
   "            self._start()",
   "            self._start()"),
 
- ("scheduler fix round 3: R317 a conductor that cannot say whether it is "
-  "latched counts as not latched in Reset",
-  "ltcplay/schedule_service.py",
-  "        except Exception:\n            still = True",
-  "        except Exception:\n            still = False"),
-
- ("scheduler fix round 3: R318 a Reset refused while the Abort still fades "
-  "clears the scheduler's latch",
-  "ltcplay/schedule_service.py",
-  "        if not ok and still:\n            return ok, said",
-  "        if False:\n            return ok, said"),
-
  ("scheduler fix round 3: R322 a dark or latch that is not true or false is "
   "accepted",
   "ltcplay/schedule.py",
@@ -8152,24 +8887,508 @@ def build():
 
  ("scheduler 2 AM reset: the night is read on UTC, not the local clock",
   "ltcplay/schedule.py",
-  "    local = _utc(_aware(now)).astimezone(tz)",
-  "    local = _utc(_aware(now))"),
+  "    local = now.astimezone(tz)\n    if rule is None:",
+  "    local = now\n    if rule is None:"),
 
- ("scheduler 2 AM reset: a night ends at its own date's reset, not the "
-  "next day's",
+ ("scheduler 2 AM reset: a night ends at its own date's reset, not the next day's",
   "ltcplay/schedule.py",
-  "    return _utc(datetime.combine(d + timedelta(days=1), NIGHT_RESET,",
-  "    return _utc(datetime.combine(d, NIGHT_RESET,"),
+  "    base = _utc(datetime.combine(d + timedelta(days=1), NIGHT_RESET,",
+  "    base = _utc(datetime.combine(d, NIGHT_RESET,"),
 
  ("scheduler 2 AM reset: the service moves on at midnight (calendar date)",
   "ltcplay/schedule_service.py",
-  "        return sch.night_of(now, self.rule.tz)",
-  "        return now.astimezone(self.rule.tz).date()"),
+  "        d = sch.night_of(now, self.rule.tz, self.rule, self.machine)\n        m = self.machine",
+  "        d = now.astimezone(self.rule.tz).date()\n        m = self.machine"),
 
- ("scheduler 2 AM reset: a first show before 2 AM is accepted",
+ ("after midnight: a night past midnight ends at midnight",
   "ltcplay/schedule.py",
-  "    if first < NIGHT_RESET:",
+  "    on = d + timedelta(days=1) if n.last_end <= n.first_start else d",
+  "    on = d"),
+
+ ("after midnight: the night hands over at 2 AM with a show still to come",
+  "ltcplay/schedule.py",
+  "    r = base if end is None else max(base, end)",
+  "    r = base"),
+
+ ("after midnight: the next night's early first show waits for 2 AM",
+  "ltcplay/schedule.py",
+  "        r = min(r, floor if end is None else max(end, floor))",
+  "        pass"),
+
+ ("after midnight: the hand over ignores the machine's moved shows",
+  "ltcplay/schedule.py",
+  "        live = m if m is not None and m.date == y else None",
+  "        live = None"),
+
+ ("after midnight: a small hours time typed tonight is not after midnight",
+  "ltcplay/schedule.py",
+  "    for c in both:\n        if cut < c <= limit:",
+  "    for c in both[:1]:\n        if cut < c <= limit:"),
+
+ ("after midnight: tonight's file refuses a show after midnight",
+  "ltcplay/schedule.py",
+  "    return (midnight - timedelta(seconds=PRESHOW_LEAD_S),\n            midnight + MAX_EDIT_AHEAD)\n",
+  "    return (midnight - timedelta(seconds=PRESHOW_LEAD_S),\n            midnight + timedelta(days=1))\n"),
+
+ ("after midnight: the save answer leaves out the warnings",
+  "ltcplay/remote.py",
+  "        warned = (\" Warnings, saved anyway: \" + \" \".join(warns)) \\\n            if warns else \"\"",
+  "        warned = \"\""),
+
+ ("after midnight: nights that run into each other are not warned about",
+  "ltcplay/schedule.py",
+  "    out += clash\n",
+  "    pass\n"),
+
+ ("after midnight: an exception outside the season is not used",
+  "ltcplay/schedule.py",
+  "    if d not in rule.exceptions and \\\n            not (rule.first_date <= d <= rule.last_date):",
+  "    if not (rule.first_date <= d <= rule.last_date):"),
+
+ ("after midnight: a later hand over is said as the 2 AM reset",
+  "ltcplay/schedule.py",
+  "    why = RESET_MISSED if at_default else HANDOVER_MISSED",
+  "    why = RESET_MISSED"),
+
+ ("after midnight: spacing that does not fit is not warned about",
+  "ltcplay/schedule.py",
+  "        if n.interval_min * 60 < need:",
+  "        if False:"),
+
+ ("review196A: a save takes the night back to an earlier one",
+  "ltcplay/schedule_service.py",
+  "            return max(d, m.date)",
+  "            return d"),
+
+ ("review196A: a restart goes back before the latest saved night",
+  "ltcplay/schedule_service.py",
+  "        return d if floor is None else max(d, floor)",
+  "        return d"),
+
+ ("review196A: a restart drops a show still to come on the night before",
+  "ltcplay/schedule_service.py",
+  "                       if st == sch.PENDING and back <= 2]",
+  "                       if False]"),
+
+ ("review196A: a restart closes a night that still has a show to run",
+  "ltcplay/schedule_service.py",
+  "            if now < ends:\n                # It still has a show",
+  "            if False:\n                # It still has a show"),
+
+ ("review196A: the night picked up at a start is not taken as tonight",
+  "ltcplay/schedule_service.py",
+  "            d = self._tonight(now)\n        if self.machine.date == d:",
+  "        if self.machine.date == d:"),
+
+ ("review196A: a time far after tonight's last show is guessed",
+  "ltcplay/schedule.py",
+  "    hhmm = _hm(t)\n    d1, d2 = today, today + timedelta(days=1)",
+  "    return both[-1]\n    hhmm = _hm(t)\n    d1, d2 = today, today + timedelta(days=1)"),
+
+ ("review196A: a time typed with tomorrow is not tomorrow",
+  "ltcplay/schedule.py",
+  "    if day == \"tomorrow\":\n        return pick(_wall_all(today + timedelta(days=1), t, m.tz))",
+  "    if day == \"tomorrow\":\n        return pick(_wall_all(today, t, m.tz))"),
+
+ ("review196A: a huge show length is not capped",
+  "ltcplay/schedule.py",
+  "        show_len_s = _capped(show_len_s, MAX_SPAN_S, \"show_len_s\", notes)",
+  "        pass"),
+
+ ("review196A: a huge guard is not capped",
+  "ltcplay/schedule.py",
+  "        guard_s = _capped(guard_s, MAX_SPAN_S, \"guard_s\", notes)",
+  "        pass"),
+
+ ("review196A: a season from year 1 is not capped",
+  "ltcplay/schedule.py",
+  "                first_date = SEASON_MIN",
+  "                pass"),
+
+ ("review196A: every night of a long season is checked",
+  "ltcplay/schedule.py",
+  "    while d <= hi and k < SCAN_NIGHTS:",
+  "    while d <= hi:"),
+
+ ("review196A: a weekday written twice is not said",
+  "ltcplay/schedule.py",
+  "                    if k in weekly:",
+  "                    if False:"),
+
+ ("review196A: the overlap names a date, not the weekday",
+  "ltcplay/schedule.py",
+  "               f\"A {names[WEEKDAYS[d.weekday()]]} night\")",
+  "               f\"The night of {d}\")"),
+
+ ("review196A: a night's last show is taken as its first",
+  "ltcplay/schedule.py",
+  "        return start, start + k * step",
+  "        return start, start"),
+
+ ("review196A: a 24 hour night is no night",
+  "ltcplay/schedule.py",
+  "    on = d + timedelta(days=1) if n.last_end <= n.first_start else d",
+  "    on = d + timedelta(days=1) if n.last_end < n.first_start else d"),
+
+ ("review196A: the next night's preshow cuts this night's own shows",
+  "ltcplay/schedule.py",
+  "        r = min(r, floor if end is None else max(end, floor))",
+  "        r = min(r, floor)"),
+
+ ("review196A: a next morning time is not said as tomorrow",
+  "ltcplay/schedule.py",
+  "            \" (tomorrow)\" if day == 1 else f\" ({local.date()})\" if day else \"\")",
+  "            \"\" if day == 1 else f\" ({local.date()})\" if day else \"\")"),
+
+ ("review196A: a next morning list is written in an older format",
+  "ltcplay/schedule.py",
+  "    next_day = any(t is not None",
+  "    next_day = False and any(t is not None"),
+
+ ("review196B: a closed night holds the hand over to the file's hours",
+  "ltcplay/schedule.py",
+  "        end = None\n        need = timedelta(seconds=m.show_len_s + m.guard_s)\n        limit = hold_limit(m)",
+  "        need = timedelta(seconds=m.show_len_s + m.guard_s)\n        limit = hold_limit(m)"),
+
+ ("review196B: a typed time may land a day after tonight's night",
+  "ltcplay/schedule.py",
+  "    limit = max(ends) + EDIT_DAY_LIMIT\n",
+  "    limit = max(ends) + timedelta(hours=24)\n"),
+
+ ("review196B: tomorrow's night never begins before midnight",
+  "ltcplay/schedule.py",
+  "    if now >= night_reset(today, tz, rule, live):\n        return today + timedelta(days=1)",
+  "    if False:\n        return today + timedelta(days=1)"),
+
+ ("review196B: the second 01:00 is not said as such",
+  "ltcplay/schedule.py",
+  "        head = \"the second \" if getattr(local, \"fold\", 0) else \"\"",
+  "        head = \"\""),
+
+ ("review196B: an edit in the repeated hour says nothing",
+  "ltcplay/schedule.py",
+  "    twice = _utc(other) != _utc(local)",
+  "    twice = False"),
+
+ ("review196B: a failure working out the warnings is not a warning",
+  "ltcplay/schedule.py",
+  "        return [f\"The schedule could not be checked for warnings \"",
+  "        raise\n        return [f\"The schedule could not be checked for warnings \""),
+
+ ("review196B: thousands of exceptions are not said",
+  "ltcplay/schedule.py",
+  "    if len(exc_all) > SCAN_EXCEPTIONS:",
   "    if False:"),
+
+ ("review196B: the summary is not written again after a save on a closed night",
+  "ltcplay/schedule_service.py",
+  "        if out.machine.state == sch.OFF and out.machine.slots != m.slots \\",
+  "        if False and out.machine.state == sch.OFF and out.machine.slots != m.slots \\"),
+
+ ("review196B: a delayed show after 2 AM is said as missed at the 2 AM reset",
+  "ltcplay/schedule_service.py",
+  "        default = ends == sch.night_reset(m.date, m.tz)",
+  "        default = True"),
+
+ ("review196C: a show delayed after 2 AM does not hold the night",
+  "ltcplay/schedule.py",
+  "    if hold is not None:\n        r = max(r, hold)",
+  "    if False:\n        r = max(r, hold)"),
+
+ ("review196C: the last show's guard does not hold the hand over",
+  "ltcplay/schedule.py",
+  "        if m.last_end is not None:\n            # The last show that ran still has its guard",
+  "        if False:\n            # The last show that ran still has its guard"),
+
+ ("review196C: a show past the next night's first show holds the night",
+  "ltcplay/schedule.py",
+  "                if nxt is not None and s.start >= nxt:",
+  "                if False:"),
+
+ ("review196C: a show left to the hand over is not missed out loud",
+  "ltcplay/schedule_service.py",
+  "        if m.pending():\n            # A show typed for a time at or after",
+  "        if False:\n            # A show typed for a time at or after"),
+
+ ("review196C: the next night's first show is not known to the night",
+  "ltcplay/schedule.py",
+  "                   next_first=_next_night_first(rule, d))",
+  "                   next_first=None)"),
+
+ ("review196C: a show ending inside the next night's first show is not warned",
+  "ltcplay/schedule.py",
+  "    if s.start + timedelta(seconds=m.show_len_s + m.guard_s) > m.next_first:\n        return \"inside\"",
+  "    if False:\n        return \"inside\""),
+
+ ("review196C: a Delay into the next night is not journaled",
+  "ltcplay/schedule.py",
+  "    _note_clash(tx, m_before)\n    was = {s.n for s in m_before.pending() if runs_late(m_before, s)}",
+  "    was = {s.n for s in m_before.pending() if runs_late(m_before, s)}"),
+
+ ("review196C: the save's answer leaves out the next night's clash",
+  "ltcplay/schedule_service.py",
+  "        for w in sch.clash_warnings(m):\n            text += \" \" + w",
+  "        for w in ():\n            text += \" \" + w"),
+
+ ("review196C: a restart ignores a list dated tomorrow",
+  "ltcplay/schedule_service.py",
+  "            sch._utc(sch._aware(now)).astimezone(self.rule.tz).date() +\n            timedelta(days=1))",
+  "            sch._utc(sch._aware(now)).astimezone(self.rule.tz).date())"),
+
+ ("review196C: a night is opened though the next has its own list",
+  "ltcplay/schedule_service.py",
+  "        if os.path.exists(tonight_path(d, self.state_dir)):\n            return None\n        for back in",
+  "        if False:\n            return None\n        for back in"),
+
+ ("review196C: today is the night's date, not the calendar day",
+  "ltcplay/schedule.py",
+  "    today = (now_u.astimezone(m.tz).date() if now_u is not None else m.date)",
+  "    today = m.date"),
+
+ ("review196C: the later of a repeated hour cannot be typed",
+  "ltcplay/schedule.py",
+  "            return (ambiguous or cands)[-1]",
+  "            return cands[0]"),
+
+ ("review196C: the repeated hour has one instant",
+  "ltcplay/schedule.py",
+  "    for fold in (0, 1):\n        dt = datetime.combine(d, t, tzinfo=tz).replace(fold=fold)",
+  "    for fold in (0,):\n        dt = datetime.combine(d, t, tzinfo=tz).replace(fold=fold)"),
+
+ ("review196C: the refusal names the night's days, not the calendar's",
+  "ltcplay/schedule.py",
+  "    d1, d2 = today, today + timedelta(days=1)\n    raise",
+  "    d1, d2 = m.date, m.date + timedelta(days=1)\n    raise"),
+
+ ("review196C: the list does not say tomorrow",
+  "ltcplay/schedule.py",
+  "        row = {\"show\": s.n, \"start\": m.hm(s.start),",
+  "        row = {\"show\": s.n, \"start\": clock(_local(m, s.start)),"),
+
+ ("round3196: the limit is not inclusive at the edge",
+  "ltcplay/schedule.py",
+  "    if when is None or when > hi:\n",
+  "    if when is None or when >= hi:\n"),
+
+ ("round3196: Delay moves a show past the limit",
+  "ltcplay/schedule.py",
+  "    far = [x.n for x in slots if x.n in which and x.start > hi]\n",
+  "    far = []\n"),
+
+ ("round3196: a time before the night began is accepted by the editor",
+  "ltcplay/schedule.py",
+  "    if when < lo:\n        raise ValueError(f\"{str(ev.at).strip()!r} is before this night \"",
+  "    if False:\n        raise ValueError(f\"{str(ev.at).strip()!r} is before this night \""),
+
+ ("round3196: the overlap warning says on time though an earlier show overruns",
+  "ltcplay/schedule.py",
+  "        on_time = (\"\" if inside else",
+  "        on_time = (\"\" if False else"),
+
+ ("round3196: a late first show is said to be missed within its grace",
+  "ltcplay/schedule.py",
+  "            if late > grace:\n",
+  "            if late > grace - 100000:\n"),
+
+ ("late limit 2 min: the late grace defaults to 0 again",
+  "ltcplay/schedule.py",
+  "DEFAULT_LATE_GRACE_S = 120\n",
+  "DEFAULT_LATE_GRACE_S = 0\n"),
+
+ ("late limit 2 min: a file without late_grace_s reads as 15",
+  "ltcplay/schedule.py",
+  "    grace = DEFAULT_LATE_GRACE_S\n    version = 0\n",
+  "    grace = 15\n    version = 0\n"),
+
+ ("late limit 2 min: the late grace cap is 15 again",
+  "ltcplay/schedule.py",
+  "MAX_LATE_GRACE_S = 300\n",
+  "MAX_LATE_GRACE_S = 15\n"),
+
+ ("late limit 2 min: a show exactly at the limit is missed",
+  "ltcplay/schedule.py",
+  "        if late > grace:\n            if held:\n",
+  "        if late >= grace:\n            if held:\n"),
+
+ ("late limit 2 min: the rig check allowance carries a show past 120 s",
+  "ltcplay/schedule.py",
+  "    return max(grace_s, min(grace_s + max(0, int(allowance_s)),\n                            DEFAULT_LATE_GRACE_S))\n",
+  "    return grace_s + max(0, int(allowance_s))\n"),
+
+ ("late limit 2 min: the night overlap warning ignores a late last show",
+  "ltcplay/schedule.py",
+  "                 x + need + grace_td > first]",
+  "                 x + need + grace_td > first + grace_td]"),
+
+ ("late limit 2 min: the close-together warning says a show is missed",
+  "ltcplay/schedule.py",
+  "lateness can add up from show to show. Saved as it is.",
+  "Saved as it is."),
+
+ ("late limit 2 min: a night is handed over while a show can still start inside its grace",
+  "ltcplay/schedule.py",
+  "                e = s.start + need + timedelta(seconds=m.late_grace_s)\n",
+  "                e = s.start + need\n"),
+
+ ("late limit 2 min: the settling tick at a hand over can start a show",
+  "ltcplay/schedule.py",
+  "        if tx.ev.settle:\n            break\n",
+  "        if False:\n            break\n"),
+
+ ("late limit 2 min: a file that says 15 is not changed to 120",
+  "ltcplay/schedule_service.py",
+  "        if not self.MIGRATE_LEGACY_GRACE:\n            return\n",
+  "        return\n"),
+
+ ("late limit 2 min: any late_grace_s is changed to 120",
+  "ltcplay/schedule_service.py",
+  "            if first_load and g == 15 and isinstance(g, int) and",
+  "            if first_load and g is not None and isinstance(g, int) and"),
+
+ ("late limit 2 min: a 15 chosen after the change is changed again",
+  "ltcplay/schedule_service.py",
+  "            if os.path.exists(marker):\n                return\n",
+  ""),
+
+ ("late limit 2 min: a reload changes a 15 typed in Programming",
+  "ltcplay/schedule_service.py",
+  "            if first_load and g == 15 and isinstance(g, int) and",
+  "            if g == 15 and isinstance(g, int) and"),
+
+ ("late limit 2 min: the marker is written only when the file states a value",
+  "ltcplay/schedule_service.py",
+  "            try:\n                write_json_atomic(marker, {\"migrated\": changed,",
+  "            try:\n                if g is None:\n                    raise OSError('x')\n                write_json_atomic(marker, {\"migrated\": changed,"),
+
+ ("late limit 2 min: the copy of the file as it was is overwritten",
+  "ltcplay/schedule_service.py",
+  "                    if not os.path.exists(backup):\n",
+  "                    if True:\n"),
+
+ ("late limit 2 min: Resume promises a start with no margin",
+  "ltcplay/schedule.py",
+  "RESUME_MARGIN_S = 5\n",
+  "RESUME_MARGIN_S = 0\n"),
+
+ ("late limit 2 min: Resume says next on the schedule for a show starting now",
+  "ltcplay/schedule.py",
+  "    return \"yes\" if late <= m.late_grace_s - RESUME_MARGIN_S else \"close\"\n",
+  "    return \"no\"\n"),
+
+ ("late limit 2 min: Resume promises a start inside the guard",
+  "ltcplay/schedule.py",
+  "            _guard_left(m, now) != 0 or not 0 <= late <= m.late_grace_s):\n",
+  "            not 0 <= late <= m.late_grace_s):\n"),
+
+ ("late limit 2 min: Resume does not say a show is close to its limit",
+  "ltcplay/schedule.py",
+  "    if how == \"close\":\n",
+  "    if False:\n"),
+
+ ("late limit 2 min: the settings watcher is not refreshed after a migration",
+  "ltcplay/web.py",
+  "        config_watch.refresh(schedule.path)\n",
+  "        pass\n"),
+
+ ("late limit 2 min: a reload after a failed first save writes the marker",
+  "ltcplay/schedule_service.py",
+  "            if not first_load and getattr(self, \"_late_save_failed\", False):\n",
+  "            if False:\n"),
+
+ ("late limit 2 min: the rehearsal script uses up the one-time change",
+  "tools/stress/rehearsals/rehearsals.ps1",
+  "Remove-Item $MARKER -Force",
+  "Write-Output $MARKER -Force"),
+
+ ("review196C: overlapping nights do not say a show can be missed",
+  "ltcplay/schedule.py",
+  "so that first show will be MISSED (late by \"",
+  "so that first show will be late (late by \""),
+
+ ("review196B: the overlap warning names the wrong show",
+  "ltcplay/schedule.py",
+  "        after = [x for x in starts if x >= first]\n",
+  "        after = [x for x in starts if x > first]\n"),
+
+ ("review196B: a show at the next night's first show is not warned",
+  "ltcplay/schedule.py",
+  "        inside = [x for x in starts if x < first and x + need > first]\n",
+  "        inside = []\n"),
+
+ ("review196B: the reader refuses a show in the next night's preshow",
+  "ltcplay/schedule.py",
+  "    return (midnight - timedelta(seconds=PRESHOW_LEAD_S),\n",
+  "    return (midnight,\n"),
+
+ ("review196B: the dry run never puts the Stop's Hold back after the show end", 'ltcplay/schedule_service.py',
+  '            self._keep_stop_hold(now)\n'
+  '            # A schedule saved during a show or a closing',
+  '            # A schedule saved during a show or a closing'),
+
+ ("review196C: the second of a repeated hour is not said",
+  "ltcplay/schedule.py",
+  "    if getattr(local, \"fold\", 0):\n        return (f\" {clk} happens twice",
+  "    if False:\n        return (f\" {clk} happens twice"),
+
+ ("delta196A: the file refuses a show the editor accepted",
+  "ltcplay/schedule.py",
+  "    return (midnight - timedelta(seconds=PRESHOW_LEAD_S),\n            midnight + MAX_EDIT_AHEAD)\n",
+  "    return (midnight - timedelta(seconds=PRESHOW_LEAD_S),\n            midnight + timedelta(days=2))\n"),
+
+ ("delta196A: a time years away is accepted",
+  "ltcplay/schedule.py",
+  "    if when is None or when > hi:\n",
+  "    if when is None:\n"),
+
+ ("delta196A: an impossible date is an uncaught overflow",
+  "ltcplay/schedule.py",
+  "    except OverflowError:\n        when = None",
+  "    except OverflowError:\n        raise"),
+
+ ("delta196A: only tomorrow's night caps the hand over",
+  "ltcplay/schedule.py",
+  "    for k in range(1, NEXT_NIGHT_LOOK + 1):",
+  "    for k in range(1, 2):"),
+
+ ("delta196A: a far show holds the night",
+  "ltcplay/schedule.py",
+  "                if s.start > limit:\n                    # Too far out",
+  "                if False:\n                    # Too far out"),
+
+ ("delta196A: a show delayed in the preshow is missed at the preshow",
+  "ltcplay/schedule.py",
+  "        if dl is not None and dl.start >= opens:",
+  "        if False:"),
+
+ ("delta196A: a far show is not warned",
+  "ltcplay/schedule.py",
+  "    if s.start > hold_limit(m):\n        return \"beyond\"",
+  "    if False:\n        return \"beyond\""),
+
+ ("delta196A: a move into the preshow is not warned",
+  "ltcplay/schedule.py",
+  "        return \"near\"\n    return None",
+  "        return None\n    return None"),
+
+ ("delta196A: a worse clash is not journaled again",
+  "ltcplay/schedule.py",
+  "        if how is None or was.get(s.n) == how:",
+  "        if how is None or s.n in was:"),
+
+ ("delta196A: a date and a day word are both taken",
+  "ltcplay/schedule.py",
+  "            if day is not None or on is not None:\n                raise ValueError(f\"{text!r} names the day twice. Give one \"\n                                 f\"of today, tomorrow or a date.\")\n            try:",
+  "            if False:\n                raise ValueError(f\"{text!r} names the day twice. Give one \"\n                                 f\"of today, tomorrow or a date.\")\n            try:"),
+
+ ("delta196A: first and second are both taken",
+  "ltcplay/schedule.py",
+  "            if which is not None and which != w:",
+  "            if False:"),
+
+ ("delta196A: second for a time that happens once says nothing",
+  "ltcplay/schedule.py",
+  "    twice = _utc(other) != _utc(local)\n    clk = clock(local)",
+  "    twice = _utc(other) != _utc(local) or True\n    clk = clock(local)"),
 
  ("scheduler 2 AM reset: a show running at the reset is cut by it",
   "ltcplay/schedule_service.py",
@@ -8193,16 +9412,9 @@ def build():
   "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,\n"
   "                         fade_s=ABORT_FADE_S)"),
 
- ("failed start: the conductor latches a failed start",
-  "ltcplay/conductor.py",
-  "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,",
-  "            self._latched = True\n"
-  "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,"),
-
- ("failed start: the scheduler latches a failed start",
-  "ltcplay/schedule_service.py",
-  "        if any(c.method == \"abort\" for c in calls):",
-  "        if any(c.method in (\"abort\", \"failed_start\") for c in calls):"),
+ # ('failed start: the conductor latches a failed start')
+ # is retired (2026-11-08); it could not be caught: the conductor has no latch since Abort and Reset went (aee2141): nothing
+ # reads _latched, so setting it changes nothing to catch.
 
  ("a failed start raises no alert", "ltcplay/schedule_service.py",
   "                    self.alert_sink(\"start\", alert)",
@@ -8414,10 +9626,6 @@ def build():
   "        if s is None:\n            return self.RUN_OFF\n        if clk is None:\n            return self.NOT_AUDIO_MASTER",
   "        if s is not None and clk is None:\n            return self.NOT_AUDIO_MASTER"),
 
- ("fire & ice: a show starts while the conductor is still aborted", "ltcplay/fire_ice.py",
-  "            self.LATCHED if self.conductor.latched else \"\")",
-  "            \"\")"),
-
  ("fire & ice: an unconfirmed cue that stops is reported as ended",
   "ltcplay/fire_ice.py",
   "            self.svc.report(\"SHOW_ENDED\" if cue[\"confirmed\"]\n"
@@ -8505,10 +9713,9 @@ def build():
   '        if sch.START_SHOW in kinds and not self.dry_run and \\\n',
   '        if sch.START_SHOW in kinds and \\\n'),
 
- ('show-assembly: an Abort no longer supersedes a waiting show start',
-  'ltcplay/schedule_service.py',
-  '    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting",\n                           "start_show")',
-  '    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting")'),
+ ('show-assembly: a Stop no longer supersedes a waiting show start', 'ltcplay/schedule_service.py',
+  '    STOP_DROPS = ("hold", "resume", "show_starting", "start_show")',
+  '    STOP_DROPS = ("hold", "resume", "show_starting")'),
 
  ('show-assembly: the show start goes to the conductor, not the runner',
   'ltcplay/schedule_service.py',
@@ -8542,8 +9749,8 @@ def build():
 
  ('show-assembly: flame cues read while nothing is running',
   'ltcplay/fire_ice.py',
-  '        if s is None or not getattr(s, "running", False):\n            self._look_since = None\n            return self._zero("")',
-  '        if s is None:\n            self._look_since = None\n            return self._zero("")'),
+  '        if s is None or not getattr(s, "running", False):\n            self._look_since = None\n            return self._idle()',
+  '        if s is None:\n            self._look_since = None\n            return self._idle()'),
 
  ("show-assembly: the screen Abort's disarm skips the flame link",
   'ltcplay/fire_ice.py',
@@ -8589,8 +9796,8 @@ def build():
 
  ('fix round 1: flame cues follow a GO free run',
   'ltcplay/fire_ice.py',
-  '        if getattr(p, "freerun_epoch", None) is not None:\n            return self._zero(',
-  '        if False:\n            return self._zero('),
+  '        if getattr(p, "freerun_epoch", None) is not None:\n            return self._idle(',
+  '        if False:\n            return self._idle('),
 
  ('fix round 1: flame cues go on while the show audio is paused',
   'ltcplay/fire_ice.py',
@@ -8665,13 +9872,15 @@ def build():
 
  ('fix round 1: music_started records nothing',
   'ltcplay/conductor.py',
-  '            self._set("music", MUSIC_PLAYING)\n\n    def pixels_to_show',
-  '            pass\n\n    def pixels_to_show'),
+  '            self._set("music", MUSIC_PLAYING)\n            self._stopped_since_music = False\n\n    def pixels_to_show',
+  '            self._stopped_since_music = False\n\n    def pixels_to_show'),
 
- ('fix round 1: an Abort during the start leaves the music playing',
-  'ltcplay/fire_ice.py',
-  '            self.show.music_halt(C.ABORT_FADE_S)',
-  '            pass'),
+ ('fix round 1: a Stop during the start leaves the music playing', 'ltcplay/fire_ice.py',
+  '            self.show.music_halt(C.ABORT_FADE_S)\n'
+  '            try:\n'
+  '                self.conductor.stop(who, "engine", force_new=True)',
+  '            try:\n'
+  '                self.conductor.stop(who, "engine", force_new=True)'),
 
 
  ('fix round 1: the flame frames never raise an unconfirmed disarm',
@@ -8702,21 +9911,6 @@ def build():
   'def _has_status_mirror(path):\n    try:',
   'def _has_status_mirror(path):\n    from . import flamelink  # noqa: F401\n    try:'),
 
-
- ("fix round 1: the deck does not read latched from its own Abort",
-  'ltcplay/streamdeck.py',
-  '        with self._lock:\n            self._local = (True, self._clock())\n        return self._press("abort", who, screen)',
-  '        return self._press("abort", who, screen)'),
-
- ("fix round 1: the deck's Abort to the engine is not confirmed",
-  'ltcplay/streamdeck.py',
-  '        if name == "abort":\n            body["confirmed"] = True',
-  '        if name == "abort":\n            pass'),
-
- ("fix round 1: an engine answer older than the deck's press wins",
-  'ltcplay/streamdeck.py',
-  '        if engine is not None and (pressed_at is None or\n                                   engine[1] > pressed_at):',
-  '        if engine is not None:'),
 
  ('fix round 1: an engine refusal of a deck press is not a fault',
   'ltcplay/streamdeck.py',
@@ -8789,15 +9983,9 @@ def build():
 
 
 
- ('fix round 1: an Abort with no operator chosen is refused',
-  'ltcplay/schedule.py',
-  'ALWAYS_TAKEN = frozenset((ABORT, HOLD_ON, STOP_SHOW))',
-  'ALWAYS_TAKEN = frozenset((HOLD_ON, STOP_SHOW))'),
-
- ('fix round 1: a Hold with no operator chosen is refused',
-  'ltcplay/schedule.py',
-  'ALWAYS_TAKEN = frozenset((ABORT, HOLD_ON, STOP_SHOW))',
-  'ALWAYS_TAKEN = frozenset((ABORT, STOP_SHOW))'),
+ ('fix round 1: a Hold with no operator chosen is refused', 'ltcplay/schedule.py',
+  'ALWAYS_TAKEN = frozenset((HOLD_ON, STOP_SHOW))',
+  'ALWAYS_TAKEN = frozenset((STOP_SHOW,))'),
 
  ("fix round 1: the service refuses an Abort by a name not on the list",
   'ltcplay/schedule_service.py',
@@ -8887,25 +10075,15 @@ def build():
   '                elif k in self._key_group:\n                    i = self._key_group[k]\n                    if self.arm.wanted[i] or self._reported_armed(i):',
   '                elif k == TOP_HOLD:\n                    self._do_reset()\n                elif k in self._key_group:\n                    i = self._key_group[k]\n                    if self.arm.wanted[i] or self._reported_armed(i):'),
 
- ('fix round 2: a deck Abort waits in line behind other presses',
-  'ltcplay/streamdeck.py',
-  '            body["confirmed"] = True\n            # Abort never waits',
-  '            body["confirmed"] = True\n        if False:\n            # Abort never waits'),
-
  ("fix round 2: an engine that did not take a press is not shown on the deck",
   'ltcplay/streamdeck.py',
   '            self.fault = "" if (ok or noop) else f"{name.title()}: {text}"',
   '            self.fault = ""'),
 
- ('fix round 2: the page can bring the rig up while an Abort stands',
-  'ltcplay/web.py',
-  '                self._abort_latched():\n            return self._send(409, {"error": LATCHED_REFUSAL})',
-  '                False:\n            return self._send(409, {"error": LATCHED_REFUSAL})'),
-
- ("fix round 2: a press's answer says nothing was disarmed",
-  'ltcplay/schedule_service.py',
-  '        text = " ".join(self._reworded(le).text for le in out.log if le.text)',
-  '        text = " ".join(le.text for le in out.log if le.text)'),
+ # ("fix round 2: a press's answer says nothing was disarmed")
+ # is retired (2026-11-04); it could not be caught:
+ # _reworded() returns its line unchanged since Abort went, so the
+ # mutated join is the same text.
 
  ("pixels: a show start never takes the closing black off (Jeff's dark "
   "shows, 2026-10-29)",
@@ -8924,6 +10102,26 @@ def build():
   'ltcplay/fire_ice.py',
   '                if hold is not None:\n                    held = hold()\n',
   '                if hold is not None:\n                    p.override = "blackout"\n                    held = hold()\n'),
+
+ ("pixels: the show's last frame is not held through the show clock's last timecode frame",
+  'ltcplay/player.py',
+  '                    self._show_clock_ending(tc, ended_at):\n',
+  '                    False:\n'),
+
+ ("pixels: the show-end hold also holds a show chased off a timecode feed",
+  'ltcplay/player.py',
+  '        if getattr(clk, "source", None) != "audio_master":\n            return False\n        return 0.0 <= tc - ended_at',
+  '        if False:\n            return False\n        return 0.0 <= tc - ended_at'),
+
+ ("pixels: the show-end hold stops before the cue after it (the Intermission an hour later)",
+  'ltcplay/player.py',
+  '                    self._show_clock_ending(tc, ended_at):\n',
+  '                    (nxt is None and self._show_clock_ending(tc, ended_at)):\n'),
+
+ ("pixels: the show-end hold never ends, so a long tail holds the last frame",
+  'ltcplay/player.py',
+  '        return 0.0 <= tc - ended_at < SHOW_END_HOLD_S\n',
+  '        return 0.0 <= tc - ended_at\n'),
 
  ("pixels: the held look never hands over to the show",
   'ltcplay/player.py',
@@ -8972,21 +10170,17 @@ def build():
   '            self._set("pixels", UNKNOWN)\n            return clear()\n',
   '            return clear()\n'),
 
- ("pixels: a show start hands the pixels to the show under a latched Abort",
-  'ltcplay/conductor.py',
-  '            if self._latched:\n                return None\n            self._set("pixels", UNKNOWN)\n',
-  '            self._set("pixels", UNKNOWN)\n'),
+ # ("pixels: a start refused by an Abort just before the hand-over plays
+ # the music anyway") is retired (PR #216): since the Abort latch went
+ # (aee2141) pixels_to_show never refuses and pixels_for_show never returns
+ # None, so the branch it broke cannot run and the mutation could not be
+ # caught. A Stop at that moment is "fire & ice: a Stop during the hand-over
+ # lets the show start go out", below.
 
- ("pixels: a start refused by an Abort just before the hand-over plays "
-  "the music anyway",
-  'ltcplay/fire_ice.py',
-  '        elif to_show(lambda: self.show.pixels_for_show(what)) is None:\n            return None\n',
-  '        else:\n            to_show(lambda: self.show.pixels_for_show(what))\n'),
-
- ("pixels: an Abort while the cue was starting leaves the hand-over armed",
-  'ltcplay/fire_ice.py',
-  '            self.show.music_halt(C.ABORT_FADE_S)\n            self._start_undone()\n',
-  '            self.show.music_halt(C.ABORT_FADE_S)\n'),
+ ('pixels: a Stop while the cue was starting leaves the hand-over armed', 'ltcplay/fire_ice.py',
+  '                           action="stop", outcome="failed")\n'
+  '            self._start_undone()\n',
+  '                           action="stop", outcome="failed")\n'),
 
  ("pixels: a start the clock refused leaves its hand-over armed",
   'ltcplay/fire_ice.py',
@@ -9026,6 +10220,12 @@ def build():
   'ltcplay/fire_ice.py',
   '                "Programming: Show file card, Stop, then Run. "\n',
   '                "Programming screen: press Follow timecode. "\n'),
+
+ ("pixels: the look-in-show CUES FAULT sends a 2.0 screen to 1.0, not to "
+  "2.0's own Show file card on its Schedule tab",
+  'ltcplay/fire_ice.py',
+  '                "On 2.0: the Schedule tab\'s Show file card. "\n',
+  '                "On 2.0, Open in 1.0 first. "\n'),
 
  ("pixels: a look set through the engine during a start's hand-over is "
   "lifted by the first show frame",
@@ -9197,29 +10397,8 @@ def build():
   "    if True:\n        _OPENER.append("),
 
  # -- review of PR #43 (2026-10-05): P0-1, the screen Abort disarms first, every time --
- ('review43: the screen Abort sends no disarm of its own',
-  'ltcplay/remote.py',
-  '            flames = self._disarm_now(who, screen, "Abort")',
-  '            flames = (None, "")'),
-
- ('review43: a disarm that did not go out reads as a done Abort',
-  'ltcplay/remote.py',
-  '        ok = f_ok is True or (f_ok is None and s_ok)',
-  '        ok = True'),
-
-
  # -- review of PR #43: P0-5, the screen Abort's disarm never waits on the tonight.json save --
- ("review43: the screen Abort's disarm waits on the scheduler's save",
-  'ltcplay/remote.py',
-  '            flames = self._disarm_now(who, screen, "Abort")',
-  '            with self.schedule.lock:\n                self.schedule.machine and self.schedule._save_tonight()\n            flames = self._disarm_now(who, screen, "Abort")'),
-
  # -- review of PR #43: P0-1, the deck says what the engine's Abort did --
- ('review43: the deck reads RESET after an Abort that stopped no show',
-  'ltcplay/streamdeck.py',
-  '        if name == "abort" and doc.get("stopped") is False:',
-  '        if False:'),
-
  # -- review of PR #43: P0-2, the lasers' timecode blank fails closed --
  ('review43: a black zone with no address answers True again',
   'ltcplay/beyondtc.py',
@@ -9319,8 +10498,8 @@ def build():
 
  ('review43: a render that cannot be read is a quiet zero',
   'ltcplay/fire_ice.py',
-  '                              f"({type(e).__name__}: {e})", fault=True)',
-  '                              f"({type(e).__name__}: {e})")'),
+  '                              f"({name}: {e})", fault=True,',
+  '                              f"({name}: {e})",'),
 
  ('review43: /api/conductor leaves out the flame cue fault',
   'ltcplay/web.py',
@@ -9385,11 +10564,6 @@ def build():
   '        if False:\n            named.append('),
 
  # -- review of PR #43: P1-5, the deck reads RESET after an engine restart --
- ("review43: /api/conductor forgets the scheduler's saved Abort latch",
-  'ltcplay/web.py',
-  '        snap["latched"] = bool(snap.get("latched")) or sched_latched',
-  '        snap["latched"] = bool(snap.get("latched"))'),
-
  # -- review of PR #38: P2, the single-copy lock is machine wide or says so --
  ('review38: the fall back to Local is quiet',
   'ltcplay/onlyone.py',
@@ -9492,11 +10666,6 @@ def build():
   '            pass'),
 
  # -- re-review of #46: P1-A, the screen Abort's laser blank goes before the scheduler --
- ("rereview: the screen Abort's laser blank waits for the scheduler",
-  'ltcplay/remote.py',
-  '            lasers = self._lasers_dark_now()\n',
-  '            lasers = (None, "")\n'),
-
  # -- review of PR #43 P0-2 re-anchored, and re-review P1-B, P2-a, P2-h: the BEYOND route check --
  ('review43: a show file with no BEYOND route passes the check',
   'ltcplay/fire_ice.py',
@@ -9582,20 +10751,10 @@ def build():
   '    def _http_fetch(self, path):\n        try:\n            with urllib.request.urlopen(self.base_url + path,'),
 
  # -- review of #48: a Reset pressed before an Abort never ends it, whatever order they reach the scheduler --
- ('rereview: a Reset that reached the scheduler after a later-pressed Abort is still sent',
-  'ltcplay/schedule_service.py',
-  '            late = when < self._abort_pressed\n',
-  '            late = False\n'),
-
- ("rereview: the screen's Abort and Reset carry no press order",
-  'ltcplay/remote.py',
-  '        pressed = stamp() if stamp is not None else None\n',
-  '        pressed = None\n'),
-
- ("rereview: the Abort's press order is not kept",
-  'ltcplay/schedule_service.py',
-  '                self._abort_pressed = (self._press_stamp\n',
-  '                self._abort_pressed = 0 and (self._press_stamp\n'),
+ # ("rereview: the screen's Abort and Reset carry no press order")
+ # is retired (2026-11-04); it could not be caught:
+ # the press order it drops (Remote._press's stamp) feeds only the
+ # scheduler's _press_stamp, which nothing reads since Abort and Reset went.
 
  # -- #46's Windows run, 2026-10-08: a Reset the conductor answered while the
  # Abort pressed after it was still saving tonight.json found the latch set
@@ -9606,15 +10765,7 @@ def build():
   '        calls = self._decide_conductor(plan, ev)\n'
   '        if ev.kind == sch.STOP_SHOW and calls:',
   '        calls = None\n'
-  '        if any(p[1] == "abort" for p in plan):\n'
-  '            self.machine = replace(self.machine, abort_latched=True)\n'
-  '            self._marker_clear_pending = False\n'
   '        if False:'),
-
- ("abort save: a step is taken outside the scheduler's lock",
-  'ltcplay/schedule_service.py',
-  '        with self._locked():\n            return self._apply_locked(ev, now)',
-  '        if True:\n            return self._apply_locked(ev, now)'),
 
  # Look A, the deck artwork Jeff approved on the real deck (2026-09-27).
  ("deck look: the two snakes run opposite ways",
@@ -9879,13 +11030,6 @@ def build():
   "    link.status_mirrored = _has_status_mirror(cfg.flamesafe_config)",
   "    link.status_mirrored = False"),
 
- ('an unconfirmed screen Abort no longer disarms the flames',
-  'ltcplay/remote.py',
-  '            flames = self._disarm_now(who, screen, "Abort")\n'
-  '        if name in ("abort", "hold", "start-now"):',
-  '            flames = None\n'
-  '        if name in ("abort", "hold", "start-now"):'),
-
  ("MadMapper at High is left at High", "packaging/windows/supervisor.py",
   "HIGH_OR_ABOVE = (0x80, 0x100)", "HIGH_OR_ABOVE = ()"),
 
@@ -9943,33 +11087,6 @@ def build():
   "ltcplay/morning.py",
   """            state = ("on" if ms and len(on) == len(ms) and not waiting else""",
   """            state = ("on" if ms and len(on) == len(ms) else"""),
-
- ("morning page: a group click arms again unless every member is selected",
-  "ltcplay/web/remote.html",
-  "  const any = groupAnySelected(ids, MO.purge_state || {});\n"
-  "  moPress(\"purge-select\", {machines: ids, group: g, on: !any});",
-  "  const any = ids.every(id => ((MO.purge_state || {}).selected || []).includes(id));\n"
-  "  moPress(\"purge-select\", {machines: ids, group: g, on: !any});"),
-
- ("morning page: a group button cannot disarm with purge arming off",
-  "ltcplay/web/remote.html",
-  "  return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, \"arm\")));",
-  "  return !ids.length || !mo.purge_enabled || (!any && (arrange || !mayRow(st, \"arm\")));"),
-
- ("morning page: a group button cannot disarm in Arrange mode or signed out",
-  "ltcplay/web/remote.html",
-  "  return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, \"arm\")));",
-  "  return !ids.length || arrange || !mayRow(st, \"arm\") || (!any && !mo.purge_enabled);"),
-
- ("morning page: a group button's words grow it and push the page down",
-  "ltcplay/web/remote.html",
-  ".mo-groups button .gd{display:block;max-width:100%;white-space:nowrap;",
-  ".mo-groups button .gd{display:block;max-width:100%;white-space:normal;"),
-
- ("morning page: a group button flamesafe still holds armed is drawn grey",
-  "ltcplay/web/remote.html",
-  '    b.classList.toggle("part", gs.state === "part" || (any && gs.state !== "on"));',
-  '    b.classList.toggle("part", any && gs.state !== "on");'),
 
  ("morning: a group flamesafe still holds armed shows grey once cleared",
   "ltcplay/morning.py",
@@ -10032,7 +11149,7 @@ def build():
             # One fireball is one machine'''),
 
  ("morning page: a fireball tile reads like a G-Flame (Off, FIRING)",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '''  if(m.kind === "fireball") return''',
   '''  if(false) return'''),
 
@@ -10089,7 +11206,7 @@ def build():
   '''        kind = "fireball" if False else \\'''),
 
  ("morning page: a purge refused for a group with no deck key reads Arming...",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '''  if(g.purge_refused === "screenonly") return''',
   '''  if(false) return'''),
 
@@ -10297,22 +11414,10 @@ def build():
   "            if not shows and m.delayed() is None:",
   "            if not shows:"),
 
- ("alert hold: two ticks at once can start two hold workers",
+ ("alert hold: two ticks at once can start two booth workers",
   "ltcplay/remote.py",
   "        with self._alert_lock:\n            self._start_alert_workers()",
   "        self._start_alert_workers()"),
-
- ("alert hold: an old hold clears a newer one",
-  "ltcplay/alerthold.py",
-  "        if self.hold is h:\n            self.hold = None",
-  "        self.hold = None"),
-
- ("alert hold: the automatic play's journal line hides the alert hold",
-  "ltcplay/announce.py",
-  '                     "It plays while the schedule is on the alert hold; "\n'
-  '                     "nothing else was changed." if automatic is not None\n'
-  '                     else\n',
-  ""),
 
  ("alert hold: the server's close never stops the alert workers",
   "ltcplay/web.py",
@@ -10326,13 +11431,8 @@ def build():
 
  ("alert hold: a tick after the close starts the workers again",
   "ltcplay/remote.py",
-  "        if self._alert_stop.is_set():\n            return\n        self._alert_wake.set()",
-  "        self._alert_wake.set()"),
-
- ("alert hold: the hold worker does the booth's work too",
-  "ltcplay/remote.py",
-  "                args=(self._alert_wake, self._hold_work),",
-  "                args=(self._alert_wake, self._alert_work),"),
+  "        if self._alert_stop.is_set():\n            return\n        self._booth_wake.set()",
+  "        self._booth_wake.set()"),
 
  ("alert hold: an operator's own Resume at showtime is not respected",
   "ltcplay/schedule_service.py",
@@ -10346,8 +11446,8 @@ def build():
 
  ("alert hold: the alert workers never stop",
   "ltcplay/remote.py",
-  "        self._alert_stop.set()\n        self._alert_wake.set()",
-  "        self._alert_wake.set()"),
+  "        self._alert_stop.set()\n        self._booth_wake.set()",
+  "        self._booth_wake.set()"),
 
  ("alert hold: the remote never hooks the scheduler's ticks",
   "ltcplay/remote.py",
@@ -10361,60 +11461,78 @@ def build():
 
  ("alert hold: the alert work runs on the scheduler's thread",
   "ltcplay/remote.py",
-  "        self._alert_wake.set()\n        self._booth_wake.set()\n"
+  "        self._booth_wake.set()\n"
   "        with self._alert_lock:",
-  "        self._alert_work()\n        self._booth_wake.set()\n"
+  "        self._booth_work()\n"
   "        with self._alert_lock:"),
 
- ("alert hold: Acknowledge does not cancel the announcement",
-  "ltcplay/alerthold.py",
-  "        if self._acknowledged(h):\n            self._cancel(h)\n"
-  "            return\n        if self._clock() < h[\"due\"]:",
-  "        if False:\n            self._cancel(h)\n"
-  "            return\n        if self._clock() < h[\"due\"]:"),
+ # Jeff, 2026-10-30: nothing plays on the public PA automatically.
+ ("no PA: the alert hold plays the Delayed on the PA by itself again",
+  "ltcplay/remote.py",
+  "        self.alert_hold = AlertHold(self.alerts, schedule, clock=clock)\n",
+  "        self.alert_hold = AlertHold(self.alerts, schedule, clock=clock)\n"
+  "        _auto_started = self.alert_hold.started\n"
+  "\n"
+  "        def _auto_delayed(epoch, why, _s=_auto_started):\n"
+  "            _s(epoch, why)\n"
+  "            try:\n"
+  "                self._announce.play(\"delayed\", \"Andy\", \"Rack screen\",\n"
+  "                                    surface=True)\n"
+  "            except Exception:\n"
+  "                pass\n"
+  "        self.alert_hold.started = _auto_delayed\n"),
 
- ("alert hold: one Acknowledge cancels while another loud alert is open",
-  "ltcplay/alerthold.py",
-  "        return not (h[\"loud\"] & now_ids)",
-  "        return bool(h[\"ids\"] - now_ids)"),
+ ("no PA: a play in the engine's own name is not refused",
+  "ltcplay/announce.py",
+  "            engine = self._engine_name(who, screen)\n            if engine:",
+  "            engine = self._engine_name(who, screen)\n            if False:"),
 
- ("alert hold: deck and gate alerts announce too",
-  "ltcplay/alerthold.py",
-  "        loud_ids = {a.id for a in open_ if a.kind in ANNOUNCE_KINDS}",
-  "        loud_ids = {a.id for a in open_}"),
+ ("no PA: the engine's own names are not known",
+  "ltcplay/announce.py",
+  'ENGINE_NAMES = frozenset(("ltc player", "ltcplay", "engine", "system",\n'
+  '                          "scheduler"))',
+  "ENGINE_NAMES = frozenset()"),
 
- ("alert hold: the announcement plays after the operator resumed",
-  "ltcplay/alerthold.py",
-  "        if h is None:\n            return\n        if not self._still_held(h):\n"
-  "            self._drop(h)\n            return",
-  "        if h is None:\n            return\n        if False:\n"
-  "            self._drop(h)\n            return"),
+ ("no PA: the rig check's Announcements is required again",
+  "ltcplay/web.py",
+  '            ("Announcements", False,',
+  '            ("Announcements", True,'),
 
- ("alert hold: the announcement plays on every tick after the countdown",
-  "ltcplay/alerthold.py",
-  '        h["state"], h["due"] = "announcing", None\n',
+ ("no PA: an advisory check reads FAILED in the rig check's line",
+  "ltcplay/preroll.py",
+  '    if not it.get("required", True):\n'
+  '        # Advisory (Announcements, Jeff 2026-10-30): said, never a failure.\n'
+  '        return f"{it[\'name\']} WARNING: {it[\'text\']}"\n',
   ""),
 
- ("alert hold: the countdown is not waited for",
-  "ltcplay/alerthold.py",
-  '        if self._clock() < h["due"]:\n            return',
-  '        if False:\n            return'),
+ ("no PA: the rack screen lists an advisory check as FAILED",
+  "ltcplay/web/remote_rules.js",
+  '(i.required === false ? " WARNING: " : " FAILED: ")',
+  '" FAILED: "'),
 
- ("alert hold: the automatic Delayed asks for a Hold, and its safety cuts",
-  "ltcplay/announce.py",
-  "            elif self.hold_requester is not None and not over_show:",
-  "            if self.hold_requester is not None and not over_show:"),
+ # Cold review of PR #183.
+ ("no PA: the engine announces through the conductor by itself",
+  "ltcplay/fire_ice.py",
+  "    svc.conductor = conductor\n",
+  "    svc.conductor = conductor\n"
+  "    svc.on_show_started = (lambda *a, **k: conductor.announce(\n"
+  "        \"delayed\", \"Andy\", \"Rack screen\"))\n"),
 
- ("alert hold: an Acknowledge during the file read does not stop it",
+ ("no PA: a missing Delayed recording reads OK on the Announcements lamp",
+  "ltcplay/remote.py",
+  "                if dl and not dl[0].get(\"available\"):",
+  "                if False:"),
+
+ ("no PA: an account may take one of the engine's names",
+  "ltcplay/users.py",
+  'RESERVED = ("unsigned", "system", "signed out", "nobody", "deck", "engine",\n'
+  '            "scheduler", "ltc player", "ltcplay")',
+  'RESERVED = ("unsigned", "system", "signed out", "nobody", "deck")'),
+
+ ("no PA: a refused Test tone in the engine's name journals as a Play",
   "ltcplay/announce.py",
-  "            if automatic is not None:\n"
-  "                why = self._automatic_refusal(automatic)\n"
-  "                if why:\n"
-  "                    self.playing = None",
-  "            if False:\n"
-  "                why = self._automatic_refusal(automatic)\n"
-  "                if why:\n"
-  "                    self.playing = None"),
+  '                          action="test tone" if tone else "play",',
+  '                          action="play",'),
 
  # Review of PR #129 (cold review, 2026-10-27).
  ("an announcement pressed at showtime pauses the show that just started",
@@ -10656,7 +11774,7 @@ def build():
   "        for line in []:"),
 
  ("morning page: an unknown multi-channel group's tile reads Off",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  if(m.never_purged) return",
   "  if(false) return"),
 
@@ -10836,7 +11954,7 @@ def build():
 
  ("morning page: a Space press whose key repeat events have stopped never "
   "ends (T3)",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '''  return nowMs - startAt > graceMs && nowMs - Math.max(repeatAt || 0, startAt) > gapMs;''',
   '''  return false;'''),
 
@@ -10874,21 +11992,6 @@ def build():
   '''        knows is still zeroed here while the problem stands)."""
         return
         link = self._link_get()'''),
-
- ("morning: Abort leaves a purge selection and the laser tests as they are (T7)",
-  "ltcplay/morning.py",
-  '''        self.purge.clear(f"Abort pressed by {who or screen or 'someone'}")
-        for hook in list(self.abort_hooks):
-            try:
-                hook(who, screen)
-            except Exception:                    # noqa: BLE001
-                pass
-        self.lasers.all_off("Abort pressed")''',
-  '''        for hook in list(self.abort_hooks):
-            try:
-                hook(who, screen)
-            except Exception:                    # noqa: BLE001
-                pass'''),
 
  ("morning: a laser test turns on while a show is live (T10)",
   "ltcplay/morning.py",
@@ -11005,51 +12108,6 @@ def build():
  # machine followed the mouse for ever, and the next click ARMED it). Each
  # of these takes one guard away; the selftest's node DOM test and the
  # engine's route test must notice every one.
- ("morning page: in Arrange mode a press on a machine still arms it",
-  "ltcplay/web/remote.html",
-  '''  if(ARRANGE){ dragStart(e, m); return; }''',
-  '''  if(ARRANGE){ dragStart(e, m); }'''),
-
- ("morning page: letting go never ends the drag, so the machine keeps "
-  "following the pointer",
-  "ltcplay/web/remote.html",
-  '''window.addEventListener("pointerup", () => dragEnd("let go"));''',
-  ''''''),
-
- ("morning page: Save layout leaves the machine on the pointer",
-  "ltcplay/web/remote.html",
-  '''  dragEnd(how === "save" ? "Save layout" : how === "cancel" ? "Cancel" : how === "reset" ? "Reset layout" : "the page was left");''',
-  ''''''),
-
- ("morning page: Escape does not drop a held machine",
-  "ltcplay/web/remote.html",
-  '''document.addEventListener("keydown", e => { if(e.key === "Escape" && DRAG) dragEnd("Escape", true); });''',
-  ''''''),
-
- ("morning page: the window losing focus leaves the machine on the pointer",
-  "ltcplay/web/remote.html",
-  '''window.addEventListener("blur", () => dragEnd("the window lost focus"));''',
-  ''''''),
-
- ("morning page: the Space bar fires while arranging",
-  "ltcplay/web/remote.html",
-  '''  if(arrangeBlocked("purge-fire", {})) return;        // the Space bar, while arranging''',
-  ''''''),
-
- ("morning page: a group button, a lock or a laser test goes while arranging "
-  "(the gate every press meets is gone)",
-  "ltcplay/web/remote.html",
-  '''  if(arrangeBlocked(route, extra)) return;
-  try{''',
-  '''  try{'''),
-
- ("morning page: Arrange mode holds nothing back",
-  "ltcplay/web/remote.html",
-  '''  if(!ARRANGE) return false;
-  const off = extra && extra.on === false;''',
-  '''  if(true) return false;
-  const off = extra && extra.on === false;'''),
-
  ("windows: the rack screen opens as a kiosk again (no Minimize, and "
   "Explorer opens behind it)",
   "packaging/windows/supervisor.py",
@@ -11069,78 +12127,6 @@ def build():
   "ltcplay/remote.py",
   '''    if reuse and not new:''',
   '''    if False:'''),
-
- ("morning page: the open beat never tells the engine the screen is arranging",
-  "ltcplay/web/remote.html",
-  '''Object.assign({arranging: ARRANGE, inst: BEAT_INST''',
-  '''Object.assign({arranging: false, inst: BEAT_INST'''),
-
- ("morning page: Save layout does not leave Arrange mode, so arming stays off "
-  "and the banner stays",
-  "ltcplay/web/remote.html",
-  '''  ARRANGE = false; ARRANGE_POS = {};
-  // The page and the engine hear''',
-  '''  ARRANGE_POS = {};
-  // The page and the engine hear'''),
-
- ("morning page: pointercancel no longer ends a drag",
-  "ltcplay/web/remote.html",
-  '''window.addEventListener("pointercancel", () => dragEnd("the pointer was cancelled"));''',
-  '''window.addEventListener("pointercancel", () => {});'''),
-
- ("morning page: pagehide no longer ends a drag",
-  "ltcplay/web/remote.html",
-  '''window.addEventListener("pagehide", () => dragEnd("the page closed"));''',
-  '''window.addEventListener("pagehide", () => {});'''),
-
- ("morning page: the page going hidden no longer ends a drag",
-  "ltcplay/web/remote.html",
-  '''document.addEventListener("visibilitychange", () => { if(document.hidden) dragEnd("the page was hidden"); });''',
-  '''document.addEventListener("visibilitychange", () => {});'''),
-
- ("morning page: leaving the Morning page stays in Arrange mode",
-  "ltcplay/web/remote.html",
-  '''    arrangeExit("left");''',
-  '''    void 0;'''),
-
- ("morning page: entering Arrange does not stop a fire press",
-  "ltcplay/web/remote.html",
-  '''  fireStop("Arrange mode");''',
-  '''  void 0;'''),
-
- ("morning page: entering Arrange keeps this screen's purge selection armed",
-  "ltcplay/web/remote.html",
-  '''    post("/api/remote/purge-clear", actor({})).catch(() => {});
-  $("mo-msg").textContent = "Press a machine and move it''',
-  '''    void 0;
-  $("mo-msg").textContent = "Press a machine and move it'''),
-
- ("morning page: an L lock button locks or unlocks while arranging",
-  "ltcplay/web/remote.html",
-  '''  if(arrangeBlocked("lock", {})) return;        // before anything is sent''',
-  '''  // gate gone'''),
-
- ("morning page: the group buttons stay live while arranging",
-  "ltcplay/web/remote.html",
-  '''  return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, "arm")));''',
-  '''  return !ids.length || (!any && (!mo.purge_enabled || !mayRow(st, "arm")));'''),
-
- ("morning page: a bare mouse (no button down) still drags the machine",
-  "ltcplay/web/remote.html",
-  '''  if(ev.pointerType === "mouse" && ev.buttons === 0){ dragEnd("the button was already up"); return; }''',
-  '''  if(false){ dragEnd("the button was already up"); return; }'''),
-
- ("morning page: losing pointer capture does not end the drag",
-  "ltcplay/web/remote.html",
-  '''    if(DRAG && DRAG.el === el && !(el.hasPointerCapture && el.hasPointerCapture(DRAG.pointerId))) dragEnd("the pointer was released");''',
-  '''    void 0;'''),
-
- ("morning page: the banner still says arranging while Save is in flight",
-  "ltcplay/web/remote.html",
-  '''  post("/api/remote/morning-open", openBeatBody(how === "left")).catch(() => {});
-  renderMorning();
-  if(how === "save") await moPress''',
-  '''  if(how === "save") await moPress'''),
 
  ("morning: one window's ordinary beat clears another window's Arrange mode",
   "ltcplay/morning.py",
@@ -11188,11 +12174,6 @@ def build():
   "ltcplay/morning.py",
   '''                           mark_open=body.get("leaving") is not True)''',
   '''                           mark_open=True)'''),
-
- ("morning page: the beat sent on leaving the page does not say so",
-  "ltcplay/web/remote.html",
-  '''openBeatBody(how === "left")''',
-  '''openBeatBody(false)'''),
 
  ("morning: a screen in Arrange mode can still arm or unlock at the engine",
   "ltcplay/morning.py",
@@ -11337,11 +12318,6 @@ def build():
   "ltcplay/streamdeck.py",
   '''            body["on"] = True''',
   '''            pass'''),
-
- ("page: the Space bar's fire heartbeat stops saying on true",
-  "ltcplay/web/remote.html",
-  '''moActor({fire_id:f.id, on:true})''',
-  '''moActor({fire_id:f.id})'''),
 
  ("morning: one window's beat numbers are counted against another window's",
   "ltcplay/morning.py",
@@ -11698,7 +12674,7 @@ def build():
   '''                           "safeties_up": [],'''),
 
  ("multi-safety: the card shows the safety line for a one-safety group",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '''  if(up.length < 2 || c === "unknown") return "";''',
   '''  if(c === "unknown") return "";'''),
 
@@ -11906,9 +12882,9 @@ def build():
   '            return "safety" if body.get("kind") != "rewrite" else "settings"',
   '            return "unlock"'),
 
- ('users: Abort is a show press the matrix can take away', 'ltcplay/users.py',
-  '    "abort": "safety", "hold": "safety",',
-  '    "abort": "show", "hold": "safety",'),
+ ('users: Stop is a show press the matrix can take away', 'ltcplay/users.py',
+  '    "hold": "safety", "disarm-all": "safety", "stop": "safety",',
+  '    "hold": "safety", "disarm-all": "safety", "stop": "show",'),
 
  ('users: every password gets the same salt', 'ltcplay/users.py',
   '    salt = salt or secrets.token_bytes(16)',
@@ -12055,8 +13031,8 @@ def build():
   '            if False:\n                # Only ever changed from a fresh read'),
 
  ('users: deck can be a name', 'ltcplay/users.py',
-  'RESERVED = ("unsigned", "system", "signed out", "nobody", "deck")',
-  'RESERVED = ("unsigned", "system", "signed out", "nobody")'),
+  'RESERVED = ("unsigned", "system", "signed out", "nobody", "deck", "engine",',
+  'RESERVED = ("unsigned", "system", "signed out", "nobody", "engine",'),
 
  ('users: a users file that is not UTF-8 reads as no users', 'ltcplay/users.py',
   '            with open(self.path, "rb") as fh:\n                raw = fh.read()',
@@ -12166,37 +13142,9 @@ def build():
   '        if u is not None and (u.get("active") is True or u.get("stale")):',
   '        if False:'),
 
- ('page: a sign-in leaves Run locked', 'ltcplay/web/remote.html',
-  '      el.disabled = el.dataset.dis0 === "1";\n',
-  ''),
-
- ('page: a Stop is locked signed out', 'ltcplay/web/remote.html',
-  '  return offs.filter(el => el && el.dataset.mode !== "stop");',
-  '  return offs.filter(Boolean);'),
-
- ("page: a sign-in leaves the sign-in tooltip", 'ltcplay/web/remote.html',
-  '    el.title = el.dataset.title0 || "";\n',
-  ''),
-
- ('page: signed out leaves Start now on', 'ltcplay/web/remote.html',
-  '    offs.push($("b-start"), $("b-resume"), $("b-reset"), $("b-run"),',
-  '    offs.push($("b-resume"), $("b-reset"), $("b-run"),'),
-
- ('page: signed out may hold to arm', 'ltcplay/web/remote.html',
+ ('page: signed out may hold to arm', 'ltcplay/web/remote_rules.js',
   '  if(!mayRow(st, "arm")) return {ok:false, signin:true, why:SIGN_IN_WORDS};\n',
   ''),
-
- ("page: signed out may arm a laser", 'ltcplay/web/remote.html',
-  '    offs.push(...[...document.querySelectorAll("#lz-chips button[data-lz]")].filter(b => !b.classList.contains("armed")));',
-  '    offs.push(...[...document.querySelectorAll("#lz-chips button[data-lz]")].filter(b => false));'),
-
- ('page: a laser Disarm is locked signed out', 'ltcplay/web/remote.html',
-  '    offs.push(...[...document.querySelectorAll("#lz-chips button[data-lz]")].filter(b => !b.classList.contains("armed")));',
-  '    offs.push(...document.querySelectorAll("#lz-chips button[data-lz]"));'),
-
- ('page: the chip never says view only', 'ltcplay/web/remote.html',
-  '  b.textContent = me.user ? me.user : (viewOnly ? "Sign in to use controls" : "Signed out");',
-  '  b.textContent = me.user ? me.user : "Signed out";'),
 
  ("web: the page's open-beats are written to the audit log", 'ltcplay/web.py',
   '                                         "/api/remote/morning-open",\n                                         "/api/schedule/deck-event")):',
@@ -12585,23 +13533,6 @@ def build():
   '            return "bad", "not arming"',
   '            return "warn", "not arming"'),
 
- ('rack screen: a status the page cannot draw is still called fresh',
-  'ltcplay/web/remote.html',
-  '        LAST_OK = before;',
-  '        ;'),
-
- ('rack screen: a stale page reads the status before greying its chips',
-  'ltcplay/web/remote.html',
-  '  if(stale){\n'
-  '    // The top bar\'s chips first',
-  '  if(stale && false){\n'
-  '    // The top bar\'s chips first'),
-
- ('deck lamp: a page that lost the engine keeps its chips green',
-  'ltcplay/web/remote.html',
-  '    document.querySelectorAll(".chip").forEach(el => { el.className = "chip warn"; const w = el.querySelector("span"); if(w) w.textContent = "no contact"; });',
-  '    document.querySelectorAll(".chip").forEach(el => { });'),
-
  ('deck hold: a Hold the engine found already done is ENGINE FAULT',
   'ltcplay/streamdeck.py',
   '        noop = (not ok and name in ("hold", "resume") and\n'
@@ -12668,11 +13599,6 @@ def build():
   '            # Switching arming from a screen OFF only takes risk away.\n'
   '            return "safety"',
   '        if False:\n            return "safety"'),
-
- ('screen arm: an Abort standing is not said',
-  'ltcplay/remote.py',
-  '        if self._abort_standing():\n            return ("An Abort is standing',
-  '        if False:\n            return ("An Abort is standing'),
 
  ('screen arm: no Stream Deck reading the engine is not said',
   'ltcplay/remote.py',
@@ -12767,26 +13693,6 @@ def build():
   '                      if now - t > SCREEN_REFUSED_KEEP_S]',
   '                      if False]'),
 
- ('screen arm: the page hides the button while arming is off',
-  'ltcplay/web/remote.html',
-  '    ab.hidden = false;\n',
-  '    ab.hidden = !on;\n'),
-
- ('screen arm: the page says arming off nowhere',
-  'ltcplay/web/remote.html',
-  '  if(!on && !HOLD && $("arm-note").textContent !== ARMING_OFF) armSay(ARMING_OFF, 1);',
-  '  if(false) armSay(ARMING_OFF, 1);'),
-
- ('screen arm: a refusal is said only where a short window hides it',
-  'ltcplay/web/remote.html',
-  '  if(level >= 2){ $("ctl-msg").textContent = text;',
-  '  if(false){ $("ctl-msg").textContent = text;'),
-
- ('screen arm: the page reads the deck taking the hold as nothing',
-  'ltcplay/web/remote.html',
-  '    if(j.armed){',
-  '    if(false){'),
-
  ('screen arm: the hold is credited without the deck\'s word',
   'ltcplay/remote.py',
   '                    took = mine and \\\n'
@@ -12846,13 +13752,8 @@ def build():
   '                    pg.clear("arming from a screen was switched off")',
   '                    pass'),
 
- ('screen arm: the confirm box says less than the switch does',
-  'ltcplay/web/remote.html',
-  'confirmBox("Turn on arming from a screen?", SCREEN_ARMING_ENABLES,',
-  'confirmBox("Turn on arming from a screen?", "Hold to arm.",'),
-
  ('screen arm: the page says nothing when arming is off',
-  'ltcplay/web/remote.html',
+  'ltcplay/web/remote_rules.js',
   '  if(!a.enabled) return {ok:false, off:true, why:ARMING_OFF};',
   '  if(!a.enabled) return {ok:false, off:true, why:""};'),
 
@@ -13029,10 +13930,10 @@ def build():
   '            return f"{\', \'.join(locked)} locked out"'),
  ('lasers: the output may come on while blocked (latched, held, closing)',
   'ltcplay/laserarm.py',
-  '        blocked = self._blocked()\n'
+  '        blocked = self._blocked(enable=True)\n'
   '        if blocked:\n'
   '            return blocked',
-  '        blocked = self._blocked()\n'
+  '        blocked = self._blocked(enable=True)\n'
   '        if False:\n'
   '            return blocked'),
  ('lasers: the output may come on with blanking not set up',
@@ -13122,15 +14023,12 @@ def build():
   'ltcplay/conductor.py',
   '        self._disarm_lasers("Hold", who, screen)',
   '        pass'),
- ('lasers: Abort no longer disarms the lasers',
-  'ltcplay/conductor.py',
-  '                self._disarm_lasers("Abort", who, screen)',
-  '                pass'),
- ('lasers: Abort disarms the lasers only while a show plays',
-  'ltcplay/conductor.py',
-  '                self._disarm_lasers("Abort", who, screen)',
-  '                if self._playing():\n'
-  '                    self._disarm_lasers("Abort", who, screen)'),
+ ('lasers: Stop disarms the lasers only while a show plays', 'ltcplay/conductor.py',
+  '            self._flames_cut("Stop")\n'
+  '            self._disarm_lasers("Stop", who, screen)\n',
+  '            self._flames_cut("Stop")\n'
+  '            if self._playing():\n'
+  '                self._disarm_lasers("Stop", who, screen)\n'),
  ('lasers: a laser disarm hook that raises stops the Abort',
   'ltcplay/conductor.py',
   '        try:\n'
@@ -13153,16 +14051,9 @@ def build():
  ('lasers: re-arming runs the whole up sequence, not only the lasers',
   'ltcplay/conductor.py',
   '        if want.get("lasers_only"):\n'
-  '            # lasers_armed(): the show is up already; only the lasers.\n'
-  '            self._restore_lasers(gen, progress)\n'
-  '            return\n',
-  ''),
- ('lasers: re-arming ignores the Abort latch',
-  'ltcplay/conductor.py',
-  '            refused = self._refuse_if_latched("Lighting the armed lasers")\n'
-  '            if refused:\n'
-  '                return refused',
-  '            pass'),
+  '            # lasers_armed(): the show is up already; only the lasers. A\n',
+  '        if False:\n'
+  '            # lasers_armed(): the show is up already; only the lasers. A\n'),
  ("lasers: the conductor's laser gate ignores the arm",
   'ltcplay/fire_ice.py',
   '        why = arm_gate()\n'
@@ -13192,18 +14083,10 @@ def build():
   'ltcplay/web.py',
   '            httpd.fire_ice.attach_laser_arm(httpd.morning.laser_arm)',
   '            pass'),
- ('lasers: a Hold press does not disarm the lasers at the press',
-  'ltcplay/remote.py',
-  '        if name in ("abort", "hold"):\n'
+ ('lasers: a Hold press does not disarm the lasers at the press', 'ltcplay/remote.py',
+  '        if name == "hold":\n'
   '            # Every laser disarmed',
-  '        if name == "abort":\n'
-  '            # Every laser disarmed'),
- ('lasers: an unconfirmed Abort does not disarm the lasers',
-  'ltcplay/remote.py',
-  '        if name in ("abort", "hold"):\n'
-  '            # Every laser disarmed',
-  '        if name == "hold" or (name == "abort" and\n'
-  '                               body.get("confirmed") is True):\n'
+  '        if False:\n'
   '            # Every laser disarmed'),
  ('lasers: arming from the show network needs no screen_arming',
   'ltcplay/remote.py',
@@ -13212,13 +14095,8 @@ def build():
   '                (name == "laser-test" and body.get("on") is True)) and \\'),
  ('lasers: arming is allowed while the show is on Hold',
   'ltcplay/remote.py',
-  '        if state in ("PAUSED", "HOLD") or \\\n'
-  '                getattr(cond, "_look", None) in ("HELD", "DARK"):',
+  '        if state in ("PAUSED", "HOLD") or look in ("HELD", "DARK"):',
   '        if False:'),
- ('lasers: arming is allowed while the Abort latch stands',
-  'ltcplay/remote.py',
-  '            return "the show is aborted; press Reset first, then arm"',
-  '            pass'),
  ('lasers: with no schedule, arming is allowed',
   'ltcplay/remote.py',
   '            return ("the show state is not known (no schedule is loaded), "\n'
@@ -13260,13 +14138,8 @@ def build():
   'ltcplay/users.py',
   '        if name == "laser-arm" and body.get("on") is not True:',
   '        if False:'),
- ('lasers: Arrange mode on the page lets a laser arm through',
-  'ltcplay/web/remote.html',
-  ' ||\n'
-  '    (route === "laser-arm" && extra && extra.on === true);',
-  ';'),
  ("lasers: the page reads ALL ARMED without the engine's word",
-  'ltcplay/web/remote.html',
+  'ltcplay/web/remote_rules.js',
   '  if(la.output_permitted) return "Lasers: ALL ARMED.',
   '  if(true) return "Lasers: ALL ARMED.'),
  ('lasers: an arm racing a disarm still writes armed',
@@ -13278,12 +14151,11 @@ def build():
   '            self._disarm_gen += 1\n'
   '            was = [',
   '            was = ['),
- ('lasers: an Abort or Hold press in flight does not refuse arming',
-  'ltcplay/laserarm.py',
+ ('lasers: a Stop or Hold press in flight does not refuse arming', 'ltcplay/laserarm.py',
   '        if pressing:\n'
-  '            return ("an Abort or Hold is being pressed',
+  '            return ("a Stop or Hold is being pressed',
   '        if False:\n'
-  '            return ("an Abort or Hold is being pressed'),
+  '            return ("a Stop or Hold is being pressed'),
  ('lasers: the remote never tells the arm an Abort or Hold is under way',
   'ltcplay/remote.py',
   '                arm.press_begin()\n            except Exception:                    # noqa: BLE001\n                arm = None\n        try:\n            return self._press(',
@@ -13360,12 +14232,6 @@ def build():
   '                        w["ids"] = list(dict.fromkeys(list(w["ids"]) +\n'
   '                                                      list(ids)))',
   '                        pass'),
- ('lasers: Arrange mode on the page holds back a disarm click',
-  'ltcplay/web/remote.html',
-  '  if(all){ moPress("laser-arm", {lasers: ids, on:false}, "mo-lmsg"); return; }\n'
-  '  if(arrangeBlocked("laser-arm", {on:true})) return;',
-  '  if(arrangeBlocked("laser-arm", {on:true})) return;\n'
-  '  if(all){ moPress("laser-arm", {lasers: ids, on:false}, "mo-lmsg"); return; }'),
  ("lasers: a trailing slash gets a refused address into a laser's lists",
   'ltcplay/lasertest.py',
   '    return a.rstrip("/")',
@@ -13391,73 +14257,6 @@ def build():
   '            # The laser arm FIRST'),
 
  # -- LASERS on the show screen (Jeff, 2026-10-22) --
- ('rack lasers: Disarm all lasers waits for a fresh status',
-  'ltcplay/web/remote.html',
-  '  return lzPress({all:true, on:false});',
-  '  if(LZ_STALE) return null;\n  return lzPress({all:true, on:false});'),
- ('rack lasers: Arrange mode holds back Disarm all lasers',
-  'ltcplay/web/remote.html',
-  '  return lzPress({all:true, on:false});',
-  '  if(arrangeBlocked("laser-arm", {on:true})) return null;\n'
-  '  return lzPress({all:true, on:false});'),
- ('rack lasers: Disarm all lasers asks for a confirm',
-  'ltcplay/web/remote.html',
-  '  return lzPress({all:true, on:false});',
-  '  return confirmBox("Disarm all lasers?", "", "Disarm", "").then(ok => ok ? '
-  'lzPress({all:true, on:false}) : null);'),
- ('rack lasers: the screen arming switch holds back Disarm all lasers',
-  'ltcplay/web/remote.html',
-  '  return lzPress({all:true, on:false});',
-  '  if((LZ || {}).arm_here) return null;\n  return lzPress({all:true, on:false});'),
- ('rack lasers: Disarm all lasers sends a body that is not a disarm',
-  'ltcplay/web/remote.html',
-  '  return lzPress({all:true, on:false});',
-  '  return lzPress({all:true, on:true});'),
- ('rack lasers: Disarm all lasers is not wired',
-  'ltcplay/web/remote.html',
-  '$("lz-disarm").addEventListener("click", lzDisarmAll);',
-  ''),
- ("rack lasers: an armed laser's chip arms instead of disarming",
-  'ltcplay/web/remote.html',
-  '  if(ls.length && ls.every(x => x.armed)) return lzPress({lasers:ids, on:false});',
-  ''),
- ('rack lasers: a chip arms with no confirm',
-  'ltcplay/web/remote.html',
-  '  if(!(await confirmBox("Arm " + names + "?", LZ_ARM_NOTE, "Arm", "start"))) return null;',
-  ''),
- ('rack lasers: Arrange mode lets a chip arm',
-  'ltcplay/web/remote.html',
-  '  if(arrangeBlocked("laser-arm", {on:true})) return null;\n'
-  '  const names',
-  '  const names'),
- ('rack lasers: a chip arms on a stale status',
-  'ltcplay/web/remote.html',
-  '  if(stale) return "no contact with the engine, so the lasers\' state is not known";',
-  ''),
- ('rack lasers: a chip asks to arm with the screen arming switch off',
-  'ltcplay/web/remote.html',
-  '  if(la && la.arm_here) return la.arm_here;',
-  ''),
- ('rack lasers: a chip asks to arm a locked laser',
-  'ltcplay/web/remote.html',
-  '  if(locked.length) return locked.join(", ")',
-  '  if(false) return locked.join(", ")'),
- ('rack lasers: the page never asks its own refusals before an arm',
-  'ltcplay/web/remote.html',
-  '  const why = lzArmRefusal(la, ls, LZ_STALE);',
-  '  const why = "";'),
- ('rack lasers: a stale status leaves the chips pressable',
-  'ltcplay/web/remote.html',
-  '  }).concat(ls.map(x => ({ids:[x.id], off:stale,',
-  '  }).concat(ls.map(x => ({ids:[x.id], off:false,'),
- ('rack lasers: the show screen never draws the strip',
-  'ltcplay/web/remote.html',
-  '  renderLaserStrip(ST && ST.laser_arm, stale);\n',
-  ''),
- ('rack lasers: the chips may widen the page',
-  'ltcplay/web/remote.html',
-  '.lz-chips{display:flex;flex-wrap:wrap;gap:6px;min-width:0;overflow:hidden;',
-  '.lz-chips{display:flex;flex-wrap:wrap;gap:6px;'),
  ('rack lasers: the status leaves the strip out',
   'ltcplay/remote.py',
   '            out["laser_arm"] = self.rack_laser_view(m, ctx)',
@@ -13605,10 +14404,6 @@ def build():
   'ltcplay/lasertest.py',
   '                "setup_needed": (None if self.mechanism != "none" and\n',
   '                "setup_needed": (None if True or self.mechanism != "none" and\n'),
- ('laser test: the Startup page hides what a laser not set up needs',
-  'ltcplay/web/remote.html',
-  '      !l.configured ? need :\n',
-  '      false ? need :\n'),
  ('madmapper watch: MadMapper exiting raises no alert',
   'ltcplay/remote.py',
   '                self.alerts.raise_("video", text)',
@@ -13747,10 +14542,6 @@ def build():
   'ltcplay/remote.py',
   '        if ok:\n            alert = (f"{lead}: ALL groups disarm sent.',
   '        if True:\n            alert = (f"{lead}: ALL groups disarm sent.'),
- ('rack screen: a late Disarm answer covers the Abort pressed after it',
-  'ltcplay/web/remote.html',
-  '  if(seq >= (SAID_SEQ[el.id] || 0) && (el.id !== "ctl-msg" || seq >= ABORT_SEQ)){',
-  '  if(true){'),
  ('ui2 page: a forced Disarm is said as done',
   'ltcplay/web/remote2.html',
   '    const forced = route === "group-disarm" && j.forced === true;\n',
@@ -13842,42 +14633,6 @@ def build():
   'ltcplay/web.py',
   '        httpd.remote.reserve_disarm_ids()',
   '        pass'),
- ('schedule tab: the list is rebuilt on every status poll again',
-  'ltcplay/web/remote.html',
-  '  if(key === SLOT_KEY) return;',
-  '  if(false) return;'),
- ('schedule tab: a tap is read only as a click on one element again',
-  'ltcplay/web/remote.html',
-  '  if(el) toggleSlot(el.dataset.k);\n});',
-  '  if(false) toggleSlot(el.dataset.k);\n});'),
- ('schedule tab: a show with no reason opens to nothing',
-  'ltcplay/web/remote.html',
-  '(notes || "No notes for this show.")',
-  'notes'),
- ('mode switch: Programming is offered during a live show',
-  'ltcplay/web/remote.html',
-  '  if(want === "programming" && live){',
-  '  if(false){'),
- ('mode switch: Run in Programming starts a Show',
-  'ltcplay/web/remote.html',
-  'post("/api/start", prog ? {timeline:f, on_lost:"hold"} : {timeline:f})',
-  'post("/api/start", {timeline:f})'),
- ('arm button: a refused hold greys the state out',
-  'ltcplay/web/remote.html',
-  '.lamp button.armb:disabled{opacity:1;filter:none;cursor:default}\n',
-  ''),
- ('arm again: flamesafe\'s cycle the arm is shown as it is',
-  'ltcplay/web/remote.html',
-  '  if(REASON_WORDS[r]) return REASON_WORDS[r];',
-  '  if(false) return REASON_WORDS[r];'),
- ('arm again: the button does not say Disarm, then hold',
-  'ltcplay/web/remote.html',
-  '  if(look.held === "cycle") return "Disarm, then hold";\n',
-  ''),
- ('time zone: the schedule\'s own zone is not the one chosen',
-  'ltcplay/web/remote.html',
-  '  sel.value = want || "America/Denver";',
-  '  sel.value = "America/Denver";'),
  ('arm again: the Stream Deck key says CYCLE ARM again',
   'ltcplay/streamdeck.py',
   '    "cycle the arm": "ARM AGAIN",',
@@ -13889,8 +14644,8 @@ def build():
   "        if False:\n            # Live flame programming is on: the show's own cues are held"),
  ('live flame: a live show sends the program frame',
   'ltcplay/flamelink.py',
-  '            # The mode ends as soon as the engine sees the show start.\n            return tc, zeros',
-  '            # The mode ends as soon as the engine sees the show start.\n            return tc, self._program_values(now)'),
+  '            # The mode ends as soon as the engine sees the show start.\n            # Nor the Fireball page\'s frame: one source at a time.\n            return tc, zeros, False',
+  '            # The mode ends as soon as the engine sees the show start.\n            # Nor the Fireball page\'s frame: one source at a time.\n            return tc, self._program_values(now), False'),
  ('live flame: the program frame never expires at the link',
   'ltcplay/flamelink.py',
   '        if now - p[1] > PROGRAM_HOLD_S or now < p[1]:\n            self._program = None',
@@ -13905,8 +14660,8 @@ def build():
   '            if session != self._program_session:'),
  ('live flame: the purge frame is read while it is on',
   'ltcplay/flamelink.py',
-  '            if self._program_on:\n                return tc, self._program_values(now)\n            return tc, self._purge_values(now)',
-  '            return tc, self._purge_values(now)'),
+  '            if self._program_on:\n                # Live flame programming\'s frame alone (one source at a\n                # time): not the Fireball page\'s either.\n                return tc, self._program_values(now), False\n            return tc, self._purge_values(now), True',
+  '            return tc, self._purge_values(now), True'),
  ('live flame: the listener binds any address',
   'ltcplay/flameprog.py',
   '    if ip != LISTEN_IP:\n        raise SettingsError(',
@@ -14104,10 +14859,11 @@ def build():
   'ltcplay/remote.py',
   '        if body.get("confirmed") is not True:\n            return 400, {"error": "Confirm it on the page first. Nothing "\n                                  "was changed."}\n        ok, text = lf.begin(',
   '        ok, text = lf.begin('),
- ('live flame: Abort, Hold and Start now do not end it',
-  'ltcplay/remote.py',
-  '        if name in ("abort", "hold", "start-now"):',
-  '        if False:'),
+ ('live flame: Hold and Start now do not end it', 'ltcplay/remote.py',
+  '        if name in ("hold", "start-now", "start-at-cue"):\n'
+  '            # A timed purge ends at the press too',
+  '        if False:\n'
+  '            # A timed purge ends at the press too'),
  ("live flame: a second group's hold is not refused",
   'ltcplay/remote.py',
   '        why = self.live_flame_arm_refusal(gname)\n        if why:\n            return why',
@@ -14144,10 +14900,6 @@ def build():
   'ltcplay/web.py',
   '                if _rm is not None and hasattr(_rm, "live_flame_end"):',
   '                if False:'),
- ('live flame: the page never shows the red bar',
-  'ltcplay/web/remote.html',
-  '  ban.hidden = !on;',
-  '  ban.hidden = true;'),
  ('live flame: another controller sending to this PC is taken',
   'ltcplay/flameprog.py',
   '                if sends and (dest.startswith("127.") or',
@@ -14357,379 +15109,139 @@ def build():
  # -- the rack screen's banners never squeeze the flame controls (Jeff,
  # 2026-10-24, the show PC): caught by the page's CSS contract and by the
  # page drawn in headless Chromium (selftest.py, RACK_SIZES).
- ("rack screen: the flame groups' rows give their room to banners again",
-  "ltcplay/web/remote.html",
-  "  grid-auto-rows:minmax(min-content,1fr);gap:8px}",
-  "  grid-auto-rows:minmax(0,1fr);gap:8px}"),
-
- ("rack screen: the flame block shrinks below its content again",
-  "ltcplay/web/remote.html",
-  ".flames{flex:1 0 auto;min-height:min-content;",
-  ".flames{flex:1 1 auto;min-height:0;"),
-
- ("rack screen: the screens' row may shrink to nothing again",
-  "ltcplay/web/remote.html",
-  "  grid-template-rows:auto auto minmax(min-content,1fr) auto;",
-  "  grid-template-rows:auto auto minmax(0,1fr) auto;"),
-
- ("rack screen: the page cannot be scrolled again",
-  "ltcplay/web/remote.html",
-  "html{height:100%;overflow-x:hidden;overflow-y:auto}",
-  "html{height:100%;overflow:hidden}"),
-
  ("rack screen: the banners are never folded",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  if(list.length < 2) return {fold:false, n:list.length, fresh:fresh, keys:keys};",
   "  if(list.length < 99) return {fold:false, n:list.length, fresh:fresh, keys:keys};"),
-
- ("rack screen: the fold is never drawn",
-  "ltcplay/web/remote.html",
-  "  setWarn(\"lock-banner\", lockText);\n  renderAlertFold();",
-  "  setWarn(\"lock-banner\", lockText);"),
-
- ("rack screen: Show all never opens the banners",
-  "ltcplay/web/remote.html",
-  "  $(\"al-body\").hidden = f.fold && !ALERTS_OPEN;",
-  "  $(\"al-body\").hidden = f.fold;"),
-
- ("rack screen: the Abort stop sign scrolls off the window",
-  "ltcplay/web/remote.html",
-  "#abortbar{position:fixed;z-index:15;",
-  "#abortbar{position:absolute;z-index:15;"),
 
  # The rack screen, 2026-10-26: ABORT a stop sign in the corner, one
  # button per flame group, Arm all and Disarm all one two-way button, and
  # the nav buttons that were cut off (selftest.py, drawn and pressed in
  # headless Chromium).
- ("rack screen: the Abort stop sign shrinks under a finger's 44 px",
-  "ltcplay/web/remote.html",
-  "  --abort-size:56px;",
-  "  --abort-size:30px;"),
-
- ("rack screen: the page keeps no gutter beside the Abort stop sign",
-  "ltcplay/web/remote.html",
-  "padding:clamp(6px,1vh,12px) var(--abort-gutter) var(--abort-room)",
-  "padding:clamp(6px,1vh,12px) clamp(10px,1.2vw,24px) var(--abort-room)"),
-
- ("rack screen: the Abort stop sign has no name for a screen reader",
-  "ltcplay/web/remote.html",
-  '<button id="b-abort" aria-label="Abort. Activate twice to abort."',
-  '<button id="b-abort"'),
-
  ("rack screen: the finger that armed a group disarms it on the way up",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '  return downMode === "disarm" ? "disarm" : "";',
   '  return nowMode === "disarm" ? "disarm" : "";'),
 
  ("rack screen: an armed group's button stays Hold to arm",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '  if(g && (g.armed === "armed" || g.wanted)) return "disarm";',
   '  if(g && g.wanted) return "disarm";'),
 
  ("rack screen: a group asked for has no Disarm",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '  if(g && (g.armed === "armed" || g.wanted)) return "disarm";',
   '  if(g && g.armed === "armed") return "disarm";'),
 
  ("rack screen: a per-group Disarm offered with screen arming off",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '  if(!on) return "lamp";\n  if(c === "unknown") return "disarm";',
   '  if(c === "unknown") return "disarm";'),
 
- ("rack screen: a Disarm button is held back by a stale page",
-  "ltcplay/web/remote.html",
-  '    if(el.dataset.mode === "disarm"){ el.disabled = false; return; }\n',
-  ''),
-
  ("rack screen: a mix of armed groups shows Arm all",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '  if(gs.some(g => g.wanted || (g.armed !== "disarmed" && g.armed !== "held"))) return "disarm";',
   '  if(gs.every(g => g.wanted || (g.armed !== "disarmed" && g.armed !== "held"))) return "disarm";'),
 
  ("rack screen: Arm all is offered with screen arming off",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '  if(stale || !st || !st.arming || !st.arming.enabled) return "disarm";',
   '  if(stale || !st) return "disarm";'),
 
  ("rack screen: Arm all holds two groups under live flame programming's one at a time",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '  if(lf.on === true && lf.one_group_at_a_time !== false) return ONE_GROUP_WORDS;\n',
   ''),
 
  ("rack screen: Arm all holds a group in its re-arm wait",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '    else if(w > 0) out.push({group:i, name:g.name, why:rearmText(w)});',
   ''),
 
- ("rack screen: Arm all holds while an Abort stands",
-  "ltcplay/web/remote.html",
-  '  if(st && st.schedule && st.schedule.aborted) return REFUSED_LATCHED;\n',
-  ''),
-
  # Review of #118: the follow-up's guards.
- ("rack screen: letting go of Arm all early does not let go",
-  "ltcplay/web/remote.html",
-  '  ALL_BTN.addEventListener(ev, () => { if(HOLD && HOLD.all) armStop("let go"); }));',
-  '  ALL_BTN.addEventListener(ev, () => {}));'),
-
- ("rack screen: a stale page never stops an Arm all hold",
-  "ltcplay/web/remote.html",
-  '    if(HOLD.all && g && (g.armed === "armed" || g.wanted) && as.why === "Already armed or asked for.") continue;',
-  '    if(HOLD.all) continue;'),
-
- ("rack screen: an Arm all heartbeat goes on a stale status",
-  "ltcplay/web/remote.html",
-  '    const why = holdLapsed();\n    if(why){ armStop(why); return; }',
-  '    const why = "";'),
-
- ("rack screen: Arm all reads Disarm all while it is still arming",
-  "ltcplay/web/remote.html",
-  'const mode = (HOLD && HOLD.all) ? "arm" : allButtonMode(ST, stale);',
-  'const mode = allButtonMode(ST, stale);'),
-
- ("rack screen: live flame programming turned on mid-hold does not stop Arm all",
-  "ltcplay/web/remote.html",
-  '  if(HOLD.all){ const no = armAllRefusal(ST); if(no) return no; }\n',
-  ''),
-
  ("rack screen: live flame programming not readable allows Arm all",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '  if(lf.error) return LF_UNKNOWN_WORDS;\n',
   ''),
 
- ("rack screen: an armed group's button reads DISARM, not ARMED",
-  "ltcplay/web/remote.html",
-  '  el.querySelector(".act").textContent = "Disarm";',
-  '  el.querySelector(".word").textContent = "Disarm";'),
-
- ("rack screen: Enter on Arm all says nothing",
-  "ltcplay/web/remote.html",
-  ' else if(e.detail === 0 && ALL_BTN.dataset.mode === "arm") armSay(KEY_HOLD_WORDS, 2);',
-  ''),
-
- ("rack screen: Arm all looks like Disarm all",
-  "ltcplay/web/remote.html",
-  '#b-disarm.armall{border:3px solid #5FE08A;color:#5FE08A;',
-  '#b-disarm.armall{'),
-
- ("rack screen: the Abort sign's line is never shown",
-  "ltcplay/web/remote.html",
-  '#abortbar button:hover small,#abortbar button:focus-visible small{display:block}',
-  '#abortbar button:hover small,#abortbar button:focus-visible small{display:none}'),
-
- ("rack screen: letting go of a group's Hold to arm early does not let go",
-  "ltcplay/web/remote.html",
-  'b.addEventListener(ev, () => { if(holding(i) && !HOLD.all) armStop("let go"); }));',
-  'b.addEventListener(ev, () => {}));'),
-
- ("rack screen: a press on a group's Disarm tries a hold",
-  "ltcplay/web/remote.html",
-  'if(b.dataset.mode === "hold") armStart(i); });',
-  'armStart(i); });'),
-
  ("rack screen: a group whose state is not known shows Hold to arm",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '  if(c === "unknown") return "disarm";\n  if(g && (g.armed',
   '  if(c === "unknown") return "hold";\n  if(g && (g.armed'),
 
- ("rack screen: a page with no contact leaves its buttons as they were",
-  "ltcplay/web/remote.html",
-  '    if(stale) setArmMode(el, armOn ? "disarm" : "lamp", "unknown");\n',
-  ''),
-
  ("rack screen: Arm all offered while a group is not known",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '(g.armed !== "disarmed" && g.armed !== "held")',
   '(g.armed === "armed")'),
 
  ("rack screen: live flame programming with its one-group setting unsaid allows Arm all",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   'lf.one_group_at_a_time !== false',
   'lf.one_group_at_a_time === true'),
 
  ("rack screen: Enter on a group's Disarm does nothing",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   'if(keyboard) return nowMode === "disarm" ? "disarm" : "";',
   'if(keyboard) return "";'),
 
- ("rack screen: the idle Abort sign is drawn invisible",
-  "ltcplay/web/remote.html",
-  '#abortbar.idle:not(.tap1) .oct{background:#7A1A16}',
-  '#abortbar.idle:not(.tap1) .oct{background:transparent}'),
-
- ("rack screen: the Abort sign drops under the page",
-  "ltcplay/web/remote.html",
-  '#abortbar{position:fixed;z-index:15;',
-  '#abortbar{position:fixed;z-index:0;'),
-
- ("rack screen: the Abort sign moves to the left corner",
-  "ltcplay/web/remote.html",
-  'right:calc(10px + env(safe-area-inset-right));',
-  'left:calc(10px + env(safe-area-inset-right));'),
-
- ("rack screen: letting go of Arm all never tells the engine",
-  "ltcplay/web/remote.html",
-  '    if(h.all){ p.end = "out"; p.why = why ? "Hold stopped: " + why : "Hold stopped"; }\n    post("/api/remote/arm-release", {group:p.group}).catch(() => {});',
-  '    if(h.all){ p.end = "out"; p.why = why ? "Hold stopped: " + why : "Hold stopped"; continue; }\n    post("/api/remote/arm-release", {group:p.group}).catch(() => {});'),
-
  # The Abort double tap and the one laser pill (Jeff, 2026-10-26).
- ("rack screen: one tap on the Abort sign aborts",
-  "ltcplay/web/remote.html",
-  '    if(nowMs - prev.at <= ABORT_TAP_MS || enlarged) return {fire:true, next:null};\n  }\n  return {fire:false, next:{at:nowMs, kind:kind}};',
-  '    if(nowMs - prev.at <= ABORT_TAP_MS || enlarged) return {fire:true, next:null};\n  }\n  return {fire:true, next:null};'),
-
- ("rack screen: the Abort sign's second tap counts long after the first",
-  'ltcplay/web/remote.html',
-  'const ABORT_TAP_MS = 2000;',
-  'const ABORT_TAP_MS = 5000;'),
-
- ("rack screen: a finger then the mouse aborts",
-  "ltcplay/web/remote.html",
-  '  if(prev && prev.kind === kind && nowMs >= prev.at){',
-  '  if(prev && nowMs >= prev.at){'),
-
- ("rack screen: the Abort sign's first tap shows nothing",
-  "ltcplay/web/remote.html",
-  '    $("abortbar").classList.add("tap1");\n',
-  ''),
-
- ("rack screen: the Abort sign never goes back after its first tap",
-  "ltcplay/web/remote.html",
-  "    ABORT_TIMER = setTimeout(abortTapDone, ABORT_TAP_MS);\n",
-  ""),
+ ('rack screen: a finger then the mouse is a Stop', 'ltcplay/web/remote_rules.js',
+  '  if(prev && prev.kind === kind && nowMs >= prev.at){\n'
+  '    if(nowMs - prev.at <= STOP_TAP_MS',
+  '  if(prev && nowMs >= prev.at){\n'
+  '    if(nowMs - prev.at <= STOP_TAP_MS'),
 
  ("rack screen: the two laser pills are shown apart again",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  if(!arm || !out) return subs;",
   "  return subs;"),
 
  ("rack screen: the laser pill takes the arm's colour over a fault",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  const state = (CHIP_RANK[arm.state] || 0) >= (CHIP_RANK[out.state] || 0) ? arm.state : out.state;",
   "  const state = arm.state;"),
 
  ("rack screen: the laser pill leaves out LINK LOST",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '  const fault = out.state === "bad" ? String(out.word || "fault") + ": " : "";',
   '  const fault = "";'),
 
  ("rack screen: the laser pill's tooltip leaves out who is armed",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '    armed.length ? "Armed: " + armed.map(x => x.name).join(", ") + "." : "",',
   '    "",'),
 
  # One-tap lockout on the Startup page (Jeff, 2026-10-26).
- ("startup page: an L button asks before it locks again",
-  "ltcplay/web/remote.html",
-  '    const j = await moPress("lock", lockBody(kind, id, on), msg);',
-  '    if(!(await confirmBox("Lock out " + name + "?", "", "Lock out", ""))) return;\n    const j = await moPress("lock", lockBody(kind, id, on), msg);'),
-
- ("startup page: an unlock is sent without saying it is confirmed",
-  "ltcplay/web/remote.html",
-  " : {kind:kind, id:id, on:false, confirmed:true}; }",
-  " : {kind:kind, id:id, on:false}; }"),
-
- ("startup page: a lock or unlock offers no Undo",
-  "ltcplay/web/remote.html",
-  '    if(j) lockUndoOffer(kind, id, name, on);',
-  ''),
-
- ("startup page: Undo does the same again instead of the opposite",
-  "ltcplay/web/remote.html",
-  '  await lockClick(u.kind, u.id, u.name, !u.on);',
-  '  await lockClick(u.kind, u.id, u.name, u.on);'),
-
- ("startup page: Undo never goes away",
-  "ltcplay/web/remote.html",
-  "  LOCK_UNDO.timer = setTimeout(lockUndoGone, LOCK_UNDO_MS);",
-  ""),
-
- ("startup page: a refused lock offers an Undo",
-  "ltcplay/web/remote.html",
-  "  }catch(e){ el.textContent = e.message; return null; }",
-  "  }catch(e){ el.textContent = e.message; return {}; }"),
-
  # Review of #122.
- ("startup page: a second tap on L while the first is under way flips it back",
-  'ltcplay/web/remote.html',
-  '  if(LOCK_BUSY[key] && want === undefined) return;\n',
-  ''),
-
- ("startup page: an L button is free again at once after its answer",
-  "ltcplay/web/remote.html",
-  "    setTimeout(() => { delete LOCK_BUSY[key]; }, LOCK_QUIET_MS);",
-  "    delete LOCK_BUSY[key];"),
-
- ("startup page: an L tap never asks the engine before it sends",
-  'ltcplay/web/remote.html',
-  '    try{ fresh = await getJSON("/api/remote/morning", 1500); }catch(e){ fresh = null; }',
-  '    fresh = MO;'),
-
  ("startup page: a machine is unlocked while its flame group is armed",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '  if(g && (g.armed === "armed" || g.wanted)) return "Disarm " + m.group + " first, then unlock " + m.name + ".";',
   ''),
 
- ("startup page: a laser lock's Undo sits under the machine map",
-  "ltcplay/web/remote.html",
-  '  if(at && bar.previousElementSibling !== at) at.insertAdjacentElement("afterend", bar);',
-  ''),
-
- ("rack screen: the enlarged Abort sign spills out of its gutter",
-  "ltcplay/web/remote.html",
-  "#abortbar.tap1 button{width:calc(var(--abort-size) + 10px);",
-  "#abortbar.tap1 button{width:calc(var(--abort-size) * 2.1);"),
-
- ("rack screen: a fast double tap on the Abort sign waits for a third",
-  'ltcplay/web/remote.html',
-  '  if(prev && prev.kind === kind && nowMs >= prev.at){',
-  '  if(prev && prev.kind === kind && nowMs >= prev.at && nowMs - prev.at >= 150){'),
-
- ("rack screen: a held Enter on the Abort sign counts again and again",
-  "ltcplay/web/remote.html",
-  '$("b-abort").addEventListener("keydown", e => { if(e.repeat && (e.key === "Enter" || e.key === " ")) e.preventDefault(); });',
-  ''),
-
- ("rack screen: a tap leaves keyboard focus on the Abort sign",
-  "ltcplay/web/remote.html",
-  '  if(kind !== "key") $("b-abort").blur();',
-  ''),
-
- ("rack screen: a late timer turns a good second Abort tap into a first",
-  'ltcplay/web/remote.html',
-  'abortTapStep(ABORT_TAP, monoNow(), kind, $("abortbar").classList.contains("tap1"));',
-  'abortTapStep(ABORT_TAP, monoNow(), kind, false);'),
-
- ("rack screen: the second Abort tap leaves a hold under way",
-  "ltcplay/web/remote.html",
-  '  abortTapDone();\n  armStop("Abort");',
-  '  abortTapDone();'),
+ ('rack screen: a fast double tap on Stop waits for a third', 'ltcplay/web/remote_rules.js',
+  '    if(nowMs - prev.at <= STOP_TAP_MS || enlarged) return {fire:true, next:null};',
+  '    if((nowMs - prev.at <= STOP_TAP_MS && nowMs - prev.at > 100) || enlarged) return {fire:true, next:null};'),
 
  ("rack screen: the laser pill says output on when it is only allowed",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '  if(ls && la.output_permitted) o = "output allowed";',
   '  if(ls && la.output_permitted) o = "output on";'),
 
  ("rack screen: a laser warning shows only as a colour",
-  'ltcplay/web/remote.html',
+  'ltcplay/web/remote_rules.js',
   '  const warn = out.state === "warn" || (out.state === "ok" && /\\blit\\b/.test(String(out.word || ""))) ? "; " + String(out.word || "check") : "";',
   '  const warn = "";'),
 
  # Every flame group's "armed n of m machines" (Jeff, 2026-10-26).
  ("rack screen: a group's machine count leaves out the locked-out ones",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  const m = Math.max(0, x.machines - locked);",
   "  const m = x.machines;"),
 
  ("rack screen: an armed group reads armed 0 of its machines",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '  const n = c === "armed" ? m : 0;',
   "  const n = 0;"),
-
- ("rack screen: the machine count is never drawn",
-  "ltcplay/web/remote.html",
-  "    const sl = safetyLine(g, c) || machineCountLine(g, c, ST && ST.morning && ST.morning.group_machines), se",
-  "    const sl = safetyLine(g, c), se"),
 
  ("remote: the group machine count never counts a lockout",
   "ltcplay/remote.py",
@@ -14737,23 +15249,8 @@ def build():
   "                if False:\n                    g[\"locked\"] += 1"),
 
  # Second review of #122.
- ("startup page: a tap sends what the engine has, not what the operator saw",
-  "ltcplay/web/remote.html",
-  "    if(on === isLocked(fresh)){",
-  "    if(false){"),
-
- ("startup page: Undo is dropped inside the quiet second",
-  "ltcplay/web/remote.html",
-  "  if(LOCK_BUSY[key] && want === undefined) return;",
-  "  if(LOCK_BUSY[key]) return;"),
-
- ("startup page: Undo unlocks a machine whose group is armed",
-  "ltcplay/web/remote.html",
-  '    if(!on && kind === "machine"){\n      const why = unlockRefusal(',
-  '    if(!on && kind === "machine" && want === undefined){\n      const why = unlockRefusal('),
-
  ("startup page: an unlock goes while flamesafe is not connected",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  if(!fl.connected || fl.stale) return",
   "  if(fl.stale) return"),
 
@@ -14772,13 +15269,8 @@ def build():
   "        if not fl or fl.get(\"stale\") or not fl.get(\"connected\"):",
   "        if not fl:"),
 
- ("rack screen: a page with no contact keeps an old machine count",
-  "ltcplay/web/remote.html",
-  '      if(sf){ sf.hidden = false; sf.textContent = "armed: not known"; sf.title = ""; }\n',
-  ''),
-
  ("rack screen: a lock flamesafe does not hold yet is counted out",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '  const locked = lk === "ok" ? k : 0;',
   "  const locked = k;"),
 
@@ -14793,66 +15285,36 @@ def build():
   ''),
 
  ("rack screen: the laser pill leaves out lit, unconfirmed",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   ' || (out.state === "ok" && /\\blit\\b/.test(String(out.word || "")))',
   ''),
 
  ("rack screen: a laser arm not known is only red",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '  if(!ls || arm.state === "bad") a = ',
   '  if(!ls) a = '),
 
  ("rack screen: some lasers armed reads output dark",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '  else if(ls) o = "output off";',
   '  else if(ls) o = "output dark";'),
 
  ("rack screen: a two-safety group gets the machine count too",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '  if(!g || c === "unknown" || (g.safeties_up || []).length >= 2) return "";',
   '  if(!g || c === "unknown" || (g.safeties_up || []).length > 2) return "";'),
 
- ("rack screen: the nav buttons are cut off at the right edge again",
-  "ltcplay/web/remote.html",
-  "nav{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;flex:0 1 auto;min-width:0;max-width:100%;",
-  "nav{display:flex;gap:8px;flex:0 0 auto;"),
-
- ("rack screen: the Art-Net note is never shown",
-  "ltcplay/web/remote.html",
-  "  setWarn(\"an-note\", s.artnet_note || \"\");",
-  "  setWarn(\"an-note\", \"\");"),
-
  # Review of #102: the folded line is red and names every fault, a new
  # fault opens it, and the deck alert's Disarm all stays outside it.
- ("rack screen: a lockout is folded as a note",
-  "ltcplay/web/remote.html",
-  '  LOCAL_FAULT["lock-banner"] = !!lockText;',
-  '  LOCAL_FAULT["lock-banner"] = false;'),
-
- ("rack screen: the cue fault and the deck not heard are folded as a note",
-  "ltcplay/web/remote.html",
-  '  LOCAL_FAULT["fl-warn"] = !!fmsg;',
-  '  LOCAL_FAULT["fl-warn"] = false;'),
-
  ("rack screen: the folded line does not name the faults",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   '      (faults.length === 1 ? "Fault: " : faults.length + " faults: ") + faults.join(", "),',
   '      "Fault",'),
 
  ("rack screen: a new fault only bumps the count",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  const fresh = !!seen && keys.some(k => !seen.has(k));",
   "  const fresh = false;"),
-
- ("rack screen: a fresh fault never opens the fold",
-  "ltcplay/web/remote.html",
-  "  if(f.fresh){ if(HOLD) PENDING_OPEN = true; else ALERTS_OPEN = true; }",
-  ""),
-
- ("rack screen: the deck alert's Disarm all is behind Show all",
-  "ltcplay/web/remote.html",
-  '  $("al-sum-dis").hidden = !f.fold || ALERTS_OPEN ||',
-  '  $("al-sum-dis").hidden = true ||'),
 
  # -- the render's end (2026-10-24): a tiny overrun is zero and no fault;
  # past the end the output is zero always.
@@ -14905,10 +15367,13 @@ def build():
   "            return True",
   "        if tc is None:\n            self._seek_reset()\n            return True"),
 
+ # Re-pointed (2026-11-03): breaking only send_frame's first landing check
+ # was never caught, because its later `dropped` check zeros the same frame;
+ # a landing that no frame can see breaks both.
  ("programming flames: a frame read across a landing goes out with its values",
   "ltcplay/flamelink.py",
-  "            if lgen != self._land_gen:",
-  "            if False:"),
+  "                self._land_gen += 1\n",
+  ""),
 
  ("programming flames: the playhead never finds the flame link",
   "ltcplay/playhead.py",
@@ -14917,9 +15382,9 @@ def build():
 
  ("programming flames: Play from lands only before the move",
   "ltcplay/playhead.py",
-  "                return self._play_from(show_s, who, screen)\n"
+  "                return self._play_from(show_s, who, screen, bind)\n"
   "            finally:\n                self._landing()",
-  "                return self._play_from(show_s, who, screen)\n"
+  "                return self._play_from(show_s, who, screen, bind)\n"
   "            finally:\n                pass"),
 
  ("programming flames: Back and Ahead land only before the move",
@@ -14983,21 +15448,6 @@ def build():
   "ltcplay/remote.py",
   "        for view in (self.live_flame_view, self.programming_flames_view):",
   "        for view in (self.live_flame_view,):"),
-
- ("programming flames: the Programming screen cuts the cue fault short",
-  "ltcplay/web/remote.html",
-  "  $(\"pf-warn\").textContent = warn;",
-  "  $(\"pf-warn\").textContent = warn.slice(0, 80);"),
-
- ("programming flames: the Programming screen never shows a cue fault",
-  "ltcplay/web/remote.html",
-  "  const warn = on && tr.programming && fault ?",
-  "  const warn = false && fault ?"),
-
- ("programming flames: the Programming screen never shows the line",
-  "ltcplay/web/remote.html",
-  "  $(\"pf-line\").hidden = !on;",
-  "  $(\"pf-line\").hidden = true;"),
 
  # The fuel tracker (fuel.py, FUEL.md, Jeff 2026-10-26).
  ("fuel: the flame link's observer is told before the frame went",
@@ -15167,16 +15617,6 @@ def build():
   "ltcplay/remote.py",
   "                out[\"fuel\"] = self.fuel.summary()",
   "                pass"),
-
- ("fuel: the page never draws the health bar",
-  "ltcplay/web/remote.html",
-  "<i style=\"width:${pct}%\"></i>",
-  "<i></i>"),
-
- ("fuel: the page offers Refilled to someone who may not",
-  "ltcplay/web/remote.html",
-  "<button data-refill=\"${esc(u.id)}\" ${f.may_refill ? \"\" : \"disabled\"}",
-  "<button data-refill=\"${esc(u.id)}\""),
 
  ("fuel: a group flamesafe reports not armed burns",
   "ltcplay/fuel.py",
@@ -15398,16 +15838,6 @@ def build():
   "        try:\n            remote.fuel.close()\n        finally:\n"
   "            _close_before()"),
 
- ("fuel: the Fuel page cannot scroll, so its lower tiles are cut off",
-  "ltcplay/web/remote.html",
-  "#v-fuel{overflow:auto;display:flex;",
-  "#v-fuel{display:flex;"),
-
- ("fuel: the Fuel button never turns amber",
-  "ltcplay/web/remote.html",
-  "  $(\"nav-fuel\").classList.toggle(\"soon\", !!(s.fuel && (s.fuel.refill_soon || s.fuel.fault)));",
-  ""),
-
  # The Weather block (weather.py, WEATHER.md; 2026-10-26). Display only;
  # each is a way the wind readout could mislead an operator.
  ("weather: the mesonet's knots are shown as mph",
@@ -15524,7 +15954,7 @@ def build():
   "        txt = (f\"{short} did not answer: {err}\" if True else"),
 
  ("weather: the page shows a backup reading without amber",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "cls:lv === \"backup\" ? \"stale\" : lv,",
   "cls:lv,"),
 
@@ -15615,14 +16045,51 @@ def build():
   "    if False:\n        return None"),
 
  ("weather: the page keeps old numbers when the engine goes quiet",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  if(heardAgoS > dead) return one(",
   "  if(false) return one("),
 
  ("weather: the page drops the STALE word",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "(lv === \"stale\" ? \"STALE. \" : \"\")",
   "\"\""),
+
+ # When, not how long ago (Jeff, 2026-10-30): each line says the date and
+ # time it was last updated, in the show's zone; no advisory only line.
+ ("weather: the times are said in UTC, not the show's zone",
+  "ltcplay/weather.py",
+  "    return datetime.fromtimestamp(epoch, tz)\n",
+  "    return datetime.fromtimestamp(epoch, timezone.utc)\n"),
+
+ ("weather: the schedule file's time zone is ignored",
+  "ltcplay/weather.py",
+  "    return zone(name) or zone(ZONE_DEFAULT)",
+  "    return zone(ZONE_DEFAULT)"),
+
+ ("weather: a changed schedule time zone is never read again",
+  "ltcplay/weather.py",
+  "        if self._zone_key != key or self._zone is None:",
+  "        if self._zone is None:"),
+
+ ("weather: a time ahead of this PC's clock is said as still to come",
+  "ltcplay/weather.py",
+  "    if now is not None and epoch > now:\n        epoch = now",
+  "    if False:\n        epoch = now"),
+
+ ("weather: the measured line says no time",
+  "ltcplay/weather.py",
+  "                f\"{updated_text(d['valid'], tz, now)}.{tail(pick['s'])}\")",
+  "                f\"{tail(pick['s'])}\")"),
+
+ ("weather: the NWS issue time is said as this PC's fetch time",
+  "ltcplay/weather.py",
+  "                         f\"NWS issued {when_text(d['issued'], tz, now)}. \"",
+  "                         f\"NWS issued {when_text(got, tz, now)}. \""),
+
+ ("weather: 2.0's wind button says advisory only again",
+  "ltcplay/web/remote2.html",
+  "  return {cls:v.cls === \"ok\" ? \"ok\" : \"stale\", text:t, v};",
+  "  return {cls:v.cls === \"ok\" ? \"ok\" : \"stale\", text:t + \". Advisory only.\", v};"),
 
  ("weather: the engine's route answers no weather",
   "ltcplay/remote.py",
@@ -15757,14 +16224,9 @@ def build():
   "                pass"),
 
  ("last show sign out: a blank minutes box is saved as off (P2-7)",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  if(!/^[0-9]{1,4}$/.test(t)) return null;",
   "  if(!/^[0-9]{1,4}$/.test(t)) return 0;"),
-
- ("last show sign out: Save sends minutes it could not read (P2-7)",
-  "ltcplay/web/remote.html",
-  "  if(lastShow === null){",
-  "  if(false){"),
 
  ("last show sign out: a night closed at its reset loses its sign-out (P2-8)",
   "ltcplay/remote.py",
@@ -15847,11 +16309,6 @@ def build():
   "                    still_ok=self._live_or_broken if on else None)",
   "                    still_ok=None)"),
 
- ("calibrate all: the page's button sends nothing",
-  "ltcplay/web/remote.html",
-  "$(\"mo-cal-on\").addEventListener(\"click\", () => moPress(\"laser-test\", {all:true, on:true}, \"mo-lmsg\"));",
-  "$(\"mo-cal-on\").addEventListener(\"click\", () => {});"),
-
  # Sign everyone out after the last show (users.py, remote.py; Jeff,
  # 2026-10-26).
  ("last show sign out: off by default",
@@ -15926,19 +16383,14 @@ def build():
   "        if name.strip().lower() in GFLAME_ROW_NAMES:"),
 
  ("Rack screen: a failed Stop disarm still says Stopped. (third review of #126, P2-2)",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  if(f && f.disarmed === false) return STOP_DISARM_FAILED;\n",
   ""),
 
- ("Rack screen: Stop's answer is not read",
-  "ltcplay/web/remote.html",
-  "el.textContent = (r.ok || (j && j.failed)) ? stopWords(j) :",
-  "el.textContent = (r.ok || (j && j.failed)) ? \"Stopped.\" :"),
-
  ("Rack screen: the Stop confirm does not say it disarms the flames",
-  "ltcplay/web/remote.html",
-  "\"Stop playback and disarm every flame group. Every laser",
-  "\"Stop playback. Every laser"),
+  "ltcplay/web/remote_rules.js",
+  "\"Tap twice. Disarms every flame group and every laser,",
+  "\"Tap twice. Disarms every laser,"),
 
  ("deck: a failed Stop disarm is a quiet done",
   "ltcplay/streamdeck.py",
@@ -16025,7 +16477,7 @@ def build():
 
  ("halt: a halt during a show does not end the show",
   "ltcplay/remote.py",
-  "            if svc is not None and state in (\"SHOW\", \"PAUSED\"):\n                try:\n                    r = svc.operator_press(\"stop-show\"",
+  "            if state in self.HALT_LIVE:\n                try:\n                    r = svc.operator_press(\"stop-show\"",
   "            if False:\n                try:\n                    r = svc.operator_press(\"stop-show\""),
 
  ("halt: a halt ends the show with the scheduler's Abort",
@@ -16039,23 +16491,16 @@ def build():
   "            fn = None\n            if fn is not None:\n                try:\n                    r = fn(f\"Stop held"),
 
  ("halt: playback stops before the scheduler ends the show", "ltcplay/web.py",
-  "        out = self._halt(body)\n        try:\n            out[\"stopped\"] = c.stop()\n",
-  "        _s = c.stop()\n        out = self._halt(body)\n        try:\n            out[\"stopped\"] = _s\n"),
+  "        out = self._halt(body)\n        if getattr(self.server, \"schedule\", None) is not None and \\\n",
+  "        _s0 = (c.stop() if getattr(self.server, \"schedule\", None) is None\n               else None)\n        out = self._halt(body)\n        if getattr(self.server, \"schedule\", None) is not None and \\\n"),
 
- ("halt: the scheduler's Stop latches like an Abort",
-  "ltcplay/schedule_service.py",
-  "            if ev.kind == sch.ABORT:\n                plan.append((\"Abort\", \"abort\", self._ABORT_EFFECTS))",
-  "            if ev.kind in (sch.ABORT, sch.STOP_SHOW):\n                plan.append((\"Abort\", \"abort\", self._ABORT_EFFECTS))"),
+ ("halt: the scheduler's Stop needs no confirm", 'ltcplay/schedule.py',
+  '    if ev.kind in (END_NIGHT, STOP_SHOW) and not ev.confirmed:',
+  '    if ev.kind in (END_NIGHT,) and not ev.confirmed:'),
 
- ("halt: the scheduler's Stop needs no confirm",
-  "ltcplay/schedule.py",
-  "    if ev.kind in (ABORT, END_NIGHT, STOP_SHOW) and not ev.confirmed:",
-  "    if ev.kind in (ABORT, END_NIGHT) and not ev.confirmed:"),
-
- ("halt: the scheduler's Stop is refused with no operator chosen",
-  "ltcplay/schedule.py",
-  "ALWAYS_TAKEN = frozenset((ABORT, HOLD_ON, STOP_SHOW))",
-  "ALWAYS_TAKEN = frozenset((ABORT, HOLD_ON))"),
+ ("halt: the scheduler's Stop is refused with no operator chosen", 'ltcplay/schedule.py',
+  'ALWAYS_TAKEN = frozenset((HOLD_ON, STOP_SHOW))',
+  'ALWAYS_TAKEN = frozenset((HOLD_ON,))'),
 
  ("halt: the scheduler's Stop is refused while the show is paused",
   "ltcplay/schedule.py",
@@ -16087,8 +16532,8 @@ def build():
  # Review of #130 (fix forward).
  ("halt: playback stops before the conductor's fade (review of #130, 5)",
   "ltcplay/web.py",
-  "        if h.get(\"show_ended\"):\n            svc = getattr(self.server, \"schedule\", None)",
-  "        if False:\n            svc = getattr(self.server, \"schedule\", None)"),
+  "                rm.wait_stop_window(h, HALT_FADE_WAIT_S)\n",
+  "                pass\n"),
 
  ("halt: the flames are not first (review of #130, 6)",
   "ltcplay/remote.py",
@@ -16097,17 +16542,17 @@ def build():
 
  ("halt: the laser arm is not told a press is under way",
   "ltcplay/remote.py",
-  "        if arm is not None:\n            try:\n                arm.press_begin()\n            except Exception:                    # noqa: BLE001\n                arm = None\n        try:\n            # 1. The flames first",
-  "        if arm is not None:\n            try:\n                pass\n            except Exception:                    # noqa: BLE001\n                arm = None\n        try:\n            # 1. The flames first"),
+  "        if arm is not None:\n            try:\n                arm.press_begin()\n            except Exception:                    # noqa: BLE001\n                arm = None\n        try:\n            # A Start now waiting for the show audio never outlives a Stop",
+  "        if arm is not None:\n            try:\n                pass\n            except Exception:                    # noqa: BLE001\n                arm = None\n        try:\n            # A Start now waiting for the show audio never outlives a Stop"),
 
  ("halt: screen arm holds survive a halt",
   "ltcplay/remote.py",
-  "                self.cancel_holds(f\"{who or 'someone'} held Stop on the \"",
-  "                (lambda *a: 0)(f\"{who or 'someone'} held Stop on the \""),
+  "                self.cancel_holds(f\"{who or 'someone'} {how} Stop on the \"",
+  "                (lambda *a: 0)(f\"{who or 'someone'} {how} Stop on the \""),
 
  ("halt: the purge selection and laser tests survive a halt",
   "ltcplay/remote.py",
-  "                    if fn is not None:\n                        fn(arg)\n",
+  "                    if fn is not None:\n                        fn(*args)\n",
   "                    pass\n"),
 
  ("halt: a step that raises stops the rest",
@@ -16117,7 +16562,7 @@ def build():
 
  ("halt: a show that ended by itself is a failure (review of #130, 8)",
   "ltcplay/remote.py",
-  "                if not s_ok and now_state not in (\"SHOW\", \"PAUSED\"):",
+  "                if not s_ok and now_state not in self.HALT_LIVE:",
   "                if False:"),
 
  ("halt: the journal line hides a failed step (review of #130, 4)",
@@ -16132,18 +16577,19 @@ def build():
 
  ("halt: Stop on the last show goes straight to closing (review of #130, 2)",
   "ltcplay/schedule.py",
-  "        _abort_effects(n), abort=True)\n\n\ndef _end_night",
-  "        _abort_effects(n))\n\n\ndef _end_night"),
+  "        _abort_effects(n), abort=True, hold=True)\n\n\ndef _end_night",
+  "        _abort_effects(n), hold=True)\n\n\ndef _end_night"),
 
  ("deck: only the first failed Stop step is said (review of #130, 3)",
   "ltcplay/streamdeck.py",
   "            text = \"playback stopped, but \" + \"; and \".join(\n                t for _k, t in fails)",
   "            text = \"playback stopped, but \" + fails[0][1]"),
 
- ("deck: Stop waits on the press queue again (review of #130, 7)",
-  "ltcplay/streamdeck.py",
-  "        if name == \"stop\":\n            # Stop never waits behind another press either",
-  "        if False:\n            # Stop never waits behind another press either"),
+ ('deck: Stop waits on the press queue again (review of #130, 7)', 'ltcplay/streamdeck.py',
+  '        if name == "stop":\n'
+  '            # Stop never waits behind another press (review of #130, 7; as',
+  '        if False:\n'
+  '            # Stop never waits behind another press (review of #130, 7; as'),
 
  ("deck: the key never reads STOP ALL with the scheduler unknown",
   "ltcplay/streamdeck.py",
@@ -16153,13 +16599,13 @@ def build():
 
  # Second review of #130 (fix forward).
  ("halt: the conductor's fade is not waited for (second review of #130, 7)",
-  "ltcplay/web.py",
-  "                    cond.wait_idle(HALT_FADE_WAIT_S)\n",
-  "                    pass\n"),
+  "ltcplay/remote.py",
+  "                cond.wait_idle(left())\n",
+  "                pass\n"),
 
  ("halt: the conductor's calls are not flushed before playback stops",
-  "ltcplay/web.py",
-  "                svc.flush_conductor(HALT_FADE_WAIT_S)\n",
+  "ltcplay/remote.py",
+  "                svc.flush_conductor(left())\n",
   "                pass\n"),
 
  ("halt: the lasers are not blanked at once (second review of #130, 7)",
@@ -16242,10 +16688,378 @@ def build():
   "        if ev.kind == sch.STOP_SHOW and calls:\n            # Stop: a show start",
   "        if False:\n            # Stop: a show start"),
 
- ("conductor: Stop drops a Hold too, like an Abort",
+ # Stop meets every Abort guarantee (Jeff, 2026-10-30; PR-A of the Abort
+ # removal): the Stop twins of the Abort's guarantees, and the new rules.
+ ("conductor: Stop's flame cut waits for the executor", 'ltcplay/conductor.py',
+  '            self._flames_cut("Stop")\n'
+  '            self._disarm_lasers("Stop", who, screen)\n',
+  '            self._disarm_lasers("Stop", who, screen)\n'),
+
+ ("conductor: Stop sends no laser blank of its own",
+  "ltcplay/conductor.py",
+  '            r = self._call("lasers blanked at the Stop",\n'
+  '                           self.devices.lasers_blank)',
+  '            r = done("lasers left to the executor")'),
+
+ ("conductor: Stop does not stop a running video fade at the press",
+  "ltcplay/conductor.py",
+  '                self._video_cancel()\n'
+  '                line = self._accept("Stop", STOPPED_DARK,',
+  '                line = self._accept("Stop", STOPPED_DARK,'),
+
+ ("conductor: Stop runs a stopped show's plain dark, not the removed Abort's sequence", 'ltcplay/conductor.py',
+  '            if want.get("halt") is True:\n'
+  "                # A Stop (stop(): the removed Abort's sequence, no latch).",
+  '            if False:\n'
+  "                # A Stop (stop(): the removed Abort's sequence, no latch)."),
+
+ # ("conductor: Stop latches like an Abort") is retired (2026-11-03), as
+ # "a stopped show latches" above: no conductor code reads a latch any more.
+
+ ('conductor: a second Stop starts a new fade', 'ltcplay/conductor.py',
+  '            again = (not force_new and not music_since and\n',
+  '            again = (False and not force_new and not music_since and\n'),
+
+ ('conductor: Stop never disarms the lasers at the conductor', 'ltcplay/conductor.py',
+  '            self._flames_cut("Stop")\n'
+  '            self._disarm_lasers("Stop", who, screen)\n',
+  '            self._flames_cut("Stop")\n'),
+
+ ("scheduler: a Stop asks the conductor for a stopped show's plain dark", 'ltcplay/schedule_service.py',
+  '            if ev.kind == sch.STOP_SHOW:\n'
+  "                # Every operator's Stop",
+  '            if False:\n'
+  "                # Every operator's Stop"),
+
+ ('scheduler line: a Stop waits behind a hung conductor request', 'ltcplay/schedule_service.py',
+  '    URGENT = ("stop",)',
+  '    URGENT = ()'),
+
+ ('scheduler line: requests a Stop supersedes still go out after it', 'ltcplay/schedule_service.py',
+  '            gone = self.SUPERSEDED_BY_STOP\n',
+  '            gone = ()\n'),
+
+ ("scheduler line: a Stop that goes ahead drops a waiting Reset",
   "ltcplay/schedule_service.py",
-  "    STOP_DROPS = (\"show_starting\", \"start_show\")",
-  "    STOP_DROPS = (\"show_starting\", \"start_show\", \"hold\")"),
+  '    SUPERSEDED_BY_STOP = STOP_DROPS',
+  '    SUPERSEDED_BY_STOP = STOP_DROPS + ("reset",)'),
+
+ ("scheduler: Stop during a show does not hold the schedule",
+  "ltcplay/schedule.py",
+  "        _abort_effects(n), abort=True, hold=True)\n\n\ndef _end_night",
+  "        _abort_effects(n), abort=True)\n\n\ndef _end_night"),
+
+ ("scheduler: a Stop's Hold brings the intermission back",
+  "ltcplay/schedule.py",
+  "        tx.m = replace(tx.m, held_from=STANDBY, stop_hold=True)\n"
+  "        _enter(tx, HOLD, after_stop=stopped)",
+  "        tx.m = replace(tx.m, held_from=STANDBY, stop_hold=True)\n"
+  "        _enter(tx, HOLD)"),
+
+ # ('scheduler: Resume lands in the middle of a Stop')
+ # is retired (2026-11-04); it could not be caught:
+ # the same refusal, words and journal line, is made again under the
+ # lock (round 2 of cold review A of #199, 3), so dropping the early check
+ # changes nothing a Resume's caller sees (only a tick runs first).
+
+ ("halt: Stop between shows does not hold the schedule",
+  "ltcplay/remote.py",
+  "            if state in self.HALT_HOLDS:",
+  "            if False:"),
+
+ ("halt: a screen's Stop turns Run off again",
+  "ltcplay/remote.py",
+  "            return self._stop_press(who, screen, run_off=svc is None)",
+  "            return self._stop_press(who, screen, run_off=True)"),
+
+ ("halt: the Stream Deck's Stop turns Run off again",
+  "ltcplay/web.py",
+  '        if getattr(self.server, "schedule", None) is not None and \\\n'
+  '                not isinstance(self.server.schedule, _NoSchedule):',
+  '        if False and \\\n'
+  '                not isinstance(self.server.schedule, _NoSchedule):'),
+
+ ("halt: Run off leaves playback running",
+  "ltcplay/remote.py",
+  "            return self._stop_press(who, screen, run_off=True)\n"
+  "        finally:",
+  "            return self._stop_press(who, screen, run_off=False)\n"
+  "        finally:"),
+
+ ("halt: Stop leaves Programming playback running",
+  "ltcplay/remote.py",
+  "            self._halt_programming(out, who, screen)\n",
+  ""),
+
+ ("halt: Stop leaves the fireball and the cleaning to their watchers",
+  "ltcplay/remote.py",
+  '                    (m, "stop_hooks", (who, screen)),\n',
+  ""),
+
+ ("halt: a screen's Stop tells the laser arm only inside the halt", 'ltcplay/remote.py',
+  '            if name in ("hold", "stop", "run-off") else None',
+  '            if name in ("hold",) else None'),
+
+ ("morning: Stop's hooks run nothing",
+  "ltcplay/morning.py",
+  '                hook(who, screen, what="Stop")',
+  '                pass'),
+
+ ("deck: a screen's Stop never starts the re-arm refractory",
+  "ltcplay/streamdeck.py",
+  "                self._disarmed_at = [now] * len(self.names)\n"
+  "            self._disarm_all_seen = seen",
+  "                pass\n"
+  "            self._disarm_all_seen = seen"),
+
+ ("deck: a stale flamesafe status starts the refractory on old news",
+  "ltcplay/streamdeck.py",
+  "            if st is None or self.status.stale(self._clock):\n"
+  "                return None\n"
+  "            d = st.get(\"disarm_all\")",
+  "            if st is None:\n"
+  "                return None\n"
+  "            d = st.get(\"disarm_all\")"),
+
+ ("Rack screen: Stop's late second tap is a first tap again",
+  "ltcplay/web/remote_rules.js",
+  '    if(nowMs - prev.at <= STOP_TAP_MS || enlarged) return {fire:true, next:null};',
+  '    if(nowMs - prev.at <= STOP_TAP_MS) return {fire:true, next:null};'),
+
+ ("Rack screen: Stop is drawn with nothing playing",
+  "ltcplay/web/remote_rules.js",
+  '  return !sch.attached && !!(show.running || show.starting);\n}',
+  '  return true;\n}'),
+
+ ("Rack screen: no Stop during the rig check before a show",
+  "ltcplay/web/remote_rules.js",
+  '  if(pr.state === "checking" || pr.state === "queued") return true;',
+  ''),
+
+ ("Rack screen: no Stop while Programming playback plays",
+  "ltcplay/web/remote_rules.js",
+  '  if(tr.programming && tr.playhead === "show_audio" && tr.playing) return true;',
+  ''),
+
+ ("Rack screen: Stop's answer says Run is off when it is on",
+  "ltcplay/web/remote_rules.js",
+  '  if(j && j.run_on === true){',
+  '  if(false){'),
+
+ ("ui2 page: Stop show is drawn with nothing playing",
+  "ltcplay/web/remote2.html",
+  "  const id = b.id, can = stopShows(ST) || !!isSt;",
+  "  const id = b.id, can = true;"),
+
+ ("ui2 page: Stop show is hidden with no contact",
+  "ltcplay/web/remote2.html",
+  "  const id = b.id, can = stopShows(ST) || !!isSt;",
+  "  const id = b.id, can = stopShows(ST);"),
+
+ # Cold review of #191: the fixes, each with a mutation.
+ ("scheduler: a tick during a Stop starts the show coming due (A-F1)",
+  "ltcplay/schedule_service.py",
+  "            if self._halt_defers(now, ev):\n                pass\n",
+  "            if False:\n                pass\n"),
+
+ ("scheduler: a Stop at showtime ticks first and pauses the show (A-F1)",
+  "ltcplay/schedule_service.py",
+  "        self._press_stamp = self.stamp_press()\n"
+  "        try:\n            out = self._apply(ev)\n",
+  "        self._press_stamp = self.stamp_press()\n"
+  "        self.tick()\n"
+  "        if self.machine.state == sch.SHOW:\n"
+  "            ev = replace(ev, kind=sch.HOLD_ON, confirmed=False)\n"
+  "        try:\n            out = self._apply(ev)\n"),
+
+ ("scheduler: a Stop's Hold is not marked as a Stop's",
+  "ltcplay/schedule.py",
+  "    tx.m = replace(tx.m, held_from=m.state, stop_hold=stop)",
+  "    tx.m = replace(tx.m, held_from=m.state)"),
+
+ ("scheduler: a Stop's Hold is not kept on later nights (A-F2)",
+  "ltcplay/schedule_service.py",
+  "        if self._stop_carry is None or m is None or self.halting():",
+  "        if True:"),
+
+ ("scheduler: a Stop with nothing to hold leaves no Hold (round 2, 1)",
+  "ltcplay/schedule_service.py",
+  "            self._stop_carry_set(who, screen)\n            try:",
+  "            try:"),
+
+ ("scheduler: a restart forgets the Stop's Hold (round 2, 3)",
+  "ltcplay/schedule_service.py",
+  "        self._stop_carry = self._stop_carry_load()",
+  "        self._stop_carry = None"),
+
+ ("scheduler: Resume never releases a Stop's Hold", 'ltcplay/schedule_service.py',
+  '        ended = self._stop_carry_clear(who, screen, "pressed Resume")',
+  '        ended = False'),
+
+ ("scheduler: Continue anyway resumes a Stop's Hold (round 2, 8)",
+  "ltcplay/schedule_service.py",
+  "        if m.state == sch.HOLD and not self.stop_held():",
+  "        if m.state == sch.HOLD:"),
+
+ ("scheduler: a Stop's conductor call waits for tonight's save (round 2, 4)",
+  "ltcplay/schedule_service.py",
+  "        early = [c for c in calls if c.method == \"stop\"]",
+  "        early = []"),
+
+ ("scheduler: a Stop between shows leaves the idle look up (round 2, 5)",
+  "ltcplay/remote.py",
+  "        threading.Thread(target=go, daemon=True,\n"
+  "                         name=\"ltcplay-stop-conductor\").start()",
+  "        pass"),
+
+ ("scheduler: a Stop's Hold between shows is not dark (round 2, 5)", 'ltcplay/schedule.py',
+  '    _enter(tx, HOLD, after_stop=stop)',
+  '    _enter(tx, HOLD)'),
+
+ ("conductor: a show start asked for before a Stop is taken (round 2, 2)",
+  "ltcplay/conductor.py",
+  "            if (stops is not None and stops != self.stops) or \\\n"
+  "                    (stops is None and self._stopped_since_music):",
+  "            if False:"),
+
+ ("scheduler: the show start's Stop count is not taken (round 2, 2)",
+  "ltcplay/schedule_service.py",
+  "                call.stops = getattr(self.conductor, \"stops\", None)",
+  "                call.stops = None"),
+
+ ("Rack screen: no Stop while the conductor has the rig up",
+  "ltcplay/web/remote_rules.js",
+  "  if(sch.lit === true) return true;",
+  ""),
+
+ ("ui2 page: no Held after Stop on the top line",
+  "ltcplay/web/remote2.html",
+  "  if(sch.stop_held && !isLive(st)) return {tone:\"warn\", icon:\"pause\", text:\"Held after Stop: press Resume.\"};",
+  ""),
+
+ ("scheduler: a Stop's Hold is not kept in tonight's file",
+  "ltcplay/schedule.py",
+  "    if m.stop_hold:\n        doc[\"stop_hold\"] = True\n",
+  ""),
+
+ ('fire & ice: a Stop during the cue start leaves the music playing (A-F3)', 'ltcplay/fire_ice.py',
+  '        if getattr(self.conductor, "stops", 0) != stops0:\n'
+  '            # A Stop landed while the cue was starting',
+  '        if False:\n'
+  '            # A Stop landed while the cue was starting'),
+
+ ("Rack screen: the Run card ignores lost contact (B2)",
+  "ltcplay/web/remote_rules.js",
+  "  if(stale && st) return {mode:\"stop\", label:\"Stop\", sub:\"no contact\"};\n"
+  "  if(!(show.running",
+  "  if(!(show.running"),
+
+ ("Rack screen: no Stop in a rehearsal Run with timecode moving (B1)",
+  "ltcplay/web/remote_rules.js",
+  "  if(tr.programming && show.running && TC_MOVING.includes(show.state)) return true;",
+  ""),
+
+ ("ui2 page: no Run off (B1)",
+  "ltcplay/web/remote2.html",
+  "  return !HALT_BUSY && !isSt && runIsOn(ST) && !stopShows(ST) && !STOP_TAPS2[\"b-stop\"];",
+  "  return false;"),
+
+ ("ui2 page: Run off turns Run off without asking",
+  "ltcplay/web/remote2.html",
+  "  if(!(await confirmBox(\"Turn Run off?\", RUN_OFF_CONFIRM, \"Yes, Run off\", \"red\"))) return;\n",
+  ""),
+
+ # Cold review of #191 round 3.
+ ("scheduler: a failed Stop's Hold file is never tried again (round 3, M1)",
+  "ltcplay/schedule_service.py",
+  "            # Left dirty: the next tick tries again.\n",
+  "            self._stop_carry_dirty = False\n"),
+
+ ("scheduler: the tick never retries the Stop's Hold file (round 3, M1)",
+  "ltcplay/schedule_service.py",
+  "        self._stop_carry_write()\n"
+  "        if self._stop_carry is None or m is None or self.halting():",
+  "        if self._stop_carry is None or m is None or self.halting():"),
+
+ ("scheduler: the Stop's Hold back after a Start now is not dark (round 3, M2)",
+  "ltcplay/schedule_service.py",
+  "        if not out.refused and self.conductor is not None and \\\n"
+  "                getattr(self.conductor, \"_look\", None) not in (",
+  "        if False and \\\n"
+  "                getattr(self.conductor, \"_look\", None) not in ("),
+
+ ("scheduler: the Stop's Hold coming back cancels a Start now (round 3, L1)",
+  "ltcplay/schedule_service.py",
+  "            if not (ev.kind == sch.HOLD_ON and str(ev.detail or \"\")\n"
+  "                    .startswith(sch.STOP_HOLD_DETAILS[1])):",
+  "            if True:"),
+
+ ("scheduler: an unreadable Stop's Hold file counts as not held",
+  "ltcplay/schedule_service.py",
+  "            return {\"night\": \"\", \"who\": \"\", \"unreadable\": True}",
+  "            return None"),
+
+ ("scheduler: a tick never marks an existing Hold as the Stop's",
+  "ltcplay/schedule_service.py",
+  "            if not m.stop_hold:\n"
+  "                self.machine = replace(m, stop_hold=True)\n"
+  "                self._save_tonight()\n"
+  "            return\n"
+  "        if m.state not in self.SHOWTIME_FROM or not m.waiting():",
+  "            return\n"
+  "        if m.state not in self.SHOWTIME_FROM or not m.waiting():"),
+
+ # Cold review of #191 round 3, review B.
+ ("halt: the conductor's Stop is not asked at the press (round 3, F1/F3)",
+  "ltcplay/remote.py",
+  "            out[\"_cond_done\"] = self._conductor_stop_now(who, screen)",
+  "            out[\"_cond_done\"] = None"),
+
+ ("halt: the Stop ends before the conductor has taken it (round 3, F4)",
+  "ltcplay/remote.py",
+  "                done.wait(left())\n",
+  "                pass\n"),
+
+ ("scheduler: a Stop with nothing left tonight holds the night open (round 3, F2)",
+  "ltcplay/schedule_service.py",
+  "        elif st in self.SHOWTIME_FROM and not m.waiting():",
+  "        elif False:"),
+
+ ("scheduler: the Stop's Hold keeps a finished night from closing (round 3, F2)",
+  "ltcplay/schedule_service.py",
+  "        if m.state not in self.SHOWTIME_FROM or not m.waiting():",
+  "        if m.state not in self.SHOWTIME_FROM:"),
+
+ # Final review of #191.
+ ("scheduler: the carried Hold's dark disarms and cuts the pump (final, 4)",
+  "ltcplay/schedule_service.py",
+  "                [(\"Dark again for the Stop's Hold\", \"show_stopped\",",
+  "                [(\"Dark again for the Stop's Hold\", \"stop\","),
+
+ ("scheduler: a Stop on a Hold does not mark it dark (final, 4)",
+  "ltcplay/schedule_service.py",
+  "                self.machine = replace(m, stop_hold=True, dark=True)",
+  "                self.machine = replace(m, stop_hold=True)"),
+
+ ("halt: the press does not wait for the conductor to take the Stop (final, 4)",
+  "ltcplay/remote.py",
+  "        done.wait(self.COND_STOP_WAIT_S)\n",
+  ""),
+
+ ("scheduler: a Stop's Hold is put back over a Start now (final, G1)",
+  "ltcplay/schedule_service.py",
+  "        if self._start_waiters > 0 or self._start_press_tick:",
+  "        if False:"),
+
+ ("scheduler: Start now does not wait for a running dark fade (final, G2)",
+  "ltcplay/schedule_service.py",
+  "            why = self._stop_still_fading()",
+  "            why = \"\""),
+
+ ("conductor: Stop leaves a Hold decided before it in the line",
+  "ltcplay/schedule_service.py",
+  "    STOP_DROPS = (\"hold\", \"resume\", \"show_starting\", \"start_show\")",
+  "    STOP_DROPS = (\"resume\", \"show_starting\", \"start_show\")"),
 
  ("conductor: Stop's drop takes calls decided after it",
   "ltcplay/schedule_service.py",
@@ -16440,18 +17254,6 @@ def build():
   "        out = write_new_show_file(settings_mod.folder(),\n                                  starter_base(args.show_dir), doc)",
   "        out = os.path.join(settings_mod.folder(),\n                           starter_base(args.show_dir) + \"_timeline.json\")\n        with open(out, \"w\") as fh:\n            json.dump(doc, fh, indent=2)"),
 
- ("Getting started never offers Make a show file", "ltcplay/web/remote.html",
-  "  $(\"su-make\").hidden = !makeOffered(su);",
-  "  $(\"su-make\").hidden = true;"),
-
- ("Getting started always offers Make a show file", "ltcplay/web/remote.html",
-  "  $(\"su-make\").hidden = !makeOffered(su);",
-  "  $(\"su-make\").hidden = false;"),
-
- ("Getting started offers Make a show file with no renders", "ltcplay/web/remote.html",
-  "  return !!su && su.show_files === 0 && su.show_folder_renders > 0;",
-  "  return !!su && su.show_files === 0;"),
-
  ("the setup view never counts the renders for Make a show file", "ltcplay/remote.py",
   "                \"show_folder_renders\": self._renders_in(folder) if not files",
   "                \"show_folder_renders\": 0 if not files"),
@@ -16516,35 +17318,6 @@ def build():
   "        late = self._new_show_refusal()",
   "        late = None"),
 
- ("the folder card's Make a show file does nothing", "ltcplay/web/remote.html",
-  "$(\"fo-make\").addEventListener(\"click\", makeShowFile);\n",
-  ""),
-
- ("Getting started's Make a show file does nothing", "ltcplay/web/remote.html",
-  "$(\"su-make\").addEventListener(\"click\", async () => {\n  location.hash = \"programming\";",
-  "$(\"su-make-off\") && (async () => {\n  location.hash = \"programming\";"),
-
- ("the folder card's Check the show file does nothing", "ltcplay/web/remote.html",
-  "$(\"fo-check\").addEventListener(\"click\", async () => {",
-  "$(\"fo-check-off\") && (async () => {"),
-
- ("Make a show file's button returns before it posts", "ltcplay/web/remote.html",
-  "async function makeShowFile(){\n  if(!(await confirmBox(",
-  "async function makeShowFile(){\n  return null;\n  if(!(await confirmBox("),
-
- ("Getting started hides Make a show file after deciding to offer it", "ltcplay/web/remote.html",
-  "  $(\"su-make\").hidden = !makeOffered(su);\n",
-  "  $(\"su-make\").hidden = !makeOffered(su);\n  $(\"su-make\").hidden = true;\n"),
-
- ("Getting started's Make a show file never makes one",
-  'ltcplay/web/remote.html',
-  '  // Show folder card (fo-made), where this press has gone.\n  await makeShowFile();',
-  '  // Show folder card (fo-made), where this press has gone.\n  const j = null;'),
-
- ("Make a show file does not choose the new file on the page", "ltcplay/web/remote.html",
-  "    await loadShowFiles(j.file);\n",
-  "    await loadShowFiles();\n"),
-
  ('the rack screen never says the timecode runs at another rate',
   'ltcplay/remote.py',
   '        if not (count_off or speed_off or drop_off):\n            return ""',
@@ -16568,18 +17341,6 @@ def build():
   "    tmp = os.path.join(dest, f\"~{os.urandom(4).hex()}.new\")",
   "    tmp = os.path.join(dest, f\".{base}_timeline.{os.getpid()}.new\")"),
 
- ("the Getting started card pushes Disarm all off the screen when opened", "ltcplay/web/remote.html",
-  "  if($(\"v-show\").hidden) return;\n  const key = fitKey();",
-  "  return;\n  const key = fitKey();"),
-
- ("the open Getting started card is moved below the flame groups again", "ltcplay/web/remote.html",
-  "#setup.folded .subody{display:none}",
-  "#setup.folded .subody{display:none}\n@media (max-height:900px){#setup:not(.folded){order:9}}"),
-
- ("Make a show file is only in the steps, not the card's header", "ltcplay/web/remote.html",
-  "<button id=\"su-make\" hidden>Make a show file</button><button class=\"ghost\" id=\"su-more\"",
-  "<button class=\"ghost\" id=\"su-more\""),
-
  ("the rate note states a rate after the timecode stops", "ltcplay/remote.py",
   "        if not cs.get(\"running\") or rate is None or fps is None or \\\n                not arriving:",
   "        if not cs.get(\"running\") or rate is None or fps is None:"),
@@ -16591,43 +17352,6 @@ def build():
  ("ltc init calls an asked-for 30 fps the default", "ltcplay/cli.py",
   "    why = \"it was asked for\" if args.fps is not None else \"that is the default\"",
   "    why = (\"it was asked for\" if str(fps) != str(INIT_FPS)\n           else \"that is the default\")"),
-
- ("the Getting started fit runs on every poll and resets the steps' scroll", "ltcplay/web/remote.html",
-  "  if(!force && key === FIT_KEY) return;",
-  ""),
-
- ("the open Getting started steps may have no room at all", "ltcplay/web/remote.html",
-  "const FIT_SLACK = 30, STEPS_MIN = 120;",
-  "const FIT_SLACK = 30, STEPS_MIN = 0;"),
-
- ("the short-window rules are never used for the Getting started card", "ltcplay/web/remote.html",
-  "  if(fitOver() > 0.5) root.classList.add(\"setupafter\");",
-  "  root.classList.remove(\"tight\");\n  if(fitOver() > 0.5) root.classList.add(\"setupafter\");"),
-
- ("Show the steps leaves the page where it was", "ltcplay/web/remote.html",
-  "    try{ $(\"setup\").scrollIntoView({block: below || after ? \"start\" : \"nearest\"}); }catch(e){}",
-  ""),
-
- ("Make a show file is 32 px tall on a short window again", "ltcplay/web/remote.html",
-  "#setup .surow #su-make{min-height:40px}",
-  ""),
-
- ("the open steps never move after the flame groups", "ltcplay/web/remote.html",
-  "      card.style.maxHeight = \"\";\n      stepsHome(false);",
-  "      fitCap();"),
-
- ("warnings that come with the Getting started steps open are never fitted", "ltcplay/web/remote.html",
-  "    card.classList.contains(\"folded\"), SETUP_KEY, Math.round(cr.top + scrollY), dis, arm]);",
-  "    card.classList.contains(\"folded\"), SETUP_KEY, 0, 0, 0]);"),
-
- ("the card's 40 percent cap starves the open steps again", "ltcplay/web/remote.html",
-  "    if(cr.height < minH - 0.5) card.style.maxHeight = minH + \"px\";",
-  ""),
-
- ("the short-window rules make the controls taller on a short window", "ltcplay/web/remote.html",
-  ":where(html.tight) .ctl button{min-height:44px}",
-  "html.tight .ctl button{min-height:44px}"),
-
 
  # aim slots seen (2026-10-28): the start lines, the status frame, the
  # rack screen's aim line and alert, the Startup page's file; fuel burns
@@ -16693,14 +17417,9 @@ def build():
   "                        \"sent\": at(g.get(\"commanded_fire\"))}"),
 
  ("aim seen: the card always says loaded",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  let t = \"Aim \" + j(a.slots) + \": \" + (a.loaded ? \"loaded\" :",
   "  let t = \"Aim \" + j(a.slots) + \": \" + (true ? \"loaded\" :"),
-
- ("aim seen: the card never shows the aim line",
-  "ltcplay/web/remote.html",
-  "    ae.hidden = !al;",
-  "    ae.hidden = true;"),
 
  ("aim seen: the Startup page error leaves out the flamesafe file",
   "ltcplay/morning.py",
@@ -16743,14 +17462,14 @@ def build():
   "                a = self.alerts.raise_(\"flames\", text)"),
 
  ("aim seen: the card says held as disarmed",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "c === \"held\" ? \"; held\" : ",
   ""),
  # The Programming playhead on the show audio (playhead.py, Jeff
  # 2026-10-28, field report items 7 and 8).
  ("Play from starts the show audio at the top, not at the point asked", "ltcplay/clock.py",
-  '            self._send(("play", role, sample, 0, self._token))',
-  '            self._send(("play", role, 0, 0, self._token))'),
+  '            self._send(("play", role, sample, fade, self._token))',
+  '            self._send(("play", role, 0, fade, self._token))'),
 
  ("Play from starts the timecode at 00:00:00:00 whatever the point", "ltcplay/clock.py",
   '            frame = cue.get("first_frame", 0)\n        if last is None or',
@@ -16797,12 +17516,8 @@ def build():
   "        if a < 0:"),
 
  ("Play from never starts the show (no conductor show start)", "ltcplay/playhead.py",
-  "            r = cond.show_starting(who, screen)\n            if getattr(r, \"ok\", True) is False:",
+  "            r = cond.show_starting(who, screen, confirm_moving=True)\n            if getattr(r, \"ok\", True) is False:",
   "            r = None\n            if getattr(r, \"ok\", True) is False:"),
-
- ("Play from goes ahead with an Abort standing", "ltcplay/playhead.py",
-  '        if cond is not None and getattr(cond, "latched", False):',
-  '        if False:'),
 
  ("Play from leaves MadMapper on whatever bank it was", "ltcplay/playhead.py",
   "                mm.select_bank(mm.cfg.show_bank, wait=False)",
@@ -16813,8 +17528,10 @@ def build():
   "                # The Abort's black stands"),
 
  ("Pause freezes only the clock, not the show's Hold", "ltcplay/playhead.py",
-  '            self._refused(cond.hold(who, screen), "Pause")',
-  '            s.clock_pause()'),
+  '            r = cond.hold(who, screen)\n'
+  '            self._refused(r, "Pause")',
+  '            r = s.clock_pause()\n'
+  '            self._refused(r, "Pause")'),
 
  ("Continue skips the show's Resume", "ltcplay/playhead.py",
   '            self._refused(cond.resume(who, screen), "Continue")',
@@ -16870,11 +17587,6 @@ def build():
   "        if ph is not None:                          # hold",
   "        if False:                                   # hold"),
 
- ("a screen Abort in Programming playback leaves the music playing", "ltcplay/remote.py",
-  "            if ph is not None:\n                stopped = True\n                try:\n                    said = ph.abort_press(who, screen)",
-  "            if False:\n                stopped = True\n                try:\n                    said = ph.abort_press(who, screen)"),
-
-
  # Re-review of #142.
  ("a Show mode Run on this machine's clock counts as Programming", "ltcplay/remote.py",
   '            asked = getattr(s, "on_lost_arg", None) == "hold"',
@@ -16892,10 +17604,6 @@ def build():
   '                getattr(clk, "_cue", None) is ours[1])',
   '                True)'),
 
- ("a Programming Abort answers that nothing was stopped", "ltcplay/remote.py",
-  "                out = dict(out, programming=said, stopped=stopped, ok=ok,",
-  "                out = dict(out, programming=said, ok=ok,"),
-
  # Third review of #142.
  ("a Programming Hold leaves the schedule running", "ltcplay/remote.py",
   '            if svc is not None and getattr(m, "state", None) in ("IDLE",',
@@ -16904,10 +17612,6 @@ def build():
  ("Run goes over Programming playback", "ltcplay/web.py",
   '                if _why:\n                    return self._send(409, {"error": _why})',
   '                if False:\n                    return self._send(409, {"error": _why})'),
-
- ("a failed Programming stop on Abort is reported as stopped", "ltcplay/remote.py",
-  "                ok = stopped and not (flames and flames[0] is False)",
-  "                ok = not (flames and flames[0] is False)"),
 
  ("the watchdog halts a show that took over meanwhile", "ltcplay/playhead.py",
   "            if only is not None and not self._mine(only):\n                return False",
@@ -16930,9 +17634,9 @@ def build():
   '                    cancel(f"Hold was pressed on the {screen}")',
   '                    pass'),
 
- ("Programming playback starts over a Fireball channel that is on", "ltcplay/remote.py",
-  '        if ph is not None and name in ("play-from", "loop") and \\\n                fb is not None and fb.active():',
-  '        if False:'),
+ ("Programming Play from is refused while the Fireball page has a channel on (round 4)", "ltcplay/remote.py",
+  '        # The Fireball page works at any time (Jeff, 2026-10-30): a\n',
+  '        if name in ("play-from", "loop") and self.fireball is not None and self.fireball.active():\n            return 409, {"error": "A Fireball channel is on."}\n        # The Fireball page works at any time (Jeff, 2026-10-30): a\n'),
 
  # Jeff's field report, 2026-10-28: Stop, Reset from Hold, refusal reasons.
  ("a refused start's alert says only that the show did not start",
@@ -16951,37 +17655,14 @@ def build():
   "            return self.AUDIO_LOADING",
   "        if False:\n            return self.AUDIO_LOADING"),
 
- ("Reset from Hold does nothing again", "ltcplay/remote.py",
-  "                r = fn(who, screen, surface=surface) if fn else None",
-  "                r = None"),
-
- ("Reset from a paused show carries the show on",
-  "ltcplay/schedule_service.py",
-  "            if m.state == sch.PAUSED:\n                kinds.append(sch.STOP_SHOW)",
-  "            if m.state == sch.PAUSED:\n                kinds.append(sch.RESUME)"),
-
  ("Rack screen: Start now never becomes Stop during a show",
-  "ltcplay/web/remote.html",
-  'const live = sch.state === "SHOW" || sch.state === "PAUSED" ||',
-  'const live = false ||'),
-
- ("Rack screen: Stop is not the complete halt", "ltcplay/web/remote.html",
-  'r = await fetch("/api/remote/stop", ', 'r = await fetch("/api/stop", '),
+  "ltcplay/web/remote_rules.js",
+  '  if(sch.state === "SHOW" || sch.state === "PAUSED") return true;\n  // The rig is up',
+  '  if(false) return true;\n  // The rig is up'),
 
  ("Stop from a screen does not disarm or end the show", "ltcplay/remote.py",
-  "        h = self.halt(who, screen)\n        out = {k: h[k]",
-  "        h = {}\n        out = {k: h[k]"),
-
- ("Reset ends a Hold inside the late grace and the show starts",
-  "ltcplay/schedule.py",
-  "            if lateness_s(s.start, now) < 0:\n                break\n"
-  "            _hold_back(tx, s)",
-  "            if True:\n                break\n            _hold_back(tx, s)"),
-
- ("Reset counts as the operator's Resume for the alert hold",
-  "ltcplay/schedule_service.py",
-  "                ev.detail != sch.RESET_DETAIL and \\\n",
-  ""),
+  "        h = self.halt(who, screen, how=\"pressed\")\n",
+  "        h = {}\n"),
 
  ("a broken intermission file blocks every show start",
   "ltcplay/fire_ice.py",
@@ -17004,30 +17685,28 @@ def build():
   "                pass"),
 
  ("Rack screen: Run never becomes Stop while Run is starting",
-  "ltcplay/web/remote.html",
-  "  return (show.running || show.starting) ? {mode:\"stop\"",
-  "  return show.running ? {mode:\"stop\""),
+  "ltcplay/web/remote_rules.js",
+  "  if(!(show.running || show.starting)) return {mode:\"run\"",
+  "  if(!show.running) return {mode:\"run\""),
 
  ("Rack screen: a press is not decided by what was seen at touch-down",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  if(seen && seen !== now)\n    return {act:\"none\"",
   "  if(false)\n    return {act:\"none\""),
 
  ("Rack screen: Start is not locked after Stop turns back into Start",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  if(now !== \"stop\" && flippedAt && nowMs - flippedAt < FLIP_LOCK_MS)",
   "  if(false)"),
 
  ("Rack screen: Start now works during a halt",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  if(busy) return {act:\"none\", say:\"Stopping: wait until it has finished.\"};\n",
   ""),
 
- ("an announcement or engine Hold does not end a waiting Start now",
-  "ltcplay/schedule_service.py",
-  "        if not out.refused and ev.kind in (sch.HOLD_ON, sch.ABORT,\n"
-  "                                          sch.STOP_SHOW):",
-  "        if not out.refused and ev.kind in (sch.ABORT, sch.STOP_SHOW):"),
+ ('an announcement or engine Hold does not end a waiting Start now', 'ltcplay/schedule_service.py',
+  '        if not out.refused and ev.kind in (sch.HOLD_ON, sch.STOP_SHOW):',
+  '        if not out.refused and ev.kind in (sch.STOP_SHOW,):'),
 
  ("Start now goes ahead during a Stop's halt",
   "ltcplay/schedule_service.py",
@@ -17044,34 +17723,28 @@ def build():
   "                                    self.halting()):",
   "            if False:"),
 
- ("Rack screen: Start now is not off while a halt runs",
-  "ltcplay/web/remote.html",
-  "    (el.disabled || lk.disabled || HALT_BUSY || flipLocked(\"b-start\"));",
-  "    (el.disabled || lk.disabled || flipLocked(\"b-start\"));"),
-
  ("Start now's lock re-check runs before the tick's alert Hold",
   "ltcplay/schedule_service.py",
-  "        with self._locked():\n"
-  "            # The tick first: a Hold it takes (the engine's own at\n"
-  "            # showtime for an open alert) cancels the start below (C1).\n"
-  "            self.tick()\n",
-  "        with self._locked():\n"),
+  "            self._start_press_tick = kind == sch.START_NOW\n"
+  "            try:\n                self.tick()\n",
+  "            self._start_press_tick = kind == sch.START_NOW\n"
+  "            try:\n                pass\n"),
 
  ("a late failure report raises a did-not-start alert",
   "ltcplay/schedule_service.py",
   "                    le.outcome != \"recorded as a fault\" and \\\n",
   ""),
 
- ("Rack screen: Run never becomes Stop", "ltcplay/web/remote.html",
-  'return (show.running || show.starting) ? {mode:"stop"',
+ ("Rack screen: Run never becomes Stop", "ltcplay/web/remote_rules.js",
+  'return stopShows(st) ? {mode:"stop"',
   'return false ? {mode:"stop"'),
 
  ("Rack screen: a scheduler refusal reads Conflict again",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  const t = j && (j.error || j.text);", "  const t = j && j.error;"),
 
  ("Rack screen: no Loading state while the show audio loads",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "if(b && b.text && b.loading)", "if(false)"),
 
  # The Fireball page (fireball.py, OPERATOR.md, Jeff 2026-10-28; design
@@ -17119,17 +17792,13 @@ def build():
 
  ("fireball: the watcher does not see the flame link zeroed",
   "ltcplay/fireball.py",
-  "            if link is None or self._gen(link) != r[\"gen\"]:",
-  "            if link is None:"),
+  "        if link is None or self._gen(link) != r[\"gen\"]:\n            return (\"the flame link was disarmed",
+  "        if link is None:\n            return (\"the flame link was disarmed"),
 
  ("fireball: the watcher does not look at the rules",
   "ltcplay/fireball.py",
-  "            else:\n"
-  "                why = self.refusal()\n"
-  "        if why:",
-  "            else:\n"
-  "                why = \"\"\n"
-  "        if why:"),
+  "            why = self._link_why(self._link(), r) or self.refusal() or \\\n",
+  "            why = self._link_why(self._link(), r) or \\\n"),
 
  ("fireball: a cut run can come back",
   "ltcplay/fireball.py",
@@ -17151,7 +17820,7 @@ def build():
 
  ("fireball: a zero that lands during a beat is ignored",
   "ltcplay/fireball.py",
-  "                lost = self._gen(link) != r[\"gen\"]",
+  "                lost = took is False or self._link_why(link, r)",
   "                lost = False"),
 
  ("fireball: a disarm seen just after the frame went in is ignored",
@@ -17167,10 +17836,10 @@ def build():
   "ltcplay/fireball.py",
   "        if r is not None and link is not None:\n"
   "            try:\n"
-  "                link.purge_clear()",
+  "                link.manual_clear()",
   "        if False:\n"
   "            try:\n"
-  "                link.purge_clear()"),
+  "                link.manual_clear()"),
 
  ("fireball: a refused beat leaves its run on",
   "ltcplay/fireball.py",
@@ -17248,10 +17917,9 @@ def build():
   "            why = self._other() or \"\"",
   "            why = \"\""),
 
- ("fireball: an Abort on the rack screen does not cut it",
-  "ltcplay/morning.py",
-  "                hook(who, screen)",
-  "                pass"),
+ ('fireball: a Stop on the rack screen does not cut it at the press', 'ltcplay/morning.py',
+  '                hook(who, screen, what="Stop")',
+  '                pass'),
 
  ("fireball: a beat that turns a channel on is a safety press",
   "ltcplay/users.py",
@@ -17274,50 +17942,22 @@ def build():
   "        finally:\n"
   "            remote.fireball.close()"),
 
- ("fireball page: a held button is not let go on the lift",
-  "ltcplay/web/remote.html",
-  "    const b = e.target.closest && e.target.closest(\".fb-pad\"); if(!b || b.dataset.kind !== \"momentary\") return;\n"
-  "    fbPress(b.dataset.k, false);",
-  "    const b = e.target.closest && e.target.closest(\".fb-pad\"); if(!b || b.dataset.kind !== \"momentary\") return;"),
-
- ("fireball page: losing focus holds the valve on",
-  "ltcplay/web/remote.html",
-  "window.addEventListener(\"blur\", () => fbRelease(\"the page lost focus\"));\n",
-  ""),
-
- ("fireball page: leaving the page leaves the channels on",
-  "ltcplay/web/remote.html",
-  "  if(!on && FB_OPEN){ FB_OPEN = false; clearTimeout(FB_TIMER); fbCut(\"the page was left\"); }",
-  "  if(!on && FB_OPEN){ FB_OPEN = false; clearTimeout(FB_TIMER); }"),
-
- ("fireball page: a refused beat leaves the channels on",
-  "ltcplay/web/remote.html",
-  "  catch(e){ if(run === FB_RUN) fbCut(e.message); }",
-  "  catch(e){}"),
-
  ("fireball page: signed out is not view only",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  else if(viewOnly) out.block = \"Signed out: this screen is view only. Sign in to use the Fireball controls.\";\n",
   ""),
 
  ("fireball page: the Fireball disarming leaves a toggle on",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "    if(any && !out.cut) out.cut = \"the Fireball is not armed\";\n",
   ""),
 
  ("fireball page: a stale page keeps beating",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  if(stale) out.block = \"This page's status is not live, so nothing can be pressed.\";\n"
   "  else if(viewOnly)",
   "  if(false) out.block = \"\";\n"
   "  else if(viewOnly)"),
-
- ("fireball page: a toggle is on while held only",
-  "ltcplay/web/remote.html",
-  "  const b = e.target.closest(\".fb-pad\"); if(!b || b.dataset.kind !== \"toggle\") return;\n"
-  "  fbPress(b.dataset.k, !FB_ON[b.dataset.k]);",
-  "  const b = e.target.closest(\".fb-pad\"); if(!b || b.dataset.kind !== \"toggle\") return;\n"
-  "  fbPress(b.dataset.k, true);"),
 
  # Wave flamer cleaning (cleaning.py, MORNING.md, OPERATOR.md; Andy's
  # design, 2026-10-28): a dead-man sequence on the Shutdown page.
@@ -17591,25 +18231,10 @@ def build():
   "                out[\"cleaning\"] = self.cleaning.summary()",
   "                pass"),
 
- ("cleaning page: letting go before the hold completes does not end it",
-  "ltcplay/web/remote.html",
-  "  $(\"wc-hold\").addEventListener(ev, () => { if(WC_HOLD) wcLetGo(\"you let go before the hold was complete\"); });",
-  "  $(\"wc-hold\").addEventListener(ev, () => {});"),
-
  ("cleaning page: signed out is not view only",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  else if(viewOnly) out.block = \"Signed out: this screen is view only. Sign in to start the cleaning.\";\n",
   ""),
-
- ("cleaning page: the banner never shows",
-  "ltcplay/web/remote.html",
-  "  $(\"wc-banner\").hidden = !on;",
-  "  $(\"wc-banner\").hidden = true;"),
-
- ("cleaning page: the page keeps beating after the hold completes",
-  "ltcplay/web/remote.html",
-  "    if(j.state === \"phase1\" || j.state === \"phase2\"){",
-  "    if(false){"),
 
  ("cleaning: phase 2 starts before flamesafe says armed",
   "ltcplay/cleaning.py",
@@ -17666,30 +18291,10 @@ def build():
   "        if False:\n"
   "            # Armed or asked for during a go-ahead that never completed:"),
 
- ("cleaning page: losing focus does not stop it",
-  "ltcplay/web/remote.html",
-  "window.addEventListener(\"blur\", () => { if(WC_HOLD) wcLetGo(\"the page lost focus\"); });\n",
-  ""),
-
- ("cleaning page: leaving the page leaves it running",
-  "ltcplay/web/remote.html",
-  "  if(!on && WC_OPEN){ WC_OPEN = false; clearTimeout(WC_TIMER); wcLetGo(\"the page was left\"); }",
-  "  if(!on && WC_OPEN){ WC_OPEN = false; clearTimeout(WC_TIMER); }"),
-
- ("cleaning page: a refused beat keeps beating",
-  "ltcplay/web/remote.html",
-  "  }catch(e){ if(run === WC_RUN) wcLetGo(e.message.replace(/[.\\s]+$/, \"\")); }",
-  "  }catch(e){}"),
-
  ("cleaning page: any truthy hold runs it",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  return {hold:hold === true, run:",
   "  return {hold:!!hold, run:"),
-
- ("cleaning page: a blocked button still starts",
-  "ltcplay/web/remote.html",
-  "  if(!st.ok){ $(\"wc-msg\").textContent = st.block; return; }\n  WC_HOLD = true;",
-  "  WC_HOLD = true;"),
 
  # Settings changed on disk (Jeff's field report 2026-10-28, item 11):
  # configwatch.py, its notice, the live reload of the announcements, Reload
@@ -17858,16 +18463,6 @@ def build():
   "             progs[n].started_wall < changed]\n",
   "             progs[n].started_wall < 0]\n"),
 
- ("rack screen: Reload engine shown when not offered",
-  "ltcplay/web/remote.html",
-  "  $(\"cfg-reload\").hidden = !cn.offer || !mayRow(s, \"settings\");\n",
-  "  $(\"cfg-reload\").hidden = false;\n"),
-
- ("rack screen: the settings note leaves out flamesafe's own restart",
-  "ltcplay/web/remote.html",
-  "    (r.flamesafe ? \", so for a changed flamesafe.json stop LTC Player and start it again.\" : \".\");\n",
-  "    \".\";\n"),
-
  # Show stays Show (Jeff, 2026-10-28: "even when I press show mode, it
  # turns on programming mode").
  ("Show on the show audio: the engine's mode follows the player's forced hold", "ltcplay/session.py",
@@ -17948,8 +18543,8 @@ def build():
   '            if False:'),
 
  ('pre-roll: a failed check lets the scheduler start the show', 'ltcplay/schedule_service.py',
-  '            if v == "failed":\n                return True\n',
-  '            if v == "failed":\n                return False\n'),
+  '            if v in ("failed", "cleared"):\n',
+  '            if v == "failed":\n                return False\n            if v == "cleared":\n'),
 
  ('pre-roll: a show due with no check starts unchecked', 'ltcplay/schedule_service.py',
   '            if v is None:\n                self._preroll_kick(n)\n            return True',
@@ -17960,7 +18555,8 @@ def build():
   '        pr = self.preroll\n        if pr is not None:\n            pass'),
 
  ('pre-roll: Start now skips the rig check', 'ltcplay/schedule_service.py',
-  '            return self._preroll_for_start_now(who, screen, gen), gen',
+  '            return self._preroll_for_start_now(who, screen, gen,\n'
+  '                                               start_at), gen',
   '            return None, gen'),
 
  ('pre-roll: the late allowance applies to every show', 'ltcplay/schedule.py',
@@ -17979,10 +18575,6 @@ def build():
   '            self._drop_held("The pre-roll\'s video test")',
   '            pass'),
 
- ('pre-roll: the screens are blacked while the show is aborted', 'ltcplay/conductor.py',
-  '            if self._latched:\n                return self._refused("Pre-roll video black",',
-  '            if False:\n                return self._refused("Pre-roll video black",'),
-
  ('pre-roll: the alert is display only and never holds the show', 'ltcplay/alerts.py',
   'DISPLAY_ONLY = frozenset(("aim", "follow"))',
   'DISPLAY_ONLY = frozenset(("aim", "follow", "preroll"))'),
@@ -17999,9 +18591,12 @@ def build():
   '        if state not in ("SHOW", "PAUSED"):\n            self._degraded_over(off_seq)\n',
   ''),
 
- ('continue anyway: it can be pressed again for another show', 'ltcplay/schedule_service.py',
-  '        if pr is not None and pr.continued is not None:\n            # Once per failed check',
-  '        if False:\n            # Once per failed check'),
+ # ('continue anyway: it can be pressed again for another show')
+ # is retired (2026-11-04); it could not be caught:
+ # pr.continued is set together with preroll.consume() and cleared
+ # only when a new show's check is queued, so the used failure's own
+ # "consumed" refuses whenever this would. That guard is "continue anyway:
+ # a used failure can be continued again".
 
  ('continue anyway: a used failure can be continued again', 'ltcplay/preroll.py',
   '            if r is None or r["state"] != "failed" or r.get("consumed"):',
@@ -18071,88 +18666,502 @@ def build():
   '        if not self.users_active() or not who:\n            return 403, {"error": "Continue anyway needs a signed-in "',
   '        if False:\n            return 403, {"error": "Continue anyway needs a signed-in "'),
 
- ('continue anyway: it goes past an Abort', 'ltcplay/schedule_service.py',
-  '        elif self._aborted():\n            why = "the show is aborted; press Reset first"',
-  '        elif False:\n            why = "the show is aborted; press Reset first"'),
-
- ('continue anyway: the Delayed countdown keeps going', 'ltcplay/schedule_service.py',
-  '                try:\n                    on_continue()\n',
-  '                try:\n                    pass\n'),
-
  ('continue anyway: the choice is not journaled', 'ltcplay/schedule_service.py',
   '        self.journal_press(\n            who, screen, "continue anyway", "chosen",',
   '        (lambda *a, **k: None)(\n            who, screen, "continue anyway", "chosen",'),
-
- ("continue anyway: the alert hold's countdown is not cancelled", 'ltcplay/alerthold.py',
-  '            if h["state"] == "counting":\n                h["state"], h["due"] = "cancelled", None\n                self._journal(f"The Delayed announcement was cancelled: "',
-  '            if False:\n                h["state"], h["due"] = "cancelled", None\n                self._journal(f"The Delayed announcement was cancelled: "'),
 
  ('continue anyway: a network failure naming MadMapper leaves the video on', 'ltcplay/preroll.py',
   '        if i.get("name") in ("Network", "Timecode"):',
   '        if False:'),
 
  ("continue anyway: the next show's check does not end the Continue", 'ltcplay/preroll.py',
-  "            if not manual:\n                # A new show's check: the last Continue anyway is over.\n                self.continued = None",
+  "            if not manual:\n                # A new show's check: the last Continue anyway is over, and\n                # so is the last \"failure cleared\" note.\n                self.continued = None",
   '            if False:\n                self.continued = None'),
- # -- interface 2.0 (Jeff, 2026-10-28): /remote2 beside 1.0, the per-screen
- # switch, the default set on the show machine only, 1.0's own rules served,
- # and the SHOW tab's presses kept 1.0's --
+ # -- the rig check failure cleared by a later pass, MadMapper's output
+ # window and the rack screen kept in front (Jeff's field reports,
+ # 2026-10-29) --
+ ('rig check cleared: a pass clears nothing', 'ltcplay/preroll.py',
+  '            self._clear_failure(r)\n            if self._on_pass is not None:',
+  '            if self._on_pass is not None:'),
+
+ ('rig check cleared: a pass clears a failure raised after it began', 'ltcplay/preroll.py',
+  '                newer = self._fail_seq > r.get("seq", 0)\n',
+  '                newer = False\n'),
+
+ ('rig check cleared: a pass clears a preroll alert opened after it began', 'ltcplay/preroll.py',
+  '                    now_id != r.get("alert_at_start"):',
+  '                    False:'),
+
+ ('rig check cleared: the failed verdict stays after a pass', 'ltcplay/preroll.py',
+  '                            v["state"] = "cleared"\n',
+  ''),
+
+ ('rig check cleared: a failed Pre-check does not refresh the failure', 'ltcplay/preroll.py',
+  '        elif in_force:\n            self._refresh_failure(r, bad)',
+  '        elif False:\n            self._refresh_failure(r, bad)'),
+
+ ('rig check cleared: a cleared show is started by the scheduler unattended', 'ltcplay/schedule_service.py',
+  '            if v in ("failed", "cleared"):\n',
+  '            if v == "cleared":\n                return False\n            if v == "failed":\n'),
+
+ ('rig check cleared: Resume does not release the cleared show', 'ltcplay/schedule_service.py',
+  '                        self._end_stop_hold(who, screen, surface)\n'
+  '                    self._preroll_release(who, screen)',
+  '                        self._end_stop_hold(who, screen, surface)\n'
+  '                    pass'),
+
+ ('rig check cleared: the screens do not say Press Resume', 'ltcplay/remote.py',
+  '        if st == "HOLD" and held:',
+  '        if False:'),
+
+ ('rig check cleared: 1.0 and 2.0 still show the old failure', 'ltcplay/web/remote_rules.js',
+  '  if(p.cleared && !p.show_check && s.state !== "SHOW"',
+  '  if(false && p.cleared && !p.show_check && s.state !== "SHOW"'),
+
+ ('mm output: a window with a title bar counts as the output', 'ltcplay/showwindows.py',
+  '        if w.get("caption"):\n            continue',
+  '        if False:\n            continue'),
+
+ ('mm output: a window that does not fill the display counts', 'ltcplay/showwindows.py',
+  '    return l <= ml + tol and t <= mt + tol and r >= mr - tol and \\\n        b >= mb - tol',
+  '    return l <= ml + tol and t <= mt + tol'),
+
+ ('mm output: the rig check passes with the output OFF', 'ltcplay/preroll.py',
+  '        return False, (f"{why}. Turn it on in MadMapper: Output menu, "',
+  '        return True, (f"{why}. Turn it on in MadMapper: Output menu, "'),
+
+ ('mm output: the rig check passes when the output is not known', 'ltcplay/preroll.py',
+  '    return False, why or "not known"',
+  '    return True, why or "not known"'),
+
+ ('mm output: the switch off is ignored', 'ltcplay/web.py',
+  '        if not getattr(fire_ice, "madmapper_output_check", True):',
+  '        if False:'),
+
+ ('mm output: the lamp reads ok with the output OFF', 'ltcplay/remote.py',
+  '            add("MadMapper output", {"on": "ok", "off": "bad"}.get(',
+  '            add("MadMapper output", {"on": "ok", "off": "ok"}.get('),
+
+ ('rack keeper: raises the rack screen over the projection on its display', 'ltcplay/showwindows.py',
+  '        if any(overlap(w["rect"], area) > 0 for w in wins\n               if w["hwnd"] in outs):',
+  '        if False:'),
+
+ ('rack keeper: raises over a window a person brought forward', 'ltcplay/showwindows.py',
+  '                 and w["hwnd"] not in self.chosen\n',
+  ''),
+
+ ('rack keeper: raises over old windows after the boot settle', 'ltcplay/showwindows.py',
+  '                 and (boot or now - self.seen[w["hwnd"]] <=',
+  '                 and (True or now - self.seen[w["hwnd"]] <='),
+
+ ('rack keeper: never gives up on a window that stays on top', 'ltcplay/showwindows.py',
+  '        if n >= MAX_RAISES:',
+  '        if False:'),
+
+ ('mm output watch: alerts before MadMapper had time to come on', 'ltcplay/showwindows.py',
+  '        due = (now - self.first_seen >= self.settle_s and',
+  '        due = (True and'),
+
+ ('mm output watch: an alert the engine did not take is not sent again', 'ltcplay/showwindows.py',
+  '            self.alerted = self._call(self.alert, f"{why}. {ENABLE_STEPS}")',
+  '            self.alerted = self._call(self.alert, f"{why}. {ENABLE_STEPS}") or True'),
+
+ ('mm output watch: the alert stays after the output comes on', 'ltcplay/showwindows.py',
+  '            self.alerted = False\n            if self.raised and now >= self.next_try:',
+  '            self.alerted = False\n            if False:'),
+
+ ("mm output: the rack screen's own display counts as the projector's", 'ltcplay/showwindows.py',
+  '        outs = [(w, n) for w, n in outs if n != r]\n',
+  ''),
+
+ ('mm output: one display only reads as on', 'ltcplay/showwindows.py',
+  '    if not monitor and len(mons) == 1:',
+  '    if False:'),
+
+ ("mm output: a display past the PC's reads as off, not not known", 'ltcplay/showwindows.py',
+  '    if monitor and monitor > len(mons):',
+  '    if False:'),
+
+ ('mm output: a rig check that saw the output on leaves its alert open', 'ltcplay/web.py',
+  '        if a.kind == "output" and a.since < began:',
+  '        if False:'),
+
+ ('mm output: a rig check clears an output alert newer than it', 'ltcplay/web.py',
+  '        if a.kind == "output" and a.since < began:',
+  '        if a.kind == "output":'),
+
+ ('supervisor: the output watch reads showpc.json, not the engine file', 'packaging/windows/supervisor.py',
+  '    chk, mon, quiet = output_settings(settings)',
+  '    chk, mon, quiet = True, 0, ""'),
+
+ ('rack keeper: takes the keyboard from a person typing', 'ltcplay/showwindows.py',
+  '        if age is None or age < INPUT_QUIET_S:',
+  '        if False:'),
+
+ ('rack keeper: takes the foreground from any program', 'ltcplay/showwindows.py',
+  '        take = self.api.foreground() == c["hwnd"]',
+  '        take = True'),
+
+ ('rack keeper: picks another Edge window of the same process', 'ltcplay/showwindows.py',
+  '    if pid is not None and w.get("pid") != pid:\n        return False\n',
+  '    if pid is not None and w.get("pid") == pid:\n        return True\n'),
+
+ ('rack keeper: a minimized rack screen is restored over the projection', 'ltcplay/showwindows.py',
+  '        if rack["minimized"]:\n            # Left minimized',
+  '        if rack["minimized"] and False:\n            # Left minimized'),
+
+ ("rig check cleared: Resume journals a Start now key as a show", "ltcplay/schedule_service.py",
+  "                if not isinstance(key, tuple) or len(key) != 3 or \\\n                        key[0] != night or not isinstance(key[1], int) or \\\n                        m is None or key != self._show_key(m, key[1]):",
+  "                if not isinstance(key, tuple) or not isinstance(key[1], int):"),
+
+ ('rack keeper: moves the rack screen when the displays cannot be read', 'ltcplay/showwindows.py',
+  '        if not mons:\n            # The displays cannot be read',
+  '        if False:\n            # The displays cannot be read'),
+
+ ('rack keeper: a titleless MadMapper window not filling a display is a cover', 'ltcplay/showwindows.py',
+  '            if image_is(w.get("image"), MADMAPPER) and not w.get("caption")}',
+  '            if False}'),
+
+ ('mm output: page_monitor wins over where the rack screen is', 'ltcplay/showwindows.py',
+  '        r = rack_display(wins, mons, fallback=rack or 1)',
+  '        r = rack or rack_display(wins, mons)'),
+
+ ('mm output watch: a new off spell reuses a stale alert', 'ltcplay/showwindows.py',
+  "            if self.raised:\n                # The last spell's",
+  "            if False:\n                # The last spell's"),
+
+ ('mm output: the engine ignores page_monitor', 'ltcplay/web.py',
+  '            rack=_page_monitor()).start()',
+  '            rack=1).start()'),
+
+ ("mm output: the rack window under the output makes its display the rack's", 'ltcplay/showwindows.py',
+  '            if n and n not in outd:',
+  '            if n:'),
+
+ ('mm output: an output hidden by another window reads on', 'ltcplay/showwindows.py',
+  '        c = covered_by(wins, w)\n        if c is None:',
+  '        c = covered_by(wins, w)\n        if True:'),
+
+ ("supervisor: watches a MadMapper that is not the show's", 'packaging/windows/supervisor.py',
+  '    elif not showwindows.on_this_pc(mm.get("host", "127.0.0.1")):',
+  '    elif False:'),
+
+ ('supervisor: watches with no MadMapper in the show', 'packaging/windows/supervisor.py',
+  '    if not isinstance(mm, dict):\n        quiet = (',
+  '    if False:\n        quiet = ('),
+
+ ('supervisor: an alert that never reached the engine counts as sent', 'packaging/windows/supervisor.py',
+  '            f"did not reach the engine ({e.reason})")\n        return False',
+  '            f"did not reach the engine ({e.reason})")\n        return True'),
+
+ ('mm output watch: a new engine never gets the alert again', 'ltcplay/showwindows.py',
+  '        if ep != self._epoch:',
+  '        if False:'),
+
+ ('mm output watch: a refused alert is retried at the same pace forever', 'ltcplay/showwindows.py',
+  '        self.backoff = min(self.backoff * 2, 600.0)',
+  '        self.backoff = self.retry_s'),
+
+ ("mm output watch: an earlier supervisor's alert is never cleared", 'ltcplay/showwindows.py',
+  '        # on (a clear with nothing open counts as done).\n        self.raised = True',
+  '        # on (a clear with nothing open counts as done).\n        self.raised = False'),
+
+ ('rack keeper: the click that brought a window forward is not a choice', 'ltcplay/showwindows.py',
+  '            if age is not None and now - age >= self.fg_since[fg] - \\\n                    (2 * self.tick_s + 1.0):',
+  '            if age is not None and now - age >= self.fg_since[fg]:'),
+
+ ("rack keeper: a raise buries a dialog or the person's window", 'ltcplay/showwindows.py',
+  '        if why:\n            self._say("dialog"',
+  '        if False:\n            self._say("dialog"'),
+
+ ('mm output: a see-through overlay hides the output', 'ltcplay/showwindows.py',
+  '        if w.get("minimized") or w.get("seethrough"):',
+  '        if w.get("minimized"):'),
+
+ ('rack keeper: a restart of LTC Player re-enters the boot settle', 'ltcplay/showwindows.py',
+  '            if isinstance(sess, (int, float)) and sess >= 0 \\',
+  '            if False \\'),
+
+ ('rack keeper: the brought-forward margin is one tick only', 'ltcplay/showwindows.py',
+  '                    (2 * self.tick_s + 1.0):',
+  '                    self.tick_s:'),
+
+ ('supervisor: an unreadable settings file can raise output alerts', 'packaging/windows/supervisor.py',
+  '        return True, 0, "ltcplay_fire_ice.json could not be read"\n    if not isinstance',
+  '        return True, 0, ""\n    if not isinstance'),
+
+ ('key guard: Stop is held back after focus (2.0)', 'ltcplay/web/remote2.html',
+  '<button data-safe class="b red nostop" id="b-stop">',
+  '<button class="b red nostop" id="b-stop">'),
+
+ ('mm output watch: a switched-off watch keeps alerting', 'ltcplay/showwindows.py',
+  '            if self._config is not None and not self._config[0]:',
+  '            if False:'),
+
+ ('rack keeper: the taskbar stops the raise', 'ltcplay/showwindows.py',
+  '                 and not w.get("seethrough") and not is_taskbar(w)\n',
+  '                 and not w.get("seethrough")\n'),
+
+ ("rack keeper: the rack screen's own pop-up stops the raise", 'ltcplay/showwindows.py',
+  '                 and w.get("owner") != rack["hwnd"]\n',
+  ''),
+
+ ('rack keeper: a window nobody uses stops the raise', 'ltcplay/showwindows.py',
+  '            if w["hwnd"] == fg_now and (age is None or\n                                        age < FOREGROUND_IN_USE_S):',
+  '            if True:'),
+
+ ('rack keeper: an unowned dialog of the covering program is buried', 'ltcplay/showwindows.py',
+  '                    w.get("owner") or w.get("pid") == c.get("pid"))):',
+  '                    w.get("owner"))):'),
+
+ ("key guard: 2.0's DAY purge fires on a Space right after focus", 'ltcplay/web/remote2.html',
+  '  if(keyFresh() || keySafe(e.target)) return;\n  if(fireKeyNotOurs(e)) return;',
+  '  if(fireKeyNotOurs(e)) return;'),
+
+ ("mm output watch: the supervisor's 'this PC' is only loopback", 'ltcplay/showwindows.py',
+  '    return _thispc.on_this_pc(host)',
+  "    return str(host or '').startswith('127.') or host == 'localhost'"),
+
+ # -- review fixes of #176 (two cold reviews, 2026-10-30) --
+ ("mm output: the rig check's backstop reads the note, not whether it looked", 'ltcplay/web.py',
+  '            and i.get("used")]',
+  '            and not i.get("note")]'),
+
+ ('mm output: a rig check that did not look clears the output alert', 'ltcplay/web.py',
+  '            and i.get("used")]',
+  '            ]'),
+
+ ('rig check: an item the show does not use counts as seen', 'ltcplay/preroll.py',
+  'note=True, used=False))',
+  'note=True))'),
+
+ ('mm output: Continue anyway blacks the video on an unproven output check', 'ltcplay/preroll.py',
+  'OFF_FOR = {"Video": "video", "Lasers"',
+  'OFF_FOR = {"Video": "video", "MadMapper output": "video", "Lasers"'),
+
+ ('rack keeper: a parentless dialog box counts as a cover', 'ltcplay/showwindows.py',
+  'and not w.get("owner") and not is_dialog(w)\n',
+  'and not w.get("owner")\n'),
+
+ ("rack keeper: another program's dialog box is buried", 'ltcplay/showwindows.py',
+  '            if is_dialog(w) or (is_app(w) and (',
+  '            if (is_app(w) and ('),
+
+ ('rack keeper: windows open before a restart count as just appeared', 'ltcplay/showwindows.py',
+  'float("-inf") if first else now)',
+  'now)'),
+
+ ('rack keeper: raises over the window in use since before a restart or the lock screen', 'ltcplay/showwindows.py',
+  '                        self.seen.get(w["hwnd"], now) <= now - age)):',
+  '                        False)):'),
+
+ ('rack keeper: moves a rack screen that is not responding', 'ltcplay/showwindows.py',
+  '            if self.api.hung(rack["hwnd"]):',
+  '            if False:'),
+
+ ('rig check cleared: a clear ignores a raise made in place since', 'ltcplay/alerts.py',
+  '                if rev is not None and a.rev != rev:',
+  '                if False:'),
+
+ ('rig check cleared: the alert is cleared by kind, not as the check saw it', 'ltcplay/preroll.py',
+  '                got = self._clear_alert(KIND, alert_id)',
+  '                got = self._clear_alert(KIND)'),
+
+ ('rig check cleared: a refused clear still clears the verdict', 'ltcplay/preroll.py',
+  '                if not self._clear(now_id) and self.alert_open():',
+  '                if False:'),
+
+ ('rig check cleared: an alert opened after the check read none is ignored', 'ltcplay/preroll.py',
+  '            elif self.alert_open():\n                # Opened since',
+  '            elif False:\n                # Opened since'),
+
+ ('rig check cleared: a failure numbered during the clear is ignored', 'ltcplay/preroll.py',
+  '                    if self._fail_seq > r.get("seq", 0):\n                        newer = True',
+  '                    if False:\n                        newer = True'),
+
+ ('rig check cleared: the order of events is not checked first', 'ltcplay/preroll.py',
+  '                newer = self._fail_seq > r.get("seq", 0)\n',
+  '                newer = False\n'),
+
+ ("rig check: 'could not run' is never raised again after a pass cleared it", 'ltcplay/schedule_service.py',
+  '        once = (why, getattr(self.preroll, "clears", 0))',
+  '        once = why'),
+
+ ('rig check cleared: an open alert alone is not a failure in force', 'ltcplay/preroll.py',
+  '        return failed or self.alert_open()',
+  '        return failed'),
+
+ ('rig check cleared: Resume releases a show whose check still failed', 'ltcplay/preroll.py',
+  '                    if v["state"] == "cleared"]\n            for k in keys:',
+  '                    if v["state"] in ("cleared", "failed")]\n            for k in keys:'),
+
+ ("rig check: a 'could not run' failure is not numbered", 'ltcplay/preroll.py',
+  '        before it can clear it."""\n        with self._lock:\n            self._seq += 1',
+  '        before it can clear it."""\n        return\n        with self._lock:\n            self._seq += 1'),
+
+ ("rig check cleared: failing again keeps the old failure's age", 'ltcplay/preroll.py',
+  '                v["done"] = r["done"]\n',
+  ''),
+
+ ('rig check cleared: Resume gives the show no late allowance', 'ltcplay/schedule_service.py',
+  '                self._preroll_late[key] = pr.late_ok_s()\n                d = m.delayed()',
+  '                d = m.delayed()'),
+
+ ("rig check cleared: the note survives a show's own check", 'ltcplay/preroll.py',
+  '                self.continued = None\n                self.cleared = None',
+  '                self.continued = None'),
+
+ ('rig check cleared: Press Resume when no show was released', 'ltcplay/remote.py',
+  '        if st == "HOLD" and held:',
+  '        if st == "HOLD":'),
+
+ ('rig check: Check again refused before a show after a failure', 'ltcplay/remote.py',
+  ' and \\\n                    not pr.failure_in_force():',
+  ':'),
+
+ ('rig check: Check again allowed in the minute before a show', 'ltcplay/remote.py',
+  '            if 0 <= left < self.PRECHECK_CLEAR_S + pr.window_s and \\',
+  '            if False and \\'),
+
+ ('rig check cleared: a clear is not counted', 'ltcplay/preroll.py',
+  '                        self.clears += 1\n',
+  ''),
+
+ ('rig check cleared: the screens are not told how many shows', 'ltcplay/preroll.py',
+  '                                  "shows": cl.get("shows", 0),\n',
+  ''),
+
+ ('rig check cleared: the alerts are called under the pre-roll\'s lock (deadlock)', 'ltcplay/preroll.py',
+  '                got = self._clear_alert(KIND, alert_id)',
+  '                with self._lock:\n                    got = self._clear_alert(KIND, alert_id)'),
+
+ ("rig check: a show's pass older than a later failure is not run again", 'ltcplay/preroll.py',
+  'self._fresh(r) and not self._stale(r):',
+  'self._fresh(r):'),
+
+ ("rig check: a show's pass older than a later failure still counts", 'ltcplay/preroll.py',
+  '(not self._fresh(r) or self._stale(r)):',
+  'not self._fresh(r):'),
+
+ ('rack keeper: the in-use rule covers a window that opened after the last input', 'ltcplay/showwindows.py',
+  '                        self.seen.get(w["hwnd"], now) <= now - age)):',
+  '                        True)):'),
+
+ ('mm output: a rig check clears the output alert while the output is off again', 'ltcplay/web.py',
+  '        if look.now()[0] != "on":',
+  '        if False:'),
+
+ ('rig check cleared: a delayed show held says Press Resume', 'ltcplay/remote.py',
+  '        if m is not None and m.delayed() is not None:\n            # A delayed show waits',
+  '        if False:\n            # A delayed show waits'),
+
+ ('rig check cleared: the Resume line says a delayed show is checked again', 'ltcplay/schedule_service.py',
+  '                if d is not None and d.n == key[1]:',
+  '                if False:'),
+
+ ('continue anyway: a failed MadMapper output check reads as nothing failed', 'ltcplay/schedule_service.py',
+  '        if any(i["name"] == "MadMapper output" for i in bad):',
+  '        if False:'),
+
+ ('rig check cleared: a cleared show is journaled as a late check', 'ltcplay/schedule_service.py',
+  '            if v in ("failed", "cleared"):',
+  '            if v == "failed":'),
+
+ # -- the screen (remote2.html) and its rules, served (R1: the first screen
+ # and its switch are removed) --
  ("ui2: the show network cannot reach the 2.0 page", "ltcplay/web.py",
   "            or route in UI_ROUTES\n",
   ""),
 
- ("ui2: a screen's own choice of page is ignored", "ltcplay/web.py",
-  '            if k == UI_COOKIE and v in ("1", "2"):',
-  "            if False:"),
+ # The rack window opens the screen at /remote.
+ ("ui2 default: the rack screen opens the old screen",
+  "packaging/windows/supervisor.py",
+  'RACK_PAGE = "/remote"     #',
+  'RACK_PAGE = "/remote1"    #'),
 
- ("ui2: a junk choice cookie picks 2.0", "ltcplay/web.py",
-  '            if k == UI_COOKIE and v in ("1", "2"):\n                return int(v)',
-  '            if k == UI_COOKIE:\n                return 2'),
+ ("R1: the first screen's old addresses send nowhere", "ltcplay/web.py",
+  "            if route in OLD_SCREEN_ROUTES:\n",
+  "            if False:\n"),
 
- ("ui2: the show machine's default interface is ignored", "ltcplay/web.py",
-  "            return 2 if rm is not None and rm.ui_default() == 2 else 1",
-  "            return 1"),
+ ("R1: the first screen's old addresses send to the old page", "ltcplay/web.py",
+  '                                  headers={"Location": "/remote"})\n            if route == "/remote-logic.js":',
+  '                                  headers={"Location": "/remote1"})\n            if route == "/remote-logic.js":'),
 
- ("ui2: a link from another site's page switches the page", "ltcplay/web.py",
-  "            return self._send(403, {\"error\": \"A switch from another site's \"\n"
-  "                                             \"page was refused.\"})",
-  "            pass"),
+ ("rules: /remote-logic.js serves the screen page instead of its rules", "ltcplay/web.py",
+  "        with open(REMOTE_RULES, encoding=\"utf-8\") as fh:\n"
+  "            logic = fh.read()\n",
+  "        with open(REMOTE2_PAGE, encoding=\"utf-8\") as fh:\n"
+  "            logic = fh.read()\n"),
 
- ("ui2: /ui sets any value it is given", "ltcplay/web.py",
-  '        if v not in ("1", "2"):\n            return self._send(400, {"error": "v has to be 1 or 2."})',
-  '        if not v:\n            return self._send(400, {"error": "v has to be 1 or 2."})'),
+ # The rules in their own file, never served half (docs/REMOVE_1_0_PLAN.md,
+ # step 1).
+ ("rules: a rules file with a closing script tag is written into the pages",
+  "ltcplay/web.py",
+  "    if \"</script\" in logic.lower():\n"
+  "        _rules_fault(\"it has a closing script tag in it\")\n"
+  "        return None\n",
+  ""),
 
- ("ui2: /remote-logic.js serves the whole of 1.0", "ltcplay/web.py",
-  "    return page[a + len(LOGIC_OPEN):b]\n",
-  "    return page\n"),
+ ("rules: a closing script tag in capitals is written into the pages",
+  "ltcplay/web.py",
+  "    if \"</script\" in logic.lower():\n",
+  "    if \"</script>\" in logic:\n"),
 
- ("ui2: the default interface is set from the network", "ltcplay/remote.py",
-  "            if not ctx.local:\n                return 403, {\"error\": \"The default interface is set on the \"",
-  "            if False:\n                return 403, {\"error\": \"The default interface is set on the \""),
+ ("rules: a missing rules file breaks the page instead of serving it as is",
+  "ltcplay/web.py",
+  "    except (OSError, ValueError) as e:\n",
+  "    except ValueError as e:\n"),
 
- ("ui2: the default interface is read from the network", "ltcplay/remote.py",
-  "        if name == UI_DEFAULT_ROUTE:\n            if not ctx.local:\n                return 403, {\"error\": \"Only on the show machine itself.\"}",
-  "        if name == UI_DEFAULT_ROUTE:\n            if False:\n                return 403, {\"error\": \"Only on the show machine itself.\"}"),
+ # Cold review of #206.
+ ("rules: a rules file that is not UTF-8 breaks every screen, Stop too",
+  "ltcplay/web.py",
+  "    except (OSError, ValueError) as e:\n",
+  "    except OSError as e:\n"),
 
- ("ui2: the default interface takes any value", "ltcplay/remote.py",
-  "        if not isinstance(v, int) or isinstance(v, bool) or \\\n                v not in UI_VERSIONS:",
-  "        if v is None:"),
+ ("rules: an empty or cut short rules file is served as the rules",
+  "ltcplay/web.py",
+  "    if gone:\n",
+  "    if False:\n"),
 
- ("ui2: a hand-written ui_default that is not 1 or 2 is kept", "ltcplay/remote.py",
-  "    out[\"ui_default\"] = v if (isinstance(v, int) and not isinstance(v, bool)\n                              and v in UI_VERSIONS) else 1",
-  "    out[\"ui_default\"] = v if v is not None else 1"),
+ ("rules: a rules file that did not load is never said in the log",
+  "ltcplay/web.py",
+  "        _RULES_FAULT_SAID[0] = True\n        print(",
+  "        _RULES_FAULT_SAID[0] = True\n        if False: print("),
 
- ("ui2: setting the default interface needs no role", "ltcplay/users.py",
-  '    "ui-default": "settings",',
-  '    "ui-default": None,'),
+ ("rules: a rules file that did not load is said on every request",
+  "ltcplay/web.py",
+  "    if not _RULES_FAULT_SAID[0]:\n",
+  "    if True:\n"),
 
- ("ui2 page: Abort fires on its first tap", "ltcplay/web/remote2.html",
-  "  const step = abortTapStep2(ABORT_TAP, monoNow(), kind, $(\"abortbar\").classList.contains(\"tap1\"));\n  if(!step.fire){",
-  "  const step = abortTapStep2(ABORT_TAP, monoNow(), kind, $(\"abortbar\").classList.contains(\"tap1\"));\n  if(false){"),
+ ("rules: the installed engine's self-check passes without the rules",
+  "packaging/windows/entry_engine.py",
+  "    if why:\n        raise RuntimeError(why)\n",
+  "    if False:\n        raise RuntimeError(why)\n"),
 
- ("ui2 page: Stop is sent with no confirm", "ltcplay/web/remote2.html",
-  '  if(!(await confirmBox("Stop the show?",',
-  '  if(false && !(await confirmBox("Stop the show?",'),
+ ("rules: the installer smoke test takes a screen without its rules",
+  "packaging/windows/ci_smoke.py",
+  "            check(st == 200 and \"function armState(\" in body,\n",
+  "            check(st == 200,\n"),
+
+ ("rules: the self-check reads 2.0 as whole without its rules",
+  "ltcplay/web.py",
+  "    if RULES_SERVED_MARK.encode() not in remote2_page():\n",
+  "    if False:\n"),
+
+ ("rules: the rules are written into a page twice",
+  "ltcplay/web.py",
+  "        page = page.replace(LOGIC_TAG, LOGIC_OPEN + logic + \"</script>\", 1)",
+  "        page = page.replace(LOGIC_TAG, LOGIC_OPEN + logic + \"</script>\" + LOGIC_OPEN + logic + \"</script>\", 1)"),
+
+ ("ui2 page: the broken page's Stop fires on its first tap", 'ltcplay/web/remote2.html',
+  '  const step = stopTapStep2(CORE_TAP, monoNow(), kind, false);\n'
+  '  if(!step.fire){',
+  '  const step = stopTapStep2(CORE_TAP, monoNow(), kind, false);\n'
+  '  if(false){'),
+
+ ("ui2 page: Stop show is sent on its first tap", "ltcplay/web/remote2.html",
+  '  if(!step.fire){\n    if(t) clearTimeout(t.timer);\n    STOP_TAPS2[id]',
+  '  if(false){\n    if(t) clearTimeout(t.timer);\n    STOP_TAPS2[id]'),
 
  ("ui2 page: lifting the finger does not let go of a hold to arm", "ltcplay/web/remote2.html",
   '        b.addEventListener(ev, () => { if(holding(i) && !HOLD.all) armStop("let go"); }));',
@@ -18179,12 +19188,12 @@ def build():
   "      $(\"wc-hold\").addEventListener(ev, () => { if(false) wcLetGo(\"you let go before the hold was complete\"); });\n    }\n    $(\"wc-hold\").addEventListener(\"contextmenu\", e => e.preventDefault());\n    $(\"wc-stop\")"),
 
  ("ui2 day: leaving DAY keeps this screen's purge selection", "ltcplay/web/remote2.html",
-  "    MO_OPEN = false; clearTimeout(MO_TIMER); fireStop(\"the page was left\");\n    purgeDrop();\n  }",
-  "    MO_OPEN = false; clearTimeout(MO_TIMER); fireStop(\"the page was left\");\n  }"),
+  "    MO_OPEN = false; clearTimeout(MO_TIMER);\n    purgeDrop();\n  }",
+  "    MO_OPEN = false; clearTimeout(MO_TIMER);\n  }"),
 
  ("ui2 day: leaving the Purge step keeps this screen's selection", "ltcplay/web/remote2.html",
-  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); purgeDrop(); }",
-  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); }"),
+  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); tpLetGo(\"another step was chosen\"); purgeDrop(); }",
+  "  if(DAY_STEP === \"purge\"){ fireStop(\"another step was chosen\"); tpLetGo(\"another step was chosen\"); }"),
 
  ("ui2 day: a double tap on Tick ticks twice", "ltcplay/web/remote2.html",
   "      if(DAY_TICK_BUSY || monoNow() - DAY_TICK_AT < DAY_TICK_QUIET_MS) return;\n",
@@ -18202,8 +19211,8 @@ def build():
 
  ("ui2 day: the Purge step dropping out keeps this screen's selection",
   "ltcplay/web/remote2.html",
-  "    if(DAY_STEP === \"purge\"){ fireStop(\"the Purge step went\"); purgeDrop(); }",
-  "    if(DAY_STEP === \"purge\"){ fireStop(\"the Purge step went\"); }"),
+  "    if(DAY_STEP === \"purge\"){ fireStop(\"the Purge step went\"); tpLetGo(\"the Purge step went\"); purgeDrop(); }",
+  "    if(DAY_STEP === \"purge\"){ fireStop(\"the Purge step went\"); tpLetGo(\"the Purge step went\"); }"),
 
  ("ui2 page: Programming playback firing flames is not pinned",
   "ltcplay/web/remote2.html",
@@ -18220,10 +19229,9 @@ def build():
   "  return !!(t && t.closest && t.closest(FIRE_KEY_NEVER));",
   "  return false;"),
 
- ("ui2 page: a refused Programming pin Stop is only said",
-  "ltcplay/web/remote2.html",
-  "    catch(e2){ say(\"NOT held.\", e2.message, \"bad\"); disarmFailed(\"Programming NOT paused. Abort or Disarm flames.\", e2.message); }",
-  "    catch(e2){ say(\"NOT held.\", e2.message, \"bad\"); }"),
+ ('ui2 page: a refused Programming pin Stop is only said', 'ltcplay/web/remote2.html',
+  '    catch(e2){ say("NOT held.", e2.message, "bad"); disarmFailed("Programming NOT paused. Stop show or Disarm flames.", e2.message); }',
+  '    catch(e2){ say("NOT held.", e2.message, "bad"); }'),
 
  ("ui2 page: two pins both say just Stop",
   "ltcplay/web/remote2.html",
@@ -18246,8 +19254,8 @@ def build():
   ""),
 
  ("ui2 day: Next marks Purge done after a look", "ltcplay/web/remote2.html",
-  "[\"fuel\", \"lasers\", \"locks\", \"locks-shut\"].includes(cur.key)",
-  "[\"fuel\", \"purge\", \"lasers\", \"locks\", \"locks-shut\"].includes(cur.key)"),
+  "[\"fuel\", \"lasers\", \"locks\", \"locks-shut\", \"fireball\"].includes(cur.key)",
+  "[\"fuel\", \"purge\", \"lasers\", \"locks\", \"locks-shut\", \"fireball\"].includes(cur.key)"),
 
  ("ui2 page: announcements with no output picked read Off", "ltcplay/web/remote2.html",
   "const SYS_OFF = /^(none|none set up|not set up|stopped|",
@@ -18265,9 +19273,9 @@ def build():
   "    if logic is not None and LOGIC_TAG in page:\n",
   "    if False:\n"),
 
- ("ui2 page: Abort leans on 1.0's rules", "ltcplay/web/remote2.html",
-  "  const kind = abortTapKind2(e);",
-  "  const kind = abortTapKind(e);"),
+ ("ui2 page: the broken page's Stop leans on 1.0's rules", 'ltcplay/web/remote2.html',
+  '  const step = stopTapStep2(CORE_TAP, monoNow(), kind, false);',
+  '  const step = stopTapStep(CORE_TAP, monoNow(), kind, false);'),
 
  ("ui2 page: a page whose rules did not load says nothing", "ltcplay/web/remote2.html",
   "window.addEventListener(\"load\", () => { if(!ui2Whole()) $(\"broken\").hidden = false; });\nsetInterval(() => { if(!ui2Whole()) $(\"broken\").hidden = false; }, 1000);",
@@ -18289,6 +19297,20 @@ def build():
   "  if(down && (down.key !== ALERT_KEY || down.act !== $(\"al-act\").dataset.act)){",
   "  if(false){"),
 
+ ("ui2 page: the footer's sentence cut is a lookbehind again (dead on iPadOS 15)",
+  "ltcplay/web/remote2.html",
+  "  const end = /[.!?]\\s/.exec(t);\n"
+  "  const first = end ? t.slice(0, end.index + 1) : t;\n",
+  "  const first = t.split(/(?<=[.!?])\\s/)[0];\n"),
+ ("ui2 page: the footer cuts at a full stop with no space after it",
+  "ltcplay/web/remote2.html",
+  "  const end = /[.!?]\\s/.exec(t);",
+  "  const end = /[.!?]/.exec(t);"),
+ ("ui2 page: the footer's sentence loses its full stop",
+  "ltcplay/web/remote2.html",
+  "  const first = end ? t.slice(0, end.index + 1) : t;",
+  "  const first = end ? t.slice(0, end.index) : t;"),
+
  ("ui2 page: no contact leaves the old alert slot", "ltcplay/web/remote2.html",
   "  if(isSt) drawSlotStale(); else",
   "  if(false) drawSlotStale(); else"),
@@ -18301,9 +19323,9 @@ def build():
   "    say(dis ? \"Disarm NOT done. Use Deck or e-stop.\" : short8(",
   "    say(false ? \"Disarm NOT done. Use Deck or e-stop.\" : short8("),
 
- ("ui2 page: a failed Stop disarm does not say e-stop", "ltcplay/web/remote2.html",
-  "  if(bad.some(i => i.key === \"abort\" || i.key === \"stop\")) return",
-  "  if(bad.some(i => i.key === \"abort\")) return"),
+ ('ui2 page: a failed Stop disarm does not say e-stop', 'ltcplay/web/remote2.html',
+  '  if(bad.some(i => i.key === "stop")) return',
+  '  if(false) return'),
 
  ("ui2 page: letting go of Continue anyway early still continues", "ltcplay/web/remote2.html",
   '  if(PR_HOLD){ prHoldEnd(); say("Let go too early: nothing done."',
@@ -18450,12 +19472,11 @@ def build():
             return why''',
   '''        why = ""'''),
 
- ("timed purge: the flame link zeroed is not seen before a send",
-  "ltcplay/morning.py",
-  '''        if self._gen(self._link()) != t["gen"]:
-            return "the flame link was zeroed (Stop, Hold, Abort or a disarm)"''',
-  '''        if False:
-            return ""'''),
+ ('timed purge: the flame link zeroed is not seen before a send', 'ltcplay/morning.py',
+  '        if self._gen(self._link()) != t["gen"]:\n'
+  '            return "the flame link was zeroed (Stop, Hold or a disarm)"',
+  '        if False:\n'
+  '            return ""'),
 
  ("timed purge: a zero landing during the set is not seen",
   "ltcplay/morning.py",
@@ -18493,12 +19514,11 @@ def build():
                                  f"{screen}", who, screen)''',
   '''            pass'''),
 
- ("timed purge: a Hold standing does not end it",
-  "ltcplay/remote.py",
-  '''            if state == "HOLD":
-                return ("a Hold is standing; Resume or Reset first, then "''',
-  '''            if False:
-                return ("a Hold is standing; Resume or Reset first, then "'''),
+ ('timed purge: a Hold standing does not end it', 'ltcplay/remote.py',
+  '            if state == "HOLD":\n'
+  '                return ("a Hold is standing; Resume first, then ',
+  '            if False:\n'
+  '                return ("a Hold is standing; Resume first, then '),
 
  ("timed purge: the flame link not sending does not end it",
   "ltcplay/remote.py",
@@ -18563,25 +19583,10 @@ def build():
   "            left = self.purge_timed_left()\n            if left is not None:",
   "            left = self.purge_timed_left()\n            if False:"),
 
- ("timed purge page: a press while it runs is not Stop purge",
-  "ltcplay/web/remote.html",
-  "  if(st.running){ tpStopPress(); return; }",
-  ""),
-
  ("timed purge page: Other is not kept to the longest",
-  "ltcplay/web/remote.html",
+  "ltcplay/web/remote_rules.js",
   "  return Math.min(max, Math.max(min, n));",
   "  return n;"),
-
- ("timed purge page: the start beats stop before the engine's start",
-  "ltcplay/web/remote.html",
-  "    if(j.started || j.running){",
-  "    if(true){"),
-
- ("timed purge page: leaving the page clears its selection (and ends it)",
-  "ltcplay/web/remote.html",
-  " && !MO.purge_state.timed)",
-  ")"),
 
  ("ui2 page: a running timed purge is not pinned",
   "ltcplay/web/remote2.html",
@@ -18713,6 +19718,3657 @@ def build():
   "                    self._timed_remember(owner, rid, seq)\n                self._note(f\"{who or device}'s timed purge on the {device} \"",
   "                    self._timed_remember(owner, rid, seq, make=True)\n                self._note(f\"{who or device}'s timed purge on the {device} \""),
 
+ # -- the fireball timeline (fireball_timeline.py, Jeff 2026-10-30) --------
+ ("fireball timeline: a stale revision overwrites a newer save",
+  "ltcplay/fireball_timeline.py",
+  "not isinstance(base_rev, int) or base_rev != doc[\"rev\"]:",
+  "not isinstance(base_rev, int):"),
+
+ ("fireball timeline: a start past the end of the show is accepted",
+  "ltcplay/fireball_timeline.py",
+  "            if show_len_s is not None and fr / FPS >= show_len_s:",
+  "            if show_len_s is not None and fr / FPS > show_len_s:"),
+
+ ("fireball timeline: a stage given twice is accepted",
+  "ltcplay/fireball_timeline.py",
+  "        if key in seen:",
+  "        if False:"),
+
+ ("fireball timeline: a duration of 0 is accepted",
+  "ltcplay/fireball_timeline.py",
+  "    if not math.isfinite(v) or v <= 0:",
+  "    if not math.isfinite(v) or v < 0:"),
+
+ ("fireball timeline: frame 30 is accepted at 30 fps",
+  "ltcplay/fireball_timeline.py",
+  "    if f >= FPS:",
+  "    if f > FPS:"),
+
+ ("fireball timeline: Purge is accepted as a stage",
+  "ltcplay/fireball_timeline.py",
+  "        word = STAGE_WORD.get(key) if isinstance(key, str) else None",
+  "        word = dict(STAGE_WORD, purge=\"Purge\").get(key) if isinstance(key, str) else None"),
+
+ ("fireball timeline: an unknown field in the file is accepted",
+  "ltcplay/fireball_timeline.py",
+  "        extra = set(entry) - _ENTRY_KEYS",
+  "        extra = set()"),
+
+ ("fireball timeline: the version before a save is not kept",
+  "ltcplay/fireball_timeline.py",
+  "                self._keep_history(doc[\"rev\"], bool(err), old)",
+  "                pass"),
+
+ ("fireball timeline: a save is not audited",
+  "ltcplay/fireball_timeline.py",
+  "            self._audit(who, screen, show, \"accepted\", what)",
+  "            pass"),
+
+ ("fireball timeline: a rebuilt file restarts at revision 1 (round 5)",
+  "ltcplay/fireball_timeline.py",
+  "                max(doc[\"rev\"], int(self._wall() * 1000)) + 1",
+  "                doc[\"rev\"] + 1"),
+
+ ("fireball timeline: a save by someone without the Settings row",
+  "ltcplay/remote.py",
+  "                                \"signed-in admin.\")\n        if not u.may(me.get(\"role\"), \"settings\"):\n            return refused(403, f\"{me.get('name')} may not: \"\n                                f\"{users_mod.perm_label('settings')}.\")\n        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the fireball timeline",
+  "                                \"signed-in admin.\")\n        if False:\n            return refused(403, f\"{me.get('name')} may not: \"\n                                f\"{users_mod.perm_label('settings')}.\")\n        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the fireball timeline"),
+
+ ("fireball timeline: a save signed out",
+  "ltcplay/remote.py",
+  "        if u is None or not u.active() or not me.get(\"name\"):\n            return refused(403, \"editing the fireball timeline needs a \"",
+  "        if u is None:\n            return refused(403, \"editing the fireball timeline needs a \""),
+
+ ("fireball timeline: a save from the show network without screen_arming",
+  "ltcplay/remote.py",
+  "        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the fireball timeline from a \"",
+  "        if False:\n            return refused(403, \"editing the fireball timeline from a \""),
+
+ ("fireball timeline: the page's own show length is trusted",
+  "ltcplay/remote.py",
+  "            show, cue, length, body.get(\"source\"), body.get(\"stages\"),",
+  "            show, cue, body.get(\"show_len_s\") or length, body.get(\"source\"), body.get(\"stages\"),"),
+
+ ("fireball timeline: a save is not a Settings press",
+  "ltcplay/users.py",
+  "    \"fireball-timeline-save\": \"settings\",",
+  "    \"fireball-timeline-save\": None,"),
+
+ ("fireball timeline: a save over an unreadable file is taken",
+  "ltcplay/fireball_timeline.py",
+  "            if err and replace_unreadable is not True:",
+  "            if False:"),
+
+ ("fireball timeline: a missing file once saved reads as never saved",
+  "ltcplay/fireball_timeline.py",
+  "                if self.path and os.path.isdir(self.history_dir()):",
+  "                if False:"),
+
+ ("fireball timeline: the history copy is written before the save is in place",
+  "ltcplay/fireball_timeline.py",
+  "                old = self._read_bytes()\n                self._write(new)",
+  "                old = self._read_bytes()\n                os.makedirs(self.history_dir(), exist_ok=True)\n                self._keep_history(doc[\"rev\"], bool(err), old)\n                self._write(new)"),
+
+ ("fireball timeline: a refused replace leaves its temporary file",
+  "ltcplay/fireball_timeline.py",
+  "            try:\n                os.remove(tmp)\n            except OSError:\n                pass\n            raise",
+  "            raise"),
+
+ ("fireball timeline: a read is not under the store's lock",
+  "ltcplay/fireball_timeline.py",
+  "        with self._lock:\n            if not self.path or not os.path.exists(self.path):",
+  "        if True:\n            if not self.path or not os.path.exists(self.path):"),
+
+ ("fireball timeline: a save keeps the spelling it was given",
+  "ltcplay/remote.py",
+  "        show = real\n        cue, length, why = self.fireball_show_info(show)",
+  "        cue, length, why = self.fireball_show_info(show)"),
+
+ ("fireball timeline: show names are compared case for case",
+  "ltcplay/fireball_timeline.py",
+  "    return str(name).rstrip(\" .\").lower()",
+  "    return str(name)"),
+
+ ("fireball timeline: two spellings of one show are taken",
+  "ltcplay/remote.py",
+  "        if len(same) == 1:\n            return same[0], \"\"",
+  "        if len(same) >= 1:\n            return same[0], \"\""),
+
+ ("fireball timeline: a refused history copy makes a save that was made say Not saved",
+  "ltcplay/fireball_timeline.py",
+  "            except OSError as e:\n                warn = (",
+  "            except KeyError as e:\n                warn = ("),
+
+ ("fireball timeline: names are folded as Unicode case folding (sz as ss)",
+  "ltcplay/fireball_timeline.py",
+  "    return str(name).rstrip(\" .\").lower()",
+  "    return str(name).rstrip(\" .\").casefold()"),
+
+ # -- the fireball's charge state (fireball_charge.py, Jeff 2026-10-30) ----
+ ("fireball charge: zeros (Stop, Hold, a show's end) empty the tanks",
+  "ltcplay/fireball_charge.py",
+  "                self._release = None\n                self._ending = (rel, now)",
+  "                self._release = None\n                self._ending = (rel, now)\n            elif rel is None and self._ending is None and not any(lv.values()):\n                self._released({\"kind\": \"shot\", \"certain\": True, \"during\": {}}, now_w)"),
+
+ ("fireball charge: the Igniter counts as the shot",
+  "ltcplay/fireball_charge.py",
+  "            valve, purge = vals[VALVE_SLOT - 1], vals[PURGE_SLOT - 1]",
+  "            valve, purge = vals[VALVE_SLOT - 1] or vals[57], vals[PURGE_SLOT - 1]"),
+
+ ("fireball charge: a charge counts while the group is not armed",
+  "ltcplay/fireball_charge.py",
+  "        if armed == \"off\":",
+  "        if False:"),
+
+ ("fireball charge: a release not seen for certain empties the tanks",
+  "ltcplay/fireball_charge.py",
+  "            elif rel[\"certain\"]:",
+  "            elif True:"),
+
+ ("fireball charge: a charge with the status not known leaves the tank EMPTY",
+  "ltcplay/fireball_charge.py",
+  "            if t[\"state\"] == EMPTY:\n                self._set(k, UNKNOWN,",
+  "            if False:\n                self._set(k, UNKNOWN,"),
+
+ ("fireball charge: a broken file reads as EMPTY",
+  "ltcplay/fireball_charge.py",
+  "        if isinstance(main, Exception):\n            # Which of the two",
+  "        if isinstance(main, Exception):\n            self.tanks = {k: _new_tank(EMPTY, now, \"x\") for k in TANK_WORD}; self.releasing = \"\"; return\n            # Which of the two"),
+
+ ("fireball charge: a restart in the middle of a release is not UNKNOWN",
+  "ltcplay/fireball_charge.py",
+  "        if rel:\n            what = ",
+  "        if False:\n            what = "),
+
+ ("fireball charge: a change is not written to the file",
+  "ltcplay/fireball_charge.py",
+  "        if persist:\n            self._next_rev()",
+  "        if False:\n            self._next_rev()"),
+
+ ("fireball charge: a top-off from the Fireball page is called a double charge",
+  "ltcplay/fireball_charge.py",
+  "            if m is not None:\n                self._set(k, CHARGED, f\"top-off by {m[0]}\"",
+  "            if False:\n                self._set(k, CHARGED, f\"top-off by {m[0]}\""),
+
+ ("fireball charge: a charge on during the shot is forgotten",
+  "ltcplay/fireball_charge.py",
+  "            if during is not None:\n                self._set(k, during,",
+  "            if False:\n                self._set(k, during,"),
+
+ ("fireball charge: a release flamesafe never reported sending empties the tanks",
+  "ltcplay/fireball_charge.py",
+  "            confirmed = seen is not None and seen >= rel.get(\"at\", 0) - 0.1",
+  "            confirmed = True"),
+
+ ("fireball charge: the fuel tracker is no longer told of each frame",
+  "ltcplay/web.py",
+  "                _before(tc, values, ok)\n",
+  "                pass\n"),
+
+ ("fireball charge: no record (the first run) reads as NOT KNOWN",
+  "ltcplay/fireball_charge.py",
+  "        self.tanks = {k: _new_tank(EMPTY, now, \"first run: no charge \"",
+  "        self.tanks = {k: _new_tank(UNKNOWN, now, \"first run: no charge \""),
+
+ ("fireball charge: a record that could not be written is never tried again",
+  "ltcplay/fireball_charge.py",
+  "        elif self._unwritten is not None and \\\n                self._clock() - self._retry_at >= RETRY_S:",
+  "        elif False:"),
+
+ ("fireball charge: a record that could not be written is forgotten",
+  "ltcplay/fireball_charge.py",
+  "            self._unwritten = doc\n            self._retry_at = self._clock()",
+  "            self._unwritten = None\n            self._retry_at = self._clock()"),
+
+ ("fireball charge: close() does not try the unwritten record again",
+  "ltcplay/fireball_charge.py",
+  "                    if self._unwritten is not None:\n                        # One last try now",
+  "                    if False:\n                        # One last try now"),
+
+ ("fireball charge: a charge after the valve closed is wiped by the late confirmation",
+  "ltcplay/fireball_charge.py",
+  "                tgt = rel if rel is not None else (\n                    self._ending[0] if self._ending is not None else None)\n                if tgt is not None:\n                    tgt[\"during\"][k]",
+  "                tgt = rel\n                if tgt is not None:\n                    tgt[\"during\"][k]"),
+
+ ("fireball charge: flamesafe reporting a charge sent is not evidence",
+  "ltcplay/fireball_charge.py",
+  "                            self._sent_charge(k)",
+  "                            pass"),
+
+ ("fireball charge: a report of an older release confirms this one",
+  "ltcplay/fireball_charge.py",
+  "seen >= rel.get(\"at\", 0) - 0.1",
+  "seen >= rel.get(\"at\", 0) - 10.0"),
+
+ ("fireball charge: a status over 0.5 s old counts",
+  "ltcplay/fireball_charge.py",
+  "not isinstance(age, (int, float)) or age > fresh_s * 1000:",
+  "not isinstance(age, (int, float)) or age > fresh_s * 10000:"),
+
+ ("fireball charge: Tanks are empty is not a Settings press",
+  "ltcplay/users.py",
+  "    \"fireball-charge-empty\": \"settings\",",
+  "    \"fireball-charge-empty\": None,"),
+
+ ("fireball charge: an operator may confirm the tanks are empty",
+  "ltcplay/remote.py",
+  "        elif not u.may(me.get(\"role\"), \"settings\"):\n            why = (f\"{me.get('name')} may not: \"",
+  "        elif False:\n            why = (f\"{me.get('name')} may not: \""),
+
+ ("fireball charge: a newer record left in .tmp is ignored at start",
+  "ltcplay/fireball_charge.py",
+  "        if isinstance(got, tuple) and got[0] > main[0]:",
+  "        if False:"),
+
+ ("fireball charge: a .tmp that cannot be read is ignored",
+  "ltcplay/fireball_charge.py",
+  "        if isinstance(got, Exception):\n            last = ",
+  "        if False:\n            last = "),
+
+ ("fireball charge: the revision starts at 0 under an unreadable record (round 4)",
+  "ltcplay/fireball_charge.py",
+  "        self.rev = max([x[0] for x in (main, got) if isinstance(x, tuple)]\n                       or [0])",
+  "        self.rev = 0"),
+
+ ("fireball charge: an older .tmp beats the newer main file (round 4)",
+  "ltcplay/fireball_charge.py",
+  "        if isinstance(got, tuple) and got[0] > main[0]:",
+  "        if isinstance(got, tuple):"),
+
+ ("fireball charge: an unreadable .tmp hides what the main file last said (round 4)",
+  "ltcplay/fireball_charge.py",
+  "                    f\"(revision {main[0]}), but the write that did not \"",
+  "                    f\"\"\n                    f\"\""),
+
+ ("fireball charge: a first run whose record cannot be written starts EMPTY (round 4)",
+  "ltcplay/fireball_charge.py",
+  "        try:\n            self._write(self._doc())\n            self._durable_rev = self.rev\n        except OSError as e:",
+  "        try:\n            self._durable_rev = self.rev\n        except OSError as e:"),
+
+ ("fireball charge: the first run is said quietly, without the folder (round 4)",
+  "ltcplay/fireball_charge.py",
+  "                    f\"Fireball page if one is pressurised.\", fault=True,",
+  "                    f\"Fireball page if one is pressurised.\", fault=False,"),
+
+ ("fireball charge: flamesafe's report leaves the wire edge open (round 4, s62)",
+  "ltcplay/fireball_charge.py",
+  "            self._prev[k] = self._prev[k] or 255\n",
+  "            pass\n"),
+
+ ("fireball charge: a charge ended inside the shot counts as charged (round 4, s90)",
+  "ltcplay/fireball_charge.py",
+  "                        rel[\"during\"].pop(k, None)",
+  "                        pass"),
+
+ ("fireball charge: flamesafe's late report of a charge ended inside the shot counts (round 4)",
+  "ltcplay/fireball_charge.py",
+  "            if tgt is not None and (tgt is not self._release or\n                                    self._prev[k]):",
+  "            if tgt is not None:"),
+
+ ("fireball charge: a fireball group off 55 to 59 is still recorded (round 4)",
+  "ltcplay/fireball_charge.py",
+  "        if self.group_fault:\n            return          # 55 to 59 are not the fireball (round 4)",
+  "        if False:\n            return          # 55 to 59 are not the fireball (round 4)"),
+
+ ("fireball charge: the group's slots are never checked (round 4)",
+  "ltcplay/fireball_charge.py",
+  "                if isinstance(slots, list) and slots:\n                    self._group_check(slots)",
+  "                if False:\n                    self._group_check(slots)"),
+
+ ("fireball charge: the revision ignores the clock (round 5)",
+  "ltcplay/fireball_charge.py",
+  "        self.rev = max(self.rev, ms) + 1",
+  "        self.rev = self.rev + 1"),
+
+ ("fireball charge: a .tmp alone is trusted (round 5, F4)",
+  "ltcplay/fireball_charge.py",
+  "        if main is None:\n            # Only a .tmp,",
+  "        if main is None and False:\n            # Only a .tmp,"),
+
+ ("fireball charge: a readable .tmp is used when the main file is unreadable (round 5, F2)",
+  "ltcplay/fireball_charge.py",
+  "        if isinstance(main, Exception):\n            # Which of the two",
+  "        if isinstance(main, Exception) and not isinstance(got, tuple):\n            # Which of the two"),
+
+ ("fireball charge: two records that disagree are trusted on EMPTY (round 5, B1)",
+  "ltcplay/fireball_charge.py",
+  "            odd = [k for k in TANK_WORD if tanks[k][\"state\"] == EMPTY and\n                   other[1][k][\"state\"] != EMPTY]",
+  "            odd = []"),
+
+ ("fireball charge: a restart ignores the write-ahead mark (round 5)",
+  "ltcplay/fireball_charge.py",
+  "        if pending:\n            # An automatic charge may have gone out",
+  "        if False:\n            # An automatic charge may have gone out"),
+
+ ("fireball charge: the write-ahead mark is not written (round 5)",
+  "ltcplay/fireball_charge.py",
+  "                    self._event(\"system\", \"engine\", \"pending\", None,\n                                persist=True)",
+  "                    pass"),
+
+ ("fireball charge: an automatic charge goes before the mark is on disk (round 5)",
+  "ltcplay/fireball_charge.py",
+  "                    self._pending_rev = self.rev\n                    return \"wait\"",
+  "                    self._pending_rev = self.rev\n                    return \"ok\""),
+
+ ("fireball charge: a mark that cannot be written still lets charges go (round 5)",
+  "ltcplay/fireball_charge.py",
+  "                if self._failed_rev is not None and self._failed_rev >= pr:\n                    return \"failed\"",
+  "                if False:\n                    return \"failed\""),
+
+ ("fireball charge: the shot leaves the write-ahead mark (round 5)",
+  "ltcplay/fireball_charge.py",
+  "        # charge writes it again first.\n        self.pending = False",
+  "        # charge writes it again first."),
+
+ ("fireball charge: a press on the page never asks for the mark (round 5)",
+  "ltcplay/fireball_charge.py",
+  "                # review), but a restart after this charge then finds it.\n                self.charge_ready(manual=True)",
+  "                # review), but a restart after this charge then finds it.\n                pass"),
+
+ ("fireball charge: a group fault leaves the tanks as they were (round 5, F3)",
+  "ltcplay/fireball_charge.py",
+  "                        if self.tanks[k][\"state\"] != UNKNOWN:\n                            self._set(k, UNKNOWN,",
+  "                        if False:\n                            self._set(k, UNKNOWN,"),
+
+ ("fireball charge: a manual press is not held for the mark (round 6)",
+  "ltcplay/fireball_charge.py",
+  "        r = self.charge_ready(manual=True)\n        if r != \"failed\":\n            return r",
+  "        r = self.charge_ready(manual=True)\n        if r != \"failed\":\n            return \"ok\""),
+
+ ("fireball charge: a manual press that cannot be saved leaves the tanks as they were (round 6)",
+  "ltcplay/fireball_charge.py",
+  "                        if self.tanks[k][\"state\"] == EMPTY:\n                            self._set(k, UNKNOWN, \"a Fireball press went \"",
+  "                        if False:\n                            self._set(k, UNKNOWN, \"a Fireball press went \""),
+
+ ("fireball charge: an unsaved manual press writes no marker elsewhere (round 6)",
+  "ltcplay/fireball_charge.py",
+  "        saved = self._write_alt(job)\n        with self._lock:\n            self._alt_done = saved",
+  "        saved = False\n        with self._lock:\n            self._alt_done = saved"),
+
+ ("fireball charge: the start ignores the marker elsewhere (round 6)",
+  "ltcplay/fireball_charge.py",
+  "        if rev <= self._main_rev:\n            # Older than the MAIN file (a record left in .tmp never counts:\n            # round-9 review F2).\n            self._drop_alt(self._main_rev)\n            return",
+  "        if True:\n            return"),
+
+ ("fireball charge: the marker elsewhere is never taken away (round 6)",
+  "ltcplay/fireball_charge.py",
+  "            self._drop_alt(doc[\"rev\"])\n            self._unsaved_active = False",
+  "            self._unsaved_active = False"),
+
+ ("fireball charge: Tanks are empty works while the group is off 55 to 59 (round 6)",
+  "ltcplay/fireball_charge.py",
+  "            if self.group_fault or self.ext_fault:\n                return False,",
+  "            if False:\n                return False,"),
+
+ ("fireball charge: a disagreeing flamesafe.json leaves the tanks as they were (round 6)",
+  "ltcplay/fireball_charge.py",
+  "                if self.tanks[k][\"state\"] != UNKNOWN:\n                    self._set(k, UNKNOWN, \"flamesafe.json and the running \"",
+  "                if False:\n                    self._set(k, UNKNOWN, \"flamesafe.json and the running \""),
+
+ ("fireball charge: a mark nothing used stays for ever (round 6)",
+  "ltcplay/fireball_charge.py",
+  "        self._pending_idle()\n",
+  "        pass\n"),
+
+ ("fireball charge: a mark a charge used is taken off when idle (round 6)",
+  "ltcplay/fireball_charge.py",
+  "        if state == CHARGED:\n            self._pending_used = True",
+  "        if False:\n            self._pending_used = True"),
+
+ ("fireball charge: Tanks are empty leaves the PENDING mark (round 6)",
+  "ltcplay/fireball_charge.py",
+  "                self.pending = False\n            elif unk and self.pending:",
+  "                pass\n            elif unk and self.pending:"),
+
+ ("fireball charge: the marker goes in the temp folder (round 7)",
+  "ltcplay/fireball_charge.py",
+  "                        os.path.expanduser(\"~\"), \".ltcplay\"), name)]",
+  "                        \"/tmp\", \"x\"), name)]"),
+
+ ("fireball charge: a marker is written in one place only (round 7)",
+  "ltcplay/fireball_charge.py",
+  "        saved = False\n        for path in self._alts:",
+  "        saved = False\n        for path in self._alts[:1]:"),
+
+ ("fireball charge: a marker is written in place, not renamed (round 7)",
+  "ltcplay/fireball_charge.py",
+  "        tmp = path + \".tmp\"\n        with open(tmp, \"w\", encoding=\"utf-8\") as fh:\n            json.dump({\"rev\": rev,",
+  "        tmp = path\n        with open(tmp, \"w\", encoding=\"utf-8\") as fh:\n            json.dump({\"rev\": rev,"),
+
+ ("fireball charge: a marker that cannot be read is ignored (round 7)",
+  "ltcplay/fireball_charge.py",
+  "        except (OSError, ValueError, AttributeError):\n            return None\n\n    def _read_alt(self):",
+  "        except (OSError, ValueError, AttributeError):\n            return 0\n\n    def _read_alt(self):"),
+
+ ("fireball charge: the leftover of a marker being written is ignored (round 7)",
+  "ltcplay/fireball_charge.py",
+  "                if name.endswith((\".marker\", \".marker.tmp\")):\n                    out.add(name)\n        for path in self._alts:\n            for name in (path, path + \".tmp\"):",
+  "                if name.endswith((\".marker\",)):\n                    out.add(name)\n        for path in self._alts:\n            for name in (path,):"),
+
+ ("fireball charge: automatic charging stays on with no marker anywhere (round 7)",
+  "ltcplay/fireball_charge.py",
+  "        if self.auto_off and not manual:",
+  "        if False and not manual:"),
+
+ ("fireball charge: Tanks are empty does not turn automatic charging back on (round 7)",
+  "ltcplay/fireball_charge.py",
+  "            was_off, self.auto_off = self.auto_off, False",
+  "            was_off = self.auto_off"),
+
+ ("fireball charge: the unsaved press is handled on every beat (round 7)",
+  "ltcplay/fireball_charge.py",
+  "                if not self._unsaved_active:\n                    self._unsaved_active = True",
+  "                if True:\n                    self._unsaved_active = True"),
+
+ ("fireball charge: the marker is written under the tracker's lock (round 7)",
+  "ltcplay/fireball_charge.py",
+  "        saved = self._write_alt(job)\n        with self._lock:\n            self._alt_done = saved",
+  "        with self._lock:\n            saved = self._write_alt(job)\n            self._alt_done = saved"),
+
+ ("fireball charge: the press goes out before the marker is written (round 7)",
+  "ltcplay/fireball_charge.py",
+  "                return \"wait\" if self._alt_done is None else \"ok\"",
+  "                return \"ok\""),
+
+ ("fireball charge: the config comparison waits for a show (round 7)",
+  "ltcplay/fireball_charge.py",
+  "        self.note_external_fault(ext)\n        if text != self.group_fault:",
+  "        if text != self.group_fault:"),
+
+ ("fireball charge: a charge channel on does not keep the mark (round 7)",
+  "ltcplay/fireball_charge.py",
+  "        if at is not None and self._clock() - at < 0.5:",
+  "        if False:"),
+
+ ("fireball charge: the sender never notes a charge on the wire (round 7)",
+  "ltcplay/fireball_charge.py",
+  "                self._charge_on_wire_at = self._clock()",
+  "                pass"),
+
+ ("fireball charge: automatic charging never comes back by itself (round 8)",
+  "ltcplay/fireball_charge.py",
+  "        self._alt_work()\n        self._auto_off_check()",
+  "        self._alt_work()"),
+
+ ("fireball charge: automatic charging comes back with a tank NOT KNOWN (round 8)",
+  "ltcplay/fireball_charge.py",
+  "            known = all(self.tanks[k][\"state\"] != UNKNOWN for k in TANK_WORD)",
+  "            known = True"),
+
+ ("fireball charge: automatic charging off is called a record that cannot be saved (round 8)",
+  "ltcplay/fireball_charge.py",
+  "            # well be saveable now (round-8 review 1).\n            return \"off\"",
+  "            # well be saveable now (round-8 review 1).\n            return \"failed\""),
+
+ ("fireball charge: a confirmation with no tank NOT KNOWN says tanks confirmed EMPTY (round 8)",
+  "ltcplay/fireball_charge.py",
+  "            if unk:\n                words = \" and \".join(TANK_WORD[k] for k in unk)",
+  "            if True:\n                words = \" and \".join(TANK_WORD[k] for k in unk)"),
+
+ ("fireball charge: the marker's name ignores the folder's case (round 8)",
+  "ltcplay/fireball_charge.py",
+  "hashlib.sha1(os.path.normcase(os.path.abspath(\n                    folder)).encode(",
+  "hashlib.sha1((os.path.abspath(\n                    folder)).encode("),
+
+ ("fireball charge: the marker's name carries no machine (round 8)",
+  "ltcplay/fireball_charge.py",
+  "                name = f\"ltcplay_fireball_charge_{tag}_{mid}.marker\"\n                self._alts = [\n                    os.path.join(folder, f\"{FILE}.{mid}.marker\"),",
+  "                name = f\"ltcplay_fireball_charge_{tag}.marker\"\n                self._alts = [\n                    os.path.join(folder, f\"{FILE}.marker\"),"),
+
+ ("fireball charge: an unreadable marker does not name its file (round 8)",
+  "ltcplay/fireball_charge.py",
+  "            bad = getattr(self, \"_unreadable_markers\", [])\n            if bad:",
+  "            bad = getattr(self, \"_unreadable_markers\", [])\n            if False:"),
+
+ ("fireball charge: a marker that cannot be deleted is not said (round 8)",
+  "ltcplay/fireball_charge.py",
+  "        if stuck:\n            # Every start would read NOT KNOWN for ever: name the file.",
+  "        if False:\n            # Every start would read NOT KNOWN for ever: name the file."),
+
+ ("fireball charge: the record does not judge the config alone (round 8)",
+  "ltcplay/fireball_charge.py",
+  "        return self._file_get is not None",
+  "        return False"),
+
+ ("fireball manual: an overtaken beat carries no held list (round 9)",
+  "ltcplay/fireball.py",
+  "# nothing about what is held now, and is not used.\n"
+  "                return 200, {\"ok\": True, \"run\": r[\"id\"], \"overtaken\": True,\n"
+  "                             \"on\": [k for k in KEYS if k in r[\"on\"]],\n"
+  "                             \"held\": list(r.get(\"held\", []))}",
+  "# nothing about what is held now, and is not used.\n"
+  "                return 200, {\"ok\": True, \"run\": r[\"id\"], \"overtaken\": True,\n"
+  "                             \"on\": [k for k in KEYS if k in r[\"on\"]]}"),
+
+ ("fireball charge: Tanks are empty takes the mark off with a charge on the wire (round 10)",
+  "ltcplay/fireball_charge.py",
+  "            if unk and not self._charge_in_flight(self._clock()):",
+  "            if unk:"),
+
+ # ("fireball charge: a charge the page holds does not keep the mark (round
+ # 10)") is retired (2026-11-04): it could not be caught. Every page press
+ # that holds a tank (note_manual) also asks for the mark (charge_ready),
+ # which renews _pending_asked_at at the same moment, and both windows are
+ # half a second, so the "asked lately" test above already keeps the mark
+ # whenever the page's hold is fresh. Removing that ask is its own mutation.
+
+ ("fireball charge: a charge on the wire does not keep the mark (round 10)",
+  "ltcplay/fireball_charge.py",
+  "        if at is not None and now - at < 0.5:\n            return True\n        asked = self._pending_asked_at",
+  "        asked = self._pending_asked_at"),
+
+ ("fireball charge: an unreadable marker ignores a readable one's higher revision (round 10)",
+  "ltcplay/fireball_charge.py",
+  "rev = max(self._next_rev(), self._best_readable or 0)",
+  "rev = self._next_rev()"),
+
+ ("fireball charge: Tanks are empty leaves the markers present now (round 10)",
+  "ltcplay/fireball_charge.py",
+  "            if unk and found:",
+  "            if False:"),
+
+ ("fireball cues: every stage gets the first-frame excuse (round 10)",
+  "ltcplay/fireball_cues.py",
+  "                    not (run.top_ok and w[\"s0\"] == 0):",
+  "                    not run.top_ok:"),
+
+ ("fireball cues: the first-frame excuse is for no stage (round 10)",
+  "ltcplay/fireball_cues.py",
+  "                    not (run.top_ok and w[\"s0\"] == 0):",
+  "                    True:"),
+
+ ("fireball cues: an FSEQ charge at frame 1 or 2 is a landing (round 10)",
+  "ltcplay/fireball_cues.py",
+  "                                      (first and relf > TOP_FRAMES) or jumped,\n                                      relf,",
+  "                                      (first and relf > 0) or jumped,\n                                      relf,"),
+
+ ("fireball cues: an FSEQ charge at frame 3 is a start (round 10)",
+  "ltcplay/fireball_cues.py",
+  "                                      (first and relf > TOP_FRAMES) or jumped,\n                                      relf,",
+  "                                      (first and relf > 4) or jumped,\n                                      relf,"),
+
+ ("fireball charge: a charge just asked for does not keep the mark at Tanks are empty (round 10b)",
+  "ltcplay/fireball_charge.py",
+  "        if self.pending and asked is not None and now - asked < 0.5:",
+  "        if False:"),
+
+ ("fireball charge: a kept mark stays used (round 10b)",
+  "ltcplay/fireball_charge.py",
+  "                self._pending_used = False\n                self._pending_asked_at = self._clock()\n            was_off",
+  "                pass\n            was_off"),
+
+ ("fireball charge: a status with no fireball group and nothing on 55 to 59 is not known (round 10c)",
+  "ltcplay/fireball_charge.py",
+  "        if no_fireball_group(fl):",
+  "        if False:"),
+
+ ("fireball charge: a group that owns channel 55 under another name counts as off (round 10c)",
+  "ltcplay/fireball_charge.py",
+  "            if any(x in FIRE_SLOTS for x in list(fire) + list(safe)):",
+  "            if any(x in FIRE_SLOTS for x in list(safe)):"),
+
+ ("fireball charge: a passthrough entry on 55 to 59 does not stop the off reading (round 10d)",
+  "ltcplay/fireball_charge.py",
+  "                    any(x in FIRE_SLOTS for x in slots):",
+  "                    False:"),
+
+ ("fireball charge: a safety slot on 55 to 59 does not stop the off reading (round 10d)",
+  "ltcplay/fireball_charge.py",
+  "            if any(x in FIRE_SLOTS for x in list(fire) + list(safe)):",
+  "            if any(x in FIRE_SLOTS for x in list(fire)):"),
+
+ ("fireball charge: frames with no fireball group still stamp a charge on the wire (round 10d)",
+  "ltcplay/fireball_charge.py",
+  "                    and not (self._no_group and self.armed_now() == \"off\"):",
+  "                    :"),
+
+ ("fireball charge: flamesafe.json with a group and the running one without says nothing (round 10d)",
+  "ltcplay/fireball_charge.py",
+  "        if self._no_group and self._file_get is not None:",
+  "        if False:"),
+
+ ("remote: the flame status view drops the safety slots (round 10d)",
+  "ltcplay/remote.py",
+  "                           \"safety_slots\": _ints(g.get(\"safety_slots\")),",
+  "                           \"safety_slots\": None,"),
+
+ ("remote: a passthrough entry with bad slots reads as none (round 10e)",
+  "ltcplay/remote.py",
+  "                     \"slots\": _ints(p.get(\"slots\")),\n                     \"asked\"",
+  "                     \"slots\": _ints(p.get(\"slots\")) or [],\n                     \"asked\""),
+
+ ("remote: a passthrough entry that is not one is dropped (round 10e)",
+  "ltcplay/remote.py",
+  "                       if not isinstance(p, dict)]",
+  "                       if False]"),
+
+ ("fireball charge: a late status clears the no-group note (round 10e)",
+  "ltcplay/fireball_charge.py",
+  "        if not self._no_group and self._armed == \"unknown\":",
+  "        if False:"),
+
+ ("fireball charge: the wire stamp is skipped on a stale no-group reading (round 10e)",
+  "ltcplay/fireball_charge.py",
+  "                    and not (self._no_group and self.armed_now() == \"off\"):",
+  "                    and not self._no_group:"),
+
+ ("fireball charge: a start reads only this machine's marker names (round 9)",
+  "ltcplay/fireball_charge.py",
+  "(folder, glob.escape(FILE) + \".*marker*\"),",
+  "(folder, glob.escape(FILE) + \".NOPE\"),"),
+
+ ("fireball charge: a start reads only this machine's marker names in the home folder (round 9)",
+  "ltcplay/fireball_charge.py",
+  "                        glob.escape(self._tag) + \"*marker*\")):",
+  "                        glob.escape(self._tag) + \"NOPE\")):"),
+
+ ("fireball charge: a newer record clears only this machine's markers (round 9)",
+  "ltcplay/fireball_charge.py",
+  "        left, stuck = 0, []\n        for name in self._marker_files():",
+  "        left, stuck = 0, []\n        for name in [n for p in self._alts for n in (p, p + \".tmp\") if os.path.exists(n)]:"),
+
+ ("fireball charge: a record left in .tmp outranks a marker (round 9)",
+  "ltcplay/fireball_charge.py",
+  "        if rev <= self._main_rev:\n            # Older than the MAIN file",
+  "        if rev <= self._base_rev:\n            # Older than the MAIN file"),
+
+ ("fireball charge: a first run writes EMPTY before it looks for a marker (round 9)",
+  "ltcplay/fireball_charge.py",
+  "        found, _r = self._read_alt()\n        if found:\n            self.tanks = {k: _new_tank(UNKNOWN, now, \"a marker of an \"",
+  "        found, _r = self._read_alt()\n        if False:\n            self.tanks = {k: _new_tank(UNKNOWN, now, \"a marker of an \""),
+
+ ("fireball charge: Tanks are empty with no tank NOT KNOWN takes the PENDING mark off (round 9)",
+  "ltcplay/fireball_charge.py",
+  "            if unk and not self._charge_in_flight(self._clock()):\n                # Only when a tank was NOT KNOWN",
+  "            if True:\n                # Only when a tank was NOT KNOWN"),
+
+ ("fireball charge: automatic charging comes back without trying a marker (round 9)",
+  "ltcplay/fireball_charge.py",
+  "        ok = False\n        for path in self._alts:\n            probe = path + \".probe\"",
+  "        ok = True\n        for path in self._alts:\n            probe = path + \".probe\""),
+
+ ("fireball charge: automatic charging comes back with the record unsaved (round 9)",
+  "ltcplay/fireball_charge.py",
+  "            saved = self._unwritten is None and not self.write_fault",
+  "            saved = True"),
+
+ ("fireball charge: the old charging-off fault stays when it comes back (round 9)",
+  "ltcplay/fireball_charge.py",
+  "            if self.fault and \"automatic charging is OFF\" in self.fault:\n                self.fault = \"\"",
+  "            if False:\n                self.fault = \"\""),
+
+ ("fireball charge: close() waits on a hung write for ever (round 4)",
+  "ltcplay/fireball_charge.py",
+  "        t.start()\n        t.join(CLOSE_S)",
+  "        t.start()\n        t.join()"),
+
+ ("fireball charge: close() writes beside the writer thread (round 4)",
+  "ltcplay/fireball_charge.py",
+  "            try:\n                with self._wlock:\n                    self._pump()",
+  "            try:\n                if True:\n                    self._pump()"),
+
+ ("fireball charge: the status reader also writes the file",
+  "ltcplay/fireball_charge.py",
+  "            try:\n                self._read_armed()\n            except",
+  "            try:\n                self._read_armed()\n                self.pump()\n            except"),
+
+ ("fireball charge: the charge record closes before the flame link",
+  "ltcplay/web.py",
+  "        try:\n            _close_before()\n        finally:\n            tr.close()",
+  "        try:\n            tr.close()\n        finally:\n            _close_before()"),
+
+ ("fireball charge: a release report is stamped when it was read",
+  "ltcplay/fireball_charge.py",
+  "                            at -= age / 1000.0",
+  "                            pass"),
+
+ ("fireball charge: a charge on through a stale status is a new edge",
+  "ltcplay/fireball_charge.py",
+  "                self._prev[k] = v\n",
+  "                self._prev[k] = v if certain else (v and self._prev[k])\n"),
+
+ ("fireball charge: Tanks are empty empties a charged tank",
+  "ltcplay/fireball_charge.py",
+  "            unk = [k for k in TANK_WORD if self.tanks[k][\"state\"] == UNKNOWN]",
+  "            unk = [k for k in TANK_WORD if self.tanks[k][\"state\"] != EMPTY]"),
+
+ # -- the Fireball page's frame merged on the flame link (2026-10-30) -------
+ ("fireball manual: the charge state is not told before the frame can go out",
+  "ltcplay/fireball.py",
+  "                self._tell(on, who, screen)\n                # Refused by the link",
+  "                pass\n                # Refused by the link"),
+
+ ("fireball manual: the beat's zero count is read after its checks",
+  "ltcplay/fireball.py",
+  "                gen = gen0 if link is link0 else None",
+  "                gen = self._gen(link)"),
+
+ ("fireball manual: the page sets its frame without the zero count",
+  "ltcplay/fireball.py",
+  "                took = link.manual_set(vals, r[\"gen\"], r[\"drops\"]) \\\n                    if r[\"drops\"] is not None else \\\n                    link.manual_set(vals, r[\"gen\"])",
+  "                took = link.manual_set(vals)"),
+
+ ("fireball manual: flamesafe not confirming the locks does not hold the page off",
+  "ltcplay/fireball.py",
+  "        why = m._locks_confirmed()\n        if why:",
+  "        why = \"\"\n        if why:"),
+
+ ("fireball manual: an unreadable Morning config does not hold the page off during a show",
+  "ltcplay/fireball.py",
+  "    if m.config_error:\n        return (f\"ltcplay_morning.json could not be read \"",
+  "    if False:\n        return (f\"ltcplay_morning.json could not be read \""),
+
+ ("fireball manual: a frame of the wrong size is taken",
+  "ltcplay/flamelink.py",
+  "            vals = bytes(values)\n            if len(vals) != UNIVERSE_SIZE:\n                return False\n            keep",
+  "            vals = bytes(values)[:UNIVERSE_SIZE].ljust(UNIVERSE_SIZE, b\"\\0\")\n            keep"),
+
+ ("fireball manual: a Hold during a frame's read drops the page's channels",
+  "ltcplay/flamelink.py",
+  "            if dropped and aid == self.abort_id:",
+  "            if False:"),
+
+ ("fireball manual: the zero frame a Hold sends drops the page's channels",
+  "ltcplay/flamelink.py",
+  "            return self._send_zero_frame(keep_manual=True)",
+  "            return self._send_zero_frame()"),
+
+ ("fireball manual: the page counts a Hold as a disarm",
+  "ltcplay/fireball.py",
+  "            g = getattr(link, \"abort_id\")",
+  "            g = getattr(link, \"_zero_gen\")"),
+
+ ("fireball manual: a Hold holds the page off during a show",
+  "ltcplay/fireball.py",
+  "    # A Hold (the schedule HOLD or PAUSED, the conductor's held look) does",
+  "    if getattr(mach, \"state\", None) in (\"HOLD\", \"PAUSED\"):\n        return \"a Hold is standing.\"\n    # A Hold (the schedule HOLD or PAUSED, the conductor's held look) does"),
+
+ ("fireball manual: the page's frame ends on a zero()",
+  "ltcplay/flamelink.py",
+  "            if m is None or m[2] != self.abort_id or \\\n",
+  "            if m is None or m[2] != self.abort_id or self.zeroed or \\\n"),
+
+ ("fireball manual: the show's own sent values carry the page's frame",
+  "ltcplay/flamelink.py",
+  "        return tc, self._with_manual(vals, self._clock())",
+  "        vals = self._with_manual(vals, self._clock())\n        self._show_part = bytes(vals)\n        return tc, vals"),
+
+ ("fireball manual: a frame that did not go out counts as the show's",
+  "ltcplay/flamelink.py",
+  "            self.show_sent = show if ok else bytes(UNIVERSE_SIZE)",
+  "            self.show_sent = show"),
+
+ ("fireball manual: the show's sent values keep a frame a zero() dropped (round 4, E2)",
+  "ltcplay/flamelink.py",
+  "                if len(sp) == len(values) and not dropped \\\n",
+  "                if len(sp) == len(values) \\\n"),
+
+ ("fireball manual: a zero frame leaves the show's sent values (round 4, E15)",
+  "ltcplay/flamelink.py",
+  "        self.show_sent = bytes(UNIVERSE_SIZE)\n        return self._send(encode_flame(seq, None, mono,",
+  "        return self._send(encode_flame(seq, None, mono,"),
+
+ ("fireball manual: a frame not sent keeps the page's frame (round 4, s95)",
+  "ltcplay/flamelink.py",
+  "            self._manual = None\n            self.manual_drops += 1",
+  "            pass"),
+
+ ("fireball manual: a frame not sent does not cut the page's run (round 4, s95)",
+  "ltcplay/fireball.py",
+  "        if self._drops(link) != r.get(\"drops\"):",
+  "        if False:"),
+
+ ("fireball manual: a sign-out leaves the page's run to its beats (round 4, s28)",
+  "ltcplay/remote.py",
+  "                self.fireball_signout_cut(\n",
+  "                (lambda *a: None)(\n"),
+
+ ("fireball manual: a sign-out on the show machine cuts only its own screen's run (round 5, G14)",
+  "ltcplay/fireball.py",
+  "                or (local and r.get(\"local\")))",
+  "                )"),
+
+ ("fireball manual: any sign-out cuts every run (round 5, G15)",
+  "ltcplay/fireball.py",
+  "            hit = r is not None and (",
+  "            hit = r is not None or ("),
+
+ ("fireball manual: a press racing a sign-out starts a run (round 5, F6)",
+  "ltcplay/fireball.py",
+  "                gone = self._still(still)\n                if gone:",
+  "                gone = self._still(still)\n                if False:"),
+
+ ("fireball manual: the watcher never asks whether the sign-in may still arm (round 5, B2)",
+  "ltcplay/fireball.py",
+  "            why = self._link_why(self._link(), r) or self.refusal() or \\\n                self._still(r.get(\"still\"))",
+  "            why = self._link_why(self._link(), r) or self.refusal()"),
+
+ ("fireball manual: the route gives the run no sign-in check (round 5, B2)",
+  "ltcplay/fireball.py",
+  "                          local=bool(getattr(ctx, \"local\", False)),\n                          still=still)",
+  "                          local=bool(getattr(ctx, \"local\", False)),\n                          still=None)"),
+
+ ("fireball manual: a demoted sign-in may still hold a channel (round 5, B2)",
+  "ltcplay/remote.py",
+  "            return (f\"{nobody} may no longer use the Fireball controls \"",
+  "            return \"\"\n            return (f\"{nobody} may no longer use the Fireball controls \""),
+
+ ("fireball manual: frames resuming after a stall bring the page's channel back (round 5, B3)",
+  "ltcplay/flamelink.py",
+  "                self._manual = None\n                self.manual_drops += 1\n                sp0 = self._show_part",
+  "                sp0 = self._show_part"),
+
+ ("fireball manual: a beat in flight sets the frame after a failed send (round 5, B4)",
+  "ltcplay/flamelink.py",
+  "                        (drops is not None and self.manual_drops != drops):",
+  "                        False:"),
+
+ ("fireball manual: a stall inside the read keeps the page's frame (round 6)",
+  "ltcplay/flamelink.py",
+  "            if self._manual is not None and last is not None and \\\n                    self._clock() - last > self.manual_stall_s():",
+  "            if False and last is not None and \\\n                    self._clock() - last > self.manual_stall_s():"),
+
+ ("fireball manual: the stall limit ignores flamesafe's fire_hold_ms (round 6)",
+  "ltcplay/flamelink.py",
+  "                    self._clock() - last > self.manual_stall_s():",
+  "                    self._clock() - last > MANUAL_STALL_S:"),
+
+ ("fireball manual: a Fuel press is never held for the mark (round 6)",
+  "ltcplay/fireball.py",
+  "                if held and self.manual_gate is not None:",
+  "                if False and self.manual_gate is not None:"),
+
+ ("fireball manual: a held Fuel press goes out anyway (round 6)",
+  "ltcplay/fireball.py",
+  "                            vals = self.frame(set(on) - held)",
+  "                            pass"),
+
+ ("fireball manual: a run's end tells nobody (round 6)",
+  "ltcplay/fireball.py",
+  "                self.on_end(r.get(\"token\") or \"\")",
+  "                pass"),
+
+ ("fireball manual: the engine does not give the panel the press gate (round 6)",
+  "ltcplay/web.py",
+  "        fb.manual_gate = tr.manual_gate",
+  "        pass"),
+
+ ("fireball manual: the panel is not told of a run's end by the engine (round 6)",
+  "ltcplay/fireball.py",
+  "        panel.on_end = end",
+  "        pass"),
+
+ ("fireball manual: a Hold during a stall sends the page's frame again (round 7)",
+  "ltcplay/flamelink.py",
+  "            if last is not None and now - last > self.manual_stall_s():",
+  "            if False:"),
+
+ ("fireball manual: a run's end gives the sign-in a fresh grace (round 7)",
+  "ltcplay/remote.py",
+  "        busy = getattr(self, \"_fb_users_busy\", None)\n        if busy:\n            now = self.clock()",
+  "        busy = getattr(self, \"_fb_users_busy\", None)\n        if busy:\n            busy.pop(token, None)\n            now = self.clock()"),
+
+ ("fireball manual: an old busy entry is never forgotten (round 7)",
+  "ltcplay/remote.py",
+  "                      if now - ent[1] > self.FIREBALL_BUSY_KEEP_S]:",
+  "                      if False]:"),
+
+ ("fireball manual: a held press is not said to be held (round 7)",
+  "ltcplay/fireball.py",
+  "                            waiting = [k for k in KEYS if k in held]",
+  "                            waiting = []"),
+
+ ("fireball manual: a held press is held for ever (round 8)",
+  "ltcplay/fireball.py",
+  "                    elif now - r[\"held_since\"] > HOLD_CAP_S:\n                        capped = True",
+  "                    elif False:\n                        capped = True"),
+
+ ("fireball manual: the held count never starts again (round 8)",
+  "ltcplay/fireball.py",
+  "                else:\n                    r[\"held_since\"] = None",
+  "                else:\n                    pass"),
+
+ ("fireball manual: a dropped press says nothing (round 8)",
+  "ltcplay/fireball.py",
+  "                                  f\"press was dropped, not sent late. \"",
+  "                                  f\"press was dropped. \""),
+
+ ("fireball manual: a busy entry ages from its first look (round 8)",
+  "ltcplay/remote.py",
+  "            ent[1] = now\n",
+  "            pass\n"),
+
+ ("fireball manual: the timeline judges its charge from the composed frame",
+  "ltcplay/web.py",
+  "            sent_get=lambda: getattr(link, \"show_sent\", None),",
+  "            sent_get=None,"),
+
+ ("fireball manual: the page's frame is not limited to the fireball's slots",
+  "ltcplay/flamelink.py",
+  "            keep = bytearray(UNIVERSE_SIZE)\n"
+  "            for s in self.manual_slots:\n"
+  "                keep[s - 1] = vals[s - 1]\n",
+  "            keep = bytearray(vals)\n"),
+
+ ("fireball manual: the link merges every slot of the page's frame",
+  "ltcplay/flamelink.py",
+  "        hit = False\n        for s in self.manual_slots:",
+  "        hit = False\n        for s in range(1, UNIVERSE_SIZE + 1):"),
+
+ ("fireball manual: the page's value replaces a higher show value",
+  "ltcplay/flamelink.py",
+  "            if v > out[s - 1]:\n                out[s - 1] = v",
+  "            if v != out[s - 1]:\n                out[s - 1] = v"),
+
+ ("fireball manual: the page's frame never expires at the link",
+  "ltcplay/flamelink.py",
+  "        if m[2] != self.abort_id or now - m[1] > MANUAL_HOLD_S or \\\n"
+  "                now < m[1]:",
+  "        if m[2] != self.abort_id or now < m[1]:"),
+
+ ("fireball manual: the page's frame outlives a zero or a disarm_all",
+  "ltcplay/flamelink.py",
+  "        if m[2] != self.abort_id or now - m[1] > MANUAL_HOLD_S or \\\n"
+  "                now < m[1]:",
+  "        if now - m[1] > MANUAL_HOLD_S or now < m[1]:"),
+
+ ("fireball manual: a beat read before a zero is taken",
+  "ltcplay/flamelink.py",
+  "                if (gen is not None and self.abort_id != gen) or \\\n",
+  "                if False or \\\n"),
+
+ ("fireball manual: the lockout does not apply to the page's frame",
+  "ltcplay/flamelink.py",
+  "        self.manuals_sent += 1\n        return self._unlocked(bytes(out))",
+  "        self.manuals_sent += 1\n        return bytes(out)"),
+
+ ("fireball manual: merged while live flame programming is on in a show",
+  "ltcplay/flamelink.py",
+  "            # Nor the Fireball page's frame: one source at a time.\n"
+  "            return tc, zeros, False",
+  "            # Nor the Fireball page's frame: one source at a time.\n"
+  "            return tc, zeros, True"),
+
+ ("fireball manual: merged while live flame programming is on between shows",
+  "ltcplay/flamelink.py",
+  "                return tc, self._program_values(now), False",
+  "                return tc, self._program_values(now), True"),
+
+ ("fireball manual: merged when the show state cannot be read",
+  "ltcplay/flamelink.py",
+  "            return None, zeros, False",
+  "            return None, zeros, True"),
+
+ ("fireball manual: the page's frame is never merged",
+  "ltcplay/flamelink.py",
+  "        return tc, self._with_manual(vals, self._clock())",
+  "        return tc, vals"),
+
+ ("fireball manual: the page's frame is zeroed between shows",
+  "ltcplay/flamelink.py",
+  "                                         and self._program is None\n"
+  "                                         and self._manual is None):",
+  "                                         and self._program is None):"),
+
+ ("fireball manual: the page is held off during a show again",
+  "ltcplay/fireball.py",
+  "                              remote, link, during_show=True),",
+  "                              remote, link),"),
+
+
+ ("fireball manual: live flame programming does not hold the page off",
+  "ltcplay/fireball.py",
+  "    lf = getattr(remote, \"live_flame\", None)\n"
+  "    if lf is not None and lf.on:",
+  "    lf = getattr(remote, \"live_flame\", None)\n"
+  "    if False:"),
+
+ ("fireball manual: the lock state is not asked during a show",
+  "ltcplay/fireball.py",
+  "    why = m.lock_problem()\n    if why:\n"
+  "        return f\"{why}; nothing fires from this page until then.\"",
+  "    why = \"\"\n    if why:\n"
+  "        return f\"{why}; nothing fires from this page until then.\""),
+
+ ("fireball manual: the flame link is never told the fireball's slots",
+  "ltcplay/fireball.py",
+  "            link.set_manual_slots(group[\"fire\"])",
+  "            pass"),
+
+ # -- the fireball timeline editor on 2.0 (remote2.html, 2026-10-30) -----
+ ("fireball editor: an operator may save the timeline",
+  "ltcplay/web/remote2.html",
+  "  if(!mayRow(st, \"settings\")) return \"Admins only\";",
+  "  if(false) return \"Admins only\";"),
+
+ ("fireball editor: signed out may save the timeline",
+  "ltcplay/web/remote2.html",
+  "  if(!me.user) return \"Sign in to edit\";",
+  "  if(false) return \"Sign in to edit\";"),
+
+ ("fireball editor: an iPad saves with arming from a screen off",
+  "ltcplay/web/remote2.html",
+  "  if(!local && !(st && st.arming && st.arming.enabled)) return \"Arming off here\";",
+  "  if(false) return \"Arming off here\";"),
+
+ ("fireball editor: no contact may save",
+  "ltcplay/web/remote2.html",
+  "  if(isSt) return \"No contact\";",
+  "  if(false) return \"No contact\";"),
+
+ ("fireball editor: a refused row is sent anyway",
+  "ltcplay/web/remote2.html",
+  "  if(Object.keys(chk.errors).length){ fbtSay(\"Not saved: fix the stages marked above.\", \"bad\"); return; }",
+  "  if(false){ fbtSay(\"Not saved: fix the stages marked above.\", \"bad\"); return; }"),
+
+ ("fireball editor: fields stay open for a screen that may not save",
+  "ltcplay/web/remote2.html",
+  "document.querySelectorAll(\"#fbt-rows input, #fbt-rows .use, #fbt-src .b\").forEach(el => { el.disabled = lock; });",
+  "document.querySelectorAll(\"#fbt-rows input, #fbt-rows .use, #fbt-src .b\").forEach(el => { el.disabled = false; });"),
+
+ ("fireball editor: frame 30 is a timecode",
+  "ltcplay/web/remote2.html",
+  "  if(mi > 59 || s > 59 || f >= FBT_FPS) return null;",
+  "  if(mi > 59 || s > 59 || f > FBT_FPS) return null;"),
+
+ ("fireball editor: a length of 0 is accepted",
+  "ltcplay/web/remote2.html",
+  "  return isFinite(d) && d > 0 ? d : null;",
+  "  return isFinite(d) && d >= 0 ? d : null;"),
+
+ ("fireball editor: the save does not carry the revision it read",
+  "ltcplay/web/remote2.html",
+  "  return {show:show, rev:rev, source:source, stages:stages};",
+  "  return {show:show, rev:0, source:source, stages:stages};"),
+
+ ("fireball editor: a stage left out is sent",
+  "ltcplay/web/remote2.html",
+  "    if(!r || !r.used) continue;",
+  "    if(!r) continue;"),
+
+ ("fireball editor: a newer revision read under an edit becomes its base",
+  "ltcplay/web/remote2.html",
+  "      if(FBT_BASE !== v.rev) FBT_STALE = true;",
+  "      FBT_BASE = v.rev;"),
+
+ ("fireball editor: Save is not held for Revert after someone saved",
+  "ltcplay/web/remote2.html",
+  "  if(stale) return \"Saved elsewhere: Revert\";",
+  "  if(false) return \"Saved elsewhere: Revert\";"),
+
+ ("fireball editor: a stale refusal leaves Save open",
+  "ltcplay/web/remote2.html",
+  "    if(/someone saved/i.test(err.message)){\n      FBT_STALE = true;",
+  "    if(/someone saved/i.test(err.message)){\n      FBT_STALE = false;"),
+
+ ("fireball editor: another show's rows stay while the new one is read",
+  "ltcplay/web/remote2.html",
+  "  FBT_SHOW = show; FBT = null; FBT_FOR = \"\"; FBT_DIRTY = false; FBT_STALE = false; FBT_ASK = null;\n  $(\"fbt-show\").value = show;\n  fbtDrawRows(null);",
+  "  FBT_SHOW = show; FBT_DIRTY = false; FBT_STALE = false; FBT_ASK = null;\n  $(\"fbt-show\").value = show;\n  fbtDrawRows(FBT && FBT.entry);"),
+
+ ("fireball editor: a save goes while the data is another show's",
+  "ltcplay/web/remote2.html",
+  "  if(!v || forShow !== show) return failed ? ",
+  "  if(!v) return failed ? "),
+
+ ("fireball editor: fields stay open while a save is on its way",
+  "ltcplay/web/remote2.html",
+  "  const lock = !!why || !ours || !!(v && (v.error || v.show_problem)) || FBT_BUSY || FBT_READING;",
+  "  const lock = !!why || !ours || !!(v && (v.error || v.show_problem)) || FBT_READING;"),
+
+ ("fireball editor: an unsaved edit is wiped when coming back and the read fails (round 2)",
+  "ltcplay/web/remote2.html",
+  "    if(FBT && FBT_FOR === FBT_SHOW){\n      // This show's own data stays",
+  "    if(false){\n      // This show's own data stays"),
+
+ ("fireball editor: no Retry after a failed read (round 2)",
+  "ltcplay/web/remote2.html",
+  "  $(\"fbt-retry\").hidden = !FBT_FAIL || FBT_READING;",
+  "  $(\"fbt-retry\").hidden = true;"),
+
+ ("fireball editor: Save says Loading when nothing is loading (round 2)",
+  "ltcplay/web/remote2.html",
+  "return failed ? \"Could not read: Retry\" : \"Loading\";",
+  "return \"Loading\";"),
+
+ ("fireball editor: fields stay open while a read is on its way (round 2)",
+  "ltcplay/web/remote2.html",
+  "  const lock = !!why || !ours || !!(v && (v.error || v.show_problem)) || FBT_BUSY || FBT_READING;",
+  "  const lock = !!why || !ours || !!(v && (v.error || v.show_problem)) || FBT_BUSY;"),
+
+ ("fireball editor: Save stays open while a read is on its way (round 2)",
+  "ltcplay/web/remote2.html",
+  "  if(reading) return \"Loading\";\n",
+  ""),
+
+ ("fireball editor: another show drops an unsaved edit without asking (round 2)",
+  "ltcplay/web/remote2.html",
+  "  if(FBT_DIRTY && to !== FBT_SHOW){",
+  "  if(false){"),
+
+ ("fireball editor: Revert drops an unsaved edit without asking (round 2)",
+  "ltcplay/web/remote2.html",
+  "{ if(FBT_DIRTY) fbtAsk({kind:\"revert\"}); else fbtRevert(); }",
+  "{ fbtRevert(); }"),
+
+ ("fireball editor: Keep editing does not close the question (round 2)",
+  "ltcplay/web/remote2.html",
+  "$(\"fbt-keep\").addEventListener(\"click\", () => { FBT_ASK = null; fbtGate(stale()); });",
+  "$(\"fbt-keep\").addEventListener(\"click\", () => {});"),
+
+ ("fireball editor: a save not read back says only Saved (round 2)",
+  "ltcplay/web/remote2.html",
+  "    if(FBT_FAIL) fbtSay(\"Saved. Could not read it back: Retry.\", \"bad\");\n    else ",
+  "    "),
+
+ ("fireball editor: the next save is against the old revision (round 2)",
+  "ltcplay/web/remote2.html",
+  "    if(j.entry && typeof j.entry.rev === \"number\") FBT_BASE = j.entry.rev;\n",
+  ""),
+
+ ("fireball editor: Save stays open with red rows (round 2)",
+  "ltcplay/web/remote2.html",
+  "  if(rowsBad) return \"Fix the marked rows\";\n",
+  ""),
+
+ ("fireball editor: 1,000 is read as 1 s (round 2)",
+  "ltcplay/web/remote2.html",
+  "  if(fbtDurUnclear(v)) return null;\n",
+  ""),
+
+ ("fireball editor: a save with no answer locks the fields for ever (round 2)",
+  "ltcplay/web/remote2.html",
+  "  const t = setTimeout(() => ctl.abort(), FBT_POST_MS);",
+  "  const t = 0;"),
+
+ ("fireball editor: a time typed into an unused stage is left out",
+  "ltcplay/web/remote2.html",
+  "  if(row && String(e.target.value || \"\").trim()) row.querySelector(\".use\").setAttribute(\"aria-pressed\", \"true\");",
+  "  if(false) row.querySelector(\".use\").setAttribute(\"aria-pressed\", \"true\");"),
+
+ ("fireball editor: a decimal comma is not a length",
+  "ltcplay/web/remote2.html",
+  "trim().replace(\",\", \".\");",
+  "trim();"),
+
+ ("fireball editor: the show list is not read again when the tab opens",
+  "ltcplay/web/remote2.html",
+  "  if(there) fbtLoad(true, true);",
+  "  if(there) fbtLoad(true, false);"),
+
+ ("fireball editor: the show picker is a small target",
+  "ltcplay/web/remote2.html",
+  "select.f{font:inherit;min-height:56px;",
+  "select.f{font:inherit;min-height:0;"),
+
+ # -- the fireball timeline on the flame cues (fireball_cues.py) -----------
+ ("fireball cues: the FSEQ's 55 to 59 are not masked for a timeline show",
+  "ltcplay/fireball_cues.py",
+  "        out = self._masked(out)\n        if label != run.cue:",
+  "        if label != run.cue:"),
+
+ ("fireball cues: a broken timeline file falls back to the FSEQ",
+  "ltcplay/fireball_cues.py",
+  "        if plan is None or plan[1]:",
+  "        if plan is None:"),
+
+ ("fireball cues: a charged tank is charged again (double charge)",
+  "ltcplay/fireball_cues.py",
+  "        if state == \"charged\":\n            return (f\"{word} already charged",
+  "        if state == \"charged\" and False:\n            return (f\"{word} already charged"),
+
+ ("fireball cues: a tank in an unknown state is charged",
+  "ltcplay/fireball_cues.py",
+  "        return (f\"{word} tank state not known: {what} was skipped \"",
+  "        return \"\"\n        return (f\"{word} tank state not known: {what} was skipped \""),
+
+ ("fireball cues: a charge cut short charges again after a Resume",
+  "ltcplay/fireball_cues.py",
+  "        if tank in run.sent_tanks:",
+  "        if False:"),
+
+ ("fireball cues: a charge stops after its first frame",
+  "ltcplay/fireball_cues.py",
+  "        if carrying_on:\n            return \"\"",
+  "        if False:\n            return \"\""),
+
+ ("fireball cues: a stage moved into the past by an edit fires late",
+  "ltcplay/fireball_cues.py",
+  "            if relf is not None and w[\"s0\"] < relf:",
+  "            if False:"),
+
+ ("fireball cues: an edit moves a stage that has started",
+  "ltcplay/fireball_cues.py",
+  "            if k not in self.started:\n                self.stages[k] = w",
+  "            if True:\n                self.stages[k] = w"),
+
+ ("fireball cues: a source switch applies in the middle of a play",
+  "ltcplay/fireball_cues.py",
+  "        if run.source != \"timeline\":\n            # A landing",
+  "        run.source = (entry or {}).get(\"source\", \"fseq\")\n        if run.source != \"timeline\":\n            # A landing"),
+
+ ("fireball cues: the shot is followed by an automatic purge",
+  "ltcplay/fireball_cues.py",
+  "        run.prev_on = now_on\n        if run.practice is not None:",
+  "        run.prev_on = now_on\n        if 57 in now_on:\n            out[58] = ON_VALUE\n        if run.practice is not None:"),
+
+ # -- Fireball practice (fireball_practice.py, design rev 5) -------------
+ ("practice: Valve Open with no Igniter lit is a step",
+  "ltcplay/fireball_practice.py",
+  "    if va is not None and (ig is None or not (",
+  "    if False and (ig is None or not ("),
+
+ ("practice: an Igniter that ends on the Valve's frame counts as lit",
+  "ltcplay/fireball_practice.py",
+  "            ig[0] + fbtl.LEAD_FRAMES <= va[0] < ig[1])):",
+  "            ig[0] + fbtl.LEAD_FRAMES <= va[0] <= ig[1])):"),
+
+ ("practice: a charge with no valve is a step",
+  "ltcplay/fireball_practice.py",
+  "    if va is None and (\"fuel\" in stages or \"air\" in stages):",
+  "    if False:"),
+
+ ("practice: Resume is not asked of practice",
+  "ltcplay/schedule_service.py",
+  "            if kind == sch.RESUME and self.resume_veto is not None:",
+  "            if False:"),
+
+ ("practice: the Resume veto is asked only with the schedule on HOLD (after the release of a Stop's Hold)",
+  "ltcplay/schedule_service.py",
+  "            if kind == sch.RESUME and self.resume_veto is not None:",
+  "            if kind == sch.RESUME and self.resume_veto is not None and self.machine is not None and self.machine.state == sch.HOLD:"),
+
+ ("practice: tonight's list may be edited while practice is open",
+  "ltcplay/schedule_service.py",
+  "        fn = self.edit_veto\n        if fn is not None:",
+  "        fn = self.edit_veto\n        if False:"),
+
+ ("practice: the first night loaded is not counted",
+  "ltcplay/schedule_service.py",
+  "                self.machine = replace(m, operators=self.operators)\n                self.night_loads += 1",
+  "                self.machine = replace(m, operators=self.operators)"),
+
+ ("practice: Start now's veto covers Programming playback only",
+  "ltcplay/remote.py",
+  "        pr = self.fireball_practice\n        if pr is not None and pr.blocking:\n            return pr.refusal()\n        try:",
+  "        pr = self.fireball_practice\n        try:"),
+
+ ("practice: Resume is not refused at the press",
+  "ltcplay/remote.py",
+  "PRACTICE_REFUSED_ROUTES = (\"start-now\", \"start-at-cue\", \"resume\",",
+  "PRACTICE_REFUSED_ROUTES = (\"start-now\", \"start-at-cue\","),
+
+ ("practice: Done is an arm press",
+  "ltcplay/users.py",
+  "        if name == \"fireball-practice\" and body.get(\"action\") not in (",
+  "        if name == \"fireball-practice\" and False and body.get(\"action\") not in ("),
+
+ ("practice: the show runner starts a show while practice is open",
+  "ltcplay/fire_ice.py",
+  "        fn = self.practice_refusal\n        if fn is not None:",
+  "        fn = self.practice_refusal\n        if False:"),
+
+ ("practice: the night's date and load are not compared",
+  "ltcplay/fireball_practice.py",
+  "        if (getattr(m, \"date\", None), getattr(svc, \"night_loads\", None)) != \\\n                b.get(\"night\"):",
+  "        if False:"),
+
+ ("practice: any Hold counts as the Stop's Hold",
+  "ltcplay/fireball_practice.py",
+  "        if st == \"HOLD\":\n            return bool(getattr(m, \"stop_hold\", False))",
+  "        if st == \"HOLD\":\n            return True"),
+
+ ("practice: the entry is not pinned (an edit before the first frame fires)",
+  "ltcplay/fireball_cues.py",
+  "        if entry_hash(shows.get(show)) != tok.get(\"hash\"):",
+  "        if False:"),
+
+ ("practice: an edit during the play reaches it",
+  "ltcplay/fireball_cues.py",
+  "        if rev != run.rev and run.practice is not None:",
+  "        if False:"),
+
+ ("practice: whole shot or nothing judged at the first frame only, not at each landing",
+  "ltcplay/fireball_cues.py",
+  "        if run.practice is not None and (first or jumped or moved):",
+  "        if run.practice is not None and first:"),
+
+ ("practice: the margin leaves out the write-ahead mark's lead",
+  "ltcplay/fireball_cues.py",
+  "PRACTICE_MARGIN_FRAMES = max(LEAD_FRAMES, LANDING_SETTLE_FRAMES)",
+  "PRACTICE_MARGIN_FRAMES = LANDING_SETTLE_FRAMES"),
+
+ ("practice: a move after a stage went out carries on",
+  "ltcplay/fireball_cues.py",
+  "            if run.started:\n                why = PRACTICE_CUT",
+  "            if run.started:\n                why = \"\""),
+
+ ("practice: a play practice did not bind fires",
+  "ltcplay/fireball_cues.py",
+  "        if self.practice_open and run.practice is None:",
+  "        if False:"),
+
+ ("practice: the other flame slots are not zeroed in a practice play",
+  "ltcplay/fireball_cues.py",
+  "        if self.practice_open:\n            res = self._practice_only(res)",
+  "        if False:\n            res = self._practice_only(res)"),
+
+ ("practice: the step's end is a Stop",
+  "ltcplay/fireball_practice.py",
+  "            ph.follow(\"Fireball practice\", \"\")",
+  "            self._stop(\"the step ended\")"),
+
+ ("practice: tanks need not be EMPTY for a step",
+  "ltcplay/fireball_practice.py",
+  "                for t in (v.get(\"tanks\") or {}).values()):\n            return REFUSE_TANKS",
+  "                for t in (v.get(\"tanks\") or {}).values()):\n            pass"),
+
+ ("practice: an arm from before practice opened counts",
+  "ltcplay/fireball_practice.py",
+  "            elif fb and self._seen_off and \\",
+  "            elif fb and \\"),
+
+ ("practice: another screen's beat keeps practice open",
+  "ltcplay/fireball_practice.py",
+  "        if owner != self.owner:\n            return False, (\"Only the screen",
+  "        if False:\n            return False, (\"Only the screen"),
+
+ ("practice: the watchdog never acts",
+  "ltcplay/fireball_practice.py",
+  "        if wb is None or self._clock() - wb > BEAT_STALE_S:\n            self._ending(\"the practice watcher stopped\")",
+  "        if False:\n            self._ending(\"the practice watcher stopped\")"),
+
+ ("practice: a Stop that did not complete counts as done",
+  "ltcplay/fireball_practice.py",
+  "            failed = code != 200 or bool((out or {}).get(\"failed\"))",
+  "            failed = code != 200"),
+
+ ("practice: ending practice sends no Stop",
+  "ltcplay/fireball_practice.py",
+  "                code, out = self._stop(f\"Fireball practice ended: \"",
+  "                code, out = (200, {}) if True else self._stop(f\"Fireball practice ended: \""),
+
+ ("practice: another group armed does not end it",
+  "ltcplay/fireball_practice.py",
+  "        if others:\n            return f\"another flame group was armed",
+  "        if False:\n            return f\"another flame group was armed"),
+
+ ("practice: a second sender on the arm link does not end it",
+  "ltcplay/fireball_practice.py",
+  "        if ai.get(\"foreign_senders\") or ai.get(\"flooded\"):",
+  "        if False:"),
+
+ ("practice: a pause during the step does not end it",
+  "ltcplay/fireball_practice.py",
+  "        if clk is not None and getattr(clk, \"paused\", False):",
+  "        if False:"),
+
+ ("practice: a step may run over its time",
+  "ltcplay/fireball_practice.py",
+  "        if now - t0 > planned + OVERRUN_S:",
+  "        if False:"),
+
+ ("practice: the late sign is turned round",
+  "ltcplay/fireball_practice.py",
+  "        late = on - prog",
+  "        late = prog - on"),
+
+ ("practice: the flame link's record is never called",
+  "ltcplay/flamelink.py",
+  "                sobs(*sent_rec)",
+  "                pass"),
+
+ ("practice: a freerunning clock counts as against the audio",
+  "ltcplay/clock.py",
+  "        return e, self._mode == \"follow\" and e is not None",
+  "        return e, e is not None"),
+
+ ("practice: the play is bound after the flame cues are released",
+  "ltcplay/playhead.py",
+  "                bind(self._ours[1] if self._ours else None)",
+  "                pass"),
+
+ ("practice: a bind that fails leaves the music playing",
+  "ltcplay/playhead.py",
+  "            except Exception:\n                s.clock_halt()\n                raise",
+  "            except Exception:\n                raise"),
+
+ ("practice: Step needs only the Show row, not the Arm row",
+  "ltcplay/remote.py",
+  "                       for p in (\"show\", \"arm\"))",
+  "                       for p in (\"show\",))"),
+
+ ("practice: the Stream Deck's spoof ALARM does not end it",
+  "ltcplay/fireball_practice.py",
+  "        if self.state != \"closed\" and action == \"spoof-alarm\" and fault:",
+  "        if False:"),
+
+ ("practice: the Stream Deck unplugged ends practice and disarms",
+  "ltcplay/fireball_practice.py",
+  "DECK_ALERT_ENDS = False",
+  "DECK_ALERT_ENDS = True"),
+
+ ("practice: the Stream Deck alert is not noted",
+  "ltcplay/fireball_practice.py",
+  "        if on and not self.deck_note:",
+  "        if False:"),
+
+ ("practice: a practice shot is not counted toward fuel (its record replaces the flame link's observers)",
+  "ltcplay/web.py",
+  "    link.sent_observer = pr.on_sent",
+  "    link.observer = pr.on_sent"),
+
+ ("practice: a step's play is bound after practice ended",
+  "ltcplay/fireball_practice.py",
+  "                        if self.state != \"starting\" or gen != self._gen:",
+  "                        if False:"),
+
+ ("practice: a step whose practice ended while its play started carries on",
+  "ltcplay/fireball_practice.py",
+  "        if not self._cas((\"starting\",), \"step\", gen):",
+  "        if self._cas((\"starting\",), \"step\", gen) and False:"),
+
+ ("practice: the step's end turns an ended practice back to ready",
+  "ltcplay/fireball_practice.py",
+  "        if not self._cas((\"step\",), \"ready\", self._gen):\n            return",
+  "        self.state = \"ready\"\n        if False:\n            return"),
+
+ ("practice: open turns a practice ended during its Stop back on",
+  "ltcplay/fireball_practice.py",
+  "            if self.state != \"opening\" or gen != self._gen:\n                # Ended (Done, a disarm) while its own Stop ran",
+  "            if False:\n                # Ended (Done, a disarm) while its own Stop ran"),
+
+ ("practice: frames before the audio's first buffer mark the table not against the audio",
+  "ltcplay/fireball_practice.py",
+  "                # buffer (no epoch yet): those frames are not timed.\n                continue",
+  "                # buffer (no epoch yet): those frames are not timed.\n                against = False\n                continue"),
+
+ ("practice: a Stop that hangs is never pressed again",
+  "ltcplay/fireball_practice.py",
+  "                    self._retry_at is not None and now < self._retry_at:\n                return          # the last Stop was pressed under RETRY_S ago",
+  "                    True:\n                return          # the last Stop was pressed under RETRY_S ago"),
+
+ ("practice: the bound play is not cut when practice ends",
+  "ltcplay/fireball_practice.py",
+  "        self._recording = False\n        self._cut_plays()",
+  "        self._recording = False"),
+
+ ("practice: a cut practice play keeps firing",
+  "ltcplay/fireball_cues.py",
+  "        if run.practice is not None and run.practice.get(\"cut\"):",
+  "        if False:"),
+
+ ("practice: a Step may hold 'starting' for ever",
+  "ltcplay/fireball_practice.py",
+  "        if self.state == \"starting\" and self._starting_at is not None and \\",
+  "        if False and self._starting_at is not None and \\"),
+
+ ("practice: a Hold asked during opening is erased",
+  "ltcplay/fireball_practice.py",
+  "            self.ended_why = \"\"\n            self._alerted = False\n            self.deck_note = \"\"",
+  "            self.ended_why = \"\"\n            self._alerted = False\n            self.deck_note = \"\"\n            self._end_asked = \"\""),
+
+ ("practice: a disarm through the flame link does not end it",
+  "ltcplay/fireball_practice.py",
+  "        if getattr(link, \"abort_id\", None) != b.get(\"abort_id\"):",
+  "        if False:"),
+
+ ("practice: with sign-in off an iPad may open and Step",
+  "ltcplay/remote.py",
+  "        if not self.users_active():\n            if local:\n                return \"\"",
+  "        if not self.users_active():\n            if True:\n                return \"\""),
+
+ ("practice: a pending mark reads as charged tanks",
+  "ltcplay/fireball_practice.py",
+  "        if v.get(\"pending\"):\n            return REFUSE_SETTLING",
+  "        if v.get(\"pending\"):\n            return REFUSE_TANKS"),
+
+ ("practice: a Stop that came back failed is pressed again at once",
+  "ltcplay/fireball_practice.py",
+  "            if stop_first and not user and self.state == \"ending\" and \\",
+  "            if stop_first and not user and self._stopping and \\"),
+
+ ("practice: a person's Done waits for the retry",
+  "ltcplay/fireball_practice.py",
+  "        self._ending(f\"{who or 'someone'} pressed Done on the {screen}\",\n                     user=True)",
+  "        self._ending(f\"{who or 'someone'} pressed Done on the {screen}\",\n                     user=False)"),
+
+ ("practice: open goes on after Done during its engine check",
+  "ltcplay/fireball_practice.py",
+  "            if self.state != \"opening\" or gen != self._gen:\n                # Ended (Done) while the engine was checked",
+  "            if False:\n                # Ended (Done) while the engine was checked"),
+
+ ("fireball cues: the flame cues skip the timeline in background mode",
+  "ltcplay/fire_ice.py",
+  "                return self._with_fireball(out, s, label, rel, cue)\n            data = f.frame(idx)",
+  "                return out\n            data = f.frame(idx)"),
+
+ ("fireball cues: the flame cues skip the timeline when reading in the call",
+  "ltcplay/fire_ice.py",
+  "        return self._with_fireball(out, s, label, rel, cue)\n\n    def _with_fireball",
+  "        return out\n\n    def _with_fireball"),
+
+ ("fireball cues: a timeline that cannot be built lets every show's FSEQ fire the fireball",
+  "ltcplay/web.py",
+  "    cues.fireball = fb\n    remote.fireball_cues = fb",
+  "    cues.fireball = fb if fb.store is not None else None\n    remote.fireball_cues = fb"),
+
+ ("fireball cues: another spelling of the show's name falls back to the FSEQ",
+  "ltcplay/fireball_cues.py",
+  "        if entry is None:\n            # A case-blind folder",
+  "        if False:\n            # A case-blind folder"),
+
+ ("fireball cues: two spellings of one show in the file are taken",
+  "ltcplay/fireball_cues.py",
+  "            if len(same) > 1:",
+  "            if False:"),
+
+ ("fireball cues: an FSEQ show is not guarded",
+  "ltcplay/fireball_cues.py",
+  "            return self._fseq_guarded(out, run,\n                                      (first and relf > TOP_FRAMES) or jumped,\n                                      relf,\n                                      (first and relf > TOP_FRAMES) or moved,\n                                      moved)\n        out = self._masked(out)",
+  "            return self._fseq_guarded(out, run,\n                                      (first and relf > TOP_FRAMES) or jumped,\n                                      relf,\n                                      (first and relf > TOP_FRAMES) or moved,\n                                      moved) if False else out\n        out = self._masked(out)"),
+
+ ("fireball cues: Purge goes out from an FSEQ show",
+  "ltcplay/fireball_cues.py",
+  "        out[PURGE_SLOT - 1] = 0",
+  "        pass"),
+
+ ("fireball cues: an FSEQ show's charge on a charged tank goes out",
+  "ltcplay/fireball_cues.py",
+  "            if why:\n                out[slot - 1] = 0",
+  "            if False:\n                out[slot - 1] = 0"),
+
+ ("fireball cues: an FSEQ show never charges again after its shot",
+  "ltcplay/fireball_cues.py",
+  "        if fseq and state == \"empty\":",
+  "        if False:"),
+
+ ("fireball cues: a charge cut short by a Hold carries on after it",
+  "ltcplay/fireball_cues.py",
+  "            if at is not None and 0 <= self._clock() - at <= GAP_S:",
+  "            if at is not None:"),
+
+ ("fireball cues: one frame not sent ends the charge",
+  "ltcplay/fireball_cues.py",
+  "            if at is not None and 0 <= self._clock() - at <= GAP_S:",
+  "            if False:"),
+
+ ("fireball cues: the charge state is not told a charge carries on",
+  "ltcplay/fireball_cues.py",
+  "                if tell is not None:\n                    tell(tank)",
+  "                if tell is not None:\n                    pass"),
+
+ ("fireball charge: the show's charge after a short gap is a double charge",
+  "ltcplay/fireball_charge.py",
+  "            if c is not None and 0 <= now - c <= MANUAL_FRESH_S:",
+  "            if False:"),
+
+ ("fireball cues: an unrelated edit says a stage was moved by it",
+  "ltcplay/fireball_cues.py",
+  "                if old is None or old[\"s0\"] != w[\"s0\"]:",
+  "                if True:"),
+
+ ("fireball cues: a gap with no frame asked keeps the stage carrying on",
+  "ltcplay/fireball_cues.py",
+  "        if gapped:\n            run.prev_on = set()",
+  "        if False:\n            run.prev_on = set()"),
+
+ ("fireball cues: carrying on is judged from the composed frame",
+  "ltcplay/fireball_cues.py",
+  "        if self._sent_get is not None:\n            try:\n                v = self._sent_get()",
+  "        if False:\n            try:\n                v = self._sent_get()"),
+
+ ("fireball cues: an FSEQ charge the FSEQ turned off rides on",
+  "ltcplay/fireball_cues.py",
+  "                run.sent_at.pop(tank, None)\n                run.sent_tanks.discard(tank)\n                run.fseq_hold.discard(tank)\n                run.fseq_skip.discard(tank)\n                continue",
+  "                run.fseq_hold.discard(tank)\n                run.fseq_skip.discard(tank)\n                continue"),
+
+ ("fireball cues: a switch to the FSEQ mid-play drops the play's stages (round 4, s40)",
+  "ltcplay/fireball_cues.py",
+  "                run.rev = rev\n            else:",
+  "                run.adopt(dict(entry or {}, stages=[]), rev, relf)\n            else:"),
+
+ ("fireball cues: a skipped or cut short stage is not journaled (round 4)",
+  "ltcplay/fireball_cues.py",
+  "        self._note(text, fault=fault, outcome=\"fireball_skipped\")",
+  "        pass"),
+
+ ("fireball cues: an automatic charge goes before the write-ahead mark (round 5)",
+  "ltcplay/fireball_cues.py",
+  "            r = self._ready(tr)\n            if r == \"ok\":\n                return \"\"",
+  "            r = \"ok\"\n            if r == \"ok\":\n                return \"\""),
+
+ ("fireball cues: a mark on its way skips the stage (round 5)",
+  "ltcplay/fireball_cues.py",
+  "            if r == \"wait\":\n                return WAIT",
+  "            if False:\n                return WAIT"),
+
+ ("fireball cues: the mark is not asked for as the play starts (round 5)",
+  "ltcplay/fireball_cues.py",
+  "            if w[\"s1\"] > relf and w[\"s0\"] - relf <= LEAD_FRAMES and \\\n                    tr.state(tank) == \"empty\":\n                self._ready(tr)",
+  "            if w[\"s1\"] > relf and w[\"s0\"] - relf <= LEAD_FRAMES and \\\n                    tr.state(tank) == \"empty\":\n                pass"),
+
+ ("fireball cues: a mark that cannot be saved is not a fault (round 5)",
+  "ltcplay/fireball_cues.py",
+  "        return \"charge record cannot be saved\" in why or \\\n            \"automatic charging is off\" in why",
+  "        return False"),
+
+ ("fireball cues: a timeline stage landed inside starts late after a wait (round 5)",
+  "ltcplay/fireball_cues.py",
+  "                    run.skipped[k] = \"landed inside its window\"\n                    self._say(f\"{fbtl.STAGE_WORD[k]} was skipped: the show \"\n                              f\"landed inside its window (a stage is never \"\n                              f\"started part way).\")\n                    continue\n                if not run.top_ok and \\\n                        w[\"s0\"] < land + LANDING_SETTLE_FRAMES:",
+  "                    pass\n                if False:"),
+
+ ("fireball cues: an FSEQ charge landed inside starts late after a wait (round 5)",
+  "ltcplay/fireball_cues.py",
+  "            if tank in run.fseq_hold or tank in run.fseq_skip:\n                out[slot - 1] = 0",
+  "            if tank in run.fseq_skip:\n                out[slot - 1] = 0"),
+
+ ("fireball cues: the running flamesafe's slots are never looked at (round 6)",
+  "ltcplay/fireball_cues.py",
+  "        file_g, live_g = self._group, self._live",
+  "        file_g, live_g = self._group, None"),
+
+ ("fireball cues: a file and live disagreement does not tell the charge record (round 6)",
+  "ltcplay/fireball_cues.py",
+  "            if tr is not None and not self._ext_told and \\\n                    not getattr(tr, \"judges_ext\", False):",
+  "            if False:"),
+
+ ("fireball cues: a disagreement zeroes only one group (round 6)",
+  "ltcplay/fireball_cues.py",
+  "        for g in known:\n            for s in g:",
+  "        for g in known[:1]:\n            for s in g:"),
+
+ ("fireball cues: the mark is asked for at no charge stage (round 6)",
+  "ltcplay/fireball_cues.py",
+  "        self._lead(run, tr, relf)\n",
+  "        pass\n"),
+
+ ("fireball cues: the mark is asked for however far the stage is (round 6)",
+  "ltcplay/fireball_cues.py",
+  "            if w[\"s1\"] > relf and w[\"s0\"] - relf <= LEAD_FRAMES and \\",
+  "            if w[\"s1\"] > relf and True and \\"),
+
+ ("fireball cues: a refused FSEQ charge starts late when the retry works (round 6)",
+  "ltcplay/fireball_cues.py",
+  "                if self._unsaved(why):\n                    run.fseq_skip.add(tank)",
+  "                pass"),
+
+ ("fireball cues: a seek inside the play is not a landing (round 6)",
+  "ltcplay/fireball_cues.py",
+  "            jumped = relf < run.last_relf - 2 or relf > run.last_relf + adv",
+  "            jumped = False"),
+
+ ("fireball cues: an FSEQ charge held for the mark starts late after a seek (round 6)",
+  "ltcplay/fireball_cues.py",
+  "            return self._fseq_guarded(out, run,\n                                      (first and relf > TOP_FRAMES) or jumped,\n                                      relf,\n                                      (first and relf > TOP_FRAMES) or moved,\n                                      moved)",
+  "            return self._fseq_guarded(out, run, (first and relf > TOP_FRAMES), relf,\n                                      (first and relf > TOP_FRAMES) or moved,\n                                      moved)"),
+
+ ("fireball cues: the engine never gives the cues the running flamesafe's slots (round 6)",
+  "ltcplay/web.py",
+  "journal=say, group_get=fireball_slots, live_get=live_slots,",
+  "journal=say, group_get=fireball_slots,"),
+
+ ("fireball cues: a pause is not a landing (round 7)",
+  "ltcplay/fireball_cues.py",
+  "        jumped = jumped or gapped\n",
+  "        pass\n"),
+
+ ("fireball cues: the cues and the charge record word a disagreement differently (round 7)",
+  "ltcplay/fireball_cues.py",
+  "            text = group_mismatch_text(file_g, live_g)",
+  "            text = group_mismatch_text(file_g, live_g) + \" \""),
+
+ ("fireball cues: a charge not started begins inside a window the play landed in (round 8)",
+  "ltcplay/fireball_cues.py",
+  "            if k not in run.started and land is not None and \\\n                    not (run.top_ok and w[\"s0\"] == 0):",
+  "            if False and land is not None and \\\n                    not (run.top_ok and w[\"s0\"] == 0):"),
+
+ ("fireball cues: a charge already started is skipped by the landing rule (round 8)",
+  "ltcplay/fireball_cues.py",
+  "            if k not in run.started and land is not None and \\\n                    not (run.top_ok and w[\"s0\"] == 0):",
+  "            if land is not None and \\\n                    not (run.top_ok and w[\"s0\"] == 0):"),
+
+ ("fireball cues: the cues tell the record too when it judges the config (round 8)",
+  "ltcplay/fireball_cues.py",
+  "                    not getattr(tr, \"judges_ext\", False):",
+  "                    True:"),
+
+ ("fireball cues: automatic charging off is called a record that cannot be saved (round 8)",
+  "ltcplay/fireball_cues.py",
+  "            if r == \"off\":\n                return (f\"{word}: automatic charging is off after a \"",
+  "            if False:\n                return (f\"{word}: automatic charging is off after a \""),
+
+ ("fireball cues: a play starting at frame 1 or 2 is a landing (round 9)",
+  "ltcplay/fireball_cues.py",
+  "TOP_FRAMES = 2\n",
+  "TOP_FRAMES = 0\n"),
+
+ ("fireball cues: a fireball group off 55 to 59 is not checked",
+  "ltcplay/fireball_cues.py",
+  "        bad = mismatch or any(g != list(SLOTS) for g in known)",
+  "        bad = False"),
+
+ ("fireball cues: the engine never names flamesafe's fireball group",
+  "ltcplay/web.py",
+  "            journal=say, group_get=fireball_slots, live_get=live_slots,",
+  "            journal=say, live_get=live_slots,"),
+
+ # A schedule saved while ltcplay runs, and Run off after a restart
+ # (Jeff, Pico, 2026-10-29).
+ ("saved schedule: a save waits for a restart to plan tonight again",
+  "ltcplay/schedule_service.py",
+  "                self._follow_rule(self.clock())\n            rule = self.rule",
+  "                pass\n            rule = self.rule"),
+
+ ("saved schedule: a closed night stays closed though a show is still to come",
+  "ltcplay/schedule.py",
+  "    if was == OFF and tx.m.waiting() and not closed_by_operator(tx.m):",
+  "    if False:"),
+
+ ("saved schedule: a reopened night brings a look back instead of staying dark",
+  "ltcplay/schedule.py",
+  "        _enter(tx, STANDBY, after_stop=True)\n        nxt = tx.m.next_slot() or tx.m.delayed()",
+  "        _enter(tx, STANDBY)\n        nxt = tx.m.next_slot() or tx.m.delayed()"),
+
+ ("saved schedule: the rebuilt list is not saved, so a restart rebuilds again",
+  "ltcplay/schedule_service.py",
+  "                                  detail=sch.SAVED_START), now)\n        self._save_tonight()\n        self._journal_line(\"system\", self._tonight_words(now),",
+  "                                  detail=sch.SAVED_START), now)\n        self._journal_line(\"system\", self._tonight_words(now),"),
+
+ ("saved schedule: an extra show is renumbered by a rebuild",
+  "ltcplay/schedule.py",
+  "        slots[sl.n] = sl\n        if sl.status == RUNNING:",
+  "        slots[sl.n + (50 if sl.origin == \"operator\" else 0)] = replace(sl, n=sl.n + (50 if sl.origin == \"operator\" else 0))\n        if sl.status == RUNNING:"),
+
+ ("saved schedule: a time still to come loses its show's number",
+  "ltcplay/schedule.py",
+  "            to_come.setdefault(planned, sl.n)\n            if sl.planned is not None and planned in fresh_times:",
+  "            if sl.planned is not None and planned in fresh_times:"),
+
+ ("saved schedule: a save rebuilds tonight under a running show",
+  "ltcplay/schedule.py",
+  "FOLLOW_LATER = frozenset((SHOW, PAUSED, CLOSING))",
+  "FOLLOW_LATER = frozenset((PAUSED, CLOSING))"),
+
+ ("saved schedule: a save during a show is never followed once it ends",
+  "ltcplay/schedule_service.py",
+  "            self._follow_rule(now, deferred=True)\n            ev = self._tick_event()",
+  "            ev = self._tick_event()"),
+
+ ("saved schedule: the wait for a show is said on every tick",
+  "ltcplay/schedule_service.py",
+  "            if self._follow_said != key:",
+  "            if True:"),
+
+ ("saved schedule: a save on Hold ends the Hold",
+  "ltcplay/schedule.py",
+  "    tx.m = replace(rebuilt, state=was, running=0, paused_at=None,",
+  "    tx.m = replace(rebuilt, state=STANDBY if was == HOLD else was, running=0, paused_at=None,"),
+
+ ("saved schedule: a show made due during a Hold is missed, not delayed",
+  "ltcplay/schedule.py",
+  "    _settle_saved_past(tx, m, held=(was == HOLD), why=past)",
+  "    _settle_saved_past(tx, m, held=False, why=past)"),
+
+ ("saved schedule: a night closed with Close for the night opens again",
+  "ltcplay/schedule.py",
+  "        if closed:\n            sl = replace(sl, status=SKIPPED, reason=CLOSED_SAVED)",
+  "        if False:\n            sl = replace(sl, status=SKIPPED, reason=CLOSED_SAVED)"),
+
+ ("saved schedule: no more shows tonight gives no reason from the schedule",
+  "ltcplay/schedule_service.py",
+  "        elif not plan.starts:\n            why = plan.why",
+  "        elif not plan.starts:\n            why = \"\""),
+
+ ("saved schedule: the Programming screen says loaded with nothing planned",
+  "ltcplay/remote.py",
+  "                elif callable(words):\n                    loaded = \" \" + str(words())",
+  "                elif False:\n                    loaded = \" \" + str(words())"),
+
+ ("Run off: no warning that the next show will not start",
+  "ltcplay/schedule_service.py",
+  "        nxt = m.next_slot()\n        if nxt is None:\n            return None\n        if self._run_pressed():",
+  "        nxt = m.next_slot()\n        if True:\n            return None\n        if self._run_pressed():"),
+
+ ("Run off: the warning stays after Run is pressed",
+  "ltcplay/schedule_service.py",
+  "        if self._run_pressed():\n            # Run reads as pressed",
+  "        if False:\n            # Run reads as pressed"),
+
+ ("Run off: the warning says a show will not start with auto_start off",
+  "ltcplay/schedule_service.py",
+  "        if getattr(cfg, \"auto_start\", \"when_run_pressed\") == \"off\":\n            return None\n        if m.state in (sch.SHOW, sch.PAUSED, sch.CLOSING, sch.OFF,",
+  "        if m.state in (sch.SHOW, sch.PAUSED, sch.CLOSING, sch.OFF,"),
+
+ ("Run off: the remote status drops the warning",
+  "ltcplay/remote.py",
+  "                    \"run_warning\": st.get(\"run_warning\"),\n",
+  ""),
+
+ ("Run off: rack screen 2.0 does not show the warning",
+  "ltcplay/web/remote2.html",
+  "  if(sch.run_warning) items.push({key:\"run\", tone:sch.run_warning_urgent ? \"bad\" : \"warn\", what:sch.run_warning.split(\":\")[0] + \".\", do:(sch.run_warning.split(\"will NOT start. \")[1] || \"Press Run.\"), full:sch.run_warning});\n",
+  ""),
+
+ # Review of PR #180 (reviewer B): an operator's close, a show whose time
+ # had gone by, and tonight's delays across a save.
+ ("review180: Close for the night is not kept on the machine",
+  "ltcplay/schedule.py",
+  "    tx.m = replace(tx.m, held_from=\"\", closed_by_operator=True)",
+  "    tx.m = replace(tx.m, held_from=\"\")"),
+
+ ("review180: an operator's close is read only from the shows it skipped",
+  "ltcplay/schedule.py",
+  "    return m.closed_by_operator or any(s.reason == CLOSED_BY_OPERATOR",
+  "    return any(s.reason == CLOSED_BY_OPERATOR"),
+
+ ("review180: tonight's file drops an operator's close",
+  "ltcplay/schedule.py",
+  "    if m.closed_by_operator:\n        doc[\"closed_by_operator\"] = True",
+  "    if False:\n        doc[\"closed_by_operator\"] = True"),
+
+ ('review180: a closed night is written as format 3', 'ltcplay/schedule.py',
+  '    marked = m.dark or m.closed_by_operator or m.stop_hold',
+  '    marked = m.dark or m.stop_hold'),
+
+ ("review180: an operator's close is not read back after a restart",
+  "ltcplay/schedule.py",
+  "        closed_by_operator=doc.get(\"closed_by_operator\", False),\n        stop_hold=",
+  "        closed_by_operator=False,\n        stop_hold="),
+
+ ("review180: a rebuild forgets an operator's close",
+  "ltcplay/schedule.py",
+  "                   closed_by_operator=saved.closed_by_operator,",
+  "                   closed_by_operator=False,"),
+
+ ("review180: a save leaves a show whose time had gone by to start late",
+  "ltcplay/schedule.py",
+  "            continue\n        late.append(s)\n",
+  "            continue\n"),
+
+ ("review180: any show waiting under the same number counts as unchanged",
+  "ltcplay/schedule.py",
+  "        if old is not None and old.status == PENDING and \\\n                old.start == s.start:",
+  "        if old is not None and old.status == PENDING:"),
+
+ ("review180: a save misses a show still waiting for its own time",
+  "ltcplay/schedule.py",
+  "                old.start == s.start:\n            continue\n",
+  "                old.start == s.start and False:\n            continue\n"),
+
+ ("review180: a restart after a save starts a show whose time had gone by",
+  "ltcplay/schedule.py",
+  "        _settle_saved_past(tx, m, held=(m.resumed_from == HOLD),\n                           why=RESTART_PAST)\n",
+  "        pass\n"),
+
+ ("review180: on Hold a save misses the show already waiting",
+  "ltcplay/schedule.py",
+  "    wait = late[-1] if held and late and tx.m.delayed() is None else None",
+  "    wait = late[-1] if held and late else None"),
+
+ ("review180: the answer to a save ticks the scheduler",
+  "ltcplay/schedule_service.py",
+  "            text = self._tonight_words(self.clock())\n",
+  "            self.tick()\n            text = self._tonight_words(self.clock())\n"),
+
+ ("review180: a save with tonight's times unchanged still rebuilds tonight",
+  "ltcplay/schedule.py",
+  "    if keeps_tonight(rule, saved):\n        notes = []",
+  "    if False:\n        notes = []"),
+
+ ("review180: a time no longer in the schedule still keeps tonight's list",
+  "ltcplay/schedule.py",
+  "    return new <= planned and to_come <= new\n",
+  "    return new <= planned\n"),
+
+ ("review180: a new time in the schedule still keeps tonight's list",
+  "ltcplay/schedule.py",
+  "    return new <= planned and to_come <= new\n",
+  "    return to_come <= new\n"),
+
+ ("review180: the answer does not say what the save undid",
+  "ltcplay/schedule_service.py",
+  "             [f\"This save undid tonight's changes: {' '.join(dropped)}\"]\n             if dropped else []) + list(skipped))",
+  "             [f\"This save undid tonight's changes: {' '.join(dropped)}\"]\n             if False else []) + list(skipped))"),
+
+ ("review180: the answer does not say tonight's list was kept",
+  "ltcplay/schedule_service.py",
+  "            ([self.KEPT_BUT if skipped else self.KEPT_TIMES] if kept else",
+  "            ([] if kept else"),
+
+ ("review180: a show's records go by its number alone",
+  "ltcplay/schedule_service.py",
+  "        return (str(m.date), n, at.isoformat() if at is not None else \"\")",
+  "        return (str(m.date), n)"),
+
+ ("review180: a show moved tonight loses its records",
+  "ltcplay/schedule_service.py",
+  "        at = (s.planned or s.start) if s is not None else None",
+  "        at = s.start if s is not None else None"),
+
+ ("review180: on Hold the Run warning does not say Resume",
+  "ltcplay/schedule_service.py",
+  "        if m.state == sch.HOLD:\n            need.append(\"Resume\")",
+  "        if False:\n            need.append(\"Resume\")"),
+
+ # Review A of PR #180: the start, close and reopen decisions its own
+ # mutations found unpinned.
+ ("review180: a save sweeps tonight in the live state and starts a due show",
+  "ltcplay/schedule.py",
+  "    _settle_saved_past(tx, m, held=(was == HOLD), why=past)\n    if was == OFF and m.never_opened",
+  "    _settle_saved_past(tx, m, held=(was == HOLD), why=past)\n    _sweep(tx)\n    if was == OFF and m.never_opened"),
+
+ ("review180: a save during the closing is followed at once",
+  "ltcplay/schedule.py",
+  "FOLLOW_LATER = frozenset((SHOW, PAUSED, CLOSING))",
+  "FOLLOW_LATER = frozenset((SHOW, PAUSED))"),
+
+ ("review180: a save after the nightly reset rebuilds the earlier night",
+  "ltcplay/schedule_service.py",
+  "        if m.date != self._tonight(now):\n",
+  "        if False:\n"),
+
+ ("review180: a rebuild on restart forgets the show that was running",
+  "ltcplay/schedule.py",
+  "            running = sl.n\n",
+  "            running = 0\n"),
+
+ ("review180: a kept list on restart forgets the show that was running",
+  "ltcplay/schedule.py",
+  "        m = _carried(fresh, saved, saved.slots, saved.running)\n        return _room_for_delays(",
+  "        m = _carried(fresh, saved, saved.slots, 0)\n        return _room_for_delays("),
+
+ ("review180: a save drops the Delay of a show whose time is still in the schedule",
+  "ltcplay/schedule.py",
+  "            if sl.planned is not None and planned in fresh_times:",
+  "            if False:"),
+
+ ("review180: a kept Delay goes back to the show's planned time",
+  "ltcplay/schedule.py",
+  "                sl = replace(sl, start=was.start, planned=was.planned)",
+  "                sl = replace(sl, planned=was.planned)"),
+
+ ("review180: shows taken off tonight are said to have gone by",
+  "ltcplay/schedule_service.py",
+  "        elif sch._utc(plan.starts[-1]) > sch._utc(now):",
+  "        elif False:"),
+
+ ("review180 r4: a save on a night that never opened reopens it dark",
+  "ltcplay/schedule.py",
+  "    if was == OFF and m.never_opened and not closed_by_operator(tx.m):",
+  "    if False:"),
+
+ ("review180 r4: a night that never opened is left in BOOT after a save",
+  "ltcplay/schedule_service.py",
+  "        if out.machine.state == sch.BOOT:\n            # A night that never opened",
+  "        if False:\n            # A night that never opened"),
+
+ ("review180 r4: a dark night at start is not marked as never opened",
+  "ltcplay/schedule.py",
+  "        tx.m = replace(tx.m, never_opened=True)",
+  "        pass"),
+
+ ("review180 r5: a time too close to a delayed show is not skipped",
+  "ltcplay/schedule.py",
+  "            if a.planned is not None and b.planned is None:\n                hit = (b, a)\n            elif b.planned is not None and a.planned is None:\n                hit = (a, b)",
+  "            pass"),
+
+ ("review180 r5: a time gone by is weighed against a delayed show",
+  "ltcplay/schedule.py",
+  "    cut = _LONG_AGO if now is None else _utc(_aware(now))",
+  "    cut = _LONG_AGO"),
+
+ ("review180 r5: a save drops a Delay whose planned time left the file",
+  "ltcplay/schedule.py",
+  "                orphans.append(sl)\n",
+  "                pass\n"),
+
+ ("review180 r5: the kept list is not checked for a delayed show",
+  "ltcplay/schedule.py",
+  "        return _room_for_delays(m, now, notes, skipped), notes\n    hm = fresh.hm",
+  "        return m, notes\n    hm = fresh.hm"),
+
+ ("review180 r5: the Run warning is amber after the first show time",
+  "ltcplay/schedule_service.py",
+  "        if any(s.start <= now for s in m.slots):\n            return True\n",
+  ""),
+
+ ("review180 r5: a rebuild forgets the night never opened",
+  "ltcplay/schedule.py",
+  "                   never_opened=saved.never_opened,\n                   stop_hold=saved.stop_hold)",
+  "                   never_opened=False,\n                   stop_hold=saved.stop_hold)"),
+
+ ("review180 r5: a save on a dark night says the scheduler started",
+  "ltcplay/schedule.py",
+  "            if was else \"Tonight started from the schedule just saved\"\n            if ev.detail == SAVED_START else \"The scheduler started\")",
+  "            if was else \"The scheduler started\")"),
+
+ ("review180 r4: shows still to come are numbered against time order",
+  "ltcplay/schedule.py",
+  "    for sl in sorted(left, key=lambda x: (at(x), x.start)):",
+  "    for sl in sorted(left, key=lambda x: (-at(x).timestamp(), x.start)):"),
+
+ ("review180 r4: a time a save put in the past moves IDLE to STANDBY",
+  "ltcplay/schedule.py",
+  "            any(s.status == MISSED and s.reason not in PAST_REASONS",
+  "            any(s.status == MISSED and s.reason not in ()"),
+
+ ("review180 r4: a restart says a time went by when the schedule was saved",
+  "ltcplay/schedule.py",
+  "                           why=RESTART_PAST)",
+  "                           why=SAVED_PAST)"),
+
+ ("review180 r4: a save followed after a show says it went by when saved",
+  "ltcplay/schedule_service.py",
+  "            sch.FOLLOWED_PAST if deferred else sch.SAVED_PAST, skipped)",
+  "            sch.SAVED_PAST, skipped)"),
+
+ ("review180 r4: a save leaving nothing to come does not say the night closes now",
+  "ltcplay/schedule_service.py",
+  "        elif m.state in (sch.IDLE, sch.STANDBY) and m.delayed() is None:",
+  "        elif False:"),
+
+ ("review180 r4: rows a save added to a closed night pile up",
+  "ltcplay/schedule.py",
+  "        if sl.reason == CLOSED_SAVED and planned not in fresh_times:",
+  "        if False:"),
+
+ ("review180 r4: the Run warning is a fault all day",
+  "ltcplay/schedule_service.py",
+  "        return (nxt.start - now).total_seconds() <= self.RUN_WARNING_RED_S",
+  "        return True"),
+
+ ("review180 r4: two schedule saves at once are not one at a time",
+  "ltcplay/remote.py",
+  "        with _SCHEDULE_SAVE_LOCK:\n            return self._save_schedule_file(doc)",
+  "        return self._save_schedule_file(doc)"),
+
+ ("review180 r4: threads writing one JSON file share a temp file",
+  "ltcplay/remote.py",
+  "    tmp = (f\"{path}.{os.getpid()}.{threading.get_ident()}.\"\n           f\"{next(_TMP_SEQ)}.tmp\")",
+  "    tmp = f\"{path}.{os.getpid()}.tmp\""),
+
+ ("review180 r4: the kept answer says tonight's times did not change",
+  "ltcplay/schedule_service.py",
+  "        \"No show still to come tonight changed its time, so tonight's list \"\n        \"is kept as it is,",
+  "        \"Tonight's show times did not change, so tonight's list \"\n        \"is kept as it is,"),
+
+ ("review180: a save drops the Stop's Hold",
+  "ltcplay/schedule.py",
+  "                   never_opened=saved.never_opened,\n                   stop_hold=saved.stop_hold)",
+  "                   never_opened=saved.never_opened,\n                   stop_hold=False)"),
+
+ ("review180: the answer to a save on Hold does not say the Hold stands",
+  "ltcplay/schedule_service.py",
+  "            text += \" The schedule is on Hold: nothing starts until Resume.\"\n",
+  "            pass\n"),
+
+ ("review180: the Run warning is shown in OFF",
+  "ltcplay/schedule_service.py",
+  "        if m.state in (sch.SHOW, sch.PAUSED, sch.CLOSING, sch.OFF,\n",
+  "        if m.state in (sch.SHOW, sch.PAUSED, sch.CLOSING,\n"),
+
+ ("review180: the Run warning is shown in a dry run",
+  "ltcplay/schedule_service.py",
+  "        if m is None or self.run_gate is None or self.dry_run or \\\n",
+  "        if m is None or self.run_gate is None or \\\n"),
+
+ ("review180: a Programming Run gives no warning that the show will not start",
+  "ltcplay/schedule_service.py",
+  "            if not why:\n                return None\n",
+  "            if True:\n                return None\n"),
+
+ ("review180: rack screen 2.0 says only Press Run, whatever the warning asks",
+  "ltcplay/web/remote2.html",
+  "do:(sch.run_warning.split(\"will NOT start. \")[1] || \"Press Run.\")",
+  "do:\"Press Run.\""),
+
+ ("play-from cues: a cue right at the end of the show audio is saved",
+  "ltcplay/play_from.py",
+  "                fr / FPS >= audio_len_s:",
+  "                fr / FPS > audio_len_s:"),
+
+ ("play-from cues: a lead-in under 1 s is saved",
+  "ltcplay/play_from.py",
+  "    if v < LEAD_IN_MIN_S:",
+  "    if v < 0:"),
+
+ ("play-from cues: a lead-in left out is 1 s, not 2",
+  "ltcplay/play_from.py",
+  "    if v is None:\n        return LEAD_IN_DEFAULT_S",
+  "    if v is None:\n        return LEAD_IN_MIN_S"),
+
+ ("play-from cues: a lead-in may start before the top of the show cue",
+  "ltcplay/play_from.py",
+  "        elif fr is not None and lead is not None and fr < lead * FPS:",
+  "        elif False:"),
+
+ ("play-from cues: Finale and finale are two names",
+  "ltcplay/play_from.py",
+  "            key = name_key(name)",
+  "            key = name"),
+
+ ("play-from cues: an unknown field in a cue is kept quiet",
+  "ltcplay/play_from.py",
+  "        extra = set(c) - _CUE_KEYS",
+  "        extra = set()"),
+
+ ("play-from cues: the list is not kept in time order",
+  "ltcplay/play_from.py",
+  "    out.sort(key=lambda c: (parse_tc(c[\"tc\"]), c[\"name\"].casefold()))",
+  "    pass"),
+
+ ("play-from cues: a page may claim an id the list does not have",
+  "ltcplay/play_from.py",
+  "        if c[\"id\"] is not None and c[\"id\"] not in known:",
+  "        if False:"),
+
+ ("play-from cues: a new cue reuses a deleted cue's id",
+  "ltcplay/play_from.py",
+  "    nxt = max(max(used, default=0) + 1, int(next_id or 1))",
+  "    nxt = len(before) + 1"),
+
+ ("play-from cues: a stale revision overwrites another editor's save",
+  "ltcplay/play_from.py",
+  "                        base_rev != doc[\"rev\"]:",
+  "                        False:"),
+
+ ("play-from cues: a saved file is not kept in the history",
+  "ltcplay/play_from.py",
+  "        try:\n            self._keep_history(data, new[\"rev\"], False)",
+  "        try:\n            pass"),
+
+ ("play-from cues: a refused save is not in the audit log",
+  "ltcplay/play_from.py",
+  "        self._audit(who, screen, str(show)[:MAX_TEXT], \"refused\", text)",
+  "        pass"),
+
+ ("play-from cues: a save writes no journal line",
+  "ltcplay/play_from.py",
+  "        self._note(who, screen, \"saved\", text)",
+  "        pass"),
+
+ ("play-from cues: an operator may save the list",
+  "ltcplay/users.py",
+  "    \"play-from-cues-save\": \"settings\",",
+  "    \"play-from-cues-save\": \"show\","),
+
+ ("play-from cues: the engine lets any role save",
+  "ltcplay/remote.py",
+  "        if not u.may(me.get(\"role\"), \"settings\"):\n            return refused(403, f\"{me.get('name')} may not: \"\n                                f\"{users_mod.perm_label('settings')}.\")\n        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the play-from cues",
+  "        if False:\n            return refused(403, f\"{me.get('name')} may not: \"\n                                f\"{users_mod.perm_label('settings')}.\")\n        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the play-from cues"),
+
+ ("play-from cues: a save from the show network needs no screen_arming",
+  "ltcplay/remote.py",
+  "        if not self.may_act_from(ctx.local):\n            return refused(403, \"editing the play-from cues",
+  "        if False:\n            return refused(403, \"editing the play-from cues"),
+
+ ("play-from cues: signed out reads the list",
+  "ltcplay/remote.py",
+  "        if not (me.get(\"name\") and not no_users) and \\",
+  "        if False and \\"),
+
+ ("play-from cues: the page's audio length is trusted",
+  "ltcplay/remote.py",
+  "        cue, length, why = self.play_from_show_info(show)\n        if why:\n            return refused(409,",
+  "        cue, length, why = body.get(\"cue\"), body.get(\"audio_len_s\"), \"\"\n        if why:\n            return refused(409,"),
+
+ ("play-from cues: the show length, not the audio's, bounds a cue",
+  "ltcplay/remote.py",
+  "        return cue, float(got[\"audio_s\"]), \"\"",
+  "        return cue, float(got[\"show_s\"]), \"\""),
+
+ ("ui2 page: the play-from card passes a name used twice",
+  "ltcplay/web/remote2.html",
+  "    else if(seen[key(name)] > 1) out.push(\"Name used twice.\");",
+  "    else if(false) out.push(\"Name used twice.\");"),
+
+ ("ui2 page: the play-from card passes a cue past the audio end",
+  "ltcplay/web/remote2.html",
+  "    else if(audioLen && fr / 30 >= audioLen) out.push(",
+  "    else if(false) out.push("),
+
+ ("ui2 page: the play-from card passes a lead-in under 1 s",
+  "ltcplay/web/remote2.html",
+  "    if(!Number.isInteger(ln) || ln < minL || ln > maxL)",
+  "    if(!Number.isInteger(ln) || ln > maxL)"),
+
+ ("ui2 page: the play-from card sends no id, so a rename is a delete and an add",
+  "ltcplay/web/remote2.html",
+  "    if(c.id) o.id = c.id;",
+  "    if(false) o.id = c.id;"),
+
+ ("play-from cues: a file that cannot be read is saved over without a replace",
+  "ltcplay/play_from.py",
+  "                if err and replace is not True:",
+  "                if False:"),
+
+ ("play-from cues: anything in the replace field replaces a broken file",
+  "ltcplay/remote.py",
+  "                                  replace=body.get(\"replace\") is True)",
+  "                                  replace=bool(body.get(\"replace\")))"),
+
+ ("play-from cues: a good file's revision is its own, even below one kept",
+  "ltcplay/play_from.py",
+  "                got[\"rev\"] = self._high_water(got[\"rev\"])\n",
+  "                pass\n"),
+
+ ("play-from cues: a file that cannot be read is revision 0",
+  "ltcplay/play_from.py",
+  "                return (dict(empty_doc(), rev=self._high_water(raw_rev)),",
+  "                return (empty_doc(),"),
+
+ ("play-from cues: a deleted file is revision 0",
+  "ltcplay/play_from.py",
+  "                    high = self._high_water()\n",
+  "                    high = 0\n"),
+
+ ("play-from cues: a replace does not keep the broken file first",
+  "ltcplay/play_from.py",
+  "        if new is not None and err and old is not None:",
+  "        if False:"),
+
+ ("play-from cues: a file held open for a moment is not tried again",
+  "ltcplay/play_from.py",
+  "RETRIES = 5\n",
+  "RETRIES = 1\n"),
+
+ ("play-from cues: a read does not wait for a save",
+  "ltcplay/play_from.py",
+  "        with self._lock:\n            if not self.path:\n                return empty_doc(), \"\"",
+  "        if True:\n            if not self.path:\n                return empty_doc(), \"\""),
+
+ ("play-from cues: a lead-in too big for a float raises",
+  "ltcplay/play_from.py",
+  "    if not isinstance(v, int):\n        raise CueError(words)\n",
+  "    if float(v) != int(v):\n        raise CueError(words)\n"),
+
+ ("play-from cues: a file nested too deep raises out of load",
+  "ltcplay/play_from.py",
+  "            except Exception as e:               # noqa: BLE001\n                what = ",
+  "            except (OSError, ValueError) as e:\n                what = "),
+
+ ("play-from cues: a new cue takes a deleted cue's id (high-water ignored)",
+  "ltcplay/play_from.py",
+  "    nxt = max(max(used, default=0) + 1, int(next_id or 1))",
+  "    nxt = max(used, default=0) + 1"),
+
+ ("play-from cues: the next id is not saved",
+  "ltcplay/play_from.py",
+  "                     \"cues\": new_cues, \"next_id\": nxt,",
+  "                     \"cues\": new_cues,"),
+
+ ("play-from cues: control and invisible characters are kept",
+  "ltcplay/play_from.py",
+  "    if any(unicodedata.category(ch) in (\"Cc\", \"Cf\") and ch not in _JOINERS",
+  "    if False and any(unicodedata.category(ch) in (\"Cc\", \"Cf\") and ch not in _JOINERS"),
+
+ ("play-from cues: two spellings of one name are two names",
+  "ltcplay/play_from.py",
+  "    return unicodedata.normalize(\"NFC\", name).casefold()",
+  "    return name.casefold()"),
+
+ ("play-from cues: a time in other scripts' digits is read",
+  "ltcplay/play_from.py",
+  "_TC = re.compile(r\"([0-9]{2}):([0-9]{2}):([0-9]{2}):([0-9]{2})\")",
+  "_TC = re.compile(r\"(\\d{2}):(\\d{2}):(\\d{2}):(\\d{2})\")"),
+
+ ("play-from cues: a list whose show file is gone is not named",
+  "ltcplay/remote.py",
+  "        out[\"missing\"] = [n for n in out[\"shows\"] if n not in here]",
+  "        out[\"missing\"] = []"),
+
+ ("play-from cues: a show file's name is matched without its case",
+  "ltcplay/remote.py",
+  "        if name not in self.play_from_show_files():",
+  "        if not os.path.isfile(os.path.join(folder, name)):"),
+
+ ("play-from cues: with no users the show PC cannot read the list",
+  "ltcplay/remote.py",
+  "                not (no_users and ctx.local):",
+  "                True:"),
+
+ ("play-from cues: with no users the show network reads the list",
+  "ltcplay/remote.py",
+  "                not (no_users and ctx.local):",
+  "                not no_users:"),
+
+ ("ui2 page: the play-from card saves over a broken file without Replace",
+  "ltcplay/web/remote2.html",
+  "  return !!(PF && PF.may_edit && !PF_STALE && (!PF.error || PF_REPLACE));",
+  "  return !!(PF && PF.may_edit && !PF_STALE);"),
+
+ ("ui2 page: the play-from card saves again from a stale copy",
+  "ltcplay/web/remote2.html",
+  "  if(String(message).includes(PF_STALE_WORDS)) PF_STALE = true;",
+  "  if(false) PF_STALE = true;"),
+
+ ("ui2 page: the play-from Time field cuts off HH:MM:SS:FF",
+  "ltcplay/web/remote2.html",
+  "minmax(0,2fr) minmax(172px,1.3fr)",
+  "minmax(0,2fr) minmax(0,1.3fr)"),
+
+ ("play-from cues: a file saved before and gone now reads as no cues and no error",
+  "ltcplay/play_from.py",
+  "                    if high > 0 or self.history():",
+  "                    if False:"),
+
+ ("play-from cues: a stale page restores the last copy",
+  "ltcplay/play_from.py",
+  "                    not isinstance(base_rev, int) or base_rev != doc[\"rev\"]:\n                why = (f\"someone saved",
+  "                    not isinstance(base_rev, int) or False:\n                why = (f\"someone saved"),
+
+ ("play-from cues: a replace goes on when the broken file could not be kept",
+  "ltcplay/play_from.py",
+  "                return False, text, None\n        try:\n            if new is None:",
+  "                pass\n        try:\n            if new is None:"),
+
+ ("play-from cues: two first requests make two stores",
+  "ltcplay/remote.py",
+  "        with _PFC_STORE_LOCK:\n            st = getattr(self, \"_pfc_store\", None)",
+  "        if True:\n            st = getattr(self, \"_pfc_store\", None)"),
+
+ ("play-from cues: a new audit log is not handed to the store",
+  "ltcplay/remote.py",
+  "            st.audit = getattr(self, \"audit\", None)\n            return st",
+  "            return st"),
+
+ ("play-from cues: a file held open a moment is called unreadable",
+  "ltcplay/play_from.py",
+  "READ_WAIT_S = 2.0\n",
+  "READ_WAIT_S = 0.25\n"),
+
+ ("play-from cues: a revision too big resets to 0",
+  "ltcplay/play_from.py",
+  "            top = max(top, min(file_rev, MAX_REV))",
+  "            top = max(top, file_rev if file_rev <= MAX_REV else 0)"),
+
+ ("play-from cues: names are rewritten (NFKC), not kept as typed",
+  "ltcplay/play_from.py",
+  "    return v\n\n\ndef name_key",
+  "    return unicodedata.normalize(\"NFKC\", v)\n\n\ndef name_key"),
+
+ ("play-from cues: a joiner inside a name is refused",
+  "ltcplay/play_from.py",
+  "    if any(unicodedata.category(ch) in (\"Cc\", \"Cf\") and ch not in _JOINERS",
+  "    if any(unicodedata.category(ch) in (\"Cc\", \"Cf\") and ch not in ()"),
+
+ ("ui2 page: the play-from card keeps Save after the file broke",
+  "ltcplay/web/remote2.html",
+  "  else if(PF && String(message).includes(PF_REPLACE_WORDS)){ PF.error = String(message); PF_REPLACE = false; }",
+  "  else if(false){ PF.error = String(message); PF_REPLACE = false; }"),
+
+ ("play-from cues: the file is written in text mode (Windows new lines), so the kept copy is not the file",
+  "ltcplay/play_from.py",
+  "            with open(tmp, \"wb\") as fh:\n                fh.write(data)",
+  "            with open(tmp, \"w\", encoding=\"utf-8\", newline=\"\\r\\n\") as fh:\n                fh.write(data.decode(\"utf-8\"))"),
+
+ ("start at a cue: the runner starts the show cue from the top",
+  "ltcplay/fire_ice.py",
+  "start_s=land[\"s\"],",
+  "start_s=0.0,"),
+
+ ("start at a cue: the music starts hard, no fade in",
+  "ltcplay/fire_ice.py",
+  "fade_in_ms=land[\"fade_s\"] * 1000.0)",
+  "fade_in_ms=0)"),
+
+ ("start at a cue: no flame landing before the cue starts",
+  "ltcplay/fire_ice.py",
+  "        if land is not None:\n            self._flame_landing()\n        try:",
+  "        try:"),
+
+ ("start at a cue: no flame landing after the cue started",
+  "ltcplay/fire_ice.py",
+  "        finally:\n            if land is not None:\n                self._flame_landing()",
+  "        finally:\n            pass"),
+
+ ("start at a cue: the video is not taken black before the cue",
+  "ltcplay/fire_ice.py",
+  "            if dark is not None:\n                dark()",
+  "            if dark is not None:\n                pass"),
+
+ ("start at a cue: the runner plays a list saved for another show cue",
+  "ltcplay/fire_ice.py",
+  "        if saved and (role_cue is None or\n                      saved.lower() != str(role_cue).lower()):",
+  "        if False:"),
+
+ ("start at a cue: the runner plays a list saved for another show file",
+  "ltcplay/fire_ice.py",
+  "        if file and here and file != here:",
+  "        if False:"),
+
+ ("start at a cue: where a stopped show stopped is not remembered",
+  "ltcplay/fire_ice.py",
+  "                    self._remember_stop(cue)",
+  "                    pass"),
+
+ ("start at a cue: the conductor brings the video up hard",
+  "ltcplay/conductor.py",
+  "                fade = max(0.0, min(float(fade_s or 0.0), ABORT_FADE_S))",
+  "                fade = 0.0"),
+
+ ("start at a cue: video black for the cue darkens a show that is up",
+  "ltcplay/conductor.py",
+  "            if self._look in (PLAYING,) + HOLDING_LOOKS:\n                return self._refused(\"Video black for the cue\",",
+  "            if False:\n                return self._refused(\"Video black for the cue\","),
+
+ ("start at a cue: the scheduler never asks the runner for the video fade",
+  "ltcplay/schedule_service.py",
+  "                    call.fade_s = float(fade()) if fade is not None else 0.0",
+  "                    call.fade_s = 0.0"),
+
+ ("start at a cue: the press's cue never reaches the show start",
+  "ltcplay/schedule_service.py",
+  "            self._press_start_at = start_at\n",
+  ""),
+
+ ("start at a cue: Continue anyway starts from the top",
+  "ltcplay/schedule_service.py",
+  "        start_at = cc[1] if cc is not None and cc[0] is r else None",
+  "        start_at = None"),
+
+ ("start at a cue: Continue anyway takes an older failed check's cue",
+  "ltcplay/schedule_service.py",
+  "        start_at = cc[1] if cc is not None and cc[0] is r else None",
+  "        start_at = cc[1] if cc is not None else None"),
+
+ ("start at a cue: a failed check does not keep the cue",
+  "ltcplay/schedule_service.py",
+  "        self._continue_cue = (r, start_at)\n",
+  ""),
+
+ ("start at a cue: refusals say Start now, not the cue",
+  "ltcplay/schedule_service.py",
+  "            return f\"Start at the cue {start_at['cue']['name']}\"",
+  "            return \"Start now\""),
+
+ ("start at a cue: it starts the delayed show, not an extra one",
+  "ltcplay/schedule.py",
+  "    if d is not None and not str(ev.detail or \"\").startswith(\n            PLAY_FROM_DETAIL):",
+  "    if d is not None:"),
+
+ ("start at a cue: the journal says Start now, with no cue",
+  "ltcplay/schedule.py",
+  "        if cue.startswith(PLAY_FROM_DETAIL):",
+  "        if False:"),
+
+ ("start at a cue: the route takes a cue the page shows at another time",
+  "ltcplay/remote.py",
+  "        if \"tc\" in body and body.get(\"tc\") != cue[\"tc\"]:",
+  "        if False:"),
+
+ ("start at a cue: the route works in Programming",
+  "ltcplay/remote.py",
+  "        if self._rehearsal_run(s):\n            # Asked of the run itself",
+  "        if False:\n            # Asked of the run itself"),
+
+ ("start at a cue: the route starts a cue of another show file",
+  "ltcplay/remote.py",
+  "        if show is not None and show != file:",
+  "        if False:"),
+
+ ("start at a cue: no confirm needed",
+  "ltcplay/remote.py",
+  "CONFIRM_ROUTES = frozenset((\"start-now\", \"start-at-cue\"))",
+  "CONFIRM_ROUTES = frozenset((\"start-now\",))"),
+
+ ("start at a cue: a stale page may press it",
+  "ltcplay/remote.py",
+  "FRESH_ROUTES = frozenset((\"start-now\", \"resume\", \"start-at-cue\")",
+  "FRESH_ROUTES = frozenset((\"start-now\", \"resume\")"),
+
+ ("start at a cue: it starts over Programming playback",
+  "ltcplay/remote.py",
+  "        if name in (\"start-now\", \"start-at-cue\"):\n            why = self.programming_playback_refusal()",
+  "        if name == \"start-now\":\n            why = self.programming_playback_refusal()"),
+
+ ("start at a cue: a timed purge and live flames are not cut at the press",
+  "ltcplay/remote.py",
+  "        if name in (\"hold\", \"start-now\", \"start-at-cue\"):",
+  "        if name in (\"hold\", \"start-now\"):"),
+
+ ("start at a cue: Resume offers another show file's stop",
+  "ltcplay/remote.py",
+  "        if not isinstance(at, dict) or at.get(\"file\") != show:",
+  "        if not isinstance(at, dict):"),
+
+ ("start at a cue: operators may not (the Settings row)",
+  "ltcplay/users.py",
+  "    \"start-at-cue\": \"show\",",
+  "    \"start-at-cue\": \"settings\","),
+
+ ("start at a cue: the landing ignores the lead-in",
+  "ltcplay/play_from.py",
+  "    return max(0, parse_tc(cue[\"tc\"]) - int(cue[\"lead_in_s\"]) * FPS)",
+  "    return max(0, parse_tc(cue[\"tc\"]))"),
+
+ ("start at a cue: Resume offers the cue after, at the very frame",
+  "ltcplay/play_from.py",
+  "        if at <= frame and (best is None or at >= parse_tc(best[\"tc\"])):",
+  "        if at < frame and (best is None or at >= parse_tc(best[\"tc\"])):"),
+
+ ("start at a cue: the audio fade in is never sent",
+  "ltcplay/clock.py",
+  "            fade = self._sa.fade_frames(fade_in_ms) if fade_in_ms else 0",
+  "            fade = 0"),
+
+ ("start at a cue: a clock that cannot seek is started part way",
+  "ltcplay/session.py",
+  "        if part_way and self.playhead_clock() is None:",
+  "        if False:"),
+
+ ("start at a cue: the runner never reads the cue again at the start",
+  "ltcplay/fire_ice.py",
+  "        recheck = getattr(self.svc, \"recheck_start_at\", None)",
+  "        recheck = lambda sa: (sa, \"\")"),
+
+ ("start at a cue: Continue anyway never reads the cue again",
+  "ltcplay/schedule_service.py",
+  "            fresh, why = self.recheck_start_at(start_at)\n            if why:",
+  "            fresh, why = start_at, \"\"\n            if why:"),
+
+ ("start at a cue: a cue changed since it was chosen still stands",
+  "ltcplay/remote.py",
+  "        if changed:\n            return None, (f\"the cue {want.get('name')} was changed",
+  "        if False:\n            return None, (f\"the cue {want.get('name')} was changed"),
+
+ ("start at a cue: Show mode is asked only while no show is live",
+  "ltcplay/remote.py",
+  "        if self._rehearsal_run(s):\n            # Asked of the run itself",
+  "        if self.programming()[0]:\n            # Asked of the run itself"),
+
+ ("start at a cue: the remote never hands the scheduler its re-check",
+  "ltcplay/remote.py",
+  "            schedule.start_at_check = self.start_at_check",
+  "            schedule.start_at_check = None"),
+
+ ("start at a cue: no re-check wired lets the cue through",
+  "ltcplay/schedule_service.py",
+  "            return None, (\"this engine cannot read the play-from cues, so \"\n                          \"it cannot start at a cue.\")",
+  "            return start_at, \"\""),
+
+ ("start at a cue: Resume's memory survives the night change",
+  "ltcplay/fire_ice.py",
+  "        if state in (\"CLOSING\", \"OFF\") or night != at.get(\"night\") or \\",
+  "        if state in (\"CLOSING\", \"OFF\") or \\"),
+
+ ("start at a cue: Resume's memory survives Run off",
+  "ltcplay/fire_ice.py",
+  "                self.show._session() is None:\n            with self._lock:\n                if self.stopped_at is at:",
+  "                False:\n            with self._lock:\n                if self.stopped_at is at:"),
+
+ ("start at a cue: Resume's memory survives Close for the night",
+  "ltcplay/fire_ice.py",
+  "        if state in (\"CLOSING\", \"OFF\") or night != at.get(\"night\") or \\",
+  "        if state in (\"OFF\",) or night != at.get(\"night\") or \\"),
+
+ ("start at a cue: the remote offers an earlier night's stop",
+  "ltcplay/remote.py",
+  "        if m is None or at.get(\"night\") != str(getattr(m, \"date\", \"\")):",
+  "        if False:"),
+
+ ("start at a cue: video black for the cue lands in a Stop's fade",
+  "ltcplay/conductor.py",
+  "            if want.get(\"halt\") is True and self._done_gen != self._gen:",
+  "            if False:"),
+
+ ("start at a cue: preshow music refuses the video black, so it cuts in",
+  "ltcplay/conductor.py",
+  "            if self._look in (PLAYING,) + HOLDING_LOOKS:\n                return self._refused(\"Video black for the cue\",",
+  "            if self._look in (PLAYING,) + HOLDING_LOOKS or self._playing():\n                return self._refused(\"Video black for the cue\","),
+
+ ("start at a cue: a cue past the audio's end passes the route",
+  "ltcplay/remote.py",
+  "        if audio_s is not None and \\\n                pf_mod.parse_tc(cue[\"tc\"]) / pf_mod.FPS >= audio_s:",
+  "        if False:"),
+
+ ("start at a cue: Resume compares the show cue with its case",
+  "ltcplay/remote.py",
+  "                       str(entry[\"cue\"]).lower() !=\n                       str(at[\"cue\"]).lower()):",
+  "                       entry[\"cue\"] !=\n                       at[\"cue\"]):"),
+
+ ("start at a cue: a fireball stage opening in the landing's settle time goes out late and short",
+  "ltcplay/fireball_cues.py",
+  "                if not run.top_ok and \\\n                        w[\"s0\"] < land + LANDING_SETTLE_FRAMES:",
+  "                if False:"),
+
+ ("start at a cue: Valve Open opens without its Igniter lead",
+  "ltcplay/fireball_cues.py",
+  "            if k not in run.started and lw is not None and \\",
+  "            if False and lw is not None and \\"),
+
+ ("start at a cue: an FSEQ slot turning on in the settle time is not held",
+  "ltcplay/fireball_cues.py",
+  "                if settling:\n                    run.fseq_land_hold.add(slot)",
+  "                if False:\n                    run.fseq_land_hold.add(slot)"),
+
+ ("start at a cue: an FSEQ Valve opens while its Igniter lead was held",
+  "ltcplay/fireball_cues.py",
+  "                        lead in run.fseq_lead_held or\n",
+  "                        False or\n"),
+
+ ("start at a cue: the landing's settle time is only the flame link's",
+  "ltcplay/fireball_cues.py",
+  "LANDING_SETTLE_FRAMES = 24",
+  "LANDING_SETTLE_FRAMES = 15"),
+
+ ("start at a cue: a Stop never takes the stop position at the press",
+  "ltcplay/remote.py",
+  "            note = getattr(getattr(self.schedule, \"performer\", None),\n                           \"note_stop\", None)",
+  "            note = None"),
+
+ ("start at a cue: a held show's frozen frame is not the one remembered",
+  "ltcplay/fire_ice.py",
+  "        if getattr(clk, \"_paused\", False):\n            f = getattr(clk, \"_frozen_frame\", None)",
+  "        if False:\n            f = getattr(clk, \"_frozen_frame\", None)"),
+
+ ("start at a cue: the route takes a cue whose lead-in changed",
+  "ltcplay/remote.py",
+  "        if \"lead_in_s\" in body and body.get(\"lead_in_s\") != cue[\"lead_in_s\"]:",
+  "        if False:"),
+
+ ("start at a cue: a Back keeps what the fire stages did before the move",
+  "ltcplay/fireball_cues.py",
+  "            for k in FIRE_STAGES:\n                run.started.discard(k)",
+  "            for k in ():\n                run.started.discard(k)"),
+
+ ("start at a cue: an FSEQ Resume in the Igniter lead counts as a move",
+  "ltcplay/fireball_cues.py",
+  "        self._fseq_land(out, run, relf, landed if moved is None else moved,\n                        seek)",
+  "        self._fseq_land(out, run, relf, landed,\n                        seek)"),
+
+ ("start at a cue: an FSEQ Valve open where the playhead lands goes on",
+  "ltcplay/fireball_cues.py",
+  "                if seek and slot in NEEDS_SLOT and \\",
+  "                if False and slot in NEEDS_SLOT and \\"),
+
+ ("start at a cue: a stage landed inside is skipped without a word",
+  "ltcplay/fireball_cues.py",
+  "                    self._say(f\"{fbtl.STAGE_WORD[k]} was skipped: the show \"\n                              f\"landed inside its window (a stage is never \"\n                              f\"started part way).\")",
+  "                    pass"),
+
+ ("start at a cue: a stage opening too soon is skipped without a word",
+  "ltcplay/fireball_cues.py",
+  "                    self._say(f\"{fbtl.STAGE_WORD[k]} was skipped: it opens \"\n                              f\"too soon after the landing (it would go out \"\n                              f\"late and cut short).\")",
+  "                    pass"),
+
+ ("start at a cue: an FSEQ Valve held for its lead is not said",
+  "ltcplay/fireball_cues.py",
+  "                    self._shot_lost(run, f\"The FSEQ's {word} was held: its \"",
+  "                    (lambda *a: None)(run, f\"The FSEQ's {word} was held: its \""),
+
+
+ ("start at a cue: Stop never asks for the stop position",
+  "ltcplay/remote.py",
+  "                    note()\n",
+  "                    pass\n"),
+
+ ("start at a cue: the re-check compares the show cue with its case",
+  "ltcplay/remote.py",
+  "        if str(fresh.get(\"show_cue\") or \"\").lower() != \\\n                str(start_at.get(\"show_cue\") or \"\").lower():",
+  "        if str(fresh.get(\"show_cue\") or \"\") != \\\n                str(start_at.get(\"show_cue\") or \"\"):"),
+
+ ('remote: the Abort route is back', 'ltcplay/remote.py',
+  'CONTROL_ROUTES = ("start-now", "hold", "resume",\n'
+  '                  "disarm-all", "stop", "run-off", "start-at-cue")',
+  'CONTROL_ROUTES = ("start-now", "hold", "resume", "abort",\n'
+  '                  "disarm-all", "stop", "run-off", "start-at-cue")'),
+
+ ("ui2 page: the broken page's Stop posts nothing", 'ltcplay/web/remote2.html',
+  '    const r = await fetch("/api/remote/stop", {method:"POST", credentials:"same-origin", cache:"no-store",\n'
+  '      headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify({seen:seen})});',
+  '    const r = await fetch("/api/remote/status", {method:"GET", credentials:"same-origin", cache:"no-store",\n'
+  '      headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}});'),
+
+ ("halt: a Stop leaves a purge selection as it is (T7, the Abort's)", 'ltcplay/remote.py',
+  '                    (getattr(m, "purge", None), "clear",\n'
+  '                     (f"Stop held by {who or screen or \'someone\'}",)),\n',
+  ""),
+
+ ("halt: a Stop leaves the laser tests on (T7, the Abort's)", 'ltcplay/remote.py',
+  '                    (getattr(m, "lasers", None), "all_off", ("Stop held",))):',
+  '                    (getattr(m, "lasers", None), "all_on", ("Stop held",))):'),
+
+ ("fire & ice: a Stop during the hand-over lets the show start go out (as the removed Abort's latch did not)", 'ltcplay/fire_ice.py',
+  '        if getattr(self.conductor, "stops", 0) != stops0:\n'
+  '            # A Stop landed DURING the hand-over',
+  '        if False:\n'
+  '            # A Stop landed DURING the hand-over'),
+
+ ("upgrade: an old list's Abort latch is read as nothing (not a Stop's Hold)", 'ltcplay/schedule_service.py',
+  '        if sch.abort_latch_in(doc):',
+  '        if False:'),
+
+ ('upgrade: an old Abort latch is not dark', 'ltcplay/schedule.py',
+  '        dark=doc.get("dark", False) or abort_latch_in(doc),',
+  '        dark=doc.get("dark", False),'),
+
+ ("resume: a Resume from a Stop's Hold leaves the fault flag up (Reset used to clear it)", 'ltcplay/schedule_service.py',
+  '        if ended and self.machine is not None and self.machine.faults:',
+  '        if False:'),
+
+ ("page: the old page can bring the rig up while a Stop's Hold stands (the removed Abort latch's rule)", 'ltcplay/web.py',
+  '                self._stop_held():\n'
+  '            return self._send(409, {"error": STOP_HOLD_REFUSAL})',
+  '                False:\n'
+  '            return self._send(409, {"error": STOP_HOLD_REFUSAL})'),
+
+ ("journal: a summary written from the journal reads a Stop's show as still running", 'ltcplay/journal.py',
+  '    if r.startswith("STOPPED"):\n'
+  '        # A Stop',
+  '    if False:\n'
+  '        # A Stop'),
+
+ ("fire & ice: a start's Stop count is read when it is made, not when it was decided (cold review A of #199, F2)", 'ltcplay/schedule_service.py',
+  '            if method in ("show_starting", "start_show"):',
+  '            if method == "show_starting":'),
+
+ ('fire & ice: the runner ignores the Stop count the start was decided with', 'ltcplay/fire_ice.py',
+  '        stops0 = getattr(self.conductor, "stops", 0) if stops is None \\\n'
+  '            else stops',
+  '        stops0 = getattr(self.conductor, "stops", 0)'),
+
+ ("fire & ice: a start refused by a Stop clears the pixels' black first (F5)", 'ltcplay/fire_ice.py',
+  '        if not why and getattr(self.conductor, "stops", 0) != stops0:',
+  '        if False:'),
+
+ ("resume: every Resume from a Hold clears the fault flag, not only a Stop's Hold's (F3)", 'ltcplay/schedule_service.py',
+  '        if ended and self.machine is not None and self.machine.faults:',
+  '        if self.machine is not None and self.machine.faults:'),
+
+ ("resume: a Stop's Hold Resume never lets go of the set-aside night (F4)", 'ltcplay/schedule_service.py',
+  '        if ended:\n'
+  '            self._release_set_aside()',
+  '        if False:\n'
+  '            self._release_set_aside()'),
+
+ ('conductor: a Stop only re-blanks when music started under an earlier Stop still fading (M1)', 'ltcplay/conductor.py',
+  '            again = (not force_new and not music_since and',
+  '            again = (not force_new and'),
+
+ ("stop hold: tonight's list never carries the Stop's Hold (M3)", 'ltcplay/schedule_service.py',
+  '        if held:\n'
+  "            # The Stop's Hold's second record",
+  '        if False:\n'
+  "            # The Stop's Hold's second record"),
+
+ ("stop hold: the night before's Stop's Hold is not carried forward (M3)", 'ltcplay/schedule_service.py',
+  '        elif held:\n'
+  '            self._stop_hold_from_list(',
+  '        elif False:\n'
+  '            self._stop_hold_from_list('),
+
+ ("stop hold: the list is not saved again when the Stop's Hold changes (M3)", 'ltcplay/schedule_service.py',
+  '        if self.machine is not None and \\\n'
+  '                getattr(self, "_saved_stop_held", None) != (',
+  '        if False and \\\n'
+  '                getattr(self, "_saved_stop_held", None) != ('),
+
+ ("resume: a Resume in CLOSING or OFF releases the Stop's Hold without its other steps (round 2, 1)", 'ltcplay/schedule_service.py',
+  '                self._end_stop_hold(who, screen, surface)\n'
+  '                return {"ok": True,',
+  '                self._stop_carry_clear(who, screen, "pressed Resume")\n'
+  '                self._stop_carry_write()\n'
+  '                return {"ok": True,'),
+
+ ('resume: a Resume is not checked again for a Stop under the lock (round 2, 3)', 'ltcplay/schedule_service.py',
+  '            if kind == sch.RESUME and self.halting():\n'
+  '                # Again under the lock',
+  '            if False:\n'
+  '                # Again under the lock'),
+
+ ("stop hold: tonight's list's stop_held is not read back the same night (round 2, 2)", 'ltcplay/schedule_service.py',
+  '        elif doc.get("stop_held") is True or (',
+  '        elif False and ('),
+
+ ("stop hold: a #191 build's Stop's Hold on HOLD in tonight's list is a plain Hold (round 2, 4)", 'ltcplay/schedule_service.py',
+  '                doc.get("stop_hold") is True and\n'
+  '                doc.get("state") == sch.HOLD):\n'
+  '            # This version',
+  '                False):\n'
+  '            # This version'),
+
+ ("stop hold: a #191 build's Stop's Hold on HOLD the night before is not carried (round 2, 2)", 'ltcplay/schedule_service.py',
+  '                    prev.get("stop_hold") is True and\n'
+  '                    prev.get("state") == sch.HOLD))',
+  '                    False))'),
+
+ ("stop hold: tonight's list refuses its own stop_held key (round 2, 2)", 'ltcplay/schedule.py',
+  '                              "stop_hold", "stop_held"))',
+  '                              "stop_hold"))'),
+
+ ('conductor: a Hold after a Stop turns it into a pause a Resume brings back (round 2)', 'ltcplay/conductor.py',
+  '            stopped = (self._look == STOPPED_DARK and\n',
+  '            stopped = (False and\n'),
+
+ ("conductor: a new show's music after a Stop is not held (round 3)", 'ltcplay/conductor.py',
+  '                       self._stopped_since_music)\n',
+  '                       (self._stopped_since_music or self.stops > 0))\n'),
+
+ ('playhead: the Hold press says paused when a Stop left the rig dark (round 3)', 'ltcplay/playhead.py',
+  '        if why:\n'
+  '            return f"Programming playback was not paused: {why}"',
+  '        if False:\n'
+  '            return f"Programming playback was not paused: {why}"'),
+
+ ('playhead: a Pause never hears that a Stop left the rig dark (round 3)', 'ltcplay/playhead.py',
+  '            if self._stopped_dark(cond):\n',
+  '            if False:\n'),
+
+ ("start at a cue: Valve Open trusts that its Igniter was asked for, not that it went out",
+  "ltcplay/fireball_cues.py",
+  "                    lw[\"slot\"] not in run.lead_seen:",
+  "                    lead not in run.started:"),
+
+ ("start at a cue: a flame link landing with the cue time unchanged is not a move",
+  "ltcplay/fireball_cues.py",
+  "        lc = self._land_count()",
+  "        lc = None"),
+
+ ("start at a cue: an FSEQ Valve opens while its Igniter has not gone out",
+  "ltcplay/fireball_cues.py",
+  "                        (raw[lead - 1] > 0 and\n                         lead not in run.lead_seen)):",
+  "                        False):"),
+
+ ("start at a cue: an Igniter counts as gone out without the wire saying so",
+  "ltcplay/fireball_cues.py",
+  "                if len(sent) >= slot and sent[slot - 1] > 0:\n                    run.lead_seen.add(slot)",
+  "                if True:\n                    run.lead_seen.add(slot)"),
+
+ ("start at a cue: an Igniter seen before a landing still counts after it",
+  "ltcplay/fireball_cues.py",
+  "        if moved:\n            run.lead_seen.clear()",
+  "        if False:\n            run.lead_seen.clear()"),
+
+ ("start at a cue: the engine never hands the fireball the link's landings",
+  "ltcplay/web.py",
+  "            land_get=lambda: getattr(link, \"guard_gen\", None))",
+  "            land_get=None)"),
+
+ ('scheduler: Resume hands the next tick a show past its late limit to miss', 'ltcplay/schedule.py',
+  '        _sweep(tx, held=True)\n'
+  '    back = m.held_from',
+  '        pass\n'
+  '    back = m.held_from'),
+
+ ("scheduler: Resume of a Stop's Hold holds back every due show", 'ltcplay/schedule.py',
+  '        _sweep(tx, held=True)\n'
+  '    back = m.held_from',
+  '        _sweep(tx, held=True)\n'
+  '        if m.stop_hold:\n'
+  '            for s in tx.m.pending():\n'
+  '                if s.start <= now:\n'
+  '                    _hold_back(tx, s)\n'
+  '    back = m.held_from'),
+
+ ("flame link: a seek it sees itself does not start the guard generation again",
+  "ltcplay/flamelink.py",
+  "        self.seeks += 1\n        self.guard_gen += 1",
+  "        self.seeks += 1"),
+
+
+ ("start at a cue: the engine hands the fireball only the link's landings",
+  "ltcplay/web.py",
+  "            land_get=lambda: getattr(link, \"guard_gen\", None))",
+  "            land_get=lambda: getattr(link, \"landings\", None))"),
+
+ ("start at a cue: an FSEQ Igniter's evidence outlives its shot",
+  "ltcplay/fireball_cues.py",
+  "                    run.lead_seen.discard(slot)\n                continue",
+  "                    pass\n                continue"),
+
+ ("start at a cue: a shot lost to the Igniter rule is not counted",
+  "ltcplay/fireball_cues.py",
+  "            self.shots_skipped[show] += 1",
+  "            pass"),
+
+
+ ("fireball timeline: a Valve on its Igniter's frame is not warned about",
+  "ltcplay/fireball_timeline.py",
+  "    if ig is None or va is None or va < ig or va >= ig + LEAD_FRAMES:",
+  "    if True:"),
+
+ ("fireball timeline: a save with a same-frame Valve says nothing",
+  "ltcplay/remote.py",
+  "        warn = fbtl_mod.lead_warning((entry or {}).get(\"stages\") or ())",
+  "        warn = \"\""),
+
+ ("ui2 page: the fireball editor never warns about a same-frame Valve",
+  "ltcplay/web/remote2.html",
+  "  if(at.igniter !== undefined && at.valve !== undefined && at.valve >= at.igniter && at.valve < at.igniter + 3){",
+  "  if(false){"),
+
+ ("fireball cues: a lost shot is counted though nothing reaches a tank",
+  "ltcplay/fireball_cues.py",
+  "        if idle:\n            return\n        self._shot_skipped(run)",
+  "        if False:\n            return\n        self._shot_skipped(run)"),
+
+ ("fireball cues: every lost shot is a fault line again (the soak counts them)",
+  "ltcplay/fireball_cues.py",
+  "        self._say(text)\n\n    def _shot_skipped(self, run):",
+  "        self._say(text, fault=True)\n\n    def _shot_skipped(self, run):"),
+
+ ("fireball charge: the soak's flamesafe reads as a fireball that may be reached",
+  "ltcplay/fireball_charge.py",
+  "            return bool(self._no_group) and self.armed_now() == \"off\"",
+  "            return False"),
+
+ ("Stream Deck: a press after the deck's own Stop is sent before its answer",
+  "ltcplay/streamdeck.py",
+  "            self._after_stops()\n            self._post_one(*item)",
+  "            self._post_one(*item)"),
+
+ ("Stream Deck: a Stop is not counted as waiting for its answer",
+  "ltcplay/streamdeck.py",
+  "            with self._stops_cv:\n                self._stops += 1",
+  "            with self._stops_cv:\n                pass"),
+
+
+ # interface 2.0, P11 (machine map, Arrange) and P13 (show machine switches)
+ ("ui 2.0 map: a swipe that starts on a machine chooses it",
+  "ltcplay/web/remote2.html",
+  "  if(Math.hypot(e.clientX - t.x, e.clientY - t.y) >= MACH_TAP_PX || performance.now() - t.at >= MACH_TAP_MS) return;",
+  "  if(performance.now() - t.at >= MACH_TAP_MS) return;"),
+
+ ("ui 2.0 map: a long press chooses a machine",
+  "ltcplay/web/remote2.html",
+  "  if(Math.hypot(e.clientX - t.x, e.clientY - t.y) >= MACH_TAP_PX || performance.now() - t.at >= MACH_TAP_MS) return;",
+  "  if(Math.hypot(e.clientX - t.x, e.clientY - t.y) >= MACH_TAP_PX) return;"),
+
+ ("ui 2.0 map: a tile blocks the page's scroll outside Arrange",
+  "ltcplay/web/remote2.html",
+  "  cursor:pointer;touch-action:pan-y;",
+  "  cursor:pointer;touch-action:none;"),
+
+ ("ui 2.0 Arrange: started on a window too short for its bar",
+  "ltcplay/web/remote2.html",
+  "function arrangeRoom(){ return $(\"d-panel\").clientHeight >= ARRANGE_MIN_PX; }",
+  "function arrangeRoom(){ return true; }"),
+
+ ("ui 2.0 Arrange: the button loses its icon",
+  "ltcplay/web/remote2.html",
+  "  if(ab){ ab.disabled = ARRANGE; }",
+  "  if(ab){ ab.disabled = ARRANGE; ab.textContent = \"Arrange\"; }"),
+
+ ("ui 2.0 Arrange: Arm all lasers is not held back while arranging",
+  "ltcplay/web/remote2.html",
+  "  if(arrangeBlocked(\"laser-arm\", {on:true})) return null;\n  if(!(await confirmBox(\"Arm all \"",
+  "  if(!(await confirmBox(\"Arm all \""),
+
+ ("ui 2.0 Arrange: signing out stays arranging",
+  "ltcplay/web/remote2.html",
+  "      if(ARRANGE) mapOff();\n      try{ const r = await post(\"/api/remote/signout\"",
+  "      try{ const r = await post(\"/api/remote/signout\""),
+
+ ("ui 2.0 Arrange: a machine select is not held back while arranging",
+  "ltcplay/web/remote2.html",
+  "    ((route === \"purge-select\" || route === \"laser-test\") && !off) ||",
+  "    (route === \"laser-test\" && !off) ||"),
+
+ ("ui 2.0 Arrange: offered on an iPad",
+  "ltcplay/web/remote2.html",
+  "  $(\"mo-arrange\").hidden = !(ME && ME.local);",
+  "  $(\"mo-arrange\").hidden = false;"),
+
+ ("ui 2.0 Arrange: leaving the Purge step stays arranging",
+  "ltcplay/web/remote2.html",
+  "  if(DAY_STEP === \"purge\") mapOff();\n  if(DAY_STEP === \"fireball\") fireballView(false);\n  DAY_STEP = k;",
+  "  if(DAY_STEP === \"fireball\") fireballView(false);\n  DAY_STEP = k;"),
+
+ ("ui 2.0 Arrange: leaving DAY stays arranging",
+  "ltcplay/web/remote2.html",
+  "  if(!on) mapOff();\n",
+  ""),
+
+ ("ui 2.0 Arrange: the fire key line does not say arranging",
+  "ltcplay/web/remote2.html",
+  "      if(ARRANGE){ kk.className = \"key\"; kk.textContent = ARRANGE_BANNER; }\n",
+  ""),
+
+ ("ui 2.0 map: the field is never drawn",
+  "ltcplay/web/remote2.html",
+  "  renderField(MO, (ST && ST.flames) || {}, MO.purge_state || {});\n",
+  ""),
+
+ ("ui 2.0 switches: Arming from a screen shown on an iPad",
+  "ltcplay/web/remote2.html",
+  "  if($(\"arming-card\").hidden !== !local) $(\"arming-card\").hidden = !local;",
+  "  $(\"arming-card\").hidden = false;"),
+
+ ("ui 2.0 switches: the announcement output shown on an iPad",
+  "ltcplay/web/remote2.html",
+  "  const an = !local || !L.show;",
+  "  const an = !L.show;"),
+
+ ("ui 2.0 switches: the outputs are never read",
+  "ltcplay/web/remote2.html",
+  "  if(t === \"schedule\" && ME && ME.local) loadAnnOutputs();\n",
+  ""),
+
+ ("ui 2.0 switches: Arming from a screen goes on with no question",
+  "ltcplay/web/remote2.html",
+  "  if(!(await confirmBox(\"Turn on arming from a screen?\", SCREEN_ARMING_ENABLES, \"Yes, turn it on\", \"go\"))) return;",
+  ""),
+
+ ("ui 2.0 switches: Live flame On for a sign-in without Settings",
+  "ltcplay/web/remote2.html",
+  "  $(\"lf-on\").disabled = on || lf.available === false || !mayRow(ST, \"settings\");",
+  "  $(\"lf-on\").disabled = on || lf.available === false;"),
+
+ # interface 2.0's Schedule tab (P3, P4 of docs/REMOVE_1_0_PLAN.md)
+ ("ui 2.0 Schedule: opening the tab again reloads the file over unsaved edits",
+  "ltcplay/web/remote2.html",
+  "if(ME && ME.local && !SE_READ){ SE_READ = true; loadSchedule(); } }",
+  "if(ME && ME.local){ SE_READ = true; loadSchedule(); } }"),
+
+ ("ui 2.0 Schedule: a tab press opens the tab twice (two reads)",
+  "ltcplay/web/remote2.html",
+  "  else if(location.hash !== \"#\" + t){ location.hash = t; return; }\n",
+  "  else if(location.hash !== \"#\" + t){ location.hash = t; }\n"),
+
+ ("ui 2.0 Schedule: typing is not a touch, so the page leaves a form being typed in",
+  "ltcplay/web/remote2.html",
+  "document.addEventListener(\"keydown\", () => { LAST_TOUCH = Date.now(); }, true);\n",
+  ""),
+
+ ("ui 2.0 Schedule: going back to SHOW says nothing of unsaved edits",
+  "ltcplay/web/remote2.html",
+  "  try{ if(seDirty()) say(\"Unsaved schedule edits kept.\",",
+  "  try{ if(false) say(\"Unsaved schedule edits kept.\","),
+
+ ("ui 2.0 Schedule: the tonight card has no state line",
+  "ltcplay/web/remote2.html",
+  "  setText($(\"tn-state\"), tonightState(s));\n",
+  ""),
+
+ ("ui 2.0 Schedule: the Run warning is not shown",
+  "ltcplay/web/remote2.html",
+  "  $(\"tn-run-warn\").hidden = !rw; setText($(\"tn-run-warn\"), rw);",
+  "  $(\"tn-run-warn\").hidden = true;"),
+
+ ("ui 2.0 Schedule: the editor shows on an iPad",
+  "ltcplay/web/remote2.html",
+  "  if($(\"sched-edit\").hidden !== !local) $(\"sched-edit\").hidden = !local;",
+  "  $(\"sched-edit\").hidden = false;"),
+
+ ("ui 2.0 Schedule: the editor is never read when the address opened the tab",
+  "ltcplay/web/remote2.html",
+  "  if(local && TAB === \"schedule\" && !SE_READ){ SE_READ = true; loadSchedule(); }\n",
+  ""),
+
+ ("ui 2.0 Schedule: Save drops what the editor does not show (the exceptions)",
+  "ltcplay/web/remote2.html",
+  "  const doc = Object.assign({}, SCHED_DOC || {});\n  doc.timezone",
+  "  const doc = {};\n  doc.timezone"),
+
+ ("ui 2.0 Schedule: a tap never opens a show's notes",
+  "ltcplay/web/remote2.html",
+  "  if(el) toggleSlot(el.dataset.k);\n});",
+  "});"),
+
+ ("ui 2.0 Schedule: Next names the wrong show",
+  "ltcplay/web/remote2.html",
+  "  return nx ? (\"Show \" + nx.show + \" at \" + nx.start) :",
+  "  return nx ? (\"Show \" + nx.start) :"),
+
+ ("ui 2.0 Schedule: the tonight list is not drawn",
+  "ltcplay/web/remote2.html",
+  "  try{ renderTonight(s); }catch(e){}\n",
+  ""),
+
+ # interface 2.0's Programming tab (P1, P2 of docs/REMOVE_1_0_PLAN.md)
+ ("ui 2.0 Programming: Run in Programming starts a Show run (no on_lost hold)",
+  "ltcplay/web/remote2.html",
+  "  try{ const j = await post(\"/api/start\", prog ? {timeline:f, on_lost:\"hold\"} : {timeline:f}); say(prog",
+  "  try{ const j = await post(\"/api/start\", {timeline:f}); say(prog"),
+
+ ("ui 2.0 Programming: Programming runs while a scheduled show is live",
+  "ltcplay/web/remote2.html",
+  "  if(v.locked){ say(\"Programming is locked.\",",
+  "  if(false){ say(\"Programming is locked.\","),
+
+ ("ui 2.0 Programming: Run starts with no question",
+  "ltcplay/web/remote2.html",
+  "  if(!(await confirmBox(prog ? \"Run in Programming?\"",
+  "  if(false && !(await confirmBox(prog ? \"Run in Programming?\""),
+
+ ("ui 2.0 Programming: Run off goes with no question",
+  "ltcplay/web/remote2.html",
+  "    const sure = await confirmBox(\"Turn Run off?\", RUN_OFF_CONFIRM, \"Yes, Run off\", \"red\");\n    if(!sure) return;\n    if(runLook(ST, stale()).mode !== \"runoff\")",
+  "    if(runLook(ST, stale()).mode !== \"runoff\")"),
+
+ ("ui 2.0 Programming: the session is pressable signed out",
+  "ltcplay/web/remote2.html",
+  "  const can = controlStates(ST, isSt).transport && mayRow(ST, \"show\");",
+  "  const can = controlStates(ST, isSt).transport;"),
+
+ ("ui 2.0 Programming: the session is pressable with no contact",
+  "ltcplay/web/remote2.html",
+  "  const can = controlStates(ST, isSt).transport && mayRow(ST, \"show\");",
+  "  const can = mayRow(ST, \"show\");"),
+
+ ("ui 2.0 Programming: Run's Stop is held back while signed out",
+  "ltcplay/web/remote2.html",
+  "    b.disabled = HALT_BUSY || (rk.mode !== \"stop\" && (progFlipped() || !mayRow(ST, \"show\")));",
+  "    b.disabled = HALT_BUSY || progFlipped() || !mayRow(ST, \"show\");"),
+
+ ("ui 2.0 Programming: Run is pressable signed out",
+  "ltcplay/web/remote2.html",
+  "    b.disabled = HALT_BUSY || (rk.mode !== \"stop\" && (progFlipped() || !mayRow(ST, \"show\")));",
+  "    b.disabled = HALT_BUSY || (rk.mode !== \"stop\" && progFlipped());"),
+
+ ("ui 2.0 Programming: Run's Stop fires on one tap",
+  "ltcplay/web/remote2.html",
+  "  if(d.act === \"stop\") return stopTap2(\"p-run\", ev);",
+  "  if(d.act === \"stop\") return pressStop();"),
+
+ ("ui 2.0 Programming: Loop sends the state it already has",
+  "ltcplay/web/remote2.html",
+  "press(\"loop\", {on: !$(\"p-loop\").dataset.on})",
+  "press(\"loop\", {on: !!$(\"p-loop\").dataset.on})"),
+
+ ("ui 2.0 Programming: a flame cue fault is not said",
+  "ltcplay/web/remote2.html",
+  "  const warn = on && tr.programming && fault ? \"Flame cues are not going out, so nothing fires from Play from: \" + fault : \"\";\n  return {on, line, warn};",
+  "  const warn = \"\";\n  return {on, line, warn};"),
+
+ ("ui 2.0 Programming: Programming is never locked by a live show (copy differs)",
+  "ltcplay/web/remote2.html",
+  "  const live = sch.state === \"SHOW\" || sch.state === \"PAUSED\";\n  let text = MODE_WHAT[want], locked = false;",
+  "  const live = sch.state === \"SHOW\";\n  let text = MODE_WHAT[want], locked = false;"),
+
+ ("ui 2.0 Programming: a tab opened from its address never reads the show files",
+  "ltcplay/web/remote2.html",
+  "  if(local && !$(\"p-file\").options.length && Date.now() - P_FILES_AT > 5000) progFiles();\n",
+  ""),
+
+ ("ui 2.0 Programming: the Run card shows on an iPad",
+  "ltcplay/web/remote2.html",
+  "  if($(\"p-run-card\").hidden !== !local) $(\"p-run-card\").hidden = !local;",
+  "  $(\"p-run-card\").hidden = false;"),
+
+ # 2.0's show PC tools: P12, P14, P15, P16 (1.0's code)
+ ("ui 2.0 tools: the Stream Deck operator card is shown off the show PC",
+  "ltcplay/web/remote2.html",
+  "  $(\"deck-op\").hidden = !ME.local;",
+  "  $(\"deck-op\").hidden = false;"),
+
+ ("ui 2.0 tools: the Show network card is shown off the show PC",
+  "ltcplay/web/remote2.html",
+  "  $(\"admin\").hidden = !ME.local;",
+  "  $(\"admin\").hidden = false;"),
+
+ ("ui 2.0 tools: the Show folder card is shown off the show PC",
+  "ltcplay/web/remote2.html",
+  "  $(\"folders\").hidden = !ME.local;",
+  "  $(\"folders\").hidden = false;"),
+
+ ("ui 2.0 tools: Restart the engine goes with no question",
+  "ltcplay/web/remote2.html",
+  "  if(!(await confirmBox(\"Restart the engine?\",",
+  "  if(false && !(await confirmBox(\"Restart the engine?\","),
+
+ ("ui 2.0 tools: Reload engine goes with no question",
+  "ltcplay/web/remote2.html",
+  "  if(!(await confirmBox(\"Reload the engine?\",",
+  "  if(false && !(await confirmBox(\"Reload the engine?\","),
+
+ ("ui 2.0 tools: Use this folder goes with no question",
+  "ltcplay/web/remote2.html",
+  "  if(!(await confirmBox(\"Use this show folder?\",",
+  "  if(false && !(await confirmBox(\"Use this show folder?\","),
+
+ ("ui 2.0 tools: Reload engine is offered without the settings permission",
+  "ltcplay/web/remote2.html",
+  "  $(\"cfg-reload\").hidden = !cn.offer || !mayRow(s, \"settings\");",
+  "  $(\"cfg-reload\").hidden = !cn.offer;"),
+
+ ("ui 2.0 tools: Restart the engine is live without the settings permission",
+  "ltcplay/web/remote2.html",
+  "  $(\"net-restart\").disabled = !r.offered || !mayRow(ST, \"settings\");",
+  "  $(\"net-restart\").disabled = !r.offered;"),
+
+ ("ui 2.0 tools: the Stream Deck operator is chosen with another screen name",
+  "ltcplay/web/remote2.html",
+  "await post(\"/api/schedule/operator\", {who:$(\"deck-op-pick\").value, screen:\"Rack screen\"});",
+  "await post(\"/api/schedule/operator\", {who:$(\"deck-op-pick\").value, screen:\"2.0\"});"),
+
+ ("ui 2.0 tools: today's PDF loses its date",
+  "ltcplay/web/remote2.html",
+  "    const pdf = \"/api/remote/checklist-pdf?date=\" + encodeURIComponent((MO && MO.checklists && MO.checklists.show_date) || \"\");",
+  "    const pdf = \"/api/remote/checklist-pdf?date=\";"),
+
+ ("ui 2.0 tools: Export all navigates the page instead of downloading",
+  "ltcplay/web/remote2.html",
+  "href=\"/api/remote/checklist-export\" download target=\"_blank\" rel=\"noopener\">",
+  "href=\"/api/remote/checklist-export\">"),
+
+ ("ui 2.0 tools: Verify records does nothing",
+  "ltcplay/web/remote2.html",
+  "    $(\"mo-verify\").addEventListener(\"click\", () => moPress(\"checklist-verify\", {}, \"mo-cmsg\"));\n",
+  ""),
+
+ ("ui 2.0 tools: the rig check card is shown off the show PC",
+  "ltcplay/web/remote2.html",
+  "  rcard.hidden = !s.preroll || !(ME && ME.local);",
+  "  rcard.hidden = !s.preroll;"),
+
+ ("ui 2.0 tools: the cards are never drawn",
+  "ltcplay/web/remote2.html",
+  "  try{ renderTools(isSt); }catch(e){}\n",
+  ""),
+
+ ("ui 2.0 tools: the Schedule tab never reads the network or the deck",
+  "ltcplay/web/remote2.html",
+  "  if(t === \"schedule\" && ME && ME.local){ loadNetwork(); loadDeckOp(); loadFolders(); }\n",
+  ""),
+
+ ("ui 2.0 tools: Close this window is offered off the show PC",
+  "ltcplay/web/remote2.html",
+  "    $(\"info-exit\").hidden = !(ME && ME.local && j.kiosk_closable);",
+  "    $(\"info-exit\").hidden = !j.kiosk_closable;"),
+
+ ("ui 2.0 tools: Check the show file checks the typed folder",
+  "ltcplay/web/remote2.html",
+  "  const f = $(\"p-file\").value;\n  if(!f){ $(\"fo-checked\")",
+  "  const f = $(\"fo-path\").value;\n  if(!f){ $(\"fo-checked\")"),
+
+ ("ui 2.0 tools: Getting started never shows",
+  "ltcplay/web/remote2.html",
+  "  card.hidden = !!su.ready;",
+  "  card.hidden = true;"),
+
+ ("ui 2.0 tools: Help has no info panel",
+  "ltcplay/web/remote2.html",
+  "  if(v === \"info\") openInfo();\n",
+  ""),
+ # 2.0's Users pane: 1.0's Users screen, who may do what and the audit log (P5, P6, P7)
+ ("ui 2.0 Users: Remove goes with no question",
+  "ltcplay/web/remote2.html",
+  "    if(window.confirm(\"Remove \" + b.dataset.remove + \"? Their audit lines stay.\")) uAdmin({op:\"remove\", name:b.dataset.remove});",
+  "    if(true || window.confirm(\"Remove \" + b.dataset.remove + \"? Their audit lines stay.\")) uAdmin({op:\"remove\", name:b.dataset.remove});"),
+
+ ("ui 2.0 Users: the users list is shown off the show PC",
+  "ltcplay/web/remote2.html",
+  "  $(\"u-admin\").hidden = !(UV.local && UV.may_admin && UV.active !== undefined);",
+  "  $(\"u-admin\").hidden = !(UV.may_admin && UV.active !== undefined);"),
+
+ ("ui 2.0 Users: who may do what is editable off the show PC",
+  "ltcplay/web/remote2.html",
+  "  const edit = !!(UV.local && UV.may_admin);",
+  "  const edit = !!UV.may_admin;"),
+
+ ("ui 2.0 Users: the audit card is shown off the show PC",
+  "ltcplay/web/remote2.html",
+  "  $(\"u-audit\").hidden = !UV.local;",
+  "  $(\"u-audit\").hidden = false;"),
+
+ ("ui 2.0 Users: the shared token is written into its field",
+  "ltcplay/web/remote2.html",
+  "    $(\"au-tok\").placeholder = u.token_set ?",
+  "    $(\"au-tok\").value = u.token || \"\";\n    $(\"au-tok\").placeholder = u.token_set ?"),
+
+ ("ui 2.0 Users: opening the pane does not read the users",
+  "ltcplay/web/remote2.html",
+  "  if(t === \"users\") loadUsers();\n",
+  ""),
+
+ ("ui 2.0 Users: the pane is not a tab",
+  "ltcplay/web/remote2.html",
+  "const TABS = [\"show\", \"day\", \"schedule\", \"settings\", \"users\"];",
+  "const TABS = [\"show\", \"day\", \"schedule\", \"settings\"];"),
+
+ ("ui 2.0 Users: the signed-in sheet still opens 1.0",
+  "ltcplay/web/remote2.html",
+  "    if(v === \"users\"){ if(location.hash === \"#users\") showTab(\"users\"); else location.hash = \"users\"; }",
+  "    if(v === \"users\") location.href = \"/remote1#users\";"),
+
+ ("ui 2.0 Users: Sign out on the pane leaves the header button as it was",
+  "ltcplay/web/remote2.html",
+  "  renderUser();\n  loadUsers();\n});",
+  "  loadUsers();\n});"),
+
+ ("ui 2.0 Users: a bad last show time is saved anyway",
+  "ltcplay/web/remote2.html",
+  "  if(lastShow === null){\n    uMsg(\"au-msg\", \"Sign out after the last show",
+  "  if(false){\n    uMsg(\"au-msg\", \"Sign out after the last show"),
+
+ ("ui 2.0 Users: the pane's buttons are smaller than 56 px",
+  "ltcplay/web/remote2.html",
+  "#t-users button{font:inherit;min-height:56px;",
+  "#t-users button{font:inherit;min-height:40px;"),
+
+ ("ui 2.0 Users: the pane's rows do not stack on a phone",
+  "ltcplay/web/remote2.html",
+  "@media (max-width:600px){ #t-users .row > *{flex:1 1 100% !important} }\n",
+  ""),
+
+ ("ui 2.0 Users: the sheet's Users leaves an open pane unread",
+  "ltcplay/web/remote2.html",
+  "    if(v === \"users\"){ if(location.hash === \"#users\") showTab(\"users\"); else location.hash = \"users\"; }",
+  "    if(v === \"users\") location.hash = \"users\";"),
+
+ ("ui 2.0 Users: the header's Sign out leaves the pane as it was",
+  "ltcplay/web/remote2.html",
+  "      renderUser();\n      // The Users pane, as its own Sign out: typed passwords and the token\n      // cleared, and read again while it is open (review of #214, 2).\n      usersSignedOut();\n",
+  "      renderUser();\n"),
+
+ ("ui 2.0 Users: the header's Sign out leaves a typed token in the pane",
+  "ltcplay/web/remote2.html",
+  "[\"u-pw\", \"u-new\", \"u-old\", \"u-new1\", \"ua-pw\", \"au-tok\"].forEach(id => { $(id).value = \"\"; });",
+  "[\"u-pw\", \"u-new\", \"u-old\", \"u-new1\", \"ua-pw\"].forEach(id => { $(id).value = \"\"; });"),
+
+ ("ui 2.0 Users: the header's Sign out does not read the open pane again",
+  "ltcplay/web/remote2.html",
+  "  if(TAB === \"users\") loadUsers();\n}",
+  "}"),
+
+ ("ui 2.0 Users: who may do what's boxes are 40 px",
+  "ltcplay/web/remote2.html",
+  "#t-users input[type=checkbox]{width:56px;height:56px;",
+  "#t-users input[type=checkbox]{width:40px;height:40px;"),
+
+ # flamesafe.json that is not valid JSON (Jeff, 2026-11-06): the engine
+ # starts with flames off and says where; the supervisor starts neither
+ # flamesafe nor the deck; the last good copy.
+ ('flamesafe bad json: the engine refuses to start on it, so no rack screen',
+  'ltcplay/cli.py',
+  '            if fs_problem:\n                # Every place still has to name',
+  '            if False:\n                # Every place still has to name'),
+
+ ('flamesafe bad json: a config named on the command line is still used',
+  'ltcplay/cli.py',
+  '        if bad:\n            fs_problem = fs_problem or bad\n            flamesafe_config = None\n',
+  '        if False:\n            fs_problem = fs_problem or bad\n            flamesafe_config = None\n'),
+
+ ('flamesafe bad json: the rack screen is never told',
+  'ltcplay/cli.py',
+  '            remote_.flamesafe_problem = fs_problem\n',
+  '            pass\n'),
+
+ ('flamesafe bad json: the status leaves it out',
+  'ltcplay/remote.py',
+  'out["flamesafe_config_error"] = str(self.flamesafe_problem or "")',
+  'out["flamesafe_config_error"] = ""'),
+
+ ("flamesafe bad json: 2.0's alert slot does not show it",
+  'ltcplay/web/remote2.html',
+  '  if(s.flamesafe_config_error) items.push({key:"fscfg", tone:"bad", what:"Flame settings file broken.", do:"Flames are off. Tap here.", full:s.flamesafe_config_error});\n',
+  ''),
+
+ ('flamesafe bad json: the supervisor starts flamesafe and the deck on it in a loop',
+  'packaging/windows/supervisor.py',
+  '    fs_bad = flamesafecheck.json_problem(fs) if fs_ok else None\n',
+  '    fs_bad = None\n'),
+
+ ('flamesafe bad json: flamesafe.log never says why it is not started',
+  'packaging/windows/supervisor.py',
+  '        program_log_line("flamesafe", why_not)\n',
+  '        pass\n'),
+
+ ('flamesafe bad json: the start message does not say flames are off',
+  'packaging/windows/supervisor.py',
+  '            if note:\n                tell("LTC Player has started, with flames off." + note,',
+  '            if False:\n                tell("LTC Player has started, with flames off." + note,'),
+
+ ('flamesafe last good: kept before flamesafe has run on it',
+  'packaging/windows/supervisor.py',
+  '            now - p.started < flamesafecheck.LAST_GOOD_AFTER_S:',
+  '            False:'),
+
+ ('flamesafe last good: bytes that are not JSON are kept',
+  'ltcplay/flamesafecheck.py',
+  '    if bytes_problem(raw, path) is not None:\n        return None\n    good = last_good_path(path)',
+  '    good = last_good_path(path)'),
+
+ ("flamesafe bad json: the line and column are not the error's",
+  'ltcplay/flamesafecheck.py',
+  '"line": e.lineno, "column": e.colno,',
+  '"line": 1, "column": 1,'),
+
+ ("art-net: the same address twice does not say to set each program's input",
+  'ltcplay/artnodes.py',
+  ' Then set each "\n       "program\'s Art-Net input to that address, not the Show LAN address.")',
+  '")'),
+
+ ('flamesafe bad json: the flame controller is dropped too, so the pixel output may send it',
+  'ltcplay/cli.py',
+  '                fire_ice.flamesafe_config = None\n',
+  '                fire_ice.flamesafe_config = None\n                fire_ice.flame_controller = None\n'),
+
+ ('flamesafe bad json: another file named elsewhere is not refused first',
+  'ltcplay/cli.py',
+  '                _same, _why = _one_flamesafe_config(args, fire_ice)\n                if _why:\n',
+  '                _same, _why = _one_flamesafe_config(args, fire_ice)\n                if False:\n'),
+
+ ('flamesafe bad json: a byte-order mark is taken, though flamesafe refuses it',
+  'ltcplay/flamesafecheck.py',
+  '    if raw.startswith(b"\\xef\\xbb\\xbf"):',
+  '    if False:'),
+
+ ('flamesafe last good: the banner does not say when the copy was saved',
+  'ltcplay/flamesafecheck.py',
+  '{good}, "\n                f"saved {when}. It may be older',
+  '{good}. "\n                f"It may be older'),
+
+ ('flamesafe last good: a file edited since flamesafe started on it is kept',
+  'packaging/windows/supervisor.py',
+  '            if fh.read() != p.config_bytes:',
+  '            if False:'),
+ # Lasers follow Programming playback (Jeff, 2026-11-06).
+ ("programming lasers: Play from lights the lasers before the timecode "
+  "moves",
+  'ltcplay/playhead.py',
+  '            r = cond.show_starting(who, screen, confirm_moving=True)\n',
+  '            r = cond.show_starting(who, screen)\n'),
+
+ ("programming lasers: the conductor skips the Play from timecode wait",
+  'ltcplay/conductor.py',
+  '        elif want.get("confirm_moving") and \\\n'
+  '                not self._timecode_moving(gen, START_CONFIRM_S):\n',
+  '        elif False:\n'),
+
+ ("programming lasers: one frozen timecode frame counts as moving",
+  'ltcplay/conductor.py',
+  '            return f != seen[0]\n',
+  '            return True\n'),
+
+ ("programming lasers: the 'already on hold' answer keeps the lasers armed",
+  'ltcplay/conductor.py',
+  '        # Already on hold: nothing new starts, but the lasers are blanked\n',
+  '        if not disarm_lasers:\n'
+  '            self._lookstate = (self._look, True)\n'
+  '        # Already on hold: nothing new starts, but the lasers are blanked\n'),
+
+ ("programming lasers: a Hold that disarms leaves a Pause's keep in force",
+  'ltcplay/conductor.py',
+  '            if disarm_lasers:\n'
+  '                # A Hold that disarms ends any Programming Pause\'s keeping\n'
+  '                # of the arm, whichever branch below it takes.\n'
+  '                self._lookstate = (self._look, False)\n',
+  ''),
+
+ ("programming lasers: a scheduled show's Hold no longer disarms",
+  'ltcplay/conductor.py',
+  '    def hold(self, who="", screen="", *, disarm_lasers=True):\n',
+  '    def hold(self, who="", screen="", *, disarm_lasers=False):\n'),
+
+ ("programming lasers: the Pause sends no laser output off",
+  'ltcplay/conductor.py',
+  '        if want.get("keep_lasers_armed"):\n'
+  '            self._pause_output_off(gen, want, progress)\n',
+  ''),
+
+ ("programming lasers: a Pause that cannot make the lasers dark leaves "
+  "them armed",
+  'ltcplay/conductor.py',
+  '        self._disarm_lasers("Pause (the lasers could not be made dark)",\n'
+  '                            want.get("who", ""), want.get("screen", ""))\n',
+  '        pass\n'),
+
+ ("programming lasers: the Pause's output off sends EnableLaserOutput",
+  'ltcplay/conductor.py',
+  '        method = ("output_disable" if hasattr(self.beyond, "output_disable")\n',
+  '        method = ("output_enable" if hasattr(self.beyond, "output_disable")\n'),
+
+ ("programming lasers: the transport keeps the lasers armed without the "
+  "active() check",
+  'ltcplay/playhead.py',
+  '                    keep = keep_lasers_if() is True and self.active()\n',
+  '                    keep = keep_lasers_if() is True\n'),
+
+ ("programming lasers: the Pause exemption covers an announcement's DARK",
+  'ltcplay/remote.py',
+  '        if look != "HELD":\n',
+  '        if look not in ("HELD", "DARK"):\n'),
+
+ ("programming lasers: the Pause exemption ignores CLOSING",
+  'ltcplay/remote.py',
+  '        if state in ("PAUSED", "HOLD", "CLOSING"):\n',
+  '        if state in ("PAUSED", "HOLD"):\n'),
+
+ ("programming lasers: the Pause exemption ignores the schedule's Hold",
+  'ltcplay/remote.py',
+  '        if state in ("PAUSED", "HOLD", "CLOSING"):\n',
+  '        if state in ("PAUSED", "CLOSING"):\n'),
+
+ ("programming lasers: the Pause exemption ignores the conductor's keep",
+  'ltcplay/remote.py',
+  '        if keep is not True:\n'
+  '            return False\n',
+  ''),
+
+ ("programming lasers: a new arm is allowed during a Programming Pause",
+  'ltcplay/laserarm.py',
+  '        if enable and self._enable_blockers is not None:\n',
+  '        if self._enable_blockers is not None:\n'),
+
+ ("programming lasers: the arm's watcher disarms through a Programming "
+  "Pause",
+  'ltcplay/laserarm.py',
+  '        blocked = self._blocked(enable=True)\n',
+  '        blocked = self._blocked()\n'),
+
+ ("programming lasers: the Morning page never uses the lighting blockers",
+  'ltcplay/morning.py',
+  '        if enable and self._laser_enable_blockers is not None:\n',
+  '        if False:\n'),
+
+ ("programming lasers: Programming's yes skips the laser arm",
+  'ltcplay/fire_ice.py',
+  '        if why is not None and programming_gate() is not None:\n'
+  '            return why\n'
+  '        why = arm_gate()\n',
+  '        if why is not None:\n'
+  '            return why if programming_gate() is not None else None\n'
+  '        why = arm_gate()\n'),
+
+ ("programming lasers: Programming replaces the show's state gate",
+  'ltcplay/fire_ice.py',
+  '        if why is not None and programming_gate() is not None:\n',
+  '        if programming_gate() is not None:\n'),
+
+ ("programming lasers: an error asking Programming lights the lasers",
+  'ltcplay/fire_ice.py',
+  '            return f"Programming could not be asked ({type(e).__name__})"\n',
+  '            return None\n'),
+
+ ("programming lasers: ltc serve does not hand the gate Programming",
+  'ltcplay/web.py',
+  '            programming_lasers=httpd.remote.programming_lasers_refusal)',
+  '            programming_lasers=None)'),
+
+ ("programming lasers: ltc serve does not hand the arm the lighting "
+  "blockers",
+  'ltcplay/web.py',
+  '                laser_enable_blockers=httpd.remote.laser_enable_blockers,\n',
+  ''),
+
+ ("programming lasers: STANDBY lights the lasers in Programming",
+  'ltcplay/remote.py',
+  'PROGRAMMING_LASER_STATES = ("IDLE", "OFF", "BOOT")\n',
+  'PROGRAMMING_LASER_STATES = ("IDLE", "OFF", "BOOT", "STANDBY")\n'),
+
+ ("programming lasers: playback Play from did not start lights the lasers",
+  'ltcplay/remote.py',
+  '            if ph is None or not ph.active():\n',
+  '            if ph is None:\n'),
+
+ ("programming lasers: a laser test on does not keep them dark",
+  'ltcplay/remote.py',
+  '            if tests is not None and getattr(tests, "on", None):\n',
+  '            if False:\n'),
+
+ ("programming lasers: an error in the engine's Programming check is a yes",
+  'ltcplay/remote.py',
+  '            return (f"Programming could not be asked "\n'
+  '                    f"({type(e).__name__}: {e})")\n',
+  '            return None\n'),
+
+ ("programming lasers: the playhead's watch never asks the engine",
+  'ltcplay/remote.py',
+  '        self.playhead.lasers_refusal = self.programming_lasers_refusal\n',
+  ''),
+
+ ("programming lasers: the watch never blanks a frozen timecode",
+  'ltcplay/playhead.py',
+  '        if why is None and still >= FROZEN_S:\n',
+  '        if False:\n'),
+
+ ("programming lasers: the watch never blanks lasers Programming may no "
+  "longer light",
+  'ltcplay/playhead.py',
+  '            if no is not None:\n'
+  '                why = f"the lasers may no longer be lit here: {no}"\n',
+  '            if False:\n'
+  '                why = f"the lasers may no longer be lit here: {no}"\n'),
+
+ ("programming lasers: the watch's laser guard never runs",
+  'ltcplay/playhead.py',
+  '        guarded = self._laser_guard(clk)\n',
+  '        guarded = None\n'),
+
+ ("programming lasers: arming during Programming playback lights the "
+  "lasers on a frozen timecode",
+  'ltcplay/conductor.py',
+  '                         confirm_moving=self._programming_start)\n',
+  '                         confirm_moving=False)\n'),
+
+ ("programming lasers: a re-arm's relight skips the timecode wait",
+  'ltcplay/conductor.py',
+  '            if want.get("confirm_moving") and \\\n'
+  '                    not self._timecode_moving(gen, START_CONFIRM_S):\n',
+  '            if False:\n'),
+
+ ("programming lasers: the Pause's keep is written after its look and "
+  "journal line",
+  'ltcplay/conductor.py',
+  '        self._lookstate = (look, params.get("keep_lasers_armed") is True)\n'
+  '        self._look = look\n'
+  '        line = ((f"{label}, asked for by {self._who(who, screen)}.",),\n'
+  '                dict(action=label.lower(), who=who, screen=screen))\n'
+  '        if not quiet:\n'
+  '            self._note(*line[0], **line[1])\n',
+  '        self._lookstate = (look, False)\n'
+  '        self._look = look\n'
+  '        line = ((f"{label}, asked for by {self._who(who, screen)}.",),\n'
+  '                dict(action=label.lower(), who=who, screen=screen))\n'
+  '        if not quiet:\n'
+  '            self._note(*line[0], **line[1])\n'
+  '        self._lookstate = (look, params.get("keep_lasers_armed") is True)\n'),
+
+ ("programming lasers: the blockers read the look and the keep apart",
+  'ltcplay/remote.py',
+  '            snap = cond.look_and_keep()\n'
+  '            look, keep = snap[0], snap[1] is True\n',
+  '            look = cond._look\n'
+  '            keep = cond.look_and_keep()[1] is True\n'),
+
+ ("programming lasers: the watch ignores lasers whose record is UNKNOWN",
+  'ltcplay/playhead.py',
+  '            maybe = cond.lasers_maybe_lit() is True\n',
+  '            maybe = lit\n'),
 ]
 
 
@@ -18765,10 +23421,16 @@ _LAST_STOP = _PerThread(["", False])
 # just ran on this runner, never under MUTANT_FLOOR (the old 300 s, so no
 # mutant is stopped sooner than before) and never over MUTANT_CEILING (so a
 # hung mutant costs a bounded time, twice over in CI).
-SUITE_TIMEOUT = 1800
+# 1800 s became too short on 2026-11-03 (PR #216): the suite alone takes 16
+# to 20 minutes on ubuntu (27 to 35 on windows), and with --jobs 3 three
+# baselines share one runner, so every shard of that run stopped at 1800 s
+# with nothing mutated. 5400 s is half again the selftest job's longest
+# limit (60 minutes, windows). The ceiling stays equal to it, so a mutant
+# is never stopped sooner than a clean baseline is allowed to take.
+SUITE_TIMEOUT = 5400
 MUTANT_FACTOR = 3
 MUTANT_FLOOR = 300
-MUTANT_CEILING = 1800
+MUTANT_CEILING = 5400
 
 
 def mutant_timeout(baseline_seconds):
@@ -19603,11 +24265,13 @@ def _sweep(todo, workers, expected, unknown, expected_file):
     def attempt(hint, root, env):
         """One run of the mutant: (green, the test it stopped in, what
         failed, the hint if the run that counts had it first). A run with a
-        hint counts only when it failed in the hinted test; any other result
-        (green, red elsewhere, stopped without saying where) is run again in
-        file order, and that one counts."""
+        hint counts only when it failed in a hinted test (a hint may name
+        several, comma separated, as LTC_SELFTEST_FIRST does); any other
+        result (green, red elsewhere, stopped without saying where) is run
+        again in file order, and that one counts."""
         green = run_suite(limit, ff, hint, False, root, env)
-        if hint and not (not green and _LAST_STOP[0] == hint):
+        if hint and not (not green
+                         and _LAST_STOP[0] in hint.split(",")):
             green = run_suite(limit, ff, None, False, root, env)
             hint = None
         return green, _LAST_STOP[0], list(_LAST_FAILS), hint

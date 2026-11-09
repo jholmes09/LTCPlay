@@ -24,41 +24,42 @@ Who may press what
 
 The controls
 ------------
-Start now, Hold, Resume and Abort are the scheduler's own operator events
+Start now, Hold and Resume are the scheduler's own operator events
 (schedule_service.Service.operator_press: the same schedule.step every
-press goes through, journaled with who and which screen, the Abort latch
-saved before the conductor is asked). Reset is Service.reset_conductor.
+press goes through, journaled with who and which screen). Stop is the
+engine's complete halt (Remote.halt). There is no Abort and no Reset (Jeff,
+2026-10-30): Stop does everything Abort did, and Resume ends a Hold.
 "Disarm all flame groups" is a PLAIN disarm (Jeff, 2026-10-23): every
 group's disarm handed to the Stream Deck process, exactly as a group's own
 Disarm is, so no fresh arm cycle is forced; only when that cannot be
 trusted to land (the deck not reading this engine, or flamesafe not
 confirming every group off within PLAIN_CONFIRM_S) does the show's own
-flames_disarm_all go (the flame link's disarm_all, the Abort's, which
-forces one). Journaled with the surface and which screen.
+flames_disarm_all go (the flame link's disarm_all, Stop's, which forces
+one). Journaled with the surface and which screen.
 
 ARMING (Jeff, 2026-10-03, its own PR): the page never arms anything. A
 hold to arm (arm-hold, repeated every 100 ms while the
 finger is down) is read by the Stream Deck process (deck-input) as a remote
 press of that group's key. The deck owns flamesafe's arm link and runs its
-own rules (the hold, the refractory window, the latched refusal) and
-flamesafe runs all of its own (consent, dwell, the post-Abort window, the
+own rules (the hold, the refractory window) and flamesafe runs all of its
+own (consent, dwell, the window after a disarm_all, the
 round-4 veto, the second-copy guard) exactly as for a finger on the deck.
 It needs a listed address (above), a page status and a
 flamesafe status no older than ARM_FRESH_S, heartbeats the engine actually
 received for SCREEN_HOLD_S, and screen_arming on in ltcplay_remote.json
 (OFF unless the file says true; the Programming screen on the show machine
 itself turns it on and off, route screen-arming). A gap in the heartbeats,
-an Abort, a disarm or a sign out lets the hold go; an interrupted hold
+a Stop, a disarm or a sign out lets the hold go; an interrupted hold
 never carries on.
 
 Every refusal is said on the page in a sentence that names the reason
 (2026-10-22, Jeff: "I'm supposed to be able to enable flames via the
 screen"; a hold that went nowhere used to look like a working one). The
 engine refuses, and says why, what the Stream Deck would refuse anyway:
-screen arming off, an Abort standing, the Stream Deck program not reading
+screen arming off, the Stream Deck program not reading
 this engine, this device in Arrange mode on the Morning page, every machine
 in the group locked out. What only the deck knows (its re-arm wait after a
-disarm, its own latch) it reports back on its next deck-input read
+disarm) it reports back on its next deck-input read
 (`refused`), and the hold's next heartbeat carries the sentence. None of
 this loosens anything: each one is a refusal of a press the deck or
 flamesafe would refuse anyway, said out loud.
@@ -66,10 +67,10 @@ flamesafe would refuse anyway, said out loud.
 
 Fresh state
 -----------
-Start now, Resume and Reset act on what the page
-shows, so they are refused when the page's last status is more than
-FRESH_S old (the page sends the `served_at` of the status it is showing).
-Hold, Abort and disarm are never refused for that: they only take risk
+Start now and Resume act on what the page shows, so they are refused
+when the page's last status is more than FRESH_S old (the page sends the
+`served_at` of the status it is showing). Stop, Hold and disarm are never
+refused for that: they only take risk
 away, and a press that reduces risk must never wait on a stale page.
 
 The network
@@ -95,6 +96,7 @@ address (web.wrong_host_page); the Host check is not loosened.
 import contextlib
 import hmac
 import ipaddress
+import itertools
 import json
 import math
 import os
@@ -109,6 +111,9 @@ from . import users as users_mod
 from . import version as version_mod
 from .morning import (TIMED_DEFAULT_S, TIMED_MAX_DEFAULT_S,
                       TIMED_MAX_LIMIT_S, TIMED_MIN_S, TIMED_PRESETS_S)
+from .fuelpump import (DEFAULT_S as PUMP_DEFAULT_S,
+                       MAX_DEFAULT_S as PUMP_MAX_DEFAULT_S,
+                       MAX_LIMIT_S as PUMP_MAX_LIMIT_S, MIN_S as PUMP_MIN_S)
 from .playhead import ShowAudioPlayhead
 
 FIXED_PORT = 7878
@@ -122,11 +127,13 @@ FRESH_S = 2.0
 FLAME_STALE_S = 1.0
 
 # The routes this module answers, and nothing else. No "arm" among them.
-CONTROL_ROUTES = ("start-now", "hold", "resume", "abort", "reset",
-                  "disarm-all", "stop")
+CONTROL_ROUTES = ("start-now", "hold", "resume",
+                  "disarm-all", "stop", "run-off", "start-at-cue")
 # Stop from a screen (Jeff, 2026-10-28; review of #144, F7): the Stream
-# Deck's complete halt (Remote.halt), then playback stops. A live show's
-# fade is let run this long at most first (web.HALT_FADE_WAIT_S).
+# Deck's complete halt (Remote.halt). Since 2026-10-30 Stop leaves Run on
+# and holds the schedule instead; "run-off" is the halt and then playback
+# stopped, Run off (the Programming Run card). A live show's fade is let
+# run this long at most first (web.HALT_FADE_WAIT_S).
 STOP_FADE_WAIT_S = 3.0
 # Programming-session transport (Jeff, 2026-10-03): play from a timecode,
 # jump, pause and continue, an A/B loop, back to following timecode. Only
@@ -137,10 +144,14 @@ STOP_FADE_WAIT_S = 3.0
 # show machine or the Settings permission: programming_move_refusal.
 TRANSPORT_ROUTES = ("play-from", "jump", "pause", "continue", "mark-a",
                     "mark-b", "loop", "follow")
-FRESH_ROUTES = frozenset(("start-now", "resume", "reset")
+# Start at a cue (play_from.py part 2, Jeff 2026-10-31): Start now from a
+# saved play-from cue, in Show mode. The Show row (operators may), every
+# guard Start now has, and the cue resolved by the engine from the saved
+# list (Remote.start_at_cue), never a time from the page.
+FRESH_ROUTES = frozenset(("start-now", "resume", "start-at-cue")
                          + TRANSPORT_ROUTES)
 JUMP_MAX_S = 600.0
-CONFIRM_ROUTES = frozenset(("start-now", "abort"))
+CONFIRM_ROUTES = frozenset(("start-now", "start-at-cue"))
 # Arming from a screen (Jeff, 2026-10-03; its own PR and safety review).
 # The page never arms anything itself: a hold here is a remote press of the
 # group's key on the Stream Deck process, which owns flamesafe's arm link
@@ -209,17 +220,59 @@ CLEANING_POST_ROUTES = ("cleaning-beat", "cleaning-stop")
 # and from the show network need screen_arming; a disarm and Hazers off
 # never.
 HAZER_POST_ROUTES = ("hazer", "hazers-off", "hazer-level")
+# Play-from cues (play_from.py, the cue list per show file): read by anyone
+# signed in; a save is the role matrix's Settings row (admin by default,
+# users.py), a signed-in person, from the show network with screen_arming
+# too. They send nothing and start nothing.
+PLAY_FROM_GET_ROUTES = ("play-from-cues",)
+# One play-from Store per engine, made under this lock (play_from_store).
+_PFC_STORE_LOCK = threading.Lock()
+PLAY_FROM_POST_ROUTES = ("play-from-cues-save",)
+# The fireball's fuel pump (fuelpump.py, Jeff 2026-10-30): read by anyone in
+# the status; {"on": true} is an arm press (users.classify) and from the
+# show network needs screen_arming; anything else turns it off, never
+# refused.
+PUMP_POST_ROUTES = ("fuel-pump",)
+# The fireball timeline (fireball_timeline.py, Jeff 2026-10-30): read by
+# anyone; a save is the role matrix's Settings row (admin by default,
+# users.py), a signed-in person, from the show network with screen_arming
+# too. Restricted by who, never by when: a save during a show is allowed.
+FIREBALL_TIMELINE_GET_ROUTES = ("fireball-timeline",)
+FIREBALL_TIMELINE_POST_ROUTES = ("fireball-timeline-save",)
+# The fuel and air charge record (fireball_charge.py): an admin confirms
+# NOT KNOWN tanks are empty (the Settings row, signed in, screen_arming
+# from the show network). It only changes the record; it sends nothing.
+FIREBALL_CHARGE_POST_ROUTES = ("fireball-charge-empty",)
+# Fireball practice (fireball_practice.py, design rev 5): read by anyone;
+# open and Step for anyone with the Show and Arm rows, on any screen (an
+# operator on an iPad too; with sign-in off, the show PC); Done from
+# anywhere (it only takes things away).
+FIREBALL_PRACTICE_GET_ROUTES = ("fireball-practice",)
+FIREBALL_PRACTICE_POST_ROUTES = ("fireball-practice",)
+# Refused while practice is open (press Done first): every start, every
+# move of the playhead but practice's own, Resume, setup that reloads the
+# show or the schedule, and anything else that could put flame, sound or
+# a second source on the rig. A Hold, a Pause and Follow are never
+# refused: they end practice after they are done.
+PRACTICE_REFUSED_ROUTES = ("start-now", "start-at-cue", "resume",
+                           "play-from", "jump", "continue", "loop", "mark-a",
+                           "mark-b", "preroll-continue", "announce-play",
+                           "schedule-file", "show-folder", "show-select",
+                           "show-file-new", "reload-engine")
+PRACTICE_ENDS_ROUTES = ("hold", "pause", "follow")
 GET_ROUTES = ("whoami", "status", "network", "deck-input",
               "announce-outputs") + \
     MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES + \
-    CLEANING_GET_ROUTES
+    CLEANING_GET_ROUTES + PLAY_FROM_GET_ROUTES + FIREBALL_TIMELINE_GET_ROUTES
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     "network", "screen-arming", "alert", "live-flame",
     "announce-output", "announce-test-tone") + \
     MORNING_POST_ROUTES + FUEL_POST_ROUTES + FIREBALL_POST_ROUTES + \
-    CLEANING_POST_ROUTES + HAZER_POST_ROUTES
+    CLEANING_POST_ROUTES + HAZER_POST_ROUTES + PLAY_FROM_POST_ROUTES + \
+    PUMP_POST_ROUTES + FIREBALL_TIMELINE_POST_ROUTES + \
+    FIREBALL_CHARGE_POST_ROUTES
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
 # on the show machine itself (and the role matrix's Settings, users.py), with
 # a confirm; OFF from any surface, signed in or not: it only takes risk away.
@@ -228,8 +281,8 @@ LIVE_FLAME_ENABLES = (
     "127.0.0.1), or also from the one Mac named in its settings, and passes the flame controller's channels to flamesafe "
     "through its own flame link. flamesafe still fires only a group that "
     "is armed (hold to arm on the Stream Deck), and still applies lockouts "
-    "and Abort. One flame group may be armed at a time. It turns itself "
-    "off, and disarms every flame group, on Off, Abort, Hold, Start now, "
+    "and Stop. One flame group may be armed at a time. It turns itself "
+    "off, and disarms every flame group, on Off, Stop, Hold, Start now, "
     "Run, a show starting, a second sender, no xLights data for a while, "
     "or the session limit. Never use xLights' test tools while a group is "
     "armed.")
@@ -238,16 +291,21 @@ LIVE_FLAME_ENABLES = (
 # that plays from the show audio, Programming playback is the show's own
 # path, so its flame cues go to flamesafe whenever it plays; flamesafe
 # fires only armed groups. The Programming screen says so in one line.
+# The scheduler states in which Programming playback may light the lasers
+# (Jeff, 2026-11-06): before the night (BOOT, IDLE) and after it (OFF).
+# Never intermission (STANDBY), a Hold, CLOSING, or a live show (where the
+# show's own laser gate decides, conductor.LASER_STATES).
+PROGRAMMING_LASER_STATES = ("IDLE", "OFF", "BOOT")
 PROGRAMMING_FLAMES_LINE = ("Flames follow the show while you play here. "
-                           "Only armed groups fire. Hold, Stop or Abort "
-                           "ends it.")
+                           "Only armed groups fire. Hold or Stop ends "
+                           "it.")
 # A page from before the change may still post the switch's route: it is
 # answered, never acted on.
 REMOVED_ROUTES = {
     "scrub-flames": ("Fire flames while scrubbing is not needed any more, so "
                      "it was removed. Flames follow the show while you play "
                      "on the Programming screen, and only armed groups "
-                     "fire. To stop flames press Hold, Stop or Abort, or "
+                     "fire. To stop flames press Hold or Stop, or "
                      "disarm on the Stream Deck. Reload this page. Nothing "
                      "was changed."),
 }
@@ -257,14 +315,6 @@ REMOVED_ROUTES = {
 # Programming, Announcement output; Settings permission (users.py).
 LOCAL_ONLY = frozenset(("network", "screen-arming", "announce-output",
                         "announce-test-tone", "preroll-check"))
-# Interface 2.0 (Jeff, 2026-10-28): which page /remote serves a screen that
-# has not chosen one with its own ltcplay_ui cookie (web.py). 1 is the page
-# every screen had (remote.html), 2 is remote2.html. Read and set on the
-# show machine itself only (never from the network), the role matrix's
-# Settings to set it (users.py). A preference, never a safety setting: a
-# value that is not 1 or 2 reads as 1 and never breaks the settings file.
-UI_DEFAULT_ROUTE = "ui-default"
-UI_VERSIONS = (1, 2)
 # Operator announcements (announce.py; Jeff, 2026-10-26): the rack screen's
 # three buttons and its Stop, and the Stream Deck's page 2 keys, which post
 # here from this machine. One press plays (no double tap). From the show
@@ -290,8 +340,6 @@ DECK_REFUSALS = {
     "refractory": ("The Stream Deck refused it: {g} was disarmed less than "
                    "2 s ago, and it waits that long before it takes a new "
                    "arm. Lift your finger, wait a moment, then hold again."),
-    "latched": ("The Stream Deck refused it: an Abort is standing. Press "
-                "Reset, then hold again."),
     "operator": ("The Stream Deck refused it: no operator is chosen for it "
                  "(Programming, Stream Deck operator, on the show machine)."),
     "role": ("The Stream Deck refused it: the role matrix does not let the "
@@ -522,16 +570,34 @@ def judge_pc_clock(offset_s, service):
                                if service == "running" else "."))
 
 
+# Each write has a temp file of its own: two threads of this process
+# writing the same file never share one (review of PR #180: two saves at
+# once could interleave in "<path>.<pid>.tmp").
+_TMP_SEQ = itertools.count(1)
+
+
 def _write_json(path, doc, private=False):
-    tmp = f"{path}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(doc, fh, indent=2)
-        fh.write("\n")
-        fh.flush()
-        os.fsync(fh.fileno())
-    if private and os.name != "nt":
-        os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    tmp = (f"{path}.{os.getpid()}.{threading.get_ident()}."
+           f"{next(_TMP_SEQ)}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        if private and os.name != "nt":
+            os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+# Held by Remote.save_schedule_file from the check to the answer.
+_SCHEDULE_SAVE_LOCK = threading.Lock()
 
 
 # --------------------------------------------------------- the network --
@@ -585,11 +651,17 @@ def load_settings(folder=None):
     # timed purge this show machine allows, 30 s unless an admin sets it in
     # this file, never more than morning.TIMED_MAX_LIMIT_S; purge_timed_s
     # the duration last started here, the page's default.
+    # pump_max_s (Jeff, 2026-10-30, the fuel pump): the longest run time,
+    # 10 minutes unless an admin sets it lower; never more than
+    # fuelpump.MAX_LIMIT_S (600 s), read and written. The default run is
+    # always 5 minutes.
     out = {"show_network_address": None, "flamesafe_config": None,
            "screen_arming": False, "purge_arming": True, "booth_alert": None,
-           "alert_pixels": None, "ui_default": 1,
+           "alert_pixels": None,
            "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
-           "purge_timed_s": TIMED_DEFAULT_S, "path": path}
+           "purge_timed_s": TIMED_DEFAULT_S,
+           "pump_max_s": PUMP_MAX_DEFAULT_S,
+           "path": path}
     if not os.path.exists(path):
         return out
     try:
@@ -608,8 +680,10 @@ def settings_from_doc(doc, path, out=None):
         out = {"show_network_address": None, "flamesafe_config": None,
                "screen_arming": False, "purge_arming": True,
                "booth_alert": None, "alert_pixels": None,
-               "ui_default": 1, "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
-               "purge_timed_s": TIMED_DEFAULT_S, "path": path}
+               "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
+               "purge_timed_s": TIMED_DEFAULT_S,
+               "pump_max_s": PUMP_MAX_DEFAULT_S,
+               "path": path}
     if not isinstance(doc, dict):
         raise ValueError(f"{path} is not a settings object.")
     if doc.get("show_network_address"):
@@ -641,6 +715,20 @@ def settings_from_doc(doc, path, out=None):
             raise ValueError(f"{path}: {k} must be a whole number of "
                              f"seconds from {lo} to {TIMED_MAX_LIMIT_S}.")
         out[k] = v
+    for k in ("pump_max_s",):
+        if k not in doc:
+            continue
+        v = doc[k]
+        if isinstance(v, bool) or not isinstance(v, int) or v < PUMP_MIN_S:
+            # Never a guess: a value that is not a run time is refused.
+            raise ValueError(f"{path}: {k} must be a whole number of "
+                             f"seconds, at least {PUMP_MIN_S}; above "
+                             f"{PUMP_MAX_LIMIT_S} it is read and saved as "
+                             f"{PUMP_MAX_LIMIT_S} (ten minutes).")
+        # Jeff (2026-10-30): never more than 10 minutes. A larger one, from
+        # before this ceiling, is read as the ceiling, never refused, so
+        # the settings file still loads.
+        out[k] = min(v, PUMP_MAX_LIMIT_S)
     if doc.get("booth_alert") is not None:
         # Checked by boothaudio.parse_config, which owns the shape; a bad
         # block is refused here, at load, never at show time.
@@ -649,9 +737,6 @@ def settings_from_doc(doc, path, out=None):
                                           f"{path} booth_alert")
     if doc.get("alert_pixels") is not None:
         out["alert_pixels"] = check_alert_pixels(doc["alert_pixels"], path)
-    v = doc.get("ui_default")
-    out["ui_default"] = v if (isinstance(v, int) and not isinstance(v, bool)
-                              and v in UI_VERSIONS) else 1
     return out
 
 
@@ -701,6 +786,12 @@ def save_settings(folder, **changes):
     doc = dict(doc)
     doc.update(changes)
     settings_from_doc(doc, path)            # ValueError: nothing written
+    # The fuel pump's longest run is never written above 600 s (Jeff,
+    # 2026-10-30), as it is never read above it.
+    v = doc.get("pump_max_s")
+    if isinstance(v, int) and not isinstance(v, bool) and \
+            v > PUMP_MAX_LIMIT_S:
+        doc["pump_max_s"] = PUMP_MAX_LIMIT_S
     if os.path.exists(path):
         import shutil
         shutil.copyfile(path, path + ".bak")
@@ -1179,6 +1270,10 @@ class FlameStatus:
                            # and sent on them, for the card's aim line.
                            "aim_slots": _ints(g.get("aim_slots")),
                            "fire_slots": _ints(g.get("fire_slots")) or [],
+                           # The safety slots (None from an older
+                           # flamesafe): the group's arm value is put on
+                           # them whenever it is armed (round-10 review).
+                           "safety_slots": _ints(g.get("safety_slots")),
                            "commanded_fire": _ints(
                                g.get("commanded_fire")),
                            "sent_fire": _ints(g.get("sent_fire"))})
@@ -1205,14 +1300,30 @@ class FlameStatus:
                 "groups": groups,
                 # The hazers as flamesafe reports them (2026-10-29), None
                 # while stale or from an older flamesafe.
+                # Each entry's kind (2026-10-30): "hazer", or "switch" for
+                # the fuel pump with its on value; an entry from a
+                # flamesafe that says no kind is a hazer.
                 "passthrough": ([
                     {"name": str(p.get("name", "")),
-                     "slots": _ints(p.get("slots")) or [],
+                     "kind": str(p.get("kind") or "hazer"),
+                     "on": (p.get("on") if isinstance(p.get("on"), int)
+                            and not isinstance(p.get("on"), bool)
+                            else None),
+                     # None when it is missing or not a list of whole
+                     # numbers: the charge record then does not take the
+                     # entry for "nothing on 55 to 59" (round-10 delta
+                     # review 1).
+                     "slots": _ints(p.get("slots")),
                      "asked": bool(p.get("asked")),
                      "enabled": bool(p.get("enabled")),
                      "passing": bool(p.get("passing")),
                      "why": str(p.get("why", ""))}
                     for p in last["passthrough"] if isinstance(p, dict)]
+                    + [{"name": "", "kind": "malformed", "on": None,
+                        "slots": None, "asked": False, "enabled": False,
+                        "passing": False, "why": "not an entry"}
+                       for p in last["passthrough"]
+                       if not isinstance(p, dict)]
                     if isinstance(last.get("passthrough"), list)
                     and not stale else None),
                 # What flamesafe says it is holding at zero (the lockout
@@ -1538,6 +1649,10 @@ class Remote:
         # the call that brings its window forward (a fake in the selftest).
         self.beyond_host = None
         self.open_beyond_fn = None
+        # MadMapper's video output (showwindows.OutputLook), or None with
+        # the reason it is not checked (web._attach_mm_output).
+        self.mm_output = None
+        self.mm_output_why = ""
         # The last show seen ended ({"night", "ended"}), kept so a night
         # that closes at its 02:00 reset before the sign-out is due still
         # gets it (review of PR #125, P2-8).
@@ -1556,6 +1671,12 @@ class Remote:
         self.morning = None          # morning.Morning, set by web.serve
         self.fuel = None             # fuel.FuelTracker, set by web.serve
         self.fireball = None         # fireball.FireballPanel, web.serve
+        # fireball_charge.ChargeTracker, web.serve (display only here)
+        self.fireball_charge = None
+        # fireball_cues.FireballCues, web.serve (display only here)
+        self.fireball_cues = None
+        # fireball_practice.Practice, web.serve
+        self.fireball_practice = None
         self.cleaning = None         # cleaning.CleaningPanel, web.serve
         # hazers.Hazers, set by web.serve (Fire & Ice with a flame link),
         # and the "hazers" mismatch alert's sentence and id.
@@ -1563,6 +1684,10 @@ class Remote:
         self._hz_said = None
         self._hz_alert_id = None
         self._hz_lock = threading.Lock()
+        # fuelpump.FuelPump, set by web.serve when flamesafe's config has a
+        # fuel pump (2026-10-30).
+        self.pump = None
+        self._pump_users_busy = {}
         self.live_flame = None       # flameprog.LiveFlame, set by web.serve
         self.clock = clock
         self.wall = wall
@@ -1576,10 +1701,20 @@ class Remote:
             journal=lambda text, outcome: self._journal(
                 "", "Programming screen", "programming playback", outcome,
                 text))
+        # Lasers lit while Programming may no longer light them (the
+        # schedule left IDLE, OFF or BOOT, a laser test came on) are
+        # blanked by the playhead's watch, whether or not anything told
+        # the conductor (Jeff, 2026-11-06).
+        self.playhead.lasers_refusal = self.programming_lasers_refusal
         # Start now asks again under the scheduler's lock, after its tick
         # and any wait for the show audio (a Play from may have landed).
         if schedule is not None and hasattr(schedule, "start_veto"):
             schedule.start_veto = self.programming_playback_refusal
+        # Start at a cue (play_from.py part 2): the scheduler's Continue
+        # anyway and the show runner ask again, at the start itself, whether
+        # the cue still stands (review A of #201).
+        if schedule is not None and hasattr(schedule, "start_at_check"):
+            schedule.start_at_check = self.start_at_check
         # Screen arm holds: group index -> {token, who, device, start,
         # beat, id}; per-group disarms waiting for the deck to read them.
         import collections
@@ -1649,6 +1784,10 @@ class Remote:
         # and removes it when it is fine again). Read at most every 30 s.
         self.disk_file = os.path.join(settings_folder(), DISK_FILE)
         self._disk = (None, 0.0)
+        # flamesafe's config is not valid JSON (cli.serve, Jeff
+        # 2026-11-06): the sentence for the screens' red line, "" when it
+        # is fine. This engine then has no flame link and no flame groups.
+        self.flamesafe_problem = ""
         # The alert service (alerts.py, 2026-10-12): the rack screen's
         # banners, the booth note and the blue pulse. web.serve gives it
         # the booth player and the pulse's pixel range from the settings;
@@ -1661,19 +1800,16 @@ class Remote:
         if schedule is not None and hasattr(schedule, "alert_sink"):
             schedule.alert_sink = self.alerts.raise_
         # The alert hold (alerthold.py, Jeff 2026-10-26): at showtime with
-        # an alert open the schedule Holds, and a Delayed announcement
-        # follows unless acknowledged. Ticked with the booth re-sound
-        # after every scheduler tick (_alert_tick), on its thread.
+        # an alert open the schedule Holds and the booth speaker says so.
+        # Nothing plays on the public PA automatically (Jeff, 2026-10-30).
+        # The booth re-sound runs after every scheduler tick
+        # (_alert_tick), on a worker of its own.
         from .alerthold import AlertHold
-        self._alert_wake = threading.Event()
         self._booth_wake = threading.Event()
         self._alert_stop = threading.Event()
         self._alert_lock = threading.Lock()
-        self._alert_thread = None
         self._booth_thread = None
-        self.alert_hold = AlertHold(self.alerts, schedule,
-                                    announce=lambda: self._announce,
-                                    clock=clock)
+        self.alert_hold = AlertHold(self.alerts, schedule, clock=clock)
         if schedule is not None and hasattr(schedule, "showtime_gate"):
             schedule.showtime_gate = self.alert_hold.gate
             schedule.on_alert_hold = self.alert_hold.started
@@ -1840,10 +1976,6 @@ class Remote:
                          else self.schedule_file_view())
         if name == "whoami":
             return 200, self.whoami(ctx)
-        if name == UI_DEFAULT_ROUTE:
-            if not ctx.local:
-                return 403, {"error": "Only on the show machine itself."}
-            return 200, {"default": self.ui_default()}
         if name in USER_GET_ROUTES:
             return self.users_get(ctx)
         if name == "deck-input":
@@ -1885,6 +2017,12 @@ class Remote:
         if name in CLEANING_GET_ROUTES:
             from . import cleaning as cleaning_mod
             return cleaning_mod.route_get(self.cleaning, ctx, self.wall)
+        if name in PLAY_FROM_GET_ROUTES:
+            return self.play_from_get(query, ctx)
+        if name in FIREBALL_TIMELINE_GET_ROUTES:
+            return self.fireball_timeline_get(query)
+        if name in FIREBALL_PRACTICE_GET_ROUTES:
+            return self.fireball_practice_get(ctx)
         return 404, {"error": "no such thing here"}
 
     def post(self, route, body, ctx):
@@ -1894,6 +2032,9 @@ class Remote:
         if name in REMOVED_ROUTES:
             # A page from before the change: told plainly, nothing done.
             return 410, {"error": REMOVED_ROUTES[name], "removed": True}, {}
+        why = self.fireball_practice_route_refusal(name, body)
+        if why:
+            return 409, {"ok": False, "error": why, "text": why}, {}
         if "who" in body and self.users_active():
             # A name in the body (the Morning page's checklist, the Stream
             # Deck's chosen operator) is never who pressed: the signed-in
@@ -1905,12 +2046,6 @@ class Remote:
                                       "and this window are set on the show "
                                       "machine itself, not from here."}, {}
             return (*self.setup_post(name, body),) + ({},)
-        if name == UI_DEFAULT_ROUTE:
-            if not ctx.local:
-                return 403, {"error": "The default interface is set on the "
-                                      "show machine itself, not from here. "
-                                      "Nothing was changed."}, {}
-            return (*self.set_ui_default(body, ctx),) + ({},)
         if name in LOCAL_ONLY and not ctx.local:
             what = ("Arming from a screen is switched on and off"
                     if name == "screen-arming" else
@@ -1956,8 +2091,23 @@ class Remote:
             return (*self.announce_post(name, body, ctx),) + ({},)
         if name in HAZER_POST_ROUTES:
             return (*self.hazer_post(name, body, ctx),) + ({},)
+        if name in PLAY_FROM_POST_ROUTES:
+            return (*self.play_from_save(body, ctx),) + ({},)
+        if name in PUMP_POST_ROUTES:
+            return (*self.pump_post(body, ctx),) + ({},)
+        if name in FIREBALL_TIMELINE_POST_ROUTES:
+            return (*self.fireball_timeline_save(body, ctx),) + ({},)
+        if name in FIREBALL_CHARGE_POST_ROUTES:
+            return (*self.fireball_charge_empty(body, ctx),) + ({},)
+        if name in FIREBALL_PRACTICE_POST_ROUTES:
+            return (*self.fireball_practice_post(body, ctx),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
-            return (*self.press(name, body, ctx),) + ({},)
+            out = self.press(name, body, ctx)
+            if name in PRACTICE_ENDS_ROUTES:
+                pr = self.fireball_practice
+                if pr is not None:
+                    pr.request_end(f"{name.capitalize()} was pressed")
+            return (*out,) + ({},)
         if name == "arm-hold":
             return (*self.arm_hold(body, ctx),) + ({},)
         if name == "arm-release":
@@ -1976,20 +2126,50 @@ class Remote:
         if pr is None:
             return None
         try:
-            return pr.view()
+            v = pr.view()
         except Exception as e:                   # noqa: BLE001
             return {"state": "idle", "items": [], "text": "",
                     "error": f"{type(e).__name__}: {e}"}
+        if v.get("cleared"):
+            # A failure a later check cleared (Jeff's field report,
+            # 2026-10-29): what to press now, in the same words on every
+            # screen. Nothing starts by itself.
+            v["cleared"]["say"] = self._cleared_say(v["cleared"])
+        return v
+
+    def _cleared_say(self, cleared=None):
+        m = getattr(self.schedule, "machine", None)
+        st = getattr(m, "state", None)
+        held = (cleared or {}).get("shows", 1)
+        if m is not None and m.delayed() is not None:
+            # A delayed show waits for Start now, held or not (review A
+            # round 2 of #176): Resume does not start it.
+            return (f"Rig check passed. Press Start now for show "
+                    f"{m.delayed().n}.")
+        if st == "HOLD" and held:
+            # Resume releases the show it cleared, which is then checked
+            # again. A cleared alert alone ("could not run") leaves no show
+            # for Resume to release (review 2 of #176): Start now, below.
+            return "Rig check passed. Press Resume."
+        # Not held: the show it failed for is never started by itself
+        # after a failure, so Start now (it checks again).
+        return "Rig check passed. Press Start now to start the show."
+
 
     PRECHECK_CLEAR_S = 60.0
 
     def preroll_check(self, body, ctx):
-        """Pre-check (the rack screen, an admin: the role matrix's
-        Settings row, web.py): the same checks a show's pre-roll makes,
-        with nothing started and no alert raised or cleared. Only between
+        """Pre-check, and Check again after a failure (the rack screen, an
+        admin: the role matrix's Settings row, web.py): the same checks a
+        show's pre-roll makes, with nothing started. It raises no alert of
+        its own; a pass clears a failure in force (and its preroll alert),
+        and a failure while one is in force refreshes it
+        (preroll.PreRoll._clear_failure, _refresh_failure). Only between
         shows, with Run pressed, never in the minute before a show (its
-        own pre-roll runs then). Returns at once; the result is in the
-        status's "preroll"."""
+        own pre-roll runs then) unless a failure is in force: a failed
+        show is never checked again by itself (preroll.PreRoll.claim), so
+        Check again is let through then. Returns at once; the result is
+        in the status's "preroll"."""
         pr = self.preroll
         who = ctx.user or "unsigned"
         if pr is None:
@@ -2012,7 +2192,8 @@ class Remote:
             why = "a Stop is under way"
         elif m is not None and m.next_slot() is not None:
             left = (m.next_slot().start - svc.clock()).total_seconds()
-            if 0 <= left < self.PRECHECK_CLEAR_S + pr.window_s:
+            if 0 <= left < self.PRECHECK_CLEAR_S + pr.window_s and \
+                    not pr.failure_in_force():
                 why = (f"show {m.next_slot().n} is due in {left:.0f} s and "
                        f"its own rig check runs by itself")
         if why:
@@ -2023,7 +2204,8 @@ class Remote:
         threading.Thread(target=pr.run, daemon=True,
                          name="ltcplay-precheck",
                          args=(key, f"a Pre-check by {who}"),
-                         kwargs={"alerts": False, "manual": True}).start()
+                         kwargs={"alerts": False, "manual": True,
+                                 "by": f"Check again by {who}"}).start()
         return 200, {"ok": True, "text": "Checking the rig. Nothing is "
                                          "started, nothing is armed and "
                                          "nothing is played; the screens "
@@ -2064,9 +2246,7 @@ class Remote:
             return 409, {"error": "Continue anyway needs the button held "
                                   "until it fills; a tap does nothing. "
                                   "Nothing was changed."}
-        got = svc.continue_anyway(
-            who, screen,
-            on_continue=lambda: self.alert_hold.stop_for_continue(who))
+        got = svc.continue_anyway(who, screen)
         return (200 if got.get("ok") else 409), (
             got if got.get("ok") else {"error": got.get("text", "")})
 
@@ -2275,6 +2455,17 @@ class Remote:
                 self.timed_purge_cut(f"{_who} signed out on the {ctx.device}",
                                      ctx.user, ctx.device,
                                      token=getattr(ctx, "token", "") or "")
+                # The fuel pump too (Jeff, 2026-10-30: signing out stops
+                # the pump); its timer's own check is the belt.
+                self.pump_after_signout(
+                    f"{_who} signed out on the {ctx.device}", ctx.user,
+                    ctx.device, getattr(ctx, "token", "") or "")
+                # The Fireball page's channels end here too, at once, not on
+                # the page's next beat or the 0.25 s backstop (round-4
+                # review, s28/s48): this screen's run, and on the show
+                # machine (every session made here ended) any run.
+                self.fireball_signout_cut(
+                    f"{_who} signed out on the {ctx.device}", ctx)
             if ended:
                 # Only this device's own hold (a hold belongs to the device
                 # it came from), and only when a sign-in really ended: a
@@ -2287,8 +2478,8 @@ class Remote:
                     pass
             return 200, {"ok": True, "text": "Signed out. This screen is "
                                              "view only now: Stop, Hold, "
-                                             "Abort, Acknowledge and every "
-                                             "disarm still work."}, {
+                                             "Acknowledge and every disarm "
+                                             "still work."}, {
                 "Set-Cookie": (cookie % "") + "; Max-Age=0"}
         me = getattr(ctx, "session", None) or {}
         if name == "my-password":
@@ -2470,46 +2661,6 @@ class Remote:
                     "on the show network to use it.")
         return 200, dict(view, ok=True, note=note)
 
-    def ui_default(self):
-        """1 or 2: the page /remote serves a screen with no ltcplay_ui
-        cookie of its own (web.py). 1 whenever the settings file cannot be
-        read: the page every screen had."""
-        try:
-            v = load_settings(self.folder).get("ui_default")
-        except Exception:                        # noqa: BLE001
-            return 1
-        return v if (isinstance(v, int) and not isinstance(v, bool)
-                     and v in UI_VERSIONS) else 1
-
-    def set_ui_default(self, body, ctx):
-        """POST ui-default {"default": 1|2}, on the show machine only (the
-        role matrix's Settings, users.py). Only the JSON numbers 1 and 2;
-        anything else changes nothing. Changes which page a screen that has
-        not chosen gets; nothing on the rig."""
-        v = body.get("default")
-        if not isinstance(v, int) or isinstance(v, bool) or \
-                v not in UI_VERSIONS:
-            return 400, {"error": "default has to be 1 or 2. Nothing was "
-                                  "changed."}
-        # Who: the signed-in person or "unsigned", never a name in the body.
-        who = ctx.user or "unsigned"
-        screen = ctx.screen
-        try:
-            save_settings(self.folder, ui_default=v)
-        except ValueError as e:
-            return 409, {"error": f"{e} The default interface was not "
-                                  f"changed."}
-        except OSError as e:
-            return 500, {"error": f"ltcplay_remote.json could not be "
-                                  f"written ({e}). The default interface "
-                                  f"was not changed."}
-        self._journal(who, screen, "interface default", str(v),
-                      f"{who} set the default interface to {v}.0 on the "
-                      f"{screen}.")
-        return 200, {"ok": True, "default": v,
-                     "text": f"Screens that have not chosen now get {v}.0. "
-                             f"Each screen can still switch for itself."}
-
     def set_screen_arming(self, body, ctx):
         """POST screen-arming {"on": true|false}, on the show machine only
         (LOCAL_ONLY; the role matrix's Settings to turn it on, users.py).
@@ -2570,34 +2721,24 @@ class Remote:
 
     def _alert_tick(self):
         """After each scheduler tick, on the scheduler's thread: wakes the
-        alert worker and returns at once. The work itself (the booth
-        re-sound's device lookup and file read, the Delayed's file read
-        and stream open) is the worker's, so a slow disk or device never
-        stalls a scheduler tick (review of PR #133, 4)."""
+        booth worker and returns at once. The work itself (the booth
+        re-sound's device lookup and file read) is the worker's, so a slow
+        disk or device never stalls a scheduler tick (review of PR #133,
+        4)."""
         if self._alert_stop.is_set():
             return
-        self._alert_wake.set()
         self._booth_wake.set()
         with self._alert_lock:
             self._start_alert_workers()
 
     def _start_alert_workers(self):
-        """Called with _alert_lock held: one hold worker and one booth
-        worker, ever, whichever thread ticks first (a second hold worker
-        could play the Delayed twice)."""
-        if self._alert_thread is None:
-            # Two workers: the booth re-sound never waits behind the
-            # Delayed's file read, nor the other way round (review of PR
-            # #133).
-            self._alert_thread = threading.Thread(
-                target=self._worker, daemon=True,
-                args=(self._alert_wake, self._hold_work),
-                name="ltcplay-alert-hold")
+        """Called with _alert_lock held: one booth worker, ever, whichever
+        thread ticks first (a second one could sound a note twice)."""
+        if self._booth_thread is None:
             self._booth_thread = threading.Thread(
                 target=self._worker, daemon=True,
                 args=(self._booth_wake, self._booth_work),
                 name="ltcplay-alert-booth")
-            self._alert_thread.start()
             self._booth_thread.start()
 
     def _worker(self, wake, work):
@@ -2609,15 +2750,9 @@ class Remote:
             work()
 
     def close_alerts(self):
-        """Stop the alert workers (web.serve's server_close)."""
+        """Stop the alert worker (web.serve's server_close)."""
         self._alert_stop.set()
-        self._alert_wake.set()
         self._booth_wake.set()
-
-    def _alert_work(self):
-        """Both at once, on the caller's thread (tests)."""
-        self._booth_work()
-        self._hold_work()
 
     def _booth_work(self):
         """The booth note again for alerts still open. Never raises."""
@@ -2664,23 +2799,21 @@ class Remote:
             return (f"The rig's state could not be read "
                     f"({type(e).__name__}).", [])
 
-    def _reset_health(self, r, who, screen):
-        """A Reset that went through says, in plain words, how every
-        subsystem stands (Jeff's field report, 2026-10-28), in its answer
-        and in the journal. A refused Reset is answered as before. Never
-        raises."""
+    def _resume_health(self, r, who, screen):
+        """A Resume that went through says, in plain words, how every
+        subsystem stands (Jeff's field report, 2026-10-28, for Reset; Reset
+        is removed, Jeff, 2026-10-30, and Resume is what carries on after a
+        Stop or a Hold now), in its answer and in the journal. A refused
+        Resume is answered as before. Never raises."""
         try:
             if not isinstance(r, dict) or not r.get("ok"):
                 return r
             text, items = self.rig_health()
             said = str(r.get("text") or "").strip()
-            if said.startswith("Reset."):
-                said = said[len("Reset."):].strip()
-            out = dict(r, text=" ".join(x for x in ("Reset done.", said,
-                                                    text) if x),
+            out = dict(r, text=" ".join(x for x in (said, text) if x),
                        health=items)
-            self._journal(who, screen, "reset", "rig state",
-                          f"After {who or 'someone'}'s Reset on the "
+            self._journal(who, screen, "resume", "rig state",
+                          f"After {who or 'someone'}'s Resume on the "
                           f"{screen}: {text}",
                           fault=any(i.get("ok") is False for i in items))
             return out
@@ -2767,13 +2900,6 @@ class Remote:
                 self.alerts.raise_("timing", self.TIMING_TEXT.format(
                     n=n, w=f"{worst:.0f}", lim=lim))
             self._timing_said = n
-        except Exception:                        # noqa: BLE001
-            pass
-
-    def _hold_work(self):
-        """The alert hold's countdown and its Delayed. Never raises."""
-        try:
-            self.alert_hold.tick()
         except Exception:                        # noqa: BLE001
             pass
 
@@ -3106,12 +3232,13 @@ class Remote:
         return None
 
     def press(self, name, body, ctx):
-        """A show control press. An Abort or a Hold tells the laser arm it
-        is under way before ANY other work and until its answer is made
-        (review of PR #87, P2-2): an arm confirmed in that window, before
-        the scheduler's latch or Hold is set, is refused."""
+        """A show control press. A Hold or a Stop tells the laser arm it is
+        under way before ANY other work and until its answer is made (review
+        of PR #87, P2-2; Stop since 2026-10-30): an arm confirmed in that
+        window, before the scheduler's Hold is set, is refused. There is no
+        Abort (Jeff, 2026-10-30): Stop does everything it did."""
         arm = getattr(self.morning, "laser_arm", None) \
-            if name in ("abort", "hold") else None
+            if name in ("hold", "stop", "run-off") else None
         if arm is not None:
             try:
                 arm.press_begin()
@@ -3127,9 +3254,8 @@ class Remote:
                     pass
 
     def _press(self, name, body, ctx):
-        # The press's place in line, taken before anything else (an Abort's
-        # disarm and laser blank, a lock): the scheduler compares a Reset's
-        # with the latest Abort's, so work done first never reorders them.
+        # The press's place in line, taken before anything else (a disarm,
+        # a laser blank, a lock), so work done first never reorders them.
         stamp = getattr(self.schedule, "stamp_press", None)
         pressed = stamp() if stamp is not None else None
         who, screen, surface = self._actor(ctx, body)
@@ -3137,6 +3263,11 @@ class Remote:
             # Only takes risk away: never refused for a stale page or a
             # missing confirm, from any surface (review of #144, F7).
             return self.stop_press(who, screen)
+        if name == "run-off":
+            # Run off (2026-10-30): the Stop, then playback stops. Its
+            # role is the show row's (users.REMOTE_ROUTES), never a stale
+            # page's refusal: it only takes things away.
+            return self.run_off(who, screen)
         if name in FRESH_ROUTES:
             why = self._stale(body)
             if why:
@@ -3144,33 +3275,21 @@ class Remote:
                               f"{who or 'Someone'}'s {name} on the {screen} "
                               f"was refused. {why}")
                 return 409, {"error": why, "stale": True}
-        if name == "start-now":
+        if name in ("start-now", "start-at-cue"):
             why = self.programming_playback_refusal()
             if why:
+                _lbl = ("Start now" if name == "start-now" else
+                        "Start at a cue")
                 self._journal(who, screen, name, "refused",
-                              f"{who or 'Someone'}'s Start now on the "
+                              f"{who or 'Someone'}'s {_lbl} on the "
                               f"{screen} was refused. {why}")
                 return 409, {"ok": False, "error": why, "text": why}
-        flames = None
-        if name == "abort":
-            # The flames first, every time (review of PR #43, P0-1): every
-            # flame group disarmed through the flame link before any
-            # scheduler step, any lock or any journal line, whatever the
-            # scheduler is doing and whether or not a show is live. The
-            # scheduler takes an Abort only in SHOW or PAUSED, and the
-            # conductor only while something plays; a group armed before a
-            # show, between shows or after one must still come off. Nothing
-            # here waits on a disk (P0-5). Before the confirm check too
-            # (safety audit of bench-build, P2 b): a disarm only removes
-            # risk, so an unconfirmed Abort still takes the flames off; the
-            # rest of it is refused below.
-            flames = self._disarm_now(who, screen, "Abort")
-        if name in ("abort", "hold", "start-now"):
+        if name in ("hold", "start-now", "start-at-cue"):
             # A timed purge ends at the press too (Jeff, 2026-10-29), from
             # every surface, before the confirm check: it only takes risk
             # away. The flame link's purge frame is cleared on this thread.
-            _lbl = {"abort": "Abort", "hold": "Hold",
-                    "start-now": "Start now"}[name]
+            _lbl = {"hold": "Hold", "start-now": "Start now",
+                    "start-at-cue": "Start at a cue"}[name]
             self.timed_purge_cut(f"{who or 'someone'} pressed {_lbl} on the "
                                  f"{screen}", who, screen)
             # Live flame programming ends at the press, from every surface,
@@ -3181,14 +3300,7 @@ class Remote:
             # on a thread of their own, after the lasers below.
             self.live_flame_cut(f"{who or 'someone'} pressed {name} on the "
                                 f"{screen}", who, screen)
-        if name == "abort":
-            # The hazers OFF at the press (Jeff, 2026-10-29: "Abort turns
-            # off the hazers"), before the confirm check: it only takes
-            # something away. The flame link's disarm_all above did it at
-            # the link already; this is the belt, and the journal line.
-            self.hazers_cut(f"{who or 'someone'} pressed Abort on the "
-                            f"{screen}", who, screen)
-        if name in ("abort", "hold"):
+        if name == "hold":
             # Every laser disarmed at the press too (Jeff, 2026-10-22,
             # ruling 3), from every surface, before the confirm check and
             # before the scheduler: only the arm's state changes on this
@@ -3196,32 +3308,16 @@ class Remote:
             # arm's own sender, so nothing here waits on BEYOND.
             self._lasers_disarm_now(who, screen, name)
         if name in CONFIRM_ROUTES and body.get("confirmed") is not True:
-            if flames is not None and flames[0] is not None:
-                why = ("Confirm it on the page first. Every flame group was "
-                       "sent a disarm; nothing else was changed.")
-            else:
-                why = "Confirm it on the page first. Nothing was changed."
+            why = "Confirm it on the page first. Nothing was changed."
             self._journal(who, screen, name, "refused",
                           f"{who or 'Someone'}'s {name} on the {screen} was "
                           f"refused. {why}")
             return 400, {"error": why}
-        if name == "abort":
-            # And the lasers, the same way (re-review P1-A): blanked here,
-            # before the scheduler's step and its save, not after them.
-            lasers = self._lasers_dark_now()
-        if name in ("abort", "disarm-all"):
-            # No screen hold survives an Abort or a disarm, whoever pressed
-            # it and whether or not it goes on to be accepted.
+        if name == "disarm-all":
+            # No screen hold survives a disarm, whoever pressed it and
+            # whether or not it goes on to be accepted.
             self.cancel_holds(f"{who or 'someone'} pressed {name} on the "
                               f"{screen}")
-            # Nor a purge or a laser test (the Morning and Shutdown page):
-            # Abort wins over everything, before the scheduler is asked.
-            m = self.morning
-            if m is not None and name == "abort":
-                try:
-                    m.on_abort(who, screen)
-                except Exception:
-                    pass
         if name == "disarm-all":
             # Disarm all flame groups (2026-10-23): the purge selection is
             # cleared first (in memory only), so the deck cannot want a
@@ -3244,40 +3340,13 @@ class Remote:
                     pass
             return out
         # Programming playback on the show audio (review of #142): Hold is
-        # its Pause and Abort its Stop, after every disarm above, and no
-        # Start now goes over it. A scheduled show is never this
+        # its Pause (Stop, stop_press, stops it), after every disarm above,
+        # and no Start now goes over it. A scheduled show is never this
         # (programming() refuses it, and active() is only the very cue
         # Play from started).
-        ph = self.playhead if name in ("hold", "abort") else None
+        ph = self.playhead if name == "hold" else None
         if ph is not None and not (self.programming()[0] and ph.active()):
             ph = None
-        if name == "abort":
-            code, out = self.abort(who, screen, flames, lasers, pressed)
-            if ph is not None:
-                stopped = True
-                try:
-                    said = ph.abort_press(who, screen)
-                except Exception as e:              # noqa: BLE001
-                    stopped = False
-                    said = (f"Programming playback did NOT stop "
-                            f"({type(e).__name__}: {e}). Press Stop the "
-                            f"show audio, or Stop.")
-                self._journal(who, screen, "abort",
-                              "done" if stopped else "fault",
-                              f"{who or 'Someone'} pressed Abort on the "
-                              f"{screen}. {said}", fault=not stopped)
-                # No scheduled show was live to stop: the answer says what
-                # did stop, the Programming playback.
-                text = " ".join(t for t in (flames[1] if flames else "",
-                                            lasers[1], said) if t)
-                ok = stopped and not (flames and flames[0] is False)
-                out = dict(out, programming=said, stopped=stopped, ok=ok,
-                           text=text)
-                out.pop("error", None)
-                if not ok:
-                    out["error"] = text
-                code = 200 if ok else 409
-            return code, out
         if ph is not None:                          # hold
             # Jeff's ruling: Hold is a schedule pause. The schedule's own
             # Hold first (so the next show does not start until Resume),
@@ -3340,23 +3409,152 @@ class Remote:
             # surface: the press names the surface, not a person on the
             # operator list (Jeff, 2026-10-07). Every other rule the
             # scheduler has for these presses still applies.
-            if name == "reset":
-                # From a Hold, Reset ends it (and a paused show) and clears
-                # the fault flag; starts nothing (Jeff, 2026-10-28). Else,
-                # and always while an Abort stands, the Abort's Reset.
-                fn = getattr(svc, "reset_hold", None)
-                r = fn(who, screen, surface=surface) if fn else None
-                if r is None:
-                    r = svc.reset_conductor(who, screen, pressed=pressed,
-                                            surface=surface)
-                r = self._reset_health(r, who, screen)
+            if name == "start-at-cue":
+                start_at, why = self.start_at_cue(body)
+                if why:
+                    text = (f"Start at a cue was refused: {why} Nothing was "
+                            f"started.")
+                    self._journal(who, screen, name, "refused",
+                                  f"{who or 'Someone'}'s Start at a cue on "
+                                  f"the {screen} was refused. {text}")
+                    return 409, {"ok": False, "error": text, "text": text}
+                r = svc.operator_press("start-now", who, screen,
+                                       confirmed=body.get("confirmed") is True,
+                                       surface=surface, start_at=start_at)
             else:
                 r = svc.operator_press(name, who, screen,
                                        confirmed=body.get("confirmed") is True,
                                        surface=surface)
+                if name == "resume":
+                    r = self._resume_health(r, who, screen)
         except ValueError as e:
             return 400, {"error": str(e)}
         return (200 if r.get("ok") else 409), r
+
+    # -- Start at a cue (play_from.py part 2) -----------------------------
+    def start_at_cue(self, body):
+        """(start_at, "") or (None, why) for POST start-at-cue {"show",
+        "cue_id", "tc"}: the saved cue of the show file that is RUNNING,
+        looked up by its id in ltcplay_play_from.json. The page's "show"
+        and "tc", when given, must still be what is running and what is
+        saved (a list retimed or a show changed since the page read it is
+        refused, never guessed). Show mode only: Programming has its own
+        Play from. Sends nothing, starts nothing."""
+        from . import play_from as pf_mod
+        s = getattr(self.control, "session", None)
+        if s is None or not getattr(s, "running", False):
+            return None, ("no show file is running. Press Run on the "
+                          "Programming screen first (Show mode).")
+        if self._rehearsal_run(s):
+            # Asked of the run itself, live show or not: the runner asks
+            # this again at the start (start_at_check).
+            return None, ("it is for Show mode. In Programming, use Play "
+                          "from on the Programming screen.")
+        file = os.path.basename(str(getattr(s, "timeline_path", "") or ""))
+        show = body.get("show")
+        if show is not None and show != file:
+            return None, (f"this screen shows the cues of {show}, but "
+                          f"{file} is running. Reload and choose again.")
+        try:
+            doc, err = self.play_from_store().load()
+        except Exception as e:                   # noqa: BLE001
+            doc, err = None, f"the play-from cues could not be read " \
+                             f"({type(e).__name__})"
+        if err:
+            return None, err.rstrip(".") + "."
+        entry = pf_mod.entry_of(doc, file)
+        cue = pf_mod.find_cue(entry, body.get("cue_id"))
+        if cue is None:
+            return None, (f"that cue is not in the saved list for {file} "
+                          f"(it may have been deleted). Reload and choose "
+                          f"again.")
+        if "tc" in body and body.get("tc") != cue["tc"]:
+            return None, (f"the cue {cue['name']} is at {cue['tc']} now, "
+                          f"not {body.get('tc')}: it was changed since this "
+                          f"screen read it. Reload and choose again.")
+        if "lead_in_s" in body and body.get("lead_in_s") != cue["lead_in_s"]:
+            return None, (f"the cue {cue['name']} has a {cue['lead_in_s']} s "
+                          f"lead-in now, not {body.get('lead_in_s')} s: it "
+                          f"was changed since this screen read it. Reload "
+                          f"and choose again.")
+        # Past the end of the show audio (a render made shorter since the
+        # list was saved): refused here, before the video goes black or a
+        # show is counted (review A of #201). The running clock's own
+        # length of the show cue's audio, as step 1 checks it on a save.
+        try:
+            got = s.clock.show_lengths(entry.get("cue") or "")
+            audio_s = float(got["audio_s"]) if got else None
+        except Exception:                        # noqa: BLE001
+            audio_s = None
+        if audio_s is not None and \
+                pf_mod.parse_tc(cue["tc"]) / pf_mod.FPS >= audio_s:
+            return None, (f"the cue {cue['name']} at {cue['tc']} is past "
+                          f"the end of the show audio, which is "
+                          f"{pf_mod.tc_text(int(audio_s * pf_mod.FPS))} "
+                          f"long now. Retime or delete it on 2.0 Settings.")
+        return {"cue": dict(cue), "show_cue": entry.get("cue") or "",
+                "file": file}, ""
+
+    def start_at_check(self, start_at):
+        """(the cue as saved NOW, "") or (None, why), for a start at a cue
+        that is about to happen (Continue anyway, the show runner): every
+        refusal of start_at_cue again (Show mode, the show file running,
+        the cue file, the cue by its id, past the audio's end), and the
+        cue must still have the name, time and lead-in it was chosen with,
+        for the same show cue. A cue retimed, renamed or deleted since is
+        refused, never started at its old point (review A of #201).
+        Never raises."""
+        try:
+            want = start_at["cue"]
+            fresh, why = self.start_at_cue({"show": start_at.get("file"),
+                                            "cue_id": want.get("id")})
+        except Exception as e:                   # noqa: BLE001
+            return None, (f"the cue to start at could not be checked "
+                          f"({type(e).__name__}).")
+        if why:
+            return None, why
+        got = fresh["cue"]
+        changed = [w for w, k in (("name", "name"), ("time", "tc"),
+                                  ("lead-in", "lead_in_s"))
+                   if got.get(k) != want.get(k)]
+        if changed:
+            return None, (f"the cue {want.get('name')} was changed since it "
+                          f"was chosen ({', '.join(changed)}). Choose it "
+                          f"again.")
+        if str(fresh.get("show_cue") or "").lower() != \
+                str(start_at.get("show_cue") or "").lower():
+            return None, ("the cue list was saved again for another show "
+                          "cue since the cue was chosen. Choose it again.")
+        return fresh, ""
+
+    def resume_offer(self, show):
+        """Resume's offer for `show` (a show file): where the last show
+        that was stopped part way stopped, and the cue at or before it
+        (play_from.resume_offer), so the scene starts fresh. None when no
+        stopped show of that file is known. Display only."""
+        from . import play_from as pf_mod
+        run = getattr(self.schedule, "performer", None)
+        at = getattr(run, "stopped_at", None)
+        if not isinstance(at, dict) or at.get("file") != show:
+            return None
+        # Tonight's stop only (review A of #201): a stop from an earlier
+        # night is never offered.
+        m = getattr(self.schedule, "machine", None)
+        if m is None or at.get("night") != str(getattr(m, "date", "")):
+            return None
+        try:
+            doc, err = self.play_from_store().load()
+            entry = pf_mod.entry_of(doc, show)
+            if err or (entry.get("cue") and at.get("cue") and
+                       str(entry["cue"]).lower() !=
+                       str(at["cue"]).lower()):
+                return None
+            cue = pf_mod.resume_offer(entry["cues"], at["frame"])
+            return {"show": at.get("show"),
+                    "stopped_at": pf_mod.tc_text(at["frame"]),
+                    "cue": cue}
+        except Exception:                        # noqa: BLE001
+            return None
 
     # -- programming-session transport ----------------------------------
     LIVE_STATES = ("SHOW", "PAUSED")
@@ -3366,7 +3564,12 @@ class Remote:
 
     def programming_playback_refusal(self):
         """The sentence that refuses Start now and Run while Programming
-        playback is on (playhead.py), or ""."""
+        playback is on (playhead.py), or Fireball practice is open, or "".
+        Asked under the scheduler's lock (start_veto): attribute reads
+        only for practice, never a lock."""
+        pr = self.fireball_practice
+        if pr is not None and pr.blocking:
+            return pr.refusal()
         try:
             on = self.programming()[0] and self.playhead.active()
         except Exception:                           # noqa: BLE001
@@ -3379,8 +3582,8 @@ class Remote:
         if svc is not None:
             m = getattr(svc, "machine", None)
             if m is not None and m.state in self.LIVE_STATES:
-                return False, ("A scheduled show is live. Only Hold, Resume "
-                               "and Abort work during a show; scrubbing is "
+                return False, ("A scheduled show is live. Only Stop, Hold "
+                               "and Resume work during a show; scrubbing is "
                                "for programming sessions.")
         s = getattr(self.control, "session", None)
         p = getattr(s, "player", None)
@@ -3388,7 +3591,18 @@ class Remote:
             return False, ("Nothing is playing. To scrub, on the show "
                            "machine choose Programming on the Show file "
                            "card and press Run.")
-        cond = getattr(svc, "conductor", None)
+        if not self._rehearsal_run(s):
+            return False, ("This show was started in Show mode. Scrubbing "
+                           "only works in Programming: press Stop, choose "
+                           "Programming on the Show file card, then Run.")
+        return True, ""
+
+    def _rehearsal_run(self, s):
+        """True when the running session `s` is a Programming run (no
+        output, Run's own "hold", or a rehearsal conductor), whether or
+        not a show is live."""
+        p = getattr(s, "player", None)
+        cond = getattr(self.schedule, "conductor", None)
         # A show whose clock is this machine has its player's on_lost set
         # to "hold" whatever was asked (Session.open), so there the Run's
         # own choice decides: Programming asks for "hold" (re-review of
@@ -3399,14 +3613,9 @@ class Remote:
             asked = getattr(s, "on_lost_arg", None) == "hold"
         else:
             asked = getattr(p, "on_lost", "") == "hold"
-        rehearsal = (getattr(s, "no_output", False)
-                     or asked
-                     or getattr(cond, "mode", None) == "rehearsal")
-        if not rehearsal:
-            return False, ("This show was started in Show mode. Scrubbing "
-                           "only works in Programming: press Stop, choose "
-                           "Programming on the Show file card, then Run.")
-        return True, ""
+        return bool(getattr(s, "no_output", False)
+                    or asked
+                    or getattr(cond, "mode", None) == "rehearsal")
 
     def transport(self, name, body, who, screen):
         ok, why = self.programming()
@@ -3426,18 +3635,10 @@ class Remote:
         ph = self.playhead
         if not ph.applies():
             ph = None
-        fb = self.fireball
-        if ph is not None and name in ("play-from", "loop") and \
-                fb is not None and fb.active():
-            # One source of fire values at a time: the Fireball page has a
-            # channel on (it cuts itself once Run is pressed; this covers
-            # the moment between).
-            why = ("A Fireball channel is on. Turn the Fireball page off "
-                   "first. Nothing was played.")
-            self._journal(who, screen, name, "refused",
-                          f"{label}'s {name} on the {screen} was refused. "
-                          f"{why}")
-            return 409, {"error": why}
+        # The Fireball page works at any time (Jeff, 2026-10-30): a
+        # Programming Play from or Loop is never refused because a Fireball
+        # channel is on (round-4 review); the page's frame is not the show's
+        # and a landing drops only the show's values (flamelink.py).
 
         def here():
             if ph is not None:
@@ -3487,8 +3688,16 @@ class Remote:
                     at = p.nudge(secs)
                 said = f"jumped {secs:+g} s to {tl.format(at)}"
             elif name == "pause" and ph is not None:
-                at = ph.pause(who, screen)
-                said = f"paused at {tl.format(at)}"
+                # The Programming screen's Pause keeps armed lasers armed
+                # (Jeff, 2026-11-06), only while this is a Programming
+                # session and the playback is the one Play from started:
+                # asked again by the playhead at the press itself, with
+                # its own active() check (a Hold that disarms otherwise).
+                at, why = ph.pause_or_why(
+                    who, screen,
+                    keep_lasers_if=lambda: self.programming()[0])
+                said = (f"not paused at {tl.format(at)}: {why}" if why
+                        else f"paused at {tl.format(at)}")
             elif name == "continue" and ph is not None:
                 at = ph.cont(who, screen)
                 said = f"continued from {tl.format(at)}"
@@ -3590,25 +3799,12 @@ class Remote:
                 return i, n
         raise ValueError("That is not a flame group flamesafe reports.")
 
-    def _abort_standing(self):
-        """True while an Abort is latched (the scheduler's or the
-        conductor's latch, as show_live_refusal reads it). The Stream Deck
-        takes no screen hold then; the engine says so first."""
-        svc = self.schedule
-        m = getattr(svc, "machine", None)
-        cond = getattr(svc, "conductor", None)
-        return bool(getattr(m, "abort_latched", False) or
-                    getattr(cond, "latched", False))
-
     def arm_refusal(self, gname, device):
         """Why a screen hold on `gname` from `device` would arm nothing
         right now, in a sentence for the page, or "". Each is something
         the Stream Deck or flamesafe refuses anyway; the engine says it
         before a hold that cannot work fills its bar. Checked on the first
         press and on every heartbeat."""
-        if self._abort_standing():
-            return ("An Abort is standing, so nothing arms until it is "
-                    "Reset. Press Reset, then hold again.")
         why = self.live_flame_arm_refusal(gname)
         if why:
             return why
@@ -3987,7 +4183,7 @@ class Remote:
                            "nothing could be sent")
         try:
             r = fn(f"{label} pressed Disarm {gname} on the {device} "
-                   f"({why}: every group disarmed the Abort way)")
+                   f"({why}: every group disarmed the Stop way)")
             return (bool(getattr(r, "ok", False)),
                     str(getattr(r, "sentence", "") or "").strip())
         except Exception as e:                   # noqa: BLE001
@@ -4005,7 +4201,7 @@ class Remote:
         if ok:
             alert = (f"{lead}: ALL groups disarm sent. Disarm {gname} "
                      f"forced ({why}): the flame link has no one-group "
-                     f"disarm, so the Abort's disarm was sent to every "
+                     f"disarm, so the Stop's disarm was sent to every "
                      f"flame group, every hazer is off, and the show's "
                      f"flames stay at zero until Hold then Resume or a new "
                      f"run. Each group needs Arm again (let go, then hold) "
@@ -4015,7 +4211,7 @@ class Remote:
                      f"the forced disarm did not go out either "
                      f"({said or 'no answer'}). {gname} may still be "
                      f"armed: press "
-                     f"Abort, or disarm at the Stream Deck.")
+                     f"Stop, or disarm at the Stream Deck.")
         self._journal(who, device, "disarm", "forced" if ok else "fault",
                       f"{label} pressed Disarm {gname} on the {device}. "
                       f"{alert}", fault=True)
@@ -4207,7 +4403,7 @@ class Remote:
         m = getattr(svc, "machine", None)
         state = getattr(m, "state", None)
         if state in ("HOLD", "PAUSED"):
-            return "a Hold is standing; Resume or Reset first"
+            return "a Hold is standing; Resume first"
         s = getattr(self.control, "session", None)
         if s is not None and getattr(s, "running", False):
             return ("Run is pressed (a show file is running), so the show "
@@ -4242,6 +4438,14 @@ class Remote:
         if pg is not None and pg.selected:
             return ("machines are selected for a purge on the Morning and "
                     "Shutdown page; clear the purge selection first")
+        # The fuel pump (re-review A of #188, N1): at the start only (the
+        # mode not yet on; begin() asks this after marking itself
+        # starting), never on a watch pass, so a pump can never end a
+        # running session (and with it, by its disarm, the pump).
+        if lf is None or not getattr(lf, "on", False):
+            why = self.live_flame_pump_refusal()
+            if why:
+                return why
         return ""
 
     def live_flame_armed_groups(self):
@@ -4356,6 +4560,22 @@ class Remote:
             return 403, {"error": "Live flame programming is turned on on "
                                   "the show machine itself, not from here. "
                                   "Nothing was changed."}
+        # The fuel pump (2026-10-30, review B of #188, F3): live flame
+        # programming ends with a disarm to every flame group, which turns
+        # the pump off too; a Hold or Start now ends it. So it does not
+        # start while the pump runs: Hold must never end the pump (Jeff:
+        # "Off on Stop, NOT Hold"). This is the early, plain answer; the
+        # check that decides is live_flame_blockers, run inside begin()
+        # after it is marked starting, and pump_blocker refuses the pump
+        # while live flame programming is on OR starting, with the pump's
+        # run reserved before that look (re-review A of #188, N1): one of
+        # the two always sees the other.
+        why = self.live_flame_pump_refusal()
+        if why:
+            self._journal(who or "unsigned", screen, "live flame", "refused",
+                          f"Live flame programming ON on the {screen} was "
+                          f"refused: {why}")
+            return 409, {"error": why}
         if body.get("confirmed") is not True:
             return 400, {"error": "Confirm it on the page first. Nothing "
                                   "was changed."}
@@ -4502,6 +4722,683 @@ class Remote:
             return 409, {"error": text}
         return 200, {"ok": True, "text": text}
 
+    # -- play-from cues (play_from.py): the cue list per show file ----------
+    def play_from_store(self):
+        """The play-from cue list's file in the settings folder: ONE Store
+        per engine, made on first use under a lock (two first requests at
+        once would otherwise each make their own, with their own file lock,
+        and overwrite each other). A new audit log is handed to it, never a
+        new store. Sends nothing."""
+        with _PFC_STORE_LOCK:
+            st = getattr(self, "_pfc_store", None)
+            if st is None:
+                from . import play_from as pf_mod
+
+                def _journal(who, screen, outcome, text, fault=False):
+                    self._journal(who or "system", screen or "engine",
+                                  "play-from cues", outcome, text,
+                                  fault=fault)
+                st = self._pfc_store = pf_mod.Store(
+                    self.folder, journal=_journal,
+                    audit=getattr(self, "audit", None), wall=self.wall)
+            st.audit = getattr(self, "audit", None)
+            return st
+
+    def play_from_show_info(self, show):
+        """(the show's own cue, its AUDIO's length in seconds, "") for a
+        show file in the show folder, opened as the Check button opens one
+        (nothing sent, nothing played), or (None, None, why). The audio's
+        length, not the show's: the show audio clock cannot start past the
+        end of its audio, however long the lights or the video run."""
+        ctl = self.control
+        folder = getattr(ctl, "folder", None)
+        name = os.path.basename(str(show or ""))
+        if not folder or not name or name != show:
+            return None, None, f"{show!r} is not a show file"
+        # Spelled exactly as the folder lists it: on a disk that does not
+        # tell case apart (Windows, macOS) "show.json" would open
+        # "Show.json" too and make a second list for the same show.
+        if name not in self.play_from_show_files():
+            return None, None, f"{name} is not in the show folder"
+        path = os.path.join(folder, name)
+        from . import clock as clock_mod
+        from .session import Session
+        kw = dict(getattr(ctl, "defaults", None) or {})
+        kw.update(no_output=True, no_log=True, sd=getattr(ctl, "_sd", None))
+        s = None
+        cue = got = None
+        try:
+            s = Session(path, **kw)
+            s.open()
+            cue = clock_mod.show_cue_of(s.clock, s.tl)
+            if cue is not None:
+                got = s.clock.show_lengths(cue)
+        except Exception as e:                       # noqa: BLE001
+            return None, None, (f"{name} could not be opened "
+                                f"({type(e).__name__}: {e})")
+        finally:
+            if s is not None:
+                try:
+                    s.stop()
+                except Exception:                    # noqa: BLE001
+                    pass
+        if cue is None or not got or not got.get("audio_s"):
+            return None, None, (f"{name} does not play from the show "
+                                f"audio, so it has no show cue to play "
+                                f"from")
+        return cue, float(got["audio_s"]), ""
+
+    def play_from_show_files(self):
+        """The file names in the show folder, exactly as it lists them
+        (a set; empty when there is no folder)."""
+        folder = getattr(self.control, "folder", None)
+        try:
+            return {n for n in os.listdir(folder)
+                    if os.path.isfile(os.path.join(folder, n))} \
+                if folder else set()
+        except OSError:
+            return set()
+
+    def play_from_get(self, query, ctx):
+        """GET play-from-cues[?show=<file>]: the file's revision, its error
+        and the rules, the lists whose show file is gone, and with ?show=
+        that show's cues, its own cue and audio length, a note when the
+        audio changed since the save, and whether this person may save
+        (and why not). Anyone signed in may read; with no users set up, the
+        show machine itself reads it, as the other Settings do. (code,
+        body)."""
+        import urllib.parse
+        me = getattr(ctx, "session", None) or {}
+        u = self.users
+        no_users = u is None or not u.active()
+        if not (me.get("name") and not no_users) and \
+                not (no_users and ctx.local):
+            return 403, {"error": "Sign in to read the play-from cues."}
+        show = (urllib.parse.parse_qs(query or "").get("show") or [None])[0]
+        from . import play_from as pf_mod
+        try:
+            out = self.play_from_store().view(show)
+        except Exception as e:                       # noqa: BLE001
+            return 500, {"error": f"The play-from cues could not be read "
+                                  f"({type(e).__name__})."}
+        if no_users:
+            out["may_edit"] = False
+            out["edit_why"] = ("Saving needs a signed-in admin. Set up "
+                               "users first (Users, in 1.0).")
+        elif not u.may(me.get("role"), "settings"):
+            out["may_edit"] = False
+            out["edit_why"] = (f"Only someone with Settings (admins) "
+                               f"saves; {me.get('name')} reads only.")
+        elif not self.may_act_from(ctx.local):
+            out["may_edit"] = False
+            out["edit_why"] = ("Saving from the show network needs Arming "
+                               "from a screen on.")
+        else:
+            out["may_edit"], out["edit_why"] = True, ""
+        here = self.play_from_show_files()
+        out["missing"] = [n for n in out["shows"] if n not in here]
+        if show is not None:
+            cue, length, why = self.play_from_show_info(show)
+            out.update(cue=cue, audio_len_s=length, show_problem=why,
+                       audio_note=pf_mod.audio_note(out["entry"], length))
+            # Start at a cue (part 2): Resume's offer, the cue before where
+            # the last stopped show of this file stopped. Display only.
+            out["resume"] = self.resume_offer(show)
+        return 200, out
+
+    def play_from_save(self, body, ctx):
+        """POST play-from-cues-save {"show", "rev", "cues": [{"id" (kept
+        from the list read; none for a new cue), "name", "tc", "lead_in_s",
+        "note"}]}: the Settings row (users.classify, checked by web.py
+        first, and again here), a signed-in person, from the show network
+        screen_arming too. The show's own cue and audio length are worked
+        out here, never taken from the page. Saved with a revision check,
+        history, a journal line and an audit event. Sends nothing, starts
+        nothing. (code, body)."""
+        from . import users as users_mod
+        from . import play_from as pf_mod
+        body = body if isinstance(body, dict) else {}
+        who, device, _surface = self._actor(ctx, body)
+        me = getattr(ctx, "session", None) or {}
+        u = self.users
+        st = self.play_from_store()
+        show = body.get("show")
+
+        def refused(code, why):
+            text = f"Not saved: {why} Nothing was changed."
+            st.refused(who, device, show, text)
+            return code, {"error": text}
+        if u is None or not u.active() or not me.get("name"):
+            return refused(403, "editing the play-from cues needs a "
+                                "signed-in admin.")
+        if not u.may(me.get("role"), "settings"):
+            return refused(403, f"{me.get('name')} may not: "
+                                f"{users_mod.perm_label('settings')}.")
+        if not self.may_act_from(ctx.local):
+            return refused(403, "editing the play-from cues from a device "
+                                "on the show network needs screen_arming "
+                                "(on the show machine itself: Programming, "
+                                "Arming from a screen, Turn on).")
+        if body.get("restore") is True:
+            # Put the last saved copy back (the file is missing or cannot
+            # be read): every show's list, as it was last saved.
+            ok, text, _doc = st.restore(body.get("rev"), who=who,
+                                        screen=device)
+            if not ok:
+                return 409, {"error": text + " Nothing was changed.",
+                             "stale": pf_mod.STALE_WORDS in text,
+                             "replace_needed": False}
+            return 200, {"ok": True, "text": text}
+        if not isinstance(show, str):
+            return refused(400, "choose a show file.")
+        cue, length, why = self.play_from_show_info(show)
+        if why:
+            return refused(409, why[0].upper() + why[1:] + ".")
+        ok, text, entry = st.save(show, cue, length, body.get("cues"),
+                                  body.get("rev"), who=who, screen=device,
+                                  replace=body.get("replace") is True)
+        if not ok:
+            return 409, {"error": text + " Nothing was changed.",
+                         "stale": pf_mod.STALE_WORDS in text,
+                         "replace_needed": pf_mod.REPLACE_WORDS in text}
+        return 200, {"ok": True, "text": text, "entry": entry}
+    # -- the fuel pump (fuelpump.py) ------------------------------------------
+    def pump_cut(self, reason, who="", screen=""):
+        """Stop or Abort: the fuel pump OFF at the flame link now, the
+        journal and audit lines on a thread of their own. Never raises,
+        never waits."""
+        pm = self.pump
+        if pm is None:
+            return False
+        try:
+            was = pm.cut()
+            threading.Thread(target=pm.off, args=(reason,),
+                             kwargs={"who": who, "screen": screen,
+                                     "system": not who, "was": was},
+                             daemon=True, name="ltcplay-pump-off").start()
+            return True
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def pump_signout(self, why, who, screen, token):
+        """Sign out: the fuel pump run this sign-in started turns off now.
+        Never raises."""
+        pm = self.pump
+        if pm is None or not token:
+            return False
+        try:
+            return pm.end_for_token(token, why, who=who, screen=screen)
+        except Exception:                        # noqa: BLE001
+            return False
+
+    PUMP_USERS_BUSY_S = 3.0
+
+    def pump_signed_out(self, token, who):
+        """For the pump: why the sign-in that started (or is starting) a
+        run no longer lets it run, or "". Only while there are users
+        (users.py); no sign-in at all is "signed out", as for a timed
+        purge. Never waits on the users lock (a password hash runs under
+        it): a busy lock is read as "still signed in" for up to
+        PUMP_USERS_BUSY_S, then ends it. A users file that cannot be read
+        is said as that, never as a sign-out. A role that may no longer
+        arm (a demotion) ends it too. Never raises."""
+        u = getattr(self, "users", None)
+        if u is None:
+            return ""
+        nobody = who or "the person who started it"
+        try:
+            state, s = u.session_check(token)
+        except Exception:                        # noqa: BLE001
+            state, s = "broken", None
+        if state == "off":
+            return ""
+        if state == "busy":
+            now = self.clock()
+            since = self._pump_users_busy.setdefault(token, now)
+            if now - since > self.PUMP_USERS_BUSY_S:
+                return ("could not confirm the sign-in (the users file was "
+                        "busy too long); pump turned off")
+            return ""
+        self._pump_users_busy.pop(token, None)
+        if not token and state != "broken":
+            return f"{nobody} signed out"
+        if state == "broken":
+            return ("could not confirm the sign-in (users file unreadable); "
+                    "pump turned off")
+        if state != "ok" or s is None:
+            return f"{nobody} signed out"
+        role = s.get("role")
+        try:
+            may = self.users.may(role, "arm")
+        except Exception:                        # noqa: BLE001
+            may = False
+        if not may:
+            return (f"{nobody} may no longer turn the fuel pump on (their "
+                    f"role is now {role or 'none'})")
+        return ""
+
+    def pump_after_signout(self, why, who, screen, token):
+        """A Sign out was carried out: the pump's run ends now if it was
+        this sign-in's, or if its own sign-in has just ended with it (a
+        sign-out on the show PC ends every sign-in made there), naming the
+        person who signed out. Never raises."""
+        pm = self.pump
+        if pm is None:
+            return False
+        try:
+            if token and pm.end_for_token(token, why, who=who,
+                                          screen=screen):
+                return True
+            run = pm._live_run()
+            if run is None or not run.get("token"):
+                return False
+            state, _s = self.users.session_check(run["token"])
+            if state == "gone":
+                starter = run.get("who") or "the person who started it"
+                return pm.end_for_token(
+                    run["token"], f"{why}, which ended {starter}'s "
+                    f"sign-in too" if starter != who else why,
+                    who=who, screen=screen)
+        except Exception:                        # noqa: BLE001
+            pass
+        return False
+
+    def pump_settings(self):
+        """The fuel pump's run times on this show machine: the screens'
+        default (always 5:00, capped by the longest), the longest, the
+        shortest and
+        the most an admin may set, from ltcplay_remote.json; "error" when
+        that file cannot be read (then the pump is not turned on)."""
+        out = {"default_s": PUMP_DEFAULT_S, "max_s": PUMP_MAX_DEFAULT_S,
+               "min_s": PUMP_MIN_S, "limit_s": PUMP_MAX_LIMIT_S,
+               "error": ""}
+        try:
+            rs = load_settings(self.folder)
+        except (ValueError, OSError) as e:
+            out["error"] = str(e)
+            return out
+        out["max_s"] = rs["pump_max_s"]
+        # Jeff (2026-10-30): 5 minutes unless Andy sets another run time
+        # before he turns it on; never a remembered one.
+        out["default_s"] = min(PUMP_DEFAULT_S, rs["pump_max_s"])
+        return out
+
+    def pump_post(self, body, ctx):
+        """POST fuel-pump {"on": true, "seconds": N, "run": "<press id>"}
+        or {"on": false}. ON is an arm press (users.classify, checked by
+        web.py first) and, from the show network, needs screen_arming
+        (may_act_from); anything but the JSON word true turns it OFF, is
+        never refused and never starts it. (code, body)."""
+        pm = self.pump
+        if pm is None:
+            return 404, {"error": "There is no fuel pump in this engine."}
+        who, device, _surface = self._actor(ctx, body)
+        on = body.get("on") is True
+        if not on:
+            ok, text = pm.set(False, who=who, screen=device)
+            return 200, {"ok": True, "text": text}
+        if not self.may_act_from(ctx.local):
+            why = ("Turning the fuel pump on from a device on the show "
+                   "network needs screen_arming (on the show machine "
+                   "itself: Programming, Arming from a screen, Turn on). "
+                   "Nothing was changed.")
+            self._journal(who, device, "fuel-pump", "refused",
+                          f"{who or 'Someone'}'s fuel pump ON from the "
+                          f"{device} was refused. {why}")
+            return 403, {"error": why}
+        # A sign-in on this screen (cold review A of #195, 3): the run is
+        # tied to it, and signing out stops it. With users, an ON from no
+        # sign-in (the Stream Deck, a page with no session) is refused.
+        if self.users_active() and not (getattr(ctx, "token", "") or ""):
+            why = ("Turning the fuel pump on needs a sign-in on this screen "
+                   "(signing out stops it). Sign in, then press again.")
+            self._journal(who, device, "fuel-pump", "refused",
+                          f"{who or 'Someone'}'s fuel pump ON from the "
+                          f"{device} was refused. {why}")
+            return 403, {"error": why}
+        # The press's own age (final delta review of #189): an ON sent from
+        # a status more than ARM_FRESH_S old (or none) is refused, as an
+        # arm hold is, so a request that stalled on weak Wi-Fi and lands
+        # after a Pump off or a Stop can never start the pump then.
+        try:
+            seen = float(body.get("seen"))
+        except (TypeError, ValueError):
+            seen = None
+        if seen is None or seen != seen or \
+                abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:
+            why = ("The fuel pump was not turned on: the press came from a "
+                   "screen whose status was more than 1 s old (or said "
+                   "nothing of its age), so it may be from before a Pump "
+                   "off or a Stop. Wait for the screen to be live, then "
+                   "press again.")
+            self._journal(who, device, "fuel-pump", "refused",
+                          f"{who or 'Someone'}'s fuel pump ON from the "
+                          f"{device} was refused. {why}")
+            return 409, {"error": why}
+        ps = self.pump_settings()
+        if ps["error"]:
+            return 409, {"error": f"The fuel pump was not turned on: "
+                                  f"{ps['error']}"}
+        ok, text = pm.set(True, who=who, screen=device,
+                          seconds=body.get("seconds"), run=body.get("run"),
+                          max_s=ps["max_s"],
+                          token=getattr(ctx, "token", "") or "")
+        if not ok:
+            return 409, {"error": text}
+        return 200, {"ok": True, "text": text}
+
+    def pump_view(self, fl):
+        """The status's "pump": fuelpump.FuelPump.view with this show
+        machine's run times, or None with no pump in this engine. Never
+        raises."""
+        pm = self.pump
+        if pm is None:
+            return None
+        try:
+            v = pm.view(fl)
+            ps = self.pump_settings()
+            v.update(default_s=ps["default_s"], max_s=ps["max_s"],
+                     min_s=ps["min_s"], settings_error=ps["error"])
+            return v
+        except Exception as e:                   # noqa: BLE001
+            return {"available": False,
+                    "down": f"{type(e).__name__}: {e}"}
+    # -- the fireball timeline (fireball_timeline.py) -------------------------
+    def fireball_timeline_store(self):
+        """The fireball timeline's file in the settings folder (one Store
+        per engine, made on first use). Sends nothing."""
+        st = getattr(self, "_fbtl_store", None)
+        if st is not None:
+            # The audit log may be set up after the store was made: the
+            # same store (its listeners kept), the current audit log.
+            st.audit = getattr(self, "audit", None)
+        else:
+            from . import fireball_timeline as fbtl
+
+            def _journal(who, screen, outcome, text, fault=False):
+                self._journal(who or "system", screen or "engine",
+                              "fireball timeline", outcome, text,
+                              fault=fault)
+            st = self._fbtl_store = fbtl.Store(
+                self.folder, journal=_journal,
+                audit=getattr(self, "audit", None), wall=self.wall)
+        return st
+
+    def fireball_show_name(self, show):
+        """(the show file's own name as the show folder spells it, "") or
+        (None, why). Windows and macOS folders ignore case (and Windows
+        trailing dots and spaces), but the engine finds a show's timeline
+        by the name the playing session has, which is the folder's own
+        spelling: a timeline is always saved under that spelling (review
+        of #187: "show.json" was saved, "Show.json" played, and the show
+        fell back to its FSEQ)."""
+        folder = getattr(self.control, "folder", None)
+        name = os.path.basename(str(show or ""))
+        if not folder or not name or name != show:
+            return None, f"{show!r} is not a show file"
+        try:
+            entries = [e for e in os.listdir(folder)
+                       if os.path.isfile(os.path.join(folder, e))]
+        except OSError as e:
+            return None, f"the show folder could not be read ({e})"
+        if name in entries:
+            return name, ""
+        from . import fireball_timeline as fbtl
+        same = [e for e in entries
+                if fbtl.show_key(e) == fbtl.show_key(name)]
+        if len(same) == 1:
+            return same[0], ""
+        if len(same) > 1:
+            return None, (f"{name} matches more than one show file "
+                          f"({', '.join(sorted(same))}); rename one")
+        return None, f"{name} is not in the show folder"
+
+    def fireball_show_info(self, show):
+        """(the show's own cue, its length in seconds, "") for a show file
+        in the show folder, opened as the Check button opens one (nothing
+        sent, nothing played), or (None, None, why). `show` must be the
+        folder's own spelling (fireball_show_name)."""
+        ctl = self.control
+        folder = getattr(ctl, "folder", None)
+        name, why = self.fireball_show_name(show)
+        if why:
+            return None, None, why
+        path = os.path.join(folder, name)
+        from . import clock as clock_mod
+        from .session import Session
+        kw = dict(getattr(ctl, "defaults", None) or {})
+        kw.update(no_output=True, no_log=True, sd=getattr(ctl, "_sd", None))
+        s = None
+        try:
+            s = Session(path, **kw)
+            s.open()
+            cue = clock_mod.show_cue_of(s.clock, s.tl)
+            length = clock_mod.show_len_of(s.clock, s.tl)
+        except Exception as e:                       # noqa: BLE001
+            return None, None, (f"{name} could not be opened "
+                                f"({type(e).__name__}: {e})")
+        finally:
+            if s is not None:
+                try:
+                    s.stop()
+                except Exception:                    # noqa: BLE001
+                    pass
+        if cue is None or not length:
+            return None, None, (f"{name} does not play from the show "
+                                f"audio, so it has no show cue to time the "
+                                f"fireball against")
+        return cue, float(length), ""
+
+    def fireball_timeline_get(self, query=""):
+        """GET fireball-timeline[?show=<file>]: the file's revision, its
+        error, every show's entry, and with ?show= that show's entry, its
+        own cue and length, and whether an edit is refused now. Anyone may
+        read it. (code, body)."""
+        import urllib.parse
+        show = (urllib.parse.parse_qs(query or "").get("show") or [None])[0]
+        try:
+            out = self.fireball_timeline_store().view(show)
+        except Exception as e:                       # noqa: BLE001
+            return 500, {"error": f"The fireball timeline could not be "
+                                  f"read ({type(e).__name__})."}
+        if show is not None:
+            real, _why = self.fireball_show_name(show)
+            if real and real != show:
+                # The folder's own spelling: the entry the engine uses.
+                show = real
+                out = self.fireball_timeline_store().view(show)
+            cue, length, why = self.fireball_show_info(show)
+            out.update(cue=cue, show_len_s=length, show_problem=why)
+        return 200, out
+
+    # -- Fireball practice (fireball_practice.py) ----------------------------
+    def fireball_practice_route_refusal(self, name, body):
+        """The sentence that refuses a POST while Fireball practice is
+        open, or "". Attribute reads only."""
+        pr = self.fireball_practice
+        if pr is None or not pr.blocking:
+            return ""
+        body = body if isinstance(body, dict) else {}
+        if name in PRACTICE_REFUSED_ROUTES:
+            return pr.refusal()
+        if name == "live-flame" and body.get("on") is True:
+            return pr.refusal()
+        if name == "cleaning-beat" and body.get("hold") is True:
+            return pr.refusal()
+        return ""
+
+    def _practice_may(self, ctx, what):
+        """"" when this request may open practice or Step (Jeff,
+        2026-11-08): anyone with the Show and Arm rows, on any screen, an
+        operator on an iPad too; asked at every press. Programming's
+        narrower rule for moving the playhead (programming_move_refusal:
+        the show PC or an admin) is not asked here and stays for every
+        other move. With sign-in switched off: the show PC only."""
+        from . import users as users_mod
+        local = bool(getattr(ctx, "local", False))
+        if not self.users_active():
+            if local:
+                return ""
+            return (f"{what} is done on the show PC while sign-in is off. "
+                    f"Nothing was changed.")
+        role = (getattr(ctx, "session", None) or {}).get("role")
+        try:
+            u = self.users
+            mx = u.matrix()
+            rows = all(users_mod.allowed(mx, role, p)
+                       for p in ("show", "arm"))
+        except Exception:                        # noqa: BLE001
+            return (f"{what} was refused: the sign-in could not be "
+                    f"checked. Nothing was changed.")
+        if not rows:
+            return (f"{what} needs the Show and Arm permissions. Nothing was "
+                    f"changed.")
+        return ""
+
+    def fireball_practice_get(self, ctx):
+        pr = self.fireball_practice
+        if pr is None:
+            return 404, {"error": "Fireball practice is not set up in this "
+                                  "engine."}
+        from . import fireball as fireball_mod
+        v = pr.view(fireball_mod._owner(ctx))
+        v["served_at"] = int(self.wall() * 1000)
+        return 200, v
+
+    def fireball_practice_post(self, body, ctx):
+        """POST fireball-practice {"action": "open" (with "mode": "live" or
+        "dry"), "step" (with "lead_in_s"), "beat" or "done"}."""
+        from . import fireball as fireball_mod
+        from . import fireball_practice as fp
+        pr = self.fireball_practice
+        if pr is None:
+            return 404, {"error": "Fireball practice is not set up in this "
+                                  "engine."}
+        who, screen, _s = self._actor(ctx, body)
+        action = body.get("action")
+        owner = fireball_mod._owner(ctx)
+        if action == "done":
+            return 200, {"ok": True, "text": pr.done(who, screen)}
+        if action == "beat":
+            ok, why = pr.beat(owner)
+            return (200 if ok else 409), {"ok": ok, "text": why}
+        if action not in ("open", "step"):
+            return 400, {"error": "action is open, step, beat or done."}
+        what = "Opening Fireball practice" if action == "open" else "Step"
+        why = self._practice_may(ctx, what)
+        if why:
+            self._journal(who, screen, "fireball practice", "refused", why)
+            return 403, {"ok": False, "error": why, "text": why}
+        try:
+            if action == "open":
+                text = pr.open(body.get("mode"), owner, who, screen)
+            else:
+                lead = body.get("lead_in_s", fp.LEAD_IN_DEFAULT_S)
+                text = pr.step(owner, who, screen, lead)
+        except fp.Refused as e:
+            self._journal(who, screen, "fireball practice", "refused",
+                          str(e))
+            return 409, {"ok": False, "error": str(e), "text": str(e)}
+        return 200, {"ok": True, "text": text}
+
+    def fireball_charge_empty(self, body, ctx):
+        """POST fireball-charge-empty: an admin confirms the fuel and air
+        tanks the record does not know are empty (Tanks are empty on the
+        Fireball page). The Settings row, a signed-in person, from the
+        show network screen_arming too. (code, body)."""
+        from . import users as users_mod
+        who, device, _surface = self._actor(ctx, body)
+        me = getattr(ctx, "session", None) or {}
+        u = self.users
+        tr = self.fireball_charge
+        if tr is None:
+            return 404, {"error": "The fireball charge record is not running "
+                                  "in this engine."}
+        why = ""
+        if u is None or not me.get("name") or not u.active():
+            why = "confirming the tanks are empty needs a signed-in admin."
+        elif not u.may(me.get("role"), "settings"):
+            why = (f"{me.get('name')} may not: "
+                   f"{users_mod.perm_label('settings')}.")
+        elif not self.may_act_from(ctx.local):
+            why = ("confirming the tanks are empty from a device on the "
+                   "show network needs screen_arming.")
+        if why:
+            self._journal(who, device, "fireball charge", "refused",
+                          f"{who or 'Someone'}'s Tanks are empty on the "
+                          f"{device} was refused. {why}")
+            return 403, {"error": f"Not changed: {why}"}
+        ok, text = tr.confirm_empty(who, device)
+        if not ok:
+            return 409, {"error": text}
+        return 200, {"ok": True, "text": text}
+
+    def fireball_timeline_save(self, body, ctx):
+        """POST fireball-timeline-save {"show", "rev", "source": "fseq" or
+        "timeline", "stages": [{"stage", "start", "dur_s"}]}: the Settings
+        row (users.classify, checked by web.py first, and again here), a
+        signed-in person, from the show network screen_arming too. Allowed
+        during a show (Jeff, 2026-10-30: editing is restricted by who, not
+        by when); how a running show takes a new revision is the engine's
+        (a later change). The show's own cue and length are worked out
+        here, never taken from the page. Saved with a revision check,
+        history, a journal line and an audit event. Sends nothing.
+        (code, body)."""
+        from . import users as users_mod
+        who, device, _surface = self._actor(ctx, body)
+        me = getattr(ctx, "session", None) or {}
+        u = self.users
+        st = self.fireball_timeline_store()
+        show = body.get("show")
+
+        def refused(code, why):
+            text = f"Not saved: {why} Nothing was changed."
+            self._journal(who, device, "fireball timeline", "refused",
+                          f"{who or 'Someone'}'s fireball timeline save for "
+                          f"{show!r} on the {device} was refused. {why}")
+            st._audit(who, device, str(show)[:200], "refused", why)
+            return code, {"error": text}
+        if u is None or not u.active() or not me.get("name"):
+            return refused(403, "editing the fireball timeline needs a "
+                                "signed-in admin.")
+        if not u.may(me.get("role"), "settings"):
+            return refused(403, f"{me.get('name')} may not: "
+                                f"{users_mod.perm_label('settings')}.")
+        if not self.may_act_from(ctx.local):
+            return refused(403, "editing the fireball timeline from a "
+                                "device on the show network needs "
+                                "screen_arming (on the show machine itself: "
+                                "Programming, Arming from a screen, Turn "
+                                "on).")
+        if not isinstance(show, str):
+            return refused(400, "choose a show file.")
+        real, why = self.fireball_show_name(show)
+        if why:
+            return refused(409, why[0].upper() + why[1:] + ".")
+        show = real
+        cue, length, why = self.fireball_show_info(show)
+        if why:
+            return refused(409, why[0].upper() + why[1:] + ".")
+        ok, text, entry = st.save(
+            show, cue, length, body.get("source"), body.get("stages"),
+            body.get("rev"), who=who, screen=device,
+            replace_unreadable=body.get("replace_unreadable") is True)
+        if not ok:
+            return 409, {"error": text + " Nothing was changed."
+                         if "Nothing" not in text else text}
+        # Saved; a shot whose Valve would never run is said (review of
+        # #201: a Valve Open needs its Igniter to have gone out first).
+        from . import fireball_timeline as fbtl_mod
+        warn = fbtl_mod.lead_warning((entry or {}).get("stages") or ())
+        if warn:
+            text = f"{text} Note: {warn}"
+            self._journal(who or "system", device or "engine",
+                          "fireball timeline", "warning",
+                          f"Fireball timeline for {show}: {warn}",
+                          fault=True)
+        return 200, {"ok": True, "text": text, "entry": entry,
+                     "warning": warn}
+
     def hazers_view(self, fl):
         """The status's "hazers": hazers.Hazers.view, and the display only
         "hazers" alert while flamesafe's list and this engine's differ.
@@ -4550,6 +5447,52 @@ class Remote:
                     "disarms every hazer. Turn it off first.")
         return ""
 
+    def pump_night_state(self):
+        """The scheduler's state for the fuel pump's end of night
+        (fuelpump.NIGHT_CLOSING and NIGHT_OVER), or None. Never raises."""
+        try:
+            return getattr(getattr(self.schedule, "machine", None), "state",
+                           None)
+        except Exception:                        # noqa: BLE001
+            return None
+
+    def live_flame_pump_refusal(self):
+        """Why live flame programming may not start because of the fuel
+        pump, or "": the pump is on (its end, or a Hold or Start now ending
+        it, would turn the pump off). Fails closed. Never raises."""
+        pm = self.pump
+        if pm is None:
+            return ""
+        try:
+            on = pm.run is not None or pm.on()
+        except Exception:                        # noqa: BLE001
+            on = True
+        if on:
+            return ("The fuel pump is on, and live flame programming ends "
+                    "with a disarm that turns the pump off (a Hold would "
+                    "end it too). Press Pump off first, or wait for its "
+                    "time to end. Nothing was changed.")
+        return ""
+
+    def pump_blocker(self):
+        """Why the fuel pump may not be turned ON now beyond fuelpump.py's
+        own checks, or "": live flame programming on, or being turned on
+        (its end sends the Abort's disarm to flamesafe, which turns the
+        pump off; re-review A of #188, N1). Asked again by fuelpump.py with
+        its run already reserved, so a begin() racing it is always seen by
+        one side or the other."""
+        lf = getattr(self, "live_flame", None)
+        programming = lf is not None and (getattr(lf, "on", False) or
+                                          getattr(lf, "_starting", False))
+        if programming and not getattr(lf, "on", False):
+            return ("live flame programming is starting, and turning it "
+                    "off turns the fuel pump off. Turn it off first, or "
+                    "wait for it to start and turn it off.")
+        if programming:
+            return ("live flame programming is on, and turning it off "
+                    "turns the fuel pump off. Turn it off first.")
+        return ""
+
     @staticmethod
     def hazers_mismatch_text(mine, theirs, path):
         def words(v):
@@ -4560,7 +5503,7 @@ class Remote:
                 f"{path or 'flamesafe config'} when it started). Until they "
                 f"match no hazer can be switched on here. Check that both "
                 f"read the same flamesafe.json, then restart flamesafe and "
-                f"LTC Player. Stop, Hold, Abort and Disarm all work as usual "
+                f"LTC Player. Stop, Hold and Disarm all work as usual "
                 f"meanwhile.")
 
     def _hazers_alert(self, agree, mine, theirs):
@@ -4610,18 +5553,13 @@ class Remote:
 
     def show_live_refusal(self):
         """Why nothing may fire from the Morning page right now: a show
-        live (SHOW or PAUSED), an Abort standing, or the show clock playing
-        a cue. "" when a purge may go (between shows, nothing playing)."""
+        live (SHOW or PAUSED), or the show clock playing a cue. "" when a purge may go (between shows, nothing playing)."""
         svc = self.schedule
         m = getattr(svc, "machine", None)
         state = getattr(m, "state", None)
         if state in ("SHOW", "PAUSED"):
             return (f"a scheduled show is live ({state}); nothing fires from "
                     f"this page until it has ended")
-        cond = getattr(svc, "conductor", None)
-        if getattr(m, "abort_latched", False) or \
-                getattr(cond, "latched", False):
-            return "the show is aborted; press Reset first"
         s = getattr(self.control, "session", None)
         clk = getattr(s, "clock", None) if s is not None else None
         if clk is not None and getattr(clk, "playing", False):
@@ -4688,6 +5626,11 @@ class Remote:
             # (review of PR #125, P2-2).
             from . import windowfront
             fn = windowfront.OPENER
+            # The supervisor's rack screen keeper leaves BEYOND in front
+            # after this press (showwindows.RackKeeper).
+            from . import appdata, showwindows
+            if appdata.WINDOWS:
+                showwindows.stamp_opened(appdata.folder())
         try:
             ok, text = fn(self.beyond_host)
         except Exception as e:                   # noqa: BLE001
@@ -4888,7 +5831,7 @@ class Remote:
             svc = self.schedule
             state = getattr(getattr(svc, "machine", None), "state", None)
             if state == "HOLD":
-                return ("a Hold is standing; Resume or Reset first, then "
+                return ("a Hold is standing; Resume first, then "
                         "start it again.")
             if getattr(svc, "halting", lambda: False)() is True:
                 return "Stop is under way."
@@ -4932,6 +5875,90 @@ class Remote:
         except Exception as e:                   # noqa: BLE001
             return f"the engine's state could not be read ({type(e).__name__})."
         return ""
+
+    FIREBALL_USERS_BUSY_S = 1.0
+
+    def fireball_signed_out(self, token, who):
+        """For the Fireball page's run (round-5 review B 2, the fuel pump's
+        rule, its own words): why the sign-in that pressed may no longer
+        hold a Fireball channel, or "". Signed out (also after the last
+        show), removed, or a role that may no longer arm. Never waits on
+        the users lock: busy is "still signed in" for up to
+        FIREBALL_USERS_BUSY_S. Never raises."""
+        u = getattr(self, "users", None)
+        if u is None:
+            return ""
+        nobody = who or "the person who pressed"
+        try:
+            state, s = u.session_check(token)
+        except Exception:                        # noqa: BLE001
+            state, s = "broken", None
+        if state == "off":
+            return ""
+        busy = getattr(self, "_fb_users_busy", None)
+        if busy is None:
+            busy = self._fb_users_busy = {}
+        if state == "busy":
+            now = self.clock()
+            # [busy since, last looked at]: the second moves on every look
+            # (round-8 review 3), so an entry still being checked is never
+            # taken for an old one.
+            ent = busy.get(token)
+            if ent is None:
+                ent = busy[token] = [now, now]
+            ent[1] = now
+            if now - ent[0] > self.FIREBALL_USERS_BUSY_S:
+                return "the sign-in could not be confirmed (the users file "\
+                       "was busy too long)"
+            return ""
+        busy.pop(token, None)
+        if state == "broken":
+            return "the sign-in could not be confirmed (the users file "\
+                   "cannot be read)"
+        if state != "ok" or s is None or not token:
+            return f"{nobody} signed out"
+        role = s.get("role")
+        try:
+            may = self.users.may(role, "arm")
+        except Exception:                        # noqa: BLE001
+            may = False
+        if not may:
+            return (f"{nobody} may no longer use the Fireball controls "
+                    f"(their role is now {role or 'none'})")
+        return ""
+
+    FIREBALL_BUSY_KEEP_S = 120.0
+
+    def fireball_run_ended(self, token):
+        """A Fireball run ended. The "users lock busy" time kept for its
+        sign-in is NOT dropped here (round-7 review 8: that gave every new
+        press a fresh grace, so an unconfirmable sign-in fired in bursts);
+        it goes when a check succeeds, or when nobody has looked at that
+        sign-in for FIREBALL_BUSY_KEEP_S."""
+        busy = getattr(self, "_fb_users_busy", None)
+        if busy:
+            now = self.clock()
+            for t in [t for t, ent in busy.items()
+                      if now - ent[1] > self.FIREBALL_BUSY_KEEP_S]:
+                busy.pop(t, None)
+
+    def fireball_signout_cut(self, why, ctx):
+        """A sign-out that ended a session: the Fireball page's run that
+        sign-in started, or that user started on this screen, or (on the
+        show machine itself, where every sign-in made there ended) any run
+        started there, is cut now (round-5 review F5, the fuel pump's
+        rule). Never raises."""
+        fb = self.fireball
+        if fb is None:
+            return False
+        try:
+            return fb.cut_signed_out(
+                why, token=getattr(ctx, "token", "") or "",
+                user=ctx.user or "", device=ctx.device,
+                local=bool(ctx.local), who=ctx.user or "",
+                screen=ctx.device)
+        except Exception:                        # noqa: BLE001
+            return False
 
     def timed_purge_cut(self, why, who="", screen="", token=None,
                         group=None):
@@ -4994,8 +6021,7 @@ class Remote:
             text = (f"An announcement played by {label} on the {screen} "
                     f"held the schedule")
         else:
-            text = (f"{'Abort' if what == 'abort' else 'Hold'} pressed by "
-                    f"{label} on the {screen}")
+            text = f"Hold pressed by {label} on the {screen}"
         try:
             fn(text, who, screen)
         except Exception:                        # noqa: BLE001
@@ -5006,7 +6032,8 @@ class Remote:
         show, Jeff, 2026-10-26): {"night", "ended"} once the night's last
         show has ended, else None.
 
-        The night is the schedule's own (its 02:00 reset, schedule.night_of),
+        The night is the schedule's own (schedule.night_of: until it hands
+        over to the next, 2 AM or later while a show of it still runs),
         and "ended" is when the last show of it that really ran ended (a
         slot's ended_at; a restart's assumed end does not count). A show
         started by hand (Start now) counts, but only on a night that had a
@@ -5015,8 +6042,8 @@ class Remote:
         gets its sign-out after the reset (remembered here).
 
         None with no schedule, while a show is live, paused or on Hold,
-        while a show is still to come or waiting after a Hold, while an
-        Abort stands, while the show clock plays, and while anything is
+        while a show is still to come or waiting after a Hold, while the
+        show clock plays, and while anything is
         going on at the rig (rig_busy with armed: a hold to arm, a purge,
         a laser test, an armed laser or flame group): it waits until that
         is clear (P2-5). Plain reads, never a lock."""
@@ -5053,29 +6080,105 @@ class Remote:
         except Exception:                        # noqa: BLE001
             return None
 
-    def laser_arm_blockers(self):
+    def laser_arm_blockers(self, look=None):
         """Why no laser may be armed (nor BEYOND's laser output switched
-        on) right now, or "": the Abort latch until Reset, a Hold until
-        Resume, the night closing, and no schedule at all (the show state
-        unknown). Plain reads, never a lock: the laser gate asks this."""
+        on) right now, or "": a Hold (a Stop's too) until Resume, the
+        night closing, and no schedule at all (the show state
+        unknown). Plain reads, never a lock: the laser gate asks this.
+        `look`: the conductor's look already read (laser_enable_blockers),
+        else read here."""
         svc = self.schedule
         m = getattr(svc, "machine", None)
         if m is None:
             return ("the show state is not known (no schedule is loaded), "
                     "so no laser may be armed")
         cond = getattr(svc, "conductor", None)
-        if getattr(m, "abort_latched", False) or \
-                getattr(cond, "latched", False):
-            return "the show is aborted; press Reset first, then arm"
         state = getattr(m, "state", None)
-        if state in ("PAUSED", "HOLD") or \
-                getattr(cond, "_look", None) in ("HELD", "DARK"):
+        if look is None:
+            look = getattr(cond, "_look", None)
+        if state in ("PAUSED", "HOLD") or look in ("HELD", "DARK"):
             return "the show is on Hold; press Resume first, then arm"
         if state == "CLOSING":
             return "the night is closing"
         return ""
 
-    def _lasers_dark_now(self, what="Abort pressed on a screen"):
+    def laser_enable_blockers(self):
+        """Why the lasers may not be LIT right now (laserarm.LaserArm's
+        enable_blockers, through morning.py), or "": laser_arm_blockers,
+        except that a Programming Pause that kept the lasers armed (Jeff,
+        2026-11-06; conductor.hold with disarm_lasers False) is not a Hold
+        here, so the arm's watcher leaves armed lasers armed through it. A
+        NEW arm is still refused during that Pause (laser_arm_blockers is
+        the arm's refusal, unchanged). Never raises: an error is a
+        blocker. Plain reads, never a lock."""
+        svc = self.schedule
+        m = getattr(svc, "machine", None)
+        if m is None:
+            return self.laser_arm_blockers()
+        cond = getattr(svc, "conductor", None)
+        # The conductor's look and its keep as ONE read (look_and_keep),
+        # never the look and then the keep (cold review of #223, M2).
+        try:
+            snap = cond.look_and_keep()
+            look, keep = snap[0], snap[1] is True
+        except Exception:                           # noqa: BLE001
+            look, keep = getattr(cond, "_look", None), False
+        state = getattr(m, "state", None)
+        why = self.laser_arm_blockers(look=look)
+        if not why:
+            return why
+        try:
+            if self._programming_pause_keeps_lasers(state, look, keep):
+                return ""
+        except Exception:                           # noqa: BLE001
+            pass
+        return why
+
+    def _programming_pause_keeps_lasers(self, state, look, keep):
+        """True only while `look` (the conductor's, read once with `keep`)
+        is a Programming Pause's HELD that kept the lasers armed, the
+        schedule is not on Hold, paused or closing, and the Programming
+        playback Play from started is still the one on the show audio."""
+        if state in ("PAUSED", "HOLD", "CLOSING"):
+            return False
+        if look != "HELD":
+            return False
+        if keep is not True:
+            return False
+        ph = getattr(self, "playhead", None)
+        return bool(self.programming()[0] and ph is not None and
+                    ph.active())
+
+    def programming_lasers_refusal(self):
+        """None while Programming playback may light the lasers (Jeff,
+        2026-11-06; fire_ice.attach's programming_lasers, asked only when
+        the show's own laser gate says no), else why not. The laser arm is
+        asked after this, as for a show. Also the Programming playhead's
+        guard (playhead.py): lasers lit while this says no are blanked.
+        Never raises; plain reads, never a lock."""
+        try:
+            ok, why = self.programming()
+            if not ok:
+                return why or "this is not a Programming session"
+            ph = getattr(self, "playhead", None)
+            if ph is None or not ph.active():
+                return ("no Programming playback started by Play from is "
+                        "playing")
+            m = getattr(self.schedule, "machine", None)
+            state = getattr(m, "state", None)
+            if state not in PROGRAMMING_LASER_STATES:
+                return (f"the show state is {state or 'unknown'}, and "
+                        f"Programming lights the lasers only before or "
+                        f"after the night (IDLE, OFF, BOOT)")
+            tests = getattr(getattr(self, "morning", None), "lasers", None)
+            if tests is not None and getattr(tests, "on", None):
+                return "a laser calibration test is on"
+            return None
+        except Exception as e:                      # noqa: BLE001
+            return (f"Programming could not be asked "
+                    f"({type(e).__name__}: {e})")
+
+    def _lasers_dark_now(self, what="Stop pressed on a screen"):
         """(ok or None, sentence): the conductor's laser blank, on this
         thread, at once. None when no conductor is attached."""
         cond = getattr(self.schedule, "conductor", None)
@@ -5093,46 +6196,65 @@ class Remote:
 
     def stop_press(self, who, screen):
         """Stop pressed on a screen, the rack screen or an iPad (Jeff,
-        2026-10-28): exactly the Stream Deck's Stop. halt() first (every
-        flame group and laser disarmed, nothing fired, a live show ended
-        and faded to dark, nothing latched), the fade let run, then
-        playback stops, so Run is off. (code, answer) in /api/stop's
-        shape: {"flames", "lasers", "lasers_blank", "show", "failed",
-        "stopped"}, with "error" when a step failed. Never raises."""
+        2026-10-28; 2026-10-30): exactly the Stream Deck's Stop, with every
+        guarantee an Abort had. halt() (every flame group and laser
+        disarmed and blanked at the press, nothing fired, the fireball,
+        cleaning, purge, laser tests and Programming playback ended, a live
+        show ended through the conductor's urgent Stop and faded to dark,
+        and the schedule put on Hold; nothing latched), and the fade let
+        run. Run is left ON (Jeff, 2026-10-30: "Stop shouldn't turn off
+        Run"); Resume releases the Hold. Only an engine with no scheduler
+        at all (Run is then the show itself) still stops playback.
+        (code, answer) in /api/stop's shape: {"flames", "lasers",
+        "lasers_blank", "show", "hold", "programming", "failed",
+        "stopped", "run_on"}, with "error" when a step failed. Never
+        raises."""
         svc = self.schedule
         begin = getattr(svc, "halt_begin", None)
         if begin is not None:
             begin()
         try:
-            return self._stop_press(who, screen)
+            return self._stop_press(who, screen, run_off=svc is None)
         finally:
             end = getattr(svc, "halt_end", None)
             if end is not None:
                 end()
 
-    def _stop_press(self, who, screen):
-        h = self.halt(who, screen)
-        out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show")
+    def run_off(self, who, screen):
+        """Run off (the Programming Run card, 2026-10-30): the whole Stop
+        (halt) first, then playback stops, so Run is off. This is what
+        Stop did before 2026-10-30; Stop itself now leaves Run on."""
+        svc = self.schedule
+        begin = getattr(svc, "halt_begin", None)
+        if begin is not None:
+            begin()
+        try:
+            return self._stop_press(who, screen, run_off=True)
+        finally:
+            end = getattr(svc, "halt_end", None)
+            if end is not None:
+                end()
+
+    def _stop_press(self, who, screen, run_off=False):
+        # A screen's Stop is a double tap (pressed); the deck's is held.
+        h = self.halt(who, screen, how="pressed")
+        self.wait_stop_window(h, STOP_FADE_WAIT_S)
+        out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show",
+                                 "hold", "programming")
                if h.get(k) is not None}
         out["failed"] = list(h.get("failed") or [])
-        if h.get("show_ended"):
-            svc = self.schedule
+        if run_off:
             try:
-                svc.flush_conductor(STOP_FADE_WAIT_S)
-            except Exception:                    # noqa: BLE001
-                pass
-            cond = getattr(svc, "conductor", None)
-            if cond is not None and getattr(cond, "threaded", False):
-                try:
-                    cond.wait_idle(STOP_FADE_WAIT_S)
-                except Exception:                # noqa: BLE001
-                    pass
-        try:
-            out["stopped"] = bool(self.control.stop())
-        except Exception as e:                   # noqa: BLE001
-            out["stopped"] = False
-            out["failed"].append("playback stop")
-            out["error"] = f"{type(e).__name__}: {e}"
+                out["stopped"] = bool(self.control.stop())
+            except Exception as e:               # noqa: BLE001
+                out["stopped"] = False
+                out["failed"].append("playback stop")
+                out["error"] = f"{type(e).__name__}: {e}"
+            out["run_on"] = False
+        else:
+            # Stop never turns Run off (Jeff, 2026-10-30).
+            out["stopped"] = True
+            out["run_on"] = True
         try:
             self.control._state_cache = None
         except Exception:                        # noqa: BLE001
@@ -5142,42 +6264,42 @@ class Remote:
                             ", ".join(out["failed"]) + " did NOT work.")
         return (500 if "error" in out else 200), out
 
-    def halt(self, who, screen):
-        """The Stream Deck's Stop, a complete halt of everything (Jeff,
-        2026-10-26), during a scheduled show too: everything a screen's
-        Abort takes away, in the Abort's order, WITHOUT the Abort latch.
-        Each step runs whatever the one before it did, and none raises:
+    def halt(self, who, screen, how="held"):
+        """Stop, a complete halt of everything (Jeff, 2026-10-26), during a
+        scheduled show too, with every guarantee a screen's Abort had (Jeff,
+        2026-10-30), in the Abort's order, WITHOUT the Abort latch. Every
+        Stop comes here: a screen's double tap, an iPad, the Stream Deck's
+        hold (web.py). Each step runs whatever the one before it did, and
+        none raises:
 
-          1. every flame group disarmed through the flame link (the
-             flame half of an Abort, _disarm_now), before anything else;
-          2. live flame programming cut, the link's slot shut at once and
-             the rest of ending it on a thread of its own, exactly as an
-             Abort does;
-          3. every laser disarmed (the laser arm, told a press is under
-             way first, as for an Abort) and blanked at once
-             (_lasers_dark_now, its answer reported as "lasers_blank");
-          4. every screen arm hold let go, the purge selection cleared and
-             the laser tests ended (what an Abort clears);
-          5. a scheduled show that is live ended: the scheduler's Stop
-             (STOP_SHOW), faded to dark like an Abort, nothing latched.
-             A show that ended by itself meanwhile is not a failure.
+          0. the laser arm told a press is under way, before ANY other work
+             (as press("abort") does), so no laser arms until the answer;
+          1. every flame group disarmed through the flame link (the flame
+             half of an Abort, _disarm_now), before anything else;
+          2. a timed purge and live flame programming cut, the hazers off;
+          3. every laser disarmed and blanked at once (_lasers_dark_now,
+             its answer reported as "lasers_blank"), so BEYOND is blank
+             before any video or audio fade starts;
+          4. every screen arm hold let go, the purge selection cleared, the
+             fireball and the cleaning cut at once (Morning.stop_hooks,
+             the hooks an Abort runs), the laser tests ended;
+          5. Programming playback stopped (Abort's playhead stop), since
+             Run is no longer turned off by a Stop;
+          6. the scheduler: a live show ends (STOP_SHOW: the conductor's
+             urgent Stop, Abort's sequence, and the schedule on Hold while
+             a show is still to come); between shows the schedule goes on
+             Hold ("stop-hold"). Run is never touched. A show that ended
+             by itself meanwhile is not a failure, nor is a night already
+             closing or over (there is nothing to hold).
 
-        {"flames", "lasers", "lasers_blank", "show", "show_ended",
-        "failed"}: each step's
-        {"ok"/"disarmed", "text"} (None when there is nothing of it in
-        this engine) and the names of the steps that failed. The caller
-        (web.py /api/stop) stops playback after it."""
+        {"flames", "lasers", "lasers_blank", "show", "show_ended", "hold",
+        "programming", "failed"}: each step's {"ok"/"disarmed", "text"}
+        (None when there is nothing of it in this engine) and the names of
+        the steps that failed."""
         label = who or "An unnamed operator"
         out = {"flames": None, "lasers": None, "lasers_blank": None,
-               "show": None, "show_ended": False, "failed": []}
-        # A Start now waiting for the show audio never outlives a Stop
-        # (review of #144, F2).
-        cancel = getattr(self.schedule, "cancel_start_wait", None)
-        if cancel is not None:
-            try:
-                cancel(f"Stop was pressed on the {screen}")
-            except Exception:                    # noqa: BLE001
-                pass
+               "show": None, "show_ended": False, "hold": None,
+               "programming": None, "failed": []}
         m = self.morning
         arm = getattr(m, "laser_arm", None)
         if arm is not None:
@@ -5186,6 +6308,14 @@ class Remote:
             except Exception:                    # noqa: BLE001
                 arm = None
         try:
+            # A Start now waiting for the show audio never outlives a Stop
+            # (review of #144, F2).
+            cancel = getattr(self.schedule, "cancel_start_wait", None)
+            if cancel is not None:
+                try:
+                    cancel(f"Stop was pressed on the {screen}")
+                except Exception:                # noqa: BLE001
+                    pass
             # 1. The flames first, every time (the Abort's rule).
             try:
                 f_ok, f_text = self._disarm_now(who, screen, "Stop")
@@ -5195,9 +6325,20 @@ class Remote:
                 out["flames"] = {"disarmed": bool(f_ok), "text": f_text}
                 if not f_ok:
                     out["failed"].append("flames")
+            # Where the show was, for Resume's offer (play_from.py part 2;
+            # review B of #201): taken now, after the flames and before
+            # anything stops the show audio, which forgets a held frame.
+            # Memory only, never waits.
+            note = getattr(getattr(self.schedule, "performer", None),
+                           "note_stop", None)
+            if note is not None:
+                try:
+                    note()
+                except Exception:                # noqa: BLE001
+                    pass
             # 2. Live flame programming, cut as an Abort cuts it (review of
             # #130, second pass, 3).
-            why = f"{label} held Stop on the {screen}"
+            why = f"{label} {how} Stop on the {screen}"
             self.timed_purge_cut(why, who, screen)
             for name in ("live_flame_cut",):
                 fn = getattr(self, name, None)
@@ -5210,6 +6351,10 @@ class Remote:
             # halt). The flame link's disarm_all in step 1 did it at the
             # link already; this is the belt, and the journal line.
             self.hazers_cut(why, who, screen)
+            # The fuel pump OFF too (Jeff, 2026-10-30: "it should be
+            # affected by the stop button"); step 1's disarm_all did it at
+            # the link already.
+            self.pump_cut(why, who, screen)
             # 3. Every laser: disarmed on the arm, and blanked at once.
             fn = getattr(m, "lasers_disarm_now", None)
             if fn is not None:
@@ -5239,45 +6384,40 @@ class Remote:
                 out["lasers_blank"] = {"ok": bool(b_ok), "text": b_text}
                 if not b_ok:
                     out["failed"].append("laser blank")
-            # 4. What an Abort clears: screen holds, the purge, laser tests.
+            # 3b. The conductor's Stop, asked at once, whatever the
+            # scheduler is doing (cold review of #191 round 3, F1, F3):
+            # Abort's sequence, so any look still up (a show, the idle or
+            # intermission look, after a Hold, while closing) goes dark.
+            # Never behind the scheduler's lock or tonight's save: on a
+            # thread of its own, waited for URGENT_WAIT_S here (the
+            # conductor's own lock may be busy), and the halt stays open
+            # until it has been taken (F4, _stop_press). The scheduler's
+            # own Stop, below, finds it under way (a re-blank only).
+            out["_cond_done"] = self._conductor_stop_now(who, screen)
+            # 4. What an Abort clears: screen holds, the purge, the
+            # fireball and the cleaning (at once, not when their watchers
+            # next see the flame link's zero), the laser tests.
             try:
-                self.cancel_holds(f"{who or 'someone'} held Stop on the "
+                self.cancel_holds(f"{who or 'someone'} {how} Stop on the "
                                   f"{screen}")
             except Exception:                    # noqa: BLE001
                 pass
-            for obj, meth, arg in (
+            for obj, meth, args in (
                     (getattr(m, "purge", None), "clear",
-                     f"Stop held by {who or screen or 'someone'}"),
-                    (getattr(m, "lasers", None), "all_off", "Stop held")):
+                     (f"Stop held by {who or screen or 'someone'}",)),
+                    (m, "stop_hooks", (who, screen)),
+                    (getattr(m, "lasers", None), "all_off", ("Stop held",))):
                 fn = getattr(obj, meth, None)
                 try:
                     if fn is not None:
-                        fn(arg)
+                        fn(*args)
                 except Exception:                # noqa: BLE001
                     pass
-            # 5. A live scheduled show ends, with no latch.
-            svc = self.schedule
-            state = getattr(getattr(svc, "machine", None), "state", None)
-            if svc is not None and state in ("SHOW", "PAUSED"):
-                try:
-                    r = svc.operator_press("stop-show", who, screen,
-                                           confirmed=True)
-                    s_ok, s_text = bool(r.get("ok")), str(r.get("text")
-                                                          or "")
-                except Exception as e:           # noqa: BLE001
-                    s_ok, s_text = False, f"{type(e).__name__}: {e}"
-                now_state = getattr(getattr(svc, "machine", None), "state",
-                                    None)
-                if not s_ok and now_state not in ("SHOW", "PAUSED"):
-                    # The show ended by itself while Stop was on its way
-                    # (third review of #130, 8): nothing left to stop.
-                    s_ok, s_text = True, ("The show had already ended, so "
-                                          "there was no show to stop.")
-                else:
-                    out["show_ended"] = s_ok
-                out["show"] = {"ok": s_ok, "text": s_text}
-                if not s_ok:
-                    out["failed"].append("show")
+            # 5. Programming playback: Run is no longer turned off by a
+            # Stop, so the playback is stopped here (Abort's playhead stop).
+            self._halt_programming(out, who, screen)
+            # 6. The scheduler: the show ended, and the schedule held.
+            self._halt_schedule(out, who, screen)
         finally:
             if arm is not None:
                 try:
@@ -5288,50 +6428,183 @@ class Remote:
                                      out["lasers_blank"]) if x is not None]
         bad = ", ".join(out["failed"])
         self._journal(who, screen, "stop", "fault" if bad else "done",
-                      f"{label} held Stop on the {screen}: a complete halt. "
+                      f"{label} {how} Stop on the {screen}: a complete halt. "
                       + " ".join(parts)
                       + (f" These did NOT work: {bad}." if bad else ""),
                       fault=bool(bad))
         return out
 
-    def abort(self, who, screen, flames, lasers=(None, ""), pressed=None):
-        """A screen's Abort (the deck has no Abort key since 2026-10-26).
-        `flames` is what the disarm
-        sent before anything else did (_disarm_now). Then the scheduler's
-        Abort, which stops a live show through the conductor. The answer
-        says both, truthfully: a disarm sent with no show to stop is not
-        "aborted", and a stopped show whose disarm failed is a fault."""
-        f_ok, f_text = flames
-        label = who or "An unnamed operator"
-        self._journal(who, screen, "abort disarm",
-                      "fault" if f_ok is False else
-                      ("done" if f_ok else "not connected"),
-                      f"{label} pressed Abort on the {screen}. {f_text}",
-                      fault=f_ok is False)
+    def wait_stop_window(self, h, total_s):
+        """After the halt, inside its halt_begin/halt_end (so Start now,
+        Resume and Run stay refused): ONE deadline of `total_s` for
+        everything (final review of #191, G2): the conductor taking the
+        Stop, the scheduler's conductor calls made (a live show ended), and
+        a threaded conductor's fade over. Past the deadline the press
+        answers anyway; a Start now then still waits for the fade, or is
+        refused while it runs (Service._stop_still_fading). Never raises."""
+        end = time.monotonic() + total_s
+
+        def left():
+            return max(0.0, end - time.monotonic())
+        done = h.get("_cond_done") if isinstance(h, dict) else None
+        try:
+            if done is not None:
+                done.wait(left())
+            svc = self.schedule
+            if isinstance(h, dict) and h.get("show_ended") and \
+                    svc is not None:
+                svc.flush_conductor(left())
+            cond = getattr(svc, "conductor", None)
+            if (done is not None or (isinstance(h, dict) and
+                                     h.get("show_ended"))) and \
+                    cond is not None and getattr(cond, "threaded", False):
+                cond.wait_idle(left())
+        except Exception:                        # noqa: BLE001
+            pass
+
+    # How long the press waits for the conductor to take its Stop before
+    # carrying on (the scheduler's urgent line uses the same 0.25 s).
+    COND_STOP_WAIT_S = 0.25
+
+    def _conductor_stop_now(self, who, screen):
+        """Conductor.stop on a thread of its own, waited for at most
+        COND_STOP_WAIT_S. Returns an Event set once it has answered (or
+        None with no conductor). Never raises."""
+        cond = getattr(self.schedule, "conductor", None)
+        fn = getattr(cond, "stop", None)
+        if fn is None:
+            return None
+        done = threading.Event()
+
+        def go():
+            try:
+                fn(who or "", screen or "")
+            except Exception:                    # noqa: BLE001
+                pass
+            finally:
+                done.set()
+        threading.Thread(target=go, daemon=True,
+                         name="ltcplay-stop-conductor").start()
+        done.wait(self.COND_STOP_WAIT_S)
+        return done
+
+    def _halt_programming(self, out, who, screen):
+        """halt() step 5: Programming playback stopped, if it is on."""
+        ph = self.playhead
+        try:
+            on = ph is not None and self.programming()[0] and ph.active()
+        except Exception:                        # noqa: BLE001
+            on = ph is not None
+        if not on:
+            return
+        try:
+            said = ph.abort_press(who, screen)
+            ok = True
+        except Exception as e:                   # noqa: BLE001
+            ok, said = False, (f"Programming playback did NOT stop "
+                               f"({type(e).__name__}: {e}). Press Stop "
+                               f"the show audio, or Run off.")
+        out["programming"] = {"ok": ok, "text": str(said or "")}
+        if not ok:
+            out["failed"].append("programming playback")
+
+    # The scheduler states a Stop ends a show in, and holds in.
+    HALT_LIVE = ("SHOW", "PAUSED")
+    HALT_HOLDS = ("IDLE", "STANDBY")
+
+    def _halt_schedule(self, out, who, screen):
+        """halt() step 6. A live show: STOP_SHOW (the show ends; the
+        schedule is held while a show is still to come). Between shows:
+        the schedule's Hold, said as the Stop. Already on Hold: nothing
+        more. The night closing or over: nothing to hold. If the state
+        moved under the press (a show started or ended as it landed), the
+        step is asked once more of the state it moved to."""
         svc = self.schedule
         if svc is None:
-            s_ok, s_text = False, ("There is no scheduler running in this "
-                                   "engine, so no show was stopped.")
-        else:
+            return
+        one = getattr(svc, "halt_schedule", None)
+        if one is not None:
+            # The scheduler decides and applies it in one locked step with
+            # no tick first (cold review of #191, A-F1): a show coming due
+            # at the press is held, never started and then paused, and a
+            # show already running is ended through the conductor's Stop.
             try:
-                r = svc.operator_press("abort", who, screen, confirmed=True,
-                                       pressed=pressed)
-                s_ok = bool(r.get("ok"))
-                s_text = str(r.get("text") or "")
-            except ValueError as e:
-                s_ok, s_text = False, str(e)
-            if not s_ok:
-                s_text = f"No show was stopped: {s_text}"
-        text = f"{f_text} {lasers[1]} {s_text}".strip().replace("  ", " ")
-        # A disarm that went out is the Abort's safety half done, whatever
-        # the scheduler said; one that failed is a fault even if the show
-        # stopped. With no flame link at all, the scheduler decides.
-        ok = f_ok is True or (f_ok is None and s_ok)
-        out = {"ok": ok, "text": text, "disarmed": f_ok, "stopped": s_ok,
-               "lasers_blanked": lasers[0]}
-        if not ok:
-            out["error"] = text
-        return (200 if ok else 409), out
+                r = one(who, screen,
+                        f"pressed Stop on the {screen or 'screen'}, so the "
+                        f"schedule is on Hold")
+                ok, text = bool(r.get("ok")), str(r.get("text") or "")
+                kind = r.get("kind")
+            except Exception as e:               # noqa: BLE001
+                ok, text, kind = False, f"{type(e).__name__}: {e}", "hold"
+            if kind == "stop":
+                out["show"] = {"ok": ok, "text": text}
+                out["show_ended"] = ok
+                if not ok:
+                    out["failed"].append("show")
+                elif r.get("state") == "HOLD":
+                    out["hold"] = {"ok": True, "text": ""}
+            elif kind in ("hold", "held", "carried"):
+                # "carried": nothing to hold right now (the last show, the
+                # night closing or over), but the Stop's Hold stands, and
+                # the answer says so (round 3 of the cold review).
+                out["hold"] = {"ok": ok, "text": text}
+                if not ok:
+                    out["failed"].append("hold")
+            return
+        for _attempt in (1, 2):
+            state = getattr(getattr(svc, "machine", None), "state", None)
+            if state in self.HALT_LIVE:
+                try:
+                    r = svc.operator_press("stop-show", who, screen,
+                                           confirmed=True)
+                    s_ok, s_text = bool(r.get("ok")), str(r.get("text")
+                                                          or "")
+                except Exception as e:           # noqa: BLE001
+                    s_ok, s_text = False, f"{type(e).__name__}: {e}"
+                now_state = getattr(getattr(svc, "machine", None), "state",
+                                    None)
+                if not s_ok and now_state not in self.HALT_LIVE:
+                    if _attempt == 1 and now_state in self.HALT_HOLDS:
+                        continue
+                    # The show ended by itself while Stop was on its way
+                    # (third review of #130, 8): nothing left to stop.
+                    s_ok, s_text = True, ("The show had already ended, so "
+                                          "there was no show to stop.")
+                else:
+                    out["show_ended"] = s_ok
+                out["show"] = {"ok": s_ok, "text": s_text}
+                if not s_ok:
+                    out["failed"].append("show")
+                if now_state == "HOLD":
+                    out["hold"] = {"ok": True, "text": ""}
+                return
+            if state in self.HALT_HOLDS:
+                try:
+                    r = svc.operator_press(
+                        "stop-hold", who, screen, confirmed=True,
+                        detail=f"pressed Stop on the {screen or 'screen'}, "
+                               f"so the schedule is on Hold")
+                    h_ok, h_text = bool(r.get("ok")), str(r.get("text")
+                                                          or "")
+                except Exception as e:           # noqa: BLE001
+                    h_ok, h_text = False, f"{type(e).__name__}: {e}"
+                now_state = getattr(getattr(svc, "machine", None), "state",
+                                    None)
+                if not h_ok and now_state in self.HALT_LIVE and \
+                        _attempt == 1:
+                    continue              # a show started as Stop landed
+                if not h_ok and now_state in ("HOLD", "PAUSED", "CLOSING",
+                                              "OFF"):
+                    h_ok = True           # nothing left to hold
+                out["hold"] = {"ok": h_ok, "text": h_text}
+                if not h_ok:
+                    out["failed"].append("hold")
+                return
+            if state == "HOLD":
+                out["hold"] = {"ok": True, "text": "The schedule was "
+                               "already on Hold; it stays on Hold until "
+                               "Resume."}
+            return
 
     def disarm_all(self, who, screen):
         """Disarm all flame groups: a PLAIN disarm (Jeff, 2026-10-23), the
@@ -5451,15 +6724,15 @@ class Remote:
         code, out = self._disarm_all_forced(who, screen, why)
         if out.get("ok"):
             text = (f"Disarm all flame groups was not confirmed: {why}. "
-                    f"Every group was sent the disarm Abort uses, so each "
+                    f"Every group was sent the disarm Stop uses, so each "
                     f"needs Arm again (let go, then hold) before it can "
                     f"fire. {out.get('text') or ''}")
         else:
             # Review of PR #97, P2-4: never say off when it may not be.
             text = (f"Disarm all flame groups COULD NOT be confirmed: {why}, "
-                    f"and the Abort's disarm did not go out either "
+                    f"and the Stop's disarm did not go out either "
                     f"({out.get('error') or out.get('text') or 'no answer'})."
-                    f" A group may still be armed: press Abort, or disarm "
+                    f" A group may still be armed: press Stop, or disarm "
                     f"at the Stream Deck.")
         try:
             self.alerts.raise_("flames", text=text)
@@ -5483,14 +6756,14 @@ class Remote:
             return 409, {"ok": False, "error": text}
         try:
             r = fn(f"{label} pressed Disarm all flame groups on the "
-                   f"{screen} ({why}: disarmed the Abort way)")
+                   f"{screen} ({why}: disarmed the Stop way)")
             ok = bool(getattr(r, "ok", False))
             said = str(getattr(r, "sentence", "") or "")
         except Exception as e:
             ok, said = False, f"{type(e).__name__}: {e}"
         text = (f"{label} pressed Disarm all flame groups on the {screen}. "
                 f"A plain disarm could not go ({why}), so every group was "
-                f"disarmed the way Abort does it: each needs Arm again (let "
+                f"disarmed the way Stop does it: each needs Arm again (let "
                 f"go, then hold) before it can fire. {said}").strip()
         self._journal(who, screen, "disarm all", "done" if ok else "fault",
                       text, fault=not ok)
@@ -5576,7 +6849,7 @@ class Remote:
                 f"Put the aim list in the flamesafe.json flamesafe uses, "
                 f"check that LTC Player reads that same file, then quit LTC "
                 f"Player and start it again so both read it afresh. Stop, "
-                f"Hold, Abort and Disarm all work as usual meanwhile.")
+                f"Hold and Disarm all work as usual meanwhile.")
 
     def _aim_alert(self, agree, mine, theirs, path):
         """Raise once per new mismatch sentence; clear the one raised here
@@ -6210,14 +7483,14 @@ class Remote:
                                      f"older face until a resend goes "
                                      f"through. A press acts on the face the "
                                      f"deck last really showed. Arming, "
-                                     f"disarming and Abort do not wait on "
+                                     f"disarming and Stop do not wait on "
                                      f"it.")}
                 return {"heard": True, "age_s": round(age, 1),
                         "usb_worst_ms": usb,
                         "text": (f"The Stream Deck's keys are slow to "
                                  f"update: writing them over USB took "
                                  f"{usb / 1000.0:.1f} s in the last minute. "
-                                 f"Arming, disarming and Abort do not wait "
+                                 f"Arming, disarming and Stop do not wait "
                                  f"on it. A busy machine (a big file copy, "
                                  f"a USB hub) is the usual cause."
                                  if usb is not None and
@@ -6375,7 +7648,7 @@ class Remote:
                            "sat": {"first_start": "17:00",
                                    "interval_min": 20, "last_end": "22:00"}},
                 "exceptions": {}, "show_len_s": 440, "guard_s": 120,
-                "late_grace_s": 15}
+                "late_grace_s": 120}
 
     def save_schedule_file(self, body):
         """POST schedule-file {"doc": {...}}: checked by the scheduler's
@@ -6390,12 +7663,18 @@ class Remote:
             # file for it.
             return 409, {"error": "There is no scheduler in this engine, so "
                                   "there is no schedule to edit here."}
+        # One save at a time, written, loaded and answered whole: two
+        # screens saving at once never interleave (review of PR #180).
+        with _SCHEDULE_SAVE_LOCK:
+            return self._save_schedule_file(doc)
+
+    def _save_schedule_file(self, doc):
         if self._show_live():
             return 409, {"error": "A show is live. Save the schedule between "
                                   "shows. Nothing was changed."}
         try:
             from . import schedule as sch
-            sch.parse_rule(doc)
+            rule = sch.parse_rule(doc)
         except Exception as e:                   # RuleError and kin
             problems = getattr(e, "problems", None)
             why = "; ".join(str(p) for p in problems) if problems else str(e)
@@ -6409,21 +7688,36 @@ class Remote:
         loaded = ""
         if svc is not None and hasattr(svc, "reload"):
             try:
+                # Tonight's list is rebuilt at once, even on a night that
+                # had closed, and the answer says what it now holds (Jeff,
+                # Pico, 2026-10-29: "has loaded it" while nothing was
+                # planned).
                 svc.reload()
                 err = str(getattr(svc, "error", "") or "")
-                loaded = (f" The scheduler could not load it: {err}" if err
-                          else " The scheduler has loaded it.")
+                words = getattr(svc, "tonight_words", None)
+                if err:
+                    loaded = f" The scheduler could not load it: {err}"
+                elif callable(words):
+                    loaded = " " + str(words())
+                else:
+                    loaded = " The scheduler has loaded it."
             except Exception as e:               # noqa: BLE001
                 loaded = f" The scheduler could not reload it: {e}"
         cw = self.config_watch
         if cw is not None and svc is not None and hasattr(svc, "reload"):
             # Read again just now: what is on disk is the engine's copy.
             cw.refresh(path)
+        # Jeff, 2026-10-30: "Don't restrict the schedule in any way." What
+        # used to refuse a save is said here, and the save stands.
+        # rule_warnings never raises: a failure is itself a warning.
+        warns = list(sch.rule_warnings(rule))
+        warned = (" Warnings, saved anyway: " + " ".join(warns)) \
+            if warns else ""
         self._journal("", "Rack screen", "schedule file", "saved",
                       f"The schedule file {path} was saved from the "
-                      f"Programming screen.{loaded}")
-        return 200, {"ok": True, "text": f"Saved to {path}.{loaded}",
-                     "doc": doc, "path": path}
+                      f"Programming screen.{loaded}{warned}")
+        return 200, {"ok": True, "text": f"Saved to {path}.{loaded}{warned}",
+                     "doc": doc, "path": path, "warnings": warns}
 
     def open_folder(self, body):
         """POST open-folder {"which": "show" | "settings"}: the folder
@@ -6892,8 +8186,18 @@ class Remote:
                 add("Announcements", "bad", "not known" if av.get("stale")
                     else "file problem")
             elif rt.get("ok"):
-                add("Announcements", "ok", "on show audio"
-                    if rt.get("kind") == "show" else "own output")
+                dl = [i for i in av.get("items") or []
+                      if i.get("id") == "delayed"]
+                if dl and not dl[0].get("available"):
+                    # Advisory (Jeff, 2026-10-30): nothing plays on the PA
+                    # by itself, but the operator's Delayed button cannot
+                    # play, so the lamp says so. A warning, never a fault.
+                    add("Announcements", "warn",
+                        "Delayed recording missing" if dl[0].get("missing")
+                        else "Delayed recording cannot play")
+                else:
+                    add("Announcements", "ok", "on show audio"
+                        if rt.get("kind") == "show" else "own output")
             elif rt.get("kind") == "show":
                 add("Announcements", "bad", "show audio not open")
             elif not av.get("device_set"):
@@ -6941,6 +8245,18 @@ class Remote:
                 add("Laser arm", "bad", "not known")
         link = self.beyond_link()
         self._video_lamp(add, out, cond, snap, cs)
+        mo = getattr(self, "mm_output", None)
+        if mo is not None:
+            # MadMapper's video output (showwindows.py, Jeff's field
+            # report 2026-10-29): its full-screen window on the projector
+            # display, read from Windows. Display only.
+            try:
+                st, why = mo.state()
+            except Exception as e:               # noqa: BLE001
+                st, why = "unknown", f"not known: {type(e).__name__}"
+            add("MadMapper output", {"on": "ok", "off": "bad"}.get(
+                st, "warn"), {"on": "on", "off": "OFF"}.get(st, "not known"))
+            out[-1]["title"] = why
         for name, key in (("Lasers", "lasers"),):
             v = applied.get(key)
             if key == "lasers" and laser_fault:
@@ -7050,7 +8366,7 @@ class Remote:
             return
         self._users_alert_said = why
         from . import users as users_mod
-        locked = ("Every control is locked except Stop, Hold, Abort, "
+        locked = ("Every control is locked except Stop, Hold, "
                   "Acknowledge and every disarm, and nobody can sign in.")
         if getattr(u, "error_kind", "") == "open":
             # There, but held by something: nothing to delete. It is tried
@@ -7094,12 +8410,15 @@ class Remote:
                     "error": st.get("error"), "state": state,
                     "running": st.get("running"),
                     "held": state in ("HOLD", "PAUSED"),
-                    "aborted": bool(cv.get("aborted")),
                     "conductor": cv.get("attached", False),
+                    "lit": cv.get("lit") is True,
+                    "stop_held": cv.get("stop_held") is True,
                     "trouble": cv.get("trouble"),
                     "next": st.get("next"), "delayed": st.get("delayed"),
                     "dry_run": st.get("dry_run"),
                     "start_blocked": st.get("start_blocked"),
+                    "run_warning": st.get("run_warning"),
+                    "run_warning_urgent": st.get("run_warning_urgent"),
                     "slots": tn.get("slots", [])}
             except Exception as e:
                 out["schedule"] = {"attached": True, "ok": False,
@@ -7126,6 +8445,7 @@ class Remote:
                                           cue_now)
         out["audio_interface"] = self.audio_interface_view()
         out["disk"] = self.disk_view()
+        out["flamesafe_config_error"] = str(self.flamesafe_problem or "")
         out["deck"] = self.deck_view()
         out["programs"] = self.programs_view()
         if ctx.local:
@@ -7155,6 +8475,33 @@ class Remote:
         hzv = self.hazers_view(out["flames"])
         if hzv is not None:
             out["hazers"] = hzv
+        pmv = self.pump_view(out["flames"])
+        if pmv is not None:
+            out["pump"] = pmv
+        fbc = self.fireball_charge
+        if fbc is not None:
+            # The fuel and air tanks (fireball_charge.py): display only.
+            try:
+                out["fireball_charge"] = fbc.view()
+            except Exception as e:               # noqa: BLE001
+                out["fireball_charge"] = {
+                    "fault": f"{type(e).__name__}: {e}", "text": "",
+                    "tanks": {}}
+        fbp = self.fireball_practice
+        if fbp is not None:
+            # Fireball practice (fireball_practice.py): its state, so every
+            # screen shows it is open.
+            out["fireball_practice"] = {"state": fbp.state,
+                                        "mode": fbp.mode,
+                                        "ended_why": fbp.ended_why}
+        fbq = self.fireball_cues
+        if fbq is not None:
+            # The fireball timeline's fault and its skips (fireball_cues.py).
+            try:
+                out["fireball_timeline"] = fbq.view()
+            except Exception as e:               # noqa: BLE001
+                out["fireball_timeline"] = {
+                    "fault": f"{type(e).__name__}: {e}", "messages": []}
         out["beyond_link"] = self.beyond_link()
         try:
             _snap = self.schedule.conductor.snapshot() or {}

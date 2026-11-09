@@ -263,8 +263,8 @@ How it runs:
 - Hold fades the music out over `hold_fade_ms` and freezes the timecode on the
   frame the audio stopped on, still sending it so MadMapper and BEYOND hold.
   Resume fades the music back in from that exact point and the timecode
-  carries on. Abort fades the music out over `abort_fade_ms`, then stops the
-  cue.
+  carries on. Stop fades the music out over `abort_fade_ms` (its name is
+  older than the Stop that uses it), then stops the cue.
 - If the interface drops out mid-show, the rest of the show carries on:
   timecode, pixels, video and lasers run on this computer's own clock from
   where the audio was, with no jump. The page goes red with a sentence and the
@@ -425,7 +425,7 @@ longer read.
 passwords, optional. Signing in (the user button, top right) names the
 person in the journal and the audit log; a role matrix may restrict
 settings, users, show files, unlocking, the show controls and arming, and
-never Abort, Hold, Stop or a disarm (ltcplay/users.py). Every press on
+never Hold, Stop or a disarm (ltcplay/users.py). Every press on
 every surface is one hash-chained line in `logs/audit` (ltcplay/audit.py),
 sent nightly to Jeff's server once switched on (ltcplay/auditsend.py,
 tools/audit_receiver.py).
@@ -434,46 +434,42 @@ The remote page is one screen with no scrolling, at 1920x1080 on the rack PC
 and 1024x768 on an iPad: the show state, the timecode, the current show with
 "Left in this show" (its length minus where the engine's show clock is; it
 stands still while held, and is not shown when the length is not known),
-the next show with its countdown, Start now and Abort (each asks first),
-Hold, Resume, Reset, each flame group as flamesafe last reported it with its
-Hold to arm and Disarm, Disarm all flame groups, the big Abort bar, and a
-status strip (deck, flamesafe, audio, video, lasers, pixels). All through the
+the next show with its countdown, Start now (it asks first) and in its
+place Stop while there is something to stop (a double tap), Hold, Resume,
+each flame group as flamesafe last reported it with its Hold to arm and
+Disarm, Disarm all flame groups, and a status strip (deck, flamesafe, audio, video, lasers, pixels). All through the
 same scheduler and conductor paths. Tonight's list is its own compact screen
 (Schedule), and everything else is on the Programming screen: the transport
 below, Run and Stop, the Stream Deck operator and the show network, the last
-three on the machine itself only. Each has a Back to the show button, and the
-Abort bar is on every screen. If the page has not heard from the engine for 2
-s a red banner says so and the controls that act on what it shows go off;
-Hold, Abort and Disarm stay on.
+three on the machine itself only. Each has a Back to the show button. There
+is no Abort (removed, Jeff, 2026-10-30): Stop does everything it did, and
+the hardware e-stop is the emergency layer. If the page has not heard from
+the engine for 2 s a red banner says so and the controls that act on what
+it shows go off; Stop, Hold and Disarm stay on.
 
 **The Stream Deck's keys** (Jeff, 2026-10-26): key 0 is START / STOP,
 keys 1 to 4 arm and disarm the first four flame groups (Floor G, Cat-Walk G,
 Blue Flames, Fireball by default; ltcplay_deck.json can reorder and
-relabel them), key 5 is spare. The deck has no Hold and no Abort key: those
-are the Rack screen's. STOP RUN (while a run is going, and only when the
+relabel them), key 5 is spare. The deck has no Hold key: Hold is the Rack
+screen's. STOP RUN (while a run is going, and only when the
 scheduler is known to have no show live) is a half second hold: every
 flame group is turned off on the arm link at once, then the Rack screen's
 Stop route is asked with "halt", which ends live flame programming, sends
-the flame link's disarm_all (the flame half of an Abort), disarms every
+the flame link's disarm_all, disarms every
 laser and stops playback; nothing latches the rig. During a scheduled show
 the key keeps saying NOW PLAYING, PAUSED or AUDIO LOST, and the same hold
 is a complete halt (Jeff, 2026-10-26): all of the above, and the show
-ends through the scheduler's Stop (faded like an Abort, no latch, no
-Reset; after the last show of the night the night closes a moment later,
-as after an Abort). The flames go first, then live flames, the lasers
+ends through the scheduler's Stop (faded to dark over 1 s, no latch;
+after the last show of the night the night closes a moment later). Every
+Stop puts the schedule on a Stop's Hold until Resume. The flames go first, then live flames, the lasers
 (disarmed and blanked), screen arm holds, the purge and the laser tests,
 then the show, whose fade runs to the end before playback stops. With
 the engine down the key reads STOP ALL and the hold still disarms the arm
 link first. The Rack screen's own Stop button is still refused during a
 show.
-After an Abort from any screen
-the deck border stays solid red and every key with nothing to do is
-greyed; a group that flamesafe still reports armed keeps showing ARMED (and
-a fault or a lost link still shows), and a tap on it turns it off. STOP RUN
-still works while aborted, as on the Rack screen. Reset is on the Rack
-screen; the deck starts every group's two second re-arm wait when it sees
-the Abort, and again when it sees the Reset. If the engine does not take a
-press, or cannot be reached, the Start key reads ENGINE FAULT.
+The deck starts every group's two second re-arm wait when it sees
+flamesafe take a Stop's disarm from any screen. If the engine does not take
+a press, or cannot be reached, the Start key reads ENGINE FAULT.
 
 **The Stream Deck's three threads** (2026-10-21): the arm link to flamesafe
 is sent from a thread of its own at 20 Hz, the key images are written to the
@@ -500,12 +496,12 @@ It needs a page status and a flamesafe status no older than 1 s, 1 s of
 heartbeats the engine actually received, and `"screen_arming": true` in
 `ltcplay_remote.json` (off unless it says true; turned on and off on the
 show machine itself: Programming, "Arming from a screen"). The page names
-the reason whenever a hold is refused: switched off, an Abort standing, no
+the reason whenever a hold is refused: switched off, no
 Stream Deck program reading the engine, this screen in Arrange mode, every
 machine in the group locked out, or the deck's own refusal (its re-arm
 wait after a disarm, no operator); and says so when the Stream Deck took it. One hold per group at a
 time: another device, or another tab on the same one, cannot take over or
-restart a live hold. A dropped connection, a closed page, an Abort or a
+restart a live hold. A dropped connection, a closed page, a Stop or a
 disarm lets the hold go.
 
 In a programming session (a show started with Rehearse, or in Rehearsal mode)

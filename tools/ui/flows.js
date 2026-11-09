@@ -81,13 +81,13 @@ const TASKS = [
       await o.tap("#al-act", "Acknowledge"); } }],
   ["7 Play an announcement and carry on", "ready", async o => {
     await o.tap('[data-ann="delayed"]', "Delayed"); await o.shot("7_announcing"); await o.tap("#b-go", "Resume"); }],
-  ["8 Abort and get back to ready", "running", async o => {
-    await o.tap("#b-abort", "Abort (1st tap)"); await o.tap("#b-abort", "Abort (2nd tap)"); await o.shot("8_aborted");
-    await o.tap("#b-go", "Reset"); await o.hold("#b-armall", 3000, "Hold: arm flames");
+  // Abort was removed (2026-10-30): Stop is a double tap with no sheet,
+  // and holds the schedule until Resume.
+  ["8 Stop and get back to ready", "running", async o => {
+    await o.tap("#b-stop", "Stop show (1st tap)"); await o.shot("8_stop_tap1");
+    await o.tap("#b-stop", "Stop show (2nd tap)"); await o.shot("8_stopped");
+    await o.tap("#b-go", "Resume"); await o.hold("#b-armall", 3000, "Hold: arm flames");
     await o.tap("#lz-b", "Arm lasers"); await o.yes("arm lasers"); await o.shot("8_ready"); }],
-  ["9 Stop and get ready for the next show", "running", async o => {
-    await o.tap("#b-stop", "Stop show"); await o.shot("9_stop_confirm"); await o.yes("stop");
-    await o.tap("#b-go", "Run show"); await o.yes("run"); await o.shot("9_ready"); }],
   ["10 End of night", "day_shut_jeff", async o => {
     await o.tap('.tab[data-tab="day"]', "Day");
     for(let i = 0; i < 3; i++) await o.tap("#d-tick", "Tick");
@@ -99,7 +99,7 @@ const TASKS = [
     await o.tap("#d-signout", "Sign out"); await o.tap('#sh-row [data-i="2"]', "Sign out (sheet)");
     await o.shot("10_done"); }],
   // A group's Disarm the Stream Deck does not act on (2026-10-29): the
-  // engine forces the Abort's disarm and the page says so in amber.
+  // engine forces the Stop's disarm and the page says so in amber.
   ["11 Disarm a group the deck does not answer", "deck_not_answering", async o => {
     await o.shot("11_armed"); await o.tap('[data-arm="0"]', "Disarm front row"); await o.shot("11_forced");
     const said = await o.page.$eval("#msg-t", e => e.textContent).catch(() => "");

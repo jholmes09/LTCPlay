@@ -41,6 +41,8 @@ function baseStatus(){
              {name: "wave flamer", armed: "disarmed"}, {name: "fireball", armed: "disarmed"}],
     aim: {ltcplay: null, flamesafe: null, path: "", agree: true}};
   s.deck = {heard: true, age_s: 0.4, text: ""};
+  // Fireball practice (fireball_practice.py): closed unless a scenario opens it.
+  s.fireball_practice = {state: "closed", mode: "live", ended_why: ""};
   s.disarm_connected = true;
   s.arming = {enabled: true, needs_s: 2.0, fresh_s: 1.0, holds: []};
   s.laser_fault = "";
@@ -66,7 +68,7 @@ function baseStatus(){
     schedule_path: "C:\\Users\\show\\AppData\\Local\\ltcplay\\ltcplay_schedule.json"});
   s.transport = {programming: false, why: "Nothing is playing. To scrub, on the show machine choose Programming on the Show file card and press Run.", freerun: false, paused: false, loop: null, marks: {}};
   s.live_flame = {available: true, on: false, why: ""};
-  s.programming_flames = {available: true, follows: true, on: false, line: "Flames follow the show while you play here. Only armed groups fire. Hold, Stop or Abort ends it."};
+  s.programming_flames = {available: true, follows: true, on: false, line: "Flames follow the show while you play here. Only armed groups fire. Hold or Stop ends it."};
   // The hazers (hazers.py, 2026-10-29): Jeff's three, all disarmed.
   s.hazers = {available: true, down: "", last_off: null, agree: true, show: "idle", levels_fault: "",
     hazers: [1, 2, 3].map(n => ({name: "Hazer " + n, haze_slot: 78 + 2 * n, fan_slot: 79 + 2 * n, armed: false,
@@ -95,8 +97,8 @@ const SCENARIOS = {
     s.flames.groups.forEach(g => g.armed = "armed");
     s.laser_arm.lasers.forEach(l => l.armed = true); s.subsystems[3].word = "armed"; },
   held: s => { SCENARIOS.running(s); Object.assign(s.schedule, {state: "PAUSED", held: true}); s.countdown.running = false; },
-  aborted: s => { SCENARIOS.running(s); Object.assign(s.schedule, {state: "STANDBY", running: null, aborted: true});
-    s.show.running = false; s.flames.groups.forEach(g => { g.armed = "held"; g.reason = "Disarmed by the show's Abort. Cycle the arm to re-arm."; });
+  stop_held: s => { SCENARIOS.running(s); Object.assign(s.schedule, {state: "HOLD", running: null, held: true, stop_held: true});
+    s.show.running = false; s.flames.groups.forEach(g => { g.armed = "held"; g.reason = "Disarmed by the show's Stop. Cycle the arm to re-arm."; });
     s.laser_arm.lasers.forEach(l => l.armed = false); s.countdown = {kind: "next", label: "Next show", s: 1500, running: true}; },
   alerts_open: s => { const p = FX("status_pico"); s.alerts = p.alerts; s.flames.cues_fault = p.flames.cues_fault;
     s.deck = p.deck; s.morning.locked_machines = ["wave flamer 3"]; s.disk = p.disk;
@@ -152,6 +154,8 @@ const SCENARIOS = {
   // The Stream Deck program reads the engine but does not act on a group's
   // Disarm: the engine forces the flame link's disarm_all (2026-10-29).
   deck_not_answering: s => { s.flames.groups[0].armed = "armed"; s.flames.groups[0].wanted = true; },
+  // Fireball practice open on this screen, the Fireball armed, one step's table.
+  fireball_practice: s => { s.fireball_practice = {state: "ready", mode: "live", ended_why: ""}; s.flames.groups[3].armed = "armed"; },
 };
 // The DAY tab's own state, per scenario: the morning view, fuel, cleaning.
 function dayState(name, st){
@@ -191,6 +195,19 @@ function routesFor(name, st){
   if(tm){ mo.purge_state = Object.assign({}, mo.purge_state, {timed: true, firing: true, selected: ["m1", "m2", "m3", "m4"]}); }
   r["/api/remote/morning"] = mo;
   r["/api/remote/fireball"] = FX("fireball");
+  // Fireball practice's card (GET fireball-practice), as the engine answers it.
+  const fp = st.fireball_practice || {state: "closed", mode: "live", ended_why: ""};
+  r["/api/remote/fireball-practice"] = {state: fp.state, mode: fp.mode, yours: fp.state !== "closed", who: "Dallen", screen: "iPad",
+    ended_why: fp.ended_why, step_why: "", tanks: "Fuel: empty. Air: empty.", fireball_armed: fp.state !== "closed", others_armed: [],
+    deck_note: "", results: fp.state === "closed" ? [] : [{id: 1, mode: "live", flagged: 1, rows: [
+      {stage: "fuel", word: "Fuel", programmed_tc: "00:00:10:00", programmed_ms: 10000, length_ms: 1000, sent_ms: 10010, late_ms: 10, length_sent_ms: 1000, result: "OK", flag: false},
+      {stage: "air", word: "Air", programmed_tc: "00:00:10:15", programmed_ms: 10500, length_ms: 1000, sent_ms: 10560, late_ms: 60, length_sent_ms: 1000, result: "LATE 60 ms", flag: true},
+      {stage: "igniter", word: "Igniter", programmed_tc: "00:00:12:00", programmed_ms: 12000, length_ms: 500, sent_ms: 12000, late_ms: 0, length_sent_ms: 500, result: "OK", flag: false},
+      {stage: "valve", word: "Valve Open", programmed_tc: "00:00:12:05", programmed_ms: 12166.7, length_ms: 200, sent_ms: 12170, late_ms: 3.3, length_sent_ms: 200, result: "OK", flag: false}]}],
+    note: "This is when LTC Player sent each stage to flamesafe, measured against the show audio. flamesafe adds up to 25 ms, and the igniter, valve and gas add their own delay. No software can see that.",
+    lead_in: {min: 4, max: 30, default: 5}, late_ok_ms: 41, early_ok_ms: 5,
+    fuel_note: "Every charge and shot of a step is recorded in the fuel and air charge record like a show's (never a double charge), and its flame time is in the fuel totals as Programming (Other). A step is not a show.",
+    served_at: Date.now()};
   const wx = FX("weather");
   r["/api/remote/weather"] = wx;
   const users = FX("real_users");
@@ -213,16 +230,14 @@ class FakeEngine {
     this.posts = [];
     this.dead = false;
     Object.assign(this, dayState(name, this.st));
-    this.html = fs.readFileSync(path.join(REPO, "ltcplay", "web", "remote.html"), "utf8");
+    // The screen's rules file (/remote-logic.js).
+    this.logic = fs.readFileSync(path.join(REPO, "ltcplay", "web", "remote_rules.js"), "utf8");
     this.html2 = fs.readFileSync(path.join(REPO, "ltcplay", "web", "remote2.html"), "utf8");
-    const a = this.html.indexOf('<script id="remote-logic">'), b = this.html.indexOf("</script>", a);
-    this.logic = this.html.slice(a + '<script id="remote-logic">'.length, b);
-    this.uiDefault = 1;
   }
   setScenario(name){ this.name = name; this.st = baseStatus(); (SCENARIOS[name] || (s => s))(this.st); this.holds = {}; }
   // The real engine's hold registry (remote.py arm_hold): one hold per
   // group with its own id; a beat with any other id is refused, and any
-  // disarm, Abort or Stop ends it.
+  // disarm or Stop ends it.
   dropHolds(group){ this.holds = this.holds || {}; if(group === undefined) this.holds = {}; else delete this.holds[group]; }
   groupDisarm(i){
     const s = this.st, g = s.flames.groups[i];
@@ -230,10 +245,10 @@ class FakeEngine {
     this.dropHolds(i);
     if(this.name === "deck_not_answering"){
       const text = "Not confirmed: ALL groups disarm sent. Disarm " + g.name + " forced (flamesafe did not report " + g.name +
-        " off within 1 s of the Disarm): the flame link has no one-group disarm, so the Abort's disarm was sent to every flame group, " +
+        " off within 1 s of the Disarm): the flame link has no one-group disarm, so the Stop's disarm was sent to every flame group, " +
         "every hazer is off, and the show's flames stay at zero until Hold then Resume or a new run. Each group needs Arm again " +
         "(let go, then hold) before it can fire.";
-      s.flames.groups.forEach(x => { x.armed = "disarmed"; x.wanted = false; x.reason = "Disarmed by the show's Abort. Cycle the arm to re-arm."; });
+      s.flames.groups.forEach(x => { x.armed = "disarmed"; x.wanted = false; x.reason = "Disarmed by the show's Stop. Cycle the arm to re-arm."; });
       s.alerts = (s.alerts || []).concat([{id: 900 + i, kind: "flames", severity: "fault", text: text, options: ["Acknowledge"]}]);
       return {code: 200, body: {ok: true, confirmed: false, forced: true, text: text}};
     }
@@ -251,17 +266,12 @@ class FakeEngine {
       }
       case "/api/remote/signout": s.me = me(null, null); return ok("Signed out.");
       case "/api/remote/hold": sch.held = true; if(sch.state === "SHOW") sch.state = "PAUSED"; return ok("Held.");
-      case "/api/remote/resume": sch.held = false; if(sch.state === "PAUSED") sch.state = "SHOW"; s.alert_hold = {held: false};
+      case "/api/remote/resume": sch.held = false; sch.stop_held = false; if(sch.state === "PAUSED") sch.state = "SHOW"; else if(sch.state === "HOLD") sch.state = "STANDBY"; s.alert_hold = {held: false};
         if(s.announce) s.announce.playing = null; return ok("Resumed.");
-      case "/api/remote/abort": this.dropHolds(); sch.aborted = true; sch.state = "STANDBY"; sch.running = null; if(s.show) s.show.running = false;
-        s.flames.groups.forEach(g => { g.armed = "held"; g.reason = "Disarmed by the show's Abort. Cycle the arm to re-arm."; });
-        s.laser_arm.lasers.forEach(l => l.armed = false); return ok("Aborted.");
-      case "/api/remote/reset": sch.aborted = false; s.flames.groups.forEach(g => { g.armed = "disarmed"; g.wanted = false; delete g.reason; }); return ok("Reset.");
       case "/api/remote/start-now": sch.state = "SHOW"; sch.running = (sch.next || {}).show || 1; sch.held = false;
         s.show = {running: true, show: "Fire and Ice", timecode: "01:00:01:00", state: "playing"}; s.countdown = {kind: "left", label: "Time left", s: 440, running: true}; return ok("Started.");
       case "/api/start": s.show = Object.assign({}, s.show || {}, {running: true, starting: false, show: "Fire and Ice", timeline: body.timeline, state: "idle"});
         if(sch.start_blocked) sch.start_blocked = null; return {code: 200, body: {ok: true, banner: "Running " + body.timeline + "."}};
-      case "/api/remote/ui-default": this.uiDefault = body.default; return ok("Set.");
       case "/api/remote/stop": this.dropHolds(); sch.state = "STANDBY"; sch.running = null; s.show = {running: false};
         s.flames.groups.forEach(g => g.armed = "disarmed"); return ok("Stopped.");
       case "/api/remote/disarm-all": this.dropHolds(); s.flames.groups.forEach(g => { g.armed = "disarmed"; g.wanted = false; }); return ok("Disarmed.");
@@ -340,10 +350,9 @@ class FakeEngine {
         const r = this.onPost(p, body);
         return route.fulfill({status: r.code, contentType: "application/json", body: JSON.stringify(r.body)});
       }
-      if(p === "/" || p === "/remote" || p === "/remote1") return route.fulfill({status: 200, contentType: "text/html; charset=utf-8", body: this.html});
-      if(p === "/remote2") return route.fulfill({status: 200, contentType: "text/html; charset=utf-8", body: this.html2});
+      // The screen: / and /remote (and /remote2, the same page).
+      if(p === "/" || p === "/remote" || p === "/remote2") return route.fulfill({status: 200, contentType: "text/html; charset=utf-8", body: this.html2});
       if(p === "/remote-logic.js") return route.fulfill({status: 200, contentType: "application/javascript; charset=utf-8", body: this.logic});
-      if(p === "/api/remote/ui-default") return route.fulfill({status: 200, contentType: "application/json", body: JSON.stringify({default: this.uiDefault})});
       if(p.startsWith("/brand/") && process.env.NOFONT) return route.fulfill({status: 404, body: "{}"});
       if(p.startsWith("/brand/logo") && this.name === "no_logo") return route.fulfill({status: 404, body: "{}"});
       if(p.startsWith("/brand/")){

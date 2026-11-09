@@ -5,7 +5,7 @@ WHAT THIS IS FOR: knowing who pressed what (audit.py writes it down). It is
 not what keeps the show safe, and it never stands in the way of anything
 that makes the rig safer.
 
-THE SAFETY RULE (not negotiable): Abort, Hold, Stop, every disarm, letting
+THE SAFETY RULE (not negotiable): Stop, Hold, every disarm, letting
 go of a hold, stopping or clearing a purge, locking a machine out, turning
 a laser test off, disarming a laser (one, a group or every laser),
 Acknowledge and signing in or out work from every
@@ -13,7 +13,7 @@ surface whether anyone is signed in or not, whatever the role, and are
 logged as "unsigned" when nobody is. classify() names them "safety" and
 allowed() answers True for "safety" before it looks at anything else.
 Nothing in flamesafe is touched by this module: its sole writer, the
-Abort latch, the link key and hold-to-arm stay exactly as they were.
+link key and hold-to-arm stay exactly as they were.
 
 SIGNED OUT IS VIEW ONLY (Jeff's field report, 2026-10-28, Tier A): once
 any user exists, every press that is not safety needs a signed-in user
@@ -21,7 +21,7 @@ whose role may, on every surface: the rack screen on this machine, an
 iPad, the old page and the Stream Deck (which acts as whoever is signed in
 on this machine's rack screen). Being on the machine itself (loopback) is
 NOT a sign-in. Signed out, a screen sees status, the schedule and the
-alerts, and may only do the safety presses above: Stop, Hold, Abort,
+alerts, and may only do the safety presses above: Stop, Hold,
 Acknowledge and every disarm. allowed() refuses every restricted row for
 nobody signed in, whatever the stored matrix says, and the "Signed out"
 column is fixed off (FIXED) so nobody can tick it back on.
@@ -51,8 +51,8 @@ Sessions live in memory: an engine restart signs everyone out, which
 changes nothing on the rig.
 
 SIGN OUT AFTER THE LAST SHOW (Jeff, 2026-10-26): when tonight's last show
-has ended (nothing still to come, nothing live or held, no Abort
-standing, nothing going on at the rig), and `signout_after_last_show_min`
+has ended (nothing still to come, nothing live or held, nothing going on
+at the rig), and `signout_after_last_show_min`
 minutes have passed (default 10; 0 is off), every session signed in
 before the show ended is signed out, once for that night. Someone who
 signs in after the show ended is left signed in. Without a show on the
@@ -82,7 +82,11 @@ ROLES = ("admin", "operator", "viewer")
 SIGNED_OUT = "signed_out"
 COLUMNS = ROLES + (SIGNED_OUT,)
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'_-]{0,39}$")
-RESERVED = ("unsigned", "system", "signed out", "nobody", "deck")
+# Never an account's name. With the engine's own names (announce.py's
+# ENGINE_NAMES: what the scheduler and the alert hold act as), so no real
+# person's press can read as the engine's, and refused (Jeff, 2026-10-30).
+RESERVED = ("unsigned", "system", "signed out", "nobody", "deck", "engine",
+            "scheduler", "ltc player", "ltcplay")
 # Who a press is from when nobody is signed in (the journal, the audit).
 UNSIGNED = "unsigned"
 PW_MIN, PW_MAX = 6, 128
@@ -104,12 +108,14 @@ LOCK_MAX_S = 300.0
 # screen does is either safety (never restricted) or harmless (reading,
 # opening a folder, checking a file).
 PERMS = (
-    ("show", "Start now, Resume, Reset, Run a show file, rehearsal "
-             "scrubbing"),
+    ("show", "Start now, Start at a cue, Resume, Run a show file, "
+             "rehearsal scrubbing"),
     ("arm", "Arm flames and lasers: hold to arm, the Stream Deck's arm "
             "keys, a purge (momentary or timed), the Fireball page's "
             "channels, the wave flamer "
-            "cleaning, arming a laser, arming a hazer, the hazer levels"),
+            "cleaning, arming a laser, arming a hazer, the hazer levels, "
+            "turning the fuel pump on, Fireball practice (open and Step, "
+            "with the Show row too)"),
     ("unlock", "Unlock a machine, turn a laser test on"),
     ("checklist", "Tick the Morning and Shutdown checklists"),
     ("show_files", "Show files and setup: the show folder, the schedule, "
@@ -118,17 +124,19 @@ PERMS = (
                  "flame programming, moving Programming playback from an "
                  "iPad while flames follow it, the timecode input, the "
                  "announcement output, the audit upload, idle sign out, "
-                 "sign out after the last show"),
+                 "sign out after the last show, the play-from cues, the "
+                 "fireball timeline"),
     ("users", "Users: add, remove, reset passwords, set roles, clear "
               "sign-in lockouts"),
 )
 PERM_KEYS = tuple(p for p, _ in PERMS)
-SAFETY_ROWS = ("Abort, Hold, Stop, Disarm (one group or every group, "
+SAFETY_ROWS = ("Stop, Hold, Disarm (one group or every group, "
                "flames or lasers), "
                "letting go of a hold, stopping or clearing a purge, "
                "locking a machine, a laser test off, live flame "
                "programming off, "
-               "a hazer disarm, Hazers off, Acknowledge, signing "
+               "a hazer disarm, Hazers off, the fuel pump off, "
+               "Fireball practice's Done, Acknowledge, signing "
                "in and out: always, for everyone, signed in or not")
 
 # The defaults (Jeff decides; USERS.md). Signed out is view only (Jeff's
@@ -166,8 +174,7 @@ READ_GRACE_S = 10.0
 # The remote page's POST routes (remote.py) and the old page's (web.py).
 # "safety": never restricted. None: harmless, never restricted.
 REMOTE_ROUTES = {
-    "abort": "safety", "hold": "safety", "disarm-all": "safety",
-    "stop": "safety",
+    "hold": "safety", "disarm-all": "safety", "stop": "safety",
     "group-disarm": "safety", "arm-release": "safety", "alert": "safety",
     "purge-stop": "safety", "purge-clear": "safety",
     "signin": "safety", "signout": "safety",
@@ -175,7 +182,14 @@ REMOTE_ROUTES = {
     # press; Stop ends only the announcement's audio, so it only takes
     # something away and is never restricted.
     "announce-stop": "safety", "announce-play": "show",
-    "start-now": "show", "resume": "show", "reset": "show",
+    "start-now": "show", "resume": "show",
+    # Start at a cue (play_from.py part 2, Jeff 2026-10-31): Start now from
+    # a saved cue; operators may, as for Start now.
+    "start-at-cue": "show",
+    # Run off (2026-10-30): Stop no longer turns Run off, so the
+    # Programming Run card's Run off does (the Stop, then playback
+    # stops). Run itself is a show press (/api/start), and so is this.
+    "run-off": "show",
     "play-from": "show", "jump": "show", "pause": "show",
     "continue": "show", "mark-a": "show", "mark-b": "show",
     "loop": "show", "follow": "show",
@@ -187,9 +201,6 @@ REMOTE_ROUTES = {
     "preroll-continue": "show",
     # The announcement output picker (remote.announce_output).
     "announce-output": "settings", "announce-test-tone": "settings",
-    # The default interface (interface 2.0, 2026-10-28): which page a
-    # screen that has not chosen gets. Setup, admin by default.
-    "ui-default": "settings",
     "live-flame": "settings",
     "audit-settings": "settings",
     "audit-upload-now": "settings", "idle-signout": "settings",
@@ -220,6 +231,23 @@ REMOTE_ROUTES = {
     # The hazers (hazers.py): Hazers off only takes something away; a
     # hazer ON is an arm press, OFF safety (classify).
     "hazers-off": "safety", "hazer": "arm", "hazer-level": "arm",
+    # Play-from cues (play_from.py): saving the cue list is setup, admin
+    # only by default. It sends nothing and starts nothing.
+    "play-from-cues-save": "settings",
+    # The fuel pump (fuelpump.py, 2026-10-30): ON is an arm press, OFF
+    # safety (classify).
+    "fuel-pump": "arm",
+    # The fireball timeline (fireball_timeline.py, Jeff 2026-10-30): a
+    # save is setup, admin only by default.
+    "fireball-timeline-save": "settings",
+    # The charge record (fireball_charge.py): an admin confirms NOT KNOWN
+    # tanks are empty.
+    "fireball-charge-empty": "settings",
+    # Fireball practice (fireball_practice.py): open, Step and the beat
+    # that keeps it open are arm presses (the engine also asks the Show
+    # row, at every press, on any screen); Done only takes risk away
+    # (classify).
+    "fireball-practice": "arm",
     # These depend on the body: see classify().
     "fireball-beat": "arm", "cleaning-beat": "arm",
     "purge-select": "arm", "purge-fire": "arm", "laser-test": "unlock",
@@ -280,6 +308,11 @@ def classify(route, body=None):
         if name == "purge-select" and \
                 body.get("on") is False:
             return "safety"
+        if name == "fireball-practice" and body.get("action") not in (
+                "open", "step", "beat"):
+            # Done, or anything the engine does not open or step with,
+            # only ends practice.
+            return "safety"
         if name == "fireball-beat":
             # A beat with every channel off only turns things off.
             return "arm" if fireball_on_wanted(raw) else "safety"
@@ -292,6 +325,10 @@ def classify(route, body=None):
             # other body is a release, which only stops it.
             return "arm" if body.get("hold") is True else "safety"
         if name == "laser-test" and body.get("on") is not True:
+            return "safety"
+        if name == "fuel-pump" and body.get("on") is not True:
+            # Anything but the JSON word true turns the pump off at the
+            # engine (remote.pump_post): it only takes something away.
             return "safety"
         if name == "hazer" and body.get("on") is not True:
             # A hazer disarm (anything but the JSON word true disarms at
@@ -409,7 +446,8 @@ def check_name(name):
     if not NAME_RE.match(name) or name.lower() in RESERVED:
         raise ValueError("A name is 1 to 40 letters, digits, spaces, dots, "
                          "dashes or apostrophes, and not unsigned, system, "
-                         "signed out, deck or nobody.")
+                         "signed out, deck, nobody, engine, scheduler, LTC "
+                         "Player or ltcplay.")
     return name
 
 
@@ -470,7 +508,7 @@ class Users:
         self.error = ""
         # () -> None, or {"night": the schedule's night, "ended": wall
         # clock seconds the last show of it ended}, only while that last
-        # show is over and nothing is live, held or aborted. Set by the
+        # show is over and nothing is live or held. Set by the
         # engine (remote.Remote.last_show_over). None: never.
         self.last_show = None
         self._last_show_done = None   # the night already signed out
@@ -745,6 +783,26 @@ class Users:
                 return None
             s = dict(s, role=u.get("role"))
             return s
+
+    def session_check(self, token):
+        """For a watcher that must never wait on this lock (the fuel pump's
+        timer: a password hash runs under it): ("ok", session), ("gone",
+        None), ("broken", None) while the users file cannot be used, ("off",
+        None) while there are no users at all, or ("busy", None) when the
+        lock is held right now. Never raises."""
+        if not self._lock.acquire(blocking=False):
+            return "busy", None
+        try:
+            if self._load().get("broken"):
+                return "broken", None
+            if not self.active():
+                return "off", None
+            s = self.session(token)
+            return ("ok", s) if s is not None else ("gone", None)
+        except Exception:
+            return "broken", None
+        finally:
+            self._lock.release()
 
     def touch(self, token):
         """A command from this session: it is not idle."""
@@ -1074,7 +1132,7 @@ class Users:
                             "An admin can always manage users."
                             if c == "admin" else
                             "Signed out is view only: nobody signed in "
-                            "may do anything but Stop, Hold, Abort, "
+                            "may do anything but Stop, Hold, "
                             "Acknowledge and disarm.")
                     m[c][p] = v
             doc["matrix"] = m

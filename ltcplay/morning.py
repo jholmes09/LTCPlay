@@ -1938,7 +1938,7 @@ class Purge:
         self._note(f"{h['who'] or device} started a timed purge on the "
                    f"{device}: {', '.join(t['machines'])} for "
                    f"{t['seconds']} s. It stops by itself at {t['seconds']} s;"
-                   f" Stop purge, Stop, Abort and Hold end it at once.",
+                   f" Stop purge, Stop and Hold end it at once.",
                    action="purge", outcome="timed_start", who=h["who"],
                    screen=device)
         why = self.timed_send(now)
@@ -1976,7 +1976,7 @@ class Purge:
         if why:
             return why
         if self._gen(self._link()) != t["gen"]:
-            return "the flame link was zeroed (Stop, Hold, Abort or a disarm)"
+            return "the flame link was zeroed (Stop, Hold or a disarm)"
         why = self._timed_engine(t)
         if why:
             return why
@@ -2039,7 +2039,7 @@ class Purge:
                 f["beat"] = fresh
                 t["firing"], t["waiting"] = firing, waiting
                 lost = "" if self._gen(link) == t["gen"] else \
-                    "the flame link was zeroed (Stop, Hold, Abort or a disarm)"
+                    "the flame link was zeroed (Stop, Hold or a disarm)"
         if lost:
             self.stop(lost)
         return lost
@@ -2121,6 +2121,7 @@ class Morning:
                  laser_port=None, logs_dir=None, socket_factory=None,
                  threaded=True, transport=None, laser_output=lambda: None,
                  laser_blockers=lambda: "", laser_blank=None,
+                 laser_enable_blockers=None,
                  night_state=lambda: None, audit=None):
         from . import checklist as checklist_mod
         self.folder = folder
@@ -2190,11 +2191,16 @@ class Morning:
         # disarmed, and BEYOND's laser output is switched off at once.
         self._night_state = night_state
         self._laser_blockers = laser_blockers
+        # The engine's own "may the lasers be lit" blockers, when they
+        # differ from what refuses a new arm (remote.laser_enable_blockers:
+        # a Programming Pause keeps armed lasers armed). None: the same.
+        self._laser_enable_blockers = laser_enable_blockers
         self.laser_arm = laserarm.LaserArm(
             [(l.id, l.name) for l in self.cfg.lasers],
             groups=self.cfg.laser_groups,
             locked=lambda lid: self.lockout.is_locked("laser", lid),
             output=laser_output, blockers=self._arm_blockers,
+            enable_blockers=self._arm_enable_blockers,
             blank_now=laser_blank, per_laser=self.lasers, journal=journal,
             audit=audit, threaded=threaded, clock=clock, wall=wall)
         logs_dir = logs_dir or os.path.join(folder, "logs")
@@ -2242,11 +2248,18 @@ class Morning:
             return f"{lock_problem}; nothing fires from this page until then."
         return self._live_sentence()
 
-    def _arm_blockers(self):
+    def _arm_enable_blockers(self):
+        """laserarm.LaserArm's `enable_blockers`: _arm_blockers, with the
+        engine's lighting blockers (laser_enable_blockers) in place of its
+        arming ones when the engine gives them."""
+        return self._arm_blockers(enable=True)
+
+    def _arm_blockers(self, enable=False):
         """Why no laser may be armed, nor BEYOND's laser output switched on,
         right now (laserarm.LaserArm's `blockers`): this page's settings or
         lockout cannot be trusted, then the engine's own (an Abort latch,
-        a Hold, the night closing). "" when nothing blocks."""
+        a Hold, the night closing). "" when nothing blocks. `enable`: the
+        engine's lighting blockers instead (_arm_enable_blockers)."""
         if self.config_error:
             return (f"ltcplay_morning.json could not be read "
                     f"({self.config_error})")
@@ -2256,6 +2269,8 @@ class Morning:
         state, err = laserarm._ask(self._night_state)
         if err is None and state in laserarm.CLOSING_STATES:
             return "the night is closing"
+        if enable and self._laser_enable_blockers is not None:
+            return self._laser_enable_blockers() or ""
         return self._laser_blockers() or ""
 
     def lasers_disarm_now(self, why, who="", screen=""):
@@ -2663,15 +2678,17 @@ class Morning:
             except Exception:
                 pass
 
-    def on_abort(self, who="", screen=""):
-        """Abort wins over everything: the purge and the laser tests end."""
-        self.purge.clear(f"Abort pressed by {who or screen or 'someone'}")
+    def stop_hooks(self, who="", screen=""):
+        """Stop (Remote.halt, Jeff 2026-10-30: Stop has every guarantee the
+        removed Abort had): the fireball and the cleaning cut at once,
+        through the hooks in abort_hooks (named for the Abort they were
+        written for), said as the Stop. Remote.halt clears the purge and
+        ends the laser tests itself. Never raises."""
         for hook in list(self.abort_hooks):
             try:
-                hook(who, screen)
+                hook(who, screen, what="Stop")
             except Exception:                    # noqa: BLE001
                 pass
-        self.lasers.all_off("Abort pressed")
 
     def close(self):
         self._stop.set()
@@ -2868,7 +2885,7 @@ class Morning:
                                       f"selection; only that device or the "
                                       f"show machine itself can "
                                       f"{'stop' if name == 'purge-stop' else 'clear'} "
-                                      f"it (or Abort)."}
+                                      f"it (or Disarm all flame groups)."}
             if name == "purge-stop":
                 if self.purge.timed_running():
                     # The same Stop purge for both kinds (Jeff, 2026-10-29).

@@ -727,6 +727,15 @@ def main(installer, version=""):
         st, body = get("/remote")
         check(st == 200 and "<html" in body.lower() and "<title>" in body,
               f"GET /remote (the rack screen page): {st} {body[:120]!r}")
+        # The screen's rules written into it (ltcplay/web/remote_rules.js;
+        # web.RULES_SERVED_MARK): a package without the file fails here,
+        # not on the night. /remote2 is the same page, for old bookmarks.
+        for path in ("/remote", "/remote2"):
+            st, body = get(path)
+            check(st == 200 and "function armState(" in body,
+                  f"GET {path} is not served with the screen rules "
+                  f"(remote_rules.js missing from the package?): {st} "
+                  f"{body[:120]!r}")
         st, body = get("/api/remote/status")
         try:
             status = json.loads(body) if st == 200 else {}
@@ -933,6 +942,19 @@ def main(installer, version=""):
                    or b"").decode("utf-8", "replace")
         check("update check:" in sup_log, "the update check wrote no "
                                           "sentence to the supervisor's log")
+        # The window watches (showwindows.py, Jeff's field report
+        # 2026-10-29): on by default, and reading this PC's window list
+        # (no MadMapper on the runner: it says so, nothing is raised).
+        check("rack screen keeper: ON" in sup_log and
+              "MadMapper output watch: ON" in sup_log,
+              "the supervisor's log does not say the rack screen keeper "
+              "and the MadMapper output watch are on")
+        check("MadMapper output: MadMapper is not running" in sup_log or
+              "MadMapper output: not known" in sup_log,
+              "the MadMapper output watch never read the window list")
+        if "MadMapper output: not known" in sup_log:
+            NOTES.append("MadMapper output watch: the runner's window list "
+                         "could not be read (no desktop session)")
         NOTES.append(f"update check answered with exit {rc}")
 
         say("6. Stop LTC Player")

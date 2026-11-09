@@ -8,12 +8,12 @@
     {
      "source": "mesonet",
      "level": "stale",
-     "text": "the last UTALP (Iowa mesonet) reading is 27 min old, over its 20 min limit"
+     "text": "the last UTALP (Iowa mesonet) reading is stale, over its 20 min limit, last updated Oct 26, 11:55 AM"
     }
    ],
    "source": "mesonet",
    "level": "stale",
-   "text": "Measured, I-15 Point of the Mountain (UTALP): 12 mph, gusts 21 mph, from NNW (340\u00b0). 27 min old.",
+   "text": "Measured, I-15 Point of the Mountain (UTALP): 12 mph, gusts 21 mph, from NNW (340\u00b0). Last updated Oct 26, 11:55 AM.",
    "age_s": 1620,
    "speed_mph": 12.0
   },
@@ -21,23 +21,22 @@
    "kind": "forecast",
    "source": "forecast",
    "level": "ok",
-   "text": "Forecast for this spot (NWS): 40 mph, gusts 18 mph, from S (170\u00b0). Issued 1 h 6 min ago; this PC got it 22 min ago.",
+   "text": "Forecast for this spot (NWS): 40 mph, gusts 18 mph, from S (170\u00b0). NWS issued Oct 26, 11:15 AM. Last updated Oct 26, 12:00 PM.",
    "age_s": 1320,
    "issued_age_s": 3979,
    "speed_mph": 40.0
   }
  ],
  "banner": [
-  "NWS WIND ADVISORY in effect until 12:00 AM. Checked 22 min ago."
+  "NWS WIND ADVISORY in effect until 6:00 PM. Last updated Oct 26, 12:00 PM."
  ],
  "disagree": "Sources disagree, verify on site: measured UTALP 12 mph, forecast 40 mph.",
  "internet": "",
- "advisory": "Advisory only. The on-site wind check decides, not this screen.",
  "error": "",
  "page_dead_s": 60,
  "alerts_line": {
   "level": "ok",
-  "text": "NWS wind and fire alerts for this spot: see above. Checked 22 min ago."
+  "text": "NWS wind and fire alerts for this spot: see above. Last updated Oct 26, 12:00 PM."
  },
  "state": "stale"
 }

@@ -1,7 +1,7 @@
 """BENCH BUILD ONLY: the soak signs in the way an operator does.
 
 Signed out is view only (PR #143, Jeff's field report 2026-10-28): with
-users on, every press that is not Stop, Hold, Abort, Acknowledge or a
+users on, every press that is not Stop, Hold, Acknowledge or a
 disarm needs a signed-in role, the rack screen included, and the Stream
 Deck acts as whoever is signed in on the show machine. So the soak signs
 in through the engine's real route, POST /api/remote/signin, from this
@@ -53,7 +53,7 @@ class SignedIn:
 
     `http(method, path, body=None, signed_out=False)` -> (status, doc).
     `signed_out=True` sends the press with no cookie at all, as a signed
-    out screen does (Stop, Hold, Abort and the disarms must still work)."""
+    out screen does (Stop, Hold and the disarms must still work)."""
 
     def __init__(self, base, name=USER, note=print, timeout=5.0,
                  opener=None):

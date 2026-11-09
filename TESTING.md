@@ -7,15 +7,16 @@ Written 2026-10-06, after the audit that simplified it.
 ## The three layers
 
 1. **selftest.py** is the suite: 377 checks of the program, from LTC
-   decoding to the show conductor's Abort. It runs in about 3.5 minutes on
-   a laptop and 4 to 6 minutes on a CI runner. Every PR runs it on ubuntu
+   decoding to the show conductor's Stop. On a CI runner it takes about
+   15 to 20 minutes on ubuntu and 25 to 35 on windows (2026-11-03; the
+   job limits are 45 and 60 minutes). Every PR runs it on ubuntu
    and on windows (the show PC's OS). `python3 selftest.py` runs it by
    hand; its last line is "all checks passed in N s" or a count of
    failures, each with a sentence.
 
 2. **mutate.py** is the proof that the suite is honest. It breaks the
    program on purpose, one line at a time (973 breakages, each a real
-   show-night failure: "Abort's flame cut waits for the executor", "a new
+   show-night failure: "Stop's flame cut waits for the executor", "a new
    socket for every frame"), and requires the suite to fail under each.
    A mutation the suite does not notice is a guarantee nobody is testing.
    A mutation is caught only when the suite fails under it twice. The
@@ -36,7 +37,7 @@ Written 2026-10-06, after the audit that simplified it.
 
 | When | What | How long | Required to merge |
 |---|---|---|---|
-| Every push to a PR | selftest on ubuntu and windows | 5 to 7 min | yes, through `ci` |
+| Every push to a PR | selftest on ubuntu and windows | 15 to 20 min (ubuntu), 25 to 35 min (windows); limits 45 and 60 | yes, through `ci` |
 | A PR marked ready for review, and every push to it after | the mutate shards, each running only the mutations this PR can have changed the result of (below); as many shards as that needs, 32 at most, none at all for a doc or UI change | nothing for a doc; 10 to 90 min for a change to a safety file | yes, through `ci` |
 | A push to main | the same, against the previous main | as above | not applicable |
 | A release tag (`gpl-...` or a tech build) | every mutation, ubuntu and windows | 4 to 6 hours | the tag is not cut until it is green |
@@ -120,10 +121,10 @@ forces every way it can end red and checks the sentence is there.
 - `The suite FAILS with nothing mutated`: the baseline is red on that
   runner; see the selftest job, the shard measured nothing.
 - `INFRASTRUCTURE FAILURE`: the suite with nothing mutated did not finish
-  inside 30 minutes, twice (it is run once more by itself after the first
+  inside 90 minutes, twice (it is run once more by itself after the first
   time). The runner, not the code: no mutation ran and none was missed;
   re-run the shard. A mutant's own suite is stopped at three times that
-  shard's measured baseline, never under 300 s or over 30 minutes; a
+  shard's measured baseline, never under 300 s or over 90 minutes; a
   mutant stopped there counts as caught (it made the suite hang), and the
   job summary's "baseline time / mutant limit" column gives both numbers.
 - `shard N/32 TIMED OUT`: the shard ran out of its 340 minutes (the
@@ -141,8 +142,8 @@ closes the issue by itself.
 ## Running things by hand
 
 - The suite: `python3 selftest.py`.
-- One mutation or a few: `python3 mutate.py abort` runs every mutation
-  whose name contains "abort".
+- One mutation or a few: `python3 mutate.py stop` runs every mutation
+  whose name contains "stop".
 - What a change would run: `python3 mutate.py --changed origin/main
   --list` (or `--files ltcplay/conductor.py,selftest.py --list` with no
   git).
@@ -162,7 +163,7 @@ closes the issue by itself.
   when a sweep gets slow.
 - The rack screen drawn in a real browser (2026-10-24): the suite finds
   Chromium, Chrome or Edge by itself (set `LTCPLAY_CHROME` to one to
-  choose), draws remote.html headless at seven window sizes with five
+  choose), draws remote2.html headless at several window sizes with five
   banners and measures every flame group's Hold to arm and Disarm. With
   no browser it says so and skips; on the ubuntu CI runner a missing
   browser is a failure.
@@ -174,7 +175,7 @@ tree until it says "tree restored byte for byte".
 ## Real time in the suite
 
 A handful of checks still read the clock, because what they prove is a
-thread handoff: Abort does not wait behind a slow BEYOND, a hung
+thread handoff: Stop does not wait behind a slow BEYOND, a hung
 announcement, a stuck disk. They are written one way: the test stalls
 the thing that must not be waited on (300 ms to 3 s, or until the test
 lets it go), and the bound is half that stall or less. A wait on the
@@ -197,7 +198,7 @@ scarce resource. The order that pays, from the audit:
    (the setting that goes to the show), all programs, arming exercised:
    the configuration the show will actually run.
 2. The same with the Stream Deck plugged in and the real operator flow
-   (sign in, arm by holding, Hold, Resume, Abort, Reset) at least once
+   (sign in, arm by holding, Hold, Resume, Stop) at least once
    per block, by hand, with the soak's judge watching flamesafe's sACN.
 3. A 24 hour run, containment ON, unattended, for the slow leaks: memory,
    handles, the journal's disk use, the 120-day pruning, MadMapper's

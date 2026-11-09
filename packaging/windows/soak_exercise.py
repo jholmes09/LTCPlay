@@ -9,7 +9,7 @@ The exerciser presses only the real paths, with the real consent rules:
     the Stream Deck's operator there (the deck's operator gate), exactly
     as a person on the show machine would; every press but the safety
     ones goes with that sign-in, and the deck acts as that user;
-  - Hold, Abort, a group's Disarm and letting go of a hold are each
+  - Hold, Stop, a group's Disarm and letting go of a hold are each
     pressed signed out (no cookie) the first time, as a check that a
     signed-out screen can still do them;
   - it arms each flame group by HOLDING its Arm button on the screen
@@ -17,21 +17,22 @@ The exerciser presses only the real paths, with the real consent rules:
     a remote press of the group's key on the real Stream Deck program,
     which owns flamesafe's arm link (the soak runs that program with a
     virtual deck when no Stream Deck is plugged in). The deck's own rules
-    (operator chosen, hold time, re-arm refractory, nothing while an Abort
-    stands) and flamesafe's (cycle the arm after an Abort) all apply;
-  - Hold, Resume, Abort and Reset go through the same screen routes a
-    person presses.
+    (operator chosen, hold time, re-arm refractory) and flamesafe's (cycle
+    the arm after a Stop) all apply;
+  - Hold, Resume and Stop go through the same screen routes a person
+    presses. (Abort and Reset were removed, Jeff, 2026-10-30: the
+    exerciser's Abort is now a Stop, then Resume from the Stop's Hold.)
 
 Each show (a full-length bench show, 7 min 24 s by default): arm every
 group not armed at ARM_AT_S into the show, Hold every 2 minutes from 30 s
 for HOLD_FOR_S each, then Resume; on every other show (1, 3, 5, ...),
-Abort 40 s before the end, then Reset once the conductor takes it. The
+Stop 40 s before the end, then Resume once the Stop's Hold stands. The
 next show arms the groups again (plan_for).
 
 SacnJudge judges every flamesafe sACN packet against what it may carry:
 a group's channels non-zero only while flamesafe reports that group armed,
 and its fire channels non-zero only during a show, never inside a Hold,
-never after an Abort until it has been re-armed, never outside a show.
+never after a Stop until it has been re-armed, never outside a show.
 Fire packets are counted per group. Everything else is a violation, with
 its time.
 """
@@ -46,21 +47,21 @@ ARM_AT_S = 8.0
 HOLD_AT_S = 30.0         # the first Hold; then one every HOLD_EVERY_S
 HOLD_EVERY_S = 120.0
 HOLD_FOR_S = 5.0
-ABORT_BEFORE_END_S = 40.0  # the Abort, on every other show (1, 3, 5, ...)
-ABORT_AT_LEAST_S = 60.0
+STOP_BEFORE_END_S = 40.0  # the Stop, on every other show (1, 3, 5, ...)
+STOP_AT_LEAST_S = 60.0
 
 
 def plan_for(show_s):
-    """(hold times, abort time) through a show `show_s` long: Holds every
-    2 minutes from 30 s, the Abort 40 s before the end (60 s at least),
+    """(hold times, stop time) through a show `show_s` long: Holds every
+    2 minutes from 30 s, the Stop 40 s before the end (60 s at least),
     each Hold over well before it (Jeff, 2026-10-05: a full-length show)."""
-    abort_at = max(ABORT_AT_LEAST_S, show_s - ABORT_BEFORE_END_S)
+    stop_at = max(STOP_AT_LEAST_S, show_s - STOP_BEFORE_END_S)
     holds = []
     t = HOLD_AT_S
-    while t + HOLD_FOR_S + 20.0 <= abort_at:
+    while t + HOLD_FOR_S + 20.0 <= stop_at:
         holds.append(t)
         t += HOLD_EVERY_S
-    return holds, abort_at
+    return holds, stop_at
 BEAT_S = 0.1             # the page's own heartbeat while a finger is down
 GRACE_S = 0.3            # a change reaching flamesafe and back
 REFRACTORY_S = 2.5       # the deck's re-arm refractory (2 s) and a margin
@@ -101,9 +102,9 @@ class Exerciser:
                  clock=time.monotonic, sleep=time.sleep, show_s=100.0):
         self.http = http
         # The safety presses already made once signed out (route -> the
-        # status it answered): Hold, Abort, Disarm, letting go.
+        # status it answered): Hold, Stop, Disarm, letting go.
         self.signed_out_done = {}
-        self.hold_at, self.abort_at = plan_for(show_s)
+        self.hold_at, self.stop_at = plan_for(show_s)
         self.groups = list(groups)
         self.show_time = show_time
         self.show_number = show_number
@@ -113,7 +114,7 @@ class Exerciser:
         self.sleep = sleep
         self.stop = threading.Event()
         self.counts = {"arm_tries": 0, "arms": 0, "cycles": 0, "holds": 0,
-                       "resumes": 0, "aborts": 0, "resets": 0}
+                       "resumes": 0, "stops": 0, "stop_resumes": 0}
         self.arms_by_group = {g: 0 for g in self.groups}
         self.rearmed = {}            # group -> wall time it was last armed
         self.hold_tails = {}         # hold window start -> timings
@@ -157,7 +158,7 @@ class Exerciser:
         return True
 
     def safety(self, method, path, body):
-        """A safety press (Hold, Abort, a Disarm, letting go): the first
+        """A safety press (Hold, Stop, a Disarm, letting go): the first
         of each is sent signed out, and must not be refused for it."""
         if path in self.signed_out_done:
             return self.http(method, path, body)
@@ -172,14 +173,14 @@ class Exerciser:
 
     def press(self, route, **extra):
         body = dict(extra, seen=self._seen())
-        if route in ("hold", "abort"):
+        if route in ("hold", "stop"):
             return self.safety("POST", "/api/remote/" + route, body)
         return self.http("POST", "/api/remote/" + route, body)
 
     def arm(self, i):
         """Hold group i's Arm button on the screen until flamesafe reports
         it armed, then let go. A group still asked for but not armed (an
-        Abort from a screen disarmed it at flamesafe; the deck still wants
+        Stop from a screen disarmed it at flamesafe; the deck still wants
         it) is cycled first, as an operator does: Disarm, wait out the
         deck's re-arm refractory window, then hold again."""
         name = self.groups[i]
@@ -254,9 +255,9 @@ class Exerciser:
             for i, g in enumerate(self.groups):
                 if not self.armed().get(g):
                     self.arm(i)
-            self._close("abort")       # re-armed: an Abort's window ends
+            self._close("stop")        # re-armed: a Stop's window ends
         due = [h for h in self.hold_at if t >= h and f"hold{h}" not in done]
-        if due and t < self.abort_at:
+        if due and t < self.stop_at:
             for h in due:
                 done.add(f"hold{h}")
             sent = time.time()
@@ -279,26 +280,26 @@ class Exerciser:
                 self._close("hold")
             else:
                 self._fail("Hold", doc)
-        if t >= self.abort_at and k % 2 == 1 and "abort" not in done:
-            done.add("abort")
-            st, doc = self.press("abort", confirmed=True)
+        if t >= self.stop_at and k % 2 == 1 and "stop" not in done:
+            done.add("stop")
+            st, doc = self.press("stop")
             if st != 200:
-                self._fail("Abort", doc)
+                self._fail("Stop", doc)
                 return
-            self.counts["aborts"] += 1
+            self.counts["stops"] += 1
             now = time.time()
-            self.windows.append([now, None, "abort"])
-            self.windows.append([now, None, "aborted"])     # until Reset
+            self.windows.append([now, None, "stop"])
+            self.windows.append([now, None, "stopped"])     # until Resume
             t0 = self.clock()
             while self.clock() - t0 < 15 and not self.stop.is_set():
                 self.sleep(1.0)
-                st, doc = self.press("reset")
+                st, doc = self.press("resume")
                 if st == 200:
-                    self.counts["resets"] += 1
-                    self._close("aborted")
+                    self.counts["stop_resumes"] += 1
+                    self._close("stopped")
                     break
             else:
-                self._fail("Reset", doc)
+                self._fail("Resume after the Stop", doc)
 
     def _close(self, why):
         for w in self.windows:
@@ -330,7 +331,7 @@ class Exerciser:
 
     def fire_quiet(self, name, at, armed_since=None):
         """Why group `name` may not fire at wall time `at`, or None: inside
-        a Hold, or after an Abort until that group has been armed again.
+        a Hold, or after a Stop until that group has been armed again.
         `armed_since`: when flamesafe's own status last turned it armed (it
         can fire a moment before the exerciser's hold returns)."""
         rearmed = max(self.rearmed.get(name, 0), armed_since or 0)
@@ -339,14 +340,14 @@ class Exerciser:
             if h is not None and at >= h["sent"] and (e is None or at <= e):
                 if h["last_fire"] is None or at > h["last_fire"]:
                     h["last_fire"] = at
-        # A Hold names itself first: an older Abort's window is open only
+        # A Hold names itself first: an older Stop's window is open only
         # until the group is armed again, and must never label a Hold.
         for s, e, why in self.windows:
             if why == "hold" and s + GRACE_S <= at and (e is None or at <= e):
                 return "hold"
         for s, e, why in self.windows:
-            if why == "abort" and s + GRACE_S <= at and rearmed < s:
-                return (f"time after the Abort at "
+            if why == "stop" and s + GRACE_S <= at and rearmed < s:
+                return (f"time after the Stop at "
                         f"{time.strftime('%H:%M:%S', time.localtime(s))}, "
                         f"{name} not armed again since")
         return None
@@ -371,10 +372,10 @@ class Exerciser:
                 f"{time.strftime('%H:%M:%S', time.localtime(h['sent']))}); "
                 f"the judge allows {GRACE_S * 1000:.0f} ms after the answer")
 
-    def in_window(self, at, kinds=("hold", "abort")):
+    def in_window(self, at, kinds=("hold", "stop")):
         """The reason fire (by default) must be zero at wall time `at`, or
-        None. The lasers' kinds are ("hold", "aborted"): dark from an Abort
-        until its Reset."""
+        None. The lasers' kinds are ("hold", "stopped"): dark from a Stop
+        until the Resume that ends its Hold."""
         for s, e, why in self.windows:
             if why in kinds and s + GRACE_S <= at and (e is None or at <= e):
                 return why
@@ -416,7 +417,7 @@ class SacnJudge:
     def packet(self, values, at, armed, in_show, quiet, src=None):
         """`values`: the 512 slot values; `armed`: {name: bool};
         `in_show`: timecode moving; `quiet`: the reason fire must be zero
-        now (a Hold, an Abort), or None, or a callable(group) giving it per
+        now (a Hold, a Stop), or None, or a callable(group) giving it per
         group."""
         self.packets += 1
         self.armed_state(armed, at)
@@ -535,7 +536,7 @@ def self_test():
     assert "belong to no group" in j.violations[-1][1]
     ex0 = Exerciser(lambda *a, **k: (200, {}), ["front row"], lambda: None,
                     lambda: 0, lambda: {}, lambda t: None)
-    ex0.windows.append([100.0, None, "abort"])
+    ex0.windows.append([100.0, None, "stop"])
     va = [0] * 512
     va[400], va[410] = 78, 9
     ja = SacnJudge(groups)
@@ -548,8 +549,8 @@ def self_test():
     jb.packet(va, 101.0, {"front row": True}, True,
               lambda g, since: ex0.fire_quiet(g, 101.0, since))
     assert "not armed again since" in jb.violations[-1][1], \
-        "still armed from before the Abort: a violation"
-    # Show PC 18:33:34: a Hold, long after an Abort the group was armed
+        "still armed from before the Stop: a violation"
+    # Show PC 18:33:34: a Hold, long after a Stop the group was armed
     # again since, is named a Hold and judged as one.
     ex0.windows.append([200.0, None, "hold"])
     assert ex0.fire_quiet("front row", 201.0, 150.0) == "hold"
@@ -580,10 +581,6 @@ def self_test():
                 return 409, {"error": "front row is already armed or "
                                       "asked for.", "let_go": True}
             return 200, {"ok": True, "hold_id": "h"}
-        if path == "/api/remote/reset":
-            r = state.setdefault("resets", 0)
-            state["resets"] = r + 1
-            return (409, {"error": "still fading"}) if r == 0 else (200, {})
         return 200, {}
     clock = [0.0]
 
@@ -615,11 +612,12 @@ def self_test():
     assert ex.windows[0][2] == "hold" and ex.windows[0][1] is not None
     show["t"] = 61.0
     ex.step()
-    ab = [b for _m, p, b in state["calls"] if p == "/api/remote/abort"]
-    assert ab and ab[0]["confirmed"] is True and ex.counts["resets"] == 1
-    assert ex.in_window(time.time() + 1) == "abort"
-    assert ex.in_window(time.time() + 1, ("hold", "aborted")) is None, \
-        "the lasers' Abort window ends at Reset"
+    ab = [b for _m, p, b in state["calls"] if p == "/api/remote/stop"]
+    assert ab and ex.counts["stops"] == 1 and ex.counts["stop_resumes"] == 1
+    assert not any(p == "/api/remote/abort" for _m, p, _b in state["calls"])
+    assert ex.in_window(time.time() + 1) == "stop"
+    assert ex.in_window(time.time() + 1, ("hold", "stopped")) is None, \
+        "the lasers' Stop window ends at Resume"
     show["k"] = 2
     show["t"] = 9.0
     state["armed"] = {"front row": False, "cat-walk": False}
@@ -639,12 +637,12 @@ def self_test():
     assert ex.counts["arms"] == 4 and ex.counts["cycles"] == 2, ex.counts
     assert ex.in_window(time.time() + 1) is None
     assert ex.fire_quiet("front row", time.time() + 1) is None, \
-        "armed again after the Abort: it may fire"
-    ex.windows.append([time.time(), None, "abort"])
-    assert "after the Abort" in ex.fire_quiet("front row", time.time() + 1)
+        "armed again after the Stop: it may fire"
+    ex.windows.append([time.time(), None, "stop"])
+    assert "after the Stop" in ex.fire_quiet("front row", time.time() + 1)
     assert not ex.failures, ex.failures
     assert sorted(state["signed_out"]) == sorted(
-        ["/api/remote/arm-release", "/api/remote/hold", "/api/remote/abort",
+        ["/api/remote/arm-release", "/api/remote/hold", "/api/remote/stop",
          "/api/remote/group-disarm"]), state["signed_out"]
     # A signed-out safety press refused for it is a failure.
     ex3 = Exerciser(lambda m, p, b=None, signed_out=False: (
@@ -654,8 +652,8 @@ def self_test():
     ex3.press("hold")
     assert ex3.failures and "signed out" in ex3.failures[0][1]
     yield ("the exerciser signs in and chooses the Stream Deck's operator "
-           "as that user, presses Hold, Abort, a Disarm and a let go "
+           "as that user, presses Hold, Stop, a Disarm and a let go "
            "signed out once each (refused for it: a failure), holds "
            "each Arm button with heartbeats until flamesafe reports it "
-           "armed, Holds and Resumes, Aborts (confirmed), Resets once it "
+           "armed, Holds and Resumes, Stops, Resumes once the Stop's Hold "
            "is taken, and re-arms on the next show")

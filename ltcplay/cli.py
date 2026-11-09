@@ -1428,6 +1428,7 @@ def _cmd_serve(args):
         memtrace.start(_remote_mod.settings_folder())
     folder = os.path.abspath(args.folder or settings_mod.folder())
     schedule = None
+    fs_problem = ""
     if getattr(args, "schedule", None) is not None:
         # Only here, and only when asked for, is the scheduler loaded. The
         # GPL launchers never pass --schedule.
@@ -1449,6 +1450,26 @@ def _cmd_serve(args):
             fire_ice = fire_ice_mod.FireIceConfig.load(
                 fire_ice_mod.config_path_for(schedule))
             _watch_flamesafe(cfg_watch, fire_ice.flamesafe_config)
+            # flamesafe.json that is not valid JSON (Jeff, 2026-11-06): the
+            # engine and the rack screen still start, with no flame link
+            # and no flame groups, so nothing can be armed from here
+            # (flamesafe cannot run on the file either), and the screens
+            # say where the file is broken. Never a guessed config.
+            fs_problem = _flamesafe_json_problem(fire_ice.flamesafe_config)
+            if fs_problem:
+                # Every place still has to name the same file (P1-4),
+                # checked before this one is set aside: a different file
+                # named elsewhere is refused as before, never run.
+                _same, _why = _one_flamesafe_config(args, fire_ice)
+                if _why:
+                    _say_refused(_why)
+                    return _err(_why)
+                # Only the flamesafe config goes. The flame controller
+                # stays named: the pixel output still never sends its
+                # channels, and a show with it Active is still refused
+                # (fire_ice.build, check_flame_controllers). No flame link
+                # is built without a flamesafe config.
+                fire_ice.flamesafe_config = None
             _soak_why = fire_ice_mod.soak_refusal(fire_ice)
             if _soak_why:
                 # The soak kit's settings, left behind: refused where the
@@ -1512,6 +1533,13 @@ def _cmd_serve(args):
         # the flame link's disarm confirmation and lock alarm.
         flamesafe_config = fire_ice.flamesafe_config
     _watch_flamesafe(cfg_watch, flamesafe_config)
+    if flamesafe_config:
+        # The same for a flamesafe config named another way (the command
+        # line, the remote settings): the engine runs without it.
+        bad = _flamesafe_json_problem(flamesafe_config)
+        if bad:
+            fs_problem = fs_problem or bad
+            flamesafe_config = None
     try:
         httpd = web_mod.serve(folder, port=args.port, bind=args.bind,
                               token=args.token, schedule=schedule,
@@ -1529,6 +1557,12 @@ def _cmd_serve(args):
         # and found shorter (Jeff, 2026-09-26): nothing was bound or
         # started. See web.serve and clock.derive_show_length_in_folder.
         return _err(str(e))
+    if fs_problem:
+        # The rack screen's red line (Remote.flamesafe_problem).
+        remote_ = getattr(httpd, "remote", None)
+        if remote_ is not None:
+            remote_.flamesafe_problem = fs_problem
+        print(f"FLAMES OFF: {fs_problem}")
     # Where it really listens: a saved address this PC does not have now
     # falls back to this PC only (--network-if-saved).
     bound = getattr(httpd, "bind_address", None) or args.bind
@@ -1745,6 +1779,21 @@ def _one_flamesafe_config(args, fire_ice):
 
 
 REFUSED_FILE = "ltcplay_engine_refused.txt"
+
+
+def _flamesafe_json_problem(path):
+    """"" when flamesafe's config at `path` is valid JSON (or not named, or
+    not there: said where it is used), else the rack screen's sentence
+    (flamesafecheck.sentence): the file, line and column, flames off, the
+    last good copy. Never raises."""
+    if not path:
+        return ""
+    try:
+        from . import flamesafecheck
+        bad = flamesafecheck.json_problem(path)
+        return flamesafecheck.sentence(bad) if bad else ""
+    except Exception:                            # noqa: BLE001
+        return ""
 
 
 def _say_refused(why):
@@ -2412,8 +2461,8 @@ def main(argv=None):
 
     dk = sub.add_parser("deck", help="run the real Stream Deck: arms and "
                         "disarms real flamesafe groups, and reaches Start "
-                        "Now, Hold and Abort through a show conductor "
-                        "where one is connected")
+                        "Now and Stop through the engine where one is "
+                        "connected")
     dk.add_argument("--flamesafe-config", required=True,
                     help="the flamesafe config this deck talks to")
     dk.add_argument("--ltcplay-url", default="http://127.0.0.1:7878",

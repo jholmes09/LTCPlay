@@ -8,7 +8,6 @@
   "state": "STANDBY",
   "running": null,
   "held": false,
-  "aborted": false,
   "conductor": true,
   "trouble": null,
   "next": null,

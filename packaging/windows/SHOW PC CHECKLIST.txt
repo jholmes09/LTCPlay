@@ -103,6 +103,31 @@ SHOW NETWORK, AUDIO, CLOCK AND MEMORY (from the 2026-10-21 soak)
 [ ] MadMapper: after opening the show project, check its Sync Source is
     Art-Net. It can come back empty after a reopen. Set it to Art-Net and
     save the project.
+[ ] MadMapper's video output comes back on by itself after a reboot
+    (2026-10-29: it came back off and the projectors showed the Windows
+    desktop). In MadMapper: Preferences, Misc, tick "Start fullscreen
+    when opening a project at startup" (MadMapper's own documentation,
+    for a project opened at startup). To turn it on by hand: the Output menu,
+    Fullscreen (or the Outputs tab, Ctrl+5, set the projector output to
+    Fullscreen). LTC Player cannot turn it on (MadMapper takes no command
+    for it that could be verified); it SEES it: the rack screen's lamp
+    MadMapper output says on, OFF or not known, the rig check before
+    every show fails while it is off, and an output alert is raised when
+    it stays off 3 minutes after MadMapper starts (cleared by itself when
+    the output comes on). The projector must be its own display: with
+    one display only, the output reads OFF. ltcplay_fire_ice.json:
+    "madmapper_output_monitor": the projector's display number (0, the
+    default: any display but the rack screen's); an output that is not a
+    full-screen window: "madmapper_output_check": false.
+[ ] Windows Fast Startup off (recommended): Control Panel, Power
+    Options, Choose what the power buttons do, Change settings that are
+    currently unavailable, untick "Turn on fast startup". With it on, a
+    shut down is not a real restart, so programs come back as they were.
+[ ] Restart the PC once and watch: the rack screen ends in front of BEYOND
+    and MadMapper on its display (the supervisor raises it again for five
+    minutes after start, and when either program opens a new window), and
+    MadMapper's output stays on the projector display. showpc.json
+    "rack_screen_keep_in_front": false turns that off.
 [ ] The audio interface runs at 48 kHz. Set it in its own control app
     (PreSonus Universal Control). At any other rate the engine refuses
     Run with "will not play N output(s) at 48000 Hz".
@@ -136,9 +161,9 @@ CHANGING THE FLAME GROUPS (at tech)
 [ ] In showpc.json, "show_mode" is "fire_ice" (it is, unless someone
     changed it). That runs the scheduler, the show conductor and the flame
     link, and starts the Stream Deck program on the engine's own address,
-    so the deck's Stop reaches the show and the deck shows an Abort from
-    any screen (the deck has no Hold or Abort key since 2026-10-26: those
-    are the Rack screen's). With
+    so the deck's Stop reaches the show (the deck has no Hold key since
+    2026-10-26: Hold is the Rack screen's; there is no Abort anywhere
+    since 2026-10-30). With
     "plain", the Stream Deck program is not started at all.
 [ ] The rack screen page opens maximized on the show monitor, with
     Minimize, Maximize and Close in its title bar. If it
@@ -151,7 +176,7 @@ CHANGING THE FLAME GROUPS (at tech)
     Andy, Dallen, Dave and Jared each sign in once and choose their own
     password (no password is shipped). Sign in on the rack screen before
     a show so the audit log names who pressed what. Nobody needs to be
-    signed in for Abort, Hold, Stop or a disarm.
+    signed in for Stop, Hold or a disarm.
 [ ] Audit upload (when Jeff's server is ready): Users screen, Audit log:
     server address (https://), token, time (03:30), tick "Send ... every
     night", Save, then "Send now" and check "Last upload".

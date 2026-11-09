@@ -39,43 +39,93 @@ USER_ERRORS = (SessionError, audio_mod.DeviceError, ValueError,
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = os.path.join(HERE, "web", "index.html")
-REMOTE_PAGE = os.path.join(HERE, "web", "remote.html")
-# Interface 2.0 (Jeff, 2026-10-28), beside 1.0, never instead of it.
-# /remote serves 1.0 unless this screen chose 2.0 with its own cookie (set
-# by /ui?v=2, cleared back by /ui?v=1), or the show machine's default says
-# 2 (remote.ui_default, 1 until Jeff sets it). /remote1 and /remote2 are
-# always that page. /remote-logic.js is 1.0's own pure rules (remote.html's
-# remote-logic block, cut out at each request), so both pages run one set.
+# The screen (remote2.html): /remote, and the show network's /. /remote2
+# is the same page, kept for old bookmarks; the first screen's old
+# addresses (/remote1, /ui?v=1 or 2) send a browser to /remote and set
+# nothing. /remote-logic.js is its pure rules (web/remote_rules.js), also
+# written into the page as it is served.
 REMOTE2_PAGE = os.path.join(HERE, "web", "remote2.html")
-UI_COOKIE = "ltcplay_ui"
-UI_ROUTES = ("/remote1", "/remote2", "/remote-logic.js", "/ui")
+REMOTE_RULES = os.path.join(HERE, "web", "remote_rules.js")
+UI_ROUTES = ("/remote2", "/remote-logic.js", "/remote1", "/ui")
+OLD_SCREEN_ROUTES = ("/remote1", "/ui")
 LOGIC_OPEN = '<script id="remote-logic">'
 LOGIC_TAG = '<script src="/remote-logic.js"></script>'
 
 
+# What a whole rules file has in it: the block's own ends and the rules
+# the arming and the Stop double tap run on. A file without one of them is
+# empty, cut short or not the rules, and is never served (cold review of
+# #206, 2).
+RULE_MARKERS = ("// LOGIC BEGIN", "// LOGIC END", "function isStale(",
+                "function armState(", "function stopTapStep(",
+                "function stopTapKind(")
+_RULES_FAULT_SAID = [False]
+
+
+def _rules_fault(why):
+    """Says once, in the engine's log, that the rules did not load, until
+    they load again."""
+    if not _RULES_FAULT_SAID[0]:
+        _RULES_FAULT_SAID[0] = True
+        print(f"ltcplay: FAULT: the screen rules file "
+              f"{os.path.basename(REMOTE_RULES)} did not load ({why}). "
+              f"The screen says so and keeps its own Stop.", flush=True)
+
+
 def remote_logic():
-    """1.0's pure rules (remote.html's remote-logic block), or None."""
-    with open(REMOTE_PAGE, encoding="utf-8") as fh:
-        page = fh.read()
-    a = page.find(LOGIC_OPEN)
-    b = page.find("</script>", a) if a >= 0 else -1
-    if a < 0 or b < 0:
+    """The shared pure rules (web/remote_rules.js), or None when the file
+    is missing, cannot be read or decoded, or is not the rules whole (empty,
+    cut short, or with a closing script tag in it that would end the block
+    early). A None is said once in the engine's log."""
+    try:
+        with open(REMOTE_RULES, encoding="utf-8") as fh:
+            logic = fh.read()
+    except (OSError, ValueError) as e:
+        _rules_fault(f"{type(e).__name__}: {e}")
         return None
-    return page[a + len(LOGIC_OPEN):b]
+    if "</script" in logic.lower():
+        _rules_fault("it has a closing script tag in it")
+        return None
+    gone = [m for m in RULE_MARKERS if m not in logic]
+    if gone:
+        _rules_fault(f"it is empty or cut short: no {gone[0]}")
+        return None
+    _RULES_FAULT_SAID[0] = False
+    return logic
 
 
-def remote2_page():
-    """remote2.html with 1.0's rules written into it (safety review of
-    #166, B1): the page arrives whole in one answer, never waiting on a
-    second request for its rules. Without the block, the page as it is
-    (its own tag then asks /remote-logic.js, and it says when that fails;
-    its Abort needs neither)."""
-    with open(REMOTE2_PAGE, encoding="utf-8") as fh:
+def _with_rules(path, logic):
+    """The page at `path` with the shared rules (`logic`) written into it in
+    place of its /remote-logic.js tag (safety review of #166, B1): the page
+    arrives whole in one answer, never waiting on a second request for its
+    rules. Without the rules, the page as it is (its tag then asks
+    /remote-logic.js)."""
+    with open(path, encoding="utf-8") as fh:
         page = fh.read()
-    logic = remote_logic()
     if logic is not None and LOGIC_TAG in page:
         page = page.replace(LOGIC_TAG, LOGIC_OPEN + logic + "</script>", 1)
     return page.encode("utf-8")
+
+
+# The installer's checks (entry_engine.py's self-check, ci_smoke.py) look
+# for this in the screen as served: a rule the page cannot work without.
+RULES_SERVED_MARK = "function armState("
+
+
+def rules_self_check():
+    """"" when the screen (/remote) is served with the rules written in,
+    else what is wrong (the engine's --self-check, cold review of #206,
+    3)."""
+    if RULES_SERVED_MARK.encode() not in remote2_page():
+        return (f"the rack screen (/remote, /remote2) is not served with "
+                f"its rules: {REMOTE_RULES} is missing or broken")
+    return ""
+
+
+def remote2_page():
+    """remote2.html as /remote serves it, the rules written in. Without
+    them the page says so; its stop-core Stop needs neither."""
+    return _with_rules(REMOTE2_PAGE, remote_logic())
 # The pages' icons (tab, iPad home screen, installed web app), made from the
 # LTC Player app icon by tools/make_web_icons.py. A fixed list of files at
 # fixed addresses: nothing here reads a path the request names.
@@ -97,7 +147,7 @@ WILDCARD = ("0.0.0.0", "::", "")
 
 # The show's own transport and output routes. While a scheduled show is live
 # (the scheduler in SHOW or PAUSED) every one of them is refused, on every
-# door, the machine's own page included: Hold, Resume and Abort are the only
+# door, the machine's own page included: Stop, Hold and Resume are the only
 # presses a live show takes (PR #43 review, finding 2: a GO during a live
 # show moved the pixels and fired a flame cue it jumped into).
 LIVE_SHOW_REFUSED = ("/api/start", "/api/go", "/api/skip", "/api/release",
@@ -105,20 +155,21 @@ LIVE_SHOW_REFUSED = ("/api/start", "/api/go", "/api/skip", "/api/release",
                      "/api/showdir", "/api/reinput", "/api/input",
                      "/api/trigger", "/api/autoreload", "/api/find")
 LIVE_SHOW_STATES = ("SHOW", "PAUSED")
-# After an Abort, until Reset (PR #43 fix round 2, E): the same routes are
-# refused, except Stop and a Blackout, which only make the rig darker. The
-# page used to bring the show's pixels back up while the Abort stood.
-LATCHED_ALLOWED = ("/api/stop",)
-LATCHED_REFUSAL = ("The show was aborted. Nothing on this page may bring "
-                   "the rig back up until someone presses Reset; Stop and "
-                   "Blackout still work.")
+# While a Stop's Hold stands, until Resume (it took over the removed
+# Abort latch's rule, PR #43 fix round 2, E; Jeff, 2026-10-30): the same
+# routes are refused, except Stop and a Blackout, which only make the rig
+# darker. The page used to bring the show's pixels back up after an Abort.
+STOP_HOLD_ALLOWED = ("/api/stop",)
+STOP_HOLD_REFUSAL = ("A Stop's Hold is standing. Nothing on this page may "
+                     "bring the rig back up until someone presses Resume; "
+                     "Stop and Blackout still work.")
 # A halt that ended a live show (the Stream Deck's Stop) waits at most this
 # long for the conductor's calls, and again for its fade, before playback
 # stops (review of #130, 5). The deck's post waits STOP_POST_TIMEOUT_S.
 HALT_FADE_WAIT_S = 3.0
-LIVE_SHOW_REFUSAL = ("A scheduled show is live. Only Hold, Resume and Abort "
+LIVE_SHOW_REFUSAL = ("A scheduled show is live. Only Stop, Hold and Resume "
                      "work during a show; this waits until the show has "
-                     "ended or been aborted.")
+                     "ended.")
 
 
 HOST_REFUSAL = "This page has to be opened by the show machine's address."
@@ -973,27 +1024,31 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:                   # noqa: BLE001
             return {"failed": ["halt"],
                     "error": f"{type(e).__name__}: {e}"}
-        out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show")
-               if h.get(k) is not None}
-        out["failed"] = list(h.get("failed") or [])
-        if h.get("show_ended"):
-            svc = getattr(self.server, "schedule", None)
+        # One deadline for the whole window (final review of #191, G2):
+        # the conductor taking the Stop, the scheduler's calls, its fade.
+        if isinstance(h, dict):
             try:
-                svc.flush_conductor(HALT_FADE_WAIT_S)
+                rm.wait_stop_window(h, HALT_FADE_WAIT_S)
             except Exception:                    # noqa: BLE001
                 pass
-            cond = getattr(svc, "conductor", None)
-            if cond is not None and getattr(cond, "threaded", False):
-                try:
-                    cond.wait_idle(HALT_FADE_WAIT_S)
-                except Exception:                # noqa: BLE001
-                    pass
+        out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show",
+                                 "hold", "programming")
+               if h.get(k) is not None}
+        out["failed"] = list(h.get("failed") or [])
         return out
 
     def _halt_stop(self, body, c):
-        """The Stream Deck's Stop (/api/stop with "halt"): Remote.halt,
-        then playback stops. Answers the request."""
+        """The Stream Deck's Stop (/api/stop with "halt"): Remote.halt, the
+        same Stop as every screen's (Jeff, 2026-10-30): the show ended, the
+        schedule on Hold, and Run left ON. Only an engine with no scheduler
+        (Run is then the show itself) still stops playback after the halt.
+        Answers the request."""
         out = self._halt(body)
+        if getattr(self.server, "schedule", None) is not None and \
+                not isinstance(self.server.schedule, _NoSchedule):
+            out["stopped"] = True
+            out["run_on"] = True
+            return self._send(500 if out.get("error") else 200, out)
         try:
             out["stopped"] = c.stop()
         except Exception as e:       # noqa: BLE001
@@ -1018,8 +1073,7 @@ class Handler(BaseHTTPRequestHandler):
     def _stop_flames(self, body):
         """Stop's flame half (review of #126, P2-1): live flame programming
         cut, then the flame link's disarm_all
-        (the show's flames_disarm_all, never the conductor's Abort, so
-        nothing is latched). {"disarmed": True/False, "text": ...}, or None
+        (the show's flames_disarm_all; nothing is latched). {"disarmed": True/False, "text": ...}, or None
         with no flame link in this engine (the GPL path). Never raises."""
         rm = getattr(self.server, "remote", None)
         if rm is None:
@@ -1040,6 +1094,15 @@ class Handler(BaseHTTPRequestHandler):
         # The hazers OFF (hazers.py, Jeff 2026-10-29: Stop is a complete
         # halt); the flame link's disarm_all below does it at the link too.
         fn = getattr(rm, "hazers_cut", None)
+        if fn is not None:
+            try:
+                fn(reason, who, screen)
+            except Exception:                    # noqa: BLE001
+                pass
+        # The fuel pump OFF (fuelpump.py, Jeff 2026-10-30: "it should be
+        # affected by the stop button"); the disarm_all below does it at
+        # the link too.
+        fn = getattr(rm, "pump_cut", None)
         if fn is not None:
             try:
                 fn(reason, who, screen)
@@ -1085,7 +1148,7 @@ class Handler(BaseHTTPRequestHandler):
     def _role_refused(self, route):
         """Send a 403 and return True when the role matrix does not let
         this press go ahead. NEVER for a safety press (users.classify:
-        Abort, Hold, Stop, every disarm, a release, a lock, Acknowledge,
+        Stop, Hold, every disarm, a release, a lock, Acknowledge,
         signing in or out), and never before any user exists. Being on
         this machine is not a sign-in: the rack screen is asked like any
         other (Jeff's field report, 2026-10-28). A fault in here never
@@ -1138,12 +1201,12 @@ class Handler(BaseHTTPRequestHandler):
                    if name else "Nobody is signed in on this screen, and "
                    "signed out is view only: ") + \
                 f"{users_mod.perm_label(perm)}. Sign in as someone who may " \
-                f"(the user chip at the top). Abort, Hold, Stop and every " \
+                f"(the user chip at the top). Stop, Hold and every " \
                 f"disarm always work. Nothing was changed."
         except Exception as e:                   # noqa: BLE001
             why = (f"The sign-in check could not be made ({type(e).__name__})"
                    f", so this was refused: {users_mod.perm_label(perm)}. "
-                   f"Abort, Hold, Stop and every disarm always work. Nothing "
+                   f"Stop, Hold and every disarm always work. Nothing "
                    f"was changed.")
         if ended:
             why = ("The timed purge was ended (a second purge press stops "
@@ -1183,6 +1246,9 @@ class Handler(BaseHTTPRequestHandler):
                     (short == "purge-fire" and
                      body.get("fire_id") is not None and
                      body.get("on") is True) or   # a release is logged
+                    # Fireball practice's screen beat, once a second.
+                    (short == "fireball-practice" and
+                     body.get("action") == "beat") or
                     # The Fireball page: a beat that changes nothing.
                     (short == "fireball-beat" and
                      body.get("run") is not None and
@@ -1357,20 +1423,11 @@ class Handler(BaseHTTPRequestHandler):
     def _conductor(self):
         """Read-only: what the Fire & Ice show conductor last did. A plain
         404 without one, like every optional route here. There is no route
-        that presses Hold, Resume or Abort."""
+        here that presses Stop, Hold or Resume."""
         c = getattr(self.server, "conductor", None)
         if c is None:
             return 404, {"error": "no such thing here"}
         snap = c.snapshot()
-        # The scheduler's own Abort latch, saved in tonight's file, is the
-        # one that survives an engine restart (the conductor starts
-        # unlatched): latched while either is (review of PR #43, P1-5), so
-        # the Stream Deck shows the Abort latch after a restart too. A
-        # plain read, never the scheduler's lock: this route is polled.
-        m = getattr(getattr(self.server, "schedule", None), "machine", None)
-        sched_latched = bool(getattr(m, "abort_latched", False))
-        snap["scheduler_abort_latched"] = sched_latched
-        snap["latched"] = bool(snap.get("latched")) or sched_latched
         out = {"conductor": snap}
         fi = getattr(self.server, "fire_ice", None)
         fl = getattr(fi, "flame_link", None)
@@ -1451,25 +1508,19 @@ class Handler(BaseHTTPRequestHandler):
                 # path only; nothing in this mode serves or links to it.
                 return self._send(302, b"", "text/plain",
                                   headers={"Location": "/remote"})
-            if route == "/ui":
-                return self._ui_switch()
+            if route in OLD_SCREEN_ROUTES:
+                # The first screen is removed (R1): an old bookmark or link
+                # lands on the screen. No cookie, nothing else.
+                return self._send(302, b"", "text/plain",
+                                  headers={"Location": "/remote"})
             if route == "/remote-logic.js":
                 return self._remote_logic()
-            if route in ("/remote", "/remote1", "/remote2") or (
+            if route in ("/remote", "/remote2") or (
                     route in ("/", "/index.html") and not self._local()):
-                # The show network gets the remote page: the sign-in form
-                # until it has a session, then the touch controls. 1.0
-                # unless this screen chose 2.0 (or the default is 2.0);
-                # /remote1 and /remote2 are always that page.
-                page = {"/remote1": REMOTE_PAGE,
-                        "/remote2": REMOTE2_PAGE}.get(route) or (
-                    REMOTE2_PAGE if self._ui_choice() == 2 else REMOTE_PAGE)
-                if page == REMOTE2_PAGE:
-                    return self._send(200, remote2_page(),
-                                      "text/html; charset=utf-8")
-                with open(page, "rb") as fh:
-                    return self._send(200, fh.read(),
-                                      "text/html; charset=utf-8")
+                # The screen, to the show network and this machine alike
+                # (/remote2 is the same page, for old bookmarks).
+                return self._send(200, remote2_page(),
+                                  "text/html; charset=utf-8")
             if route == "/api/remote" or route.startswith("/api/remote/"):
                 remote = getattr(self.server, "remote", None)
                 if remote is None:
@@ -1537,61 +1588,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, {"error": f"{type(e).__name__}: {e}"})
         return self._send(404, {"error": "no such thing here"})
 
-    def _ui_choice(self):
-        """1 or 2: which page /remote serves this screen. Its own
-        ltcplay_ui cookie ("1" or "2") first, else the show machine's
-        default (remote.ui_default, 1 until Jeff sets 2). Anything odd, or
-        anything that cannot be read, is 1: the page every screen had."""
-        for part in str(self.headers.get("Cookie") or "").split(";"):
-            k, _, v = part.strip().partition("=")
-            if k == UI_COOKIE and v in ("1", "2"):
-                return int(v)
-        rm = getattr(self.server, "remote", None)
-        try:
-            return 2 if rm is not None and rm.ui_default() == 2 else 1
-        except Exception:                        # noqa: BLE001
-            return 1
-
-    def _ui_switch(self):
-        """GET /ui?v=2 or /ui?v=1: this screen's own choice of interface, a
-        cookie in this browser and nothing else, then back to /remote.
-        Nothing on the show machine changes. A link followed from another
-        site's page is refused, as a press from one is."""
-        sfs = self.headers.get("Sec-Fetch-Site")
-        if sfs is not None and sfs.strip().lower() not in ("same-origin",
-                                                           "none"):
-            return self._send(403, {"error": "A switch from another site's "
-                                             "page was refused."})
-        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        v = (q.get("v") or [""])[0]
-        if v not in ("1", "2"):
-            return self._send(400, {"error": "v has to be 1 or 2."})
-        return self._send(302, b"", "text/plain", headers={
-            "Location": "/remote",
-            "Set-Cookie": f"{UI_COOKIE}={v}; SameSite=Strict; Path=/; "
-                          f"Max-Age=31536000"})
-
     def _remote_logic(self):
-        """GET /remote-logic.js: 1.0's pure rules, cut out of remote.html
-        (its remote-logic block) at each request, so 2.0 runs the very
-        functions 1.0 runs and selftest.py proves."""
+        """GET /remote-logic.js: the shared pure rules (web/remote_rules.js),
+        read at each request: the page's own fallback when they were not
+        written into it."""
         logic = remote_logic()
         if logic is None:
-            return self._send(500, {"error": "remote.html has no "
-                                             "remote-logic block."})
+            return self._send(500, {"error": "The page rules file "
+                                             "(remote_rules.js) is missing "
+                                             "or broken."})
         return self._send(200, logic,
                           "application/javascript; charset=utf-8")
 
-    def _abort_latched(self):
-        """True while an Abort stands (the scheduler's latch, or the show
-        conductor's), until Reset."""
+    def _stop_held(self):
+        """True while a Stop's Hold stands (Service.stop_held), until
+        Resume. Never raises."""
         svc = getattr(self.server, "schedule", None)
-        if svc is None:
+        try:
+            return bool(svc is not None and svc.stop_held())
+        except Exception:                           # noqa: BLE001
             return False
-        m = getattr(svc, "machine", None)
-        cond = getattr(svc, "conductor", None)
-        return bool(getattr(m, "abort_latched", False) or
-                    getattr(cond, "latched", False))
 
     def _scheduled_show_live(self):
         svc = getattr(self.server, "schedule", None)
@@ -1650,11 +1666,11 @@ class Handler(BaseHTTPRequestHandler):
         # just clears the slot; the next state() call rebuilds, lazily, once.
         c._state_cache = None
         body = self._body()
-        if route in LIVE_SHOW_REFUSED and route not in LATCHED_ALLOWED and \
+        if route in LIVE_SHOW_REFUSED and route not in STOP_HOLD_ALLOWED and \
                 not (route == "/api/override" and
                      (body or {}).get("look") == "blackout") and \
-                self._abort_latched():
-            return self._send(409, {"error": LATCHED_REFUSAL})
+                self._stop_held():
+            return self._send(409, {"error": STOP_HOLD_REFUSAL})
         if isinstance(body, dict) and "who" in body and \
                 route != "/api/schedule/operator":
             body = self._authed_body(route, body)
@@ -1756,11 +1772,10 @@ class Handler(BaseHTTPRequestHandler):
                 # Deck's alike: live flame programming ends, and the flame
                 # link's disarm_all goes out
                 # (the cues zeroed, a zero frame, the keyed disarm and its
-                # repeats: the flame half of an Abort), WITHOUT the Abort
-                # latch, which is the Abort's alone. Then playback stops.
+                # repeats), with no latch. Then playback stops.
                 # The Stream Deck's Stop is a complete halt (Jeff,
                 # 2026-10-26, "halt"): Remote.halt takes away everything
-                # an Abort does, in the Abort's order, with no latch, and
+                # the removed Abort did, in its order, with no latch, and
                 # ends a live scheduled show (STOP_SHOW). Its fade runs to
                 # the end before playback stops.
                 if self._halt_asked():
@@ -2024,6 +2039,100 @@ def _preroll_hosts(httpd, fire_ice):
     return out
 
 
+def _page_monitor(folder=None):
+    """showpc.json's page_monitor (the supervisor's settings, in this PC's
+    settings folder): the rack screen's display when its window cannot be
+    seen. 1 when it cannot be read."""
+    try:
+        from . import appdata
+        with open(os.path.join(folder or appdata.folder(), "showpc.json"),
+                  encoding="utf-8-sig") as fh:
+            v = json.load(fh).get("page_monitor", 1)
+        return v if isinstance(v, int) and not isinstance(v, bool) and \
+            v >= 1 else 1
+    except Exception:                                # noqa: BLE001
+        return 1
+
+
+def _attach_mm_output(httpd, fire_ice, mm_cfg, windows=None):
+    """MadMapper's video output, on or OFF (showwindows.py; Jeff's field
+    report, 2026-10-29): read from this PC's window list on a thread of its
+    own, for the rack screen's lamp and the rig check. Only with MadMapper
+    on this Windows PC and madmapper_output_check on; otherwise the reason
+    it is not checked. Never raises."""
+    remote = httpd.remote
+    try:
+        import sys
+        from . import madmapperwatch as mmw
+        from . import showwindows
+        if windows is None:
+            windows = sys.platform == "win32"
+        host = getattr(mm_cfg, "host", None)
+        why = ""
+        if not getattr(fire_ice, "madmapper_output_check", True):
+            why = ("not checked: madmapper_output_check is false in "
+                   "ltcplay_fire_ice.json")
+        elif not mmw.on_this_pc(host):
+            why = (f"not checked: MadMapper is on another machine ({host}), "
+                   f"so its output window cannot be seen from here")
+        elif not windows:
+            why = "not checked: this is not the Windows show PC"
+        remote.mm_output_why = why
+        if why:
+            remote.mm_output = None
+            return None
+        look = showwindows.OutputLook(
+            monitor=getattr(fire_ice, "madmapper_output_monitor", 0),
+            rack=_page_monitor()).start()
+        remote.mm_output = look
+        before = httpd.server_close
+
+        def _close():
+            try:
+                look.stop()
+            finally:
+                before()
+        httpd.server_close = _close
+        return look
+    except Exception as e:                           # noqa: BLE001
+        remote.mm_output = None
+        remote.mm_output_why = (f"not known: the output check could not "
+                                f"start ({type(e).__name__}: {e})")
+        return None
+
+
+def _output_seen_on(alerts, r, look=None):
+    """A passed rig check whose MadMapper output item passed (seen on, not
+    just not used) clears the "output" alert (showwindows.OutputWatch's)
+    raised before the check began (review B of #176: a stale one held a
+    healthy show). Never one raised after, and never while the engine's
+    own look (`look`, showwindows.OutputLook) reads it off again now: the
+    supervisor's watch still thinks its alert is up for that off spell and
+    would not raise it again (review B round 2). Returns whether it
+    cleared."""
+    # "used": the check looked and saw it on. "note" is no guide: a pass
+    # that says what it saw carries one too (review 1 of #176).
+    seen = [i for i in r.get("items") or ()
+            if i.get("name") == "MadMapper output" and i.get("ok")
+            and i.get("used")]
+    began = r.get("wall_at")
+    if not seen or began is None or look is None:
+        return False
+    try:
+        if look.now()[0] != "on":
+            return False
+    except Exception:                                # noqa: BLE001
+        return False
+    for a in alerts.open():
+        if a.kind == "output" and a.since < began:
+            ok, _t = alerts.clear(id=a.id, action="Confirm",
+                                  who="LTC Player (the rig check saw "
+                                      "MadMapper's output on)",
+                                  screen="engine")
+            return ok
+    return False
+
+
 def _attach_preroll(httpd, fire_ice, fstatus):
     """The pre-roll (preroll.py, Jeff 2026-10-28): the rig checked before
     every show the scheduler starts and before Start now, on the schedule
@@ -2077,7 +2186,10 @@ def _attach_preroll(httpd, fire_ice, fstatus):
             if getattr(fire_ice, "beyond", None) is not None else None
         checks = [
             ("Audio", True, lambda p: P.check_audio(p, clk(), refusal())),
-            ("Announcements", True,
+            # Advisory (Jeff, 2026-10-30): nothing plays on the PA by
+            # itself, so a missing output or recording is a warning line
+            # for the operator's own buttons, never a failed check.
+            ("Announcements", False,
              lambda p: P.check_announcements(p, httpd.announce)),
             ("Booth speaker", True,
              lambda p: P.check_booth(p, remote.alerts.booth, booth_resolve)),
@@ -2089,6 +2201,12 @@ def _attach_preroll(httpd, fire_ice, fstatus):
                 mm[1] if mm and hb is not None else None, clk(),
                 wiring.conductor, mm_running,
                 fire_ice.preroll_video_unconfirmed_ok)),
+            ("MadMapper output", True, lambda p: P.check_madmapper_output(
+                p, getattr(getattr(remote, "mm_output", None), "now", None),
+                getattr(remote, "mm_output_why", "") or (
+                    "no MadMapper in this show"
+                    if getattr(fire_ice, "madmapper", None) is None else
+                    "not known: MadMapper's output check did not start"))),
             ("Flame link", True, lambda p: P.check_flame_link(
                 p, fstatus, wiring.flame_link, remote.deck_chip
                 if fstatus is not None else None)),
@@ -2109,13 +2227,9 @@ def _attach_preroll(httpd, fire_ice, fstatus):
             return "Programming" if remote.programming()[0] else ""
         pr = P.PreRoll(
             checks, window_s=fire_ice.preroll_s, journal=note,
-            alert=remote.alerts.raise_,
-            clear_alert=lambda kind: remote.alerts.clear(
-                kind=kind, action="Confirm", who="LTC Player (a later rig "
-                "check passed)", screen="engine"),
-            open_alert=lambda: any(a.kind == P.KIND
-                                   for a in remote.alerts.open()),
-            skip=skip)
+            on_pass=lambda r: _output_seen_on(
+                remote.alerts, r, getattr(remote, "mm_output", None)),
+            skip=skip, **P.alert_hooks(remote.alerts))
         svc.preroll = pr
         remote.preroll = pr
         return pr
@@ -2227,7 +2341,6 @@ def _attach_hazers(httpd):
         remote.hazers = hazers_mod.Hazers(
             link_get=lambda: getattr(httpd.fire_ice, "flame_link", None),
             flames_get=lambda: fs.view() if fs is not None else None,
-            abort_standing=remote._abort_standing,
             show_state=remote.hazer_show_state,
             blocker=remote.hazer_blocker, folder=remote.folder,
             journal=_journal, audit=getattr(remote, "audit", None))
@@ -2241,6 +2354,40 @@ def _attach_hazers(httpd):
             + f" read from {getattr(link, 'flamesafe_path', '')}. Every "
               f"hazer is DISARMED until armed; it runs at its levels only "
               f"while a show plays.", action="flame_link", outcome="hazers")
+
+
+def _attach_pump(httpd):
+    """The fireball's fuel pump (fuelpump.py, Jeff 2026-10-30): built for
+    the Fire & Ice engine with a flame link whose flamesafe config lists
+    one. OFF at start. A failure leaves it unavailable (OFF, its slot
+    zero) and is said once; the show is never held back."""
+    from . import fuelpump as fuelpump_mod
+    remote = httpd.remote
+    link = getattr(httpd.fire_ice, "flame_link", None)
+    if link is None or link.pump_name() is None:
+        return
+    try:
+        def _journal(who, screen, outcome, text, fault=False):
+            remote._journal(who or "system", screen or "engine",
+                            "fuel-pump", outcome, text, fault=fault)
+        fs = remote.flame_status
+        remote.pump = fuelpump_mod.FuelPump(
+            link_get=lambda: getattr(httpd.fire_ice, "flame_link", None),
+            flames_get=lambda: fs.view() if fs is not None else None,
+            blocker=remote.pump_blocker,
+            journal=_journal, audit=getattr(remote, "audit", None),
+            night_state=remote.pump_night_state,
+            signed_out=remote.pump_signed_out)
+    except Exception as e:                       # noqa: BLE001
+        print(f"The fuel pump could not be set up: {type(e).__name__}: {e}")
+        return
+    say = getattr(link, "journal_line", None)
+    if say is not None:
+        n, slot, on = link.cfg.pump
+        say(f"Flame link: fuel pump {n} on channel {slot} at {on}, read from "
+            f"{getattr(link, 'flamesafe_path', '')}. It is OFF until turned "
+            f"on; Stop turns it off.", action="flame_link",
+            outcome="fuel pump")
 
 
 def _attach_fuel(httpd):
@@ -2301,6 +2448,173 @@ def _attach_fireball(httpd):
     httpd.server_close = _close_fireball
 
 
+def _attach_fireball_timeline(httpd):
+    """The fireball timeline on the flame cues (fireball_cues.py, Jeff
+    2026-10-30): for a show set to "timeline", slots 55 to 59 come from
+    the settings folder's ltcplay_fireball_timeline.json. Built before any
+    show can run. If it cannot be built, every show's fireball slots are
+    zero (fail closed: a show set to the timeline never falls back to its
+    FSEQ), and that is said."""
+    from . import fire_ice as fire_ice_mod
+    from . import fireball_cues as fbc_mod
+    remote = httpd.remote
+    link = getattr(httpd.fire_ice, "flame_link", None)
+    cues = getattr(link, "cues", None)
+    if not isinstance(cues, fire_ice_mod.FlameCues):
+        return
+    say = getattr(link, "journal_line", None)
+    try:
+        def fireball_slots():
+            # flamesafe's fireball group's fire slots, as the Fireball page
+            # reads them (the Startup page's reading of flamesafe's
+            # config), or None when there is none to compare.
+            from . import fireball as fireball_mod
+            g, _why = fireball_mod.find_group(
+                getattr(getattr(httpd, "morning", None), "groups", None)
+                or [])
+            return g["fire"] if g else None
+        def live_slots():
+            # The fire slots of the fireball group the RUNNING flamesafe
+            # reports in its status (round-6 review 1), or None.
+            fs = getattr(remote, "flame_status", None)
+            v = fs.view() if fs is not None else None
+            for g in (v or {}).get("groups") or []:
+                if str(g.get("name", "")).strip().lower() != "fireball":
+                    continue
+                sl = g.get("fire_slots")
+                if isinstance(sl, list) and sl:
+                    return [int(x) for x in sl]
+            return None
+        fb = fbc_mod.FireballCues(
+            remote.fireball_timeline_store(),
+            charge_get=lambda: getattr(remote, "fireball_charge", None),
+            journal=say, group_get=fireball_slots, live_get=live_slots,
+            # The show path's own sent values, before the Fireball page's
+            # frame (flamelink.show_sent, third review D-F1).
+            sent_get=lambda: getattr(link, "show_sent", None),
+            # Every time the flame link's guard starts again (a landing:
+            # a Continue, a loop, a move; or a seek it saw itself, such as
+            # a stalled clock catching up) is a move for the fireball too
+            # (final review of #201).
+            land_get=lambda: getattr(link, "guard_gen", None))
+        fb.refresh()
+    except Exception as e:                       # noqa: BLE001
+        fb = fbc_mod.FireballCues(None, journal=say)
+        fb._plan = (None, f"the fireball timeline could not be set up "
+                          f"({type(e).__name__}: {e}); no show fires its "
+                          f"fireball", {})
+        print(f"The fireball timeline could not be set up: "
+              f"{type(e).__name__}: {e}")
+    cues.fireball = fb
+    remote.fireball_cues = fb
+
+
+def _fireball_file_slots(httpd):
+    """The fireball group's fire slots as flamesafe.json has them (the
+    Startup page's reading of flamesafe's config), or None."""
+    from . import fireball as fireball_mod
+    g, _why = fireball_mod.find_group(
+        getattr(getattr(httpd, "morning", None), "groups", None) or [])
+    return g["fire"] if g else None
+
+
+def _attach_fireball_charge(httpd):
+    """The fireball's charge state (fireball_charge.py, Jeff 2026-10-30):
+    watches every flame frame after it went out (chained onto the flame
+    link's observer, beside the fuel tracker's) and flamesafe's status.
+    It never sends and never changes a value. A failure leaves it
+    unavailable and is said once."""
+    from . import fireball_charge as charge_mod
+    remote = httpd.remote
+    link = getattr(httpd.fire_ice, "flame_link", None)
+    if link is None:
+        return
+    try:
+        def _journal(who, screen, outcome, text, fault=False):
+            remote._journal(who or "system", screen or "engine",
+                            "fireball charge", outcome, text, fault=fault)
+        fs = remote.flame_status
+        tr = charge_mod.ChargeTracker(
+            remote.folder, flames_get=lambda: fs.view() if fs is not None
+            else None, journal=_journal, audit=getattr(remote, "audit", None),
+            # flamesafe.json's fireball slots, compared with the running
+            # flamesafe's on every status (round-7 review 6).
+            file_get=lambda: _fireball_file_slots(httpd))
+    except Exception as e:                       # noqa: BLE001
+        print(f"The fireball charge state could not be set up: "
+              f"{type(e).__name__}: {e}")
+        return
+    before = link.observer
+
+    def both(tc, values, ok, _before=before, _tr=tr):
+        if _before is not None:
+            try:
+                _before(tc, values, ok)
+            except Exception:                    # noqa: BLE001
+                pass
+        _tr.observe(tc, values, ok)
+    link.observer = both
+    remote.fireball_charge = tr
+    fb = getattr(remote, "fireball", None)
+    if fb is not None:
+        fb.on_controls = lambda on, who, screen: tr.note_manual(on, who,
+                                                                screen)
+        # A Fuel or Air press waits for the charge record's mark on disk
+        # (round-6 review 3), and goes out anyway if it cannot be saved.
+        fb.manual_gate = tr.manual_gate
+    _close_before = httpd.server_close
+
+    def _close_charge():
+        # The flame link (and everything closed before it) first, the
+        # charge record last: it sees every frame that goes out (review
+        # C-5: closed first, it missed the last frames).
+        try:
+            _close_before()
+        finally:
+            tr.close()
+    httpd.server_close = _close_charge
+
+
+def _attach_fireball_practice(httpd):
+    """Fireball practice (fireball_practice.py, design rev 5): the flame
+    link's sent_observer (the timing record), the scheduler's Resume and
+    tonight-edit vetoes and the show runner's start refusal (each one
+    attribute read). It never sends; a failure leaves it unavailable and
+    is said once."""
+    from . import fireball_practice as fp_mod
+    remote = httpd.remote
+    link = getattr(httpd.fire_ice, "flame_link", None)
+    if link is None or getattr(remote, "fireball_cues", None) is None:
+        return
+    try:
+        def _journal(text, outcome="done", who="", screen="", fault=False):
+            remote._journal(who or "system", screen or "engine",
+                            "fireball practice", outcome, text, fault=fault)
+        pr = fp_mod.Practice(remote, link_get=lambda: link, journal=_journal)
+    except Exception as e:                       # noqa: BLE001
+        print(f"Fireball practice could not be set up: "
+              f"{type(e).__name__}: {e}")
+        return
+    link.sent_observer = pr.on_sent
+    svc = getattr(remote, "schedule", None)
+    if svc is not None:
+        svc.resume_veto = pr.refusal
+        svc.edit_veto = pr.refusal
+        svc.deck_event_hook = pr.deck_event
+        perf = getattr(svc, "performer", None)
+        if perf is not None:
+            perf.practice_refusal = pr.refusal
+    remote.fireball_practice = pr
+    _close_before = httpd.server_close
+
+    def _close_practice():
+        try:
+            _close_before()
+        finally:
+            pr.close()
+    httpd.server_close = _close_practice
+
+
 def _attach_cleaning(httpd):
     """Wave flamer cleaning (cleaning.py, the Shutdown page): flamesafe's
     wave flamer group, the engine's hold to arm and disarm, the Startup
@@ -2328,6 +2642,19 @@ def _attach_cleaning(httpd):
             _close_before()
     httpd.server_close = _close_cleaning
 
+
+
+def _note_schedule_rewritten(schedule, config_watch):
+    """The scheduler just rewrote the schedule file while it started (the
+    late limit 15 s to 2 minutes): what is on disk is its own copy, not a
+    change to restart for. Never raises."""
+    if config_watch is None or \
+            not getattr(schedule, "legacy_grace_migrated", False):
+        return
+    try:
+        config_watch.refresh(schedule.path)
+    except Exception:                            # noqa: BLE001
+        pass
 
 def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
           token=None, on_ready=None, schedule=None, announce=None,
@@ -2401,6 +2728,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         if isinstance(schedule, str):
             from . import schedule_service
             schedule = schedule_service.Service(schedule)
+        _note_schedule_rewritten(schedule, config_watch)
         if schedule.rule is not None:
             from . import clock as clock_mod
             show_path, derived, warning = \
@@ -2678,7 +3006,10 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             httpd_schedule, control, fire_ice, madmapper=httpd.madmapper,
             beyond=httpd.beyond, announce=httpd.announce,
             journal=_beyond_journal(httpd_schedule),
-            alert_pixels=httpd.remote.alert_pixels)
+            alert_pixels=httpd.remote.alert_pixels,
+            # Programming playback may light the lasers (Jeff, 2026-11-06):
+            # asked only when the show's own gate says no.
+            programming_lasers=httpd.remote.programming_lasers_refusal)
         httpd.conductor = wiring.conductor
         httpd.fire_ice = wiring
         # Every laser starts disarmed (Jeff, 2026-10-22): the blank and
@@ -2764,6 +3095,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                 logs_dir=os.path.join(httpd.remote.folder, "logs"),
                 laser_output=_laser_output,
                 laser_blockers=httpd.remote.laser_arm_blockers,
+                laser_enable_blockers=httpd.remote.laser_enable_blockers,
                 laser_blank=_laser_blank, night_state=_night_state,
                 audit=getattr(httpd.remote, "audit", None))
             httpd.remote.morning = httpd.morning
@@ -2791,13 +3123,22 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                   f"{type(e).__name__}: {e}")
     if fire_ice is not None and \
             getattr(httpd.fire_ice, "flame_link", None) is not None:
+        _attach_fireball_timeline(httpd)
         _attach_hazers(httpd)
+        _attach_pump(httpd)
     if httpd.morning is not None:
         _attach_fuel(httpd)
         if fire_ice is not None and \
                 getattr(httpd.fire_ice, "flame_link", None) is not None:
             _attach_fireball(httpd)
             _attach_cleaning(httpd)
+    if fire_ice is not None and \
+            getattr(httpd.fire_ice, "flame_link", None) is not None:
+        # After the fuel tracker (its observer is chained, never replaced)
+        # and the Fireball page (who pressed is told here).
+        _attach_fireball_charge(httpd)
+        # After the charge record and the fireball timeline it reads.
+        _attach_fireball_practice(httpd)
     if fire_ice is not None and \
             getattr(httpd.fire_ice, "flame_link", None) is not None and \
             getattr(fire_ice, "flame_controller", None):
@@ -2855,6 +3196,9 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         except Exception as e:                       # noqa: BLE001
             print(f"The MadMapper watch could not start: "
                   f"{type(e).__name__}: {e}")
+        # MadMapper's output (showwindows.py): wired whether or not the
+        # watch above started (review A of #176).
+        _attach_mm_output(httpd, fire_ice, _mm_cfg)
     if fire_ice is not None and fstatus is not None and \
             getattr(httpd.fire_ice, "flame_link", None) is not None:
         # flamesafe's status_mirror_port (PR #39): the remote page's copy of

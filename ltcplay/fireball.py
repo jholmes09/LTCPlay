@@ -22,14 +22,23 @@ imports flamesafe). Nothing here names a slot number.
 The path (nothing new reaches the rig)
 ======================================
 
-The values go out as the Startup page's purge frame on the engine's own
-flame link (FlameLink.purge_set, PURGE_HOLD_S), the same frame the
-Startup page's purge and, beside it, live flame programming
-(program_set) use. flamesafe stays the only program that writes the flame
-universe. It sends a fire value only for a group that is ARMED, and only
-an operator arms it, by the normal hold to arm (the rack screen's button
-or the Stream Deck's key). This page never arms anything and has no path
-to the arm link.
+The values go out on the engine's own flame link as the Fireball page's
+own frame (FlameLink.manual_set, MANUAL_HOLD_S; Jeff, 2026-10-30: "Andy
+may manually start any phase with toggle buttons at any time, including
+during a show"). The link carries it ONLY on the fireball group's fire
+slots (set_manual_slots, from build), whether or not a show is live, and
+on each of those slots sends the HIGHER of the show's own value (its FSEQ,
+or its fireball timeline: fireball_cues.py) and this page's, so neither
+can turn the other's channel off. flamesafe stays the only program that
+writes the flame universe. It sends a fire value only for a group that is
+ARMED, and only an operator arms it, by the normal hold to arm (the rack
+screen's button or the Stream Deck's key). This page never arms anything
+and has no path to the arm link.
+
+A charge pressed here while the tank is already charged is a top-off by
+that person, not a double charge (Jeff): the charge state
+(fireball_charge.py) counts it as one, and the timeline then skips its own
+charge of that tank for the rest of the show.
 
 The rules, each a refusal or a cut
 ==================================
@@ -39,12 +48,12 @@ The rules, each a refusal or a cut
     that is not: the frame carries zeros on every fireball slot until it
     is armed. So no value is ever up on the arm tick, and flamesafe's
     clean rising edge rule (every fire slot under 15) always holds.
-  - The page is unavailable while a show can send flame cues or another
-    source has the flame values: a scheduled show live or paused, a Hold,
-    an Abort standing, the show clock playing a cue, Run pressed, live
-    flame programming on, a purge selected
-    or firing on the Startup page, any screen in Arrange mode, the lock
-    state not trusted, the flame link not sending. Each says why.
+  - The page works during a show (a scheduled show playing, the show
+    clock playing a cue, Run pressed, Programming playback) and through a
+    Hold (Jeff, 2026-10-30: a Hold zeroes the show's own values, never the
+    page's). It is unavailable while: an Abort is standing, live flame programming is on, a purge is selected
+    or firing on the Startup page, any screen is in Arrange mode, the lock
+    state is not trusted, the flame link is not sending. Each says why.
   - The Startup page's purge rules: purge_arming on, and from the show
     network screen_arming too; the page's status under a second old; a
     machine locked out never fires (any fireball slot locked: nothing
@@ -62,8 +71,8 @@ The rules, each a refusal or a cut
     beat whatever this module does.
   - CUT, all to zero at once, on: the fireball group seen not armed (a
     disarm, a lockout, flamesafe holding it), flamesafe's status stale,
-    the flame link zeroed or disarmed (zero() and disarm_all() are Stop,
-    Hold, Abort, a show ending: the link's own counter says so), Abort
+    the flame link disarmed (disarm_all() is Stop and Abort: the link's
+    own disarm count says so; a Hold or a show ending does not), Abort
     (Morning.on_abort), any blocker above appearing, a refused beat, a
     stale heartbeat, the page leaving, hidden or closed, its status gone
     stale, sign out (the beat is refused), and All off from any screen.
@@ -95,6 +104,10 @@ MOMENTARY = tuple(k for k, _l, kind in CONTROLS if kind == "momentary")
 ON_VALUE = 255
 UNIVERSE_SIZE = 512
 BEAT_STALE_S = 0.25          # the same as flamelink.PURGE_HOLD_S
+# A Fuel or Air press held for the charge record's mark is dropped, with a
+# message, after this long (a hung disk): never sent late, never held for
+# ever (round-8 review 4).
+HOLD_CAP_S = 2.0
 STATUS_FRESH_S = 0.5         # flamesafe's status, as arm_stale_ms
 PAGE_FRESH_S = 1.0           # the page's own status (seen)
 WATCH_S = 0.05
@@ -178,6 +191,17 @@ class FireballPanel:
         self._ended = collections.OrderedDict()
         self.runs = 0
         self.last_cut = ""
+        # (on keys, who, screen): told what this page holds ON after each
+        # beat that went in, and set() on every cut, so the fireball's
+        # charge state (fireball_charge.py) can name who charged or topped
+        # off. Display and journal only: it never changes what is sent.
+        self.on_controls = None
+        # () -> "ok" or "wait": asked before a Fuel or Air press goes out
+        # (the charge record's write-ahead mark, round-6 review 3); and
+        # (token) called when a run ends, so the engine can forget what it
+        # kept for that sign-in (review 9).
+        self.manual_gate = None
+        self.on_end = None
         self._stop = threading.Event()
         self._thread = None
         self._threaded = threaded
@@ -196,19 +220,74 @@ class FireballPanel:
         except Exception:                                # noqa: BLE001
             pass
 
+    def _tell(self, on, who, screen):
+        tell = self.on_controls
+        if tell is not None:
+            try:
+                tell(set(on), who, screen)
+            except Exception:                            # noqa: BLE001
+                pass
+
     @property
     def available(self):
         return self.group is not None
 
     def _gen(self, link):
-        """The flame link's zero count: zero() and disarm_all() (Stop,
-        Hold, Abort, a show ending, every disarm through the link) bump
-        it. None when it cannot be read."""
+        """The flame link's disarm count (abort_id): every disarm_all()
+        (Stop, Abort) bumps it; a zero() (Hold, a show ending) does not.
+        None when it cannot be read."""
         try:
-            g = getattr(link, "_zero_gen")
+            # The disarm count (Stop, Abort): a Hold or a show's end does
+            # not end the page's channels (Jeff, 2026-10-30).
+            g = getattr(link, "abort_id")
             return g if isinstance(g, int) else None
         except Exception:                                # noqa: BLE001
             return None
+
+    @staticmethod
+    def _still(still):
+        """Why the run's sign-in may no longer hold a channel, or ""."""
+        if still is None:
+            return ""
+        try:
+            return str(still() or "")
+        except Exception:                                # noqa: BLE001
+            return "the sign-in could not be checked"
+
+    def cut_signed_out(self, why, token="", user="", device="",
+                       local=False, who="", screen=""):
+        """A sign-out that ended a session (round-5 review F5): the run is
+        cut if that sign-in started it (its token), or that user started it
+        on that screen, or, on the show machine itself (every sign-in made
+        there ended), it was started there. Another screen's run by
+        someone else is never cut. True when a run was cut."""
+        with self._lock:
+            r = self._run
+            hit = r is not None and (
+                (token and r.get("token") == token) or
+                (user and r.get("who") == user and r["owner"][0] == device)
+                or (local and r.get("local")))
+        if not hit:
+            return False
+        return self.cut(why, who=who, screen=screen)
+
+    @staticmethod
+    def _drops(link):
+        """The flame link's count of frames it could not send, or None."""
+        d = getattr(link, "manual_drops", None)
+        return d if isinstance(d, int) and not isinstance(d, bool) else None
+
+    def _link_why(self, link, r):
+        """Why the run `r` may not carry on, from the flame link: a
+        disarm_all() (Stop, Abort) since it started, or a frame that could
+        not be sent since (round-4 review, s95: a 300 ms outage, and
+        Andy's Fuel came back by itself when the link did). Else ""."""
+        if link is None or self._gen(link) != r["gen"]:
+            return ("the flame link was disarmed (Stop or a disarm through "
+                    "it)")
+        if self._drops(link) != r.get("drops"):
+            return "a frame to flamesafe could not be sent"
+        return ""
 
     def armed_state(self):
         """("armed" | "off" | "unknown", sentence) for the fireball group
@@ -278,12 +357,17 @@ class FireballPanel:
 
     # -- the routes ------------------------------------------------------------
     def beat(self, body, owner, seen_ok=True, may=(True, ""), who="",
-             screen=""):
+             screen="", token="", local=False, still=None):
         """One heartbeat from the page (every 100 ms while anything is on):
         (code, body). `owner` is (device, window); `may` (ok, why) is the
         purge arming switch for this surface. The body names its run (the
         page makes a new one for each press that starts from everything
-        off) and numbers its beats (seq)."""
+        off) and numbers its beats (seq). `token` and `local` are the
+        sign-in that pressed (its run is cut when that sign-in ends:
+        cut_signed_out); `still` () -> why that sign-in may no longer hold
+        a channel (signed out, demoted, removed, the users file unreadable)
+        or "": asked as a run starts and by the watcher (round-5
+        reviews)."""
         body = body if isinstance(body, dict) else {}
         on = controls_on(body)
         rid = body.get("run")
@@ -309,6 +393,11 @@ class FireballPanel:
             return 400, {"error": "A beat that turns something on has to "
                                   "name its run. Nothing was turned on.",
                          "cut": True}
+        # The zero count is read BEFORE the checks (review of #193, 5): a
+        # Stop or Abort that lands after them moves it, so the frame
+        # this beat would set is refused at the link (manual_set's gen).
+        link0 = self._link()
+        gen0 = self._gen(link0) if link0 is not None else None
         why = ""
         if not seen_ok:
             why = ("The page's status is more than 1 s old. Wait for it to "
@@ -350,14 +439,23 @@ class FireballPanel:
                 self._remember(owner, r["id"], None)
                 r = self._run = None
             if r is None:
-                gen = self._gen(link)
+                gen = gen0 if link is link0 else None
                 if gen is None:
                     return 409, {"error": "The flame link's state could not "
                                           "be read, so nothing turns on.",
                                  "cut": True}
+                # The sign-in checked again as the run starts (round-5
+                # review F6: a press that raced a sign-out started a run
+                # for up to 0.25 s).
+                gone = self._still(still)
+                if gone:
+                    return 409, {"error": f"Nothing was turned on: {gone}.",
+                                 "cut": True}
                 r = self._run = {"id": rid, "owner": owner, "on": set(),
                                  "beat": now, "gen": gen, "start": now,
-                                 "seq": seq}
+                                 "seq": seq, "drops": self._drops(link0),
+                                 "who": who, "token": token or "",
+                                 "local": bool(local), "still": still}
                 self._remember(owner, None, seq, make=True)
                 self.runs += 1
                 started = True
@@ -366,37 +464,84 @@ class FireballPanel:
                 # Overtaken by a later beat (separate connections): it says
                 # nothing about what is held now, and is not used.
                 return 200, {"ok": True, "run": r["id"], "overtaken": True,
-                             "on": [k for k in KEYS if k in r["on"]]}
+                             "on": [k for k in KEYS if k in r["on"]],
+                             "held": list(r.get("held", []))}
             else:
                 r["seq"] = seq
             before = set(r["on"])
             r["on"] = set(on)
             r["beat"] = now
         vals = self.frame(on)
+        waiting = []
+        capped = False
         with self._lock:
             if self._run is r and seq is not None and r["seq"] != seq:
                 # A later beat of this run went past this one while its
                 # frame was worked out (review of #149, P3-1): that one's
                 # frame stands, this one is not written.
                 return 200, {"ok": True, "run": r["id"], "overtaken": True,
-                             "on": [k for k in KEYS if k in r["on"]]}
+                             "on": [k for k in KEYS if k in r["on"]],
+                             "held": list(r.get("held", []))}
             if self._run is not r:
                 # A cut that landed while this beat was worked out wins:
                 # nothing is set.
                 lost = True
             else:
-                link.purge_set(vals)
-                # A zero() or disarm_all() (Stop, Hold, Abort) that landed
-                # before the frame went in: the count moved, and the frame
-                # comes straight out again. One that lands after it clears
-                # the frame itself.
-                lost = self._gen(link) != r["gen"]
+                # The charge state is told who holds what BEFORE the frame
+                # can go out (review of #193, 1): the link's sender may
+                # send it the moment it is set, and a charge it sees then
+                # must already be this person's (a top-off, never a
+                # double charge).
+                # A Fuel or Air press waits (a few frames) for the charge
+                # record's mark to reach the disk; it goes out anyway when
+                # the record cannot be saved (the record then marks both
+                # tanks NOT KNOWN itself): round-6 review 3.
+                held = set(on) & {"fuel", "air"}
+                if held and self.manual_gate is not None:
+                    try:
+                        if self.manual_gate() == "wait":
+                            vals = self.frame(set(on) - held)
+                            waiting = [k for k in KEYS if k in held]
+                    except Exception:                    # noqa: BLE001
+                        pass
+                r["held"] = list(waiting)
+                if waiting:
+                    if r.get("held_since") is None:
+                        r["held_since"] = now
+                    elif now - r["held_since"] > HOLD_CAP_S:
+                        capped = True
+                else:
+                    r["held_since"] = None
+                self._tell(on, who, screen)
+                # Refused by the link itself when a disarm_all() (Stop,
+                # Abort) has moved its disarm count since the run started
+                # (a zero(), a Hold or a show's end, does not: Jeff,
+                # 2026-10-30).
+                took = link.manual_set(vals, r["gen"], r["drops"]) \
+                    if r["drops"] is not None else \
+                    link.manual_set(vals, r["gen"])
+                # A disarm_all() that landed just after the frame went in,
+                # or a frame that could not be sent since the run started:
+                # the frame comes straight out again. One that lands later
+                # clears the frame itself.
+                lost = took is False or self._link_why(link, r)
+        if capped:
+            # The mark did not reach the disk in HOLD_CAP_S: the press is
+            # dropped (everything off, the safe direction), said, and
+            # nothing is sent late.
+            self.cut(f"the charge record did not answer in "
+                     f"{HOLD_CAP_S:g} s", who=who, screen=screen)
+            return 409, {"error": f"The charge record did not answer in "
+                                  f"{HOLD_CAP_S:g} s, so the Fuel or Air "
+                                  f"press was dropped, not sent late. "
+                                  f"Release and press again.", "cut": True}
         if lost:
             if self._run is r or self._run is None:
-                link.purge_clear()
+                link.manual_clear()
             if self._run is r:
-                self.cut("the flame link was zeroed (Stop, Hold, Abort or "
-                         "a disarm)", who=who, screen=screen)
+                self.cut(self._link_why(link, r) or
+                         "the flame link was disarmed (Stop or a disarm "
+                         "through it)", who=who, screen=screen)
             return 409, {"error": "Everything was turned off: "
                                   f"{self.last_cut or 'the run ended'}. "
                                   "Press again.", "cut": True}
@@ -412,8 +557,15 @@ class FireballPanel:
                        f"{', '.join(names)} ON"
                        f"{' (a new run)' if started else ''}.",
                        outcome="on", who=who, screen=screen)
-        return 200, {"ok": True, "run": r["id"],
-                     "on": [k for k in KEYS if k in on]}
+        out = {"ok": True, "run": r["id"],
+               "on": [k for k in KEYS if k in on]}
+        if waiting:
+            # Fuel or Air pressed, held for the few milliseconds the charge
+            # record needs for its mark. They are toggles: the page keeps
+            # beating while they are on, so the next beat sends them (a
+            # tap is not lost: round-7 review 9).
+            out["held"] = waiting
+        return 200, out
 
     def _remember(self, owner, rid, seq, make=False):
         """Note an ended run id and the highest beat number of `owner`.
@@ -458,7 +610,13 @@ class FireballPanel:
         link = self._link()
         if r is not None and link is not None:
             try:
-                link.purge_clear()
+                link.manual_clear()
+            except Exception:                            # noqa: BLE001
+                pass
+        self._tell(set(), who, screen)
+        if r is not None and self.on_end is not None:
+            try:
+                self.on_end(r.get("token") or "")
             except Exception:                            # noqa: BLE001
                 pass
         if r is not None:
@@ -476,8 +634,9 @@ class FireballPanel:
     # -- the watcher -----------------------------------------------------------
     def tick(self, now=None):
         """Every WATCH_S: a live run with no beat for BEAT_STALE_S, the
-        group not armed, flamesafe stale, the flame link zeroed or
-        disarmed, or any blocker is cut."""
+        group not armed, flamesafe stale, the flame link disarmed (Stop,
+        Abort) or unable to send a frame, or any blocker is cut. A Hold or
+        a show's end does not cut it (Jeff, 2026-10-30)."""
         now = self._clock() if now is None else now
         with self._lock:
             r = self._run
@@ -487,12 +646,8 @@ class FireballPanel:
         if now - r["beat"] > BEAT_STALE_S:
             why = f"no heartbeat for {BEAT_STALE_S:g} s"
         else:
-            link = self._link()
-            if link is None or self._gen(link) != r["gen"]:
-                why = "the flame link was zeroed (Stop, Hold, Abort or a "\
-                      "disarm)"
-            else:
-                why = self.refusal()
+            why = self._link_why(self._link(), r) or self.refusal() or \
+                self._still(r.get("still"))
         if why:
             with self._lock:
                 same = self._run is r
@@ -517,8 +672,11 @@ class FireballPanel:
             t.join(1.0)
         self.cut("the engine is stopping")
 
-    def on_abort(self, who="", screen=""):
-        self.cut(f"Abort pressed by {who or screen or 'someone'}", who=who,
+    def on_abort(self, who="", screen="", what="Abort"):
+        """An Abort or a Stop (Morning.on_abort, Morning.stop_hooks): every
+        fireball channel cut at once, not when the watcher next sees the
+        flame link's zero."""
+        self.cut(f"{what} pressed by {who or screen or 'someone'}", who=who,
                  screen=screen)
 
     # -- views -----------------------------------------------------------------
@@ -564,7 +722,30 @@ class FireballPanel:
 
 # ------------------------------------------------------------ the engine --
 
-def engine_blockers(remote, link=None, cleaning=True):
+def _during_show_blockers(remote, m):
+    """The Fireball page's own rules during a show (Jeff, 2026-10-30): a
+    show playing, the show clock playing, Run pressed and Programming
+    playback and a Hold do NOT hold it off; live flame programming, and
+    the Startup page's settings or lock state not trusted do. "" or the
+    sentence. May raise (the caller fails closed)."""
+    # A Hold (the schedule HOLD or PAUSED, the conductor's held look) does
+    # NOT hold the page off (Jeff, 2026-10-30): it zeroes the show's own
+    # values only.
+    lf = getattr(remote, "live_flame", None)
+    if lf is not None and lf.on:
+        return ("live flame programming is on; nothing fires from this "
+                "page until it is off.")
+    if m.config_error:
+        return (f"ltcplay_morning.json could not be read "
+                f"({m.config_error}), so nothing fires from this page "
+                f"until it is fixed.")
+    why = m.lock_problem()
+    if why:
+        return f"{why}; nothing fires from this page until then."
+    return ""
+
+
+def engine_blockers(remote, link=None, cleaning=True, during_show=False):
     """Why the engine forbids the Fireball page's controls right now, in a
     sentence, or "": the Startup page's purge rules (a show live or paused,
     an Abort standing, the show clock playing, live flame programming
@@ -572,7 +753,10 @@ def engine_blockers(remote, link=None, cleaning=True):
     trusted, flamesafe not holding the engine's locks, Arrange mode, a
     purge selected or firing), a Hold, Run pressed, the flame link not
     sending, and (with `cleaning`) the wave flamer cleaning running
-    (cleaning.py, which asks the same rules for itself). Fails closed."""
+    (cleaning.py, which asks the same rules for itself). With
+    `during_show` (the Fireball page itself, Jeff 2026-10-30) a show
+    playing and Run pressed are allowed: _during_show_blockers. The
+    cleaning never passes it. Fails closed."""
     try:
         m = remote.morning
         if m is None:
@@ -581,24 +765,30 @@ def engine_blockers(remote, link=None, cleaning=True):
         if cl is not None and cl.active():
             return ("the wave flamer cleaning is running on the Shutdown "
                     "page; stop it first.")
-        why = remote.morning_live_refusal() or m._live_or_broken()
-        if why:
-            return why
-        svc = remote.schedule
-        st = getattr(getattr(svc, "machine", None), "state", None)
-        if st == "HOLD":
-            return "a Hold is standing; Resume or Reset first."
-        s = getattr(remote.control, "session", None)
-        if s is not None and getattr(s, "running", False):
-            return ("Run is pressed (a show file is running), so the show "
-                    "file owns the flame channels; press Stop first.")
-        try:
-            cs = remote.control.state() or {}
-        except Exception:                                # noqa: BLE001
-            cs = {}
-        if cs.get("running") or cs.get("starting"):
-            return ("Run is pressed (a show file is running), so the show "
-                    "file owns the flame channels; press Stop first.")
+        if during_show:
+            why = _during_show_blockers(remote, m)
+            if why:
+                return why
+        else:
+            why = remote.morning_live_refusal() or m._live_or_broken()
+            if why:
+                return why
+            svc = remote.schedule
+            st = getattr(getattr(svc, "machine", None), "state", None)
+            if st == "HOLD":
+                return "a Hold is standing; Resume first."
+            s = getattr(remote.control, "session", None)
+            if s is not None and getattr(s, "running", False):
+                return ("Run is pressed (a show file is running), so the "
+                        "show file owns the flame channels; press Stop "
+                        "first.")
+            try:
+                cs = remote.control.state() or {}
+            except Exception:                            # noqa: BLE001
+                cs = {}
+            if cs.get("running") or cs.get("starting"):
+                return ("Run is pressed (a show file is running), so the show "
+                        "file owns the flame channels; press Stop first.")
         why = m._locks_confirmed()
         if why:
             return why
@@ -639,9 +829,16 @@ def build(remote, morning, link, journal=None, threaded=True,
         fs = getattr(remote, "flame_status", None)
         return fs.view() if fs is not None else None
 
+    if group is not None and link is not None:
+        # The only slots the page's frame may carry on the flame link.
+        try:
+            link.set_manual_slots(group["fire"])
+        except Exception:                                # noqa: BLE001
+            pass
     panel = FireballPanel(group, problem, link_get=lambda: link,
                           flames_get=flames,
-                          blockers=lambda: engine_blockers(remote, link),
+                          blockers=lambda: engine_blockers(
+                              remote, link, during_show=True),
                           locked_slots=locked, journal=journal,
                           clock=clock, threaded=threaded)
     # The Startup page's purge waits while this has anything on (one
@@ -650,6 +847,9 @@ def build(remote, morning, link, journal=None, threaded=True,
         "the Fireball page has a channel on; turn it off there first."
         if panel.active() else "")
     morning.abort_hooks.append(panel.on_abort)
+    end = getattr(remote, "fireball_run_ended", None)
+    if end is not None:
+        panel.on_end = end
     return panel
 
 
@@ -691,6 +891,18 @@ def route_post(panel, remote, name, body, ctx):
                           "which is off from here (purge_arming, and from "
                           "the show network screen_arming, in "
                           "ltcplay_remote.json).")
+        token = getattr(ctx, "token", "") or ""
+        still = None
+        check = getattr(remote, "fireball_signed_out", None)
+        if check is not None and getattr(remote, "users_active",
+                                         lambda: False)():
+            # The fuel pump's rule (round-5 review B 2): signed out,
+            # demoted, removed, a password reset or the sign-out after the
+            # last show all end the sign-in, or its right to arm.
+            def still():
+                return check(token, who)
         return panel.beat(body, _owner(ctx), seen_ok=seen_ok, may=may,
-                          who=who, screen=screen)
+                          who=who, screen=screen, token=token,
+                          local=bool(getattr(ctx, "local", False)),
+                          still=still)
     return 404, {"error": "no such thing here"}

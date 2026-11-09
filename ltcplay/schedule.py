@@ -50,17 +50,18 @@ Whatever drives this engine and carries out its effects must:
    that frozen frame so receivers hold instead of timing out), then
    FADE_MUSIC_OUT. Resume: RESUME_SHOW carries on from the frozen frame,
    FADE_MUSIC_IN, and UNBLANK_LASERS only once timecode is moving again.
-   Abort (and a failed start, and a restart during a show): ZERO_FLAME_CUES
+   A Stop (and a failed start, and a restart during a show): ZERO_FLAME_CUES
    and BLANK_LASERS at once; then FADE_MUSIC_OUT, FADE_VIDEO_OUT and
    FADE_PIXELS together over their length, the whole show fading to black;
    then STOP_CONDUCTOR once the fade is done. Nothing follows: the rig stays
    dark until an operator acts or the next show starts.
-   Lasers blanked by a pause or an abort stay blanked until a RESUME_SHOW
+   Lasers blanked by a pause or a Stop stay blanked until a RESUME_SHOW
    or the next START_SHOW. The engine itself never arms or disarms
-   anything; on an operator's Abort every flame group is disarmed at once
-   as well (Jeff, 2026-09-27), and on a failed start too (Jeff,
-   2026-10-03), and that is the show conductor's job (conductor.py), not an
-   effect listed here. A show cut by a restart is not disarmed by it.
+   anything; on an operator's Stop every flame group is disarmed at once
+   as well (Jeff, 2026-09-27, for the Abort that Stop replaced), and that
+   is the engine's and the show conductor's job (remote.py, conductor.py),
+   not an effect listed here. A failed start leaves every group as it is
+   (Jeff, 2026-10-12). A show cut by a restart is not disarmed by it.
 3. Never perform anything for a refused Outcome (Outcome.refused is set).
 4. Send SHOW_CONFIRMED as soon as timecode is seen advancing after a
    START_SHOW. Until then the show counts as not yet started.
@@ -79,8 +80,9 @@ Whatever drives this engine and carries out its effects must:
    a second from the OS wall clock with a zone attached. The late rule
    counts whole seconds, so a tick has to land inside every second.
 10. Send operator events only with `who` and `screen` filled in, and send
-    Abort and End night with confirmed=True only after the operator has
-    answered the confirm question from ACTIONS.
+    Stop (STOP_SHOW) and End night with confirmed=True only after the
+    operator has answered (Stop's double tap; End night's confirm question
+    from ACTIONS).
 11. Never read flame arm state for the scheduler's sake, and never set the
     OS clock.
 """
@@ -172,16 +174,19 @@ CONFIRM_WINDOW_S = 10
 # _in_preshow_lead, used by _boot_done, _tick and _resume.
 PRESHOW_LEAD_S = 30 * 60
 
-# The nightly reset (Jeff, 2026-10-03). A show night runs until this time,
-# local, on the next calendar day, always. At it last night closes: a show
-# still delayed is MISSED, out loud, with a fault line naming it
-# (close_at_reset). A show scheduled at or after it belongs to that calendar
-# day's night (night_of), so no night's first show may be before it
-# (_night). Jeff's reason: during operations nothing happens at 2 AM, and
+# The nightly reset (Jeff, 2026-10-03). Until 2026-10-30 a show night ran
+# until this time, local, on the next calendar day, always, and no night's
+# first show could be before it. Since Jeff's "Don't restrict the schedule
+# in any way" (2026-10-30) it is only where a night hands over when nothing
+# of it is left to run: night_reset with the rule moves the hand over later
+# while a show of the night still has to run, and earlier when the next
+# night's first show is earlier. A show still delayed at the hand over is
+# MISSED, out loud (close_at_reset). Jeff's reason for 2 AM: during
+# operations nothing happens at 2 AM, and
 # media shoots sometimes run at 4 or 5 AM, so 2 AM is the safe gap. It
 # replaced the 2026-10-02 default, where a night closed only when the next
-# night's preshow began (30 minutes before its first show). The Abort latch
-# is not the night's: it stays until Reset, whatever the night.
+# night's preshow began (30 minutes before its first show). A Stop's Hold
+# is not the night's: it stays until Resume, whatever the night.
 NIGHT_RESET = time(2, 0)
 
 
@@ -208,22 +213,20 @@ RESUME = "RESUME"
 SKIP_NEXT = "SKIP_NEXT"
 DELAY_NEXT = "DELAY_NEXT"
 DELAY_REST = "DELAY_REST"
-ABORT = "ABORT"
 END_NIGHT = "END_NIGHT"
-# The Stream Deck's Stop held during a scheduled show (Jeff, 2026-10-26:
-# Stop is a complete halt of everything, the show ends): the show is cut
-# short and faded to dark like an Abort, but NOTHING is latched, so no
-# Reset is needed; Run brings the rig back. The engine disarms every flame
-# group and laser itself before it sends this.
+# Stop during a scheduled show (Jeff, 2026-10-26: Stop is a complete halt
+# of everything, the show ends): the show is cut short and faded to dark,
+# NOTHING is latched, and the schedule goes on a Stop's Hold until Resume
+# (2026-10-30). The engine disarms every flame group and laser itself
+# before it sends this. There is no Abort and no Reset any more (Jeff,
+# 2026-10-30): Stop does everything Abort did, and Resume ends a Hold.
 STOP_SHOW = "STOP_SHOW"
-# Reset pressed while the schedule is on Hold (Jeff's field report,
-# 2026-10-28: "I play the show, press Hold, and Reset does nothing"). The
-# service sends the scheduler's own events with this as their detail: a
-# paused show ends (STOP_SHOW, faded to dark, nothing latched) and a Hold
-# between shows ends (RESUME); the fault flag is cleared (CLEAR_FAULT).
-# Reset never starts or continues a show itself: a delayed show still
-# waits for Start now. Only the journal's words differ.
-RESET_DETAIL = "reset"
+# A Hold that a Stop put on (Jeff, 2026-10-30): the Hold's detail starts
+# with one of these. Such a Hold is marked (Machine.stop_hold): only Resume
+# ends it, and it carries over the nightly reset. "an older version's
+# Abort" is the upgrade's: a saved Abort latch read back as a Stop's Hold.
+STOP_HOLD_DETAILS = ("pressed Stop", "kept the Hold of a Stop",
+                     "kept the Hold of an Abort")
 EDIT_MOVE = "EDIT_MOVE"
 EDIT_ADD = "EDIT_ADD"
 EDIT_REMOVE = "EDIT_REMOVE"
@@ -246,7 +249,6 @@ EVENT_ACTORS = {
     SKIP_NEXT: ("operator",),
     DELAY_NEXT: ("operator",),
     DELAY_REST: ("operator",),
-    ABORT: ("operator",),
     END_NIGHT: ("operator",),
     STOP_SHOW: ("operator",),
     EDIT_MOVE: ("operator",),
@@ -256,10 +258,17 @@ EVENT_ACTORS = {
 EVENTS = tuple(EVENT_ACTORS)
 DELAY_CHOICES = (5, 10)
 
-# The late rule's ceiling. A bigger number in the rule file is refused with a
-# sentence rather than quietly clamped: a silent clamp is a setting that says
-# one thing and does another.
-MAX_LATE_GRACE_S = 15
+# The late rule (Jeff, 2026-11-01): a show is MISSED only when it is more
+# than 2 minutes (120 s) late; within that it still starts, late. The setting
+# late_grace_s keeps its name; when the rule file does not give one, this is
+# the value. It was 15 s before (and 0 when the file left it out).
+DEFAULT_LATE_GRACE_S = 120
+# The late rule's ceiling (5 minutes). A bigger number in the rule file is
+# refused with a sentence rather than quietly clamped: a silent clamp is a
+# setting that says one thing and does another. A grace longer than the gap
+# between shows lets a late show run into the next one's slot; the next show
+# then waits for it and may be late itself (the save warning says so).
+MAX_LATE_GRACE_S = 300
 
 # Who may press things, until the operators file says otherwise.
 DEFAULT_OPERATORS = ("Andy", "Jeff")
@@ -307,9 +316,12 @@ class Rule:
     exceptions: dict         # date -> NightRule, or None for a closed night
     show_len_s: int
     guard_s: int
-    late_grace_s: int = 0
+    late_grace_s: int = DEFAULT_LATE_GRACE_S
     version: int = 0
     tz: object = field(default=None, compare=False, repr=False)
+    # What parse_rule had to change to use the file at all (a value capped,
+    # a weekday written twice), said first by rule_warnings.
+    notes: tuple = field(default=(), compare=False, repr=False)
 
 
 def zone(name):
@@ -365,7 +377,32 @@ def _date(text, name):
                          f"not {text!r}.")
 
 
-def _night(doc, where, show_len_s, guard_s, problems):
+# Weekdays as an operator may write them: "thu", "Thu", "Thursday".
+WEEKDAY_NAMES = {w: w for w in WEEKDAYS}
+WEEKDAY_NAMES.update({full: w for w, full in zip(WEEKDAYS, (
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday"))})
+
+
+# The longest a show, a guard or the gap between shows can be (review of
+# PR #196: a show length of 1e14 s loaded, then every tick overflowed).
+# Longer is capped to this, and said; it is not refused.
+MAX_SPAN_S = 24 * 3600
+# The season's furthest dates (a season from year 1 to 9999 ran off the
+# calendar when the night before or after it was looked at).
+SEASON_MIN = date(1971, 1, 1)
+SEASON_MAX = date(9998, 12, 30)
+
+
+def _capped(v, most, name, notes):
+    if v is not None and v > most:
+        notes.append(f"{name} is {v}, more than {most}; {most} is used. "
+                     f"Saved as it is.")
+        return most
+    return v
+
+
+def _night(doc, where, show_len_s, guard_s, problems, notes=None):
     if not isinstance(doc, dict):
         problems.append(f"{where} has to be a block with first_start, "
                         f"interval_min and last_end.")
@@ -390,39 +427,12 @@ def _night(doc, where, show_len_s, guard_s, problems):
     if why:
         problems.append(why)
         return None
-    if last <= first:
-        problems.append(f"{where}: last_end {_hm(last)} is not after "
-                        f"first_start {_hm(first)}. A night cannot run past "
-                        f"midnight.")
-        return None
-    if first < NIGHT_RESET:
-        # Every night closes at the nightly reset, and from it on the shows
-        # belong to that day's night, so a show before it could never run
-        # (Jeff, 2026-10-03).
-        problems.append(f"{where}: first_start {_hm(first)} is before "
-                        f"{_hm(NIGHT_RESET)}, the {reset_words()} nightly "
-                        f"reset. A night's shows run from {_hm(NIGHT_RESET)} "
-                        f"to midnight, so a show before {reset_words()} "
-                        f"could never run.")
-        return None
-    if show_len_s is None or guard_s is None:
-        return NightRule(first, interval, last)
-    need = show_len_s + guard_s
-    if interval * 60 < need:
-        problems.append(
-            f"{where}: interval_min is {interval}, but a show takes "
-            f"{show_len_s} s and the guard after it is {guard_s} s, so shows "
-            f"would run into each other. The interval has to be at least "
-            f"{-(-need // 60)} minutes.")
-        return None
-    span = (datetime.combine(date(2000, 1, 3), last)
-            - datetime.combine(date(2000, 1, 3), first)).total_seconds()
-    if span < need:
-        problems.append(
-            f"{where}: from {_hm(first)} to {_hm(last)} there is not room for "
-            f"one show, which needs {show_len_s} s plus the {guard_s} s guard "
-            f"before last_end.")
-        return None
+    interval = _capped(interval, MAX_SPAN_S // 60, f"{where} interval_min",
+                       [] if notes is None else notes)
+    # Jeff, 2026-10-30: "Don't restrict the schedule in any way." A night
+    # may start at any time of day and run past midnight (last_end at or
+    # before first_start is on the next day); spacing that does not fit is
+    # warned about (rule_warnings), never refused.
     return NightRule(first, interval, last)
 
 
@@ -461,16 +471,19 @@ def parse_rule(doc, where=""):
             problems.extend(e.problems)
 
     show_len_s = guard_s = None
-    grace = 0
+    grace = DEFAULT_LATE_GRACE_S
     version = 0
+    notes = []
     if "show_len_s" in doc:
         show_len_s, why = _whole(doc["show_len_s"], "show_len_s", 1)
         if why:
             problems.append(why)
+        show_len_s = _capped(show_len_s, MAX_SPAN_S, "show_len_s", notes)
     if "guard_s" in doc:
         guard_s, why = _whole(doc["guard_s"], "guard_s", 0)
         if why:
             problems.append(why)
+        guard_s = _capped(guard_s, MAX_SPAN_S, "guard_s", notes)
     if "late_grace_s" in doc:
         grace, why = _whole(doc["late_grace_s"], "late_grace_s", 0,
                             MAX_LATE_GRACE_S)
@@ -481,7 +494,7 @@ def parse_rule(doc, where=""):
                 why += (" A show that far behind its time does not start by "
                         "itself; the operator can press Start now.")
             problems.append(why)
-            grace = 0
+            grace = DEFAULT_LATE_GRACE_S
     if "version" in doc:
         version, why = _whole(doc["version"], "version", 0, unit="saves")
         if why:
@@ -507,9 +520,16 @@ def parse_rule(doc, where=""):
             except ValueError as e:
                 problems.append(str(e))
                 first_date = last_date = None
-            if first_date and last_date and last_date < first_date:
-                problems.append(f"The season ends on {last_date} before it "
-                                f"starts on {first_date}.")
+            # A season that ends before it starts is warned about
+            # (rule_warnings): only the date exceptions then have shows.
+            if first_date and first_date < SEASON_MIN:
+                notes.append(f"The season starts on {first_date}; "
+                             f"{SEASON_MIN} is used. Saved as it is.")
+                first_date = SEASON_MIN
+            if last_date and last_date > SEASON_MAX:
+                notes.append(f"The season ends on {last_date}; {SEASON_MAX} "
+                             f"is used. Saved as it is.")
+                last_date = SEASON_MAX
 
     weekly = {}
     if "weekly" in doc:
@@ -517,13 +537,19 @@ def parse_rule(doc, where=""):
             problems.append("weekly has to be a block of weekdays, such as "
                             "\"thu\", \"fri\" and \"sat\".")
         else:
-            for k, v in doc["weekly"].items():
+            for k0, v in doc["weekly"].items():
+                k = WEEKDAY_NAMES.get(str(k0).strip().lower(), k0)
                 if k not in WEEKDAYS:
                     problems.append(f"weekly: {k!r} is not a weekday. Use "
                                     f"{', '.join(WEEKDAYS)}.")
                     continue
-                n = _night(v, f"weekly {k}", show_len_s, guard_s, problems)
+                n = _night(v, f"weekly {k}", show_len_s, guard_s, problems,
+                           notes)
                 if n is not None:
+                    if k in weekly:
+                        # Review of PR #196: {"thu": A, "Thursday": B}.
+                        notes.append(f"weekly: {k0!r} is {k} again; the "
+                                     f"later one is used. Saved as it is.")
                     weekly[k] = n
 
     exceptions = {}
@@ -537,15 +563,12 @@ def parse_rule(doc, where=""):
         except ValueError as e:
             problems.append(str(e))
             continue
-        if first_date and last_date and not (first_date <= d <= last_date):
-            problems.append(f"The exception for {d} is outside the season "
-                            f"({first_date} to {last_date}), so it would never "
-                            f"be used.")
-            continue
+        # An exception outside the season is used anyway: its date runs its
+        # own hours (rule_warnings says so).
         if v is None:
             exceptions[d] = None
             continue
-        n = _night(v, f"exception {d}", show_len_s, guard_s, problems)
+        n = _night(v, f"exception {d}", show_len_s, guard_s, problems, notes)
         if n is not None:
             exceptions[d] = n
 
@@ -554,7 +577,7 @@ def parse_rule(doc, where=""):
     return Rule(timezone=doc["timezone"], first_date=first_date,
                 last_date=last_date, weekly=weekly, exceptions=exceptions,
                 show_len_s=show_len_s, guard_s=guard_s, late_grace_s=grace,
-                version=version, tz=tz)
+                version=version, tz=tz, notes=tuple(notes))
 
 
 def rule_to_doc(rule):
@@ -602,13 +625,26 @@ def _wall(d, t, tz):
         .astimezone(tz)
 
 
-def expand(rule, d):
+def night_window(n, d, tz):
+    """(first_start, last_end) of one night rule on date `d`, in UTC. A
+    last_end at or before first_start is on the next day: the night runs
+    past midnight (Jeff, 2026-10-30). Pure."""
+    start = datetime.combine(d, n.first_start, tzinfo=tz).astimezone(
+        timezone.utc)
+    on = d + timedelta(days=1) if n.last_end <= n.first_start else d
+    end = datetime.combine(on, n.last_end, tzinfo=tz).astimezone(
+        timezone.utc)
+    return start, end
+
+
+def expand(rule, d, count_only=False):
     """The shows for one date. No I/O; the answer depends only on the rule and
     the date. Slots are first_start, then every interval_min in real elapsed
     time, and one is kept only if start + show_len_s + guard_s <= last_end,
     because last_end is when the last show must be finished."""
     wd = WEEKDAYS[d.weekday()]
-    if not (rule.first_date <= d <= rule.last_date):
+    if d not in rule.exceptions and \
+            not (rule.first_date <= d <= rule.last_date):
         return Plan(d, "off-season", None, (),
                     f"{d} is outside the season, so there are no shows.")
     if d in rule.exceptions:
@@ -624,11 +660,16 @@ def expand(rule, d):
         return Plan(d, "dark", None, (),
                     f"{d} is a {wd}, which is a dark night.")
     tz = rule.tz or zone(rule.timezone)
-    start = datetime.combine(d, n.first_start, tzinfo=tz).astimezone(
-        timezone.utc)
-    end = datetime.combine(d, n.last_end, tzinfo=tz).astimezone(timezone.utc)
+    start, end = night_window(n, d, tz)
     step = timedelta(minutes=n.interval_min)
     need = timedelta(seconds=rule.show_len_s + rule.guard_s)
+    if count_only:
+        # Only the first and last start, without the list (_night_span, on
+        # every tick and across a long season: review of PR #196).
+        if start + need > end:
+            return None
+        k = (end - need - start) // step
+        return start, start + k * step
     out = []
     s = start
     while s + need <= end:
@@ -643,6 +684,182 @@ def expand_season(rule):
     while d <= rule.last_date:
         out.append(expand(rule, d))
         d += timedelta(days=1)
+    return out
+
+
+def _night_span(rule, d):
+    """(first show start, end of the last show and its guard) of the
+    night of `d` from the rule, UTC; (None, None) with no shows. Pure."""
+    plan = expand(rule, d, count_only=True)
+    if plan is None or isinstance(plan, Plan):
+        return None, None
+    first, last = plan
+    return first, last + timedelta(seconds=rule.show_len_s + rule.guard_s)
+
+
+# How many nights of the season rule_warnings looks at for two nights
+# running into each other.
+SCAN_NIGHTS = 400
+
+
+# How many date exceptions rule_warnings looks at (review B of PR #196:
+# 100000 exceptions took over 20 s).
+SCAN_EXCEPTIONS = 2000
+
+
+def rule_warnings(rule, most=6):
+    """Sentences for a schedule that is saved and used as it is, but has
+    something an operator should know (Jeff, 2026-10-30: "Don't restrict
+    the schedule in any way": what was refused is now said here). Never
+    raises: a failure is itself a sentence (review B of PR #196: it was
+    swallowed and the save said nothing). Pure."""
+    try:
+        return _rule_warnings(rule, most)
+    except Exception as e:                       # noqa: BLE001
+        return [f"The schedule could not be checked for warnings "
+                f"({type(e).__name__}: {e}). It is saved and used as it "
+                f"is; check its numbers."]
+
+
+def _rule_warnings(rule, most):
+    out = list(rule.notes)
+    exc_all = sorted(rule.exceptions.items())
+    exc = dict(exc_all[:SCAN_EXCEPTIONS])
+    if len(exc_all) > SCAN_EXCEPTIONS:
+        out.append(f"The schedule has {len(exc_all)} date exceptions; the "
+                   f"first {SCAN_EXCEPTIONS} were checked for warnings. All "
+                   f"of them are used.")
+    need = rule.show_len_s + rule.guard_s
+    nights = [(f"weekly {k}", rule.weekly[k]) for k in WEEKDAYS
+              if k in rule.weekly]
+    nights += [(f"exception {d}", n) for d, n in sorted(exc.items())
+               if n is not None]
+    for where, n in nights:
+        if n.interval_min * 60 < need:
+            out.append(
+                f"{where}: shows are {n.interval_min} minutes apart, but a "
+                f"show takes {rule.show_len_s} s and the guard after it is "
+                f"{rule.guard_s} s, so they overlap: a show whose time comes "
+                f"while the one before it is still running waits, and is "
+                f"missed once it is more than {rule.late_grace_s} s late; "
+                f"one inside the guard starts as soon as the guard is over "
+                f"if that is within {rule.late_grace_s} s of its time, so "
+                f"lateness can add up from show to show. Saved as it is.")
+        start, end = night_window(n, date(2000, 1, 3), timezone.utc)
+        if (end - start).total_seconds() < need:
+            out.append(
+                f"{where}: from {_hm(n.first_start)} to {_hm(n.last_end)} "
+                f"there is not room for one show ({rule.show_len_s} s plus "
+                f"the {rule.guard_s} s guard), so that night has no shows. "
+                f"Saved as it is.")
+    if rule.last_date < rule.first_date:
+        out.append(f"The season ends on {rule.last_date} before it starts "
+                   f"on {rule.first_date}, so only the date exceptions have "
+                   f"shows. Saved as it is.")
+    for d, n in sorted(exc.items()):
+        if not (rule.first_date <= d <= rule.last_date):
+            out.append(f"The exception for {d} is outside the season "
+                       f"({rule.first_date} to {rule.last_date}). "
+                       + ("It runs its own hours on that date anyway."
+                          if n is not None else
+                          "That date has no shows anyway."))
+    # One night's last show running into the next night's first show:
+    # every night next to an exception, and the first SCAN_NIGHTS of the
+    # season, each weekday said once (review of PR #196: a season to 2099
+    # took 8 s, every save).
+    tz = rule.tz or zone(rule.timezone)
+    names = dict(zip(WEEKDAYS, ("Monday", "Tuesday", "Wednesday",
+                                "Thursday", "Friday", "Saturday", "Sunday")))
+    one = timedelta(days=1)
+    dates = set()
+    for e in exc:
+        dates.update((e - one, e))
+    lo, hi = sorted((rule.first_date, rule.last_date))
+    d, k = lo - one, 0
+    while d <= hi and k < SCAN_NIGHTS:
+        dates.add(d)
+        d += one
+        k += 1
+    scanned_all = d > hi
+    seen, clash = set(), []
+    need = timedelta(seconds=rule.show_len_s + rule.guard_s)
+    for d in sorted(dates):
+        plan = expand(rule, d)
+        first = _next_night_first(rule, d)
+        if not plan.starts or first is None:
+            continue
+        starts = [_utc(x) for x in plan.starts]
+        # What really happens (night_reset): a show at or after the next
+        # night's first show is MISSED when tonight hands over before it;
+        # a show that starts before it but ends, with its guard, after it
+        # makes that first show late, and MISSED if the lateness passes its
+        # grace.
+        after = [x for x in starts if x >= first]
+        grace_td = timedelta(seconds=rule.late_grace_s)
+        inside = [x for x in starts if x < first and x + need > first]
+        # A show that starts as late as its grace allows ends that much
+        # later (Jeff, 2026-11-01: up to 120 s late still starts).
+        maybe = [x for x in starts if x < first and x + need <= first and
+                 x + need + grace_td > first]
+        if not after and not inside and not maybe:
+            continue
+        special = d in rule.exceptions or d + one in rule.exceptions
+        key = d if special else WEEKDAYS[d.weekday()]
+        if key in seen:
+            continue
+        seen.add(key)
+        who = (f"The night of {d}" if special else
+               f"A {names[WEEKDAYS[d.weekday()]]} night")
+
+        def at_(x):
+            return _hm(x.astimezone(tz).timetz())
+        f_at = at_(first)
+        # "Runs on time" only when no earlier show of tonight overruns it.
+        on_time = ("" if inside else ", and the next night's first show "
+                                     "runs on time")
+        if after:
+            many = len(after) > 1
+            clash.append(
+                f"{who} has {'shows' if many else 'a show'} at "
+                f"{at_(after[0])}" +
+                (f" to {at_(after[-1])}" if many else "") +
+                f", at or after the next night's first show at {f_at}: "
+                f"tonight hands over before {'them' if many else 'it'}, so "
+                f"{'they' if many else 'it'} will be MISSED{on_time}. "
+                f"Saved as it is; nothing is refused.")
+        if inside:
+            late = int((inside[-1] + need - first) // ONE_SECOND)
+            grace = rule.late_grace_s
+            if late > grace:
+                fate = (f"so that first show will be MISSED (late by "
+                        f"{fmt_span(late)}, more than its {grace} s grace)")
+            else:
+                fate = (f"so that first show starts late by "
+                        f"{fmt_span(late)}, within its {grace} s grace, "
+                        f"and is MISSED only if something else delays it "
+                        f"further")
+            clash.append(
+                f"{who} has a show at {at_(inside[-1])} that ends, with its "
+                f"guard, {fmt_span(late)} after the next night's first show "
+                f"at {f_at}: the next night begins only once this one's "
+                f"guard is over, {fate}. Saved as it is; nothing is "
+                f"refused.")
+        if maybe and not inside:
+            x = maybe[-1]
+            worst = int((x + need + grace_td - first) // ONE_SECOND)
+            clash.append(
+                f"{who} has a show at {at_(x)} that ends, with its guard, "
+                f"just before the next night's first show at {f_at}; if it "
+                f"starts as late as its {rule.late_grace_s} s grace allows "
+                f"it ends {fmt_span(worst)} after it, and that first show "
+                f"then starts late, or is MISSED if that is more than its "
+                f"own grace. Saved as it is; nothing is refused.")
+    if not scanned_all:
+        clash.append(f"Nights running into each other were checked for the "
+                     f"first {SCAN_NIGHTS} nights of the season only.")
+    out += clash
+    if len(out) > most:
+        out = out[:most] + [f"And {len(out) - most} more like these."]
     return out
 
 
@@ -667,6 +884,18 @@ def lateness_s(slot_start, now):
     N. Without this, a scheduler that looks a few times a second would
     almost never land on the exact instant, and grace 0 would mean never."""
     return (_utc(now) - _utc(slot_start)) // ONE_SECOND
+
+
+def late_limit_s(grace_s, allowance_s=0):
+    """How late a show may start, in whole seconds: the late grace, and for
+    a show whose rig check (pre-roll) could only run at its time, the check's
+    allowance on top, but never past DEFAULT_LATE_GRACE_S (Jeff, 2026-11-01:
+    a show more than 2 minutes late is MISSED, full stop). So the allowance
+    only helps a grace set below 120 s; a grace of 120 or more is the limit
+    as it stands."""
+    grace_s = int(grace_s)
+    return max(grace_s, min(grace_s + max(0, int(allowance_s)),
+                            DEFAULT_LATE_GRACE_S))
 
 
 def may_fire(slot_start, now, grace_s):
@@ -720,7 +949,7 @@ class Slot:
 # The presses that are taken whoever pressed them and wherever: see step().
 # Stop (STOP_SHOW) is a halt like them: the deck's Stop with no operator
 # chosen still stops the show.
-ALWAYS_TAKEN = frozenset((ABORT, HOLD_ON, STOP_SHOW))
+ALWAYS_TAKEN = frozenset((HOLD_ON, STOP_SHOW))
 
 
 @dataclass(frozen=True)
@@ -729,7 +958,7 @@ class Event:
     actor: str
     detail: str = ""         # what a device reported, in words
     minutes: int = 0         # Delay next / Delay the rest
-    confirmed: bool = False  # Abort and End night
+    confirmed: bool = False  # Stop and End night
     show: int = 0            # which show an edit or an end is about
     at: str = ""             # a wall clock time for an edit, "18:25"
     screen: str = ""         # operator events: which screen, from config
@@ -739,10 +968,6 @@ class Event:
     # on the operator list, so the list check is not asked of it. Every
     # other rule (state, confirm, the screen named) applies as before.
     surface: bool = False
-    # TICK, BOOT_DONE, START_NOW, HOLD_ON and RESUME: the show conductor is
-    # latched after an Abort and nobody has pressed Reset. Filled in by the
-    # service, never by an operator; always False without a conductor.
-    latched: bool = False
     # SHOW_FAILED only: the performer refused the start before it sent
     # anything to the rig (Run not pressed, auto_start off, the conductor
     # latched). Nothing started, so nothing is faded or stopped: the
@@ -756,6 +981,12 @@ class Event:
     # rather than without the check. Every other show keeps the grace.
     late_show: int = 0
     late_ok_s: int = 0
+    # A TICK that only settles a night being handed over (schedule_service
+    # _ensure_night): it may mark shows MISSED and finish what is over, but
+    # never starts a show, so every start goes through the normal alert
+    # hold, pre-roll and Stop checks (Jeff's rule; simulation review B of
+    # PR #202).
+    settle: bool = False
 
 
 @dataclass(frozen=True)
@@ -807,20 +1038,36 @@ class Machine:
     resumed_from: str = ""       # the state saved before a restart
     rule_id: str = ""            # which rule tonight was built from
     operators: tuple = DEFAULT_OPERATORS   # who may press things
-    # The rig was left dark by a show stopped early (Abort, a failed start,
+    # The rig was left dark by a show stopped early (a Stop, a failed start,
     # a restart during a show) and nothing has brought a look back since.
     # Kept in tonight's file, so a restart stays dark too (Jeff: after a
     # stopped show the rig stays dark until the operator acts). Set and
     # cleared only by _enter.
     dark: bool = False
-    # An operator's Abort was sent to the show conductor and nobody has
-    # pressed Reset since. Kept in tonight's file so a restart (which brings
-    # up a fresh conductor that remembers nothing) still misses every show
-    # and refuses Start now until Reset (Jeff: after an Abort the rig stays
-    # dark until the operator acts). Set and cleared ONLY by
-    # schedule_service, and only with a conductor attached; the engine
-    # carries it and reads Event.latched instead.
-    abort_latched: bool = False
+    # An operator pressed Close for the night tonight. Kept in tonight's
+    # file and across every rebuild (a save, a restart), so a saved
+    # schedule never opens the night again, even when nothing was left to
+    # skip when it was pressed (review of PR #180). Set only by _end_night;
+    # a new night starts without it. Start now still runs an extra show.
+    closed_by_operator: bool = False
+    # OFF because tonight had no shows at all when the scheduler started
+    # (BOOT_DONE), so no closing ever ran and the rig was never blacked out
+    # by one (review of PR #180, B1: a save on such a night came up dark
+    # and said "The night had closed"). A schedule saved on it starts
+    # tonight as a restart would (follow_rule). Cleared as soon as the
+    # night leaves OFF; in memory only: a restart runs BOOT_DONE again.
+    never_opened: bool = False
+    # The first show of the NEXT night, UTC, from the rule when this night
+    # was built (None when the next night has none). Not kept in tonight's
+    # file: a restart builds it again. The hand over (night_reset) and the
+    # warnings about a show that cannot fit before it read it (review of
+    # PR #196, round 2).
+    next_first: object = None
+    # The schedule's Hold was put on by a Stop (Jeff, 2026-10-30): only an
+    # operator's Resume (or a show started by hand) ends it, and it carries
+    # over the nightly reset. Kept in tonight's file. True only while state
+    # is HOLD: _enter clears it on leaving HOLD.
+    stop_hold: bool = False
 
     @property
     def fault(self):
@@ -864,8 +1111,16 @@ class Machine:
         return s.fired_at + timedelta(seconds=self.show_len_s + paused)
 
     def hm(self, dt):
-        """An instant as tonight's wall clock reads it: 18:20."""
-        return clock(dt.astimezone(self.tz))
+        """An instant as tonight's wall clock reads it: 18:20, and
+        "00:30 (tomorrow)" once it is past midnight, on the next day
+        (review of PR #196: a list that runs past midnight)."""
+        local = dt.astimezone(self.tz)
+        day = (local.date() - self.date).days
+        # The autumn's repeated hour: the second 01:05 is said as such
+        # (review B of PR #196).
+        head = "the second " if getattr(local, "fold", 0) else ""
+        return head + clock(local) + (
+            " (tomorrow)" if day == 1 else f" ({local.date()})" if day else "")
 
 
 @dataclass(frozen=True)
@@ -886,11 +1141,12 @@ def new_night(rule, d):
     slots = tuple(Slot(n=i + 1, start=_utc(s))
                   for i, s in enumerate(plan.starts))
     tz = rule.tz or zone(rule.timezone)
-    end = (_utc(datetime.combine(d, plan.night.last_end, tzinfo=tz))
+    end = (night_window(plan.night, d, tz)[1]
            if plan.night is not None else None)
     return Machine(date=d, tz=tz, show_len_s=rule.show_len_s,
                    guard_s=rule.guard_s, late_grace_s=rule.late_grace_s,
-                   slots=slots, night_end=end, rule_id=rule_fingerprint(rule))
+                   slots=slots, night_end=end, rule_id=rule_fingerprint(rule),
+                   next_first=_next_night_first(rule, d))
 
 
 def rule_fingerprint(rule):
@@ -903,12 +1159,6 @@ def rule_fingerprint(rule):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-def midnight(m):
-    """The end of tonight's date: no show on tonight's list may run past it."""
-    return _utc(datetime.combine(m.date + timedelta(days=1), time(0),
-                                 tzinfo=m.tz))
-
-
 def runs_late(m, s):
     """True when a show still to come finishes, with its guard, after
     tonight's last_end. Allowed, because an operator may need to run late,
@@ -918,10 +1168,71 @@ def runs_late(m, s):
             > m.night_end)
 
 
+def clash_with_next_night(m, s):
+    """How a show still to come meets what follows tonight: "after" (it
+    starts at or after the next night's first show, so tonight hands over
+    before it), "beyond" (it starts later than tonight's hold limit,
+    hold_limit: it cannot hold the night either), "inside" (it ends, with
+    its guard, after the next night's first show: that night begins only
+    once this one's guard is over), "near" (it is inside the next night's
+    preshow lead: that preshow begins only after it), or None. Pure."""
+    if s.status != PENDING:
+        return None
+    if m.next_first is not None and s.start >= m.next_first:
+        return "after"
+    if s.start > hold_limit(m):
+        return "beyond"
+    if m.next_first is None:
+        return None
+    if s.start + timedelta(seconds=m.show_len_s + m.guard_s) > m.next_first:
+        return "inside"
+    if (s.planned is not None or s.origin != "rule") and \
+            s.start >= m.next_first - timedelta(seconds=PRESHOW_LEAD_S):
+        # Only a show an operator moved or added: the rule's own shows
+        # are the rule's business (rule_warnings).
+        return "near"
+    return None
+
+
+def clash_warnings(m):
+    """Sentences for every show still to come that cannot be fitted into
+    tonight's hand over. Said, never refused (Jeff, 2026-10-30)."""
+    out = []
+    for s in m.pending():
+        how = clash_with_next_night(m, s)
+        if how == "after":
+            out.append(
+                f"Show {s.n} at {m.hm(s.start)} is at or after the next "
+                f"night's first show at {m.hm(m.next_first)}, so tonight "
+                f"hands over before it and show {s.n} will be missed.")
+        elif how == "beyond":
+            out.append(
+                f"Show {s.n} at {m.hm(s.start)} is more than "
+                f"{int(EDIT_DAY_LIMIT.total_seconds() // 3600)} hours after "
+                f"tonight's last show ends ({m.hm(hold_limit(m) - EDIT_DAY_LIMIT)}), "
+                f"so tonight hands over before it and show {s.n} will be "
+                f"missed.")
+        elif how == "inside":
+            late = int((s.start + timedelta(
+                seconds=m.show_len_s + m.guard_s) - m.next_first) // ONE_SECOND)
+            out.append(
+                f"Show {s.n} at {m.hm(s.start)} ends, with its guard, "
+                f"{fmt_span(late)} after the next night's first show at "
+                f"{m.hm(m.next_first)}, so that show can be missed: the next "
+                f"night begins only once this one's guard is over.")
+        elif how == "near":
+            out.append(
+                f"Show {s.n} at {m.hm(s.start)} is inside the "
+                f"{fmt_span(PRESHOW_LEAD_S)} before the next night's first "
+                f"show at {m.hm(m.next_first)}, so that night's preshow "
+                f"begins only after show {s.n} and its guard.")
+    return out
+
+
 def late_warnings(m):
     return [f"Show {s.n} at {m.hm(s.start)} finishes after tonight's "
             f"last_end of {m.hm(m.night_end)}, so the night runs late."
-            for s in m.pending() if runs_late(m, s)]
+            for s in m.pending() if runs_late(m, s)] + clash_warnings(m)
 
 
 def _local(m, now):
@@ -977,8 +1288,8 @@ def _operator_name(ev):
 
 
 def _pressed(ev, what):
-    """"Andy pressed Abort on the Rack screen", or, with no operator chosen,
-    "Abort pressed on the Rack screen with no operator chosen"."""
+    """"Andy pressed Stop on the Rack screen", or, with no operator chosen,
+    "Stop pressed on the Rack screen with no operator chosen"."""
     if ev.who.strip():
         return f"{ev.who.strip()} pressed {what}{_screen(ev)}"
     return f"{what} pressed{_screen(ev)} with no operator chosen"
@@ -1012,7 +1323,7 @@ def _verb(ev):
         HOLD_ON: "Hold", RESUME: "Resume", SKIP_NEXT: "Skip next",
         DELAY_NEXT: f"Delay next +{ev.minutes}",
         DELAY_REST: f"Delay the rest of the night +{ev.minutes}",
-        ABORT: "Abort show", END_NIGHT: "Close for the night",
+        END_NIGHT: "Close for the night",
         STOP_SHOW: "Stop",
         EDIT_MOVE: "move of a show", EDIT_ADD: "added show",
         EDIT_REMOVE: "removal of a show",
@@ -1118,17 +1429,28 @@ def _enter(tx, state, show=0, after_stop=False, resume=False):
     Also the one place `dark` is decided: true only while the state was
     entered after a stopped show and so asked for no look of its own."""
     tx._set_state(state)
+    if state != OFF and tx.m.never_opened:
+        tx.m = replace(tx.m, never_opened=False)
     tx.effects.extend(entry_effects(state, show, after_stop, resume))
     dark = _stays_dark(state, after_stop)
     if tx.m.dark != dark:
         tx.m = replace(tx.m, dark=dark)
+    if state != HOLD and tx.m.stop_hold:
+        tx.m = replace(tx.m, stop_hold=False)
 
 
-def _after_show(tx, abort=False, stopped=False):
+def _after_show(tx, abort=False, stopped=False, hold=False):
     """Where a show that has just finished, or been stopped, leaves the
-    night. `stopped` is a show cut short (Abort, a failed start)."""
+    night. `stopped` is a show cut short (Abort, a failed start). `hold`
+    is an operator's Stop (Jeff, 2026-10-30): with a show still to come it
+    leaves the schedule on HOLD, dark, so nothing starts by itself until
+    Resume (or an explicit Start now); with none left it leaves the night
+    as an Abort does (STANDBY, and the next tick closes it)."""
     m = tx.m
-    if abort or m.waiting():
+    if hold and m.waiting():
+        tx.m = replace(tx.m, held_from=STANDBY, stop_hold=True)
+        _enter(tx, HOLD, after_stop=stopped)
+    elif abort or m.waiting():
         # Abort stays in STANDBY even when no show is left; the next tick
         # closes the night if so.
         _enter(tx, STANDBY, after_stop=stopped)
@@ -1142,6 +1464,22 @@ def _after_show(tx, abort=False, stopped=False):
 # still the one Start now starts.
 DELAYED_START = "DELAYED START (operator hold)"
 EXTRA_SHOW = "EXTRA SHOW (operator)"
+# Start at a cue (play_from.py, part 2; Jeff, 2026-10-31): START_NOW whose
+# detail starts with this is a start at a saved cue. It is ALWAYS an extra
+# show ("every play-from counts as an extra show"), never the delayed one;
+# a delayed show is then overtaken, as by any other show that starts
+# (_fire: MISSED, "show N was started instead"). Everything else is Start
+# now's (one show, then a Stop's Hold comes back; refused while a show is
+# up or an Abort stands).
+PLAY_FROM_DETAIL = "from the cue "
+# Close for the night's reason on every show it skipped. A saved schedule
+# never opens such a night again (rebuild_night).
+CLOSED_BY_OPERATOR = "SKIPPED (operator, Close for the night)"
+# A time a saved schedule gave a night already closed with Close for the
+# night. A later save drops such a row when its time left the schedule, so
+# saves never pile them up (review of PR #180, F3).
+CLOSED_SAVED = ("SKIPPED (the night had been closed with Close for the "
+                "night before this time was saved)")
 
 
 def _fire(tx, s, reason="FIRED"):
@@ -1157,9 +1495,15 @@ def _fire(tx, s, reason="FIRED"):
         what = {DELAYED_START: f"the delayed show {s.n}, planned for "
                                f"{clock(_local(tx.m, s.start))}",
                 EXTRA_SHOW: f"an extra show, {s.n}"}[reason]
-        text = (f"{_operator_name(tx.ev)} pressed Start now"
-                f"{_screen(tx.ev)}. Started {what}, at "
-                f"{clock(_local(tx.m, now))}.")
+        cue = str(getattr(tx.ev, "detail", "") or "")
+        if cue.startswith(PLAY_FROM_DETAIL):
+            text = (f"{_operator_name(tx.ev)} pressed Start at a cue"
+                    f"{_screen(tx.ev)}. Started {what}, {cue}, at "
+                    f"{clock(_local(tx.m, now))}.")
+        else:
+            text = (f"{_operator_name(tx.ev)} pressed Start now"
+                    f"{_screen(tx.ev)}. Started {what}, at "
+                    f"{clock(_local(tx.m, now))}.")
         nxt = tx.m.next_slot()
         if reason == EXTRA_SHOW and nxt is not None:
             text += (f" Show {nxt.n} at {clock(_local(tx.m, nxt.start))} "
@@ -1194,16 +1538,9 @@ def _miss(tx, s, why):
             show=s.n, actor="scheduler")
 
 
+# A show missed while an older version's Abort latch stood said this; a
+# saved list may still carry it as a MISSED show's reason.
 LATCHED_MISSED = "MISSED (aborted, not Reset)"
-
-
-def _miss_latched(tx, s):
-    tx.set_slot(s.n, status=MISSED, reason=LATCHED_MISSED)
-    tx.note("miss", "missed", LATCHED_MISSED,
-            f"Show {s.n} at {clock(_local(tx.m, s.start))} missed: the show "
-            f"was aborted and has not been Reset, so the rig stays dark. "
-            f"Press Reset; after that the next show starts on schedule, "
-            f"and Start now works again.", show=s.n, actor="scheduler")
 
 
 def _hold_back(tx, s, extra=0):
@@ -1265,7 +1602,7 @@ def _sweep(tx, held=None):
         state = tx.m.state
         grace = tx.m.late_grace_s
         if tx.ev.late_show and tx.ev.late_show == s.n:
-            grace += max(0, int(tx.ev.late_ok_s))
+            grace = late_limit_s(grace, tx.ev.late_ok_s)
         if late > grace:
             if held:
                 _hold_back(tx, s)
@@ -1288,22 +1625,26 @@ def _sweep(tx, held=None):
             _miss(tx, s, why)
             continue
         # Inside the window. Only a waiting machine fires, and only if the
-        # guard after the previous show has run out.
+        # guard after the previous show has run out. A settling tick never
+        # fires: the show stays PENDING for the normal tick (or the hand
+        # over's own MISSED).
+        if tx.ev.settle:
+            break
         if state in (IDLE, STANDBY) and _guard_left(tx.m, now) == 0:
-            if tx.ev.latched:
-                # Jeff: after an Abort the rig stays dark until the
-                # operator acts. Reset is that act; until it, a show that
-                # comes due does not start and is not a failed start.
-                _miss_latched(tx, s)
-                continue
             _fire(tx, s)
         break
+
+
+# BOOT_DONE's detail when a schedule saved on a night that never opened
+# starts it (follow_rule): its journal line says so, not "started".
+SAVED_START = "a schedule was saved on a night that had no shows"
 
 
 def _boot_done(m, ev, now):
     tx = _Tx(m, ev, now)
     if not m.slots:
         _enter(tx, OFF)
+        tx.m = replace(tx.m, never_opened=True)
         tx.note(BOOT_DONE, "done", "no shows tonight",
                 f"The scheduler started. There are no shows on "
                 f"{m.date}, so it is off for the night.")
@@ -1334,13 +1675,11 @@ def _boot_done(m, ev, now):
     tx.m = replace(tx.m, paused_at=None)
     _sweep(tx, held=(was == HOLD))
     # A restart never brings back a look a stopped show took away: if the
-    # rig was dark before it (an Abort, a failed start, a show cut by an
+    # rig was dark before it (a Stop, a failed start, a show cut by an
     # earlier restart, and nobody has acted since), it stays dark until an
     # operator acts or the next show starts (Jeff's rule; before 2026-10-02
     # a restart brought the intermission loop back on its own).
-    # An Abort nobody has Reset (ev.latched, from the service) is dark too,
-    # on any night: the latch outlives the night it was pressed on.
-    dark = cut or m.dark or ev.latched
+    dark = cut or m.dark
     stayed = ""
     if not tx.m.waiting():
         _enter(tx, CLOSING)
@@ -1353,11 +1692,11 @@ def _boot_done(m, ev, now):
         _enter(tx, STANDBY, after_stop=dark)
         why = "shows have already passed tonight"
     elif dark:
-        # Every show is still to come, but an Abort has not been Reset: no
+        # Every show is still to come, but the rig was left dark: no
         # preshow look and no intermission loop, the rig waits dark.
         _enter(tx, STANDBY, after_stop=True)
-        why = ("an Abort has not been Reset, so the rig waits dark rather "
-               "than showing the preshow look")
+        why = ("the rig was left dark, so it waits dark rather than "
+               "showing the preshow look")
     elif _in_preshow_lead(tx.m, now):
         _enter(tx, STANDBY)
         why = (f"within {fmt_span(PRESHOW_LEAD_S)} of the first show, so the "
@@ -1365,17 +1704,14 @@ def _boot_done(m, ev, now):
     else:
         _enter(tx, IDLE)
         why = "before the first show"
-    if ev.latched:
-        stayed = (" The rig stays dark: an Abort has not been Reset. No show "
-                  "starts and Start now is refused until an operator presses "
-                  "Reset.")
-    elif tx.m.dark and not cut:
+    if tx.m.dark and not cut:
         stayed = (" The rig stays dark, as it was before the restart: the "
                   "last show was stopped early and nobody has acted since. "
                   "The next show, or an operator, brings it back.")
     nxt = tx.m.next_slot()
     head = ("The scheduler restarted and picked up tonight's list as it was"
-            if was else "The scheduler started")
+            if was else "Tonight started from the schedule just saved"
+            if ev.detail == SAVED_START else "The scheduler started")
     tx.note(BOOT_DONE, "done", why,
             f"{head}, in {tx.m.state}: {why}."
             + (f" Next is show {nxt.n} at {clock(_local(m, nxt.start))}."
@@ -1402,7 +1738,11 @@ def _tick(m, ev, now):
                 "to zero, MadMapper stopped, pixels faded, blackout.",
                 actor="scheduler")
     elif before == IDLE and st == IDLE and \
-            any(s.status == MISSED for s in tx.m.slots):
+            any(s.status == MISSED and s.reason not in PAST_REASONS
+                for s in tx.m.slots):
+        # A time a saved schedule put in the past (PAST_REASONS) is not a
+        # show going by: the save never changes the look (review of PR
+        # #180).
         # The first show went by without starting; the night is under way.
         _enter(tx, STANDBY)
         tx.note("standby", "done", "the first show was missed",
@@ -1440,7 +1780,7 @@ def _pause_so_far(tx):
 
 
 def _show_stopped(m, ev, now, status, reason, text, effects, abort=False,
-                  stopped=None):
+                  stopped=None, hold=False):
     tx = _Tx(m, ev, now)
     n = m.running
     s = m.slot(n)
@@ -1452,7 +1792,8 @@ def _show_stopped(m, ev, now, status, reason, text, effects, abort=False,
         tx.m = replace(tx.m, faults=tx.m.faults + (text,))
     tx.effects.extend(effects)
     _after_show(tx, abort=abort,
-                stopped=bool(effects) if stopped is None else stopped)
+                stopped=bool(effects) if stopped is None else stopped,
+                hold=hold)
     tx.note(ev.kind, status.lower(), reason, text, show=n)
     return tx.done()
 
@@ -1566,7 +1907,7 @@ def _closing_done(m, ev, now):
 def _start_now(m, ev, now):
     """Start now has no restriction except that it does nothing while a show
     is running or paused (refused in step). It ignores guard_s, and it works
-    straight after an Abort. It starts the DELAYED show if there is one;
+    straight after a Stop. It starts the DELAYED show if there is one;
     otherwise it inserts an EXTRA show and runs it now.
 
     Jeff, 2026-10-02: Start now runs an extra show. The next scheduled slot
@@ -1581,13 +1922,10 @@ def _start_now(m, ev, now):
     Start now inside the 2 minute guard after a show needs no cooldown:
     decided (Jeff, 2026-10-03). The extra show and the guard as built
     stand."""
-    if ev.latched:
-        return _refuse(m, ev, now, "The show was aborted and has not been "
-                                   "Reset. Press Reset first; nothing "
-                                   "starts until then.")
     tx = _Tx(m, ev, now)
     d = m.delayed()
-    if d is not None:
+    if d is not None and not str(ev.detail or "").startswith(
+            PLAY_FROM_DETAIL):
         _fire(tx, d, DELAYED_START)
     else:
         n = max((s.n for s in m.slots), default=0) + 1
@@ -1621,12 +1959,13 @@ def _hold(m, ev, now):
                     f"Resume carries on from there.")
         tx.note(HOLD_ON, "paused", "PAUSED (operator hold)", text, show=n)
         return tx.done()
-    tx.m = replace(tx.m, held_from=m.state)
-    # While an Abort has not been Reset, a Hold (an operator's, or an
-    # announcement's) keeps the rig dark: only Reset ends the Abort (Jeff:
-    # after an Abort the rig stays dark until the operator acts, and Reset
-    # is that act). Before 2026-10-02 it brought the intermission loop back.
-    _enter(tx, HOLD, after_stop=ev.latched)
+    stop = str(ev.detail or "").startswith(STOP_HOLD_DETAILS)
+    tx.m = replace(tx.m, held_from=m.state, stop_hold=stop)
+    # A Stop's Hold is dark (cold review of #191 round 2, item 5): no look
+    # is asked for; the engine takes the idle look down with the
+    # conductor's Stop. Resume clears the dark flag (the rig stays dark
+    # until the next show starts: nothing brings the intermission back).
+    _enter(tx, HOLD, after_stop=stop)
     if ev.detail:
         text = (f"{_operator_name(ev)} {ev.detail}. No show starts by "
                 f"itself until Resume; a show whose time passes meanwhile "
@@ -1635,9 +1974,6 @@ def _hold(m, ev, now):
         text = (f"{_pressed(ev, 'Hold')}. No show "
                 f"starts by itself until Resume; a show whose time passes "
                 f"meanwhile is delayed and waits for Start now.")
-    if ev.latched:
-        text += (" The rig stays dark: the show was aborted and has not "
-                 "been Reset.")
     tx.note(HOLD_ON, "done", "schedule on hold", text)
     return tx.done()
 
@@ -1656,6 +1992,12 @@ def _resume(m, ev, now):
                 f"paused; it now ends at "
                 f"{clock(_local(tx.m, tx.m.expected_end()))}.", show=n)
         return tx.done()
+    if m.state == HOLD:
+        # A show whose late limit passed during the Hold waits (DELAYED),
+        # as a tick on the Hold would have made it, even when no tick ran
+        # since: Resume never hands the next tick a show to call MISSED
+        # (final review of #199). Still on HOLD here, so nothing fires.
+        _sweep(tx, held=True)
     back = m.held_from if m.held_from in (IDLE, STANDBY) else STANDBY
     if back == IDLE and (any(s.status != PENDING for s in m.slots) or
                           _in_preshow_lead(m, now)):
@@ -1663,34 +2005,50 @@ def _resume(m, ev, now):
         # that the first show is now inside the preshow lead: either way
         # Resume lands in the intermission, not the preshow look.
         back = STANDBY
-    if ev.latched:
-        # Still aborted and not Reset: back to waiting, dark (IDLE is the
-        # preshow look, which never stays dark).
-        back = STANDBY
-    reset = ev.detail == RESET_DETAIL
-    if reset:
-        # Reset never starts a show (Jeff's field report, 2026-10-28;
-        # review of #144, F1): a show whose time has come, even one still
-        # inside the late grace that the next tick would start, waits as a
-        # delayed show for Start now, exactly as if the Hold were still on.
-        for s in list(tx.m.pending()):
-            if lateness_s(s.start, now) < 0:
-                break
-            _hold_back(tx, s)
     tx.m = replace(tx.m, held_from="")
-    _enter(tx, back, after_stop=ev.latched)
+    _enter(tx, back)
     nxt, d = tx.m.next_slot(), tx.m.delayed()
     tx.note(RESUME, "done", "schedule resumed",
-            f"{_operator_name(ev)} pressed "
-            f"{'Reset' if reset else 'Resume'}{_screen(ev)}."
-            + (" The schedule is no longer on hold. Reset starts nothing "
-               "by itself." if reset else "")
+            f"{_operator_name(ev)} pressed Resume{_screen(ev)}."
             + (f" The delayed show {d.n} still waits for Start now."
                if d else "")
-            + (f" Next on the schedule is show {nxt.n} at "
-               f"{clock(_local(m, nxt.start))}."
+            + (_resume_words(tx, nxt, now)
                if nxt else " There are no more scheduled shows tonight."))
     return tx.done()
+
+
+RESUME_MARGIN_S = 5
+
+
+def _resume_starts_next(tx, nxt, now):
+    """What the next tick will do with `nxt` after this Resume, as far as
+    the engine can tell: "yes" (a state a show starts from, no guard
+    left, and more than RESUME_MARGIN_S of its late limit left), "close" (the same but within RESUME_MARGIN_S of
+    the limit: it may still start, or be MISSED a second later), or "no".
+    Delta reviews of PR #202: Resume at exactly 120 s said "starts now" and
+    the show was MISSED a tick later."""
+    m = tx.m
+    late = lateness_s(nxt.start, now)
+    if (m.state not in (IDLE, STANDBY) or nxt.status != PENDING or
+            _guard_left(m, now) != 0 or not 0 <= late <= m.late_grace_s):
+        return "no"
+    return "yes" if late <= m.late_grace_s - RESUME_MARGIN_S else "close"
+
+
+def _resume_words(tx, nxt, now):
+    m = tx.m
+    how = _resume_starts_next(tx, nxt, now)
+    at = clock(_local(m, nxt.start))
+    if how == "yes":
+        return (f" Show {nxt.n}, due at {at}, is still inside its late "
+                f"limit and starts at the next tick, "
+                f"{lateness_s(nxt.start, now)} s late, unless something "
+                f"else holds it (an open alert, Run, the rig check).")
+    if how == "close":
+        return (f" Show {nxt.n}, due at {at}, is close to its limit "
+                f"({lateness_s(nxt.start, now)} s late of "
+                f"{m.late_grace_s}) and may still start at the next tick.")
+    return f" Next on the schedule is show {nxt.n} at {at}."
 
 
 def _need_next(m, ev, now):
@@ -1730,11 +2088,9 @@ def _spacing_problem(m, slots, moved, now):
         if s.n in moved and s.start <= now:
             return (f"Show {s.n} would be at {clock(_local(m, s.start))}, "
                     f"which has already passed.")
-        if s.n in moved and s.start + length > midnight(m):
-            return (f"Show {s.n} would start at {clock(_local(m, s.start))} "
-                    f"and finish at {clock(_local(m, s.start + length))}, "
-                    f"after midnight. Tonight's list cannot run into "
-                    f"tomorrow; Start now still works.")
+        # A show may be moved or added past midnight (Jeff, 2026-10-30:
+        # "Don't restrict the schedule in any way"); the night stays open
+        # until it has run (night_reset with the machine).
     seq = sorted((s for s in slots if s.status in (PENDING, RUNNING)),
                  key=lambda s: (s.start if s.status == PENDING
                                 else s.fired_at, s.n))
@@ -1758,9 +2114,25 @@ def _spacing_problem(m, slots, moved, now):
     return None
 
 
+def _note_clash(tx, m_before):
+    """Journal every show an edit or a Delay has just made meet the next
+    night's first show (clash_with_next_night). Allowed, never silent."""
+    was = {s.n: clash_with_next_night(m_before, s)
+           for s in m_before.pending()}
+    for s in tx.m.pending():
+        how = clash_with_next_night(tx.m, s)
+        if how is None or was.get(s.n) == how:
+            continue
+        text = [w for w in clash_warnings(tx.m)
+                if w.startswith(f"Show {s.n} at ")][0]
+        tx.note(tx.ev.kind, "clashes with the next night",
+                "CLASHES WITH THE NEXT NIGHT", text + " Allowed.", show=s.n)
+
+
 def _note_late(tx, m_before):
     """Journal every show an edit has just pushed past last_end. Allowed, and
     never silent."""
+    _note_clash(tx, m_before)
     was = {s.n for s in m_before.pending() if runs_late(m_before, s)}
     for s in tx.m.pending():
         if runs_late(tx.m, s) and s.n not in was:
@@ -1790,6 +2162,14 @@ def _delay(m, ev, now, rest):
         return bad
     which = {s.n for s in m.pending()} if rest else {nxt.n}
     slots = _shift(m, m.slots, which, ev.minutes)
+    hi = edit_window(m.date, m.tz)[1]
+    far = [x.n for x in slots if x.n in which and x.start > hi]
+    if far:
+        return _refuse(m, ev, now,
+                       f"Show {far[0]} would move past the furthest time a "
+                       f"night's list can hold ("
+                       f"{MAX_EDIT_AHEAD.days // 366} years after tonight). "
+                       f"Move it to an earlier day first.")
     why = _spacing_problem(m, slots, which, now)
     if why:
         if not rest:
@@ -1837,67 +2217,47 @@ NOTHING_SENT_TO_RIG = (
     "Nothing was sent to the rig for it: no fade, no blank, no MadMapper "
     "or BEYOND command and no flame cue, and every flame group stays as it "
     "was.")
-ABORT_CONFIRM_DISARM = ("Every flame cue goes to zero and every flame group "
-                        "is disarmed at once.")
-
-
-def _abort(m, ev, now):
-    n = m.running
-    return _show_stopped(
-        m, ev, now, ABORTED, "ABORTED (operator)",
-        f"{_pressed(ev, 'Abort')} during show {n}. "
-        f"Flame cues zeroed and lasers blanked; music, video and pixels "
-        f"fading to black over {ABORT_FADE_S:g} s, then MadMapper stopped. "
-        f"{NOTHING_DISARMED}",
-        _abort_effects(n), abort=True)
 
 
 def _stop_show(m, ev, now):
-    """Stop during a show (the Stream Deck's Stop held; Jeff, 2026-10-26):
-    the show ends now, faded to dark as an Abort is, and the night carries
-    on exactly as after an Abort: STANDBY and dark, and after the last show
-    of the night the next tick closes the night (review of #130, 2). But
-    nothing is latched: no Reset is needed, and with Run no longer pressed
-    no later show starts. The engine disarms the flame groups and lasers
-    itself before this and journals how that went, so this line claims
-    only what the scheduler does."""
+    """Stop during a show (every Stop: a screen's double tap, an iPad, the
+    Stream Deck's Stop held): the show ends now, faded to dark, and
+    nothing is latched. Stop also holds (Jeff, 2026-10-30): with a show
+    still to come the schedule goes on HOLD, dark (held_from STANDBY), so
+    no later show starts by itself until Resume; Run is left alone. After
+    the last show of the night it leaves the night STANDBY and dark, and
+    the next tick closes it (review of #130, 2). The engine disarms the
+    flame groups and lasers itself before this and journals how that went,
+    so this line claims only what the scheduler does. The slot's status is
+    ABORTED (a show cut short), its reason STOPPED (operator Stop)."""
     n = m.running
-    if ev.detail == RESET_DETAIL:
-        return _show_stopped(
-            m, ev, now, ABORTED, "ENDED (Reset during Hold)",
-            f"{_pressed(ev, 'Reset')} while show {n} was paused on Hold. "
-            f"Show {n} has ended: flame cues zeroed and lasers blanked; "
-            f"music, video and pixels fading to black over "
-            f"{ABORT_FADE_S:g} s, then MadMapper stopped. No flame group is "
-            f"disarmed and nothing is latched. Reset starts nothing: the "
-            f"rig stays dark until Start now or the next show's time, and "
-            f"only while Run is pressed.",
-            _abort_effects(n), abort=True)
+    held = m.waiting()
     return _show_stopped(
         m, ev, now, ABORTED, "STOPPED (operator Stop)",
         f"{_pressed(ev, 'Stop')} during show {n}. Flame cues zeroed and "
         f"lasers blanked; music, video and pixels fading to black over "
-        f"{ABORT_FADE_S:g} s, then MadMapper stopped. Nothing is latched: "
-        f"no Reset is needed, and no show starts until Run is pressed "
-        f"again.",
-        # As an Abort leaves the night: STANDBY, never straight to closing
-        # (the latch is not set here; only an Abort's conductor call sets
-        # it, schedule_service).
-        _abort_effects(n), abort=True)
+        f"{ABORT_FADE_S:g} s, then MadMapper stopped. Nothing is latched. "
+        + (f"The schedule is on Hold: no show starts by itself until "
+           f"Resume; a show whose time passes meanwhile is delayed and "
+           f"waits for Start now." if held else
+           f"There are no more shows tonight, so the night closes; the "
+           f"Stop's Hold stands until Resume, so no show starts by itself "
+           f"on a later night."),
+        # Never straight to closing, and on HOLD while a show is still to
+        # come.
+        _abort_effects(n), abort=True, hold=True)
 
 
 def _end_night(m, ev, now):
     tx = _Tx(m, ev, now)
     skipped = []
     for s in m.pending() + ([m.delayed()] if m.delayed() else []):
-        tx.set_slot(s.n, status=SKIPPED,
-                    reason="SKIPPED (operator, Close for the night)")
+        tx.set_slot(s.n, status=SKIPPED, reason=CLOSED_BY_OPERATOR)
         skipped.append(s.n)
-    tx.m = replace(tx.m, held_from="")
+    tx.m = replace(tx.m, held_from="", closed_by_operator=True)
     _enter(tx, CLOSING)
     for n in skipped:
-        tx.note(END_NIGHT, "skipped",
-                "SKIPPED (operator, Close for the night)",
+        tx.note(END_NIGHT, "skipped", CLOSED_BY_OPERATOR,
                 f"Show {n} will not run: the night was closed.", show=n)
     tx.note(END_NIGHT, "done", "night closed by the operator",
             f"{_operator_name(ev)} pressed Close for the night"
@@ -1910,27 +2270,194 @@ def _end_night(m, ev, now):
 RESET_MISSED = f"MISSED (still waiting at the {reset_words()} nightly reset)"
 
 
-def night_of(now, tz):
+def night_of(now, tz, rule=None, m=None):
     """Which night `now` belongs to: its local calendar date from the
     nightly reset on, the day before until then (Jeff, 2026-10-03). Read on
     the local wall clock, so on a night the clocks change the reset is still
     the first instant the wall clock reads NIGHT_RESET or later (in the
-    spring gap, the first instant after it). Pure."""
-    local = _utc(_aware(now)).astimezone(tz)
-    if local.time() < NIGHT_RESET:
-        return local.date() - timedelta(days=1)
-    return local.date()
+    spring gap, the first instant after it). Pure.
+
+    With the `rule` (and the machine `m` on the scheduler, when it is one
+    of those nights) the hand over is night_reset's: the night before runs
+    on past 2 AM while one of its shows still has to run, and the next
+    night begins earlier when its first show is earlier (Jeff,
+    2026-10-30: shows between midnight and 2 AM)."""
+    now = _utc(_aware(now))
+    local = now.astimezone(tz)
+    if rule is None:
+        if local.time() < NIGHT_RESET:
+            return local.date() - timedelta(days=1)
+        return local.date()
+    for back in (2, 1):
+        y = local.date() - timedelta(days=back)
+        live = m if m is not None and m.date == y else None
+        if now < night_reset(y, tz, rule, live):
+            return y
+    # Today's night may hand over before midnight, when tomorrow's first
+    # show is early enough that its preshow starts tonight (review B of PR
+    # #196: a first show at 00:10 had no preshow).
+    today = local.date()
+    live = m if m is not None and m.date == today else None
+    if now >= night_reset(today, tz, rule, live):
+        return today + timedelta(days=1)
+    return today
 
 
-def night_reset(d, tz):
+NEXT_NIGHT_LOOK = 8
+
+
+def _next_night_first(rule, d):
+    """The first show of the first LATER night that has shows (up to
+    NEXT_NIGHT_LOOK days on), UTC, or None (delta review of PR #196: a dark
+    night let this night swallow the one after). Pure."""
+    one = timedelta(days=1)
+    for k in range(1, NEXT_NIGHT_LOOK + 1):
+        first, _e = _night_span(rule, d + k * one)
+        if first is not None:
+            return first
+    return None
+
+
+def hold_limit(m):
+    """How late a show of this night's list may start and still hold the
+    night open: its last planned end (or the 2 AM reset, whichever is
+    later) plus EDIT_DAY_LIMIT, the same window a time typed without a day
+    may land in. A show further out never holds the night: it is warned
+    about when typed and missed out loud at the hand over (delta review of
+    PR #196: a date years ahead). Pure."""
+    base = _utc(datetime.combine(m.date + timedelta(days=1), NIGHT_RESET,
+                                 tzinfo=m.tz))
+    end = m.night_end if m.night_end is not None else base
+    return max(base, end) + EDIT_DAY_LIMIT
+
+
+def _next_reset_after(t, tz):
+    """The first NIGHT_RESET (local) strictly after the instant `t`."""
+    local = _utc(t).astimezone(tz)
+    r = _utc(datetime.combine(local.date(), NIGHT_RESET, tzinfo=tz))
+    if r <= _utc(t):
+        r = _utc(datetime.combine(local.date() + timedelta(days=1),
+                                  NIGHT_RESET, tzinfo=tz))
+    return r
+
+
+def night_reset(d, tz, rule=None, m=None):
     """The instant the night of `d` closes: NIGHT_RESET, local, on the next
     calendar day. A reset inside the spring gap comes out as the first
-    instant after it, the same instant night_of moves on at. Pure."""
-    return _utc(datetime.combine(d + timedelta(days=1), NIGHT_RESET,
+    instant after it, the same instant night_of moves on at. Pure.
+
+    With the `rule` it is where the night of `d` hands over to the next
+    (Jeff, 2026-10-30, replacing the fixed reset): 2 AM as before, later
+    while a show of the night still has to run (the end of its last show
+    and guard, from the rule, and from the machine `m` when given: a show
+    delayed or moved still to come, or running), and earlier when the
+    next night's first show is earlier (its preshow, PRESHOW_LEAD_S before
+    it), but never before this night's own shows have run. It never drops
+    a planned show of the night and never starts one early."""
+    base = _utc(datetime.combine(d + timedelta(days=1), NIGHT_RESET,
                                  tzinfo=tz))
+    if rule is None:
+        return base
+    _first, end = _night_span(rule, d)
+    nxt = _next_night_first(rule, d)
+    hold = None
+    dl = None
+    if m is not None:
+        # The machine is the night: what it still has to run decides, not
+        # the file's hours (review B of PR #196: a night closed with Close
+        # for the night, or with its late shows skipped, held the next
+        # night back until its planned end). Nothing left to run: over.
+        end = None
+        need = timedelta(seconds=m.show_len_s + m.guard_s)
+        limit = hold_limit(m)
+        for s in m.slots:
+            if s.status == PENDING:
+                if s.start > limit:
+                    # Too far out to hold the night (a date days or years
+                    # ahead): warned when typed, missed at the hand over.
+                    continue
+                if nxt is not None and s.start >= nxt:
+                    # At or after the next night's first show: this night
+                    # cannot hold the next one back for it (review of PR
+                    # #196, round 2: "18:10 tomorrow" held Thursday open
+                    # all Friday and Friday's shows were missed). It is
+                    # warned about when typed, and missed out loud at the
+                    # hand over (close_unrun_at_handover).
+                    continue
+                # Until it can no longer start: its time, the late grace
+                # it may still start inside, and then its length and guard
+                # (simulation review B of PR #202: a night handed over
+                # while a show could still start inside its grace).
+                e = s.start + need + timedelta(seconds=m.late_grace_s)
+            elif s.status == RUNNING and m.running == s.n:
+                e = m.expected_end(s.fired_at or s.start) + \
+                    timedelta(seconds=m.guard_s)
+            else:
+                continue
+            end = e if end is None else max(end, e)
+        if m.last_end is not None:
+            # The last show that ran still has its guard: the next night's
+            # first show never starts inside it (review of PR #196, round
+            # 2: Friday's 00:18 show started 40 s into Thursday's guard).
+            tail = m.last_end + timedelta(seconds=m.guard_s)
+            end = tail if end is None else max(end, tail)
+        dl = m.delayed()
+        if dl is not None:
+            # A show delayed (a Hold) waits for Start now and holds the
+            # night open, as far as the next 2 AM after its own time (the
+            # old reset, for a show before 2 AM), never past the next
+            # night's start (review of PR #196, round 2: a show delayed
+            # after 2 AM was missed 10 s later).
+            hold = _next_reset_after(dl.start, tz)
+    r = base if end is None else max(base, end)
+    if hold is not None:
+        r = max(r, hold)
+    if nxt is not None:
+        opens = nxt - timedelta(seconds=PRESHOW_LEAD_S)
+        floor = opens
+        if dl is not None and dl.start >= opens:
+            # A show delayed inside the next night's preshow waits until
+            # that night's first show, not its preshow (delta review of PR
+            # #196: it was missed one tick after it became DELAYED).
+            floor = max(opens, min(nxt, hold))
+        r = min(r, floor if end is None else max(end, floor))
+    return r
 
 
-def close_at_reset(m, now):
+# The same, when the night handed over at another time than 2 AM (a show
+# still to run after 2 AM, or the next night's first show before it).
+HANDOVER_MISSED = ("MISSED (still waiting when the night ended, as the "
+                   "next night began)")
+
+
+UNRUN_AT_HANDOVER = ("MISSED (the night handed over to the next night "
+                     "before its time)")
+
+
+def close_unrun_at_handover(m, now):
+    """Shows still to come when the night hands over (typed for a time at or
+    after the next night's first show, review of PR #196): MISSED out loud,
+    each a fault line, never started and never left PENDING in the file.
+    Returns an Outcome; the caller sets the night aside. Pure."""
+    pend = m.pending()
+    if not pend:
+        return Outcome(m)
+    now = _utc(_aware(now))
+    tx = _Tx(m, Event(TICK, "scheduler"), now)
+    texts = []
+    for sl in pend:
+        text = (f"Show {sl.n}, set for {m.hm(sl.start)}, never started: the "
+                f"night of {m.date} handed over to the next night first. "
+                f"It is {UNRUN_AT_HANDOVER}.")
+        tx.set_slot(sl.n, status=MISSED, reason=UNRUN_AT_HANDOVER)
+        tx.note("miss", "fault", UNRUN_AT_HANDOVER, text, show=sl.n,
+                actor="scheduler")
+        texts.append(text)
+    tx.m = replace(tx.m, faults=tx.m.faults + tuple(texts))
+    return tx.done()
+
+
+def close_at_reset(m, now, at_default=True):
     """A night kept open past midnight by a delayed show (Jeff, 2026-10-01)
     closes at the nightly reset (Jeff, 2026-10-03): the delayed show becomes
     MISSED, out loud, as a fault line naming it and why, and it goes on the
@@ -1943,22 +2470,218 @@ def close_at_reset(m, now):
     if d is None:
         return Outcome(m)
     tx = _Tx(m, Event(TICK, "scheduler"), now)
+    why = RESET_MISSED if at_default else HANDOVER_MISSED
+    when = (f"at the {reset_words()} nightly reset on "
+            f"{m.date + timedelta(days=1)}" if at_default else
+            f"when the night ended at {clock(_local(m, now))}, as the next "
+            f"night began")
     text = (f"Show {d.n}, planned for {clock(_local(m, d.start))} on "
             f"{m.date} and delayed since, never started: it was still "
-            f"waiting at the {reset_words()} nightly reset on "
-            f"{m.date + timedelta(days=1)}, and nobody had pressed Start now "
+            f"waiting {when}, and nobody had pressed Start now "
             f"or Close for the night. The night of {m.date} is closed and "
-            f"show {d.n} is {RESET_MISSED}.")
-    tx.set_slot(d.n, status=MISSED, reason=RESET_MISSED)
+            f"show {d.n} is {why}.")
+    tx.set_slot(d.n, status=MISSED, reason=why)
     tx.m = replace(tx.m, faults=tx.m.faults + (text,))
-    tx.note("miss", "fault", RESET_MISSED, text, show=d.n,
+    tx.note("miss", "fault", why, text, show=d.n,
             actor="scheduler")
     return tx.done()
 
 
-def _edit_time(m, ev):
-    t = parse_time(ev.at, "The new time")
-    return _utc(_wall(m.date, t, m.tz))
+# How far past tonight's last planned show a typed time may land before it
+# has to say its day (review of PR #196: at 22:40 "10:55", meant 22:55,
+# became Friday 10:55 AM and started then).
+EDIT_DAY_LIMIT = timedelta(hours=3)
+# How far ahead a typed time may be, and the same window the file reader
+# accepts (delta review of PR #196: a time the editor took made the file
+# unreadable on a restart). Further is an arithmetic limit, refused with a
+# sentence, not a scheduling restriction.
+MAX_EDIT_AHEAD = timedelta(days=5 * 366)
+
+
+def _wall_all(d, t, tz):
+    """Every instant the wall clock reads `t` on date `d`, earliest first:
+    two in the autumn's repeated hour, one otherwise (a time inside the
+    spring gap is one hour later, as _wall does). Pure."""
+    out = []
+    for fold in (0, 1):
+        dt = datetime.combine(d, t, tzinfo=tz).replace(fold=fold)
+        u = _utc(dt)
+        if fold == 1 and u.astimezone(tz).replace(tzinfo=None) != \
+                dt.replace(tzinfo=None):
+            continue
+        if u not in out:
+            out.append(u)
+    return sorted(out)
+
+
+_TIME_WORDS = ("today", "tomorrow", "tonight", "first", "second")
+
+
+def _edit_words(text):
+    """(time text, day word or None, date or None, "first"/"second" or
+    None) from what was typed: "00:30", "10:55 tomorrow", "23:30 today",
+    "10:55 2026-11-14", "01:45 second". ValueError with the sentence."""
+    parts = str(text or "").split()
+    if not parts:
+        raise ValueError("The new time has to be a time of day like "
+                         "\"17:30\", not nothing.")
+    day = which = on = None
+    for w in (x.lower() for x in parts[1:]):
+        if w in ("first", "second"):
+            if which is not None and which != w:
+                raise ValueError(f"{text!r} says both first and second. "
+                                 f"Say one.")
+            which = w
+        elif w in ("today", "tomorrow", "tonight"):
+            if day is not None or on is not None:
+                raise ValueError(f"{text!r} names the day twice. Give one "
+                                 f"of today, tomorrow or a date.")
+            day = w
+        else:
+            if day is not None or on is not None:
+                raise ValueError(f"{text!r} names the day twice. Give one "
+                                 f"of today, tomorrow or a date.")
+            try:
+                on = date.fromisoformat(w)
+            except ValueError:
+                raise ValueError(
+                    f"The new time has to be a time of day like \"17:30\", "
+                    f"then if you like today, tomorrow, a date like "
+                    f"2026-11-14, or second for the later of a time that "
+                    f"happens twice; not {text!r}.")
+    return parts[0], day, on, which
+
+
+def edit_window(d, tz):
+    """The one limit on any show time a night's list may hold: from a night's
+    preshow (never earlier than PRESHOW_LEAD_S before midnight of its date)
+    to MAX_EDIT_AHEAD after that midnight, both ends inclusive. The editor,
+    Delay, Move and the file reader all use it, measured from midnight(d) and
+    not from this week's schedule file, so a save that changes the hours can
+    never make a list the program wrote unreadable (round 3 of PR #196).
+    Returns (earliest, latest) in UTC."""
+    midnight = _utc(datetime.combine(d, time(0), tzinfo=tz))
+    return (midnight - timedelta(seconds=PRESHOW_LEAD_S),
+            midnight + MAX_EDIT_AHEAD)
+
+
+def _edit_time(m, ev, now=None):
+    """_edit_time_inner, with an arithmetic limit made a sentence: a date
+    the calendar cannot hold, or further than MAX_EDIT_AHEAD, is refused
+    with how far it may go (delta review of PR #196: 9999-12-31 raised an
+    uncaught OverflowError). Not a scheduling restriction."""
+    try:
+        when = _edit_time_inner(m, ev, now)
+    except OverflowError:
+        when = None
+    years = MAX_EDIT_AHEAD.days // 366
+    lo, hi = edit_window(m.date, m.tz)
+    if when is None or when > hi:
+        raise ValueError(f"{str(ev.at).strip()!r} is more than {years} years "
+                         f"away. Type a day within {years} years of "
+                         f"tonight.")
+    if when < lo:
+        raise ValueError(f"{str(ev.at).strip()!r} is before this night "
+                         f"began. Type a time from {clock(_local(m, lo))} "
+                         f"on, tonight or later.")
+    return when
+
+
+def _edit_time_inner(m, ev, now=None):
+    """The time an operator typed for tonight's list ("00:30", or "10:55
+    tomorrow", "23:30 today", "10:55 2026-11-14", "01:45 second").
+
+    "today" and "tomorrow" are the calendar days of NOW, on the clock, in
+    the show's zone (review of PR #196, round 2: counted from the night's
+    date they gave the wrong day after midnight); "tonight" is the night's
+    own date. A date may be typed in full. "second" is the later of a time
+    the clocks make happen twice.
+
+    Without a day, the time is the nearest occurrence still to come inside
+    tonight's window: from the start of the night's date to its planned end
+    (the file's last_end, or its last planned show) plus EDIT_DAY_LIMIT
+    (review B of PR #196). A time that has gone by and is still near
+    tonight's hours is taken (and then refused as passed); anything else is
+    never guessed: it is refused, saying how to type it with its day. In a
+    time that happens twice, the first one still to come is taken, and the
+    journal says so (_time_notes)."""
+    tpart, day, on, which = _edit_words(ev.at)
+    t = parse_time(tpart, "The new time")
+    now_u = _utc(_aware(now)) if now is not None else None
+    today = (now_u.astimezone(m.tz).date() if now_u is not None else m.date)
+
+    def pick(cands):
+        if which == "second":
+            ambiguous = [c for c in cands if c.astimezone(m.tz).fold == 1]
+            return (ambiguous or cands)[-1]
+        if which == "first":
+            cands = [c for c in cands if c.astimezone(m.tz).fold == 0] or cands
+        if now_u is not None:
+            ahead = [c for c in cands if c > now_u]
+            if ahead:
+                return ahead[0]
+        return cands[0]
+    if on is not None:
+        return pick(_wall_all(on, t, m.tz))
+    if day == "tomorrow":
+        return pick(_wall_all(today + timedelta(days=1), t, m.tz))
+    if day == "today":
+        return pick(_wall_all(today, t, m.tz))
+    if day == "tonight":
+        return pick(_wall_all(m.date, t, m.tz))
+    both = sorted(_wall_all(m.date, t, m.tz) +
+                  _wall_all(m.date + timedelta(days=1), t, m.tz))
+    if which == "second":
+        both = [c for c in both if c.astimezone(m.tz).fold == 1] or both
+    elif which == "first":
+        both = [c for c in both if c.astimezone(m.tz).fold == 0] or both
+    planned = [(s.planned or s.start) for s in m.slots if s.origin == "rule"]
+    ends = [x for x in (m.night_end, max(planned, default=None))
+            if x is not None]
+    if not ends:
+        return both[0]
+    start = _utc(datetime.combine(m.date, time(0), tzinfo=m.tz))
+    limit = max(ends) + EDIT_DAY_LIMIT
+    cut = now_u if now_u is not None else start
+    for c in both:
+        if cut < c <= limit:
+            return c
+    # Gone by, near tonight's own hours: it is tonight's, and refused as
+    # passed by the spacing check.
+    same = [c for c in both if c.astimezone(m.tz).date() == m.date]
+    if planned and same and min(planned) - EDIT_DAY_LIMIT <= same[0] <= limit:
+        return same[0]
+    hhmm = _hm(t)
+    d1, d2 = today, today + timedelta(days=1)
+    raise ValueError(
+        f"{hhmm} is not inside tonight's night, which ends at "
+        f"{m.hm(max(ends))} (with {int(EDIT_DAY_LIMIT.total_seconds() // 3600)}"
+        f" hours to spare). Say which day: type \"{hhmm} today\" "
+        f"({d1:%a %d %b}) or \"{hhmm} tomorrow\" ({d2:%a %d %b}), or "
+        f"\"{hhmm} {d1}\" with a date.")
+
+
+def _time_notes(m, ev, when):
+    """Sentences about how a typed time was read: a time the clocks make
+    happen twice (which one was taken, how to type the other), and "first"
+    or "second" typed for a time that does not happen twice (it changes
+    nothing). "" when there is nothing to say. Pure."""
+    local = when.astimezone(m.tz)
+    other = local.replace(fold=1 - getattr(local, "fold", 0))
+    twice = _utc(other) != _utc(local)
+    clk = clock(local)
+    try:
+        which = _edit_words(ev.at)[3]
+    except ValueError:
+        which = None
+    if not twice:
+        return (f" {clk} does not happen twice, so \"{which}\" changes "
+                f"nothing." if which else "")
+    if getattr(local, "fold", 0):
+        return (f" {clk} happens twice tonight, as the clocks go back; this "
+                f"is the second one.")
+    return (f" {clk} happens twice tonight, as the clocks go back; this is "
+            f"the first one (type \"{clk} second\" for the later one).")
 
 
 def _edit_move(m, ev, now):
@@ -1969,7 +2692,7 @@ def _edit_move(m, ev, now):
         return _refuse(m, ev, now, f"Show {s.n} is {s.status} and can no "
                                    f"longer be moved.")
     try:
-        when = _edit_time(m, ev)
+        when = _edit_time(m, ev, now)
     except ValueError as e:
         return _refuse(m, ev, now, str(e))
     slots = tuple(replace(x, start=when, planned=x.planned or x.start)
@@ -1983,15 +2706,16 @@ def _edit_move(m, ev, now):
               f"{clock(_local(m, when))})")
     tx.note(EDIT_MOVE, "done", reason,
             f"{_operator_name(ev)} moved show {s.n} from "
-            f"{clock(_local(m, s.start))} to {clock(_local(m, when))}"
-            f"{_screen(ev)}, for tonight only.", show=s.n)
+            f"{m.hm(s.start)} to {m.hm(when)}"
+            f"{_screen(ev)}, for tonight only."
+            f"{_time_notes(m, ev, when)}", show=s.n)
     _note_late(tx, m)
     return tx.done()
 
 
 def _edit_add(m, ev, now):
     try:
-        when = _edit_time(m, ev)
+        when = _edit_time(m, ev, now)
     except ValueError as e:
         return _refuse(m, ev, now, str(e))
     n = max((s.n for s in m.slots), default=0) + 1
@@ -2003,7 +2727,8 @@ def _edit_add(m, ev, now):
     tx.m = replace(tx.m, slots=slots)
     tx.note(EDIT_ADD, "done", "ADDED (operator)",
             f"{_operator_name(ev)} added show {n} at "
-            f"{clock(_local(m, when))}{_screen(ev)}, for tonight only.",
+            f"{m.hm(when)}{_screen(ev)}, for tonight only."
+            f"{_time_notes(m, ev, when)}",
             show=n)
     _note_late(tx, m)
     return tx.done()
@@ -2047,7 +2772,6 @@ ALLOWED = {
     SKIP_NEXT: _LIVE,
     DELAY_NEXT: _LIVE,
     DELAY_REST: _LIVE,
-    ABORT: frozenset((SHOW, PAUSED)),
     END_NIGHT: frozenset((IDLE, STANDBY, HOLD)),
     STOP_SHOW: frozenset((SHOW, PAUSED)),
     EDIT_MOVE: _LIVE,
@@ -2062,7 +2786,7 @@ _HANDLERS = {
     CLEAR_FAULT: _clear_fault, CLOSING_DONE: _closing_done,
     START_NOW: _start_now, HOLD_ON: _hold, RESUME: _resume,
     SKIP_NEXT: _skip_next, DELAY_NEXT: lambda m, e, n: _delay(m, e, n, False),
-    DELAY_REST: lambda m, e, n: _delay(m, e, n, True), ABORT: _abort,
+    DELAY_REST: lambda m, e, n: _delay(m, e, n, True),
     END_NIGHT: _end_night, STOP_SHOW: _stop_show, EDIT_MOVE: _edit_move, EDIT_ADD: _edit_add,
     EDIT_REMOVE: _edit_remove,
 }
@@ -2078,8 +2802,8 @@ def _why_not(m, ev):
         return "The scheduler has already started."
     if st == PAUSED and k in (SHOW_ENDED, SHOW_FAILED):
         return (f"Show {m.running} is paused, so it has neither ended nor "
-                f"failed to start. Resume or Abort it first.")
-    if k in (SHOW_CONFIRMED, SHOW_ENDED, SHOW_FAILED, ABORT, STOP_SHOW):
+                f"failed to start. Resume or Stop it first.")
+    if k in (SHOW_CONFIRMED, SHOW_ENDED, SHOW_FAILED, STOP_SHOW):
         return f"No show is running; the scheduler is in {st}."
     if k == CLOSING_DONE:
         return f"The scheduler is not closing; it is in {st}."
@@ -2098,7 +2822,7 @@ def _why_not(m, ev):
     if k == END_NIGHT:
         if st in (SHOW, PAUSED):
             how = "paused" if st == PAUSED else "running"
-            return (f"Show {m.running} is {how}. Abort it first, then "
+            return (f"Show {m.running} is {how}. Stop it first, then "
                     f"Close for the night.")
         return "The night has already been closed."
     if k in (SKIP_NEXT, DELAY_NEXT, DELAY_REST, EDIT_MOVE, EDIT_ADD,
@@ -2117,11 +2841,11 @@ def step(m, ev, now):
     log line, and the machine unchanged."""
     _check_event(ev)
     now = _utc(_aware(now))
-    # Abort and Hold are never refused for who pressed them or where (the
-    # coordinator for Jeff, 2026-10-03, PR #43 fix round 1): no operator
-    # chosen, a blank screen or a name not on the list still stops the
-    # show, and the journal says so. Start now, Resume, Reset and every
-    # edit still name someone on the list and a screen.
+    # Stop and Hold are never refused for who pressed them or where (the
+    # coordinator for Jeff, 2026-10-03, PR #43 fix round 1, for the Abort
+    # that Stop replaced): no operator chosen, a blank screen or a name not
+    # on the list still stops the show, and the journal says so. Start now,
+    # Resume and every edit still name someone on the list and a screen.
     if ev.actor == "operator" and ev.kind in ALWAYS_TAKEN:
         pass
     elif ev.actor == "operator" and not (ev.who.strip() and
@@ -2144,7 +2868,7 @@ def step(m, ev, now):
                        f"from the list. Nothing was changed.")
     if m.state not in ALLOWED[ev.kind]:
         return _refuse(m, ev, now, _why_not(m, ev))
-    if ev.kind in (ABORT, END_NIGHT, STOP_SHOW) and not ev.confirmed:
+    if ev.kind in (END_NIGHT, STOP_SHOW) and not ev.confirmed:
         return _refuse(m, ev, now, f"{_verb(ev)} has to be confirmed first. "
                                    f"Nothing was changed.")
     if ev.kind == CLEAR_FAULT and not m.faults:
@@ -2154,21 +2878,44 @@ def step(m, ev, now):
 
 # ------------------------------------------------ tonight, as data --
 
-# Format 4 (2026-10-02) is format 3 plus `dark` and `abort_latched`, each
-# written only when true. A night that is neither is still written as
-# format 3, byte for byte as before, so an older ltcplay can still read it.
-# A night that IS dark or latched is written as format 4, which an older
-# ltcplay refuses ("not a saved night this version can read") and sets
-# aside, rather than reading the night and quietly dropping the dark or the
-# Abort latch: that would bring the rig back up after a restart.
+# Format 4 (2026-10-02) is format 3 plus `dark` (and, until 2026-10-30,
+# `abort_latched`), each written only when true. A night that is neither is
+# still written as format 3, byte for byte as before, so an older ltcplay
+# can still read it. A night that IS dark is written as format 4, which an
+# older ltcplay refuses ("not a saved night this version can read") and
+# sets aside, rather than reading the night and quietly dropping the dark:
+# that would bring the rig back up after a restart.
+#
+# The upgrade (Abort removed, Jeff, 2026-10-30): a list saved with
+# `abort_latched` true is still read, never refused or set aside, and the
+# Abort it carries becomes a Stop's Hold (dark, and nothing starts by
+# itself until Resume): abort_latch_in(). This version never writes
+# `abort_latched`.
 TONIGHT_FORMAT = 4
+# A list with a show on the next day (a night past midnight, PR #196):
+# an older ltcplay reads every show as on the night's own date, so it is
+# told plainly that the file is newer, and sets it aside.
+TONIGHT_NEXT_DAY_FORMAT = 5
 TONIGHT_PLAIN_FORMAT = 3
-TONIGHT_FORMATS = (TONIGHT_PLAIN_FORMAT, TONIGHT_FORMAT)
+TONIGHT_FORMATS = (TONIGHT_PLAIN_FORMAT, TONIGHT_FORMAT,
+                   TONIGHT_NEXT_DAY_FORMAT)
 TONIGHT_KEYS = frozenset((
     "format", "date", "rule_id", "state", "running", "last_end",
     "held_from", "faults", "shows_started", "slots"))
-# Format 4 only, and written only when true.
-TONIGHT_OPTIONAL = frozenset(("dark", "abort_latched"))
+# Format 4 only, and written only when true. `closed_by_operator` (PR #180)
+# and `stop_hold` (#191) ride on format 4 the same way: an older ltcplay
+# refuses the file and sets it aside rather than reading a closed night as
+# open, or a Stop's Hold as a plain one.
+TONIGHT_OPTIONAL = frozenset(("dark", "abort_latched", "closed_by_operator",
+                              "stop_hold", "stop_held"))
+# `stop_held` (simulation review B of #199, M3) is the service's own
+# record that a Stop's Hold stands, whatever the state (HOLD, CLOSING,
+# OFF): a second copy of ltcplay_stop_hold.json, so a restart tonight or
+# on the next night keeps the Hold when that file could not be written.
+# The machine never reads it (schedule_service.py does); written only
+# when true, on format 4 or later.
+# Read, never written: an older version's Abort latch (the upgrade above).
+TONIGHT_LEGACY = frozenset(("abort_latched",))
 SLOT_KEYS = frozenset((
     "n", "start", "status", "reason", "origin", "planned", "fired_at",
     "confirmed_at", "ended_at", "paused_s"))
@@ -2184,9 +2931,12 @@ def machine_to_doc(m):
     tonight is kept: the slots, their statuses and edits, when the last show
     ended, hold and faults. show_len_s, guard_s, late_grace_s and the zone
     always come from the rule file, never from here. Pure."""
-    marked = m.dark or m.abort_latched
+    marked = m.dark or m.closed_by_operator or m.stop_hold
+    next_day = any(t is not None and t.astimezone(m.tz).date() != m.date
+                   for s in m.slots for t in (s.start, s.planned))
     doc = {
-        "format": TONIGHT_FORMAT if marked else TONIGHT_PLAIN_FORMAT,
+        "format": (TONIGHT_NEXT_DAY_FORMAT if next_day else
+                   TONIGHT_FORMAT if marked else TONIGHT_PLAIN_FORMAT),
         "date": m.date.isoformat(),
         "rule_id": m.rule_id, "state": m.state, "running": m.running,
         "last_end": _iso(m.last_end),
@@ -2201,8 +2951,10 @@ def machine_to_doc(m):
     }
     if m.dark:
         doc["dark"] = True
-    if m.abort_latched:
-        doc["abort_latched"] = True
+    if m.closed_by_operator:
+        doc["closed_by_operator"] = True
+    if m.stop_hold:
+        doc["stop_hold"] = True
     return doc
 
 
@@ -2226,8 +2978,11 @@ def machine_from_doc(doc, rule, d, now, notes=None):
     ahead = []
     base = new_night(rule, d)
     tz = base.tz
-    start_of_day = _utc(datetime.combine(d, time(0), tzinfo=tz))
-    end_of_day = midnight(base)
+    # A night may run past midnight (Jeff, 2026-10-30), and a show may be
+    # typed for any later day: the file reads whatever the editor accepts,
+    # through the one shared limit (edit_window), or one wrong show would
+    # set the whole night aside.
+    start_of_day, end_of_day = edit_window(d, tz)
 
     def when(v, what, optional=True):
         if v is None:
@@ -2251,8 +3006,13 @@ def machine_from_doc(doc, rule, d, now, notes=None):
             dt = _utc(datetime.fromisoformat(v))
         except (TypeError, ValueError):
             raise ValueError(f"{what} is not a time: {v!r}.")
-        if not (start_of_day <= dt < end_of_day):
-            raise ValueError(f"{what} is not on {d} in {rule.timezone}.")
+        if dt < start_of_day:
+            raise ValueError(f"{what} is before the night of {d} began "
+                             f"(in {rule.timezone}).")
+        if dt > end_of_day:
+            raise ValueError(f"{what} is more than "
+                             f"{MAX_EDIT_AHEAD.days // 366} years after the "
+                             f"night of {d} in {rule.timezone}.")
         return dt
 
     if not isinstance(doc, dict):
@@ -2260,15 +3020,17 @@ def machine_from_doc(doc, rule, d, now, notes=None):
     fmt = doc.get("format")
     if fmt not in TONIGHT_FORMATS:
         newer = isinstance(fmt, int) and not isinstance(fmt, bool) and \
-            fmt > TONIGHT_FORMAT
-        reads = " and ".join(str(f) for f in TONIGHT_FORMATS)
+            fmt > TONIGHT_NEXT_DAY_FORMAT
+        reads = (", ".join(str(f) for f in TONIGHT_FORMATS[:-1]) +
+                 f" and {TONIGHT_FORMATS[-1]}")
         if newer:
             raise ValueError(f"It was saved by a newer ltcplay (format "
                              f"{fmt}); this version reads formats {reads}.")
         raise ValueError(f"It is not a saved night this version can read "
                          f"(format {fmt!r}; this version reads formats "
                          f"{reads}).")
-    allowed = TONIGHT_KEYS | (TONIGHT_OPTIONAL if fmt == TONIGHT_FORMAT
+    allowed = TONIGHT_KEYS | (TONIGHT_OPTIONAL if fmt in (
+        TONIGHT_FORMAT, TONIGHT_NEXT_DAY_FORMAT)
                               else frozenset())
     unknown = sorted(k for k in doc if k not in allowed)
     missing = sorted(k for k in TONIGHT_KEYS if k not in doc)
@@ -2314,9 +3076,6 @@ def machine_from_doc(doc, rule, d, now, notes=None):
         if x["origin"] not in ORIGINS or not isinstance(x["reason"], str):
             raise ValueError(f"Show {n} has origin {x['origin']!r}.")
         start = tonight(x["start"], f"Show {n}'s start")
-        if start + timedelta(seconds=rule.show_len_s) > end_of_day \
-                and x["origin"] != "operator":
-            raise ValueError(f"Show {n} would finish after midnight.")
         sl = Slot(n=n, start=start, status=status, reason=x["reason"],
                   origin=x["origin"],
                   planned=(tonight(x["planned"], f"Show {n}'s planned start")
@@ -2373,8 +3132,23 @@ def machine_from_doc(doc, rule, d, now, notes=None):
         base, slots=tuple(slots), running=doc["running"],
         last_end=last_end, held_from=doc["held_from"], faults=tuple(doc["faults"]),
         shows_started=doc["shows_started"], resumed_from=state,
-        rule_id=str(doc["rule_id"]), dark=doc.get("dark", False),
-        abort_latched=doc.get("abort_latched", False))
+        rule_id=str(doc["rule_id"]),
+        # An older version's Abort latch is a Stop's Hold now (the
+        # upgrade): dark, and marked as the Stop's while it is a Hold. The
+        # service keeps it standing on every later state too
+        # (abort_latch_in, its Stop's Hold file).
+        dark=doc.get("dark", False) or abort_latch_in(doc),
+        closed_by_operator=doc.get("closed_by_operator", False),
+        stop_hold=(doc.get("stop_hold", False) or abort_latch_in(doc))
+        and state == HOLD)
+
+
+def abort_latch_in(doc):
+    """True when a saved list (a dict as read from tonight's file) carries
+    an older version's Abort latch (`abort_latched` true, format 4 or 5).
+    The upgrade reads it as a Stop's Hold (Jeff, 2026-10-30: Abort is
+    removed; every Stop holds until Resume). Never raises. Pure."""
+    return isinstance(doc, dict) and doc.get("abort_latched") is True
 
 
 UNREADABLE = "MISSED (tonight's record was unreadable)"
@@ -2401,62 +3175,358 @@ def assume_the_worst(m, now):
     return replace(m, slots=tuple(slots), last_end=now), notes
 
 
-def rebuild_night(rule, saved):
-    """The rule changed since tonight was saved. Tonight is built again from
-    the new rule, keeping only what already happened: every show with a
-    final status (and one that was running, or delayed and waiting for
-    Start now) is carried over onto the new list, matched by the time it
-    was planned for. Operator edits to shows
-    still to come are dropped. Returns (machine, sentences), one sentence per
-    change, for the journal. Pure."""
+def closed_by_operator(m):
+    """True when tonight was closed with Close for the night. The machine's
+    own flag says so (kept in tonight's file and across every rebuild, so
+    a night closed with nothing left to skip counts too); a show SKIPPED
+    for it says so as well."""
+    return m.closed_by_operator or any(s.reason == CLOSED_BY_OPERATOR
+                                       for s in m.slots)
+
+
+def keeps_tonight(rule, saved):
+    """True when `rule` gives tonight the show times tonight's list was
+    planned from: no time is new, and no show still to come lost its time.
+    Tonight's list is then kept exactly as it is, with every change made to
+    it tonight (Delay next, Delay the rest, a move, a show added, removed
+    or skipped): a save that changed another night, an exception, the
+    season or the wording undoes nothing (reviews of PR #180: a save of
+    Friday's hours undid a Delay the rest and show 1 started 10 minutes
+    early). Only the times are compared, so a save and a restart decide
+    alike: a restart reads tonight's list onto the new rule and never knew
+    the old show length, guard or grace. A new one applies to the kept list
+    as to any other, and every start is still checked against it (the
+    guard, a show still running). Pure."""
     fresh = new_night(rule, saved.date)
+    new = {sl.start for sl in fresh.slots}
+    ours = [sl for sl in saved.slots if sl.origin == "rule"]
+    planned = {(sl.planned or sl.start) for sl in ours}
+    to_come = {(sl.planned or sl.start) for sl in ours
+               if sl.status in (PENDING, DELAYED)}
+    return new <= planned and to_come <= new
+
+
+def _carried(fresh, saved, slots, running):
+    """Tonight on `fresh` (the new rule's lengths, guard, grace and zone)
+    with `slots` and everything else that happened tonight from `saved`."""
+    return replace(fresh, slots=slots, running=running,
+                   last_end=saved.last_end, held_from=saved.held_from,
+                   faults=saved.faults, shows_started=saved.shows_started,
+                   resumed_from=saved.resumed_from, dark=saved.dark,
+                   closed_by_operator=saved.closed_by_operator,
+                   never_opened=saved.never_opened,
+                   stop_hold=saved.stop_hold)
+
+
+def rebuild_night(rule, saved, dropped=None, now=None, skipped=None):
+    """The rule changed since tonight was saved.
+
+    When it gives tonight the same times still to come (keeps_tonight),
+    tonight's list is kept as it is, every change made tonight with it; the
+    rule's show length, guard, grace and zone are the new rule's.
+
+    Otherwise tonight is built again from the new rule, keeping what
+    already happened: every show with a final status (and one that was
+    running, or delayed and waiting for Start now) is carried over as it
+    is, a show taken off tonight's list or skipped stays SKIPPED. A show
+    still to come that was delayed or moved tonight keeps its time while
+    the time it was planned for is still in the schedule: a save never
+    brings it earlier. A show whose planned time left the schedule, and a
+    show added tonight, are dropped: each one is a sentence, also appended
+    to `dropped` when given, so the answer to a save can say so plainly.
+
+    Either way, a time from the file too close (show length plus guard) to
+    a show an operator delayed or moved is SKIPPED (TOO_CLOSE), never the
+    delayed show (review of PR #180, round 3): see _room_for_delays. Times
+    at or before `now` are left out of that check; the save misses them.
+    Each such skip is a sentence, also appended to `skipped`.
+
+    Numbers (Jeff, Pico, 2026-10-29: after a rebuild the extra show 19 came
+    back as show 23): a show that happened, and an extra show, keeps its
+    number; the shows still to come are numbered in time order, each
+    taking the lowest number no show that happened has. On a night closed
+    with Close for the night every show still to come is SKIPPED for the
+    same reason: a saved schedule never opens a night an operator closed.
+
+    Used by a restart (schedule_service._load_tonight) and by a schedule
+    saved while ltcplay runs (follow_rule), the one rebuild for both.
+    Returns (machine, sentences), one sentence per change, for the
+    journal. The machine is in BOOT, as a fresh night is. Pure."""
+    fresh = new_night(rule, saved.date)
+    if keeps_tonight(rule, saved):
+        notes = []
+        m = _carried(fresh, saved, saved.slots, saved.running)
+        return _room_for_delays(m, now, notes, skipped), notes
     hm = fresh.hm
-    by_time = {sl.start: sl for sl in fresh.slots}
-    slots = {sl.n: sl for sl in fresh.slots}
-    extra_n = max((sl.n for sl in fresh.slots), default=0)
+    fresh_times = {sl.start for sl in fresh.slots}
+    closed = closed_by_operator(saved)
+    slots = {}
     notes = []
     running = 0
-    kept_times = set()
+    taken = set()
+    # The number of the show still to come at each planned time.
+    to_come = {}
+    # A show still to come that was delayed or moved tonight, by the time
+    # it was planned for; `orphans`, those whose planned time left the file.
+    moved = {}
+    orphans = []
+
+    def drop(text):
+        notes.append(text)
+        if dropped is not None:
+            dropped.append(text)
     for sl in sorted(saved.slots, key=lambda x: (x.start, x.n)):
         planned = sl.planned or sl.start
         if sl.status == PENDING:
             if sl.origin != "rule":
-                notes.append(f"The show added tonight at {hm(sl.start)} is "
-                             f"dropped because the schedule changed.")
-            elif sl.planned is not None:
+                drop(f"The show added tonight at {hm(sl.start)} is dropped "
+                     f"because the schedule changed.")
+                continue
+            to_come.setdefault(planned, sl.n)
+            if sl.planned is not None and planned in fresh_times:
+                # Its time is still in the schedule: the Delay or move is
+                # kept (review of PR #180: dropping it put the show back at
+                # a time already gone by, and it was MISSED).
+                moved.setdefault(planned, sl)
                 notes.append(f"Tonight's move of the {hm(planned)} show to "
-                             f"{hm(sl.start)} is dropped because the "
-                             f"schedule changed.")
-            elif planned not in by_time:
+                             f"{hm(sl.start)} (a Delay or a move) is kept.")
+            elif sl.planned is not None:
+                # Never dropped either (review of PR #180, round 3): the
+                # operator delayed or moved it, so it stays at its time.
+                orphans.append(sl)
+                notes.append(f"Tonight's move of the {hm(planned)} show to "
+                             f"{hm(sl.start)} (a Delay or a move) is kept, "
+                             f"though the {hm(planned)} show is no longer in "
+                             f"the schedule.")
+            elif planned not in fresh_times:
                 notes.append(f"The {hm(planned)} show is no longer in the "
                              f"schedule.")
             continue
-        match = by_time.get(planned) if sl.origin == "rule" else None
-        if match is not None and match.start not in kept_times:
-            n = match.n
-            kept_times.add(match.start)
-        else:
-            extra_n += 1
-            n = extra_n
-        slots[n] = replace(sl, n=n)
+        if sl.status == SKIPPED and sl.reason.startswith(TOO_CLOSE_HEAD) \
+                and sl.origin == "rule":
+            # Skipped by a save for a delayed show: judged again from the
+            # new file, like any time still to come.
+            to_come.setdefault(planned, sl.n)
+            continue
+        if sl.reason == CLOSED_SAVED and planned not in fresh_times:
+            # Only ever a row a save added to a closed night: gone with its
+            # time, not piled up (review of PR #180, F3).
+            continue
+        if sl.origin == "rule" and planned in fresh_times:
+            taken.add(planned)
+        slots[sl.n] = sl
         if sl.status == RUNNING:
-            running = n
-        notes.append(f"Show {n} at {hm(sl.start)} keeps its status, "
-                     f"{sl.status}"
-                     + (f", from show {sl.n} on the old list."
-                        if n != sl.n else "."))
-    saved_times = {(x.planned or x.start) for x in saved.slots}
-    for sl in fresh.slots:
-        if sl.start not in saved_times:
-            notes.append(f"Show {sl.n} at {hm(sl.start)} is new in the "
-                         f"schedule.")
-    m = replace(fresh, slots=tuple(sorted(slots.values(), key=lambda x: x.n)),
-                running=running, last_end=saved.last_end,
-                held_from=saved.held_from,
-                faults=saved.faults, shows_started=saved.shows_started,
-                resumed_from=saved.resumed_from, dark=saved.dark,
-                abort_latched=saved.abort_latched)
-    return m, notes
+            running = sl.n
+        notes.append(f"Show {sl.n} at {hm(sl.start)} keeps its status, "
+                     f"{sl.status}.")
+    # The times still to come are numbered in time order, each taking the
+    # lowest number no show that happened (or extra show) has (review of
+    # PR #180: a save at 17:00 numbered the night 2, 4, 1, 3, 5).
+    # Each entry goes by the time it was planned for; a delayed show's
+    # place in the order is its delayed time.
+    left = [sl for sl in fresh.slots if sl.start not in taken] + [
+        replace(o, start=o.planned, planned=None) for o in orphans]
+    moved.update({o.planned: o for o in orphans})
+
+    def at(sl):
+        return moved[sl.start].start if sl.start in moved else sl.start
+    numbers = {}
+    used = set(slots)
+    free = 1
+    for sl in sorted(left, key=lambda x: (at(x), x.start)):
+        while free in used:
+            free += 1
+        numbers[sl.start] = free
+        used.add(free)
+    for sl in left:
+        n = numbers[sl.start]
+        new = sl.start not in to_come
+        if not new and to_come[sl.start] != n:
+            notes.append(f"The {hm(sl.start)} show, show "
+                         f"{to_come[sl.start]} before, is now show {n}, so "
+                         f"tonight's shows still to come are numbered in "
+                         f"time order.")
+        if closed:
+            sl = replace(sl, status=SKIPPED, reason=CLOSED_SAVED)
+            notes.append(f"Show {n} at {hm(sl.start)} is "
+                         f"{'new in' if new else 'still in'} the schedule, "
+                         f"but tonight was closed with Close for the night, "
+                         f"so it is skipped.")
+        else:
+            if new:
+                notes.append(f"Show {n} at {hm(sl.start)} is new in the "
+                             f"schedule.")
+            was = moved.get(sl.start)
+            if was is not None:
+                sl = replace(sl, start=was.start, planned=was.planned)
+        slots[n] = replace(sl, n=n)
+    m = _carried(fresh, saved,
+                 tuple(sorted(slots.values(), key=lambda x: x.n)), running)
+    return _room_for_delays(m, now, notes, skipped), notes
+
+
+# A time from the file skipped because a show an operator delayed or moved
+# is too close to it (review of PR #180, round 3).
+TOO_CLOSE_HEAD = "SKIPPED (too close to the delayed show "
+
+
+def _room_for_delays(m, now, notes, skipped=None):
+    """A show an operator delayed or moved tonight (planned set) is never
+    moved earlier or dropped by a save. Any other show still to come that
+    starts too close to it (show length plus guard either way) is SKIPPED,
+    "too close to the delayed show N", and said in `notes` (and `skipped`).
+    Times at or before `now` are left out: the save misses those, as any
+    time gone by. Two shows that are both delayed or both from the file
+    are never judged here: the file's own times are spaced by the file,
+    and a Delay press was spaced when pressed. Pure."""
+    need = timedelta(seconds=m.show_len_s + m.guard_s)
+    cut = _LONG_AGO if now is None else _utc(_aware(now))
+    while True:
+        pend = [x for x in m.pending() if x.start > cut]
+        hit = None
+        for a, b in zip(pend, pend[1:]):
+            if b.start >= a.start + need:
+                continue
+            if a.planned is not None and b.planned is None:
+                hit = (b, a)
+            elif b.planned is not None and a.planned is None:
+                hit = (a, b)
+            if hit:
+                break
+        if hit is None:
+            return m
+        victim, kept = hit
+        why = f"{TOO_CLOSE_HEAD}{kept.n})"
+        m = replace(m, slots=tuple(
+            replace(x, status=SKIPPED, reason=why) if x.n == victim.n
+            else x for x in m.slots))
+        text = (f"Show {victim.n} at {m.hm(victim.start)} is skipped: it is "
+                f"too close to show {kept.n} at {m.hm(kept.start)}, which "
+                f"an operator delayed or moved tonight, for both to run. A "
+                f"save never moves a delayed show earlier.")
+        notes.append(text)
+        if skipped is not None:
+            skipped.append(text)
+
+
+# Before any instant the machine keeps.
+_LONG_AGO = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+# A schedule saved while ltcplay runs (Jeff, Pico, 2026-10-29: a schedule
+# saved after the night had closed planned nothing until the engine was
+# restarted). In these states tonight is rebuilt only once they are over:
+# a running or paused show is never touched, and a closing finishes first.
+FOLLOW_LATER = frozenset((SHOW, PAUSED, CLOSING))
+
+SAVED_PAST = "MISSED (its time had gone by when the schedule was saved)"
+# The same at a restart that found the schedule file changed, and for a
+# save followed only once the show or closing it waited for was over
+# (review of PR #180: the time had not gone by when that was saved).
+RESTART_PAST = ("MISSED (its time had gone by when the changed schedule "
+                "file was read at a restart)")
+FOLLOWED_PAST = ("MISSED (its time had gone by when the saved schedule "
+                 "was followed, after the show or the closing it waited "
+                 "for)")
+PAST_REASONS = frozenset((SAVED_PAST, RESTART_PAST, FOLLOWED_PAST))
+
+
+def _settle_saved_past(tx, before, held, why=SAVED_PAST):
+    """A rebuild never lets a show start whose time is at or before now,
+    unless that same show was already waiting for that same time before it
+    (review of PR #180: with a late grace, a save made the next tick
+    start a show whose time had gone by, during the save's own answer).
+    Every other such show is MISSED (SAVED_PAST). On a Hold with no show
+    already waiting, the latest of them waits as DELAYED instead, as any
+    show whose time passes during a Hold does; a show already waiting stays
+    the one that waits. A show that was waiting for the same time before is
+    left for the next tick, exactly as if nothing had been saved."""
+    now = tx.when
+    late = []
+    for s in tx.m.pending():
+        if s.start > now:
+            break
+        old = before.slot(s.n)
+        if old is not None and old.status == PENDING and \
+                old.start == s.start:
+            continue
+        late.append(s)
+    wait = late[-1] if held and late and tx.m.delayed() is None else None
+    for s in late:
+        if s is wait:
+            _hold_back(tx, s)
+        else:
+            _miss(tx, s, why)
+
+
+def follow_rule(rule, m, now, dropped=None, past=SAVED_PAST, skipped=None):
+    """Tonight rebuilt from a schedule saved while the scheduler runs, the
+    same rebuild a restart makes (rebuild_night), with nothing started.
+    Returns (Outcome, sentences): the Outcome has no effects, ever; the
+    sentences are rebuild_night's (and, in BOOT, the shows it settled).
+    `dropped` gets the sentences for tonight's changes the rebuild undid.
+
+    Every state: a show the rebuild puts at or before now that was not
+    already waiting for that same time is MISSED, or DELAYED on a Hold
+    (_settle_saved_past); it is never started late. A show that was
+    already waiting is left to the next tick, as if nothing was saved.
+    BOOT (a restart): BOOT_DONE then works out the state, as it always has.
+    IDLE, STANDBY, HOLD: the state is kept (a Hold stays a Hold, nothing is
+    Resumed), and so is the show waiting after a Hold.
+    OFF: a closed night with a show still to come opens again in STANDBY,
+    dark (the closing blacked the rig out, and nothing is sent to bring a
+    look back). Never SHOW, and nothing starts: the next show starts at its
+    time only while Run is pressed, and only by the usual rules. With
+    nothing to come, or closed with Close for the night, it stays OFF.
+    SHOW, PAUSED, CLOSING (FOLLOW_LATER): refused, so a running show and its
+    status are never disturbed.
+    OFF on a night that never opened (never_opened: no shows at all when
+    the scheduler started, so no closing ran): tonight starts as a restart
+    would start it. The machine comes back in BOOT and the caller sends
+    BOOT_DONE, which picks IDLE (the preshow look) or STANDBY by the usual
+    rules (review of PR #180, B1). With nothing to come it stays OFF.
+    `past` is the reason a show the rebuild put in the past is MISSED
+    with; a restart (BOOT) always uses RESTART_PAST. Pure."""
+    now = _utc(_aware(now))
+    if m.state in FOLLOW_LATER:
+        raise ValueError(f"Tonight is not rebuilt in {m.state}; it waits "
+                         f"until that is over.")
+    rebuilt, notes = rebuild_night(rule, m, dropped, now, skipped)
+    was = m.state
+    tx = _Tx(m, Event(TICK, "scheduler"), now)
+    if was == BOOT:
+        tx.m = rebuilt
+        _settle_saved_past(tx, m, held=(m.resumed_from == HOLD),
+                           why=RESTART_PAST)
+        out = tx.done()
+        return Outcome(out.machine), notes + [e.text for e in out.log]
+    tx.m = replace(rebuilt, state=was, running=0, paused_at=None,
+                   operators=m.operators)
+    _settle_saved_past(tx, m, held=(was == HOLD), why=past)
+    if was == OFF and m.never_opened and not closed_by_operator(tx.m):
+        if tx.m.waiting():
+            tx.m = replace(tx.m, state=BOOT, held_from="", resumed_from="")
+            tx.note("open", "done", "tonight had no shows",
+                    "Tonight had no shows when the scheduler started, and "
+                    "the schedule just saved has a show tonight, so "
+                    "tonight starts now as a restart would start it. "
+                    "Nothing is started by the save; a show starts by "
+                    "itself only while Run is pressed.", actor="scheduler")
+        return tx.done(), notes
+    if was == OFF and tx.m.waiting() and not closed_by_operator(tx.m):
+        tx.m = replace(tx.m, held_from="")
+        _enter(tx, STANDBY, after_stop=True)
+        nxt = tx.m.next_slot() or tx.m.delayed()
+        what = (f"show {nxt.n} at {clock(_local(tx.m, nxt.start))} is next"
+                if tx.m.next_slot() else
+                f"show {nxt.n} is delayed and waits for Start now")
+        tx.note("reopen", "done", "a show is still to come",
+                f"The night had closed, and the schedule just saved has a "
+                f"show still to come tonight, so the scheduler is back in "
+                f"STANDBY: {what}. Nothing was started and the rig stays "
+                f"dark until the next show. A show starts by itself only "
+                f"while Run is pressed.", actor="scheduler")
+    return tx.done(), notes
 
 
 # --------------------------------------------------- operator actions --
@@ -2480,10 +3550,6 @@ ACTIONS = (
      "event": DELAY_REST, "minutes": 5, "confirm": None},
     {"id": "delay_rest_10", "label": "Delay the rest of the night +10",
      "event": DELAY_REST, "minutes": 10, "confirm": None},
-    {"id": "abort", "label": "Abort show", "event": ABORT, "minutes": 0,
-     "confirm": ("Abort show {show}? " + ABORT_CONFIRM_DISARM +
-                 " Lasers, video, pixels and music fade to black and "
-                 "MadMapper stops.")},
     {"id": "end_night", "label": "Close for the night", "event": END_NIGHT,
      "minutes": 0,
      "confirm": ("Close for the night? Every show still to come tonight is "
@@ -2526,10 +3592,10 @@ def slot_view(m, now=None):
     out = []
     for s in sorted(m.slots, key=lambda s: (s.start, s.n)):
         status = NEXT if (nxt is not None and s.n == nxt.n) else s.status
-        row = {"show": s.n, "start": clock(_local(m, s.start)),
+        row = {"show": s.n, "start": m.hm(s.start),
                "start_iso": _local(m, s.start).isoformat(timespec="seconds"),
                "status": status, "reason": s.reason, "origin": s.origin,
-               "planned": (clock(_local(m, s.planned))
+               "planned": (m.hm(s.planned)
                            if s.planned is not None else None),
                "past_last_end": runs_late(m, s)}
         if now is not None and s.status == PENDING:

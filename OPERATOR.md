@@ -44,12 +44,12 @@ sign-in.
 - **Signed out, every screen is view only.** It still shows the show
   state, the schedule, the flame and laser lamps and the alerts. The chip
   at the top right reads "Sign in to use controls", and Start now, Resume,
-  Reset, Run, every Hold to arm, a laser's Arm, the announcements and the
-  settings switches are greyed out. Hold, Abort, Disarm all and every
+  Run, every Hold to arm, a laser's Arm, the announcements and the
+  settings switches are greyed out. Stop, Hold, Disarm all and every
   Disarm stay live.
-- **Always, signed in or not:** Stop, Hold, Abort, Acknowledge an alert,
+- **Always, signed in or not:** Stop, Hold, Acknowledge an alert,
   Disarm all flame groups, disarming one group, and disarming lasers.
-- **Needs a signed-in operator or admin:** Start now, Resume, Reset, Run,
+- **Needs a signed-in operator or admin:** Start now, Resume, Run,
   arming a flame group (hold to arm and Arm all), a purge, arming a laser,
   a laser test, unlocking, playing an announcement, the checklists,
   choosing the operator and editing tonight's list. Settings, show files
@@ -61,7 +61,7 @@ sign-in.
   anything or stop live flame programming: use Disarm all or Stop for that.
 - **If the users file is damaged or missing** after users were set up, an
   alert says so on every screen and every control is locked except Stop,
-  Hold, Abort, Acknowledge and the disarms. Nobody can sign in. A good
+  Hold, Acknowledge and the disarms. Nobody can sign in. A good
   `ltcplay_users.json` put back in the settings folder is used at once, with
   no restart. To start over with no users: close LTC Player, remove
   `ltcplay_users.json` and `ltcplay_users.made` from the settings folder
@@ -135,30 +135,36 @@ someone acknowledges it. It stays until you press Acknowledge on the
 banner or any key on the Stream Deck. Acknowledge only clears the banner:
 nothing on the rig changes.
 
+**Nothing plays on the public PA automatically.**
+Jeff, 2026-10-30: nothing plays on the public PA automatically.
+"I want to delete the function where the delay audio plays
+automatically in any scenario. We can still notify Andy of issues with
+the in-booth speaker, but nothing on the public PA." The only things LTC
+Player plays by itself are the booth notes, on the booth speaker. The
+Delayed, Cancellation and Cannot continue announcements play on the PA
+only when someone presses them.
+
 **An alert still open when a show is due** (Jeff, 2026-10-26). Between
 shows an alert does nothing automatic. But if a show's time comes while
 any alert is open, the schedule goes on Hold at once instead of starting
-the show: the booth note sounds and the state card on the rack screen
-says "Held: alert open". For an audio, video, flames, flame link,
-timecode, start or rig check alert, a 60 second countdown shows there; if nobody
-acknowledges the alert by then, the Delayed announcement plays once on
-the PA. A Stream Deck or gate alert holds quietly, with no announcement.
-Acknowledging cancels the countdown and the announcement (with two such
-alerts open, both have to be acknowledged), even while the recording is
-still loading; once it has started it plays to its end. Acknowledging
-does NOT start the show: it waits until you press Resume (then Start now
-for the delayed show, as after any Hold). Pressing Resume on a held
+the show: the booth speaker plays "Show is held for an open alert." once,
+then the alert's own note, and the state card on the rack screen says
+"Held: alert open. Press Resume." Nothing plays on the PA (Jeff,
+2026-10-30): if the audience should hear Delayed, press it. Every kind
+of alert holds the same way, except the display only ones (aim slots,
+MadMapper not following, hazers, flame frame timing), which never hold.
+Acknowledging does NOT start the show: it waits until you press Resume
+(then Start now for the delayed show, as after any Hold). Pressing Resume on a held
 schedule while alerts are open is your choice: from this Hold or one of
 your own, before the show's time or after it, the show it lets start is
 not held again for those alerts (or for some of them, if others were
 acknowledged meanwhile); a NEW alert still holds it. It speaks only for
 that one show: the show after it is held again if the alert is still
-open, and resuming a paused, running show says nothing about the next. The automatic announcement
-changes nothing else on the rig: no laser is disarmed and nothing about
-the flames changes. If the recording or the announcement output is
-missing, it stays held and the state card says so. A show that
-is already running is never held, stopped, disarmed or announced over by
-this. Stop on the Stream Deck works the same while held.
+open, and resuming a paused, running show says nothing about the next.
+The alert hold changes nothing else on the rig: no laser is disarmed and
+nothing about the flames changes. A show that is already running is
+never held, stopped or disarmed by this. Stop on the Stream Deck works
+the same while held.
 While an alert is open the Stream Deck's Start key reads ACK / ALERT in
 blue; it goes back to START NOW once the alert is cleared. An audio alert,
 or an alert the booth speaker could not play, also pulses the floor pixels
@@ -174,9 +180,10 @@ three below:
 Key 5 reads ANNOUNCE while LTC Player runs announcements (it is blank and
 does nothing otherwise). One press opens page 2, see Announcements below.
 
-The deck has **no Hold key and no Abort key** any more. Hold, Resume,
-Abort and Reset are on the Rack screen (and the hardware e-stop is where it
-always was). The four flame keys arm and disarm Floor G (front row),
+The deck has **no Hold key** any more. Hold and Resume are on the Rack
+screen; the deck's Stop is key 0, held (and the hardware e-stop is where
+it always was). There is no Abort anywhere (removed, Jeff, 2026-10-30):
+Stop does everything it did. The four flame keys arm and disarm Floor G (front row),
 Cat-Walk G (cat-walk), Blue Flames (wave flamer) and Fireball (fireball):
 hold a key to arm its group, tap it to disarm. With no ltcplay_deck.json
 those four go on keys 1 to 4 by their names (any case; cat walk and
@@ -213,7 +220,7 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   schedule STAYS on Hold: press Resume when you are ready to carry on.
 - **During a show** the announcement plays over the show and pauses,
   holds and stops nothing, even when it is pressed the very second a show
-  starts. If the show has to end, press Stop (or Abort) yourself. The
+  starts. If the show has to end, press Stop yourself. The
   banner then reads ANNOUNCEMENT PLAYING.
 - On the show screen the Announcements line itself says HELD FOR
   ANNOUNCEMENT (or ANNOUNCEMENT PLAYING) and Stop announcement lights;
@@ -235,8 +242,8 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   announcement plays THROUGH THE SHOW AUDIO: mixed into the show's own
   front left and right, outputs 1 and 2, which are the Main L/R (USB
   return 1/2 on the StudioLive 16R). There is no second device: it plays
-  during a show, and neither the show, Hold, Stop nor Abort ever has to
-  let go of the interface for it. A Hold or an Abort fades the show's own
+  during a show, and neither the show, Hold nor Stop ever has to
+  let go of the interface for it. A Hold or a Stop fades the show's own
   audio as always; an announcement already playing goes on until it ends
   or you press Stop announcement.
 - **The level.** The show's own audio is never turned down or changed by
@@ -269,7 +276,7 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   during a show, and it holds nothing.
 - **A show starting or a Resume still fades an announcement** that is
   playing (over 0.15 s), so the show starts on time with its own sound.
-  Stop and Abort on the show never touch it. Stop announcement fades only
+  Stop on the show never touches it. Stop announcement fades only
   the announcement.
 - **Programming.** If you are playing the show in Programming when an
   announcement holds the schedule, the Programming playback pauses with it
@@ -304,7 +311,7 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   buttons are off and the line says to look at the Show audio lamp.
 - The deck's page 2 hides the four flame keys while it is up, because the
   deck has only six keys. It goes back to the flame keys by itself: BACK,
-  ten seconds with no key pressed, an Abort, an alert, the Startup page
+  ten seconds with no key pressed, an alert, the Startup page
   opening, or a deck alarm. START / STOP is the same key on both pages.
   It goes back for the ten seconds only when LTC Player has just said
   nothing is playing: while one plays, or while the deck has not heard
@@ -366,23 +373,24 @@ Run has been pressed and playback is going it reads STOP RUN: hold it for
 half a second to Stop. Stop first turns every flame group off, at once,
 then does exactly what the Rack screen's Stop does: live flame programming
 ends, every flame group is sent off again through the show's flame link
-(the flame half of an Abort, so each group needs a fresh arm), playback
-stops, the outputs go dark, and no show starts until Run is pressed again.
-The deck's Stop is a complete halt: every laser is disarmed too.
-Unlike Abort it does not latch the rig: nothing needs a Reset. A tap does
-nothing; let go before the ring fills and nothing is sent.
+(so each group needs a fresh arm), the
+outputs go dark, and the schedule goes on Hold: no show starts until
+Resume (Jeff, 2026-10-30). Run stays on, so the key keeps reading STOP
+RUN after a Stop; that is expected. The deck's Stop is a complete halt:
+every laser is disarmed too. Nothing latches: Resume carries on. A tap
+does nothing; let go before the ring fills
+and nothing is sent.
 
 **Stop during a scheduled show** (Jeff, 2026-10-26). The key keeps saying
 NOW PLAYING, PAUSED or AUDIO LOST, but holding it half a second still
 stops everything: every flame group and laser is disarmed, the show ends
-(faded to dark as an Abort is, but with no latch and no Reset needed),
-playback stops, and no show starts until Run is pressed again. Stopping
-the last show of the night closes the night a moment later, as an Abort
-does. Because Run is no longer pressed, each later show that night raises
-a "The show did not start" alert when its time comes, until the last
-show's time has passed or Run is pressed again: acknowledge each one. To
-disarm just one group during a show, tap its key on the deck, or use the
-Rack screen.
+(faded to dark over 1 second, nothing latched),
+and the schedule goes on Hold, so no later show starts until Resume. Run
+stays on (Jeff, 2026-10-30). A show whose time comes during the Hold
+waits as a delayed show for Start now. Stopping the last show of the
+night closes the night a moment later. To disarm just
+one group during a show, tap its key on the deck, or use the Rack
+screen.
 
 **If the deck cannot read the show computer** (it is down, or still
 starting), the key reads STOP ALL, and the same half second hold still
@@ -391,7 +399,7 @@ show computer for the rest, and says ENGINE FAULT if it cannot reach it
 (or CHECK RACK if it took the Stop but has not answered yet). If the
 flames and lasers went off but playback itself did not stop, the key reads
 PLAYBACK FAILED: press Stop on the Rack screen. If the show itself did not
-end, the key flashes SHOW NOT STOPPED: press Abort on the Rack screen. The key also reads STOP
+end, the key flashes SHOW NOT STOPPED: press Stop on the Rack screen, or use the hardware e-stop. The key also reads STOP
 ALL when nothing is running but a flame group is armed, or live flame
 programming or Programming playback with flames is on, and the hold turns everything
 off. An alert waiting on the deck never eats a
@@ -405,16 +413,14 @@ anything but the purge (a group the purge selection wants counts as the
 purge's, even if it was armed by hand first): then it is Stop. If FIRE is
 being held when a show or run starts, FIRE ends and the same held key
 becomes a Stop hold at once: keep holding to stop, let go to cancel. The Rack screen's Stop is the same complete halt, during a show
-too (see Stop, Hold and Reset on the rack screen, below). After an Abort the deck's border goes red and
-the keys grey out, but STOP RUN still works while a run is going, as on
-the Rack screen. If Stop stopped playback but could not send the flame
+too (see Stop, Hold and Resume on the rack screen, below). If Stop stopped playback but could not send the flame
 groups off, the Rack screen says "Stopped, but the flame disarm FAILED"
 and the deck's key flashes DISARM FAILED: press Disarm all flame groups,
 or use the hardware e-stop.
 
 **A flame group with no key.** A group past key 4 has no key: arm it by
 holding its Hold to arm button on the Rack screen, disarm it there, with
-Disarm all flame groups, a Stop on the deck or any Abort. Its name on the
+Disarm all flame groups, or any Stop. Its name on the
 Rack screen's flame card says "(no Stream Deck key)". A purge click on
 the Morning page never arms it, and a Fireball is never purged at all.
 
@@ -432,14 +438,16 @@ plain words. Disarm all flame groups does not disarm, blank or switch
 off the lasers (it still ends a laser calibration test, as it always
 has), and the Stream Deck has no laser key.
 
-**WIND on the show screen (Fire & Ice).** Under the lasers. Advisory only:
-it never arms, holds or stops anything; the on-site wind check decides.
+**WIND on the show screen (Fire & Ice).** Under the lasers. It never
+arms, holds or stops anything. Each line says when it was last updated, as
+a date and time in the show's time zone ("Last updated Oct 30, 2:14 PM";
+the forecast also "NWS issued Oct 30, 1:50 PM"), or "No reading yet".
 The measured line shows the highest usable reading from UTALP (the I-15
 Point of the Mountain station) and the backup airports (Provo, Salt Lake
 City). A backup reading is amber and says "backup station", the airport,
 how far away it is and why UTALP was not used ("UTALP (Iowa mesonet)
-stopped reporting at 3:40 AM, last reading 3 h 12 min ago") or what UTALP
-reads. If the highest reading is STALE it is still shown, amber and
+stopped reporting, last updated Oct 30, 3:40 AM") or what UTALP reads.
+If the highest reading is STALE it is still shown, amber and
 marked STALE, with the current ones beside it. NO CURRENT DATA, use
 on-site wind check, with no number, means no
 source has a usable reading (UTALP over 45 min old, an airport over 2 h);
@@ -456,8 +464,8 @@ laser starts DISARMED each time the engine starts; Arm on a laser, or Arm
 on a laser group, then Arm in the confirm box; Disarm all lasers is one
 click and always works, signed in or not; BEYOND's laser output comes on
 only once EVERY laser is armed and none is locked out, because BEYOND's
-only known command is for all lasers at once; Abort, Hold and the night
-closing disarm every laser, and after Resume or Reset they stay dark until
+only known command is for all lasers at once; Stop, Hold and the night
+closing disarm every laser, and after Resume they stay dark until
 you arm them again; the Lasers pill at the top of the rack screen says how
 many are armed); one calibration test button per laser (the laser has to be
 armed first) (ON keeps the grid up at low power until pressed again;
@@ -480,8 +488,7 @@ a group button arms every machine in it that can be armed and says which
 it skipped and why, such as one locked out; it is green when all of the
 group is armed, amber with the count and the reason when only part is,
 and while any of it is armed, clicking it again takes the whole group off;
-let go and it stops; nothing fires while a show is live or an Abort
-stands); the timed purge (below); lock out of any one machine or laser (the L button on it: one tap
+let go and it stops; nothing fires while a show is live); the timed purge (below); lock out of any one machine or laser (the L button on it: one tap
 locks it out, one tap on a locked one unlocks it, with no pop-up either
 way; a line under the machine map, or under the lasers, says what was
 done, with Undo for 5 seconds; a tap does what the screen showed when you
@@ -513,10 +520,10 @@ says "Hold to purge (the machines) for (the seconds)", the same as a Hold
 to arm: a tap does nothing, let go too soon and nothing fires. Once it
 says it started you can let go: the machines fire for those seconds and
 stop by themselves, even if the page or the iPad is closed. The rack
-screen, every screen's banner, 2.0's top line and the Stream Deck's key 0
+screen, the line at the top of every tab and the Stream Deck's key 0
 (PURGING and the seconds) count down. To end it early press Stop purge
 (on the Startup page or the banner, from any screen, signed in or
-not), or Stop, Hold or Abort; Start now, Run, a disarm of one of
+not), or Stop or Hold; Start now, Run, a disarm of one of
 its groups, a lock, signing out and any other purge press (Space, the
 deck's FIRE, the button again) also end it at once. Only one purge at a
 time; the Fireball page, the cleaning and live flame programming wait for
@@ -536,9 +543,19 @@ group must list five fire slots" and does nothing.
 - **Valve Open** and **Igniter** are on only while your finger is on the
   button. Lift it and they go off.
 
-ON is 255 on that channel. Nothing on this page arms. Arm the Fireball as
-always, with its hold to arm (the show screen's button or its Stream Deck
-key), signed in. Until it is armed every button is grey, says why, and
+ON is 255 on that channel. A **Fuel Charge or Air Charge** press is held
+for the few milliseconds the charge record needs to save its PENDING mark
+(see "The fuel and air charge"); if the record cannot be saved it goes out
+anyway and both tanks read NOT KNOWN. Fuel and Air are toggles and the
+page keeps sending while they are on, so a quick tap is never lost: the
+press is sent at the next beat (the answer says "held" meanwhile, and
+the pad says WAITING, not ON). If the charge record does not answer in 2
+seconds (a hung disk) the press is **dropped**, everything goes off, and
+the page says so: release and press again. It is never sent late.
+The mark still reaches the disk meanwhile, so on a slow disk a second
+press within 5 seconds goes straight out. Nothing on this page arms. Arm
+the Fireball as always, with its hold to arm (the show screen's button or
+its Stream Deck key), signed in. Until it is armed every button is grey, says why, and
 nothing is sent: flamesafe keeps every Fireball channel at zero, the Valve
 Open included, unless the Fireball is armed. The Fireball arms only with
 every channel at zero, so this page keeps them all off until it is armed,
@@ -546,24 +563,49 @@ and turns them all off when it disarms (if one still shows ON, it says "turn
 Fuel, Air, Purge off before arming").
 
 **Everything goes off by itself** (within a quarter of a second) on: Stop,
-Hold, Abort, Disarm Fireball, Disarm all flame groups or the Fireball's
-deck key; flamesafe not reporting; leaving the page, closing it or hiding
-it; this page's status not being live; signing out; the connection
-dropping; and the All off button (any screen). Losing focus (another window
+Disarm Fireball, Disarm all flame groups or the Fireball's deck
+key; the Fireball locked out; the flame link lost, a single frame to
+flamesafe that could not be sent, or frames stopping for more than
+flamesafe's own fire_hold_ms (100 ms unless its config says otherwise;
+a stall inside the engine's own reading counts too, and so does a Hold or
+the end of a show that comes during one: it never sends a channel
+flamesafe has already zeroed); flamesafe not reporting; leaving the page, closing it or hiding
+it; this page's status not being live; signing out (at once, at the
+engine: the run that sign-in started, or that person's run on that
+screen, and on the show PC every run started there; never someone
+else's run on another iPad); losing the right to arm (a role changed,
+the person removed, a password reset, the sign-out after the last
+show); the connection dropping; and the All off button (any screen). Losing focus (another window
 clicked) lets go of Valve Open and Igniter. After any of these nothing
 comes back on by itself: press again.
 
-**When it will not work** it says why in plain words: a show live or on
-Hold, an Abort standing, Run pressed (the show file owns the channels),
-live flame programming on, a purge selected
-on the Startup page (and that purge waits while a Fireball channel is on),
-any screen in Arrange mode, the Fireball locked out, or the purge switch
-off (`purge_arming`, and from an iPad `screen_arming`, in
-ltcplay_remote.json). One screen at a time. Signed out it is view only;
-turning a channel on needs the arm permission (an operator or admin), and
-All off always works. The values go out the way the Startup page's purge
-does, on the engine's own flame link to flamesafe, which stays the only
-program that writes to the flame node.
+**During a show too** (Jeff, 2026-10-30: Andy may start any phase by hand
+at any time). The page works while a show plays, while Run is pressed and
+during Programming playback, and Programming's Play from and Loop work
+with a Fireball channel on (it stays on). On each Fireball channel the higher of the
+show's value (its FSEQ, or its fireball timeline) and this page's goes
+out, so the page can add a channel the show has off, and can never turn
+off one the show has on. The page shows the fuel and air charge record
+and, when the timeline skipped a charge, why. **Fuel Charge or Air Charge
+pressed while that tank is already charged is a top-off, not a double
+charge**: the button says "Charged: a press is a top-off", and the
+journal names who topped it off. A tank charged by hand is not charged
+again by the timeline in that show (its stage is skipped and says so).
+
+**A Hold does not turn the page off** (Jeff, 2026-10-30). Hold, and the
+end of a show, zero the show's own fireball values (its FSEQ or its
+timeline); what you hold on this page stays on through them.
+
+**When it will not work** it says why in plain words: live flame
+programming on, a purge selected on the Startup page (and that purge
+waits while a Fireball channel is on), any screen in Arrange mode, the
+Fireball locked out, or the purge switch off (`purge_arming`, and from an
+iPad `screen_arming`, in ltcplay_remote.json). One screen at a time.
+Signed out it is view only; turning a channel on needs the arm permission
+(an operator or admin), and All off always works. The values go out on
+the engine's own flame link to flamesafe, which stays the only program
+that writes to the flame node, and only on the Fireball's five channels:
+never on 77, never on any other channel.
 
 **First test at the rack, fuel valve closed and the key switch on test or
 off, with Andy:**
@@ -575,9 +617,10 @@ off, with Andy:**
 3. Each toggle on and off once (Fuel Charge, Air Charge, Purge): the head
    follows, and goes off when pressed again.
 4. Hold Valve Open, then Igniter: on while held, off the moment you lift.
-5. With Fuel Charge on: press Disarm Fireball, then (armed again) Abort,
-   Stop, Hold, the Fireball's deck key, and close the page. Each time every
-   channel goes off at once and stays off.
+5. With Fuel Charge on: press Disarm Fireball, then (armed again) Stop,
+   the Fireball's deck key, and close the page. Each time every
+   channel goes off at once and stays off. Then with Fuel Charge on press
+   Hold: it stays on (a Hold never turns the page off); Stop turns it off.
 6. Pull the network cable of the iPad (or close the browser) while holding
    Valve Open: it goes off within a second.
 7. Only then open the fuel valve, one channel at a time.
@@ -612,7 +655,7 @@ says the limits).
 
 **Stop** works from the Shutdown page and the banner on the rack screen or
 an iPad, the rack screen's own Stop, and the Stream Deck's Stop key (the
-deck shows Stop while the cleaning runs or waits). **Abort** always works.
+deck shows Stop while the cleaning runs or waits).
 
 **How it arms.** Every arm is a hold to arm, exactly as on the show screen:
 yours for the start and for the go-ahead, and, in phase 1 only, the same
@@ -624,7 +667,7 @@ and the Stream Deck program running, signed in as someone who may arm.
 Signed out it is view only; Stop always works.
 
 **It stops at once, the ignition off first and then the wave flamers
-disarmed,** on: Stop (anywhere); Abort; Hold; any disarm anywhere; the
+disarmed,** on: Stop (anywhere); Hold; any disarm anywhere; the
 wave flamers disarming by themselves; flamesafe not reporting; a wave
 flamer locked or unlocked; a show starting; live flame programming
 going on; another flame group armed; an alert about
@@ -634,8 +677,8 @@ gave the go-ahead) signing out; any refusal. If flamesafe does not report
 the wave flamers off within a second, Disarm all flame groups goes.
 Nothing comes back by itself: start again with a hold.
 
-**When it will not start** it says why: a show live or on Hold, an Abort
-standing, Run pressed, live flame programming on,
+**When it will not start** it says why: a show live or on Hold, Run
+pressed, live flame programming on,
 a purge selected (and the purge waits while the cleaning runs), the
 Fireball page with a channel on, any screen in Arrange mode, another flame
 group armed or being armed, the wave flamers already armed (it starts
@@ -659,7 +702,7 @@ page as flame (not as a purge).
    going.
 4. Press Stop on the page: the click stops at once, the lamp goes off
    within a second. Run it again and try each stop once, in phase 1 and
-   in the bursts: the banner's Stop, Abort, Hold, the Stream Deck's Stop,
+   in the bursts: the banner's Stop, Hold, the Stream Deck's Stop,
    Disarm all flame groups, locking a wave flamer, unplugging the deck.
    Each time the click stops at once and the wave flamers disarm.
 5. Lock one wave flamer before starting: that one never moves or clicks,
@@ -803,6 +846,37 @@ restarted. Within about 5 seconds of the edit, the rack screen shows a note
   with an older copy of `flamesafe.json`, its log says which programs were
   left behind and when each started.
 
+### "Flame settings file broken": flamesafe.json is not valid JSON
+
+A typing slip in `flamesafe.json` (a missing comma, a stray bracket) used
+to stop flamesafe and the Stream Deck program over and over, and the rack
+screen never opened. Now:
+
+- LTC Player still starts and the rack screen opens. Its alert slot shows
+  "Flame settings file broken." in red; tap it for the whole sentence: the
+  file, the line and column where it is broken, and the last good copy.
+- Flames are off. flamesafe and the Stream Deck program are not started
+  on that file, and the engine runs without its flame link: no flame group
+  can be armed from any screen (with flamesafe stopped, the flame
+  controller gets nothing to fire with). Stop and Hold still work for the
+  show. The slot also says flamesafe is not connected and there is no
+  flame link here: both are expected until the file is fixed.
+- The start message says the flamesafe config is invalid, and
+  `flamesafe.log` (in LTC Player's logs folder) says the same sentence.
+- A file saved "UTF-8 with BOM" (an older Notepad does) counts as broken
+  too: flamesafe refuses it. Save it as UTF-8 without BOM.
+- The last good copy is `flamesafe.last-good.json`, beside
+  `flamesafe.json`. LTC Player writes it only after flamesafe has run on
+  a file for 20 seconds, and only while the file still holds what
+  flamesafe started on, so a file flamesafe refused never becomes it. The
+  screen says when it was saved: it may be older than your recent edits
+  (a channel moved since, for example), so check it before you use it.
+- To fix it: correct the line the screen names, or copy
+  `flamesafe.last-good.json` over `flamesafe.json` by hand (nothing copies
+  it back by itself). flamesafe and the Stream Deck program start on their
+  own once the file is valid; then stop LTC Player and start it again, so
+  the engine reads the file too.
+
 ## The hazers
 
 Jeff, 2026-10-29. The three haze machines share the flame universe, but
@@ -813,14 +887,14 @@ channel, and is either ARMED or DISARMED.
 - **Arming.** On the show screen, the Hazers row under the flame groups:
   Hazer 1, Hazer 2 and Hazer 3, each reading ARMED (green) or DISARMED.
   One tap arms, the next disarms. No hold: a hazer is not a flame. On
-  Interface 2.0 on a narrow screen the row is one Hazers tile; its Hazers
+  a narrow screen the row is one Hazers tile; its Hazers
   button opens the hazers, with each one's arm button. On the Stream
   Deck: the hazers page, keys 1 to 3 arm and disarm, key 4 is HAZERS OFF,
   key 5 BACK. Open it with key 5 on the arm keys page: a tap if no
   announcements are set up; with announcements, a tap is still
   ANNOUNCE, and a hold (0.7 s, the ring fills) is the hazers. The
   announcements page's key 5 is always BACK.
-- **Levels.** Levels on the show screen (Hazers on 2.0's tile): each
+- **Levels.** Levels on the show screen (Hazers on the narrow tile): each
   hazer's Haze and Fan, 0 to 100 percent, 5 a tap. **Same for all
   hazers** sets every hazer at once. They take effect at once, during a
   show too, and are kept on the show PC (ltcplay_hazers.json in the
@@ -835,54 +909,895 @@ channel, and is either ARMED or DISARMED.
   group (the arm row of the role matrix), and from an iPad need arming
   from a screen switched on. Disarming and Hazers off work for everyone,
   always.
-- **What disarms them.** Abort, Stop, Hazers off, a restart, flamesafe not
+- **What disarms them.** Stop, Hazers off, a restart, flamesafe not
   answering for a second, and live flame programming ending (a hazer
-  cannot be armed while live flame programming is on). After an Abort or
-  a Stop, arm each one again (wait a second after a Stop).
+  cannot be armed while live flame programming is on). After a Stop, arm
+  each one again (wait a second after a Stop).
 - **If a tile says Waiting for flamesafe,** flamesafe has not taken the
   arm yet; if it stays that way, disarm it and arm it again.
 
-## Stop, Hold and Reset on the rack screen
+## The fireball's fuel pump
 
-Jeff, 2026-10-28. Each screen has one Stop, where the button that started
-things was:
+Jeff, 2026-10-30: "a toggle for a fuel pump. This is something for Andy to
+manually control as needed. It does not need to be armed or disarmed but
+it should be affected by the stop button." And: "Off on Stop, NOT Hold.
+Pump should auto-stop after 5 minutes. Allow Andy to set duration before
+he triggers it."
 
-- **Stop.** On the show screen, Start now turns into a red **Stop** while a
-  show is live (playing, or paused on Hold). On the Programming screen, Run
-  turns into **Stop** while Run is in force. Stop asks once, then does
-  exactly what the Stream Deck's Stop does, a complete halt: every flame
-  group and every laser is disarmed first, nothing is fired, a live show
-  ends and fades to dark, then playback stops, so Run is off. Nothing is
-  latched: no Reset is needed. Press Run to bring the rig back; each flame
-  group needs arming again. The line under the buttons says what happened
-  ("Stopped. The show ended and the rig is fading to dark...") or, if any
-  part did not work, which part, and what to press. If the engine refuses,
-  it says why in its own words. Stop works the same from the rack
-  screen, an iPad and the Stream Deck, signed in or not. Right after Stop
-  turns back into Start now (or Run) the button waits 2 seconds before it
-  takes a press, and a press made just as the show ended or started does
-  nothing and says so: a Stop never turns into a start.
+- **What it is.** One DMX channel on the flame universe (channel 100, on
+  at 255), not a flame: no safety channel, no hold to arm. flamesafe
+  writes the on value itself; the show file never drives it.
+- **On the screen.** The SHOW tab, the Fuel pump row
+  under the hazers: the pump's state ("Off", "Pump on: 4:12 left", or
+  "Waiting for flamesafe", or "flamesafe has it on" when flamesafe still
+  passes it with LTC Player off: press Pump off), the run time field, **Fuel pump: On** and
+  **Pump off**. Type the run time, then tap Fuel pump: On. When On cannot
+  be pressed it is greyed and says why in a few words. Pump off is never
+  greyed. The row is there only when `flamesafe.json` lists a pump.
+  When On cannot be pressed, the line under the row says why in full.
+  The Stream Deck has no pump control. Every Stop
+  that is carried out turns the pump off (a screen's
+  double tap Stop and the Stream Deck's Stop always are); a Hold never
+  does, and neither does a Stop's Hold standing on later nights. A Stop
+  that is refused, such as the old page's plain Stop during a live show,
+  leaves the pump as it was.
+- **Run time.** The default is **5:00**: unless you set another time
+  before you turn it on, the pump runs 5 minutes and turns off by itself.
+  To run it longer or shorter, set the time first, in minutes and
+  seconds (4:30) or whole minutes (5). The field goes back to 5:00 each
+  time the pump turns off. The ceiling is **10:00** (Jeff, 2026-10-30):
+  a longer time is refused and the screen says so in words. An admin can
+  set a lower ceiling (`pump_max_s` in `ltcplay_remote.json`), never a
+  higher one; a setting above 600 s is read as 10:00. Turning it on while it runs is
+  refused, and never adds time: press Pump off, then start it again with
+  the time you want.
+- **When.** Any time: during a show, between shows, in Programming.
+- **Who.** Turning it on needs the same sign-in as arming a flame group
+  (the arm row of the role matrix), and from an iPad needs arming from a
+  screen switched on. Pump off works for everyone, always.
+- **Signing out turns it off** (Jeff, 2026-10-30), as it ends a timed
+  purge: the person who turned it on signing out on that screen, or that
+  sign-in ending any other way (idle sign out, sign out after the last
+  show, a sign-out on the show PC, which ends every sign-in made there).
+  Someone else signing out on another screen leaves it running.
+- **What turns it off.** Its time up, Pump off, signing out (above), Stop, the night
+  closing (and the night being over, for a run started before), flamesafe
+  not answering for a second, the flame link not sending, flamesafe not
+  passing it for a second and a half (press Fuel pump: On again), and a
+  restart of LTC Player or flamesafe. **Hold does not turn it off.**
+- **Anything that sends the disarm to every flame group turns it off
+  too**, on purpose (it only takes something away): Disarm all flame
+  groups when the Stream Deck does not answer and LTC Player falls back
+  to the disarm to every group, the wave flamer cleaning's disarm, and
+  live flame programming ending. The journal names which one. Live flame
+  programming cannot be turned on while the pump runs, because a Hold or
+  Start now ends live flame programming, and that would turn the pump
+  off; press Pump off first.
+- After a Stop or any of those, wait a second before you turn
+  it on again.
+- **When it is refused.** A Stop still being sent (wait a second), live
+  flame programming on,
+  flamesafe not answering, the flame link not sending, the night closing,
+  its channel in the lockout file, flamesafe and LTC Player reading
+  different pump settings, or the pump already on. The screen says
+  which.
+
+**Setting it up.** Add this one line to the `passthrough` list in
+`flamesafe.json`, after the hazers:
+
+```json
+{"name": "Fireball Fuel Pump", "switch": 100, "on": 255}
+```
+
+`switch` is the DMX channel and `on` the value it takes when on (1 to
+255). Channel 100 must be in no flame group and no other passthrough
+entry. With no such line there is no pump and no pump button.
+
+**Order matters.** A flamesafe or an LTC Player older than the fuel pump
+update refuses a `flamesafe.json` with this line. With only flamesafe
+updated, LTC Player does not start, which stops the whole show; with only
+flamesafe restarted and an older LTC Player still running, no hazer can
+be armed. Install BOTH updates first, then add the line, then restart
+flamesafe and LTC Player. Before the pump is wired, check at the bench
+that the DMX node (the PixLite) drops its outputs to zero when the flame
+universe stops arriving, rather than holding the last look.
+
+## The fireball timeline
+
+Jeff, 2026-10-30. For each show file, the fireball's preparation and
+ignition can run from a timeline instead of from the show's FSEQ. Each
+stage has a **start** (a timecode on the show audio's own cue time,
+HH:MM:SS:FF at 30 frames a second, 00:00:00:00 at the top of the show
+cue) and a **duration** in seconds: its channel is on from the start for
+that long. The stages, in this order:
+
+| Stage | Channel |
+|---|---|
+| Fuel (Fuel Charge) | 55 |
+| Air (Air Charge) | 56 |
+| Igniter (Fireball Igniter) | 58 |
+| Valve Open (Fireball Valve Open) | 57 |
+
+- **Purge (59) is never a stage.** Purging is pressed by hand only, on the
+  Fireball page. Nothing purges by itself, ever. All Fireball Safety (77)
+  is flamesafe's own slot: it writes it from the arm state.
+- **What is checked.** A start is a real timecode inside the show; a
+  duration is a number of seconds above 0. There is no longest duration
+  and no order between the stages. A stage left out is never on. A stage that would run past the end of the show
+  ends there. Anything wrong is refused in a sentence and nothing is
+  saved.
+- **Source.** Each show file is either **FSEQ** (as today, and the
+  default for every show) or **Timeline**. Nothing changes for any show
+  until an admin switches it.
+- **Who may edit.** A signed-in person with the Settings row of the role
+  matrix (admins by default). From an iPad, arming from a screen must be
+  on too. Signed out is view only. Editing is allowed at any time, during
+  a show too: it is restricted by who, never by when.
+- **Kept safely.** The timeline is `ltcplay_fireball_timeline.json` in
+  the settings folder. Every save is written whole, says which version it
+  was based on (if someone else saved since, it is refused: reload, check
+  and save again), keeps the version before it in
+  `fireball_timeline_history` (the last 50), and writes one journal line
+  and one audit line: who, which screen, and what changed, stage by
+  stage. If the file cannot be read, or it is missing after it was saved
+  once, no show fires its fireball from a timeline (a show set to Timeline
+  never falls back to its FSEQ), and every save is refused, because saving
+  over it would lose every other show's timeline. An admin either repairs
+  the file or replaces it on purpose (the broken one is kept in
+  `fireball_timeline_history`). If the copy of the version before cannot
+  be kept, the save still stands and says so. A show is saved under the
+  show folder's
+  own spelling of its name ("show.json" typed on a Mac or Windows PC is
+  saved as "Show.json"); two files whose names differ only by case are
+  refused: rename one.
+- **Where: the Schedule tab, Fireball timeline.** Pick
+  the show file, then FSEQ or Timeline. Each stage is one row: tap its
+  name to use it or leave it out, type its start (HH:MM:SS:FF) and its
+  length in seconds (2.5 or 2,5; 1,000 is refused as unclear: write 1000
+  or 1.0). A time typed into a stage that is not used uses it. The bar
+  under the rows draws each stage on the show's length. A row that would
+  be refused says why in red under the row at once, Save stays greyed
+  ("Fix the marked rows") and nothing is sent. Save sends it, against
+  the version you started from; Revert reads the saved one again. Before
+  Revert or picking another show drops changes you have not saved, the
+  card asks: **Keep editing** or **Discard my changes**. If someone else saved
+  this show's timeline since you started (seen when you come back to the
+  tab, or when Save is refused), Save stays greyed ("Saved elsewhere:
+  Revert") until you press Revert and make your change again. While a
+  save, or a read of this show, is on its way the fields are locked and
+  Save is greyed. If a read fails, what is on the screen stays (your
+  changes too) and **Could not read: Retry** reads it again; a save that
+  could not be read back says "Saved. Could not read it back: Retry". A
+  save with no answer in 15 seconds says "No answer: check the
+  connection" and the fields unlock (it may have saved: Revert reads
+  what is there). Picking another show file
+  empties the rows until that show's own timeline has been read. If the
+  timeline file is broken, an admin sees **Replace the file** (it asks
+  first: every other show's timeline in it is lost). The card says who
+  saved it last, and when a show is live that a save applies from the
+  next frame. Signed out, without the Settings row, or from an iPad with
+  arming from a screen off, every field and Save are greyed with a dashed
+  edge and Save says why ("Sign in to edit", "Admins only", "Arming off
+  here"). Hold, Stop show and Disarm flames stay at full strength
+  above and beside it.
+
+### Every show, FSEQ or Timeline (a behaviour change)
+
+Jeff: never a double charge under any circumstance, and Purge by hand
+only. So for **every** show, also one that plays its fireball from its
+FSEQ:
+
+- **Purge (59) never comes from a show.** Whatever the FSEQ has on 59 is
+  zero. Purge is only the Fireball page's Purge button.
+- **The FSEQ's Fuel Charge (55) and Air Charge (56) follow the same charge
+  rule as the timeline:** they go out only while that tank is EMPTY, or
+  carrying on the charge they started; otherwise they are held off and the
+  journal and the screens say so once ("Fuel already charged: the FSEQ's
+  Fuel Charge was skipped (no double charge)."). After a shot or a Purge
+  empties the tank, the next charge in the FSEQ goes out again.
+  A charge the FSEQ itself turns off has ended: a second Fuel cue a
+  moment later, or a flicker effect, never charges a charged tank again.
+- **The fireball must be on 55 to 59.** If flamesafe's fireball group is
+  on other channels, no show fires its fireball (its own channels are held
+  at zero), both tanks become NOT KNOWN on the charge record, and the
+  screens say why, until the group is on 55 to 59.
+- **flamesafe.json and the running flamesafe must agree.** The cues read
+  the fireball's slots from flamesafe.json, the charge record reads them
+  from the running flamesafe's status. If the two differ (for example the
+  file says 60 to 64 and flamesafe was started before the file was
+  changed and still runs 55 to 59), the channels of **both** groups are
+  zero from every show, both tanks become NOT KNOWN, "Tanks are empty" is
+  refused, and the screens say "flamesafe.json puts the fireball on ...
+  and the running flamesafe on ...", until they agree: restart
+  flamesafe and LTC Player from the same file.
+- **No fireball group found at all** in flamesafe's config: 55 to 59 are
+  still guarded for every show, whatever is wired to them. Purge (59) is
+  always zero, and Fuel (55) and Air (56) each get one charge until a
+  shot (57) or a Purge empties the record again.
+- Valve Open (57) and the Igniter (58) of an FSEQ show follow the rules
+  below (whole or not at all after a landing; Valve Open needs its
+  Igniter to have gone out first). Every other channel of an FSEQ show is
+  exactly as before.
+
+### Valve Open needs its Igniter first (every play, every show)
+
+Valve Open runs only after its Igniter has actually gone out in that run:
+the flame link must have sent the Igniter since it last started its guard
+again (a start, Play from, Back, Ahead, Continue, a loop, or the show
+timecode jumping by itself, for example after a stall). This holds on
+every play, not only a start at a cue. It applies when the timeline has an
+Igniter starting at or before Valve Open, and on a show on its FSEQ when
+the Igniter is on as Valve Open opens; on an FSEQ show the Igniter counts
+only until the FSEQ turns it off, so each shot needs its own.
+
+- **A Valve on the Igniter's own frame never runs.** The Igniter has not
+  gone out yet when the Valve would open. Start Valve Open at least 3
+  frames (0.1 s) after the Igniter. The fireball timeline editor
+  (Schedule tab) shows this under Valve Open, and a save that has it says so
+  (it is still saved). An FSEQ made in xLights with the two starting
+  together loses that shot the same way.
+- **Every lost shot is said.** Each is a line in the journal, and the
+  Fireball line on the Morning and Startup page says, per show, "N
+  fireball shots skipped: Valve Open needs its Igniter to go out first"
+  for that show's latest play. With no fireball group on 55 to 59 in
+  flamesafe (nothing there can reach a tank, as on the bench soak), the
+  Valve is still held but nothing is counted or said.
+
+### In a show set to Timeline
+
+- The show's FSEQ values on 55 to 59 are ignored, always. Each stage's
+  channel is ON (255) from its start for its duration, on the show audio's
+  own cue time, and off otherwise. **Purge (59) is never set.**
+- Everything that stops flames stops these: they reach the Fireball only
+  while it is **armed** (flamesafe), only while the show plays, and Hold,
+  Stop, a seek and a Programming move work on them exactly as on
+  any flame cue. After a Resume a stage whose time is still running comes
+  back like any flame cue does, **except a charge** (below).
+- **Never a double charge.** The Fuel or Air stage turns its channel on
+  only while that tank is EMPTY (see the charge record below), or while it
+  carries on the very charge it started. A new charge also waits until
+  the charge record says PENDING on disk (below), asked for when the
+  stage is within two seconds of starting (a rehearsal stopped before
+  that leaves no mark); if that cannot be saved, the stage is skipped:
+  "the charge record cannot be saved: automatic charging is off" (an
+  FSEQ's charge stays skipped until the FSEQ turns it off). A Programming
+  Ahead or Back inside a play counts as a landing, and so does a pause of
+  more than a quarter of a second (the position may have moved while the
+  engine was not asked): a charge stage that has not started never starts
+  inside a window the play landed in, whatever the mark's answer (after a
+  Hold, a seek, a Play from). Otherwise it is skipped for the
+  rest of that play, and the journal and every screen's status say so
+  once, for example
+  "Fuel already charged: the Fuel stage was skipped (no double charge)."
+  A tank NOT KNOWN is skipped too: purge or fire to reset it. A charge cut
+  short (stopped for more than a quarter of a second: Hold, Stop, a seek)
+  never charges again in that play, even after a Resume inside its time:
+  "Fuel charge cut short ... not charged again in this play": that shot
+  is under-charged, and the journal says so too. A stage interrupted for
+  0.25 s or less resumes within the same window; longer ends it. So a
+  dropped frame, a send that failed, a short link outage, a lockout
+  undone at once, or a Hold under 0.1 s with an instant Resume rides
+  through as the same charge; its time on never adds up to more than its
+  window. The Valve Open and Igniter stages are not limited by this.
+- **Editing during a show.** A saved change is taken on the next frame. A
+  stage already started keeps the times it started with. A stage not
+  started yet takes the new times, unless its new start is already behind
+  the show: then it is not fired in this play. A change of source (FSEQ
+  or Timeline) applies from the next time a show cue starts: the play
+  running finishes its own stages, Valve Open included.
+- A show plays the timeline saved for it under any spelling of its file
+  name ("SHOW.JSON" plays the timeline of "Show.json"); two entries that
+  differ only by case are a fault and that show fires no fireball.
+- If the timeline file cannot be read, or could not be set up, 55 to 59
+  are zero for **every** show (a Timeline show never falls back to its
+  FSEQ) and the journal and every screen's status say why.
+
+### The fuel and air charge (never a double charge)
+
+Jeff, 2026-10-30: "If air and fuel were pressurized, but there was no
+shot, the stop button doesn't depressurize that. ... Do not under any
+circumstances double charge the air or fuel." LTC Player keeps a record
+of each tank, **Fuel** and **Air**: EMPTY, CHARGED, or NOT KNOWN, and
+for the record as a whole a mark, PENDING.
+
+- **PENDING (write first, then charge).** Before any automatic charge
+  goes out (a timeline's Fuel or Air stage, or an FSEQ's Fuel or Air
+  Charge), LTC Player writes "an automatic charge may be going out" to
+  the record and waits until it is on disk. That is one write, at the
+  first charge of a show, a few milliseconds. If it cannot be written,
+  the automatic charge is **not sent** and the screens say "the charge
+  record cannot be saved: automatic charging is off". If LTC Player
+  stops with PENDING on the record, an EMPTY tank reads NOT KNOWN at the
+  next start. A charge channel that is on keeps the mark asked for. A
+  shot, a Purge or Tanks are empty clears it. A mark that
+  no charge used (a rehearsal stopped before its charge) comes off again
+  after 5 seconds without being asked for, so it does not leave both
+  tanks NOT KNOWN at the next start.
+- **A Fuel or Air press on the Fireball page** is held for the few
+  milliseconds the PENDING mark takes to reach the disk, then goes out.
+  If the record cannot be saved the press **still goes out** (a top-off
+  is yours to decide), but both tanks become NOT KNOWN at once, the fault
+  is shown, and a second tiny marker is written, in the settings folder
+  and in the user's own folder (`.ltcplay` in the home folder, never the
+  temp folder, which a reboot or a disk clean-up empties), so that after
+  a crash or restart the tanks read NOT KNOWN even if the settings folder
+  works again and its record says EMPTY. A marker that cannot be read
+  counts as present. The marker is written in the background, once for as
+  long as the record cannot be saved, and the press goes out after it.
+  If **no** marker could be written anywhere, automatic charging is
+  **off** until an admin confirms the tanks with Tanks are empty (it
+  works then even when no tank is NOT KNOWN, and the button is shown
+  whenever automatic charging is off); the Fireball page's own presses
+  still go out. It also comes back **by itself** once the record can be
+  saved again, a marker can be written again, and every tank is known
+  (EMPTY after a shot, CHARGED by frames seen); the journal says so. A
+  marker that cannot be deleted or read is named with its path, so it can
+  be deleted by hand once the tanks are checked. Marker names carry the
+  machine's name, but a start reads **every** machine's markers for this
+  settings folder: a computer's name can change after a crash (a Mac takes
+  it from the network), and a marker missed is a double charge. A record
+  newer than a marker clears it whatever machine wrote it; on a settings
+  folder shared by two machines the trade-off is that one machine's newer
+  record clears the other's marker, which was chosen over ever missing a
+  real one. A record left half-saved (in a `.tmp` file) never clears a
+  marker: only a record renamed into place as the main file does.
+  Tanks are empty (then) takes the markers away.
+
+- **What charges a tank:** Fuel Charge (55) or Air Charge (56) reaching
+  the Fireball while flamesafe says it is armed, from the show or from the
+  Fireball page.
+- **What empties both tanks:** the shot (Jeff: Valve Open IS the shot;
+  57 on and then off again) or Purge (59, on and then off again), each only once flamesafe
+  has reported sending it. Nothing else: **Stop, Hold, the end of a show,
+  a disarm and a restart of LTC Player change nothing.** The Igniter
+  plays no part. A charge that went on and off again while the valve (or
+  the purge) was still open was released with it: that tank is EMPTY
+  after the shot. One still on when the valve closed is CHARGED after it.
+- **A top-off is not a double charge.** Fuel or Air pressed again on the
+  Fireball page while that tank is charged is counted as a top-off by
+  that person, and the journal says so.
+- **NOT KNOWN** (cautious on purpose; each one says why on the screens
+  and in the journal):
+  - the record could not be read (a half-written record left by a power
+    cut says what the last full record said);
+  - LTC Player stopped while the valve or the purge was open (the release
+    may not have finished);
+  - a shot or a purge that flamesafe did not report sending within half
+    a second;
+  - a charge or a release that went out while flamesafe's status was not
+    known (flamesafe down or not reporting): the tank may really be empty,
+    but nothing proves it;
+  - no record could be written in the settings folder at the very first
+    start;
+  - LTC Player stopped with PENDING on the record;
+  - the record and a copy left by a write that did not finish disagree,
+    or only that copy was found, or the record could not be read;
+  - flamesafe's fireball group was found on other channels than 55 to 59,
+    or flamesafe.json's fireball slots and the running flamesafe's differ
+    (Tanks are empty is refused while that stands: fix the config first;
+    it is judged on every status of flamesafe, with no show playing, and
+    clears by itself when the two agree);
+  - a Fireball press went out while the record could not be saved.
+
+  A shot or a purge seen for certain makes it EMPTY again. While a tank
+  is CHARGED or NOT KNOWN, nothing charges it automatically.
+- **The very first start** (no record yet) counts both tanks EMPTY (Jeff:
+  tanks start empty), and the journal says loudly, with the folder: "No
+  charge record found: starting both tanks EMPTY". If the fuel or air
+  tank is pressurised now, press Purge on the Fireball page. **If the
+  settings folder is lost or the program runs under another Windows user,
+  the tanks read EMPTY: confirm by eye before a show** (the record is in
+  that Windows user's own settings folder, `%LOCALAPPDATA%\ltcplay`).
+- **Tanks are empty** (an admin, on the Fireball page, while a tank is
+  NOT KNOWN): if both tanks are known to be depressurised, it makes the
+  NOT KNOWN ones EMPTY (it asks first, and the journal names who). A
+  charged tank is emptied only by the shot or by Purge.
+- **Evidence.** A charge counts when it went out while flamesafe said the
+  Fireball was armed, or when flamesafe itself reports having sent it
+  (so a short charge right after arming is never missed).
+- Kept in `ltcplay_fireball_charge.json` in the settings folder (written
+  whole on every change, so it survives a power cut); every change is one
+  journal line and one audit line. If the file cannot be written (on
+  Windows an antivirus or the indexer can hold it), the record is kept in
+  memory, written again every second until it is, and the screens show
+  the fault meanwhile: do not restart LTC Player until it clears. (If it
+  is restarted anyway, the newest record the write left behind is the one
+  read, by its revision number, which is taken from the clock (in
+  milliseconds) and only ever goes up, so a later record always ranks
+  above an earlier one. On one machine a clock set back can only cost an
+  extra NOT KNOWN, never a wrong EMPTY. That holds for one machine only: with a
+  settings folder shared between two machines and clocks that disagree,
+  a real marker can be cleared by the other machine's higher-revision
+  record. A settings folder shared between two machines is not supported
+  for the fireball record. If that copy cannot be read, both tanks are
+  NOT KNOWN.) If flamesafe's fireball group is on other channels than 55
+  to 59, both tanks become NOT KNOWN and are written so, and the screens
+  say why: a group put back on 55 to 59 never finds an old EMPTY.
+- Every screen's status carries it as one
+  sentence, for example "Fuel: charged 14:32. Air: charged 14:35. No shot
+  fired." There is no pressure reading: it is never invented.
+
+## Fireball practice
+
+Fireball practice fires the show's fireball shot for real, again and again,
+and shows how close to its programmed time each stage went out. It is on
+the Schedule tab, under the Fireball timeline card. It works on the
+Programming screen's playhead, never as a show: a step adds no show to
+tonight's count.
+
+**Before you start:** on the Programming screen, choose the show file and
+press Run in Programming. The show's fireball must be set to Timeline.
+
+**Open practice.** Press **Open practice (Live)** for real flame, or
+**Open practice (Dry)** to step with nothing armed. Opening presses Stop:
+every flame group and laser is disarmed, and the schedule holds until
+Resume. Resume, Start now, Start at a cue, Play from and the other moves of
+the playhead, a schedule edit, the show file card's choices, Reload engine
+and an announcement are refused while practice is open.
+
+**Arm the Fireball** with its hold to arm (Live), once. Arm nothing else:
+another group or a laser armed, or a hazer switched on, ends practice.
+
+**Step** plays the shot: from a lead-in (5 s, or 4 to 30) before its first
+stage to 2 s after its last, then the playback stops and the Fireball stays
+armed. Press Step again for the next shot. A step is refused, with nothing
+sent, unless:
+
+- Valve Open has an Igniter lit when it opens (the Igniter starts at least
+  3 frames before it and is still on). The words: "This step is refused:
+  Valve Open has no Igniter lit when it opens. Tick Igniter, start it at
+  least 3 frames (0.1 s) before Valve Open, and keep it on until Valve Open
+  starts. Nothing was sent."
+- A Fuel or Air stage has a Valve Open after it.
+- Both tanks are empty. If not: "Tanks charged: Purge on the Fireball page
+  before the next step."
+- It is pressed on the screen that opened practice, by someone who may
+  press Start now and arm (an operator on an iPad too).
+
+A step fires its whole shot or nothing. A Hold, a pause, a stall or a move
+part way through skips everything left in it; a tank left charged then
+needs a Purge before the next step.
+
+**What ends practice**, every group and laser disarmed (a Stop): **Done**,
+Stop, any disarm, the Fireball disarmed, anything else armed, a lockout of
+the Fireball, the Stream Deck's spoof ALARM, a second sender on the arm or
+flame link, flamesafe not reporting for a second, a fault in the flame cues, the
+fireball timeline or the charge record, a Hold or pause during a step, a
+step running over its time, the schedule leaving its Hold, Run off,
+another show file, leaving the Schedule tab for 5 s, and 10 minutes with
+no step. If the Stop does not complete, practice says so with a flames
+alert and presses Stop again every second until it does.
+
+**Only noted, never an end:** the Stream Deck unplugged or failing (its
+alert). Practice carries on and nothing is disarmed for it, as for a show
+(an unplugged deck never disarms the flames by itself); the card and the
+journal say so.
+
+**Fuel:** a step is not a show, but every charge and shot it sends is
+recorded in the fuel and air charge record like a show's (and its never a
+double charge rule applies), and its flame time is in the fuel totals as
+Programming (the Other pile, which the totals include). After a dry step,
+or a step whose shot was skipped, the charge record needs a few seconds
+to settle; the card says "Step again in a few seconds" until it has.
+
+**The timing table.** After each step, one row per stage: the programmed
+time, the time it was sent (both in ms from the top of the show cue, on the
+show audio), how late it went out and its length. Up to 41 ms late (one
+frame period of the flame link, 25 ms, plus a timer tick) or 5 ms early is
+OK; anything else is flagged. This is when LTC Player sent each stage to
+flamesafe. flamesafe adds up to 25 ms, and the igniter, valve and gas add
+their own delay. No software can see that: watch the flame against the
+music.
+
+**Good to know:** the Fireball page's pads stay live between steps. An edit
+of the Fireball timeline changes the show's real timeline file, and the
+next step uses it. Between steps the rig shows the between-shows look.
+
+## The late limit: 2 minutes
+
+(Jeff, 2026-11-01.) A show is MISSED only if it is more than 2 minutes
+(120 seconds) late. Within 2 minutes it still starts, late, and the
+journal says so ("Show 3 started on schedule at 18:40, 119 s after its
+time."). One second more and it is MISSED, as "MISSED (late by 2m 1s)".
+It was 15 seconds before.
+
+- The setting is still `late_grace_s` in the schedule file and on the
+  Programming screen ("Late start allowed, seconds"). A file that does not
+  give it now means 120. The most it can be is 300 (5 minutes); a bigger
+  number is refused in words, never quietly cut down. A file that says 15
+  or 0 keeps that value.
+- Everything that waits on a show's time uses the same number: the sweep
+  that starts or misses a show, the saved-schedule rules, and the warnings
+  for shows close together and for two nights that run into each other
+  ("starts late by ..., within its 120 s grace", "will be MISSED (late by
+  ..., more than its 120 s grace)"; a last show that starts as late as the
+  grace allows is counted too).
+- After a restart a show that came due while the program was down starts
+  if it is no more than the limit late, and Run is pressed. A restart
+  always leaves Run off, so unless Run was pressed before the show's time
+  the show is refused and marked FAULT, with the alert "did not start" and
+  the sentence "Run has not been pressed". Pressing Run afterwards, even
+  inside the 120 seconds, does not start it: press Start now. Past the
+  limit the show is simply MISSED.
+- The rig check (pre-roll) never stretches the limit. A show whose rig
+  check runs at its time may start up to the check's allowance late, but
+  never past 120 seconds: a show whose rig check cannot finish by then is
+  MISSED. (Only a grace set below 120 gains from the allowance.)
+- Schedule files that still say `late_grace_s` 15 (the old default, which
+  the example file had and first run copies) are changed to 120 once, when
+  the program reads them: the file is saved (the old one is kept as the
+  previous version) and the journal says "late limit changed from 15 s to 2
+  minutes". Every other value (0, 30, 60, 300 ...) is left alone, and a 15
+  chosen again afterwards is kept (a marker file,
+  `ltcplay_late_limit_migrated.json`, stays beside the schedule file). The
+  example file now says 120.
+- The change happens once, on the first start after the upgrade (a
+  marker file, `ltcplay_late_limit_migrated.json`, is written on the first
+  good read of the schedule file, whatever it said), never when you save
+  from the Programming screen. The file as it was is kept as
+  `ltcplay_schedule.pre-late-limit.json` (never overwritten), besides the
+  usual `ltcplay_schedule.previous.json`, which the next save replaces.
+  After rolling back to an earlier version of LTC Player, set the late
+  limit to 15 in Programming (the earlier version refuses a larger number
+  and schedules nothing); your file as it was is
+  `ltcplay_schedule.pre-late-limit.json` (the reliable copy: the next save
+  replaces `ltcplay_schedule.previous.json`). When you update again, set
+  120 in Programming, or delete `ltcplay_late_limit_migrated.json` so the
+  next start changes a 15 to 120 once more; otherwise the 15 stays. A
+  Programming tab that was open before the change and is saved afterwards
+  writes its own value back, 15 included, and that is kept.
+- A night is not handed over while a waiting show can still start inside
+  its late limit, and the settling step at a hand over never starts a show:
+  every start, however late, goes through the alert hold, the rig check and
+  the Stop check.
+- It never overrides anything that says wait. A Hold, a Stop's Hold,
+  Run not pressed, the guard after the previous show, a show that
+  is running and a Stop under way all still hold a show back, however
+  close to its time. Resume's journal line says "Show N ... starts at the next tick,
+  N s late" only when it really will (no
+  guard left, at least 5 seconds of the limit left); within 5 seconds of
+  the limit it says the show "is close to its limit and may still start at
+  the next tick"; otherwise it says what is next on the schedule. Pressing Resume within the limit starts the show,
+  late; after it the show waits for Start now, as before. A show that is
+  held back past the limit is DELAYED, not MISSED, as before.
+- The 120 second guard between shows is unchanged. A show inside the guard
+  of the one before starts as soon as the guard is over, if that is within
+  2 minutes of its time (so lateness can add up from show to show when
+  shows are close together; the save warning says so); beyond 2 minutes it
+  is not started by itself.
+- The Programming screen shows 120 in the late-start field when the file
+  leaves it out.
+
+## Schedule times: any time of day, past midnight
+
+Jeff, 2026-10-30: "I tried to schedule a show between Midnight and 2 AM
+but it wouldn't allow it. Don't restrict the schedule in any way."
+
+- **A night can run past midnight, and past 2 AM.** Write the last show's
+  end time after midnight: Thursday "first show 22:35, last show ends
+  01:30" runs Thursday's shows at 22:35, 22:50 and so on through the
+  small hours, all on Thursday's night. A last end at or before the first
+  show is on the next morning.
+- **A night can start at any time,** 00:30 included: Friday "first show
+  00:30" is Friday's night, at half past midnight on Friday.
+- **Nothing about the times is refused any more.** Shows closer together
+  than a show and its guard, a night with no room for a show, a season
+  that ends before it starts, an exception outside the season and two
+  nights that run into each other are all saved. The answer to the save
+  (and the journal) says what to know, starting "Warnings, saved
+  anyway:". An exception outside the season is used: its date runs its
+  own hours. Only a time that is not a time (25:00), a time zone this PC
+  does not know, a misspelled setting and a late grace over 300 seconds
+  (5 minutes) are still refused. A show length, guard or gap between shows over 24
+  hours, and a season before 1971 or after 9998, are used as 24 hours and
+  as those dates, and said. A weekday written twice is said; the later
+  one is used.
+- **A weekday can be written in full,** "Thursday" as well as "thu".
+- **Tonight's Delay, move and add can go past midnight.** A time typed in
+  the small hours ("00:30") is tonight's, after midnight, and the list
+  shows it as "00:30 (tomorrow)". A time without a day is the nearest
+  one still to come inside tonight's night, which runs from the start of
+  its date to its last show end plus 3 hours. A time that has gone by,
+  near tonight's own hours, is refused as passed. Anything else is never
+  guessed: typing "10:55" at 22:40 (meant 22:55) is refused, and the
+  answer says how to type it. "Today" and "tomorrow" are the calendar
+  days on the clock, also after midnight: at 00:10 on Friday, "17:00
+  today" is Friday and "17:00 tomorrow" is Saturday. A date can be typed
+  too ("17:00 2026-11-14"), up to 5 years ahead; further, or a date the
+  calendar cannot hold, is refused in words. A date together with a day
+  word ("18:45 2026-11-12 tomorrow") is refused as contradictory, and so
+  is "first second"; "17:00 second" for a time that does not happen twice
+  is taken and the answer says "second" changed nothing. Whatever is
+  accepted is kept in tonight's saved list and read back after a restart.
+  On the night the clocks go back, a time in the
+  repeated hour is the first one still to come (the journal says so, and
+  how to type the other one), the list says "the second 01:05" for the
+  later one, and "01:05 second" types it.
+- **A show typed for a time at or after the next night's first show** is
+  accepted and warned about, in the journal, on the screens and in the
+  answer to a save: tonight hands over before it, so it is MISSED, said
+  out loud in the journal when the night hands over. It cannot hold the
+  next night back (it used to: "18:10 tomorrow" kept Thursday open all
+  Friday and Friday's shows were missed). "The next night" is the first
+  later night that has shows, so a dark Friday does not let Thursday
+  swallow Saturday. A show typed more than 3 hours after tonight's last
+  show ends (its planned end, or 2 AM, whichever is later) never holds
+  the night either, whatever day it was typed for: a date months ahead is
+  accepted, warned about with its date, and missed at the hand over. A Delay, a move or a save that
+  makes a show end, with its guard, after the next night's first show is
+  warned the same way: that first show can be missed, because the next
+  night begins only once this one's guard is over. Nothing is refused.
+  When two nights of the schedule overlap, the warning names what really
+  happens: a show of tonight at or after the next night's first show is
+  MISSED at the hand over (and that first show runs on time); a show
+  that starts before it but ends, with its guard, after it makes that
+  first show late: MISSED (the warning says "will be") when it is later than
+  the late grace, otherwise it starts late. "Runs on time" is said only when
+  no earlier show overruns it.
+- **A restart reads back every list the program itself can make.** That
+  includes a show started with Start now in the next night's preshow
+  (up to 30 minutes before its first show, so before midnight), and a
+  show typed for tomorrow or a date. The list is never set aside, so
+  no Stop's Hold is put on for an unreadable night and the shows that
+  ran stay done.
+  One limit serves the editor, Move, Delay and the file reader: from 30
+  minutes before midnight of the night's date to 5 years (1830 days)
+  after that midnight, both ends included, and it does not depend on the
+  schedule file, so saving different hours never makes tonight's list
+  unreadable. A time outside it is refused in words, and so is a Delay
+  that would move a show past it.
+- **A dry run and a Stop's Hold.** In a dry run, the Hold of a Stop is
+  put back only after the made-up end of the show, before the next
+  show is looked at, so the next show does not start by itself.
+- **The night only moves forward.** Once a night has handed over to the
+  next, saving a schedule that gives it longer hours never opens it
+  again; the change is for the next time that weekday comes round. A
+  restart never goes back either: it starts on the latest night with a
+  saved list (one that begins before midnight included) and never opens
+  an earlier one.
+- **A save never moves a delayed show earlier,** whatever it does to the
+  night's hours.
+- **A restart keeps a night that still has a show to run,** for example a
+  show moved to 02:30: it carries on until that show and its guard are
+  over. A restart after a night has handed over closes it, and a show of
+  it still to come is MISSED, in the journal.
+- **Tonight's saved list** with a show on the next morning is written as
+  format 5. An older LTC Player refuses such a file in words and sets it
+  aside rather than reading 00:30 as earlier the same evening.
+
+**What the 2 AM reset did, and what replaces it.** Every night used to
+end at 2 AM the next morning: a show could not be planned before 2 AM, a
+night could not run past midnight, and a show still delayed at 2 AM was
+MISSED. Now a night ends where it hands over to the next one:
+
+- at 2 AM, as before, when nothing of it is left to run by then;
+- later, while one of its shows (planned, moved or running) still has to
+  run, and then until the last show's guard is over, so the next night's
+  first show never starts inside it (a cut show's guard counts from the
+  restart);
+- later, while a show delayed by a Hold waits for Start now: it holds the
+  night to the next 2 AM after its own time, never past the next night's
+  start, so a show delayed at 03:00 is not missed 10 seconds later. A
+  show delayed inside the 30 minutes before the next night's first show
+  waits until that first show, not its preshow. A move of a show into
+  those 30 minutes is warned about;
+- earlier, when the next night's first show is earlier: 30 minutes before
+  it, when its preshow begins, which can be before midnight. Never before
+  this night's own shows still to come have run;
+- a night closed with Close for the night, or with its later shows
+  skipped, has nothing left to run, so it never holds the next night back.
+
+A show still delayed when the night hands over is MISSED, as before; the
+journal says "when the night ended, as the next night began" when that
+is not 2 AM. A restart in the middle of such a wait carries on with it. The hand over never drops a planned show, never starts a
+show early and never presses or releases Run. The night only moves
+forward. If two nights run into each other, the earlier one finishes
+first and a show of the next night whose time has gone by by then is
+missed: the save warns about it.
+
+## Saving the schedule during the night
+
+On 2026-10-29 a schedule saved after the night had closed planned nothing
+until the engine was restarted. Now:
+
+- **A save follows the new file at once.** Saving on the Programming screen
+  ("Schedule: the show times") looks at tonight straight away, the same way
+  a restart does. A save never starts a show, and never sends anything to
+  the rig except in two cases said below: a night that had no shows at all
+  starts as a restart would, and a save that leaves no show to come closes
+  the night.
+- **Tonight's times unchanged: tonight's list is kept.** If the new file
+  gives tonight the same show times (you changed another night, an
+  exception, the season or anything else; a time that already ran or was
+  skipped may be gone from the file), tonight's list stays exactly as
+  it is, with every change made tonight: Delay next, Delay the rest, a
+  moved show, a show added, taken off or skipped. The answer says so. A new
+  show length, guard or late grace applies to the kept list, and every
+  start is still checked against it. If a longer show or guard leaves a
+  show too close to one you delayed, that show is skipped ("too close to
+  the delayed show N") and the answer says so instead of "kept as it is".
+- **Tonight's times changed: tonight is rebuilt.** Shows that already ran
+  keep their number and status, and an extra show (Start now) keeps its
+  number. The shows still to come are numbered in time order, each taking
+  the lowest number no show that already ran has, so they always run in
+  number order; the journal says when a show's number changed (a delayed
+  show can get a new number too). A show whose number changed is checked
+  by the rig check again before it starts. A show taken off tonight's list
+  or skipped stays skipped.
+- **A save never moves a show earlier than you delayed it, and never
+  drops a Delay.** A Delay next, Delay the rest or move of a show still to
+  come is always kept at its time, even if the time it was planned for is
+  gone from the new file. A time from the file that is too close to a
+  delayed show (show length plus guard, before or after it) is SKIPPED
+  instead, "too close to the delayed show N", and the answer and journal
+  say so. A time already gone by is left out of that check: it is missed,
+  as below. Shows added tonight are dropped, and the answer says so ("This
+  save undid tonight's changes: ..."). The count of shows still to come
+  never includes two shows that cannot both run.
+- **The answer says what tonight now holds.** For example "tonight now has
+  4 shows still to come, next show 4 at 22:35", or "Saved, but there are
+  no more shows tonight:" and the reason (every show has gone by, the
+  schedule's own reason such as a dark night, or Close for the night). The
+  journal says the same, one line for each change. If the save leaves no
+  show still to come while the night is waiting for one, the answer says
+  the night closes now: flame cues to zero, MadMapper stopped, pixels
+  faded, blackout.
+- **A show whose time has already gone by is never started.** A time the
+  save puts at or before now is MISSED ("its time had gone by when the
+  schedule was saved"), even inside the late grace. On a Hold with no show
+  already waiting it waits as DELAYED instead, for Start now. A show that
+  was already waiting for that same time before the save is left as it
+  was. The same holds after a restart with a changed file ("when the
+  changed schedule file was read at a restart") and for a save followed
+  after a show or closing ("when the saved schedule was followed").
+  Before the first show, such a miss does not end the preshow look.
+- **A closed night opens again** when the saved file has a show still to
+  come tonight, unless it was closed with Close for the night. The
+  scheduler goes back to STANDBY with the rig dark: unlike a fresh start
+  at that time, the intermission does not come back by itself. Nothing is
+  started and no look is sent; the next show starts at its time only while
+  Run is pressed, by the usual rules.
+- **A night that had no shows at all** (the engine started on a dark
+  night: another weekday's schedule, before the season, or a night an
+  exception made dark) never closed, so a save that gives it shows starts
+  it exactly as a restart would: IDLE with the preshow look, or STANDBY
+  close to the first show. Those looks go out only while Run is pressed,
+  as after a restart.
+- **A night closed with Close for the night stays closed.** The engine
+  remembers the press (in tonight's file, so a restart remembers it too),
+  even when no show was left to skip. A save never opens it again: every
+  time on it is SKIPPED and the answer says so. Saving again does not pile
+  up skipped rows: a time a save added is gone again once the file no
+  longer has it. To run a show tonight after
+  that, press Start now (an extra show each time; the night closes again
+  after it). The saved schedule is followed from the next night on.
+- **A Hold stays a Hold, and a Stop's Hold stays.** A save on Hold keeps
+  the Hold (Resume is still needed) and keeps the show already waiting
+  after the Hold.
+- **During a show the save is refused** on the Programming screen. If a
+  schedule is loaded while a show runs or while the night is closing, the
+  show and its status are left alone and tonight follows the file once
+  that is over; the journal says so. If that show was the last one on the
+  old list, the night closes after it as usual (fade, black), and then
+  opens again in STANDBY, dark, for the new later show.
+- **A hand edit of the file is not watched.** Only a save from the
+  Programming screen is followed at once. A file changed on disk by hand
+  is followed at the next engine restart.
+- **Start now just before a show** runs an extra show, as before. The show
+  it pushes aside is DELAYED and waits for Start now; the later shows still
+  run on time, and the night closes only after its last scheduled show.
+
+**After an engine restart, press Run.** A restart always leaves Run off,
+and LTC Player never presses it for you (no show starts unattended). While
+Run is off and a show is still to come, the rack screen says so: "Run is
+off: the 22:50 show (show 5) will NOT start. Press Run." It is amber until
+30 minutes before that show, then red, a fault. Once the night's first
+show time has gone by it is red at once. On a Hold
+it says "Press Run, then Resume.". During a Programming Run
+(Run reads as pressed, but the schedule starts nothing over a rehearsal)
+it says "A Programming Run is in force: the 22:50 show (show 5) will NOT
+start. Press Stop, choose Show, then Run." It is an alert on the SHOW
+tab, a line on the Schedule tab, and part of the
+answer to a schedule save.
+It goes as soon as Run is pressed.
+
+## Stop, Hold and Resume on the rack screen
+
+Jeff, 2026-10-28 and 2026-10-30. Each screen has one Stop, where Stop
+has always been, and it is there only while there is something for it to
+stop:
+
+- **Stop.** On the SHOW tab, **Stop show** is there, solid red,
+  while a show is live (playing, or paused on Hold), while the rig is
+  being checked before a show, while Start now waits for the show audio,
+  while Programming playback plays, and during a rehearsal Run (the
+  Programming mode) while its timecode is moving. On the Programming screen, Run
+  turns into **Stop** at those same times. Stop show sits in the SHOW
+  tab's controls and in the strip on every other tab, and its place is
+  empty when nothing is playing. With no contact with
+  the engine (what is playing is not known) Stop is always there.
+- **Stop is a double tap**, with no pop-up: the first tap only changes the
+  button (it pulses and reads Tap again) and sends nothing; a second tap
+  within 2 seconds, with the same finger, mouse or key, sends Stop. A lone
+  tap goes back by itself after 2 seconds. A held key never counts twice.
+- **What Stop does** (everything the removed Abort did, and it latches
+  nothing):
+  every flame group and every laser is disarmed first, the lasers are
+  blanked at once, the hazers go off, a timed purge, live flame
+  programming, the fireball, the cleaning and the laser tests end at
+  once, Programming playback stops, and a live show ends: video, pixels
+  and music fade to dark over 1 second and MadMapper stops. Nothing is
+  fired. Stop works the same from the rack screen, an iPad and the Stream
+  Deck (key 0, held half a second), signed in or not.
+- **Stop also holds, until Resume.** Every Stop puts on a Stop's Hold,
+  whatever was happening: during a show, between shows, on the night's
+  last show, while the night is closing, on a night with no shows. While
+  it stands no show starts by itself, tonight or on any later night, even
+  with Run on: the next night with shows comes up on Hold (Jeff,
+  2026-10-30). It is kept in `ltcplay_stop_hold.json` next to tonight's
+  file, so a restart keeps it too. If that file cannot be written, the
+  fault flag says so and it is tried again on every tick until it is; a
+  file that cannot be read counts as a Stop's Hold. When the Hold comes
+  back after a Start now's show, the look goes dark again (it never
+  comes back while an operator's Start now is starting its show; a Start
+  now pressed while the rig is still being taken dark waits up to 3 s for
+  it, and is refused with what to do if a device is slower than that). Every screen says **Held after Stop:
+  press Resume**. Only **Resume** ends it (pressed with nothing held, it
+  just releases it); Continue anyway does not. A show whose time comes during
+  the Hold waits as a delayed show for Start now. **Start now** still works
+  from it, as an explicit start with its rig check: it starts that one
+  show, and the Hold comes back when that show ends. Every Stop takes
+  whatever look is still up down to dark, whatever the schedule was
+  doing (a show, the idle or intermission look, on Hold, while closing);
+  the Hold is dark. Resume releases the Hold but does not bring a look
+  back: the rig stays dark until the next show starts. After a Stop on the
+  night's last show (or once nothing is left tonight) the night closes
+  as usual, fading to black, and the Stop's Hold waits for the next
+  night with shows. A second Stop disarms everything again and stays on
+  Hold. A Stop pressed the very moment a show comes due holds the
+  schedule before that show can start: it never starts the show and never
+  just pauses it, and while a Stop is under way the scheduler starts no
+  show. A show start already on its way when the Stop lands is refused,
+  and one whose music already began is stopped and faded again. While a
+  Stop is still disarming and fading to dark (until the show conductor
+  has taken it), Resume, Start now and Run are refused until it has
+  finished. The Stop's fade never waits on a file being written or on
+  the scheduler.
+- **Stop never turns Run off.** Run stays on: Hold (or a Stop's Hold) is
+  how the schedule is stopped. Each flame group needs arming again, and
+  the lasers can only be armed again after Resume. The line under the
+  buttons says what happened ("Stopped. The show ended and the rig is
+  fading to dark. ... The schedule is on Hold: no show starts until you
+  press Resume.") or, if any part did not work, which part, and what to
+  press. If the engine refuses, it says why in its own words.
+- **Run off** is on the Programming screen's Run button: with Run on and
+  nothing playing, the button reads Run off. It is also in Stop's place
+  on the SHOW tab at those times, in full colour. It asks first, then does
+  a Stop and stops playback, so Run is off. Run off needs the Show
+  permission; Stop never does. Right after Stop turns back into Start
+  now, Run or Run off, the button waits 2 seconds before it takes a
+  press, and a press made just as the show ended or started does nothing
+  and says so: a Stop never turns into a start.
+- The Stream Deck starts every flame group's re-arm wait when it sees
+  flamesafe take a Stop's disarm from any screen, so a reflex press right
+  after a Stop does not quietly re-arm a group.
 - **Hold** pauses the show where it is (or, between shows, keeps the next
-  show from starting). **Resume** carries on.
-- **Reset** works from Hold. With a show paused on Hold, Reset ends that
-  show: it fades to dark, nothing is latched, and no flame group is
-  disarmed. With the schedule on Hold between shows, Reset ends the Hold.
-  Either way it also clears the fault flag, and it never starts or
-  continues a show by itself: a show whose time has already come waits as
-  a delayed show for Start now (even one still inside the late grace), the
-  next show starts at its own time (only while Run is pressed), and if an
-  alert is open at that time the schedule still holds for it.
-  After an Abort, Reset ends the Abort as it always has; if the schedule is
-  also on Hold, a second Reset ends the Hold.
-- **ABORT** keeps its own meaning: tap twice, the show stops, everything is
-  disarmed, and the rig stays latched until Reset.
+  show from starting). **Resume** carries on. Resume ending a Hold also
+  clears the fault flag.
+- **There is no Abort and no Reset** (removed, Jeff, 2026-10-30). Stop does
+  everything Abort did, with no latch; Resume is what carries on after a
+  Stop or a Hold. The hardware e-stop is the emergency layer. A tonight's
+  list or a latch file saved by an older version with an Abort still
+  standing is read as a Stop's Hold: nothing starts by itself until
+  Resume, and every show on the list is kept.
 
-**Reset says how the rig stands** (Jeff's field report, 2026-10-28). After
-Reset the line under the buttons, and the journal, say each part in plain
+**Resume says how the rig stands** (Jeff's field report, 2026-10-28, for
+the Reset that was removed). After a Resume the line under the buttons,
+and the journal, say each part in plain
 words, in this order: audio, pixels, flame link (and which groups are
 armed), timecode (and the frame it holds for MadMapper), MadMapper (its
-heartbeat), BEYOND, lasers and the laser arm, announcements. For example:
-"Reset done. The rig stays dark until a show starts. Audio ready. Pixels
+heartbeat), BEYOND, lasers and the laser arm, announcements. For example,
+after Resume's own words: "Audio ready. Pixels
 ready. Flame link OK, all groups disarmed. Timecode ready, holding
 00:01:27:10 for MadMapper until the next show. MadMapper running:
 heartbeat not seen yet (it must follow once a show starts; Start now sets
@@ -891,17 +1806,18 @@ laser arm disarmed. Announcements ready." Anything not ready says so in
 capitals with what to do ("MadMapper NOT RUNNING: start MadMapper and its
 project."), and the line ends with "Needs attention:" and the list.
 MadMapper's heartbeat only arrives while a show's video is moving, so
-after Reset it reads "not seen yet"; the alert below says if it does not
+after a Resume between shows it reads "not seen yet"; the alert below
+says if it does not
 follow once the show runs.
 
-**After an Abort the video follows the next show by itself.** Every Abort
+**After a Stop the video follows the next show by itself.** Every Stop
 (and a stopped show, and a failed start) ends by stopping MadMapper's
 show bank. On the bench (B2) a stopped bank stayed stopped even while
 timecode kept arriving, until it was told to play again. So every show
 start (Start now, a scheduled show, Programming's Play from) now selects
 the show bank and then tells it to play, MadMapper's own documented
 message, before the show audio starts. Under External Sync that puts the
-bank back to following the timecode: Abort, Reset, Start now should not
+bank back to following the timecode: Stop, Resume, Start now should not
 need anything touched in MadMapper.
 
 **MadMapper is not following timecode.** If the show's timecode has been
@@ -925,7 +1841,7 @@ now that cannot work is refused at once with the same words, and adds no
 FAULT line. Right after Run the show audio takes a few seconds to load:
 Start now then says "audio loading, starts when ready". Pressed then, it
 waits for the audio (at most 20 seconds) and reads **Loading, starting when
-ready**; the show starts as soon as the audio is in. Hold, Stop or Abort
+ready**; the show starts as soon as the audio is in. Hold or Stop
 cancels the wait and nothing starts, and so does any Hold the program
 makes itself (for an announcement, or at showtime for an open alert).
 While a Stop is still disarming and fading to dark, Start now and Run on
@@ -946,64 +1862,99 @@ What each end leaves on the pixels:
 | The night's last scheduled show ends by itself | black (the closing) |
 | A Start now show ends by itself | the idle look, even with nothing else tonight |
 | Programming's Play reaches the end of the cue | the idle look |
-| Stop | black, and Run is off |
-| Abort during a show | black, latched until Reset; dark after Reset until a show starts |
-| Abort during Programming playback | the idle look; nothing latches |
+| Stop | black, and the schedule on Hold (Run stays on) |
 | A show that started and then failed | black |
-| A start refused before anything went out (Auto start off, an Abort standing, the show audio not ready) | left as they were |
+| A start refused before anything went out (Auto start off, the show audio not ready) | left as they were |
+
+**No black frame between the show and the idle look** (Jeff's report,
+2026-10-30: "a little blip of black when we go from intermission to the
+show or vice versa"). The show's timecode runs 30 frames a second, so it
+ends on the next whole timecode frame after the lights file ends, up to
+1/30 s later. In that moment the pixels used to send one black frame
+(25 ms) before the idle look. Now the lights file's last frame stays up
+through it, at most 2/30 s, and the idle look follows on the next frame.
+That is the same with the show file's Intermission cue after the show or
+without it. A Hold or a Stop in that moment still goes black at
+once. Show audio (or `clock.zones.show_len_s`) that ends up to one
+timecode frame (1/30 s) after the lights file is covered by the same
+hold: the last frame stays up, not black. If it runs on longer than that,
+the pixels are black for the rest (after the held frames), as below,
+unless the show file says `"gaps": "idle"`, which puts the idle look up
+there instead. A free run (GO) on the show audio clock gets the same hold
+at the end of every cue it passes, gaps between cues included: the cue's
+last frame stays up for at most 2/30 s, then the gap look. Only the Fire
+& Ice show audio clock does this; a show chased off a timecode feed (GPL)
+is unchanged.
 
 After a Start now show ends by itself with nothing else tonight, the
 night closes and the pixels stay on the idle look all through the closed
-night, until the next show starts. Abort then still disarms every flame
+night, until the next show starts. Stop then still disarms every flame
 group, blanks and disarms the lasers, turns the hazers off, lets go of
-any hold to arm and clears the purge selection and laser tests, but there
-is no show to stop: the screen says "No show was stopped", nothing
-latches, and the pixels stay on the idle look. Stop is a complete halt (the journal says "held
-Stop on the ...: a complete halt"); with no show running it ends no show,
-but it turns Run off, and turning Run off sends black to the pixels.
+any hold to arm and clears the purge selection and laser tests (a
+complete halt), takes whatever look is up down to dark, and puts on a
+Stop's Hold; it never turns Run off.
 
 **Every start clears it.** Start now, a scheduled start and Programming's
 Play from all clear the pixels for the show in the same one place,
 whatever ended the show before:
 
-- the show conductor's black (the closing, a stopped or failed show, an
-  Abort since Reset), and a stale record of it;
+- the show conductor's black (the closing, a stopped or failed show),
+  and a stale record of it;
 - on Start now and a scheduled start, also a black or preshow look put
   on the pixel output before the start. The Fire & Ice screens have no
   Black or Preshow button; only the engine's override can set one. On
-  the Programming screen such a look stays through Play from. To clear
-  it in 1.0: press Stop on the "Show file, on this machine" card, then
-  Run (Run starts with no look on the pixels). That card is only on the
-  show machine's own screen. 2.0 has no Show file card: use Open in 1.0.
+  the Programming cards such a look stays through Play from. To clear
+  it: press Stop on the "Show file, on this machine" card (Schedule tab),
+  then Run (Run starts with no look on the pixels). That card is only on
+  the show machine's own screen.
   The Programming card's "Follow timecode again" button does not clear a
   look, and while the show audio is the playhead it reads "Stop the show
   audio" and stops playback.
 
 Nothing goes dark for it: the look that is up (the idle look, a Preshow,
 the closing black) stays until the show's first frame, and the show takes
-over on that very frame. A Hold, an Abort or a Stop after the start is
+over on that very frame. A Hold or a Stop after the start is
 not touched and holds, and so does a look set through the engine's
-override. That includes a Hold, an Abort, a Stop or
+override. That includes a Hold, a Stop or
 a failed start before the show's first frame, or in the moment between
 that frame and the show being confirmed: the pixels go black, never the
-show, whatever ended the show before (a Stop, an Abort and Reset). The pre-roll blacks MadMapper's surfaces,
+show, whatever ended the show before. A Stop that lands before the start
+hands the pixels to the show sends nothing out at all. The pre-roll blacks MadMapper's surfaces,
 never the pixels.
 
 The journal says it at every start, in the same words, for example "Show 4
 start: the pixel output is cleared for the show (the show conductor's
 black from between shows). The black stays up until the first show frame
-goes out, and the show takes over on that frame. A Hold, an Abort or a
-Stop after this start still holds." and then "Show 4: the
+goes out, and the show takes over on that frame. A Hold or a Stop after
+this start still holds." and then "Show 4: the
 first show frame went out on the pixels 0.21 s after the start was sent."
 
 **If the pixels are ever on a look while a show plays** (anything but a
-Hold's or an Abort's own fade), after 1.5 s the rack screen and the Stream
+Hold's or a Stop's own fade), after 1.5 s the rack screen and the Stream
 Deck show it as a flame cues fault: "CUES FAULT: pixels show black, not
-the show. Programming: Show file card, Stop, then Run. On 2.0, Open in
-1.0 first. Scheduled show: tell Jeff." That Stop is the one on the "Show
-file, on this machine" card (it ends playback and turns Run off), not
-"Stop the show audio". 2.0 shows it as "Flame cues are off" with the
-full text behind a tap. It is display only.
+the show. Programming: Show file card, Stop, then Run. On 2.0: the
+Schedule tab's Show file card. Scheduled show: tell Jeff." That Stop is
+the one on the "Show file, on this machine" card (it ends playback and
+turns Run off), not "Stop the show audio". The screen shows it as "Flame
+cues are off" with the full text behind a tap. It is display only.
+
+**Other flame cue faults while a show plays.** The flame cues are cut from
+the show's render on a thread of their own, a little ahead of the show. A
+frame not cut yet is zero, and a CUES FAULT once it has stayed so for 1 s.
+"The show's render could not be read (...)" names the error, and so does
+"could not be cut here (...); it is tried again" while a passing trouble
+(memory, the system) is tried again. A cut that fails every try stays a
+fault, and is still tried again every 30 s, so the next show plays it once
+the trouble has passed. "The thread that cuts the show's flame cues ...
+keeps stopping ... restart LTC Player" means what it says: restart LTC
+Player before the next show.
+
+**Known: a flame can fire part way through its cue.** If the flame cues
+were zero for a while during a show (any CUES FAULT above, or a render
+still being read) and come back while a flame cue is on, that flame fires
+from that frame to the end of its cue. The seek guard holds only flames
+that were already on when the timecode moved; it does not hold a cue that
+comes back after a fault. After any CUES FAULT in a show, expect that.
 
 ## The rig check before each show (pre-roll)
 
@@ -1035,10 +1986,11 @@ Continue anyway then leaves video, lasers and flames off.
 | Check | Proven by | Required |
 |---|---|---|
 | Audio | the show audio interface open and taking audio (a new buffer within 1 s), the show's audio loaded | yes |
-| Announcements | the announcement output attached and the Delayed recording playable | yes |
+| Announcements | the announcement output attached and the Delayed recording playable, for the announcement buttons. Advisory (Jeff, 2026-10-30: nothing plays on the PA by itself): a problem shows as "Announcements WARNING: ..." in the checklist and never fails the check, holds a show or needs Continue anyway | no, a warning only |
 | Booth speaker | its output attached (only when one is set up) | yes, when set up |
 | Timecode | Art-Net timecode (30 frames a second) going out with no receiver refusing it; BEYOND's black zone stream flowing | yes |
 | Video | MadMapper running; the screens taken to black first; the show bank selected; a test timecode from 00:00:00:00 sent to MadMapper ALONE; its heartbeat (/float-1) answering AND moving at about real time; MadMapper then parked on frame 0 | yes |
+| MadMapper output | MadMapper's video output on: a full-screen MadMapper window with no title bar filling the projector's display, read from Windows' window list (nothing is sent to MadMapper). With `madmapper_output_monitor` 0 (the default) any display but the rack screen's counts; n: only display n. One display only (the projector not detected), a setting past the displays this PC has, or a list that cannot be read: fails. Not checked when MadMapper is on another PC or `madmapper_output_check` is false | yes |
 | Flame link | a new flamesafe status frame during the check, no fault, the flame link sending and not locked, the Stream Deck program arming live | yes |
 | Lasers | blanking set up, the laser arm readable, a blank sent now that got out, BEYOND's black zone flowing (timecode blanking), BEYOND running | yes |
 | Network | every device the show uses answers a ping: MadMapper and BEYOND when on another PC, the timecode receivers, the flame node, and every pixel controller that answered a ping since Run (some never answer one at all) | yes |
@@ -1053,26 +2005,105 @@ unless set).
 **What the audience sees and hears: nothing.** Nothing is played, armed,
 fired or lit. The lasers get one more blank (a blank only darkens). The
 screens go black for the video test and stay black until the show's own
-start brings them up (a moment after the first frame). Abort, Stop and
-Hold during the check end it at once; nothing starts.
+start brings them up (a moment after the first frame). Stop and Hold
+during the check end it at once; nothing starts.
 
 **When it fails.** A **rig check** alert names each failed check in plain
 words ("Video FAILED: MadMapper did not answer the timecode"), the booth
 note sounds, and at the show's time the alert hold applies exactly as for
-any alert: Held at once, 60 s, then one Delayed on the PA. Acknowledging
+any alert: Held at once, the booth speaker says so, nothing on the PA.
+Acknowledging
 it before the time does not let the show start by itself; it is raised
 again at the time. Resume alone never lets the scheduler start a show
 whose check failed (unlike other alerts): use Start now, which checks
-again, or Continue anyway. A later check that passes clears it. Start now that
-fails its check is refused with the reason.
+again, or Continue anyway. A later check that passes on a fresh run
+(Check again, Check the rig, Start now's own check) clears the failure
+and the rig check alert, and the journal says "Rig check passed, failure
+cleared (who)". It starts nothing: a held show stays held. While the
+schedule is held for a show whose check failed and whose time has not
+gone by, the screens say "Rig check passed. Press Resume." Resume then
+checks the show once more and starts it if that passes. Otherwise they
+say Press Start now: a show whose time has gone by (it waits for Start
+now, held or not), no hold at all, or a
+cleared "rig check could not run" alert, which leaves no show for Resume
+to release. If the rig check still cannot run, that alert comes back.
+A failure raised after that check began is never cleared by it, and a
+check that fails again keeps the failure with the new reasons. The
+other way round too: a show's own check that passed counts only until a
+failure is recorded after it (Start now's check failing, a Pre-check, a
+check that could not run). The show is then checked again before it
+starts. Start now
+that fails its check is refused with the reason.
+
+**MadMapper's output after a reboot** (Jeff, 2026-10-29). LTC Player
+cannot turn MadMapper's video output on; it sees it. The rack screen's
+lamp **MadMapper output** says on, OFF or not known. The supervisor gives
+MadMapper 3 minutes after it starts; still off, it raises an **output**
+alert with what to do (MadMapper: Output menu, Fullscreen; and, so it comes
+back by itself, Preferences, Misc, Start fullscreen when opening a project
+at startup), and clears it itself when the output comes on (a rig check
+that sees it on clears it too). The settings, both in
+ltcplay_fire_ice.json and read by the engine and the supervisor alike:
+`madmapper_output_check` (true; false turns the check, the lamp and the
+alert off, for an output that is not a full-screen window) and
+`madmapper_output_monitor` (0: any display but the rack screen's; 1 the
+main display, 2 the next, as showpc.json's page_monitor counts). After
+changing either one, Reload engine is enough (or stop and start LTC
+Player): the engine reads them when it starts, the supervisor within a
+few seconds. A failed MadMapper output check holds the show like any
+other, but Continue anyway leaves nothing off for it: the rule (a
+full-screen MadMapper window with no title bar) is not yet proven on a
+real MadMapper 6 (BENCH.md), so the video is never blacked on its word.
+The
+supervisor also keeps the rack screen in front of BEYOND and MadMapper
+windows after a reboot (showpc.json `rack_screen_keep_in_front`, true).
+It never raises the rack screen over MadMapper's output, never takes the
+keyboard from someone typing in another program, never covers a dialog or
+a window a person has in front, and leaves a minimized rack screen
+minimized. Its five minutes count from the sign-in, so stopping and starting
+LTC Player later does not bring them back, and windows that were already
+open when LTC Player started count as old (it raises over a BEYOND or
+MadMapper window only when one opens after that). A dialog over the rack
+screen stops it: BEYOND's or MadMapper's (owned by its window or not),
+and any program's message box (Explorer's, LTC Player's own). So does
+the window in front if the last key, touch or click (in the last minute)
+came while that window was open, including one back in front after the
+lock screen (unlocked by Windows Hello, with no key). A window nobody is
+using does not stop it. For 2 s after the
+rack screen comes to the front with no touch in it, a key that would
+start or arm something is ignored (it was typed for another program);
+Hold, Stop and every Disarm or Off key always work.
+
+How the output is judged: the rack screen's display is where its window
+is (unless MadMapper's output sits over it there: then that display is
+the projector's), else showpc.json's page_monitor, else the main display;
+the lamp, the rig check and the alert all use that one rule. The output
+counts as on only when no other window hides a quarter of it or more (the
+rack screen or BEYOND in front of it on the projector reads OFF, saying
+which window). Mirrored (duplicate) displays look like one display to
+Windows and read OFF: set `madmapper_output_monitor` to 1 there. See-through
+overlays (a game overlay, notifications) hide nothing. With several
+projector displays and `madmapper_output_monitor` 0, ONE uncovered output
+on any of them reads on: the check is for one projector display, so set
+the number when there are more. The alert is raised only for a show whose
+MadMapper runs on this PC (and not when ltcplay_fire_ice.json cannot be
+read); the watch still reads and logs the windows. The supervisor
+reads these settings again every few seconds, so a change (and Reload
+engine) applies without restarting LTC Player; the engine's rig check and
+lamp read them when the engine starts, so Reload engine is enough. The
+output alert holds a show at its time like any fault, and like every
+alert it plays nothing on the PA: the booth speaker says it.
 
 The show screen (and the iPad) then shows the failed checks and two
 choices:
 
 - **Check the rig again** (an admin, on the show PC): the same checks,
   nothing started. Also on the Programming screen's Rig check card, any
-  time between shows with Run pressed, never in the minute before a show.
-  Once it passes, press Resume, then Start now (which checks once more).
+  time between shows with Run pressed, never in the minute before a show
+  unless a rig check failure stands (a failed show is never checked
+  again by itself). Once it passes, press what the screen says: Resume
+  while the show is held (it is checked once more, then starts), else
+  Start now (which checks once more).
 - **Hold to continue anyway** (signed in, with the Start now permission):
   hold the button until it fills, like Hold to arm; a tap does nothing.
   Its text lists exactly what is still failing. The show starts NOW, late,
@@ -1081,14 +2112,108 @@ choices:
   with no laser output; a failed Flame link leaves every flame cue at
   zero. (A Network failure that names MadMapper, BEYOND or the flame node
   counts the same.) Audio is never faked: a show does not start without
-  its sound, and Start now then says why. The Delayed countdown stops (and
-  a Delayed already playing is stopped), the alert stays open so the booth
-  sees what is degraded, and the journal records who, when and every
-  failed check. It is used once per failed check, and not for a check
+  its sound, and Start now then says why. Nothing plays on the PA by
+  itself, so there is no countdown to stop; an announcement someone pressed
+  that is still playing fades out as the show starts. The alert stays
+  open so the booth sees what is degraded, and the journal records who,
+  when and every failed check. It is used once per failed check, and not for a check
   more than 10 minutes old. When the show ends, everything it left off
   is back for the next one, which is checked again in full. Continue anyway
-  never gets past an Abort (press Reset), a Stop under way, the hold to
-  arm or the flame link's rules. The scheduler never continues by itself.
+  never gets past a Stop under way, the hold to arm or the flame link's
+  rules. The scheduler never continues by itself.
+
+## Start at a cue (play-from cues, Show mode)
+
+Start at a cue starts the show part way, at one of the cues saved in
+Settings ("Play-from cues"), instead of from the top. It is Start now with
+a starting point: everything Start now does and refuses, it does and
+refuses too.
+
+- **After a Stop:** tap Resume. When the show file running has
+  saved cues, a sheet asks what to do: **Resume** (carries on the
+  schedule, as always), **Resume show 4 from Finale** (the cue the engine
+  offers, at or before where show 4 stopped; the sheet says where it
+  stopped), or **Another cue** (every saved cue of that show file, by name
+  and time). A cue then asks once more, like Start now ("Resume show 4
+  from Finale?", with the time it plays from), and starts only on
+  **Yes, start**. Cancel sends nothing.
+- **Any time Start now is offered:** its question has
+  **From a cue** beside Yes, start now: pick any saved cue, then Yes,
+  start.
+- With no saved cues for the show file running, Resume and Start now are
+  the one press and the one question they always were. The cue list is
+  read when you press, from the saved list, never from this screen's
+  memory; if the show changes while a question is up, nothing starts and
+  the footer says so. Resume offers the cues only while a Stop's Hold
+  stands; after any other Hold (yours, an alert's, an announcement's)
+  Resume is the one press it always was. If a Stop or a Hold is pressed
+  while the list is being read, or the list takes more than about 1.5 s
+  to come, Resume sends nothing and says so: look, then press it again.
+  Not offered in Programming, not to someone signed out, and not on an
+  iPad or laptop when no users are set up (the cue list is read by the
+  show PC only then): there Resume and Start now are the plain press and
+  question.
+
+- **Who:** anyone who may press Start now (the Show row: operators and
+  admins, signed in). Like Start now it needs a page that is up to date
+  and a confirm.
+- **Show mode only.** In Programming, use Play from on the Programming
+  screen, which works as before.
+- **Where it starts:** the engine reads the cue from the saved list of
+  the show file that is running, never a time from the screen. It plays
+  from the cue's time less its lead-in (a cue at 00:08:12:00 with a 3 s
+  lead-in plays from 00:08:09:00). If the cue was changed, deleted, or the
+  running show is another file since the screen read the list, it is
+  refused and nothing starts: reload and choose again.
+- **It is an extra show,** like Start now: it counts as one show, the
+  schedule runs on around it, and a Stop's Hold comes back when it ends.
+  A show waiting after a Hold (delayed) is not the one it starts; that
+  delayed show is then missed, the way it is when any other show starts.
+  It is refused while a show is up, while an Abort stands, and while a
+  Stop is under way or still fading, exactly as Start now is.
+- **The rig check runs first,** as for Start now, and the screen says
+  "Start at the cue Finale by ...". If it fails and you hold Continue
+  anyway, the show starts **from that same cue**, never from the top, with
+  what failed left off for that show.
+- **How it lands:** the music and the video fade in over about 1 second
+  at the cue instead of starting hard. The timecode starts on the cue's
+  frame, so MadMapper, BEYOND and the pixels are in that cue's scene from
+  the first frame. The pixels cannot fade, so they come up in the scene at
+  once. The lasers come up only through the laser gate, as at every show
+  start: a disarmed laser stays dark until someone arms it.
+- **Flames land safely.** Nothing fires for the first half second. A
+  flame or fireball stage that is already part way through when the show
+  lands is NOT started in the middle; it stays off until its next start.
+  A fireball stage that would open in the first moment after the landing
+  (under about 0.8 s, while the flame link settles) is skipped whole, so
+  every stage runs whole or not at all. Valve Open runs only after its
+  Igniter has actually gone out in that run: the flame link must have
+  sent the Igniter since the latest landing (a start, Play from, Back,
+  Ahead, Continue or a loop). That applies when the fireball timeline has
+  an Igniter stage at or before Valve Open, and on a show on its FSEQ when
+  the Igniter is on as Valve Open opens. An Igniter at the very top of a
+  show is held dark by the flame link for its first moment, so its Valve
+  Open does not run either. Each skipped or held stage is said in the
+  journal and on the Fireball page, with why. Choose cues with their
+  lead-in at least a second before a fireball shot.
+  A fuel or air charge is skipped when that tank is already charged or
+  not known (never a double charge), and a charge whose window the show
+  landed in is skipped too. Start at a cue never arms anything: flamesafe
+  fires only a group someone has armed, and hold to arm is unchanged.
+- **Stop wins.** Stop, Hold or Abort at any moment, during the rig check
+  or after the start, stops it at once, as for Start now.
+- **Resume after a Stop:** the engine remembers where a stopped show
+  stopped (a held show too) and offers the cue at or before that point, so
+  the scene starts fresh from its own top rather than in the middle. If no
+  cue is before that point, start from the top with Start now. It is
+  tonight's only: forgotten at the night change, at Close for the night
+  and when Run goes off.
+- **The cue is checked again at the start.** If the cue was changed or
+  deleted in Settings after it was chosen (for example while the rig
+  check failed), Start at a cue and Continue anyway are refused and
+  nothing starts: choose the cue again.
+- **The journal** says who pressed it, on which screen, the cue, its time
+  and lead-in, and every refusal in words.
 
 ## How long a show runs
 
@@ -1126,15 +2251,15 @@ time the night plans for a show and is not used here.
   file), never to BEYOND, never by broadcast, whatever the lasers'
   blanking mode. The held frame stops when the next show starts, or on
   Stop.
-- **Abort** (Jeff's field report, 2026-10-28) fades and stops the show as
-  before, and then the timecode HOLDS on the aborted show's last frame for
-  MadMapper, the same way as at the end of a show (MadMapper alone, never
-  BEYOND, never by broadcast, never the pixels), until the next show
-  starts or Stop. An Abort after the end keeps the held frame. Flames,
-  lasers, fuel and the Abort latch are exactly as before: everything is
-  disarmed, the lasers stay blanked, and Reset is still needed.
-- **Stop** is as before: it stops the timecode at once, including after
-  the audio has ended. A longer show never delays Stop or Abort.
+- **The show's Stop** (Jeff's field report, 2026-10-28, for the Abort it
+  replaced) fades and stops the show, and then the timecode HOLDS on the
+  stopped show's last frame for MadMapper, the same way as at the end of
+  a show (MadMapper alone, never BEYOND, never by broadcast, never the
+  pixels), until the next show starts. A Stop after the end keeps the
+  held frame. Everything is disarmed and the lasers stay blanked.
+- **Stop on the show file card** (it ends playback and turns Run off)
+  stops the timecode at once, including after the audio has ended. A
+  longer show never delays either Stop.
 
 ## Stopping
 
@@ -1216,15 +2341,14 @@ Turning it off puts every controller back on the live stream immediately.
 
 ## The iPad
 
-Once, on the show machine: open the page (http://127.0.0.1:7878/remote),
-press Programming, and pick this machine's show Wi-Fi address under "Show
-network". On a Mac, start it with the show network on (Run ltcplay, answer
+Once, on the show machine: open the Schedule tab and pick this machine's
+show Wi-Fi address on the "Show network, on this machine" card. On a Mac, start it with the show network on (Run ltcplay, answer
 y to the iPad question). There is no PIN.
 
 ### Open the page from your Mac or iPad
 
-On the Windows show PC the "Show network, on this machine" card on
-Programming says it all in plain words: the address saved (or none), where
+On the Windows show PC the "Show network, on this machine" card on the
+Schedule tab says it all in plain words: the address saved (or none), where
 the engine is listening, whether the Windows Firewall rule is there,
 whether Windows calls that network Public or Private (with what to do
 when it is Public), and the address to type on the other machine, for
@@ -1244,19 +2368,19 @@ example
   installer again. INSTALL.md has the rest.
 
 A device on the show network signed out is view only, and arming from it
-still needs "Arming from a screen" on. Nothing about Abort, Hold or Stop
+still needs "Arming from a screen" on. Nothing about Hold or Stop
 changes.
 
  Once users are set up (USERS.md), an
 iPad signed out is view only, like every screen ("Signing in" above); it
-can still Stop, Hold, Abort, Acknowledge and disarm. Anything on the show
+can still Stop, Hold, Acknowledge and disarm. Anything on the show
 Wi-Fi that can reach that address can see the page, so keep the show Wi-Fi
 to the crew.
 
 After the last show of the night, everyone is signed out on their own:
 10 minutes after the last show ends, every screen that was signed in
-before it ended is signed out, once. It waits while a show is live, on
-Hold or aborted, and while anything is armed or going on at the rig (a
+before it ended is signed out, once. It waits while a show is live or on
+Hold, and while anything is armed or going on at the rig (a
 hold to arm, a purge, a laser test, an armed laser or flame group), and
 goes as soon as that is clear. Anyone who signs in after the last show
 ended stays signed in for the rest of the night. It only happens on a
@@ -1268,33 +2392,27 @@ On the iPad, on the show Wi-Fi, open `http://<that address>:7878/`. It goes
 straight to the show screen. Everything you need during a show is on that
 one screen, with no scrolling: the show state, the timecode, the current
 show and how long is left in it, the next show, Start now, Hold, Resume,
-Reset, the flame groups and the status strip along the top (deck,
-flamesafe, audio, video, lasers, pixels). ABORT is a red stop sign in the
-bottom right corner, on every screen, always in sight (it stays there while
-the page scrolls; there is no gesture to find it). The page keeps a strip
-free down its right edge, so no other button is ever under the sign. Point
-at it (or reach it with the Tab key) and a line beside it says what a press
-does now, for example "Nothing to abort right now". Abort is a DOUBLE TAP,
-with no pop-up: the first tap only makes the sign bigger and flashing, with
-TAP AGAIN TO ABORT on it (it grows upward, inside the free strip, so it
-never covers another button), and sends nothing; a second tap anywhere on
-the big sign while it is big (2 seconds) aborts, exactly as before, however
-fast the second tap comes. Any finger works, two
-different fingers too, or the mouse twice (a double click), or Enter or
-Space twice (holding the key down counts once); a finger then the mouse
-counts as one tap. After 2 seconds
-with no second tap the sign goes back by itself and nothing happened. It
-works signed out, and with the connection lost it still sends and says
-plainly if the engine did not answer. The Stream Deck's Abort is unchanged. If you pinch-zoom an iPad in on part of the page, the sign
-is only in view when the zoomed part includes the bottom right corner: zoom
-back out to find it. Start now asks once too. Hold, Resume and Reset are one
-press. Disarm all flame groups is one press and never asks. It is a plain
-disarm: every group goes off, and a group is armed again by holding its
-button, with no Reset. Abort is different: it stops the
-show, and every group then needs Arm again (let go, then hold) after Reset.
-If the Stream Deck program is not running, or flamesafe does not report
-every group off within a second, Disarm all flame groups disarms them the
-way Abort does instead, and says so.
+the flame groups and the status strip along the top (deck, flamesafe,
+audio, video, lasers, pixels). Stop is where Stop has always been, in
+Start now's place while there is something to stop (see Stop, Hold and
+Resume on the rack screen): a DOUBLE TAP, with no pop-up. The first tap
+only changes the button (it pulses and reads Tap again) and sends
+nothing; a second tap within 2 seconds sends Stop, however fast it comes.
+Any finger works, two different fingers too, or the mouse twice (a double
+click), or Enter or Space twice (holding the key down counts once); a
+finger then the mouse counts as one tap. After 2 seconds with no second
+tap the button goes back by itself and nothing happened. It works signed
+out, and with the connection lost it still sends. A Stop that did not do
+all of it (its flame disarm failed, a part failed, it was refused, or the
+engine did not answer) stays on the screen as a banner until Seen. There
+is no Abort sign any more (removed, Jeff, 2026-10-30); the hardware
+e-stop is the emergency layer. Start now asks once too. Hold and Resume
+are one press. Disarm all flame groups is one press and never asks. It is
+a plain disarm: every group goes off, and a group is armed again by
+holding its button. A Stop is different: every group then needs Arm
+again (let go, then hold). If the Stream Deck program is not running, or
+flamesafe does not report every group off within a second, Disarm all
+flame groups disarms them the way Stop does instead, and says so.
 
 The lasers have ONE pill in the status strip, one plain sentence: who is
 armed and BEYOND's laser output, for example "Lasers: all disarmed, output
@@ -1372,7 +2490,7 @@ audio from that point, then the rig comes up for the show). Back 10 s,
 Back 5 s, Ahead 5 s and Ahead 10 s move the audio, the timecode and the
 pixels at once; while paused they move the paused point, and Continue
 plays from there. Pause is the show's own Hold (flame cues to zero,
-lasers blanked and disarmed, music and timecode frozen) and Continue its
+lasers blanked, music and timecode frozen) and Continue its
 own Resume. The A/B loop jumps the audio back to mark A each time it
 passes mark B; both marks have to be in the same cue. Stop the show
 audio (the button that says Follow timecode again on other shows) takes
@@ -1383,7 +2501,7 @@ audio.
 While Programming is playing, Hold on any screen or the Stream Deck
 pauses it the same as Pause, and also holds the schedule, so no show
 starts until someone presses Resume (Continue carries the playback on but
-leaves the schedule held). Abort (after it disarms every flame group and
+leaves the schedule held). Stop (after it disarms every flame group and
 laser, as always) stops the playback the way Stop the show audio does.
 Start now and Run are refused while Programming is playing: stop the
 Programming playback first.
@@ -1398,16 +2516,48 @@ Nothing on the screen arms anything. Flame cues still go only to groups
 an operator has armed, through flamesafe, and nothing fires for half a
 second after a jump, a loop, Play from or Continue; a cue you jump over is not
 played, and a flame already on where you land stays off until it ends.
-The lasers stay dark in Programming: the laser gate lights them only
-while a scheduled show is live. BEYOND's own timeline still follows the
-timecode, so its position moves with the playhead.
+The lasers follow the playhead too, by the same rules as a show. They
+light only when every laser is armed on the Morning and Shutdown page and
+none is locked out, and only before or after the night (the schedule in
+IDLE, OFF or BOOT). They stay dark during intermission (STANDBY), on Hold,
+while the night closes, and while a laser calibration test is on. Nothing
+on the Programming screen arms them.
+
+- Play from: the lasers come up once the timecode is moving, never on a
+  frozen frame. If it is not moving within 2 seconds they stay dark.
+- Back, Ahead and the A/B loop: the lasers are not blanked for the jump.
+  BEYOND follows the timecode to the new place.
+- If the timecode stops moving for half a second while the lasers are lit
+  (a jump whose audio has not started, a stalled clock), the lasers are
+  blanked, because a frozen laser frame is a static beam. The check runs
+  four times a second, so the blank comes within about 0.75 seconds of the
+  last frame. This is only a safety guard for a frozen frame. Pause, then
+  Continue, or Play from again, brings them back. Arming the lasers on the
+  Morning page during playback lights them only once the timecode moves,
+  the same as Play from.
+- Pause on the Programming screen blanks the lasers and switches BEYOND's
+  laser output off, but every laser stays armed. (The blank is the one a
+  Hold sends: brightness 0, or with "beyond_blank" set to "timecode"
+  BEYOND's timecode moved to the black zone, brightness not touched.) Continue lights them
+  again once the timecode moves, if they are all still armed. While
+  paused, a laser can be disarmed or locked out (it then stays dark), but
+  not armed: arm it after Continue, as after a Hold in a show. If the
+  lasers were armed a moment before the Pause, BEYOND's laser output may
+  be switched on again just after the Pause switched it off; the lasers
+  stay blanked all the same, and nothing lights them until Continue.
+- Hold (the Hold button on any screen or the Stream Deck), an
+  announcement, Stop and Disarm all lasers still disarm every laser and
+  leave them dark, as in a show.
+- If the schedule moves on while the lasers are lit (into intermission,
+  the night closing), they are blanked, even if nothing else told the
+  show conductor.
 
 There is no switch for flames in Programming (the old "Fire flames while
 scrubbing" was removed): while you play here, the show's own flame cues go
 to flamesafe and only armed groups fire. The Programming screen says so in
 one line, and shows in full why the flame cues cannot go out when they
 cannot. While flames follow the transport, only the show PC or an admin
-can move the position, the loop or the marks. Hold, Stop or Abort ends it.
+can move the position, the loop or the marks. Hold or Stop ends it.
 LIVE_FLAME_PROGRAMMING.md, "Flames in Programming playback", has the rules.
 
 The time zone on the schedule card is a list of plain names (for example
@@ -1415,8 +2565,8 @@ Mountain Time (Denver)); the show's local time is shown under it. The
 engine checks the zone again when the schedule is saved.
 
 Each flame group has ONE button, and its colour is the group's state:
-green armed, bronze off, amber held back (flashing: re-arm needed after an
-Abort, a fault or a lost link), WAIT (the re-arm wait). While the group is
+green armed, bronze off, amber held back (flashing: re-arm needed after a
+Stop, a fault or a lost link), WAIT (the re-arm wait). While the group is
 off the button is Hold to arm: press and hold it, as before. While the group
 is armed or asked for, the button still says the state in big letters
 (ARMED, ARM AGAIN, WAIT), with DISARM under it and "One press disarms": one
@@ -1448,9 +2598,9 @@ the same in full: flamesafe's list, LTC Player's list, the flamesafe.json LTC
 Player read when it started, and what to do (put the aim list in the
 flamesafe.json flamesafe uses, check LTC Player reads that same file, then
 quit LTC Player and start it again). It is display only: it never holds
-a show at showtime, never plays the Delayed announcement, never sounds
+a show at showtime, never sounds
 the booth speaker and changes nothing on the Stream Deck (no ACK key, page
-2 stays open). Stop, Hold, Abort and Disarm all work as usual while it
+2 stays open). Stop, Hold and Disarm all work as usual while it
 is up, and it clears itself once the lists agree. Both
 programs also write their aim list and the file they read to the journal
 when they start.
@@ -1469,14 +2619,14 @@ every hold still under way is let go; a group the Stream Deck already armed
 during the hold stays armed (its button then reads Disarm). A
 group that is locked out, still in its re-arm wait or refused stays out, and
 the line beside it names each one and why. While live flame programming is
-on with one group at a time (or turns on during the hold), or an Abort
-stands, Arm all arms nothing, stops, and says so. While any
+on with one group at a time (or turns on during the hold), Arm all arms
+nothing, stops, and says so. While any
 group is armed or asked for (one or several), or the lamps are not known, it
 reads Disarm all flame groups: one press, as before. With arming from a
 screen switched off it always reads Disarm all flame groups.
 
 If the page shows a red CONNECTION LOST bar, the iPad has lost the engine.
-The show carries on by itself and a Hold stays held. Start now, Resume, Reset
+The show carries on by itself and a Hold stays held. Start now, Resume
 and the programming buttons go grey until it is back.
 
 Arming from the iPad or the rack screen (when screen arming is switched on;
@@ -1548,38 +2698,135 @@ is live), and flamesafe with the Stream Deck (what the show PC's LTC
 Player says about each program, and why one is not running). The card
 goes away once a show file and a schedule exist.
 
-The Abort confirm lists what the press will do from this screen and, in
-red, what it cannot: with no flame link in the engine, the flames are NOT
-disarmed from the screen (the Stream Deck's group keys and Stop, and the
-hardware e-stop, are), and with no BEYOND OSC address the lasers are not
-blanked from here.
-After the press, the engine's answer stays on the screen as a banner until
-it is seen, never only as a one-line note.
+After a Stop, the engine's answer says what it did and, if any part did
+not work (with no flame link in the engine the flames are NOT disarmed
+from the screen: the Stream Deck's group keys and Stop, and the hardware
+e-stop, are), it stays on the screen as a banner until it is seen, never
+only as a one-line note.
 
-## Interface 2.0 (being tried, 1.0 stays)
+## The screen
 
-The page above is interface 1.0. Interface 2.0 is a new SHOW screen beside
-it; the Day, Schedule and Settings tabs of 2.0 open the 1.0 page for now
-("Open in 1.0"). Nothing else changes: every 2.0 button sends exactly what
-the same 1.0 button sends, with the same holds, confirms and refusals.
+There is one screen, on every device: the rack screen, every iPad and
+every laptop get it at `/remote` and at the show network address
+(`/remote2` is the same page, for old bookmarks). Its tabs are SHOW, Day,
+Schedule (with the Programming cards and, on the show PC, its tools) and
+Settings. Stop show, Hold and Disarm flames are one tap away on every
+tab, and the hardware e-stop always works.
 
-- Try it: "Try 2.0" in the 1.0 header. Back: "Back to 1.0" in the 2.0
-  header. One tap each way, and it is this screen only (a cookie in that
-  browser): the rack screen, each iPad and each laptop choose for
-  themselves. The rack window's address stays `/remote`.
-- `/remote1` is always 1.0 and `/remote2` is always 2.0, for comparing.
-- Which one a screen that has not chosen gets: 2.0 Settings, "Default
-  interface", on the show PC itself, by someone with Settings (admins).
-  It starts at 1.0 and stays there until Jeff changes it. It is
-  `ui_default` (1 or 2) in `ltcplay_remote.json`; anything else reads as 1.
-- The 2.0 SHOW screen, top to bottom: one line that says what to do next;
+- An old `/remote1` or `/ui` address opens the screen (`/remote`). A
+  `ui_default` left in `ltcplay_remote.json` is ignored.
+- Settings, "Play-from cues" (on the show PC, by someone with
+  Settings, admins): a list of named points in a show file to play the
+  show from later. Saving the list sends nothing to the rig and starts
+  nothing; starting a show from a cue is "Start at a cue" (below, in its
+  own section). Pick the show file, then
+  Add cue, or change a name, time, lead-in or note in place, or Delete a
+  cue, and Save. Each cue has:
+  - a name, up to 40 characters, used once in that show (Finale and
+    finale count as the same name);
+  - a time, HH:MM:SS:FF at 30 frames a second, counted from the top of
+    the show cue (00:00:00:00 is the first frame of the show audio, the
+    same count as the Art-Net timecode, MadMapper and BEYOND). It must be
+    inside the show AUDIO: the card says how long the audio is;
+  - a lead-in, the whole seconds played before the cue: 2 when left
+    empty, at least 1 and at most 30. The time less the lead-in cannot be
+    before the top of the show cue;
+  - a note, optional, up to 200 characters.
+  A cue that breaks a rule is marked in red and Save waits until it is
+  fixed; the engine checks every rule again and says what it refused.
+  Names and notes are one line of plain text: a control or invisible
+  character is refused. If someone else saved the list since this screen
+  read it, the save is refused and nothing is overwritten: tap Reload to
+  read the list again (changes not saved are dropped), then make them
+  again and save. The list is `ltcplay_play_from.json` in the settings
+  folder, one list per show file, under the show file's name exactly as
+  the show folder spells it; a copy of every saved file is kept in
+  `play_from_history` (the last 50), and every save and every refusal is
+  in the journal and the audit log. When the file cannot be read (damaged
+  by hand, or written by a newer LTC Player), or was saved before and is
+  gone now (deleted, moved, quarantined), the card says so and nothing
+  can be saved over it. An admin taps Restore the last saved copy (every
+  show's list, as last saved), or fixes the file, or taps Replace the
+  file, then makes this show's list and saves. Replace starts the file
+  again with only this show's list (the other shows' lists in it are
+  gone); the broken file is kept in `play_from_history` first, and when
+  it cannot be kept nothing is replaced. When the show audio is
+  rendered again at another length, the card says so and names any cue
+  now past its end; a list whose show file is no longer in the show folder
+  is named too. Anyone signed in can read the list; saving it from an
+  iPad also needs Arming from a screen on. With no users set up, the show
+  PC reads the list but nobody can save it until an admin exists.
+- The SHOW tab, top to bottom: one line that says what to do next;
   the show state, the timecode and the time left; the big button for the
-  next step (Run show, Start now, Resume or Reset), Hold and Stop show; one
+  next step (Run show, Start now or Resume; Resume and Start now offer
+  the saved play-from cues, see Start at a cue), Hold and Stop show; one
   alert at a time with Acknowledge (tap the words for the details); a tile
   per flame group and one for the lasers, with Hold: arm flames and Disarm
   flames (flames only; the lasers' tile has its own Disarm lasers); the
-  announcements and the wind along the bottom, left of Abort in its
-  corner, 96 px, tap twice. Tap "Announce" for what the announcements do. Run show is the 1.0 Run in Show mode, on the show PC only.
+  announcements and the wind along the bottom. Tap "Announce" for what
+  the announcements do. Run show is Run in Show mode, on the show PC only.
+- Schedule tab: tonight's shows and the schedule editor. Tonight's shows, two columns: tap a show to see its notes
+  (why it moved, how it was added, a late warning), tap again to close
+  them. "Next:" says the next show, and the engine's Run warning shows in
+  amber when Run is off with a show to come. On the show PC only, the
+  card "Schedule: the show times": the time zone (with the show's local
+  time now), the season's first and last date, the show nights (tick a
+  night, then its first show, minutes apart and when the last show ends),
+  the show length, the gap before a show and Late start allowed (seconds,
+  120 unless set, at most 300). Save the schedule writes the schedule
+  file and loads it at once (tonight's list is rebuilt; nothing is
+  started); the engine checks every rule and says what it refused or
+  anything to know. Reload from the file reads it again (changes not saved
+  are dropped). Date exceptions in the file are kept as they are; the card
+  says how many. Edits not yet saved stay in the form when the screen
+  goes back to SHOW by itself (a new alert, or a minute untouched near a
+  show; typing counts as a touch), and the footer says "Unsaved schedule
+  edits kept"; opening Schedule again never reads the file over them. A
+  save writes the whole schedule: a save from another window or iPad
+  since this one read the file is overwritten, so press Reload from the
+  file first if someone else may have changed it. The
+  card's first line is the state line (STANDBY, On hold, Held after
+  Stop, Checking, Held for an alert). iPads and laptops see tonight's
+  shows only.
+- Machine map, Arrange and the show machine switches. On DAY's Purge step, Map shows the field (every
+  machine where the layout puts it) in the group buttons' place; a tap
+  on a machine arms it for the purge, as a group button does (a tap:
+  a swipe that starts on a machine scrolls and chooses nothing). Arrange
+  (its button is shown on the show PC only; the engine saves a layout
+  for anyone with the show files permission, from any device) is
+  Arrange mode. It needs room for its bar and the field:
+  on a window too short it says so and does not start. While it is on
+  nothing arms, fires, locks or lights anything (the fire key line says so, a tap
+  picks a machine up instead), and the only ways out are Save layout,
+  Cancel, Reset layout (asks first) and leaving the step, the Map or
+  DAY (unsaved moves are forgotten). On the Programming cards (Schedule
+  tab): Arming from a screen (show PC only; Turn on asks first and
+  needs Settings, Turn off works at once), Live flame programming (Turn
+  on on the show PC only, asks first and needs Settings; Turn off from
+  anywhere, also from the line at the top) and the announcement output
+  (show PC only: the output, Save, Test tone, Settings). Nothing on
+  them arms anything by itself: arming is still the Stream Deck's hold
+  to arm and flamesafe's rules.
+- Programming (Schedule tab): the Programming cards, on the Schedule tab (there is no room in the header for a tab
+  of its own; `/remote2#prog` opens it). On the show PC, the Show file
+  card: Show or Programming (which mode Run
+  starts), the show file, and Run. Run asks first ("Press Run?" in Show,
+  "Run in Programming?" in Programming); Programming is a rehearsal (Play
+  from, jump and loop work, the scheduler starts no show). Programming is
+  refused while a scheduled show is live: press Hold, and once the show
+  has ended Stop, then Run in Programming. While Run is on, the same
+  button is Stop (tap twice) when something is playing, else Run off
+  (asks first); to switch modes, Stop or Run off, choose the other mode,
+  then Run. On every screen, the Programming session card: Play from (a
+  timecode or a cue name), Back 10 s, Back 5 s, Ahead 5 s, Ahead 10 s,
+  Pause, Continue, Set A, Set B, Loop on or off, and Follow timecode again
+  (Stop the show audio while the show audio plays). They work only in a
+  Programming run, with contact, signed in with the Show row; the engine
+  says why it refuses one, and its answer is shown under the card. While
+  the show's flame cues follow Programming playback, a move needs the show
+  PC or Settings, and the card says how the flames follow; a
+  flame cue fault is shown there in full. The show folder, the network
+  and the other show PC tools are cards further down the Schedule tab.
 - Anything live that has to be stopped by hand (the wave flamer cleaning,
   live flame programming) sits in the next-step
   line with its own red Stop, on every tab, never behind another alert,
@@ -1591,21 +2838,80 @@ the same 1.0 button sends, with the same holds, confirms and refusals.
 - A Disarm that is refused stays in the alert slot until Seen, and the
   next step says to use the Deck or the e-stop. With no contact the slot
   says Connection lost.
-- Abort does not depend on the rest of the page: if the page did not load
-  whole it says "Page not fully loaded. Reload it." across the top, and
-  Abort still works.
+- Stop does not depend on the rest of the page: if the page did not load
+  whole it says "Page not fully loaded. Reload it." across the top, with
+  its own Stop show button, which still works (a double tap).
 - The rig check before a show: the big button says Checking rig while it
-  runs. When it fails, the alert slot says so and its button is 1.0's
+  runs. When it fails, the alert slot says so and its button is
   "Hold: continue anyway" (a hold; a tap does nothing). On the show PC the
   alert's details have Check again.
 - DAY tab: the day as steps. Startup (sign in, rig checks, the startup
   list, fuel, purge, laser test, locks) or Shutdown (the shutdown list,
   wave flamer cleaning, locks, sign out); only the steps that apply now,
-  each with its mark, and one big Next. Every press is the 1.0 Startup,
-  Fuel and Shutdown pages' own: a purge fires only with the Stream Deck's
+  each with its mark, and one big Next. A purge fires only with the Stream Deck's
   FIRE key or Space held, the cleaning starts only with its two holds,
-  and Lock is one tap per machine with Undo. "Map in 1.0" opens the
-  machine map, Arrange, the checklist PDF and the rest of 1.0's page.
+  and Lock is one tap per machine with Undo. The Purge step has the
+  machine map and Arrange; the checklist steps have Verify records, the
+  PDF and Export all.
+- DAY tab, Fireball, fuel and timed purge.
+  The Fireball step (Startup, only when the show has a fireball group):
+  a pad per channel. Fuel Charge, Air Charge and Purge stay on until
+  pressed again; Valve Open and Igniter are on only while held. While
+  anything is on, the page sends a beat every 100 ms, and the engine and
+  the flame link turn everything off 0.25 s after the last one. Leaving
+  the step or the tab, hiding or closing the page, no contact, signing
+  out and every refusal turn everything off at once; losing focus lets
+  go of Valve Open and Igniter; a Hold does not end it. Nothing comes
+  back on by itself. All off and Disarm Fireball always work; Tanks are
+  empty is for admins. The pads show only whole: on a window too short
+  for them (under about 690 px of page) the step says "This window is
+  too short for the fireball pads: make it taller or use the iPad", and
+  anything on is turned off. The Fireball step is not there at Shutdown,
+  or while the show PC's status has no fireball group; there is then no
+  All off, but Stop show and Disarm flames still turn the fireball off. Nothing on this step arms: the Fireball is armed
+  by its own hold to arm. The Fuel step: Refills and notes (amber
+  when there is a fuel warning) shows the warning and Recent refills
+  with Undo (admins; it asks first, and the refill stays in the record
+  marked undone); press it again for the tanks. The Purge step: the
+  timed purge, a preset or Other seconds, and Hold to start (held like a Hold to arm: a tap,
+  letting go early, another step or tab, no contact or signing out fire
+  nothing); once it runs you may let go, it stops by itself, and
+  Stop purge here or in the line at the top ends it now.
+- Show PC tools.
+  - DAY, the Startup and Shutdown checklist steps: Verify records,
+    Download today's PDF and Export all. The two downloads are links: on
+    an iPad, Safari saves the file and stays on this page; a screen
+    added to the iPad's home screen opens it in Safari.
+  - Schedule tab, top: Getting started (only on a fresh install, until a
+    show file and a schedule exist), its three steps, Make a show file,
+    and Change it and Set the show times, which go to their cards below.
+  - Schedule tab, below the Programming cards, on the show PC only: Settings
+    changed (when a settings file changed on disk; Reload engine, asks
+    first, refused while a show runs or a flame group is armed, for
+    someone who may change settings), Rig check (pre-roll) with Check the
+    rig, the Show folder (Make a show file, Check the show file, Use this
+    folder, which asks first and restarts the engine, Open the show and
+    settings folders), the Stream Deck operator (Choose), and the Show
+    network (the address to type on an iPad, Use, Save address, and
+    Restart the engine when the saved address needs it; it asks first).
+  - Help, This LTC Player: the version, this screen, where the settings
+    and logs are, the mode, how to leave this window, and on the show PC
+    Close this window.
+- Users: the Users pane. Open it
+  from Settings (Users, Open) or from the header: tap your name, then
+  Users in the Signed in sheet. Signed in shows who you are, Sign out,
+  and your own password (Change). Users (admins, on the show PC only):
+  each person's role, Reset password (it asks for a temporary one;
+  leave it empty and they choose their own at their next sign-in),
+  Remove (it asks first; their audit lines stay), Add a person, and
+  Clear sign-in lockouts. The last admin cannot be removed or made
+  something else. Who may do what: everyone can read it; admins on the
+  show PC change it and press Save who may do what. Stop, Hold and every
+  disarm always work, for everyone. Audit log (show PC only): its state,
+  Check the chain now, the nightly upload (server, shared token, time,
+  days kept), Idle sign out, sign out after the last show, Save, and
+  Send now. The shared token is never shown: the field says only whether one
+  is saved, and a token typed there is cleared after Save.
 - The systems badge in the header names a single problem ("Stream Deck:
   check"); one tap opens the list, which starts with what to do first.
   Something not set up here reads Off.

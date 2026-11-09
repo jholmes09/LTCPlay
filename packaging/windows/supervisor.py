@@ -64,10 +64,10 @@ SHOW MODE (showpc.json "show_mode")
       conductor, the flame link and the show runner all run, with
       ltcplay_fire_ice.json beside the schedule file (flamesafe_config,
       flame_controller). The Stream Deck program is started with the
-      engine's own address, so its Abort, Hold, Resume and Reset reach the
-      show conductor.
+      engine's own address, so its Stop, Hold and Resume reach the show
+      conductor.
   "plain": the engine alone, no scheduler. The Stream Deck program is NOT
-      started: with no show conductor its Abort could only disarm flames.
+      started: with no show conductor its Stop could only disarm flames.
   %LOCALAPPDATA%\\ltcplay\\logs\\        one log per program, and this one's
   %PROGRAMDATA%\\LTC Player\\stop        present: stay stopped (see --task)
   %PROGRAMDATA%\\LTC Player\\stop-refused  why the last stop was refused
@@ -83,6 +83,30 @@ import diagnostics
 import housekeeping
 import ltcwin
 import updater
+
+try:
+    # ltcplay/showwindows.py, carried as a module of its own like audit.py
+    # (this program does not bundle the ltcplay package).
+    import showwindows
+except ImportError:
+    try:
+        # The soak program imports this file and carries the package.
+        from ltcplay import showwindows
+    except ImportError:
+        sys.path.append(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))), "ltcplay"))
+        import showwindows
+
+try:
+    # ltcplay/flamesafecheck.py, carried the same way (stdlib only).
+    import flamesafecheck
+except ImportError:
+    try:
+        from ltcplay import flamesafecheck
+    except ImportError:
+        sys.path.append(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))), "ltcplay"))
+        import flamesafecheck
 
 # Global\, not the session's own namespace (locked decision 21): a second
 # supervisor started in another Windows session (a second sign-in, Remote
@@ -165,10 +189,17 @@ def load_settings():
         # The rack screen page (/remote), maximized on this monitor:
         # 1 is the main display, 2 the next one Windows lists, and so on.
         "page_monitor": 1,
-        # Extra room under the page's Abort bar, in the page's own pixels,
+        # Extra room at the bottom of the page, in the page's own pixels,
         # for a window that still reaches under the taskbar (0: none; the
         # page also measures it by itself, 2026-10-26).
         "page_bottom_pad": 0,
+        # Jeff's field report, 2026-10-29 (showwindows.py): after a reboot
+        # BEYOND came up over the rack screen. The rack screen is raised
+        # again when a BEYOND or MadMapper window covers it (false: never).
+        # MadMapper's output watch reads its switches from
+        # ltcplay_fire_ice.json (output_settings), the engine's own file,
+        # so the two never disagree.
+        "rack_screen_keep_in_front": True,
         "show_mode": "fire_ice",
         "schedule": os.path.join(appdata_dir(), "ltcplay_schedule.json"),
     }
@@ -581,6 +612,9 @@ class Program:
         self.next_try = 0.0
         self.said_why_not = ""
         self.out = None
+        self.config_bytes = None
+        self.config_path = None
+        self.last_good_kept = False
 
     def alive(self):
         if self.proc is not None:
@@ -610,6 +644,18 @@ class Program:
         # while it starts counts as newer than its copy (2026-10-28).
         self.read = {f: config_hash(f) for f in files_read(self.name,
                                                             settings)}
+        # flamesafe's config as it is started on: the last good copy is
+        # these bytes once flamesafe has run on them (keep_last_good).
+        self.config_bytes = None
+        self.config_path = None
+        self.last_good_kept = False
+        if self.name == "flamesafe" and args:
+            try:
+                with open(args[0], "rb") as fh:
+                    self.config_bytes = fh.read()
+                self.config_path = os.path.abspath(args[0])
+            except OSError:
+                self.config_bytes = None
         env.pop(ltcwin.FLAMESAFE_ENV, None)
         if settings is not None and settings.get("flamesafe_config"):
             # One flamesafe config for all three programs (P1-4): the same
@@ -669,6 +715,58 @@ class Program:
         return (f"{EXE[self.name]} did not stop within {STOP_WAIT_S:.0f} s "
                 f"and is still running ({why or 'Ctrl-Break was sent'}). It "
                 f"was NOT forced to quit.")
+
+
+def keep_last_good(p, now):
+    """flamesafe has run LAST_GOOD_AFTER_S on the config it was started on
+    (p.config_path, read as p.config_bytes then): those bytes become the
+    last good copy beside it (flamesafecheck.save_last_good), once per
+    start, and only while the file still holds them (an edit since is not
+    what flamesafe ran). A file flamesafe refused never gets here: it exits
+    within seconds. Never raises."""
+    if p.last_good_kept or p.config_bytes is None or not p.config_path or \
+            now - p.started < flamesafecheck.LAST_GOOD_AFTER_S:
+        return
+    p.last_good_kept = True
+    path = p.config_path
+    try:
+        with open(path, "rb") as fh:
+            if fh.read() != p.config_bytes:
+                log(f"{os.path.basename(path)} changed since flamesafe "
+                    f"started on it, so it is not kept as the last good "
+                    f"copy")
+                return
+        got = flamesafecheck.save_last_good(path, p.config_bytes)
+        if got:
+            log(f"flamesafe has run on {os.path.basename(path)}: kept as "
+                f"the last good copy, {got}")
+    except OSError as e:
+        log(f"the last good copy of {os.path.basename(path)} could not be "
+            f"written ({e}); the one before stays")
+
+
+def say_not_started(name, p, why_not):
+    """Why a program is not started, said once per change in
+    supervisor.log, and for flamesafe in flamesafe.log too: where an
+    operator looks for flamesafe's trouble (Jeff, 2026-11-06)."""
+    if why_not == p.said_why_not:
+        return
+    log(why_not)
+    if name == "flamesafe":
+        program_log_line("flamesafe", why_not)
+    p.said_why_not = why_not
+
+
+def program_log_line(name, text):
+    """One line in a program's own log (flamesafe.log) while it is not
+    running, so the reason is where an operator looks. Never raises."""
+    try:
+        with open(os.path.join(log_dir(), f"{name}.log"), "a",
+                  encoding="utf-8") as fh:
+            fh.write(time.strftime("%Y-%m-%d %H:%M:%S ") + "LTC Player: "
+                     + text + "\n")
+    except OSError:
+        pass
 
 
 def priority_boost_on(settings=None):
@@ -783,11 +881,20 @@ def wanted_args(settings):
     port = settings["port"]
     fs = os.path.abspath(settings["flamesafe_config"])
     fs_ok = bool(settings["run_flamesafe"]) and os.path.isfile(fs)
+    # Not valid JSON (Jeff, 2026-11-06): flamesafe would only exit and be
+    # started again in a loop, and the deck with it. Neither is started;
+    # the engine starts with flames off and the rack screen says where.
+    fs_bad = flamesafecheck.json_problem(fs) if fs_ok else None
     out = {}
-    out["flamesafe"] = ([fs], "") if fs_ok else (
-        None, f"flamesafe is not started: no config at {fs}" if
-        settings["run_flamesafe"] else "flamesafe is switched off in "
-        "showpc.json")
+    if fs_bad is not None:
+        fs_ok = False
+        out["flamesafe"] = (None, "flamesafe is not started: "
+                            + flamesafecheck.sentence(fs_bad))
+    else:
+        out["flamesafe"] = ([fs], "") if fs_ok else (
+            None, f"flamesafe is not started: no config at {fs}" if
+            settings["run_flamesafe"] else "flamesafe is switched off in "
+            "showpc.json")
     folder = settings["show_folder"]
     try:
         os.makedirs(folder, exist_ok=True)
@@ -820,12 +927,16 @@ def wanted_args(settings):
     url = f"http://127.0.0.1:{port}"
     if mode != "fire_ice":
         out["deck"] = (None, "the Stream Deck program is not started: its "
-                       "Abort, Hold, Resume and Reset need the engine's show "
+                       "Stop, Hold and Resume need the engine's show "
                        "conductor, which runs only with show_mode "
                        "\"fire_ice\" in showpc.json")
     elif not settings["run_deck"]:
         out["deck"] = (None, "the Stream Deck program is switched off in "
                        "showpc.json")
+    elif fs_bad is not None:
+        out["deck"] = (None, "the Stream Deck program is not started: "
+                       "flamesafe's config is not valid JSON (flamesafe.log "
+                       "says where)")
     elif not fs_ok:
         out["deck"] = (None, "the Stream Deck program is not started: it "
                        "needs flamesafe's config")
@@ -1342,6 +1453,229 @@ def show_refusal_page(page):
         os.startfile(page)
 
 
+WINDOWS_EVERY_S = 2.0
+
+
+def post_alert(port, kind, text=None):
+    """The engine's alert of `kind` raised with `text`, or cleared when
+    `text` is None (its alert API, from this machine). True once the engine
+    took it (a clear with nothing open counts as done); a failure is
+    logged."""
+    body = {"raise": kind, "text": text} if text is not None else \
+        {"clear": kind}
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/remote/alert",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return 200 <= r.status < 300
+    except urllib.error.HTTPError as e:
+        if text is None and e.code == 409:
+            return True                # nothing open to clear
+        log(f"the engine refused the {kind} alert "
+            f"{'raise' if text is not None else 'clear'} (HTTP {e.code})")
+        return False
+    except urllib.error.URLError as e:
+        # Not connected (refused, or the connect itself timed out): it
+        # never reached the engine, so it is sent again later.
+        log(f"the {kind} alert {'raise' if text is not None else 'clear'} "
+            f"did not reach the engine ({e.reason})")
+        return False
+    except TimeoutError:
+        # Sent, and no answer in time (review B of #176): the engine may
+        # have taken it, so it is never sent again and an Acknowledge is
+        # never undone. Said in the log.
+        log(f"the {kind} alert {'raise' if text is not None else 'clear'} "
+            f"was sent but got no answer within 3 s; it is not sent again")
+        return True
+    except Exception as e:
+        log(f"the {kind} alert {'raise' if text is not None else 'clear'} "
+            f"did not reach the engine ({type(e).__name__}: {e})")
+        return False
+
+
+_OUT_SAID = set()
+
+
+def _say_once(quiet, text):
+    """log(text), once per text when `quiet` (the watch reads the file on
+    every look)."""
+    if quiet and text in _OUT_SAID:
+        return
+    _OUT_SAID.add(text)
+    log(text)
+
+
+def output_settings(settings, quiet_log=False):
+    """(check, monitor, why_no_alert) for MadMapper's output watch, from
+    ltcplay_fire_ice.json beside the schedule (madmapper_output_check,
+    madmapper_output_monitor): the same file and keys the engine's rig
+    check reads. Missing or wrong: (True, 0, ""), said in the log.
+    why_no_alert is a sentence when the show's MadMapper is not on this PC
+    (no madmapper block, or another host, review B round 2 of #176): the
+    watch then reads and logs, and never raises an alert nothing would
+    clear."""
+    try:
+        fi = os.path.join(os.path.dirname(settings["schedule"]),
+                          "ltcplay_fire_ice.json")
+        with open(fi, encoding="utf-8-sig") as fh:
+            doc = json.load(fh)
+    except Exception:
+        # Not readable: whether the show's MadMapper is here is not known,
+        # so the watch reads and logs but raises nothing (review B round 3).
+        return True, 0, "ltcplay_fire_ice.json could not be read"
+    if not isinstance(doc, dict):
+        return True, 0, "ltcplay_fire_ice.json could not be read"
+    mm = doc.get("madmapper")
+    quiet = ""
+    if not isinstance(mm, dict):
+        quiet = ("the show has no MadMapper (no madmapper block in "
+                 "ltcplay_fire_ice.json)")
+    elif not showwindows.on_this_pc(mm.get("host", "127.0.0.1")):
+        quiet = (f"the show's MadMapper is on another machine "
+                 f"({mm.get('host')})")
+    chk = doc.get("madmapper_output_check", True)
+    mon = doc.get("madmapper_output_monitor", 0)
+    if chk is not True and chk is not False:
+        _say_once(quiet_log, f"ltcplay_fire_ice.json madmapper_output_check "
+                             f"is {chk!r}, not true or false: the output is "
+                             f"watched")
+        chk = True
+    if isinstance(mon, bool) or not isinstance(mon, int) or \
+            not 0 <= mon <= 8:
+        _say_once(quiet_log, f"ltcplay_fire_ice.json madmapper_output_monitor "
+                             f"is {mon!r}, not 0 to 8: any display but the "
+                             f"rack screen's counts")
+        mon = 0
+    return chk, mon, quiet
+
+
+def soak_kit(settings):
+    """True when ltcplay_fire_ice.json beside the schedule is a soak kit's
+    (soak.py writes "soak_only": true, with the rig check off): the bench
+    soak's shows are never held by the MadMapper output alert."""
+    try:
+        fi = os.path.join(os.path.dirname(settings["schedule"]),
+                          "ltcplay_fire_ice.json")
+        with open(fi, encoding="utf-8-sig") as fh:
+            return json.load(fh).get("soak_only") is True
+    except Exception:
+        return False
+
+
+def output_alert(settings, port, text):
+    """OutputWatch's alert: the engine's video alert, except under a soak
+    kit (said in the log instead). True once done."""
+    if soak_kit(settings):
+        log("MadMapper output: OFF, no alert raised (a soak kit's "
+            "ltcplay_fire_ice.json is in use)")
+        return True
+    return post_alert(port, "output", text)
+
+
+def start_window_watch(settings, port, api=None):
+    """[True, RackKeeper or None, OutputWatch or None] (showwindows.py),
+    as showpc.json says, each said in the log. Windows only; never
+    raises."""
+    out = [True, None, None]
+    if not ltcwin.WINDOWS and api is None:
+        return out
+    try:
+        api = api or showwindows.Win32()
+    except Exception as e:
+        log(f"the show PC's windows cannot be read ({type(e).__name__}: "
+            f"{e}): the rack screen keeper and the MadMapper output watch "
+            f"are off")
+        return out
+    if settings.get("rack_screen_keep_in_front", True) is not False:
+        out[1] = showwindows.RackKeeper(
+            api, monitor=settings.get("page_monitor", 1), log=log,
+            opened=lambda: showwindows.opened_at(appdata_dir()))
+        log(f"rack screen keeper: ON (display "
+            f"{settings.get('page_monitor', 1)}): the rack screen is raised "
+            f"again when a BEYOND or MadMapper window covers it (any, for "
+            f"{showwindows.BOOT_SETTLE_S:g} s after start; then only one "
+            f"that appeared in the last {showwindows.APP_SETTLE_S:g} s), "
+            f"never over MadMapper's output or a window a person brought "
+            f"forward (showpc.json \"rack_screen_keep_in_front\": false "
+            f"turns it off)")
+    else:
+        log("rack screen keeper: OFF (showpc.json "
+            "\"rack_screen_keep_in_front\": false)")
+    chk, mon, quiet = output_settings(settings)
+    page = settings.get("page_monitor", 1)
+    # Always made: it reads ltcplay_fire_ice.json again on every look, so
+    # switching it on or off (and Reload engine) needs no restart of LTC
+    # Player (review B round 4).
+    out[2] = showwindows.OutputWatch(
+        api, monitor=mon, log=log, rack=page if isinstance(page, int)
+        else 1,
+        alert=lambda text: output_alert(settings, port, text),
+        clear=lambda: post_alert(port, "output"),
+        epoch=lambda: ENGINE_STARTS[0],
+        config=lambda: output_settings(settings, quiet_log=True))
+    if chk:
+        try:
+            n = len(api.monitors())
+        except Exception:
+            n = 0
+        if mon and n and mon > n:
+            log(f"MadMapper output watch: madmapper_output_monitor is {mon} "
+                f"but this PC has {n} display(s); the output reads as not "
+                f"known until it is set right (ltcplay_fire_ice.json)")
+        log(f"MadMapper output watch: ON, "
+            + (f"display {mon}" if mon else "any display but the rack "
+               "screen's") + f" (read now, at start: madmapper_output_check "
+            f"true, madmapper_output_monitor {mon}, page_monitor {page}; "
+            "ltcplay_fire_ice.json "
+            "\"madmapper_output_check\": false turns it off). Read from "
+            "the window list only; nothing is sent to MadMapper."
+            + (f" It raises no alert: {quiet}." if quiet else ""))
+    else:
+        log("MadMapper output watch: OFF (ltcplay_fire_ice.json "
+            "\"madmapper_output_check\": false)")
+    return out
+
+
+# How many times this supervisor started the engine: a new engine has no
+# alerts, so the MadMapper output watch raises its alert again.
+ENGINE_STARTS = [0]
+
+
+def start_window_thread(settings, port):
+    """start_window_watch, ticked every WINDOWS_EVERY_S on a daemon thread
+    of its own until Windows ends the session. Never raises."""
+    def loop():
+        try:
+            ws = start_window_watch(settings, port)
+        except Exception as e:
+            log(f"the window watches could not start ({type(e).__name__}: "
+                f"{e})")
+            return
+        while not ENDING.is_set():
+            for w in ws[1:]:
+                if w is None:
+                    continue
+                try:
+                    if isinstance(w, showwindows.RackKeeper) and \
+                            RACK_WINDOW[0] is not None:
+                        w.rack_pid = getattr(RACK_WINDOW[0], "pid", None)
+                    w.tick()
+                except Exception as e:
+                    log(f"window watch: {type(e).__name__}: {e}")
+            ENDING.wait(WINDOWS_EVERY_S)
+    try:
+        import threading
+        t = threading.Thread(target=loop, daemon=True,
+                             name="ltcplay-window-watch")
+        t.start()
+        return t
+    except Exception as e:
+        log(f"the window watches could not start ({type(e).__name__}: {e})")
+        return False
+
+
 def run_loop(open_page=False):
     if not take_mutex():
         log("another LTC Player supervisor is already running; leaving it")
@@ -1368,6 +1702,7 @@ def run_loop(open_page=False):
     next_contain = 0.0
     mm_priority = start_madmapper_priority(settings)
     next_mm = 0.0
+    windows = None
     mm_failed = ""
     me_started = time.time()
     progs = {n: Program(n) for n in PROGRAMS}
@@ -1513,16 +1848,18 @@ def run_loop(open_page=False):
                 log(f"{EXE[n]} (adopted, pid {p.pid}) has stopped")
                 p._forget()
             if p.alive():
+                if n == "flamesafe":
+                    keep_last_good(p, now)
                 continue
             if args is None:
-                if why_not != p.said_why_not:
-                    log(why_not)
-                    p.said_why_not = why_not
+                say_not_started(n, p, why_not)
                 continue
             p.said_why_not = ""
             if now >= p.next_try and not ENDING.is_set():
                 try:
                     p.start(args, settings)
+                    if n == "engine":
+                        ENGINE_STARTS[0] += 1
                     audit_event("program-start", EXE[n])
                     note = restart_note(n, progs,
                                         settings.get("flamesafe_config"))
@@ -1537,6 +1874,10 @@ def run_loop(open_page=False):
         if not page_opened and engine_answers(port):
             page_opened = True
             open_page_now(port)
+        if windows is None:
+            # On a thread of its own (review A of #176): a window call or
+            # an alert POST never holds up this loop.
+            windows = start_window_thread(settings, port)
         time.sleep(POLL_S)
 
 
@@ -1603,7 +1944,7 @@ def _write_refusal(why):
 
 
 RACK_PAGE = "/remote"     # the rack screen page ("Rack screen")
-# The most room the page keeps under its Abort bar (CSS px), whatever
+# The most room the page keeps at its bottom edge (CSS px), whatever
 # showpc.json page_bottom_pad says; the page caps it the same (PAD_MAX).
 PAGE_BOTTOM_PAD_MAX = 160
 
@@ -1631,7 +1972,7 @@ def work_area(monitor_rect, work_rect):
     """The window's rectangle on one display: its WORK AREA (rcWork, the
     display less the taskbar and any docked bars), never the whole display
     (Jeff, 2026-10-26: sized to the monitor, the window ran 96 px under the
-    always-on-top taskbar and cut the ABORT bar in half). A work area that
+    always-on-top taskbar and cut the bottom of the page off). A work area that
     is empty or not inside the display is the display."""
     ml, mt, mr, mb = monitor_rect[:4]
     wl, wt, wr, wb = work_rect[:4]
@@ -1830,12 +2171,33 @@ def cmd_start():
     while time.monotonic() < deadline:
         if engine_answers(settings["port"]):
             open_page_now(settings["port"])
+            note = flamesafe_start_note(settings)
+            if note:
+                tell("LTC Player has started, with flames off." + note,
+                     error=True)
             return 0
         time.sleep(0.5)
     tell("LTC Player is starting, but the show page did not answer within "
          "30 seconds. Try 'LTC Player' again in a minute. The logs are in "
-         + log_dir(), error=True)
+         + log_dir() + flamesafe_start_note(settings), error=True)
     return 1
+
+
+def flamesafe_start_note(settings):
+    """"" when flamesafe's config is valid JSON (or missing: said
+    elsewhere), else the startup message's words for it (Jeff,
+    2026-11-06): flames are off and flamesafe.log says where."""
+    try:
+        fs = os.path.abspath(settings["flamesafe_config"])
+        bad = flamesafecheck.json_problem(fs)
+    except Exception:                            # noqa: BLE001
+        return ""
+    if bad is None:
+        return ""
+    return (f"\n\nThe flamesafe config is invalid: {os.path.basename(fs)} "
+            f"is not valid JSON at line {bad['line']}, column "
+            f"{bad['column']}. Flames are off and flamesafe is not started. "
+            f"flamesafe.log in {log_dir()} says what to do.")
 
 
 def cmd_page():
@@ -2171,9 +2533,25 @@ def self_check():
             raise RuntimeError(f"{EXE[n]} is missing from {ltcwin.app_dir()}")
     yield "all three programs are beside it"
     yield f"settings: {settings_path()}"
-    # Any file that exists stands in for flamesafe.json (frozen, __file__
-    # is not on disk).
-    probe = {"port": DEFAULT_PORT, "flamesafe_config": sys.executable,
+    # A valid JSON object stands in for flamesafe.json (flamesafe and the
+    # deck are not started on a file that is not valid JSON).
+    import shutil
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="ltcplay-self-check-")
+    try:
+        for line in _self_check_flamesafe(tmp):
+            yield line
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    for line in _self_check_rest():
+        yield line
+
+
+def _self_check_flamesafe(tmp):
+    fs_probe = os.path.join(tmp, "flamesafe.json")
+    with open(fs_probe, "w", encoding="utf-8") as fh:
+        fh.write("{}")
+    probe = {"port": DEFAULT_PORT, "flamesafe_config": fs_probe,
              "run_flamesafe": True, "run_deck": True,
              "show_folder": control_dir(),
              "show_mode": "fire_ice", "schedule": r"C:\x\ltcplay_schedule.json"}
@@ -2190,6 +2568,19 @@ def self_check():
         raise RuntimeError(f"plain mode would start the deck or the "
                            f"scheduler: {want}")
     yield "fire_ice mode runs the scheduler and the deck; plain runs neither"
+    probe["show_mode"] = "fire_ice"
+    with open(fs_probe, "w", encoding="utf-8") as fh:
+        fh.write("{\n  \"a\": 1\n  \"b\": 2\n}")
+    want = wanted_args(probe)
+    if want["flamesafe"][0] is not None or want["deck"][0] is not None or \
+            "line 3, column 3" not in want["flamesafe"][1]:
+        raise RuntimeError(f"a flamesafe.json that is not valid JSON would "
+                           f"start flamesafe or the deck: {want}")
+    yield ("a flamesafe.json that is not valid JSON starts neither "
+           "flamesafe nor the deck, and says the line and column")
+
+
+def _self_check_rest():
     yield f"control folder: {control_dir()}"
     task_xml("EXAMPLE\\user")
     yield "the sign-in task can be written"
@@ -2243,6 +2634,8 @@ def self_check():
         raise RuntimeError("the rack screen's fallbacks are wrong")
     yield ("the page opens as the rack screen (/remote), an ordinary app "
            "window maximized on the show monitor, never a kiosk")
+    for line in showwindows.self_test():
+        yield line
     for line in housekeeping.self_test():
         yield line
     for line in diagnostics.self_test():

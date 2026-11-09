@@ -32,7 +32,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ICONSET = os.path.join(ROOT, "LTC Player.iconset")
 OUT = os.path.join(ROOT, "ltcplay", "web", "icons")
 
-# The pages' own palette (ltcplay/web/remote.html :root --bg).
+# The pages' own palette (ltcplay/web/remote2.html :root --bg).
 BG = "#070605"
 
 # Each output size, from the iconset drawing it is made from.

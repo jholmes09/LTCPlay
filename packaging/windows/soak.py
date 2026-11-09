@@ -44,9 +44,9 @@ blocks). Each block waits until both programs answer, saying what to click;
 between blocks everything stops cleanly and the operator quits and starts
 both programs again. One combined report, with a section for each block.
 
-Not exercised: Hold, Resume and Abort (no page route presses them in this
-build; they come with the iPad remote, PR #39), announcements, real LTC
-input, and anything actually lighting up.
+Not exercised here: announcements, real LTC input, and anything actually
+lighting up. (The exerciser, soak_exercise.py, presses Hold, Resume and
+Stop.)
 """
 import csv
 import json
@@ -863,9 +863,10 @@ class Soak:
               "venue": "Thanksgiving Point",
               "notes": "BENCH ONLY, written by the soak test",
               # The rig check before each show (PR #162) is OFF in a soak
-              # kit: the bench has no announcement output, booth speaker
-              # or real Stream Deck to prove, so it would hold every soak
-              # show. 0 is refused by every engine without soak_only
+              # kit: the bench has no booth speaker or real Stream Deck
+              # to prove, so it would hold every soak show (a missing
+              # announcement output is only a warning since 2026-10-30).
+              # 0 is refused by every engine without soak_only
               # (fire_ice.FireIceConfig), so a real install always checks.
               "preroll_s": 0,
               "soak_only": True}
@@ -1422,7 +1423,7 @@ class Soak:
         """BEYOND's own timecode stream (fallback mode): hour
         BLACK_HOUR is the black zone; anything else is the show's, which
         is a fault while the lasers must be dark: no show timecode moving
-        to MadMapper, or inside the exerciser's Hold or Abort."""
+        to MadMapper, or inside the exerciser's Hold or Stop."""
         if self.stopping or len(b) < 19 or b[:8] != b"Art-Net\0" or \
                 struct.unpack_from("<H", b, 8)[0] != 0x9700:
             return
@@ -1434,7 +1435,7 @@ class Soak:
         if self.tc_last is None or t - self.tc_last > 1.0:
             why = "no show running"
         elif self.ex is not None:
-            w = self.ex.in_window(time.time(), ("hold", "aborted"))
+            w = self.ex.in_window(time.time(), ("hold", "stopped"))
             if w:
                 why = f"inside the {w}"
         if why and (not self.bey_bad or
@@ -2510,13 +2511,14 @@ class Soak:
                  in str(r).lower()]
         failed = [(n, r) for n, (st, r) in sorted(self.slots.items())
                   if st == "FAULT" and n not in early]
-        # The exerciser Aborts every other show 40 s before its end: an
-        # Abort it pressed is a show that ran, not a failure.
+        # The exerciser Stops every other show 40 s before its end: a
+        # Stop it pressed is a show that ran, not a failure (status
+        # ABORTED, the status a stopped show keeps).
         aborted = sum(1 for st, _r in self.slots.values() if st == "ABORTED")
         out.append(("PASS" if (done or aborted) and not failed else "FAIL",
                     "Scheduled shows (the scheduler starting each show)",
                     f"{done} show(s) played to the end, {aborted} stopped by "
-                    f"the exerciser's Abort near the end, {len(failed)} failed "
+                    f"the exerciser's Stop near the end, {len(failed)} failed "
                     f"to start (limit 0)" + (": " + "; ".join(
                         f"show {n}: {r}" for n, r in failed[:5])
                         if failed else "") + (
@@ -2625,7 +2627,7 @@ class Soak:
                     + f"; {sc.events} packets, {self.sacn_nonzero} not all "
                     f"zero. A group's channels may carry values only while "
                     f"flamesafe reports it armed, and its fire channels only "
-                    f"in a show, never in a Hold, never after an Abort until "
+                    f"in a show, never in a Hold, never after a Stop until "
                     f"it is armed again."))
         # The engine on PORT is this soak's only while its own engine runs:
         # an earlier run's report, rewritten by the A/B while the next run
@@ -2721,7 +2723,7 @@ class Soak:
             out.append(("PASS" if ok else "FAIL",
                         "Flame arming exerciser (on the rack screen, no "
                         "sign-in, arming through the Stream Deck program, "
-                        "Hold, Resume, Abort and Reset)",
+                        "Hold, Resume, Stop and Resume after it)",
                         f"{len(ex.failures)} failure(s) (limit 0)"
                         + (": " + "; ".join(f"{now_text(a)} {w}" for a, w in
                                             ex.failures[:6])
@@ -2729,10 +2731,11 @@ class Soak:
                         + f"; {c['arms']} of {c['arm_tries']} arms took ("
                         + ", ".join(f"{n} {k}" for n, k in
                                     ex.arms_by_group.items())
-                        + f"); {c['cycles']} arm cycle(s) after an Abort "
+                        + f"); {c['cycles']} arm cycle(s) after a Stop "
                         f"(Disarm, then hold again); {c['holds']} Holds, "
                         f"{c['resumes']} Resumes ({ex.hold_tail_line()}), "
-                        f"{c['aborts']} Aborts, {c['resets']} Resets; "
+                        f"{c['stops']} Stops, {c['stop_resumes']} Resumes "
+                        f"after a Stop; "
                         f"{self.hold_continued} Hold silence(s) in the "
                         f"timecode read as the same show"
                         + ("; the Stream Deck program ran with a virtual "
