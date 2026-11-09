@@ -321,6 +321,44 @@ def preflight_refusal(refuse, video_off_ok=False):
             f"stopped its programs; nothing else was started." + hint)
 
 
+def resolve_audio_name(wanted, names):
+    """(exact output name, sentence) for --audio-device / -AudioDevice
+    `wanted` among this PC's output names (as the engine lists them): the
+    exact name when there is one, else the ONE output whose name contains
+    it (any case). Raises RuntimeError, in a sentence, when none or two or
+    more match: the engine opens one exact name only (2026-11-09: the
+    script took 'StudioLive' and the engine said the interface was not
+    attached). Pure."""
+    names = sorted({str(n) for n in names or [] if str(n).strip()})
+    listed = "; ".join(names) or "none"
+    if wanted in names:
+        return wanted, (f"show audio interface: '{wanted}', the exact name "
+                        f"the engine opens")
+    low = str(wanted or "").strip().lower()
+    hits = [n for n in names if low and low in n.lower()]
+    if len(hits) == 1:
+        return hits[0], (f"show audio interface: '{wanted}' is the output "
+                         f"'{hits[0]}', the exact name the engine opens")
+    if hits:
+        raise RuntimeError(
+            f"--audio-device '{wanted}' matches {len(hits)} outputs: "
+            f"{'; '.join(hits)}. Give the one exact name the engine should "
+            f"open, for example --audio-device \"{hits[0]}\". Nothing was "
+            f"started.")
+    raise RuntimeError(
+        f"--audio-device '{wanted}' is not an output on this PC. Outputs: "
+        f"{listed}. Nothing was started.")
+
+
+def audio_output_names():
+    """This PC's output names as the engine lists them (its own
+    sounddevice, ASIO on Windows)."""
+    from ltcplay import showaudio
+    sd = showaudio.import_sounddevice()
+    return [str(d.get("name", "")) for d in sd.query_devices()
+            if d.get("max_output_channels", 0) > 0]
+
+
 def choose_addresses(mode, want="auto", settings=None, on_pc=None):
     """(mode, plan) for this PC: plan_addresses for `mode`, from this PC's
     own settings; all programs mode that cannot be set up so the engine
@@ -970,7 +1008,9 @@ class Soak:
             names = [str(d.get("name", "")) for d in outs]
             self.audio_outputs = sorted(set(names))
             if self.audio_device:
-                return self.audio_device
+                name, said = resolve_audio_name(self.audio_device, names)
+                note(said)
+                return name
             saved = settings_mod.load().get("device")
             if saved and saved in names:
                 return saved
@@ -981,6 +1021,8 @@ class Soak:
                 if api == "ASIO" and any(w in n.lower() for w in
                                          ("focusrite", "scarlett")):
                     return n
+        except RuntimeError:
+            raise
         except Exception as e:
             note(f"could not list the audio outputs: {e}")
         return None
@@ -3679,6 +3721,7 @@ class Blocks:
                 s.fps = getattr(self, "fps", 40)
                 s.fake_audio = self.fake_audio
                 s.want_mode = "all"
+                s.video_off_ok = getattr(self, "video_off_ok", False)
                 s.priority = getattr(self, "priority", True)
                 s.contain = getattr(self, "contain", False)
                 s.on_report = self.write
@@ -3990,6 +4033,21 @@ def main(argv=None):
                 except (IndexError, ValueError):
                     print("--days takes a number")
                     return 2
+        elif a == "--resolve-audio":
+            # Start 48h soak.ps1 and register_soak_task.ps1 ask this, so
+            # the scripts and the engine agree on one exact name.
+            try:
+                name, said = resolve_audio_name(argv[i + 1],
+                                                audio_output_names())
+            except IndexError:
+                print("--resolve-audio takes a name")
+                return 2
+            except RuntimeError as e:
+                print(f"REFUSED. {e}")
+                return 2
+            print(said)
+            print(f"EXACT: {name}")
+            return 0
         elif a == "--unattended-off":
             import supervisor as sup
             import soak_unattended
@@ -4124,6 +4182,7 @@ def main(argv=None):
         if resolved == "all programs":
             note(why)
             soak = Blocks(seconds, device, fake)
+            soak.video_off_ok = video_off_ok
             soak.show_s, soak.every_min = show_s, every_min
             soak.universes, soak.fps = universes, fps
             soak.priority = priority
