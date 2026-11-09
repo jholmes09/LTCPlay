@@ -279,6 +279,48 @@ def plan_addresses(mode, cands, on_pc):
                      f"program on {SOAK_LISTEN_IP}, one address each")}
 
 
+# -- preflight (2026-11-09): never a long run while every show is held ------
+# An open fault alert holds every scheduled show at its time (alerthold.py),
+# so a run that starts with one plays no show at all. A minute after the
+# engine starts (and Run is pressed), its open alerts are read; any fault
+# alert refuses the run. MadMapper's video output being OFF is expected only
+# when the operator says so (--video-output-off-ok, a muted and dark PC):
+# then it is printed and acknowledged, so it holds no show.
+PREFLIGHT_S = 60.0
+VIDEO_OFF_WORDS = "video output is OFF"
+VIDEO_OFF_FLAG = "--video-output-off-ok"
+
+
+def preflight_verdict(alerts, video_off_ok=False):
+    """(refuse, expected) from the engine's open alerts (its status
+    "alerts"): each a fault alert as (id, "kind: text"); the video output
+    OFF alert is expected only with `video_off_ok`. Warnings are neither.
+    Pure."""
+    refuse, expected = [], []
+    for a in alerts or []:
+        if not isinstance(a, dict) or a.get("severity") != "fault":
+            continue
+        line = (a.get("id"), f"{a.get('kind')}: {a.get('text')}")
+        if video_off_ok and VIDEO_OFF_WORDS in str(a.get("text") or ""):
+            expected.append(line)
+        else:
+            refuse.append(line)
+    return refuse, expected
+
+
+def preflight_refusal(refuse, video_off_ok=False):
+    """The sentence a refused preflight prints."""
+    hint = ""
+    if not video_off_ok and any(VIDEO_OFF_WORDS in t for _i, t in refuse):
+        hint = (f" If this PC is muted and dark on purpose, start the soak "
+                f"again with {VIDEO_OFF_FLAG}.")
+    return (f"Preflight REFUSED: the engine has {len(refuse)} fault "
+            f"alert(s) open a minute after it started, and an open fault "
+            f"alert holds every scheduled show, so this run would play no "
+            f"show: " + " | ".join(t for _i, t in refuse) + ". The soak "
+            f"stopped its programs; nothing else was started." + hint)
+
+
 def choose_addresses(mode, want="auto", settings=None, on_pc=None):
     """(mode, plan) for this PC: plan_addresses for `mode`, from this PC's
     own settings; all programs mode that cannot be set up so the engine
@@ -1984,6 +2026,33 @@ class Soak:
             self.no_run[-1][1] = time.time()
         return True
 
+    def preflight(self, wait_s=None, sleep=time.sleep):
+        """A minute after the engine started and Run was pressed, its open
+        alerts: any fault alert refuses the run (RuntimeError, said in
+        preflight_refusal); the video output OFF alert, with
+        --video-output-off-ok, is printed and acknowledged."""
+        wait_s = PREFLIGHT_S if wait_s is None else wait_s
+        note(f"preflight: waiting {wait_s:.0f} s, then reading the "
+             f"engine's open alerts")
+        sleep(wait_s)
+        st = self.engine("/api/remote/status")
+        if st.get("error"):
+            raise RuntimeError(f"Preflight REFUSED: the engine's status "
+                               f"could not be read ({st['error']}), so it "
+                               f"cannot be known that no fault alert holds "
+                               f"the shows.")
+        ok = getattr(self, "video_off_ok", False)
+        refuse, expected = preflight_verdict(st.get("alerts"), ok)
+        for aid, text in expected:
+            note(f"preflight: expected on a muted, dark PC ({VIDEO_OFF_FLAG}"
+                 f"): {text}. Acknowledged, so it holds no show.")
+            self.engine("/api/remote/alert", {"id": aid,
+                                              "action": "acknowledge"})
+        if refuse:
+            raise RuntimeError(preflight_refusal(refuse, ok))
+        note("preflight: no fault alert is open; the run goes on")
+        return True
+
     # --------------------------------------------------------- sample ---
     def sample(self, hours):
         self.sample_apps(hours)
@@ -2179,6 +2248,7 @@ class Soak:
         if self.deck:
             self.start_program("deck")
         self.start_show()
+        self.preflight()
         note("scheduling protection " + (
             "ON: engine and flamesafe at High, their show threads at "
             "Highest, the deck at Above normal; this soak program at High, "
@@ -3832,6 +3902,7 @@ def main(argv=None):
     if rc is not None:
         return rc
     wait = "--no-wait" not in argv
+    video_off_ok = False
     seconds = None
     device = None
     fake = False
@@ -3859,6 +3930,8 @@ def main(argv=None):
             i += 1
         elif a == "--fake-audio":
             fake = True
+        elif a == VIDEO_OFF_FLAG:
+            video_off_ok = True
         elif a in ("--audio-channels", "--ltc-output"):
             try:
                 v = int(argv[i + 1])
@@ -3951,6 +4024,7 @@ def main(argv=None):
         elif a != "--no-wait":
             print(f"Unknown option {a}. Options: --hours H, --minutes M, "
                   f"--audio-device NAME, --no-wait, --fake-audio, "
+                  f"{VIDEO_OFF_FLAG}, --stop-now, "
                   f"--audio-channels N, --audio-map 1,2,..., "
                   f"--ltc-output N, --universes N (1 to {MAX_UNIVERSES}, "
                   f"default 1), --fps F ("
@@ -4063,6 +4137,7 @@ def main(argv=None):
             soak.audio_map = track.get("--audio-map")
             soak.ltc_output = track.get("--ltc-output")
             soak.want_mode = mode
+            soak.video_off_ok = video_off_ok
             soak.priority = priority
             soak.contain = contain
         ok = soak.run()
