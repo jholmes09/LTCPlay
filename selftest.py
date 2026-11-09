@@ -51776,6 +51776,67 @@ def test_mutate_never_runs_stale_bytecode():
     print("  ok")
 
 
+def test_mutate_shards_fit_their_time_limit():
+    section("the mutate shards: one shard count for a whole sweep in "
+            "selftest.yml and nightly-mutate.yml, small enough that a shard "
+            "ends far inside its 340 minute limit at the speed measured on "
+            "2026-11-09 (32 shards of 135 ran out at 340), at most 16 at "
+            "once so 4 of the account's 20 job slots stay free")
+    import ast
+    import re
+    wfdir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         ".github", "workflows")
+    st = open(os.path.join(wfdir, "selftest.yml"), encoding="utf-8").read()
+    nm = open(os.path.join(wfdir, "nightly-mutate.yml"),
+              encoding="utf-8").read()
+    full = re.findall(r"^\s*FULL_SHARDS=(\d+)\s*$", st, re.M)
+    night = re.findall(r"^\s*NSHARDS: (\d+)\s*$", nm, re.M)
+    check(len(full) == 1 and len(night) == 1 and full == night,
+          f"one shard count, the same in both workflows: selftest.yml "
+          f"{full}, nightly-mutate.yml {night}")
+    n = int(full[0]) if full else 0
+    check('"$FULL_SHARDS"' in st and "release tag: every mutation, ubuntu "
+          "and windows, $FULL_SHARDS shards each" in st and
+          "if (( k > FULL_SHARDS )); then k=$FULL_SHARDS; fi" in st,
+          "a release tag, a change with no base and the affected cap all "
+          "use FULL_SHARDS")
+    check("needs.plan.outputs.shards" in nm and
+          "--shard ${{ matrix.shard }}/${{ needs.plan.outputs.nshards }}" in nm
+          and 'int(os.environ["N"])' in nm and "/32" not in nm,
+          "the nightly sweep's matrix, --shard and timeout report all read "
+          "the one count")
+    for name, text in (("selftest.yml", st), ("nightly-mutate.yml", nm)):
+        par = [int(x) for x in re.findall(r"max-parallel: (\d+)", text)]
+        check(par == [16], f"{name}: max-parallel {par}, want [16] (20 job "
+              "slots, 4 left free)")
+        check(re.findall(r"timeout-minutes: 340\b", text) and
+              re.findall(r"timeout-minutes: 355\b", text),
+              f"{name}: the 340 minute step limit and the 355 minute job "
+              "limit stay as the backstop")
+    tree = ast.parse(open(os.path.join(os.path.dirname(os.path.abspath(
+        __file__)), "mutate.py"), encoding="utf-8").read(), "mutate.py")
+    total = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "MUTATIONS"
+                for t in node.targets):
+            total = len(node.value.elts)
+    per = -(-total // n) if n else total
+    # Measured in run 42577562836: a baseline of up to 1112 s, then up to
+    # 2.51 minutes a mutation, on ubuntu with --jobs 3.
+    worst = 1112 / 60 + per * 2.51
+    check(total > 1000 and worst <= 150,
+          f"{total} mutations in {n} shards is {per} a shard, about "
+          f"{worst:.0f} minutes at the measured worst; want 150 or less")
+    check("int(os.environ.get(\"NSHARDS\") or 0)" in st and
+          '"no job"' in st,
+          "mutate-report counts a shard that never got a job as red")
+    for name, text in (("selftest.yml", st), ("nightly-mutate.yml", nm)):
+        check("\u2013" not in text and "\u2014" not in text,
+              f"{name} has no em or en dashes")
+    print("  ok")
+
+
 def test_mutate_mutant_limit_follows_the_baseline():
     """A mutant's suite is stopped at a limit measured from the unmutated
     baseline on the same runner, not a fixed 300 s, and a baseline that does
@@ -113944,6 +114005,7 @@ if __name__ == "__main__":
         test_mutate_mutant_limit_follows_the_baseline,
         test_mutate_fast_path_never_turns_red_green,
         test_mutate_never_runs_stale_bytecode,
+        test_mutate_shards_fit_their_time_limit,
         test_alerts_pure_logic,
         test_alerts_route_status_and_acknowledge,
         test_boothaudio_never_holds_and_never_uses_the_pa,

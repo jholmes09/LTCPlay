@@ -1,0 +1,2 @@
+2026-11-09 18:47:09
+The settings name different flamesafe configs: the Windows app's showpc.json names /tmp/ltcplay_selftest_1yb6vya_/tmpj_mvtye1/o/flamesafe.json; /tmp/ltcplay_selftest_1yb6vya_/tmpj_mvtye1/ltcplay_fire_ice.json names /tmp/ltcplay_selftest_1yb6vya_/tmpj_mvtye1/flamesafe.json. The flame link, the flame lamps and the flamesafe that is running must all use the same one, so nothing was started. Make every one of them name the same file (on the show PC, the one in showpc.json).
