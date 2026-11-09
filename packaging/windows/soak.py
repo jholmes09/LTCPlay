@@ -1842,23 +1842,29 @@ class Soak:
         except Exception:
             return
         v = None if f is None else f[1]
-        what = "blank" if v in (0, 0.0) else "unblank"
+        # BEYOND's laser output switches carry no number (beyond.py
+        # OUTPUT_ADDRESSES): DisableLaserOutput takes light away, as a blank
+        # does; EnableLaserOutput is judged like an unblank.
+        if v is None and "disable" in address.lower():
+            what = "blank"
+        else:
+            what = "blank" if v in (0, 0.0) else "unblank"
         self.beyond_cmds.append((time.time(), what, address))
         if what == "unblank" and (self.tc_last is None or
                                   t - self.tc_last > SHOW_GAP_S + 2):
             # Lasers asked up with no show timecode moving: a real fault,
             # unless the show's timecode starts within the same few seconds
             # after it (counted in lit_outside).
-            self.unblank_waiting.append((t, time.time()))
+            self.unblank_waiting.append((t, time.time(), address))
 
     def lit_outside(self, now=None):
         """(count, [wall times]) of the unblanks with no show timecode
         moving SHOW_GAP_S + 2 before or after them (still waiting longer
         than that)."""
         now = time.perf_counter() if now is None else now
-        late = [w for t, w in list(self.unblank_waiting)
+        late = [(w, a) for t, w, a in list(self.unblank_waiting)
                 if now - t > SHOW_GAP_S + 2]
-        return len(late), [now_text(w) for w in late]
+        return len(late), [f"{now_text(w)} {a}" for w, a in late]
 
     def on_madmapper(self, b, t, addr=None):
         from ltcplay import madmapper as MM
