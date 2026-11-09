@@ -12,14 +12,14 @@ name: selftest
 #              mutation when a safety file is touched, new or edited
 #              mutations, and whatever a deleted test guarded) and how many
 #              shards that needs: none for a doc, a launcher, the packaging
-#              or this workflow; about 25 mutations a shard otherwise, 32 at
-#              most; 32 for a release tag or a change with no base.
+#              or this workflow; about 25 mutations a shard otherwise, 96 at
+#              most; 96 for a release tag or a change with no base.
 #   mutate     those shards, ubuntu (a release tag: ubuntu and windows). No
 #              shard job is started at all when there is nothing to run.
 #              They start only once both selftest jobs are green (a red
 #              suite makes every mutation look caught, so the shards would
-#              measure nothing), and at most 10 run at once, so a PR never
-#              takes the whole account's 20 job slots. On a PR into
+#              measure nothing), and at most 16 run at once, so a PR never
+#              takes more than 16 of the account's 20 job slots. On a PR into
 #              bench-build they are not required to merge: the required
 #              checks are selftest (ubuntu-latest), selftest
 #              (windows-latest), changes and installer (windows-app.yml).
@@ -101,8 +101,8 @@ jobs:
   #                  TESTING.md), so the list of files to watch can never
   #                  drift from the list of files mutate.py breaks
   #                  The shard count follows the selection: about 25
-  #                  mutations a shard (about 75 minutes on ubuntu with
-  #                  --jobs 3), 32 at most
+  #                  mutations a shard (about 80 minutes on ubuntu with
+  #                  --jobs 3), 96 at most
   #   mode=none      that selection is empty (a doc, a launcher, the brand,
   #                  this workflow): no shard job is started at all
   # A push with no usable base (a first push, a rewritten one) runs
@@ -129,6 +129,11 @@ jobs:
           BEFORE: ${{ github.event.before }}
         run: |
           set -u
+          # The shard count of a whole sweep, and the most an affected run
+          # gets. Sized so a shard of the whole list (4300 mutations / 96 =
+          # 45) ends in 115 to 135 minutes, far inside its 340 (see the mutate
+          # job). weekly-mutate.yml uses the same number.
+          FULL_SHARDS=96
           shards_json() {    # 0..N-1 as a JSON list
             python3 -c "import json,sys; print(json.dumps(list(range(int(sys.argv[1])))))" "$1"
           }
@@ -139,11 +144,11 @@ jobs:
             exit 0
           }
           if [[ "$REF" == refs/tags/* ]]; then
-            say "release tag: every mutation, ubuntu and windows, 32 shards each" full "" '["ubuntu-latest","windows-latest"]' 32
+            say "release tag: every mutation, ubuntu and windows, $FULL_SHARDS shards each" full "" '["ubuntu-latest","windows-latest"]' "$FULL_SHARDS"
           fi
           if [[ "$EVENT" == pull_request ]]; then base="$PR_BASE"; else base="$BEFORE"; fi
           if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            say "no base to compare against: every mutation, ubuntu, 32 shards" full "" '["ubuntu-latest"]' 32
+            say "no base to compare against: every mutation, ubuntu, $FULL_SHARDS shards" full "" '["ubuntu-latest"]' "$FULL_SHARDS"
           fi
           # mutate.py --list needs no numpy: it stops before the baseline.
           # Exit 0 with "nothing to run" means the selection is empty.
@@ -160,25 +165,28 @@ jobs:
             say "nothing this change can have broken is mutated: no shard runs" none "$base" '["ubuntu-latest"]' 1
           fi
           # About 25 mutations a shard: on ubuntu with --jobs 3 a mutation
-          # costs about 3 minutes of a shard (81 took 221 to 280 minutes in
-          # nightly run 40469889985), so about 75 minutes plus the baseline.
-          # The shards split the full list by index (mutate.py --shard I/N
-          # keeps index % N == I), so 0..N-1 always cover every selected one.
-          k=$(( (n + 24) / 25 )); if (( k < 1 )); then k=1; fi; if (( k > 32 )); then k=32; fi
+          # costs 2.2 to 2.5 minutes of a shard after a 15 to 19 minute
+          # baseline (run 42577562836, 2026-11-09), so about 80 minutes.
+          # Past 2400 mutations the cap holds and a shard gets more, never
+          # over 45 (4300 / 96). The shards split the full list by index
+          # (mutate.py --shard I/N keeps index % N == I), so 0..N-1 always
+          # cover every selected one.
+          k=$(( (n + 24) / 25 )); if (( k < 1 )); then k=1; fi; if (( k > FULL_SHARDS )); then k=$FULL_SHARDS; fi
           say "the $n affected mutations, ubuntu, $k shard(s)" affected "$base" '["ubuntu-latest"]' "$k"
 
   # The account runs at most 20 jobs at once, shared by every workflow and
   # every PR. So the shards (2026-10-29, the congestion of 10-26 to 10-28):
   #   - start only for a change that has something to mutate (no job at
-  #     all for mode none, not 32 empty ones), as many as the selection
-  #     needs (the changes job), never more than 32;
+  #     all for mode none, not 96 empty ones), as many as the selection
+  #     needs (the changes job), never more than 96;
   #   - start only after both selftest jobs are green. On a PR into
   #     bench-build that is the fast lane: the required checks (selftest
   #     on ubuntu and windows, changes, installer) finish first and are
   #     never queued behind shards; the shards follow and are not
   #     required to merge;
-  #   - run at most 10 at once (max-parallel), leaving the other 10 slots
-  #     for other PRs' selftest and installer jobs;
+  #   - run at most 16 at once (max-parallel), leaving the other 4 slots
+  #     for other PRs' selftest and installer jobs. A whole sweep of 96
+  #     shards is 6 waves of 16, about 11 to 14 hours on ubuntu;
   #   - are skipped while the PR is a draft and run for the first time
   #     when it is marked ready for review; selftest itself still runs on
   #     every push, drafts included.
@@ -187,19 +195,21 @@ jobs:
     if: needs.changes.outputs.mode != 'none' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     strategy:
       fail-fast: false
-      max-parallel: 10
+      max-parallel: 16
       matrix:
         os: ${{ fromJSON(needs.changes.outputs.oses) }}
         shard: ${{ fromJSON(needs.changes.outputs.shards) }}
     runs-on: ${{ matrix.os }}
-    # Sized for a full sweep: about 2600 mutations in 32 shards, 81 a
-    # shard. With fail fast, catcher hints and --jobs 3 a shard took 221 to
-    # 280 minutes on ubuntu in nightly run 40469889985, when only 460
-    # mutations had a hint (two shards ran out at 285 with 1 and 3 left).
-    # 355 is under GitHub's 360 cap and leaves room over that. An affected
-    # run is a fraction of it. The sweep step stops itself 15 minutes
-    # before this limit so the job is never killed from outside with
-    # nothing said.
+    # Sized for a full sweep: 4300 mutations in 96 shards, 45 a shard.
+    # Measured on ubuntu with fail fast, catcher hints and --jobs 3 (run
+    # 42577562836, 2026-11-09, 10 shards at once): a baseline of 15 to 19
+    # minutes, then 2.2 to 2.5 minutes a mutation, so 45 take about 115 to
+    # 135 minutes. With 32 shards of 135 the same runners needed 307 to
+    # 340, and 8 of the first 14 ran out at 340 with 128 to 132 done. The
+    # limits stay as a backstop only: 355 is under GitHub's 360 cap, and
+    # an affected run is a fraction of it. The sweep step stops itself 15
+    # minutes before this limit so the job is never killed from outside
+    # with nothing said.
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v5
@@ -344,12 +354,14 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           REPO: ${{ github.repository }}
           MODE: ${{ needs.changes.outputs.mode }}
+          NSHARDS: ${{ needs.changes.outputs.nshards }}
+          OSES: ${{ needs.changes.outputs.oses }}
           JOB_PREFIX: "mutate ("
         run: |
           gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
             --jq '.jobs[] | [.name, (.conclusion // .status), .html_url] | @tsv' > "$RUNNER_TEMP/jobs.tsv"
           python3 - "$RUNNER_TEMP/jobs.tsv" <<'PY'
-          import os, sys
+          import json, os, sys
 
           prefix, mode = os.environ["JOB_PREFIX"], os.environ.get("MODE", "")
           shards = []
@@ -359,17 +371,27 @@ jobs:
                   if len(parts) == 3 and parts[0].startswith(prefix):
                       shards.append(parts)
           red = [s for s in shards if s[1] not in ("success", "skipped")]
+          # Every shard the changes job asked for must be here: one that
+          # never got a job is red too, not quietly left out of the count.
+          try:
+              want = int(os.environ.get("NSHARDS") or 0) * len(json.loads(os.environ.get("OSES") or "[]"))
+          except ValueError:
+              want = 0
+          missing = want - len(shards) if shards and want > len(shards) else 0
+          total, nred = max(want, len(shards)), len(red) + missing
+          if missing:
+              red.append((f"{missing} of the {want} shards", "no job", ""))
           out = []
           if not shards:
               out.append("### mutate: no shard jobs were found in this run")
           elif not red:
-              out.append(f"### mutate: all {len(shards)} shards green"
+              out.append(f"### mutate: all {total} shards green"
                          + (" (nothing this change can have broken is mutated)"
                             if mode == "none" else ""))
           else:
-              out += [f"### mutate: {len(red)} of {len(shards)} shards red", "",
+              out += [f"### mutate: {nred} of {total} shards red", "",
                       "| shard | result | job |", "|---|---|---|"]
-              out += [f"| {n} | {c} | [open]({u}) |" for n, c, u in red]
+              out += [f"| {n} | {c} | " + (f"[open]({u})" if u else "none") + " |" for n, c, u in red]
               out += ["",
                       "Each red shard's own summary (above, under its job) says "
                       "why: the kind of failure and the mutation or test. Its "

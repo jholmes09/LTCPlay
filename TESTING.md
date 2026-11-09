@@ -38,11 +38,11 @@ Written 2026-10-06, after the audit that simplified it.
 | When | What | How long | Required to merge |
 |---|---|---|---|
 | Every push to a PR | selftest on ubuntu and windows | 15 to 20 min (ubuntu), 25 to 35 min (windows); limits 45 and 60 | yes, through `ci` |
-| A PR marked ready for review, and every push to it after | the mutate shards, each running only the mutations this PR can have changed the result of (below); as many shards as that needs, 32 at most, none at all for a doc or UI change | nothing for a doc; 10 to 90 min for a change to a safety file | yes, through `ci` |
+| A PR marked ready for review, and every push to it after | the mutate shards, each running only the mutations this PR can have changed the result of (below); about 25 a shard, 96 shards at most, 16 at a time, none at all for a doc or UI change | nothing for a doc; 10 to 90 min for a change to a safety file; 11 to 14 hours when nearly everything is selected (a release PR) | yes, through `ci` |
 | A push to main | the same, against the previous main | as above | not applicable |
-| A release tag (`gpl-...` or a tech build) | every mutation, ubuntu and windows | 4 to 6 hours | the tag is not cut until it is green |
-| Every Sunday, 03:12 Eastern | every mutation on main, ubuntu (`weekly mutate` workflow) | 15 to 19 hours (8 shards at a time) | a red sweep opens an issue; it is fixed before the next merge |
-| On demand | the same, from the Actions tab: `weekly mutate`, Run workflow, pick ubuntu, windows or both | 15 to 19 hours | before any tech build |
+| A release tag (`gpl-...` or a tech build) | every mutation, ubuntu and windows, 96 shards each, 16 at a time | 11 to 14 hours on ubuntu; windows longer | the tag is not cut until it is green |
+| Every Sunday, 03:12 Eastern | every mutation on main, ubuntu (`weekly mutate` workflow), 96 shards, 16 at a time | 11 to 14 hours | a red sweep opens an issue; it is fixed before the next merge |
+| On demand | the same, from the Actions tab: `weekly mutate`, Run workflow, pick ubuntu, windows or both | 11 to 14 hours (ubuntu) | before any tech build |
 
 **One required check.** Branch protection on main requires the `ci` job
 of the selftest workflow and nothing else. `ci` is green only when the
@@ -54,6 +54,17 @@ no shard job at all.
 
 Draft PRs run only the selftest. The mutate shards, and `ci`, start when
 the PR is marked ready for review.
+
+**Why 96 shards, 16 at a time.** The whole list is about 4300 mutations.
+On ubuntu with `--jobs 3` a shard spends 15 to 19 minutes on its
+baseline and then 2.2 to 2.5 minutes a mutation (run 42577562836,
+2026-11-09). With 32 shards of 135 that was 307 to 340 minutes, and 8 of
+the first 14 ran out at their 340 minute limit with 128 to 132 done. With 96
+shards of about 45 a shard ends in 115 to 135 minutes, so the 340 minute
+limit is a backstop, not a target. The account runs about 20 jobs at
+once; the shards take at most 16 of them (`max-parallel`), so 4 are always
+left for other PRs' selftest and installer. 96 shards in waves of 16 is 6
+waves: 11 to 14 hours for a whole ubuntu sweep.
 
 ## Which mutations a PR runs
 
@@ -82,8 +93,8 @@ or a change in one file that quietly silenced a test of another, shows
 up there, and a release tag runs everything regardless.
 
 Everything else (docs, launchers, the brand, installers, this file, the
-workflow) selects nothing, and the 32 shards report success at once so
-the PR can merge.
+workflow) selects nothing, and no shard job is started at all, so the PR
+can merge.
 
 ## What a failure means
 
@@ -127,8 +138,12 @@ forces every way it can end red and checks the sentence is there.
   shard's measured baseline, never under 300 s or over 90 minutes; a
   mutant stopped there counts as caught (it made the suite hang), and the
   job summary's "baseline time / mutant limit" column gives both numbers.
-- `shard N/32 TIMED OUT`: the shard ran out of its 340 minutes (the
-  step's limit; the job's is 355). Not a miss; re-run the shard.
+- `shard I/N TIMED OUT`: the shard ran out of its 340 minutes (the
+  step's limit; the job's is 355). Not a miss; re-run the shard. A
+  shard of a whole sweep normally takes 115 to 135 minutes, so a run of
+  them timing out means slow runners: measure again and raise the
+  shard count (`FULL_SHARDS` in selftest.yml and `NSHARDS` in
+  weekly-mutate.yml, the same number).
 - `THE TREE IS NOT CLEAN`: a restore did not land. Should never happen;
   the shard's tree is thrown away, but say so.
 
@@ -150,7 +165,7 @@ closes the issue by itself.
 - The affected mutations of a change, for real: `python3 mutate.py
   --changed origin/main`.
 - Everything, locally: `python3 mutate.py` (plan on most of a day; a
-  shard of it is `--shard 3/32`).
+  shard of it is `--shard 3/96`).
 - Everything, in CI: Actions tab, `weekly mutate`, Run workflow. Choose
   `both` before a tech build.
 - The catcher hints: `python3 mutate.py --write-catchers
