@@ -875,6 +875,9 @@ class Soak:
         self.show_starts = 0
         self.beyond_cmds = []     # (time, "blank"/"unblank")
         self.beyond_lit_outside = 0
+        # Unblanks with no show timecode moving, (perf time, wall time),
+        # until the show's timecode starts within SHOW_GAP_S + 2 after one.
+        self.unblank_waiting = []
         self.mm_packets = 0
         self.mm_addresses = {}
         self.audio_snap = {}
@@ -1803,6 +1806,12 @@ class Soak:
         if self.tc.last is None:
             self.tc.last = t
         self.tc_last = t
+        # An unblank just before the show's timecode started was the show
+        # starting (OSC blanking: the lasers come up with the start, the
+        # timecode a moment later), not lasers lit outside a show.
+        while self.unblank_waiting and \
+                t - self.unblank_waiting[0][0] <= SHOW_GAP_S + 2:
+            self.unblank_waiting.pop(0)
 
     def on_flame(self, b, t, addr=None):
         """The engine's flame link, relayed to flamesafe unchanged."""
@@ -1837,8 +1846,19 @@ class Soak:
         self.beyond_cmds.append((time.time(), what, address))
         if what == "unblank" and (self.tc_last is None or
                                   t - self.tc_last > SHOW_GAP_S + 2):
-            # Lasers asked up with no show timecode moving: a real fault.
-            self.beyond_lit_outside += 1
+            # Lasers asked up with no show timecode moving: a real fault,
+            # unless the show's timecode starts within the same few seconds
+            # after it (counted in lit_outside).
+            self.unblank_waiting.append((t, time.time()))
+
+    def lit_outside(self, now=None):
+        """(count, [wall times]) of the unblanks with no show timecode
+        moving SHOW_GAP_S + 2 before or after them (still waiting longer
+        than that)."""
+        now = time.perf_counter() if now is None else now
+        late = [w for t, w in list(self.unblank_waiting)
+                if now - t > SHOW_GAP_S + 2]
+        return len(late), [now_text(w) for w in late]
 
     def on_madmapper(self, b, t, addr=None):
         from ltcplay import madmapper as MM
@@ -2936,6 +2956,7 @@ class Soak:
         out.append(self.disk_item())
         ups = sum(1 for _t, w, _a in self.beyond_cmds if w == "unblank")
         downs = sum(1 for _t, w, _a in self.beyond_cmds if w == "blank")
+        self.beyond_lit_outside, outside = self.lit_outside()
         ok = (self.show_starts == 0 or ups > 0) and \
             self.beyond_lit_outside == 0
         if self.mode != "fallback" or (self.bey_stats or {}).get(
@@ -2947,7 +2968,8 @@ class Soak:
                     "Lasers (BEYOND commands, to this PC only)",
                     f"{ups} unblank and {downs} blank command packets; "
                     f"{self.beyond_lit_outside} unblank(s) with no show "
-                    f"running (limit 0)"))
+                    f"running (limit 0)" + (
+                        ": " + ", ".join(outside[:8]) if outside else "")))
         out.append(("INFO" if self.mode != "fallback" else
                     "PASS" if self.mm_packets and self.show_starts else
                     "FAIL" if self.show_starts else "NOT TESTED",
