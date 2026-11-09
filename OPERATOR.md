@@ -2410,8 +2410,9 @@ Stop, however fast it comes.
 Any finger works, two different fingers too, or the mouse twice (a double
 click), or Enter or Space twice (holding the key down counts once); a
 finger then the mouse counts as one tap. After 3 seconds with no second
-tap the button goes back by itself, says "Stop not sent: tap twice" a
-moment, and nothing happened. It works signed
+tap the button goes back by itself, reads "Not sent: tap twice" a
+moment (the message line says "Stop not sent: tap twice"), and nothing
+happened. It works signed
 out, and with the connection lost it still sends. A Stop that did not do
 all of it (its flame disarm failed, a part failed, it was refused, or the
 engine did not answer) stays on the screen as a banner until Seen. There

@@ -452,11 +452,12 @@ function stopLeftS(leftMs){
 }
 // The Stop show button's two lines, [big, small]: "Stop show" / "tap
 // twice"; armed, "Tap again" / "to stop (3)"; a lone tap that timed out,
-// "Stop not sent" / "tap twice". Two lines, so the words fit a portrait
-// iPad's button.
+// "Not sent" / "tap twice" (the message line says "Stop not sent: tap
+// twice"). Two lines, at full size, so the words fit a portrait iPad's
+// button and the strip's.
 function stopLines(armedLeftMs, missed){
   if(armedLeftMs !== null && armedLeftMs !== undefined) return ["Tap again", "to stop (" + stopLeftS(armedLeftMs) + ")"];
-  if(missed) return ["Stop not sent", "tap twice"];
+  if(missed) return ["Not sent", "tap twice"];
   return ["Stop show", "tap twice"];
 }
 function stopTapStep(prev, nowMs, kind, enlarged){
