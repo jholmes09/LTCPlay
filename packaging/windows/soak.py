@@ -19,7 +19,15 @@ the way show night does, from the real programs in this install:
     127.0.0.1, must stay all zeros;
   - ltcplay-deck.exe too, when a Stream Deck Mini is plugged in.
 
-Every output goes to 127.0.0.1, where this program listens and times it:
+Art-Net receivers (2026-11-09): one on the loopback at most, every other on
+an address of its own that this PC has (the ShowNet loopback adapters, or
+what this PC's settings name), exactly as the engine requires
+(plan_addresses). A minute after Run, any open fault alert refuses the run
+(preflight): an open fault alert holds every show. --audio-device resolves to
+one exact output name. "Stop soak now" (--stop-now --confirm STOP) stops the
+run at once and ends its own engine, flamesafe and deck.
+
+Every output goes to this PC only, where this program listens and times it:
 Art-Net pixels and timecode (6454), BEYOND (its OSC port), MadMapper (its
 OSC port), the flame link (through a relay that forwards every frame to
 flamesafe unchanged), flamesafe's sACN (5568) and its status frames. Nothing
@@ -31,7 +39,13 @@ keeps "nothing attached, expected" separate from real faults.
 
     ltcplay-soak.exe                 asks how long (1, 8 or 24 hours; Enter = 8)
     ltcplay-soak.exe --hours 8
-    ltcplay-soak.exe --audio-device "Focusrite USB ASIO"
+    ltcplay-soak.exe --audio-device "StudioLive"   (the ONE output whose
+        name holds it; two or more, or none, is refused)
+    ltcplay-soak.exe --hours 6 --confirm DISCONNECTED   (Start soak (6 h))
+    ltcplay-soak.exe --stop-now --confirm STOP          (Stop soak now)
+    ltcplay-soak.exe --video-output-off-ok   (a muted, dark PC: MadMapper's
+        video output OFF alert is expected, printed and acknowledged)
+    ltcplay-soak.exe --resolve-audio "StudioLive"   (prints the exact name)
     ltcplay-soak.exe --hours 1 --universes 170 --fps 40   (a render the
         size of a big show: 170 Art-Net universes plus the flame universe)
     ltcplay-soak.exe --minutes 6 --no-wait --fake-audio   (the CI run: a
@@ -142,6 +156,307 @@ def now_text(t=None):
 
 
 # --------------------------------------------------------------- stats ---
+# -- where the soak's Art-Net receivers are (2026-11-09, show PC) ------------
+# The engine refuses (as a fault, which holds every scheduled show) any two
+# Art-Net receivers on one address on port 6454, every 127.x.x.x counting as
+# one (ltcplay/artnodes.py: Windows gives every packet to one socket). That
+# check is real and stays as it is. So the soak's show names only addresses
+# it accepts: one loopback receiver at most, and every other receiver on an
+# address of its own that this PC really has (the ShowNet loopback adapters,
+# or what this PC's own settings name).
+SHOWNET = {"MadMapper": "10.250.1.1", "BEYOND": "10.250.2.1"}
+SOAK_LISTEN_IP = "127.0.0.1"
+
+
+def pc_show_addresses(settings=None, read_json=None, listdir=os.listdir):
+    """{"MadMapper": [ip, ...], "BEYOND": [ip, ...]}: the addresses this
+    PC's own settings give each program, in order: ltcplay_fire_ice.json
+    beside showpc.json's schedule (madmapper.host; beyond_timecode_ip, then
+    beyond.host), every show file's clock.artnet.nodes in the show folder
+    (a node named MadMapper or BEYOND), then the ShowNet loopbacks. Each
+    address once. Never raises."""
+    def load(path):
+        try:
+            if read_json is not None:
+                return read_json(path)
+            with open(path, encoding="utf-8-sig") as fh:
+                return json.load(fh)
+        except Exception:
+            return None
+    out = {"MadMapper": [], "BEYOND": []}
+
+    def add(app, ip):
+        if isinstance(ip, str) and ip.strip() and \
+                ip.strip() not in out[app]:
+            out[app].append(ip.strip())
+    settings = settings or {}
+    sched = settings.get("schedule")
+    if sched:
+        fi = load(os.path.join(os.path.dirname(str(sched)),
+                               "ltcplay_fire_ice.json"))
+        if isinstance(fi, dict):
+            mm = fi.get("madmapper")
+            if isinstance(mm, dict):
+                add("MadMapper", mm.get("host"))
+            add("BEYOND", fi.get("beyond_timecode_ip"))
+            by = fi.get("beyond")
+            if isinstance(by, dict):
+                add("BEYOND", by.get("host"))
+    folder = settings.get("show_folder")
+    try:
+        names = sorted(listdir(folder)) if folder else []
+    except OSError:
+        names = []
+    for n in names:
+        if not n.lower().endswith(".json"):
+            continue
+        doc = load(os.path.join(folder, n))
+        clock = doc.get("clock") if isinstance(doc, dict) else None
+        art = clock.get("artnet") if isinstance(clock, dict) else None
+        nodes = art.get("nodes") if isinstance(art, dict) else None
+        if not isinstance(nodes, dict):
+            continue
+        for name, ip in nodes.items():
+            low = str(name).strip().lower()
+            if low.startswith("madmapper"):
+                add("MadMapper", ip)
+            elif low.startswith("beyond"):
+                add("BEYOND", ip)
+    for app, ip in SHOWNET.items():
+        add(app, ip)
+    return out
+
+
+def plan_addresses(mode, cands, on_pc):
+    """Where the soak's Art-Net receivers are, for `mode` ("fallback" or
+    "all programs"), from the candidate addresses (pc_show_addresses) and
+    `on_pc(ip)`, True only for an address this PC has. Returns {"nodes",
+    "mm", "beyond", "beyond_tc", "listen", "blank", "said"}; raises
+    RuntimeError, in a sentence, when all programs mode cannot be set up so
+    the engine accepts it. Pure."""
+    from ltcplay import artnodes
+
+    def usable(ip, taken):
+        a = artnodes.resolve(ip)
+        return (a is not None and not artnodes.is_loopback(a) and
+                artnodes.port_key(a) not in taken and on_pc(a) is True)
+    if mode == "fallback":
+        # This program plays MadMapper on the one loopback address, and
+        # BEYOND on an address of BEYOND's own when this PC has one.
+        taken = {artnodes.port_key(SOAK_LISTEN_IP)}
+        by = next((ip for ip in cands.get("BEYOND", [])
+                   if usable(ip, taken)), None)
+        nodes = {"MadMapper": SOAK_LISTEN_IP}
+        if by:
+            nodes["BEYOND"] = by
+            said = (f"Art-Net receivers: this program as MadMapper on "
+                    f"{SOAK_LISTEN_IP} and as BEYOND on {by} (its own "
+                    f"address on this PC), one address each")
+        else:
+            said = (f"Art-Net receivers: this program as MadMapper on "
+                    f"{SOAK_LISTEN_IP} only. This PC has no address of "
+                    f"BEYOND's own (looked for: "
+                    f"{', '.join(cands.get('BEYOND', [])) or 'none'}), and "
+                    f"a second receiver on the loopback would be refused, "
+                    f"so BEYOND's timecode black zone is not timed and the "
+                    f"lasers are blanked by OSC in this run")
+        return {"nodes": nodes, "mm": SOAK_LISTEN_IP, "beyond": by,
+                "beyond_tc": by, "listen": SOAK_LISTEN_IP,
+                "blank": "timecode" if by else "osc", "said": said}
+    found = {}
+    taken = {artnodes.port_key(SOAK_LISTEN_IP)}
+    for app in ("MadMapper", "BEYOND"):
+        ip = next((x for x in cands.get(app, []) if usable(x, taken)), None)
+        found[app] = ip
+        if ip:
+            taken.add(artnodes.port_key(ip))
+    if not found["MadMapper"] or not found["BEYOND"]:
+        missing = [a for a in ("MadMapper", "BEYOND") if not found[a]]
+        raise RuntimeError(
+            f"All programs mode needs MadMapper and BEYOND each on an "
+            f"address of its own on this PC (the ShowNet loopbacks "
+            f"{SHOWNET['MadMapper']} and {SHOWNET['BEYOND']}, or what this "
+            f"PC's settings name), but {' and '.join(missing)} has none "
+            f"here (looked for MadMapper: "
+            f"{', '.join(cands.get('MadMapper', [])) or 'none'}; BEYOND: "
+            f"{', '.join(cands.get('BEYOND', [])) or 'none'}). The soak's "
+            f"commands would not reach the real programs. Run with --mode "
+            f"fallback, where this program plays both.")
+    nodes = {"MadMapper": found["MadMapper"], "BEYOND": found["BEYOND"],
+             "Soak": SOAK_LISTEN_IP}
+    return {"nodes": nodes, "mm": found["MadMapper"],
+            "beyond": found["BEYOND"], "beyond_tc": found["BEYOND"],
+            "listen": SOAK_LISTEN_IP, "blank": "timecode",
+            "said": (f"Art-Net receivers: MadMapper on {found['MadMapper']}, "
+                     f"BEYOND on {found['BEYOND']} (their own addresses on "
+                     f"this PC, where their OSC commands go too), and this "
+                     f"program on {SOAK_LISTEN_IP}, one address each")}
+
+
+# -- preflight (2026-11-09): never a long run while every show is held ------
+# An open fault alert holds every scheduled show at its time (alerthold.py),
+# so a run that starts with one plays no show at all. A minute after the
+# engine starts (and Run is pressed), its open alerts are read; any fault
+# alert refuses the run. MadMapper's video output being OFF is expected only
+# when the operator says so (--video-output-off-ok, a muted and dark PC):
+# then it is printed and acknowledged, so it holds no show.
+PREFLIGHT_S = 60.0
+VIDEO_OFF_WORDS = "video output is OFF"
+VIDEO_OFF_FLAG = "--video-output-off-ok"
+
+
+def preflight_verdict(alerts, video_off_ok=False):
+    """(refuse, expected) from the engine's open alerts (its status
+    "alerts"): each a fault alert as (id, "kind: text"); the video output
+    OFF alert is expected only with `video_off_ok`. Warnings are neither.
+    Pure."""
+    refuse, expected = [], []
+    for a in alerts or []:
+        if not isinstance(a, dict) or a.get("severity") != "fault":
+            continue
+        line = (a.get("id"), f"{a.get('kind')}: {a.get('text')}")
+        if video_off_ok and VIDEO_OFF_WORDS in str(a.get("text") or ""):
+            expected.append(line)
+        else:
+            refuse.append(line)
+    return refuse, expected
+
+
+def preflight_refusal(refuse, video_off_ok=False):
+    """The sentence a refused preflight prints."""
+    hint = ""
+    if not video_off_ok and any(VIDEO_OFF_WORDS in t for _i, t in refuse):
+        hint = (f" If this PC is muted and dark on purpose, start the soak "
+                f"again with {VIDEO_OFF_FLAG}.")
+    return (f"Preflight REFUSED: the engine has {len(refuse)} fault "
+            f"alert(s) open a minute after it started, and an open fault "
+            f"alert holds every scheduled show, so this run would play no "
+            f"show: " + " | ".join(t for _i, t in refuse) + ". The soak "
+            f"stopped its programs; nothing else was started." + hint)
+
+
+# -- stopping (2026-11-09) ----------------------------------------------------
+# "Stop soak now" (--stop-now): the run stops within a second, whatever it is
+# doing, stops its own engine, flamesafe and deck, does not start again at
+# sign-in, and the scheduled task is removed by the same user (it is that
+# user's own task, registered without elevation: register_soak_task.ps1).
+STOP_NOW_FILE = "STOP_NOW"
+SOAK_TASK = "LTC Player unattended soak"
+STOP_WORD = "STOP"
+RUN_WORD = "DISCONNECTED"
+
+
+def soak_folder():
+    import supervisor as sup
+    return os.path.join(sup.appdata_dir(), "soak")
+
+
+def stop_now_requested(folder=None):
+    return os.path.exists(os.path.join(folder or soak_folder(),
+                                       STOP_NOW_FILE))
+
+
+def stop_now(folder=None, run=subprocess.run, windows=None):
+    """--stop-now: STOP_NOW (the running soak stops within a second) and
+    STOP_UNATTENDED (the task does nothing at the next sign-in) written,
+    then the task removed. Returns the lines to print."""
+    import soak_unattended
+    folder = folder or soak_folder()
+    os.makedirs(folder, exist_ok=True)
+    for p in (os.path.join(folder, STOP_NOW_FILE),
+              soak_unattended.stop_file_path(folder)):
+        with open(p, "w") as fh:
+            fh.write("stop\n")
+    out = ["Stop soak now: the soak stops within a second, stops its own "
+           "engine, flamesafe and deck, and does not start again at "
+           "sign-in."]
+    windows = ltcwin.WINDOWS if windows is None else windows
+    if windows:
+        try:
+            r = run(["schtasks", "/Delete", "/TN", SOAK_TASK, "/F"],
+                    capture_output=True, text=True, timeout=30)
+            said = " ".join(((r.stdout or "") + (r.stderr or "")).split())
+            out.append(f"The task '{SOAK_TASK}' was removed." if
+                       r.returncode == 0 else
+                       f"The task '{SOAK_TASK}' was not removed ({said or 'exit ' + str(r.returncode)}); it does nothing at sign-in while STOP_UNATTENDED is there.")
+        except Exception as e:                   # noqa: BLE001
+            out.append(f"The task '{SOAK_TASK}' could not be removed "
+                       f"({e}); it does nothing at sign-in while "
+                       f"STOP_UNATTENDED is there.")
+    return out
+
+
+def confirm_refusal(given, word, what):
+    """None when --confirm says `word` (or is not given), else the
+    sentence refusing `what`."""
+    if given is None or given == word:
+        return None
+    return (f"REFUSED. {what} needs --confirm {word} (it said "
+            f"{given!r}). Nothing was changed.")
+
+
+def resolve_audio_name(wanted, names):
+    """(exact output name, sentence) for --audio-device / -AudioDevice
+    `wanted` among this PC's output names (as the engine lists them): the
+    exact name when there is one, else the ONE output whose name contains
+    it (any case). Raises RuntimeError, in a sentence, when none or two or
+    more match: the engine opens one exact name only (2026-11-09: the
+    script took 'StudioLive' and the engine said the interface was not
+    attached). Pure."""
+    names = sorted({str(n) for n in names or [] if str(n).strip()})
+    listed = "; ".join(names) or "none"
+    if wanted in names:
+        return wanted, (f"show audio interface: '{wanted}', the exact name "
+                        f"the engine opens")
+    low = str(wanted or "").strip().lower()
+    hits = [n for n in names if low and low in n.lower()]
+    if len(hits) == 1:
+        return hits[0], (f"show audio interface: '{wanted}' is the output "
+                         f"'{hits[0]}', the exact name the engine opens")
+    if hits:
+        raise RuntimeError(
+            f"--audio-device '{wanted}' matches {len(hits)} outputs: "
+            f"{'; '.join(hits)}. Give the one exact name the engine should "
+            f"open, for example --audio-device \"{hits[0]}\". Nothing was "
+            f"started.")
+    raise RuntimeError(
+        f"--audio-device '{wanted}' is not an output on this PC. Outputs: "
+        f"{listed}. Nothing was started.")
+
+
+def audio_output_names():
+    """This PC's output names as the engine lists them (its own
+    sounddevice, ASIO on Windows)."""
+    from ltcplay import showaudio
+    sd = showaudio.import_sounddevice()
+    return [str(d.get("name", "")) for d in sd.query_devices()
+            if d.get("max_output_channels", 0) > 0]
+
+
+def choose_addresses(mode, want="auto", settings=None, on_pc=None):
+    """(mode, plan) for this PC: plan_addresses for `mode`, from this PC's
+    own settings; all programs mode that cannot be set up so the engine
+    accepts it falls back to fallback mode with the reason in the plan's
+    sentence, unless --mode all asked for it (then it raises). MadMapper's
+    and BEYOND's addresses for their readiness checks (soak_apps.APPS)
+    follow the plan."""
+    from ltcplay import artnodes
+    on_pc = on_pc or artnodes.bind_probe
+    cands = pc_show_addresses(settings)
+    try:
+        plan = plan_addresses(mode, cands, on_pc)
+    except RuntimeError as e:
+        if want == "all":
+            raise
+        mode = "fallback"
+        plan = plan_addresses(mode, cands, on_pc)
+        plan["said"] = f"{e} So this run is in fallback mode. {plan['said']}"
+    if mode != "fallback":
+        soak_apps.APPS["MadMapper"]["ip"] = plan["mm"]
+        soak_apps.APPS["BEYOND"]["ip"] = plan["beyond"]
+    return mode, plan
+
+
 class Intervals:
     """Streaming statistics of the gaps between events."""
 
@@ -560,12 +875,18 @@ class Soak:
         self.show_starts = 0
         self.beyond_cmds = []     # (time, "blank"/"unblank")
         self.beyond_lit_outside = 0
+        # Unblanks with no show timecode moving, (perf time, wall time),
+        # until the show's timecode starts within SHOW_GAP_S + 2 after one.
+        self.unblank_waiting = []
         self.mm_packets = 0
         self.mm_addresses = {}
         self.audio_snap = {}
         self.audio_worst = {}
         self.slots = {}
         self.mode = "fallback"      # or "all programs" (see choose_mode)
+        # Where the Art-Net receivers are (plan_addresses): set from this
+        # PC's settings by run(); until then one loopback receiver only.
+        self.addrs = plan_addresses("fallback", {}, lambda _ip: False)
         self.apps = {}              # name -> install path, all-programs mode
         self.app_watch = {}         # name -> soak_apps.AppWatch
         self.app_cpu = {}           # name -> [cpu %]
@@ -717,10 +1038,9 @@ class Soak:
         xml = bench_networks(plan["universes"])
         with open(os.path.join(self.show_dir, "xlights_networks.xml"), "w",
                   encoding="utf-8") as fh:
-            fh.write(xml if self.mode == "fallback" else
-                     xml.replace('IP="127.0.0.1"',
-                                 f'IP="{SOAK_IP}"').replace(
-                         'ComPort="127.0.0.1"', f'ComPort="{SOAK_IP}"'))
+            # The pixels go to this program's own receiver (the one
+            # loopback receiver, plan_addresses) in both modes.
+            fh.write(xml)
         fx.write_fseq(os.path.join(self.show_dir, "bench.fseq"),
                       frame_count=int(self.show_s * plan["fps"]),
                       channel_count=plan["channels"],
@@ -745,11 +1065,7 @@ class Soak:
                "cues": [{"tc": "00:00:00:00", "fseq": "bench.fseq",
                          "name": "Show"}],
                "clock": {"source": "audio_master",
-                         "artnet": {"nodes": (
-                             {"MadMapper": "127.0.0.1", "BEYOND": BEYOND_TC_IP}
-                             if self.mode == "fallback" else
-                             {"MadMapper": "127.0.0.1", "BEYOND": "127.0.0.2",
-                              "Soak": SOAK_IP})},
+                         "artnet": {"nodes": dict(self.addrs["nodes"])},
                          "audio": dict(audio, device=self.audio_name
                                        or "none found")}}
         with open(os.path.join(self.show_dir, "bench.json"), "w",
@@ -772,7 +1088,9 @@ class Soak:
             names = [str(d.get("name", "")) for d in outs]
             self.audio_outputs = sorted(set(names))
             if self.audio_device:
-                return self.audio_device
+                name, said = resolve_audio_name(self.audio_device, names)
+                note(said)
+                return name
             saved = settings_mod.load().get("device")
             if saved and saved in names:
                 return saved
@@ -783,6 +1101,8 @@ class Soak:
                 if api == "ASIO" and any(w in n.lower() for w in
                                          ("focusrite", "scarlett")):
                     return n
+        except RuntimeError:
+            raise
         except Exception as e:
             note(f"could not list the audio outputs: {e}")
         return None
@@ -847,18 +1167,19 @@ class Soak:
             json.dump(rule, fh, indent=1)
         fi = {"scheduler_performs": True, "auto_start": "when_run_pressed",
               "show_cue": "Show",
-              "madmapper": {"host": "127.0.0.1", "port": (
+              "madmapper": {"host": (
+                  "127.0.0.1" if self.mode == "fallback"
+                  else self.addrs["mm"]), "port": (
                   MM_PORT if self.mode == "fallback" else
                   soak_apps.MADMAPPER_PORT),
                             "show_bank": "Bank-1", "surfaces": ["Quad-1"]},
               "beyond": {"host": ("127.0.0.1" if self.mode == "fallback"
-                                  else soak_apps.BEYOND_IP), "port": (
+                                  else self.addrs["beyond"]), "port": (
                   BEYOND_PORT if self.mode == "fallback" else
                   soak_apps.BEYOND_PORT)},
               "flamesafe_config": self.engine_fs_cfg,
               "flame_controller": "Flames",
-              "beyond_blank": "timecode",
-              "beyond_timecode_ip": BEYOND_TC_IP,
+              "beyond_blank": self.addrs["blank"],
               "show_name": "Ignite the Night",
               "venue": "Thanksgiving Point",
               "notes": "BENCH ONLY, written by the soak test",
@@ -870,6 +1191,10 @@ class Soak:
               # (fire_ice.FireIceConfig), so a real install always checks.
               "preroll_s": 0,
               "soak_only": True}
+        if self.addrs["beyond_tc"]:
+            # BEYOND's timecode: the black zone goes to BEYOND's own
+            # address, the same one the show file names (plan_addresses).
+            fi["beyond_timecode_ip"] = self.addrs["beyond_tc"]
         if self.mode != "fallback":
             # MadMapper's heartbeat track (its project sends it; see the
             # checklist), read by the engine's own watchdog.
@@ -1481,6 +1806,12 @@ class Soak:
         if self.tc.last is None:
             self.tc.last = t
         self.tc_last = t
+        # An unblank just before the show's timecode started was the show
+        # starting (OSC blanking: the lasers come up with the start, the
+        # timecode a moment later), not lasers lit outside a show.
+        while self.unblank_waiting and \
+                t - self.unblank_waiting[0][0] <= SHOW_GAP_S + 2:
+            self.unblank_waiting.pop(0)
 
     def on_flame(self, b, t, addr=None):
         """The engine's flame link, relayed to flamesafe unchanged."""
@@ -1511,12 +1842,29 @@ class Soak:
         except Exception:
             return
         v = None if f is None else f[1]
-        what = "blank" if v in (0, 0.0) else "unblank"
+        # BEYOND's laser output switches carry no number (beyond.py
+        # OUTPUT_ADDRESSES): DisableLaserOutput takes light away, as a blank
+        # does; EnableLaserOutput is judged like an unblank.
+        if v is None and "disable" in address.lower():
+            what = "blank"
+        else:
+            what = "blank" if v in (0, 0.0) else "unblank"
         self.beyond_cmds.append((time.time(), what, address))
         if what == "unblank" and (self.tc_last is None or
                                   t - self.tc_last > SHOW_GAP_S + 2):
-            # Lasers asked up with no show timecode moving: a real fault.
-            self.beyond_lit_outside += 1
+            # Lasers asked up with no show timecode moving: a real fault,
+            # unless the show's timecode starts within the same few seconds
+            # after it (counted in lit_outside).
+            self.unblank_waiting.append((t, time.time(), address))
+
+    def lit_outside(self, now=None):
+        """(count, [wall times]) of the unblanks with no show timecode
+        moving SHOW_GAP_S + 2 before or after them (still waiting longer
+        than that)."""
+        now = time.perf_counter() if now is None else now
+        late = [(w, a) for t, w, a in list(self.unblank_waiting)
+                if now - t > SHOW_GAP_S + 2]
+        return len(late), [f"{now_text(w)} {a}" for w, a in late]
 
     def on_madmapper(self, b, t, addr=None):
         from ltcplay import madmapper as MM
@@ -1781,10 +2129,20 @@ class Soak:
             note(f"{name} stopped cleanly")
             return True
         except subprocess.TimeoutExpired:
+            # The soak's own child (its outputs go to this PC only): ended,
+            # so none is left running after the soak (2026-11-09: a deck
+            # left behind, elevated, that the user could not end).
             how = why or "Ctrl-Break sent"
-            note(f"{name} did NOT stop within 20 s ({how}); it was not "
-                 f"forced to quit")
-            return False
+            try:
+                c["p"].kill()
+                c["p"].wait(10)
+                note(f"{name} did not stop within 20 s ({how}), so the soak "
+                     f"ended it (its own child)")
+                return True
+            except (OSError, subprocess.TimeoutExpired) as e:
+                note(f"{name} did NOT stop within 20 s ({how}) and could "
+                     f"not be ended ({e})")
+                return False
 
     def engine(self, route, body=None, timeout=5, signed_out=False):
         """GET (no body) or POST to the engine as the signed-in rack screen
@@ -1821,6 +2179,33 @@ class Soak:
         self.loops += 1
         if self.no_run and self.no_run[-1][1] is None:
             self.no_run[-1][1] = time.time()
+        return True
+
+    def preflight(self, wait_s=None, sleep=time.sleep):
+        """A minute after the engine started and Run was pressed, its open
+        alerts: any fault alert refuses the run (RuntimeError, said in
+        preflight_refusal); the video output OFF alert, with
+        --video-output-off-ok, is printed and acknowledged."""
+        wait_s = PREFLIGHT_S if wait_s is None else wait_s
+        note(f"preflight: waiting {wait_s:.0f} s, then reading the "
+             f"engine's open alerts")
+        sleep(wait_s)
+        st = self.engine("/api/remote/status")
+        if st.get("error"):
+            raise RuntimeError(f"Preflight REFUSED: the engine's status "
+                               f"could not be read ({st['error']}), so it "
+                               f"cannot be known that no fault alert holds "
+                               f"the shows.")
+        ok = getattr(self, "video_off_ok", False)
+        refuse, expected = preflight_verdict(st.get("alerts"), ok)
+        for aid, text in expected:
+            note(f"preflight: expected on a muted, dark PC ({VIDEO_OFF_FLAG}"
+                 f"): {text}. Acknowledged, so it holds no show.")
+            self.engine("/api/remote/alert", {"id": aid,
+                                              "action": "acknowledge"})
+        if refuse:
+            raise RuntimeError(preflight_refusal(refuse, ok))
+        note("preflight: no fault alert is open; the run goes on")
         return True
 
     # --------------------------------------------------------- sample ---
@@ -1915,6 +2300,11 @@ class Soak:
         for c in self.checks:
             note("PC check: " + c)
         note(self.choose_mode(self.want_mode))
+        mode, self.addrs = choose_addresses(
+            self.mode, self.want_mode, self.sup.load_settings())
+        if mode != self.mode:
+            self.mode, self.apps, self.app_watch = mode, {}, {}
+        note(self.addrs["said"])
         self.container = ltcwin.package_name()
         if self.container:
             note(f"WARNING: this soak runs inside another app's container "
@@ -1950,8 +2340,10 @@ class Soak:
         need = [("127.0.0.1", SACN_PORT, "flamesafe's sACN"),
                 ("127.0.0.1", self.status_port, "flamesafe's status"),
                 ("127.0.0.1", FLAME_RELAY, "the flame link relay")]
+        bey_tc = self.addrs["beyond_tc"]
         if self.mode == "fallback":
-            need += [(BEYOND_TC_IP, ARTNET_PORT, "BEYOND's timecode"),
+            need += ([(bey_tc, ARTNET_PORT, "BEYOND's timecode")]
+                     if bey_tc else []) + [
                      ("127.0.0.1", ARTNET_PORT, "Art-Net"),
                      ("127.0.0.1", BEYOND_PORT, "BEYOND's OSC"),
                      ("127.0.0.1", MM_PORT, "MadMapper's OSC")]
@@ -1960,8 +2352,9 @@ class Soak:
                  udp_listener(self.status_port, self.on_status, "status"),
                  udp_listener(FLAME_RELAY, self.on_flame, "flame relay")]
         if self.mode == "fallback":
-            socks += [udp_listener(ARTNET_PORT, self.on_beyond_tc,
-                                   "beyond timecode", ip=BEYOND_TC_IP),
+            socks += ([udp_listener(ARTNET_PORT, self.on_beyond_tc,
+                                    "beyond timecode", ip=bey_tc)]
+                      if bey_tc else []) + [
                       udp_listener(ARTNET_PORT, self.on_artnet, "artnet"),
                       udp_listener(BEYOND_PORT, self.on_beyond, "beyond"),
                       udp_listener(MM_PORT, self.on_madmapper, "madmapper")]
@@ -1976,9 +2369,9 @@ class Soak:
             # address can be listened on.
             try:
                 socks.append(udp_listener(ARTNET_PORT, self.on_artnet,
-                                          "artnet", ip=SOAK_IP))
+                                          "artnet", ip=SOAK_LISTEN_IP))
                 self.measured = (f"pixels and timecode: timed here from the "
-                                 f"copy the engine sends {SOAK_IP}:6454; "
+                                 f"copy the engine sends {SOAK_LISTEN_IP}:6454; "
                                  f"MadMapper and BEYOND: process, window and "
                                  f"OSC port held (their commands are not "
                                  f"overheard: they hold those ports)")
@@ -1987,11 +2380,11 @@ class Soak:
                     "another program"
                 self.outside_timing = False
                 self.measured = (f"pixels and timecode NOT timed from "
-                                 f"outside: {SOAK_IP}:6454 could not be "
+                                 f"outside: {SOAK_LISTEN_IP}:6454 could not be "
                                  f"listened on ({who} holds 6454); see the "
                                  f"engine's own counters. MadMapper and "
                                  f"BEYOND: process, window and OSC port held")
-                note(f"could not listen on {SOAK_IP}:6454 ({who} holds "
+                note(f"could not listen on {SOAK_LISTEN_IP}:6454 ({who} holds "
                      f"6454): pixels and timecode are not timed from "
                      f"outside in this run")
         if self.fake_audio:
@@ -2010,6 +2403,7 @@ class Soak:
         if self.deck:
             self.start_program("deck")
         self.start_show()
+        self.preflight()
         note("scheduling protection " + (
             "ON: engine and flamesafe at High, their show threads at "
             "Highest, the deck at Above normal; this soak program at High, "
@@ -2039,6 +2433,11 @@ class Soak:
         try:
             while time.perf_counter() - t0 < self.seconds:
                 time.sleep(0.5)
+                if stop_now_requested():
+                    self.interrupted = True
+                    self.stopped_now = True
+                    note("Stop soak now was used: stopping at once")
+                    break
                 nw = time.time()
                 if nw - last_wall > 15:
                     self.pauses.append((last_wall, nw - last_wall))
@@ -2563,8 +2962,11 @@ class Soak:
         out.append(self.disk_item())
         ups = sum(1 for _t, w, _a in self.beyond_cmds if w == "unblank")
         downs = sum(1 for _t, w, _a in self.beyond_cmds if w == "blank")
-        ok = (self.show_starts == 0 or ups > 0) and \
-            self.beyond_lit_outside == 0
+        self.beyond_lit_outside, outside = self.lit_outside()
+        # The lasers come up only once a laser is armed (laserarm.py) and
+        # the soak arms none, so blanking by OSC sends no unblank at all:
+        # what is judged is that no command lights them outside a show.
+        ok = self.beyond_lit_outside == 0
         if self.mode != "fallback" or (self.bey_stats or {}).get(
                 "blank_mode") == "timecode":
             # BEYOND itself has them ("BEYOND answering"), or the lasers
@@ -2574,7 +2976,10 @@ class Soak:
                     "Lasers (BEYOND commands, to this PC only)",
                     f"{ups} unblank and {downs} blank command packets; "
                     f"{self.beyond_lit_outside} unblank(s) with no show "
-                    f"running (limit 0)"))
+                    f"running (limit 0)" + (
+                        ": " + ", ".join(outside[:8]) if outside else "")
+                    + ("; no laser is armed by the soak, so no unblank is "
+                       "expected" if not ups else "")))
         out.append(("INFO" if self.mode != "fallback" else
                     "PASS" if self.mm_packets and self.show_starts else
                     "FAIL" if self.show_starts else "NOT TESTED",
@@ -2652,7 +3057,15 @@ class Soak:
             self.bey_stats = las
         las = self.bey_stats or {}
         tc = las.get("timecode") or {}
-        heard = self.mode == "fallback"
+        heard = self.mode == "fallback" and bool(
+            getattr(self, "addrs", {}).get("beyond_tc"))
+        if self.mode == "fallback" and not heard:
+            out.append(("INFO", "BEYOND's timecode blanking (black zone "
+                        "hour 23 while the lasers must be dark)",
+                        "NOT TIMED in this run: this PC has no address of "
+                        "BEYOND's own, so the lasers are blanked by OSC and "
+                        "no BEYOND timecode is sent (one Art-Net receiver "
+                        "per address, the engine's own rule)"))
         out.append((("FAIL" if self.bey_bad else "PASS") if heard else
                     "INFO",
                     "BEYOND's timecode blanking (black zone hour 23 while "
@@ -2885,10 +3298,12 @@ class Soak:
                  self, "container", "") else "Container: none (started as "
                                              "itself)"),
             f"Soak mode: {self.mode}"
-            + (" (MadMapper and BEYOND running on this PC, getting LTC "
-               "Player's real commands: MadMapper's OSC on 127.0.0.1:8000, "
-               "BEYOND's on 127.0.0.2:8100, the Art-Net timecode to both; "
-               "BEYOND's laser output may be enabled, this PC is isolated)"
+            + (f" (MadMapper and BEYOND running on this PC, getting LTC "
+               f"Player's real commands: MadMapper's OSC on "
+               f"{self.addrs['mm']}:{soak_apps.MADMAPPER_PORT}, BEYOND's on "
+               f"{self.addrs['beyond']}:{soak_apps.BEYOND_PORT}, the Art-Net "
+               f"timecode to both; BEYOND's laser output may be enabled, "
+               f"this PC is isolated)"
                if self.mode != "fallback"
                else " (MadMapper's and BEYOND's commands counted by this "
                     "program; neither program ran)"),
@@ -3430,13 +3845,16 @@ class Blocks:
                 s.fps = getattr(self, "fps", 40)
                 s.fake_audio = self.fake_audio
                 s.want_mode = "all"
+                s.video_off_ok = getattr(self, "video_off_ok", False)
                 s.priority = getattr(self, "priority", True)
                 s.contain = getattr(self, "contain", False)
                 s.on_report = self.write
                 self.blocks.append(s)
                 s.run()
                 if s.interrupted:
-                    self.stopped = f"stopped by Ctrl-C in block {i}"
+                    self.stopped = (f"stopped by Stop soak now in block {i}"
+                                    if getattr(s, "stopped_now", False)
+                                    else f"stopped by Ctrl-C in block {i}")
                     break
                 before = pids
         except KeyboardInterrupt:
@@ -3486,7 +3904,9 @@ class Blocks:
             f"{ltcwin.version_line('LTC Player')}",
             "BEYOND's response to commands is checked only as far as "
             "possible: it sends nothing back, so running, its window "
-            "responding and holding its OSC port (127.0.0.2:8100) is all "
+            f"responding and holding its OSC port at its own address "
+            f"({soak_apps.APPS['BEYOND']['ip']}:{soak_apps.BEYOND_PORT}, "
+            f"that address or every address) is all "
             "that can be known. MadMapper is checked by the engine's "
             "heartbeat watchdog as well.",
             "",
@@ -3602,6 +4022,15 @@ def _self_check():
            "programs treated as present, and says so")
     for line in _bench_audio_check():
         yield line
+    from ltcplay import artnodes
+    for plan in (plan_addresses("fallback", {}, lambda _ip: False),
+                 plan_addresses("fallback", {"BEYOND": ["10.250.2.1"]},
+                                lambda ip: ip == "10.250.2.1")):
+        assert not artnodes.collisions(plan["nodes"]), plan
+    yield ("the soak's show names one Art-Net receiver per address (the "
+           "engine's own rule), with or without an address of BEYOND's own")
+    assert resolve_audio_name("Live", ["A Live B", "C"])[0] == "A Live B"
+    yield "--audio-device resolves to one exact output name"
 
 
 def _bench_audio_check():
@@ -3651,6 +4080,9 @@ def main(argv=None):
     if rc is not None:
         return rc
     wait = "--no-wait" not in argv
+    video_off_ok = False
+    confirm = None
+    stop_requested_now = False
     seconds = None
     device = None
     fake = False
@@ -3678,6 +4110,8 @@ def main(argv=None):
             i += 1
         elif a == "--fake-audio":
             fake = True
+        elif a == VIDEO_OFF_FLAG:
+            video_off_ok = True
         elif a in ("--audio-channels", "--ltc-output"):
             try:
                 v = int(argv[i + 1])
@@ -3736,6 +4170,30 @@ def main(argv=None):
                 except (IndexError, ValueError):
                     print("--days takes a number")
                     return 2
+        elif a == "--resolve-audio":
+            # Start 48h soak.ps1 and register_soak_task.ps1 ask this, so
+            # the scripts and the engine agree on one exact name.
+            try:
+                name, said = resolve_audio_name(argv[i + 1],
+                                                audio_output_names())
+            except IndexError:
+                print("--resolve-audio takes a name")
+                return 2
+            except RuntimeError as e:
+                print(f"REFUSED. {e}")
+                return 2
+            print(said)
+            print(f"EXACT: {name}")
+            return 0
+        elif a == "--confirm":
+            try:
+                confirm = argv[i + 1]
+            except IndexError:
+                print("--confirm takes a word")
+                return 2
+            i += 1
+        elif a == "--stop-now":
+            stop_requested_now = True
         elif a == "--unattended-off":
             import supervisor as sup
             import soak_unattended
@@ -3770,6 +4228,7 @@ def main(argv=None):
         elif a != "--no-wait":
             print(f"Unknown option {a}. Options: --hours H, --minutes M, "
                   f"--audio-device NAME, --no-wait, --fake-audio, "
+                  f"{VIDEO_OFF_FLAG}, --stop-now, "
                   f"--audio-channels N, --audio-map 1,2,..., "
                   f"--ltc-output N, --universes N (1 to {MAX_UNIVERSES}, "
                   f"default 1), --fps F ("
@@ -3782,6 +4241,23 @@ def main(argv=None):
                   f"--every-min M (default {SHOW_EVERY_MIN})")
             return 2
         i += 1
+    if stop_requested_now:
+        why = confirm_refusal(confirm, STOP_WORD, "Stop soak now")
+        if why:
+            print(why)
+            return 2
+        for line in stop_now():
+            print(line)
+        return 0
+    why = confirm_refusal(confirm, RUN_WORD, "Starting the soak")
+    if why:
+        print(why)
+        return 2
+    try:
+        # A Stop soak now from an earlier run never stops this one.
+        os.remove(os.path.join(soak_folder(), STOP_NOW_FILE))
+    except OSError:
+        pass
     if track:
         try:
             audio_plan(track.get("--audio-channels", 2),
@@ -3860,8 +4336,16 @@ def main(argv=None):
             raise _Done()
         resolved, _found, why = resolve_mode(mode)
         if resolved == "all programs":
+            # MadMapper and BEYOND must be on addresses of their own here,
+            # or the engine refuses the soak's show (choose_addresses).
+            resolved, plan = choose_addresses(resolved, mode,
+                                              sup.load_settings())
+            if resolved != "all programs":
+                note(plan["said"])
+        if resolved == "all programs":
             note(why)
             soak = Blocks(seconds, device, fake)
+            soak.video_off_ok = video_off_ok
             soak.show_s, soak.every_min = show_s, every_min
             soak.universes, soak.fps = universes, fps
             soak.priority = priority
@@ -3875,6 +4359,7 @@ def main(argv=None):
             soak.audio_map = track.get("--audio-map")
             soak.ltc_output = track.get("--ltc-output")
             soak.want_mode = mode
+            soak.video_off_ok = video_off_ok
             soak.priority = priority
             soak.contain = contain
         ok = soak.run()

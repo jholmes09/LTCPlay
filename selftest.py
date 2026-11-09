@@ -43806,6 +43806,339 @@ def test_soak_schedule_is_refused_outside_the_soak():
     print("  ok")
 
 
+def test_soak_runs_on_the_show_pc():
+    section("the soak on the real show PC (2026-11-09, build bench-2026.11.08"
+            "-459f83a): its show names only Art-Net receivers the engine "
+            "accepts (one loopback, every other on an address of its own "
+            "this PC has); a fault alert open a minute in refuses the run; "
+            "--audio-device resolves to one exact output name; MadMapper's "
+            "and BEYOND's addresses come from this PC's settings; Stop soak "
+            "now ends the soak and its programs at once; nothing elevated")
+    import subprocess as _sp
+    import tempfile
+    import types
+    from ltcplay import artnodes as A
+    from ltcplay import fire_ice as F
+    sp = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                      "packaging", "windows")
+    sys.path.insert(0, sp)
+    was = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    work = tempfile.mkdtemp()
+    names = ("soak", "ltcwin", "soak_apps", "soak_exercise", "supervisor")
+    try:
+        for m in names:
+            sys.modules.pop(m, None)
+        import soak
+        import soak_apps
+        # A. The old layouts were refused by the engine's own rule.
+        check(A.collisions({"MadMapper": "127.0.0.1",
+                            "BEYOND": "127.0.0.2"}) and
+              A.collisions({"MadMapper": "127.0.0.1", "BEYOND": "127.0.0.2",
+                            "Soak": "127.0.0.9"}),
+              "the old soak layouts share the loopback: refused, rightly")
+        here = {"10.250.1.1", "10.250.2.1"}
+
+        def on_pc(ip):
+            return ip in here
+        cands = {"MadMapper": ["10.250.1.1"], "BEYOND": ["10.250.2.1"]}
+        p = soak.plan_addresses("fallback", cands, on_pc)
+        check(p["nodes"] == {"MadMapper": "127.0.0.1",
+                             "BEYOND": "10.250.2.1"} and
+              p["beyond_tc"] == "10.250.2.1" and p["blank"] == "timecode" and
+              p["said"] == ("Art-Net receivers: this program as MadMapper "
+                            "on 127.0.0.1 and as BEYOND on 10.250.2.1 (its "
+                            "own address on this PC), one address each"),
+              f"fallback with BEYOND's own address: {p}")
+        check(A.collisions(p["nodes"]) == [] and
+              A.not_here(p["nodes"], adapters=here | {"127.0.0.1"},
+                         probe=lambda a: a in here or a == "127.0.0.1") == [],
+              "and the engine accepts it: no shared address, all on this PC")
+        p = soak.plan_addresses("fallback", {"BEYOND": ["10.250.2.1",
+                                                        "127.0.0.2"]},
+                                lambda ip: False)
+        check(p["nodes"] == {"MadMapper": "127.0.0.1"} and
+              p["beyond_tc"] is None and p["blank"] == "osc" and
+              p["said"] == ("Art-Net receivers: this program as MadMapper "
+                            "on 127.0.0.1 only. This PC has no address of "
+                            "BEYOND's own (looked for: 10.250.2.1, "
+                            "127.0.0.2), and a second receiver on the "
+                            "loopback would be refused, so BEYOND's timecode "
+                            "black zone is not timed and the lasers are "
+                            "blanked by OSC in this run"),
+              f"one loopback only: exactly one node: {p}")
+        check(soak.plan_addresses("fallback", {"BEYOND": ["127.0.0.2"]},
+                                  lambda ip: True)["nodes"] ==
+              {"MadMapper": "127.0.0.1"},
+              "a second loopback address is never a second receiver")
+        p = soak.plan_addresses("all programs", cands, on_pc)
+        check(p["nodes"] == {"MadMapper": "10.250.1.1",
+                             "BEYOND": "10.250.2.1", "Soak": "127.0.0.1"} and
+              p["mm"] == "10.250.1.1" and p["beyond"] == "10.250.2.1" and
+              A.collisions(p["nodes"]) == [] and
+              p["said"] == ("Art-Net receivers: MadMapper on 10.250.1.1, "
+                            "BEYOND on 10.250.2.1 (their own addresses on "
+                            "this PC, where their OSC commands go too), and "
+                            "this program on 127.0.0.1, one address each"),
+              f"all programs on their real addresses: {p}")
+        want_no = ("All programs mode needs MadMapper and BEYOND each on an "
+                   "address of its own on this PC (the ShowNet loopbacks "
+                   "10.250.1.1 and 10.250.2.1, or what this PC's settings "
+                   "name), but BEYOND has none here (looked for MadMapper: "
+                   "10.250.1.1; BEYOND: 127.0.0.2). The soak's commands "
+                   "would not reach the real programs. Run with --mode "
+                   "fallback, where this program plays both.")
+        try:
+            soak.plan_addresses("all programs", {"MadMapper": ["10.250.1.1"],
+                                                 "BEYOND": ["127.0.0.2"]},
+                                on_pc)
+            check(False, "all programs with BEYOND on the loopback was taken")
+        except RuntimeError as e:
+            check(str(e) == want_no, f"said plainly: {e}")
+        real_apps = {k: dict(v) for k, v in soak_apps.APPS.items()}
+        real_cands = soak.pc_show_addresses
+        try:
+            soak.pc_show_addresses = lambda settings=None: {
+                "MadMapper": ["10.250.1.1"], "BEYOND": ["127.0.0.2"]}
+            mode, p = soak.choose_addresses("all programs", "auto", {},
+                                            on_pc=on_pc)
+            check(mode == "fallback" and
+                  p["said"].startswith(want_no + " So this run is in "
+                                       "fallback mode. Art-Net receivers:"),
+                  f"auto: fallback mode, said: {mode} {p['said'][:80]}")
+            try:
+                soak.choose_addresses("all programs", "all", {}, on_pc=on_pc)
+                check(False, "--mode all was quietly changed")
+            except RuntimeError as e:
+                check(str(e) == want_no, f"--mode all refuses: {e}")
+            soak.pc_show_addresses = lambda settings=None: dict(cands)
+            mode, p = soak.choose_addresses("all programs", "auto", {},
+                                            on_pc=on_pc)
+            check(mode == "all programs" and
+                  soak_apps.APPS["MadMapper"]["ip"] == "10.250.1.1" and
+                  soak_apps.APPS["BEYOND"]["ip"] == "10.250.2.1",
+                  f"D: MadMapper's and BEYOND's readiness checks look at "
+                  f"their real addresses: {soak_apps.APPS}")
+        finally:
+            soak.pc_show_addresses = real_cands
+            for k, v in real_apps.items():
+                soak_apps.APPS[k].clear()
+                soak_apps.APPS[k].update(v)
+        # The PC's own settings, in order, then the ShowNet loopbacks.
+        files = {
+            os.path.join("S", "ltcplay_fire_ice.json"): {
+                "madmapper": {"host": "10.250.1.7"},
+                "beyond_timecode_ip": "10.250.2.7",
+                "beyond": {"host": "10.250.2.8"}},
+            os.path.join("F", "show.json"): {"cues": [], "clock": {
+                "artnet": {"nodes": {"MadMapper 2": "10.250.1.9",
+                                     "BEYOND": "10.250.2.7"}}}}}
+        got = soak.pc_show_addresses(
+            {"schedule": os.path.join("S", "ltcplay_schedule.json"),
+             "show_folder": "F"},
+            read_json=lambda pth: files.get(pth),
+            listdir=lambda d: ["show.json", "notes.txt"])
+        check(got == {"MadMapper": ["10.250.1.7", "10.250.1.9",
+                                    "10.250.1.1"],
+                      "BEYOND": ["10.250.2.7", "10.250.2.8",
+                                 "10.250.2.1"]},
+              f"the addresses this PC's settings name, then ShowNet's: {got}")
+        # The soak's own schedule follows the plan: BEYOND's timecode to
+        # BEYOND's own address, or OSC blanking with none.
+        for plan, blank, tc in (
+                (soak.plan_addresses("fallback", cands, on_pc), "timecode",
+                 "10.250.2.1"),
+                (soak.plan_addresses("fallback", {}, on_pc), "osc", None)):
+            s = soak.Soak(60, None, folder=os.path.join(work, blank))
+            s.show_s, s.mode, s.addrs = 60.0, "fallback", plan
+            s.engine_fs_cfg = os.path.join(work, "fs.json")
+            s.make_schedule()
+            with open(os.path.join(s.sched_dir, F.CONFIG_FILE),
+                      encoding="utf-8") as fh:
+                fi = json.load(fh)
+            check(fi.get("beyond_blank") == blank and
+                  fi.get("beyond_timecode_ip") == tc and
+                  F.FireIceConfig.parse(fi).beyond_blank == blank,
+                  f"the soak's settings follow the plan: {blank} {tc} "
+                  f"{fi.get('beyond_blank')} {fi.get('beyond_timecode_ip')}")
+        # B. Preflight.
+        alerts = [{"id": 3, "kind": "audio", "severity": "fault",
+                   "text": "The show audio interface X is not attached."},
+                  {"id": 4, "kind": "output", "severity": "fault",
+                   "text": "MadMapper's video output is OFF: this PC has "
+                           "only one display."},
+                  {"id": 5, "kind": "aim", "severity": "warning",
+                   "text": "a warning"}]
+        refuse, expected = soak.preflight_verdict(alerts, False)
+        check(refuse == [(3, "audio: The show audio interface X is not "
+                             "attached."),
+                         (4, "output: MadMapper's video output is OFF: this "
+                             "PC has only one display.")] and expected == [],
+              f"every fault alert refuses; a warning does not: {refuse}")
+        check(soak.preflight_refusal(refuse) ==
+              "Preflight REFUSED: the engine has 2 fault alert(s) open a "
+              "minute after it started, and an open fault alert holds every "
+              "scheduled show, so this run would play no show: audio: The "
+              "show audio interface X is not attached. | output: "
+              "MadMapper's video output is OFF: this PC has only one "
+              "display.. The soak stopped its programs; nothing else was "
+              "started. If this PC is muted and dark on purpose, start the "
+              "soak again with --video-output-off-ok.",
+              f"the refusal: {soak.preflight_refusal(refuse)!r}")
+        refuse, expected = soak.preflight_verdict(alerts, True)
+        check([i for i, _t in refuse] == [3] and
+              [i for i, _t in expected] == [4],
+              "with --video-output-off-ok the video output OFF is expected")
+        s = soak.Soak(60, None, folder=os.path.join(work, "pre"))
+        calls, lines = [], []
+        real_note = soak.note
+        soak.note = lines.append
+        try:
+            s.video_off_ok = True
+            s.engine = lambda route, body=None, **k: (
+                calls.append((route, body)) or
+                ({"alerts": alerts[1:]} if body is None else {}))
+            check(s.preflight(wait_s=0, sleep=lambda t: None) is True and
+                  calls == [("/api/remote/status", None),
+                            ("/api/remote/alert",
+                             {"id": 4, "action": "acknowledge"})] and
+                  "preflight: expected on a muted, dark PC "
+                  "(--video-output-off-ok): output: MadMapper's video "
+                  "output is OFF: this PC has only one display.. "
+                  "Acknowledged, so it holds no show." in lines,
+                  f"expected, printed and acknowledged: {calls} {lines}")
+            s.engine = lambda route, body=None, **k: {"alerts": alerts}
+            try:
+                s.preflight(wait_s=0, sleep=lambda t: None)
+                check(False, "a fault alert did not refuse the run")
+            except RuntimeError as e:
+                check(str(e).startswith("Preflight REFUSED: the engine has "
+                                        "1 fault alert(s) open"),
+                      f"a fault alert refuses the run: {e}")
+            check(soak.PREFLIGHT_S == 60.0, "after a minute")
+        finally:
+            soak.note = real_note
+        # C. One exact output name.
+        outs = ["StudioLive Series III ASIO", "Speakers (Realtek(R) Audio)",
+                "StudioLive Series III ASIO", "Focusrite USB ASIO",
+                "Focusrite USB (Focusrite USB Audio)"]
+        check(soak.resolve_audio_name("StudioLive", outs) ==
+              ("StudioLive Series III ASIO",
+               "show audio interface: 'StudioLive' is the output "
+               "'StudioLive Series III ASIO', the exact name the engine "
+               "opens"),
+              "a part of a name matching one output: that exact name, said")
+        check(soak.resolve_audio_name("Focusrite USB ASIO", outs)[0] ==
+              "Focusrite USB ASIO", "an exact name is itself")
+        for wanted, said in (
+                ("Focusrite", "--audio-device 'Focusrite' matches 2 "
+                              "outputs: Focusrite USB (Focusrite USB "
+                              "Audio); Focusrite USB ASIO. Give the one "
+                              "exact name the engine should open, for "
+                              "example --audio-device \"Focusrite USB "
+                              "(Focusrite USB Audio)\". Nothing was "
+                              "started."),
+                ("Scarlett", "--audio-device 'Scarlett' is not an output on "
+                             "this PC. Outputs: Focusrite USB (Focusrite USB "
+                             "Audio); Focusrite USB ASIO; Speakers "
+                             "(Realtek(R) Audio); StudioLive Series III "
+                             "ASIO. Nothing was started.")):
+            try:
+                soak.resolve_audio_name(wanted, outs)
+                check(False, f"{wanted} was taken")
+            except RuntimeError as e:
+                check(str(e) == said, f"refused, said: {e}")
+        # E. Stop soak now.
+        ran = []
+        folder = os.path.join(work, "soakdir")
+        out = soak.stop_now(folder, run=lambda cmd, **k: (
+            ran.append(cmd) or types.SimpleNamespace(returncode=0, stdout="",
+                                                     stderr="")),
+            windows=True)
+        check(os.path.exists(os.path.join(folder, "STOP_NOW")) and
+              os.path.exists(os.path.join(folder, "STOP_UNATTENDED")) and
+              soak.stop_now_requested(folder) and
+              ran == [["schtasks", "/Delete", "/TN",
+                       "LTC Player unattended soak", "/F"]] and
+              out == ["Stop soak now: the soak stops within a second, stops "
+                      "its own engine, flamesafe and deck, and does not "
+                      "start again at sign-in.",
+                      "The task 'LTC Player unattended soak' was removed."],
+              f"Stop soak now: {ran} {out}")
+        check(soak.confirm_refusal(None, "STOP", "x") is None and
+              soak.confirm_refusal("STOP", "STOP", "x") is None and
+              soak.confirm_refusal("stop", "STOP", "Stop soak now") ==
+              "REFUSED. Stop soak now needs --confirm STOP (it said "
+              "'stop'). Nothing was changed.",
+              "the confirmation words are exact")
+        # The soak's own child that does not stop is ended.
+
+        class _P:
+            killed = False
+
+            def poll(self):
+                return None
+
+            def send_signal(self, sig):
+                pass
+
+            def wait(self, t=None):
+                if not self.killed:
+                    raise _sp.TimeoutExpired("x", t)
+                return 0
+
+            def kill(self):
+                self.killed = True
+        s = soak.Soak(60, None, folder=os.path.join(work, "kill"))
+        child = _P()
+        s.procs = {"deck": {"p": child}}
+        lines = []
+        soak.note = lines.append
+        try:
+            check(s.stop_program("deck") is True and child.killed and
+                  lines == ["deck did not stop within 20 s (Ctrl-Break "
+                            "sent), so the soak ended it (its own child)"],
+                  f"a child that does not stop is ended: {lines}")
+        finally:
+            soak.note = real_note
+        reg = open(os.path.join(sp, "register_soak_task.ps1"),
+                   encoding="utf-8").read()
+        check("-RunLevel Limited" in reg and "RunLevel Highest" not in reg
+              and "$StopNow" in reg and "--stop-now --confirm STOP" in reg and
+              "--resolve-audio $AudioDevice" in reg,
+              "the task runs as the signed-in user, not elevated; -StopNow; "
+              "the audio name resolved by the soak program")
+        start = open(os.path.join(os.path.dirname(os.path.abspath(
+            __file__)), "tools", "stress", "soak", "Start 48h soak.ps1"),
+            encoding="utf-8").read()
+        check("[switch]$StopNow" in start and
+              "--stop-now --confirm STOP" in start and
+              "--resolve-audio $AudioDevice" in start and
+              "if ($admin) {" in start,
+              "the 48 h start script: -StopNow, the exact audio name, and "
+              "it refuses an elevated PowerShell")
+        iss = open(os.path.join(sp, "installer.iss"), encoding="utf-8").read()
+        check('Name: "{group}\\Start soak (6 h)"; Filename: '
+              '"{app}\\ltcplay-soak.exe"; Parameters: "--hours 6 --confirm '
+              'DISCONNECTED";' in iss and
+              'Name: "{group}\\Stop soak now"; Filename: '
+              '"{app}\\ltcplay-soak.exe"; Parameters: "--stop-now --confirm '
+              'STOP";' in iss,
+              "F: Start soak (6 h) and Stop soak now, with their words")
+        for t in (want_no, soak.preflight_refusal(refuse),
+                  soak.plan_addresses("fallback", {}, on_pc)["said"]):
+            _no_dashes(t, "the soak's new sentences")
+    finally:
+        sys.dont_write_bytecode = was
+        if sp in sys.path:
+            sys.path.remove(sp)
+        for m in names:
+            sys.modules.pop(m, None)
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_fire_ice_runner_reports_the_show():
     section("fire & ice: when the scheduler performs, a show ends when its "
             "audio does, a start without Run fails, closing completes, and "
@@ -113278,6 +113611,7 @@ if __name__ == "__main__":
         test_rack_screen_stop_in_place_of_start_now,
         test_schedule_failed_start_effects_follow_what_was_sent,
         test_soak_schedule_is_refused_outside_the_soak,
+        test_soak_runs_on_the_show_pc,
         test_fire_ice_flame_link_from_flamesafe_config,
         test_fire_ice_flame_cues_cut_ahead_match_and_never_decompress,
         test_fire_ice_flame_cut_guards,

@@ -28,7 +28,11 @@ It also REFUSES (not warns) when:
 Other uses:
   ... -Status        print the soak's status and the last block's verdict
   ... -Stop          stop after the block now running, remove the task
-  ... -AudioDevice "Focusrite USB ASIO"  the interface's exact name
+  ... -StopNow       stop at once (the soak ends its own engine, flamesafe
+                     and deck) and remove the task
+  ... -AudioDevice "StudioLive"  the interface: resolved by ltcplay-soak.exe
+                     --resolve-audio to the ONE exact output name the engine
+                     opens, and REFUSED when none or two or more match
   ... -FakeAudio     run with the engine's stand-in device (see above)
   ... -AudioChannels 19 -LtcOutput 20
                      the bench show track: 19 channels (the show's layout,
@@ -50,8 +54,9 @@ Other uses:
 What it changes: <signed-in user>\AppData\Local\ltcplay\soak\unattended.json
 (contain true, block_minutes 110, fake_audio, audio_device, restart_cmd),
 removes a stale STOP_UNATTENDED and unattended_state, registers the task
-"LTC Player unattended soak" (register_soak_task.ps1, needs an elevated
-PowerShell) and starts it. The soak itself stops LTC Player the safe way
+"LTC Player unattended soak" (register_soak_task.ps1, as the signed-in user,
+NOT elevated: the soak and its programs are that user's, so that user can
+end them and remove the task) and starts it. The soak itself stops LTC Player the safe way
 first and starts it again at the end. Nothing here arms or fires anything:
 the soak's flamesafe copy sends to 127.0.0.1 only.
 #>
@@ -60,6 +65,7 @@ param(
     [string]$Confirmation = "",
     [switch]$Status,
     [switch]$Stop,
+    [switch]$StopNow,
     [switch]$NoWitness,
     [string]$RestartCmd = "",
     [switch]$KeepRestartCmd,
@@ -340,6 +346,13 @@ function Show-Status {
 
 if ($Status) { Show-Status; exit 0 }
 
+if ($StopNow) {
+    Say "Stopping the soak NOW (it ends its own engine, flamesafe and deck)."
+    if (Test-Path $exe) { & $exe --stop-now --confirm STOP | ForEach-Object { Say "  $_" } }
+    if (Test-Path $reg) { & powershell -NoProfile -ExecutionPolicy Bypass -File $reg -Remove | ForEach-Object { Say "  $_" } }
+    exit 0
+}
+
 if ($Stop) {
     Say "Stopping the unattended soak after the block now running."
     if (Test-Path $exe) { & $exe --unattended-off | ForEach-Object { Say "  $_" } }
@@ -356,8 +369,8 @@ if (-not $FlameHardwareDisconnected -or $Confirmation -ne "DISCONNECTED") {
     exit 3
 }
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $admin) {
-    Say "REFUSED. register_soak_task.ps1 needs an elevated PowerShell (right-click PowerShell, Run as administrator), then run this again."
+if ($admin) {
+    Say "REFUSED. This PowerShell is elevated. Run it as the signed-in user, NOT as administrator: an elevated soak starts elevated programs the user cannot end, and a task the user cannot remove."
     exit 4
 }
 if (-not (Test-Path $exe)) { Say "REFUSED. $exe is not there. Install the bench build first (INSTALL.md)."; exit 5 }
@@ -369,9 +382,24 @@ try { Say ("Program: " + (& $exe --version 2>&1 | Select-Object -First 1)) } cat
 # A soak with no show audio interface plays no show (2026-10-18: 48 hours,
 # 0 shows, 'Show audio: NO interface found'). Refuse, unless fake audio is
 # asked for on purpose.
+if ($AudioDevice) {
+    # The ONE exact name the engine opens (the soak program asks the same
+    # audio list the engine does), never a part of a name.
+    $said = @(& $exe --resolve-audio $AudioDevice 2>&1)
+    $exact = ($said | Where-Object { "$_" -like "EXACT: *" } | Select-Object -First 1)
+    if (-not $exact) { Say ($said -join " "); exit 11 }
+    $AudioDevice = "$exact".Substring(7)
+    Say ("Audio: " + (($said | Where-Object { "$_" -notlike "EXACT: *" }) -join " "))
+}
 $present = Present-AudioOutputs
 $named = Named-AudioDevices $ad
-$ac = Audio-Check $AudioDevice $named $present
+if ($AudioDevice) {
+    # Resolved above against the engine's own list: Windows' device names
+    # (Present-AudioOutputs) spell an ASIO output differently.
+    $ac = @($true, "audio interface '$AudioDevice' is an output the engine opens by that exact name")
+} else {
+    $ac = Audio-Check $AudioDevice $named $present
+}
 if ($ac[0]) {
     Say ("Audio: " + $ac[1])
     if ($FakeAudio) { Say "AUDIO IS FAKE anyway (-FakeAudio): the engine plays the shows on its stand-in device, NOT the interface. This run proves the engine, the scheduler, the flame link, the timecode, the Art-Net outputs and the witness, not the real audio path." }
@@ -492,7 +520,7 @@ if (-not $NoWitness) {
         Start-Process powershell -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$w`"", "-Companion") -WindowStyle Minimized
         Say "Started the witness in companion mode (processes and disk every 10 s; the soak owns the flame port during stage 1)."
     } else { Say "witness.ps1 not found beside this kit; start it by hand with -Companion." }
-    Say "The laser listener (witness\laser_listener.ps1) is not started here: with no BEYOND installed the soak holds BEYOND's OSC port 127.0.0.1:8100 itself and judges the laser commands in its block report, so the listener would refuse. Start it with the witness for stages 2 to 4 (Start laser listener.cmd)."
+    Say "The laser listener (witness\laser_listener.ps1) is not started here: with no BEYOND running the soak holds BEYOND's OSC port 127.0.0.1:8100 itself and judges the laser commands in its block report, so the listener would refuse. Start it with the witness for stages 2 to 4 (Start laser listener.cmd)."
 }
 
 # ------------------------------------------------------------------- wait ---
