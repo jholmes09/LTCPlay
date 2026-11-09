@@ -16691,7 +16691,8 @@ def test_schedule_run_off_says_the_next_show_will_not_start():
     section("scheduler (Jeff, Pico, 2026-10-29): with Run off after an "
             "engine restart, the status says the next show will NOT start "
             "and to press Run, on the schedule screen and both rack "
-            "screens; nothing presses Run")
+            "screens; the warning itself never presses Run (2.0's Run show "
+            "beside it is the big button's own press)")
     n = _fi_night(session=False, armed=False)
     if n.S is None:
         return
@@ -43606,9 +43607,9 @@ t(startLook(att("STANDBY", {running:true}, {transport:{programming:true, playhea
 // The double tap (the removed Abort sign's rule).
 t(stopTapStep(null, 1000, "touch", false).fire === false && stopTapStep({at:1000, kind:"touch"}, 3500, "touch", false).fire === true, "a second tap within 3 s fires");
 t(stopTapStep({at:1000, kind:"touch"}, 4500, "touch", false).fire === false && stopTapStep({at:1000, kind:"touch"}, 4500, "touch", true).fire === true, "later only while still showing Tap again");
-t(STOP_IDLE_WORDS === "Stop show: tap twice" && STOP_MISSED_WORDS === "Stop not sent: tap twice" && STOP_MISSED_MS === 2000, "the words: tap twice, and a lone tap says Stop was not sent");
+t(STOP_MISSED_WORDS === "Stop not sent: tap twice" && STOP_MISSED_MS === 2000, "a lone tap: the message line says Stop was not sent, for 2 s");
 t(JSON.stringify(stopLines(null, false)) === '["Stop show","tap twice"]' && JSON.stringify(stopLines(2500, false)) === '["Tap again","to stop (3)"]' && JSON.stringify(stopLines(900, false)) === '["Tap again","to stop (1)"]' && JSON.stringify(stopLines(null, true)) === '["Not sent","tap twice"]', "Stop show's two lines");
-t(stopArmedWords(3000) === "Tap again to stop (3)" && stopArmedWords(2001) === "Tap again to stop (3)" && stopArmedWords(2000) === "Tap again to stop (2)" && stopArmedWords(10) === "Tap again to stop (1)" && stopArmedWords(-50) === "Tap again to stop (1)", "the countdown: whole seconds left, never 0: " + stopArmedWords(2000));
+t(stopLeftS(3000) === 3 && stopLeftS(2001) === 3 && stopLeftS(2000) === 2 && stopLeftS(10) === 1 && stopLeftS(-50) === 1, "the countdown: whole seconds left, never 0: " + stopLeftS(2000));
 t(stopTapStep({at:1000, kind:"mouse"}, 1500, "touch", false).fire === false, "a different pointer kind is a first tap");
 t(stopTapKind({pointerType:"pen"}) === "pen" && stopTapKind({detail:0}) === "key", "the tap's kind");
 t(/^Stopped\. The show ended/.test(stopWords({stopped:true, show:{ok:true}, flames:{disarmed:true}, lasers:{disarmed:true}})) && /Run is off/.test(stopWords({stopped:true, run_on:false})), "Run off's answer: the show ended, Run is off");
@@ -98230,18 +98231,26 @@ def test_ui2_page_makes_only_1_0_presses():
         return
     fns = "\n".join(_js_function(two, n) or "" for n in (
         "isHeld", "isLive", "runIsOn", "isRehearsal", "pinItems", "signWhy",
-        "goLook", "nextStep", "pillLook", "runWarnWords", "alertItems"))
+        "goLook", "nextStep", "pillLook", "runWarnWords", "runHereShown",
+        "alertItems"))
     # alertItems' words and the page's own state it reads.
     for c in ("ALERT_WHAT", "ALERT_DO"):
         m = re.search(r"^const " + c + r" = \{.*?\};$", two, re.M | re.S)
         fns += "\n" + (m.group(0) if m else "")
-    fns += ("\nlet STOP_SAID = null, DISARM_FAIL = null;")
+    fns += ("\nlet STOP_SAID = null, DISARM_FAIL = null;"
+            "\nlet STALE_NOW = false, START_WAITING = false;"
+            "\nconst stale = () => STALE_NOW;")
     # The systems badge's words.
     for c in ("SYS_LABEL", "SYS_SHORT", "SYS_OFF", "SYS_SAY"):
         m = re.search(r"^const " + c + r" = .*?;$", two, re.M | re.S)
         fns += "\n" + (m.group(0) if m else "")
     fns += "\n" + "\n".join(_js_function(two, n) or "" for n in (
         "short8", "sysItem", "sysLook"))
+    run_here = "\n".join(_js_function(two, n) or "" for n in (
+        "runShowHere", "drawRunHere"))
+    check("function runShowHere(" in run_here and
+          "function drawRunHere(" in run_here, "Run show here is found")
+    fns += "\nconst RUN_HERE_FNS = " + json.dumps(run_here) + ";"
     js = lo + "\nlet CD = null; const monoNow = () => 0;\n" + fns + r"""
 const out = [];
 const t = (c, m) => { if(!c) out.push(m); };
@@ -98267,15 +98276,54 @@ t(goLook(s, false, true).mode === "start" && !goLook(s, false, true).off, "betwe
 // Where Run is, by name (the Windows stress test, 2026-11-09), and Run
 // show in the alert slot on the show PC only, with the Show row.
 s = base(); s.show.running = false;
-s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run, then Resume.";
+s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
 let ri = alertItems(s).find(i => i.key === "run");
-t(ri && ri.do === "Press the Run show button on the show PC's main screen, then Resume." && !ri.act, "an iPad: the button named, on the show PC; no Run here: " + JSON.stringify(ri));
+t(ri && ri.do === "Press the Run show button on the show PC's main screen." && !ri.act, "an iPad: the button named, on the show PC; no Run here: " + JSON.stringify(ri));
 globalThis.ME = {local:true};
 ri = alertItems(s).find(i => i.key === "run");
-t(ri && ri.do === "Press the Run show button on the main screen, then Resume." && ri.act === "run" && ri.full === "Run is off: the 18:00 show (show 1) will NOT start. Press the Run show button on the main screen, then Resume.", "the show PC: the button named, and Run show in the slot: " + JSON.stringify(ri));
+t(ri && ri.do === "Press the Run show button on the main screen." && ri.act === "run" && ri.full === "Run is off: the 18:00 show (show 1) will NOT start. Press the Run show button on the main screen.", "the show PC: the button named, and Run show in the slot: " + JSON.stringify(ri));
+STALE_NOW = true;
+ri = alertItems(s).find(i => i.key === "run");
+t(ri && !ri.act && runHereShown(s, true, true, false) === "", "no contact: no Run show in the slot (the big button's own gate)");
+STALE_NOW = false;
+t(runHereShown(s, false, true, true) === "", "Start now loading: no Run show");
+t(runHereShown(s, false, false, false) === "", "an iPad: no Run show");
 s.me = {may:{show:false, arm:false}};
 ri = alertItems(s).find(i => i.key === "run");
-t(ri && !ri.act, "without the Show row: no Run show in the slot");
+t(ri && !ri.act && runHereShown(s, false, true, false) === "", "without the Show row: no Run show in the slot");
+// On a Hold the big button is Resume and the engine says Run, then
+// Resume: Run show is by the warning, and named so (cold review of #227).
+s = base(); s.show.running = false; s.schedule.state = "HOLD"; s.schedule.held = true;
+s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run, then Resume.";
+t(goLook(s, false, true).mode === "resume" && runHereShown(s, false, true, false) === "held", "held, Run off: Resume on the big button, Run show by the warning");
+ri = alertItems(s).find(i => i.key === "run");
+t(ri && ri.act === "run" && ri.do === "Press the Run show button by this warning, then Resume.", "held, the show PC: the button by the warning: " + JSON.stringify(ri));
+globalThis.ME = undefined;
+ri = alertItems(s).find(i => i.key === "run");
+t(ri && !ri.act && ri.do === "Press Run show on the show PC, then Resume.", "held, an iPad: Run show on the show PC: " + JSON.stringify(ri));
+globalThis.ME = {local:true};
+t(runHereShown(s, true, true, false) === "", "held, no contact: no Run show");
+s.me = {may:{show:false}};
+t(runHereShown(s, false, true, false) === "", "held, signed out: no Run show");
+s = base(); s.show.running = true; s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
+t(runHereShown(s, false, true, false) === "", "Run on: no Run show");
+// Run show's press here: the big button's wait after a Stop, its gates
+// at the press, and the Schedule tab's button drawn with contact.
+{ let RAN = 0, SAID2 = [];
+  const runShow = () => { RAN++; }, say = (a) => SAID2.push(a);
+  const FLIPPED = {}; let HALT_BUSY = false, ST = base();
+  ST.show.running = false; ST.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
+  const TN = {hidden:true}; const $ = id => id === "tn-run" ? TN : null;
+  eval(RUN_HERE_FNS);
+  globalThis.ME = {local:true};
+  runShowHere(); t(RAN === 1, "Run show here: the big button's runShow");
+  FLIPPED.go = Date.now(); runShowHere(); t(RAN === 1 && /Nothing done/.test(SAID2.join()), "Run show here waits after a Stop (FLIP_LOCK_MS)");
+  FLIPPED.go = 0; HALT_BUSY = true; runShowHere(); t(RAN === 1, "Run show here: not while a Stop is under way");
+  HALT_BUSY = false; STALE_NOW = true; runShowHere(); t(RAN === 1, "Run show here: not with no contact");
+  drawRunHere(true); t(TN.hidden === true, "the Schedule tab's Run show: hidden with no contact");
+  STALE_NOW = false; drawRunHere(false); t(TN.hidden === false, "the Schedule tab's Run show: shown on the show PC, with contact, Run off");
+  ST.me = {may:{show:false}}; drawRunHere(false); runShowHere(); t(TN.hidden === true && RAN === 1, "the Schedule tab's Run show: none signed out");
+  globalThis.ME = undefined; ST.me = base().me; drawRunHere(false); t(TN.hidden === true, "the Schedule tab's Run show: none on an iPad"); }
 s = base(); s.schedule.run_warning = "A Programming Run is in force: the 18:00 show (show 1) will NOT start. Press Stop, choose Show, then Run.";
 ri = alertItems(s).find(i => i.key === "run");
 t(ri && !ri.act && ri.full === s.schedule.run_warning, "a Programming Run: the engine's words, no Run button");
@@ -98402,6 +98450,94 @@ console.log(JSON.stringify(out));
         bad = None
     check(r.returncode == 0 and bad == [],
           f"2.0's next step and big button, in node: {r.stdout[-900:]!r} "
+          f"{r.stderr[-600:]!r}")
+    print("  ok")
+
+
+def test_ui2_stop_lone_tap_never_covers_a_stop():
+    section("2.0's Stop show (cold review of #227): a lone tap that times "
+            "out says \"Stop not sent: tap twice\" for 2 s, never after a "
+            "Stop or Hold was pressed since the tap, and any Stop ends "
+            "every armed first tap (Stop show, the strip's, the Run card's)")
+    import re
+    import shutil
+    _one, two = _ui2_pages()
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "ltcplay", "web", "remote_rules.js"),
+              encoding="utf-8") as fh:
+        rules = fh.read()
+    fns = "\n".join(_js_function(two, n) or "" for n in (
+        "stopTapDone2", "stopTap2", "pressStop"))
+    check("function pressStop(" in fns and "function stopTapDone2(" in fns,
+          "the Stop presses are found")
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    js = rules + r"""
+const SAID = [], TIMERS = [];
+let NOW = 1000;
+const monoNow = () => NOW;
+const setTimeout = (f, ms) => { TIMERS.push({f:f, ms:ms}); return TIMERS.length; };
+const clearTimeout = id => { if(id && TIMERS[id - 1]) TIMERS[id - 1].f = null; };
+const setInterval = () => 1, clearInterval = () => {};
+const say = (a, b, c, ms) => SAID.push([a, ms]);
+const stopRedraw = () => {};
+const drawTransport = () => {};
+const actor = x => x;
+const WINDOW_ID = "w";
+let POSTS = 0;
+const fetch = async () => { POSTS++; return {ok:true, json:async () => ({stopped:true})}; };
+const btn = () => ({blur(){}, classList:{remove(){}, add(){}, toggle(){}}});
+const $ = id => btn();
+const FLIPPED = {};
+let HALT_BUSY = false, HALT_SEQ = 0, STOP_SAID = null;
+const STOP_TAPS2 = {}, STOP_MISSED = {};
+let STOP_TICK = null;
+""" + fns + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const fire = (ms) => { const due = TIMERS.filter(x => x.f && x.ms === ms); due.forEach(x => { const f = x.f; x.f = null; f(); }); return due.length; };
+(async () => {
+  // A lone tap: after 3 s, "Stop not sent", for 2 s.
+  stopTap2("b-stop", {pointerType:"touch"});
+  SAID.length = 0;
+  fire(STOP_TAP_MS);
+  t(SAID.length === 1 && SAID[0][0] === "Stop not sent: tap twice." && SAID[0][1] === 2000 && STOP_MISSED["b-stop"], "a lone tap: Stop not sent, 2 s: " + JSON.stringify(SAID));
+  // The strip's Stop tapped once, then Stop show stopped (two taps): the
+  // strip's timer never says "not sent" over the Stop's answer.
+  SAID.length = 0; TIMERS.length = 0; delete STOP_MISSED["b-stop"];
+  stopTap2("m-stop", {pointerType:"touch"});
+  NOW += 500; stopTap2("b-stop", {pointerType:"touch"});
+  NOW += 300; await stopTap2("b-stop", {pointerType:"touch"});
+  t(POSTS === 1, "two taps stop: " + POSTS);
+  t(!STOP_TAPS2["m-stop"] && !STOP_TAPS2["b-stop"], "a Stop ends every armed first tap");
+  const n = fire(STOP_TAP_MS);
+  t(!SAID.some(x => /not sent/.test(x[0])) && !STOP_MISSED["m-stop"], "no 'not sent' after a Stop: " + JSON.stringify(SAID) + " " + n);
+  // A tap whose page pressed Stop or Hold since (HALT_SEQ moved), even if
+  // its timer still runs: nothing said.
+  SAID.length = 0; TIMERS.length = 0;
+  stopTap2("p-run", {pointerType:"touch"});
+  HALT_SEQ++;
+  fire(STOP_TAP_MS);
+  t(!SAID.some(x => /not sent/.test(x[0])) && !STOP_MISSED["p-run"], "a Hold since the tap: nothing said: " + JSON.stringify(SAID));
+  // While a Stop is under way: nothing said.
+  SAID.length = 0; TIMERS.length = 0;
+  stopTap2("b-stop", {pointerType:"touch"});
+  HALT_BUSY = true;
+  fire(STOP_TAP_MS);
+  t(!SAID.some(x => /not sent/.test(x[0])), "a Stop under way: nothing said");
+  console.log(JSON.stringify(out));
+})().catch(e => { console.log(JSON.stringify(["threw: " + e])); });
+"""
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        bad = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        bad = None
+    check(r.returncode == 0 and bad == [],
+          f"2.0's lone Stop tap, in node: {r.stdout[-900:]!r} "
           f"{r.stderr[-600:]!r}")
     print("  ok")
 
@@ -113635,6 +113771,7 @@ if __name__ == "__main__":
         test_remote_rules_file,
         test_ui2_runs_on_ipados15,
         test_ui2_page_makes_only_1_0_presses,
+        test_ui2_stop_lone_tap_never_covers_a_stop,
         test_ui2_show_tab_in_a_browser,
         test_ui2_day_makes_only_1_0_presses,
         test_ui2_day_tab_in_a_browser,

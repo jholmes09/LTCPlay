@@ -439,14 +439,10 @@ function unlockRefusal(m, flames){
 // a second tap that came too late); the button says "tap twice" and
 // counts the window down.
 const STOP_TAP_MS = 3000;
-// The words of the double tap, on every Stop show button.
-const STOP_IDLE_WORDS = "Stop show: tap twice";
+// A lone tap that timed out: the message line's words, for this long.
 const STOP_MISSED_WORDS = "Stop not sent: tap twice";
 const STOP_MISSED_MS = 2000;
-// "Tap again to stop (3)": the first tap's whole seconds left, never 0.
-function stopArmedWords(leftMs){
-  return "Tap again to stop (" + stopLeftS(leftMs) + ")";
-}
+// The first tap's whole seconds left, never 0: "to stop (3)".
 function stopLeftS(leftMs){
   return Math.max(1, Math.ceil(Math.max(0, leftMs) / 1000));
 }

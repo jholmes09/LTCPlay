@@ -1697,7 +1697,10 @@ it says "Press Run, then Resume.". The screen names the button: "Press
 the Run show button on the main screen" on the show PC (on an iPad, "on
 the show PC's main screen"), and on the show PC, signed in with the Start
 now permission, a Run show button stands beside it, in the alert and on
-the Schedule tab: the same Run as the main screen's, asking first. During
+the Schedule tab: the same Run as the main screen's, asking first. It is
+there only with contact. On a Hold the main screen's big button is
+Resume, so the warning says "Press the Run show button by this warning,
+then Resume": Run does not end the Hold, and its question says so. During
 a Programming Run
 (Run reads as pressed, but the schedule starts nothing over a rehearsal)
 it says "A Programming Run is in force: the 22:50 show (show 5) will NOT
@@ -2854,7 +2857,7 @@ tab, and the hardware e-stop always works.
   its own Stop show button, which still works (a double tap).
 - The rig check before a show: the big button says Checking rig while it
   runs. When it fails, the alert slot says so and its button is
-  "Hold: continue anyway" (a hold; a tap does nothing). On the show PC the
+  "Hold to continue anyway" (a hold; a tap does nothing). On the show PC the
   alert's details have Check again.
 - DAY tab: the day as steps. Startup (sign in, rig checks, the startup
   list, fuel, purge, laser test, locks) or Shutdown (the shutdown list,
