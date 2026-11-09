@@ -48672,6 +48672,12 @@ def test_flamesafe_bad_json_starts_with_flames_off():
             json.dump({"flamesafe_config": fs,
                        "flame_controller": "Flames"}, fh)
         seen = {}
+        # A refused start writes cli.REFUSED_FILE into the settings
+        # folder, which off Windows is the repo itself: keep it in
+        # this test's own folder.
+        from ltcplay import remote as RM_
+        real_settings_folder = RM_.settings_folder
+        RM_.settings_folder = lambda: work
         real_serve = web_mod.serve
 
         def fake_serve(*a, **k):
@@ -48784,6 +48790,7 @@ def test_flamesafe_bad_json_starts_with_flames_off():
                   f"flamesafe.json broken: {rc!r} {said[-300:]!r}")
         finally:
             web_mod.serve = real_serve
+            RM_.settings_folder = real_settings_folder
         R = _RemoteRig(S)
         try:
             st, _h, s0 = R.ask("GET", "/api/remote/status")
