@@ -161,6 +161,9 @@ body.inactive #pm-on{filter:saturate(.3)}
 body.noact #d-steps .st, body.noact #d-next, body.noact #d-seg .b,
 body.noact #d-ctl .b:not(.red):not(.redline):not(.safe):not(.amber):not([data-mode="disarm"]){filter:saturate(.3)}
 .b .fill{position:absolute;left:0;top:0;bottom:0;width:0;background:rgba(255,255,255,.28);pointer-events:none;transition:width .1s linear}
+/* Hold to continue anyway (the Windows stress test, 2026-11-09: no visible
+   progress on amber): a dark fill with a white leading edge while held. */
+#al-act.holding .fill{background:rgba(0,0,0,.42);border-right:4px solid #fff}
 .q{width:56px;height:56px;min-width:56px;border-radius:50%;border:2px solid var(--blue);background:#0d1d30;
   color:#E3F1FF;font-weight:800;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;padding:0;flex:0 0 auto}
 
@@ -195,6 +198,11 @@ main > #mini{padding:var(--gap) var(--pad) 0}
 .tr .b{min-height:0;height:100%;font-size:calc(var(--fs) + 2px)}
 #b-go{font-size:calc(var(--fs) + 6px)}
 #b-go .lbl{display:flex;flex-direction:column;align-items:flex-start;text-align:left}
+/* Stop show's two lines: "Stop show" over "tap twice" (the Windows
+   stress test, 2026-11-09). */
+#b-stop .lbl,#m-stop .lbl{display:flex;flex-direction:column;align-items:center;white-space:nowrap}
+#b-stop{font-size:var(--fs);gap:6px;padding-left:8px;padding-right:8px}
+#b-stop .lbl small:empty,#m-stop .lbl small:empty{display:none}
 .tr .q{align-self:center}
 #alert{display:flex;align-items:center;gap:var(--gap);padding:0 10px;border-radius:12px;border:2px solid var(--line);background:var(--panel)}
 #alert > svg{width:32px;height:32px}
@@ -719,7 +727,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   <!-- Off the SHOW tab: the presses that make things safe, always here. -->
   <div id="mini" hidden>
     <button data-safe class="b amber" id="m-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
-    <button data-safe class="b red nostop" id="m-stop"><svg class="i"><use href="#i-stop"/></svg><span id="m-stop-l">Stop show</span></button>
+    <button data-safe class="b red nostop" id="m-stop"><svg class="i"><use href="#i-stop"/></svg><span class="lbl"><span id="m-stop-l">Stop show</span><small id="m-stop-s">tap twice</small></span></button>
     <button data-safe class="b safe" id="m-disf"><svg class="i"><use href="#i-shield"/></svg>Disarm flames</button>
     <button data-safe class="b safe" id="m-disl"><svg class="i"><use href="#i-shield"/></svg>Disarm lasers</button>
     <button data-safe class="b redline" id="m-snd"><svg class="i"><use href="#i-stop"/></svg>Stop sound</button>
@@ -737,7 +745,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <div class="tr">
       <button class="b green" id="b-go" data-mode="none"><svg class="i"><use href="#i-play"/></svg><span class="lbl"><span id="go-l">Start now</span><small id="go-why"></small></span></button>
       <button data-safe class="b amber" id="b-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
-      <button data-safe class="b red nostop" id="b-stop"><svg class="i"><use href="#i-stop"/></svg><span id="stop-l">Stop show</span></button>
+      <button data-safe class="b red nostop" id="b-stop"><svg class="i"><use href="#i-stop"/></svg><span class="lbl"><span id="stop-l">Stop show</span><small id="stop-s">tap twice</small></span></button>
       <button class="b red" id="b-runoff" hidden><svg class="i"><use href="#i-power"/></svg><span>Run off</span></button>
       <button class="q" data-q="transport" aria-label="Help: show controls">?</button>
     </div>
@@ -861,6 +869,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
         <div class="t"><b>Tonight's shows</b><span id="tn-state"></span></div>
         <div class="pline" id="tn-next">Next: None tonight</div>
         <div class="pline bad" id="tn-run-warn" role="alert" hidden></div>
+        <button class="b green" id="tn-run" hidden><svg class="i"><use href="#i-power"/></svg>Run show</button>
         <div id="tonight"></div>
         <div class="pline">Tap a show to see its notes.</div>
       </div>
@@ -1249,13 +1258,13 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
      stopTapKind2 are 1.0's stopTapStep and stopTapKind, renamed;
      selftest.py checks they stay the same), 1.0's Stop route and headers.
      On a whole page the SHOW tab's Stop is the page's own (stopTap2). -->
-<div id="broken" hidden role="alert"><svg class="i"><use href="#i-warn"/></svg><span id="broken-t">Page not fully loaded. Reload it.</span><button data-safe class="b red" id="broken-stop"><svg class="i"><use href="#i-stop"/></svg><span id="broken-stop-l">Stop show</span></button><button class="b red" id="broken-go"><svg class="i"><use href="#i-reset"/></svg>Reload</button></div>
+<div id="broken" hidden role="alert"><svg class="i"><use href="#i-warn"/></svg><span id="broken-t">Page not fully loaded. Reload it.</span><button data-safe class="b red" id="broken-stop"><svg class="i"><use href="#i-stop"/></svg><span id="broken-stop-l">Stop show: tap twice</span></button><button class="b red" id="broken-go"><svg class="i"><use href="#i-reset"/></svg>Reload</button></div>
 <script id="stop-core">
 "use strict";
 const $ = (id) => document.getElementById(id);
 const monoNow = () => performance.now();
 const WINDOW_ID = "w-" + Math.random().toString(36).slice(2, 8);
-const STOP_TAP_MS2 = 2000;                  // 1.0's STOP_TAP_MS
+const STOP_TAP_MS2 = 3000;                  // 1.0's STOP_TAP_MS
 let UI2_READY = false;                      // the page's own script ran to its end
 function stopTapStep2(prev, nowMs, kind, enlarged){
   if(prev && prev.kind === kind && nowMs >= prev.at){
@@ -1267,11 +1276,17 @@ function stopTapKind2(e){
   if(e && e.pointerType) return e.pointerType;
   return e && e.detail === 0 ? "key" : "mouse";
 }
-let CORE_TAP = null, CORE_TIMER = null;
-function coreTapDone(){
-  CORE_TAP = null; clearTimeout(CORE_TIMER);
+let CORE_TAP = null, CORE_TIMER = null, CORE_TICK = null;
+function coreTapDone(missed){
+  CORE_TAP = null; clearTimeout(CORE_TIMER); clearInterval(CORE_TICK);
   $("broken-stop").classList.remove("tap1");
-  $("broken-stop-l").textContent = "Stop show";
+  // A lone tap that timed out says so a moment: one tap is not a Stop.
+  $("broken-stop-l").textContent = missed === true ? "Stop not sent: tap twice" : "Stop show: tap twice";
+  if(missed === true) CORE_TIMER = setTimeout(() => { if(!CORE_TAP) $("broken-stop-l").textContent = "Stop show: tap twice"; }, 2000);
+}
+function coreTapLeft(){
+  const left = CORE_TAP ? CORE_TAP.at + STOP_TAP_MS2 - monoNow() : 0;
+  $("broken-stop-l").textContent = "Tap again to stop (" + Math.max(1, Math.ceil(Math.max(0, left) / 1000)) + ")";
 }
 $("broken-stop").addEventListener("keydown", e => { if(e.repeat && (e.key === "Enter" || e.key === " ")) e.preventDefault(); });
 $("broken-stop").addEventListener("click", async e => {
@@ -1282,8 +1297,10 @@ $("broken-stop").addEventListener("click", async e => {
     CORE_TAP = step.next;
     clearTimeout(CORE_TIMER);
     $("broken-stop").classList.add("tap1");
-    $("broken-stop-l").textContent = "Tap again";
-    CORE_TIMER = setTimeout(coreTapDone, STOP_TAP_MS2);
+    coreTapLeft();
+    clearInterval(CORE_TICK);
+    CORE_TICK = setInterval(coreTapLeft, 250);
+    CORE_TIMER = setTimeout(() => coreTapDone(true), STOP_TAP_MS2);
     return;
   }
   coreTapDone();
@@ -1366,13 +1383,13 @@ setInterval(applyBottomPad, 1000);
 
 // ---- the last message, in a few words; the engine's own words behind Details
 let MSG_FULL = "", MSG_TIMER = null;
-function say(short, full, level){
+function say(short, full, level, ms){
   setText($("msg-t"), short || "");
   $("msg").className = level || "";
   MSG_FULL = (full && full !== short) ? String(full) : "";
   $("msg-more").hidden = !MSG_FULL;
   clearTimeout(MSG_TIMER);
-  MSG_TIMER = setTimeout(() => { setText($("msg-t"), ""); $("msg-more").hidden = true; MSG_FULL = ""; }, 30000);
+  MSG_TIMER = setTimeout(() => { setText($("msg-t"), ""); $("msg-more").hidden = true; MSG_FULL = ""; }, ms || 30000);
 }
 // A sentence from the engine, cut to a few words for the footer: the whole
 // sentence stays one tap away (Details).
@@ -1717,6 +1734,32 @@ const ALERT_DO = {deck:"Check its USB cable.", audio:"Check the audio box.", vid
   timecode:"Tap here. Call Jeff.", lasers:"Disarm lasers if unsure.", link:"Use the Deck to disarm.",
   output:"Turn on MadMapper output."};
 let STOP_SAID = null, DISARM_FAIL = null, ALERT_KEY = null, FAULTS_SEEN = null, KEYS_SEEN = null;
+// The engine's "Press Run" with the button named: on the show PC, "the
+// Run show button on the main screen"; elsewhere, Run is pressed on the
+// show PC. On a Hold ("Press Run, then Resume") the big button is Resume,
+// so Run show is the one by the warning (runHereShown). Every other word
+// is the engine's own. Pure.
+function runWarnWords(text, local){
+  const t = String(text || "");
+  if(/Press Run, then Resume/.test(t)) return t.replace(/Press Run(?=,)/, local ? "Press the Run show button by this warning" : "Press Run show on the show PC");
+  const where = local ? "the Run show button on the main screen" : "the Run show button on the show PC's main screen";
+  return t.replace(/Press Run(?=[,.])/, "Press " + where);
+}
+// Run show where the Run warning is (the alert slot, the Schedule tab),
+// with the engine's warning Run is off, on the show PC, with contact and
+// the Show row (goLook's own gates): "run" while the big button is Run
+// show itself, "held" on a Hold, when the big button is Resume and the
+// engine says "Press Run, then Resume" (Run does not resume: runShow says
+// so); else "". Pure.
+function runHereShown(st, isStaleNow, local, waiting){
+  const sch = (st && st.schedule) || {};
+  if(!local || isStaleNow || !/^Run is off/.test(String(sch.run_warning || ""))) return "";
+  const g = goLook(st, isStaleNow, local, waiting);
+  if(g.off) return "";
+  if(g.mode === "run") return "run";
+  if(g.mode === "resume" && !runIsOn(st)) return "held";
+  return "";
+}
 function alertItems(st){
   const s = st || {}, items = [];
   if(STOP_SAID) items.push({key:"stop", tone:"bad", what:"Flame disarm FAILED.", do:"Use the Deck or e-stop.", full:STOP_SAID, act:"seen"});
@@ -1752,9 +1795,16 @@ function alertItems(st){
   const sch = s.schedule || {};
   if(sch.error) items.push({key:"sch", tone:"bad", what:"Schedule problem.", do:"Tap here for details.", full:sch.error});
   // Run off with a show to come (an engine restart leaves it off): the
-  // engine's sentence. Display only: nothing presses Run.
+  // engine's sentence, and on the show PC Run show (runHereShown).
   // The headline and the press come from the engine's own sentence ("Run is off: ... will NOT start. Press Run, then Resume."; a Programming Run says so), never fixed here (review of PR #180).
-  if(sch.run_warning) items.push({key:"run", tone:sch.run_warning_urgent ? "bad" : "warn", what:sch.run_warning.split(":")[0] + ".", do:(sch.run_warning.split("will NOT start. ")[1] || "Press Run."), full:sch.run_warning});
+  if(sch.run_warning){
+    // Where Run is, by name (the Windows stress test, 2026-11-09): "Press
+    // Run" named no button. Where the big button is Run show, the slot's
+    // button is Run show itself (runShow: its route, role and confirm).
+    const loc = typeof ME !== "undefined" && !!(ME && ME.local);
+    const runAct = runHereShown(s, stale(), loc, START_WAITING) ? "run" : undefined;
+    items.push({key:"run", tone:sch.run_warning_urgent ? "bad" : "warn", what:sch.run_warning.split(":")[0] + ".", do:runWarnWords(sch.run_warning.split("will NOT start. ")[1] || "Press Run.", loc), full:runWarnWords(sch.run_warning, loc), act:runAct});
+  }
   if(sch.trouble) items.push({key:"tr", tone:"warn", what:"Show PC trouble.", do:"Tap here for details.", full:sch.trouble});
   if(sch.conductor === false && sch.attached) items.push({key:"nocond", tone:"warn", what:"No show conductor here.", do:"Tap here for details.", full:"No show conductor is attached in this engine: Stop, Hold and Resume are journaled by the scheduler only."});
   if(s.disk && s.disk.text) items.push({key:"disk", tone:"warn", what:"Show PC disk filling up.", do:"Tell Jeff.", full:s.disk.text});
@@ -1795,14 +1845,14 @@ function renderAlertSlot(){
   setText($("al-n"), (idx + 1) + " of " + items.length);
   $("al-next").hidden = items.length < 2;
   $("al-text").disabled = !it.full;
-  const act = {ack:"Acknowledge", seen:"Seen", "pr-continue":"Hold: continue anyway"}[it.act];
+  const act = {ack:"Acknowledge", seen:"Seen", "pr-continue":PR_HOLD_WORDS, run:"Run show"}[it.act];
   const ab = $("al-act");
   ab.hidden = !act;
   ab.dataset.act = it.act || "";
   // Continue anyway is a hold, as 1.0's: drawn as a hold button.
-  ab.className = "b " + (it.act === "pr-continue" ? "amber hold" : "blue");
-  setIcon(ab.querySelector("svg"), it.act === "pr-continue" ? "ring" : "check");
-  setText($("al-act-l"), it.act === "pr-continue" && PR_HOLD ? "Keep holding..." : (act || ""));
+  ab.className = "b " + (it.act === "pr-continue" ? "amber hold" + (PR_HOLD ? " holding" : "") : "blue");
+  setIcon(ab.querySelector("svg"), it.act === "pr-continue" ? "ring" : it.act === "run" ? "power" : "check");
+  setText($("al-act-l"), act || "");
   // Continue anyway is the run permission's (1.0's engine rule); never
   // turned off under a finger that holds it.
   if(!PR_HOLD) ab.disabled = it.act === "pr-continue" && !mayRow(ST, "show");
@@ -1855,6 +1905,7 @@ $("al-act").addEventListener("click", async (e) => {
   }
   const it = ALERTS.find(i => i.key === (down ? down.key : ALERT_KEY)); if(!it) return;
   if(it.act === "pr-continue") return;      // a hold, never a tap (below)
+  if(it.act === "run") return runShowHere();   // the big button's own Run
   if(it.act === "ack"){
     try{ await post("/api/remote/alert", actor({id:it.id, action:"acknowledge"})); say("Acknowledged.", "", "ok"); }
     catch(e){ say("Not acknowledged.", e.message, "bad"); }
@@ -1924,11 +1975,15 @@ $("pins").addEventListener("click", async e => {
 // presses (begin, then done once it has filled; the engine times the hold
 // itself). Letting go early sends nothing more and nothing happens.
 let PR_HOLD_MS = 1000, PR_HOLD = null;
+// The button's words, held or not; while held, its fill runs across it
+// for the hold's whole time (the same hold time as ever).
+const PR_HOLD_WORDS = "Hold to continue anyway";
 function prHoldEnd(){
   if(!PR_HOLD) return;
   clearTimeout(PR_HOLD.timer); PR_HOLD = null;
+  $("al-act").classList.remove("holding");
   const f = $("al-act").querySelector(".fill"); if(f){ f.style.transition = "none"; f.style.width = "0"; }
-  setText($("al-act-l"), "Hold: continue anyway");
+  setText($("al-act-l"), PR_HOLD_WORDS);
 }
 $("al-act").addEventListener("pointerdown", async (ev) => {
   if($("al-act").dataset.act !== "pr-continue" || $("al-act").disabled) return;
@@ -1937,7 +1992,8 @@ $("al-act").addEventListener("pointerdown", async (ev) => {
   const token = String(Date.now()) + "-" + String(Math.random()).slice(2, 10);
   const it = ALERTS.find(i => i.key === ALERT_KEY);
   say("Keep holding...", it ? it.full : "", "warn");
-  setText($("al-act-l"), "Keep holding...");
+  setText($("al-act-l"), PR_HOLD_WORDS);
+  $("al-act").classList.add("holding");
   const f = $("al-act").querySelector(".fill");
   if(f){ f.style.transition = "none"; f.style.width = "0"; void f.offsetWidth; f.style.transition = "width " + (PR_HOLD_MS + 100) + "ms linear"; f.style.width = "100%"; }
   const mine = PR_HOLD = {token:token, timer:null};
@@ -2007,6 +2063,7 @@ function renderStale(){
   try{ fitNextBrand(); }catch(e){}
   if(isSt) drawSlotStale(); else if($("alert").classList.contains("stale")){ $("alert").className = ""; renderAlertSlot(); }
   renderMini(isSt);
+  try{ drawRunHere(isSt); }catch(e){}
   if(isSt){
     setText($("st-tc"), "--:--:--:--");
     setText($("cd-l"), "Countdown"); setText($("cd-v"), "not known");
@@ -2075,6 +2132,11 @@ function drawTransport(isSt){
 // known, so Stop is there). No confirm box: a double tap, 1.0's
 // stopTapStep.
 const STOP_TAPS2 = {};
+// When a lone first tap timed out, per button: its label says "Not sent"
+// for STOP_MISSED_MS, and the message line STOP_MISSED_WORDS.
+const STOP_MISSED = {};
+let STOP_TICK = null;
+function stopRedraw(){ try{ drawTransport(stale()); renderMini(stale()); drawProg(stale()); }catch(e){} }
 function drawStop(b, l, isSt){
   if(!b) return;
   const id = b.id, can = stopShows(ST) || !!isSt;
@@ -2084,17 +2146,30 @@ function drawStop(b, l, isSt){
   b.classList.toggle("tap1", !!STOP_TAPS2[id]);
   b.setAttribute("aria-hidden", on ? "false" : "true");
   b.tabIndex = on ? 0 : -1;
-  setText(l, HALT_BUSY ? "Stopping" : STOP_TAPS2[id] ? "Tap again" : "Stop show");
+  const two = HALT_BUSY ? ["Stopping", ""] : stopLines(STOP_TAPS2[id] ? STOP_TAPS2[id].prev.at + STOP_TAP_MS - monoNow() : null,
+    !!STOP_MISSED[id] && Date.now() - STOP_MISSED[id] < STOP_MISSED_MS);
+  setText(l, two[0]);
+  setText($(l.id.replace(/-l$/, "-s")), two[1]);
   b.title = STOP_TITLE;
   b.disabled = HALT_BUSY || !on;
 }
-function stopTapDone2(id){
+function stopTapDone2(id, missed){
   const t = STOP_TAPS2[id];
   if(t) clearTimeout(t.timer);
   delete STOP_TAPS2[id];
+  if(!Object.keys(STOP_TAPS2).length){ clearInterval(STOP_TICK); STOP_TICK = null; }
   const b = $(id);
   if(b) b.classList.remove("tap1");
-  try{ drawTransport(stale()); renderMini(stale()); drawProg(stale()); }catch(e){}
+  // A lone tap that timed out: said, on the button and below, for
+  // STOP_MISSED_MS. Never once a Stop or Hold was pressed here since the
+  // tap (HALT_SEQ moved) or one is under way: "not sent" must not cover
+  // a Stop's own answer (cold review of #227).
+  if(missed === true && t && !HALT_BUSY && t.seq === HALT_SEQ){
+    STOP_MISSED[id] = Date.now();
+    say(STOP_MISSED_WORDS + ".", "One tap is not a Stop: tap Stop show twice within " + (STOP_TAP_MS / 1000) + " s to stop everything and hold the schedule.", "warn", STOP_MISSED_MS);
+    setTimeout(stopRedraw, STOP_MISSED_MS + 50);
+  } else delete STOP_MISSED[id];
+  stopRedraw();
 }
 function stopTap2(id, e){
   const kind = stopTapKind(e);
@@ -2106,9 +2181,12 @@ function stopTap2(id, e){
   const step = stopTapStep(t ? t.prev : null, monoNow(), kind, false);
   if(!step.fire){
     if(t) clearTimeout(t.timer);
-    STOP_TAPS2[id] = {prev:step.next, timer:setTimeout(() => stopTapDone2(id), STOP_TAP_MS)};
-    say("Tap Stop again to stop.", "Tap Stop show again to stop everything and hold the schedule.", "warn");
-    try{ drawTransport(stale()); renderMini(stale()); drawProg(stale()); }catch(e1){}
+    STOP_TAPS2[id] = {prev:step.next, seq:HALT_SEQ, timer:setTimeout(() => stopTapDone2(id, true), STOP_TAP_MS)};
+    delete STOP_MISSED[id];
+    // The window counts down on the button.
+    if(!STOP_TICK) STOP_TICK = setInterval(stopRedraw, 250);
+    say("Tap Stop again to stop.", "Tap Stop show again within " + (STOP_TAP_MS / 1000) + " s to stop everything and hold the schedule.", "warn");
+    stopRedraw();
     return;
   }
   stopTapDone2(id);
@@ -2327,15 +2405,45 @@ async function runShow(){
   let f = "";
   try{ f = await runFile(); }catch(e){ say("Show files not readable.", e.message, "bad"); return; }
   if(!f){ say("No show file found.", "No show file in the show folder.", "bad"); return; }
-  if(!(await confirmBox("Run the show?", "Runs " + f + ". Shows then start on time.", "Yes, run", "green"))) return;
-  try{ const j = await post("/api/start", {timeline:f}); say("Running. Shows start on time.", j.banner || "Running.", "ok"); }
+  // On a Hold Run does not resume (the engine's "Press Run, then Resume"):
+  // the confirm and the answer say so.
+  const held = !!(ST && (isHeld(ST) || (ST.schedule || {}).stop_held));
+  if(!(await confirmBox("Run the show?", "Runs " + f + (held ? ". The schedule stays held: press Resume after." : ". Shows then start on time."), "Yes, run", "green"))) return;
+  try{ const j = await post("/api/start", {timeline:f}); say(held ? "Running. Still held: press Resume." : "Running. Shows start on time.", j.banner || "Running.", "ok"); }
   catch(e){ say("Run was refused.", e.message, "bad"); }
 }
 $("b-hold").addEventListener("click", () => press("hold"));
+// Run show where the Run warning is (the alert slot, the Schedule tab):
+// the big button's runShow, its route, role and confirm, and its wait
+// after a Stop (FLIP_LOCK_MS).
+function runShowHere(){
+  if(HALT_BUSY || (FLIPPED.go && Date.now() - FLIPPED.go < FLIP_LOCK_MS)){
+    say("Nothing done. Look, then press again.", "The show has just stopped. Nothing was done; wait a moment before starting anything.", "warn");
+    return;
+  }
+  // Pressed only while it is offered (no contact, signed out, Run already
+  // on: nothing done).
+  if(!runHereShown(ST, stale(), !!(ME && ME.local), START_WAITING)){
+    say("Nothing done. Look, then press again.", "Run show is not offered now (no contact, signed out, or Run is already on). Nothing was done.", "warn");
+    try{ drawRunHere(stale()); }catch(e){}
+    return;
+  }
+  return runShow();
+}
+// The Schedule tab's Run show: drawn with the page's contact, every 250 ms.
+function drawRunHere(isSt){
+  const on = !!runHereShown(ST, isSt, !!(ME && ME.local), START_WAITING);
+  if($("tn-run").hidden !== !on) $("tn-run").hidden = !on;
+}
+$("tn-run").addEventListener("click", () => runShowHere());
 // Stop: the engine's complete halt (1.0's pressStop): the same body, the
 // same answer read the same way. No confirm: the double tap is its guard.
 async function pressStop(route){
   HALT_SEQ++;
+  // Any Stop ends every armed first tap (Stop show, the strip's, the Run
+  // card's): none of them says "not sent" after it.
+  Object.keys(STOP_TAPS2).forEach(k => stopTapDone2(k));
+  Object.keys(STOP_MISSED).forEach(k => { delete STOP_MISSED[k]; });
   if(HALT_BUSY) return;
   HALT_BUSY = true;
   say("Stopping...", "Stopping: disarming, then fading to dark...", "warn");
@@ -2848,8 +2956,12 @@ function drawProg(isSt){
     if(b.dataset.mode !== rk.mode){ if(b.dataset.mode === "stop") FLIPPED.prun = Date.now(); b.dataset.mode = rk.mode; }
     if(STOP_TAPS2["p-run"] && rk.mode !== "stop") stopTapDone2("p-run");
     const tap = rk.mode === "stop" && !!STOP_TAPS2["p-run"];
-    setText($("p-run-l"), HALT_BUSY ? "Stopping" : tap ? "Tap again" : rk.label);
-    setText($("p-run-s"), HALT_BUSY ? "wait" : tap ? "to stop" : rk.sub);
+    // Stop show's own two lines while armed, or a moment after a lone tap
+    // ("Not sent" / "tap twice"); else the card's Stop words.
+    const missed = rk.mode === "stop" && !tap && !!STOP_MISSED["p-run"] && Date.now() - STOP_MISSED["p-run"] < STOP_MISSED_MS;
+    const pl = tap || missed ? stopLines(tap ? STOP_TAPS2["p-run"].prev.at + STOP_TAP_MS - monoNow() : null, missed) : [rk.label, rk.sub];
+    setText($("p-run-l"), HALT_BUSY ? "Stopping" : pl[0]);
+    setText($("p-run-s"), HALT_BUSY ? "wait" : pl[1]);
     const cls = "b " + (rk.mode === "run" ? "green" : "red") + (tap ? " tap1" : "");
     if(b.className !== cls) b.className = cls;
     setIcon(b.querySelector("svg"), rk.mode === "run" ? "power" : "stop");
@@ -3115,7 +3227,9 @@ function renderTonight(s){
   setText($("tn-state"), tonightState(s));
   setText($("tn-next"), sch.attached ? "Next: " + tonightNext(sch) : "No schedule in this engine");
   const rw = String(sch.run_warning || "");
-  $("tn-run-warn").hidden = !rw; setText($("tn-run-warn"), rw);
+  const local0 = !!(ME && ME.local);
+  $("tn-run-warn").hidden = !rw; setText($("tn-run-warn"), runWarnWords(rw, local0));
+  drawRunHere(stale());
   renderSchedule(sch.slots || []);
   const local = !!(ME && ME.local);
   if($("sched-edit").hidden !== !local) $("sched-edit").hidden = !local;
@@ -4593,7 +4707,7 @@ const QHELP = {
     ["Hold", "Pauses the schedule. Resume carries on."], ["Stop show", "Tap twice. Ends everything and holds the schedule. Resume when safe."]]],
   alert: ["Alerts", [["The box", "What is wrong, and what to do."], ["Details", "The full message from the show PC."],
     ["Acknowledge", "Clears the alert. Changes nothing on the rig."], ["Arrows", "The other alerts."],
-    ["Hold: continue anyway", "After a failed rig check: starts late, failed parts off."], ["Stop cleaning", "Stops the wave flamer cleaning."]]],
+    ["Hold to continue anyway", "After a failed rig check: hold until the bar fills. Starts late, failed parts off."], ["Stop cleaning", "Stops the wave flamer cleaning."]]],
   flames: ["Flames and lasers", [["Hold to arm", "Press and keep holding until it says ARMED."], ["Disarm", "One tap makes it safe. Always works."],
     ["Hold: arm flames", "Press and hold to arm every flame group. Not the lasers."], ["Disarm flames", "One tap makes every flame group safe. Not the lasers."],
     ["Arm lasers", "Arms every laser, after you confirm."], ["Disarm lasers", "One tap makes every laser safe."]]],
