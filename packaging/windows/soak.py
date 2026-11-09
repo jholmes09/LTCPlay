@@ -19,7 +19,15 @@ the way show night does, from the real programs in this install:
     127.0.0.1, must stay all zeros;
   - ltcplay-deck.exe too, when a Stream Deck Mini is plugged in.
 
-Every output goes to 127.0.0.1, where this program listens and times it:
+Art-Net receivers (2026-11-09): one on the loopback at most, every other on
+an address of its own that this PC has (the ShowNet loopback adapters, or
+what this PC's settings name), exactly as the engine requires
+(plan_addresses). A minute after Run, any open fault alert refuses the run
+(preflight): an open fault alert holds every show. --audio-device resolves to
+one exact output name. "Stop soak now" (--stop-now --confirm STOP) stops the
+run at once and ends its own engine, flamesafe and deck.
+
+Every output goes to this PC only, where this program listens and times it:
 Art-Net pixels and timecode (6454), BEYOND (its OSC port), MadMapper (its
 OSC port), the flame link (through a relay that forwards every frame to
 flamesafe unchanged), flamesafe's sACN (5568) and its status frames. Nothing
@@ -31,7 +39,13 @@ keeps "nothing attached, expected" separate from real faults.
 
     ltcplay-soak.exe                 asks how long (1, 8 or 24 hours; Enter = 8)
     ltcplay-soak.exe --hours 8
-    ltcplay-soak.exe --audio-device "Focusrite USB ASIO"
+    ltcplay-soak.exe --audio-device "StudioLive"   (the ONE output whose
+        name holds it; two or more, or none, is refused)
+    ltcplay-soak.exe --hours 6 --confirm DISCONNECTED   (Start soak (6 h))
+    ltcplay-soak.exe --stop-now --confirm STOP          (Stop soak now)
+    ltcplay-soak.exe --video-output-off-ok   (a muted, dark PC: MadMapper's
+        video output OFF alert is expected, printed and acknowledged)
+    ltcplay-soak.exe --resolve-audio "StudioLive"   (prints the exact name)
     ltcplay-soak.exe --hours 1 --universes 170 --fps 40   (a render the
         size of a big show: 170 Art-Net universes plus the flame universe)
     ltcplay-soak.exe --minutes 6 --no-wait --fake-audio   (the CI run: a
@@ -3976,6 +3990,15 @@ def _self_check():
            "programs treated as present, and says so")
     for line in _bench_audio_check():
         yield line
+    from ltcplay import artnodes
+    for plan in (plan_addresses("fallback", {}, lambda _ip: False),
+                 plan_addresses("fallback", {"BEYOND": ["10.250.2.1"]},
+                                lambda ip: ip == "10.250.2.1")):
+        assert not artnodes.collisions(plan["nodes"]), plan
+    yield ("the soak's show names one Art-Net receiver per address (the "
+           "engine's own rule), with or without an address of BEYOND's own")
+    assert resolve_audio_name("Live", ["A Live B", "C"])[0] == "A Live B"
+    yield "--audio-device resolves to one exact output name"
 
 
 def _bench_audio_check():
