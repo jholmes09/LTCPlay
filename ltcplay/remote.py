@@ -135,6 +135,12 @@ CONTROL_ROUTES = ("start-now", "hold", "resume",
 # stopped, Run off (the Programming Run card). A live show's fade is let
 # run this long at most first (web.HALT_FADE_WAIT_S).
 STOP_FADE_WAIT_S = 3.0
+# Play from with the box left empty (Windows stress round 3, 2026-11-10:
+# the box's grey example was taken for a typed time). Still refused: an
+# empty box never means "from the top".
+PLAY_FROM_EMPTY = ("Nothing to play from: the box is empty. Type a "
+                   "timecode (example: 00:01:30:00) or a cue name; the grey "
+                   "example in the box is not a value.")
 # Programming-session transport (Jeff, 2026-10-03): play from a timecode,
 # jump, pause and continue, an A/B loop, back to following timecode. Only
 # in a programming session (a show started from the page as Rehearse, or in
@@ -3663,8 +3669,7 @@ class Remote:
             if name == "play-from":
                 at = str(body.get("at") or "").strip()
                 if not at:
-                    raise ValueError("Type a timecode to play from, like "
-                                     "00:01:30:00, or a cue name.")
+                    raise ValueError(PLAY_FROM_EMPTY)
                 if ph is not None:
                     pos = ph.resolve(at)
                     said = (f"played from "

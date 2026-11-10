@@ -1620,6 +1620,14 @@ def _sweep(tx, held=None):
             elif in_guard:
                 why = (f"MISSED (inside the {tx.m.guard_s} s guard after the "
                        f"previous show)")
+            elif tx.ev.late_show == s.n and tx.ev.late_ok_s:
+                # Its rig check could only run at its time (the service
+                # gave this tick its allowance) and had not let it start
+                # by the limit: say so, not only how late (Windows stress
+                # round 3, 2026-11-10).
+                why = (f"MISSED (late by {fmt_span(late)}: the rig check "
+                       f"before it took the time, and a show more than "
+                       f"{fmt_span(grace)} late is not started)")
             else:
                 why = f"MISSED (late by {fmt_span(late)})"
             _miss(tx, s, why)

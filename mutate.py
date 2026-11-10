@@ -23425,6 +23425,37 @@ def build():
   'ltcplay/playhead.py',
   '            maybe = cond.lasers_maybe_lit() is True\n',
   '            maybe = lit\n'),
+
+ ("windows round 3: a show its rig check pushed past the limit says only how late",
+  "ltcplay/schedule.py",
+  "            elif tx.ev.late_show == s.n and tx.ev.late_ok_s:\n",
+  "            elif False:\n"),
+
+ ("windows round 3: a clock set back while the journal is stopped keeps it off",
+  "ltcplay/journal.py",
+  "                and self._retry_at - timedelta(seconds=self.retry_s) <= now \\\n",
+  "                and now \\\n"),
+
+ ("windows round 3: a clock set back puts off the journal's free space look",
+  "ltcplay/journal.py",
+  "            not 0 <= (now - self._free_at).total_seconds() < FREE_CHECK_S",
+  "            (now - self._free_at).total_seconds() >= FREE_CHECK_S"),
+
+ ("windows round 3: a journal file another program holds is not named",
+  "ltcplay/journal.py",
+  "            where = e.filename or self.folder\n",
+  "            where = self.folder\n"),
+
+ ("windows round 3: an empty Play from says the grey example as if typed",
+  "ltcplay/remote.py",
+  "                    raise ValueError(PLAY_FROM_EMPTY)\n",
+  "                    raise ValueError(\"Type a timecode to play from, like \"\n"
+  "                                     \"00:01:30:00, or a cue name.\")\n"),
+
+ ("windows round 3: Play from's box shows the example as if it were a time",
+  "ltcplay/web/remote2.html",
+  'placeholder="Example: 00:01:30:00"',
+  'placeholder="00:01:30:00"'),
 ]
 
 

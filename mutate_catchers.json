@@ -3719,5 +3719,11 @@
 "practice: a pending mark reads as charged tanks": "test_fireball_practice_engine",
 "practice: a Stop that came back failed is pressed again at once": "test_fireball_practice_engine",
 "practice: a person's Done waits for the retry": "test_fireball_practice_engine",
-"practice: open goes on after Done during its engine check": "test_fireball_practice_engine"
+"practice: open goes on after Done during its engine check": "test_fireball_practice_engine",
+"windows round 3: a show its rig check pushed past the limit says only how late": "test_preroll_late_allowance_is_for_its_show_only",
+"windows round 3: a clock set back while the journal is stopped keeps it off": "test_journal_held_file_and_clock_set_back",
+"windows round 3: a clock set back puts off the journal's free space look": "test_journal_held_file_and_clock_set_back",
+"windows round 3: a journal file another program holds is not named": "test_journal_held_file_and_clock_set_back",
+"windows round 3: an empty Play from says the grey example as if typed": "test_remote_transport_on_the_show_audio",
+"windows round 3: Play from's box shows the example as if it were a time": "test_ui2_programming_tab_makes_1_0_presses"
 }
