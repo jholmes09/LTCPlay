@@ -15816,10 +15816,24 @@ def build():
   "        q = self._q\n        if len(q) >= QUEUE_MAX:",
   "        q = self._q\n        self.save()\n        if len(q) >= QUEUE_MAX:"),
 
+ # Re-pointed (the #181 sweep, 2026-11-10): Fireball practice's record
+ # (#225) went in after the fuel observer, so "pass, return ok" had become
+ # the record's guard, which nothing tested. The fuel observer's own guard
+ # is anchored here, and the record's has its two mutations below.
  ("fuel: only a RuntimeError from the observer is kept off the sender",
   "ltcplay/flamelink.py",
-  "            except Exception:\n                pass\n        return ok",
-  "            except RuntimeError:\n                pass\n        return ok"),
+  "                obs(tc, values, ok)\n            except Exception:\n                pass\n",
+  "                obs(tc, values, ok)\n            except RuntimeError:\n                pass\n"),
+
+ ("practice: only a RuntimeError from the timing record is kept off the sender",
+  "ltcplay/flamelink.py",
+  "                sobs(*sent_rec)\n            except Exception:\n                pass\n",
+  "                sobs(*sent_rec)\n            except RuntimeError:\n                pass\n"),
+
+ ("practice: a timing record that raises reaches the flame link's sender",
+  "ltcplay/flamelink.py",
+  "            try:\n                sobs(*sent_rec)\n            except Exception:\n                pass\n",
+  "            sobs(*sent_rec)\n"),
 
  ("fuel: refill all ignores the units the page showed",
   "ltcplay/fuel.py",

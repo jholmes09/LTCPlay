@@ -1702,6 +1702,8 @@
 "fuel: live flame programming counts as a show": "test_fuel_counts_shows_and_not_rehearsals",
 "fuel: one under the fire value counts as flame": "test_fuel_flame_seconds_at_the_flame_link",
 "fuel: only a RuntimeError from the observer is kept off the sender": "test_fuel_flame_seconds_at_the_flame_link",
+"practice: only a RuntimeError from the timing record is kept off the sender": "test_fireball_practice_vetoes_and_wiring",
+"practice: a timing record that raises reaches the flame link's sender": "test_fireball_practice_vetoes_and_wiring",
 "fuel: only a tank twice the others is named": "test_fuel_learns_the_tank_and_counts_shows_left",
 "fuel: percent left rounds up": "test_fuel_learns_the_tank_and_counts_shows_left",
 "fuel: refill all ignores the units the page showed": "test_schedule_conductor_calls_after_the_save_and_off_the_lock",

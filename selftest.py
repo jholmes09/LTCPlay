@@ -106276,7 +106276,13 @@ def test_fireball_practice_vetoes_and_wiring():
                                     "key": _fl_key(), "frame_stale_ms": 500})
     sent = {}
     seen = []
-    for with_obs in (False, True):
+    oks = []
+    # "raise": a record that raises anything (not only RuntimeError) never
+    # reaches the sender: every frame still goes out, byte for byte, and
+    # send_frame says it went (the sweep of #181 found this unguarded).
+    errs = (ValueError("bad"), KeyError("k"), Exception("plain"),
+            RuntimeError("broke"), ZeroDivisionError())
+    for with_obs in (False, True, "raise"):
         clk = [1000.0]
         tc = [0]
 
@@ -106287,16 +106293,30 @@ def test_fireball_practice_vetoes_and_wiring():
         lk._sock = _FlSock()
         lk.seq = 7000          # the link starts its count at random
         lk.release()
-        if with_obs:
+        if with_obs == "raise":
+            def boom(*a, n=[0]):
+                n[0] += 1
+                raise errs[n[0] % len(errs)]
+            lk.sent_observer = boom
+        elif with_obs:
             lk.sent_observer = lambda *a: seen.append((a, bytes(
                 lk.show_sent)))
         for _ in range(20):
             tc[0] += 1
             clk[0] += 0.034
-            lk.send_frame()
+            try:
+                ok = lk.send_frame()
+            except BaseException as e:            # noqa: BLE001
+                ok = "raised " + type(e).__name__
+            if with_obs == "raise":
+                oks.append(ok)
         sent[with_obs] = [d for d, _a in lk._sock.sent]
     check(sent[False] == sent[True] and len(sent[True]) == 20,
           "the record changes no byte of any frame")
+    check(sent["raise"] == sent[False] and oks == [True] * 20,
+          "a record that raises ValueError, KeyError, Exception, "
+          "RuntimeError or ZeroDivisionError never reaches the sender: "
+          f"every frame went, unchanged, and send_frame said so: {oks}")
     import json as _js
     frames = [_js.loads(d) for d in sent[True] if b'"flame"' in d]
     check(len(seen) == 20 and all(
