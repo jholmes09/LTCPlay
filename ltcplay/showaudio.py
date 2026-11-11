@@ -39,8 +39,23 @@ import time
 from collections import deque, namedtuple
 
 RATE = 48000                 # 48 kHz end to end (handoff section 4a)
-MAX_OUTPUTS = 8              # Jeff, 2026-09-27: at most 8 outputs,
-MAX_STEMS = 8                # and at most 8 stems a cue
+# Jeff, 2026-09-27: at most 8 outputs and 8 stems. Jeff, 2026-10-20: the
+# final show tracks are 19 channels (Music L, C, R and Atmo L, R; Lily,
+# Jack, Narrator and Sound Effects L, C, R; Sound Effects Atmo L, R), on a
+# PreSonus StudioLive III 16R, with timecode possibly on a 20th output of
+# its own. 32 covers that with room (19 program tracks as 19 mono stems,
+# plus a timecode track) and is still a cap: a typo of 190 is refused when
+# the show file loads.
+# Nothing here pairs outputs: any count from 1 up, odd or even.
+MAX_OUTPUTS = 32             # outputs of the interface a show may use
+MAX_STEMS = 32               # stems a cue may play
+# The decoded audio of every cue stays in memory for the whole night (no
+# disk read once a cue is loaded), at 4 bytes a sample: 19 channels at
+# 48 kHz are 219 MB a minute (a 7 minute show, 1.5 GB). A show whose
+# audio needs more than this share of the computer's memory is refused
+# when the show file loads, in a sentence, never found out by a load that
+# fails or a computer that pages its audio to disk mid-show.
+MEMORY_SHARE = 0.5
 LOCK_FILE = "ltcplay_show_audio.lock"
 LOCK_WAIT_S = 3.0            # a closing audio process gets this long to go
 ROLES = ("show", "intermission")
@@ -209,11 +224,11 @@ class AudioConfig:
 
     KEYS = frozenset(("device", "rate", "channels", "cues", "hold_fade_ms",
                       "abort_fade_ms", "return_fade_ms", "allow_shared_mode",
-                      "notes"))
+                      "ltc_output", "notes"))
 
     def __init__(self, device, channels, cues, rate=RATE, hold_fade_ms=250,
                  abort_fade_ms=1000, return_fade_ms=1000,
-                 allow_shared_mode=False):
+                 allow_shared_mode=False, ltc_output=None):
         self.device = device
         self.channels = channels
         self.cues = dict(cues)            # role -> AudioCue
@@ -222,11 +237,17 @@ class AudioConfig:
         self.abort_fade_ms = abort_fade_ms
         self.return_fade_ms = return_fade_ms
         self.allow_shared_mode = allow_shared_mode
+        # The one output a timecode (LTC) track plays on, 1-based, or None
+        # (the default, and every show file written before it existed): no
+        # output is set aside and the stems route exactly as they say.
+        self.ltc_output = ltc_output
 
     def summary(self):
         parts = [f"{r} {len(c.stems)} stem(s)" for r, c in self.cues.items()]
+        ltc = (f", timecode on output {self.ltc_output}"
+               if self.ltc_output is not None else "")
         return (f"show audio on {self.device}, {self.channels} outputs at "
-                f"{self.rate} Hz ({', '.join(parts)})")
+                f"{self.rate} Hz ({', '.join(parts)}){ltc}")
 
     @classmethod
     def parse(cls, doc, where):
@@ -286,8 +307,47 @@ class AudioConfig:
             raise AudioConfigError(
                 f"{where}: the show and the intermission audio both name the "
                 f"cue {parsed['show'].cue!r}.")
+        ltc = _parse_ltc_output(doc.get("ltc_output"), ch, parsed, where)
         return cls(dev.strip(), ch, parsed, RATE, fades["hold_fade_ms"],
-                   fades["abort_fade_ms"], fades["return_fade_ms"], shared)
+                   fades["abort_fade_ms"], fades["return_fade_ms"], shared,
+                   ltc)
+
+
+def _parse_ltc_output(ltc, out_channels, cues, where):
+    """'clock.audio.ltc_output': the output a timecode track has to itself.
+
+    Left out (None) nothing is set aside. Set, it is a number from 1 to
+    'clock.audio.channels', and in every cue at most ONE stem plays on it:
+    two stems on one output are summed, which is a mix for music and
+    garbage for timecode. The show cue must play something there, or the
+    timecode output would be silent all show. Whether a one-channel stem
+    also spreads the timecode onto program outputs is checked with the
+    files, in check_show()."""
+    what = "'clock.audio.ltc_output'"
+    if ltc is None:
+        return None
+    if not isinstance(ltc, int) or isinstance(ltc, bool) \
+            or not 1 <= ltc <= out_channels:
+        raise AudioConfigError(
+            f"{where}: {what} is the one output the timecode track plays "
+            f"on, a number from 1 to 'clock.audio.channels' "
+            f"({out_channels}), not {ltc!r}. Leave it out when no timecode "
+            f"track plays from this computer.")
+    for role, cue in cues.items():
+        on = [s.file for s in cue.stems if ltc in s.channels]
+        if len(on) > 1:
+            raise AudioConfigError(
+                f"{where}: output {ltc} is the timecode output ({what}), and "
+                f"the {role} audio plays {', '.join(map(repr, on))} on it. "
+                f"Only the timecode track may play there: anything mixed "
+                f"with it garbles the timecode.")
+        if role == "show" and not on:
+            raise AudioConfigError(
+                f"{where}: output {ltc} is the timecode output ({what}), but "
+                f"no stem of the show audio plays on it, so the timecode "
+                f"would be silent. Route the timecode track to output {ltc}, "
+                f"like {{\"file\": \"ltc.wav\", \"channels\": [{ltc}]}}.")
+    return ltc
 
 
 # --------------------------------------------------------------- wav files --
@@ -430,7 +490,40 @@ def _find_cue(timeline, want):
                      c.tc_text.lower())]
 
 
-def check_show(acfg, timeline):
+def total_memory_bytes(platform=None):
+    """This computer's physical memory in bytes, or None when it cannot be
+    read (then the memory check below is skipped, never guessed)."""
+    try:
+        if (platform or sys.platform) == "win32":
+            import ctypes
+
+            class _Status(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong),
+                            ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            st = _Status()
+            st.dwLength = ctypes.sizeof(_Status)
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(
+                    ctypes.byref(st)):
+                return None
+            return int(st.ullTotalPhys) or None
+        n = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        return int(n) if n > 0 else None
+    except Exception:
+        return None
+
+
+def _gb(n):
+    return f"{n / 1e9:.1f} GB"
+
+
+def check_show(acfg, timeline, total_memory=None):
     """Check every file the audio block names, against the show folder.
 
     Returns {role: {"label": timeline cue name, "frames": length,
@@ -438,8 +531,13 @@ def check_show(acfg, timeline):
     frames)]}}. Raises AudioConfigError with a sentence for a missing
     file, a stem at the wrong rate, stems of different lengths (unless
     the cue allows it), a stem whose channels do not match its outputs,
-    or a cue that is not in the show."""
+    a one-channel stem that would spread the timecode onto program
+    outputs, a cue that is not in the show, or audio that needs more than
+    MEMORY_SHARE of this computer's memory once loaded (`total_memory`,
+    bytes, read from the computer when not given)."""
     show_dir = getattr(timeline, "show_dir", "") or ""
+    ltc = getattr(acfg, "ltc_output", None)
+    need = 0                           # bytes, once every cue is decoded
     out = {}
     for role, cue in acfg.cues.items():
         hits = _find_cue(timeline, cue.cue)
@@ -470,6 +568,15 @@ def check_show(acfg, timeline):
                     f"{st.file} has {info.channels} channels but its "
                     f"'channels' lists {len(st.channels)} output(s). List "
                     f"one output for each channel, or use a mono file.")
+            if ltc is not None and ltc in st.channels and \
+                    info.channels == 1 and len(st.channels) > 1:
+                raise AudioConfigError(
+                    f"{st.file} is one channel and plays on outputs "
+                    f"{', '.join(map(str, st.channels))}, and output {ltc} "
+                    f"is the timecode output: the same sound would be the "
+                    f"timecode and program audio. Route the timecode track "
+                    f"to output {ltc} alone.")
+            need += info.frames * info.channels * 4
             lengths.append((info.frames, st.file))
             stems.append((path, st.gain, [c - 1 for c in st.channels],
                           info.frames))
@@ -486,6 +593,14 @@ def check_show(acfg, timeline):
         out[role] = {"label": hits[0].name, "frames": max(frames),
                      "stems": stems,
                      "same_length": not cue.allow_different_lengths}
+    total = total_memory_bytes() if total_memory is None else total_memory
+    if total and need > MEMORY_SHARE * total:
+        raise AudioConfigError(
+            f"The show audio needs {_gb(need)} of memory once it is loaded "
+            f"(it is held in memory all night, 219 MB a minute for 19 "
+            f"channels), more than half of this computer's {_gb(total)}. "
+            f"Shorten or mix down the stems, or play it on a computer with "
+            f"more memory.")
     return out
 
 
@@ -681,6 +796,150 @@ class Mixer:
         return out
 
 
+# ------------------------------------------------------- announcements --
+# Jeff's field report (2026-10-28, item 9): announcements play through the
+# show audio, mixed into the show's own front left and right outputs (the
+# Main L/R on the StudioLive 16R), on the stream the show already has open.
+# No second device, so a show never has to let go of its interface for one,
+# and one can play during a show.
+#
+# The bus is added AFTER the mixer: the show's own audio is rendered exactly
+# as before (its fades, Hold, Stop and Abort's level act on the show only,
+# never on an announcement), then the announcement is added on top at its
+# own gain. Nothing ducks the show. While an announcement plays, and only on
+# the outputs it plays on, a summed sample louder than SOFT_KNEE (-1 dBFS)
+# is rounded off toward full scale instead of hard clipped: show audio on
+# its own, with no announcement playing, is never touched.
+SOFT_KNEE = 0.89
+ANNOUNCE_COMMANDS = ("ann_play", "ann_stop")
+ANN_STATE_NAMES = {IDLE: "idle", PLAYING: "playing", ENDED: "ended"}
+
+
+def soft_clip(x, knee=SOFT_KNEE):
+    """In place: every sample of `x` above `knee` in size is bent smoothly
+    toward 1.0 (never reaching it); everything at or under `knee` is left
+    exactly as it is. Returns how many samples were bent."""
+    import numpy as np
+    over = np.abs(x) > knee
+    n = int(np.count_nonzero(over))
+    if n:
+        v = x[over]
+        room = 1.0 - knee
+        x[over] = np.sign(v) * (knee + room * np.tanh((np.abs(v) - knee)
+                                                      / room))
+    return n
+
+
+class AnnounceBus:
+    """One announcement at a time, added onto some of the show's outputs.
+
+    Owned by the audio callback, like the Mixer. `pcm` is float32 at the
+    show's own rate, (frames, 1) or (frames, len(outs)): a mono recording
+    plays on every one of `outs`, a stereo one left to the first and right
+    to the second. `token` is the main program's, so it can tell its own
+    announcement's progress from an earlier one's.
+
+    The callback never frees a recording (up to tens of MB): one that is
+    done, stopped or replaced is put on `retired`, and the process's main
+    thread lets it go (collect()), so the callback never pays for the
+    free."""
+
+    def __init__(self, out_channels):
+        self.out_channels = int(out_channels)
+        self.pcm = None
+        self.outs = ()
+        self.gain = 1.0
+        self.token = 0
+        self.state = IDLE
+        self.frame = 0
+        self._fade_total = 0
+        self._fade_done = 0
+        self.softened = 0
+        self.retired = deque()
+
+    def _retire(self):
+        if self.pcm is not None:
+            self.retired.append(self.pcm)
+            self.pcm = None
+
+    def collect(self):
+        """On the process's main thread: let the retired recordings go."""
+        q = self.retired
+        while q:
+            q.popleft()
+
+    def play(self, token, pcm, outs, gain):
+        outs = [int(o) for o in outs]
+        if not outs or min(outs) < 0 or max(outs) >= self.out_channels:
+            return False
+        if pcm.ndim != 2 or pcm.shape[1] not in (1, len(outs)):
+            return False
+        self._retire()
+        self.pcm = pcm
+        self.outs = outs
+        self.gain = float(gain)
+        self.token = int(token)
+        self.frame = 0
+        self._fade_total = self._fade_done = 0
+        self.state = PLAYING if pcm.shape[0] > 0 else ENDED
+        return True
+
+    def stop(self, token, fade=0):
+        """Fade this announcement out over `fade` frames (0: at once). Only
+        the token's own announcement: an older stop never cuts a newer
+        one."""
+        if int(token) != self.token or self.state != PLAYING:
+            return False
+        if int(fade) <= 0:
+            self.state = ENDED
+            self._retire()
+        elif not self._fade_total:
+            self._fade_total, self._fade_done = int(fade), 0
+        return True
+
+    def hard_stop(self):
+        self.state = IDLE
+        self._retire()
+        self._fade_total = self._fade_done = 0
+
+    def mix(self, out):
+        """Add the announcement into `out` (frames, outputs), in place."""
+        import numpy as np
+        if self.state != PLAYING or self.pcm is None:
+            return
+        n = out.shape[0]
+        a = self.frame
+        b = min(a + n, self.pcm.shape[0])
+        k = b - a
+        seg = self.pcm[a:b] * np.float32(self.gain)
+        end = False
+        if self._fade_total:
+            left = self._fade_total - self._fade_done
+            k = min(k, left)
+            ramp = 1.0 - (np.arange(self._fade_done, self._fade_done + k,
+                                    dtype=np.float64) / self._fade_total)
+            seg = seg[:k] * ramp[:, None].astype(np.float32)
+            self._fade_done += k
+            end = self._fade_done >= self._fade_total
+        for i, o in enumerate(self.outs):
+            out[:k, o] += seg[:, 0] if seg.shape[1] == 1 else seg[:, i]
+        if k:
+            for o in self.outs:
+                self.softened += soft_clip(out[:k, o])
+        self.frame = a + k
+        if end or self.frame >= self.pcm.shape[0]:
+            self.state = ENDED
+            self._retire()
+
+
+def apply_announce(bus, msg):
+    if msg[0] == "ann_play":
+        return bus.play(msg[1], msg[2], msg[3], msg[4])
+    if msg[0] == "ann_stop":
+        return bus.stop(msg[1], msg[2])
+    return False
+
+
 MIXER_COMMANDS = ("play", "pause", "resume", "stop", "level")
 
 
@@ -703,6 +962,9 @@ def apply_command(m, msg):
 SEQ, TOKEN, STATE, PLAYING_AT, FRAME, STOP, CUE_FRAMES, PERF, LATENCY, \
     LEVEL, CALLBACKS, UNDERFLOWS, CLIPPED, ERRORS = range(14)
 HEARTBEAT, DEVSTATE, OPENS = 16, 17, 18
+# The announcement bus's own report, written by the callback inside the
+# same sequence as the position (read_announce reads it the same way).
+ANN_TOKEN, ANN_STATE, ANN_FRAME = 14, 15, 19
 SLOTS = 20
 
 Position = namedtuple("Position", "seq token state playing frame stop_frame "
@@ -718,10 +980,12 @@ class Publisher:
 
     def publish(self, token, state, playing, frame, stop_frame, cue_frames,
                 perf, latency, level, callbacks, underflows, clipped,
-                errors=0):
+                errors=0, ann=None):
         a = self.arr
         s = a[SEQ]
         a[SEQ] = s + 1.0                 # odd: a write is in progress
+        if ann is not None:
+            a[ANN_TOKEN], a[ANN_STATE], a[ANN_FRAME] = ann
         a[TOKEN] = token
         a[STATE] = state
         a[PLAYING_AT] = 1.0 if playing else 0.0
@@ -760,6 +1024,22 @@ def read_position(arr, offset=0.0, tries=100):
                         int(v[3]), int(v[4]), int(v[5]), v[6] - offset,
                         v[7], v[8], int(v[9]), int(v[10]), int(v[11]),
                         int(v[12]))
+    return None
+
+
+def read_announce(arr, tries=100):
+    """The announcement bus as the last callback left it: (token, state,
+    frame), or None if nothing has been played since the process started."""
+    for _ in range(tries):
+        s1 = arr[SEQ]
+        if s1 <= 0:
+            return None
+        if int(s1) & 1:
+            continue
+        v = (arr[ANN_TOKEN], arr[ANN_STATE], arr[ANN_FRAME])
+        if arr[SEQ] != s1:
+            continue
+        return int(v[0]), int(v[1]), int(v[2])
     return None
 
 
@@ -953,6 +1233,8 @@ class AudioProcess:
         self.sync_load = sync_load
         self.name = spec["device"]
         self.mixer = Mixer(spec["channels"], spec.get("rate", RATE))
+        self.bus = AnnounceBus(spec["channels"])
+        self._ann_parts = {}             # token -> parts, see command()
         self.cmdq = deque()
         self.stream = None
         self.opened_at = None
@@ -992,6 +1274,30 @@ class AudioProcess:
                 self.cmdq.append(msg)
             else:
                 apply_command(self.mixer, msg)
+        elif kind == "ann_part":
+            # An announcement arrives in parts (ShowRoute.load), so no one
+            # message is big and the show's own commands go between them.
+            # At most the two newest tokens' parts are kept.
+            parts = self._ann_parts
+            parts.setdefault(msg[1], []).append(msg[2])
+            while len(parts) > 2:           # an abandoned load's parts
+                del parts[min(parts)]
+        elif kind in ANNOUNCE_COMMANDS:
+            # Only onto a running stream: with no stream nothing would ever
+            # play it, and the main program, seeing no progress, says so.
+            if kind == "ann_play" and msg[2] is None:
+                # Its parts, joined here on the main thread, never in the
+                # callback.
+                parts = self._ann_parts.pop(msg[1], None)
+                for t in [t for t in self._ann_parts if t < msg[1]]:
+                    del self._ann_parts[t]
+                if not parts:
+                    return
+                import numpy as np
+                msg = ("ann_play", msg[1], np.concatenate(parts),
+                       msg[3], msg[4])
+            if self.stream is not None:
+                self.cmdq.append(msg)
 
     def _load(self, role, stems, same_length=True):
         """Decode a cue's stems, all or nothing. One cue at a time, one stem
@@ -1071,9 +1377,14 @@ class AudioProcess:
         self.last_cb = now
         m = self.mixer
         q = self.cmdq
+        bus = self.bus
         while q:
             try:
-                apply_command(m, q.popleft())
+                msg = q.popleft()
+                if msg[0] in ANNOUNCE_COMMANDS:
+                    apply_announce(bus, msg)
+                else:
+                    apply_command(m, msg)
             except Exception:
                 self.render_errors += 1
         playing = m.state == PLAYING
@@ -1083,6 +1394,11 @@ class AudioProcess:
         except Exception:
             self.render_errors += 1
             outdata.fill(0)
+        try:
+            bus.mix(outdata)
+        except Exception:
+            self.render_errors += 1
+            bus.hard_stop()
         if status and getattr(status, "output_underflow", False):
             self.underflows += 1
         self.callbacks += 1
@@ -1097,7 +1413,8 @@ class AudioProcess:
         self.pub.publish(m.token, m.state, playing, start, m.stop_frame,
                          m.cue_frames, now, lat, m.level * m.env,
                          self.callbacks, self.underflows, m.clipped,
-                         self.render_errors)
+                         self.render_errors,
+                         ann=(bus.token, bus.state, bus.frame))
 
     # -- the device, on the main thread
     def _say(self, kind, text):
@@ -1123,11 +1440,13 @@ class AudioProcess:
             pass
         self.cmdq.clear()
         self.mixer.hard_stop()
+        self.bus.hard_stop()
         self.devstate = DEV_CLOSED
         self._reinit = True
 
     def step(self, now):
         self.pub.heartbeat(now, self.devstate, self.opens)
+        self.bus.collect()
         self._finish_loads()
         if self.stream is not None:
             why = None
@@ -1164,6 +1483,7 @@ class AudioProcess:
             self._reinit = False
         self.cmdq.clear()
         self.mixer.hard_stop()
+        self.bus.hard_stop()
         spec = self.spec
         try:
             stream, desc, shared = open_output_stream(
@@ -1251,11 +1571,35 @@ def take_lock(spec, clock=time.monotonic, sleep=time.sleep):
             sleep(0.05)
 
 
+def _raise_priority():
+    """Windows, with LTCPLAY_PRIORITY=high (the Windows supervisor's
+    scheduling protection, show PC 2026-10-04: MadMapper's video decoding
+    starved the show programs): the audio process runs at High priority and
+    this thread at Highest. Unset (the Mac, and every other use), it does
+    nothing. Never raises."""
+    if os.environ.get("LTCPLAY_PRIORITY") != "high" or \
+            not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.GetCurrentThread.restype = wintypes.HANDLE
+        k32.SetPriorityClass.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        k32.SetThreadPriority.argtypes = (wintypes.HANDLE, ctypes.c_int)
+        k32.SetPriorityClass(wintypes.HANDLE(k32.GetCurrentProcess()), 0x80)
+        k32.SetThreadPriority(wintypes.HANDLE(k32.GetCurrentThread()), 2)
+    except Exception:
+        pass
+
+
 def child_main(conn, arr, spec):
     """The audio process. Runs until told to close, or until the main
     program goes away (its end of the pipe closes), so the sound never
     outlives the program that started it. Only one runs at a time on this
     computer: a second refuses, says so, and exits."""
+    _raise_priority()
     try:
         from . import onlyone
         try:
@@ -1554,6 +1898,23 @@ class AudioEngine:
             return None
         return read_position(self._arr, self.offset)
 
+    def announce_read(self):
+        """The announcement bus's (token, state, frame), or None."""
+        if self._arr is None:
+            return None
+        return read_announce(self._arr)
+
+    def device_open(self):
+        """True while the audio process is alive, answering, and has the
+        interface open: what an announcement needs to play through it."""
+        arr = self._arr
+        if arr is None or not self.alive:
+            return False
+        hb = arr[HEARTBEAT]
+        if hb <= 0 or self._clock() - (hb - self.offset) > self.HANG_S:
+            return False
+        return int(arr[DEVSTATE]) == DEV_OPEN
+
     def events(self):
         out = []
         q = self._events
@@ -1576,6 +1937,77 @@ class AudioEngine:
             self._proc = self._conn = None
         self._reap(p, c, self.CLOSE_S)
         self._watch = None
+
+
+class ShowRoute:
+    """The show audio as announce.py plays through it: the running show
+    audio process's announcement bus, on the stream it already has open.
+    Built fresh for each look (web.py's show route provider), so it never
+    outlives the session it came from."""
+
+    def __init__(self, engine, device, channels, rate=RATE):
+        self.engine = engine
+        self.device = device
+        self.channels = int(channels)
+        self.rate = rate
+
+    @classmethod
+    def of_clock(cls, clk):
+        """The route for a show clock, or None when it plays no show audio
+        of its own (timecode in, Art-Net only, GPL)."""
+        if clk is None or getattr(clk, "source", None) != "audio_master":
+            return None
+        eng = getattr(clk, "engine", None)
+        audio = getattr(clk, "audio", None)
+        if eng is None or audio is None:
+            return None
+        return cls(eng, audio.device, audio.channels)
+
+    def ready(self):
+        try:
+            return bool(self.engine.device_open())
+        except Exception:
+            return False
+
+    # One part of an announcement is at most this many frames (1 s at
+    # 48 kHz, 384 KB for two channels): the show's own commands are never
+    # queued behind a big message.
+    PART_FRAMES = RATE
+
+    def load(self, token, pcm):
+        """Send the recording to the audio process in parts. Called with no
+        lock of announce.py's held: the parts are only joined there, and
+        play() starts it. Returns True when every part went."""
+        for a in range(0, max(1, pcm.shape[0]), self.PART_FRAMES):
+            if not self.engine.send(("ann_part", int(token),
+                                     pcm[a:a + self.PART_FRAMES])):
+                return False
+        return True
+
+    def play(self, token, outs, gain):
+        """Start the recording load() sent for this token: one small
+        message."""
+        return bool(self.engine.send(("ann_play", int(token), None,
+                                      list(outs), float(gain))))
+
+    def stop(self, token, fade=0):
+        try:
+            return bool(self.engine.send(("ann_stop", int(token),
+                                          int(fade))))
+        except Exception:
+            return False
+
+    def read(self):
+        """{"token", "state" ("idle", "playing", "ended"), "frame"} or
+        None."""
+        try:
+            r = self.engine.announce_read()
+        except Exception:
+            return None
+        if r is None:
+            return None
+        return {"token": r[0], "state": ANN_STATE_NAMES.get(r[1], "idle"),
+                "frame": r[2]}
 
 
 _MAIN_LOCK = threading.Lock()

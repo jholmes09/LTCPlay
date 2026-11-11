@@ -1,0 +1,90 @@
+{
+  "notes": "The Morning and Shutdown page (MORNING.md). Copy this file to the machine's settings folder (the show PC: %LOCALAPPDATA%\\ltcplay\\ltcplay_morning.json) and edit it there. Every value marked PLACEHOLDER is a guess until Jeff or Andy sets it. Leave a key out to get the default. Without this file at all the page shows one machine per fire slot of flamesafe's config, Jeff's four groups, these purge values, four undecided lasers in one laser group (All lasers), two empty checklists, no names and the tally off. purge.waver.head_settle_s is how long the head is given to come up before the Waver fires, 0 to 10 seconds; 0 sends the head up and the fire in the same frame.",
+
+  "machines": [
+    {"id": "ground-1", "name": "Ground 1", "kind": "gflame", "group": "front row", "fire": [411]},
+    {"id": "ground-2", "name": "Ground 2", "kind": "gflame", "group": "front row", "fire": [412]},
+    {"id": "ground-3", "name": "Ground 3", "kind": "gflame", "group": "front row", "fire": [413]},
+    {"id": "ground-4", "name": "Ground 4", "kind": "gflame", "group": "front row", "fire": [414]},
+    {"id": "ground-5", "name": "Ground 5", "kind": "gflame", "group": "front row", "fire": [415]},
+    {"id": "scaffold-1", "name": "Scaffold 1", "kind": "gflame", "group": "cat-walk", "fire": [424]},
+    {"id": "scaffold-2", "name": "Scaffold 2", "kind": "gflame", "group": "cat-walk", "fire": [425]},
+    {"id": "scaffold-3", "name": "Scaffold 3", "kind": "gflame", "group": "cat-walk", "fire": [426]},
+    {"id": "waver-1", "name": "Waver 1", "kind": "waver", "group": "cat-walk", "fire": [421], "pan": 422, "tilt": 423,
+     "notes": "PLACEHOLDER channels (they match flamesafe.example.json's cat-walk group so this example loads). A waver's pan and tilt slots must also be listed in its flamesafe group's fire slots, or flamesafe holds them at zero."},
+    {"id": "fireball", "name": "Fireball", "kind": "fireball", "group": "fireball", "fire": [451]}
+  ],
+
+  "groups": {
+    "Ground G-Flames": ["ground-1", "ground-2", "ground-3", "ground-4", "ground-5"],
+    "Scaffold G-Flames": ["scaffold-1", "scaffold-2", "scaffold-3"],
+    "Scaffold Wavers": ["waver-1"],
+    "Fireball": ["fireball"]
+  },
+
+  "purge": {
+    "gflame_fire": 255,
+    "waver": {"pan_up": 128, "tilt_up": 255, "head_settle_s": 1.5, "fire": 255},
+    "fireball": {"fire": 255}
+  },
+
+  "lasers": [
+    {"id": "laser-1", "name": "Laser 1", "mechanism": "none", "on": [], "off": [], "lock": [], "arm": [], "disarm": [],
+     "note": "PLACEHOLDER. When Jeff knows: mechanism \"osc\", host and port of BEYOND (or leave them out to use the beyond block of ltcplay_fire_ice.json), and the OSC messages that put the alignment grid up at low power (on), take it down (off) and shut this laser out (lock). Each message is [address, value]; a value is a whole number, a decimal or text. BEYOND's BlackOut and MasterPause are refused by name. arm and disarm are PLACEHOLDERS for a per-laser BEYOND command that nobody has verified yet: leave them empty (nothing is sent) until Andy has tried one on the real rig. They never switch BEYOND's own laser output on: that needs every laser armed (MORNING.md, Lasers: arm and disarm)."},
+    {"id": "laser-2", "name": "Laser 2", "mechanism": "none"},
+    {"id": "laser-3", "name": "Laser 3", "mechanism": "none"},
+    {"id": "laser-4", "name": "Laser 4", "mechanism": "none"}
+  ],
+
+  "laser_groups": {
+    "All lasers": ["laser-1", "laser-2", "laser-3", "laser-4"]
+  },
+
+  "checklists": {
+    "morning": {"title": "Morning", "steps": [
+      {"id": "sample-1", "text": "SAMPLE step: Andy will supply the real list. Delete these."},
+      {"id": "sample-2", "text": "SAMPLE step: each step is an id and its words."}
+    ]},
+    "shutdown": {"title": "Shutdown", "steps": []}
+  },
+
+  "names": ["Andy", "Jeff"],
+
+  "fuel": {
+    "notes": "The Fuel page (FUEL.md). Every key is optional. start_shows_per_tank is your starting guess of shows per tank (null: none), used only until the page has learned the real number from your refills. count_purge: a G-Flame purges from its own tank (true), a Showven from separate purge fuel (false). fire_at is the lowest fire value that makes flame.",
+    "kinds": {
+      "gflame": {"label": "100 lb propane", "fire_at": 229, "count_purge": true, "start_shows_per_tank": null},
+      "waver": {"label": "15 gal", "fire_at": 254, "count_purge": false, "start_shows_per_tank": null}
+    },
+    "learn_refills": 5,
+    "outlier_ratio": 2.0,
+    "recent_shows": 10,
+    "min_shows": 3,
+    "min_show_s": 30,
+    "amber_below_percent": 35,
+    "red_below_percent": 15,
+    "refill_soon_shows": 3
+  },
+
+  "cleaning": {
+    "notes": "Wave flamer cleaning on the Shutdown page (MORNING.md). A hold of the button, the same as a Hold to arm, starts phase 1: it pressurizes and depressurizes the pump with no fire, on its own (cycles times armed armed_s, disarmed disarmed_s). Then it waits, disarmed, until a second full hold starts phase 2: the heads straight up (aim), then bursts burst_on_s on and burst_off_s off until Stop. Every key is optional; these are the defaults. cycles 1 to 10. armed_s 1 to 30 and disarmed_s 2.5 to 30, each counted once flamesafe reports it. arm_wait_s: how long to wait for flamesafe to report it armed before stopping (3 to 20); disarm_wait_s the same for disarmed (1 to 5). aim: 128 is straight up (118 to 138, never far off straight up). aim_settle_s: time for the heads to come up before the first burst, from the first frame that points them up (1 to 5). burst_on_s 0.2 to 5, burst_off_s 0.5 to 10. max_burst_min: the bursts end by themselves after this many minutes (1 to 30). pause_max_min: with no second hold it goes back to idle after this many minutes (1 to 60).",
+    "cycles": 3,
+    "armed_s": 3.0,
+    "disarmed_s": 3.0,
+    "arm_wait_s": 8.0,
+    "disarm_wait_s": 2.0,
+    "aim": 128,
+    "aim_settle_s": 1.0,
+    "burst_on_s": 1.0,
+    "burst_off_s": 1.0,
+    "max_burst_min": 10,
+    "pause_max_min": 10
+  },
+
+  "tally": {
+    "enabled": false,
+    "url": "",
+    "token_file": "",
+    "timeout_s": 10
+  }
+}

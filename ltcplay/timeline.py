@@ -275,15 +275,26 @@ class Timeline:
         return parse_tc(text, self.fps, self.drop)
 
 
+def fseq_names(folder):
+    """The .fseq renders in `folder`, by name, sorted: any case of the
+    extension (A.FSEQ too), and a folder name with [ or ] in it read as a
+    name, never as a pattern. [] when it cannot be read."""
+    try:
+        names = os.listdir(folder)
+    except (OSError, TypeError, ValueError):
+        return []
+    return sorted(n for n in names if n.lower().endswith(".fseq") and
+                  os.path.isfile(os.path.join(folder, n)))
+
+
 def starter(show_dir, fps=30, start="01:00:00:00", gap_seconds=0.0):
     """Build a timeline covering every FSEQ in a show folder, back to back.
 
     Written as a starting point to edit, not as a guess at the real running
     order: the sequences are laid out alphabetically with a fixed gap."""
-    import glob
     from .fseq import FSEQ
     fps = normalize_rate(fps)
-    files = sorted(glob.glob(os.path.join(show_dir, "*.fseq")))
+    files = [os.path.join(show_dir, n) for n in fseq_names(show_dir)]
     t = parse_tc(start, fps)
     cues = []
     for p in files:

@@ -1,0 +1,231 @@
+{
+ "machines": [
+  {
+   "id": "m1",
+   "name": "front row 1",
+   "kind": "flame",
+   "group": "front row"
+  },
+  {
+   "id": "m2",
+   "name": "front row 2",
+   "kind": "flame",
+   "group": "front row"
+  },
+  {
+   "id": "m3",
+   "name": "front row 3",
+   "kind": "flame",
+   "group": "front row"
+  },
+  {
+   "id": "m4",
+   "name": "cat-walk 1",
+   "kind": "flame",
+   "group": "cat-walk"
+  },
+  {
+   "id": "m5",
+   "name": "cat-walk 2",
+   "kind": "flame",
+   "group": "cat-walk"
+  },
+  {
+   "id": "m6",
+   "name": "cat-walk 3",
+   "kind": "flame",
+   "group": "cat-walk"
+  },
+  {
+   "id": "m7",
+   "name": "wave flamer 1",
+   "kind": "flame",
+   "group": "wave flamer"
+  },
+  {
+   "id": "m8",
+   "name": "wave flamer 2",
+   "kind": "flame",
+   "group": "wave flamer"
+  }
+ ],
+ "groups": {
+  "front row": [
+   "m1",
+   "m2",
+   "m3"
+  ],
+  "cat-walk": [
+   "m4",
+   "m5",
+   "m6"
+  ],
+  "wave flamer": [
+   "m7",
+   "m8"
+  ]
+ },
+ "layout": {
+  "m1": {
+   "x": 12,
+   "y": 25
+  },
+  "m2": {
+   "x": 37,
+   "y": 25
+  },
+  "m3": {
+   "x": 62,
+   "y": 25
+  },
+  "m4": {
+   "x": 87,
+   "y": 25
+  },
+  "m5": {
+   "x": 12,
+   "y": 70
+  },
+  "m6": {
+   "x": 37,
+   "y": 70
+  },
+  "m7": {
+   "x": 62,
+   "y": 70
+  },
+  "m8": {
+   "x": 87,
+   "y": 70
+  }
+ },
+ "layout_saved": true,
+ "config_error": "",
+ "lockout": {
+  "machines": {},
+  "lasers": {}
+ },
+ "purge_state": {
+  "selected": [],
+  "owner": null,
+  "firing": false
+ },
+ "purge_enabled": true,
+ "live_refusal": "",
+ "lasers": [
+  {
+   "id": "L1",
+   "name": "Laser 1",
+   "on": false,
+   "locked": false,
+   "configured": true
+  },
+  {
+   "id": "L2",
+   "name": "Laser 2",
+   "on": false,
+   "locked": false,
+   "configured": true
+  }
+ ],
+ "laser_arm": {
+  "lasers": [
+   {
+    "id": "L1",
+    "name": "Laser 1",
+    "armed": false
+   },
+   {
+    "id": "L2",
+    "name": "Laser 2",
+    "armed": false
+   }
+  ],
+  "groups": {
+   "All": [
+    "L1",
+    "L2"
+   ]
+  }
+ },
+ "checklists": {
+  "checklists": [
+   {
+    "id": "startup",
+    "title": "Startup",
+    "done": 1,
+    "total": 4,
+    "steps": [
+     {
+      "id": "s0",
+      "text": "Walk the field: nothing within 10 m of a machine",
+      "done": true,
+      "who": "Andy",
+      "at": "17:02",
+      "note": ""
+     },
+     {
+      "id": "s1",
+      "text": "Fuel pressure read at every machine and written down",
+      "done": false,
+      "who": "Andy",
+      "at": "17:02",
+      "note": ""
+     },
+     {
+      "id": "s2",
+      "text": "Fire extinguishers at stations 1 to 4",
+      "done": false,
+      "who": "Andy",
+      "at": "17:02",
+      "note": ""
+     },
+     {
+      "id": "s3",
+      "text": "Purge every machine for 2 s",
+      "done": false,
+      "who": "Andy",
+      "at": "17:02",
+      "note": ""
+     }
+    ]
+   },
+   {
+    "id": "shutdown",
+    "title": "Shutdown",
+    "done": 0,
+    "total": 0,
+    "steps": []
+   }
+  ],
+  "names": [
+   "Andy",
+   "Jeff"
+  ],
+  "show_date": "2026-10-26"
+ },
+ "checks": [
+  {
+   "title": "Renders against the layout",
+   "level": "ok",
+   "text": "Every render matches the layout's channel count."
+  },
+  {
+   "title": "This PC's clock",
+   "level": "warn",
+   "text": "The clock was set by hand; NTP has not answered since 14:10."
+  },
+  {
+   "title": "The show folder",
+   "level": "bad",
+   "text": "No show file yet: playing a show needs one."
+  }
+ ],
+ "flamesafe_groups": [
+  "front row",
+  "cat-walk",
+  "wave flamer"
+ ],
+ "open": true,
+ "me": "this PC (rack screen)"
+}

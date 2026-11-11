@@ -15,6 +15,9 @@
 *.m4v
 *.avi
 *.mkv
+# The one exception (Jeff, 2026-10-28): the booth alert notes the Windows
+# installer ships, booth_<name>.wav, short spoken lines and no show media.
+!packaging/windows/booth/booth_*.wav
 
 # Local environment and built app
 .venv/
@@ -34,6 +37,25 @@ ltcplay_tonight_*.json
 ltcplay_operators.json
 ltcplay_current_operator.json
 ltcplay_announce.json
+ltcplay_screens.json
+ltcplay_abort_latch.json
+# The iPad remote: the show network address, and the operators' PIN hashes
+ltcplay_remote.json
+ltcplay_remote_pins.json
+# The rack screen's selected show, and the engine's reserved disarm ids
+ltcplay_selected_show.json
+ltcplay_last_show.json
+ltcplay_disarm_ids.json
+# The Morning and Shutdown page (MORNING.md): the machine's own settings
+# (the tally server's address and token file path), its layout and what
+# is locked out. Only ltcplay/ltcplay_morning.example.json is committed.
+ltcplay_morning.json
+ltcplay_morning_layout.json
+ltcplay_lockout.json
+
+# Users and the audit log (USERS.md): password hashes, the upload token
+ltcplay_users.json
+ltcplay_audit.json
 
 # Written by Cut a release.command at packaging time
 VERSION
@@ -65,3 +87,11 @@ Claude-Brain/
 # Python and macOS
 __pycache__/
 .DS_Store
+
+# Windows app build output (packaging/windows/ltcplay.spec, installer.iss)
+/build/
+/dist/
+packaging/windows/build/
+# The users file and its marker (users.py): machine state, never the repo
+ltcplay_users.json
+ltcplay_users.made

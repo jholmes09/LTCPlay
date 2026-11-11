@@ -1,0 +1,206 @@
+{
+ "units": [
+  {
+   "id": "g1",
+   "name": "Ground 1",
+   "kind": "gflame",
+   "kind_words": "G-Flame",
+   "label": "100 lb propane",
+   "group": "front row",
+   "locked": false,
+   "since": {
+    "show": 70.0,
+    "purge": 0.0,
+    "other": 0.0
+   },
+   "burn_s": 70.0,
+   "shows_since": 7,
+   "show_samples": 10,
+   "avg_show_s": 10.0,
+   "unsure_s": 0.0,
+   "not_sure": false,
+   "last_refill": {
+    "id": 2,
+    "who": "Andy",
+    "at_ms": 1800000616251
+   },
+   "percent": 30,
+   "color": "amber",
+   "shows_left": 3,
+   "refill_soon": true,
+   "status": "learning",
+   "words": "Refill soon. Still learning the tank size (from 1 tank), so this reads on the low side. About 3 shows left (30 percent)."
+  },
+  {
+   "id": "g2",
+   "name": "Ground 2",
+   "kind": "gflame",
+   "kind_words": "G-Flame",
+   "label": "100 lb propane",
+   "group": "front row",
+   "locked": false,
+   "since": {
+    "show": 70.0,
+    "purge": 0.0,
+    "other": 0.0
+   },
+   "burn_s": 70.0,
+   "shows_since": 17,
+   "show_samples": 10,
+   "avg_show_s": 7.0,
+   "unsure_s": 0.0,
+   "not_sure": false,
+   "last_refill": {
+    "id": 1,
+    "who": "Andy",
+    "at_ms": 1800000000000
+   },
+   "percent": 30,
+   "color": "amber",
+   "shows_left": 4,
+   "refill_soon": false,
+   "status": "learning",
+   "words": "Still learning the tank size (from 1 tank), so this reads on the low side. About 4 shows left (30 percent)."
+  },
+  {
+   "id": "c1",
+   "name": "Catwalk 1",
+   "kind": "gflame",
+   "kind_words": "G-Flame",
+   "label": "100 lb propane",
+   "group": "cat-walk",
+   "locked": true,
+   "since": {
+    "show": 0.0,
+    "purge": 0.0,
+    "other": 0.0
+   },
+   "burn_s": 0.0,
+   "shows_since": 10,
+   "show_samples": 10,
+   "avg_show_s": 0.0,
+   "unsure_s": 0.0,
+   "not_sure": false,
+   "last_refill": {
+    "id": 1,
+    "who": "Andy",
+    "at_ms": 1800000000000
+   },
+   "percent": 100,
+   "color": "green",
+   "shows_left": null,
+   "refill_soon": false,
+   "status": "learning",
+   "words": "Still learning the tank size (from 1 tank), so this reads on the low side. 100 percent left. It has not burned in a show yet, so shows left is not known."
+  },
+  {
+   "id": "w1",
+   "name": "Wave 1",
+   "kind": "waver",
+   "kind_words": "Showven",
+   "label": "15 gal",
+   "group": "wave flamer",
+   "locked": false,
+   "since": {
+    "show": 0.0,
+    "purge": 0.0,
+    "other": 0.0
+   },
+   "burn_s": 0.0,
+   "shows_since": 17,
+   "show_samples": 10,
+   "avg_show_s": 0.0,
+   "unsure_s": 0.0,
+   "not_sure": false,
+   "last_refill": {
+    "id": 1,
+    "who": "Andy",
+    "at_ms": 1800000000000
+   },
+   "percent": null,
+   "color": null,
+   "shows_left": null,
+   "refill_soon": false,
+   "status": "learning",
+   "words": "Learning: 0 s of flame and 17 shows since the refill. It knows how long a 15 gal tank lasts once one Showven has been refilled twice."
+  }
+ ],
+ "kinds": {
+  "gflame": {
+   "label": "100 lb propane",
+   "words": "G-Flame",
+   "tank_s": 100.0,
+   "cycles": 1,
+   "firm": false,
+   "suspect": [],
+   "count_purge": true,
+   "fire_at": 229,
+   "start_shows_per_tank": null
+  },
+  "waver": {
+   "label": "15 gal",
+   "words": "Showven",
+   "tank_s": null,
+   "cycles": 0,
+   "firm": false,
+   "suspect": [],
+   "count_purge": false,
+   "fire_at": 254,
+   "start_shows_per_tank": null
+  }
+ },
+ "unit_ids": [
+  "g1",
+  "g2",
+  "c1",
+  "w1"
+ ],
+ "refill_soon": [
+  "Ground 1"
+ ],
+ "not_sure": [],
+ "notes": [],
+ "not_listed": 0,
+ "recent_refills": [
+  {
+   "id": 2,
+   "who": "Andy",
+   "at_ms": 1800000616251,
+   "units": [
+    "Ground 1"
+   ],
+   "undone": null
+  },
+  {
+   "id": 1,
+   "who": "Andy",
+   "at_ms": 1800000000000,
+   "units": [
+    "Ground 1",
+    "Ground 2",
+    "Catwalk 1",
+    "Wave 1"
+   ],
+   "undone": null
+  }
+ ],
+ "show_running": false,
+ "shows_total": 17,
+ "watching": true,
+ "config_error": "",
+ "fault": "",
+ "saved_at_ms": 1800000616251,
+ "settings": {
+  "learn_refills": 5,
+  "recent_shows": 10,
+  "min_shows": 3,
+  "min_show_s": 30,
+  "amber_below_percent": 35,
+  "red_below_percent": 15,
+  "refill_soon_shows": 3
+ },
+ "may_refill": true,
+ "may_undo": true,
+ "refill_why": "",
+ "undo_why": ""
+}
