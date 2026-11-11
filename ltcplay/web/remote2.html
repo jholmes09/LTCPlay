@@ -746,7 +746,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
       <button class="b green" id="b-go" data-mode="none"><svg class="i"><use href="#i-play"/></svg><span class="lbl"><span id="go-l">Start now</span><small id="go-why"></small></span></button>
       <button data-safe class="b amber" id="b-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
       <button data-safe class="b red nostop" id="b-stop"><svg class="i"><use href="#i-stop"/></svg><span class="lbl"><span id="stop-l">Stop show</span><small id="stop-s">tap twice</small></span></button>
-      <button class="b red" id="b-runoff" hidden><svg class="i"><use href="#i-power"/></svg><span>Show control off</span></button>
+      <button class="b red" id="b-runoff" hidden><svg class="i"><use href="#i-power"/></svg><span class="lbl"><span>Show control</span><small>turn off</small></span></button>
       <button class="q" data-q="transport" aria-label="Help: show controls">?</button>
     </div>
     <div id="alert" class="none">
@@ -1631,7 +1631,7 @@ function goLook(st, isStaleNow, local, waiting){
   else if(sch.attached && prerollLook(st.preroll).checking) L = {mode:"checking", label:"Checking rig", icon:"clock", tone:"green", off:true, why:"Hold or Stop cancels"};
   else if(waiting || sch.start_waiting) L = {mode:"loading", label:"Loading", icon:"clock", tone:"green", off:true, why:"Starts when ready"};
   else if(!sch.attached) L = {mode:"none", label:"Start now", icon:"play", tone:"green", off:true, why:"No schedule here"};
-  else if(!runIsOn(st)) L = local ? {mode:"run", label:"Show control on", icon:"power", tone:"green", off:!fresh, why:fresh ? "Scheduled shows may start" : "No contact"}
+  else if(!runIsOn(st)) L = local ? {mode:"run", label:"Show control on", icon:"power", tone:"green", off:!fresh, why:fresh ? "Shows may start" : "No contact"}
                                   : {mode:"run", label:"Show control on", icon:"power", tone:"green", off:true, why:"Only on the show PC"};
   else {
     const b = sch.start_blocked;
@@ -2411,7 +2411,7 @@ async function runShow(){
   // On a Hold Run does not resume (the engine's "Press Run, then Resume"):
   // the confirm and the answer say so.
   const held = !!(ST && (isHeld(ST) || (ST.schedule || {}).stop_held));
-  if(!(await confirmBox("Turn show control on?", "Uses " + f + (held ? ". The schedule stays held: press Resume after." : ". Scheduled shows may start."), "Yes, turn on", "green"))) return;
+  if(!(await confirmBox("Turn show control on?", "Uses " + f + (held ? ". The schedule stays held: press Resume after." : ". Shows may start."), "Yes, turn on", "green"))) return;
   try{ const j = await post("/api/start", {timeline:f}); say(held ? "Show control is on. Still held: press Resume." : "Show control is on.", j.banner || "Running.", "ok"); }
   catch(e){ say("Show control did not turn on.", e.message, "bad"); }
 }
@@ -4708,7 +4708,7 @@ $("wx").addEventListener("click", () => {
 // ---- "?" : one plain sentence per control ----
 const QHELP = {
   next: ["Next step", [["This line", "Says what to do next."], ["A red Stop here", "Stops a live mode: cleaning, live flame or Programming flames."]]],
-  transport: ["Show controls", [["Show control on", "Scheduled shows may start. Off: nothing reaches the rig."], ["Start now", "Starts the next show early."],
+  transport: ["Show controls", [["Show control on", "Shows may start. Off: nothing reaches the rig."], ["Start now", "Starts the next show early."],
     ["Resume", "Carries on after a Hold or a Stop."],
     ["Hold", "Pauses the schedule. Resume carries on."], ["Stop show", "Tap twice. Ends everything and holds the schedule. Resume when safe."]]],
   alert: ["Alerts", [["The box", "What is wrong, and what to do."], ["Details", "The full message from the show PC."],
@@ -4750,7 +4750,7 @@ const COACH = [
   ["pill", "Show state, timecode and time left."],
   ["b-go", "The big button is the next step."],
   ["b-hold", "Hold pauses the schedule. Resume carries on."],
-  ["b-runoff", "Show control off: Stop leaves it on. Asks first."],
+  ["b-runoff", "Show control, turn off: Stop leaves it on. Asks first."],
   ["b-stop", "Stop: tap twice. Ends everything, the rig goes dark, and the schedule holds until Resume. Only there while something plays."],
   ["alert", "Problems show here. Fix, then Acknowledge."],
   ["groups", "Hold to arm. One tap disarms."]];
