@@ -3721,5 +3721,8 @@
 "practice: a pending mark reads as charged tanks": "test_fireball_practice_engine",
 "practice: a Stop that came back failed is pressed again at once": "test_fireball_practice_engine",
 "practice: a person's Done waits for the retry": "test_fireball_practice_engine",
-"practice: open goes on after Done during its engine check": "test_fireball_practice_engine"
+"practice: open goes on after Done during its engine check": "test_fireball_practice_engine",
+"less prose: the aim alert's file path leaves More for the bullets": "test_aim_slots_are_seen_on_the_rack_screen",
+"less prose: the late frame alert's numbers leave More for the bullets": "test_flame_frame_timing_alert_and_systems_line",
+"less prose: the users alert's file names leave More for the bullets": "test_users_file_broken_or_lost_locks_and_says_so"
 }
