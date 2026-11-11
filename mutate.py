@@ -23139,6 +23139,27 @@ def build():
   "#t-users input[type=checkbox]{width:56px;height:56px;",
   "#t-users input[type=checkbox]{width:40px;height:40px;"),
 
+ # Less prose (Jeff, 2026-11-11): bullets and paragraph breaks.
+ ("less prose: an alert's one-line text keeps the line breaks",
+  "ltcplay/alerts.py",
+  '        text = " ".join(full.split())',
+  '        text = full'),
+
+ ("less prose: an alert drops its line breaks before the rack screen",
+  "ltcplay/alerts.py",
+  '        full = self.full if "\\n" in self.full else text',
+  '        full = text'),
+
+ ("less prose: opText writes the engine's words as markup",
+  "ltcplay/web/remote2.html",
+  '      list.appendChild(document.createElement("li")).textContent = line.slice(2).trim();',
+  '      list.appendChild(document.createElement("li")).innerHTML = line.slice(2).trim();'),
+
+ ("less prose: the audio alert's names leave More for the bullets",
+  "ltcplay/audiowatch.py",
+  '            f"- Why: No show can start without it.\\n"',
+  '            f"- Why: No show can start without it, {show_file}.\\n"'),
+
  # flamesafe.json that is not valid JSON (Jeff, 2026-11-06): the engine
  # starts with flames off and says where; the supervisor starts neither
  # flamesafe nor the deck; the last good copy.

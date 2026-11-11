@@ -93,14 +93,33 @@ BOOTH_UNAVAILABLE = "Booth speaker not available"
 PULSE_DURING_SHOW = frozenset(("audio",))
 
 
+def lines(text):
+    """The words with their line breaks kept: spaces inside each line made
+    single, at most one blank line in a row, none at either end."""
+    out = []
+    for ln in str(text or "").replace("\r\n", "\n").replace("\r", "\n") \
+            .split("\n"):
+        ln = " ".join(ln.split())
+        if ln or (out and out[-1]):
+            out.append(ln)
+    while out and not out[-1]:
+        out.pop()
+    return "\n".join(out)
+
+
 class Alert:
     __slots__ = ("id", "kind", "text", "since", "options", "severity",
-                 "booth", "booth_ok", "pulse", "rev")
+                 "booth", "booth_ok", "pulse", "rev", "full")
 
     def __init__(self, id, kind, text, since, options):
         self.id = id
         self.kind = kind
         self.text = text
+        # The same words with their line breaks (headline, "- " bullets,
+        # blank line between paragraphs): only the rack screen's Details
+        # reads it (remote2.html opText). Everything else reads text, one
+        # line, as before.
+        self.full = text
         self.since = since
         self.options = tuple(options)
         self.severity = SEVERITY[kind]
@@ -116,7 +135,11 @@ class Alert:
         text = self.text
         if self.booth_ok is False:
             text = f"{text} {BOOTH_UNAVAILABLE}."
+        full = self.full if "\n" in self.full else text
+        if "\n" in full and self.booth_ok is False:
+            full = f"{full}\n\n{BOOTH_UNAVAILABLE}."
         return {"id": self.id, "kind": self.kind, "text": text,
+                "full": full,
                 "severity": self.severity, "since": int(self.since * 1000),
                 "options": list(self.options), "booth": self.booth,
                 "pulse": self.pulse}
@@ -153,7 +176,8 @@ class Alerts:
         if kind not in KINDS:
             raise ValueError(f"{kind!r} is not an alert kind. One of: "
                              f"{', '.join(KINDS)}.")
-        text = " ".join(str(text or "").split())
+        full = lines(text)
+        text = " ".join(full.split())
         if not text:
             raise ValueError("An alert needs a sentence a person can act "
                              "on.")
@@ -170,11 +194,13 @@ class Alerts:
             a = self._open.get(kind)
             if a is not None:
                 a.text = text
+                a.full = full
                 a.options = opts
                 outcome = "updated"
             else:
                 self._ids += 1
                 a = Alert(self._ids, kind, text, self._wall(), opts)
+                a.full = full
                 self._open[kind] = a
                 outcome = "raised"
             self._revs += 1

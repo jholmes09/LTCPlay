@@ -583,6 +583,12 @@ button.fb-pad.na{opacity:.45}
 #sh-body li{margin:6px 0}
 #sh-body .full{white-space:pre-wrap;color:var(--cream)}
 #sh-body .dim{color:var(--muted)}
+.op b{display:block}
+.op p{margin:0}
+.op .gap{margin-top:.8em}
+.op .dim{color:var(--muted)}
+.op ul{margin:4px 0 0;padding-left:1.1em}
+.op li{margin:4px 0}
 #sh-row{display:flex;gap:var(--gap);flex-wrap:wrap;justify-content:flex-end}
 #sh-row.flip{flex-direction:row-reverse;justify-content:flex-start}
 #sh-row .b{flex:0 1 auto;min-width:140px}
@@ -1366,6 +1372,44 @@ function actor(extra){
 const icon = (n) => `<svg class="i"><use href="#i-${n}"/></svg>`;
 function setIcon(svg, n){ const u = svg && svg.querySelector("use"); if(u && u.getAttribute("href") !== "#i-" + n) u.setAttribute("href", "#i-" + n); }
 function setText(el, t){ if(el && el.textContent !== t) el.textContent = t; }
+// Operator text with a shape (Jeff, 2026-11-11: less prose, bullets and
+// paragraph breaks). Plain text in: the first line is the headline (bold),
+// a line that starts "- " is a bullet, a blank line starts a new
+// paragraph, and a paragraph that starts "More:" is dimmed. Text with no
+// line break and no leading "- " reads exactly as before. Built from DOM
+// nodes and textContent only, never innerHTML: engine text carries file
+// and device names.
+function opText(text){
+  const box = document.createElement("div");
+  box.className = "full op";
+  const t = String(text == null ? "" : text).replace(/\r\n?/g, "\n");
+  if(t.indexOf("\n") < 0 && !/^\s*- /.test(t)){ box.textContent = t; return box; }
+  let list = null, gap = false;
+  t.split("\n").forEach((raw, i) => {
+    const line = raw.trim();
+    if(!line){ list = null; gap = box.childNodes.length > 0; return; }
+    if(/^- /.test(line)){
+      if(!list){ list = box.appendChild(document.createElement("ul")); if(gap) list.className = "gap"; }
+      list.appendChild(document.createElement("li")).textContent = line.slice(2).trim();
+    } else {
+      list = null;
+      const el = box.appendChild(document.createElement(i ? "p" : "b"));
+      el.textContent = line;
+      el.className = (gap ? "gap" : "") + (/^More:/.test(line) ? " dim" : "");
+    }
+    gap = false;
+  });
+  return box;
+}
+// opText into an element on the page, rebuilt only when the text changed
+// (cards redraw every 250 ms).
+function setOpText(el, text){
+  const t = String(text == null ? "" : text);
+  if(!el || el.dataset.op === t) return;
+  el.dataset.op = t;
+  el.textContent = "";
+  el.appendChild(opText(t));
+}
 function stale(){ return isStale(Date.now(), LAST_OK, FRESH_S); }
 
 // The room under the page (1.0's bottomPad): a window that reaches
@@ -1411,7 +1455,9 @@ function sheet(title, html, buttons, flip){
   return new Promise(res => {
     if(SHEET_DONE) SHEET_DONE(null);
     $("sh-h").textContent = title;
-    $("sh-body").innerHTML = html || "";
+    // A node (opText's) goes in as it is; a string is the page's own markup.
+    if(html instanceof Node){ $("sh-body").textContent = ""; $("sh-body").appendChild(html); }
+    else $("sh-body").innerHTML = html || "";
     const row = $("sh-row");
     row.className = flip ? "flip" : "";
     row.innerHTML = (buttons || [{label:"Close"}]).map((b, i) => `<button class="b ${b.cls || ""}"${b.safe ? " data-safe" : ""} data-i="${i}">${b.icon ? icon(b.icon) : ""}${esc(b.label)}</button>`).join("");
@@ -1773,7 +1819,7 @@ function alertItems(st){
   else if(pch) items.push({key:"preroll", tone:"bad", what:"Rig check failed.", do:"Fix it, or hold to continue.", full:pch.text, act:"pr-continue", recheck:true, holdMs:pch.holdMs || 1000});
   else { const prl = prerollLook(s.preroll); if(prl.trouble) items.push({key:"pr-trouble", tone:"warn", what:"Rig check failed.", do:"Tap here for details.", full:prl.trouble}); }
   (s.alerts || []).forEach(a => items.push({key:"a" + a.id, tone:a.severity === "fault" ? "bad" : "warn",
-    what:ALERT_WHAT[a.kind] || "Alert.", do:ALERT_DO[a.kind] || "Tap here for details.", full:a.text, act:"ack", id:a.id}));
+    what:ALERT_WHAT[a.kind] || "Alert.", do:ALERT_DO[a.kind] || "Tap here for details.", full:a.full || a.text, act:"ack", id:a.id}));
   // flamesafe.json not valid JSON (Jeff, 2026-11-06): flames are off and
   // the engine runs without its flame link; the file, line and column.
   if(s.flamesafe_config_error) items.push({key:"fscfg", tone:"bad", what:"Flame settings file broken.", do:"Flames are off. Tap here.", full:s.flamesafe_config_error});
@@ -1880,7 +1926,12 @@ $("al-text").addEventListener("click", async () => {
   const it = ALERTS.find(i => i.key === ALERT_KEY); if(!it) return;
   // A failed rig check: 1.0's Check the rig again, on the show PC only.
   const again = it.recheck && ME && ME.local;
-  const v = await sheet(it.what, `<div class="full">${esc(it.full)}</div><div class="dim">${esc(it.do || "")}</div>`,
+  // The engine's words, headline and bullets kept (opText); the slot's Do under them.
+  const body = document.createElement("div");
+  body.appendChild(opText(it.full));
+  body.appendChild(document.createElement("div")).className = "dim";
+  body.lastChild.textContent = it.do || "";
+  const v = await sheet(it.what, body,
     again ? [{label:"Close", value:null}, {label:"Check again", value:"recheck", cls:"blue", icon:"reset"}] : [{label:"Close", cls:"blue"}]);
   if(v === "recheck"){
     try{ const j = await post("/api/remote/preroll-check", actor({})); say(short8(j.text, "Checking the rig."), String(j.text || ""), "ok"); }
@@ -3573,7 +3624,8 @@ function renderTools(stale){
     $("rc-now").textContent = prl.now;
     $("rc-warn").hidden = !prl.warn;
     $("rc-warn").textContent = prl.warn;
-    $("rc-items").textContent = prl.items.join(". ");
+    // One check to a line (Jeff, 2026-11-11), not one run-on sentence.
+    setOpText($("rc-items"), prl.items.map(t => "- " + String(t).replace(/\s+/g, " ")).join("\n"));
     $("rc-run").disabled = prl.checking;
   }
   const cn = cfgNote(s.config_changed);
