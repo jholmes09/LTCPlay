@@ -4407,14 +4407,15 @@ class Remote:
         s = getattr(self.control, "session", None)
         if s is not None and getattr(s, "running", False):
             return ("show control is on (a show file is running), so the "
-                    "show may send flame cues; turn show control off first")
+                    "show may send flame cues; turn show control off first "
+                    "(End rehearsal in a rehearsal)")
         try:
             cs = self.control.state() or {}
         except Exception:                        # noqa: BLE001
             cs = {}
         if cs.get("running") or cs.get("starting"):
             return ("show control is on (a show file is running); turn "
-                    "show control off first")
+                    "show control off first (End rehearsal in a rehearsal)")
         fs = self.flame_status
         fl = fs.view() if fs is not None else None
         if not fl or fl.get("stale"):
@@ -5838,15 +5839,17 @@ class Remote:
                 return "Stop is under way."
             if getattr(getattr(self.control, "session", None), "running",
                        False):
-                return ("Run is pressed (a show file is running), so the "
-                        "show file owns the flame channels; press Stop first.")
+                return ("Show control is on (a show file is running), so "
+                        "the show file owns the flame channels; turn show "
+                        "control off first (End rehearsal in a rehearsal).")
             try:
                 cs = self.control.state() or {}
             except Exception:                    # noqa: BLE001
                 cs = {}
             if cs.get("starting") or cs.get("running"):
-                return ("Run is pressed (a show file is running), so the "
-                        "show file owns the flame channels; press Stop first.")
+                return ("Show control is on (a show file is running), so "
+                        "the show file owns the flame channels; turn show "
+                        "control off first (End rehearsal in a rehearsal).")
             m = self.morning
             link = m._link_get() if m is not None else None
             if link is not None:
@@ -7819,8 +7822,9 @@ class Remote:
         sess = getattr(c, "session", None)
         if getattr(c, "_starting", False) or \
                 (sess is not None and getattr(sess, "running", False)):
-            return 409, ("A show file is running. Press Stop first, then "
-                         "make the new show file. Nothing was written.")
+            return 409, ("A show file is running. Turn show control off "
+                         "first (End rehearsal in a rehearsal), then make "
+                         "the new show file. Nothing was written.")
         return None
 
     def new_show_file(self, body):

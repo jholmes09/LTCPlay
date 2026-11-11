@@ -236,7 +236,8 @@ def warnings_for(p, dec, tl, standing=()):
                 f"NOTHING on the rig is answering. All {len(rig.baseline)} "
                 f"controllers stopped at once, so packets are leaving this Mac "
                 f"and reaching nothing. Check the network cable, the adapter "
-                f"and the switch. Stop and Run after it is back, or the socket "
+                f"and the switch. Turn show control off and on (on the Mac page: "
+                f"Stop, then Run) after it is back, or the socket "
                 f"keeps sending into the old route.")
         else:
             out.append(

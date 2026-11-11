@@ -746,7 +746,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
       <button class="b green" id="b-go" data-mode="none"><svg class="i"><use href="#i-play"/></svg><span class="lbl"><span id="go-l">Start now</span><small id="go-why"></small></span></button>
       <button data-safe class="b amber" id="b-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
       <button data-safe class="b red nostop" id="b-stop"><svg class="i"><use href="#i-stop"/></svg><span class="lbl"><span id="stop-l">Stop show</span><small id="stop-s">tap twice</small></span></button>
-      <button class="b red" id="b-runoff" hidden><svg class="i"><use href="#i-power"/></svg><span class="lbl"><span>Show ctrl</span><small>off</small></span></button>
+      <button class="b red" id="b-runoff" hidden><svg class="i"><use href="#i-power"/></svg><span class="lbl"><span id="ro-l">Show ctrl</span><small id="ro-s">off</small></span></button>
       <button class="q" data-q="transport" aria-label="Help: show controls">?</button>
     </div>
     <div id="alert" class="none">
@@ -909,7 +909,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
            programming_move_refusal). -->
       <div class="cards" id="t-prog">
         <div class="card col" id="p-run-card" hidden>
-          <div class="t"><b>Show file, on this machine</b><span>Off: nothing reaches the rig.</span></div>
+          <div class="t"><b>Show file, on this machine</b></div>
           <div class="seg" id="p-mode" role="radiogroup" aria-label="Show or Programming"><button type="button" class="b" role="radio" data-mode="show">Show</button><button type="button" class="b" role="radio" data-mode="programming">Programming</button></div>
           <div class="pline" id="p-mode-what"></div>
           <div class="pline warn" id="p-rate" hidden></div>
@@ -1752,8 +1752,8 @@ function runWarnWords(text, local){
 // show PC, with contact and
 // the Show row (goLook's own gates): "run" while the big button is Run
 // show itself, "held" on a Hold, when the big button is Resume and the
-// engine says "Press Run, then Resume" (Run does not resume: runShow says
-// so); else "". Pure.
+// engine's warning asks for Resume too (turning show control on does not
+// resume: runShow says so); else "". Pure.
 function runHereShown(st, isStaleNow, local, waiting){
   const sch = (st && st.schedule) || {};
   if(!local || isStaleNow || !sch.run_warning || runIsOn(st)) return "";
@@ -2124,6 +2124,9 @@ function drawTransport(isSt){
   const ro = $("b-runoff"), roOn = runOffShown(isSt);
   if(ro.hidden !== !roOn) ro.hidden = !roOn;
   if(roOn) $("b-stop").hidden = true;
+  // Its words: Show ctrl / off, or End / rehearsal in a rehearsal.
+  const roReh = !!((ST && ST.transport) || {}).programming;
+  setText($("ro-l"), roReh ? "End" : "Show ctrl"); setText($("ro-s"), roReh ? "rehearsal" : "off");
   else if($("b-stop").hidden) $("b-stop").hidden = false;
   ro.disabled = !!FLIPPED.go && Date.now() - FLIPPED.go < FLIP_LOCK_MS;
 }
@@ -2408,8 +2411,8 @@ async function runShow(){
   let f = "";
   try{ f = await runFile(); }catch(e){ say("Show files not readable.", e.message, "bad"); return; }
   if(!f){ say("No show file found.", "No show file in the show folder.", "bad"); return; }
-  // On a Hold Run does not resume (the engine's "Press Run, then Resume"):
-  // the confirm and the answer say so.
+  // On a Hold turning show control on does not resume (the engine's run
+  // warning asks for Resume too): the confirm and the answer say so.
   const held = !!(ST && (isHeld(ST) || (ST.schedule || {}).stop_held));
   if(!(await confirmBox("Turn show control on?", "Uses " + f + (held ? ". The schedule stays held: press Resume after." : ". Shows may start."), "Yes, turn on", "green"))) return;
   try{ const j = await post("/api/start", {timeline:f}); say(held ? "Show control is on. Still held: press Resume." : "Show control is on.", j.banner || "Running.", "ok"); }
@@ -2484,7 +2487,9 @@ function runOffShown(isSt){
   return !HALT_BUSY && !isSt && runIsOn(ST) && !stopShows(ST) && !STOP_TAPS2["b-stop"];
 }
 $("b-runoff").addEventListener("click", async () => {
-  if(!(await confirmBox("Turn show control off?", RUN_OFF_CONFIRM, "Yes, turn off", "red"))) return;
+  // In a rehearsal it is End rehearsal (Jeff, 2026-11-11): words only.
+  const reh = !!((ST && ST.transport) || {}).programming;
+  if(!(await (reh ? confirmBox("End rehearsal?", REHEARSAL_END_CONFIRM, "Yes, end it", "red") : confirmBox("Turn show control off?", RUN_OFF_CONFIRM, "Yes, turn off", "red")))) return;
   if(!runOffShown(stale())){ say("The show changed. Nothing done.", "The show changed while you answered, so nothing was done.", "warn"); return; }
   return pressStop("run-off");
 });
@@ -2858,6 +2863,8 @@ const MODE_WHAT = {
   show: "<b>Show:</b> the scheduler starts each show at its time. Scrubbing is off.",
   programming: "<b>Programming:</b> a rehearsal. Play from, jump and loop work; the scheduler starts no show."};
 let RUN_MODE = null;
+// A rehearsal's Run off is End rehearsal (Jeff, 2026-11-11): its question.
+const REHEARSAL_END_CONFIRM = "Stops everything, as Stop does, and ends the rehearsal.";
 function runModeNow(st){
   const mo = modeLook(st);
   return mo.cls === "prog" ? "programming" : (mo.cls === "show" ? "show" : null);
@@ -2968,7 +2975,7 @@ function drawProg(isSt){
     const cls = "b " + (rk.mode === "run" ? "green" : "red") + (tap ? " tap1" : "");
     if(b.className !== cls) b.className = cls;
     setIcon(b.querySelector("svg"), rk.mode === "run" ? "power" : "stop");
-    b.title = rk.mode === "stop" ? STOP_TITLE : rk.mode === "runoff" ? RUN_OFF_CONFIRM : "";
+    b.title = rk.mode === "stop" ? STOP_TITLE : rk.mode === "runoff" ? (tr.programming ? REHEARSAL_END_CONFIRM : RUN_OFF_CONFIRM) : "";
     b.disabled = HALT_BUSY || (rk.mode !== "stop" && (progFlipped() || !mayRow(ST, "show")));
   }
   setText($("p-tc"), isSt ? "--:--:--:--" : (show.timecode || "--:--:--:--"));
@@ -3024,7 +3031,7 @@ $("p-run").addEventListener("click", async ev => {
     // Run off: not an emergency control (Stop is), so it asks first.
     // A rehearsal's Run off is End rehearsal (Jeff, 2026-11-11): words only.
     const sure = ((ST && ST.transport) || {}).programming
-      ? await confirmBox("End rehearsal?", "Stops everything, as Stop does, and ends the rehearsal.", "Yes, end it", "red")
+      ? await confirmBox("End rehearsal?", REHEARSAL_END_CONFIRM, "Yes, end it", "red")
       : await confirmBox("Turn show control off?", RUN_OFF_CONFIRM, "Yes, turn off", "red");
     if(!sure) return;
     if(runLook(ST, stale()).mode !== "runoff"){ say("The show changed. Nothing done.", "The show changed while you answered, so nothing was done.", "warn"); return; }

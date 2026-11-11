@@ -3721,5 +3721,8 @@
 "practice: a pending mark reads as charged tanks": "test_fireball_practice_engine",
 "practice: a Stop that came back failed is pressed again at once": "test_fireball_practice_engine",
 "practice: a person's Done waits for the retry": "test_fireball_practice_engine",
-"practice: open goes on after Done during its engine check": "test_fireball_practice_engine"
+"practice: open goes on after Done during its engine check": "test_fireball_practice_engine",
+"show control: the timed purge refusal says press Stop again": "test_show_control_refusals_say_turn_it_off",
+"show control: a new show file refusal says press Stop again": "test_show_control_refusals_say_turn_it_off",
+"show control: the rig-not-answering line says Stop and Run again": "test_show_control_refusals_say_turn_it_off"
 }

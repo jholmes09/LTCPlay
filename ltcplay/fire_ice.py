@@ -608,10 +608,10 @@ class FireIceShow(C.ShowOutputs):
             cleared = "nothing was over it"
         if keep is not None:
             rest = (f" The page's {self.LOOK_NAMES.get(keep, keep)} look "
-                    f"stays: on the Programming screen it is the operator's; "
-                    f"on the Show file card (on the show machine) turn "
-                    f"show control off, then on again, to give the pixels "
-                    f"to the show.")
+                    f"stays: in Programming it is the operator's. On the "
+                    f"Show file card (on the show machine): End rehearsal, "
+                    f"then Start rehearsal (in Show: Show control off, then "
+                    f"on), to give the pixels to the show.")
         else:
             first = {None: "The idle look", "blackout": "The black",
                      "preshow": "The Preshow look"}.get(held, "The look")
