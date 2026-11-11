@@ -746,7 +746,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
       <button class="b green" id="b-go" data-mode="none"><svg class="i"><use href="#i-play"/></svg><span class="lbl"><span id="go-l">Start now</span><small id="go-why"></small></span></button>
       <button data-safe class="b amber" id="b-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
       <button data-safe class="b red nostop" id="b-stop"><svg class="i"><use href="#i-stop"/></svg><span class="lbl"><span id="stop-l">Stop show</span><small id="stop-s">tap twice</small></span></button>
-      <button class="b red" id="b-runoff" hidden><svg class="i"><use href="#i-power"/></svg><span class="lbl"><span>Show control</span><small>turn off</small></span></button>
+      <button class="b red" id="b-runoff" hidden><svg class="i"><use href="#i-power"/></svg><span class="lbl"><span>Show ctrl</span><small>off</small></span></button>
       <button class="q" data-q="transport" aria-label="Help: show controls">?</button>
     </div>
     <div id="alert" class="none">
@@ -4750,7 +4750,7 @@ const COACH = [
   ["pill", "Show state, timecode and time left."],
   ["b-go", "The big button is the next step."],
   ["b-hold", "Hold pauses the schedule. Resume carries on."],
-  ["b-runoff", "Show control, turn off: Stop leaves it on. Asks first."],
+  ["b-runoff", "Show ctrl off: turns show control off. Stop leaves it on. Asks first."],
   ["b-stop", "Stop: tap twice. Ends everything, the rig goes dark, and the schedule holds until Resume. Only there while something plays."],
   ["alert", "Problems show here. Fix, then Acknowledge."],
   ["groups", "Hold to arm. One tap disarms."]];
