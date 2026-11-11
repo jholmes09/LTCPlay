@@ -52353,6 +52353,8 @@ def test_release_gate_tiers():
     section("release gate: the tier comes from the diff, and fails closed")
     import contextlib
     import io
+    import shutil
+    import subprocess
     import mutate
     import release_gate as RG
 
@@ -52385,7 +52387,7 @@ def test_release_gate_tiers():
                  "def test_b():\n    check(1, 'b')\n")
 
     def gate(changed, new=None, old=None, hunks=None, catchers=None,
-             red=None):
+             red=None, read=()):
         new, old = new or {}, old or {}
         return RG.classify(
             changed, lambda p: new.get(p, text_py if p.endswith(".py")
@@ -52394,13 +52396,18 @@ def test_release_gate_tiers():
             lambda p: (hunks or {}).get(p, [(10, 10)]), muts,
             catchers if catchers is not None else {"text: far away": "test_b"},
             lambda p: p.startswith(mutate.SAFETY_TRIGGERS)
-            and p.endswith(".py"), red)
+            and p.endswith(".py"), red, lambda p: p in read)
 
     # 1. Docs only: the selftest only, even with the whole sweep red.
     tier, names, why = gate(["OPERATOR.md", "docs/notes.md"],
                             red="the last whole sweep is red")
     check(tier == "docs" and names == set(),
           f"Markdown only is tier docs, no mutation: {tier} {why}")
+    tier, names, why = gate(["OPERATOR.md", "MORNING.md"],
+                            read={"MORNING.md"})
+    check(tier == "scoped" and names == core,
+          f"a Markdown file a test reads is test input, not docs: the "
+          f"safety core runs: {tier} {why}")
     tier, names, why = gate(["OPERATOR.md", "packaging/READ ME.txt"])
     check(tier == "scoped" and names == core,
           f"a .txt beside the .md is not docs: the safety core runs: {why}")
@@ -52444,7 +52451,7 @@ def test_release_gate_tiers():
                             old={"selftest.py": suite_old})
     check(tier == "full" and "outside its test_ functions" in " ".join(why),
           f"selftest.py's shared code (check()) changed: everything: {why}")
-    edited = suite_old.replace("check(1, 'b')", "check(2, 'b')")
+    edited = suite_old.replace("check(1, 'b')", "check(1, 'bb')")
     tier, names, why = gate(["selftest.py"], new={"selftest.py": edited},
                             old={"selftest.py": suite_old})
     check(tier == "scoped" and "text: far away" in names
@@ -52455,6 +52462,61 @@ def test_release_gate_tiers():
                             old={"selftest.py": suite_old}, catchers={})
     check(tier == "full",
           f"a test changed with no catchers file: everything: {why}")
+
+    # An existing test may only have its strings changed. Anything else in
+    # it (a `return` at its top, a number, a deleted check), a deleted
+    # test, or a string emptied is full: a test can be gutted that way with
+    # nothing of its own recorded as caught (the cold review of #242
+    # gutted test_fireball_at_the_engine and the scoped tier missed
+    # "fireball: a channel goes on with the group not armed").
+    for what, new_suite in (
+            ("a number", suite_old.replace("check(1, 'b')",
+                                           "check(2, 'b')")),
+            ("a return at the top", suite_old.replace(
+                "def test_b():\n", "def test_b():\n    return\n")),
+            ("a string emptied", suite_old.replace("'b'", "''")),
+            ("a deleted test", suite_old.split("\n\n\ndef test_b")[0]
+             + "\n")):
+        tier, names, why = gate(["selftest.py"],
+                                new={"selftest.py": new_suite},
+                                old={"selftest.py": suite_old})
+        check(tier == "full", f"an existing test changed by {what}: "
+                              f"everything: {tier} {why}")
+    added = suite_old + "\n\ndef test_c():\n    check(3, 'c')\n"
+    tier, names, why = gate(["selftest.py"], new={"selftest.py": added},
+                            old={"selftest.py": suite_old})
+    check(tier == "scoped" and names == core,
+          f"a new test, nothing else: the core: {tier} {why}")
+    here_dir = os.path.dirname(os.path.abspath(__file__))
+    real_suite = open(os.path.join(here_dir, "selftest.py"),
+                      encoding="utf-8").read()
+    gutted = real_suite.replace("def test_fireball_at_the_engine():\n",
+                                "def test_fireball_at_the_engine():\n"
+                                "    return\n", 1)
+    check(gutted != real_suite, "setup: the review's demo applies")
+    tier, names, why = gate(["selftest.py"], new={"selftest.py": gutted},
+                            old={"selftest.py": real_suite})
+    check(tier == "full" and "test_fireball_at_the_engine" in " ".join(why),
+          f"the review's demo (a return at the top of "
+          f"test_fireball_at_the_engine) is full: {why}")
+    for p, before, after, want in (
+            ("flamesafe/test_flamesafe.py", "x = 1\nassert x == 1, 'a'\n",
+             "x = 1\nassert x == 1, 'b'\n", "scoped"),
+            ("flamesafe/test_flamesafe.py", "x = 1\nassert x == 1, 'a'\n",
+             "x = 1\nassert True, 'a'\n", "full"),
+            ("tools/ui/fake_engine.js", "a", "b", "full"),
+            ("tools/ui/fx/status_off.json", "{}", "{ }", "full")):
+        tier, names, why = gate([p], new={p: after}, old={p: before})
+        check(tier == want, f"{p} changed: {want}: {tier} {why}")
+
+    # No mutation leaves mutate.py without a reason in mutate_removed.txt.
+    old_m = "MUTATIONS = [('a', 'f', 'x', 'y'), ('b', 'f', 'x', 'y')]\n"
+    new_m = "MUTATIONS = [('a', 'f', 'x', 'y')]\n"
+    check(RG.removed_without_note(old_m, new_m, "# notes\n") == ["b"]
+          and RG.removed_without_note(old_m, new_m,
+                                      "b | merged into a\n") == []
+          and RG.removed_without_note(old_m, old_m, "") == [],
+          "a mutation removed with no note is named; with a note, not")
 
     # 5. The classifier cannot decide: everything, never less.
     try:
@@ -52513,14 +52575,106 @@ def test_release_gate_tiers():
     wf = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            ".github", "workflows", "selftest.yml"),
               encoding="utf-8").read()
-    check("python3 release_gate.py --base" in wf
-          and 'narrow=(--only "$names")' in wf
+    check('git show "$base:$f"' in wf and 'git show "$BASE:$f"' in wf
+          and '"$bg/release_gate.py" --repo . --base "$base" --github-output'
+          in wf
+          and '"$bg/release_gate.py" --repo . --base "$BASE" --names-out' in wf
+          and "python3 release_gate.py --base" not in wf
+          and "python -u release_gate.py" not in wf
+          and "main has no release_gate.py yet" in wf
+          and "--check-removed" in wf,
+          "selftest.yml decides a release's tier with the BASE branch's "
+          "gate and mutate.py, never the PR's own (cold review B1), and "
+          "full when the base has none")
+    check('"$PR_BASE_REF" != main' in wf
+          and "ci is only for a PR into main" in wf
+          and "a PR into main with no release gate tier" in wf,
+          "ci refuses to certify any base but main, so a green ci cannot "
+          "be inherited by retargeting a PR to main (cold review M5)")
+    check("github.event_name == 'push' || (needs.mutate.result" in wf
+          and 'if: always() && github.event_name == \'push\'' in wf
+          and '"$MUTATE" != success' in wf,
+          "after a push the report always runs and a red suite or a "
+          "cancelled sweep is a red whole sweep (cold review M6b)")
+    wk = open(os.path.join(here_dir, ".github", "workflows",
+                           "weekly-mutate.yml"), encoding="utf-8").read()
+    check("group: ${{ github.workflow }}-${{ github.event_name }}" in wk
+          and re.search(r"^  report:\n(.*\n){0,2}    if: always\(\)$", wk,
+                        re.M)
+          and '"no job"' in wk and '"${RED:-1}"' in wk,
+          "weekly-mutate.yml: a manual run never cancels the Sunday one, "
+          "and a missing, skipped or cancelled shard is red (cold review "
+          "M6b, M6c)")
+    co = open(os.path.join(here_dir, ".github", "CODEOWNERS"),
+              encoding="utf-8").read()
+    check(all(f"/{p} " in co or f"/{p}\n" in co for p in (
+        "release_gate.py", "mutate.py", "mutate_catchers.json", ".github/")),
+          "CODEOWNERS names the gate, mutate.py, its catchers and .github/")
+    check('narrow=(--only "$names")' in wf
           and "release gate, tier full (it said:" in wf
           and '"$PR_BASE_REF" == main' in wf
           and re.search(r"^  ci:$", wf, re.M)
           and "sweep_issue.sh" in wf,
           "selftest.yml: the release gate's tiers, fail-closed fallback, "
           "per-shard recompute and the ci job are all wired")
+
+    # The base branch's copy runs from another folder against this tree.
+    with tempfile.TemporaryDirectory() as d:
+        for f in ("release_gate.py", "mutate.py", "mutate_catchers.json"):
+            shutil.copy(os.path.join(here_dir, f), os.path.join(d, f))
+        r = subprocess.run([sys.executable, os.path.join(d, "release_gate.py"),
+                            "--repo", here_dir, "--base", "HEAD"],
+                           capture_output=True, text=True, timeout=120)
+        check(r.returncode == 0 and "release gate: tier " in r.stdout,
+              f"a copy of the gate in another folder reads this tree with "
+              f"--repo: {r.returncode} {r.stdout[-300:]} {r.stderr[-300:]}")
+
+    # sweep_issue.sh: only a green sweep of main's head closes the issue;
+    # a branch run never touches it; red (or no count) opens it.
+    if sys.platform != "win32" and shutil.which("bash"):
+        with tempfile.TemporaryDirectory() as d:
+            log = os.path.join(d, "gh.log")
+            fake = os.path.join(d, "gh")
+            with open(fake, "w", encoding="utf-8") as fh:
+                fh.write('#!/bin/sh\necho "$*" >> "%s"\n'
+                         'case "$*" in\n'
+                         '  "issue list"*) echo 41 ;;\n'
+                         '  "api repos/r/commits/main"*) echo HEADSHA ;;\n'
+                         '  "issue create"*) echo https://x/issues/42 ;;\n'
+                         'esac\n' % log)
+            os.chmod(fake, 0o755)
+            rep_md = os.path.join(d, "r.md")
+            open(rep_md, "w").write("### table\n")
+            script = os.path.join(here_dir, ".github", "scripts",
+                                  "sweep_issue.sh")
+
+            def issue(ref, sha, red):
+                if os.path.exists(log):
+                    os.remove(log)
+                env = dict(os.environ, PATH=d + os.pathsep + os.environ["PATH"],
+                           GH_TOKEN="x", REPO="r", RUN_URL="u", REF=ref,
+                           SHA=sha)
+                r = subprocess.run(["bash", script, "the sweep", rep_md, red],
+                                   env=env, capture_output=True, text=True,
+                                   timeout=60)
+                calls = open(log).read() if os.path.exists(log) else ""
+                return r.returncode, calls
+            code, calls = issue("refs/heads/main", "HEADSHA", "0")
+            check(code == 0 and "issue close 41" in calls,
+                  f"green on main's head closes the issue: {code} {calls}")
+            code, calls = issue("refs/heads/main", "OLDSHA", "0")
+            check(code == 0 and "issue close" not in calls,
+                  f"green on an older main leaves it open: {calls}")
+            code, calls = issue("refs/heads/some-branch", "HEADSHA", "0")
+            check(code == 0 and "issue" not in calls,
+                  f"a branch run never touches the issue: {calls}")
+            code, calls = issue("refs/heads/main", "HEADSHA", "")
+            check(code == 1 and "issue comment 41" in calls
+                  and "issue close" not in calls,
+                  f"no red count is red: {code} {calls}")
+            code, calls = issue("refs/heads/some-branch", "X", "2")
+            check(code == 1 and "issue" not in calls,
+                  f"red on a branch is red, and leaves main's issue: {calls}")
     print("  ok")
 
 

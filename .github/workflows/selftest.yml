@@ -39,7 +39,9 @@ name: selftest
 #              the shard count can follow the work.
 #
 # A PR runs once, as a pull_request. Pushes run only for main and for release
-# tags, so a PR branch is not tested twice. ready_for_review is listed with
+# tags, so a PR branch is not tested twice. Changing a PR's base starts no
+# run, so ci refuses to certify any base but main (see the ci job): a PR
+# moved to main is closed and reopened, or pushed, to run the gate. ready_for_review is listed with
 # the three GitHub gives by default because that is the moment a draft's
 # mutate job, skipped while it stays a draft, is first allowed to run.
 on:
@@ -181,10 +183,23 @@ jobs:
           if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
             say "no base to compare against: every mutation, ubuntu, $FULL_SHARDS shards" full "" '["ubuntu-latest"]' "$FULL_SHARDS"
           fi
+          # The BASE branch's copy of the gate, never the PR's own: a PR
+          # that edits release_gate.py or mutate.py is judged by the ones
+          # it would replace. No copy there: no base gate (full below).
+          bg="$RUNNER_TEMP/base-gate"; mkdir -p "$bg"; have_bg=1
+          for f in release_gate.py mutate.py mutate_catchers.json; do
+            git show "$base:$f" > "$bg/$f" 2>/dev/null || have_bg=0
+          done
+          # A mutation may leave mutate.py only with a reason in
+          # mutate_removed.txt (any PR; the base's checker when it has one).
+          checker="$bg/release_gate.py"; if (( ! have_bg )); then checker=release_gate.py; fi
+          if [[ "$EVENT" == pull_request ]] && ! python3 "$checker" --repo . --base "$base" --check-removed; then
+            exit 1
+          fi
           # A release (a PR into main): the release gate's tier, worked out
-          # from the diff by release_gate.py, never from what anyone says
-          # about the change. Anything but a clean "docs" or "scoped" answer
-          # is the whole list (fails closed).
+          # from the diff by the base's release_gate.py, never from what
+          # anyone says about the change. Anything but a clean "docs" or
+          # "scoped" answer is the whole list (fails closed).
           if [[ "$EVENT" == pull_request && "$PR_BASE_REF" == main ]]; then
             red=()
             if ! open_issue=$(gh issue list --repo "$REPO" --label mutate-sweep --state open --json number --jq '.[0].number // empty'); then
@@ -194,7 +209,9 @@ jobs:
             fi
             gate="$RUNNER_TEMP/gate.out"; : > "$gate"
             tier=full; count=0; digest=""
-            if GITHUB_OUTPUT="$gate" python3 release_gate.py --base "$base" --github-output "${red[@]}"; then
+            if (( ! have_bg )); then
+              echo "::warning::main has no release_gate.py yet: this release runs every mutation"
+            elif GITHUB_OUTPUT="$gate" python3 "$bg/release_gate.py" --repo . --base "$base" --github-output "${red[@]}"; then
               tier=$(sed -n 's/^tier=//p' "$gate"); count=$(sed -n 's/^count=//p' "$gate"); digest=$(sed -n 's/^digest=//p' "$gate")
             else
               echo "::warning::release_gate.py failed: this release runs every mutation"
@@ -206,10 +223,12 @@ jobs:
             if [[ "$tier" == scoped && "$count" =~ ^[0-9]+$ && "$digest" =~ ^[0-9a-f]{16}$ ]] && (( count > 0 )); then
               # One wave: up to 16 shards (max-parallel) of about 10 or
               # more, so a shard is a 15 to 19 minute baseline plus about
-              # 2.4 minutes a mutation; past 720 mutations more shards,
-              # never over 45 each, as for a whole sweep.
+              # 2.4 minutes a mutation (the core alone, about 900, is 16 of
+              # about 57: 2.5 to 2.8 hours); past 960 mutations more
+              # shards, never over 60 each (about 165 minutes, far inside
+              # the 340 limit).
               k=$(( (count + 9) / 10 )); if (( k > 16 )); then k=16; fi
-              m=$(( (count + 44) / 45 )); if (( m > k )); then k=$m; fi
+              m=$(( (count + 59) / 60 )); if (( m > k )); then k=$m; fi
               if (( k > FULL_SHARDS )); then k=$FULL_SHARDS; fi
               { echo "tier=scoped"; echo "count=$count"; echo "digest=$digest"; } >> "$GITHUB_OUTPUT"
               say "release gate, tier scoped: $count mutations, ubuntu, $k shard(s)" release "$base" '["ubuntu-latest"]' "$k"
@@ -322,9 +341,11 @@ jobs:
           if [[ "$MODE" == release ]]; then
             # The release gate's list, worked out again here from the same
             # commit; it must be the very list the changes job sized.
-            names="$RUNNER_TEMP/release_names.txt"
-            python -u release_gate.py --base "$BASE" --names-out "$names" | tee "$RUNNER_TEMP/mutate.log"
-            got=$(python -c "import release_gate,sys; print(release_gate.digest(l.rstrip('\n') for l in open(sys.argv[1], encoding='utf-8')))" "$names")
+            # The base branch's gate, as in the changes job.
+            names="$RUNNER_TEMP/release_names.txt"; bg="$RUNNER_TEMP/base-gate"; mkdir -p "$bg"
+            for f in release_gate.py mutate.py mutate_catchers.json; do git show "$BASE:$f" > "$bg/$f"; done
+            python -u "$bg/release_gate.py" --repo . --base "$BASE" --names-out "$names" | tee "$RUNNER_TEMP/mutate.log"
+            got=$(python -c "import hashlib,sys; print(hashlib.sha256('\n'.join(sorted(l.rstrip('\n') for l in open(sys.argv[1], encoding='utf-8'))).encode()).hexdigest()[:16])" "$names")
             have=$(grep -c . "$names" || true)
             if [[ "$got" != "$DIGEST" || "$have" != "$COUNT" ]]; then
               echo "::error title=release gate::this shard's list ($have, $got) is not the changes job's ($COUNT, $DIGEST): nothing was run" | tee -a "$RUNNER_TEMP/mutate.log"
@@ -429,8 +450,10 @@ jobs:
   # job, and green closes that issue (.github/scripts/sweep_issue.sh, the
   # same as weekly-mutate.yml).
   mutate-report:
-    needs: [changes, mutate]
-    if: always() && needs.mutate.result != 'skipped' && needs.mutate.result != 'cancelled'
+    needs: [selftest, changes, mutate]
+    # After a push or a tag it always runs: a red suite (so no shard ran),
+    # a cancelled sweep or a broken changes job is a red whole sweep too.
+    if: always() && (github.event_name == 'push' || (needs.mutate.result != 'skipped' && needs.mutate.result != 'cancelled'))
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -498,15 +521,30 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
               fh.write(f"red={nred if shards else 1}\n")
           PY
+      # Runs even when the table step failed: anything but a green suite,
+      # a green changes job and green shards is red here.
       - name: A whole sweep after the fact is never silent
-        if: github.event_name == 'push'
+        if: always() && github.event_name == 'push'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           WHAT: The whole mutation sweep after the push of ${{ github.ref_name }} (${{ github.sha }})
-        run: bash .github/scripts/sweep_issue.sh "$WHAT" "$RUNNER_TEMP/report.md" "${{ steps.table.outputs.red }}"
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+          RED: ${{ steps.table.outputs.red }}
+          SELFTEST: ${{ needs.selftest.result }}
+          CHANGES: ${{ needs.changes.result }}
+          MUTATE: ${{ needs.mutate.result }}
+        run: |
+          report="$RUNNER_TEMP/report.md"; [[ -f "$report" ]] || echo "### the shard table could not be made" > "$report"
+          red="${RED:-1}"
+          if [[ "$SELFTEST" != success || "$CHANGES" != success || "$MUTATE" != success ]]; then
+            printf '\nselftest: %s, changes: %s, mutate: %s. Anything but success is a red sweep: the list was not proved.\n' "$SELFTEST" "$CHANGES" "$MUTATE" >> "$report"
+            if (( red < 1 )); then red=1; fi
+          fi
+          bash .github/scripts/sweep_issue.sh "$WHAT" "$report" "$red"
 
   # The one required check on main. Green only when the suite passed on
   # both OSes, the changes job decided, and every mutate shard that had to
@@ -533,7 +571,24 @@ jobs:
           MODE: ${{ needs.changes.outputs.mode }}
           TIER: ${{ needs.changes.outputs.tier }}
           COUNT: ${{ needs.changes.outputs.count }}
+          EVENT: ${{ github.event_name }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
+          # ci certifies a PR into main and nothing else. A green ci from a
+          # run made while the PR pointed at bench-build would otherwise be
+          # inherited when it is retargeted to main (a base change starts no
+          # run), with no release gate ever computed. So on any other base
+          # ci is red (it is not required there), and on main it needs the
+          # tier the changes job computed for main. After retargeting a PR
+          # to main: close and reopen it, or push, and the gate runs.
+          if [[ "$EVENT" == pull_request && "$PR_BASE_REF" != main ]]; then
+            echo "::error title=ci is only for a PR into main::this run was for a PR into $PR_BASE_REF; ci is not required there. If this PR is moved to main, close and reopen it (or push) so the release gate runs for main."
+            exit 1
+          fi
+          if [[ "$EVENT" == pull_request && -z "$TIER" ]]; then
+            echo "::error::a PR into main with no release gate tier: the changes job did not decide for main"
+            exit 1
+          fi
           echo "selftest: $SELFTEST, changes: $CHANGES, mutate: $MUTATE (mode $MODE)"
           if [[ -n "$TIER" ]]; then
             line="release gate: tier $TIER"

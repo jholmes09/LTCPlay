@@ -1,0 +1,12 @@
+# The release gate decides how much testing a release into main needs, and
+# selftest.yml on a PR comes from the PR itself. These files must be
+# reviewed by the owner before they merge. GitHub only enforces this once
+# "Require review from Code Owners" is turned on in main's (and
+# bench-build's) branch protection: Settings, Branches.
+/release_gate.py              @jholmes09
+/mutate.py                    @jholmes09
+/mutate_catchers.json         @jholmes09
+/mutate_expected_misses.txt   @jholmes09
+/mutate_removed.txt           @jholmes09
+/test_show_fixtures.py        @jholmes09
+/.github/                     @jholmes09

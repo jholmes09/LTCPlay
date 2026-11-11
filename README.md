@@ -594,14 +594,20 @@ still true by design.
 
 For Jeff. A release is a PR into main. Its one required check is `ci`. The
 computer decides how much testing a release needs by reading which files
-changed. Nobody can talk it down, Claude included. If it cannot tell, it
-runs everything.
+changed, using the copy of the rules already on main, so a release cannot
+change the rules that judge it. Nobody can talk it down, Claude included.
+If it cannot tell, it runs everything.
+
+One setting for Jeff: in GitHub, Settings, Branches, turn on "Require
+review from Code Owners" for main. Then any change to the testing
+machinery needs your review before it merges (the list is in
+`.github/CODEOWNERS`).
 
 | What the release changes | What runs before it can merge | About how long |
 |---|---|---|
-| Only docs (`.md` files) | the full test suite on Windows and Linux | 30 to 40 minutes |
-| Code, but not the testing machinery | the test suite, plus the "break it on purpose" checks near the changed lines, plus a fixed safety set (flame and laser gates, Stop and Abort, the flamesafe interlocks, the Run gate, the remote's rules) | 1.5 to 2 hours for a small fix; longer for a big one |
-| The testing machinery itself (`mutate.py`, its lists, the workflows, `release_gate.py`, the shared test code, `remote_rules.js`), or the last full check on main is red | everything, the old way | 13 to 17 hours |
+| Only docs (`.md` files no test reads) | the full test suite on Windows and Linux | 30 to 40 minutes |
+| Code, or new tests, or only the wording inside existing tests | the test suite, plus the "break it on purpose" checks near the changed lines, plus a fixed safety set of about 900 (flame and laser gates, Stop, Hold and Abort, the flamesafe interlocks, fireball, fuel and flame programming, arming, the Run gate, the remote's rules) | about 3 hours |
+| The testing machinery itself (`mutate.py`, its lists, the workflows, `release_gate.py`, the shared test code, anything in `tools/`, `remote_rules.js`), any change to how an existing test works, or the last full check on main is red | everything, the old way | 13 to 17 hours |
 
 **After it merges,** main runs every check anyway (13 to 17 hours; nobody
 waits for it), and again every Sunday. If any of those finds a problem, an

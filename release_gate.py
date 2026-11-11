@@ -6,19 +6,29 @@ Nobody picks the tier. A PR description, a label that asks for less, or an
 agent saying "it is only text" changes nothing: this script reads what
 git says changed and decides. Anything it cannot work out runs everything.
 
-    tier docs    every changed file is Markdown and none of them is a
-                 file mutate.py breaks: the selftest only (ubuntu and
+    tier docs    every changed file is Markdown, none of them is a file
+                 mutate.py breaks, and no test reads it (its name appears
+                 nowhere in the test code): the selftest only (ubuntu and
                  windows), no mutation runs
     tier scoped  anything else: the mutations whose text lies in or near
                  the changed lines (every mutation of a changed safety
-                 file), the mutations last caught by a test the change
-                 edited or deleted, and the RELEASE_CORE below, always
+                 file), the mutations last caught by a test whose string
+                 literals the change edited, and the RELEASE_CORE below,
+                 always. New tests may be added; an existing test may
+                 only have its strings and comments changed
     tier full    every mutation, as before. Forced when the change touches
-                 what decides or measures the gate itself (FORCE_FULL, or
-                 the shared code of selftest.py outside its test_
-                 functions), when the last whole sweep on main is red (its
+                 what decides or measures the gate itself (FORCE_FULL, the
+                 shared code of selftest.py outside its test_ functions,
+                 anything under tools/), when an existing test is deleted
+                 or changes in more than its strings (or a string becomes
+                 empty), when the last whole sweep on main is red (its
                  `mutate-sweep` issue is open) and any code changed, and
                  whenever this script errors or cannot read the diff
+
+The workflow runs the copy of this file (and of mutate.py and its
+catchers) that is on the BASE branch, against the PR's diff, so a release
+can never lower its own tier by editing the gate. No copy on the base:
+full.
 
 The whole list still runs after the fact: on every push to main (each
 merged release), on every release tag, every Sunday, and by hand. A red
@@ -30,6 +40,11 @@ release runs the whole list before it merges. TESTING.md has the rest.
     python3 release_gate.py --base REV --github-output     for the workflow
     --sweep-red WHY    the last whole sweep on main is red: any code
                        change runs everything (the workflow passes it)
+    --repo DIR         the git work tree to read the diff from (default:
+                       this file's folder; the workflow runs a copy of the
+                       base's gate from elsewhere)
+    --check-removed    exit 1 if a mutation of BASE's mutate.py is gone
+                       from HEAD's without a line in mutate_removed.txt
 """
 import ast
 import hashlib
@@ -39,14 +54,18 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# The git work tree the diff is read from (--repo).
+REPO = HERE
 
 # A change to any of these forces the whole list: they decide what the gate
 # runs (this file, mutate.py and its lists, the workflows), what the suite
 # means (the shared fixtures), or the remote's own safety rules.
+# tools/ is test support (the UI test rig, its fixtures, fake_engine.js,
+# the stress kit): what a test compares against, so any change is full.
 FORCE_FULL = ("release_gate.py", "mutate.py", "mutate_catchers.json",
-              "mutate_expected_misses.txt", "test_show_fixtures.py",
-              "ltcplay/web/remote_rules.js", ".github/workflows/",
-              ".github/scripts/")
+              "mutate_expected_misses.txt", "mutate_removed.txt",
+              "test_show_fixtures.py", "ltcplay/web/remote_rules.js",
+              ".github/", "tools/")
 
 # Lines of context either side of a change: a mutation whose text starts or
 # ends this close to a changed line runs (the same function, nearly always).
@@ -55,8 +74,10 @@ CONTEXT = 25
 # The always-run safety core: (file, name pattern or None for every one).
 # Flame and laser enable gates, Stop and Abort, the interlocks (flamesafe's
 # arm input, its link to the node, its service), the Run gate (nothing
-# reaches the rig before Run), and the remote's own rules. About 350
-# mutations, 2026-11-11. Every rule must still match at least one mutation
+# reaches the rig before Run), the remote's own rules, every fireball,
+# fuel and flame programming mutation, flamesafe's rules and sACN, the
+# deck's arm keys, the remote's Stop and Hold, the morning arm and purge,
+# and who may arm (the hazer). About 900 mutations, 2026-11-12. Every rule must still match at least one mutation
 # and the core must stay inside CORE_SIZE, or the gate runs everything (a
 # renamed file or a broken pattern can never quietly empty it).
 _STOP_GATE = (r"(?i)\b(stop|stops|stopped|abort\w*|e-?stop|disarm\w*|arm|"
@@ -78,8 +99,20 @@ RELEASE_CORE = (
     ("ltcplay/fire_ice.py", _RUN_GATE),
     ("ltcplay/web.py", _RUN_GATE),
     ("ltcplay/remote.py", _RUN_GATE),
+    ("ltcplay/fireball.py", None),
+    ("ltcplay/fireball_charge.py", None),
+    ("ltcplay/fireball_cues.py", None),
+    ("ltcplay/flameprog.py", None),
+    ("ltcplay/fuel.py", None),
+    ("ltcplay/fuelpump.py", None),
+    ("flamesafe/rules.py", None),
+    ("flamesafe/sacn.py", None),
+    ("ltcplay/streamdeck.py", r"(?i)^arm\b"),
+    ("ltcplay/web/remote2.html", r"(?i)\b(stop|hold|abort)\b"),
+    ("ltcplay/morning.py", r"(?i)\b(arm\w*|disarm\w*|purge\w*)\b"),
+    ("ltcplay/users.py", r"(?i)hazer|\barm"),
 )
-CORE_SIZE = (200, 700)
+CORE_SIZE = (600, 1200)
 
 
 class GateError(Exception):
@@ -133,9 +166,77 @@ def suite_split(text):
     inside = set()
     for a, b in spans.values():
         inside.update(range(a, b + 1))
-    shared = [l for i, l in enumerate(lines, 1) if i not in inside]
+    # Blank lines are not code: the two between a new test and the last
+    # one are not a change to the shared code.
+    shared = [l for i, l in enumerate(lines, 1)
+              if i not in inside and l.strip()]
     tests = {k: "\n".join(lines[a - 1:b]) for k, (a, b) in spans.items()}
     return shared, tests
+
+
+def _is_test_py(p):
+    """A test file other than selftest.py: test_*.py anywhere."""
+    b = os.path.basename(p)
+    return b.startswith("test_") and b.endswith(".py")
+
+
+def strings_only(old_src, new_src):
+    """None when new_src differs from old_src only in the contents of
+    string literals, comments and line breaks; else why not. A string
+    that becomes empty counts as more than a string edit: `want = ""` is
+    how a check is emptied without touching its code."""
+    import io
+    import tokenize
+    skip = {tokenize.COMMENT, tokenize.NL}
+    text_kinds = {tokenize.STRING}
+    for k in ("FSTRING_MIDDLE", "TSTRING_MIDDLE"):
+        if hasattr(tokenize, k):
+            text_kinds.add(getattr(tokenize, k))
+
+    def toks(src):
+        out = []
+        for t in tokenize.generate_tokens(io.StringIO(src).readline):
+            if t.type in skip:
+                continue
+            out.append((t.type, None if t.type in text_kinds else t.string,
+                        t.string))
+        return out
+    try:
+        a, b = toks(old_src), toks(new_src)
+    except (tokenize.TokenError, SyntaxError) as e:
+        return f"it could not be read as Python ({e})"
+    if [x[:2] for x in a] != [x[:2] for x in b]:
+        return "its code changed, not only its strings"
+    for x, y in zip(a, b):
+        if x[1] is None and x[2] != y[2] and \
+                y[2].lstrip("rRbBuUfF").strip("\"'") == "":
+            return f"a string became empty ({x[2][:40]} -> {y[2]})"
+    return None
+
+
+def mutations_in(text):
+    """The names in a mutate.py text's MUTATIONS list, parsed, never run."""
+    tree = ast.parse(text)
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "MUTATIONS"
+                for t in n.targets):
+            return {e.elts[0].value for e in n.value.elts}
+    raise GateError("no MUTATIONS list in mutate.py")
+
+
+def removed_without_note(old_mutate, new_mutate, notes):
+    """Mutation names in the old mutate.py text that are not in the new
+    one and have no `name | why` line in the notes text (a renamed one
+    counts as removed: say so)."""
+    old = mutations_in(old_mutate) if old_mutate else set()
+    new = mutations_in(new_mutate) if new_mutate else set()
+    noted = set()
+    for line in (notes or "").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "|" in line:
+            noted.add(line.split("|", 1)[0].strip())
+    return sorted(old - new - noted)
 
 
 def anchor_lines(text, old):
@@ -149,7 +250,8 @@ def anchor_lines(text, old):
 
 
 def classify(changed, new_text, old_text, hunks, mutations, catchers,
-             safety_files=lambda p: False, sweep_red=None):
+             safety_files=lambda p: False, sweep_red=None,
+             tests_read=lambda p: False):
     """(tier, names or None for everything, reasons).
 
     changed: every path the diff touches, both sides of a rename.
@@ -157,8 +259,11 @@ def classify(changed, new_text, old_text, hunks, mutations, catchers,
     hunks(p): [(first, last)] changed line ranges in the new file.
     mutations: mutate.MUTATIONS. catchers: {mutation: test that caught it}.
     safety_files(p): True for a file whose every mutation runs when it
-    changes. sweep_red: why to run everything when any code changed (the last whole sweep on main is red); a docs-only release
-    cannot fix or worsen that, so it stays docs."""
+    changes. sweep_red: why to run everything when any code changed (the
+    last whole sweep on main is red); a docs-only release cannot fix or
+    worsen that, so it stays docs. tests_read(p): True when some test
+    reads the file (its name appears in the test code), so a Markdown
+    file is test input, not docs."""
     reasons = []
 
     def full(why):
@@ -172,7 +277,8 @@ def classify(changed, new_text, old_text, hunks, mutations, catchers,
     if not changed:
         reasons.append("no file differs from the base")
         return "docs", set(), reasons
-    if all(p.lower().endswith(".md") and p not in targets for p in changed):
+    if all(p.lower().endswith(".md") and p not in targets
+           and not tests_read(p) for p in changed):
         reasons.append(f"docs only ({len(changed)} Markdown files, none "
                        f"mutated): the selftest only")
         return "docs", set(), reasons
@@ -195,7 +301,17 @@ def classify(changed, new_text, old_text, hunks, mutations, catchers,
         if shared_new != shared_old:
             return full("selftest.py changed outside its test_ functions "
                         "(the runner, check() or a shared rig)")
+        gone = sorted(set(tests_old) - set(tests_new))
+        if gone:
+            return full(f"existing tests deleted or renamed: "
+                        f"{', '.join(gone[:5])}")
         touched = {n for n in tests_old if tests_new.get(n) != tests_old[n]}
+        for n in sorted(touched):
+            why = strings_only(tests_old[n], tests_new[n])
+            if why:
+                return full(f"an existing test, {n}, changed: {why}. A test "
+                            f"can be weakened that way with nothing of its "
+                            f"own recorded as caught")
         if not catchers and touched:
             return full("tests changed and there is no catchers file to "
                         "say what they guarded")
@@ -204,12 +320,22 @@ def classify(changed, new_text, old_text, hunks, mutations, catchers,
         chosen |= dep
         reasons.append(f"selftest.py: {len(touched)} test(s) edited or "
                        f"deleted, {len(dep)} mutations they caught last time")
-    if "flamesafe/test_flamesafe.py" in changed:
-        dep = {n for n, *_ in mutations if "test_flamesafe_in_its_own_process"
-               in (catchers.get(n) or "").split(",")}
-        chosen |= dep
-        reasons.append(f"flamesafe's own tests: {len(dep)} mutations they "
-                       f"caught last time")
+    for p in changed:
+        if p == "selftest.py" or not _is_test_py(p):
+            continue
+        before, after = old_text(p), new_text(p)
+        if before is not None:
+            why = "it was deleted" if after is None else \
+                strings_only(before, after)
+            if why:
+                return full(f"the test file {p} changed: {why}")
+        if p == "flamesafe/test_flamesafe.py":
+            dep = {n for n, *_ in mutations
+                   if "test_flamesafe_in_its_own_process"
+                   in (catchers.get(n) or "").split(",")}
+            chosen |= dep
+            reasons.append(f"flamesafe's own tests (strings only): "
+                           f"{len(dep)} mutations they caught last time")
 
     for p in changed:
         if p not in targets:
@@ -245,7 +371,7 @@ def classify(changed, new_text, old_text, hunks, mutations, catchers,
 # --------------------------------------------------------------- git side --
 
 def _git(*args):
-    r = subprocess.run(["git"] + list(args), cwd=HERE, capture_output=True,
+    r = subprocess.run(["git"] + list(args), cwd=REPO, capture_output=True,
                        text=True, encoding="utf-8", errors="replace")
     if r.returncode != 0:
         raise GateError(f"git {' '.join(args)}: {r.stderr.strip()}")
@@ -271,6 +397,18 @@ def _hunks(point, path):
     return out
 
 
+def _tests_read():
+    """tests_read() for classify(): True when the file's name appears in
+    the test code at HEAD (selftest.py, every test_*.py, tools/)."""
+    corpus = []
+    for p in _git("ls-tree", "-r", "--name-only", "HEAD").splitlines():
+        if p == "selftest.py" or _is_test_py(p) or (
+                p.startswith("tools/") and p.endswith((".py", ".js"))):
+            corpus.append(_show("HEAD", p) or "")
+    text = "\n".join(corpus)
+    return lambda p: os.path.basename(p) in text
+
+
 def decide(base, sweep_red=None):
     """classify() on the diff from the merge base of BASE and HEAD to HEAD.
     Never raises: anything that goes wrong is tier full, with why."""
@@ -291,7 +429,7 @@ def decide(base, sweep_red=None):
         tier, names, reasons = classify(
             changed, lambda p: _show("HEAD", p), lambda p: _show(point, p),
             lambda p: _hunks(point, p), mutate.MUTATIONS, catchers,
-            safety, sweep_red)
+            safety, sweep_red, _tests_read())
         return tier, names, [f"against {point[:10]}, {len(changed)} files"] \
             + reasons
     except Exception as e:                       # noqa: BLE001 fail closed
@@ -305,7 +443,8 @@ def digest(names):
 
 
 def main(argv):
-    base, out, gh, red = None, None, False, None
+    global REPO
+    base, out, gh, red, check_removed = None, None, False, None, False
     it = iter(argv)
     for a in it:
         if a == "--base":
@@ -316,6 +455,10 @@ def main(argv):
             gh = True
         elif a == "--sweep-red":
             red = next(it)
+        elif a == "--repo":
+            REPO = os.path.abspath(next(it))
+        elif a == "--check-removed":
+            check_removed = True
         else:
             print(f"unknown option {a}")
             return 2
@@ -323,6 +466,22 @@ def main(argv):
         print("usage: release_gate.py --base REV [--names-out FILE] "
               "[--github-output] [--sweep-red WHY]")
         return 2
+    if check_removed:
+        try:
+            point = _git("merge-base", base, "HEAD").strip()
+            gone = removed_without_note(_show(point, "mutate.py"),
+                                        _show("HEAD", "mutate.py"),
+                                        _show("HEAD", "mutate_removed.txt"))
+        except Exception as e:                   # noqa: BLE001
+            print(f"::error::cannot check for removed mutations: {e}")
+            return 1
+        if gone:
+            print(f"::error title=mutations removed::{len(gone)} mutations "
+                  f"are gone from mutate.py with no `name | why` line in "
+                  f"mutate_removed.txt: {', '.join(gone[:10])}")
+            return 1
+        print("no mutation was removed without a note")
+        return 0
     tier, names, reasons = decide(base, red)
     n = len(names) if names is not None else 0
     print(f"release gate: tier {tier}"

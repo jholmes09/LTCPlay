@@ -39,7 +39,7 @@ Written 2026-10-06, after the audit that simplified it.
 |---|---|---|---|
 | Every push to a PR | selftest on ubuntu and windows | 15 to 20 min (ubuntu), 25 to 35 min (windows); limits 45 and 60 | yes, through `ci` |
 | A PR into bench-build marked ready for review, and every push to it after | the mutate shards, each running only the mutations this PR can have changed the result of (below); about 25 a shard, 96 shards at most, 16 at a time, none at all for a doc or UI change | nothing for a doc; 10 to 90 min for a change to a safety file | no |
-| A release (a PR into main) marked ready, and every push to it after | the release gate's tier (below): docs, scoped or full | docs: the selftest only; scoped: 1.5 to 2 hours for a small change; full: 13 to 17 hours | yes, through `ci` |
+| A release (a PR into main) marked ready, and every push to it after | the release gate's tier (below): docs, scoped or full | docs: the selftest only; scoped: about 3 hours (the safety core alone is about 900 mutations, one wave of 16 shards of about 57); full: 13 to 17 hours | yes, through `ci` |
 | A push to main (a release just merged) | every mutation, ubuntu, after the fact; red opens the `mutate-sweep` issue | 11 to 14 hours | not applicable: it runs after the merge |
 | A release tag (`gpl-...` or a tech build) | every mutation, ubuntu and windows, 96 shards each, 16 at a time | 11 to 14 hours on ubuntu; windows longer | the tag is not cut until it is green |
 | Every Sunday, 03:12 Eastern | every mutation on main, ubuntu (`weekly mutate` workflow), 96 shards, 16 at a time | 11 to 14 hours | a red sweep opens an issue; it is fixed before the next merge |
@@ -71,31 +71,55 @@ waves: 11 to 14 hours for a whole ubuntu sweep.
 
 `release_gate.py` reads the diff between the release branch and main (from
 their merge base) and picks one of three tiers. No person and no agent
-picks it, and nothing in a PR's text changes it.
+picks it, and nothing in a PR's text changes it. The workflow runs the
+copy of `release_gate.py`, `mutate.py` and `mutate_catchers.json` that is
+on main, against the PR's diff (`--repo`), so a release can never lower its
+own tier by editing them; with no copy on main, the tier is full.
+`selftest.yml` itself comes from the PR on a `pull_request` run, so it is
+protected by a different rule: any change under `.github/` is full, and
+`.github/CODEOWNERS` names the owner for the gate's files. That needs
+"Require review from Code Owners" turned on in main's branch protection
+(Jeff, in Settings).
 
-- **docs**: every changed file is Markdown and none is a file mutate.py
-  breaks. The selftest on both OSes only.
+`ci` passes only for a PR into main whose run computed the tier for main.
+On any other base it is red on purpose (it is not required there), so a
+green `ci` cannot follow a PR that is moved to main afterwards: a base
+change starts no run. Close and reopen the PR (or push) after moving it.
+
+- **docs**: every changed file is Markdown, none is a file mutate.py
+  breaks, and no test reads it (its name appears nowhere in selftest.py,
+  a `test_*.py` or `tools/`: MORNING.md, CONTRACT.md and others are test
+  input). The selftest on both OSes only.
 - **scoped**: any other change. The mutations whose text lies within 25
   lines of a changed line (every mutation of a changed safety file), the
-  mutations whose last catcher (`mutate_catchers.json`) is a test the
-  change edited or deleted, and the safety core, always: every
-  `remote_rules.js`, flamesafe arm input, link and service, and laser arm
-  mutation, the conductor's, flame link's and composer's Stop, Abort,
-  arm, gate and interlock mutations, and the Run gate's (about 350,
-  `RELEASE_CORE`). Sized for one wave of 16 shards.
+  mutations whose last catcher (`mutate_catchers.json`) is a test whose
+  strings the change edited, and the safety core, always (`RELEASE_CORE`,
+  about 900): every `remote_rules.js`, flamesafe arm input, link,
+  service, rules and sACN, laser arm, fireball, fireball charge and cues,
+  flame programming, fuel and fuel pump mutation; the conductor's, flame
+  link's and composer's Stop, Abort, arm, gate and interlock mutations;
+  the Run gate's; the deck's `arm:` keys; the remote's Stop, Hold and
+  Abort; the morning arm and purge; who may arm (the hazer). One wave of
+  16 shards. New tests may be added freely; an existing test may change
+  only in its string literals and comments.
 - **full**: every mutation. Forced when the change touches `mutate.py`,
   `mutate_catchers.json`, `mutate_expected_misses.txt`,
-  `release_gate.py`, `.github/workflows/`, `.github/scripts/`,
-  `test_show_fixtures.py`, `remote_rules.js`, or selftest.py outside its
-  `test_` functions (the runner, `check()`, a shared rig); when the
+  `mutate_removed.txt`, `release_gate.py`, anything under `.github/` or
+  `tools/` (the UI test rig and its fixtures), `test_show_fixtures.py`,
+  `remote_rules.js`, or selftest.py outside its `test_` functions (the
+  runner, `check()`, a shared rig); when an existing test is deleted or
+  changes in anything but its strings, or a string in it becomes empty
+  (a `return` at its top would gut it with nothing recorded as caught);
+  when the
   `mutate-sweep` issue is open and any code changed; and whenever the
   gate errors, cannot read the diff, or a shard's own recomputed list
   differs from the one the changes job sized (that shard is red).
 
 **What the scoped tier accepts.** It does not re-prove a mutation far
-from the change whose test the change weakened (a helper a test calls, a
-shared state), or a mutation with no recorded catcher whose test the change
-edited, or two commits that only interact. Those are the cases the whole
+from the change whose behavior the change altered indirectly, a test
+weakened only through a changed string (an expected value swapped for
+another non-empty one), a mutation with no recorded catcher whose test's
+strings the change edited, or two commits that only interact. Those are the cases the whole
 sweep after the merge exists for: every push to main runs every mutation,
 and so does every Sunday and every release tag. A red one opens the
 `mutate-sweep` issue, every PR's `ci` warns, and the next release with any
@@ -104,6 +128,12 @@ the issue). So a gap can ship for at most the time one whole sweep takes
 after the merge, and is never carried into the release after it.
 
 `python3 release_gate.py --base origin/main` prints the tier and why.
+
+**Mutations only leave on purpose.** A mutation that disappears from
+mutate.py (deleted or renamed) fails the `changes` job of any PR unless
+`mutate_removed.txt` has a `name | why` line for it
+(`release_gate.py --check-removed`, the base branch's copy when it has
+one).
 
 ## Which mutations a PR into bench-build runs
 
@@ -199,9 +229,14 @@ opens an issue labelled `mutate-sweep` naming the red shards with a link
 to each (or adds a comment to the one already open) and goes red itself,
 and every PR's `ci` job carries a warning while that issue is open. A
 release with any code in it runs the full tier while it is open. Whoever
-merges next fixes it first; nothing is tagged while it is open. The next
-green whole sweep closes the issue by itself
-(`.github/scripts/sweep_issue.sh`).
+merges next fixes it first; nothing is tagged while it is open. Only a
+green whole sweep of the commit that is main's head right now closes the
+issue (`.github/scripts/sweep_issue.sh`); a green sweep of a branch or of
+an older main leaves it open. A red suite after a push (so no shard ran),
+a cancelled sweep, a missing shard or a report that could not be made
+counts as red. A manual weekly run never cancels the Sunday one (they
+are in separate concurrency groups), and a run on a branch only reports
+its result: it neither opens nor closes the issue about main.
 
 ## Running things by hand
 
