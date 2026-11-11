@@ -737,14 +737,12 @@ def _rule_warnings(rule, most):
     for where, n in nights:
         if n.interval_min * 60 < need:
             out.append(
-                f"{where}: shows are {n.interval_min} minutes apart, but a "
-                f"show takes {rule.show_len_s} s and the guard after it is "
-                f"{rule.guard_s} s, so they overlap: a show whose time comes "
-                f"while the one before it is still running waits, and is "
-                f"missed once it is more than {rule.late_grace_s} s late; "
-                f"one inside the guard starts as soon as the guard is over "
-                f"if that is within {rule.late_grace_s} s of its time, so "
-                f"lateness can add up from show to show. Saved as it is.")
+                f"{where}: shows overlap and can run late. They are "
+                f"{n.interval_min} minutes apart; a show plus its guard is "
+                f"{rule.show_len_s + rule.guard_s} s ({rule.show_len_s} s "
+                f"and {rule.guard_s} s). A show more than "
+                f"{rule.late_grace_s} s late is missed, so lateness can add "
+                f"up from show to show. Saved as it is.")
         start, end = night_window(n, date(2000, 1, 3), timezone.utc)
         if (end - start).total_seconds() < need:
             out.append(

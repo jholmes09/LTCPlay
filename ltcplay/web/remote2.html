@@ -1406,7 +1406,7 @@ function opText(text){
 // (cards redraw every 250 ms).
 function setOpText(el, text){
   const t = String(text == null ? "" : text);
-  if(!el || el.dataset.op === t) return;
+  if(!el || (el.dataset.op === t && el.firstChild && el.firstChild.className === "full op")) return;
   el.dataset.op = t;
   el.textContent = "";
   el.appendChild(opText(t));
@@ -1448,7 +1448,7 @@ function short8(text, fallback){
   const first = end ? t.slice(0, end.index + 1) : t;
   return first.split(/\s+/).length <= 8 ? first : (fallback || "Done. Tap Details.");
 }
-$("msg-more").addEventListener("click", () => sheet("Details", `<div class="full">${esc(MSG_FULL)}</div>`, [{label:"Close", cls:"blue"}]));
+$("msg-more").addEventListener("click", () => sheet("Details", opText(MSG_FULL), [{label:"Close", cls:"blue"}]));
 
 // ---- sheets: confirm, details, help, sign in. Never over the footer.
 let SHEET_DONE = null;
@@ -3237,7 +3237,7 @@ async function loadSchedule(){
 }
 $("se-reload").addEventListener("click", loadSchedule);
 $("se-save").addEventListener("click", async () => {
-  try{ const j = await post("/api/remote/schedule-file", {doc:readSchedule()}); $("se-msg").textContent = j.text; if(j.doc) drawSchedule(j.doc); }
+  try{ const j = await post("/api/remote/schedule-file", {doc:readSchedule()}); setOpText($("se-msg"), j.text); if(j.doc) drawSchedule(j.doc); }
   catch(e){ $("se-msg").textContent = e.message; }
 });
 // Tonight's card (1.0's Schedule screen): what is next, 1.0's words, and
@@ -3519,7 +3519,7 @@ async function loadFolders(){
   try{
     const j = await getJSON("/api/remote/setup", 3000);
     $("fo-now").innerHTML = `This engine serves: <b>${esc(j.show_folder)}</b> (${j.show_files} show file(s)${j.show_folder_exists ? "" : "; the folder does not exist"}).` +
-      (j.show_folder_problem ? `<div class="bad" style="color:var(--red);font-weight:700;margin-top:4px">${esc(j.show_folder_problem)}</div>` : "");
+      (j.show_folder_problem ? `<div class="bad" style="color:var(--red);font-weight:700;margin-top:4px;white-space:pre-line">${esc(j.show_folder_problem)}</div>` : "");
     if(!$("fo-path").value) $("fo-path").placeholder = j.show_folder || "";
     $("info-settings").textContent = j.settings_folder || "";
     $("info-exit").hidden = !(ME && ME.local && j.kiosk_closable);
@@ -5579,7 +5579,7 @@ function dayWire(k){
   if(k === "checks") $("d-checks").addEventListener("click", e => {
     const b = e.target.closest("[data-ck]"); if(!b) return;
     const c = ((MO && MO.checks) || [])[Number(b.dataset.ck)]; if(!c) return;
-    sheet(c.title, `<div class="full">${esc(checkLook(c.level).word)}. ${esc(c.text)}</div>`, [{label:"Close", cls:"blue"}]);
+    sheet(c.title, opText(/\n/.test(String(c.text || "")) ? String(c.text) : checkLook(c.level).word + ". " + String(c.text || "")), [{label:"Close", cls:"blue"}]);
   });
   if(k === "startlist" || k === "shutlist"){
     // A tick is for the step drawn on the screen (review of #169, 2): its

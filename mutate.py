@@ -23139,6 +23139,27 @@ def build():
   "#t-users input[type=checkbox]{width:56px;height:56px;",
   "#t-users input[type=checkbox]{width:40px;height:40px;"),
 
+ # Less prose, engine answers and alerts (Jeff, 2026-11-11).
+ ('less prose: the preroll alert hides what failed behind More',
+  'ltcplay/preroll.py',
+  '            f"- Failed: {\', \'.join(i[\'name\'] for i in bad)}.\\n"\n            f"- The show will not start by itself.\\n"\n            f"- Do: Fix it, then Resume and Start now.\\n"\n            f"\\n"\n            f"More: The rig check before {label} FAILED: "',
+  '            f"- The show will not start by itself.\\n"\n            f"- Do: Fix it, then Resume and Start now.\\n"\n            f"\\n"\n            f"More: The rig check before {label} FAILED: "'),
+
+ ('less prose: the CUES FAULT says what to render only behind More',
+  'ltcplay/fire_ice.py',
+  '            f"Render these again in xLights: {names}.\\n"',
+  '            f"Render these again in xLights.\\n"'),
+
+ ('less prose: the schedule save answer runs its warnings into one line',
+  'ltcplay/remote.py',
+  '                   "".join(f"- {w}\\n" for w in warns) if warns else "") +',
+  '                   " ".join(warns) + "\\n" if warns else "") +'),
+
+ ('less prose: the stale pump press says no way forward',
+  'ltcplay/remote.py',
+  '                   "Wait for the screen to be live, then press again.\\n"',
+  '                   ""'),
+
  # Less prose (Jeff, 2026-11-11): bullets and paragraph breaks.
  ("less prose: an alert's one-line text keeps its bullet marks",
   "ltcplay/alerts.py",

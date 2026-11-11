@@ -3728,5 +3728,9 @@
 "less prose: an alert's one-line text keeps its bullet marks": "test_alerts_pure_logic",
 "less prose: an alert drops its line breaks before the rack screen": "test_alerts_pure_logic",
 "less prose: opText writes the engine's words as markup": "test_ui2_op_text_shapes_text_with_dom_nodes_only",
-"less prose: the audio alert's names leave More for the bullets": "test_audio_interface_watch"
+"less prose: the audio alert's names leave More for the bullets": "test_audio_interface_watch",
+"less prose: the preroll alert hides what failed behind More": "test_preroll_runner_unknown_is_failure_and_cancel_is_clean",
+"less prose: the CUES FAULT says what to render only behind More": "test_soak_render_older_than_layout_is_a_cues_fault_at_show_load",
+"less prose: the schedule save answer runs its warnings into one line": "test_remote_schedule_save_says_what_tonight_holds",
+"less prose: the stale pump press says no way forward": "test_pump_review_fixes"
 }

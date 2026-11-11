@@ -16834,7 +16834,10 @@ def test_remote_schedule_save_says_what_tonight_holds():
         st, _h, out = _ask(R.httpd, "POST", "/api/remote/schedule-file",
                            {"doc": doc}, client=loop)
         check(st == 200 and "Warnings, saved anyway:" in out["text"] and
-              out.get("warnings") and "overlap" in out["text"],
+              out.get("warnings") and "overlap" in out["text"] and
+              out["text"].startswith("Schedule saved.\n") and
+              "\n- weekly sat: shows overlap and can run late." in
+              out["text"] and "\nMore: saved to " in out["text"],
               f"shows closer than a show and its guard are saved, with a "
               f"warning: {st} {out.get('text') or out}")
         doc["weekly"] = {"sat": {"first_start": "23:30", "interval_min": 30,
@@ -68301,6 +68304,8 @@ def test_pump_review_fixes():
             st, _h, out = R.ask("POST", "/api/remote/fuel-pump", body,
                                 client=loop)
             check(st == 409 and "more than 1 s old" in out.get("error", "")
+                  and out.get("error", "").startswith(
+                      "Fuel pump NOT turned on.\nWait for the screen")
                   and pm.run is None and not link.pump_on,
                   f"an ON whose screen status is {label}: refused: {st} "
                   f"{out}")
@@ -79982,7 +79987,11 @@ def test_soak_render_older_than_layout_is_a_cues_fault_at_show_load():
         text = F.render_age_sentence(rig.net, [rig.render], "bench.json")
         check(text.startswith("CUES FAULT in bench.json") and
               "Show.fseq" in text and rig.net in text and
-              "Render them again" in text and "touching" in text,
+              "Render them again" in text and "touching" in text and
+              text.split("\n")[:2] == [
+                  "CUES FAULT in bench.json: flame cues are off.",
+                  "Render these again in xLights: Show.fseq."] and
+              "\n\nMore: flame cues will be zero." in text,
               f"the sentence names the show, the file, the layout and "
               f"what to do: {text!r}")
         _no_dashes(text, "the render age sentence")
@@ -80220,7 +80229,9 @@ def test_soak_show_folder_served_is_said_and_followed():
               RM.show_folder_mismatch(a, os.path.join(a, ".")) == "",
               "the same folder, however spelled, or none named: nothing")
         text = RM.show_folder_mismatch(a, b)
-        check(text.startswith(f"showpc.json names the show folder {b}") and
+        check(text.startswith("Wrong show folder in use.\n") and
+              f"More: showpc.json names the show folder {b}" in text and
+              _op_shaped(text) and
               f"serving {a}" in text and "Stop" in text,
               f"another folder: both named and what to do: {text!r}")
         _no_dashes(text, "the show folder sentence")
@@ -80250,7 +80261,7 @@ def test_soak_show_folder_served_is_said_and_followed():
                 st, _h, out = R.ask("GET", "/api/remote/status")
                 pr = out["show_folder"]["problem"]
                 check(out["show_folder"]["served"] == R.folder and
-                      pr.startswith(f"showpc.json names the show folder {b}"),
+                      f"More: showpc.json names the show folder {b}" in pr,
                       f"showpc.json names another: the status says so, on "
                       f"every screen: {out['show_folder']}")
                 st, _h, su = _ask(R.httpd, "GET", "/api/remote/setup",
@@ -83862,7 +83873,7 @@ def test_group_disarm_is_confirmed_or_forced():
         check(st == 200 and out.get("forced") is True and
               out.get("confirmed") is False and
               out.get("text", "").startswith(
-                  "Deck did not answer: ALL groups disarm sent. Disarm "
+                  "Deck did not answer: ALL groups disarm sent.\n- Disarm sent to every group. Hazers off.\n- Show flames stay zero until Hold, Resume.\n- Do: Arm each group again to fire.\n\nMore: Disarm "
                   "front row forced (the Stream Deck program has not read "
                   "this engine in the last 0.5 s") and
               "every hazer is off" in out["text"] and
@@ -83878,7 +83889,7 @@ def test_group_disarm_is_confirmed_or_forced():
               f"write: {seen_at_journal} (before: {n})")
         _no_dashes(out.get("text", ""), "the forced answer")
         al = flames_alerts()
-        check(len(al) == 1 and al[0]["text"].startswith(out["text"]) and
+        check(len(al) == 1 and al[0]["full"].startswith(out["text"]) and
               al[0]["severity"] == "fault",
               f"and a flames alert says the same: {al}")
         f = rows("forced")
@@ -83899,7 +83910,7 @@ def test_group_disarm_is_confirmed_or_forced():
                             {"group": "front row"}, client=other)
         check(st == 200 and out.get("forced") is True and
               out.get("text", "").startswith(
-                  "No word from flamesafe: ALL groups disarm sent. Disarm "
+                  "No word from flamesafe: ALL groups disarm sent.\n- Disarm sent to every group. Hazers off.\n- Show flames stay zero until Hold, Resume.\n- Do: Arm each group again to fire.\n\nMore: Disarm "
                   "front row forced (flamesafe's status is not reaching "
                   "this engine") and
               R.rig.count("flames_disarm_all") == n + 1 and not paused,
@@ -83917,7 +83928,7 @@ def test_group_disarm_is_confirmed_or_forced():
         st, _h, out = disarm("front row")
         check(st == 200 and out.get("forced") is True and
               out.get("text", "").startswith(
-                  "Not confirmed: ALL groups disarm sent. Disarm front row "
+                  "Not confirmed: ALL groups disarm sent.\n- Disarm sent to every group. Hazers off.\n- Show flames stay zero until Hold, Resume.\n- Do: Arm each group again to fire.\n\nMore: Disarm front row "
                   "forced (flamesafe did not report front row off within "
                   "1 s") and
               R.rig.count("flames_disarm_all") == n + 1 and
@@ -84360,7 +84371,7 @@ def test_group_disarm_across_two_screens_real_flamesafe():
             screen.new_disarms = real_new
             check(code == 200 and out.get("forced") is True and
                   out.get("text", "").startswith(
-                      "Not confirmed: ALL groups disarm sent. Disarm "
+                      "Not confirmed: ALL groups disarm sent.\n- Disarm sent to every group. Hazers off.\n- Show flames stay zero until Hold, Resume.\n- Do: Arm each group again to fire.\n\nMore: Disarm "
                       "front row forced (flamesafe did not report front "
                       "row off") and
                   took >= RM.PLAIN_CONFIRM_S - 0.05,
@@ -94290,6 +94301,12 @@ def test_preroll_runner_unknown_is_failure_and_cancel_is_clean():
     check([a.kind for a in al.open()] == ["preroll"] and
           "Lasers FAILED: BEYOND is not running" in al.open()[0].text,
           f"a failure raises the preroll alert: {al.view()}")
+    # Less prose (Jeff, 2026-11-11): what failed above More.
+    full = al.open()[0].full if al.open() else ""
+    check(full.startswith("Rig check FAILED before show 1 (18:00).\n"
+                          "- Failed: Lasers.\n") and
+          "\n\nMore: The rig check before show 1 (18:00) FAILED: " in full,
+          f"the preroll alert: headline, what failed, More: {full!r}")
     check(pr.verdict(("n", 1)) == "failed" and pr.alert_open(),
           "the verdict stands for its show")
     check(any(k.get("fault") and "FAILED" in t for t, k in lines),
@@ -112400,9 +112417,14 @@ def test_ui2_schedule_tab_makes_1_0_presses():
     check(t1 in two, "2.0's tonight list and its tap are 1.0's code, word "
                      "for word (slotNotes, renderSchedule, toggleSlot, the "
                      "tap's three listeners)")
+    # One named difference (Jeff, 2026-11-11: less prose): Save's answer
+    # keeps its lines (headline, warnings as bullets, More).
+    s1 = s1.replace('{doc:readSchedule()}); $("se-msg").textContent = '
+                    'j.text;',
+                    '{doc:readSchedule()}); setOpText($("se-msg"), j.text);')
     check(s1 in two, "2.0's schedule editor is 1.0's code, word for word "
                      "(the zones, drawSchedule, readSchedule, loadSchedule, "
-                     "Save and Reload)")
+                     "Save and Reload), Save's answer in lines")
     for need in ('id="tonight"', 'id="tn-run-warn"', 'id="tn-next"',
                  'id="sched-edit" hidden', 'id="se-days"', 'id="se-save"',
                  'id="se-reload"', 'id="se-msg"', 'id="se-note"',
@@ -113103,9 +113125,15 @@ def _ui2_tools_copies(one):
     ps = ("the Programming screen", "the Schedule tab")
     fit = "  try{ fitSetup(); }catch(e){}\n"
     out = [(n, fn(n)) for n in (
-        "fill", "makeOffered", "checkWords", "loadFolders", "loadDeckOp",
+        "fill", "makeOffered", "checkWords", "loadDeckOp",
         "renderNetwork", "loadNetwork", "saveNetwork", "cfgNote",
         "setWarn")]
+    # A named difference (Jeff, 2026-11-11: less prose): the show folder
+    # problem keeps its line breaks (headline, bullets, More).
+    out += [("loadFolders", sub(fn("loadFolders"),
+                                "margin-top:4px\">${esc(j.show_folder_problem)}",
+                                "margin-top:4px;white-space:pre-line\">"
+                                "${esc(j.show_folder_problem)}"))]
     out += [("renderSetupFold", sub(fn("renderSetupFold"), fit, "")),
             ("renderSetup", sub(sub(fn("renderSetup"), fit, ""), ps[0],
                                 ps[1], 2)),
@@ -113220,6 +113248,8 @@ Object.defineProperty(El.prototype, "textContent", {
 Object.defineProperty(El.prototype, "innerHTML", {
   set(v){ throw new Error("innerHTML used"); }});
 El.prototype.appendChild = function(c){ this.childNodes.push(c); return c; };
+Object.defineProperty(El.prototype, "firstChild", {
+  get(){ return this.childNodes[0] || null; }});
 const document = {createElement: (t) => new El(t)};
 const shape = (e) => [e.tag, e.className.trim(), e._t].concat(
   e.childNodes.length ? [e.childNodes.map(shape)] : []);
