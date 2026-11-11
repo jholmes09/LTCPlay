@@ -113119,6 +113119,57 @@ def _ui2_tools_copies(one):
     return out
 
 
+def test_ui2_big_button_second_line_is_state_only():
+    section("2.0's big button (Jeff, 2026-11-11: no line under a label that "
+            "only says what the label says): Resume, Start now, Loading, "
+            "Checking rig and Show running have no second line; a second "
+            "line is kept only for live state or a reason (No contact, Held "
+            "after Stop, No shows start, No schedule here, Not ready: tap)")
+    one, two = _ui2_pages()
+    lo = one[one.find("// LOGIC BEGIN"):one.find("// LOGIC END")]
+    fns = "\n".join(_js_function(two, n) or "" for n in (
+        "isHeld", "isLive", "runIsOn", "isRehearsal", "signWhy", "goLook"))
+    check("function goLook(" in fns, "goLook is found")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    js = lo + "\nlet CD = null; const monoNow = () => 0;\n" + fns + r"""
+const base = () => ({schedule:{attached:true, state:"STANDBY", next:{show:4, start:"19:30", in_s:900}},
+  show:{running:true}, flames:{connected:true, groups:[]}, me:{may:{show:true, arm:true}}});
+const out = {};
+let s = base(); out.start = goLook(s, false, true);
+out.startStale = goLook(s, true, true);
+s = base(); s.schedule.held = true; out.resume = goLook(s, false, true);
+s = base(); s.schedule.stop_held = true; out.stopHeld = goLook(s, false, true);
+s = base(); s.schedule.state = "SHOW"; out.live = goLook(s, false, true);
+s = base(); s.schedule.start_waiting = true; out.loading = goLook(s, false, true);
+s = base(); s.preroll = {state:"checking", label:"Show 4"}; out.checking = goLook(s, false, true);
+s = base(); s.schedule = {attached:false}; s.show = {running:false}; out.nosched = goLook(s, false, true);
+s = base(); s.schedule.start_blocked = {text:"The show audio is missing."}; out.blocked = goLook(s, false, true);
+const r = {};
+for(const k in out) r[k] = [out[k].label, out[k].why];
+console.log(JSON.stringify(r));
+"""
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        got = json.loads(r.stdout.strip() or "null")
+    except ValueError:
+        got = None
+    want = {"start": ["Start now", ""], "startStale": ["Start now", "No contact"],
+            "resume": ["Resume", ""], "stopHeld": ["Resume", "Held after Stop"],
+            "live": ["Show running", ""], "loading": ["Loading", ""],
+            "checking": ["Checking rig", ""],
+            "nosched": ["Start now", "No schedule here"],
+            "blocked": ["Start now", "Not ready: tap"]}
+    check(r.returncode == 0 and got == want,
+          f"the big button's second line is state or a reason only: {got} "
+          f"{r.stderr.strip()[:600]}")
+    print("  ok")
+
+
 def test_ui2_show_pc_tools_are_1_0s():
     section("2.0's show PC tools, P12, P14, P15, P16: the checklists' "
             "Verify records, today's PDF and Export all (links that "
@@ -114260,6 +114311,7 @@ if __name__ == "__main__":
         test_ui2_users_audit_driven,
         test_ui2_show_pc_tools_are_1_0s,
         test_ui2_show_pc_tools_driven,
+        test_ui2_big_button_second_line_is_state_only,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):

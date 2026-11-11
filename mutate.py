@@ -23139,6 +23139,17 @@ def build():
   "#t-users input[type=checkbox]{width:56px;height:56px;",
   "#t-users input[type=checkbox]{width:40px;height:40px;"),
 
+ # The big button's second line is state only (Jeff, 2026-11-11).
+ ("big button: Resume says Carries on under it again",
+  "ltcplay/web/remote2.html",
+  'label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "" : "No contact"};',
+  'label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "Carries on" : "No contact"};'),
+
+ ("big button: a Stop's Hold no longer says why under Resume",
+  "ltcplay/web/remote2.html",
+  'why:fresh ? "Held after Stop" : "No contact"};',
+  'why:fresh ? "" : "No contact"};'),
+
  # flamesafe.json that is not valid JSON (Jeff, 2026-11-06): the engine
  # starts with flames off and says where; the supervisor starts neither
  # flamesafe nor the deck; the last good copy.

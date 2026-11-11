@@ -3721,5 +3721,7 @@
 "practice: a pending mark reads as charged tanks": "test_fireball_practice_engine",
 "practice: a Stop that came back failed is pressed again at once": "test_fireball_practice_engine",
 "practice: a person's Done waits for the retry": "test_fireball_practice_engine",
-"practice: open goes on after Done during its engine check": "test_fireball_practice_engine"
+"practice: open goes on after Done during its engine check": "test_fireball_practice_engine",
+"big button: Resume says Carries on under it again": "test_ui2_big_button_second_line_is_state_only",
+"big button: a Stop's Hold no longer says why under Resume": "test_ui2_big_button_second_line_is_state_only"
 }
