@@ -98741,7 +98741,7 @@ t(goLook(s, false, true).mode === "live" && goLook(s, false, true).off, "a show 
 s = base(); s.show.running = false; s.show.show_control_on = false;
 t(goLook(s, false, true).mode === "run" && !goLook(s, false, true).off, "Run off, on the show PC: Run show");
 // Its words (Jeff, 2026-11-11): Show control on/off.
-t(goLook(s, false, true).label === "Show control on" && goLook(s, false, true).why === "Scheduled shows may start" && goLook(s, false, false).label === "Show control on" && goLook(s, false, false).why === "Only on the show PC", "Run show reads Show control on: " + JSON.stringify(goLook(s, false, true)));
+t(goLook(s, false, true).label === "Show control on" && goLook(s, false, true).why === "Shows may start" && goLook(s, false, false).label === "Show control on" && goLook(s, false, false).why === "Only on the show PC", "Run show reads Show control on: " + JSON.stringify(goLook(s, false, true)));
 t(goLook(s, false, false).mode === "run" && goLook(s, false, false).off, "Run off, on an iPad: Run is not offered");
 // Whether Run is on is the engine's boolean, never its sentence: the
 // sentence alone changes nothing, the boolean alone decides, and a
