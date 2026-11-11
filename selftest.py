@@ -35632,11 +35632,11 @@ def test_streamdeck_stop_hold_face_and_ring_from_the_first_instant():
     cases = [
         ("during a show", True, False, "PLAYING", False, ["NOW", "PLAYING"]),
         ("a show held", True, False, "HELD", False, ["PAUSED"]),
-        ("a run going", False, True, "BETWEEN", False, ["STOP", "RUN"]),
+        ("a run going", False, True, "BETWEEN", False, ["STOP", "ALL"]),
         ("the state unknown", None, False, "BETWEEN", False,
          ["STOP", "ALL"]),
         ("aborted during a show", True, False, "PLAYING", True,
-         ["STOP", "RUN"]),
+         ["STOP", "ALL"]),
     ]
     try:
         for what, running, live, look, latched, calm in cases:
@@ -43581,6 +43581,15 @@ t(wt.mode === "stop" && wt.label === "Stop" && wt.disabled === false && /startin
 t(startLook({schedule:{attached:true, state:"STANDBY"}, show:{running:true}}, false, true).label === "Loading", "this page's own wait reads Loading");
 const off = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"Run has not been pressed, so nothing may reach the rig; press Run", loading:false}}, show:{running:false}}, false, false);
 t(off.mode === "start" && off.sub === "Run is off" && /^Run has not been pressed/.test(off.why), "Run off: says so, and the why: " + JSON.stringify(off));
+// "Run is off" on Start now is the engine's boolean, never its sentence
+// (show control, PR 1); anything but true is off, never on.
+const blk = (text, on) => ({schedule:{attached:true, state:"STANDBY", start_blocked:{text:text, loading:false}}, show:{running:true, show_control_on:on}});
+t(startLook(blk("Run has not been pressed, so nothing may reach the rig; press Run", true), false, false).sub === "not ready, tap for why", "the old sentence with the boolean on: not read, so not ready");
+t(startLook(blk("the show audio interface is not available", true), false, false).sub === "not ready, tap for why", "Run on, blocked for another reason: not ready");
+for(const v of [false, undefined, null, "true", 1]){
+  const lk = startLook(blk("Fireball practice is on", v), false, false);
+  t(lk.sub === "Run is off" && lk.why === "Fireball practice is on", "the boolean " + JSON.stringify(v) + ": Run is off, with the engine's own why: " + JSON.stringify(lk));
+}
 // Run becomes Stop while Run is in force and there is something to stop;
 // with nothing to stop it is Run off (Stop no longer turns Run off).
 const att = (st, show, extra) => Object.assign({schedule:{attached:true, state:st}, show:show}, extra || {});
@@ -64102,8 +64111,13 @@ def test_stream_deck_start_stop_is_one_key():
         return
     try:
         c.draw(fonts, blink_on=True, chase=0)
-        check(faces[0][0] == ["STOP", "RUN"],
-              f"Run live: the key reads STOP RUN: {faces[0]}")
+        # STOP ALL, never STOP RUN: Stop leaves Run on (Jeff, 2026-11-11).
+        check(faces[0][0] == ["STOP", "ALL"] and
+              c.start_key_mode() == "stop",
+              f"Run live: the key is Stop and reads STOP ALL: {faces[0]}")
+        with open(sd.__file__, encoding="utf-8") as fh:
+            check('"STOP", "RUN"' not in fh.read(),
+                  "no Stream Deck key face reads STOP RUN")
         down()
         wait(sd.STOP_HOLD_S / 2)
         c.draw(fonts, blink_on=True, chase=0)
@@ -64117,18 +64131,21 @@ def test_stream_deck_start_stop_is_one_key():
         show[0] = False
         run[0] = False
         c.draw(fonts, blink_on=True, chase=0)
-        check(faces[0][0] != ["STOP", "RUN"],
+        check(faces[0][0] != ["STOP", "ALL"] and
+              c.start_key_mode() not in sd.STOP_MODES,
               f"stopped: the key reads Start again: {faces[0]}")
         show[0] = None
         run[0] = True
         c.draw(fonts, blink_on=True, chase=0)
-        check(faces[0][0] != ["STOP", "RUN"],
-              f"the scheduler not known: never STOP RUN: {faces[0]}")
+        check(c.start_key_mode() == "unknown" and
+              faces[0][0] == ["STOP", "ALL"],
+              f"the scheduler not known: never the run's Stop, but Stop "
+              f"(STOP ALL) all the same: {faces[0]}")
         show[0] = False
         e.latched = True
         c.draw(fonts, blink_on=True, chase=0)
-        check(faces[0][0] == ["STOP", "RUN"],
-              f"aborted with a run going: STOP RUN, reachable: {faces[0]}")
+        check(faces[0][0] == ["STOP", "ALL"],
+              f"aborted with a run going: STOP ALL, reachable: {faces[0]}")
         e.latched = False
         check(sd.SPARE_KEY not in faces,
               f"no Hold or Abort face, the spare key blank: {sorted(faces)}")
@@ -86734,6 +86751,53 @@ def test_live_flame_engine_routes_roles_and_presses():
     print("  ok")
 
 
+def test_status_says_show_control_on_as_a_boolean():
+    section("the status says whether Run is on as one boolean, "
+            "show.show_control_on, from the scheduler's own Run gate: true "
+            "only with a show file running (or starting) AND the gate "
+            "pressed; a gate that is off, raises or answers anything but "
+            "True is off, never on (show control, PR 1: the rack screen no "
+            "longer reads the engine's sentences for it)")
+    import types
+    from ltcplay import remote as RM
+    r = RM.Remote.__new__(RM.Remote)
+    r.schedule = None
+    on = r.show_control_on
+    check(on({"running": True}) is True and on({"starting": True}) is True,
+          "no scheduler: a show file running or starting is Run on")
+    check(on({}) is False and on({"running": False}) is False,
+          "no scheduler, nothing running: off")
+    gate = [True]
+
+    def g():
+        if gate[0] == "raise":
+            raise RuntimeError("gate")
+        return gate[0]
+    r.schedule = types.SimpleNamespace(run_gate=g)
+    check(on({"running": True}) is True, "the gate pressed, running: on")
+    for v in (False, None, 1, "True", "raise"):
+        gate[0] = v
+        check(on({"running": True}) is False and
+              on({"starting": True}) is False,
+              f"the gate answering {v!r}: off, never on")
+    gate[0] = True
+    check(on({}) is False, "the gate pressed but nothing running: off")
+    check(on(None) is False, "no engine state at all: off, never raises")
+    r.schedule = types.SimpleNamespace(run_gate=None)
+    check(on({"running": True}) is True,
+          "a scheduler with no Run to wait for (run_gate None): as running")
+    # The gate is the one Service._hold_back_unattended uses: fire_ice
+    # wires the same function (show._session() is not None).
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ltcplay", "remote.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    check('"show_control_on": self.show_control_on(cs)' in src and
+          '"show_control_on": False' in src,
+          "status carries it on every answer, False when the engine "
+          "state could not be read")
+    print("  ok")
+
+
 def _lf_free_udps(n):
     """n DIFFERENT free loopback UDP ports: every socket is held open until
     all are chosen (one closed and asked for again can come back the same,
@@ -92425,6 +92489,9 @@ def test_cleaning_at_the_engine():
         st = R.remote.status(ctx)
         check(st.get("cleaning", {}).get("state") == "phase1",
               f"every screen's status carries it: {st.get('cleaning')}")
+        check(st.get("show", {}).get("show_control_on") is False,
+              f"the cleaning runs with Run off, and the status says so as "
+              f"its boolean: {st.get('show')}")
         # Phase 1 on its own: armed 3 s, the disarm to the deck.
         for _i in range(31):
             step()
@@ -98656,7 +98723,7 @@ def test_ui2_page_makes_only_1_0_presses():
 const out = [];
 const t = (c, m) => { if(!c) out.push(m); };
 const base = () => ({schedule:{attached:true, state:"STANDBY", next:{show:4, start:"19:30", in_s:900}},
-  show:{running:true}, flames:{connected:true, groups:[{name:"a", armed:"disarmed"}]}, arming:{enabled:true}, me:{may:{show:true, arm:true}}});
+  show:{running:true, show_control_on:true}, flames:{connected:true, groups:[{name:"a", armed:"disarmed"}]}, arming:{enabled:true}, me:{may:{show:true, arm:true}}});
 let s = base(); s.schedule.aborted = true;
 t(goLook(s, false, true).mode === "start", "an older engine's aborted flag is not read: no Reset (removed)");
 s = base(); s.schedule.held = true;
@@ -98667,16 +98734,27 @@ s = base(); s.announce = {playing:{held_schedule:true}};
 t(goLook(s, false, true).mode === "resume", "held for an announcement: Resume");
 s = base(); s.schedule.state = "SHOW";
 t(goLook(s, false, true).mode === "live" && goLook(s, false, true).off, "a show live: nothing to start");
-s = base(); s.show.running = false;
+s = base(); s.show.running = false; s.show.show_control_on = false;
 t(goLook(s, false, true).mode === "run" && !goLook(s, false, true).off, "Run off, on the show PC: Run show");
 t(goLook(s, false, false).mode === "run" && goLook(s, false, false).off, "Run off, on an iPad: Run is not offered");
+// Whether Run is on is the engine's boolean, never its sentence: the
+// sentence alone changes nothing, the boolean alone decides, and a
+// missing or non-true boolean is off, never on (show control, PR 1).
 s = base(); s.schedule.start_blocked = {text:"Run has not been pressed yet."};
-t(goLook(s, false, true).mode === "run", "the engine saying Run is off: Run show");
+t(goLook(s, false, true).mode === "start" && runIsOn(s), "the engine's old sentence with the boolean on: Run is on (the sentence is not read)");
+s = base(); s.show.show_control_on = false;
+t(goLook(s, false, true).mode === "run" && !runIsOn(s), "the boolean off with a show file running: Run show");
+for(const v of [undefined, null, "true", 1, "yes", {}]){
+  s = base(); if(v === undefined) delete s.show.show_control_on; else s.show.show_control_on = v;
+  t(!runIsOn(s) && goLook(s, false, true).mode === "run" && pillLook(s).text === "NOT RUNNING", "the boolean " + JSON.stringify(v) + ": off, never on");
+}
+s = base(); delete s.show;
+t(!runIsOn(s) && !runIsOn(null) && !runIsOn({}), "no show answer at all: off");
 s = base();
 t(goLook(s, false, true).mode === "start" && !goLook(s, false, true).off, "between shows: Start now");
 // Where Run is, by name (the Windows stress test, 2026-11-09), and Run
 // show in the alert slot on the show PC only, with the Show row.
-s = base(); s.show.running = false;
+s = base(); s.show.running = false; s.show.show_control_on = false;
 s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
 let ri = alertItems(s).find(i => i.key === "run");
 t(ri && ri.do === "Press the Run show button on the show PC's main screen." && !ri.act, "an iPad: the button named, on the show PC; no Run here: " + JSON.stringify(ri));
@@ -98694,7 +98772,7 @@ ri = alertItems(s).find(i => i.key === "run");
 t(ri && !ri.act && runHereShown(s, false, true, false) === "", "without the Show row: no Run show in the slot");
 // On a Hold the big button is Resume and the engine says Run, then
 // Resume: Run show is by the warning, and named so (cold review of #227).
-s = base(); s.show.running = false; s.schedule.state = "HOLD"; s.schedule.held = true;
+s = base(); s.show.running = false; s.show.show_control_on = false; s.schedule.state = "HOLD"; s.schedule.held = true;
 s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run, then Resume.";
 t(goLook(s, false, true).mode === "resume" && runHereShown(s, false, true, false) === "held", "held, Run off: Resume on the big button, Run show by the warning");
 ri = alertItems(s).find(i => i.key === "run");
@@ -98713,7 +98791,7 @@ t(runHereShown(s, false, true, false) === "", "Run on: no Run show");
 { let RAN = 0, SAID2 = [];
   const runShow = () => { RAN++; }, say = (a) => SAID2.push(a);
   const FLIPPED = {}; let HALT_BUSY = false, ST = base();
-  ST.show.running = false; ST.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
+  ST.show.running = false; ST.show.show_control_on = false; ST.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
   const TN = {hidden:true}; const $ = id => id === "tn-run" ? TN : null;
   eval(RUN_HERE_FNS);
   globalThis.ME = {local:true};
@@ -98728,12 +98806,27 @@ t(runHereShown(s, false, true, false) === "", "Run on: no Run show");
 s = base(); s.schedule.run_warning = "A Programming Run is in force: the 18:00 show (show 1) will NOT start. Press Stop, choose Show, then Run.";
 ri = alertItems(s).find(i => i.key === "run");
 t(ri && !ri.act && ri.full === s.schedule.run_warning, "a Programming Run: the engine's words, no Run button");
+// Run show by the warning is decided by the boolean, never the warning's
+// first words (show control, PR 1): the same sentence either way.
+globalThis.ME = {local:true};
+s = base(); s.schedule.run_warning = "A Programming Run is in force: the 18:00 show (show 1) will NOT start. Press Stop, choose Show, then Run.";
+t(runHereShown(s, false, true, false) === "", "a warning with Run on: no Run show");
+s.show.show_control_on = false;
+t(runHereShown(s, false, true, false) === "run", "the same warning with the boolean off: Run show");
+delete s.show.show_control_on;
+t(runHereShown(s, false, true, false) === "run", "the same warning with no boolean: off, so Run show (never treated as on)");
+s = base(); s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
+t(runHereShown(s, false, true, false) === "", "the Run is off sentence with the boolean on: no Run show (the sentence is not read)");
+s.schedule.run_warning = null; s.show.show_control_on = false;
+t(runHereShown(s, false, true, false) === "", "no warning: no Run show by it");
+globalThis.ME = undefined;
+s = base(); s.schedule.run_warning = "A Programming Run is in force: the 18:00 show (show 1) will NOT start. Press Stop, choose Show, then Run.";
 t(runWarnWords("Run is off: the 18:00 show (show 1) will NOT start. Press Run.", true) === "Run is off: the 18:00 show (show 1) will NOT start. Press the Run show button on the main screen.", "Press Run.");
 globalThis.ME = undefined;
 t(goLook(s, true, true).off, "no contact: nothing that starts");
 s = base(); s.schedule.held = true;
 t(goLook(s, true, true).off, "held, no contact: Resume is off");
-s = base(); s.show.running = false;
+s = base(); s.show.running = false; s.show.show_control_on = false;
 t(goLook(s, true, true).off, "Run off, no contact: Run is off");
 s = base(); s.me = {may:{show:false}};
 t(goLook(s, false, true).off, "signed out: view only");
@@ -98752,7 +98845,7 @@ t(/Rig check failed/.test(nextStep(s, false, true, []).text), "a failed rig chec
 const words = [];
 const states = [null, base()];
 for(const f of [x => x.schedule.aborted = true, x => x.schedule.held = true, x => x.alert_hold = {held:true}, x => x.me.view_only = true,
-                x => x.show.running = false, x => { x.schedule.state = "SHOW"; x.schedule.running = 4; }, x => x.schedule.start_waiting = true,
+                x => { x.show.running = false; x.show.show_control_on = false; }, x => { x.schedule.state = "SHOW"; x.schedule.running = 4; }, x => x.schedule.start_waiting = true,
                 x => x.schedule.next = null, x => x.schedule.next = {show:5, start:"19:50", in_s:120}, x => { x.schedule.next = null; x.schedule.delayed = {show:3}; }]){
   const x = base(); f(x); states.push(x);
 }
@@ -114147,6 +114240,7 @@ if __name__ == "__main__":
         test_live_flame_review_round_two,
         test_live_flame_from_a_mac,
         test_live_flame_from_a_mac_round_two,
+        test_status_says_show_control_on_as_a_boolean,
         test_programming_moves_are_flame_landings,
         test_programming_flames_end_to_end_real_flamesafe,
         test_programming_flames_engine_routes_and_page,

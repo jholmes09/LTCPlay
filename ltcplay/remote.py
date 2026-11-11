@@ -7412,6 +7412,25 @@ class Remote:
         except Exception:
             return ""
 
+    def show_control_on(self, cs):
+        """True only while Run is in force: a show file running (or on its
+        way in) AND, when this engine has a scheduler with a Run gate, that
+        gate says pressed (the same gate that holds the scheduler back,
+        Service._run_pressed). The rack screen reads this one boolean to
+        know whether Run is on, never the engine's sentences. Anything not
+        known (no answer, a gate that raises or answers anything but True)
+        is False: off, never on. Never raises."""
+        try:
+            if not (cs.get("running") or cs.get("starting")):
+                return False
+            gate = getattr(self.schedule, "run_gate", None) \
+                if self.schedule is not None else None
+            if gate is None:
+                return True
+            return gate() is True
+        except Exception:                        # noqa: BLE001
+            return False
+
     def disk_view(self):
         """{"state": "low" | "critical", "text"} while the supervisor says
         the disk is low (its disk-low.txt), else None. Never raises."""
@@ -8429,6 +8448,9 @@ class Remote:
                            # Run on its way in (web.py _build_state): the
                            # page shows Stop then too (review of #144, F4).
                            "starting": bool(cs.get("starting")),
+                           # Is Run in force: the page reads this, never
+                           # the engine's sentences (show_control_on).
+                           "show_control_on": self.show_control_on(cs),
                            "show": cs.get("show"),
                            "timeline": cs.get("timeline"),
                            "timecode": cs.get("playing") or cs.get("ltc_in"),
@@ -8437,7 +8459,7 @@ class Remote:
             cue_now = cs.get("now")
             out["subsystems"] = self.subsystems(cs)
         except Exception as e:
-            out["show"] = {"running": False,
+            out["show"] = {"running": False, "show_control_on": False,
                            "error": f"{type(e).__name__}: {e}"}
             cue_now = None
             out["subsystems"] = self.subsystems({})

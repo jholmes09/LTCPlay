@@ -451,7 +451,7 @@ it shows go off; Stop, Hold and Disarm stay on.
 keys 1 to 4 arm and disarm the first four flame groups (Floor G, Cat-Walk G,
 Blue Flames, Fireball by default; ltcplay_deck.json can reorder and
 relabel them), key 5 is spare. The deck has no Hold key: Hold is the Rack
-screen's. STOP RUN (while a run is going, and only when the
+screen's. STOP ALL (while a run is going, and only when the
 scheduler is known to have no show live) is a half second hold: every
 flame group is turned off on the arm link at once, then the Rack screen's
 Stop route is asked with "halt", which ends live flame programming, sends
