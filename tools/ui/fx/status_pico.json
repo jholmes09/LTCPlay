@@ -16,6 +16,7 @@
  },
  "show": {
   "running": false,
+  "show_control_on": false,
   "timecode": null
  },
  "transport": {

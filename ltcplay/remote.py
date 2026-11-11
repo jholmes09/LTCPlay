@@ -7413,13 +7413,17 @@ class Remote:
             return ""
 
     def show_control_on(self, cs):
-        """True only while Run is in force: a show file running (or on its
-        way in) AND, when this engine has a scheduler with a Run gate, that
-        gate says pressed (the same gate that holds the scheduler back,
-        Service._run_pressed). The rack screen reads this one boolean to
-        know whether Run is on, never the engine's sentences. Anything not
-        known (no answer, a gate that raises or answers anything but True)
-        is False: off, never on. Never raises."""
+        """True only while Run is in force. With a scheduler's Run gate
+        (fire_ice wires one: show._session() is not None, the same gate
+        that holds the scheduler back, Service._run_pressed), it is True
+        only while a show file is running AND the gate says pressed; a
+        show file that is only starting reads False, because the gate
+        reads not pressed until the session runs. Only with no gate (no
+        scheduler, or run_gate None) does a show file that is starting
+        count as on, as one running does. The rack screen reads this one
+        boolean to know whether Run is on, never the engine's sentences.
+        Anything not known (no answer, a gate that raises or answers
+        anything but True) is False: off, never on. Never raises."""
         try:
             if not (cs.get("running") or cs.get("starting")):
                 return False
