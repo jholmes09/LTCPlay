@@ -3722,5 +3722,6 @@
 "practice: a Stop that came back failed is pressed again at once": "test_fireball_practice_engine",
 "practice: a person's Done waits for the retry": "test_fireball_practice_engine",
 "practice: open goes on after Done during its engine check": "test_fireball_practice_engine",
-"less prose: Programming's Stop explains itself again": "test_rack_screen_stop_in_place_of_start_now"
+"less prose: Programming's Stop explains itself again": "test_rack_screen_stop_in_place_of_start_now",
+"less prose: arming off no longer says to arm from the Stream Deck": "test_screen_arming_switch_and_refusals"
 }

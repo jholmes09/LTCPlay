@@ -1849,7 +1849,7 @@ example "Show 1 did not start: Run has not been pressed, so nothing may
 reach the rig; press Run on the Programming screen, then Start now". Start
 now that cannot work is refused at once with the same words, and adds no
 FAULT line. Right after Run the show audio takes a few seconds to load:
-Start now then says "audio loading, starts when ready". Pressed then, it
+Start now then says "audio loading". Pressed then, it
 waits for the audio (at most 20 seconds) and reads **Loading, starting when
 ready**; the show starts as soon as the audio is in. Hold or Stop
 cancels the wait and nothing starts, and so does any Hold the program

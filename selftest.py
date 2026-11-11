@@ -65227,6 +65227,15 @@ def test_screen_arming_switch_and_refusals():
     m = _re.search(r'const ARMING_OFF = "([^"]*)";', page)
     check(m and m.group(1) == RM.ARMING_OFF,
           "the page and the engine say the same about arming off")
+    # Shorter (Jeff, 2026-11-11), never without the way on: the Stream
+    # Deck, and the steps to turn it on (cold review B of #237).
+    for where, words in (("remote.py", RM.ARMING_OFF),
+                         ("the page", m.group(1) if m else "")):
+        check("Arm from the Stream Deck" in words and
+              "turn it on at the show machine itself: Programming, Arming "
+              "from a screen, Turn on." in words,
+              f"{where}'s ARMING_OFF says how to arm and how to turn it "
+              f"on: {words!r}")
     m = _re.search(r'const SCREEN_ARMING_ENABLES = "([^"]*)";', page)
     check(m and m.group(1) == RM.SCREEN_ARMING_ENABLES and
           all(w in RM.SCREEN_ARMING_ENABLES for w in (
