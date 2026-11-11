@@ -741,8 +741,8 @@ def _rule_warnings(rule, most):
                 f"{n.interval_min} minutes apart; a show plus its guard is "
                 f"{rule.show_len_s + rule.guard_s} s ({rule.show_len_s} s "
                 f"and {rule.guard_s} s). A show more than "
-                f"{rule.late_grace_s} s late is missed, so lateness can add "
-                f"up from show to show. Saved as it is.")
+                f"{rule.late_grace_s} s late is missed, so "
+                f"lateness can add up from show to show. Saved as it is.")
         start, end = night_window(n, date(2000, 1, 3), timezone.utc)
         if (end - start).total_seconds() < need:
             out.append(

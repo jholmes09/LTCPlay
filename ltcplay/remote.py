@@ -4207,12 +4207,12 @@ class Remote:
         label = who or "An unnamed operator"
         lead, why = cause
         ok, said = sent
+        # A headline, bullets, the rest behind More (Jeff, 2026-11-11).
+        # The first line is the footer's short line.
         if ok:
-            # A headline, bullets, the rest behind More (Jeff,
-            # 2026-11-11). The first line is the footer's short line.
             alert = (f"{lead}: ALL groups disarm sent.\n"
                      f"- Disarm sent to every group. Hazers off.\n"
-                     f"- Show flames stay zero until Hold, Resume.\n"
+                     f"- Flames stay zero until Hold then Resume.\n"
                      f"- Do: Arm each group again to fire.\n"
                      f"\n"
                      f"More: Disarm {gname} "
@@ -6970,7 +6970,9 @@ class Remote:
                           f"{type(e).__name__}: {e}"]
             out.append({"id": "renders", "title": "Flame cue renders",
                         "level": "bad" if faults else "ok",
-                        "text": " ".join(faults) if faults else
+                        # One block per show file, each with its own
+                        # headline (Jeff, 2026-11-11: less prose).
+                        "text": "\n\n".join(faults) if faults else
                         "Every show file's renders are newer than its "
                         "xlights_networks.xml, so their flame cues can "
                         "play."})

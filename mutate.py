@@ -2853,8 +2853,8 @@ MUTATIONS = [
 
  ("pump: an ON from a stale or ageless screen is taken",
   "ltcplay/remote.py",
-  "        if seen is None or seen != seen or \\\n                abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:\n            why = (\"The fuel pump was not turned on: the press came from a \"",
-  "        if False:\n            why = (\"The fuel pump was not turned on: the press came from a \""),
+  "        if seen is None or seen != seen or \\\n                abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:\n            why = (\"Fuel pump NOT turned on.\\n\"",
+  "        if False:\n            why = (\"Fuel pump NOT turned on.\\n\""),
 
  ("pump: a start that raised leaves the link naming the pump",
   "ltcplay/fuelpump.py",
@@ -23140,6 +23140,11 @@ def build():
   "#t-users input[type=checkbox]{width:40px;height:40px;"),
 
  # Less prose, engine answers and alerts (Jeff, 2026-11-11).
+ ("less prose: the Morning check runs two shows' CUES FAULTs together",
+  'ltcplay/remote.py',
+  '                        "text": "\\n\\n".join(faults) if faults else',
+  '                        "text": " ".join(faults) if faults else'),
+
  ('less prose: the preroll alert hides what failed behind More',
   'ltcplay/preroll.py',
   '            f"- Failed: {\', \'.join(i[\'name\'] for i in bad)}.\\n"\n            f"- The show will not start by itself.\\n"\n            f"- Do: Fix it, then Resume and Start now.\\n"\n            f"\\n"\n            f"More: The rig check before {label} FAILED: "',

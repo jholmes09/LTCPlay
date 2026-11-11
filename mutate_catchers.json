@@ -3732,5 +3732,6 @@
 "less prose: the preroll alert hides what failed behind More": "test_preroll_runner_unknown_is_failure_and_cancel_is_clean",
 "less prose: the CUES FAULT says what to render only behind More": "test_soak_render_older_than_layout_is_a_cues_fault_at_show_load",
 "less prose: the schedule save answer runs its warnings into one line": "test_remote_schedule_save_says_what_tonight_holds",
-"less prose: the stale pump press says no way forward": "test_pump_review_fixes"
+"less prose: the stale pump press says no way forward": "test_pump_review_fixes",
+"less prose: the Morning check runs two shows' CUES FAULTs together": "test_soak_render_older_than_layout_is_a_cues_fault_at_show_load"
 }

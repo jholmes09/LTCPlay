@@ -80081,11 +80081,13 @@ def test_soak_render_older_than_layout_is_a_cues_fault_at_show_load():
                 check(len(al) == 1 and "Show.fseq" in al[0]["text"],
                       f"and it is an alert on every screen: {out['alerts']}")
                 # The Morning checks, from the show folder's show files.
-                with open(os.path.join(R.folder, "bench.json"), "w",
-                          encoding="utf-8") as fh:
-                    json.dump({"fps": 30, "show_dir": rig.show, "cues": [
-                        {"tc": "00:00:00:00", "fseq": "Show.fseq",
-                         "name": "Show"}]}, fh)
+                for sf in ("bench.json", "second.json"):
+                    with open(os.path.join(R.folder, sf), "w",
+                              encoding="utf-8") as fh:
+                        json.dump({"fps": 30, "show_dir": rig.show,
+                                   "cues": [{"tc": "00:00:00:00",
+                                             "fseq": "Show.fseq",
+                                             "name": "Show"}]}, fh)
                 R.remote.morning = types.SimpleNamespace(
                     full_view=lambda device: {})
                 st, out = R.remote.morning_get(
@@ -80097,6 +80099,17 @@ def test_soak_render_older_than_layout_is_a_cues_fault_at_show_load():
                       "Show.fseq" in rc.get("text", ""),
                       f"the Morning checks name the show file and the "
                       f"render: {out.get('checks')}")
+                # Two show files: each its own block and headline, never
+                # one inside the other's More (cold review of #238).
+                rt = rc.get("text", "")
+                check("\n\nCUES FAULT in second.json: flame cues are off.\n"
+                      in rt and
+                      "\n\nCUES FAULT in bench.json: flame cues are off.\n"
+                      in rt and rt.startswith("CUES FAULT") and
+                      rt.count("CUES FAULT") ==
+                      1 + rt.count("\n\nCUES FAULT"),
+                      f"two show files: two blocks, each with its "
+                      f"headline: {rc.get('text')!r}")
                 check(F.show_folder_render_faults(R.folder) and
                       F.show_file_render_fault(
                           os.path.join(R.folder, "bench.json")),
@@ -83873,7 +83886,7 @@ def test_group_disarm_is_confirmed_or_forced():
         check(st == 200 and out.get("forced") is True and
               out.get("confirmed") is False and
               out.get("text", "").startswith(
-                  "Deck did not answer: ALL groups disarm sent.\n- Disarm sent to every group. Hazers off.\n- Show flames stay zero until Hold, Resume.\n- Do: Arm each group again to fire.\n\nMore: Disarm "
+                  "Deck did not answer: ALL groups disarm sent.\n- Disarm sent to every group. Hazers off.\n- Flames stay zero until Hold then Resume.\n- Do: Arm each group again to fire.\n\nMore: Disarm "
                   "front row forced (the Stream Deck program has not read "
                   "this engine in the last 0.5 s") and
               "every hazer is off" in out["text"] and
@@ -83910,7 +83923,7 @@ def test_group_disarm_is_confirmed_or_forced():
                             {"group": "front row"}, client=other)
         check(st == 200 and out.get("forced") is True and
               out.get("text", "").startswith(
-                  "No word from flamesafe: ALL groups disarm sent.\n- Disarm sent to every group. Hazers off.\n- Show flames stay zero until Hold, Resume.\n- Do: Arm each group again to fire.\n\nMore: Disarm "
+                  "No word from flamesafe: ALL groups disarm sent.\n- Disarm sent to every group. Hazers off.\n- Flames stay zero until Hold then Resume.\n- Do: Arm each group again to fire.\n\nMore: Disarm "
                   "front row forced (flamesafe's status is not reaching "
                   "this engine") and
               R.rig.count("flames_disarm_all") == n + 1 and not paused,
@@ -83928,7 +83941,7 @@ def test_group_disarm_is_confirmed_or_forced():
         st, _h, out = disarm("front row")
         check(st == 200 and out.get("forced") is True and
               out.get("text", "").startswith(
-                  "Not confirmed: ALL groups disarm sent.\n- Disarm sent to every group. Hazers off.\n- Show flames stay zero until Hold, Resume.\n- Do: Arm each group again to fire.\n\nMore: Disarm front row "
+                  "Not confirmed: ALL groups disarm sent.\n- Disarm sent to every group. Hazers off.\n- Flames stay zero until Hold then Resume.\n- Do: Arm each group again to fire.\n\nMore: Disarm front row "
                   "forced (flamesafe did not report front row off within "
                   "1 s") and
               R.rig.count("flames_disarm_all") == n + 1 and
@@ -84371,7 +84384,7 @@ def test_group_disarm_across_two_screens_real_flamesafe():
             screen.new_disarms = real_new
             check(code == 200 and out.get("forced") is True and
                   out.get("text", "").startswith(
-                      "Not confirmed: ALL groups disarm sent.\n- Disarm sent to every group. Hazers off.\n- Show flames stay zero until Hold, Resume.\n- Do: Arm each group again to fire.\n\nMore: Disarm "
+                      "Not confirmed: ALL groups disarm sent.\n- Disarm sent to every group. Hazers off.\n- Flames stay zero until Hold then Resume.\n- Do: Arm each group again to fire.\n\nMore: Disarm "
                       "front row forced (flamesafe did not report front "
                       "row off") and
                   took >= RM.PLAIN_CONFIRM_S - 0.05,
