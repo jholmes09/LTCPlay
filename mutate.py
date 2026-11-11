@@ -23478,6 +23478,23 @@ def build():
   "ltcplay/remote.py",
   "            if not (cs.get(\"running\") or cs.get(\"starting\")):\n                return False\n            gate = getattr(self.schedule, \"run_gate\", None)",
   "            if False:\n                return False\n            gate = getattr(self.schedule, \"run_gate\", None)"),
+
+ # Cold review of #240 (Jeff, 2026-11-11): Stop leaves show control on, so
+ # a refusal while it is on says turn it off, never press Stop.
+ ('show control: the timed purge refusal says press Stop again',
+  'ltcplay/remote.py',
+  '                       False):\n                return ("Show control is on (a show file is running), so "\n                        "the show file owns the flame channels; turn show "\n                        "control off first (End rehearsal in a rehearsal).")\n            try:\n                cs = self.control.state() or {}',
+  '                       False):\n                return ("Run is pressed (a show file is running), so the "\n                        "show file owns the flame channels; press Stop first.")\n            try:\n                cs = self.control.state() or {}'),
+
+ ('show control: a new show file refusal says press Stop again',
+  'ltcplay/remote.py',
+  '            return 409, ("A show file is running. Turn show control off "\n                         "first (End rehearsal in a rehearsal), then make "',
+  '            return 409, ("A show file is running. Press Stop first, then "\n                         "make "'),
+
+ ('show control: the rig-not-answering line says Stop and Run again',
+  'ltcplay/display.py',
+  'f"and the switch. Turn show control off and on (on the Mac page: "\n                f"Stop, then Run) after it is back, or the socket "',
+  'f"and the switch. Stop and Run after it is back, or the socket "'),
 ]
 
 

@@ -97524,6 +97524,45 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
     print("  ok")
 
 
+def test_show_control_refusals_say_turn_it_off():
+    section("show control (Jeff, 2026-11-11; cold review of #240): a "
+            "refusal while show control is on says turn it off (End "
+            "rehearsal in a rehearsal), never press Stop: Stop leaves it "
+            "on. The timed purge, a new show file and the terminal's "
+            "rig-not-answering line")
+    import inspect
+    import types
+    from ltcplay import remote as RM
+    from ltcplay import display as DP
+    want = "turn show control off first (End rehearsal in a rehearsal)"
+    run = types.SimpleNamespace(running=True)
+    for how, ctl in (
+            ("the session running",
+             types.SimpleNamespace(session=run, state=lambda: {})),
+            ("the engine's state starting",
+             types.SimpleNamespace(session=None,
+                                   state=lambda: {"starting": True}))):
+        fake = types.SimpleNamespace(schedule=None, control=ctl)
+        why = RM.Remote.timed_purge_blockers(fake, None)
+        check(why.startswith("Show control is on") and want in why and
+              "press Stop" not in why,
+              f"a timed purge with {how}: {why!r}")
+    fake = types.SimpleNamespace(
+        _show_live=lambda: False,
+        control=types.SimpleNamespace(_starting=False, session=run))
+    code, why = RM.Remote._new_show_refusal(fake)
+    check(code == 409 and "Turn show control off first (End rehearsal in "
+          "a rehearsal)" in why and "Press Stop" not in why and
+          "Nothing was written" in why,
+          f"a new show file with a show file running: {why!r}")
+    src = inspect.getsource(DP.warnings_for)
+    check("Turn show control off and on (on the Mac page: " in src and
+          "Stop and Run after it is back" not in src,
+          "the terminal's rig-not-answering line says turn show control "
+          "off and on (Stop, then Run on the Mac page)")
+    print("  ok")
+
+
 # ------------------------------------------- interface 2.0 (the SHOW tab) --
 
 def _ui2_pages():
@@ -113505,6 +113544,7 @@ if __name__ == "__main__":
     # passed: a run is green only when every test here ran and every check
     # in it passed.
     TESTS = [
+        test_show_control_refusals_say_turn_it_off,
         test_ltc_roundtrip,
         test_ltc_rollovers,
         test_ltc_degraded,

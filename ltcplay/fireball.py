@@ -781,7 +781,7 @@ def engine_blockers(remote, link=None, cleaning=True, during_show=False):
             if s is not None and getattr(s, "running", False):
                 return ("Show control is on (a show file is running), so "
                         "the show file owns the flame channels; turn show "
-                        "control off first.")
+                        "control off first (End rehearsal in a rehearsal).")
             try:
                 cs = remote.control.state() or {}
             except Exception:                            # noqa: BLE001
@@ -789,7 +789,7 @@ def engine_blockers(remote, link=None, cleaning=True, during_show=False):
             if cs.get("running") or cs.get("starting"):
                 return ("Show control is on (a show file is running), so the "
                         "show file owns the flame channels; turn show control "
-                        "off first.")
+                        "off first (End rehearsal in a rehearsal).")
         why = m._locks_confirmed()
         if why:
             return why
