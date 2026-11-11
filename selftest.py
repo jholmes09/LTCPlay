@@ -43332,7 +43332,10 @@ def test_refused_starts_say_why_and_what_to_press():
                  "NEVER_CONFIRMED", "SHOW_START_ERROR"):
         text = getattr(R, name)
         _no_dashes(text, f"ShowRunner.{name}")
-        check("press" in text and not text.rstrip().endswith("."),
+        # What to press: a button ("press ...") or the switch ("turn show
+        # control on/off", Jeff 2026-11-11).
+        check(("press" in text or "turn show control" in text.lower()) and
+              not text.rstrip().endswith("."),
               f"ShowRunner.{name} says what to press and ends without a "
               f"full stop (it is wrapped in FAULT (...)): {text!r}")
     # F8: a failure reported too late to be a failed start (the show runs
@@ -47772,8 +47775,7 @@ def test_every_show_start_clears_the_pixels():
     # 2.0's Schedule tab: from its pane to the next one.
     sched2 = rack2[rack2.find('id="t-schedule"'):]
     sched2 = sched2[:sched2.find('<section class="pane"')]
-    check("Programming: Show file card, End rehearsal, then Start "
-          "rehearsal." in said and
+    check("Programming: End rehearsal, then Start rehearsal." in said and
           "On 2.0: the Schedule tab's Show file card." in said and
           "Open in 1.0" not in said and len(said.split()) <= 30 and
           '<div class="card col" id="p-run-card" hidden>' in sched2 and
@@ -86736,11 +86738,11 @@ def test_live_flame_engine_routes_roles_and_presses():
     r.control = types.SimpleNamespace(
         session=types.SimpleNamespace(running=True, clock=None),
         state=lambda: {})
-    check("Run is pressed" in r.live_flame_blockers(),
+    check("show control is on" in r.live_flame_blockers(),
           "Run pressed (the session running): named")
     r.control = types.SimpleNamespace(
         session=None, state=lambda: {"starting": True})
-    check("Run is pressed" in r.live_flame_blockers(),
+    check("show control is on" in r.live_flame_blockers(),
           "Run pressed (the engine's state says starting): named")
     r.control = types.SimpleNamespace(session=None, state=lambda: {})
     r.schedule = types.SimpleNamespace(
@@ -90844,7 +90846,7 @@ def test_fireball_at_the_engine():
         check(st == 200 and link.cur[54] == 255 and v["blocked"] == "",
               f"Run pressed: the Fireball page still works (Jeff: at any "
               f"time, during a show too): {out} {v['blocked']!r}")
-        check("Run is pressed" in cl_why,
+        check("Show control is on" in cl_why,
               f"but the cleaning's rules still refuse Run pressed: {cl_why}")
         st, out = beat(set(), "a9", 2)
         check(st == 200 and link.cur is None, "all off")
