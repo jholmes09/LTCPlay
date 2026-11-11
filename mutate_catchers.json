@@ -3723,5 +3723,6 @@
 "practice: a person's Done waits for the retry": "test_fireball_practice_engine",
 "practice: open goes on after Done during its engine check": "test_fireball_practice_engine",
 "systems rows: a row says its state word twice again": "test_ui2_systems_rows_say_each_word_once",
-"systems rows: a row drops what its words add": "test_ui2_systems_rows_say_each_word_once"
+"systems rows: a row drops what its words add": "test_ui2_systems_rows_say_each_word_once",
+"systems rows: a row cuts its own verb when it starts like the state": "test_ui2_systems_rows_say_each_word_once"
 }

@@ -113154,6 +113154,8 @@ def test_ui2_systems_rows_say_each_word_once():
          "Stream Deck: Check. Slow. Check its USB cable."),
         (["Laser arm", "warn", "2 of 4 armed"],
          "Laser arm: Check. Some armed, output dark. Arm all or disarm."),
+        (["Video", "warn", "MadMapper running, no heartbeat"],
+         "Video: Check. Check the video PC."),
         (["Somethingnew", "warn", "3 retries"],
          "Somethingnew: Check. 3 retries."),
         (["Somethingnew", "warn", "ok"], "Somethingnew: Check"),

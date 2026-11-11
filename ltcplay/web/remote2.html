@@ -4401,7 +4401,7 @@ function sysRow(x){
   let rest = String(x.say || "").trim();
   const bare = rest.replace(/[\s.:,!]+$/, "").toLowerCase();
   if(bare === lw || bare === "ok") rest = "";
-  else if(rest.toLowerCase().indexOf(lw) === 0 && /^[\s.:,]/.test(rest.slice(word.length)))
+  else if(rest.toLowerCase().indexOf(lw) === 0 && /^[.:,]/.test(rest.slice(word.length)))
     rest = rest.slice(word.length).replace(/^[\s.:,]+/, "");
   if(!rest) return {head:x.label + ": " + word, rest:""};
   if(/^[a-z]/.test(rest)) return {head:x.label + ": " + word, rest:", " + rest};
