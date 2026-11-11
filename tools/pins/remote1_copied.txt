@@ -469,7 +469,7 @@ function checkWords(f, j){
   const over = cues.filter(c => c.overlap).map(c => c.name || c.tc);
   const probs = (j.problems || []).slice(0, 8);
   let t = `Check of ${esc(f)}: ${cues.length} cue(s).`;
-  if(!missing.length && !over.length && !probs.length) t += " Nothing wrong found. Next: Run in Programming mode to rehearse it.";
+  if(!missing.length && !over.length && !probs.length) t += " Nothing wrong found. Next: Start rehearsal in Programming mode.";
   if(missing.length) t += ` <b>Render not found for:</b> ${esc(missing.slice(0, 8).join(", "))}${missing.length > 8 ? ", ..." : ""}.`;
   if(over.length) t += ` <b>Starts before the cue before it has ended:</b> ${esc(over.slice(0, 8).join(", "))}${over.length > 8 ? ", ..." : ""}. Set its "tc" later.`;
   if(probs.length) t += "<ul>" + probs.map(p => `<li>${esc(p)}</li>`).join("") + "</ul>";
@@ -638,9 +638,9 @@ function runModeView(st, want){
   let text = MODE_WHAT[want], locked = false;
   if(want === "programming" && live){
     locked = true;
-    text = "<b>Programming is locked:</b> a scheduled show is live (" + esc(sch.state) + "). Press Hold to pause it now; Programming opens once the show has ended. Then Stop, and Run here in Programming.";
+    text = "<b>Programming is locked:</b> a scheduled show is live (" + esc(sch.state) + "). Press Hold to pause it now; Programming opens once the show has ended. Then Stop, and Start rehearsal here.";
   } else if(now && now !== want){
-    text += " Now running in " + (now === "show" ? "Show" : "Programming") + ": press Stop, then Run, to switch.";
+    text += now === "show" ? " Show control is on now: turn it off, then Start rehearsal." : " A rehearsal is on now: End rehearsal, then turn show control on.";
   } else if(now === want){
     text += " Running now.";
   }
@@ -650,11 +650,11 @@ Pure.
 function rateNote(st){
   return String((st && st.show && st.show.rate_note) || "");
 }
-confirmBox("Turn Run off?", RUN_OFF_CONFIRM, "Yes, Run off"
+confirmBox("Turn show control off?", RUN_OFF_CONFIRM, "Yes, turn off"
 if(runLook(ST, nowStale()).mode !== "runoff")
 const v = runModeView(ST, RUN_MODE || "show");
   if(v.locked)
-confirmBox(prog ? "Run in Programming?" : "Press Run?", prog ? "Run " + f + " as a rehearsal. Play from, jump and loop work, and the scheduler starts no show." : "Run " + f + ". The scheduler then starts each show by itself.", "Yes, Run"
+confirmBox(prog ? "Start rehearsal?" : "Turn show control on?", prog ? "Rehearses " + f + ". Play from, jump and loop work, and the scheduler starts no show." : "Uses " + f + ". The scheduler then starts each show by itself.", prog ? "Yes, start" : "Yes, turn on"
 post("/api/start", prog ? {timeline:f, on_lost:"hold"} : {timeline:f})
 press("hold")
 press("resume")

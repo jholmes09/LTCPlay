@@ -16980,7 +16980,7 @@ def build():
 
  ("ui2 page: Run off turns Run off without asking",
   "ltcplay/web/remote2.html",
-  "  if(!(await confirmBox(\"Turn Run off?\", RUN_OFF_CONFIRM, \"Yes, Run off\", \"red\"))) return;\n",
+  "  if(!(await confirmBox(\"Turn show control off?\", RUN_OFF_CONFIRM, \"Yes, turn off\", \"red\"))) return;\n",
   ""),
 
  # Cold review of #191 round 3.
@@ -17700,8 +17700,8 @@ def build():
 
  ("Rack screen: Run never becomes Stop while Run is starting",
   "ltcplay/web/remote_rules.js",
-  "  if(!(show.running || show.starting)) return {mode:\"run\"",
-  "  if(!show.running) return {mode:\"run\""),
+  "  if(!(show.running || show.starting))\n    return {mode:\"run\"",
+  "  if(!show.running)\n    return {mode:\"run\""),
 
  ("Rack screen: a press is not decided by what was seen at touch-down",
   "ltcplay/web/remote_rules.js",
@@ -22900,12 +22900,12 @@ def build():
 
  ("ui 2.0 Programming: Run starts with no question",
   "ltcplay/web/remote2.html",
-  "  if(!(await confirmBox(prog ? \"Run in Programming?\"",
-  "  if(false && !(await confirmBox(prog ? \"Run in Programming?\""),
+  "  if(!(await confirmBox(prog ? \"Start rehearsal?\"",
+  "  if(false && !(await confirmBox(prog ? \"Start rehearsal?\""),
 
  ("ui 2.0 Programming: Run off goes with no question",
   "ltcplay/web/remote2.html",
-  "    const sure = await confirmBox(\"Turn Run off?\", RUN_OFF_CONFIRM, \"Yes, Run off\", \"red\");\n    if(!sure) return;\n    if(runLook(ST, stale()).mode !== \"runoff\")",
+  "    const sure = ((ST && ST.transport) || {}).programming\n      ? await confirmBox(\"End rehearsal?\", \"Stops everything, as Stop does, and ends the rehearsal.\", \"Yes, end it\", \"red\")\n      : await confirmBox(\"Turn show control off?\", RUN_OFF_CONFIRM, \"Yes, turn off\", \"red\");\n    if(!sure) return;\n    if(runLook(ST, stale()).mode !== \"runoff\")",
   "    if(runLook(ST, stale()).mode !== \"runoff\")"),
 
  ("ui 2.0 Programming: the session is pressable signed out",
@@ -23456,13 +23456,13 @@ def build():
 
  ("show control: Start now says Run is off from the sentence again",
   "ltcplay/web/remote_rules.js",
-  "sub:!(st && st.show && st.show.show_control_on === true) ? \"Run is off\"",
-  "sub:/^Run has not been pressed/.test(String(b.text)) ? \"Run is off\""),
+  "sub:!(st && st.show && st.show.show_control_on === true) ? \"Show control is off\"",
+  "sub:/^Run has not been pressed/.test(String(b.text)) ? \"Show control is off\""),
 
  ("show control: Start now reads a missing Run boolean as on",
   "ltcplay/web/remote_rules.js",
-  "sub:!(st && st.show && st.show.show_control_on === true) ? \"Run is off\"",
-  "sub:(st && st.show && st.show.show_control_on === false) ? \"Run is off\""),
+  "sub:!(st && st.show && st.show.show_control_on === true) ? \"Show control is off\"",
+  "sub:(st && st.show && st.show.show_control_on === false) ? \"Show control is off\""),
 
  ("show control: the status ignores the Run gate",
   "ltcplay/remote.py",

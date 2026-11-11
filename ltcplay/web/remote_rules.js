@@ -195,10 +195,10 @@ function modeLook(st){
   const tr = (st && st.transport) || {};
   if(!st) return {cls:"", word:"...", text:"Waiting for the engine."};
   if(show.running && tr.programming)
-    return {cls:"prog", word:"Programming", text:"A rehearsal is running: the scrubbing controls work, and the scheduler starts no show. To go back to Show: Stop, choose Show on the Show file card, then Run."};
+    return {cls:"prog", word:"Programming", text:"A rehearsal is running: the scrubbing controls work, and the scheduler starts no show. To go back to Show: End rehearsal, choose Show on the Show file card, then turn show control on."};
   if(show.running)
     return {cls:"show", word:"Show", text:"Show mode: a show file is running and the scheduler starts each show at its time. Scrubbing is off."};
-  return {cls:"", word:"Not running", text:"No show file is running. Nothing reaches the rig until Run is pressed on the Programming screen, in Show or in Programming."};
+  return {cls:"", word:"Show control off", text:"Show control is off. Nothing reaches the rig until show control is on or a rehearsal starts."};
 }
 // One engine check's look on the Morning page: its class and the word
 // before its sentence. An unknown level is never shown as fine.
@@ -576,9 +576,9 @@ function stopWords(j){
   if(j && j.programming && j.programming.ok) said.push("Programming playback stopped.");
   if(j && j.run_on === true){
     if(j.hold && j.hold.ok) said.push("The schedule is on Hold: no show starts until you press Resume. Arm each group again when it is safe.");
-    else said.push("Run is still on. Arm each group again when it is safe.");
+    else said.push("Show control is still on. Arm each group again when it is safe.");
   }
-  else said.push("Run is off. Press Run to bring the rig back.");
+  else said.push("Show control is off. Turn it on to bring the rig back.");
   return "Stopped. " + said.join(" ");
 }
 // Is there anything for Stop to stop (Jeff, 2026-10-30: "if nothing is
@@ -614,9 +614,9 @@ function refusedWords(j, statusText){
 }
 // What Stop does, on its button (there is no confirm box: Stop is a double
 // tap, Jeff 2026-10-30).
-const STOP_TITLE = "Tap twice. Disarms every flame group and every laser, ends the fireball, cleaning and Programming playback, ends a live show and fades it to dark, and puts the schedule on Hold. Nothing is fired. Run stays on: Resume releases the Hold, and each group has to be armed again.";
+const STOP_TITLE = "Tap twice. Disarms every flame group and every laser, ends the fireball, cleaning and Programming playback, ends a live show and fades it to dark, and puts the schedule on Hold. Nothing is fired. Show control stays on: Resume releases the Hold, and each group has to be armed again.";
 // Run off (2026-10-30): Stop no longer turns Run off, so the Run card does.
-const RUN_OFF_CONFIRM = "Stop everything (as Stop does), then stop playback, so Run is off. No show starts until Run is pressed again.";
+const RUN_OFF_CONFIRM = "Stops everything, as Stop does, then ends playback. No show starts until show control is on again.";
 // The Show screen's Start now button, or Stop in its place while a show is
 // live (Jeff, 2026-10-28: the Play button becomes Stop, same position). A
 // live show is the scheduler in SHOW or PAUSED (on Hold), or, with no
@@ -653,7 +653,7 @@ function startLook(st, stale, waiting){
     return {mode:"start", label:"Start now", sub:"audio loading, starts when ready",
             disabled:!fresh, title:String(b.text), why:""};
   if(b && b.text)
-    return {mode:"start", label:"Start now", sub:!(st && st.show && st.show.show_control_on === true) ? "Run is off" : "not ready, tap for why",
+    return {mode:"start", label:"Start now", sub:!(st && st.show && st.show.show_control_on === true) ? "Show control is off" : "not ready, tap for why",
             disabled:!fresh, title:String(b.text), why:String(b.text)};
   return {mode:"start", label:"Start now", sub:"", disabled:!fresh, title:"", why:""};
 }
@@ -661,15 +661,22 @@ function startLook(st, stale, waiting){
 // force and there is something for Stop to stop (Jeff, 2026-10-28 and
 // 2026-10-30; review of #144, F4), one Stop, where Run was. Stop no longer
 // turns Run off, so with Run in force and nothing to stop it is Run off
-// (behind a confirm), and with Run off it is Run.
-function runLook(st, stale){
+// (behind a confirm), and with Run off it is Run. Its words (Jeff,
+// 2026-11-11: Run is Show control on/off; Programming's Run is a
+// rehearsal): Run is "Turn show control on", or "Start rehearsal" with
+// Programming chosen (want, the mode the Show file card has picked); Run
+// off is "Turn show control off", or "End rehearsal" while a rehearsal
+// is in force. Words only: the modes are the same.
+function runLook(st, stale, want){
   const show = (st && st.show) || {};
+  const tr = (st && st.transport) || {};
   // No contact: what is playing is not known, so Stop is there (as on
   // Start now; cold review of #191, B2).
   if(stale && st) return {mode:"stop", label:"Stop", sub:"no contact"};
-  if(!(show.running || show.starting)) return {mode:"run", label:"Run", sub:""};
+  if(!(show.running || show.starting))
+    return {mode:"run", label:want === "programming" ? "Start rehearsal" : "Turn show control on", sub:""};
   return stopShows(st) ? {mode:"stop", label:"Stop", sub:"end the show, rig dark"}
-                       : {mode:"runoff", label:"Run off", sub:"stop playback"};
+                       : {mode:"runoff", label:tr.programming ? "End rehearsal" : "Turn show control off", sub:"stop playback"};
 }
 // What a press on a button that changes between Start and Stop does
 // (review of #144, F5): the mode the operator SAW when the finger went

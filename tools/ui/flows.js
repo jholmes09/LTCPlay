@@ -57,7 +57,7 @@ const TASKS = [
     await o.typeNoTap("#si-pw", "secret1", "password"); await o.shot("1_signin");
     await o.tap('#sh-row [data-i="1"]', "Sign in"); }],
   ["2 Start the night (Run)", "idle_operator", async o => {
-    await o.shot("2_before"); await o.tap("#b-go", "Run show"); await o.yes("run"); await o.shot("2_after"); }],
+    await o.shot("2_before"); await o.tap("#b-go", "Turn show control on"); await o.yes("run"); await o.shot("2_after"); }],
   ["3 Startup checklist incl. purge", "day_jeff", async o => {
     await o.tap('.tab[data-tab="day"]', "Day"); await o.shot("3_day");
     await o.tap("#d-next", "Next step (to the startup list)");
