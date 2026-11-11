@@ -23147,8 +23147,8 @@ def build():
 
  ("less prose: an alert drops its line breaks before the rack screen",
   "ltcplay/alerts.py",
-  '        full = self.full if "\\n" in self.full else text',
-  '        full = text'),
+  '        if "\\n" in self.full:\n            out["full"]',
+  '        if False:\n            out["full"]'),
 
  ("less prose: opText writes the engine's words as markup",
   "ltcplay/web/remote2.html",
