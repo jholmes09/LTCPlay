@@ -3721,5 +3721,7 @@
 "practice: a pending mark reads as charged tanks": "test_fireball_practice_engine",
 "practice: a Stop that came back failed is pressed again at once": "test_fireball_practice_engine",
 "practice: a person's Done waits for the retry": "test_fireball_practice_engine",
-"practice: open goes on after Done during its engine check": "test_fireball_practice_engine"
+"practice: open goes on after Done during its engine check": "test_fireball_practice_engine",
+"less prose: the arming card stops naming a laser arm": "test_screen_arming_switch_and_refusals",
+"less prose: Restart the engine no longer says it is refused during a show": "test_ui2_show_pc_tools_are_1_0s"
 }

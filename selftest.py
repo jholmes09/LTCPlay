@@ -112347,7 +112347,7 @@ def test_ui2_schedule_tab_makes_1_0_presses():
     for need in ('id="tonight"', 'id="tn-run-warn"', 'id="tn-next"',
                  'id="sched-edit" hidden', 'id="se-days"', 'id="se-save"',
                  'id="se-reload"', 'id="se-msg"', 'id="se-note"',
-                 'id="se-tz-now"', "Tap a show to see its notes."):
+                 'id="se-tz-now"'):
         check(need in sched, f"the Schedule tab has {need}")
     # Each field: 1.0's id, type and limits.
     for fid in ("se-tz", "se-first", "se-last", "se-len", "se-guard",
@@ -113073,13 +113073,29 @@ def _ui2_tools_copies(one):
             ("Choose (Stream Deck operator)",
              blk('$("b-deck-op").addEventListener(')),
             ("Use (an address)", blk('$("net-uses").addEventListener(')),
+            # Less prose (Jeff, 2026-11-11): the confirms are shorter,
+            # every condition kept.
             ("Restart the engine",
-             sub(blk('$("net-restart").addEventListener('),
-                 '"Yes, restart", "start"', '"Yes, restart", "green"')),
+             sub(sub(blk('$("net-restart").addEventListener('),
+                     '"Yes, restart", "start"', '"Yes, restart", "green"'),
+                 '"LTC Player restarts the show engine so it listens on the '
+                 'saved show network address. It is refused while a show '
+                 'runs or a flame group is armed. flamesafe and the Stream '
+                 'Deck program keep running."',
+                 '"Restarts the show engine on the saved address. Refused '
+                 'while a show runs or a group is armed. flamesafe and the '
+                 'Stream Deck keep running."')),
             ("Reload engine",
-             sub(sub(blk('$("cfg-reload").addEventListener('),
-                     '"Yes, reload", "start"', '"Yes, reload", "green"'),
-                 '$("ctl-msg")', '$("cfg-msg")', 2)),
+             sub(sub(sub(blk('$("cfg-reload").addEventListener('),
+                         '"Yes, reload", "start"', '"Yes, reload", "green"'),
+                     '$("ctl-msg")', '$("cfg-msg")', 2),
+                 '"LTC Player restarts the show engine so it reads the '
+                 'changed settings files. It is refused while a show runs or '
+                 'a flame group is armed. flamesafe and the Stream Deck '
+                 'program keep running."',
+                 '"Restarts the show engine to read the changed files. '
+                 'Refused while a show runs or a group is armed. flamesafe '
+                 'and the Stream Deck keep running."')),
             ("Check the rig", blk('$("rc-run").addEventListener(')),
             ("Close this window", blk('$("info-exit").addEventListener('))]
     for ln in ('$("net-pick").addEventListener("change", () => { '

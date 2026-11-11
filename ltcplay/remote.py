@@ -354,11 +354,11 @@ TAKEN_WAIT_S = 0.5
 # Everything the screen_arming switch lets screens do (review of PR #90,
 # P2-1). The page's card and confirm box say the same words (selftest).
 SCREEN_ARMING_ENABLES = (
-    "On, this rack screen and every device on the show network can hold "
-    "to arm a flame group (through the Stream Deck, with all of its rules "
-    "and flamesafe's) and disarm one flame group. Devices on the show "
-    "network can also select and fire a purge, unlock a machine, turn a "
-    "laser test on and arm a laser (this rack screen does those without this switch).")
+    "On: this screen and every show network device can hold to arm a "
+    "flame group and disarm one flame group, under the Stream Deck's and "
+    "flamesafe's rules. Show network devices can also select and fire a "
+    "purge, unlock a machine, turn a laser test on and arm a laser; this "
+    "screen can without the switch.")
 # What the page says when screen arming is switched off (the default).
 ARMING_OFF = ("Arming from a screen is switched off on this show PC. To turn "
               "it on: on the show machine itself, Programming, Arming from "
