@@ -1784,7 +1784,7 @@ stop:
 - **Show control off** is on the Show file card's button: with show
   control on and nothing playing, the button reads Show control off
   (End rehearsal in a rehearsal). It is also in Stop's place on the SHOW
-  tab at those times, in full colour. It asks first, then does a Stop and
+  tab at those times, in full colour, reading Show ctrl off. It asks first, then does a Stop and
   stops playback, so show control is off. It needs the Show permission;
   Stop never does. Right after Stop turns back into Start now, Show
   control on or off, the button waits 2 seconds before it takes a
