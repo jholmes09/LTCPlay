@@ -1,6 +1,8 @@
 # ltcplay (LTC Player)
 
-Timecode-driven FSEQ show player for Jeff Holmes Presents. Runs GPL 2026 at Dollywood on a Mac. A Windows port for a new project is planned.
+Timecode-driven FSEQ show player for Jeff Holmes Presents. main is developed for Fire & Ice 2026 on Windows.
+
+GPL 2026 at Dollywood is frozen at tag `gpl-2026.09.15.10`, file-for-file what runs on its offline Mac, which is never updated. main no longer has to keep GPL behavior. Anything Dollywood needs comes from that tag (download its zip from the repo's Tags page), never from main.
 
 ## Every change
 
@@ -16,8 +18,7 @@ Show renders and media (`.fseq`, `.xsq`, audio, video), `.venv/`, `LTC Player.ap
 ## Show safety
 
 - Nothing reaches the rig until the operator presses Run.
-- `on_lost` for GPL is freerun to the end of the show.
-- Direct FSEQ playback is primary. Advatek scene triggering (sACN universe 6999, channels 101 to 123, multicast) is the alternate.
+- In the GPL release: `on_lost` is freerun to the end of the show, and direct FSEQ playback is primary. Advatek scene triggering (sACN universe 6999, channels 101 to 123, multicast) is the alternate.
 - The native window app stays BETA until Jeff releases it.
 
 ## Layout
