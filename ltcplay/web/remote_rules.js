@@ -663,9 +663,9 @@ function startLook(st, stale, waiting){
 // turns Run off, so with Run in force and nothing to stop it is Run off
 // (behind a confirm), and with Run off it is Run. Its words (Jeff,
 // 2026-11-11: Run is Show control on/off; Programming's Run is a
-// rehearsal): Run is "Turn show control on", or "Start rehearsal" with
+// rehearsal): Run is "Show control on", or "Start rehearsal" with
 // Programming chosen (want, the mode the Show file card has picked); Run
-// off is "Turn show control off", or "End rehearsal" while a rehearsal
+// off is "Show control off", or "End rehearsal" while a rehearsal
 // is in force. Words only: the modes are the same.
 function runLook(st, stale, want){
   const show = (st && st.show) || {};
@@ -674,9 +674,9 @@ function runLook(st, stale, want){
   // Start now; cold review of #191, B2).
   if(stale && st) return {mode:"stop", label:"Stop", sub:"no contact"};
   if(!(show.running || show.starting))
-    return {mode:"run", label:want === "programming" ? "Start rehearsal" : "Turn show control on", sub:""};
+    return {mode:"run", label:want === "programming" ? "Start rehearsal" : "Show control on", sub:""};
   return stopShows(st) ? {mode:"stop", label:"Stop", sub:"end the show, rig dark"}
-                       : {mode:"runoff", label:tr.programming ? "End rehearsal" : "Turn show control off", sub:"stop playback"};
+                       : {mode:"runoff", label:tr.programming ? "End rehearsal" : "Show control off", sub:"stop playback"};
 }
 // What a press on a button that changes between Start and Stop does
 // (review of #144, F5): the mode the operator SAW when the finger went
