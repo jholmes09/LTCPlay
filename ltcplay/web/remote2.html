@@ -986,7 +986,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <div class="pline" id="cfg-msg" role="status"></div>
         </div>
         <div class="card col" id="rigcheck" hidden>
-          <div class="t"><b>Rig check (pre-roll)</b><span>Before every show the engine checks the rig by itself: audio, announcements, timecode, video, the flame link, the lasers and the network. Check the rig runs the same checks now, between shows: nothing is started, armed or played, and the screens go black until the next show.</span></div>
+          <div class="t"><b>Rig check (pre-roll)</b><span>Checked by itself before every show. Checking now starts nothing; the screens go black until the next show.</span></div>
           <div class="pbar"><b class="dbig" id="rc-now"></b><button class="b" id="rc-run"><svg class="i"><use href="#i-check"/></svg>Check the rig</button></div>
           <div class="pline bad" id="rc-warn" hidden></div>
           <div class="pline" id="rc-items"></div>
@@ -1927,11 +1927,14 @@ $("al-text").addEventListener("click", async () => {
   const it = ALERTS.find(i => i.key === ALERT_KEY); if(!it) return;
   // A failed rig check: 1.0's Check the rig again, on the show PC only.
   const again = it.recheck && ME && ME.local;
-  // The engine's words, headline and bullets kept (opText); the slot's Do under them.
+  // The engine's words, headline and bullets kept (opText); the slot's Do
+  // under them, unless the words carry their own bullets (said once).
   const body = document.createElement("div");
   body.appendChild(opText(it.full));
-  body.appendChild(document.createElement("div")).className = "dim";
-  body.lastChild.textContent = it.do || "";
+  if(!/\n- /.test(String(it.full || ""))){
+    body.appendChild(document.createElement("div")).className = "dim";
+    body.lastChild.textContent = it.do || "";
+  }
   const v = await sheet(it.what, body,
     again ? [{label:"Close", value:null}, {label:"Check again", value:"recheck", cls:"blue", icon:"reset"}] : [{label:"Close", cls:"blue"}]);
   if(v === "recheck"){

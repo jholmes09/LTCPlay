@@ -23140,10 +23140,10 @@ def build():
   "#t-users input[type=checkbox]{width:40px;height:40px;"),
 
  # Less prose (Jeff, 2026-11-11): bullets and paragraph breaks.
- ("less prose: an alert's one-line text keeps the line breaks",
+ ("less prose: an alert's one-line text keeps its bullet marks",
   "ltcplay/alerts.py",
-  '        text = " ".join(full.split())',
-  '        text = full'),
+  '        text = " ".join(" ".join(ln[2:] if ln.startswith("- ") else ln',
+  '        text = " ".join(" ".join(ln if ln.startswith("- ") else ln'),
 
  ("less prose: an alert drops its line breaks before the rack screen",
   "ltcplay/alerts.py",
