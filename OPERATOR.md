@@ -1698,7 +1698,7 @@ Turn show control on." It is amber until 30 minutes before that show,
 then red, a fault. Once the night's first show time has gone by it is
 red at once. On a Hold it says "Turn show control on, then Resume.". On
 an iPad it adds "at the show PC". On the show PC, signed in with the
-Start now permission, a Turn show control on button stands beside it, in
+Start now permission, a Show control on button stands beside it, in
 the alert and on the Schedule tab: the same as the main screen's big
 button, asking first. It is there only with contact. On a Hold the main
 screen's big button is Resume: turning show control on does not end the
@@ -1771,7 +1771,7 @@ stop:
   show. A show start already on its way when the Stop lands is refused,
   and one whose music already began is stopped and faded again. While a
   Stop is still disarming and fading to dark (until the show conductor
-  has taken it), Resume, Start now and Turn show control on are refused until it has
+  has taken it), Resume, Start now and Show control on are refused until it has
   finished. The Stop's fade never waits on a file being written or on
   the scheduler.
 - **Stop never turns show control off.** It stays on: Hold (or a Stop's Hold) is
@@ -1781,12 +1781,12 @@ stop:
   fading to dark. ... The schedule is on Hold: no show starts until you
   press Resume.") or, if any part did not work, which part, and what to
   press. If the engine refuses, it says why in its own words.
-- **Turn show control off** is on the Show file card's button: with show
-  control on and nothing playing, the button reads Turn show control off
+- **Show control off** is on the Show file card's button: with show
+  control on and nothing playing, the button reads Show control off
   (End rehearsal in a rehearsal). It is also in Stop's place on the SHOW
   tab at those times, in full colour. It asks first, then does a Stop and
   stops playback, so show control is off. It needs the Show permission;
-  Stop never does. Right after Stop turns back into Start now, Turn show
+  Stop never does. Right after Stop turns back into Start now, Show
   control on or off, the button waits 2 seconds before it takes a
   press, and a press made just as the show ended or started does nothing
   and says so: a Stop never turns into a start.
@@ -1856,8 +1856,8 @@ waits for the audio (at most 20 seconds) and reads **Loading, starting when
 ready**; the show starts as soon as the audio is in. Hold or Stop
 cancels the wait and nothing starts, and so does any Hold the program
 makes itself (for an announcement, or at showtime for an open alert).
-While a Stop is still disarming and fading to dark, Start now and Turn
-show control on, on any screen, are refused until it has finished, and say so. Only the show's own audio counts: a
+While a Stop is still disarming and fading to dark, Start now and Show
+control on, on any screen, are refused until it has finished, and say so. Only the show's own audio counts: a
 slow or broken intermission file never holds the show back.
 
 ## The pixels at the end of a show, and at the next start
@@ -2489,13 +2489,13 @@ Schedule (it was called Tonight) shows the night's shows on one screen; tap
 a show to see its notes (why it was moved, skipped or added, or "No notes";
 tap again to close). Programming has the scrubbing controls and, on the
 show machine only, the Show file card (the Show and Programming switch, the
-show file, and Turn show control on, or Start rehearsal in Programming,
+show file, and Show control on, or Start rehearsal in Programming,
 which reads Stop in the same place while it is on and something plays),
 the Stream Deck operator and the show network.
 Show: the scheduler starts each show at its time and scrubbing is off.
 Programming: a rehearsal; play from, jump and loop work and the scheduler
 starts no show. To switch, turn show control off (or End rehearsal),
-pick the other side of the switch, then Turn show control on (or Start
+pick the other side of the switch, then Show control on (or Start
 rehearsal). While a scheduled show is live, Programming is locked and the
 switch says so. Back to the show returns to the show screen.
 
@@ -2521,7 +2521,7 @@ pauses it the same as Pause, and also holds the schedule, so no show
 starts until someone presses Resume (Continue carries the playback on but
 leaves the schedule held). Stop (after it disarms every flame group and
 laser, as always) stops the playback the way Stop the show audio does.
-Start now and Turn show control on are refused while Programming is playing: stop the
+Start now and Show control on are refused while Programming is playing: stop the
 Programming playback first.
 The Rack screen's Stop and the Stream Deck's Stop stop it too. If no
 operator page is open for 60 seconds, the playback stops by itself and
@@ -2692,8 +2692,8 @@ this LTC Player's release and build id (also in `/api/remote/status` as
 window (Alt+F4, or its Close this window button on the show PC).
 
 Show stays Show (Jeff, 2026-10-28: "even when I press show mode, it turns
-on programming mode"). The mode is what was asked for, nothing else: Turn
-show control on with Show picked is a real show and the pill reads SHOW;
+on programming mode"). The mode is what was asked for, nothing else: Show
+control on with Show picked is a real show and the pill reads SHOW;
 it reads PROGRAMMING only after Start rehearsal (or Rehearse, or
 Rehearsal on the old page). A Fire & Ice show is on this machine's own
 clock (the show audio), and such a show always holds its frame when its
@@ -2776,13 +2776,13 @@ tab, and the hardware e-stop always works.
   PC reads the list but nobody can save it until an admin exists.
 - The SHOW tab, top to bottom: one line that says what to do next;
   the show state, the timecode and the time left; the big button for the
-  next step (Turn show control on, Start now or Resume; Resume and Start now offer
+  next step (Show control on, Start now or Resume; Resume and Start now offer
   the saved play-from cues, see Start at a cue), Hold and Stop show; one
   alert at a time with Acknowledge (tap the words for the details); a tile
   per flame group and one for the lasers, with Hold: arm flames and Disarm
   flames (flames only; the lasers' tile has its own Disarm lasers); the
   announcements and the wind along the bottom. Tap "Announce" for what
-  the announcements do. Turn show control on is on the show PC only.
+  the announcements do. Show control on is on the show PC only.
 - Schedule tab: tonight's shows and the schedule editor. Tonight's shows, two columns: tap a show to see its notes
   (why it moved, how it was added, a late warning), tap again to close
   them. "Next:" says the next show, and the engine's show control warning
@@ -2827,14 +2827,14 @@ tab, and the hardware e-stop always works.
   to arm and flamesafe's rules.
 - Programming (Schedule tab): the Programming cards, on the Schedule tab (there is no room in the header for a tab
   of its own; `/remote2#prog` opens it). On the show PC, the Show file
-  card: Show or Programming, the show file, and the button: Turn show
+  card: Show or Programming, the show file, and the button: Show
   control on in Show, Start rehearsal in Programming. It asks first ("Turn
   show control on?" or "Start rehearsal?"); Programming is a rehearsal
   (Play from, jump and loop work, the scheduler starts no show).
   Programming is refused while a scheduled show is live: press Hold, and
   once the show has ended Stop, then Start rehearsal. While it is on, the
-  same button is Stop (tap twice) when something is playing, else Turn
-  show control off (End rehearsal in a rehearsal; asks first); to switch
+  same button is Stop (tap twice) when something is playing, else Show
+  control off (End rehearsal in a rehearsal; asks first); to switch
   modes, turn it off, choose the other mode, then turn it on. On every screen, the Programming session card: Play from (a
   timecode or a cue name), Back 10 s, Back 5 s, Ahead 5 s, Ahead 10 s,
   Pause, Continue, Set A, Set B, Loop on or off, and Follow timecode again

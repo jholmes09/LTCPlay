@@ -241,7 +241,7 @@ exactly as xLights made them. A fresh install has none. To make one:
 - **MadMapper's Sync Source.** After reopening the project it can be
   empty. Set it to Art-Net and save the project.
 - **48 kHz.** Set the interface to 48 kHz in its own app (PreSonus
-  Universal Control). Otherwise Turn show control on is refused with "will not play N
+  Universal Control). Otherwise Show control on is refused with "will not play N
   output(s) at 48000 Hz".
 - **Windows Time running.** With the service stopped the clock was 2.7 s
   behind. services.msc, Windows Time, Startup type Automatic, Start. The
