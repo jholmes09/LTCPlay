@@ -23139,6 +23139,17 @@ def build():
   "#t-users input[type=checkbox]{width:56px;height:56px;",
   "#t-users input[type=checkbox]{width:40px;height:40px;"),
 
+ # The Systems sheet says each state once (Jeff, 2026-11-11).
+ ("systems rows: a row says its state word twice again",
+  "ltcplay/web/remote2.html",
+  '  if(bare === lw || bare === "ok") rest = "";',
+  '  if(false) rest = "";'),
+
+ ("systems rows: a row drops what its words add",
+  "ltcplay/web/remote2.html",
+  '  if(!rest) return {head:x.label + ": " + word, rest:""};',
+  '  return {head:x.label + ": " + word, rest:""};'),
+
  # flamesafe.json that is not valid JSON (Jeff, 2026-11-06): the engine
  # starts with flames off and says where; the supervisor starts neither
  # flamesafe nor the deck; the last good copy.

@@ -113119,6 +113119,62 @@ def _ui2_tools_copies(one):
     return out
 
 
+def test_ui2_systems_rows_say_each_word_once():
+    section("2.0's Systems sheet (Jeff, 2026-11-11: 'Stream Deck: OK. OK.' "
+            "said it twice): each row says its state once and then only "
+            "what the words add; a reason or a number is never dropped")
+    two = _ui2_pages()[1]
+    fns = ""
+    for c in ("SYS_LABEL", "SYS_OFF", "SYS_SAY", "SYS_WORD"):
+        m = re.search(r"^const " + c + r" = .*?;$", two, re.M | re.S)
+        check(m is not None, f"{c} is found")
+        fns += "\n" + (m.group(0) if m else "")
+    for n in ("short8", "sysItem", "sysRow"):
+        f = _js_function(two, n)
+        check(f is not None, f"{n} is found")
+        fns += "\n" + (f or "")
+    check("const r = sysRow(x);" in two and
+          "<b>${esc(r.head)}</b>${esc(r.rest)}</li>" in two,
+          "the Systems sheet draws each row with sysRow, escaped")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    cases = [
+        (["Deck", "ok", "ok"], "Stream Deck: OK"),
+        (["Flamesafe", "ok", "linked"], "Flames: OK"),
+        (["Laser arm", "warn", "disarmed"], "Laser arm: Off, not in use here."),
+        (["Video", "warn", "not set up"], "Video: Off, not in use here."),
+        (["Laser arm", "ok", "ARMED"], "Laser arm: All armed"),
+        (["Lasers", "bad", "LINK LOST"],
+         "Laser output: FAULT. BEYOND not answering. Check laser PC."),
+        (["Deck", "warn", "late 1.2 s"],
+         "Stream Deck: Check. Slow. Check its USB cable."),
+        (["Laser arm", "warn", "2 of 4 armed"],
+         "Laser arm: Check. Some armed, output dark. Arm all or disarm."),
+        (["Somethingnew", "warn", "3 retries"],
+         "Somethingnew: Check. 3 retries."),
+        (["Somethingnew", "warn", "ok"], "Somethingnew: Check"),
+    ]
+    js = fns + "\nconst cases = " + json.dumps(cases) + ";\n" \
+        "const out = cases.map(([x]) => { const r = sysRow(sysItem(" \
+        "{name:x[0], state:x[1], word:x[2]})); return r.head + r.rest; });\n" \
+        "console.log(JSON.stringify(out));\n"
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        got = json.loads(r.stdout.strip() or "null")
+    except ValueError:
+        got = None
+    want = [w for _x, w in cases]
+    bad = [(c[0], g) for c, g in zip(cases, got or []) if g != c[1]]
+    check(r.returncode == 0 and got == want,
+          f"each Systems row says its state once: {bad or got} "
+          f"{r.stderr.strip()[:600]}")
+    print("  ok")
+
+
 def test_ui2_show_pc_tools_are_1_0s():
     section("2.0's show PC tools, P12, P14, P15, P16: the checklists' "
             "Verify records, today's PDF and Export all (links that "
@@ -114260,6 +114316,7 @@ if __name__ == "__main__":
         test_ui2_users_audit_driven,
         test_ui2_show_pc_tools_are_1_0s,
         test_ui2_show_pc_tools_driven,
+        test_ui2_systems_rows_say_each_word_once,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):
