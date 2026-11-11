@@ -42145,7 +42145,7 @@ def test_fire_ice_show_outputs():
     # Nothing running: nothing is playing, and music refuses in words.
     check(show.playing() is False, "nothing running: nothing playing")
     r = show.music_hold(0.25)
-    check(not r.ok and "Run" in r.sentence,
+    check(not r.ok and "show control" in r.sentence,
           f"music with nothing running is refused: {r}")
     check(show.music_frozen() is None, "no clock: frozen is unknown")
     check(not show.pixels_fade_out(0.25).ok, "pixels need a running show")
@@ -43598,12 +43598,12 @@ for(const v of [false, undefined, null, "true", 1]){
 // Run becomes Stop while Run is in force and there is something to stop;
 // with nothing to stop it is Run off (Stop no longer turns Run off).
 const att = (st, show, extra) => Object.assign({schedule:{attached:true, state:st}, show:show}, extra || {});
-t(runLook(att("SHOW", {running:true})).mode === "stop" && runLook(att("STANDBY", {running:false})).mode === "run" && runLook(null).label === "Turn show control on", "Run becomes Stop while a show is live");
+t(runLook(att("SHOW", {running:true})).mode === "stop" && runLook(att("STANDBY", {running:false})).mode === "run" && runLook(null).label === "Show control on", "Run becomes Stop while a show is live");
 // Its words (Jeff, 2026-11-11): Show control on/off; Programming's Run is
 // a rehearsal (Start rehearsal, End rehearsal). The modes are the same.
-t(runLook(att("STANDBY", {running:false}), false, "show").label === "Turn show control on" && runLook(att("STANDBY", {running:false}), false, "programming").label === "Start rehearsal" && runLook(att("STANDBY", {running:false}), false, "programming").mode === "run", "Run's words: Turn show control on, or Start rehearsal with Programming picked");
-t(runLook(att("STANDBY", {running:true}, {transport:{programming:true}}), false, "show").label === "End rehearsal" && runLook(att("STANDBY", {running:true}, {transport:{programming:true}}), false, "show").mode === "runoff" && runLook(att("STANDBY", {running:true}), false, "programming").label === "Turn show control off", "Run off's words: End rehearsal while a rehearsal is in force, else Turn show control off");
-t(runLook(att("STANDBY", {running:true})).mode === "runoff" && runLook(att("STANDBY", {running:true})).label === "Turn show control off", "Run in force, nothing to stop: Run off");
+t(runLook(att("STANDBY", {running:false}), false, "show").label === "Show control on" && runLook(att("STANDBY", {running:false}), false, "programming").label === "Start rehearsal" && runLook(att("STANDBY", {running:false}), false, "programming").mode === "run", "Run's words: Show control on, or Start rehearsal with Programming picked");
+t(runLook(att("STANDBY", {running:true}, {transport:{programming:true}}), false, "show").label === "End rehearsal" && runLook(att("STANDBY", {running:true}, {transport:{programming:true}}), false, "show").mode === "runoff" && runLook(att("STANDBY", {running:true}), false, "programming").label === "Show control off", "Run off's words: End rehearsal while a rehearsal is in force, else Show control off");
+t(runLook(att("STANDBY", {running:true})).mode === "runoff" && runLook(att("STANDBY", {running:true})).label === "Show control off", "Run in force, nothing to stop: Run off");
 t(runLook(att("HOLD", {running:false, starting:true})).mode === "runoff", "Run starting with nothing to stop: Run off (F4 now)");
 t(runLook({schedule:{attached:false}, show:{running:true}}).mode === "stop" && runLook({schedule:{attached:false}, show:{running:false, starting:true}}).mode === "stop", "no scheduler: Run playing or starting is the show, so Stop");
 t(runLook(att("STANDBY", {running:true}, {transport:{programming:true, playhead:"show_audio", playing:true}})).mode === "stop", "Programming playback on: Stop");
@@ -94726,7 +94726,7 @@ def test_preroll_start_now_checks_first_and_never_starts_on_a_failure():
           f"Programming Run: the scheduled show is not started: "
           f"{svc.machine.state} {n.ran}")
     rows = [x for x in svc.journal if x.get("outcome") == "programming"]
-    check(rows and "Programming Run" in rows[-1]["text"],
+    check(rows and "a rehearsal is on" in rows[-1]["text"],
           f"and the journal says why: {rows[-1:]}")
     c.close()
     n.link.close()
@@ -98746,7 +98746,7 @@ t(goLook(s, false, true).mode === "live" && goLook(s, false, true).off, "a show 
 s = base(); s.show.running = false; s.show.show_control_on = false;
 t(goLook(s, false, true).mode === "run" && !goLook(s, false, true).off, "Run off, on the show PC: Run show");
 // Its words (Jeff, 2026-11-11): Show control on/off.
-t(goLook(s, false, true).label === "Turn show control on" && goLook(s, false, true).why === "Scheduled shows may start" && goLook(s, false, false).label === "Turn show control on" && goLook(s, false, false).why === "Only on the show PC", "Run show reads Turn show control on: " + JSON.stringify(goLook(s, false, true)));
+t(goLook(s, false, true).label === "Show control on" && goLook(s, false, true).why === "Scheduled shows may start" && goLook(s, false, false).label === "Show control on" && goLook(s, false, false).why === "Only on the show PC", "Run show reads Show control on: " + JSON.stringify(goLook(s, false, true)));
 t(goLook(s, false, false).mode === "run" && goLook(s, false, false).off, "Run off, on an iPad: Run is not offered");
 // Whether Run is on is the engine's boolean, never its sentence: the
 // sentence alone changes nothing, the boolean alone decides, and a
