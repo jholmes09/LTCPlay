@@ -37,15 +37,23 @@ Written 2026-10-06, after the audit that simplified it.
 
 | When | What | How long | Required to merge |
 |---|---|---|---|
-| Every push to a PR | selftest on ubuntu and windows | 15 to 20 min (ubuntu), 25 to 35 min (windows); limits 45 and 60 | yes (both) |
-| A PR marked ready for review, and every push to it after | the mutate shards, each running only the mutations this PR can have changed the result of (below); about 25 a shard, 96 shards at most, 16 at a time, none at all for a doc | nothing for a doc; 10 to 90 min for a change to a safety file; 11 to 14 hours when nearly everything is selected (a release PR) | yes, every shard (not required on a PR into bench-build) |
+| Every push to a PR | selftest on ubuntu and windows | 15 to 20 min (ubuntu), 25 to 35 min (windows); limits 45 and 60 | yes, through `ci` |
+| A PR marked ready for review, and every push to it after | the mutate shards, each running only the mutations this PR can have changed the result of (below); about 25 a shard, 96 shards at most, 16 at a time, none at all for a doc or UI change | nothing for a doc; 10 to 90 min for a change to a safety file; 11 to 14 hours when nearly everything is selected (a release PR) | yes, through `ci` |
 | A push to main | the same, against the previous main | as above | not applicable |
 | A release tag (`gpl-...` or a tech build) | every mutation, ubuntu and windows, 96 shards each, 16 at a time | 11 to 14 hours on ubuntu; windows longer | the tag is not cut until it is green |
-| Every night, 03:12 Eastern | every mutation on main, ubuntu (`nightly mutate` workflow), 96 shards, 16 at a time | 11 to 14 hours | a red night is fixed before the next merge |
-| On demand | the same, from the Actions tab: `nightly mutate`, Run workflow, pick ubuntu, windows or both | 11 to 14 hours (ubuntu) | before any tech build |
+| Every Sunday, 03:12 Eastern | every mutation on main, ubuntu (`weekly mutate` workflow), 96 shards, 16 at a time | 11 to 14 hours | a red sweep opens an issue; it is fixed before the next merge |
+| On demand | the same, from the Actions tab: `weekly mutate`, Run workflow, pick ubuntu, windows or both | 11 to 14 hours (ubuntu) | before any tech build |
 
-Draft PRs run only the selftest. The mutate shards start when the PR is
-marked ready for review.
+**One required check.** Branch protection on main requires the `ci` job
+of the selftest workflow and nothing else. `ci` is green only when the
+suite passed on both OSes, the `changes` job decided what to run, and
+every mutate shard that had to run passed (or none had to). It is red
+when any of those failed or was cancelled. The shards are not named in
+the protection, so their number can follow the work: a doc change starts
+no shard job at all.
+
+Draft PRs run only the selftest. The mutate shards, and `ci`, start when
+the PR is marked ready for review.
 
 **Why 96 shards, 16 at a time.** The whole list is about 4300 mutations.
 On ubuntu with `--jobs 3` a shard spends 15 to 19 minutes on its
@@ -79,8 +87,8 @@ every run. A mutation runs when:
 
 A change to only a test's body, with no source file of its own in the
 diff, does NOT re-run the mutations of other files. That is the one
-place the per-PR gate is deliberately incomplete, and the nightly sweep
-exists to close it within a day: a test weakened without being renamed,
+place the per-PR gate is deliberately incomplete, and the weekly sweep
+exists to close it within the week: a test weakened without being renamed,
 or a change in one file that quietly silenced a test of another, shows
 up there, and a release tag runs everything regardless.
 
@@ -135,12 +143,16 @@ forces every way it can end red and checks the sentence is there.
   shard of a whole sweep normally takes 115 to 135 minutes, so a run of
   them timing out means slow runners: measure again and raise the
   shard count (`FULL_SHARDS` in selftest.yml and `NSHARDS` in
-  nightly-mutate.yml, the same number).
+  weekly-mutate.yml, the same number).
 - `THE TREE IS NOT CLEAN`: a restore did not land. Should never happen;
   the shard's tree is thrown away, but say so.
 
-**The nightly sweep red.** The same as a shard, on main. Whoever merges
-next fixes it first; nothing is tagged while it is red.
+**The weekly sweep red.** The same as a shard, on main. Its `report` job
+opens an issue labelled `mutate-sweep` naming the red shards with a link
+to each (or adds a comment to the one already open), and every PR's `ci`
+job carries a warning while that issue is open. Whoever merges next
+fixes it first; nothing is tagged while it is open. The next green sweep
+closes the issue by itself.
 
 ## Running things by hand
 
@@ -154,7 +166,7 @@ next fixes it first; nothing is tagged while it is red.
   --changed origin/main`.
 - Everything, locally: `python3 mutate.py` (plan on most of a day; a
   shard of it is `--shard 3/96`).
-- Everything, in CI: Actions tab, `nightly mutate`, Run workflow. Choose
+- Everything, in CI: Actions tab, `weekly mutate`, Run workflow. Choose
   `both` before a tech build.
 - The catcher hints: `python3 mutate.py --write-catchers
   mutate_catchers.json` adds the test each caught mutation stopped in. A

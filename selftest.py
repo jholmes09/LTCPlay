@@ -51785,7 +51785,7 @@ def test_mutate_never_runs_stale_bytecode():
 
 def test_mutate_shards_fit_their_time_limit():
     section("the mutate shards: one shard count for a whole sweep in "
-            "selftest.yml and nightly-mutate.yml, small enough that a shard "
+            "selftest.yml and weekly-mutate.yml, small enough that a shard "
             "ends far inside its 340 minute limit at the speed measured on "
             "2026-11-09 (32 shards of 135 ran out at 340), at most 16 at "
             "once so 4 of the account's 20 job slots stay free")
@@ -51794,13 +51794,13 @@ def test_mutate_shards_fit_their_time_limit():
     wfdir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                          ".github", "workflows")
     st = open(os.path.join(wfdir, "selftest.yml"), encoding="utf-8").read()
-    nm = open(os.path.join(wfdir, "nightly-mutate.yml"),
+    nm = open(os.path.join(wfdir, "weekly-mutate.yml"),
               encoding="utf-8").read()
     full = re.findall(r"^\s*FULL_SHARDS=(\d+)\s*$", st, re.M)
-    night = re.findall(r"^\s*NSHARDS: (\d+)\s*$", nm, re.M)
-    check(len(full) == 1 and len(night) == 1 and full == night,
+    week = re.findall(r"^\s*NSHARDS: (\d+)\s*$", nm, re.M)
+    check(len(full) == 1 and len(week) == 1 and full == week,
           f"one shard count, the same in both workflows: selftest.yml "
-          f"{full}, nightly-mutate.yml {night}")
+          f"{full}, weekly-mutate.yml {week}")
     n = int(full[0]) if full else 0
     check('"$FULL_SHARDS"' in st and "release tag: every mutation, ubuntu "
           "and windows, $FULL_SHARDS shards each" in st and
@@ -51810,9 +51810,9 @@ def test_mutate_shards_fit_their_time_limit():
     check("needs.plan.outputs.shards" in nm and
           "--shard ${{ matrix.shard }}/${{ needs.plan.outputs.nshards }}" in nm
           and 'int(os.environ["N"])' in nm and "/32" not in nm,
-          "the nightly sweep's matrix, --shard and timeout report all read "
+          "the weekly sweep's matrix, --shard and timeout report all read "
           "the one count")
-    for name, text in (("selftest.yml", st), ("nightly-mutate.yml", nm)):
+    for name, text in (("selftest.yml", st), ("weekly-mutate.yml", nm)):
         par = [int(x) for x in re.findall(r"max-parallel: (\d+)", text)]
         check(par == [16], f"{name}: max-parallel {par}, want [16] (20 job "
               "slots, 4 left free)")
@@ -51838,7 +51838,7 @@ def test_mutate_shards_fit_their_time_limit():
     check("int(os.environ.get(\"NSHARDS\") or 0)" in st and
           '"no job"' in st,
           "mutate-report counts a shard that never got a job as red")
-    for name, text in (("selftest.yml", st), ("nightly-mutate.yml", nm)):
+    for name, text in (("selftest.yml", st), ("weekly-mutate.yml", nm)):
         check("\u2013" not in text and "\u2014" not in text,
               f"{name} has no em or en dashes")
     print("  ok")
