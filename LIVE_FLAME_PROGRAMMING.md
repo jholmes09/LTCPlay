@@ -24,7 +24,7 @@ Program flame effects in xLights and see them on the real flames, while LTC Play
 Each of these ends the mode. Each one disarms every flame group, sets the values to zero, and writes the reason in the journal and the audit log.
 
 - Off, from any screen or from the red banner.
-- Stop (from any screen, the scheduler or the Stream Deck), Hold, Start now, Run, or a show starting.
+- Stop (from any screen, the scheduler or the Stream Deck), Hold, Start now, Show control on, or a show starting.
 - Anything that zeroes or disarms the flames through the show (a Hold, a Stop, a show ending). This stops xLights at the flame link at once, the same way it stops fire.
 - The listener stopping, or not checking in for 1 second (a watchdog looks every 0.2 s).
 - More than 1000 packets a second reaching the listener, of any kind.
@@ -42,7 +42,7 @@ LTC Player always starts with the mode off.
 The rack screen says the reason. It refuses to turn on while any of these is true:
 
 - A show is live or held.
-- Run is pressed.
+- Show control is on.
 - flamesafe is not reporting.
 - The flame link is not sending.
 - A purge is selected or firing.
@@ -78,7 +78,7 @@ Items marked **[verify in xLights]** are names I could not check without xLights
 
 ## Using it
 
-1. Check that no show is running and Run is not pressed.
+1. Check that no show is running and show control is off.
 2. Sign in as an admin on the rack screen.
 3. Go to Programming, then Live flame programming, then Turn on, and confirm. The red LIVE FLAME PROGRAMMING bar appears on every screen.
 4. Arm one group from the Stream Deck (hold to arm), as for a show.
@@ -88,7 +88,7 @@ Items marked **[verify in xLights]** are names I could not check without xLights
    - Turn off (the card or the red bar).
    - Stop.
    - Hold.
-   - Run.
+   - Show control on.
    - Start now.
 
 Every group disarms.
@@ -106,7 +106,7 @@ Do this first, with Andy:
    - Lock the machine: its value goes to 0.
    - Stop: everything goes to 0 and the mode ends.
    - Quit xLights: zero within 0.25 s.
-   - Run: the mode ends.
+   - Show control on: the mode ends.
    - A second sACN sender: the mode ends.
    - Arm a second group: the mode ends.
 5. **Then the node, with Andy.** Connect the node with the gas still off and repeat. Only then turn the gas on, with one machine.
@@ -172,7 +172,7 @@ flamesafe is not changed:
 
 | # | How it could fire when it should not | What stops it |
 |---|---|---|
-| T1 | The mode is left on at show time | Always off at start. Run, Start now, Hold, Stop and a show going live all end it. The flame link reads the program frame only while no show is live. While the mode is on, the show's own cues are held at zero. |
+| T1 | The mode is left on at show time | Always off at start. Show control on, Start now, Hold, Stop and a show going live all end it. The flame link reads the program frame only while no show is live. While the mode is on, the show's own cues are held at zero. |
 | T2 | Wrong channel map | The map comes only from `xlights_networks.xml`, read by the code the renders use. The mode refuses a missing, doubled or Active controller, or one that is not E1.31 unicast 127.0.0.1. It ends when the file changes. |
 | T3 | xLights reaches the node directly (multicast, or the node's IP) | Refused at entry: the flame controller must be E1.31 to 127.0.0.1 only, and not Active. The physical key switch is the backstop. |
 | T4 | The xLights Test tools, "all on", or a stray effect | Only an armed group fires, one group at a time. flamesafe refuses to arm while a fire value is held ("dirty edge"). Operator rule: no Test while armed. |
@@ -192,7 +192,7 @@ flamesafe is not changed:
 
 **Residual risks:**
 
-- **Timing.** The checks run every 50 ms, so for up to 50 ms an armed group can fire from xLights after Run is pressed somewhere other than this engine's own buttons.
+- **Timing.** The checks run every 50 ms, so for up to 50 ms an armed group can fire from xLights after show control is turned on somewhere other than this engine's own buttons.
   - A Stop, a Hold or anything else that zeroes the flames ends the mode at the flame link at once.
   - **A second group armed from the Stream Deck's own keys** can fire xLights' values for about one flamesafe tick (25 ms) in the worst case, before the mode ends and every group disarms (T12). Removing it needs the Stream Deck to refuse the key itself, which this change does not touch.
 - **The Stream Deck as a user.** The engine trusts a request from this PC that says it comes from the Stream Deck (`screen: "Stream Deck"` on loopback) to act as the person signed in on the show machine. Anything running on the show PC could claim that. This is the existing rule, not a new one.
@@ -215,7 +215,7 @@ There is no switch for this any more. "Fire flames while scrubbing" was removed 
 - **Half a second of quiet after every move.** Every Play from, Back, Ahead, Continue and loop is a landing, however small the move. Nothing fires until the show has played on steadily for half a second. The show audio keeps sending its last frame while it starts on the new place; that old frame never counts.
 - **A flame already up where you land stays off.** Channel by channel, a flame that is up where you land stays zero until it has gone to zero once. A long flame you jump into the middle of never fires, and jumping or looping through the show never fires anything on the way.
 - **Who can move it.** While the show's flame cues follow the transport, Play from, Back, Ahead, Continue, the loop (on or off) and setting mark A or B work only on the show PC itself, or for someone signed in with the Settings permission (admin). Anyone else is refused with: "Flames follow the show here; move the position from the show PC or sign in as an admin." Pause and Follow timecode again work from anywhere.
-- **What ends it.** Hold (the Programming Pause), Stop (every group disarmed through the flame link and flamesafe, then playback stops), Run and Start now (refused while Programming playback is on: Stop it first), and a show going live (Programming playback ends and the show runs as a show).
+- **What ends it.** Hold (the Programming Pause), Stop (every group disarmed through the flame link and flamesafe, then playback stops), Show control on and Start now (refused while Programming playback is on: Stop it first), and a show going live (Programming playback ends and the show runs as a show).
 - **One source at a time.** Live flame programming will not start while the show's music clock is playing, and the Morning page's purge and the cleaning refuse while it plays. The Fireball page does not (Jeff, 2026-10-30: Andy may start any phase by hand at any time): on the Fireball's channels the higher of the show's value and the page's goes out. The other way round, Play from and Loop are refused while a Fireball channel is on: start playback first, then use the Fireball page.
 - **The Stream Deck** counts Programming playback with flames as running, so its key 0 is Stop, not FIRE.
 

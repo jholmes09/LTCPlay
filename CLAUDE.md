@@ -15,7 +15,7 @@ Show renders and media (`.fseq`, `.xsq`, audio, video), `.venv/`, `LTC Player.ap
 
 ## Show safety
 
-- Nothing reaches the rig until the operator presses Run.
+- Nothing reaches the rig until the operator turns show control on (the switch called Run until 2026-11-11; the Mac page's button is still Run).
 - `on_lost` for GPL is freerun to the end of the show.
 - Direct FSEQ playback is primary. Advatek scene triggering (sACN universe 6999, channels 101 to 123, multicast) is the alternate.
 - The native window app stays BETA until Jeff releases it.

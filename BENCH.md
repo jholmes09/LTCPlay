@@ -60,8 +60,8 @@ What each setting does:
     bank and starts the show audio, which starts the timecode, which starts
     the pixels, MadMapper and BEYOND. The show then ends when its audio
     ends, not on a clock. At closing the flame cues go to zero, the lasers
-    are blanked and the pixels go black. It only starts a show if **Run has
-    been pressed** on the ltcplay page; otherwise the show is recorded as a
+    are blanked and the pixels go black. It only starts a show if **show
+    control is on** (the ltcplay page's Turn show control on); otherwise the show is recorded as a
     failed start and nothing reaches the rig. It also does not start a show
     while a Stop's Hold stands (until Resume).
   - Only the exact words `true` or `false` are accepted.
@@ -102,8 +102,8 @@ needs its stems under `clock.audio.cues`.
 1. Start MadMapper and BEYOND.
 2. Double-click **Fire and Ice bench.bat**. The window prints "Fire & Ice:"
    and what it found (scheduler performs or dry run, MadMapper, BEYOND).
-3. On the page, pick the show file and press **Run**. Nothing reaches the
-   rig before this.
+3. On the page, pick the show file and press **Turn show control on**.
+   Nothing reaches the rig before this.
 4. Watch the schedule panel. The scheduler moves from preshow to the show at
    the scheduled time. The page at `/api/conductor` shows what the show
    conductor last did and any faults.
