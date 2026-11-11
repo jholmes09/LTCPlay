@@ -113138,7 +113138,7 @@ def test_ui2_big_button_second_line_is_state_only():
         return
     js = lo + "\nlet CD = null; const monoNow = () => 0;\n" + fns + r"""
 const base = () => ({schedule:{attached:true, state:"STANDBY", next:{show:4, start:"19:30", in_s:900}},
-  show:{running:true}, flames:{connected:true, groups:[]}, me:{may:{show:true, arm:true}}});
+  show:{running:true, show_control_on:true}, flames:{connected:true, groups:[]}, me:{may:{show:true, arm:true}}});
 const out = {};
 let s = base(); out.start = goLook(s, false, true);
 out.startStale = goLook(s, true, true);
