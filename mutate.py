@@ -23160,6 +23160,21 @@ def build():
   '            f"- Why: No show can start without it.\\n"',
   '            f"- Why: No show can start without it, {show_file}.\\n"'),
 
+ ("less prose: the aim alert's file path leaves More for the bullets",
+  "ltcplay/remote.py",
+  '                f"- Do: Tell Jeff.\\n"',
+  '                f"- Do: Tell Jeff, {path}.\\n"'),
+
+ ("less prose: the late frame alert's numbers leave More for the bullets",
+  "ltcplay/remote.py",
+  '                   "- Why: A flame pulse may be cut short.\\n"',
+  '                   "- Why: A flame pulse may be cut short, worst {w} ms.\\n"'),
+
+ ("less prose: the users alert's file names leave More for the bullets",
+  "ltcplay/remote.py",
+  '                    f"- Do: Put a good users file back.\\n"',
+  '                    f"- Do: Put {users_mod.USERS_MARK} back.\\n"'),
+
  # flamesafe.json that is not valid JSON (Jeff, 2026-11-06): the engine
  # starts with flames off and says where; the supervisor starts neither
  # flamesafe nor the deck; the last good copy.

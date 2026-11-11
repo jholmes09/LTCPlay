@@ -2875,11 +2875,15 @@ class Remote:
         except Exception:                        # noqa: BLE001
             return None
 
-    TIMING_TEXT = ("Flame frames late: {n} in the last hour, worst {w} ms "
-                   "between two frames to flamesafe. flamesafe holds a fire "
-                   "value for {lim} ms after the last frame (its "
-                   "fire_hold_ms), so a flame pulse may have been cut "
-                   "short. The show carries on; nothing was changed.")
+    # A headline, bullets and the numbers behind More (Jeff, 2026-11-11:
+    # less prose); the rack screen's Details shows the lines (opText).
+    TIMING_TEXT = ("Flame frames late: {n} this hour.\n"
+                   "- Why: A flame pulse may be cut short.\n"
+                   "- The show carries on. Nothing was changed.\n"
+                   "\n"
+                   "More: worst {w} ms between two frames to flamesafe. "
+                   "flamesafe holds a fire value for {lim} ms after the "
+                   "last frame (its fire_hold_ms).")
 
     def _frame_timing_work(self):
         """Flame frames late (flamelink.FrameTiming, 2026-10-29): on the
@@ -6842,14 +6846,22 @@ class Remote:
         file this engine read, and what to do."""
         def words(v):
             return ", ".join(str(x) for x in v) if v else "none"
-        return (f"Aim slots do not match: flamesafe has {words(theirs)} and "
-                f"LTC Player has {words(mine)} (LTC Player read "
-                f"{path or 'flamesafe config'} when it started). Until they "
-                f"match a wave flamer's angle can stay at 0, its end stop. "
-                f"Put the aim list in the flamesafe.json flamesafe uses, "
-                f"check that LTC Player reads that same file, then quit LTC "
-                f"Player and start it again so both read it afresh. Stop, "
-                f"Hold and Disarm all work as usual meanwhile.")
+        # A headline, bullets and the lists behind More (Jeff,
+        # 2026-11-11: less prose); the rack screen's Details shows the
+        # lines (opText), every other reader one line.
+        return (f"Wave flamer aim lists differ.\n"
+                f"- Do: Tell Jeff.\n"
+                f"- Why: A wave flamer may stay at 0.\n"
+                f"- Stop, Hold and Disarm all still work.\n"
+                f"\n"
+                f"More: Aim slots do not match: flamesafe has "
+                f"{words(theirs)} and LTC Player has {words(mine)} (LTC "
+                f"Player read {path or 'flamesafe config'} when it "
+                f"started). Until they match a wave flamer's angle can stay "
+                f"at 0, its end stop. Put the aim list in the flamesafe.json "
+                f"flamesafe uses, check that LTC Player reads that same "
+                f"file, then quit LTC Player and start it again so both "
+                f"read it afresh.")
 
     def _aim_alert(self, agree, mine, theirs, path):
         """Raise once per new mismatch sentence; clear the one raised here
@@ -8371,15 +8383,27 @@ class Remote:
         if getattr(u, "error_kind", "") == "open":
             # There, but held by something: nothing to delete. It is tried
             # again on every read (third review of PR #143, 4).
-            text = (f"The users file cannot be opened just now: {why}. "
-                    f"{locked} It is tried again all the time and used the "
-                    f"moment it opens, with no restart. Another program may "
-                    f"be holding it, such as an antivirus scan: if this "
-                    f"lasts, check that program, and that {u.folder} can be "
-                    f"read.")
+            # A headline, bullets and the rest behind More (Jeff,
+            # 2026-11-11: less prose).
+            text = (f"Users file cannot be opened.\n"
+                    f"- Only Stop, Hold, Acknowledge, Disarm work.\n"
+                    f"- Then: It is used once it opens.\n"
+                    f"- Do: If this lasts, check antivirus.\n"
+                    f"\n"
+                    f"More: The users file cannot be opened just now: "
+                    f"{why}. {locked} It is tried again all the time and "
+                    f"used the moment it opens, with no restart. Another "
+                    f"program may be holding it, such as an antivirus scan: "
+                    f"if this lasts, check that program, and that "
+                    f"{u.folder} can be read.")
         else:
-            text = (f"The users file cannot be used: {why}. {locked} If a "
-                    f"good {users_mod.USERS_FILE} is put back in "
+            text = (f"Users file cannot be used.\n"
+                    f"- Only Stop, Hold, Acknowledge, Disarm work.\n"
+                    f"- Do: Put a good users file back.\n"
+                    f"- Then: It is used at once.\n"
+                    f"\n"
+                    f"More: The users file cannot be used: {why}. "
+                    f"{locked} If a good {users_mod.USERS_FILE} is put back in "
                     f"{u.folder}, it is used at once, with no restart. To "
                     f"start over with no users instead: close LTC Player, "
                     f"remove {users_mod.USERS_FILE} and "
