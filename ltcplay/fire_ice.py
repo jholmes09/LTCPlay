@@ -1233,7 +1233,7 @@ LOOK_IN_SHOW_FAULT_S = 1.5
 # 2.0 has the same card, with the same Stop and Run, on its Schedule tab
 # (#208), so the words send a 2.0 screen there, never to 1.0.
 LOOK_IN_SHOW = ("CUES FAULT: pixels show {look}, not the show. "
-                "Programming: Show file card, End rehearsal, then Start rehearsal. "
+                "Programming: End rehearsal, then Start rehearsal. "
                 "On 2.0: the Schedule tab's Show file card. "
                 "Scheduled show: tell Jeff.")
 # The look in plain words.
