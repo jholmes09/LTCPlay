@@ -16980,7 +16980,7 @@ def build():
 
  ("ui2 page: Run off turns Run off without asking",
   "ltcplay/web/remote2.html",
-  "  if(!(await confirmBox(\"Turn show control off?\", RUN_OFF_CONFIRM, \"Yes, turn off\", \"red\"))) return;\n",
+  "  if(!(await (reh ? confirmBox(\"End rehearsal?\", REHEARSAL_END_CONFIRM, \"Yes, end it\", \"red\") : confirmBox(\"Turn show control off?\", RUN_OFF_CONFIRM, \"Yes, turn off\", \"red\")))) return;\n",
   ""),
 
  # Cold review of #191 round 3.
@@ -22905,7 +22905,7 @@ def build():
 
  ("ui 2.0 Programming: Run off goes with no question",
   "ltcplay/web/remote2.html",
-  "    const sure = ((ST && ST.transport) || {}).programming\n      ? await confirmBox(\"End rehearsal?\", \"Stops everything, as Stop does, and ends the rehearsal.\", \"Yes, end it\", \"red\")\n      : await confirmBox(\"Turn show control off?\", RUN_OFF_CONFIRM, \"Yes, turn off\", \"red\");\n    if(!sure) return;\n    if(runLook(ST, stale()).mode !== \"runoff\")",
+  "    const sure = ((ST && ST.transport) || {}).programming\n      ? await confirmBox(\"End rehearsal?\", REHEARSAL_END_CONFIRM, \"Yes, end it\", \"red\")\n      : await confirmBox(\"Turn show control off?\", RUN_OFF_CONFIRM, \"Yes, turn off\", \"red\");\n    if(!sure) return;\n    if(runLook(ST, stale()).mode !== \"runoff\")",
   "    if(runLook(ST, stale()).mode !== \"runoff\")"),
 
  ("ui 2.0 Programming: the session is pressable signed out",
