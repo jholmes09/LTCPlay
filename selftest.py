@@ -99047,13 +99047,13 @@ window.fetch = function(u, o){
   if(window.__live && /\/api\/remote\/status/.test(String(u)))
     return realFetch.apply(this, arguments).then(r => r.json()).then(j => {
       j.schedule = Object.assign({}, j.schedule, {state:"SHOW", running:1});
-      j.show = Object.assign({}, j.show, {running:true});
+      j.show = Object.assign({}, j.show, {running:true, show_control_on:true});
       return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}});
     });
   // Run on with nothing playing (between shows): Run off is drawn.
   if(window.__runon && /\/api\/remote\/status/.test(String(u)))
     return realFetch.apply(this, arguments).then(r => r.json()).then(j => {
-      j.show = Object.assign({}, j.show, {running:true});
+      j.show = Object.assign({}, j.show, {running:true, show_control_on:true});
       if(j.schedule) j.schedule.start_blocked = null;
       return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}});
     });
@@ -99462,7 +99462,7 @@ def _ui2_status_running():
     st["schedule"].update({"state": "SHOW", "running": 4,
                            "next": {"show": 5, "start": "19:50",
                                     "in_s": 1500}})
-    st["show"] = {"running": True, "timecode": "01:03:12:08"}
+    st["show"] = {"running": True, "show_control_on": True, "timecode": "01:03:12:08"}
     st["countdown"] = {"kind": "left", "label": "Time left", "s": 312,
                        "running": True}
     st["laser_arm"]["lasers"][0]["armed"] = True
@@ -100089,7 +100089,7 @@ def _ui2_page_inline():
 def _ui2_status_day():
     st = _ui2_status_running()
     st["schedule"].update({"state": "STANDBY", "running": None})
-    st["show"] = {"running": True, "timecode": None}
+    st["show"] = {"running": True, "show_control_on": True, "timecode": None}
     st["countdown"] = None
     st["fireball"] = {"available": True, "on": [], "owner": None}
     st["laser_arm"]["lasers"][0]["armed"] = False
@@ -110113,7 +110113,7 @@ def _ui2_status_stopped():
     st = _ui2_status_running()
     st["schedule"].update({"state": "STANDBY", "running": None,
                            "stop_held": True, "held": True})
-    st["show"] = {"running": True, "timecode": "01:08:20:05",
+    st["show"] = {"running": True, "show_control_on": True, "timecode": "01:08:20:05",
                   "state": "STOPPED", "timeline": "Fire and Ice.json"}
     st["countdown"] = None
     st["transport"] = {"programming": False}
@@ -112064,7 +112064,7 @@ def _ui2_status_prog():
     stopped, mark A set, the show's flame cues following it."""
     st = _ui2_status_running()
     st["schedule"].update({"state": "STANDBY", "running": None})
-    st["show"] = {"running": True, "timecode": "01:00:42:10",
+    st["show"] = {"running": True, "show_control_on": True, "timecode": "01:00:42:10",
                   "state": "STOPPED", "timeline": "Fire and Ice.json",
                   "rate_note": ""}
     st["countdown"] = None
@@ -112191,7 +112191,7 @@ async function go(){
   }
   if(/run=1/.test(location.search)){
     // Run off: Run, in Show or Programming, each asked first.
-    window.__mod = j => { j.show.running = false; j.transport = {programming:false, why:"No show file is running."}; j.programming_flames = {available:false}; };
+    window.__mod = j => { j.show.running = false; j.show.show_control_on = false; j.transport = {programming:false, why:"No show file is running."}; j.programming_flames = {available:false}; };
     await settle(2600); posts.length = 0;
     out.off = look();
     document.querySelector('#p-mode [data-mode="programming"]').click(); await wait(200);
@@ -112209,7 +112209,7 @@ async function go(){
     q("p-file").value = "Other.json"; q("p-file").dispatchEvent(new Event("change")); await wait(300);
     out.select = bodies();
     // A scheduled show live: Programming is refused before any question.
-    window.__mod = j => { j.show.running = false; j.transport = {programming:false}; j.programming_flames = {available:false}; j.schedule.state = "SHOW"; };
+    window.__mod = j => { j.show.running = false; j.show.show_control_on = false; j.transport = {programming:false}; j.programming_flames = {available:false}; j.schedule.state = "SHOW"; };
     await settle(); posts.length = 0;
     document.querySelector('#p-mode [data-mode="programming"]').click(); await wait(200);
     out.locked = look();
