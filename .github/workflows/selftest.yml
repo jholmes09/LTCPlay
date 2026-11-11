@@ -552,7 +552,13 @@ jobs:
   # when it should have. Skipped on a draft PR, like the shards (a draft
   # cannot be merged; marking it ready starts a fresh run with the shards in
   # it).
+  # Named ci only on a PR into main (and on pushes): on any other base it
+  # is ci-bench, the same checks under another name, so no check named ci
+  # is ever reported for a PR that was not judged by the release gate. A
+  # PR moved to main then has no ci on its head until it is pushed (or
+  # closed and reopened), and branch protection waits for it.
   ci:
+    name: ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'main') && 'ci-bench' || 'ci' }}
     needs: [selftest, changes, mutate]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
@@ -574,18 +580,11 @@ jobs:
           EVENT: ${{ github.event_name }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
-          # ci certifies a PR into main and nothing else. A green ci from a
-          # run made while the PR pointed at bench-build would otherwise be
-          # inherited when it is retargeted to main (a base change starts no
-          # run), with no release gate ever computed. So on any other base
-          # ci is red (it is not required there), and on main it needs the
-          # tier the changes job computed for main. After retargeting a PR
-          # to main: close and reopen it, or push, and the gate runs.
-          if [[ "$EVENT" == pull_request && "$PR_BASE_REF" != main ]]; then
-            echo "::error title=ci is only for a PR into main::this run was for a PR into $PR_BASE_REF; ci is not required there. If this PR is moved to main, close and reopen it (or push) so the release gate runs for main."
-            exit 1
-          fi
-          if [[ "$EVENT" == pull_request && -z "$TIER" ]]; then
+          # On a PR into main this check is ci and needs the tier the
+          # changes job computed for main; on any other base it is
+          # ci-bench (see the job's name) and judges the same way as
+          # before, with no tier.
+          if [[ "$EVENT" == pull_request && "$PR_BASE_REF" == main && -z "$TIER" ]]; then
             echo "::error::a PR into main with no release gate tier: the changes job did not decide for main"
             exit 1
           fi

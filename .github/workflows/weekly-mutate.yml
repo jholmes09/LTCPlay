@@ -40,16 +40,15 @@ on:
 permissions:
   contents: read
 
-# One scheduled sweep at a time and one manual sweep at a time, in two
-# groups, so a manual run (on any branch) never cancels the Sunday sweep of
-# main and the Sunday sweep never cancels a manual one. A newer start of
-# the same kind cancels the older (a sweep that overruns a week gives way
-# to the next Sunday's). Both at once can hold 32 job slots for a while;
-# that is the price of the Sunday sweep never being silently dropped. A
-# cancelled sweep reports red (below).
+# One sweep at a time for the whole repository, scheduled or manual, on any
+# branch: it can never hold more than 16 of the account's 20 job slots, so
+# a release's shards always have room. A new start never cancels the
+# running sweep; it waits in the queue behind it (GitHub keeps one waiting
+# run per group: a third start replaces the waiting one, which then never
+# runs, so do not start a manual sweep near Sunday 07:12 UTC).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   plan:

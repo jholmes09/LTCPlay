@@ -81,10 +81,12 @@ protected by a different rule: any change under `.github/` is full, and
 "Require review from Code Owners" turned on in main's branch protection
 (Jeff, in Settings).
 
-`ci` passes only for a PR into main whose run computed the tier for main.
-On any other base it is red on purpose (it is not required there), so a
-green `ci` cannot follow a PR that is moved to main afterwards: a base
-change starts no run. Close and reopen the PR (or push) after moving it.
+The aggregate check is named `ci` only on a PR into main (and on pushes),
+and there it needs the tier computed for main. On any other base the same
+job is named `ci-bench`, so no check named `ci` is ever reported for a PR
+the release gate did not judge. A PR moved to main has no `ci` on its head
+(a base change starts no run), and branch protection waits until it is
+pushed, or closed and reopened.
 
 - **docs**: every changed file is Markdown, none is a file mutate.py
   breaks, and no test reads it (its name appears nowhere in selftest.py,
@@ -234,8 +236,9 @@ green whole sweep of the commit that is main's head right now closes the
 issue (`.github/scripts/sweep_issue.sh`); a green sweep of a branch or of
 an older main leaves it open. A red suite after a push (so no shard ran),
 a cancelled sweep, a missing shard or a report that could not be made
-counts as red. A manual weekly run never cancels the Sunday one (they
-are in separate concurrency groups), and a run on a branch only reports
+counts as red. Weekly sweeps, scheduled or manual, run one at a time and
+queue rather than cancel (never more than 16 job slots), and a run on a
+branch only reports
 its result: it neither opens nor closes the issue about main.
 
 ## Running things by hand

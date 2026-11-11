@@ -52586,11 +52586,12 @@ def test_release_gate_tiers():
           "selftest.yml decides a release's tier with the BASE branch's "
           "gate and mutate.py, never the PR's own (cold review B1), and "
           "full when the base has none")
-    check('"$PR_BASE_REF" != main' in wf
-          and "ci is only for a PR into main" in wf
-          and "a PR into main with no release gate tier" in wf,
-          "ci refuses to certify any base but main, so a green ci cannot "
-          "be inherited by retargeting a PR to main (cold review M5)")
+    check("base.ref != 'main') && 'ci-bench' || 'ci' }}" in wf
+          and '"$PR_BASE_REF" == main && -z "$TIER"' in wf
+          and "ci is only for a PR into main" not in wf,
+          "the aggregate check is ci only on a PR into main (ci-bench "
+          "elsewhere), so a green ci cannot be inherited by moving a PR "
+          "to main, and bench-build PRs show no red ci (cold review M5)")
     check("github.event_name == 'push' || (needs.mutate.result" in wf
           and 'if: always() && github.event_name == \'push\'' in wf
           and '"$MUTATE" != success' in wf,
@@ -52598,11 +52599,13 @@ def test_release_gate_tiers():
           "cancelled sweep is a red whole sweep (cold review M6b)")
     wk = open(os.path.join(here_dir, ".github", "workflows",
                            "weekly-mutate.yml"), encoding="utf-8").read()
-    check("group: ${{ github.workflow }}-${{ github.event_name }}" in wk
+    check(re.search(r"group: \$\{\{ github.workflow \}\}\n"
+                    r"  cancel-in-progress: false", wk)
           and re.search(r"^  report:\n(.*\n){0,2}    if: always\(\)$", wk,
                         re.M)
           and '"no job"' in wk and '"${RED:-1}"' in wk,
-          "weekly-mutate.yml: a manual run never cancels the Sunday one, "
+          "weekly-mutate.yml: one sweep at a time (a manual and the Sunday "
+          "one queue, never 32 slots at once, never cancelling), "
           "and a missing, skipped or cancelled shard is red (cold review "
           "M6b, M6c)")
     co = open(os.path.join(here_dir, ".github", "CODEOWNERS"),
