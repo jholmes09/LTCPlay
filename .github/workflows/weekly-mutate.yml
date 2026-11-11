@@ -178,7 +178,9 @@ jobs:
       issues: write
       contents: read
     steps:
-      - name: Say which shards are red, in the summary and in an issue
+      - uses: actions/checkout@v5
+      - name: Say which shards are red, in the summary
+        id: table
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -186,7 +188,6 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           JOB_PREFIX: "sweep ("
-          LABEL: mutate-sweep
         run: |
           gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
             --jq '.jobs[] | [.name, (.conclusion // .status), .html_url] | @tsv' > "$RUNNER_TEMP/jobs.tsv"
@@ -227,27 +228,12 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
               fh.write(f"red={len(red)}\n")
           PY
-          red=$(grep -c '| \[open\]' "$RUNNER_TEMP/report.md" || true)
-          gh label create "$LABEL" --repo "$REPO" --color B60205 \
-            --description "the weekly mutation sweep is red" --force 2>/dev/null || true
-          open_issue=$(gh issue list --repo "$REPO" --label "$LABEL" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if (( red > 0 )); then
-            body="The weekly mutation sweep on main is red: [run $RUN_ID]($RUN_URL).
-
-          $(cat "$RUNNER_TEMP/report.md")
-
-          Nothing should be tagged while this is open. Fix the test (or refresh the mutation), merge, and the next sweep closes this issue when it is green. Re-run the red shards from the run page for a timed-out shard."
-            if [[ -n "$open_issue" ]]; then
-              gh issue comment "$open_issue" --repo "$REPO" --body "$body"
-              echo "::error::the weekly mutation sweep is red; added to issue #$open_issue"
-            else
-              num=$(gh issue create --repo "$REPO" --title "Weekly mutation sweep is red" --label "$LABEL" --body "$body")
-              echo "::error::the weekly mutation sweep is red; opened $num"
-            fi
-          elif [[ -n "$open_issue" ]]; then
-            gh issue comment "$open_issue" --repo "$REPO" --body "The weekly mutation sweep is green again: [run $RUN_ID]($RUN_URL). Closing."
-            gh issue close "$open_issue" --repo "$REPO"
-            echo "the sweep is green; closed issue #$open_issue"
-          else
-            echo "the sweep is green"
-          fi
+      # Red (no shard at all counts as red): open or add to the
+      # mutate-sweep issue and fail. Green: close it.
+      - name: Say it in an issue when red
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash .github/scripts/sweep_issue.sh "The weekly mutation sweep on main" "$RUNNER_TEMP/report.md" "${{ steps.table.outputs.red }}"

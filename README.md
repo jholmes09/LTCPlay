@@ -590,6 +590,32 @@ still true by design.
    During a run, "0 send errors" means the packets left this Mac, not that
    anything received them.
 
+## How long a release takes to test, and what that can miss
+
+For Jeff. A release is a PR into main. Its one required check is `ci`. The
+computer decides how much testing a release needs by reading which files
+changed. Nobody can talk it down, Claude included. If it cannot tell, it
+runs everything.
+
+| What the release changes | What runs before it can merge | About how long |
+|---|---|---|
+| Only docs (`.md` files) | the full test suite on Windows and Linux | 30 to 40 minutes |
+| Code, but not the testing machinery | the test suite, plus the "break it on purpose" checks near the changed lines, plus a fixed safety set (flame and laser gates, Stop and Abort, the flamesafe interlocks, the Run gate, the remote's rules) | 1.5 to 2 hours for a small fix; longer for a big one |
+| The testing machinery itself (`mutate.py`, its lists, the workflows, `release_gate.py`, the shared test code, `remote_rules.js`), or the last full check on main is red | everything, the old way | 13 to 17 hours |
+
+**After it merges,** main runs every check anyway (13 to 17 hours; nobody
+waits for it), and again every Sunday. If any of those finds a problem, an
+issue called "A whole mutation sweep on main is red" opens by itself, every
+PR shows a warning, and the next release with any code in it has to run
+everything until it is fixed.
+
+**What the faster check can miss.** It proves the safety set and the code
+near the change. It does not re-prove distant code whose test the change
+quietly weakened, or two changes that only go wrong together. The full
+check after the merge catches those, usually within a day, but after the
+merge, not before. A docs-only release cannot change the program, so
+nothing is lost there.
+
 ## Moving it to another Mac
 
     ./ltc bundle gpl2026_timeline.json ~/Desktop/GPL_Show --zip

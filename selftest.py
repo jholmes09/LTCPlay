@@ -52289,15 +52289,239 @@ def test_mutate_fast_path_never_turns_red_green():
               f"--jobs 2: a baseline red once then green is reported as "
               f"flaky, never silently: {lines}")
 
+        # The retry of a red baseline runs ALONE, after every copy's first
+        # baseline has ended: with --jobs the first runs share one runner
+        # and its loopback ports (shard 58 of run 42991299120: a stray
+        # datagram in a flame node's socket, then a second red while the
+        # other copies still ran).
+        seen2 = {"n": 0, "busy": 0, "busy_at_retry": None}
+        lk2 = threading.Lock()
+
+        def red_base_alone(hit, ff, first, probe):
+            k = 0
+            if hit is None and not probe:
+                with lk2:
+                    seen2["n"] += 1
+                    k = seen2["n"]
+                    seen2["busy"] += 1
+                    if k == 3:
+                        seen2["busy_at_retry"] = seen2["busy"]
+                time.sleep(0.2)
+                with lk2:
+                    seen2["busy"] -= 1
+                if k == 1:
+                    return False, "test_wobbly"
+            return (hit is None, "test_guard")
+        code, lines, calls, learned = sweep(red_base_alone, jobs=2)
+        check(code == 0 and seen2["n"] == 3 and seen2["busy_at_retry"] == 1
+              and any("running it again alone, after the other copies "
+                      "finished" in l for l in lines)
+              and any(l.startswith("FLAKY BASELINE: 1 of 2") and
+                      "(run alone)" in l for l in lines),
+              f"--jobs 2: a red baseline's one retry runs with no other copy "
+              f"running ({seen2}), and the flaky line says so: {lines}")
+
         # A red baseline gets one more full run; red twice stops the shard.
         def red_base(hit, ff, first, probe):
             return False, "test_guard"
         code, lines, calls, learned = sweep(red_base)
         check(code == 2 and len(base_runs(calls)) == 2
               and not [c for c in calls if c[0]]
-              and any("FAILS with nothing mutated" in l for l in lines),
-              f"a red baseline is run once more, then stops the shard: "
-              f"{calls}")
+              and any("FAILS with nothing mutated" in l for l in lines)
+              and any("the same failure both times" in l for l in lines),
+              f"a red baseline is run once more, then stops the shard, "
+              f"saying both runs failed the same way: {calls} {lines}")
+        flip = {"n": 0}
+
+        def red_base_two_ways(hit, ff, first, probe):
+            flip["n"] += 1
+            return False, f"test_way{flip['n']}"
+        code, lines, calls, learned = sweep(red_base_two_ways)
+        check(code == 2
+              and any("a different failure each time" in l for l in lines),
+              f"red twice with two different failures says so (a flaky "
+              f"test, not the code), and still stops the shard: {lines}")
+
+
+def test_release_gate_tiers():
+    """release_gate.py decides how much of the mutation list a release (a
+    PR into main) must pass, from the diff alone: docs only is the selftest
+    only; a code change is the mutations near the changed lines (all of a
+    safety file's) plus the fixed safety core; the gate's own files, the
+    suite's shared code, a red whole sweep or any error is everything. The
+    diff is faked; the mutations and the core are the real ones."""
+    section("release gate: the tier comes from the diff, and fails closed")
+    import contextlib
+    import io
+    import mutate
+    import release_gate as RG
+
+    real = list(mutate.MUTATIONS)
+    core = RG.core_names(real)
+    rules = [n for n, rel, *_ in real if rel == "ltcplay/web/remote_rules.js"]
+    check(RG.CORE_SIZE[0] <= len(core) <= RG.CORE_SIZE[1]
+          and set(rules) <= core
+          and any(rel == "ltcplay/conductor.py" and n in core
+                  for n, rel, *_ in real)
+          and any(rel == "ltcplay/laserarm.py" and n in core
+                  for n, rel, *_ in real),
+          f"the safety core: {len(core)} mutations, every remote_rules.js "
+          f"one, the conductor's Stop and gates, the laser arm")
+
+    # A fake text file with two mutations, one near line 10, one at 200.
+    body = [f"line {i}" for i in range(1, 301)]
+    body[9] = 'msg = "Run the installer again"'
+    body[199] = "if armed and run_pressed:"
+    text_py = "\n".join(body) + "\n"
+    fake = [("text: the installer line", "ltcplay/fake_text.py",
+             'msg = "Run the installer again"', 'msg = ""'),
+            ("text: far away", "ltcplay/fake_text.py",
+             "if armed and run_pressed:", "if True:"),
+            ("safe: a", "ltcplay/conductor.py", "XX_NOT_THERE_A", "b"),
+            ("safe: b", "ltcplay/conductor.py", "XX_NOT_THERE_B", "b")]
+    muts = real + fake
+    suite_old = ("import os\n\ndef check(c, m):\n    pass\n\n\n"
+                 "def test_a():\n    check(1, 'a')\n\n\n"
+                 "def test_b():\n    check(1, 'b')\n")
+
+    def gate(changed, new=None, old=None, hunks=None, catchers=None,
+             red=None):
+        new, old = new or {}, old or {}
+        return RG.classify(
+            changed, lambda p: new.get(p, text_py if p.endswith(".py")
+                                       else ""),
+            lambda p: old.get(p, text_py if p.endswith(".py") else ""),
+            lambda p: (hunks or {}).get(p, [(10, 10)]), muts,
+            catchers if catchers is not None else {"text: far away": "test_b"},
+            lambda p: p.startswith(mutate.SAFETY_TRIGGERS)
+            and p.endswith(".py"), red)
+
+    # 1. Docs only: the selftest only, even with the whole sweep red.
+    tier, names, why = gate(["OPERATOR.md", "docs/notes.md"],
+                            red="the last whole sweep is red")
+    check(tier == "docs" and names == set(),
+          f"Markdown only is tier docs, no mutation: {tier} {why}")
+    tier, names, why = gate(["OPERATOR.md", "packaging/READ ME.txt"])
+    check(tier == "scoped" and names == core,
+          f"a .txt beside the .md is not docs: the safety core runs: {why}")
+
+    # 2. A text-only change in code: the mutation near it and the core,
+    #    not the far one in the same file.
+    tier, names, why = gate(["ltcplay/fake_text.py"])
+    check(tier == "scoped" and "text: the installer line" in names
+          and "text: far away" not in names and core <= names
+          and len(names) == len(core) + 1,
+          f"a one-line text change runs its neighbour and the core only: "
+          f"{tier} {len(names) if names else names} {why}")
+    moved = text_py.replace("if armed and run_pressed:", "if armed:")
+    tier, names, why = gate(["ltcplay/fake_text.py"],
+                            new={"ltcplay/fake_text.py": moved})
+    check(tier == "scoped" and "text: far away" in names,
+          f"a mutation whose text is gone runs anyway (it will SETUP "
+          f"FAIL, loudly): {why}")
+    tier, names, why = gate(["ltcplay/fake_text.py"],
+                            red="the last whole sweep is red (#9)")
+    check(tier == "full" and names is None,
+          f"while the last whole sweep is red, any code runs everything: "
+          f"{why}")
+
+    # 3. A safety file: every one of its mutations, and the core.
+    tier, names, why = gate(["ltcplay/conductor.py"],
+                            hunks={"ltcplay/conductor.py": [(5, 5)]})
+    check(tier == "scoped" and {"safe: a", "safe: b"} <= names
+          and core <= names,
+          f"a safety file runs all its mutations and the core: {why}")
+
+    # 4. The harness and the gate's own files: everything.
+    for p in ("mutate.py", "mutate_catchers.json", "release_gate.py",
+              ".github/workflows/selftest.yml", "test_show_fixtures.py",
+              "ltcplay/web/remote_rules.js", "mutate_expected_misses.txt"):
+        tier, names, why = gate([p, "ltcplay/fake_text.py"])
+        check(tier == "full" and names is None,
+              f"{p} changed: the whole list: {tier} {why}")
+    harness = suite_old.replace("    pass\n", "    return\n", 1)
+    tier, names, why = gate(["selftest.py"], new={"selftest.py": harness},
+                            old={"selftest.py": suite_old})
+    check(tier == "full" and "outside its test_ functions" in " ".join(why),
+          f"selftest.py's shared code (check()) changed: everything: {why}")
+    edited = suite_old.replace("check(1, 'b')", "check(2, 'b')")
+    tier, names, why = gate(["selftest.py"], new={"selftest.py": edited},
+                            old={"selftest.py": suite_old})
+    check(tier == "scoped" and "text: far away" in names
+          and "text: the installer line" not in names,
+          f"a test body changed: what it caught last time, and the core: "
+          f"{why}")
+    tier, names, why = gate(["selftest.py"], new={"selftest.py": edited},
+                            old={"selftest.py": suite_old}, catchers={})
+    check(tier == "full",
+          f"a test changed with no catchers file: everything: {why}")
+
+    # 5. The classifier cannot decide: everything, never less.
+    try:
+        RG.classify(["ltcplay/fake_text.py"], lambda p: text_py,
+                    lambda p: text_py, lambda p: [(10, 10)], fake, {})
+        check(False, "a core that matches no mutation must raise")
+    except RG.GateError as e:
+        check("matches no mutation" in str(e), f"core error: {e}")
+    tier, names, why = RG.decide("no-such-revision-anywhere")
+    check(tier == "full" and names is None
+          and "could not decide" in " ".join(why),
+          f"a base git cannot read: the gate fails closed: {why}")
+    saved = RG.classify, RG._git
+    try:
+        def boom(*a, **k):
+            raise ValueError("a bug in the gate")
+
+        def fake_git(*args):
+            return {"merge-base": "abc123\n"}.get(args[0],
+                                                   "ltcplay/fake_text.py\0")
+        RG.classify, RG._git = boom, fake_git
+        tier, names, why = RG.decide("HEAD")
+    finally:
+        RG.classify, RG._git = saved
+    check(tier == "full" and "a bug in the gate" in " ".join(why),
+          f"a bug inside the gate: the whole list: {why}")
+
+    # mutate.py --only runs exactly a named list, and refuses a name it
+    # does not have.
+    with tempfile.TemporaryDirectory() as d:
+        lst = os.path.join(d, "names.txt")
+        saved_lock, saved_argv = mutate.LOCK, sys.argv
+        env_saved = os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        try:
+            mutate.LOCK = os.path.join(d, ".mutating")
+            for names_in, extra, want in (
+                    ([real[0][0], real[5][0]], [], (0, 2)),
+                    ([real[0][0], "no such mutation"], [], (2, 0)),
+                    ([real[0][0]], ["--changed", "HEAD"], (2, 0))):
+                with open(lst, "w", encoding="utf-8") as fh:
+                    fh.write("".join(n + "\n" for n in names_in))
+                sys.argv = ["mutate.py", "--only", lst, "--list"] + extra
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    code = mutate.main()
+                got = (code, buf.getvalue().count("  would run  "))
+                check(got == want, f"--only {names_in} {extra}: {got}, "
+                                   f"want {want}")
+        finally:
+            mutate.LOCK, sys.argv = saved_lock, saved_argv
+            if env_saved is not None:
+                os.environ["GITHUB_STEP_SUMMARY"] = env_saved
+
+    # The workflow uses the gate, recomputes it in each shard, and falls
+    # back to the whole list; the required check is still called ci.
+    wf = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           ".github", "workflows", "selftest.yml"),
+              encoding="utf-8").read()
+    check("python3 release_gate.py --base" in wf
+          and 'narrow=(--only "$names")' in wf
+          and "release gate, tier full (it said:" in wf
+          and '"$PR_BASE_REF" == main' in wf
+          and re.search(r"^  ci:$", wf, re.M)
+          and "sweep_issue.sh" in wf,
+          "selftest.yml: the release gate's tiers, fail-closed fallback, "
+          "per-shard recompute and the ci job are all wired")
+    print("  ok")
 
 
 def test_the_gpl_path_never_loads_the_flame_link():
