@@ -52509,6 +52509,69 @@ def test_release_gate_tiers():
         tier, names, why = gate([p], new={p: after}, old={p: before})
         check(tier == want, f"{p} changed: {want}: {tier} {why}")
 
+    # Second review, item 1: the gate's hunks come from the blobs, never
+    # from `git diff`, which a .gitattributes `-diff` empties; and a
+    # .gitattributes anywhere is full. The demo: `origin = None` above the
+    # Origin check in web.py must still select the cross-site mutation.
+    web_old = open(os.path.join(here_dir, "ltcplay", "web.py"),
+                   encoding="utf-8").read()
+    anchor = '            origin = self.headers.get("Origin")\n'
+    check(web_old.count(anchor) == 1, "setup: web.py's Origin check")
+    web_new = web_old.replace(anchor, "            origin = None\n" + anchor)
+    tier, names, why = gate(["ltcplay/web.py"],
+                            new={"ltcplay/web.py": web_new},
+                            old={"ltcplay/web.py": web_old},
+                            hunks={"ltcplay/web.py": RG.text_hunks(web_old,
+                                                                   web_new)})
+    check(tier == "scoped" and
+          "remote: presses from another site's page are taken" in names,
+          f"a line added above web.py's Origin check selects the cross-"
+          f"site mutation, from the blobs: {why}")
+    for p in (".gitattributes", "ltcplay/.gitattributes"):
+        tier, names, why = gate([p, "ltcplay/web.py"])
+        check(tier == "full", f"{p} changed: everything: {why}")
+    check(RG.text_hunks("a\nb\nc\n", "a\nB\nc\n") == [(2, 2)]
+          and RG.text_hunks("a\nb\n", "a\nb\nc\n") == [(3, 3)],
+          "text_hunks gives 1-based changed lines")
+    check("core.attributesFile" in open(os.path.join(
+              here_dir, "release_gate.py"), encoding="utf-8").read(),
+          "the gate's git calls ignore any attributes file")
+
+    # Second review, item 2: an existing test's strings edited together
+    # with a production file runs every mutation of that file, so one
+    # with no recorded catcher (584 of them) is not left out.
+    tier, names, why = gate(["selftest.py", "ltcplay/fake_text.py"],
+                            new={"selftest.py": edited},
+                            old={"selftest.py": suite_old})
+    check(tier == "scoped" and {"text: the installer line",
+                                "text: far away"} <= names,
+          f"test strings edited with a production file: all of that "
+          f"file's mutations: {why}")
+
+    # Minor: registering a new test in TESTS is not a change to the runner;
+    # anything else in TESTS is.
+    reg_old = suite_old + "\n\nif __name__ == '__main__':\n    TESTS = [\n" \
+        "        test_a,\n        test_b,\n    ]\n"
+    reg_new = (reg_old.replace("        test_b,\n",
+                               "        test_b,\n        test_c,\n")
+               .replace("\n\nif __name__", "\n\ndef test_c():\n"
+                        "    check(3, 'c')\n\n\nif __name__"))
+    tier, names, why = gate(["selftest.py"], new={"selftest.py": reg_new},
+                            old={"selftest.py": reg_old})
+    check(tier == "scoped", f"a new test and its TESTS line: scoped: {why}")
+    for what, bad_new in (
+            ("an existing test listed twice",
+             reg_old.replace("        test_b,\n",
+                             "        test_b,\n        test_a,\n")),
+            ("a test dropped from TESTS",
+             reg_old.replace("        test_b,\n", "")),
+            ("a redefinition",
+             reg_new + "\n\ndef test_c():\n    check(1, 'c')\n")):
+        tier, names, why = gate(["selftest.py"],
+                                new={"selftest.py": bad_new},
+                                old={"selftest.py": reg_old})
+        check(tier == "full", f"TESTS: {what}: everything: {why}")
+
     # No mutation leaves mutate.py without a reason in mutate_removed.txt.
     old_m = "MUTATIONS = [('a', 'f', 'x', 'y'), ('b', 'f', 'x', 'y')]\n"
     new_m = "MUTATIONS = [('a', 'f', 'x', 'y')]\n"
@@ -52608,11 +52671,29 @@ def test_release_gate_tiers():
           "one queue, never 32 slots at once, never cancelling), "
           "and a missing, skipped or cancelled shard is red (cold review "
           "M6b, M6c)")
-    co = open(os.path.join(here_dir, ".github", "CODEOWNERS"),
-              encoding="utf-8").read()
-    check(all(f"/{p} " in co or f"/{p}\n" in co for p in (
-        "release_gate.py", "mutate.py", "mutate_catchers.json", ".github/")),
-          "CODEOWNERS names the gate, mutate.py, its catchers and .github/")
+    check(not os.path.exists(os.path.join(here_dir, ".github", "CODEOWNERS"))
+          and "THIS PR EDITS THE CI ITSELF" in wf
+          and "id: banner" in wf and "gate_files" in wf,
+          "a PR that edits .github/ or a .gitattributes is flagged loudly "
+          "in changes and in ci (no CODEOWNERS: Jeff is the only owner and "
+          "author, second review item 3)")
+    ci_job = wf[wf.index("\n  ci:\n"):]
+    check(re.search(r"^    if: always\(\)$", ci_job, re.M)
+          and "draft == false" not in ci_job
+          and "a draft PR is never green" in ci_job
+          and "main has moved" in ci_job
+          and 'repos/$REPO/commits/main' in ci_job,
+          "ci always runs (never skipped, which would count as passed): red "
+          "on a draft, red when main moved after the run started (second "
+          "review items 4 and 5)")
+    sw = open(os.path.join(here_dir, ".github", "workflows",
+                           "sweep-watch.yml"), encoding="utf-8").read()
+    check('workflows: ["weekly mutate"]' in sw
+          and "conclusion == 'cancelled'" in sw
+          and "head_branch == 'main'" in sw and "sweep_issue.sh" in sw
+          and re.search(r"^name: weekly mutate$", wk, re.M),
+          "a weekly sweep of main dropped while it waited opens the "
+          "mutate-sweep issue (sweep-watch.yml; second review item 6)")
     check('narrow=(--only "$names")' in wf
           and "release gate, tier full (it said:" in wf
           and '"$PR_BASE_REF" == main' in wf
@@ -114412,6 +114493,7 @@ if __name__ == "__main__":
         test_mutate_reports_every_failure_it_can_have,
         test_mutate_mutant_limit_follows_the_baseline,
         test_mutate_fast_path_never_turns_red_green,
+        test_release_gate_tiers,
         test_mutate_never_runs_stale_bytecode,
         test_mutate_shards_fit_their_time_limit,
         test_alerts_pure_logic,

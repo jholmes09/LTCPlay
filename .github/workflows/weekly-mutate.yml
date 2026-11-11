@@ -45,7 +45,8 @@ permissions:
 # a release's shards always have room. A new start never cancels the
 # running sweep; it waits in the queue behind it (GitHub keeps one waiting
 # run per group: a third start replaces the waiting one, which then never
-# runs, so do not start a manual sweep near Sunday 07:12 UTC).
+# runs; sweep-watch.yml sees that cancelled run of main and opens the
+# mutate-sweep issue, so a dropped sweep is never silent).
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false

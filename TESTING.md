@@ -75,11 +75,23 @@ picks it, and nothing in a PR's text changes it. The workflow runs the
 copy of `release_gate.py`, `mutate.py` and `mutate_catchers.json` that is
 on main, against the PR's diff (`--repo`), so a release can never lower its
 own tier by editing them; with no copy on main, the tier is full.
-`selftest.yml` itself comes from the PR on a `pull_request` run, so it is
-protected by a different rule: any change under `.github/` is full, and
-`.github/CODEOWNERS` names the owner for the gate's files. That needs
-"Require review from Code Owners" turned on in main's branch protection
-(Jeff, in Settings).
+`selftest.yml` itself comes from the PR on a `pull_request` run, and that
+cannot be closed from inside the repository: **a PR that edits the
+workflows can lower its own gate, and only a person reading that diff
+stops it.** (`pull_request_target` would take the workflow from main, but
+its check runs belong to main's commit, not the PR's head, so `ci` would
+have to be posted as a commit status, and a PR that edits its own
+workflow can post the same status with its own token. CODEOWNERS does not
+help either: Jeff is the only owner and the author of nearly every
+commit.) What the gate does instead: any change under `.github/` or to a
+`.gitattributes` is full, and the `changes` and `ci` jobs both carry a red
+"THIS PR EDITS THE CI ITSELF" annotation naming the files.
+
+`ci` always runs (a skipped required check counts as passed): it is red on
+a draft, red when anything it needs did not succeed, and red when main has
+moved since the run started (merge main in and let it run again). Jeff
+should turn on "Require branches to be up to date before merging" in
+main's protection, which only he can set.
 
 The aggregate check is named `ci` only on a PR into main (and on pushes),
 and there it needs the tier computed for main. On any other base the same
@@ -95,7 +107,9 @@ pushed, or closed and reopened.
 - **scoped**: any other change. The mutations whose text lies within 25
   lines of a changed line (every mutation of a changed safety file), the
   mutations whose last catcher (`mutate_catchers.json`) is a test whose
-  strings the change edited, and the safety core, always (`RELEASE_CORE`,
+  strings the change edited (and then every mutation of each changed
+  production file, since 584 mutations have no recorded catcher), and
+  the safety core, always (`RELEASE_CORE`,
   about 900): every `remote_rules.js`, flamesafe arm input, link,
   service, rules and sACN, laser arm, fireball, fireball charge and cues,
   flame programming, fuel and fuel pump mutation; the conductor's, flame
@@ -107,9 +121,12 @@ pushed, or closed and reopened.
 - **full**: every mutation. Forced when the change touches `mutate.py`,
   `mutate_catchers.json`, `mutate_expected_misses.txt`,
   `mutate_removed.txt`, `release_gate.py`, anything under `.github/` or
-  `tools/` (the UI test rig and its fixtures), `test_show_fixtures.py`,
+  `tools/` (the UI test rig and its fixtures), a `.gitattributes` in any
+  folder (the gate reads changed lines from the files themselves, never
+  from `git diff`, which `-diff` can empty), `test_show_fixtures.py`,
   `remote_rules.js`, or selftest.py outside its `test_` functions (the
-  runner, `check()`, a shared rig); when an existing test is deleted or
+  runner, `check()`, a shared rig; one added `TESTS` line naming a new,
+  once-defined test is allowed); when an existing test is deleted or
   changes in anything but its strings, or a string in it becomes empty
   (a `return` at its top would gut it with nothing recorded as caught);
   when the
@@ -237,8 +254,10 @@ issue (`.github/scripts/sweep_issue.sh`); a green sweep of a branch or of
 an older main leaves it open. A red suite after a push (so no shard ran),
 a cancelled sweep, a missing shard or a report that could not be made
 counts as red. Weekly sweeps, scheduled or manual, run one at a time and
-queue rather than cancel (never more than 16 job slots), and a run on a
-branch only reports
+queue rather than cancel (never more than 16 job slots). GitHub keeps one
+waiting run, so a third start drops the waiting one: `sweep-watch.yml`
+sees any weekly run of main that ended cancelled and opens the issue as
+for a red sweep. A run on a branch only reports
 its result: it neither opens nor closes the issue about main.
 
 ## Running things by hand

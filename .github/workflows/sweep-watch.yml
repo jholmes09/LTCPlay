@@ -1,0 +1,38 @@
+name: sweep watch
+
+# A weekly sweep that never ran is never silent. weekly-mutate.yml runs one
+# sweep at a time and queues the next; GitHub keeps only one waiting run per
+# concurrency group, so a third start cancels the waiting one before any of
+# its jobs run, and its own report job never runs either. This workflow is
+# told when any weekly mutate run ends: a run of main that ended cancelled
+# (dropped while waiting, or stopped by hand) opens the mutate-sweep issue,
+# or adds to the open one, exactly as a red sweep does
+# (.github/scripts/sweep_issue.sh). Only a green whole sweep of main's head
+# closes it. workflow_run fires only for this file as it is on main.
+on:
+  workflow_run:
+    workflows: ["weekly mutate"]
+    types: [completed]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  dropped:
+    if: github.event.workflow_run.conclusion == 'cancelled' && github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          REF: refs/heads/main
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          report="$RUNNER_TEMP/report.md"
+          echo "### a weekly sweep of main was dropped: it was cancelled before it finished (another start replaced it while it waited, or it was stopped by hand), so the whole list was not proved" > "$report"
+          bash .github/scripts/sweep_issue.sh "A weekly mutation sweep of main" "$report" 1

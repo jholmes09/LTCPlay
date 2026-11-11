@@ -141,8 +141,50 @@ def core_names(mutations):
 
 
 def _forced(path):
+    """A file whose change forces the whole list. A .gitattributes in any
+    folder too: it can change what git shows as a diff (`-diff` hides a
+    file's hunks), and the gate reads its own hunks from the blobs, but a
+    change to how the tree is read is never a small change."""
+    if os.path.basename(path) == ".gitattributes":
+        return True
     return any(path == f or (f.endswith("/") and path.startswith(f))
                for f in FORCE_FULL)
+
+
+def text_hunks(old, new):
+    """[(first, last)] changed line ranges in `new` against `old`, worked
+    out here from the two texts (difflib), never from `git diff`, whose
+    output the tree's own .gitattributes can change or empty. A pure
+    deletion is the line it was cut after (or line 1)."""
+    import difflib
+    a = (old or "").splitlines()
+    b = (new or "").splitlines()
+    out = []
+    for tag, _i1, _i2, j1, j2 in difflib.SequenceMatcher(
+            None, a, b, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        out.append((j1 + 1, max(j2, j1 + 1)))
+    return out
+
+
+def _tests_list_only(shared_old, shared_new, new_tests, new_text):
+    """True when the suite's shared code differs only by lines added to the
+    TESTS list, each naming a test that is new in this change and defined
+    exactly once (a new test is registered, nothing else moved)."""
+    import difflib
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
+            None, shared_old, shared_new, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        if tag != "insert":
+            return False
+        for line in shared_new[j1:j2]:
+            m = re.fullmatch(r"\s+(test_\w+),\s*", line)
+            if not m or m.group(1) not in new_tests or len(re.findall(
+                    rf"^def {m.group(1)}\(", new_text, re.M)) != 1:
+                return False
+    return True
 
 
 def _test_spans(tree):
@@ -289,6 +331,10 @@ def classify(changed, new_text, old_text, hunks, mutations, catchers,
         return full(f"the gate's own files changed: {', '.join(forced)}")
 
     chosen = set()
+    # An existing test's strings were edited: a mutation with no recorded
+    # catcher may have been guarded by it, so every changed production
+    # file then runs all of its mutations, not only those near the change.
+    tests_edited = False
     if "selftest.py" in changed:
         new_s, old_s = new_text("selftest.py"), old_text("selftest.py")
         if new_s is None or old_s is None:
@@ -298,7 +344,9 @@ def classify(changed, new_text, old_text, hunks, mutations, catchers,
             shared_old, tests_old = suite_split(old_s)
         except SyntaxError as e:
             return full(f"selftest.py could not be parsed ({e})")
-        if shared_new != shared_old:
+        added = set(tests_new) - set(tests_old)
+        if shared_new != shared_old and not _tests_list_only(
+                shared_old, shared_new, added, new_s):
             return full("selftest.py changed outside its test_ functions "
                         "(the runner, check() or a shared rig)")
         gone = sorted(set(tests_old) - set(tests_new))
@@ -318,6 +366,7 @@ def classify(changed, new_text, old_text, hunks, mutations, catchers,
         dep = {n for n, *_ in mutations
                if set((catchers.get(n) or "").split(",")) & touched}
         chosen |= dep
+        tests_edited = tests_edited or bool(touched)
         reasons.append(f"selftest.py: {len(touched)} test(s) edited or "
                        f"deleted, {len(dep)} mutations they caught last time")
     for p in changed:
@@ -329,6 +378,7 @@ def classify(changed, new_text, old_text, hunks, mutations, catchers,
                 strings_only(before, after)
             if why:
                 return full(f"the test file {p} changed: {why}")
+            tests_edited = tests_edited or before != after
         if p == "flamesafe/test_flamesafe.py":
             dep = {n for n, *_ in mutations
                    if "test_flamesafe_in_its_own_process"
@@ -340,11 +390,13 @@ def classify(changed, new_text, old_text, hunks, mutations, catchers,
     for p in changed:
         if p not in targets:
             continue
-        if safety_files(p):
+        if safety_files(p) or tests_edited:
             names = {n for n, _o in targets[p]}
             chosen |= names
-            reasons.append(f"{p}: a safety file, all {len(names)} of its "
-                           f"mutations")
+            reasons.append(f"{p}: all {len(names)} of its mutations ("
+                           + ("a safety file" if safety_files(p) else
+                              "an existing test's strings changed too")
+                           + ")")
             continue
         text = new_text(p)
         spans = [(a - CONTEXT, b + CONTEXT) for a, b in hunks(p)]
@@ -370,8 +422,16 @@ def classify(changed, new_text, old_text, hunks, mutations, catchers,
 
 # --------------------------------------------------------------- git side --
 
+# The tree's own attributes never shape what the gate reads: no global or
+# repository attributes file, no renames, no external diff, no textconv.
+_GIT_SAFE = ("-c", "core.attributesFile=" + os.devnull,
+             "-c", "diff.renames=false", "-c", "diff.external=",
+             "-c", "core.quotePath=false")
+
+
 def _git(*args):
-    r = subprocess.run(["git"] + list(args), cwd=REPO, capture_output=True,
+    r = subprocess.run(["git", *_GIT_SAFE] + list(args), cwd=REPO,
+                       capture_output=True,
                        text=True, encoding="utf-8", errors="replace")
     if r.returncode != 0:
         raise GateError(f"git {' '.join(args)}: {r.stderr.strip()}")
@@ -380,21 +440,15 @@ def _git(*args):
 
 def _show(rev, path):
     try:
-        return _git("show", f"{rev}:{path}")
+        return _git("show", "--no-textconv", f"{rev}:{path}")
     except GateError:
         return None
 
 
 def _hunks(point, path):
-    """Changed line ranges of `path` in HEAD against `point`. A pure
-    deletion is the line it was cut after."""
-    out = []
-    for m in re.finditer(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@",
-                         _git("diff", "-U0", "--no-renames", point, "HEAD",
-                              "--", path), re.M):
-        start, count = int(m.group(1)), int(m.group(2) or 1)
-        out.append((start, start + max(count, 1) - 1))
-    return out
+    """Changed line ranges of `path` in HEAD against `point`, from the two
+    blobs (text_hunks), not from `git diff`."""
+    return text_hunks(_show(point, path), _show("HEAD", path))
 
 
 def _tests_read():
@@ -420,7 +474,8 @@ def decide(base, sweep_red=None):
         if not point:
             raise GateError(f"no merge base with {base}")
         changed = [p for p in _git("diff", "--name-only", "--no-renames",
-                                   "-z", point, "HEAD").split("\0") if p]
+                                   "--no-ext-diff", "--text", "-z", point,
+                                   "HEAD").split("\0") if p]
         catchers = mutate._load_catchers(os.path.join(HERE,
                                                       "mutate_catchers.json"))
 

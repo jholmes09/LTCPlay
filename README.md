@@ -598,10 +598,13 @@ changed, using the copy of the rules already on main, so a release cannot
 change the rules that judge it. Nobody can talk it down, Claude included.
 If it cannot tell, it runs everything.
 
-One setting for Jeff: in GitHub, Settings, Branches, turn on "Require
-review from Code Owners" for main. Then any change to the testing
-machinery needs your review before it merges (the list is in
-`.github/CODEOWNERS`).
+Two honest limits. A release that edits the workflows themselves (the
+files under `.github/`) could weaken the check that judges it, and only a
+person reading that part of the change stops it: such a PR always runs
+everything and carries a red "THIS PR EDITS THE CI ITSELF" note, so read
+that part before saying yes. And one setting for Jeff: in GitHub,
+Settings, Branches, main, turn on "Require branches to be up to date
+before merging", so a release is always tested against main as it is.
 
 | What the release changes | What runs before it can merge | About how long |
 |---|---|---|
