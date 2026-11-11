@@ -2124,10 +2124,10 @@ function drawTransport(isSt){
   const ro = $("b-runoff"), roOn = runOffShown(isSt);
   if(ro.hidden !== !roOn) ro.hidden = !roOn;
   if(roOn) $("b-stop").hidden = true;
+  else if($("b-stop").hidden) $("b-stop").hidden = false;
   // Its words: Show ctrl / off, or End / rehearsal in a rehearsal.
   const roReh = !!((ST && ST.transport) || {}).programming;
   setText($("ro-l"), roReh ? "End" : "Show ctrl"); setText($("ro-s"), roReh ? "rehearsal" : "off");
-  else if($("b-stop").hidden) $("b-stop").hidden = false;
   ro.disabled = !!FLIPPED.go && Date.now() - FLIPPED.go < FLIP_LOCK_MS;
 }
 // Stop show (Jeff, 2026-10-30): where Stop has always been (the SHOW tab's
