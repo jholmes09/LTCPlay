@@ -90,7 +90,7 @@
     <div class="kv" id="info-flames" hidden></div>
     <h2>Mode</h2>
     <div class="kv" id="info-mode"></div>
-    <div class="kv" style="margin-top:4px;color:var(--muted)">SHOW: a show file is running for real and the scheduler starts each show at its time. PROGRAMMING: a rehearsal is running; the scrubbing controls work and the scheduler starts nothing. NOT RUNNING: no show file is running; nothing reaches the rig until Run is pressed on the Programming screen. To switch between Show and Programming: the Show and Programming switch on the Programming screen's Show file card, then Run (Stop first if something is running).</div>
+    <div class="kv" style="margin-top:4px;color:var(--muted)">SHOW: a show file is running for real and the scheduler starts each show at its time. PROGRAMMING: a rehearsal is running; the scrubbing controls work and the scheduler starts nothing. SHOW CONTROL OFF: no show file is running; nothing reaches the rig until show control is on (on the Programming screen). To switch between Show and Programming: the Show and Programming switch on the Programming screen's Show file card, then Turn show control on or Start rehearsal (turn show control off or End rehearsal first).</div>
     <h2>Leaving this window</h2>
     <div class="kv">This window is only a view. Closing it never stops a show: the engine runs on its own. It is an ordinary window: the Minimize, Maximize and Close buttons are at its top right. To minimize without them, press the <kbd>Windows</kbd> key + <kbd>Down arrow</kbd> (twice if it is maximized); <kbd>Alt</kbd>+<kbd>F4</kbd> closes it, or use the button below. A folder opened from this page comes to the front; if you do not see it, it is on the taskbar.</div>
     <div class="row">
@@ -432,7 +432,7 @@ function renderSetup(su, pr){
   t += ". " + (dkOk ? "The Stream Deck program is talking to this engine." : ("The Stream Deck program has not reached this engine" + (dkP.why ? ": " + esc(dkP.why) : "") + "."));
   if(su.example_flamesafe) t += " The flamesafe config was written at first run as a SAFE EXAMPLE: it sends to this PC only (127.0.0.1), never to a flame controller, until it is edited and confirmed.";
   fl.querySelector(".t").innerHTML = t;
-  $("su-foot").textContent = su.ready ? "" : "Nothing reaches the rig until Run is pressed on the Programming screen, and the scheduler only performs once the Fire & Ice settings say so.";
+  $("su-foot").textContent = su.ready ? "" : "Nothing reaches the rig until show control is on (on the Programming screen), and the scheduler only performs once the Fire & Ice settings say so.";
   try{ fitSetup(); }catch(e){}
 }
 
@@ -447,7 +447,7 @@ function setupFolderWords(su){
 }
 
 async function makeShowFile(){
-  if(!(await confirmBox("Make a show file from this folder?", "A new show file listing every render (.fseq) in the show folder, back to back from 01:00:00:00. No show file is replaced and the renders are not changed. Nothing reaches the rig until Run.", "Yes, make it", "start"))) return null;
+  if(!(await confirmBox("Make a show file from this folder?", "A new show file listing every render (.fseq) in the show folder, back to back from 01:00:00:00. No show file is replaced and the renders are not changed. Nothing reaches the rig until show control is on.", "Yes, make it", "start"))) return null;
   const btn = $("fo-make");
   btn.disabled = true;
   $("fo-made").textContent = "Making the show file...";
