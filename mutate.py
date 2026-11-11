@@ -2014,8 +2014,8 @@ MUTATIONS = [
   '        if length_s is None:\n            length_s = 1e6\n        if False:'),
 
  ('play and halt race each other', 'ltcplay/clock.py',
-  '        with self._lock:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Press Run first.")',
-  '        if True:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Press Run first.")'),
+  '        with self._lock:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Turn show control on first.")',
+  '        if True:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Turn show control on first.")'),
 
  ('an unknown hour is taken as the show', 'ltcplay/clock.py',
   '    role = zones.get(h)\n',
@@ -10218,7 +10218,7 @@ def build():
  ("pixels: the look-in-show CUES FAULT names a button the Fire & Ice "
   "screens do not have",
   'ltcplay/fire_ice.py',
-  '                "Programming: Show file card, Stop, then Run. "\n',
+  '                "Programming: Show file card, End rehearsal, then Start rehearsal. "\n',
   '                "Programming screen: press Follow timecode. "\n'),
 
  ("pixels: the look-in-show CUES FAULT sends a 2.0 screen to 1.0, not to "
@@ -21834,8 +21834,8 @@ def build():
 
  ("review180: rack screen 2.0 says only Press Run, whatever the warning asks",
   "ltcplay/web/remote2.html",
-  "do:runWarnWords(sch.run_warning.split(\"will NOT start. \")[1] || \"Press Run.\", loc)",
-  "do:runWarnWords(\"Press Run.\", loc)"),
+  "do:runWarnWords(sch.run_warning.split(\"will NOT start. \")[1] || \"Turn show control on.\", loc)",
+  "do:runWarnWords(\"Turn show control on.\", loc)"),
 
  ("play-from cues: a cue right at the end of the show audio is saved",
   "ltcplay/play_from.py",

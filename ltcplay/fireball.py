@@ -779,16 +779,17 @@ def engine_blockers(remote, link=None, cleaning=True, during_show=False):
                 return "a Hold is standing; Resume first."
             s = getattr(remote.control, "session", None)
             if s is not None and getattr(s, "running", False):
-                return ("Run is pressed (a show file is running), so the "
-                        "show file owns the flame channels; press Stop "
-                        "first.")
+                return ("Show control is on (a show file is running), so "
+                        "the show file owns the flame channels; turn show "
+                        "control off first.")
             try:
                 cs = remote.control.state() or {}
             except Exception:                            # noqa: BLE001
                 cs = {}
             if cs.get("running") or cs.get("starting"):
-                return ("Run is pressed (a show file is running), so the show "
-                        "file owns the flame channels; press Stop first.")
+                return ("Show control is on (a show file is running), so the "
+                        "show file owns the flame channels; turn show control "
+                        "off first.")
         why = m._locks_confirmed()
         if why:
             return why

@@ -1705,7 +1705,7 @@ class Handler(BaseHTTPRequestHandler):
                 # not: it only takes risk away.
                 _rm0 = getattr(self.server, "remote", None)
                 if _rm0 is not None and hasattr(_rm0, "timed_purge_cut"):
-                    _rm0.timed_purge_cut("Run was pressed on the " +
+                    _rm0.timed_purge_cut("Show control was turned on at the " +
                                          str(self._ctx().screen),
                                          self._ctx().user or "unsigned",
                                          self._ctx().screen)
@@ -1715,7 +1715,7 @@ class Handler(BaseHTTPRequestHandler):
                 _svc = getattr(self.server, "schedule", None)
                 if getattr(_svc, "halting", lambda: False)() is True:
                     return self._send(409, {"error": (
-                        "Run was refused: " + _svc.HALTING + ". Nothing was "
+                        "Show control on was refused: " + _svc.HALTING + ". Nothing was "
                         "started.")})
                 # Never over Programming playback (playhead.py): the same
                 # sentence as Start now's.
@@ -1729,7 +1729,7 @@ class Handler(BaseHTTPRequestHandler):
                 # source of fire values.
                 _rm = getattr(self.server, "remote", None)
                 if _rm is not None and hasattr(_rm, "live_flame_end"):
-                    _rm.live_flame_end("Run was pressed",
+                    _rm.live_flame_end("Show control was turned on",
                                        self._ctx().user or "unsigned",
                                        self._ctx().screen)
                 s = c.start(body.get("timeline", ""),

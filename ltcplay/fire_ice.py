@@ -302,7 +302,7 @@ class FireIceConfig:
 
     def summary(self):
         return ("scheduler performs" + (
-                    ", starts shows by itself once Run is pressed"
+                    ", starts shows by itself once show control is on"
                     if self.auto_start == "when_run_pressed" else
                     ", never starts a show by itself (auto_start off)")
                 if self.scheduler_performs else "scheduler dry run") + \
@@ -438,7 +438,7 @@ class FireIceShow(C.ShowOutputs):
 
     def _no_clock(self, what):
         return C.failed(f"{what} was not sent: no show is running on this "
-                        f"machine's show audio (Run not pressed, or the "
+                        f"machine's show audio (show control off, or the "
                         f"show file's clock is not \"audio_master\").")
 
     def playing(self):
@@ -496,7 +496,7 @@ class FireIceShow(C.ShowOutputs):
         s, p = self._player()
         if p is None:
             return C.failed("Pixels to black was not sent: nothing is "
-                            "running. Press Run first.")
+                            "running. Turn show control on first.")
         with self._lock:
             # A show start's hand-over still waiting for its first frame
             # (pixels_for_show) ends here: this black stands, and what it
@@ -609,9 +609,9 @@ class FireIceShow(C.ShowOutputs):
         if keep is not None:
             rest = (f" The page's {self.LOOK_NAMES.get(keep, keep)} look "
                     f"stays: on the Programming screen it is the operator's; "
-                    f"press Stop on the Show file card (1.0, on the show "
-                    f"machine), then Run, to give the pixels to the "
-                    f"show.")
+                    f"on the Show file card (on the show machine) turn "
+                    f"show control off, then on again, to give the pixels "
+                    f"to the show.")
         else:
             first = {None: "The idle look", "blackout": "The black",
                      "preshow": "The Preshow look"}.get(held, "The look")
@@ -1233,7 +1233,7 @@ LOOK_IN_SHOW_FAULT_S = 1.5
 # 2.0 has the same card, with the same Stop and Run, on its Schedule tab
 # (#208), so the words send a 2.0 screen there, never to 1.0.
 LOOK_IN_SHOW = ("CUES FAULT: pixels show {look}, not the show. "
-                "Programming: Show file card, Stop, then Run. "
+                "Programming: Show file card, End rehearsal, then Start rehearsal. "
                 "On 2.0: the Schedule tab's Show file card. "
                 "Scheduled show: tell Jeff.")
 # The look in plain words.
@@ -2730,19 +2730,18 @@ class ShowRunner:
     AUTO_START_OFF = ("auto_start is off in ltcplay_fire_ice.json, so the "
                       "scheduler does not start a show by itself; press "
                       "Start now to start it")
-    RUN_OFF = ("Run has not been pressed, so nothing may reach the rig; "
-               "press Run on the Programming screen, then Start now")
+    RUN_OFF = ("Show control is off. Nothing reaches the rig. Turn show "
+               "control on, then Start now")
     NOT_AUDIO_MASTER = ("the running show file's clock is not "
                         "\"audio_master\", so this program cannot start it; "
-                        "on the Programming screen press Stop, choose the "
-                        "show file whose clock is \"audio_master\", then "
-                        "press Run")
+                        "on the Show file card turn show control off, choose "
+                        "the show file whose clock is \"audio_master\", then "
+                        "turn show control on")
     AUDIO_LOADING = ("the show audio is still loading (it takes a few "
-                     "seconds after Run); wait a moment, then press Start "
+                     "seconds after show control is turned on); wait a moment, then press Start "
                      "now, which waits for it to finish loading")
     AUDIO_FAILED = ("the show audio did not load: {why} Replace the file, "
-                    "then on the Programming screen press Stop and Run "
-                    "again")
+                    "then turn show control off and on again")
     AUDIO_DEVICE = ("the show audio interface is not available: {why} "
                     "Plug it in or pick it again, then press Start now")
     NEVER_CONFIRMED = ("the show audio stopped before its timecode was seen "
@@ -3338,7 +3337,7 @@ class ShowRunner:
     def _close(self, after_show=False):
         if self.show._session() is None:
             # Run is not pressed: the closing sends nothing to the rig.
-            self._note("Closing: Run has not been pressed, so nothing was "
+            self._note("Closing: show control is off, so nothing was "
                        "sent to the rig.", action="closing",
                        outcome="held back")
         else:

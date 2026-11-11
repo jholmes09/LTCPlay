@@ -2043,7 +2043,7 @@ def _resume_words(tx, nxt, now):
         return (f" Show {nxt.n}, due at {at}, is still inside its late "
                 f"limit and starts at the next tick, "
                 f"{lateness_s(nxt.start, now)} s late, unless something "
-                f"else holds it (an open alert, Run, the rig check).")
+                f"else holds it (an open alert, show control, the rig check).")
     if how == "close":
         return (f" Show {nxt.n}, due at {at}, is close to its limit "
                 f"({lateness_s(nxt.start, now)} s late of "
@@ -3511,7 +3511,7 @@ def follow_rule(rule, m, now, dropped=None, past=SAVED_PAST, skipped=None):
                     "the schedule just saved has a show tonight, so "
                     "tonight starts now as a restart would start it. "
                     "Nothing is started by the save; a show starts by "
-                    "itself only while Run is pressed.", actor="scheduler")
+                    "itself only while show control is on.", actor="scheduler")
         return tx.done(), notes
     if was == OFF and tx.m.waiting() and not closed_by_operator(tx.m):
         tx.m = replace(tx.m, held_from="")
@@ -3525,7 +3525,7 @@ def follow_rule(rule, m, now, dropped=None, past=SAVED_PAST, skipped=None):
                 f"show still to come tonight, so the scheduler is back in "
                 f"STANDBY: {what}. Nothing was started and the rig stays "
                 f"dark until the next show. A show starts by itself only "
-                f"while Run is pressed.", actor="scheduler")
+                f"while show control is on.", actor="scheduler")
     return tx.done(), notes
 
 
