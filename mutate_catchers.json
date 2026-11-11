@@ -3721,5 +3721,9 @@
 "practice: a pending mark reads as charged tanks": "test_fireball_practice_engine",
 "practice: a Stop that came back failed is pressed again at once": "test_fireball_practice_engine",
 "practice: a person's Done waits for the retry": "test_fireball_practice_engine",
-"practice: open goes on after Done during its engine check": "test_fireball_practice_engine"
+"practice: open goes on after Done during its engine check": "test_fireball_practice_engine",
+"less prose: an alert's one-line text keeps its bullet marks": "test_alerts_pure_logic",
+"less prose: an alert drops its line breaks before the rack screen": "test_alerts_pure_logic",
+"less prose: opText writes the engine's words as markup": "test_ui2_op_text_shapes_text_with_dom_nodes_only",
+"less prose: the audio alert's names leave More for the bullets": "test_audio_interface_watch"
 }

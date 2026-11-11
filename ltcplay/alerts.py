@@ -177,7 +177,9 @@ class Alerts:
             raise ValueError(f"{kind!r} is not an alert kind. One of: "
                              f"{', '.join(KINDS)}.")
         full = lines(text)
-        text = " ".join(full.split())
+        # One line for everything else: a "- " bullet joins as a sentence.
+        text = " ".join(" ".join(ln[2:] if ln.startswith("- ") else ln
+                                 for ln in full.split("\n")).split())
         if not text:
             raise ValueError("An alert needs a sentence a person can act "
                              "on.")

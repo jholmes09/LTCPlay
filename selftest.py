@@ -65794,7 +65794,7 @@ def test_alerts_pure_logic():
     y = C.raise_("audio", "\n  Audio  box gone.\r\n- Do:  plug it in.\n"
                  "\n\n\nMore: 'X'  in  show.json.\n\n")
     vy = y.view()
-    check(y.text == "Audio box gone. - Do: plug it in. More: 'X' in "
+    check(y.text == "Audio box gone. Do: plug it in. More: 'X' in "
           "show.json." and vy["full"] == "Audio box gone.\n- Do: plug it "
           "in.\n\nMore: 'X' in show.json.\n\n" + AL.BOOTH_UNAVAILABLE + "."
           and vy["text"] == y.text + " " + AL.BOOTH_UNAVAILABLE + "." and
