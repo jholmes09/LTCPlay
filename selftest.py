@@ -43580,8 +43580,8 @@ const wt = startLook({schedule:{attached:true, state:"STANDBY", start_waiting:tr
 t(wt.mode === "stop" && wt.label === "Stop" && wt.disabled === false && /starting when ready/.test(wt.sub), "waiting for the audio: a show is about to play, so Stop, starting when ready: " + JSON.stringify(wt));
 t(startLook({schedule:{attached:true, state:"STANDBY"}, show:{running:true}}, false, true).label === "Loading", "this page's own wait reads Loading");
 // Stop's second line is the gesture, never a sentence (Jeff, 2026-11-11).
-t(startLook({schedule:{attached:true, state:"SHOW"}, show:{running:true}}, false, false).sub === "tap twice" &&
-  runLook({schedule:{attached:true, state:"SHOW"}, show:{running:true}}, false).sub === "tap twice", "a live show: Stop, tap twice");
+t(startLook({schedule:{attached:true, state:"SHOW"}, show:{running:true, show_control_on:true}}, false, false).sub === "tap twice" &&
+  runLook({schedule:{attached:true, state:"SHOW"}, show:{running:true, show_control_on:true}}, false).sub === "tap twice", "a live show: Stop, tap twice");
 const off = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"Run has not been pressed, so nothing may reach the rig; press Run", loading:false}}, show:{running:false}}, false, false);
 t(off.mode === "start" && off.sub === "Run is off" && /^Run has not been pressed/.test(off.why), "Run off: says so, and the why: " + JSON.stringify(off));
 // Run becomes Stop while Run is in force and there is something to stop;
