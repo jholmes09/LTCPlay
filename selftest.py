@@ -65802,9 +65802,10 @@ def test_alerts_pure_logic():
           f"an alert keeps its line breaks in full only, one blank line "
           f"at most; text and the journal are one line: {vy} {jl}")
     z = C.raise_("deck", "  The deck\tis  gone. ")
-    check(z.view()["full"] == z.view()["text"] == "The deck is gone. " +
-          AL.BOOTH_UNAVAILABLE + ".",
-          f"one line in: full is text, word for word: {z.view()}")
+    check("full" not in z.view() and z.full == z.text and
+          z.view()["text"] == "The deck is gone. " + AL.BOOTH_UNAVAILABLE +
+          ".", f"one line in: no full in the view, text as before: "
+               f"{z.view()}")
     print("  ok")
 
 

@@ -135,14 +135,16 @@ class Alert:
         text = self.text
         if self.booth_ok is False:
             text = f"{text} {BOOTH_UNAVAILABLE}."
-        full = self.full if "\n" in self.full else text
-        if "\n" in full and self.booth_ok is False:
-            full = f"{full}\n\n{BOOTH_UNAVAILABLE}."
-        return {"id": self.id, "kind": self.kind, "text": text,
-                "full": full,
-                "severity": self.severity, "since": int(self.since * 1000),
-                "options": list(self.options), "booth": self.booth,
-                "pulse": self.pulse}
+        out = {"id": self.id, "kind": self.kind, "text": text,
+               "severity": self.severity, "since": int(self.since * 1000),
+               "options": list(self.options), "booth": self.booth,
+               "pulse": self.pulse}
+        # The words with their line breaks, only when they have any: the
+        # rack screen reads full, else text.
+        if "\n" in self.full:
+            out["full"] = self.full + (f"\n\n{BOOTH_UNAVAILABLE}."
+                                       if self.booth_ok is False else "")
+        return out
 
 
 class Alerts:
