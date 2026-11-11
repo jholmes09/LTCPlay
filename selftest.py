@@ -56316,7 +56316,7 @@ def test_remote_setup_routes_this_machine_only():
                                  "last_end": "22:00"}}
         st, _h, out = _ask(R.httpd, "POST", "/api/remote/schedule-file",
                            {"doc": doc}, client=loop)
-        check(st == 200 and "Saved" in out["text"] and
+        check(st == 200 and "Schedule saved." in out["text"] and
               "loaded" in out["text"],
               f"a good schedule is written and loaded: {st} {out}")
         with open(R.svc.path, encoding="utf-8") as fh:
