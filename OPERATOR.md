@@ -1697,7 +1697,8 @@ says so: "Show control is off: the 22:50 show (show 5) will NOT start.
 Turn show control on." It is amber until 30 minutes before that show,
 then red, a fault. Once the night's first show time has gone by it is
 red at once. On a Hold it says "Turn show control on, then Resume.". On
-an iPad it adds "at the show PC". On the show PC, signed in with the
+an iPad it says where: "Turn show control on at the show PC." ("Show PC:
+turn show control on, then Resume." on a Hold). On the show PC, signed in with the
 Start now permission, a Show control on button stands beside it, in
 the alert and on the Schedule tab: the same as the main screen's big
 button, asking first. It is there only with contact. On a Hold the main

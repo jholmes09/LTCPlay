@@ -141,7 +141,7 @@ Off by default. With it off, everything above is exactly as before. Turn it on o
 
 **What ends it, in addition to the list above:** a packet from any address that is not `127.0.0.1` or the Mac's (another device, the PC's own show network address). A packet that arrives on the wrong socket: this PC's packets count only on the 127.0.0.1 socket, the Mac's only on the `listen_ip` socket. A second sender, from the Mac or from this PC, also ends it: one sender identity, from one place, per session.
 
-Everything else is the same: an admin turns it on on the show PC's own rack screen, never from an iPad; anyone can turn it off; one group at a time; 10 minutes idle and 4 hours in all; Stop, Hold, Run, Start now and a show starting end it.
+Everything else is the same: an admin turns it on on the show PC's own rack screen, never from an iPad; anyone can turn it off; one group at a time; 10 minutes idle and 4 hours in all; Stop, Hold, Show control on, Start now and a show starting end it.
 
 **First test from the Mac:** the same gas off first test as below, before anything else. Add one check: send from another computer on the show network (or change the Mac's address) and see the mode end.
 
@@ -215,7 +215,7 @@ There is no switch for this any more. "Fire flames while scrubbing" was removed 
 - **Half a second of quiet after every move.** Every Play from, Back, Ahead, Continue and loop is a landing, however small the move. Nothing fires until the show has played on steadily for half a second. The show audio keeps sending its last frame while it starts on the new place; that old frame never counts.
 - **A flame already up where you land stays off.** Channel by channel, a flame that is up where you land stays zero until it has gone to zero once. A long flame you jump into the middle of never fires, and jumping or looping through the show never fires anything on the way.
 - **Who can move it.** While the show's flame cues follow the transport, Play from, Back, Ahead, Continue, the loop (on or off) and setting mark A or B work only on the show PC itself, or for someone signed in with the Settings permission (admin). Anyone else is refused with: "Flames follow the show here; move the position from the show PC or sign in as an admin." Pause and Follow timecode again work from anywhere.
-- **What ends it.** Hold (the Programming Pause), Stop (every group disarmed through the flame link and flamesafe, then playback stops), Show control on and Start now (refused while Programming playback is on: Stop it first), and a show going live (Programming playback ends and the show runs as a show).
+- **What ends it.** Hold (the Programming Pause), Stop (every group disarmed through the flame link and flamesafe, then Programming playback stops; show control stays on), Show control on and Start now (refused while Programming playback is on: Stop it first), and a show going live (Programming playback ends and the show runs as a show).
 - **One source at a time.** Live flame programming will not start while the show's music clock is playing, and the Morning page's purge and the cleaning refuse while it plays. The Fireball page does not (Jeff, 2026-10-30: Andy may start any phase by hand at any time): on the Fireball's channels the higher of the show's value and the page's goes out. The other way round, Play from and Loop are refused while a Fireball channel is on: start playback first, then use the Fireball page.
 - **The Stream Deck** counts Programming playback with flames as running, so its key 0 is Stop, not FIRE.
 
