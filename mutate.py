@@ -23454,11 +23454,6 @@ def build():
   "  if(b && b.text && /^Run has not been pressed/.test(String(b.text))) return false;\n"
   "  return !!(st && st.show && (st.show.running || st.show.starting));"),
 
- ("show control: Run show by the warning with Run on",
-  "ltcplay/web/remote2.html",
-  "  if(!local || isStaleNow || !sch.run_warning || runIsOn(st)) return \"\";",
-  "  if(!local || isStaleNow || !sch.run_warning) return \"\";"),
-
  ("show control: Start now says Run is off from the sentence again",
   "ltcplay/web/remote_rules.js",
   "sub:!(st && st.show && st.show.show_control_on === true) ? \"Run is off\"",
