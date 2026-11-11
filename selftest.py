@@ -50857,7 +50857,7 @@ def test_flame_frame_timing_alert_and_systems_line():
     al = rm.alerts.open()
     r = row()
     check(len(al) == 1 and al[0].kind == "timing" and
-          al[0].text.startswith("Flame frames late: 1 this hour. ") and
+          al[0].text.startswith("Flame frames late, last hour: 1. ") and
           "worst 178 ms" in al[0].text and
           "Nothing was changed" in al[0].text and
           _op_shaped(al[0].full) and "worst" not in
@@ -50879,7 +50879,7 @@ def test_flame_frame_timing_alert_and_systems_line():
     rm._frame_timing_work()
     al = rm.alerts.open()
     check(len(al) == 1 and al[0].text.startswith(
-        "Flame frames late: 2 this hour.") and "worst 178 ms" in al[0].text,
+        "Flame frames late, last hour: 2.") and "worst 178 ms" in al[0].text,
           f"a new late frame raises it again: {[a.text for a in al]}")
     print("  ok")
 

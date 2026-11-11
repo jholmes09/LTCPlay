@@ -2877,7 +2877,7 @@ class Remote:
 
     # A headline, bullets and the numbers behind More (Jeff, 2026-11-11:
     # less prose); the rack screen's Details shows the lines (opText).
-    TIMING_TEXT = ("Flame frames late: {n} this hour.\n"
+    TIMING_TEXT = ("Flame frames late, last hour: {n}.\n"
                    "- Why: A flame pulse may be cut short.\n"
                    "- The show carries on. Nothing was changed.\n"
                    "\n"

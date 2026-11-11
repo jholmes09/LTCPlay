@@ -60,8 +60,10 @@ sign-in.
   under way, and the screen is view only straight away. It does not disarm
   anything or stop live flame programming: use Disarm all or Stop for that.
 - **If the users file is damaged or missing** after users were set up, an
-  alert says so on every screen and every control is locked except Stop,
-  Hold, Acknowledge and the disarms. Nobody can sign in. A good
+  alert on every screen says "Users file cannot be used." (or "cannot be
+  opened." while another program holds it) and "Only Stop, Hold,
+  Acknowledge, Disarm work.": every other control is locked. Nobody can
+  sign in. Its Details say the reason and the folder under More. A good
   `ltcplay_users.json` put back in the settings folder is used at once, with
   no restart. To start over with no users: close LTC Player, remove
   `ltcplay_users.json` and `ltcplay_users.made` from the settings folder
@@ -2607,8 +2609,8 @@ flamesafe and LTC Player have the same aim list. Asked is what the show
 asked for on those slots, sent is what flamesafe really sent: 0 while the
 group is not armed (it then reads held or disarmed), by design: the head
 then sits at its end stop. Hover
-the line to read all of it. If it says NOT loaded, an Aim slots alert says
-the same in full: flamesafe's list, LTC Player's list, the flamesafe.json LTC
+the line to read all of it. If it says NOT loaded, an alert says "Wave
+flamer aim lists differ." and, under More in its Details, the same in full: flamesafe's list, LTC Player's list, the flamesafe.json LTC
 Player read when it started, and what to do (put the aim list in the
 flamesafe.json flamesafe uses, check LTC Player reads that same file, then
 quit LTC Player and start it again). It is display only: it never holds
