@@ -42145,7 +42145,7 @@ def test_fire_ice_show_outputs():
     # Nothing running: nothing is playing, and music refuses in words.
     check(show.playing() is False, "nothing running: nothing playing")
     r = show.music_hold(0.25)
-    check(not r.ok and "Run" in r.sentence,
+    check(not r.ok and "show control" in r.sentence,
           f"music with nothing running is refused: {r}")
     check(show.music_frozen() is None, "no clock: frozen is unknown")
     check(not show.pixels_fade_out(0.25).ok, "pixels need a running show")
@@ -94726,7 +94726,7 @@ def test_preroll_start_now_checks_first_and_never_starts_on_a_failure():
           f"Programming Run: the scheduled show is not started: "
           f"{svc.machine.state} {n.ran}")
     rows = [x for x in svc.journal if x.get("outcome") == "programming"]
-    check(rows and "Programming Run" in rows[-1]["text"],
+    check(rows and "a rehearsal is on" in rows[-1]["text"],
           f"and the journal says why: {rows[-1:]}")
     c.close()
     n.link.close()
