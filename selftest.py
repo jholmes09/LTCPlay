@@ -106968,6 +106968,15 @@ def test_ui2_arrange_and_switches_are_1_0s():
             check(blk.count(d) == 1, f"1.0's {what} has the dropped part "
                                      f"{d[:40]!r}")
             blk = blk.replace(d, "")
+        if what == "Arming from a screen and Live flame programming":
+            # The one named difference (Jeff, 2026-11-11: less prose): the
+            # switch's words are shorter; remote.py says the same (checked
+            # with the screen arming switch).
+            m1 = re.search(r'const SCREEN_ARMING_ENABLES = "[^"]*";', blk)
+            m2 = re.search(r'const SCREEN_ARMING_ENABLES = "[^"]*";', two)
+            check(m1 and m2, "the arming switch's words are found")
+            if m1 and m2:
+                blk = blk.replace(m1.group(0), m2.group(0))
         check(len(blk) > 300 and blk in two,
               f"2.0's {what} is 1.0's code, word for word ({len(blk)} "
               f"characters)")
