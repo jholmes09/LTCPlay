@@ -112000,6 +112000,23 @@ def test_ui2_programming_tab_makes_1_0_presses():
             ('if(runLook(ST, nowStale()).mode !== "runoff")',
              'if(runLook(ST, stale()).mode !== "runoff")')):
         check(p1 in one and p2 in two, f"1.0 presses {p1} and 2.0 {p2}")
+    # A rehearsal's Run off is End rehearsal everywhere it is said (cold
+    # reviews of #239): the Show file card's tooltip and question, the
+    # SHOW tab's button and its question; the card's heading claims no
+    # state it may not be in.
+    check('const REHEARSAL_END_CONFIRM = "Stops everything, as Stop does, '
+          'and ends the rehearsal.";' in two and
+          'reh ? confirmBox("End rehearsal?", REHEARSAL_END_CONFIRM, '
+          '"Yes, end it", "red")' in two and
+          '? await confirmBox("End rehearsal?", REHEARSAL_END_CONFIRM, '
+          '"Yes, end it", "red")' in two and
+          'rk.mode === "runoff" ? (tr.programming ? REHEARSAL_END_CONFIRM '
+          ': RUN_OFF_CONFIRM) : ""' in two and
+          'setText($("ro-l"), roReh ? "End" : "Show ctrl"); '
+          'setText($("ro-s"), roReh ? "rehearsal" : "off");' in two and
+          "<b>Show file, on this machine</b></div>" in two,
+          "a rehearsal's Run off says End rehearsal: tooltip, questions "
+          "and the SHOW tab's button")
     check('const v = runModeView(ST, RUN_MODE || "show");\n  if(v.locked)'
           in one and
           'const v = runModeView(ST, RUN_MODE || "show");\n  if(v.locked)'
