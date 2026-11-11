@@ -43575,10 +43575,13 @@ for(const s of ["IDLE", "STANDBY", "HOLD"]){
 t(startLook({schedule:{attached:false}, show:{running:true}}, false, false).mode === "stop", "no scheduler, Run playing: Stop");
 t(startLook({schedule:{attached:false}, show:{running:false, starting:true}}, false, false).mode === "stop", "no scheduler, Run starting: Stop");
 const ld = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"the show audio is still loading", loading:true}}, show:{running:true}}, false, false);
-t(ld.label === "Start now" && ld.disabled === false && /starts when ready/.test(ld.sub) && ld.why === "", "loading: Start now still works and waits: " + JSON.stringify(ld));
+t(ld.label === "Start now" && ld.disabled === false && ld.sub === "audio loading" && ld.why === "", "loading: Start now still works and waits: " + JSON.stringify(ld));
 const wt = startLook({schedule:{attached:true, state:"STANDBY", start_waiting:true}, show:{running:true}}, false, false);
 t(wt.mode === "stop" && wt.label === "Stop" && wt.disabled === false && /starting when ready/.test(wt.sub), "waiting for the audio: a show is about to play, so Stop, starting when ready: " + JSON.stringify(wt));
 t(startLook({schedule:{attached:true, state:"STANDBY"}, show:{running:true}}, false, true).label === "Loading", "this page's own wait reads Loading");
+// Stop's second line is the gesture, never a sentence (Jeff, 2026-11-11).
+t(startLook({schedule:{attached:true, state:"SHOW"}, show:{running:true}}, false, false).sub === "tap twice" &&
+  runLook({schedule:{attached:true, state:"SHOW"}, show:{running:true}}, false).sub === "tap twice", "a live show: Stop, tap twice");
 const off = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"Run has not been pressed, so nothing may reach the rig; press Run", loading:false}}, show:{running:false}}, false, false);
 t(off.mode === "start" && off.sub === "Run is off" && /^Run has not been pressed/.test(off.why), "Run off: says so, and the why: " + JSON.stringify(off));
 // Run becomes Stop while Run is in force and there is something to stop;

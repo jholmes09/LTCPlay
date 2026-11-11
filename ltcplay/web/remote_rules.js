@@ -28,7 +28,7 @@ function lampClass(g, flames){
 }
 // What the page says while arming from a screen is switched off (the
 // default; remote.py ARMING_OFF says the same).
-const ARMING_OFF = "Arming from a screen is switched off on this show PC. To turn it on: on the show machine itself, Programming, Arming from a screen, Turn on. Until then arm from the Stream Deck.";
+const ARMING_OFF = "Arming from a screen is switched off. Arm from the Stream Deck, or turn it on at the show machine itself: Programming, Arming from a screen, Turn on.";
 // May this page start or carry on a hold to arm group i? Only with
 // arming switched on, a status heard within the arming
 // freshness (1 s), flamesafe's real state reported within 1 s, and the
@@ -638,7 +638,7 @@ function startLook(st, stale, waiting){
     return {mode:"stop", label:"Stop", sub:"starting when ready", disabled:false,
             title:"Start now is waiting for the show audio to load. Hold or Stop cancels it. " + STOP_TITLE, why:""};
   if(stopShows(st))
-    return {mode:"stop", label:"Stop", sub:"end the show, rig dark", disabled:false, title:STOP_TITLE, why:""};
+    return {mode:"stop", label:"Stop", sub:"tap twice", disabled:false, title:STOP_TITLE, why:""};
   // No contact: what is playing is not known, so Stop is there.
   if(stale && st)
     return {mode:"stop", label:"Stop", sub:"no contact", disabled:false, title:STOP_TITLE, why:""};
@@ -648,7 +648,7 @@ function startLook(st, stale, waiting){
     return {mode:"start", label:"Loading", sub:"starting when ready", disabled:true,
             title:"Start now is waiting for the show audio to load. Hold or Stop cancels it.", why:""};
   if(b && b.text && b.loading)
-    return {mode:"start", label:"Start now", sub:"audio loading, starts when ready",
+    return {mode:"start", label:"Start now", sub:"audio loading",
             disabled:!fresh, title:String(b.text), why:""};
   if(b && b.text)
     return {mode:"start", label:"Start now", sub:/^Run has not been pressed/.test(String(b.text)) ? "Run is off" : "not ready, tap for why",
@@ -666,7 +666,7 @@ function runLook(st, stale){
   // Start now; cold review of #191, B2).
   if(stale && st) return {mode:"stop", label:"Stop", sub:"no contact"};
   if(!(show.running || show.starting)) return {mode:"run", label:"Run", sub:""};
-  return stopShows(st) ? {mode:"stop", label:"Stop", sub:"end the show, rig dark"}
+  return stopShows(st) ? {mode:"stop", label:"Stop", sub:"tap twice"}
                        : {mode:"runoff", label:"Run off", sub:"stop playback"};
 }
 // What a press on a button that changes between Start and Stop does

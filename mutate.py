@@ -23139,6 +23139,12 @@ def build():
   "#t-users input[type=checkbox]{width:56px;height:56px;",
   "#t-users input[type=checkbox]{width:40px;height:40px;"),
 
+ # Less prose in the rules (Jeff, 2026-11-11).
+ ("less prose: Programming's Stop explains itself again",
+  "ltcplay/web/remote_rules.js",
+  '  return stopShows(st) ? {mode:"stop", label:"Stop", sub:"tap twice"}',
+  '  return stopShows(st) ? {mode:"stop", label:"Stop", sub:"end the show, rig dark"}'),
+
  # flamesafe.json that is not valid JSON (Jeff, 2026-11-06): the engine
  # starts with flames off and says where; the supervisor starts neither
  # flamesafe nor the deck; the last good copy.
