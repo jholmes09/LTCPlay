@@ -23456,6 +23456,93 @@ def build():
   "ltcplay/web/remote2.html",
   'placeholder="Example: 00:01:30:00"',
   'placeholder="00:01:30:00"'),
+
+ ('journal watchdog: a writer stuck on the disk is never flagged',
+  'ltcplay/journal.py',
+  '        if waiting and not self.stopped_why and waited > self.stall_s:\n',
+  '        if False:\n'),
+
+ ('journal watchdog: a stuck writer is flagged again on every look',
+  'ltcplay/journal.py',
+  '            if not self.stalled_why:\n'
+  '                self.stalled_at = now\n',
+  '            if True:\n'
+  '                self.stalled_at = now\n'),
+
+ ('journal watchdog: a writer thread that is gone is left gone',
+  'ltcplay/journal.py',
+  '        if t is None or t.is_alive() or self._closing:\n',
+  '        if True:\n'),
+
+ ('journal watchdog: the health flag ignores a stuck writer and bad files',
+  'ltcplay/journal.py',
+  '        bad = bool(self.stopped_why or self.stalled_why or self.disk_why)\n',
+  '        bad = bool(self.stopped_why)\n'),
+
+ ('journal watchdog: a night file cut shorter is not found',
+  'ltcplay/journal.py',
+  '                if have < size:\n',
+  '                if False:\n'),
+
+ ('journal watchdog: a night file moved away is not found',
+  'ltcplay/journal.py',
+  '            except FileNotFoundError:\n'
+  '                result.append(f"{name} is gone from',
+  '            except FileNotFoundError:\n'
+  '                pass\n'
+  '                (f"{name} is gone from'),
+
+ ('journal watchdog: a disk that does not answer a read is not said',
+  'ltcplay/journal.py',
+  '                if t - started > DISK_ANSWER_S and not self.disk_why:\n',
+  '                if False:\n'),
+
+ ('journal watchdog: a stop that cannot be written up ends the writer',
+  'ltcplay/journal.py',
+  '                except Exception as e2:\n'
+  '                    self.stopped_why = self.stopped_why or (\n',
+  '                except ZeroDivisionError as e2:\n'
+  '                    self.stopped_why = self.stopped_why or (\n'),
+
+ ('journal watchdog: start_writer starts no watchdog',
+  'ltcplay/journal.py',
+  '            self._watcher.start()\n',
+  '            self._watcher = None\n'),
+
+ ("journal summary: the two files' counts are not compared",
+  'ltcplay/journal.py',
+  '    if not problems and jlines != len(recs) + cut:\n',
+  '    if False:\n'),
+
+ ('journal summary: lines made tonight but not in the files are not counted',
+  'ltcplay/journal.py',
+  '    missing = [i for i in made if i not in ids and i not in wait]\n',
+  '    missing = []\n'),
+
+ ('journal summary: no line for a long time while a show ran is not a gap',
+  'ltcplay/journal.py',
+  '        if span > gap_s:\n',
+  '        if False:\n'),
+
+ ("journal summary: a show's start or end with no line is not a gap",
+  'ltcplay/journal.py',
+  '        if inside and span > 60:\n',
+  '        if False:\n'),
+
+ ("journal summary: a restart's gap is called a logging gap",
+  'ltcplay/journal.py',
+  '        if rb is not None and rb.get("action") == "program start":\n',
+  '        if False:\n'),
+
+ ('journal summary: says complete whatever the files say',
+  'ltcplay/journal.py',
+  '    files_bad = files is not None and not files.get("complete")\n',
+  '    files_bad = False\n'),
+
+ ('journal summary: the scheduler does not hand over when each show ran',
+  'ltcplay/schedule_service.py',
+  '                         "started_at": (s.fired_at.isoformat()\n',
+  '                         "started_at": (None\n'),
 ]
 
 

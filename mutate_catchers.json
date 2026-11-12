@@ -3725,5 +3725,21 @@
 "windows round 3: a clock set back puts off the journal's free space look": "test_journal_held_file_and_clock_set_back",
 "windows round 3: a journal file another program holds is not named": "test_journal_held_file_and_clock_set_back",
 "windows round 3: an empty Play from says the grey example as if typed": "test_remote_transport_on_the_show_audio",
-"windows round 3: Play from's box shows the example as if it were a time": "test_ui2_programming_tab_makes_1_0_presses"
+"windows round 3: Play from's box shows the example as if it were a time": "test_ui2_programming_tab_makes_1_0_presses",
+"journal watchdog: a writer stuck on the disk is never flagged": "test_journal_watchdog_flags_a_silent_gap",
+"journal watchdog: a stuck writer is flagged again on every look": "test_journal_watchdog_flags_a_silent_gap",
+"journal watchdog: a writer thread that is gone is left gone": "test_journal_watchdog_flags_a_silent_gap",
+"journal watchdog: the health flag ignores a stuck writer and bad files": "test_journal_watchdog_flags_a_silent_gap",
+"journal watchdog: a night file cut shorter is not found": "test_journal_watchdog_flags_a_silent_gap",
+"journal watchdog: a night file moved away is not found": "test_journal_watchdog_flags_a_silent_gap",
+"journal watchdog: a disk that does not answer a read is not said": "test_journal_watchdog_flags_a_silent_gap",
+"journal watchdog: a stop that cannot be written up ends the writer": "test_journal_watchdog_flags_a_silent_gap",
+"journal watchdog: start_writer starts no watchdog": "test_journal_watchdog_flags_a_silent_gap",
+"journal summary: the two files' counts are not compared": "test_journal_summary_checks_the_files",
+"journal summary: lines made tonight but not in the files are not counted": "test_journal_summary_checks_the_files",
+"journal summary: no line for a long time while a show ran is not a gap": "test_journal_summary_checks_the_files",
+"journal summary: a show's start or end with no line is not a gap": "test_journal_summary_checks_the_files",
+"journal summary: a restart's gap is called a logging gap": "test_journal_summary_checks_the_files",
+"journal summary: says complete whatever the files say": "test_journal_summary_checks_the_files",
+"journal summary: the scheduler does not hand over when each show ran": "test_journal_summary_checks_the_files"
 }
