@@ -226,6 +226,8 @@ REMOTE_ROUTES = {
     # The Fuel page (fuel.py): not a show control, so no matrix row; the
     # route itself needs a signed-in operator or admin (an undo, an admin).
     "fuel-refill": None, "fuel-undo": None,
+    # Haze fluid (fuelhaze.py): the same, a refill of a hazer's tank.
+    "haze-refill": None,
     # The Fireball page (fireball.py): All off only takes risk away.
     "fireball-off": "safety",
     # Wave flamer cleaning (cleaning.py): Stop only takes risk away.

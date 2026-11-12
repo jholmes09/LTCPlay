@@ -90744,6 +90744,840 @@ def test_fuel_doc_in_plain_words():
     print("  ok")
 
 
+# ------------------------------------------------------------ haze fluid --
+# Jeff, 2026-11-12: haze fluid tracked the way flame fuel is (fuelhaze.py),
+# on the Fuel page. Four hazers on 80/81, 82/83, 84/85, 86/87 (haze, fan).
+
+_HZF = [("Hazer 1", 80, 81), ("Hazer 2", 82, 83), ("Hazer 3", 84, 85),
+        ("Hazer 4", 86, 87)]
+
+
+class _HazeRig:
+    """A HazeTracker on the test's clocks, watching a stand-in flame link
+    whose frames the test sends through its haze_observer exactly as
+    FlameLink.send_frame calls it: (tc, the bytes on the wire, the hazer
+    test, sent)."""
+
+    def __init__(self, work=None):
+        import types
+        self.work = work or tempfile.mkdtemp()
+        self.t = [500.0]
+        self.wall = [1_800_000_000.0]
+        self.pos = [10.0]
+        self.fresh = [True]
+        self.rehearsal = [False]
+        self.lines = []
+        self.hz = list(_HZF)
+        self.link = types.SimpleNamespace(rehearse_on=False,
+                                          haze_observer=None)
+        self.tr = self.open()
+
+    def open(self):
+        from ltcplay import fuelhaze as FH
+        tr = FH.HazeTracker(
+            self.work, lambda: self.hz,
+            status_get=lambda: self.fresh[0],
+            min_show_s_get=lambda: 30,
+            rehearsal_get=lambda: self.rehearsal[0],
+            journal=lambda text, fault=False: self.lines.append(
+                (text, fault)),
+            clock=lambda: self.t[0], wall=lambda: self.wall[0],
+            threaded=False)
+        tr.attach(self.link)
+        return tr
+
+    def reopen(self):
+        self.tr = self.open()
+        return self.tr
+
+    def write_fluid(self, fluid, levels=None):
+        import json as _j
+        doc = {"hazers_format": 1,
+               "levels": levels or {"Hazer 1": {"haze": 140, "fan": 255}}}
+        if fluid is not None:
+            doc["fluid"] = fluid
+        with open(os.path.join(self.work, "ltcplay_hazers.json"), "w",
+                  encoding="utf-8") as fh:
+            _j.dump(doc, fh)
+        self.tr._fluid_stamp = None
+        self.tr._reload_fluid()
+
+    def tc(self):
+        f = int(round(self.pos[0] * 30))
+        return (f"{f // 108000:02d}:{f // 1800 % 60:02d}:"
+                f"{f // 30 % 60:02d}:{f % 30:02d}")
+
+    def frames(self, n, tc=False, haze=(), test=False, ok=True, dt=0.025,
+               pump=True):
+        wire = bytearray(512)
+        for s, v in haze:
+            wire[s - 1] = v
+        wire = bytes(wire)
+        for _ in range(n):
+            self.t[0] += dt
+            self.wall[0] += dt
+            if tc:
+                self.pos[0] += dt
+            self.link.haze_observer(self.tc() if tc else None, wire, test,
+                                    ok)
+        if pump:
+            self.tr.pump()
+
+    def end(self):
+        from ltcplay import fuelhaze as FH
+        self.frames(4)
+        self.t[0] += FH.EPISODE_JOIN_S + 0.5
+        self.wall[0] += FH.EPISODE_JOIN_S + 0.5
+        self.tr.pump()
+        self.frames(1)
+
+    def h(self, name):
+        for x in self.tr.view()["hazers"]:
+            if x["name"] == name:
+                return x
+        return None
+
+    def u(self, name):
+        return self.tr.units.get(name)
+
+    def close(self):
+        import shutil
+        shutil.rmtree(self.work, ignore_errors=True)
+
+
+def test_haze_fluid_reads_the_bytes_on_the_wire():
+    section("haze fluid (Jeff, 2026-11-12): the flame link hands the haze "
+            "tracker the very bytes each frame sent, the hazer test said, "
+            "after the frame went; frames are byte for byte the same with "
+            "it, and whatever it raises the frame still goes")
+    import json as _j
+    from ltcplay import fuelhaze as FH
+
+    def mk():
+        link = _hz_link()
+        link.hazer_levels_set({"Hazer 1": (140, 255), "Hazer 2": (64, 0),
+                               "Hazer 3": (0, 255)})
+        link.hazers_set({"Hazer 1", "Hazer 2", "Hazer 3"})
+        return link
+    plain, watched = mk(), mk()
+    check(plain.haze_observer is None, "a new link has no haze observer")
+    seen = []
+    watched.haze_observer = lambda tc, w, test, ok: seen.append(
+        (tc, bytes(w), test, ok, len(watched._sock.sent)))
+    for _ in range(4):
+        for lk in (plain, watched):
+            check(lk.send_frame() is True, "the frame went out")
+
+    def sent(link):
+        return [_j.loads(d)["values"] for d, _a in link._sock.sent
+                if _j.loads(d)["t"] == "flame"]
+    check(sent(plain) == sent(watched),
+          "with a haze observer the frames carry exactly the same values")
+    check(len(seen) == 4 and [list(s[1]) for s in seen] == sent(watched),
+          "the observer is given the bytes each frame carried on the wire")
+    check(seen[-1][1][79:85] == bytes([140, 255, 64, 0, 0, 255]) and
+          seen[-1][2] is False and seen[-1][3] is True and
+          seen[-1][0] is not None,
+          f"ARMED hazers at their levels during a show, the test off: "
+          f"{list(seen[-1][1][79:85])} {seen[-1][2]}")
+    check(all(s[4] == i + 1 for i, s in enumerate(seen)),
+          f"and only after it was sent: {[s[4] for s in seen]}")
+    for exc in (RuntimeError("broke"), ValueError("bad"), KeyError("k"),
+                MemoryError(), ZeroDivisionError()):
+        def boom(*a, _e=exc):
+            raise _e
+        watched.haze_observer = boom
+        before = len(watched._sock.sent)
+        try:
+            ok = watched.send_frame()
+            plain.send_frame()
+        except BaseException as e:            # noqa: BLE001
+            ok = f"raised {type(e).__name__}"
+        check(ok is True and len(watched._sock.sent) == before + 1 and
+              sent(plain)[-1] == sent(watched)[-1],
+              f"a haze observer raising {type(exc).__name__}: the same "
+              f"frame still went and send_frame says so: {ok}")
+    # The hazer test: no show playing, every hazer at its levels, test
+    # said.
+    t = mk()
+    t.state["live"] = False
+    got = []
+    t.haze_observer = lambda tc, w, test, ok: got.append((bytes(w), test))
+    t.hazer_test_start(30, t.abort_id)
+    t.send_frame()
+    check(got and got[-1][1] is True and
+          got[-1][0][79:85] == bytes([140, 255, 64, 0, 0, 255]),
+          f"the hazer test's frame is told as the test: {got[-1:]}")
+    t._sock.failing = True
+    t.send_frame()
+    check(got[-1][1] is True and len(got) == 2,
+          "a frame that could not be sent is still told")
+    # A real tracker on a real link: what it sent is counted.
+    R = _HazeRig()
+    try:
+        link = mk()
+        R.tr._clock = link._clock
+        R.tr.attach(link)
+        check(link.haze_observer == R.tr.observe,
+              "attach() sets the haze observer")
+        t0 = link._clock()
+        for _ in range(41):
+            link.send_frame()
+        t1 = link._clock()
+        R.tr.pump()
+        b = R.tr.episode["burn"]
+        check("Hazer 3" not in b and _near(b["Hazer 1"][1],
+                                           b["Hazer 1"][0] * 140 / 255,
+                                           0.001) and
+              _near(b["Hazer 2"][1], b["Hazer 2"][0] * 64 / 255, 0.001) and
+              0 < b["Hazer 1"][0] <= t1 - t0 + 1e-9,
+              f"a real link's show frames: Hazer 1 at 140/255, Hazer 2 at "
+              f"64/255, Hazer 3 fan only not counted: {b}")
+    finally:
+        R.close()
+    check(FH.FULL == 255.0, "full output is a haze value of 255")
+    print("  ok")
+
+
+def test_haze_fluid_counts_haze_not_fan_by_level_and_source():
+    section("haze fluid: per hazer, the seconds its HAZE channel is above 0 "
+            "(fan only never counts), weighted by the value sent (140/255, "
+            "64/255), split show, manual (the hazer test) and other, and "
+            "per show; a performance under 30 s of timecode is other")
+    from ltcplay import fuelhaze as FH
+    R = _HazeRig()
+    try:
+        R.frames(1)
+        R.frames(400, haze=((80, 140), (81, 255), (82, 64), (85, 255)),
+                 test=True)
+        h1, h2 = R.u("Hazer 1"), R.u("Hazer 2")
+        check(_near(h1["on"]["manual"], 10.0, 0.001) and
+              _near(h1["full"]["manual"], 10.0 * 140 / 255, 0.001),
+              f"10 s at haze 140: 10 s on, {10 * 140 / 255:.3f} s full "
+              f"output: {h1['on']} {h1['full']}")
+        check(_near(h2["on"]["manual"], 10.0, 0.001) and
+              _near(h2["full"]["manual"], 10.0 * 64 / 255, 0.001),
+              f"10 s at haze 64: 10 s on, {10 * 64 / 255:.3f} s full: "
+              f"{h2['full']}")
+        check(R.u("Hazer 3") is None and R.u("Hazer 4") is None,
+              "Hazer 3 with only its fan at 255 used no fluid: not even a "
+              "record")
+        R.frames(400, haze=((84, 0), (85, 255)))
+        check(R.u("Hazer 3") is None, "fan only, outside the test: nothing")
+        R.frames(40, haze=((84, 255),))
+        h3 = R.u("Hazer 3")
+        check(_near(h3["on"]["other"], 1.0, 0.001) and
+              _near(h3["full"]["other"], 1.0, 0.001) and
+              h3["on"]["manual"] == 0.0,
+              f"haze with no show and no test is other: {h3['on']}")
+        # A show: 40 s of timecode, the first 20 s with Hazer 1 at 140.
+        R.pos[0] = 10.0
+        R.frames(800, tc=True, haze=((80, 140), (81, 255)))
+        R.frames(800, tc=True)
+        R.end()
+        h1 = R.u("Hazer 1")
+        check(_near(h1["on"]["show"], 20.0, 0.001) and
+              _near(h1["full"]["show"], 20.0 * 140 / 255, 0.001) and
+              h1["shows"] == 1 and len(h1["show_burns"]) == 1 and
+              _near(h1["show_burns"][0][0], 20.0, 0.001) and
+              _near(h1["show_burns"][0][1], 20 * 140 / 255, 0.001),
+              f"a show: its haze on show, and one show_burns entry [on, "
+              f"full]: {h1['on']} {h1['show_burns']}")
+        check(R.u("Hazer 2")["shows"] == 1 and
+              R.u("Hazer 2")["show_burns"] == [[0.0, 0.0]] and
+              R.tr.shows_total == 1,
+              "every hazer counts the show, a disarmed one with no haze")
+        # Too short to be a show: other.
+        R.pos[0] = 10.0
+        R.frames(400, tc=True, haze=((86, 255),))
+        R.end()
+        h4 = R.u("Hazer 4")
+        check(_near(h4["on"]["other"], 10.0, 0.001) and
+              h4["on"]["show"] == 0.0 and h4["shows"] == 1 and
+              R.tr.shows_total == 1,
+              f"a 10 s performance is not a show: its haze is other: "
+              f"{h4['on']}")
+        v = R.h("Hazer 1")
+        check(v["since"] == {"show": 20.0, "manual": 10.0, "other": 0.0} and
+              v["on_s"] == 30.0 and
+              v["full_s"] == round(30 * 140 / 255, 1) and
+              v["shows_since"] == 1 and v["refills"] == 0,
+              f"the page's numbers: {v['since']} {v['on_s']} {v['full_s']}")
+        check(v["big"] == "30 s haze" and
+              v["words"] == ("No refill logged yet: 30 s of haze (16 s at "
+                             "full output) since tracking began. Press "
+                             "Refilled the next time its tank is full."),
+              f"the exact words: {v['big']!r} {v['words']!r}")
+        check(v["litres_used"] is None and v["percent"] is None and
+              v["litres_per_hour"] is None,
+              "no fluid settings: seconds only, never litres")
+        # The frame clock: one frame counts at most MAX_FRAME_DT_S.
+        before = R.u("Hazer 1")["on"]["other"]
+        R.t[0] += 20.0
+        R.frames(1, haze=((80, 255),))
+        check(R.u("Hazer 1")["on"]["other"] - before <=
+              FH.MAX_FRAME_DT_S + 1e-9,
+              "a 20 s gap between frames counts one frame at most")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_haze_fluid_not_sure_on_restart_and_a_stale_link():
+    section("haze fluid: never silently dropped or invented: flamesafe's "
+            "status stale counts and marks not sure; a frame not sent or a "
+            "gap after haze is not sure up to flamesafe's 0.5 s hold, never "
+            "counted; a restart without closing is not sure for the hazers "
+            "that were hazing; a clean stop while on, 0.5 s")
+    from ltcplay import fuelhaze as FH
+    R = _HazeRig()
+    try:
+        R.frames(1)
+        R.fresh[0] = False
+        R.frames(40, haze=((80, 255),))
+        h = R.u("Hazer 1")
+        check(_near(h["on"]["other"], 1.0, 0.001) and
+              _near(h["unsure_s"], 1.0, 0.001),
+              f"flamesafe's status stale: 1 s counted AND 1 s not sure: "
+              f"{h['on']} {h['unsure_s']}")
+        check(any("not fresh right now" in x
+                  for x in R.tr.view()["notes"]),
+              f"the page says so: {R.tr.view()['notes']}")
+        R.fresh[0] = None
+        R.frames(40, haze=((80, 255),))
+        check(_near(R.u("Hazer 1")["unsure_s"], 2.0, 0.001),
+              "flamesafe's status not known at all: not sure too")
+        R.fresh[0] = True
+        R.frames(4, haze=((80, 255),))
+        check(not any("not fresh" in x for x in R.tr.view()["notes"]),
+              "fresh again: the note goes")
+        u0 = R.u("Hazer 1")["unsure_s"]
+        on0 = R.u("Hazer 1")["on"]["other"]
+        R.frames(80, haze=((80, 255),), ok=False)
+        h = R.u("Hazer 1")
+        check(_near(h["unsure_s"] - u0, FH.FLAMESAFE_HOLD_S, 0.001) and
+              h["on"]["other"] == on0 and R.u("Hazer 2") is None,
+              f"2 s of frames not sent after haze: flamesafe holds the last "
+              f"value 0.5 s, so 0.5 s not sure and nothing counted: "
+              f"{h['unsure_s'] - u0}")
+        R.frames(4, haze=((80, 255),))
+        u0 = R.u("Hazer 1")["unsure_s"]
+        R.t[0] += 20.0
+        R.frames(1)
+        check(_near(R.u("Hazer 1")["unsure_s"] - u0,
+                    FH.FLAMESAFE_HOLD_S, 0.001),
+              f"a 20 s gap after haze: flamesafe's 0.5 s hold is not sure, "
+              f"the rest is not counted at all: {R.u('Hazer 1')['unsure_s'] - u0}")
+        # A restart without closing (a crash): the hazers hazing since the
+        # last save are not sure for up to SAVE_EVERY_S each.
+        R.frames(40, haze=((82, 64),))
+        R.tr.save()
+        u1 = R.u("Hazer 1")["unsure_s"]
+        u2 = R.u("Hazer 2")["unsure_s"]
+        R.reopen()
+        check(_near(R.u("Hazer 2")["unsure_s"] - u2, FH.SAVE_EVERY_S,
+                    0.001) and
+              _near(R.u("Hazer 1")["unsure_s"] - u1, FH.SAVE_EVERY_S,
+                    0.001) and R.u("Hazer 3") is None,
+              f"a crash: each hazer hazing since the save before is not "
+              f"sure for 30 s; one that never hazed gets nothing: "
+              f"{R.u('Hazer 2')['unsure_s'] - u2}")
+        v = R.h("Hazer 4")
+        check(R.tr.gaps == 1 and v["not_sure"] is False and
+              any("stopped without closing" in x
+                  for x in R.tr.view()["notes"]),
+              "the page says it stopped without closing")
+        R.tr.refill("Hazer 2", "Andy", "operator")
+        R.tr.save()
+        R.reopen()
+        v = R.h("Hazer 2")
+        check(v["not_sure"] is True and
+              v["words"].startswith("Not sure: some haze since the refill "
+                                    "could not be counted"),
+              f"a crash after a refill: that hazer reads Not sure: "
+              f"{v['words']}")
+        # A clean stop while a hazer is on: flamesafe holds it 0.5 s.
+        R.tr.close()
+        R.reopen()
+        R.frames(1)
+        R.frames(40, haze=((84, 255),))
+        R.tr.close()
+        R.reopen()
+        h3 = R.u("Hazer 3")
+        check(_near(h3["unsure_s"], FH.FLAMESAFE_HOLD_S, 0.001) and
+              _near(h3["on"]["other"], 1.0, 0.001) and R.tr.gaps == 2,
+              f"a clean stop with Hazer 3 on: 0.5 s not sure, the rest "
+              f"counted, no new gap: {h3['unsure_s']} {R.tr.gaps}")
+        # A show under way at a restart is counted.
+        R.pos[0] = 10.0
+        R.frames(1600, tc=True, haze=((86, 255),))
+        R.tr.save()
+        R.reopen()
+        check(R.tr.episode is None and R.u("Hazer 4")["shows"] == 1 and
+              _near(R.u("Hazer 4")["on"]["show"], 40.0, 0.03),
+              "a show running when the engine stopped is counted at the "
+              "restart")
+        v = R.h("Hazer 4")
+        check("Includes" in v["words"] and "not sure" in v["words"],
+              f"the tile says how much is not sure: {v['words']}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_haze_fluid_refill_settings_and_the_record():
+    section("haze fluid: Refilled per hazer starts the count again and "
+            "counts refills; litres and percent only when a flow and a "
+            "tank are set (else seconds only); a wrong setting is said and "
+            "shows seconds only; haze.json has its own format number and "
+            "is written atomically; an old fuel.json loads untouched; the "
+            "hazer levels file keeps the fluid settings")
+    import json as _j
+    from ltcplay import fuel as F
+    from ltcplay import fuelhaze as FH
+    from ltcplay import hazers as HZ
+    R = _HazeRig()
+    try:
+        R.frames(1)
+        R.frames(400, haze=((80, 255),))
+        ok, text = R.tr.refill("Hazer 1", "Andy", "operator")
+        v = R.h("Hazer 1")
+        check(ok and text == "Refill of Hazer 1 logged." and
+              v["on_s"] == 0.0 and v["full_s"] == 0.0 and
+              v["refills"] == 1 and v["last_refill"]["who"] == "Andy",
+              f"a refill starts the count again and is counted: {text} "
+              f"{v['on_s']} {v['refills']}")
+        check(("Haze: Andy logged a refill of Hazer 1.", False) in R.lines,
+              "and is journaled")
+        with open(R.tr.path, encoding="utf-8") as fh:
+            doc = _j.load(fh)
+        check(doc["haze_format"] == FH.HAZE_FORMAT == 1 and
+              doc["hazers"]["Hazer 1"]["refills"][0]["who"] == "Andy" and
+              doc["hazers"]["Hazer 1"]["refills"][0]["on_total"] > 9.9,
+              "saved at once, with its format number")
+        check(R.tr.refill("Hazer 9", "Andy")[0] is False,
+              "no such hazer: refused")
+        R.frames(2400, haze=((80, 255),))
+        v = R.h("Hazer 1")
+        check(v["big"] == "60 s haze" and v["percent"] is None and
+              v["litres_used"] is None and "L " not in v["words"],
+              f"no settings: seconds only: {v['big']} {v['words']}")
+        R.write_fluid({"Hazer 1": {"litres_per_hour": 0.6,
+                                   "tank_litres": 2.5}})
+        v = R.h("Hazer 1")
+        check(R.tr.config_error == "" and v["litres_used"] == 0.01 and
+              v["litres_left"] == 2.49 and v["percent"] == 99 and
+              v["big"] == "99% left" and v["color"] == "green" and
+              v["words"] == ("60 s of haze (60 s at full output) and 0 "
+                             "shows since the refill. About 2.49 L left of "
+                             "2.5 L (99 percent)."),
+              f"flow and tank set: litres and percent: {v['big']} "
+              f"{v['words']!r}")
+        R.write_fluid({"Hazer 1": {"litres_per_hour": 0.6}})
+        v = R.h("Hazer 1")
+        check(v["big"] == "0.01 L used" and v["percent"] is None,
+              f"a flow but no tank: litres used only: {v['big']}")
+        check(R.h("Hazer 2")["litres_used"] is None,
+              "a hazer with no settings stays seconds only")
+        R.write_fluid({"Hazer 1": {"litres_per_hour": -1}})
+        v = R.h("Hazer 1")
+        check(R.tr.config_error == (
+            "ltcplay_hazers.json: fluid.Hazer 1.litres_per_hour is the "
+            "litres an hour at full output, a number over 0 and up to 50, "
+            "not -1.") and v["litres_used"] is None and
+              v["big"] == "60 s haze",
+              f"a wrong setting: said, and seconds only: "
+              f"{R.tr.config_error}")
+        R.write_fluid({"Hazer 7": {"litres_per_hour": 1}})
+        check("no hazer called 'Hazer 7'" in R.tr.config_error,
+              f"a hazer that is not here: said: {R.tr.config_error}")
+        R.write_fluid({"Hazer 1": {"flow": 1}})
+        check("has no setting flow" in R.tr.config_error,
+              "an unknown key: said")
+        R.write_fluid(None)
+        check(R.tr.config_error == "" and R.tr.fluid == {},
+              "no fluid block: no settings, no problem")
+        # Before any refill a tank level is never shown.
+        R.write_fluid({"Hazer 2": {"litres_per_hour": 0.6,
+                                   "tank_litres": 2.5}})
+        R.frames(40, haze=((82, 255),))
+        v = R.h("Hazer 2")
+        check(v["percent"] is None and v["litres_used"] is not None and
+              v["big"] == "1 s haze",
+              f"no refill logged: litres used, never a level: {v['big']}")
+        # Atomic: a temporary file, then replaced; a failure leaves the
+        # file as it was.
+        before = open(R.tr.path, encoding="utf-8").read()
+        real = os.replace
+        calls = []
+
+        def spy(a, b):
+            calls.append((a, b))
+            return real(a, b)
+        os.replace = spy
+        try:
+            R.tr.save()
+        finally:
+            os.replace = real
+        check(calls and calls[0][1] == R.tr.path and
+              calls[0][0] != R.tr.path and calls[0][0].endswith(".tmp"),
+              f"written to a temporary file, then swapped in: {calls}")
+        before = open(R.tr.path, encoding="utf-8").read()
+        os.replace = lambda a, b: (_ for _ in ()).throw(OSError(28, "full"))
+        try:
+            R.frames(40, haze=((80, 255),))
+            check(R.tr.save() is False and "full" in R.tr.save_error,
+                  "a disk that refuses: not saved, said")
+        finally:
+            os.replace = real
+        check(open(R.tr.path, encoding="utf-8").read() == before,
+              "and the file is exactly as it was")
+        for n in os.listdir(R.work):
+            if n.endswith(".tmp"):
+                os.remove(os.path.join(R.work, n))
+        # An unreadable haze.json is set aside, never written over.
+        with open(R.tr.path, "w", encoding="utf-8") as fh:
+            fh.write('{"haze_format": 1, "hazers": {"Hazer 1": {"on": '
+                     '{"show": -5}}}}')
+        R.reopen()
+        kept = [n for n in os.listdir(R.work) if "unreadable" in n]
+        check(kept and "could not be read" in R.tr.view()["fault"] and
+              R.tr.gaps == 1,
+              f"a bad haze.json is kept aside and said: {kept}")
+    finally:
+        R.close()
+    # An old fuel.json (no hazers in it) loads untouched, and the hazer
+    # record never writes into it.
+    F_ = _FuelRig()
+    try:
+        F_.frames(1)
+        F_.frames(40, tc=False, on=((411, 255),))
+        F_.tr.refill("g1", "Andy", "operator")
+        old = open(F_.tr.path, encoding="utf-8").read()
+        check('"fuel_format": 1' in old and "haze" not in old and
+              F.FUEL_FORMAT == 1, "fuel_format stays 1")
+        R = _HazeRig(work=F_.work)
+        R.frames(1)
+        R.frames(40, haze=((80, 255),))
+        R.tr.refill("Hazer 1", "Andy")
+        R.tr.close()
+        check(open(F_.tr.path, encoding="utf-8").read() == old and
+              os.path.exists(os.path.join(F_.work, FH.HAZE_FILE)),
+              "the hazer record is its own file: fuel.json is not touched")
+        tr2 = F_.reopen()
+        check(tr2.load_error == "" and
+              tr2.units["g1"]["refills"][0]["who"] == "Andy",
+              "an old fuel.json loads as it was")
+    finally:
+        F_.close()
+    # The levels file keeps the fluid settings when a level is set.
+    work = tempfile.mkdtemp()
+    try:
+        p = os.path.join(work, HZ.LEVELS_FILE)
+        with open(p, "w", encoding="utf-8") as fh:
+            _j.dump({"hazers_format": 1,
+                     "levels": {"Hazer 1": {"haze": 140, "fan": 255}},
+                     "fluid": {"Hazer 1": {"litres_per_hour": 0.6}}}, fh)
+        lv = HZ.Levels(work, ["Hazer 1", "Hazer 2"])
+        check(lv.levels["Hazer 1"] == (140, 255), "the levels are read")
+        lv.set("Hazer 2", haze=64)
+        doc = _j.load(open(p, encoding="utf-8"))
+        check(doc["fluid"] == {"Hazer 1": {"litres_per_hour": 0.6}} and
+              doc["levels"]["Hazer 2"] == {"haze": 64, "fan": 0},
+              f"setting a level keeps the fluid settings: {doc}")
+        doc["fluid"]["Hazer 2"] = {"tank_litres": 2.5}
+        with open(p, "w", encoding="utf-8") as fh:
+            _j.dump(doc, fh)
+        lv.set("Hazer 1", fan=0)
+        doc = _j.load(open(p, encoding="utf-8"))
+        check(doc["fluid"]["Hazer 2"] == {"tank_litres": 2.5},
+              "an edit to the fluid settings while running is kept too")
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_haze_fluid_never_touches_the_haze_output():
+    section("haze fluid: observe() on the flame link's sender thread takes "
+            "no lock, touches no disk, never sleeps; its queue is bounded "
+            "and what falls off is a gap; an error in the tracker is a "
+            "sentence on the page and changes no frame")
+    import builtins
+    import json as _j
+    from ltcplay import fuelhaze as FH
+    R = _HazeRig()
+    try:
+        tr = R.tr
+        used = []
+
+        class SpyLock:
+            def __init__(self, name):
+                self.name = name
+
+            def acquire(self, *a, **k):
+                used.append(f"{self.name}.acquire")
+                return True
+
+            def release(self):
+                used.append(f"{self.name}.release")
+
+            __enter__ = acquire
+
+            def __exit__(self, *a):
+                self.release()
+        real = (tr._lock, tr._save_lock, time.sleep, builtins.open,
+                os.fsync, os.replace)
+        tr._lock, tr._save_lock = SpyLock("record lock"), SpyLock("file lock")
+        time.sleep = lambda *a: used.append("time.sleep")
+        builtins.open = lambda *a, **k: used.append("open") or real[3](
+            *a, **k)
+        os.fsync = lambda *a: used.append("os.fsync")
+        os.replace = lambda *a: used.append("os.replace")
+        try:
+            for _ in range(50):
+                tr.observe("00:00:10:00", bytes(512), False, True)
+        finally:
+            (tr._lock, tr._save_lock, time.sleep, builtins.open, os.fsync,
+             os.replace) = real
+        check(not used and len(tr._q) == 50,
+              f"50 frames observed: nothing but the queue was touched: "
+              f"{sorted(set(used))}")
+        check(tr._q.maxlen == FH.QUEUE_MAX, "the queue has a bound")
+        for _ in range(FH.QUEUE_MAX + 25):
+            tr.observe(None, bytes(512), False, True)
+        check(len(tr._q) == FH.QUEUE_MAX and tr.dropped == 75,
+              f"past the bound the oldest falls off and is counted: "
+              f"{tr.dropped}")
+        tr.pump()
+        check(tr.gaps == 1 and any("could not be counted" in x
+                                   for x in tr.view()["notes"]),
+              "dropped frames are a gap, said at the top")
+        # An error inside the tracker: tick() keeps it to a sentence.
+        real_frame = tr._frame
+        tr._frame = lambda *a: 1 / 0
+        R.frames(4, haze=((80, 255),), pump=False)
+        try:
+            tr.tick()
+            raised = ""
+        except BaseException as e:              # noqa: BLE001
+            raised = type(e).__name__
+        tr._frame = real_frame
+        check(not raised and "ZeroDivisionError" in tr.run_error and
+              "The haze tracker hit an error" in tr.view()["fault"] and
+              any("hazers are not affected" in t for t, _f in R.lines),
+              f"a counting error is a sentence, never raised: {raised} "
+              f"{tr.view()['fault']}")
+    finally:
+        R.close()
+    # A broken tracker on a real link: the frames are byte for byte the
+    # same as a link with no tracker at all.
+    R = _HazeRig()
+    try:
+        def mk():
+            link = _hz_link()
+            link.hazer_levels_set({"Hazer 1": (140, 255)})
+            link.hazers_set({"Hazer 1"})
+            return link
+        plain, watched = mk(), mk()
+        R.tr.attach(watched)
+        R.tr._q = None                     # observe() now raises
+        for _ in range(5):
+            check(watched.send_frame() is True and plain.send_frame(),
+                  "a broken tracker: the frame still went")
+        R.tr.tick()
+
+        def sent(link):
+            return [_j.loads(d)["values"] for d, _a in link._sock.sent
+                    if _j.loads(d)["t"] == "flame"]
+        check(sent(plain) == sent(watched) and
+              sent(watched)[-1][79:81] == [140, 255],
+              "and every frame is byte for byte the frame of a link with "
+              "no tracker")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_haze_fluid_routes_wiring_and_audit():
+    section("haze fluid: shown in the fuel GET (anyone); Refilled per "
+            "hazer needs what a fuel refill needs; the POST is audit "
+            "logged like a fuel refill, with nothing more in it; web.serve "
+            "wires it to the flame link's hazers and closes it last")
+    import types
+    from ltcplay import fuelhaze as FH
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import web as W
+    check("haze-refill" in RM.POST_ROUTES and
+          FH.POST_ROUTES == ("haze-refill",), "the route exists")
+    check(U.classify("/api/remote/haze-refill", {"unit": "Hazer 1"}) is None,
+          "not a show control: no role matrix row (the route checks)")
+    R = _HazeRig()
+    try:
+        net = RM.Ctx(False, "10.20.0.44")
+        here = RM.Ctx(True, "127.0.0.1")
+        st, out = FH.route_post(R.tr, "haze-refill", {"unit": "Hazer 1"},
+                                net, None)
+        check(st == 403 and R.h("Hazer 1")["refills"] == 0,
+              f"no sign-in in this engine, from the network: refused: "
+              f"{out}")
+        st, out = FH.route_post(R.tr, "haze-refill", {}, here, None)
+        check(st == 400 and out["error"] == ("Say which hazer was "
+                                             "refilled. Nothing was "
+                                             "logged."), f"{out}")
+        st, out = FH.route_post(R.tr, "haze-refill", {"unit": "Hazer 1"},
+                                here, None)
+        check(st == 200 and out == {"text": "Refill of Hazer 1 logged."} and
+              R.h("Hazer 1")["last_refill"]["who"] == "Rack screen",
+              f"the show machine may: {out}")
+        check(FH.route_post(None, "haze-refill", {}, here, None)[0] == 404
+              and FH.route_view(None) == {"available": False},
+              "no tracker: 404 and nothing to show")
+    finally:
+        R.close()
+    httpd, http, cookie_of, work = _accounts_engine(
+        seed=(("Jeff", "admin"), ("Vic", "viewer"), ("Ola", "operator")))
+    rem = httpd.remote
+    FR, R = _FuelRig(), _HazeRig()
+    try:
+        rem.fuel, rem.haze = FR.tr, R.tr
+        st, out, _h = http("/api/remote/fuel")
+        check(st == 200 and out["haze"]["available"] and
+              [h["name"] for h in out["haze"]["hazers"]] ==
+              ["Hazer 1", "Hazer 2", "Hazer 3", "Hazer 4"],
+              f"the fuel GET carries the Hazers section: "
+              f"{out.get('haze', {}).get('names')}")
+        st, out, _h = http("/api/remote/haze-refill", {"unit": "Hazer 1"})
+        check(st == 403 and "Sign in as an operator or admin" in
+              out["error"], f"signed out: refused: {out}")
+        ck = {}
+        for name in ("Vic", "Ola"):
+            st, out, h = http("/api/remote/signin", {
+                "name": name, "password": "",
+                "new_password": name.lower() + "-pw-123"})
+            ck[name] = cookie_of(h)
+        st, out, _h = http("/api/remote/haze-refill", {"unit": "Hazer 1"},
+                           cookie=ck["Vic"])
+        check(st == 403 and "viewer" in out["error"], f"a viewer: {out}")
+        st, out, _h = http("/api/remote/haze-refill", {"unit": "Hazer 2"},
+                           cookie=ck["Ola"])
+        check(st == 200 and R.h("Hazer 2")["last_refill"]["who"] == "Ola",
+              f"an operator may, and is named: {out}")
+        st, out, _h = http("/api/remote/fuel-refill", {"unit": "g1"},
+                           cookie=ck["Ola"])
+        rem.audit.flush(5.0)
+        lines = _audit_lines(rem.audit.folder)
+        hz = [l for l in lines if l["action"] == "haze-refill"]
+        fu = [l for l in lines if l["action"] == "fuel-refill"]
+        check(len(hz) == 3 and fu and
+              sorted(hz[-1]) == sorted(fu[-1]) and
+              hz[-1]["target"] == fu[-1]["target"] == "",
+              f"every press is audit logged, the same fields as a fuel "
+              f"refill and no more: {hz[-1:]} {fu[-1:]}")
+    finally:
+        rem.fuel = rem.haze = None
+        httpd.server_close()
+        FR.close()
+        R.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    # web.serve's wiring.
+    work = tempfile.mkdtemp()
+    try:
+        order = []
+        link = types.SimpleNamespace(
+            haze_observer=None, rehearse_on=False,
+            hazer_names=lambda: ["Hazer 1", "Hazer 2"],
+            cfg=types.SimpleNamespace(hazers=(("Hazer 1", (80, 81)),
+                                              ("Hazer 2", (82, 83)))))
+        fs_view = [{"connected": True, "stale": False, "age_ms": 200}]
+        remote = types.SimpleNamespace(
+            folder=work, programming=lambda: (False, ""),
+            fuel=types.SimpleNamespace(cfg={"min_show_s": 45}),
+            flame_status=types.SimpleNamespace(view=lambda: fs_view[0]),
+            _journal=lambda *a, **k: order.append(("journal", a[2])))
+        httpd = types.SimpleNamespace(
+            remote=remote, fire_ice=types.SimpleNamespace(flame_link=link),
+            server_close=lambda: order.append("flame link and conductor"))
+        W._attach_haze(httpd)
+        tr = remote.haze
+        tr._stop.set()
+        check(link.haze_observer == tr.observe and
+              tr.hazers() == [("Hazer 1", 80, 81), ("Hazer 2", 82, 83)] and
+              tr._min_show_s() == 45.0 and
+              tr.path == os.path.join(work, "haze.json"),
+              "built on the settings folder, the link's hazers and fuel's "
+              "min_show_s, watching the flame link")
+        check(tr._status_now() is True, "flamesafe fresh: fresh")
+        fs_view[0] = {"connected": True, "stale": True, "age_ms": 200}
+        check(tr._status_now() is False, "stale: not fresh")
+        fs_view[0] = {"connected": True, "stale": False, "age_ms": 1500}
+        check(tr._status_now() is False, "older than 1 s: not fresh")
+        fs_view[0] = None
+        check(tr._status_now() is None, "no status: not known")
+        tr.refill("Hazer 1", "Andy")
+        check(("journal", "haze") in order,
+              "its journal lines go to the engine's journal")
+        httpd.server_close()
+        check(order[-1] == "flame link and conductor" and
+              link.haze_observer is None and
+              os.path.exists(os.path.join(work, "haze.json")),
+              f"closing stops the flame link first, then the haze record: "
+              f"{order}")
+        nohz = types.SimpleNamespace(
+            remote=types.SimpleNamespace(folder=work),
+            fire_ice=types.SimpleNamespace(flame_link=types.SimpleNamespace(
+                hazer_names=lambda: [])))
+        W._attach_haze(nohz)
+        check(not hasattr(nohz.remote, "haze"),
+              "no hazers in flamesafe's config: not built")
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_haze_fluid_in_the_docs_and_the_page():
+    section("haze fluid: OPERATOR.md and FUEL.md say it in plain words; the "
+            "Fuel step's Hazers section: a headline of 6 words or fewer, "
+            "3 bullets of 8 words or fewer, no dashes, 'show control' not "
+            "'Run'; its Refilled asks first and posts haze-refill {unit}")
+    import re as _re
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote2.html"),
+                encoding="utf-8").read()
+    i = page.find("const HZF_HTML")
+    blk = page[i:page.find("async function fuPress", i)]
+    check(i > 0 and "—" not in blk and "–" not in blk and
+          not _re.search(r"\bRun\b", blk), "no dashes, no Run")
+    head = _re.findall(r"<b>([^<]*)</b>", blk)
+    bullets = _re.findall(r"<li>([^<]*)</li>", blk)
+    check(head == ["Haze fluid"] and len(bullets) == 3 and
+          all(len(b.split()) <= 8 for b in bullets) and
+          bullets == ["Counts haze time, never fan time.",
+                      "Tap a hazer you refilled.",
+                      "Litres show once flow and tank are set."],
+          f"the text rule: {head} {bullets}")
+    for need in ('confirmBox(`${h.name} refilled?`',
+                 'fuPress("haze-refill", {unit:h.name});',
+                 '+ HZF_HTML;', 'renderHazeFluid(f, DAY_FU_REC);'):
+        check(page.count(need) == 1, f"the page has {need!r} once")
+    for said in _re.findall(r'"([^"]*)"', blk[blk.find("const said"):
+                                             blk.find("w.hidden")]):
+        if said:
+            check(len(said.split()) <= 8 and "—" not in said,
+                  f"a note line is 8 words or fewer: {said!r}")
+    for name in ("OPERATOR.md", "FUEL.md"):
+        doc = open(os.path.join(here, name), encoding="utf-8").read()
+        i = doc.find("Haze fluid")
+        part = doc[i:i + 2500]
+        check(i > 0 and "haze.json" in part and "fan" in part and
+              "Refilled" in part and "—" not in part and "–" not in part,
+              f"{name} says how haze fluid is counted and refilled")
+    print("  ok")
+
+
 # --------------------------------------------------- the Fireball page --
 # Jeff, 2026-10-28 (design by Andy): manual control of each Fireball
 # channel on its own rack screen page (fireball.py, OPERATOR.md).
@@ -101367,6 +102201,94 @@ out.undo = since(n).filter(p => p.route !== "morning-open").map(p => [p.route, b
     print("  ok")
 
 
+def test_ui2_haze_fluid_driven():
+    section("2.0's Fuel step's Hazers section in a real browser (Jeff, "
+            "2026-11-12): beside the fuel tanks, the same look; each "
+            "hazer's haze time, or litres and percent when set; the text "
+            "rule; a tap asks first, then posts haze-refill {unit}; it fits "
+            "with no scroll")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2_page_inline()
+    mo = _morning_view_pico(selected=())
+    hz = [{"name": f"Hazer {n}", "big": big, "words": f"Hazer {n} words.",
+           "color": col, "refill_soon": col == "red", "not_sure": False}
+          for n, big, col in ((1, "41% left", "green"),
+                              (2, "12.4 min haze", None),
+                              (3, "0.42 L used", None),
+                              (4, "9% left", "red"))]
+    fu = {"units": [{"id": "G1", "name": "Ground 1", "shows_left": 3,
+                     "percent": 40, "refill_soon": False, "color": "",
+                     "locked": False, "status": "ok"}],
+          "unit_ids": ["G1"], "may_refill": True, "may_undo": False,
+          "refill_why": "", "undo_why": "", "fault": "",
+          "config_error": "", "notes": [], "recent_refills": [],
+          "haze": {"available": True, "hazers": hz, "notes": [],
+                   "config_error": "", "fault": ""}}
+    steps = r"""
+const mark = () => window.__posts.length;
+const since = n => window.__posts.slice(n);
+const step = k => { const b = document.querySelector('#d-steps [data-step="' + k + '"]'); if(b) b.click(); return !!b; };
+await h.sleep(900);
+out.fuel_step = step("fuel");
+await h.sleep(2500);
+const sec = document.getElementById("d-hzf");
+out.shown = !!sec && !sec.hidden && sec.getClientRects().length > 0;
+out.why = document.getElementById("d-s").textContent;
+out.words = sec ? [sec.querySelector("b").textContent].concat([...sec.querySelectorAll("li")].map(l => l.textContent)) : [];
+out.tiles = [...document.querySelectorAll("#d-hzf-g [data-hrefill]")].map(b => [b.dataset.hrefill, b.querySelector("small").textContent, b.className, b.disabled]);
+out.tanks = [...document.querySelectorAll("#d-fuel [data-refill]")].length;
+{ const m = document.querySelector("main");
+  out.layout = {excess:m.scrollHeight - m.clientHeight, xs:document.scrollingElement.scrollWidth - innerWidth,
+    small:[...document.querySelectorAll("#d-hzf-g .b")].filter(e => e.getBoundingClientRect().height < 55.5).length}; }
+let n = mark();
+const b = document.querySelector('#d-hzf-g [data-hrefill="Hazer 4"]');
+if(b) b.click();
+await h.sleep(300);
+out.sheet = {open:!document.getElementById("sheet").hidden, h:document.getElementById("sh-h").textContent, posts:since(n).filter(p => p.route !== "morning-open").length};
+const yes = document.querySelector('#sh-row [data-i="1"]');
+if(yes) yes.click();
+await h.sleep(400);
+out.posts = since(n).filter(p => p.route !== "morning-open" && p.route !== "fuel").map(p => [p.route, p.body]);
+"""
+    m = _ui2_drive(chrome, page, _ui2_status_day(), steps, size=(1366, 768),
+                   frag="?tour=0#day",
+                   routes={"/api/remote/morning": mo,
+                           "/api/remote/fuel": fu},
+                   budget_ms=30000)
+    if not check(isinstance(m, dict) and not m.get("problems"),
+                 f"2.0's Hazers section, pressed: {m!r}"[:1500]):
+        print("  ok")
+        return
+    check(m["fuel_step"] and m["shown"] and m["tanks"] == 1,
+          f"the Fuel step shows the tanks and the Hazers section: {m}"[:600])
+    head, bullets = m["words"][0], m["words"][1:]
+    check(head == "Haze fluid" and len(head.split()) <= 6 and
+          len(bullets) == 3 and all(len(x.split()) <= 8 for x in bullets),
+          f"the text rule: {m['words']}")
+    check(m["tiles"] == [["Hazer 1", "41% left", "b ", False],
+                         ["Hazer 2", "12.4 min haze", "b ", False],
+                         ["Hazer 3", "0.42 L used", "b ", False],
+                         ["Hazer 4", "9% left", "b part", False]],
+          f"a tile per hazer, the engine's words, a refill due amber: "
+          f"{m['tiles']}")
+    check(m["why"] == "1 tank needs a refill.",
+          f"a hazer due counts on the step: {m['why']!r}")
+    lay = m["layout"]
+    check(lay["excess"] <= 1 and lay["xs"] <= 0 and lay["small"] == 0,
+          f"it fits: no scroll, 56 px targets: {lay}")
+    check(m["sheet"]["open"] and m["sheet"]["h"] == "Hazer 4 refilled?" and
+          m["sheet"]["posts"] == 0 and
+          m["posts"] == [["haze-refill", {"unit": "Hazer 4"}]],
+          f"a tap asks first, then posts haze-refill: {m['sheet']} "
+          f"{m['posts']}")
+    print("  ok")
+
+
 def test_ui2_calm_screens_and_brand():
     section("interface 2.0 when the show cannot act (Jeff, 2026-10-29): "
             "signed out, Run off, no contact or off the show PC, every "
@@ -101897,6 +102819,14 @@ def test_ui2_day_makes_only_1_0_presses():
         check(f1 and f2 and _js_same(f1) == _js_same(f2),
               f"2.0's {n} is 1.0's own code: {(f2 or 'missing')[:160]!r}")
     k1, k2 = _ui2_press_keys(one), _ui2_press_keys(two)
+    # The one DAY press 1.0 never had (it is frozen): haze fluid's
+    # Refilled on the Fuel step (fuelhaze.py, Jeff 2026-11-12), the fuel
+    # refill's own shape for a hazer, {unit}. Nothing else may be new.
+    check(k2.get("haze-refill") == {("unit",)} and
+          "haze-refill" not in k1,
+          f"haze fluid's Refilled is the only new DAY press, body {{unit}}: "
+          f"{k2.get('haze-refill')}")
+    k2 = {r: k for r, k in k2.items() if r != "haze-refill"}
     check(k2 and all(r in k1 and keys <= k1[r] for r, keys in k2.items()),
           f"every DAY press is a 1.0 press, body keys and all: "
           f"{ {r: sorted(k) for r, k in k2.items() if r not in k1 or not k <= k1[r]} }")
@@ -115048,6 +115978,13 @@ if __name__ == "__main__":
         test_fuel_settings_are_checked_strictly,
         test_fuel_routes_and_who_may_refill,
         test_fuel_doc_in_plain_words,
+        test_haze_fluid_reads_the_bytes_on_the_wire,
+        test_haze_fluid_counts_haze_not_fan_by_level_and_source,
+        test_haze_fluid_not_sure_on_restart_and_a_stale_link,
+        test_haze_fluid_refill_settings_and_the_record,
+        test_haze_fluid_never_touches_the_haze_output,
+        test_haze_fluid_routes_wiring_and_audit,
+        test_haze_fluid_in_the_docs_and_the_page,
         test_fireball_panel_rules,
         test_fireball_at_the_engine,
         test_fireball_signed_out_is_view_only,
@@ -115089,6 +116026,7 @@ if __name__ == "__main__":
         test_ui2_fireball_page_driven,
         test_ui2_fireball_pads_only_whole,
         test_ui2_timed_purge_and_fuel_undo_driven,
+        test_ui2_haze_fluid_driven,
         test_ui2_calm_screens_and_brand,
         test_config_watch_supervisor_and_rack_screen_note,
         test_fireball_timeline_model,

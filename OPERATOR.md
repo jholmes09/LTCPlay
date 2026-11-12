@@ -931,6 +931,13 @@ channel, and is either ARMED or DISARMED.
   report as a hazer is skipped and named. With all armed it reads
   **Disarm all hazers** (Hazers off).
 
+- **Haze fluid (Startup page, Fuel step, 2026-11-12).** Under the fuel
+  tanks, a tile per hazer: its haze time since its last refill (fan only
+  time never counts), or percent left when its flow and tank size are set
+  in ltcplay_hazers.json. Tap a hazer when its fluid tank is full and say
+  yes (**Refilled**, the same sign-in as a fuel refill). FUEL.md has the
+  details; the record is haze.json in the settings folder.
+
 ## The fireball's fuel pump
 
 Jeff, 2026-10-30: "a toggle for a fuel pump. This is something for Andy to

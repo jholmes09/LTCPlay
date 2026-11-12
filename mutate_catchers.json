@@ -3763,5 +3763,14 @@
 "hazer test: web.serve never hooks it to Hazers off": "test_hazer_test_at_the_engine",
 "hazer test: ON with no sign-in of its own is taken while there are users": "test_hazer_test_and_arm_all_need_the_arm_row",
 "hazer test: an old-status refusal is not journaled": "test_hazer_test_and_arm_all_need_the_arm_row",
-"hazer test: the rack tiles are ARMED's green during it": "test_ui2_hazer_test_in_a_browser"
+"hazer test: the rack tiles are ARMED's green during it": "test_ui2_hazer_test_in_a_browser",
+"haze fluid: fan only time is counted as fluid": "test_haze_fluid_reads_the_bytes_on_the_wire",
+"haze fluid: the haze level is not weighted (every second is full output)": "test_haze_fluid_reads_the_bytes_on_the_wire",
+"haze fluid: a restart without closing is not marked not sure": "test_haze_fluid_not_sure_on_restart_and_a_stale_link",
+"haze fluid: haze sent while flamesafe's status is stale is not marked not sure": "test_haze_fluid_not_sure_on_restart_and_a_stale_link",
+"haze fluid: a refill does not start the count again": "test_haze_fluid_refill_settings_and_the_record",
+"haze fluid: a refill is not saved at once": "test_haze_fluid_refill_settings_and_the_record",
+"haze fluid: only a RuntimeError from the haze observer is kept off the sender": "test_haze_fluid_reads_the_bytes_on_the_wire",
+"haze fluid: the observer takes the record lock on the sender thread": "test_haze_fluid_never_touches_the_haze_output",
+"haze fluid: a counting error raises out of the tracker's pass": "test_haze_fluid_never_touches_the_haze_output"
 }

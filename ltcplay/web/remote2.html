@@ -5322,8 +5322,10 @@ function daySteps(part, s){
   const list = dayList(part, mo);
   if(list && list.total) out.push({key: part === "shut" ? "shutlist" : "startlist", title:"Checklist", icon:"list",
     state: list.done >= list.total ? "done" : "todo", why: list.done + " of " + list.total + " ticked."});
-  if(part !== "shut" && fu && (fu.units || []).length){
-    const soon = fu.units.filter(u => u.refill_soon).length;
+  // Haze fluid's hazers (fuelhaze.py) are tanks on the Fuel step too.
+  const hzs = (fu && fu.haze && fu.haze.available && fu.haze.hazers) || [];
+  if(part !== "shut" && fu && ((fu.units || []).length || hzs.length)){
+    const soon = (fu.units || []).filter(u => u.refill_soon).length + hzs.filter(h => h.refill_soon).length;
     out.push({key:"fuel", title:"Fuel", icon:"flame", state: fu.fault || fu.config_error ? "blocked" : soon ? "todo" : (seen("fuel") ? "done" : "todo"),
       why: fu.fault || fu.config_error ? "Fuel record problem. Tap to read." : soon ? soon + (soon === 1 ? " tank needs a refill." : " tanks need a refill.") : "Tanks OK. Refill any you filled."});
   }
@@ -5615,7 +5617,7 @@ function dayBuild(k){
     `<div class="drow"><button class="b" id="mo-verify">${icon("shield")}Verify records</button>` +
     `<a class="b" id="mo-pdf" href="/api/remote/checklist-pdf?date=" download target="_blank" rel="noopener">${icon("print")}Download today's PDF</a>` +
     `<a class="b" id="mo-export" href="/api/remote/checklist-export" download target="_blank" rel="noopener">${icon("list")}Export all</a></div>`;
-  else if(k === "fuel") box.innerHTML = `<div class="dgrid" id="d-fuel"></div><div class="drow"><button class="b" id="fu-all">${icon("flame")}Refill all</button><button class="b" id="d-fu-rec" hidden>${icon("list")}<span id="d-fu-rec-l">Refills and notes</span></button><span id="fu-why" class="dim"></span></div>`;
+  else if(k === "fuel") box.innerHTML = `<div class="dgrid" id="d-fuel"></div><div class="drow"><button class="b" id="fu-all">${icon("flame")}Refill all</button><button class="b" id="d-fu-rec" hidden>${icon("list")}<span id="d-fu-rec-l">Refills and notes</span></button><span id="fu-why" class="dim"></span></div>` + HZF_HTML;
   else if(k === "purge") box.innerHTML = `<div class="dgrid" id="mo-groups"></div><div class="drow"><button class="b" id="mo-clear">${icon("x")}Clear</button><button class="b" id="d-mach">${icon("list")}Machines</button><button class="b" id="d-map">${icon("list")}<span id="d-map-l">Map</span></button><span class="key" id="mo-key"></span></div>`;
   else if(k === "lasers") box.innerHTML = `<div class="dgrid" id="mo-lasers"></div><div class="drow"><button class="b green" id="mo-cal-on">${icon("laser")}Test grid on</button><button class="b" id="mo-cal-off">${icon("x")}Test grid off</button><button class="b" id="mo-beyond" hidden>${icon("open")}Open BEYOND</button></div>`;
   else if(k === "locks" || k === "locks-shut") box.innerHTML = `<div class="dgrid" id="d-locks"></div>`;
@@ -5664,6 +5666,7 @@ function dayWire(k){
     $("mo-verify").addEventListener("click", () => moPress("checklist-verify", {}, "mo-cmsg"));
   }
   if(k === "fuel"){
+    $("d-hzf-g").addEventListener("click", hzfClick);
     $("d-fu-rec").addEventListener("click", () => { DAY_FU_REC = !DAY_FU_REC; renderMorning(); });
     $("d-fuel").addEventListener("click", async ev => {
       const b = ev.target.closest("[data-refill]"); if(!b || b.disabled) return;
@@ -5777,6 +5780,7 @@ function dayUpdate(k){
     setText($("d-fu-rec-l"), DAY_FU_REC ? "Back to the tanks" : "Refills and notes" + (nWarn ? " (" + nWarn + (nWarn === 1 ? " note)" : " notes)") : ""));
     $("d-fuel").hidden = DAY_FU_REC;
     setText($("fu-why"), f.may_refill ? "" : short8(f.refill_why, "Sign in to log a refill."));
+    renderHazeFluid(f, DAY_FU_REC);
   }
   if(k === "purge"){
     const gb = $("mo-groups"), purge = mo.purge_state || {};
@@ -5846,6 +5850,35 @@ function dayMachines(){
   }));
 }
 // 1.0's fuPress: the same route and body (no actor), then a fresh read.
+// Haze fluid (fuelhaze.py, Jeff 2026-11-12): the Fuel step's Hazers
+// section, the fuel tanks' look. Haze seconds always; litres and percent
+// only when the engine has a flow and a tank size for that hazer. A tap
+// is the fuel refill's: the same question, then haze-refill {unit}.
+const HZF_HTML = `<div id="d-hzf" hidden aria-label="Hazers"><div class="drow"><b>Haze fluid</b></div>` +
+  `<ul class="pline"><li>Counts haze time, never fan time.</li><li>Tap a hazer you refilled.</li><li>Litres show once flow and tank are set.</li></ul>` +
+  `<div class="dgrid" id="d-hzf-g"></div><div class="pline bad" id="d-hzf-warn" hidden></div></div>`;
+function hzfList(f){ const h = f && f.haze; return (h && h.available && h.hazers) || []; }
+function renderHazeFluid(f, rec){
+  const sec = $("d-hzf"); if(!sec) return;
+  const hz = hzfList(f);
+  sec.hidden = rec || !hz.length;
+  const hv = (f && f.haze) || {};
+  const warn = [hv.config_error, hv.fault].concat(hv.notes || []).filter(Boolean).join(" ");
+  const w = $("d-hzf-warn");
+  const said = hv.fault ? "Haze record problem. Counts may be off." : hv.config_error ? "Haze fluid settings wrong. Seconds only." : "Some haze counts are not sure.";
+  w.hidden = !warn; setText(w, warn ? said : ""); w.title = warn;
+  const g = $("d-hzf-g");
+  const sig = JSON.stringify([hz.map(h => [h.name, h.big, h.color, h.refill_soon, h.not_sure, h.words]), f.may_refill]);
+  if(g.dataset.sig === sig) return;
+  g.dataset.sig = sig;
+  g.innerHTML = hz.map(h => `<button class="b ${h.refill_soon || h.not_sure ? "part" : ""}" data-hrefill="${esc(h.name)}" title="${esc(h.words)}" ${f.may_refill ? "" : "disabled"}>${icon("wind")}<span class="tt">${esc(h.name)}<small>${esc(h.big)}</small></span></button>`).join("");
+}
+async function hzfClick(ev){
+  const b = ev.target.closest("[data-hrefill]"); if(!b || b.disabled) return;
+  const h = hzfList(FU).find(x => x.name === b.dataset.hrefill); if(!h) return;
+  if(await confirmBox(`${h.name} refilled?`, "Log that its fluid tank is full now. The haze count starts again from here.", "Yes, refilled", "green"))
+    fuPress("haze-refill", {unit:h.name});
+}
 async function fuPress(route, body){
   try{ const j = await post("/api/remote/" + route, body); $("fu-msg").textContent = j.text || "Done."; }
   catch(e){ $("fu-msg").textContent = e.message; }

@@ -1035,6 +1035,13 @@ class FlameLink:
         # it), called after the observer above. Read only; it can neither
         # change nor hold up a frame. None: nothing is called.
         self.sent_observer = None
+        # The haze fluid record (fuelhaze.py, 2026-11-12): (tc, wire, test,
+        # ok) after each frame send_frame sent, `wire` the very bytes that
+        # went out (the hazer levels and the hazer test written in), `test`
+        # whether the hazer test was in them. Called after the two above;
+        # read only, it can neither change nor hold up a frame. None:
+        # nothing is called.
+        self.haze_observer = None
         # Frame timing (2026-10-29, FrameTiming): every interval between
         # two frames of the sender thread, since start, this hour and this
         # show. Only the sender thread writes them. A finished hour or show
@@ -2473,6 +2480,13 @@ class FlameLink:
             # the lock, never read again here.
             try:
                 sobs(*sent_rec)
+            except Exception:
+                pass
+        hobs = self.haze_observer
+        if hobs is not None:
+            # The haze fluid record (fuelhaze.py): what went on the wire.
+            try:
+                hobs(tc, wire, test, ok)
             except Exception:
                 pass
         return ok

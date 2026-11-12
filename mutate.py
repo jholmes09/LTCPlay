@@ -15816,6 +15816,57 @@ def build():
   "        q = self._q\n        if len(q) >= QUEUE_MAX:",
   "        q = self._q\n        self.save()\n        if len(q) >= QUEUE_MAX:"),
 
+ # Haze fluid (fuelhaze.py, Jeff 2026-11-12).
+ ("haze fluid: fan only time is counted as fluid",
+  "ltcplay/fuelhaze.py",
+  "            v = wire[hs - 1] if 0 < hs <= n_wire else 0",
+  "            v = (wire[hs - 1] or wire[_fs - 1]) if 0 < hs <= n_wire else 0"),
+
+ ("haze fluid: the haze level is not weighted (every second is full output)",
+  "ltcplay/fuelhaze.py",
+  "            w = dt * (v / FULL)",
+  "            w = dt"),
+
+ ("haze fluid: a restart without closing is not marked not sure",
+  "ltcplay/fuelhaze.py",
+  "                for n in rec[\"hazing\"]:\n"
+  "                    self._unit(n)[\"unsure_s\"] += SAVE_EVERY_S",
+  "                for n in rec[\"hazing\"]:\n"
+  "                    pass"),
+
+ ("haze fluid: haze sent while flamesafe's status is stale is not marked not sure",
+  "ltcplay/fuelhaze.py",
+  "            if fresh is not True:\n                # flamesafe's status stale",
+  "            if False:\n                # flamesafe's status stale"),
+
+ ("haze fluid: a refill does not start the count again",
+  "ltcplay/fuelhaze.py",
+  "        last = rs[-1] if rs else None\n        base = last or",
+  "        last = None\n        base = last or"),
+
+ ("haze fluid: a refill is not saved at once",
+  "ltcplay/fuelhaze.py",
+  "        if not self.save():\n            return True, (f\"Refill of {name} logged, but",
+  "        if not True:\n            return True, (f\"Refill of {name} logged, but"),
+
+ ("haze fluid: only a RuntimeError from the haze observer is kept off the sender",
+  "ltcplay/flamelink.py",
+  "                hobs(tc, wire, test, ok)\n            except Exception:\n                pass\n",
+  "                hobs(tc, wire, test, ok)\n            except RuntimeError:\n                pass\n"),
+
+ ("haze fluid: the observer takes the record lock on the sender thread",
+  "ltcplay/fuelhaze.py",
+  "        q = self._q\n        if len(q) >= QUEUE_MAX:",
+  "        q = self._q\n        with self._lock:\n            pass\n"
+  "        if len(q) >= QUEUE_MAX:"),
+
+ ("haze fluid: a counting error raises out of the tracker's pass",
+  "ltcplay/fuelhaze.py",
+  "        except Exception as e:                    # noqa: BLE001\n"
+  "            why = f\"{type(e).__name__}: {e}\"\n            if not self.run_error:",
+  "        except KeyError as e:\n"
+  "            why = f\"{type(e).__name__}: {e}\"\n            if not self.run_error:"),
+
  # Re-pointed (the #181 sweep, 2026-11-10): Fireball practice's record
  # (#225) went in after the fuel observer, so "pass, return ok" had become
  # the record's guard, which nothing tested. The fuel observer's own guard
