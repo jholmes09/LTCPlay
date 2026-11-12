@@ -23843,7 +23843,7 @@ def build():
 
  ('receiver: two requests share a temporary file',
   'tools/audit_receiver.py',
-  '            f"{time.time_ns()}.part")\n',
+  '            f"{next(_PARTS)}.part")\n',
   '            f"part")\n'),
 
  ('receiver: a name with a newline after it is taken',

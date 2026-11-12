@@ -40,6 +40,7 @@ other name, or one with a folder in it, is refused.
 """
 import hashlib
 import hmac
+import itertools
 import json
 import os
 import re
@@ -133,11 +134,16 @@ def _append_index(store, rec):
         os.fsync(fh.fileno())
 
 
+_PARTS = itertools.count(1)
+
+
 def _part(path):
     """A temporary name for one request's copy, never shared with another
-    request writing the same file at the same moment."""
+    request writing the same file at the same moment: a counter, not the
+    clock (Windows' clock moves in steps of about 15 ms, so two names
+    taken in one step were the same)."""
     return (f"{path}.{os.getpid()}.{threading.get_ident()}."
-            f"{time.time_ns()}.part")
+            f"{next(_PARTS)}.part")
 
 
 def receive(store, token, headers, body, now=time.time):

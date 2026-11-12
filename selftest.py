@@ -80120,8 +80120,17 @@ def test_audit_receiver_takes_the_night_journal():
     check(code == 500 and doc["ok"] is False and
           doc["error"].startswith("the file could not be stored ("),
           f"a store it cannot write is a 500 with a sentence: {doc}")
-    check(R._part("x") != R._part("x"),
-          "each request writes its own temporary file")
+    # On Windows the clock moves in steps of about 15 ms: two requests in
+    # one step still write different temporary files.
+    real_ns = R.time.time_ns
+    R.time.time_ns = lambda: 1
+    try:
+        parts = {R._part("x") for _ in range(50)}
+    finally:
+        R.time.time_ns = real_ns
+    check(len(parts) == 50,
+          f"each request writes its own temporary file, whatever the "
+          f"clock: {len(parts)} names for 50")
     check(post(name="night_2026-11-12.jsonl\n")[0] == 400,
           "a name with a newline after it is refused")
     check(post("night_2026-11-10.jsonl", digest="0" * 64) ==
