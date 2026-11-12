@@ -328,6 +328,7 @@ main > #mini{padding:var(--gap) var(--pad) 0}
 #d-ctl{display:flex;flex-direction:column;gap:var(--gap);min-height:0;min-width:0;flex:1 1 auto}
 .drow{display:flex;flex-wrap:wrap;gap:var(--gap);align-items:center;min-width:0}
 .drow .b{min-height:64px;padding:0 20px}
+.psa-say{margin:0;padding-left:20px}
 .dgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:var(--gap);min-width:0}
 .dgrid .b{min-height:64px;justify-content:flex-start;text-align:left;padding:4px 12px}
 #wc-hold,#wc-stop{min-height:clamp(64px,10vh,96px);font-size:calc(var(--fs) + 4px)}
@@ -968,6 +969,17 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
             <button class="b" id="annout-tone" title="1 s of a soft 440 Hz tone at -20 dBFS through the same route and output as the announcements. Never during a show; holds nothing."><svg class="i"><use href="#i-mega"/></svg>Test tone</button></div>
           <div class="pline" id="annout-msg" role="status"></div>
         </div>
+        <!-- Pre-show audio (preshow_audio.py, Jeff 2026-11-12): On or Off
+             and one file, on the show machine, Settings permission. The
+             engine decides when it plays; this card only sets the two. -->
+        <div class="card col" id="psa-card" hidden>
+          <div class="t"><b>Pre-show audio</b></div>
+          <ul class="psa-say"><li>Plays 2 minutes before each scheduled show.</li><li>Skipped on Start now, Hold, show control off.</li><li>Plays once per show; the show never waits.</li></ul>
+          <div class="drow"><b class="dbig" id="psa-now"></b><button class="b green" id="psa-on"><svg class="i"><use href="#i-power"/></svg>Turn on</button><button data-safe class="b safe" id="psa-off"><svg class="i"><use href="#i-shield"/></svg>Turn off</button></div>
+          <div class="pbar"><select class="f" id="psa-pick" aria-label="Pre-show audio file"></select>
+            <button class="b green" id="psa-save"><svg class="i"><use href="#i-check"/></svg>Save file</button></div>
+          <div class="pline" id="psa-msg" role="status"></div>
+        </div>
         <!-- THE SHOW PC'S TOOLS (P14, P15): 1.0's Programming screen cards,
              their words and ids, on this machine only; their code is 1.0's
              (selftest.py checks). The engine refuses each from anywhere
@@ -1497,6 +1509,7 @@ function showTab(t){
   if(t === "schedule"){ fbtOpen(); progFiles(); try{ drawProg(stale()); }catch(e){} if(ME && ME.local && !SE_READ){ SE_READ = true; loadSchedule(); } }
   // 1.0's Programming screen read the outputs when it opened (P13).
   if(t === "schedule" && ME && ME.local) loadAnnOutputs();
+  if(t === "schedule" && ME && ME.local){ PSA_TRIED = true; loadPreshow(); }
   if(prog) try{ $("t-prog").scrollIntoView(); }catch(e){}
   if(t === "show") layoutGroups();
   $("mini").hidden = t === "show";
@@ -3276,6 +3289,57 @@ $("annout-save").addEventListener("click", async () => {
     loadAnnOutputs(true);
   }catch(e){ $("annout-msg").textContent = e.message; }
   $("annout-msg").title = $("annout-msg").textContent;
+});
+// Pre-show audio (preshow_audio.py, Jeff 2026-11-12): On or Off and one
+// file, the WAV files the announcements know. The show machine only, the
+// Settings row; the engine decides everything else and says it.
+var PSA_FILE = null, PSA_TRIED = false;
+function psaNow(v){
+  return (v.on ? "ON: " : "OFF: ") + (v.name || "no file chosen");
+}
+function renderPreshow(){
+  const local = !!(ME && ME.local);
+  const v = ST && ST.preshow_audio;
+  const show = local && !!v && v.available !== false;
+  if($("psa-card").hidden !== !show) $("psa-card").hidden = !show;
+  if(!show) return;
+  if(TAB === "schedule" && !PSA_TRIED){ PSA_TRIED = true; loadPreshow(); }
+  setText($("psa-now"), psaNow(v));
+  const may = mayRow(ST, "settings") && v.available !== false;
+  $("psa-on").disabled = !may || !!v.on || !($("psa-pick").value || PSA_FILE || v.file);
+  $("psa-off").disabled = !may || !v.on;
+  $("psa-save").disabled = !may || !$("psa-pick").value;
+  if(PSA_FILE === null && v.file !== undefined) PSA_FILE = v.file || "";
+  const bad = v.error || (v.file && v.file_ok === false ? "File cannot play: " + (v.file_why || "") : "");
+  if(bad && !$("psa-msg").dataset.mine) setText($("psa-msg"), bad);
+}
+setInterval(renderPreshow, 500);
+async function loadPreshow(){
+  if(!(ST && ST.preshow_audio && ST.preshow_audio.available)) return;
+  try{
+    const j = await getJSON("/api/remote/preshow-audio", 3000);
+    PSA_FILE = j.file || "";
+    const opts = [`<option value="">Choose a file</option>`].concat((j.choices || []).map(c =>
+      `<option value="${esc(c.path)}"${c.path === j.file ? " selected" : ""}${c.available ? "" : " disabled"}>${esc(c.name + (c.length_s ? ", " + Math.round(c.length_s) + " s" : "") + (c.available ? "" : ", cannot play"))}</option>`));
+    $("psa-pick").innerHTML = opts.join("");
+  }catch(e){ $("psa-msg").textContent = e.message; }
+}
+async function psaSave(on, file){
+  $("psa-msg").dataset.mine = "1";
+  try{
+    const j = await post("/api/remote/preshow-audio", {on: on, file: file});
+    $("psa-msg").textContent = j.text;
+    if(j.preshow_audio && ST) ST.preshow_audio = j.preshow_audio;
+    PSA_FILE = (j.preshow_audio && j.preshow_audio.file) || file;
+  }catch(e){ $("psa-msg").textContent = e.message; }
+  $("psa-msg").title = $("psa-msg").textContent;
+}
+$("psa-on").addEventListener("click", () => psaSave(true, $("psa-pick").value || PSA_FILE || ""));
+$("psa-off").addEventListener("click", () => psaSave(false, PSA_FILE || ""));
+$("psa-save").addEventListener("click", () => {
+  const f = $("psa-pick").value;
+  if(!f){ $("psa-msg").textContent = "Choose a file first. Nothing was changed."; return; }
+  psaSave(!!(ST && ST.preshow_audio && ST.preshow_audio.on), f);
 });
 // What the switch lets screens do: every one of it (review of PR #90,
 // P2-1). remote.py SCREEN_ARMING_ENABLES says the same words.

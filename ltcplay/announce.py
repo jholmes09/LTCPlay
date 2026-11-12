@@ -116,6 +116,21 @@ LABELS = {DELAYED: "Delayed", CANCELLATION: "Cancellation",
 # Never one of IDS: it is never a button of its own and never Holds.
 TEST_TONE = "test_tone"
 LABELS[TEST_TONE] = "Test tone"
+# Pre-show audio (preshow_audio.py; Jeff, 2026-11-12: "play an audio file
+# automatically two minutes prior to the show"). The one automatic play on
+# the PA, off unless an admin turns it on, and only ever through
+# play_preshow(): never one of IDS, so no route's Play can ask for it, and
+# play() refuses it. It plays only between shows (PRESHOW_STATES), never
+# Holds anything, and is faded by a show start like any announcement.
+PRESHOW = "preshow"
+LABELS[PRESHOW] = "Pre-show audio"
+# Who and where its journal rows name: deliberately NOT one of
+# ENGINE_NAMES (that refusal is for a play nobody asked for; this one was
+# asked for by the admin who turned it on), and reserved in users.py so no
+# person's account can carry it.
+PRESHOW_WHO, PRESHOW_SCREEN = "Pre-show audio", "schedule"
+PRESHOW_STATES = ("IDLE", "STANDBY")
+PRESHOW_HOLD_NOTE = "Pre-show audio holds nothing."
 TONE_HZ, TONE_DBFS, TONE_S, TONE_RATE = 440.0, -20.0, 1.0, 48000
 # A recording whose loudest sample is below this is silent (or decoded to
 # nothing): it is never reported as playing (Jeff's field report,
@@ -440,6 +455,17 @@ def _write_json_atomic(path, doc):
 
 
 # ------------------------------------------------------------ the schedule
+def preshow_state_words(state):
+    """Why pre-show audio does not play in this scheduler state."""
+    if state in SHOW_STATES:
+        return "a show is running"
+    if state == "HOLD":
+        return "the schedule is on Hold"
+    if state is None:
+        return "there is no schedule here"
+    return f"the schedule is not between shows ({_clean(state)})"
+
+
 def no_hold_note(state, refusal=None):
     """The one line said when an announcement plays with no Hold taken: why
     none was needed, or why none was possible. Never a reason not to play
@@ -1336,7 +1362,7 @@ class AnnounceService:
                    reason="picker", text=text, who=who, screen=screen)
         return text
 
-    def _decode(self, ann_id):
+    def _decode(self, ann_id, path=None):
         """Read and validate the file off disk: the one part of a Play
         press that touches disk. Deliberately called WITHOUT self.lock held
         (see play()): self.files is replaced only by reload_if_idle, under
@@ -1344,8 +1370,8 @@ class AnnounceService:
         safe to run unlocked, and it must never hold up Stop, a status
         poll, or another operator's press for as long as it takes (review,
         minor: do not read a big file while holding the lock)."""
-        pcm, channels, rate, _length_s = _wav_info(self.files[ann_id],
-                                                    decode=True)
+        pcm, channels, rate, _length_s = _wav_info(
+            path or self.files[ann_id], decode=True)
         return pcm, channels, rate
 
     # -- the journal, one call site ---------------------------------------
@@ -1613,12 +1639,31 @@ class AnnounceService:
         surface that pressed it and the screen it was pressed on, and a
         play in the engine's own name (ENGINE_NAMES: the scheduler, the
         alert hold, a timer) is refused before anything is claimed. There
-        is no automatic play here at all."""
-        actor = "operator"
+        is no automatic play here but pre-show audio, which never comes
+        through here: see play_preshow."""
+        return self._play(ann_id, who, screen, surface)
+
+    def play_preshow(self, path):
+        """Pre-show audio (preshow_audio.py): the file at `path`, once,
+        through the same player, route, limits and journal as an
+        announcement, and the same fade when a show starts
+        (on_show_started). Never Holds anything; refused unless the
+        schedule is between shows (PRESHOW_STATES) now and again right
+        before the sound starts. Raises ValueError with a sentence when it
+        does not play. The file's header is read here, before any lock."""
+        probe = self._probe_file(path)
+        return self._play(PRESHOW, PRESHOW_WHO, PRESHOW_SCREEN, True,
+                          preshow=(path, probe))
+
+    def _play(self, ann_id, who, screen, surface, preshow=None):
+        """play() and play_preshow(): one player. `preshow` is (path, the
+        file's probe) for pre-show audio only."""
+        pre = preshow if ann_id == PRESHOW else None
+        actor = "system" if pre else "operator"
         who = _clean((who or "").strip())
         screen = _clean((screen or "").strip())
         tone = ann_id == TEST_TONE and surface
-        if ann_id not in IDS and not tone:
+        if ann_id not in IDS and not tone and not pre:
             raise ValueError(f"{ann_id!r} is not one of {', '.join(IDS)}.")
         label = LABELS[ann_id]
         screen_txt = f" on the {screen}"
@@ -1626,6 +1671,18 @@ class AnnounceService:
         with self.lock:
             self._settle()
             state = self._current_state()
+            if pre and state not in PRESHOW_STATES:
+                why = preshow_state_words(state)
+                self._emit(actor=actor, action="pre-show audio",
+                          outcome="refused", reason=why,
+                          text=f"Pre-show audio was not played: {why}.",
+                          ann_id=ann_id, who=who, screen=screen,
+                          state=state)
+                raise ValueError(why)
+            if pre:
+                # Its file as read just now (play_preshow), where the
+                # availability check below looks for a recording's.
+                self.status_by_id[PRESHOW] = pre[1]
             if tone and state in SHOW_STATES:
                 text = (f"{who} pressed Test tone{screen_txt}, but a show "
                         f"is running. A test tone never plays during a "
@@ -1753,7 +1810,9 @@ class AnnounceService:
             over_show = state in SHOW_STATES
             held = False
             hold_note = ""
-            if tone:
+            if pre:
+                hold_note = PRESHOW_HOLD_NOTE
+            elif tone:
                 hold_note = "A test tone holds nothing."
             elif self.hold_requester is not None and not over_show:
                 hold_refusal, claim_epoch = self._request_hold(
@@ -1806,7 +1865,8 @@ class AnnounceService:
                 pcm = test_tone_pcm()
                 channels, rate = 1, TONE_RATE
             else:
-                pcm, channels, rate = self._decode(ann_id)
+                pcm, channels, rate = (self._decode(ann_id, pre[0])
+                                       if pre else self._decode(ann_id))
             # What is about to be sent, measured before anything is: a
             # recording that decoded to silence is never reported as
             # playing (Jeff's field report, 2026-10-28).
@@ -1878,6 +1938,18 @@ class AnnounceService:
             elif over_show and not held and state not in SHOW_STATES:
                 hold_note = ("The show ended while it loaded; it plays "
                              "with nothing held.")
+            # Pre-show audio: still between shows right before the sound
+            # starts. A show that started while it loaded is never played
+            # over (on_show_started had nothing to fade yet).
+            if pre and state not in PRESHOW_STATES:
+                self.playing = None
+                why = preshow_state_words(state)
+                self._emit(actor=actor, action="pre-show audio",
+                          outcome="refused", reason=why,
+                          text=f"Pre-show audio was not played: {why}.",
+                          ann_id=ann_id, who=who, screen=screen,
+                          state=state)
+                raise ValueError(why)
             # Through the show audio when it runs NOW (Run may have been
             # pressed, or Stop, while the file was read).
             route_now = self._show_route()

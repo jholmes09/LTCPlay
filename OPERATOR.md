@@ -140,9 +140,10 @@ Jeff, 2026-10-30: nothing plays on the public PA automatically.
 "I want to delete the function where the delay audio plays
 automatically in any scenario. We can still notify Andy of issues with
 the in-booth speaker, but nothing on the public PA." The only things LTC
-Player plays by itself are the booth notes, on the booth speaker. The
-Delayed, Cancellation and Cannot continue announcements play on the PA
-only when someone presses them.
+Player plays by itself are the booth notes, on the booth speaker, and
+**Pre-show audio** when an admin has turned it on (below; off unless
+turned on). The Delayed, Cancellation and Cannot continue announcements
+play on the PA only when someone presses them.
 
 **An alert still open when a show is due** (Jeff, 2026-10-26). Between
 shows an alert does nothing automatic. But if a show's time comes while
@@ -329,6 +330,33 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   pressable.
 - Announcements are pressed on the show PC itself (the rack screen and the
   Stream Deck), not from an iPad.
+
+**Pre-show audio** (Jeff, 2026-11-12). One recording played by itself 2
+minutes before each scheduled show. Two settings and nothing else, on the
+rack screen, Schedule tab, **Pre-show audio** card (admin, show PC only):
+**Turn on** or **Turn off**, and which file (**Save file**). It is OFF
+until turned on. The list is every WAV file in the Announcements folder
+(and beside ltcplay_announce.json): copy the file there first. Saved in
+ltcplay_preshow_audio.json in the settings folder; kept over a restart.
+
+- It plays once, 120 seconds before the show's scheduled time, through
+  the announcement player (the show audio while it runs, else the
+  announcement output), and holds nothing.
+- It does not play for a show started with Start now, or when, at that
+  moment, the schedule is on Hold, show control is off, a show is
+  running, the show was delayed or will not start by itself at its time,
+  or an announcement is playing. LTC Player started (or the schedule
+  changed) with less than 115 seconds to go: it does not play late.
+- Each show gets it at most once a night, even across a restart.
+- The show never waits for it. A missing file or a player problem is a
+  line in the log and the show starts on time. Still playing when the show
+  starts: it fades out over 0.15 s, like an announcement. Through the show
+  audio a file longer than 60 seconds is refused (the announcement limit).
+- Stop announcement (Stop sound) stops it. It touches no flame, laser,
+  hazer or pump.
+- The log says "Pre-show audio played before show N: file.wav." or why
+  not, for example "Pre-show audio not played before show 2: the schedule
+  is on Hold."
 
 The **booth speaker** is separate from announcements: it plays the short
 alert notes (the Stream Deck unplugged, a show that did not start) to a

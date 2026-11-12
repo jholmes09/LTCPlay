@@ -2913,6 +2913,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                          name="ltcplay-web-loopback").start()
     _say_listening(httpd, on_network, network_why)
     httpd.announce = None
+    httpd.preshow_audio = None
     if announce is not None:
         if isinstance(announce, str):
             from . import announce as announce_mod
@@ -2957,6 +2958,20 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         # 2026-09-26: audit15_resume_race.py). See Service.hold_still_claimed
         # and announce.py's _check_still_held.
         httpd.announce.hold_still_claimed = sched.hold_still_claimed
+        # Pre-show audio (preshow_audio.py, Jeff 2026-11-12): off unless an
+        # admin turns it on; its settings beside ltcplay_announce.json. It
+        # plays through this same announcement player and nothing else.
+        try:
+            from . import preshow_audio as preshow_mod
+            httpd.preshow_audio = preshow_mod.PreShowAudio(
+                os.path.dirname(os.path.abspath(
+                    httpd.announce.config_path)),
+                httpd.announce, journal=sched.preshow_journal,
+                audit=getattr(httpd.remote, "audit", None))
+            sched.preshow_audio = httpd.preshow_audio
+        except Exception as e:                   # noqa: BLE001
+            httpd.preshow_audio = None
+            print(f"Pre-show audio is off: {type(e).__name__}: {e}")
     httpd.fire_ice_config = fire_ice
     if fire_ice is not None:
         if madmapper is None:
@@ -3054,6 +3069,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         # The rack screen's and the Stream Deck's announcement presses go
         # through the remote routes (remote.announce_post).
         httpd.remote.announce = httpd.announce
+        httpd.remote.preshow_audio = httpd.preshow_audio
     httpd.morning = None
     if fire_ice is not None:
         # The Morning and Shutdown page (Jeff, 2026-10-17; morning.py,
