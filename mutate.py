@@ -23439,6 +23439,102 @@ def build():
   'ltcplay/playhead.py',
   '            maybe = cond.lasers_maybe_lit() is True\n',
   '            maybe = lit\n'),
+
+ ('hazer test: no 60 s limit (a forgotten test fogs on)',
+  'ltcplay/hazertest.py',
+  'MAX_S = 60                  # Jeff decides; a forgotten test never fogs on\n',
+  'MAX_S = 6000                # Jeff decides; a forgotten test never fogs on\n'),
+
+
+ ("hazer test: the flame link's own hard end never comes",
+  'ltcplay/flamelink.py',
+  '            until, beat = self._htest_until, self._htest_beat\n',
+  '            until, beat = float("inf"), self._htest_beat\n'),
+
+ ('hazer test: a quiet screen leaves it on',
+  'ltcplay/hazertest.py',
+  '        if now - r["page"] > PAGE_QUIET_S:\n',
+  '        if False:\n'),
+
+ ('hazer test: ON needs no permission (not the arm row)',
+  'ltcplay/users.py',
+  '    "hazer-test": "arm",\n',
+  '    "hazer-test": None,\n'),
+
+ ('hazer test: ON is classified safety (anyone may turn it on)',
+  'ltcplay/users.py',
+  '        if name == "hazer-test" and body.get("on") is not True and \\\n',
+  '        if name == "hazer-test" and \\\n'),
+
+ ('hazer test: ON from the show network without screen_arming',
+  'ltcplay/remote.py',
+  '            why = ("The hazer test from a device on the show network needs "\n',
+  '            return 200, {}\n            why = ("The hazer test from a device on the show network needs "\n'),
+
+ ('hazer test: Stop leaves it on at the engine',
+  'ltcplay/remote.py',
+  '            self.hazer_test_cut(why, who, screen)\n',
+  '            pass\n'),
+
+ ("hazer test: Stop's disarm_all leaves it on at the link",
+  'ltcplay/flamelink.py',
+  '                self._htest_on = False\n                self._htest_until = None\n                self._purge = None\n',
+  '                self._purge = None\n'),
+
+ ('hazer test: a show starting leaves it on',
+  'ltcplay/remote.py',
+  '            if st == "playing":\n                return "a show is playing, and the show drives the hazers"\n',
+  '            if False:\n                return "a show is playing, and the show drives the hazers"\n'),
+
+ ('hazer test: show control on leaves it on',
+  'ltcplay/remote.py',
+  '            if cs.get("starting") or cs.get("running"):\n                return "show control is on; press Stop first"\n',
+  '            if False:\n                return "show control is on; press Stop first"\n'),
+
+ ('hazer test: ON skips the checks arming a hazer has',
+  'ltcplay/hazertest.py',
+  '        for n in names:\n            why = hz.refusal(n)\n',
+  '        for n in ():\n            why = hz.refusal(n)\n'),
+
+ ('hazer test: an error in a pass leaves it on',
+  'ltcplay/hazertest.py',
+  '            why = f"its check failed ({type(e).__name__})"\n            self.stop(why)\n            return why\n',
+  '            return ""\n'),
+
+ ('hazer test: a state that cannot be read is left on',
+  'ltcplay/hazertest.py',
+  '            self.stop(f"its state could not be read ({type(e).__name__})")\n',
+  '            pass\n'),
+
+ ('hazer test: the page shows On with no contact',
+  'ltcplay/web/remote2.html',
+  '  const known = !isSt && v.state !== "unknown";\n',
+  '  const known = true;\n'),
+
+ ('arm all hazers: every entry armed whatever its type',
+  'ltcplay/hazers.py',
+  '            if k != "hazer":\n                missed.append(',
+  '            if False:\n                missed.append('),
+
+ ('arm all hazers: a name flamesafe reports as a flame group is armed',
+  'ltcplay/hazers.py',
+  '        if name in groups:\n            return None\n',
+  ''),
+
+ ("arm all hazers: arms every hazer at the link, skipping each one's refusals",
+  'ltcplay/hazers.py',
+  '            ok, text = self.set(n, True, who=who, screen=screen)\n',
+  '            ok, text = True, ""\n            self.link().hazers_set(self.on() | {n})\n'),
+
+ ('arm all hazers: needs no permission (not the arm row)',
+  'ltcplay/users.py',
+  '    "hazers-arm-all": "arm",\n',
+  '    "hazers-arm-all": None,\n'),
+
+ ('arm all hazers: from the show network without screen_arming',
+  'ltcplay/remote.py',
+  '            if not self.may_act_from(ctx.local):\n                why = ("Arming hazers from a device on the show network "\n',
+  '            if False:\n                why = ("Arming hazers from a device on the show network "\n'),
 ]
 
 

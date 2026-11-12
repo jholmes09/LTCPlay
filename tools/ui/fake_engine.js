@@ -73,6 +73,9 @@ function baseStatus(){
   s.hazers = {available: true, down: "", last_off: null, agree: true, show: "idle", levels_fault: "",
     hazers: [1, 2, 3].map(n => ({name: "Hazer " + n, haze_slot: 78 + 2 * n, fan_slot: 79 + 2 * n, armed: false,
       label: "Hazer " + n + " DISARMED", state: "disarmed", haze: 102, fan: 153, haze_pct: 40, fan_pct: 60, why: null}))};
+  // The hazer test (hazertest.py, 2026-11-11): off, ready.
+  s.hazer_test = {available: true, names: ["Hazer 1", "Hazer 2", "Hazer 3"], on: false, state: "off", left_s: null,
+    max_s: 60, beat_s: 2, refusal: "", last_off: null};
   return s;
 }
 
@@ -278,6 +281,14 @@ class FakeEngine {
       case "/api/remote/hazer": { const h = s.hazers.hazers.find(x => x.name === body.hazer);
         if(h){ h.armed = body.on === true; h.state = h.armed ? "standby" : "disarmed"; } return ok((body.hazer || "Hazer") + (body.on === true ? " is ARMED." : " is DISARMED.")); }
       case "/api/remote/hazers-off": s.hazers.hazers.forEach(h => { h.armed = false; h.state = "disarmed"; }); return ok("Every hazer is DISARMED.");
+      case "/api/remote/hazers-arm-all": s.hazers.hazers.forEach(h => { h.armed = true; h.state = "standby"; }); return ok("All hazers armed.");
+      case "/api/remote/hazer-test": {
+        const t = s.hazer_test;
+        if(body.on === true){ if(t.refusal) return {code: 409, body: {error: "Hazer test not started: " + t.refusal}};
+          Object.assign(t, {on: true, state: "on", left_s: t.max_s}); return ok("Hazer test ON for " + t.max_s + " s."); }
+        if(typeof body.beat === "string") return t.on ? ok("Hazer test on.") : {code: 409, body: {error: "The hazer test is off."}};
+        Object.assign(t, {on: false, state: "off", left_s: null}); return ok("Hazer test OFF.");
+      }
       case "/api/remote/hazer-level": s.hazers.hazers.forEach(h => { if(body.hazer === "all" || h.name === body.hazer){
         if(typeof body.haze === "number") h.haze_pct = body.haze; if(typeof body.fan === "number") h.fan_pct = body.fan; } }); return ok("Set.");
       case "/api/remote/group-disarm": return this.groupDisarm(body.group);

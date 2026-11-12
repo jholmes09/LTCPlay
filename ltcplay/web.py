@@ -1108,6 +1108,13 @@ class Handler(BaseHTTPRequestHandler):
                 fn(reason, who, screen)
             except Exception:                    # noqa: BLE001
                 pass
+        # The hazer test OFF (hazertest.py, 2026-11-11), the same way.
+        fn = getattr(rm, "hazer_test_cut", None)
+        if fn is not None:
+            try:
+                fn(reason, who, screen)
+            except Exception:                    # noqa: BLE001
+                pass
         # The wave flamer cleaning (cleaning.py): Stop ends it, from the
         # rack screen, an iPad or the Stream Deck.
         cl = getattr(rm, "cleaning", None)
@@ -2356,6 +2363,38 @@ def _attach_hazers(httpd):
               f"while a show plays.", action="flame_link", outcome="hazers")
 
 
+def _attach_hazer_test(httpd):
+    """The hazer test (hazertest.py, Jeff 2026-11-11): built with the
+    hazers. OFF at start; the engine shutting down turns it off (and
+    flamesafe zeroes every hazer slot once frames stop). A failure leaves
+    it unavailable and is said once."""
+    from . import hazertest as hazertest_mod
+    remote = httpd.remote
+    if getattr(remote, "hazers", None) is None:
+        return
+    try:
+        def _journal(who, screen, outcome, text, fault=False):
+            remote._journal(who or "system", screen or "engine",
+                            "hazer-test", outcome, text, fault=fault)
+        remote.hazer_test = hazertest_mod.HazerTest(
+            hazers=lambda: remote.hazers,
+            show_busy=remote.hazer_test_show_busy,
+            signed_out=remote.hazer_test_signed_out,
+            journal=_journal, audit=getattr(remote, "audit", None))
+    except Exception as e:                       # noqa: BLE001
+        print(f"The hazer test could not be set up: {type(e).__name__}: {e}")
+        return
+    before = httpd.server_close
+
+    def _close_hazer_test():
+        try:
+            remote.hazer_test.stop("the engine is shutting down")
+        except Exception:                        # noqa: BLE001
+            pass
+        before()
+    httpd.server_close = _close_hazer_test
+
+
 def _attach_pump(httpd):
     """The fireball's fuel pump (fuelpump.py, Jeff 2026-10-30): built for
     the Fire & Ice engine with a flame link whose flamesafe config lists
@@ -3125,6 +3164,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             getattr(httpd.fire_ice, "flame_link", None) is not None:
         _attach_fireball_timeline(httpd)
         _attach_hazers(httpd)
+        _attach_hazer_test(httpd)
         _attach_pump(httpd)
     if httpd.morning is not None:
         _attach_fuel(httpd)
