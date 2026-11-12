@@ -3721,5 +3721,14 @@
 "practice: a pending mark reads as charged tanks": "test_fireball_practice_engine",
 "practice: a Stop that came back failed is pressed again at once": "test_fireball_practice_engine",
 "practice: a person's Done waits for the retry": "test_fireball_practice_engine",
-"practice: open goes on after Done during its engine check": "test_fireball_practice_engine"
+"practice: open goes on after Done during its engine check": "test_fireball_practice_engine",
+"tailscale: any IPv4 address counts as a Tailscale address": "test_tailscale_address_detection_and_setting",
+"tailscale: arming is let through from Tailscale": "test_tailscale_reduced_authority",
+"tailscale: a physical effect is let through from Tailscale": "test_tailscale_reduced_authority",
+"tailscale: the door binds every interface": "test_tailscale_listener_binds_only_its_address",
+"tailscale: the door answers a peer outside 100.64.0.0/10": "test_tailscale_door_refuses_wrong_peer_host_and_proxies",
+"tailscale: the door takes any Host": "test_tailscale_door_refuses_wrong_peer_host_and_proxies",
+"tailscale: Start now and Resume signed out": "test_tailscale_reduced_authority",
+"tailscale: the engine itself does not ask": "test_tailscale_reduced_authority",
+"tailscale: on by default": "test_tailscale_address_detection_and_setting"
 }

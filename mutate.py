@@ -627,6 +627,61 @@ MUTATIONS = [
  # -- the iPad remote (2026-10-03; no sign-in since Jeff, 2026-10-07): the
  #    show network, the controls, stale state, no arm route, scrubbing and
  #    the seek guard --
+ # -- remote access over Tailscale (Jeff, 2026-11-12): 100.64.0.0/10 only,
+ #    never every interface, its own Host and peer checks, and less
+ #    authority than an iPad: arming and effects never, starting signed in
+ #    only --
+ ("tailscale: any IPv4 address counts as a Tailscale address",
+  "ltcplay/remote.py",
+  "    return ip.version == 4 and ip in TAILSCALE_NET and \\\n"
+  "        str(ip) != TAILSCALE_SERVICE_IP",
+  "    return ip.version == 4"),
+
+ ("tailscale: arming is let through from Tailscale", "ltcplay/remote.py",
+  "    if name in TAILSCALE_ARM_ROUTES and perm != \"safety\":\n"
+  "        return (\"arming\", TAILSCALE_WORDS)",
+  "    if name in TAILSCALE_ARM_ROUTES and perm != \"safety\":\n"
+  "        return None"),
+
+ ("tailscale: a physical effect is let through from Tailscale",
+  "ltcplay/remote.py",
+  "    if name in TAILSCALE_EFFECT_ROUTES and perm != \"safety\":\n"
+  "        return (\"effect\", TAILSCALE_WORDS)",
+  "    if name in TAILSCALE_EFFECT_ROUTES and perm != \"safety\":\n"
+  "        return None"),
+
+ ("tailscale: the door binds every interface", "ltcplay/web.py",
+  "    if ts in WILDCARD or not remote_mod.is_tailscale_address(ts):",
+  "    if False:"),
+
+ ("tailscale: the door answers a peer outside 100.64.0.0/10",
+  "ltcplay/web.py",
+  "            if not remote_mod.is_tailscale_address(self.client_address[0]):\n"
+  "                return TAILSCALE_PEER_REFUSAL",
+  "            if False:\n"
+  "                return TAILSCALE_PEER_REFUSAL"),
+
+ ("tailscale: the door takes any Host", "ltcplay/remote.py",
+  "    return str(host_header or \"\").strip().lower() == f\"{address}:{port}\"",
+  "    return True"),
+
+ ("tailscale: Start now and Resume signed out", "ltcplay/remote.py",
+  "        if getattr(ctx, \"user\", \"\"):\n            return None\n"
+  "        return (\"sign in\", TAILSCALE_SIGN_IN_WORDS)",
+  "        return None"),
+
+ ("tailscale: the engine itself does not ask", "ltcplay/remote.py",
+  "        if getattr(ctx, \"tailscale\", False):\n"
+  "            # Remote access over Tailscale: reduced authority, checked",
+  "        if False:\n"
+  "            # Remote access over Tailscale: reduced authority, checked"),
+
+ ("tailscale: on by default", "ltcplay/remote.py",
+  "           \"screen_arming\": False, \"purge_arming\": True, \"booth_alert\": None,\n"
+  "           \"tailscale_remote\": False,",
+  "           \"screen_arming\": False, \"purge_arming\": True, \"booth_alert\": None,\n"
+  "           \"tailscale_remote\": True,"),
+
  # -- the show network from another machine (Jeff, 2026-10-28: the page
  #    never opened from his Mac): the RFC 1918 picker, the card's view, the
  #    firewall rule read, the wrong-name page, the fallback to this PC

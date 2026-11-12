@@ -342,15 +342,19 @@ def write_settings(shows):
 
 
 FIREWALL_RULE = "LTC Player rack page"
+# Remote access over Tailscale (2026-11-12): the installer's second rule,
+# only while ltcplay_remote.json says "tailscale_remote": true.
+TAILSCALE_RULE = "LTC Player Tailscale page"
+TAILSCALE_NETS = ("100.64.0.0/10", "100.64.0.0-100.127.255.255")
 
 
-def firewall_rule():
+def firewall_rule(name=FIREWALL_RULE):
     """(exit code, netsh's words) for the installer's firewall rule."""
     try:
         netsh = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
                              "System32", "netsh.exe")
         r = subprocess.run(f'"{netsh}" advfirewall firewall show rule '
-                           f'name="{FIREWALL_RULE}" verbose',
+                           f'name="{name}" verbose',
                            capture_output=True, text=True, timeout=60,
                            errors="replace")
     except subprocess.TimeoutExpired:
@@ -386,6 +390,71 @@ def check_firewall_rule(when):
     NOTES.append(f"{when}: one firewall rule '{FIREWALL_RULE}', TCP 7878, "
                  f"ltcplay.exe, LocalSubnet, profiles "
                  f"{fields.get('profiles', ['?'])[0]}")
+
+
+def check_tailscale_rule(when, want):
+    """The second rule: absent while the setting is off; while it is on,
+    exactly one, inbound, allow, TCP 7878, ltcplay.exe, from and to
+    100.64.0.0/10 only."""
+    rc, out = firewall_rule(TAILSCALE_RULE)
+    if not want:
+        check(rc != 0, f"{when}: the firewall rule '{TAILSCALE_RULE}' is "
+                       f"there though Tailscale access is off: "
+                       f"{out.strip()[:300]!r}")
+        return
+    if not check(rc == 0, f"{when}: no firewall rule named "
+                          f"'{TAILSCALE_RULE}' though Tailscale access is "
+                          f"on: {out.strip()[:300]!r}"):
+        return
+    fields = {}
+    for ln in out.splitlines():
+        k, sep, v = ln.partition(":")
+        if sep:
+            fields.setdefault(k.strip().lower(), []).append(v.strip())
+    n = len(fields.get("rule name", []))
+    check(n == 1, f"{when}: {n} firewall rules named '{TAILSCALE_RULE}'")
+    for k, v in (("direction", ("in",)), ("action", ("allow",)),
+                 ("protocol", ("tcp",)), ("localport", ("7878",)),
+                 ("enabled", ("yes",)), ("remoteip", TAILSCALE_NETS),
+                 ("localip", TAILSCALE_NETS)):
+        got = [x.lower() for x in fields.get(k, [])]
+        check(got and all(x in v for x in got),
+              f"{when}: the Tailscale rule's {k} is {got}, not {v}")
+    prog = [x.lower() for x in fields.get("program", [])]
+    check(prog and all(x.endswith("\\ltcplay.exe") for x in prog),
+          f"{when}: the Tailscale rule is not for ltcplay.exe only: {prog}")
+    NOTES.append(f"{when}: one firewall rule '{TAILSCALE_RULE}', TCP 7878, "
+                 f"remote {fields.get('remoteip', ['?'])[0]}, local "
+                 f"{fields.get('localip', ['?'])[0]}")
+
+
+def save_tailscale_on():
+    path = os.path.join(LOCAL, "ltcplay_remote.json")
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        doc = {}
+    doc["tailscale_remote"] = True
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2)
+
+
+def tailscale_card_check():
+    """The engine with Tailscale access on but no Tailscale here: its card
+    reads the rule as present and nothing listens for Tailscale."""
+    st, body = get("/api/remote/tailscale", timeout=40)
+    try:
+        card = json.loads(body) if st == 200 else {}
+    except ValueError:
+        card = {}
+    check(card.get("on") is True and card.get("listening") is None and
+          (card.get("firewall") or {}).get("state") == "present",
+          f"the Tailscale card does not say: on, not listening (no "
+          f"Tailscale here), rule present: {st} {body[:600]!r}")
+    if card:
+        NOTES.append(f"Tailscale card: {card.get('head')}: "
+                     f"{' '.join(card.get('bullets') or [])}"[:400])
 
 
 def private_ipv4():
@@ -683,6 +752,7 @@ def main(installer, version=""):
         check("<Priority>4</Priority>" in out and "--task" in out,
               "the sign-in task is not the one LTC Player writes")
         check_firewall_rule("after install")
+        check_tailscale_rule("after install", False)
 
         say("3. self-checks of the installed programs")
         for exe in ("ltcplay.exe", "flamesafe.exe", "ltcplay-deck.exe"):
@@ -826,6 +896,9 @@ def main(installer, version=""):
             print("::warning title=show network::this runner has no "
                   "RFC 1918 address; the show network check is skipped",
                   flush=True)
+        # Remote access over Tailscale switched on before the update: the
+        # update's install adds the second rule (2026-11-12).
+        save_tailscale_on()
         mark = listener.mark()
         rc = install(installer, os.path.join(tmp, "setup-2.log"))
         check(rc == 0, f"the update install failed (exit {rc})")
@@ -867,6 +940,8 @@ def main(installer, version=""):
         NOTES.append("update refreshed the shipped booth notes and kept "
                      "the person's own copy")
         check_firewall_rule("after the update")
+        check_tailscale_rule("after the update", True)
+        tailscale_card_check()
         if net_ip:
             network_check(net_ip, logs)
 
@@ -991,6 +1066,9 @@ def main(installer, version=""):
         rc, out = firewall_rule()
         check(rc != 0, f"the firewall rule '{FIREWALL_RULE}' is still there "
                        f"after uninstall: {out.strip()[:300]!r}")
+        rc, out = firewall_rule(TAILSCALE_RULE)
+        check(rc != 0, f"the firewall rule '{TAILSCALE_RULE}' is still "
+                       f"there after uninstall: {out.strip()[:300]!r}")
     finally:
         for n in ("supervisor", "flamesafe", "engine", "deck"):
             dump(os.path.join(logs, f"{n}.log"), f"{n} log")

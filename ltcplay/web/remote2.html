@@ -155,6 +155,9 @@ body.inactive .tile:not(.armed) .tn, body.inactive .tile:not(.armed) .ts, body.i
 body.inactive #lz-b[data-mode="arm"]{filter:saturate(.3)}
 /* The fuel pump's On only; never Pump off. */
 body.inactive #pm-on{filter:saturate(.3)}
+/* From Tailscale (2026-11-12): the Day tab's purge, laser test and unlock
+   presses never go; shown greyed. Their off presses still work. */
+body.tsl #mo-groups [data-grp],body.tsl [data-m],body.tsl [data-laser],body.tsl #mo-cal-on{opacity:.45}
 /* DAY, when this screen cannot act (signed out, no contact; Run off is
    DAY's normal state, so not then): the steps and their controls go quiet,
    never a Stop, a Disarm, Hazers off or Hold. */
@@ -1024,6 +1027,17 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <div class="pbar"><button class="b green" id="net-save"><svg class="i"><use href="#i-check"/></svg>Save address</button></div>
           <div class="pline" id="net-msg" role="status"></div>
         </div>
+        <!-- Remote access over Tailscale (Jeff, 2026-11-12): off unless
+             turned on here, on the show PC only (Settings row). The engine
+             then also listens on this PC's own Tailscale address, after a
+             restart between shows. Arming and effects never from there. -->
+        <div class="card col" id="ts-card" hidden>
+          <div class="t"><b>Remote access over Tailscale</b><span>Your own device, by its Tailscale address.</span></div>
+          <div class="pline" id="ts-status"><b id="ts-head"></b><ul id="ts-bul" style="margin:4px 0 0 18px;padding:0"></ul></div>
+          <div class="pline" id="ts-facts"></div>
+          <div class="pbar"><button class="b green" id="ts-on"><svg class="i"><use href="#i-power"/></svg>Turn on</button><button class="b redline" id="ts-restart" hidden><svg class="i"><use href="#i-reset"/></svg>Restart the engine</button></div>
+          <div class="pline" id="ts-msg" role="status"></div>
+        </div>
       </div>
       <!-- The fireball timeline (fireball_timeline.py, Jeff 2026-10-30):
            per show file, a start timecode and a duration for each stage.
@@ -1493,6 +1507,7 @@ function showTab(t){
   document.querySelectorAll(".tab").forEach(b => { b.classList.toggle("on", b.dataset.tab === t); b.setAttribute("aria-selected", b.dataset.tab === t ? "true" : "false"); });
   if(t === "settings") loadPlayFrom();
   if(t === "schedule" && ME && ME.local){ loadNetwork(); loadDeckOp(); loadFolders(); }
+  if(t === "schedule" && ME && ME.local) loadTailscale();
   if(t === "users") loadUsers();
   if(t === "schedule"){ fbtOpen(); progFiles(); try{ drawProg(stale()); }catch(e){} if(ME && ME.local && !SE_READ){ SE_READ = true; loadSchedule(); } }
   // 1.0's Programming screen read the outputs when it opened (P13).
@@ -1657,6 +1672,7 @@ function nextStep(st, isStaleNow, local, items){
   if(pch && pch.cleared) return {tone:"warn", icon:"check", text:String((st.preroll.cleared || {}).say || "Rig check passed. Press Resume.")};
   if(pch && !pch.continued) return {tone:"bad", icon:"warn", text:"Rig check failed. Fix it, or continue."};
   if(st.alert_hold && st.alert_hold.held === true) return {tone:"warn", icon:"warn", text:"Alert holds the show. Acknowledge, then Resume."};
+  if(st.me && st.me.tailscale && st.me.view_only) return {tone:"warn", icon:"user", text:"Tailscale: view only. Stop, Hold, disarm work."};
   if(st.me && st.me.view_only) return {tone:"warn", icon:"user", text:"Signed out: view only. Sign in to control."};
   if(isHeld(st)) return {tone:"warn", icon:"pause", text:"Held. Press Resume to carry on."};
   if(sch.attached && !isLive(st) && prerollLook(st.preroll).checking) return {tone:"warn", icon:"clock", text:"Checking the rig before the show."};
@@ -1683,10 +1699,40 @@ function nextStep(st, isStaleNow, local, items){
 }
 // Signed out (view only), no contact, nothing heard yet, or the show not
 // running: the page's quiet tone. From the engine's status only. Pure.
+// Remote access over Tailscale: what the page says on a press it may not
+// make from there (remote.py TAILSCALE_WORDS says the same).
+const TS_WORDS = "Not from Tailscale. Use the show PC or an iPad.";
+function tsOn(st){
+  const me = (st && st.me) || (typeof ME !== "undefined" && ME) || {};
+  return !!me.tailscale;
+}
+// The Fireball, cleaning and timed purge looks from Tailscale: never ready,
+// with the reason; a hold or a channel under way is cut. A timed purge
+// already running keeps its own words (Stop purge still works).
+// A Day tab press Tailscale may not make: a purge selected or fired, a
+// laser test on, an unlock. Their off forms always go.
+function tsBlocked(route, extra){
+  if(!tsOn(typeof ST !== "undefined" ? ST : null)) return false;
+  const e = extra || {};
+  if(route === "purge-select") return e.on !== false;
+  if(route === "laser-test") return e.on === true;
+  if(route === "lock") return e.on === false;
+  if(route === "purge-fire" || route === "purge-timed") return e.on === true || e.hold === true;
+  return false;
+}
+function tsLook(look, busy){
+  if(!look || !tsOn(typeof ST !== "undefined" ? ST : null) || look.running) return look;
+  look.block = TS_WORDS; look.ok = false;
+  if(busy) look.cut = TS_WORDS;
+  if("na" in look) look.na = !busy;
+  return look;
+}
 // Why a press is not this screen's (review of #175): signed out, sign
 // in; signed in without the right, say so rather than "Sign in".
 function signWhy(st, perm, short){
   const me = (st && st.me) || (typeof ME !== "undefined" && ME) || {};
+  // From Tailscale (2026-11-12): only Start now and Resume, signed in.
+  if(me.tailscale && (perm !== "show" || me.user)) return short ? "Not from Tailscale" : (me.tailscale.words || TS_WORDS);
   if(me.user) return perm === "arm" ? (short ? "Cannot arm" : "Your sign-in cannot arm") : "View only";
   return perm === "arm" ? (short ? "Sign in" : "Sign in to arm") : short ? "Sign in" : "Sign in first";
 }
@@ -2060,6 +2106,7 @@ function renderStale(){
   const calm = inactiveNow(ST, isSt);
   document.body.classList.toggle("inactive", calm);
   document.body.classList.toggle("noact", calm && (!ST || isSt || !!(ST.me && ST.me.view_only)));
+  document.body.classList.toggle("tsl", tsOn(ST));
   try{ fitNextBrand(); }catch(e){}
   if(isSt) drawSlotStale(); else if($("alert").classList.contains("stale")){ $("alert").className = ""; renderAlertSlot(); }
   renderMini(isSt);
@@ -2538,7 +2585,7 @@ async function fbPoll(){
 }
 function fbAny(){ return Object.keys(FB_ON).some(k => FB_ON[k]); }
 function fbNow(){
-  return fireballState(FB, FB_ON, isStale(Date.now(), LAST_OK, 1.0), !!(ST && ST.me && ST.me.view_only));
+  return tsLook(fireballState(FB, FB_ON, isStale(Date.now(), LAST_OK, 1.0), !!(ST && ST.me && ST.me.view_only)), fbAny());
 }
 // Everything off here, now, and the engine told: this page's run ends and
 // can never start again (an all off is never refused).
@@ -2701,7 +2748,7 @@ const TP_SAY_MS = 6000;
 function tpSay(text){ TP_MSG = {text:String(text || ""), at:Date.now()}; renderTimedPurge(); }
 function tpSettings(){ return (MO && MO.timed_settings) || {presets:[2, 5, 10, 20, 30], default_s:5, max_s:30, min_s:1}; }
 function tpNow(){
-  return timedPurgeLook(MO, TP_SECS, TP_HOLD, isStale(Date.now(), LAST_OK, 1.0), !!(ST && ST.me && ST.me.view_only));
+  return tsLook(timedPurgeLook(MO, TP_SECS, TP_HOLD, isStale(Date.now(), LAST_OK, 1.0), !!(ST && ST.me && ST.me.view_only)), TP_HOLD);
 }
 function tpLetGo(why){
   const had = TP_HOLD, run = TP_RUN;
@@ -3528,6 +3575,46 @@ $("net-restart").addEventListener("click", async () => {
   catch(e){ $("net-msg").textContent = e.message; }
 });
 $("net-pick").addEventListener("change", () => { if($("net-pick").value) $("net-addr").value = $("net-pick").value; });
+// Remote access over Tailscale (show PC only): a headline, up to three
+// bullets, and the facts: the address to type, listening, the firewall rule.
+let TS_VIEW = null;
+function renderTailscale(v){
+  TS_VIEW = v || {};
+  setText($("ts-head"), TS_VIEW.head || "");
+  $("ts-bul").innerHTML = (TS_VIEW.bullets || []).slice(0, 3).map(b => `<li>${esc(b)}</li>`).join("");
+  const fw = (TS_VIEW.firewall || {}).state || "";
+  const fwWord = fw === "present" ? "yes" : fw === "none" ? "not needed" : fw ? "no" : "not checked";
+  $("ts-facts").innerHTML = [
+    TS_VIEW.url ? `Address: <b>${esc(TS_VIEW.url)}</b>` : "Address: none yet",
+    "Listening: " + (TS_VIEW.listening ? "yes" : "no"),
+    "Firewall rule: " + fwWord].map(t => `<div>${t}</div>`).join("");
+  const may = mayRow(ST, "settings");
+  $("ts-on").innerHTML = `<svg class="i"><use href="#i-power"/></svg>` + (TS_VIEW.on ? "Turn off" : "Turn on");
+  $("ts-on").className = "b " + (TS_VIEW.on ? "redline" : "green");
+  if(TS_VIEW.on) $("ts-on").dataset.safe = ""; else delete $("ts-on").dataset.safe;
+  // Off only takes something away: never held back by the Settings row.
+  $("ts-on").disabled = !TS_VIEW.on && !may;
+  const r = TS_VIEW.restart || {};
+  $("ts-restart").hidden = !r.needed;
+  $("ts-restart").disabled = !r.offered || !may;
+  $("ts-restart").title = r.why || "";
+}
+async function loadTailscale(){
+  try{ renderTailscale(await getJSON("/api/remote/tailscale", 3000)); }
+  catch(e){ $("ts-msg").textContent = e.message; }
+}
+$("ts-on").addEventListener("click", async () => {
+  const on = !(TS_VIEW && TS_VIEW.on);
+  if(on && !(await confirmBox("Turn on Tailscale access?", "Signed out it is view only. Arming and effects never work from there. Applies after a restart.", "Yes, turn on", "green"))) return;
+  try{ const j = await post("/api/remote/tailscale", {on:on}); $("ts-msg").textContent = j.note || ""; renderTailscale(j); }
+  catch(e){ $("ts-msg").textContent = e.message; }
+});
+$("ts-restart").addEventListener("click", async () => {
+  const sure = await confirmBox("Restart the engine?", "Only between shows, every flame group disarmed. flamesafe and the Stream Deck keep running.", "Yes, restart", "green");
+  if(!sure) return;
+  try{ const j = await post("/api/remote/reload-engine", {}); $("ts-msg").textContent = j.text; }
+  catch(e){ $("ts-msg").textContent = e.message; }
+});
 $("net-save").addEventListener("click", () => saveNetwork($("net-addr").value));
 // Settings changed on disk, and Reload engine.
 function cfgNote(cc){
@@ -3557,6 +3644,7 @@ $("rc-run").addEventListener("click", async () => {
 // The cards on this machine only, as 1.0's whoami.
 function toolsWhoami(){
   $("admin").hidden = !ME.local;
+  $("ts-card").hidden = !ME.local;
   $("deck-op").hidden = !ME.local;
   $("folders").hidden = !ME.local;
   $("info-device").textContent = ME.device || "";
@@ -3749,7 +3837,8 @@ function armShort(text){
   if(/^Keep holding/.test(t)) return "Keep holding...";
   if(/^Arm all: nothing was armed/.test(t)) return "Nothing armed. Tap Details.";
   if(/^Arm all: /.test(t)) return /Not armed:/.test(t) ? "Some groups not armed. Tap Details." : "Arming. Watch the groups.";
-  if(t.indexOf(SIGN_IN_WORDS) >= 0) return "Sign in first.";
+  if(t.indexOf(TS_WORDS) >= 0) return "Not from Tailscale.";
+  if(t.indexOf(SIGN_IN_WORDS) >= 0) return tsOn(typeof ST !== "undefined" ? ST : null) ? "Not from Tailscale." : "Sign in first.";
   if(t.indexOf(ARMING_OFF) >= 0) return "Arming from screens is off.";
   if(/no contact/i.test(t)) return "Not armed: no contact.";
   if(/real state is not known/.test(t)) return "Not armed: flame state unknown.";
@@ -5010,6 +5099,9 @@ async function moPress(route, extra, msgEl){
   // Every press on this page goes through here: in Arrange mode the ones
   // that arm, fire, lock or unlock never leave the page (Jeff, 2026-10-19).
   if(arrangeBlocked(route, extra)) return;
+  // From Tailscale a purge, a laser test or an unlock never leaves the
+  // page (the engine refuses them too): said in place.
+  if(tsBlocked(route, extra)){ el.textContent = TS_WORDS; return null; }
   try{
     const j = await post("/api/remote/" + route, moActor(extra));
     el.textContent = j.text || "Done.";
@@ -5131,7 +5223,7 @@ async function wcPoll(){
   WC_TIMER = setTimeout(wcPoll, 500);
 }
 function wcNow(){
-  return cleaningState(WC, WC_HOLD, isStale(Date.now(), LAST_OK, 1.0), !!(ST && ST.me && ST.me.view_only));
+  return tsLook(cleaningState(WC, WC_HOLD, isStale(Date.now(), LAST_OK, 1.0), !!(ST && ST.me && ST.me.view_only)), WC_HOLD);
 }
 function wcLetGo(why){
   const had = WC_HOLD, run = WC_RUN;

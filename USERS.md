@@ -122,8 +122,13 @@ the ticks there. These are the proposed defaults:
 | Unlock a machine, turn a laser test on | yes | yes | no | never |
 | Tick the Morning and Shutdown checklists | yes | yes | no | never |
 | Show files and setup (show folder, choosing the show, opening a folder, schedule, tonight's list, layout) | yes | yes | no | never |
-| Settings (show network, arming from a screen, moving Programming playback from an iPad while flames follow it, audit upload, idle sign out, sign out after the last show, the play-from cues, the fireball timeline) | yes | no | no | never |
+| Settings (show network, remote access over Tailscale, arming from a screen, moving Programming playback from an iPad while flames follow it, audit upload, idle sign out, sign out after the last show, the play-from cues, the fireball timeline) | yes | no | no | never |
 | Users (add, remove, passwords, roles, lockouts) | yes | no | no | never |
+
+From Tailscale (OPERATOR.md, "Open the page over Tailscale") only Start
+now, Start at a cue and Resume are ever allowed beyond the safety presses,
+and only signed in. Arming and every effect are never allowed from there,
+whatever this table says.
 
 "Signed out" is view only (your field report, 2026-10-28). It replaces
 the 2026-10-07 rule that nobody needed to sign in to run or arm. The

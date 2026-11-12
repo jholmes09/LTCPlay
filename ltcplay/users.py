@@ -120,7 +120,8 @@ PERMS = (
     ("checklist", "Tick the Morning and Shutdown checklists"),
     ("show_files", "Show files and setup: the show folder, the schedule, "
                    "reload, the machine layout"),
-    ("settings", "Settings: the show network, arming from a screen, live "
+    ("settings", "Settings: the show network, remote access over "
+                 "Tailscale, arming from a screen, live "
                  "flame programming, moving Programming playback from an "
                  "iPad while flames follow it, the timecode input, the "
                  "announcement output, the audit upload, idle sign out, "
@@ -195,6 +196,9 @@ REMOTE_ROUTES = {
     "loop": "show", "follow": "show",
     "arm-hold": "arm",
     "network": "settings", "screen-arming": "settings",
+    # Remote access over Tailscale (2026-11-12): turning it on is the
+    # Settings row; off only takes something away (classify).
+    "tailscale": "settings",
     # Check the rig (preroll.py): an admin's, between shows.
     "preroll-check": "settings",
     # Continue anyway after a failed rig check: a run press (Show row).
@@ -336,6 +340,9 @@ def classify(route, body=None):
             return "safety"
         if name == "screen-arming" and body.get("on") is False:
             # Switching arming from a screen OFF only takes risk away.
+            return "safety"
+        if name == "tailscale" and body.get("on") is False:
+            # Remote access over Tailscale OFF only takes something away.
             return "safety"
         if name == "live-flame" and body.get("on") is not True:
             # Live flame programming OFF (anything but the JSON word true

@@ -174,6 +174,24 @@ networks: either turn that off for this network, or make it Private
 Network profile type: Private network). Never put remote access software,
 a tunnel or a port forward on the show PC.
 
+## Open the page over Tailscale
+
+**Off unless you turn it on.**
+
+- Rack screen, Schedule tab, "Remote access over Tailscale".
+- Turn on, then Restart the engine between shows.
+- Use this installer again for the firewall rule.
+
+The installer adds a second Windows Firewall rule, "LTC Player Tailscale
+page", only while that setting is on: port 7878, for ltcplay.exe only,
+from 100.64.0.0/10 only, to this PC's own 100.64.0.0/10 address only (the
+Tailscale adapter), on any network type. Every install deletes it first,
+so after turning the setting off, using the installer again removes it;
+uninstall removes it too. Nothing else is opened. The engine listens on
+this PC's own Tailscale address only (found with Tailscale's own
+`tailscale ip -4` and this PC's address list), never on every interface.
+Tailscale Serve and Funnel are proxies and stay refused.
+
 ## The booth alert notes
 
 The installer ships the booth speaker's recorded alert notes into the

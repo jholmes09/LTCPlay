@@ -23,6 +23,14 @@
 ;     install, so an update leaves exactly one, and deleted on uninstall.
 ;     The engine itself still listens only on 127.0.0.1 and the one show
 ;     network address saved on the rack screen, never on every interface.
+;   - Remote access over Tailscale (2026-11-12): a SECOND rule, "LTC Player
+;     Tailscale page", only while ltcplay_remote.json says
+;     "tailscale_remote": true (the rack screen's Schedule tab turns it on
+;     and off): inbound TCP 7878, for ltcplay.exe only, from 100.64.0.0/10
+;     only, to this PC's own 100.64.0.0/10 address only (the Tailscale
+;     adapter), on every profile. It is deleted on every install, added
+;     again only while the setting is on, and deleted on uninstall. Nothing
+;     else is opened.
 ;   - Ships the booth alert notes (packaging\windows\booth\booth_*.wav)
 ;     into {app}\Booth notes, emptied first, so an update refreshes every
 ;     note and leaves no old one behind. A person's own copy of a note
@@ -137,11 +145,14 @@ Filename: "{app}\LTC Player.exe"; Parameters: "--install-task --quiet"; Tasks: a
 Filename: "{app}\LTC Player.exe"; Parameters: "--remove-task --quiet"; Tasks: not autostart; Flags: waituntilterminated
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""LTC Player rack page"""; Flags: runhidden waituntilterminated; StatusMsg: "Setting the firewall rule for the rack page..."
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""LTC Player rack page"" dir=in action=allow protocol=TCP localport=7878 remoteip=localsubnet profile=any program=""{app}\ltcplay.exe"" enable=yes description=""LTC Player: the rack page on port 7878, from this PC's own subnet only"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""LTC Player Tailscale page"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""LTC Player Tailscale page"" dir=in action=allow protocol=TCP localport=7878 remoteip=100.64.0.0/10 localip=100.64.0.0/10 profile=any program=""{app}\ltcplay.exe"" enable=yes description=""LTC Player: the rack page on port 7878, from Tailscale (100.64.0.0/10) only"""; Flags: runhidden waituntilterminated; Check: TailscaleOn
 Filename: "{app}\LTC Player.exe"; Parameters: "--start --quiet"; Flags: runasoriginaluser nowait; StatusMsg: "Starting LTC Player..."
 
 [UninstallRun]
 Filename: "{app}\LTC Player.exe"; Parameters: "--remove-task --quiet"; Flags: waituntilterminated; RunOnceId: "RemoveTask"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""LTC Player rack page"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveFirewallRule"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""LTC Player Tailscale page"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveTailscaleRule"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\Installers"
@@ -155,6 +166,30 @@ const
 function ControlDir: String;
 begin
   Result := ExpandConstant('{commonappdata}\LTC Player');
+end;
+
+{ Remote access over Tailscale: true only while ltcplay_remote.json (in
+  %LOCALAPPDATA%\ltcplay, the account that runs Setup) says
+  "tailscale_remote": true. Anything else, a missing or unreadable file
+  included, is false: the second firewall rule is then not added. Only
+  read, never written. }
+function TailscaleOn: Boolean;
+var
+  Body: AnsiString;
+  S, Base: String;
+begin
+  Result := False;
+  Base := GetEnv('LOCALAPPDATA');
+  if Base = '' then Exit;
+  if LoadStringFromFile(AddBackslash(Base) + 'ltcplay\ltcplay_remote.json', Body) then
+  begin
+    S := Lowercase(String(Body));
+    StringChangeEx(S, ' ', '', True);
+    StringChangeEx(S, #9, '', True);
+    StringChangeEx(S, #13, '', True);
+    StringChangeEx(S, #10, '', True);
+    Result := Pos('"tailscale_remote":true', S) > 0;
+  end;
 end;
 
 function NotRunFromInstallers: Boolean;

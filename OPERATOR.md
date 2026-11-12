@@ -2657,6 +2657,31 @@ disarms with one press. Disarm on the page is one press. The journal says which 
 physical key switch on the flame system is still the master: off means
 nothing fires.
 
+### Open the page over Tailscale
+
+**Off unless you turn it on.**
+
+- Schedule tab, "Remote access over Tailscale", Turn on.
+- Then Restart the engine, between shows, flames disarmed.
+- Use the installer again: it adds the firewall rule.
+
+**Type the address the card gives.**
+
+- Like `http://100.101.102.103:7878/`, nothing else works.
+- The card says: listening, and the firewall rule.
+- No Tailscale running: the card says so, nothing listens.
+
+**Less from Tailscale than an iPad.**
+
+- Signed out: view, Stop, Hold, Acknowledge, disarm.
+- Start now and Resume: signed in only.
+- Never arming, purges, hazers, pump, fireball, lasers.
+
+Turning it off: Turn off, Restart the engine, use the installer again
+(that removes the rule). Tailscale Serve and Funnel are still refused.
+Every press from Tailscale is in the audit log as "Tailscale at
+<address>".
+
 ## What it will not do
 
 It will not play audio and it will not start on a schedule.
