@@ -727,9 +727,62 @@ MUTATIONS = [
 
  ("tailscale: turning it off leaves the door open", "ltcplay/remote.py",
   "        if not on:\n"
-  "            # Off closes the Tailscale door now, during a show too: it",
+  "            # Off closes the Tailscale door FIRST, during a show too: it",
   "        if False:\n"
-  "            # Off closes the Tailscale door now, during a show too: it"),
+  "            # Off closes the Tailscale door FIRST, during a show too: it"),
+
+ ("tailscale: Tailscale is a default screen", "ltcplay/schedule_service.py",
+  "DEFAULT_SCREENS = (\"Rack screen\", \"Stream Deck\", \"Phone\", \"iPad\")",
+  "DEFAULT_SCREENS = (\"Rack screen\", \"Stream Deck\", \"Phone\", \"iPad\",\n"
+  "                   \"Tailscale\")"),
+
+ ("tailscale: an off that cannot be saved is not said", "ltcplay/remote.py",
+  "            if on:\n"
+  "                return 409, {\"error\": f\"{e} Nothing was changed.\"}",
+  "            return 409, {\"error\": f\"{e} Nothing was changed.\"}"),
+
+ ("tailscale: closing never stops the door's loop", "ltcplay/web.py",
+  "        threading.Thread(target=lambda: (door.shutdown(),\n"
+  "                                         door.server_close()),",
+  "        threading.Thread(target=lambda: (door.server_close(),),"),
+
+ ("tailscale: a closed door still takes a connection", "ltcplay/web.py",
+  "        if door.tailscale_closed:\n            _sr(request)\n            return\n",
+  ""),
+
+ ("tailscale: a flame group asked for does not count", "ltcplay/remote.py",
+  "        if any(g.get(\"armed\") != \"disarmed\" or g.get(\"wanted\")\n"
+  "               for g in groups):\n"
+  "            return TAILSCALE_ARMED_WORDS",
+  "        if any(g.get(\"armed\") != \"disarmed\"\n"
+  "               for g in groups):\n"
+  "            return TAILSCALE_ARMED_WORDS"),
+
+ ("tailscale: a reserved pump run does not count", "ltcplay/remote.py",
+  "            busy.append(pm.run is not None or bool(pm.on()))",
+  "            busy.append(bool(pm.on()))"),
+
+ ("tailscale: the Fireball page held with nothing on does not count",
+  "ltcplay/remote.py",
+  "            busy.append(bool(sm.get(\"on\") or sm.get(\"owner\")))",
+  "            busy.append(bool(sm.get(\"on\")))"),
+
+ ("tailscale: a fault in the engine's check lets the press through",
+  "ltcplay/web.py",
+  "            no = None if name in remote_mod.TAILSCALE_ALWAYS_SAFE else (\n"
+  "                403, {\"error\": remote_mod.TAILSCALE_WORDS,",
+  "            no = None if True else (\n"
+  "                403, {\"error\": remote_mod.TAILSCALE_WORDS,"),
+
+ ("tailscale: the scheduler never asks again before the press",
+  "ltcplay/schedule_service.py",
+  "            if gate is not None and kind in (sch.START_NOW, sch.RESUME):",
+  "            if False:"),
+
+ ("tailscale: the engine never hands the scheduler its last check",
+  "ltcplay/remote.py",
+  "        ts_gate = ({\"gate\": self.tailscale_armed_refusal}",
+  "        ts_gate = ({}"),
 
  ("tailscale: closing keeps the open connections", "ltcplay/web.py",
   "    for req in list(getattr(door, \"open_requests\", ())):",

@@ -3084,7 +3084,12 @@ class Remote:
         url = page_url(ts_listen, port) if ts_listen else None
         fw_state, fw_text = self.tailscale_firewall_view()
         restart = None
-        if err:
+        unsaved = getattr(self, "_tailscale_unsaved", "")
+        if unsaved and not ts_listen:
+            head, bullets = "Closed now, setting not saved", [
+                "The settings file could not be written.",
+                "It opens again after a restart."]
+        elif err:
             head, bullets = "Settings file cannot be read", [
                 "Fix ltcplay_remote.json in Settings and logs."]
         elif not on and not ts_listen:
@@ -3177,9 +3182,11 @@ class Remote:
     def set_tailscale(self, body, ctx):
         """POST tailscale {"on": true|false}, on the show PC only
         (LOCAL_ONLY; the role matrix's Settings row to turn it on,
-        users.py). Only the JSON words true and false. Saved here; the
-        engine starts or stops listening on Tailscale at its next restart
-        (Restart the engine, between shows with every flame group
+        users.py). Only the JSON words true and false. Off closes the
+        Tailscale door at once (close_tailscale_door), before anything is
+        saved, during a show too; a save that then fails says so on the
+        card. On is saved here and starts listening at the engine's next
+        restart (Restart the engine, between shows with every flame group
         disarmed, refused during a show)."""
         on = body.get("on")
         if not isinstance(on, bool):
@@ -3187,23 +3194,27 @@ class Remote:
                                   "changed."}
         who = ctx.user or "unsigned"
         screen = ctx.screen
-        try:
-            save_settings(self.folder, tailscale_remote=on)
-        except ValueError as e:
-            return 409, {"error": f"{e} Nothing was changed."}
-        except OSError as e:
-            return 500, {"error": f"ltcplay_remote.json could not be "
-                                  f"written ({e}). Nothing was changed."}
-        self._tailscale_cache = None
         if not on:
-            # Off closes the Tailscale door now, during a show too: it
-            # only takes access away (cold review of #244, M1).
+            # Off closes the Tailscale door FIRST, during a show too: it
+            # only takes access away (cold review of #244, M1). A save that
+            # fails below never leaves it open (verification, m2).
             close = getattr(self, "tailscale_close", None)
             if close is not None:
                 try:
                     close()
                 except Exception:                # noqa: BLE001
                     pass
+        try:
+            save_settings(self.folder, tailscale_remote=on)
+        except (ValueError, OSError) as e:
+            self._tailscale_cache = None
+            if on:
+                return 409, {"error": f"{e} Nothing was changed."}
+            self._tailscale_unsaved = str(e)
+            return 500, dict(self.tailscale_view(), error=(
+                "Tailscale closed now. Setting not saved."), detail=str(e))
+        self._tailscale_unsaved = ""
+        self._tailscale_cache = None
         self._journal(who, screen, "tailscale", "on" if on else "off",
                       f"{who} switched remote access over Tailscale "
                       f"{'ON' if on else 'OFF'} on the {screen}. "
@@ -3958,6 +3969,12 @@ class Remote:
             return 409, {"error": "There is no scheduler running in this "
                                   "engine, so there is no show to press "
                                   "this on. Nothing was changed."}
+        # From Tailscale the armed rule is asked again by the scheduler right
+        # before Start now or Resume is made, after any wait (verification
+        # of #244, m4).
+        ts_gate = ({"gate": self.tailscale_armed_refusal}
+                   if getattr(ctx, "tailscale", False) and
+                   name in TAILSCALE_SIGNED_IN_ROUTES else {})
         try:
             # surface: the press names the surface, not a person on the
             # operator list (Jeff, 2026-10-07). Every other rule the
@@ -3973,11 +3990,12 @@ class Remote:
                     return 409, {"ok": False, "error": text, "text": text}
                 r = svc.operator_press("start-now", who, screen,
                                        confirmed=body.get("confirmed") is True,
-                                       surface=surface, start_at=start_at)
+                                       surface=surface, start_at=start_at,
+                                       **ts_gate)
             else:
                 r = svc.operator_press(name, who, screen,
                                        confirmed=body.get("confirmed") is True,
-                                       surface=surface)
+                                       surface=surface, **ts_gate)
                 if name == "resume":
                     r = self._resume_health(r, who, screen)
         except ValueError as e:

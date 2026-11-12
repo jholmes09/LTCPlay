@@ -2677,10 +2677,12 @@ nothing fires.
 - Start now and Resume: signed in, nothing armed.
 - Never arming, purges, hazers, pump, fireball, lasers.
 
-Start now, Start at a cue and Resume from Tailscale also need the screen
-"Tailscale" on the screen list (`ltcplay_screens.json`; a new list has
-it, an older one does not until you add it), and they wait while anything
-at the rig is armed or running. Every page that only shows things (the
+Start now, Start at a cue and Resume from Tailscale also need an admin to
+add the screen "Tailscale" by hand to the screen list
+(`ltcplay_screens.json` in Settings and logs). No list has it on its own:
+not a new one, not an older one, and not the one used while the file is
+broken. They also wait while anything at the rig is armed or running, and
+are checked again right before the show starts or resumes. Every page that only shows things (the
 show, the schedule, the alerts, the journal lines on the screen) is
 readable by any device on your tailnet that can reach the show PC, signed
 in or not.

@@ -1259,14 +1259,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             no = rm.tailscale_refused(name, body, self._ctx())
         except Exception:                        # noqa: BLE001
-            # No remote to ask: the rule itself, unjournaled.
-            try:
-                why = remote_mod.tailscale_refusal(name, body, self._ctx())
-            except Exception:                    # noqa: BLE001
-                why = None if name in remote_mod.TAILSCALE_ALWAYS_SAFE \
-                    else ("not here", remote_mod.TAILSCALE_WORDS)
-            no = None if why is None else (
-                403, {"error": why[1], "tailscale_refused": why[0]})
+            # The engine could not be asked: refused (fail closed), but
+            # never Stop, Hold or a disarm (verification of #244, m5).
+            no = None if name in remote_mod.TAILSCALE_ALWAYS_SAFE else (
+                403, {"error": remote_mod.TAILSCALE_WORDS,
+                      "tailscale_refused": "not here"})
         if no is None:
             return False
         self._send(*no)

@@ -3742,5 +3742,15 @@
 "tailscale: closing keeps the open connections": "test_tailscale_off_closes_the_door_now",
 "tailscale: a closed door still answers a request inside": "test_tailscale_off_closes_the_door_now",
 "tailscale: wrong passwords from Tailscale lock the name out": "test_tailscale_sign_in_lockout_is_its_own",
-"tailscale: the surface's screen is the iPad's": "test_tailscale_door_refuses_wrong_peer_host_and_proxies"
+"tailscale: the surface's screen is the iPad's": "test_tailscale_door_refuses_wrong_peer_host_and_proxies",
+"tailscale: Tailscale is a default screen": "test_tailscale_needs_the_screen_listed",
+"tailscale: an off that cannot be saved is not said": "test_tailscale_off_closes_the_door_now",
+"tailscale: closing never stops the door's loop": "test_tailscale_off_closes_the_door_now",
+"tailscale: a closed door still takes a connection": "test_tailscale_off_closes_the_door_now",
+"tailscale: a flame group asked for does not count": "test_tailscale_start_waits_while_armed",
+"tailscale: a reserved pump run does not count": "test_tailscale_start_waits_while_armed",
+"tailscale: the Fireball page held with nothing on does not count": "test_tailscale_start_waits_while_armed",
+"tailscale: a fault in the engine's check lets the press through": "test_tailscale_start_waits_while_armed",
+"tailscale: the scheduler never asks again before the press": "test_tailscale_needs_the_screen_listed",
+"tailscale: the engine never hands the scheduler its last check": "test_tailscale_needs_the_screen_listed"
 }

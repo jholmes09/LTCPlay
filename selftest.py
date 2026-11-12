@@ -30601,11 +30601,9 @@ def test_journal_screens_come_from_a_list():
     work = tempfile.mkdtemp()
     now = [_den(S, 17, 30)]
     svc = _svc(S, work, now).start(thread=False)
-    check(svc.screens == ("Rack screen", "Stream Deck", "Phone", "iPad",
-                          "Tailscale")
+    check(svc.screens == ("Rack screen", "Stream Deck", "Phone", "iPad")
           and json.load(open(SV.screens_path(work), encoding="utf-8")) ==
-          {"screens": ["Rack screen", "Stream Deck", "Phone", "iPad",
-                       "Tailscale"]},
+          {"screens": ["Rack screen", "Stream Deck", "Phone", "iPad"]},
           f"the default list is written beside the operators: "
           f"{svc.screens}")
     try:
@@ -30614,8 +30612,7 @@ def test_journal_screens_come_from_a_list():
         check(False, "a screen not on the list was accepted")
     except ValueError as e:
         check("'Laptop' is not on the screen list (Rack screen, Stream Deck, "
-              "Phone, iPad, Tailscale)" in str(e),
-              f"refused with a sentence: {e}")
+              "Phone, iPad)" in str(e), f"refused with a sentence: {e}")
     check(any(r["outcome"] == "refused" and r["screen"] == "Laptop"
               and "Andy" in r["line"] for r in svc.journal),
           "and the refusal is in the journal, with who tried")
@@ -53723,12 +53720,15 @@ class _TsFlames:
     """A flamesafe status for the Tailscale tests: every group as `armed`
     says (default all disarmed), or stale."""
 
-    def __init__(self, armed=("disarmed", "disarmed"), stale=False):
+    def __init__(self, armed=("disarmed", "disarmed"), stale=False,
+                 wanted=()):
         self.armed, self.stale = list(armed), stale
+        self.wanted = set(wanted)
 
     def view(self):
         return {"stale": self.stale, "connected": True, "age_ms": 100,
-                "groups": [{"name": f"g{i}", "armed": a, "wanted": False}
+                "groups": [{"name": f"g{i}", "armed": a,
+                            "wanted": i in self.wanted}
                            for i, a in enumerate(self.armed)]}
 
 
@@ -53779,6 +53779,9 @@ def test_tailscale_start_waits_while_armed():
         starts("armed", RM.TAILSCALE_UNKNOWN_WORDS, "no flame status")
         rm.flame_status = _TsFlames(stale=True)
         starts("armed", RM.TAILSCALE_UNKNOWN_WORDS, "a stale flame status")
+        rm.flame_status = _TsFlames(wanted=(1,))
+        starts("armed", RM.TAILSCALE_ARMED_WORDS,
+               "a flame group asked for, not armed yet")
         rm.flame_status = _TsFlames(("disarmed", "armed"))
         starts("armed", RM.TAILSCALE_ARMED_WORDS, "a flame group armed")
         st, _h, me = _ask(D, "GET", "/api/remote/whoami", client=_TS_PEER,
@@ -53807,9 +53810,15 @@ def test_tailscale_start_waits_while_armed():
         busy = (
             ("hazers", types.SimpleNamespace(on=lambda: {"Hazer 1"})),
             ("pump", types.SimpleNamespace(run=None, on=lambda: True)),
+            # A run reserved, the pump not on yet.
+            ("pump", types.SimpleNamespace(run={"token": "t"},
+                                           on=lambda: False)),
             ("live_flame", types.SimpleNamespace(on=True)),
             ("fireball", types.SimpleNamespace(
                 summary=lambda: {"on": ["fuel"], "owner": None})),
+            # The Fireball page held by a screen, nothing on yet.
+            ("fireball", types.SimpleNamespace(
+                summary=lambda: {"on": [], "owner": "Rack screen"})),
             ("cleaning", types.SimpleNamespace(active=lambda: True)),
             ("fireball_practice", types.SimpleNamespace(state="ready")),
             ("hazer_test", types.SimpleNamespace(on=lambda: True)),
@@ -53832,6 +53841,19 @@ def test_tailscale_start_waits_while_armed():
             finally:
                 setattr(rm, attr, was)
         check(rm.tailscale_armed_refusal() == "", "and with none: nothing")
+        # The engine could not be asked: refused, never Stop or Hold
+        # (verification of #244, m5).
+        was = rm.tailscale_refused
+        rm.tailscale_refused = lambda *a: 1 / 0
+        try:
+            st, _h, out = press("start-now")
+            check(st == 403 and out.get("tailscale_refused") == "not here",
+                  f"a fault in the engine's check refuses: {st} {out}")
+            st, _h, out = press("hold")
+            check(not out.get("tailscale_refused"),
+                  f"but never Hold: {st} {out}")
+        finally:
+            rm.tailscale_refused = was
         # A check that cannot be made refuses.
         rm.flame_status = types.SimpleNamespace(view=lambda: 1 / 0)
         check(rm.tailscale_armed_refusal() == RM.TAILSCALE_UNKNOWN_WORDS,
@@ -53842,6 +53864,95 @@ def test_tailscale_start_waits_while_armed():
               "|| tsArmedWhy(ST)) return null;" in page,
               "the page greys Start now, Resume and Start at a cue with the "
               "engine's words")
+    finally:
+        D.server_close()
+        R.close()
+        shutil.rmtree(udir, ignore_errors=True)
+    print("  ok")
+
+
+def test_tailscale_needs_the_screen_listed():
+    section("remote access over Tailscale (verification of #244, M-a): "
+            "Start now and Resume from Tailscale need \"Tailscale\" added "
+            "to the screen list by hand; a fresh list, an older one and a "
+            "broken one all refuse; the scheduler asks the armed rule "
+            "again right before the press is made (m4)")
+    S = _sched()
+    if S is None:
+        return
+    import shutil
+    from ltcplay import remote as RM
+    from ltcplay import schedule_service as SV
+    from ltcplay import users as U
+    check("tailscale" not in [n.lower() for n in SV.DEFAULT_SCREENS],
+          f"never in the defaults: {SV.DEFAULT_SCREENS}")
+    d = tempfile.mkdtemp()
+    names, _w = SV.load_screens(d)
+    check("Tailscale" not in names, f"a fresh list: {names}")
+    with open(SV.screens_path(d), "w", encoding="utf-8") as fh:
+        json.dump({"screens": ["Rack screen", "Stream Deck", "Phone",
+                               "iPad"]}, fh)
+    names, _w = SV.load_screens(d)
+    check("Tailscale" not in names, f"an older list: {names}")
+    with open(SV.screens_path(d), "w", encoding="utf-8") as fh:
+        fh.write("{broken")
+    names, why = SV.load_screens(d)
+    check("Tailscale" not in names and why, f"a broken list: {names}")
+    shutil.rmtree(d, ignore_errors=True)
+    R = _RemoteRig(S)
+    D = _ts_door(R)
+    udir = tempfile.mkdtemp()
+    rm = R.remote
+    try:
+        us = U.Users(udir, hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator")])
+        rm.users = us
+        us.sign_in("Ollie", "", True, "rack", new_password="Ollie-pw-1234")
+        ok, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", False,
+                                     "Tailscale at 100.88.1.2")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        rm.flame_status = _TsFlames()
+
+        def press(name):
+            return _ask(D, "POST", "/api/remote/" + name,
+                        {"seen": R.seen(), "confirmed": True},
+                        client=_TS_PEER, headers=hdr)
+        for name in ("start-now", "resume"):
+            st, _h, out = press(name)
+            check(st >= 400 and "screen list" in str(out.get("error")),
+                  f"{name} from Tailscale, the list without it: refused by "
+                  f"the scheduler: {st} {out}")
+        R.svc.screens = tuple(R.svc.screens) + ("Tailscale",)
+        st, _h, out = press("start-now")
+        check("screen list" not in str(out),
+              f"added by hand: past the screen list: {st} {out}")
+        # m4: armed meanwhile (after the first check, before the press is
+        # made): refused by the scheduler's own last check.
+        calls = [0]
+
+        def later():
+            calls[0] += 1
+            # The web layer's and the engine's checks at entry see
+            # nothing armed; the scheduler's last one does.
+            return "" if calls[0] <= 2 else RM.TAILSCALE_ARMED_WORDS
+        rm.tailscale_armed_refusal = later
+        n0 = len(list(R.svc.journal))
+        st, _h, out = press("start-now")
+        check(calls[0] >= 3 and out.get("ok") is False and
+              RM.TAILSCALE_ARMED_WORDS in str(out.get("text") or
+                                              out.get("error")),
+              f"something armed while Start now was on its way: refused "
+              f"right before it was made: {st} {out}")
+        check(any(r.get("outcome") == "refused" and
+                  RM.TAILSCALE_ARMED_WORDS in str(r.get("text"))
+                  for r in list(R.svc.journal)[n0:]), "and journaled")
+        del rm.tailscale_armed_refusal
+        # The scheduler's gate itself: a sentence or a fault refuses.
+        for gate in (lambda: "x is armed", lambda: 1 / 0):
+            r = R.svc.operator_press("resume", "Ollie", "Tailscale",
+                                     surface=True, gate=gate)
+            check(r.get("ok") is False and "Resume was refused" in
+                  r.get("text", ""), f"the gate refuses Resume: {r}")
     finally:
         D.server_close()
         R.close()
@@ -53924,7 +54035,55 @@ def test_tailscale_off_closes_the_door_now():
               "this PC's own door is untouched")
         check(web_mod.close_tailscale_door(h) is False,
               "closing again does nothing")
+        # The door's own loop has ended, and a connection the operating
+        # system had already taken is dropped, never handled (m3).
+        t0 = time.time()
+        while not door._BaseServer__is_shut_down.is_set() and \
+                time.time() - t0 < 5:
+            time.sleep(0.02)
+        check(door._BaseServer__is_shut_down.is_set(),
+              "the door's serve loop has stopped")
+        a, b = _so.socketpair()
+        door.process_request(a, ("100.88.1.2", 5))
+        b.settimeout(2)
+        try:
+            got = b.recv(10)
+        except _so.timeout:
+            got = None
+        check(got == b"" and a not in door.open_requests,
+              f"a request reaching a closed door is dropped: {got!r}")
+        b.close()
     finally:
+        if door is not None:
+            door.server_close()
+        h.server_close()
+    # Off when the setting cannot be saved: the door is closed all the
+    # same, and the card says so (verification of #244, m2).
+    work2 = tempfile.mkdtemp()
+    RM.save_settings(work2, tailscale_remote=True)
+    web_mod.ThreadingHTTPServer = Rec
+    try:
+        h = web_mod.serve(folder, port=0, bind="127.0.0.1",
+                          remote_folder=work2, tailscale="100.101.102.103")
+    finally:
+        web_mod.ThreadingHTTPServer = real
+    door = h.tailscale_door_server
+    saver = RM.save_settings
+
+    def broken(*a, **k):
+        raise OSError("disk full")
+    RM.save_settings = broken
+    try:
+        code, out = h.remote.set_tailscale({"on": False},
+                                           RM.Ctx(True, "127.0.0.1"))
+        check(code == 500 and door.tailscale_closed and
+              h.tailscale_door_server is None and
+              out.get("head") == "Closed now, setting not saved" and
+              out.get("listening") is None,
+              f"a save that fails never leaves the door open, and says "
+              f"so: {code} {out}")
+    finally:
+        RM.save_settings = saver
         if door is not None:
             door.server_close()
         h.server_close()
@@ -115127,6 +115286,7 @@ if __name__ == "__main__":
         test_tailscale_start_waits_while_armed,
         test_tailscale_off_closes_the_door_now,
         test_tailscale_sign_in_lockout_is_its_own,
+        test_tailscale_needs_the_screen_listed,
         test_remote_controls_reach_the_same_paths_and_journal_who_and_where,
         test_deck_fix_round_2_abort_reset_and_disarm,
         test_deck_presses_reach_the_engine_conductor,
