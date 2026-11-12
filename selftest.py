@@ -79367,6 +79367,443 @@ def test_audit_upload_retries_resumes_and_waits_for_the_ack():
           "kept beside it and refused; nothing is overwritten")
 
 
+def test_journal_upload_sends_closed_nights_and_waits_for_the_ack():
+    section("night journal upload (Jeff, 2026-11-12): off until switched "
+            "on, sends each CLOSED night's journal, machine log and summary "
+            "whole with its SHA-256, an incomplete night marked so with its "
+            "gaps, never an open night, an incident folder or anything "
+            "else; marked sent only on the server's acknowledgement; "
+            "retried with backoff; an unacknowledged night file is never "
+            "pruned; the audit upload is untouched")
+    S = _sched()
+    if S is None:
+        return
+    import hashlib
+    import json as _j
+    import tempfile
+    import types
+    from datetime import timedelta
+    from ltcplay import auditsend as A
+    from ltcplay import journal as J
+    from ltcplay import remote as RM
+    settings = tempfile.mkdtemp()
+    nights = os.path.join(settings, "nights")
+    now = [_den(S, 13, 0, d=(2026, 11, 7))]
+    for day in (6, 7, 8, 9):
+        now[0] = _den(S, 13, 0, d=(2026, 11, day))
+        b = _book(J, nights, now, durable=False)
+        b.record(actor="scheduler", action="fire", outcome="fired",
+                 reason="FIRED", show=1,
+                 text="Show 1 started on schedule at 13:00.")
+        now[0] += timedelta(seconds=444)
+        b.record(actor="system", action="SHOW_ENDED", outcome="done",
+                 reason="DONE", show=1, text="Show 1 finished at 13:07.")
+        if day != 6:
+            # The 6th never got its summary (a crash, not yet looked back
+            # on); the 9th has one written on request, but is still open.
+            b.write_summary(f"2026-11-0{day}", state="OFF")
+    # The 8th lost its last journal line: the files disagree.
+    jp = os.path.join(nights, J.journal_name("2026-11-08"))
+    keep = open(jp, "rb").read().splitlines(True)[:-1]
+    with open(jp, "wb") as fh:
+        fh.write(b"".join(keep))
+    os.makedirs(os.path.join(nights, "incidents",
+                             "incident_2026-11-08_130500"))
+    with open(os.path.join(nights, "incidents",
+                           "incident_2026-11-08_130500", "journal.txt"),
+              "w") as fh:
+        fh.write("an incident\n")
+    with open(os.path.join(nights, "notes.txt"), "w") as fh:
+        fh.write("not a night file")
+    sent, answers = [], []
+
+    def transport(url, data, headers, timeout):
+        sent.append((url, data, dict(headers)))
+        a = answers.pop(0) if answers else "ack"
+        if a == "fail":
+            return 503, "busy Bearer s3cret-token-xyz"
+        if a == "badack":
+            return 200, _j.dumps({"ok": True, "sha256": "0" * 64})
+        return 200, _j.dumps({"ok": True, "sha256": headers["X-LTC-SHA256"]})
+    wall = [time.mktime((2026, 11, 9, 20, 0, 0, 0, 0, -1))]
+    mono = [0.0]
+    up = A.JournalUploader(nights, settings, night=lambda: "2026-11-09",
+                           transport=transport, wall=lambda: wall[0],
+                           clock=lambda: mono[0])
+    check(up.run(force=True) == 0 and not sent,
+          "off by default: nothing is sent")
+    A.save_config(settings, {"enabled": True, "token": "s3cret-token-xyz",
+                             "url": "https://audit.example.com/ltc"})
+    check(up.closed_nights() == ["2026-11-07", "2026-11-08"],
+          f"the night still open, and a night without its summary, are "
+          f"never closed: {up.closed_nights()}")
+    answers[:] = ["fail"]
+    check(up.run() == 0 and len(sent) == 1 and not up.sent() and
+          up.last_error == "HTTP 503: busy Bearer [hidden]",
+          f"a failure marks nothing, and the token is never said: "
+          f"{up.last_error!r}")
+    check(up.run() == 0 and len(sent) == 1, "it waits out its backoff")
+    mono[0] += A.BACKOFF_S[0] + 1
+    answers[:] = ["badack"]
+    check(up.run() == 0 and not up.sent(),
+          "an answer that does not acknowledge the checksum marks nothing")
+    mono[0] += A.BACKOFF_S[1] + 1
+    went = up.run()
+    names = [h["X-LTC-File"] for _u, _d, h in sent[2:]]
+    check(went == 6 and names == [
+        "night_2026-11-07.journal.txt", "night_2026-11-07.jsonl",
+        "night_2026-11-07.summary.md", "night_2026-11-08.journal.txt",
+        "night_2026-11-08.jsonl", "night_2026-11-08.summary.md"],
+        f"each closed night's three files, oldest first: {names}")
+    for _u, data, h in sent[2:]:
+        name = h["X-LTC-File"]
+        check(data == open(os.path.join(nights, name), "rb").read() and
+              h["X-LTC-SHA256"] == hashlib.sha256(data).hexdigest() and
+              h["Authorization"] == "Bearer s3cret-token-xyz" and
+              h["X-LTC-Kind"] == "night-journal" and
+              h["X-LTC-Night"] == name[6:16],
+              f"{name} goes whole with its checksum")
+    by = {h["X-LTC-File"]: h for _u, _d, h in sent[2:]}
+    m7 = _j.loads(by["night_2026-11-07.jsonl"]["X-LTC-Meta"])
+    m8 = _j.loads(by["night_2026-11-08.summary.md"]["X-LTC-Meta"])
+    check(by["night_2026-11-07.jsonl"]["X-LTC-Incomplete"] == "false" and
+          m7 == {"gaps": [], "incomplete": False, "kind": "jsonl",
+                 "night": "2026-11-07"},
+          f"a whole night says so: {m7}")
+    check(by["night_2026-11-08.summary.md"]["X-LTC-Incomplete"] == "true"
+          and m8["incomplete"] is True and m8["kind"] == "summary.md",
+          f"a night whose files disagree is sent marked incomplete: {m8}")
+    gapped = {"incomplete": True, "gaps": [{
+        "from": "2026-11-09T13:19:04-07:00", "to": "2026-11-09T20:31:10-07:00",
+        "seconds": 26526.0, "why": "no line while show 4 ran"}],
+        "problems": ["x"], "logging": "Logging: INCOMPLETE"}
+    up2 = A.JournalUploader(nights, settings, night=lambda: "2026-11-09",
+                            transport=transport)
+    sent.clear()
+    answers[:] = ["fail"]
+    up2.send_one("night_2026-11-07.jsonl", A.load_config(settings)[0],
+                 gapped)
+    check(sent[0][2]["X-LTC-Meta"] ==
+          '{"gaps":[{"from":"2026-11-09T13:19:04-07:00","seconds":26526.0,'
+          '"to":"2026-11-09T20:31:10-07:00","why":"no line while show 4 '
+          'ran"}],"incomplete":true,"kind":"jsonl","night":"2026-11-07"}',
+          f"the gap list goes in the metadata: {sent[0][2]['X-LTC-Meta']}")
+    sent.clear()
+    check(set(up.sent()) == set(names) and
+          all(up.sent()[n]["sha256"] == hashlib.sha256(open(os.path.join(
+              nights, n), "rb").read()).hexdigest() for n in names) and
+          up.sent()["night_2026-11-08.jsonl"]["incomplete"] is True,
+          f"each file is recorded sent with its checksum: {up.sent()}")
+    check(up.run(force=True) == 0 and not sent,
+          "a night acknowledged is never sent again; the open night, the "
+          "incident folder and other files never at all")
+    st = up.status()
+    check(st["pending_nights"] == [] and "s3cret" not in _j.dumps(st) and
+          st["incomplete_sent"] == ["night_2026-11-08.journal.txt",
+                                    "night_2026-11-08.jsonl",
+                                    "night_2026-11-08.summary.md"],
+          f"the status, never the token: {st}")
+    check(up.send_one("../ltcplay_audit.json", A.load_config(settings)[0])
+          == (False, "not a night journal file") and
+          up.send_one("incidents/x.jsonl", A.load_config(settings)[0])
+          == (False, "not a night journal file"),
+          "nothing but a night file's own name is ever read")
+    # The audit status carries the night journal's beside the audit's.
+    view = RM.Remote.audit_view(types.SimpleNamespace(
+        audit=None, uploader=None, journal_uploader=up, _chain_said=None))
+    check(view["journal_upload"]["pending"] == 0 and view["upload"] is None,
+          f"the Users screen's audit card shows the night journal too: "
+          f"{view}")
+    # Wired in by the engine, beside the audit upload, with the
+    # scheduler's own nights folder and night.
+    from ltcplay import web as W
+    httpd = W.serve(tempfile.mkdtemp(), port=0, bind="127.0.0.1",
+                    remote_folder=tempfile.mkdtemp())
+    try:
+        httpd.schedule = types.SimpleNamespace(
+            logbook=types.SimpleNamespace(folder=nights),
+            _night=lambda: "2026-11-09")
+        W._attach_accounts(httpd, users_seed=[("Jeff", "admin")],
+                           transport=transport)
+        ju = httpd.remote.journal_uploader
+        check(isinstance(ju, A.JournalUploader) and ju.folder == nights and
+              ju.open_night() == "2026-11-09",
+              f"the engine starts the night journal upload: {ju}")
+    finally:
+        try:
+            httpd.remote.journal_uploader.stop()
+            httpd.remote.uploader.stop()
+        except Exception:
+            pass
+        httpd.server_close()
+    # The promise, wherever it is said (deliberately changed 2026-11-12).
+    here = os.path.dirname(os.path.abspath(__file__))
+
+    def text_of(*parts):
+        return open(os.path.join(here, *parts), encoding="utf-8").read()
+    check("- The audit log and the night journal go only to your own "
+          "server.\n  Nothing else is read or sent, never a password or "
+          "token.\n" in text_of("USERS.md"),
+          "USERS.md says what is sent, and nothing else")
+    check("What it sends: the audit log and the night journal, only to "
+          "Jeff's own\nserver; nothing else is read or sent, never a "
+          "password or token.\n" in A.__doc__,
+          "auditsend.py says the same")
+    check("journal (server, shared token, time, days kept; they go only to "
+          "your own\n  server, nothing else is read or sent, never a "
+          "password or token)" in text_of("OPERATOR.md"),
+          "OPERATOR.md says the same")
+    check('<label><input type="checkbox" id="au-en"> Send the audit log and '
+          'the night journal to the server every night</label>' in
+          text_of("ltcplay", "web", "remote2.html"),
+          "the setting says what it sends")
+    # Pruning: once the upload has sent anything, a night file the server
+    # has not acknowledged stays, whatever its age.
+    now[0] = _den(S, 13, 0, d=(2027, 6, 1))
+    c = _book(J, nights, now, durable=False)
+    gone = c.prune(now[0].date())
+    check(sorted(gone) == sorted(names + ["incident_2026-11-08_130500"])
+          and all(os.path.exists(os.path.join(nights, f(n))) for n in (
+              "2026-11-06", "2026-11-09") for f in (J.machine_name,
+                                                   J.journal_name)),
+          f"past keep_days: acknowledged files go, unacknowledged ones "
+          f"stay: {gone}")
+    print("  ok")
+
+
+def test_audit_receiver_takes_the_night_journal():
+    section("audit receiver (tools/audit_receiver.py): takes the night "
+            "journal files beside the audit days, checks the SHA-256, keeps "
+            "them in night-journal/<night>/, acknowledges with the same "
+            "checksum, keeps what the PC said about an incomplete night, "
+            "never overwrites, refuses path tricks and wrong names; one file "
+            "end to end with the uploader")
+    S = _sched()
+    if S is None:
+        return
+    import hashlib
+    import json as _j
+    import importlib.util as _iu
+    import tempfile
+    from ltcplay import auditsend as A
+    from ltcplay import journal as J
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = _iu.spec_from_file_location(
+        "audit_receiver", os.path.join(here, "tools", "audit_receiver.py"))
+    R = _iu.module_from_spec(spec)
+    spec.loader.exec_module(R)
+    src = open(os.path.join(here, "tools", "audit_receiver.py")).read()
+    check("import ltcplay" not in src and "from ltcplay" not in src,
+          "the receiver stands alone: one file, the standard library only")
+    store = tempfile.mkdtemp()
+    tok = "s3cret-token-xyz"
+    settings = tempfile.mkdtemp()
+    nights = os.path.join(settings, "nights")
+    now = [_den(S, 13, 0, d=(2026, 11, 8))]
+    b = _book(J, nights, now, durable=False)
+    b.record(actor="scheduler", action="fire", outcome="fired",
+             reason="FIRED", show=1, text="Show 1 started on schedule at "
+                                          "13:00.")
+    b.write_summary("2026-11-08", state="OFF")
+
+    def to_receiver(url, data, headers, timeout):
+        code, doc = R.receive(store, tok, headers, data)
+        return code, _j.dumps(doc)
+    A.save_config(settings, {"enabled": True, "token": tok,
+                             "url": "https://audit.example.com/ltc"})
+    up = A.JournalUploader(nights, settings, night=lambda: "2026-11-09",
+                           transport=to_receiver)
+    check(up.run(force=True) == 3 and len(up.sent()) == 3,
+          f"the receiver acknowledges each night file: {up.last_error}")
+    folder = os.path.join(store, "night-journal", "2026-11-08")
+    check(sorted(os.listdir(folder)) == [
+        "night_2026-11-08.journal.txt", "night_2026-11-08.jsonl",
+        "night_2026-11-08.summary.md"] and all(
+        open(os.path.join(folder, n), "rb").read() ==
+        open(os.path.join(nights, n), "rb").read() for n in os.listdir(
+            folder)),
+        "stored whole in night-journal/<night>/, beside the audit store")
+    idx = [_j.loads(x) for x in open(os.path.join(
+        store, "night-journal", "index.jsonl"))]
+    check(len(idx) == 3 and all(r["incomplete"] is False and
+                                r["night"] == "2026-11-08" for r in idx),
+          f"the index keeps what the PC said: {idx}")
+    ok, out = R.verify_nights(store)
+    check(ok and out == ["ok  night_2026-11-08.journal.txt",
+                         "ok  night_2026-11-08.jsonl",
+                         "ok  night_2026-11-08.summary.md"],
+          f"and the stored files verify: {out}")
+    tampered = os.path.join(folder, "night_2026-11-08.summary.md")
+    keep_bytes = open(tampered, "rb").read()
+    with open(tampered, "ab") as fh:
+        fh.write(b"edited\n")
+    ok, out = R.verify_nights(store)
+    check(not ok and out[2] == "BAD night_2026-11-08.summary.md",
+          f"a stored file changed since is found: {out}")
+    with open(tampered, "wb") as fh:
+        fh.write(keep_bytes)
+    data = b"19:44:12  Andy pressed Stop.\n"
+    sha = hashlib.sha256(data).hexdigest()
+
+    def post(name, body=data, digest=None, token=tok, meta=None):
+        hd = {"Authorization": "Bearer " + token, "X-LTC-File": name,
+              "X-LTC-SHA256": digest or hashlib.sha256(body).hexdigest()}
+        if meta is not None:
+            hd["X-LTC-Meta"] = meta
+        return R.receive(store, tok, hd, body)
+    code, doc = post("night_2026-11-09.journal.txt", meta=_j.dumps(
+        {"incomplete": True, "gaps": [{"from": "13:19:04", "to":
+                                       "20:31:10"}]}))
+    check(code == 200 and doc == {"ok": True, "sha256": sha,
+                                  "incomplete": True},
+          f"an incomplete night is taken and acknowledged: {doc}")
+    last = _j.loads(open(os.path.join(store, "night-journal",
+                                      "index.jsonl")).readlines()[-1])
+    check(last["incomplete"] is True and
+          last["gaps"] == [{"from": "13:19:04", "to": "20:31:10"}],
+          f"and its gaps are kept for the cross-check: {last}")
+    check(post("night_2026-11-09.journal.txt") ==
+          (200, {"ok": True, "sha256": sha, "again": True}),
+          "the same file again is acknowledged again")
+    other = data.replace(b"Stop", b"Stap")
+    code, doc = post("night_2026-11-09.journal.txt", body=other)
+    check(code == 409 and open(os.path.join(
+        store, "night-journal", "2026-11-09",
+        "night_2026-11-09.journal.txt"), "rb").read() == data,
+        "a different file under a stored name is refused; nothing is "
+        "overwritten")
+    check(post("night_2026-11-10.jsonl", digest="0" * 64) ==
+          (400, {"ok": False, "error": "the checksum does not match"}),
+          "a wrong checksum is refused")
+    check(post("night_2026-11-10.jsonl", token="wrong-token-xxxxxx")[0]
+          == 401, "a wrong token is refused")
+    for bad in ("../night_2026-11-10.jsonl", "night_2026-11-10.jsonl/x",
+                "nights/night_2026-11-10.jsonl",
+                "/etc/night_2026-11-10.jsonl", "night_2026-02-30.jsonl",
+                "night_2026-11-10.txt", "incident_2026-11-10_130000",
+                "night_2026-11-10.jsonl\x00", "ltcplay_audit.json", ""):
+        code, doc = post(bad)
+        check(code == 400 and doc["ok"] is False,
+              f"refused: {bad!r} ({code} {doc})")
+    check(not os.path.exists(os.path.join(store, "night-journal",
+                                          "2026-11-10")) and
+          not os.path.exists(os.path.join(os.path.dirname(store),
+                                          "night_2026-11-10.jsonl")),
+          "nothing refused was written anywhere")
+    ok, out = R.verify_store(store)
+    check(ok and out == [], f"the audit store is not confused by the night "
+                            f"journal folder: {out}")
+    print("  ok")
+
+
+def test_journal_format_doc_is_real_output():
+    section("tools/JOURNAL_FORMAT.md: every journal line and machine log "
+            "record it shows for a show's start, finish, Stop, failed "
+            "start, Start now, Start at a cue, Hold and Resume and a restart "
+            "is what the real scheduler writes, run again here on a test "
+            "clock; the counting table names the real action and outcome "
+            "values; no dashes")
+    S = _sched()
+    if S is None:
+        return
+    import json as _j
+    import tempfile
+    from ltcplay import journal as J
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 30)]
+    svc = _svc(S, work, now).start(thread=False)
+    steps = [
+        ((18, 0), lambda: svc.tick()),
+        ((18, 0, 3), lambda: svc._apply(S.Event(S.SHOW_CONFIRMED, "reader",
+                                                 show=1))),
+        ((18, 7, 20), lambda: svc._apply(S.Event(
+            S.SHOW_ENDED, "system", show=1,
+            detail="timecode reached the end"))),
+        ((18, 20), lambda: svc.tick()),
+        ((18, 22), lambda: svc._apply(_op(S, S.STOP_SHOW, confirmed=True))),
+        ((18, 25), lambda: svc._apply(_op(S, S.RESUME))),
+        ((18, 26), lambda: svc._apply(_op(S, S.START_NOW, who="Jeff",
+                                          screen="Stream Deck"))),
+        ((18, 26, 6), lambda: svc._apply(S.Event(
+            S.SHOW_FAILED, "system",
+            detail="no timecode came back within 10 s of the start"))),
+        ((18, 30), lambda: svc._apply(_op(
+            S, S.START_NOW, detail="from the cue Finale (00:05:10:00)"))),
+        ((18, 32), lambda: svc._apply(_op(S, S.HOLD_ON))),
+        ((18, 33), lambda: svc._apply(_op(S, S.RESUME))),
+        ((18, 40), lambda: svc._apply(S.Event(
+            S.SHOW_ENDED, "system", detail="timecode reached the end"))),
+        ((19, 0), lambda: svc.tick())]
+    for hm, act in steps:
+        now[0] = _den(S, *hm)
+        act()
+    now[0] = _den(S, 19, 3)
+    svc = _svc(S, work, now).start(thread=False)    # cut by a restart
+    for hm, act in (
+            ((19, 20), lambda: svc.tick()),
+            ((19, 27, 30), lambda: svc._apply(S.Event(
+                S.SHOW_ENDED, "system", show=5,
+                detail="timecode reached the end"))),
+            ((19, 35), lambda: svc._apply(_op(S, S.HOLD_ON))),
+            ((19, 40, 1), lambda: svc.tick()),
+            ((19, 45), lambda: svc._apply(_op(S, S.START_NOW)))):
+        now[0] = _den(S, *hm)
+        act()
+    nights = os.path.join(work, "nights")
+    build = re.compile(r"\((?:unreleased|release|version)[^()]*"
+                       r"(?:\([^()]*\))?[^()]*\)")
+    lines = {build.sub("(BUILD)", x) for x in
+             _lines(os.path.join(nights, J.journal_name("2026-11-14")))}
+    recs = []
+    for r in _jsonl_rows(os.path.join(nights,
+                                      J.machine_name("2026-11-14"))):
+        r = dict(r)
+        r.pop("id")
+        recs.append(r)
+    here = os.path.dirname(os.path.abspath(__file__))
+    doc = open(os.path.join(here, "tools", "JOURNAL_FORMAT.md"),
+               encoding="utf-8").read()
+    shown_lines, shown_recs = 0, 0
+    for block in re.findall(r"```\n(.*?)```", doc, re.S):
+        for x in block.splitlines():
+            if re.match(r"^\d\d:\d\d:\d\d  ", x):
+                shown_lines += 1
+                check(build.sub("(BUILD)", x) in lines,
+                      f"the doc's journal line is real: {x[:120]!r}")
+            elif x.startswith("{"):
+                shown_recs += 1
+                r = _j.loads(x)
+                r.pop("id")
+                check(r in recs, f"the doc's machine log record is real: "
+                                 f"{x[:160]!r}")
+    check(shown_lines >= 12 and shown_recs >= 11,
+          f"the doc shows every kind ({shown_lines} lines, {shown_recs} "
+          f"records)")
+    for row in (
+            "| Scheduled start | `fire` | `fired` | `FIRED` | `scheduler` |",
+            "| Start now (an extra show) | `START_NOW` | `fired` | `EXTRA "
+            "SHOW (operator)` | `operator` |",
+            "| Start now (the delayed show) | `START_NOW` | `fired` | "
+            "`DELAYED START (operator hold)` | `operator` |",
+            "| Finished | `SHOW_ENDED` | `done` | `DONE` | `system` (the "
+            "show runner) |",
+            "| Operator Stop | `STOP_SHOW` | `aborted` | `STOPPED (operator "
+            "Stop)` | `operator` |",
+            "| Failed start | `SHOW_FAILED` | `fault` | `FAULT (` and why | "
+            "`system` (the show runner) |",
+            "| Cut off by a restart | `BOOT_DONE` | `fault` | `FAULT (ltcplay "
+            "restarted during the show)` | `system` |"):
+        check(row in doc, f"the counting table has {row[:60]!r}")
+        cells = [c.strip().strip("`") for c in row.split("|")[1:-1]]
+        action, outcome, reason = cells[1], cells[2], cells[3]
+        reason = reason.split("`")[0]
+        check(any(r["action"] == action and r["outcome"] == outcome and
+                  str(r["reason"]).startswith(reason) for r in recs),
+              f"and the real night wrote it: {action} {outcome} {reason}")
+    _no_dashes(doc, "JOURNAL_FORMAT.md")
+    print("  ok")
+
+
 def test_audit_never_blocks_or_fails_a_press():
     section("audit: a full queue, a full disk or an unwritable folder never "
             "blocks or fails a press; the loss is a counted gap line and a "
@@ -114610,6 +115047,9 @@ if __name__ == "__main__":
         test_review_143_sign_out_holds_and_deck_fallbacks,
         test_audit_chain_verify_finds_every_kind_of_tamper,
         test_audit_upload_retries_resumes_and_waits_for_the_ack,
+        test_journal_upload_sends_closed_nights_and_waits_for_the_ack,
+        test_audit_receiver_takes_the_night_journal,
+        test_journal_format_doc_is_real_output,
         test_audit_never_blocks_or_fails_a_press,
         test_soak_render_older_than_layout_is_a_cues_fault_at_show_load,
         test_flame_cues_refused_while_the_reader_is_mid_pass,

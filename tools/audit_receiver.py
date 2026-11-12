@@ -23,6 +23,16 @@ What it does with each upload (POST, any path):
     overwritten.
 A file whose chain does not verify is still stored (it is evidence) and
 acknowledged, and the answer and <store>/index.jsonl say chain_ok false.
+
+The night journal (since 2026-11-12) comes the same way, with the same
+token: night_2026-11-09.journal.txt, night_2026-11-09.jsonl and
+night_2026-11-09.summary.md. Each is checked against X-LTC-SHA256, stored
+as <store>/night-journal/<night>/<file name> (written whole, then moved
+into place), listed in <store>/night-journal/index.jsonl with what LTC
+Player said about the night's logging (X-LTC-Meta: "incomplete" and the
+gap times), and acknowledged with {"ok": true, "sha256": ...} exactly as
+an audit file is. The same never-overwrite rule holds. Any other name, or
+one with a folder in it, is refused.
 """
 import hashlib
 import hmac
@@ -33,6 +43,9 @@ import sys
 import time
 
 NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.(engine|deck|supervisor)\.jsonl$")
+NIGHT_RE = re.compile(r"^night_(\d{4})-(\d{2})-(\d{2})"
+                      r"\.(journal\.txt|jsonl|summary\.md)$")
+NIGHTS = "night-journal"
 ANCHOR_TAG = "LTC Player audit"
 MAX_BYTES = 64 * 1024 * 1024
 
@@ -129,6 +142,8 @@ def receive(store, token, headers, body, now=time.time):
     if not token or not hmac.compare_digest(auth.encode(), want.encode()):
         return 401, {"ok": False, "error": "wrong or missing token"}
     name = h("X-LTC-File")
+    if NIGHT_RE.match(name):
+        return receive_night(store, name, headers, body, h, now)
     m = NAME_RE.match(name)
     if not m:
         return 400, {"ok": False, "error": "not an audit day file name"}
@@ -178,6 +193,96 @@ def receive(store, token, headers, body, now=time.time):
     _append_index(store, rec)
     return 200, {"ok": True, "sha256": sha, "chain_ok": ok,
                  "linked": linked, "problem": problem}
+
+
+def _night_meta(text):
+    """What LTC Player said about the night's logging (X-LTC-Meta), kept
+    as it came: {"incomplete": bool or None, "gaps": [...]}."""
+    try:
+        doc = json.loads(text) if text else {}
+    except ValueError:
+        doc = {}
+    if not isinstance(doc, dict):
+        doc = {}
+    inc = doc.get("incomplete")
+    gaps = doc.get("gaps")
+    return {"incomplete": inc if isinstance(inc, bool) else None,
+            "gaps": gaps if isinstance(gaps, list) else []}
+
+
+def receive_night(store, name, headers, body, h, now=time.time):
+    """One night journal file (the token is already checked)."""
+    m = NIGHT_RE.match(name)
+    if not m or name != os.path.basename(name) or "\x00" in name:
+        return 400, {"ok": False, "error": "not a night journal file name"}
+    y, mo, d, kind = m.group(1), m.group(2), m.group(3), m.group(4)
+    night = f"{y}-{mo}-{d}"
+    try:
+        time.strptime(night, "%Y-%m-%d")
+    except ValueError:
+        return 400, {"ok": False, "error": "not a night journal file name"}
+    if not isinstance(body, (bytes, bytearray)) or len(body) > MAX_BYTES:
+        return 413, {"ok": False, "error": "too large"}
+    sha = hashlib.sha256(body).hexdigest()
+    if not hmac.compare_digest(sha, h("X-LTC-SHA256")):
+        return 400, {"ok": False, "error": "the checksum does not match"}
+    root = os.path.join(store, NIGHTS)
+    folder = os.path.join(root, night)
+    path = os.path.join(folder, name)
+    # Belt and braces: whatever the name, the file lands inside its folder.
+    if os.path.dirname(os.path.abspath(path)) != os.path.abspath(folder):
+        return 400, {"ok": False, "error": "not a night journal file name"}
+    os.makedirs(folder, exist_ok=True)
+    if os.path.exists(path):
+        with open(path, "rb") as fh:
+            have = hashlib.sha256(fh.read()).hexdigest()
+        if have == sha:
+            return 200, {"ok": True, "sha256": sha, "again": True}
+        keep = f"{path}.conflict-{int(now())}"
+        with open(keep, "wb") as fh:
+            fh.write(body)
+        return 409, {"ok": False, "error": "a different file with this "
+                                           "name is already stored; this one "
+                                           "was kept beside it"}
+    tmp = path + ".part"
+    with open(tmp, "wb") as fh:
+        fh.write(body)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    meta = _night_meta(h("X-LTC-Meta"))
+    if meta["incomplete"] is None:
+        said = h("X-LTC-Incomplete").lower()
+        meta["incomplete"] = True if said == "true" else (
+            False if said == "false" else None)
+    rec = {"name": name, "night": night, "kind": kind, "sha256": sha,
+           "bytes": len(body), "incomplete": meta["incomplete"],
+           "gaps": meta["gaps"],
+           "received": time.strftime("%Y-%m-%d %H:%M:%S",
+                                     time.localtime(now()))}
+    _append_index(root, rec)
+    return 200, {"ok": True, "sha256": sha, "incomplete": meta["incomplete"]}
+
+
+def verify_nights(store):
+    """Every stored night journal file against the checksum it came with.
+    (ok, lines)."""
+    root = os.path.join(store, NIGHTS)
+    idx = _index(root)
+    out, good = [], True
+    for name in sorted(idx):
+        r = idx[name]
+        path = os.path.join(root, str(r.get("night")), name)
+        try:
+            with open(path, "rb") as fh:
+                ok = hashlib.sha256(fh.read()).hexdigest() == r.get("sha256")
+        except OSError:
+            ok = False
+        good = good and ok
+        out.append(f"{'ok ' if ok else 'BAD'} {name}" +
+                   (" (sent marked incomplete)" if r.get("incomplete")
+                    else ""))
+    return good, out
 
 
 def verify_store(store):
@@ -245,7 +350,8 @@ def serve(store, token, port, cert, key, bind="0.0.0.0"):
               "Player sends only to https:// addresses: put this behind a "
               "web server that does HTTPS (Caddy, nginx), or give --cert "
               "and --key.")
-    print(f"Receiving LTC Player audit files into {store} on port {port}.")
+    print(f"Receiving LTC Player audit and night journal files into {store} "
+          f"on port {port}.")
     httpd.serve_forever()
 
 
@@ -257,6 +363,9 @@ def main(argv=None):
             print("usage: audit_receiver.py verify <store folder>")
             return 2
         ok, lines = verify_store(argv[1])
+        ok2, lines2 = verify_nights(argv[1])
+        ok = ok and ok2
+        lines = lines + lines2
         print("\n".join(lines) or "nothing stored yet")
         print("Every stored day verifies." if ok else "A stored day does NOT "
               "verify: see above.")

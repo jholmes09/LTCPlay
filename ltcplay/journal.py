@@ -495,6 +495,21 @@ def _tail(path, limit=65536):
         return b""
 
 
+def _acknowledged(folder):
+    """The night files the upload's server acknowledged (sent.json, written
+    by auditsend.JournalUploader), or None when nothing was ever sent."""
+    path = os.path.join(folder, "sent.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        files = doc.get("files") if isinstance(doc, dict) else None
+        return set(files) if isinstance(files, dict) else set()
+    except (OSError, ValueError):
+        return set()        # unreadable: nothing counts as acknowledged
+
+
 # ------------------------------------------------------------ the book --
 
 class Logbook:
@@ -1466,8 +1481,14 @@ class Logbook:
                 keep_from = nights[-1] if nights else None
             else:
                 keep_from = cutoff
+            # The nightly upload (auditsend.JournalUploader) keeps its
+            # record here once it has sent anything: then a night file the
+            # server has not acknowledged is never removed.
+            acked = _acknowledged(self.folder)
             for d, name, root, incident in found:
                 if keep_from is None or d >= keep_from:
+                    continue
+                if acked is not None and not incident and name not in acked:
                     continue
                 p = os.path.join(root, name)
                 try:

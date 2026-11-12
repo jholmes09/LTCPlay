@@ -181,16 +181,26 @@ meanwhile.
 On the Users screen, under Audit log, an admin sets: the server address
 (it must start with https://), the shared token, the time of day (03:30
 unless changed) and how many days to keep here (at least 90). Then tick
-"Send the audit log to the server every night" and Save.
+"Send the audit log and the night journal to the server every night" and
+Save.
 
-- Only the audit day files are ever sent. Nothing else leaves the PC.
+- The audit log and the night journal go only to your own server.
+  Nothing else is read or sent, never a password or token.
+- The night journal is each closed night's three files
+  (`night_YYYY-MM-DD.journal.txt`, `.jsonl` and `.summary.md`), each whole,
+  with its checksum. A night still open is never sent. A night whose
+  logging was incomplete is still sent, marked "incomplete" with its gap
+  times, so your server can flag it. Incident folders are never sent.
+  `tools/JOURNAL_FORMAT.md` says what the lines look like.
 - Each finished day is sent once, whole, with its checksum and its chain
   fingerprints. It counts as sent only when your server answers that it
   got exactly that file.
 - A failed send is tried again later (1 minute, then 5, 15, then hourly).
   A night the PC was off is caught up the next time.
 - A day is removed from the PC only once the server has it AND it is older
-  than the keep. A day not yet on the server is never removed.
+  than the keep. A day not yet on the server is never removed. Night
+  journal files keep their own 120 days, and once the upload has sent
+  anything, a night file not yet on the server is never removed.
 - The token is kept in the settings folder (`ltcplay_audit.json`), like
   flamesafe's link key: never in the program's files on GitHub, never on
   the screen, never in the log or the diagnostics bundle.

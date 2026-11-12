@@ -1,11 +1,17 @@
-"""The nightly upload of the audit log to Jeff's server (Jeff, 2026-10-20).
-The same shape as the checklist tally sender (checklist.TallySender): OFF
-until switched on, HTTPS only, a bearer token never shown or logged,
-retried with backoff, and nothing it does can reach the show.
+"""The nightly upload of the audit log and the night journal to Jeff's own
+server (Jeff, 2026-10-20; the night journal 2026-11-12). The same shape as
+the checklist tally sender (checklist.TallySender): OFF until switched on,
+HTTPS only, a bearer token never shown or logged, retried with backoff,
+and nothing it does can reach the show.
 
-What it sends: ONLY the audit day files (audit.py), each closed day once,
-whole, with its SHA-256 and the hash chain's anchor and end. Nothing else
-in the settings folder is ever read by it.
+What it sends: the audit log and the night journal, only to Jeff's own
+server; nothing else is read or sent, never a password or token.
+Uploader sends the audit day files (audit.py), each closed day once,
+whole, with its SHA-256 and the hash chain's anchor and end.
+JournalUploader (below) sends each closed night's three night journal
+files (journal.py), each whole, with its SHA-256 and the night's logging
+check. Nothing else in the settings folder or the nights folder is ever
+read by either; incident folders are never sent.
 
 When: every day at "time" (local, 03:30 unless set), and again with
 backoff after a failure, until every closed day is acknowledged. A night
@@ -386,3 +392,285 @@ def _sha256(path):
     except OSError:
         return ""
     return h.hexdigest()
+
+
+# ------------------------------------------------------- the night journal --
+# The night journal goes to the same server, with the same settings, beside
+# the audit log (Jeff, 2026-11-12): each CLOSED night's three files
+# (journal.py: night_YYYY-MM-DD.journal.txt, .jsonl and .summary.md), each
+# whole, with its SHA-256. Its own record of what was sent (sent.json in
+# the nights folder), its own backoff, its own thread: the audit upload
+# above is exactly as it was. Never an incident folder, never anything
+# else in the nights folder.
+
+JOURNAL_SENT_FILE = "sent.json"
+JOURNAL_NAME_RE = re.compile(r"^night_(\d{4}-\d{2}-\d{2})"
+                             r"\.(journal\.txt|jsonl|summary\.md)$")
+JOURNAL_KINDS = {"journal.txt": "text/plain; charset=utf-8",
+                 "jsonl": "application/x-ndjson",
+                 "summary.md": "text/markdown; charset=utf-8"}
+JOURNAL_USER_AGENT = "LTC Player night journal upload"
+JOURNAL_GAPS_MAX = 20
+
+
+def journal_sent(folder):
+    """The night journal's record of what the server acknowledged."""
+    return audit._load_sent(folder)
+
+
+class JournalUploader:
+    """The night journal's nightly upload. `night()` returns the night the
+    scheduler is on now (a date or its ISO text): only nights before it, and
+    only once their summary is written, are closed and sent. Everything
+    else is the audit Uploader's shape: tick() never raises, transport is
+    injectable, the token never leaves the request."""
+
+    def __init__(self, folder, settings_folder, night=None, transport=None,
+                 wall=time.time, clock=time.monotonic, note=None):
+        self.folder = folder
+        self.settings_folder = settings_folder
+        self._night = night
+        self._transport = transport or _https_post
+        self._wall = wall
+        self._clock = clock
+        self._note_fn = note
+        self._busy = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+        self._next_try = 0.0
+        self._fails_in_a_row = 0
+        self._last_run_day = None
+        self.last_error = ""
+        self.last_upload_at = None
+        self.last_attempt_at = None
+
+    def sent(self):
+        return journal_sent(self.folder)
+
+    def _mark_sent(self, name, info):
+        doc = {"files": self.sent()}
+        doc["files"][name] = info
+        os.makedirs(self.folder, exist_ok=True)
+        path = os.path.join(self.folder, JOURNAL_SENT_FILE)
+        tmp = path + f".{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=1, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+
+    def _note(self, action, result="accepted", reason="", target=""):
+        if self._note_fn is None:
+            return
+        try:
+            self._note_fn(action=action, result=result, reason=reason,
+                          target=target)
+        except Exception:                    # noqa: BLE001
+            pass
+
+    def open_night(self):
+        """The night still open (ISO text), or "" when it cannot be told:
+        then nothing counts as closed but nights before yesterday."""
+        try:
+            n = self._night() if callable(self._night) else self._night
+        except Exception:                    # noqa: BLE001
+            n = None
+        if n:
+            return str(n)
+        return (datetime.date.fromtimestamp(self._wall())
+                - datetime.timedelta(days=1)).isoformat()
+
+    def closed_nights(self):
+        """Nights before the open one whose summary has been written."""
+        open_n = self.open_night()
+        try:
+            names = os.listdir(self.folder)
+        except OSError:
+            return []
+        out = set()
+        for n in names:
+            m = JOURNAL_NAME_RE.match(n)
+            if m and m.group(1) < open_n and os.path.isfile(
+                    os.path.join(self.folder,
+                                 f"night_{m.group(1)}.summary.md")):
+                out.add(m.group(1))
+        return sorted(out)
+
+    def pending(self):
+        """Files of closed nights not acknowledged, oldest night first."""
+        sent = self.sent()
+        out = []
+        for night in self.closed_nights():
+            for kind in ("journal.txt", "jsonl", "summary.md"):
+                name = f"night_{night}.{kind}"
+                if name not in sent and os.path.isfile(
+                        os.path.join(self.folder, name)):
+                    out.append(name)
+        return out
+
+    def changed_since_sent(self):
+        out = []
+        for n, rec in self.sent().items():
+            p = os.path.join(self.folder, n)
+            if os.path.exists(p) and isinstance(rec, dict) and \
+                    rec.get("sha256") and _sha256(p) != rec["sha256"]:
+                out.append(n)
+        return out
+
+    def check(self, night):
+        """{"incomplete", "gaps", "problems"} for one night: the files'
+        own check (journal.check_files) and the summary's Logging line."""
+        from . import journal
+        f = journal.check_files(self.folder, night)
+        logging_line = ""
+        try:
+            with open(os.path.join(self.folder,
+                                   journal.summary_name(night)),
+                      encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if line.startswith("- Logging:"):
+                        logging_line = line.strip()
+                        break
+        except OSError:
+            pass
+        said_bad = bool(logging_line) and not logging_line.startswith(
+            "- Logging: complete")
+        return {"incomplete": bool(not f["complete"] or said_bad),
+                "gaps": [{"from": g["from"], "to": g["to"],
+                          "seconds": g["seconds"], "why": g["why"]}
+                         for g in f["gaps"][:JOURNAL_GAPS_MAX]],
+                "problems": f["problems"][:JOURNAL_GAPS_MAX],
+                "logging": logging_line[2:] if logging_line else ""}
+
+    def due(self, cfg):
+        if not cfg["enabled"]:
+            return False
+        if self._fails_in_a_row:
+            return self._clock() >= self._next_try
+        now = datetime.datetime.fromtimestamp(self._wall())
+        h, m = (int(x) for x in cfg["time"].split(":"))
+        if (now.hour, now.minute) < (h, m):
+            return False
+        return self._last_run_day != now.strftime("%Y-%m-%d")
+
+    def send_one(self, name, cfg, meta=None):
+        """(ok, why). One night file, whole, with its checksum and the
+        night's logging check (incomplete and the gaps)."""
+        m = JOURNAL_NAME_RE.match(name)
+        if m is None or os.path.dirname(name) or os.path.basename(
+                name) != name:
+            return False, "not a night journal file"
+        night, kind = m.group(1), m.group(2)
+        with open(os.path.join(self.folder, name), "rb") as fh:
+            data = fh.read()
+        sha = hashlib.sha256(data).hexdigest()
+        meta = meta if meta is not None else self.check(night)
+        doc = {"night": night, "kind": kind,
+               "incomplete": meta["incomplete"], "gaps": meta["gaps"]}
+        headers = {"Content-Type": JOURNAL_KINDS[kind],
+                   "User-Agent": JOURNAL_USER_AGENT,
+                   "X-LTC-File": name, "X-LTC-Night": night,
+                   "X-LTC-Kind": "night-journal", "X-LTC-SHA256": sha,
+                   "X-LTC-Incomplete": "true" if meta["incomplete"]
+                   else "false",
+                   "X-LTC-Meta": json.dumps(doc, separators=(",", ":"),
+                                            sort_keys=True)}
+        if cfg.get("token"):
+            headers["Authorization"] = "Bearer " + cfg["token"]
+        try:
+            status, text = self._transport(cfg["url"], data, headers,
+                                           cfg["timeout_s"])
+        except Exception as e:               # noqa: BLE001
+            status, text = 0, f"{type(e).__name__}: {e}"
+        if not 200 <= status < 300:
+            why = f"HTTP {status}: {text[:160]}" if status else text[:200]
+            # Whatever the server echoed, the token is never said.
+            return False, re.sub(r"(?i)bearer\s+\S+", "Bearer [hidden]",
+                                 why)
+        try:
+            ack = json.loads(text)
+        except ValueError:
+            ack = None
+        if not isinstance(ack, dict) or ack.get("ok") is not True or \
+                ack.get("sha256") != sha:
+            return False, ("the server answered but did not acknowledge this "
+                           "file's checksum")
+        self._mark_sent(name, {"sha256": sha, "incomplete": meta["incomplete"],
+                               "gaps": len(meta["gaps"]),
+                               "sent_at": audit._iso_local(self._wall())})
+        return True, ""
+
+    def run(self, force=False):
+        """Send every pending night file, oldest first, stopping at the
+        first failure. Returns how many went. Never raises."""
+        if not self._busy.acquire(blocking=False):
+            return 0
+        try:
+            cfg, err = load_config(self.settings_folder)
+            if err:
+                self.last_error = err
+                return 0
+            if not cfg["enabled"] or (not force and not self.due(cfg)):
+                return 0
+            self.last_attempt_at = self._wall()
+            went = 0
+            checked = {}
+            for name in self.pending():
+                night = JOURNAL_NAME_RE.match(name).group(1)
+                if night not in checked:
+                    checked[night] = self.check(night)
+                ok, why = self.send_one(name, cfg, checked[night])
+                if ok:
+                    went += 1
+                    self.last_upload_at = self._wall()
+                    self._note("journal-upload", target=name)
+                    continue
+                self._fails_in_a_row += 1
+                back = BACKOFF_S[min(self._fails_in_a_row,
+                                     len(BACKOFF_S)) - 1]
+                self._next_try = self._clock() + back
+                if why != self.last_error:
+                    self._note("journal-upload", "error", why, target=name)
+                self.last_error = why
+                return went
+            self._fails_in_a_row = 0
+            self.last_error = ""
+            self._last_run_day = datetime.datetime.fromtimestamp(
+                self._wall()).strftime("%Y-%m-%d")
+            return went
+        except Exception as e:               # noqa: BLE001
+            self.last_error = f"{type(e).__name__}: {e}"[:200]
+            return 0
+        finally:
+            self._busy.release()
+
+    def start(self):
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._loop, daemon=True,
+                                            name="ltcplay-journal-upload")
+            self._thread.start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+
+    def _loop(self):
+        while not self._stop.wait(TICK_S):
+            self.run()
+
+    def status(self):
+        pend = self.pending()
+        sent = self.sent()
+        stamps = [str(r.get("sent_at")) for r in sent.values()
+                  if isinstance(r, dict) and r.get("sent_at")]
+        last = (audit._iso_local(self.last_upload_at)
+                if self.last_upload_at else (max(stamps) if stamps else None))
+        return {"pending": len(pend),
+                "pending_nights": sorted({JOURNAL_NAME_RE.match(n).group(1)
+                                          for n in pend}),
+                "incomplete_sent": sorted(
+                    n for n, r in sent.items()
+                    if isinstance(r, dict) and r.get("incomplete")),
+                "last_upload_at": last,
+                "last_error": self.last_error,
+                "changed_since_sent": self.changed_since_sent()}

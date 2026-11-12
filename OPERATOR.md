@@ -2922,8 +2922,10 @@ tab, and the hardware e-stop always works.
   something else. Who may do what: everyone can read it; admins on the
   show PC change it and press Save who may do what. Stop, Hold and every
   disarm always work, for everyone. Audit log (show PC only): its state,
-  Check the chain now, the nightly upload (server, shared token, time,
-  days kept), Idle sign out, sign out after the last show, Save, and
+  Check the chain now, the nightly upload of the audit log and the night
+  journal (server, shared token, time, days kept; they go only to your own
+  server, nothing else is read or sent, never a password or token),
+  Idle sign out, sign out after the last show, Save, and
   Send now. The shared token is never shown: the field says only whether one
   is saved, and a token typed there is cleared after Save.
 - The systems badge in the header names a single problem ("Stream Deck:

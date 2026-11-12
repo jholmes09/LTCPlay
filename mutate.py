@@ -23543,6 +23543,132 @@ def build():
   'ltcplay/schedule_service.py',
   '                         "started_at": (s.fired_at.isoformat()\n',
   '                         "started_at": (None\n'),
+
+ ('journal upload: the night still open counts as closed',
+  'ltcplay/auditsend.py',
+  '            if m and m.group(1) < open_n and os.path.isfile(\n',
+  '            if m and m.group(1) <= open_n and os.path.isfile(\n'),
+
+ ('journal upload: a night without its summary counts as closed',
+  'ltcplay/auditsend.py',
+  '            if m and m.group(1) < open_n and os.path.isfile(\n'
+  '                    os.path.join(self.folder,\n'
+  '                                 f"night_{m.group(1)}.summary.md")):\n',
+  '            if m and m.group(1) < open_n:\n'),
+
+ ("journal upload: marked sent without the server's checksum",
+  'ltcplay/auditsend.py',
+  '                ack.get("sha256") != sha:\n'
+  '            return False, ("the server answered but did not acknowledge this "\n'
+  '                           "file\'s checksum")\n'
+  '        self._mark_sent(name, {"sha256": sha, "incomplete"',
+  '                False:\n'
+  '            return False, ("the server answered but did not acknowledge this "\n'
+  '                           "file\'s checksum")\n'
+  '        self._mark_sent(name, {"sha256": sha, "incomplete"'),
+
+ ('journal upload: a failure is marked sent',
+  'ltcplay/auditsend.py',
+  '                ok, why = self.send_one(name, cfg, checked[night])\n'
+  '                if ok:\n',
+  '                ok, why = self.send_one(name, cfg, checked[night])\n'
+  '                if True:\n'),
+
+ ('journal upload: no backoff after a failure',
+  'ltcplay/auditsend.py',
+  '                self._next_try = self._clock() + back\n'
+  '                if why != self.last_error:\n'
+  '                    self._note("journal-upload"',
+  '                self._next_try = 0.0\n'
+  '                if why != self.last_error:\n'
+  '                    self._note("journal-upload"'),
+
+ ('journal upload: an incomplete night is sent as complete',
+  'ltcplay/auditsend.py',
+  '        return {"incomplete": bool(not f["complete"] or said_bad),\n',
+  '        return {"incomplete": False,\n'),
+
+ ('journal upload: the gap list is left out of the metadata',
+  'ltcplay/auditsend.py',
+  '               "incomplete": meta["incomplete"], "gaps": meta["gaps"]}\n',
+  '               "incomplete": meta["incomplete"], "gaps": []}\n'),
+
+ ('journal upload: the token is said in an upload error',
+  'ltcplay/auditsend.py',
+  '            return False, re.sub(r"(?i)bearer\\s+\\S+", "Bearer [hidden]",\n'
+  '                                 why)\n',
+  '            return False, why\n'),
+
+ ('journal upload: sent off by default',
+  'ltcplay/auditsend.py',
+  '            if not cfg["enabled"] or (not force and not self.due(cfg)):\n'
+  '                return 0\n'
+  '            self.last_attempt_at = self._wall()\n'
+  '            went = 0\n'
+  '            checked = {}\n',
+  '            if False:\n'
+  '                return 0\n'
+  '            self.last_attempt_at = self._wall()\n'
+  '            went = 0\n'
+  '            checked = {}\n'),
+
+ ('journal upload: prune removes a night file the server has not acknowledged',
+  'ltcplay/journal.py',
+  '                if acked is not None and not incident and name not in acked:\n',
+  '                if False:\n'),
+
+ ('journal upload: the engine does not start the night journal upload',
+  'ltcplay/web.py',
+  '        if book is not None:\n'
+  '            # The night journal goes to the same server',
+  '        if False:\n'
+  '            # The night journal goes to the same server'),
+
+ ('journal upload: the Users screen does not show the night journal',
+  'ltcplay/remote.py',
+  '                out["journal_upload"] = jup.status()\n',
+  '                out["journal_upload_"] = jup.status()\n'),
+
+ ('journal upload: the setting does not say the night journal is sent',
+  'ltcplay/web/remote2.html',
+  'Send the audit log and the night journal to the server every night',
+  'Send the audit log to the server every night'),
+
+ ('receiver: night journal files are refused as not audit days',
+  'tools/audit_receiver.py',
+  '    if NIGHT_RE.match(name):\n',
+  '    if False:\n'),
+
+ ('receiver: a night file with the wrong checksum is stored',
+  'tools/audit_receiver.py',
+  '    if not hmac.compare_digest(sha, h("X-LTC-SHA256")):\n'
+  '        return 400, {"ok": False, "error": "the checksum does not match"}\n'
+  '    root = os.path.join(store, NIGHTS)\n',
+  '    if False:\n'
+  '        return 400, {"ok": False, "error": "the checksum does not match"}\n'
+  '    root = os.path.join(store, NIGHTS)\n'),
+
+ ('receiver: a different night file is acknowledged as the same',
+  'tools/audit_receiver.py',
+  '        if have == sha:\n'
+  '            return 200, {"ok": True, "sha256": sha, "again": True}\n',
+  '        if True:\n'
+  '            return 200, {"ok": True, "sha256": sha, "again": True}\n'),
+
+ ('receiver: a night that is not a date is taken',
+  'tools/audit_receiver.py',
+  '        time.strptime(night, "%Y-%m-%d")\n',
+  '        pass\n'),
+
+ ('receiver: what the PC said about an incomplete night is not kept',
+  'tools/audit_receiver.py',
+  '           "bytes": len(body), "incomplete": meta["incomplete"],\n',
+  '           "bytes": len(body), "incomplete": None,\n'),
+
+ ('receiver: verify does not check the night journal files',
+  'tools/audit_receiver.py',
+  '                ok = hashlib.sha256(fh.read()).hexdigest() == r.get("sha256")\n',
+  '                ok = True\n'),
 ]
 
 
