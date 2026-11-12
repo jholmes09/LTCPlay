@@ -2595,7 +2595,7 @@ async function fbPoll(){
 }
 function fbAny(){ return Object.keys(FB_ON).some(k => FB_ON[k]); }
 function fbNow(){
-  return tsLook(fireballState(FB, FB_ON, isStale(Date.now(), LAST_OK, 1.0), !!(ST && ST.me && ST.me.view_only)), fbAny());
+  return fireballState(FB, FB_ON, isStale(Date.now(), LAST_OK, 1.0), !!(ST && ST.me && ST.me.view_only));
 }
 // Everything off here, now, and the engine told: this page's run ends and
 // can never start again (an all off is never refused).
@@ -2758,7 +2758,7 @@ const TP_SAY_MS = 6000;
 function tpSay(text){ TP_MSG = {text:String(text || ""), at:Date.now()}; renderTimedPurge(); }
 function tpSettings(){ return (MO && MO.timed_settings) || {presets:[2, 5, 10, 20, 30], default_s:5, max_s:30, min_s:1}; }
 function tpNow(){
-  return tsLook(timedPurgeLook(MO, TP_SECS, TP_HOLD, isStale(Date.now(), LAST_OK, 1.0), !!(ST && ST.me && ST.me.view_only)), TP_HOLD);
+  return timedPurgeLook(MO, TP_SECS, TP_HOLD, isStale(Date.now(), LAST_OK, 1.0), !!(ST && ST.me && ST.me.view_only));
 }
 function tpLetGo(why){
   const had = TP_HOLD, run = TP_RUN;
@@ -5109,9 +5109,6 @@ async function moPress(route, extra, msgEl){
   // Every press on this page goes through here: in Arrange mode the ones
   // that arm, fire, lock or unlock never leave the page (Jeff, 2026-10-19).
   if(arrangeBlocked(route, extra)) return;
-  // From Tailscale a purge, a laser test or an unlock never leaves the
-  // page (the engine refuses them too): said in place.
-  if(tsBlocked(route, extra)){ el.textContent = TS_WORDS; return null; }
   try{
     const j = await post("/api/remote/" + route, moActor(extra));
     el.textContent = j.text || "Done.";
@@ -5233,7 +5230,7 @@ async function wcPoll(){
   WC_TIMER = setTimeout(wcPoll, 500);
 }
 function wcNow(){
-  return tsLook(cleaningState(WC, WC_HOLD, isStale(Date.now(), LAST_OK, 1.0), !!(ST && ST.me && ST.me.view_only)), WC_HOLD);
+  return cleaningState(WC, WC_HOLD, isStale(Date.now(), LAST_OK, 1.0), !!(ST && ST.me && ST.me.view_only));
 }
 function wcLetGo(why){
   const had = WC_HOLD, run = WC_RUN;
@@ -6522,6 +6519,19 @@ placeAnn();
 window.addEventListener("resize", placeAnn);
 showTab((location.hash || "").replace("#", ""));
 UI2_READY = true;
+// Remote access over Tailscale (2026-11-12): 1.0's copied code stays word
+// for word (the pinned copy in tools/pins); its Fireball, timed purge and
+// cleaning looks and its Day tab press are wrapped here instead. From
+// Tailscale they are never ready, with the reason, and a purge, a laser
+// test or an unlock never leaves the page (the engine refuses them too).
+const _fbNow1 = fbNow, _tpNow1 = tpNow, _wcNow1 = wcNow, _moPress1 = moPress;
+fbNow = function(){ return tsLook(_fbNow1(), fbAny()); };
+tpNow = function(){ return tsLook(_tpNow1(), TP_HOLD); };
+wcNow = function(){ return tsLook(_wcNow1(), WC_HOLD); };
+moPress = async function(route, extra, msgEl){
+  if(tsBlocked(route, extra)){ $(msgEl || "mo-msg").textContent = TS_WORDS; return null; }
+  return _moPress1(route, extra, msgEl);
+};
 whoami().then(() => setTimeout(coachMaybe, 1500)).catch(e => { say("Cannot reach the show PC.", e.message, "bad"); startPolling(); });
 </script>
 </body>
