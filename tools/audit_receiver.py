@@ -31,8 +31,12 @@ as <store>/night-journal/<night>/<file name> (written whole, then moved
 into place), listed in <store>/night-journal/index.jsonl with what LTC
 Player said about the night's logging (X-LTC-Meta: "incomplete" and the
 gap times), and acknowledged with {"ok": true, "sha256": ...} exactly as
-an audit file is. The same never-overwrite rule holds. Any other name, or
-one with a folder in it, is refused.
+an audit file is. A file already stored is never overwritten: a different
+file under its name is refused (409) and kept once beside it, unless it
+says which one it replaces (X-LTC-Replaces: the stored checksum), as LTC
+Player does when a night's file changed after it was sent; then the newer
+is stored and the older kept beside it as <name>.replaced-<checksum>. Any
+other name, or one with a folder in it, is refused.
 """
 import hashlib
 import hmac
@@ -40,11 +44,12 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 
-NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.(engine|deck|supervisor)\.jsonl$")
+NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.(engine|deck|supervisor)\.jsonl\Z")
 NIGHT_RE = re.compile(r"^night_(\d{4})-(\d{2})-(\d{2})"
-                      r"\.(journal\.txt|jsonl|summary\.md)$")
+                      r"\.(journal\.txt|jsonl|summary\.md)\Z")
 NIGHTS = "night-journal"
 ANCHOR_TAG = "LTC Player audit"
 MAX_BYTES = 64 * 1024 * 1024
@@ -128,10 +133,30 @@ def _append_index(store, rec):
         os.fsync(fh.fileno())
 
 
+def _part(path):
+    """A temporary name for one request's copy, never shared with another
+    request writing the same file at the same moment."""
+    return (f"{path}.{os.getpid()}.{threading.get_ident()}."
+            f"{time.time_ns()}.part")
+
+
 def receive(store, token, headers, body, now=time.time):
+    """(HTTP status, answer dict) for one upload. Never raises: a request
+    it cannot read is a 400, a file it cannot store a 500, each with a
+    JSON error."""
+    try:
+        return _receive(store, token, headers, body, now)
+    except (TypeError, ValueError, UnicodeError):
+        return 400, {"ok": False, "error": "a header could not be read"}
+    except OSError as e:
+        return 500, {"ok": False, "error": f"the file could not be stored "
+                                           f"({e.strerror or type(e).__name__})"}
+
+
+def _receive(store, token, headers, body, now=time.time):
     """(HTTP status, answer dict) for one upload. `headers` is any
     mapping with case-insensitive .get (or a plain dict of lower-case
-    names). Never raises for bad input."""
+    names)."""
     def h(name):
         v = headers.get(name)
         if v is None:
@@ -179,7 +204,7 @@ def receive(store, token, headers, body, now=time.time):
         return 409, {"ok": False, "error": "a different file with this "
                                            "name is already stored; this one "
                                            "was kept beside it"}
-    tmp = path + ".part"
+    tmp = _part(path)
     with open(tmp, "wb") as fh:
         fh.write(body)
         fh.flush()
@@ -233,18 +258,31 @@ def receive_night(store, name, headers, body, h, now=time.time):
     if os.path.dirname(os.path.abspath(path)) != os.path.abspath(folder):
         return 400, {"ok": False, "error": "not a night journal file name"}
     os.makedirs(folder, exist_ok=True)
+    replaced = ""
     if os.path.exists(path):
         with open(path, "rb") as fh:
             have = hashlib.sha256(fh.read()).hexdigest()
-        if have == sha:
+        if sha == have:
             return 200, {"ok": True, "sha256": sha, "again": True}
-        keep = f"{path}.conflict-{int(now())}"
-        with open(keep, "wb") as fh:
-            fh.write(body)
-        return 409, {"ok": False, "error": "a different file with this "
-                                           "name is already stored; this one "
-                                           "was kept beside it"}
-    tmp = path + ".part"
+        wants = h("X-LTC-Replaces").strip().lower()
+        if wants and hmac.compare_digest(wants, have):
+            # A file changed on the PC since it was sent (a summary
+            # written again): the newer one is kept, the one it replaces
+            # stays beside it, never lost.
+            os.replace(path, f"{path}.replaced-{have[:16]}")
+            replaced = have
+        else:
+            # Kept once per checksum, however often it is sent again.
+            keep = f"{path}.conflict-{sha[:16]}"
+            if not os.path.exists(keep):
+                tmp = _part(keep)
+                with open(tmp, "wb") as fh:
+                    fh.write(body)
+                os.replace(tmp, keep)
+            return 409, {"ok": False, "error": "a different file with this "
+                                               "name is already stored; "
+                                               "this one was kept beside it"}
+    tmp = _part(path)
     with open(tmp, "wb") as fh:
         fh.write(body)
         fh.flush()
@@ -257,7 +295,7 @@ def receive_night(store, name, headers, body, h, now=time.time):
             False if said == "false" else None)
     rec = {"name": name, "night": night, "kind": kind, "sha256": sha,
            "bytes": len(body), "incomplete": meta["incomplete"],
-           "gaps": meta["gaps"],
+           "gaps": meta["gaps"], "replaces": replaced or None,
            "received": time.strftime("%Y-%m-%d %H:%M:%S",
                                      time.localtime(now()))}
     _append_index(root, rec)

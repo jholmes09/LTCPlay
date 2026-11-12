@@ -185,12 +185,16 @@ unless changed) and how many days to keep here (at least 90). Then tick
 Save.
 
 - The audit log and the night journal go only to your own server.
-  Nothing else is read or sent, never a password or token.
+  Nothing else is read or sent, never a password or token. The night
+  journal names each operator and the screen they pressed on.
 - The night journal is each closed night's three files
   (`night_YYYY-MM-DD.journal.txt`, `.jsonl` and `.summary.md`), each whole,
   with its checksum. A night still open is never sent. A night whose
   logging was incomplete is still sent, marked "incomplete" with its gap
   times, so your server can flag it. Incident folders are never sent.
+  A file that changed after it was sent (a summary written again) is
+  sent once more. A file your server refuses for good is listed on the
+  card as not sent, and the later nights still go.
   `tools/JOURNAL_FORMAT.md` says what the lines look like.
 - Each finished day is sent once, whole, with its checksum and its chain
   fingerprints. It counts as sent only when your server answers that it
@@ -199,8 +203,9 @@ Save.
   A night the PC was off is caught up the next time.
 - A day is removed from the PC only once the server has it AND it is older
   than the keep. A day not yet on the server is never removed. Night
-  journal files keep their own 120 days, and once the upload has sent
-  anything, a night file not yet on the server is never removed.
+  journal files keep their own 120 days. While the upload is on, a night
+  file not yet on the server is kept up to 30 days longer, then removed
+  with a line in the journal saying so.
 - The token is kept in the settings folder (`ltcplay_audit.json`), like
   flamesafe's link key: never in the program's files on GitHub, never on
   the screen, never in the log or the diagnostics bundle.

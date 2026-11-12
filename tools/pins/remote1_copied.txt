@@ -59,6 +59,7 @@
       <div class="kv" id="au-up"></div>
       <div id="au-set">
         <label><input type="checkbox" id="au-en"> Send the audit log and the night journal to the server every night</label>
+        <div class="dim" style="font-size:13px">The night journal names each operator and screen.</div>
         <label for="au-url">Server address (https://)</label>
         <input id="au-url" placeholder="https://audit.example.com/ltc">
         <label for="au-tok">Shared token</label>
@@ -1252,7 +1253,9 @@ function renderAudit(){
     (u.last_error ? " Last error: " + u.last_error : "") + (u.config_error ? " Settings problem: " + u.config_error : "") +
     ((u.changed_since_sent || []).length ? " CHANGED SINCE SENT: " + u.changed_since_sent.join(", ") : "") +
     (a.journal_upload ? " Night journal: nights waiting: " + ((a.journal_upload.pending_nights || []).join(", ") || "none") + "." +
-      (a.journal_upload.last_error ? " Last error: " + a.journal_upload.last_error : "") : "");
+      (a.journal_upload.last_error ? " Last error: " + a.journal_upload.last_error : "") +
+      ((a.journal_upload.changed_since_sent || []).length ? " CHANGED SINCE SENT, sending again: " + a.journal_upload.changed_since_sent.join(", ") : "") +
+      ((a.journal_upload.failed || []).length ? " NOT SENT, refused by the server: " + a.journal_upload.failed.join(", ") : "") : "");
   const busy = document.activeElement && $("au-set").contains(document.activeElement);
   if(!busy){
     $("au-en").checked = !!u.enabled;

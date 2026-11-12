@@ -39,6 +39,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import threading
 import time
 
@@ -405,12 +406,19 @@ def _sha256(path):
 
 JOURNAL_SENT_FILE = "sent.json"
 JOURNAL_NAME_RE = re.compile(r"^night_(\d{4}-\d{2}-\d{2})"
-                             r"\.(journal\.txt|jsonl|summary\.md)$")
+                             r"\.(journal\.txt|jsonl|summary\.md)\Z")
 JOURNAL_KINDS = {"journal.txt": "text/plain; charset=utf-8",
                  "jsonl": "application/x-ndjson",
                  "summary.md": "text/markdown; charset=utf-8"}
 JOURNAL_USER_AGENT = "LTC Player night journal upload"
 JOURNAL_GAPS_MAX = 20
+# The receiver takes up to this much (tools/audit_receiver.py MAX_BYTES).
+JOURNAL_MAX_BYTES = 64 * 1024 * 1024
+# Answers that will not change by sending the same bytes again: the file
+# is marked failed for good (for this checksum), said once, and the later
+# nights go on. 401, 403, 408 and 429 are the settings or the moment, and
+# are tried again with the backoff.
+JOURNAL_RETRY_4XX = (401, 403, 408, 429)
 
 
 def journal_sent(folder):
@@ -418,43 +426,68 @@ def journal_sent(folder):
     return audit._load_sent(folder)
 
 
+def _journal_doc(folder):
+    try:
+        with open(os.path.join(folder, JOURNAL_SENT_FILE),
+                  encoding="utf-8") as fh:
+            doc = json.load(fh)
+        return doc if isinstance(doc, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 class JournalUploader:
     """The night journal's nightly upload. `night()` returns the night the
     scheduler is on now (a date or its ISO text): only nights before it, and
-    only once their summary is written, are closed and sent. Everything
-    else is the audit Uploader's shape: tick() never raises, transport is
-    injectable, the token never leaves the request."""
+    only once their summary is written, are closed and sent. `checker(night)`
+    is the night files' own check (journal.Logbook.check_night), handed in
+    so this module never imports the journal. `say(text)` writes one line
+    in the night journal. Everything else is the audit Uploader's shape:
+    run() never raises, transport is injectable, the token never leaves the
+    request.
+
+    A file the server took is sent again only when its bytes changed since
+    (a summary written again), once per change, with X-LTC-Replaces naming
+    the checksum the server holds. A file the server refuses for good (too
+    large, a different file already there, another 4xx) is marked failed
+    for that checksum, said once, and the later nights go on."""
 
     def __init__(self, folder, settings_folder, night=None, transport=None,
                  wall=time.time, clock=time.monotonic, note=None,
-                 checker=None):
+                 checker=None, say=None):
         self.folder = folder
         self.settings_folder = settings_folder
         self._night = night
-        # The night files' own check (journal.Logbook.check_night), handed
-        # in: this module never imports the journal, so the GPL show,
-        # which never loads it, stays as it is.
-        self._checker = checker
         self._transport = transport or _https_post
         self._wall = wall
         self._clock = clock
         self._note_fn = note
+        self._checker = checker
+        self._say = say
         self._busy = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
         self._next_try = 0.0
         self._fails_in_a_row = 0
         self._last_run_day = None
+        self._hashes = {}           # path: ((size, mtime_ns), sha256)
         self.last_error = ""
         self.last_upload_at = None
         self.last_attempt_at = None
 
+    # -- the record ----------------------------------------------------------
     def sent(self):
         return journal_sent(self.folder)
 
-    def _mark_sent(self, name, info):
-        doc = {"files": self.sent()}
-        doc["files"][name] = info
+    def failed(self):
+        f = _journal_doc(self.folder).get("failed")
+        return f if isinstance(f, dict) else {}
+
+    def _write_doc(self, change):
+        doc = _journal_doc(self.folder)
+        doc.setdefault("files", {})
+        doc.setdefault("failed", {})
+        change(doc)
         os.makedirs(self.folder, exist_ok=True)
         path = os.path.join(self.folder, JOURNAL_SENT_FILE)
         tmp = path + f".{os.getpid()}.tmp"
@@ -464,6 +497,27 @@ class JournalUploader:
             os.fsync(fh.fileno())
         os.replace(tmp, path)
 
+    def _mark_sent(self, name, info):
+        def change(doc):
+            doc["files"][name] = info
+            doc["failed"].pop(name, None)
+        self._write_doc(change)
+
+    def _mark_failed(self, name, info):
+        def change(doc):
+            doc["failed"][name] = info
+        self._write_doc(change)
+
+    def _mark_enabled(self, on):
+        """Pruning keeps an unacknowledged night only while the upload is
+        on (journal.Logbook.prune reads this)."""
+        if _journal_doc(self.folder).get("enabled") is not on and (
+                on or os.path.exists(os.path.join(self.folder,
+                                                  JOURNAL_SENT_FILE))):
+            def change(doc):
+                doc["enabled"] = on
+            self._write_doc(change)
+
     def _note(self, action, result="accepted", reason="", target=""):
         if self._note_fn is None:
             return
@@ -472,6 +526,43 @@ class JournalUploader:
                           target=target)
         except Exception:                    # noqa: BLE001
             pass
+
+    def _say_once(self, text):
+        if self._say is None:
+            return
+        try:
+            self._say(text)
+        except Exception:                    # noqa: BLE001
+            pass
+
+    # -- the files ------------------------------------------------------------
+    def _file(self, name):
+        """(path, sha256, size) of a night file that may be sent, or None:
+        never a link, never more than the receiver takes (None, with the
+        size, for that: (path, None, size)). The checksum is read in
+        pieces and kept until the file changes."""
+        path = os.path.join(self.folder, name)
+        try:
+            st = os.lstat(path)
+        except OSError:
+            return None
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        if st.st_size > JOURNAL_MAX_BYTES:
+            return path, None, st.st_size
+        key = (st.st_size, getattr(st, "st_mtime_ns", st.st_mtime))
+        had = self._hashes.get(path)
+        if had is not None and had[0] == key:
+            return path, had[1], st.st_size
+        h = hashlib.sha256()
+        try:
+            with open(path, "rb") as fh:
+                for piece in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(piece)
+        except OSError:
+            return None
+        self._hashes[path] = (key, h.hexdigest())
+        return path, h.hexdigest(), st.st_size
 
     def open_night(self):
         """The night still open (ISO text), or "" when it cannot be told:
@@ -502,25 +593,42 @@ class JournalUploader:
         return sorted(out)
 
     def pending(self):
-        """Files of closed nights not acknowledged, oldest night first."""
-        sent = self.sent()
+        """[(name, the checksum the server holds or "")]: files of closed
+        nights not acknowledged, or changed since, and not failed for good
+        as they are; oldest night first."""
+        sent, failed = self.sent(), self.failed()
         out = []
         for night in self.closed_nights():
             for kind in ("journal.txt", "jsonl", "summary.md"):
                 name = f"night_{night}.{kind}"
-                if name not in sent and os.path.isfile(
-                        os.path.join(self.folder, name)):
-                    out.append(name)
+                rec = sent.get(name)
+                held = rec.get("sha256") if isinstance(rec, dict) else ""
+                f = self._file(name)
+                if f is None:
+                    # A night file that cannot be read now stays pending:
+                    # sending it fails, and waits out the backoff.
+                    p = os.path.join(self.folder, name)
+                    if os.path.isfile(p) and not os.path.islink(p):
+                        out.append((name, held or ""))
+                    continue
+                sha = f[1] or f"size {f[2]}"
+                bad = failed.get(name)
+                if isinstance(bad, dict) and bad.get("sha256") == sha:
+                    continue
+                if held != sha:
+                    out.append((name, held or ""))
         return out
 
     def changed_since_sent(self):
+        """Files whose bytes are not what the server acknowledged (each is
+        sent again, once)."""
         out = []
         for n, rec in self.sent().items():
-            p = os.path.join(self.folder, n)
-            if os.path.exists(p) and isinstance(rec, dict) and \
-                    rec.get("sha256") and _sha256(p) != rec["sha256"]:
+            f = self._file(n) if JOURNAL_NAME_RE.match(n) else None
+            if f is not None and isinstance(rec, dict) and \
+                    rec.get("sha256") and f[1] != rec["sha256"]:
                 out.append(n)
-        return out
+        return sorted(out)
 
     def check(self, night):
         """{"incomplete", "gaps", "problems"} for one night: the files'
@@ -553,23 +661,35 @@ class JournalUploader:
         if not cfg["enabled"]:
             return False
         if self._fails_in_a_row:
-            return self._clock() >= self._next_try
+            return self._next_try <= self._clock()
         now = datetime.datetime.fromtimestamp(self._wall())
         h, m = (int(x) for x in cfg["time"].split(":"))
         if (now.hour, now.minute) < (h, m):
             return False
         return self._last_run_day != now.strftime("%Y-%m-%d")
 
-    def send_one(self, name, cfg, meta=None):
-        """(ok, why). One night file, whole, with its checksum and the
-        night's logging check (incomplete and the gaps)."""
+    # -- sending --------------------------------------------------------------
+    def send_one(self, name, cfg, meta=None, replaces=""):
+        """(result, why): result "sent", "retry" (tried again with the
+        backoff) or "failed" (refused for good as it is). One night file,
+        whole, with its checksum and the night's logging check."""
         m = JOURNAL_NAME_RE.match(name)
         if m is None or os.path.dirname(name) or os.path.basename(
                 name) != name:
-            return False, "not a night journal file"
+            return "failed", "not a night journal file"
         night, kind = m.group(1), m.group(2)
-        with open(os.path.join(self.folder, name), "rb") as fh:
-            data = fh.read()
+        f = self._file(name)
+        if f is None:
+            return "retry", f"{name} could not be read"
+        path, want, size = f
+        if want is None:
+            return "failed", (f"{name} is {size} bytes, more than the "
+                              f"{JOURNAL_MAX_BYTES} the server takes")
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read(JOURNAL_MAX_BYTES + 1)
+        except OSError as e:
+            return "retry", f"{name} could not be read ({e.strerror or e})"
         sha = hashlib.sha256(data).hexdigest()
         meta = meta if meta is not None else self.check(night)
         doc = {"night": night, "kind": kind,
@@ -582,6 +702,8 @@ class JournalUploader:
                    else "false",
                    "X-LTC-Meta": json.dumps(doc, separators=(",", ":"),
                                             sort_keys=True)}
+        if replaces:
+            headers["X-LTC-Replaces"] = replaces
         if cfg.get("token"):
             headers["Authorization"] = "Bearer " + cfg["token"]
         try:
@@ -592,24 +714,30 @@ class JournalUploader:
         if not 200 <= status < 300:
             why = f"HTTP {status}: {text[:160]}" if status else text[:200]
             # Whatever the server echoed, the token is never said.
-            return False, re.sub(r"(?i)bearer\s+\S+", "Bearer [hidden]",
-                                 why)
+            why = re.sub(r"(?i)bearer\s+\S+", "Bearer [hidden]", why)
+            if 400 <= status < 500 and status not in JOURNAL_RETRY_4XX:
+                return "failed", why
+            return "retry", why
         try:
             ack = json.loads(text)
         except ValueError:
             ack = None
-        if not isinstance(ack, dict) or ack.get("ok") is not True or \
-                ack.get("sha256") != sha:
-            return False, ("the server answered but did not acknowledge this "
-                           "file's checksum")
+        took = isinstance(ack, dict) and ack.get("ok") is True and \
+            ack.get("sha256") == sha
+        if not took:
+            return "retry", ("the server answered but did not acknowledge "
+                             "this file's checksum")
         self._mark_sent(name, {"sha256": sha, "incomplete": meta["incomplete"],
                                "gaps": len(meta["gaps"]),
+                               "replaced": replaces or None,
                                "sent_at": audit._iso_local(self._wall())})
-        return True, ""
+        return "sent", ""
 
     def run(self, force=False):
-        """Send every pending night file, oldest first, stopping at the
-        first failure. Returns how many went. Never raises."""
+        """Send every pending night file, oldest first. A file refused for
+        good is marked so and the later nights go on; any other failure
+        stops the run and waits out the backoff. Returns how many went.
+        Never raises."""
         if not self._busy.acquire(blocking=False):
             return 0
         try:
@@ -617,20 +745,34 @@ class JournalUploader:
             if err:
                 self.last_error = err
                 return 0
-            if not cfg["enabled"] or (not force and not self.due(cfg)):
+            self._mark_enabled(bool(cfg["enabled"]))
+            if not cfg["enabled"]:
+                return 0
+            if not force and not self.due(cfg):
                 return 0
             self.last_attempt_at = self._wall()
             went = 0
             checked = {}
-            for name in self.pending():
+            for name, held in self.pending():
                 night = JOURNAL_NAME_RE.match(name).group(1)
                 if night not in checked:
                     checked[night] = self.check(night)
-                ok, why = self.send_one(name, cfg, checked[night])
-                if ok:
+                result, why = self.send_one(name, cfg, checked[night], held)
+                if result == "sent":
                     went += 1
                     self.last_upload_at = self._wall()
                     self._note("journal-upload", target=name)
+                    continue
+                if result == "failed":
+                    f = self._file(name)
+                    self._mark_failed(name, {
+                        "sha256": (f[1] or f"size {f[2]}") if f else "",
+                        "why": why, "at": audit._iso_local(self._wall())})
+                    self._note("journal-upload", "error", why, target=name)
+                    self._say_once(
+                        f"The night journal file {name} was not sent and "
+                        f"will not be tried again as it is: {why}. The "
+                        f"later nights are sent; the show is not affected.")
                     continue
                 self._fails_in_a_row += 1
                 back = BACKOFF_S[min(self._fails_in_a_row,
@@ -647,6 +789,9 @@ class JournalUploader:
             return went
         except Exception as e:               # noqa: BLE001
             self.last_error = f"{type(e).__name__}: {e}"[:200]
+            self._fails_in_a_row += 1
+            self._next_try = self._clock() + BACKOFF_S[
+                min(self._fails_in_a_row, len(BACKOFF_S)) - 1]
             return 0
         finally:
             self._busy.release()
@@ -672,12 +817,16 @@ class JournalUploader:
                   if isinstance(r, dict) and r.get("sent_at")]
         last = (audit._iso_local(self.last_upload_at)
                 if self.last_upload_at else (max(stamps) if stamps else None))
+        failed = self.failed()
         return {"pending": len(pend),
                 "pending_nights": sorted({JOURNAL_NAME_RE.match(n).group(1)
-                                          for n in pend}),
+                                          for n, _h in pend}),
                 "incomplete_sent": sorted(
                     n for n, r in sent.items()
                     if isinstance(r, dict) and r.get("incomplete")),
+                "failed": sorted(failed),
+                "failed_why": {n: str(r.get("why", "")) for n, r in
+                               failed.items() if isinstance(r, dict)},
                 "last_upload_at": last,
                 "last_error": self.last_error,
                 "changed_since_sent": self.changed_since_sent()}

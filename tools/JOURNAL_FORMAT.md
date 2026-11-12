@@ -51,6 +51,15 @@ The fields of each `.jsonl` record:
 | Hold during a show | `HOLD` | `paused` | `PAUSED (operator hold)` | `operator` |
 | Resume after that Hold | `RESUME` | `resumed` | `RESUMED (paused ...)` | `operator` |
 
+Count on `action` and `outcome` (and `reason`), never on `actor`: the
+same event can come from different actors (a show's end is reported as
+`system` by the show runner on the show PC, and as `reader` or
+`madmapper` in other set ups).
+
+Start now and Start at a cue have the same `action`, `outcome` and
+`reason`. They are told apart only by `text`: "pressed Start at a cue"
+(and the cue's name) against "pressed Start now".
+
 The rules:
 
 1. A show STARTED once for each record with `outcome` `fired` and a
@@ -78,7 +87,13 @@ The rules:
    cue on the schedule counts as an extra show.
 7. Show numbers above the night's list (13 and 14 below) are extra
    shows. A delayed show that never ran ends as `miss` `missed`.
-8. If the summary says "Logging: INCOMPLETE" (and the upload says
+8. A start with no end in that night's file (no `SHOW_ENDED`,
+   `STOP_SHOW`, `SHOW_FAILED` or `BOOT_DONE` fault for its show number)
+   is counted as unknown, cut short: ltcplay stopped during it and did
+   not start again that night. Check the first lines of the next night's
+   file (a `BOOT_DONE` fault names a show cut by the restart) and the
+   summary's table of shows, which says FAULT for it.
+9. If the summary says "Logging: INCOMPLETE" (and the upload says
    `"incomplete": true`), the count from the files may be short: compare
    with the summary's table of shows, and check the gap times it lists.
 
@@ -164,6 +179,23 @@ every build), then the show's end:
 The `program start` record has `"outcome":"restarted without warning"`
 (or `"restarted after a clean stop"`) and `"restart":true` in its `data`.
 
+### A Programming Run at a show's time
+
+A Programming Run (Run pressed in Programming) is a rehearsal: the
+scheduler starts no show over it. The show's time passes with this line
+and then a `miss`; there is no `fire` and no `START_NOW` record, so a
+counter that follows rule 1 counts nothing. (This night ran with the rig
+check on and a late grace of 0 s.)
+
+```
+18:00:00  Show 1 is not started: a Programming Run is in force. Press Stop, choose Show, then Run, and Start now.
+18:00:01  Show 1 at 18:00 did not start: MISSED (late by 1s). It will not start by itself; Start now is still there.
+```
+
+```
+{"id":"1ea9f53fa11-9","at":"2026-11-14T18:00:00.000-07:00","night":"2026-11-14","state":"STANDBY","to_state":"STANDBY","actor":"system","action":"pre-roll","outcome":"programming","reason":"Show 1 is not started: a Programming Run is in force. Press Stop, choose Show, then Run, and Start now.","show":1,"screen":null,"who":null,"fault":false,"text":"Show 1 is not started: a Programming Run is in force. Press Stop, choose Show, then Run, and Start now.","line":"18:00:00  Show 1 is not started: a Programming Run is in force. Press Stop, choose Show, then Run, and Start now."}
+{"id":"1ea9f53fa11-10","at":"2026-11-14T18:00:01.000-07:00","night":"2026-11-14","state":"STANDBY","to_state":"STANDBY","actor":"scheduler","action":"miss","outcome":"missed","reason":"MISSED (late by 1s)","show":1,"screen":null,"who":null,"fault":false,"text":"Show 1 at 18:00 did not start: MISSED (late by 1s). It will not start by itself; Start now is still there.","line":"18:00:01  Show 1 at 18:00 did not start: MISSED (late by 1s). It will not start by itself; Start now is still there."}
+```
 ### A Hold between shows, then Start now of the delayed show
 
 ```

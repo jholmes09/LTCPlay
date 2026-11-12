@@ -30826,7 +30826,7 @@ def test_journal_watchdog_flags_a_silent_gap():
                        f"moved or removed it",
           f"a file moved away is found: {c.disk_why!r}")
     hang = threading.Event()
-    real = J.Logbook._read_back
+    real = J.Logbook.__dict__["_read_back"]
     J.Logbook._read_back = staticmethod(lambda snap, res: hang.wait())
     try:
         c.disk_why = ""
@@ -30992,8 +30992,9 @@ def test_journal_summary_checks_the_files():
     got = logging_line(p3)
     check(len(got) == 1 and got[0].startswith(
         "- Logging: INCOMPLETE. The journal file has 4 line(s) and the "
-        "machine log 10; they are written from the same events, so one of "
-        "them is missing lines. Also: Logging to disk stopped at 13:22:24: "
+        "machine log 10; they are written from the same events, so the "
+        "journal file is missing lines. Also: Logging to disk stopped at "
+        "13:22:24: "
         "this machine refused to let ltcplay write to " + jpath),
         f"a held journal file: INCOMPLETE, with the counts: {got}")
     # A night with a restart in it: the gap while ltcplay was not running
@@ -31010,6 +31011,245 @@ def test_journal_summary_checks_the_files():
     f4 = J.check_files(work4, night)
     check(f4["complete"] and not f4["gaps"],
           f"a gap that ends at a restart is not a logging gap: {f4}")
+    print("  ok")
+
+
+def test_journal_check_and_watchdog_edges():
+    section("journal (review of #245): a real night on a microsecond clock "
+            "reads complete; a file moved away is found at the next write; "
+            "a partial write retried is one line; a stop with no line lost "
+            "still reads complete; lines made and lines waiting go through "
+            "the real summary; a replaced file, a good read back after a bad "
+            "one, a clock set back, lines arriving mid write and a stopped "
+            "disk each say exactly what they are")
+    S = _sched()
+    if S is None:
+        return
+    import errno
+    import tempfile
+    import threading
+    from datetime import timedelta
+    from ltcplay import journal as J
+    night = "2026-11-14"
+
+    def logging_line(text):
+        return [x for x in text.splitlines() if x.startswith("- Logging:")]
+
+    # 1. The real scheduler on a clock with microseconds: show ends land a
+    # fraction of a millisecond after the line the file keeps for them.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 30, 0, 123456)]
+    svc = _svc(S, work, now).start(thread=False)
+    for hm in ((18, 0, 0, 123456), (18, 7, 20, 987654), (18, 20, 0, 456789),
+               (18, 27, 20, 999999), (18, 40, 0, 1)):
+        now[0] = _den(S, *hm)
+        svc.tick()
+    now[0] = _den(S, 18, 47, 20, 500500)
+    svc.tick()
+    now[0] = _den(S, 18, 50, 0, 123456)
+    svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+    text = open(os.path.join(work, "nights", J.summary_name(night)),
+                encoding="utf-8").read()
+    got = logging_line(text)
+    check(len(got) == 1 and got[0].startswith("- Logging: complete. "),
+          f"a real night on a microsecond clock is complete: {got}")
+    nights = os.path.join(work, "nights")
+    ends = [J._parse_at(r["at"]) for r in _jsonl_rows(os.path.join(
+        nights, J.machine_name(night))) if r and r.get("show") == 1]
+    for shift in (0.0004, -0.0004):
+        f = J.check_files(nights, night, windows=[
+            (1, ends[0] + timedelta(seconds=shift),
+             ends[-1] + timedelta(seconds=shift))])
+        check(not f["gaps"], f"a show time {shift * 1000:+.1f} ms from its "
+                             f"line is that line: {f['gaps']}")
+    # 2. Moved away, and another line written before any read back.
+    work2 = tempfile.mkdtemp()
+    now2 = [_den(S, 13, 19, 4)]
+    b = _book(J, work2, now2, durable=False)
+    b.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="One.")
+    os.remove(os.path.join(work2, J.machine_name(night)))
+    b.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Two.")
+    check(b.disk_why == f"{J.machine_name(night)} is gone from {work2} "
+                        f"after ltcplay wrote to it: another program moved "
+                        f"or removed it" and not b.health()["ok"],
+          f"a file moved away is found at the next write: {b.disk_why!r}")
+    b2 = _book(J, tempfile.mkdtemp(), now2, durable=False)
+    b2.record(actor="scheduler", action="note", outcome="done", reason="r",
+              text="One, a long first line.")
+    jp2 = os.path.join(b2.folder, J.journal_name(night))
+    with open(jp2, "wb") as fh:
+        fh.write(b"x\n")
+    b2.record(actor="scheduler", action="note", outcome="done", reason="r",
+              text="Two.")
+    check(b2.disk_why == f"{jp2} is shorter than ltcplay wrote it (2 bytes, "
+                         f"not 34): another program cut or replaced it",
+          f"a file cut shorter is found at the next write: {b2.disk_why!r}")
+    # 3. The read back: a file replaced with the same size, then a good
+    # read back clears the flag, out loud.
+    mono = [0.0]
+    c = _book(J, tempfile.mkdtemp(), now2, durable=False,
+              mono=lambda: mono[0])
+    c.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="One.")
+    jp = os.path.join(c.folder, J.journal_name(night))
+    data = open(jp, "rb").read()
+    with open(jp, "wb") as fh:
+        fh.write(data.replace(b"One.", b"Won."))
+    c.watch()
+    c._disk_check[0].join()
+    c.watch()
+    check(c.disk_why == f"{jp} no longer holds the last line ltcplay wrote "
+                        f"to it: another program replaced it",
+          f"a file replaced with the same size is found: {c.disk_why!r}")
+    c.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Two.")
+    mono[0] += J.DISK_CHECK_S + 1
+    c.watch()
+    c._disk_check[0].join()
+    c.watch()
+    check(not c.disk_why and c.health()["ok"] and c.memory[-1]["line"] ==
+          "13:19:04  The night files read back correctly again at "
+          "13:19:04.", f"a good read back clears it, said: "
+          f"{c.memory[-1]['line']!r}")
+    # 4. Lines that arrive while a batch is being written wait from then,
+    # not from the first line of the batch.
+    d = _book(J, tempfile.mkdtemp(), now2, durable=False,
+              mono=lambda: mono[0])
+    gate = threading.Event()
+    idle = threading.Thread(target=gate.wait, daemon=True)
+    idle.start()
+    d._writer = idle                 # nothing drains but this test
+    real = d._opener
+    late, looked = [], []
+
+    def opener(path):
+        if not late:
+            late.append(1)
+            mono[0] += 20
+            d.record(actor="scheduler", action="note", outcome="done",
+                     reason="r", text="Arrived mid write.")
+        elif len(late) == 3 and not looked:
+            # The next batch is in the disk; the watchdog looks now.
+            mono[0] += 5
+            d._watch_stall(d.clock())
+            looked.append(bool(d.stalled_why))
+        late.append(1)
+        return real(path)
+    d._opener = opener
+    d.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="First.")
+    d.drain()
+    check(looked == [False],
+          f"a line that arrived mid write has waited 5 s, not 25 s: "
+          f"{looked}")
+    gate.set()
+    d._writer = None
+    # 5. A stopped disk is flagged as stopped, never also as stuck.
+    e = _book(J, tempfile.mkdtemp(), now2, durable=False,
+              mono=lambda: mono[0])
+
+    def refuse(path):
+        raise OSError(errno.EIO, "I/O error", path)
+    e._opener = refuse
+    e.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Kept in memory.")
+    mono[0] += 60
+    e.watch()
+    check(e.stopped_why and not e.stalled_why and
+          not any(r["action"] == "logging stalled" for r in e.memory),
+          "a stop already flagged is not called stuck as well")
+    # 6. The summary's own lists, through the real path: a line lost from
+    # both files is missing; lines still waiting for a held disk are not.
+    work6 = tempfile.mkdtemp()
+    now6 = [_den(S, 12, 0)]
+    g = _book(J, work6, now6, durable=False)
+    for i in range(3):
+        g.record(actor="scheduler", action="note", outcome="done",
+                 reason="r", text=f"Line {i}.")
+    for n in (J.journal_name(night), J.machine_name(night)):
+        path = os.path.join(work6, n)
+        keep = open(path, "rb").read().splitlines(True)[:-1]
+        with open(path, "wb") as fh:
+            fh.write(b"".join(keep))
+    got = logging_line(open(g.write_summary(night, state="OFF", slots=[]),
+                            encoding="utf-8").read())
+    check(got == ["- Logging: INCOMPLETE. 1 line(s) ltcplay made tonight are "
+                  "not in the machine log."],
+          f"a line made and lost is counted: {got}")
+    work7 = tempfile.mkdtemp()
+    h = _book(J, work7, now6, durable=False)
+    h.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Written.")
+    h._opener = refuse
+    h.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Waiting.")
+    h._opener = J._open_append
+    held = [True]
+    real_drain = h.drain
+
+    def no_disk(force=False, timeout=None):
+        return False if held[0] else real_drain(force, timeout)
+    h.drain = no_disk
+    got = logging_line(open(h.write_summary(night, state="OFF", slots=[]),
+                            encoding="utf-8").read())
+    check(h.pending() and len(got) == 1 and
+          "not in the machine log" not in got[0],
+          f"lines still waiting for the disk are waiting, not lost: {got}")
+    # 7. A partial write retried is one line; a clock set back is no gap.
+    work8 = tempfile.mkdtemp()
+    k = _book(J, work8, now6, durable=False)
+    k.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="One.")
+    jp8 = os.path.join(work8, J.journal_name(night))
+    full = open(jp8, "rb").read()
+    with open(jp8, "wb") as fh:
+        fh.write(full[:6] + b"\n" + full)
+    f8 = J.check_files(work8, night)
+    check(f8["complete"] and f8["journal_lines"] == 1,
+          f"a line cut short and written again whole is one line: {f8}")
+    with open(jp8, "ab") as fh:
+        fh.write(b"12:00:01  An extra line.\n")
+    check(J.check_files(work8, night)["problems"] ==
+          ["The journal file has 2 line(s) and the machine log 1; they are "
+           "written from the same events, so the machine log is missing "
+           "lines."], "the file that is short is named")
+    now6[0] = _den(S, 13, 0)
+    k.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Late.")
+    now6[0] = _den(S, 11, 0)
+    k.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Clock set back.")
+    f9 = J.check_files(work8, night, windows=[(1, _den(S, 10, 0), None)])
+    check(not [g_ for g_ in f9["gaps"] if g_["to"].startswith(
+        "2026-11-14T11:00")], f"a clock set back is no gap: {f9['gaps']}")
+    # 8. Stopped, resumed and nothing lost: still complete.
+    work9 = tempfile.mkdtemp()
+    m = _book(J, work9, now6, durable=False)
+    m._opener = refuse
+    m.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Held.")
+    m._opener = J._open_append
+    now6[0] += timedelta(seconds=m.retry_s + 1)
+    m.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Written again.")
+    got = logging_line(open(m.write_summary(night, state="OFF", slots=[]),
+                            encoding="utf-8").read())
+    check(len(got) == 1 and got[0].startswith(
+        "- Logging: complete. The journal file has 4 line(s) and the "
+        "machine log the same number; it stopped and resumed 1 time(s) and "
+        "lost no line"), f"a stop that lost nothing is complete: {got}")
+    # 9. The scheduler's ring buffer says the logging is not well when the
+    # watchdog says so.
+    svc.logbook.stalled_why = "stuck"
+    check(svc._snapshot()["logging_ok"] is False,
+          "a stuck writer reads as logging not ok in the ring buffer")
+    svc.logbook.stalled_why = ""
+    svc.logbook.disk_why = "cut"
+    check(svc._snapshot()["logging_ok"] is False,
+          "and so does a file that did not read back")
+    svc.logbook.disk_why = ""
     print("  ok")
 
 
@@ -79505,9 +79745,9 @@ def test_journal_upload_sends_closed_nights_and_waits_for_the_ack():
                                     "night_2026-11-08.summary.md"],
           f"the status, never the token: {st}")
     check(up.send_one("../ltcplay_audit.json", A.load_config(settings)[0])
-          == (False, "not a night journal file") and
+          == ("failed", "not a night journal file") and
           up.send_one("incidents/x.jsonl", A.load_config(settings)[0])
-          == (False, "not a night journal file"),
+          == ("failed", "not a night journal file"),
           "nothing but a night file's own name is ever read")
     # The audit status carries the night journal's beside the audit's.
     view = RM.Remote.audit_view(types.SimpleNamespace(
@@ -79546,7 +79786,8 @@ def test_journal_upload_sends_closed_nights_and_waits_for_the_ack():
         return open(os.path.join(here, *parts), encoding="utf-8").read()
     check("- The audit log and the night journal go only to your own "
           "server.\n  Nothing else is read or sent, never a password or "
-          "token.\n" in text_of("USERS.md"),
+          "token. The night\n  journal names each operator and the screen "
+          "they pressed on.\n" in text_of("USERS.md"),
           "USERS.md says what is sent, and nothing else")
     check("What it sends: the audit log and the night journal, only to "
           "Jeff's own\nserver; nothing else is read or sent, never a "
@@ -79554,23 +79795,185 @@ def test_journal_upload_sends_closed_nights_and_waits_for_the_ack():
           "auditsend.py says the same")
     check("journal (server, shared token, time, days kept; they go only to "
           "your own\n  server, nothing else is read or sent, never a "
-          "password or token)" in text_of("OPERATOR.md"),
+          "password or token; the\n  night journal names each operator and "
+          "screen)" in text_of("OPERATOR.md"),
           "OPERATOR.md says the same")
     check('<label><input type="checkbox" id="au-en"> Send the audit log and '
           'the night journal to the server every night</label>' in
           text_of("ltcplay", "web", "remote2.html"),
           "the setting says what it sends")
-    # Pruning: once the upload has sent anything, a night file the server
-    # has not acknowledged stays, whatever its age.
-    now[0] = _den(S, 13, 0, d=(2027, 6, 1))
+    check('<div class="dim" style="font-size:13px">The night journal names '
+          'each operator and screen.</div>' in text_of(
+              "ltcplay", "web", "remote2.html"),
+          "and that the night journal names operators and screens")
+    card = _js_function(text_of("ltcplay", "web", "remote2.html"),
+                        "renderAudit") or ""
+    check('" CHANGED SINCE SENT, sending again: " + '
+          'a.journal_upload.changed_since_sent.join(", ")' in card and
+          '" NOT SENT, refused by the server: " + '
+          'a.journal_upload.failed.join(", ")' in card,
+          "the card shows night files changed since sent and refused")
+    # Pruning: while the upload is on, a night file the server has not
+    # acknowledged stays past keep_days, up to UNSENT_GRACE_DAYS more.
+    now[0] = _den(S, 13, 0, d=(2027, 3, 20))
     c = _book(J, nights, now, durable=False)
     gone = c.prune(now[0].date())
+    unsent = [f(n) for n in ("2026-11-06", "2026-11-09")
+              for f in (J.machine_name, J.journal_name)]
     check(sorted(gone) == sorted(names + ["incident_2026-11-08_130500"])
-          and all(os.path.exists(os.path.join(nights, f(n))) for n in (
-              "2026-11-06", "2026-11-09") for f in (J.machine_name,
-                                                   J.journal_name)),
+          and all(os.path.exists(os.path.join(nights, n)) for n in unsent),
           f"past keep_days: acknowledged files go, unacknowledged ones "
           f"stay: {gone}")
+    now[0] = _den(S, 13, 0, d=(2027, 6, 1))
+    gone = c.prune(now[0].date())
+    said = [r for r in c.memory if r["outcome"] == "removed unsent"]
+    check(sorted(gone) == sorted(unsent + [J.summary_name("2026-11-09")])
+          and said and said[-1]["text"].startswith(
+              "Removed 5 night file(s) the server never acknowledged, after "
+              "150 days: "), f"but never for good: {gone} "
+                             f"{said and said[-1]['text']}")
+    # The upload switched off: pruning is as it always was.
+    work_off = tempfile.mkdtemp()
+    now[0] = _den(S, 13, 0, d=(2026, 11, 7))
+    off = _book(J, work_off, now, durable=False)
+    off.record(actor="system", action="note", outcome="done", reason="r",
+               text="A night.")
+    with open(os.path.join(work_off, A.JOURNAL_SENT_FILE), "w") as fh:
+        fh.write('{"enabled": false, "files": {}}')
+    now[0] = _den(S, 13, 0, d=(2027, 3, 20))
+    check(sorted(off.prune(now[0].date())) == sorted(
+        [J.machine_name("2026-11-07"), J.journal_name("2026-11-07")]),
+          "with the upload off, an unsent night ages out as before")
+    print("  ok")
+
+
+def test_journal_upload_failures_and_changes():
+    section("night journal upload (review of #246): a file the server "
+            "refuses for good is marked failed for its checksum, said once, "
+            "and the later nights still go; a file changed after it was "
+            "sent goes once more, naming the copy it replaces; a file that "
+            "cannot be read waits out the backoff; a link or a file over "
+            "the receiver's 64 MB is never read; the switch is remembered "
+            "for pruning")
+    import hashlib
+    import json as _j
+    import tempfile
+    from ltcplay import auditsend as A
+    from ltcplay import journal as J
+    S = _sched()
+    if S is None:
+        return
+    settings = tempfile.mkdtemp()
+    nights = os.path.join(settings, "nights")
+    now = [_den(S, 13, 0, d=(2026, 11, 7))]
+    for day in (7, 8):
+        now[0] = _den(S, 13, 0, d=(2026, 11, day))
+        b = _book(J, nights, now, durable=False)
+        b.record(actor="system", action="note", outcome="done", reason="r",
+                 text=f"Night {day}.")
+        b.write_summary(f"2026-11-0{day}", state="OFF")
+    A.save_config(settings, {"enabled": True, "token": "s3cret-token-xyz",
+                             "url": "https://audit.example.com/ltc"})
+    sent, answers, said = [], [], []
+
+    def transport(url, data, headers, timeout):
+        sent.append(dict(headers))
+        a = answers.pop(0) if answers else "ack"
+        if isinstance(a, int):
+            return a, "refused"
+        return 200, _j.dumps({"ok": True, "sha256": headers["X-LTC-SHA256"]})
+    mono = [0.0]
+    up = A.JournalUploader(nights, settings, night=lambda: "2026-11-09",
+                           transport=transport, clock=lambda: mono[0],
+                           say=said.append)
+    answers[:] = [409]
+    went = up.run(force=True)
+    first = "night_2026-11-07.journal.txt"
+    check(went == 5 and up.failed() == {first: {
+        "sha256": up.failed()[first]["sha256"],
+        "why": "HTTP 409: refused", "at": up.failed()[first]["at"]}} and
+          len(sent) == 6, f"a refusal for good marks that file and the rest "
+                          f"go on: {went} {up.failed()}")
+    check(said == [f"The night journal file {first} was not sent and will "
+                   f"not be tried again as it is: HTTP 409: refused. The "
+                   f"later nights are sent; the show is not affected."],
+          f"said once in the journal: {said}")
+    check(up.run(force=True) == 0 and len(sent) == 6 and len(said) == 1,
+          "never tried again as it is, never said again")
+    check(up.status()["failed"] == [first] and
+          up.status()["failed_why"] == {first: "HTTP 409: refused"},
+          f"the status names it: {up.status()}")
+    # A summary written again after it was sent: sent once more, naming
+    # the copy the server holds.
+    summ = os.path.join(nights, "night_2026-11-08.summary.md")
+    held = up.sent()["night_2026-11-08.summary.md"]["sha256"]
+    with open(summ, "a", encoding="utf-8") as fh:
+        fh.write("Written again.\n")
+    check(up.changed_since_sent() == ["night_2026-11-08.summary.md"],
+          "a file changed since sent is listed")
+    check(up.run(force=True) == 1 and sent[-1]["X-LTC-File"] ==
+          "night_2026-11-08.summary.md" and
+          sent[-1]["X-LTC-Replaces"] == held and
+          up.changed_since_sent() == [],
+          f"and sent once more, replacing: {sent[-1]}")
+    check(up.run(force=True) == 0, "once per change")
+    # Another server answer: tried again later with the backoff.
+    with open(summ, "a", encoding="utf-8") as fh:
+        fh.write("And again.\n")
+    answers[:] = [503]
+    check(up.run(force=True) == 0 and up.last_error == "HTTP 503: refused"
+          and up._next_try == mono[0] + A.BACKOFF_S[0],
+          f"a 503 waits out the backoff: {up.last_error}")
+    check(not up.due(A.load_config(settings)[0]), "and is not due before")
+    # A file that cannot be read: the backoff, not a 30 s loop.
+    mono[0] += A.BACKOFF_S[0] + 1
+    import builtins
+    orig = builtins.open
+
+    def no_read(path, *a, **k):
+        if str(path).endswith("night_2026-11-08.summary.md") and \
+                "b" in (a[0] if a else k.get("mode", "r")):
+            raise PermissionError(13, "held", path)
+        return orig(path, *a, **k)
+    up._hashes.clear()
+    builtins.open = no_read
+    try:
+        went = up.run(force=True)
+    finally:
+        builtins.open = orig
+    check(went == 0 and up._fails_in_a_row == 2 and
+          up._next_try == mono[0] + A.BACKOFF_S[1] and
+          "could not be read" in up.last_error,
+          f"a file that cannot be read waits out the backoff: "
+          f"{up.last_error!r}")
+    # A link, and a file over what the receiver takes, are never read.
+    os.symlink(summ, os.path.join(nights, "night_2026-11-06.summary.md"))
+    for k in ("jsonl", "journal.txt"):
+        os.symlink(os.path.join(nights, f"night_2026-11-08.{k}"),
+                   os.path.join(nights, f"night_2026-11-06.{k}"))
+    check(not [n for n, _h in up.pending() if "11-06" in n],
+          "a link is never sent")
+    big = os.path.join(nights, "night_2026-11-08.jsonl")
+    before = len(sent)
+    with open(big, "ab") as fh:
+        fh.truncate(A.JOURNAL_MAX_BYTES + 1)
+    mono[0] += A.BACKOFF_S[2] + 1
+    up.run(force=True)
+    check("night_2026-11-08.jsonl" in up.failed() and
+          up.failed()["night_2026-11-08.jsonl"]["why"] ==
+          f"night_2026-11-08.jsonl is {A.JOURNAL_MAX_BYTES + 1} bytes, more "
+          f"than the {A.JOURNAL_MAX_BYTES} the server takes" and
+          not any(h["X-LTC-File"] == "night_2026-11-08.jsonl"
+                  for h in sent[before:]),
+          f"too large: failed, never sent: {up.failed()}")
+    # The switch is remembered for pruning.
+    doc = _j.load(open(os.path.join(nights, A.JOURNAL_SENT_FILE)))
+    check(doc["enabled"] is True, "on is recorded")
+    A.save_config(settings, {"enabled": False})
+    up.run(force=True)
+    doc = _j.load(open(os.path.join(nights, A.JOURNAL_SENT_FILE)))
+    check(doc["enabled"] is False and J._acknowledged(nights) is None,
+          "off is recorded, and pruning is then as it always was")
     print("  ok")
 
 
@@ -79676,6 +80079,51 @@ def test_audit_receiver_takes_the_night_journal():
         "night_2026-11-09.journal.txt"), "rb").read() == data,
         "a different file under a stored name is refused; nothing is "
         "overwritten")
+    nightdir = os.path.join(store, "night-journal", "2026-11-09")
+    conflicts = [n for n in os.listdir(nightdir) if ".conflict-" in n]
+    check(post("night_2026-11-09.journal.txt", body=other)[0] == 409 and
+          [n for n in os.listdir(nightdir) if ".conflict-" in n] ==
+          conflicts and len(conflicts) == 1,
+          f"sent again, the refused file is kept once, not once an hour: "
+          f"{os.listdir(nightdir)}")
+    hd = {"Authorization": "Bearer " + tok,
+          "X-LTC-File": "night_2026-11-09.journal.txt",
+          "X-LTC-SHA256": hashlib.sha256(other).hexdigest(),
+          "X-LTC-Replaces": "1" * 64}
+    check(R.receive(store, tok, hd, other)[0] == 409,
+          "replacing a copy the server does not hold is refused")
+    hd["X-LTC-Replaces"] = sha
+    code, doc = R.receive(store, tok, hd, other)
+    check(code == 200 and doc["sha256"] == hashlib.sha256(other).hexdigest()
+          and open(os.path.join(nightdir, "night_2026-11-09.journal.txt"),
+                   "rb").read() == other and
+          open(os.path.join(nightdir, "night_2026-11-09.journal.txt"
+                            ".replaced-" + sha[:16]), "rb").read() == data,
+          f"naming the copy it replaces, the newer is kept and the older "
+          f"stays beside it: {doc} {os.listdir(nightdir)}")
+    ok, out = R.verify_nights(store)
+    check(ok, f"and the store still verifies: {out}")
+    code, doc = R.receive(store, tok, {
+        "Authorization": "Bearer " + tok,
+        "X-LTC-File": "night_2026-11-11.jsonl",
+        "X-LTC-SHA256": "\u00e9" * 64}, data)
+    check(code == 400 and doc == {"ok": False,
+                                  "error": "a header could not be read"},
+          f"a checksum that is not ASCII is a 400, not a crash: {doc}")
+    blocked = tempfile.mkdtemp()
+    with open(os.path.join(blocked, "night-journal"), "w") as fh:
+        fh.write("a file where the folder should be")
+    code, doc = R.receive(blocked, tok, {
+        "Authorization": "Bearer " + tok,
+        "X-LTC-File": "night_2026-11-11.jsonl",
+        "X-LTC-SHA256": sha}, data)
+    check(code == 500 and doc["ok"] is False and
+          doc["error"].startswith("the file could not be stored ("),
+          f"a store it cannot write is a 500 with a sentence: {doc}")
+    check(R._part("x") != R._part("x"),
+          "each request writes its own temporary file")
+    check(post(name="night_2026-11-12.jsonl\n")[0] == 400,
+          "a name with a newline after it is refused")
     check(post("night_2026-11-10.jsonl", digest="0" * 64) ==
           (400, {"ok": False, "error": "the checksum does not match"}),
           "a wrong checksum is refused")
@@ -79764,9 +80212,35 @@ def test_journal_format_doc_is_real_output():
         r = dict(r)
         r.pop("id")
         recs.append(r)
+    # A Programming Run at a show's time (the rig check on, as on the
+    # show PC): no fire, no START_NOW.
+    pn = _pr_night()
+    pn.pr.skip = lambda: "Programming"
+    pn.svc.tick()
+    for t in ((17, 59, 50), (18, 0, 0), (18, 0, 1)):
+        pn.now[0] = _den(S, *t)
+        pn.svc.tick()
+        _settle(pn.svc, pn.c)
+    prog = [dict(r) for r in pn.svc.journal]
+    pn.c.close()
+    pn.link.close()
+    check(not [r for r in prog if r["action"] in ("fire", "START_NOW")] and
+          [r for r in prog if r["outcome"] == "programming"],
+          "a Programming Run writes no fire and no START_NOW record")
+    for r in prog:
+        lines.add(build.sub("(BUILD)", r["line"]))
+        r.pop("id")
+        recs.append(r)
     here = os.path.dirname(os.path.abspath(__file__))
     doc = open(os.path.join(here, "tools", "JOURNAL_FORMAT.md"),
                encoding="utf-8").read()
+    for words in (
+            "Count on `action` and `outcome` (and `reason`), never on "
+            "`actor`",
+            "They are told apart only by `text`: \"pressed Start at a cue\"",
+            "is counted as unknown, cut short",
+            "### A Programming Run at a show's time"):
+        check(words in doc, f"JOURNAL_FORMAT.md says {words!r}")
     shown_lines, shown_recs = 0, 0
     for block in re.findall(r"```\n(.*?)```", doc, re.S):
         for x in block.splitlines():
@@ -79780,7 +80254,7 @@ def test_journal_format_doc_is_real_output():
                 r.pop("id")
                 check(r in recs, f"the doc's machine log record is real: "
                                  f"{x[:160]!r}")
-    check(shown_lines >= 12 and shown_recs >= 11,
+    check(shown_lines >= 14 and shown_recs >= 13,
           f"the doc shows every kind ({shown_lines} lines, {shown_recs} "
           f"records)")
     for row in (
@@ -114519,6 +114993,7 @@ if __name__ == "__main__":
         test_journal_held_file_and_clock_set_back,
         test_journal_watchdog_flags_a_silent_gap,
         test_journal_summary_checks_the_files,
+        test_journal_check_and_watchdog_edges,
         test_journal_a_clean_stop_reads_as_one,
         test_journal_screens_come_from_a_list,
         test_journal_summary_lists_every_fault,
@@ -115052,6 +115527,7 @@ if __name__ == "__main__":
         test_audit_chain_verify_finds_every_kind_of_tamper,
         test_audit_upload_retries_resumes_and_waits_for_the_ack,
         test_journal_upload_sends_closed_nights_and_waits_for_the_ack,
+        test_journal_upload_failures_and_changes,
         test_audit_receiver_takes_the_night_journal,
         test_journal_format_doc_is_real_output,
         test_audit_never_blocks_or_fails_a_press,

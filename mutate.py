@@ -23544,6 +23544,87 @@ def build():
   '                         "started_at": (s.fired_at.isoformat()\n',
   '                         "started_at": (None\n'),
 
+ ('journal summary: a show time is compared to the microsecond, not the millisecond the files keep',
+  'ltcplay/journal.py',
+  '                  if (t - a).total_seconds() > 0.001\n',
+  '                  if a < t\n'),
+
+ ("journal summary: a show's run is overlapped by a fraction of a millisecond",
+  'ltcplay/journal.py',
+  '                if (b - s).total_seconds() > 0.001 and (\n',
+  '                if s < b and (\n'),
+
+ ('journal writer: a file moved away is not found at the next write',
+  'ltcplay/journal.py',
+  '            if new:\n'
+  '                self._disk_problem(self.clock(), (\n',
+  '            if False:\n'
+  '                self._disk_problem(self.clock(), (\n'),
+
+ ('journal writer: a file cut shorter is not found at the next write',
+  'ltcplay/journal.py',
+  '            elif size is not None and size < had[0]:\n',
+  '            elif False:\n'),
+
+ ('journal summary: a partial write retried counts as two lines',
+  'ltcplay/journal.py',
+  '                    and rows[i + 1].startswith(r.lstrip(b"\\x00")))]\n',
+  '                    and False)]\n'),
+
+ ('journal summary: names the wrong file as short',
+  'ltcplay/journal.py',
+  '        short = ("journal file" if jlines < len(recs) + cut\n',
+  '        short = ("machine log" if jlines < len(recs) + cut\n'),
+
+ ('journal summary: a stop that lost no line reads as not complete',
+  'ltcplay/journal.py',
+  '    elif log_gaps and files is not None and not files_bad:\n',
+  '    elif False:\n'),
+
+ ('journal ring buffer: a stuck writer reads as logging ok',
+  'ltcplay/schedule_service.py',
+  '                                   or self.logbook.stalled_why\n',
+  '                                   or False\n'),
+
+ ('journal ring buffer: files that did not read back read as logging ok',
+  'ltcplay/schedule_service.py',
+  '                                   or self.logbook.disk_why)}\n',
+  '                                   or False)}\n'),
+
+ ("journal watchdog: lines that arrive mid write wait from the batch's first line",
+  'ltcplay/journal.py',
+  '                self._wait_since = self._mono() if self._pending else None\n',
+  '                pass\n'),
+
+ ('journal summary: lines made tonight are not handed to the check',
+  'ltcplay/journal.py',
+  '            made = list(self._made.get(night, ()))\n',
+  '            made = []\n'),
+
+ ('journal summary: lines still waiting for the disk count as lost',
+  'ltcplay/journal.py',
+  '            waiting = [r["id"] for r, _d in self._pending]\n'
+  '        files = check_files(',
+  '            waiting = []\n'
+  '        files = check_files('),
+
+ ('journal watchdog: a file replaced with the same size is not found',
+  'ltcplay/journal.py',
+  '                if got != tail:\n',
+  '                if False:\n'),
+
+ ('journal watchdog: a good read back does not clear the flag',
+  'ltcplay/journal.py',
+  '            elif self.disk_why:\n'
+  '                self.disk_why = ""\n',
+  '            elif False:\n'
+  '                self.disk_why = ""\n'),
+
+ ('journal watchdog: a stop already flagged is called stuck as well',
+  'ltcplay/journal.py',
+  '        if waiting and not self.stopped_why and waited > self.stall_s:\n',
+  '        if waiting and waited > self.stall_s:\n'),
+
  ('journal upload: the night still open counts as closed',
   'ltcplay/auditsend.py',
   '            if m and m.group(1) < open_n and os.path.isfile(\n',
@@ -23558,30 +23639,19 @@ def build():
 
  ("journal upload: marked sent without the server's checksum",
   'ltcplay/auditsend.py',
-  '                ack.get("sha256") != sha:\n'
-  '            return False, ("the server answered but did not acknowledge this "\n'
-  '                           "file\'s checksum")\n'
-  '        self._mark_sent(name, {"sha256": sha, "incomplete"',
-  '                False:\n'
-  '            return False, ("the server answered but did not acknowledge this "\n'
-  '                           "file\'s checksum")\n'
-  '        self._mark_sent(name, {"sha256": sha, "incomplete"'),
+  '        took = isinstance(ack, dict) and ack.get("ok") is True and \\\n'
+  '            ack.get("sha256") == sha\n',
+  '        took = isinstance(ack, dict) and ack.get("ok") is True\n'),
 
  ('journal upload: a failure is marked sent',
   'ltcplay/auditsend.py',
-  '                ok, why = self.send_one(name, cfg, checked[night])\n'
-  '                if ok:\n',
-  '                ok, why = self.send_one(name, cfg, checked[night])\n'
-  '                if True:\n'),
+  '                if result == "sent":\n',
+  '                if result != "failed":\n'),
 
  ('journal upload: no backoff after a failure',
   'ltcplay/auditsend.py',
-  '                self._next_try = self._clock() + back\n'
-  '                if why != self.last_error:\n'
-  '                    self._note("journal-upload"',
-  '                self._next_try = 0.0\n'
-  '                if why != self.last_error:\n'
-  '                    self._note("journal-upload"'),
+  '            return self._next_try <= self._clock()\n',
+  '            return True\n'),
 
  ('journal upload: an incomplete night is sent as complete',
   'ltcplay/auditsend.py',
@@ -23595,27 +23665,41 @@ def build():
 
  ('journal upload: the token is said in an upload error',
   'ltcplay/auditsend.py',
-  '            return False, re.sub(r"(?i)bearer\\s+\\S+", "Bearer [hidden]",\n'
-  '                                 why)\n',
-  '            return False, why\n'),
+  '            why = re.sub(r"(?i)bearer\\s+\\S+", "Bearer [hidden]", why)\n',
+  '            pass\n'),
 
- ('journal upload: sent off by default',
+ ('journal upload: sent while it is off',
   'ltcplay/auditsend.py',
-  '            if not cfg["enabled"] or (not force and not self.due(cfg)):\n'
+  '            if not cfg["enabled"]:\n'
   '                return 0\n'
-  '            self.last_attempt_at = self._wall()\n'
-  '            went = 0\n'
-  '            checked = {}\n',
+  '            if not force and not self.due(cfg):\n',
   '            if False:\n'
   '                return 0\n'
-  '            self.last_attempt_at = self._wall()\n'
-  '            went = 0\n'
-  '            checked = {}\n'),
+  '            if not force and not self.due(cfg):\n'),
 
  ('journal upload: prune removes a night file the server has not acknowledged',
   'ltcplay/journal.py',
-  '                if acked is not None and not incident and name not in acked:\n',
-  '                if False:\n'),
+  '                    if d >= limit:\n'
+  '                        continue\n',
+  '                    if False:\n'
+  '                        continue\n'),
+
+ ('journal upload: prune keeps an unacknowledged night for ever',
+  'ltcplay/journal.py',
+  '                    if d >= limit:\n',
+  '                    if True:\n'),
+
+ ('journal upload: pruning an unacknowledged night is not said',
+  'ltcplay/journal.py',
+  '        if unsent:\n'
+  '            self.record(actor="system", action="prune",\n',
+  '        if False:\n'
+  '            self.record(actor="system", action="prune",\n'),
+
+ ('journal upload: pruning keeps unsent nights while the upload is off',
+  'ltcplay/journal.py',
+  '    if not isinstance(doc, dict) or doc.get("enabled") is False:\n',
+  '    if not isinstance(doc, dict):\n'),
 
  ('journal upload: the engine does not start the night journal upload',
   'ltcplay/web.py',
@@ -23623,6 +23707,11 @@ def build():
   '            # The night journal goes to the same server',
   '        if False:\n'
   '            # The night journal goes to the same server'),
+
+ ("journal upload: the engine does not hand over the night files' check",
+  'ltcplay/web.py',
+  '                transport=transport, checker=book.check_night,\n',
+  '                transport=transport,\n'),
 
  ('journal upload: the Users screen does not show the night journal',
   'ltcplay/remote.py',
@@ -23633,6 +23722,65 @@ def build():
   'ltcplay/web/remote2.html',
   'Send the audit log and the night journal to the server every night',
   'Send the audit log to the server every night'),
+
+ ('journal upload: the card does not say the journal names operators',
+  'ltcplay/web/remote2.html',
+  'The night journal names each operator and screen.',
+  'The night journal is sent.'),
+
+ ('journal upload: the card hides night files refused by the server',
+  'ltcplay/web/remote2.html',
+  '" NOT SENT, refused by the server: "',
+  '" "'),
+
+ ('journal upload: a refusal for good stops the later nights',
+  'ltcplay/auditsend.py',
+  '            if 400 <= status < 500 and status not in JOURNAL_RETRY_4XX:\n',
+  '            if False:\n'),
+
+ ('journal upload: a file refused for good is tried again',
+  'ltcplay/auditsend.py',
+  '                if isinstance(bad, dict) and bad.get("sha256") == sha:\n',
+  '                if False:\n'),
+
+ ('journal upload: a file refused for good is not said in the journal',
+  'ltcplay/auditsend.py',
+  '                    self._say_once(\n',
+  '                    (\n'),
+
+ ('journal upload: a file changed since sent is never sent again',
+  'ltcplay/auditsend.py',
+  '                if held != sha:\n',
+  '                if not held:\n'),
+
+ ('journal upload: a file sent again does not name the copy it replaces',
+  'ltcplay/auditsend.py',
+  '        if replaces:\n'
+  '            headers["X-LTC-Replaces"] = replaces\n',
+  '        if False:\n'
+  '            headers["X-LTC-Replaces"] = replaces\n'),
+
+ ('journal upload: a file that cannot be read is skipped without a backoff',
+  'ltcplay/auditsend.py',
+  '                    if os.path.isfile(p) and not os.path.islink(p):\n',
+  '                    if False:\n'),
+
+ ('journal upload: a link is sent',
+  'ltcplay/auditsend.py',
+  '        if not stat.S_ISREG(st.st_mode):\n'
+  '            return None\n',
+  '        if False:\n'
+  '            return None\n'),
+
+ ('journal upload: a file larger than the receiver takes is read and sent',
+  'ltcplay/auditsend.py',
+  '        if st.st_size > JOURNAL_MAX_BYTES:\n',
+  '        if False:\n'),
+
+ ('journal upload: the switch is not remembered for pruning',
+  'ltcplay/auditsend.py',
+  '            self._mark_enabled(bool(cfg["enabled"]))\n',
+  '            pass\n'),
 
  ('receiver: night journal files are refused as not audit days',
   'tools/audit_receiver.py',
@@ -23650,10 +23798,21 @@ def build():
 
  ('receiver: a different night file is acknowledged as the same',
   'tools/audit_receiver.py',
-  '        if have == sha:\n'
-  '            return 200, {"ok": True, "sha256": sha, "again": True}\n',
-  '        if True:\n'
-  '            return 200, {"ok": True, "sha256": sha, "again": True}\n'),
+  '        if sha == have:\n',
+  '        if True:\n'),
+
+ ('receiver: a night file replaces one it does not name',
+  'tools/audit_receiver.py',
+  '        if wants and hmac.compare_digest(wants, have):\n',
+  '        if True:\n'),
+
+ ('receiver: a refused night file is kept again on every try',
+  'tools/audit_receiver.py',
+  '            if not os.path.exists(keep):\n'
+  '                tmp = _part(keep)\n',
+  '            if True:\n'
+  '                keep += str(time.time_ns())\n'
+  '                tmp = _part(keep)\n'),
 
  ('receiver: a night that is not a date is taken',
   'tools/audit_receiver.py',
@@ -23670,10 +23829,27 @@ def build():
   '                ok = hashlib.sha256(fh.read()).hexdigest() == r.get("sha256")\n',
   '                ok = True\n'),
 
- ("journal upload: the engine does not hand over the night files' check",
-  'ltcplay/web.py',
-  '                transport=transport, checker=book.check_night,\n',
-  '                transport=transport,\n'),
+ ('receiver: a bad header raises instead of answering',
+  'tools/audit_receiver.py',
+  '    except (TypeError, ValueError, UnicodeError):\n',
+  '    except ZeroDivisionError:\n'),
+
+ ('receiver: a store it cannot write raises instead of answering',
+  'tools/audit_receiver.py',
+  '    except OSError as e:\n'
+  '        return 500,',
+  '    except ZeroDivisionError as e:\n'
+  '        return 500,'),
+
+ ('receiver: two requests share a temporary file',
+  'tools/audit_receiver.py',
+  '            f"{time.time_ns()}.part")\n',
+  '            f"part")\n'),
+
+ ('receiver: a name with a newline after it is taken',
+  'tools/audit_receiver.py',
+  '                      r"\\.(journal\\.txt|jsonl|summary\\.md)\\Z")\n',
+  '                      r"\\.(journal\\.txt|jsonl|summary\\.md)$")\n'),
 ]
 
 

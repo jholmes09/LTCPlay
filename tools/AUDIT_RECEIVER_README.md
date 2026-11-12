@@ -1,7 +1,8 @@
 # The audit receiver, for Jeff's server
 
 `audit_receiver.py` takes the nightly audit and night journal upload from
-LTC Player and keeps it. It is one file and needs only Python 3 (nothing to install).
+LTC Player and keeps it. It is one file and needs only Python 3.7 or
+newer (nothing to install).
 
 ## What it does
 
@@ -30,6 +31,12 @@ the same token, to the same address:
   `<store>/night-journal/<night>/`, listed in
   `<store>/night-journal/index.jsonl`, and answered with the same "got it"
   as an audit file.
+- A night file that changed on the PC after it was sent (a summary
+  written again) comes once more, naming the copy it replaces. The newer
+  is kept, and the older stays beside it as `.replaced-<checksum>`. Any
+  other different file under a stored name is refused and kept beside it
+  once, as `.conflict-<checksum>`.
+- The journal names the operators and the screens they pressed on.
 - A night whose logging was not complete still comes, marked
   `"incomplete": true` with its gap times. The index keeps both, so a
   cross-check can flag that night.

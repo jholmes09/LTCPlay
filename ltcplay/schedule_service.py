@@ -3884,7 +3884,9 @@ class Service:
         small: it is taken 5 times a second and never written to disk."""
         m, now = self.machine, self.clock()
         snap = {"state": self._state_name(),
-                "logging_ok": not self.logbook.stopped_why}
+                "logging_ok": not (self.logbook.stopped_why
+                                   or self.logbook.stalled_why
+                                   or self.logbook.disk_why)}
         if m is not None:
             nxt = m.next_slot()
             snap.update(

@@ -2924,7 +2924,8 @@ tab, and the hardware e-stop always works.
   disarm always work, for everyone. Audit log (show PC only): its state,
   Check the chain now, the nightly upload of the audit log and the night
   journal (server, shared token, time, days kept; they go only to your own
-  server, nothing else is read or sent, never a password or token),
+  server, nothing else is read or sent, never a password or token; the
+  night journal names each operator and screen),
   Idle sign out, sign out after the last show, Save, and
   Send now. The shared token is never shown: the field says only whether one
   is saved, and a token typed there is cleared after Save.
