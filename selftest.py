@@ -67004,7 +67004,7 @@ def test_hazers_at_the_engine():
         check(di.get("hazers") == {"names": ["Hazer 1", "Hazer 2",
                                              "Hazer 3"],
                                    "on": ["Hazer 1"], "down": "",
-                                   "paused": False},
+                                   "paused": False, "test": False},
               f"the Stream Deck reads them on deck-input: "
               f"{di.get('hazers')}")
         # Reviewer B, 2: the state is flamesafe's word.
