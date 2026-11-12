@@ -3772,5 +3772,17 @@
 "haze fluid: a refill is not saved at once": "test_haze_fluid_refill_settings_and_the_record",
 "haze fluid: only a RuntimeError from the haze observer is kept off the sender": "test_haze_fluid_reads_the_bytes_on_the_wire",
 "haze fluid: the observer takes the record lock on the sender thread": "test_haze_fluid_never_touches_the_haze_output",
-"haze fluid: a counting error raises out of the tracker's pass": "test_haze_fluid_never_touches_the_haze_output"
+"haze fluid: a counting error raises out of the tracker's pass": "test_haze_fluid_never_touches_the_haze_output",
+"haze fluid: the hold is a fixed 0.5 s, not flamesafe's frame_stale_ms": "test_haze_fluid_not_sure_on_restart_and_a_stale_link",
+"haze fluid: a hazer starting is not saved at once": "test_haze_fluid_not_sure_on_restart_and_a_stale_link",
+"haze fluid: a flow of 0 litres an hour is taken": "test_haze_fluid_undo_bounds_and_the_safe_side",
+"haze fluid: a NaN in haze.json is read": "test_haze_fluid_undo_bounds_and_the_safe_side",
+"haze fluid: not sure seconds are left out of the litres (reads fuller)": "test_haze_fluid_undo_bounds_and_the_safe_side",
+"haze fluid: a programming session is counted as a show": "test_haze_fluid_undo_bounds_and_the_safe_side",
+"haze fluid: per show records are unbounded": "test_haze_fluid_undo_bounds_and_the_safe_side",
+"haze fluid: refills are unbounded": "test_haze_fluid_undo_bounds_and_the_safe_side",
+"haze fluid: anyone who may refill may undo": "test_haze_fluid_routes_wiring_and_audit",
+"haze fluid: an undone refill still counts": "test_haze_fluid_undo_bounds_and_the_safe_side",
+"haze fluid: an undo is not saved at once": "test_haze_fluid_undo_bounds_and_the_safe_side",
+"ui 2.0 haze: Undo goes with no question": "test_ui2_haze_fluid_driven"
 }

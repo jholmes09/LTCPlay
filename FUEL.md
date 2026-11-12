@@ -158,15 +158,25 @@ entries) under **Haze fluid**, with the same tiles.
 - **Not sure.** A restart without closing, a stale or lost link to
   flamesafe, or frames that could not be counted while a hazer was on put
   that time under "not sure" for that hazer. It is never dropped and never
-  made up.
+  made up. After the last frame flamesafe keeps a hazer going for its
+  `frame_stale_ms` (read from flamesafe.json), so that long, plus a
+  little, is not sure. A hazer that starts hazing is saved at once, so a
+  crash right after still names it. While flamesafe's status is stale the
+  haze is counted AND counted as not sure, so in litres it counts twice:
+  emptier, never fuller.
 - **Refilled.** Tap a hazer when its fluid tank is full and say yes. It
   needs the same sign-in as a fuel refill, and is logged the same way.
+  A wrong one: an **admin** opens **Refills and notes** and presses
+  **Undo** on it, as for fuel. It stays in the record, marked undone.
 - **Litres.** Only if you set them, in `ltcplay_hazers.json` (beside the
   levels): `"fluid": {"Hazer 1": {"litres_per_hour": 0.6, "tank_litres":
   2.5}}`, the litres an hour at full output and the tank size. With both,
   the tile shows the percent left from the last refill; with only the
   first, litres used. Without them it shows haze time only. "Not sure"
   time is counted as full output, so it reads emptier, never fuller.
+  An older LTC Player that sets a hazer level rewrites
+  `ltcplay_hazers.json` without the `fluid` block: set it again after
+  going back to an older build.
 - **Where it is kept.** `haze.json` in the settings folder, beside
   `fuel.json`, written the same safe way with its own format number.
   `fuel.json` is not changed.

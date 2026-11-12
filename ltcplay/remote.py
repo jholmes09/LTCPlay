@@ -208,8 +208,8 @@ MORNING_POST_ROUTES = ("morning-open", "purge-select", "purge-fire",
 FUEL_GET_ROUTES = ("fuel",)
 FUEL_POST_ROUTES = ("fuel-refill", "fuel-undo")
 # Haze fluid (fuelhaze.py, 2026-11-12): the Fuel page's Hazers section, in
-# the fuel GET; a refill needs what a fuel refill needs.
-HAZE_POST_ROUTES = ("haze-refill",)
+# the fuel GET; a refill needs what a fuel refill needs, an undo an admin.
+HAZE_POST_ROUTES = ("haze-refill", "haze-undo")
 # The Fireball page (fireball.py): read by anyone; a channel ON needs the
 # arm row (users.classify), everything off never.
 FIREBALL_GET_ROUTES = ("fireball",)
@@ -2028,7 +2028,8 @@ class Remote:
                 # The hazers' section (fuelhaze.py): display only.
                 from . import fuelhaze
                 try:
-                    out["haze"] = fuelhaze.route_view(self.haze)
+                    out["haze"] = fuelhaze.route_view(self.haze, ctx,
+                                                     self.users)
                 except Exception as e:           # noqa: BLE001
                     out["haze"] = {"available": False,
                                    "fault": f"{type(e).__name__}: {e}"}

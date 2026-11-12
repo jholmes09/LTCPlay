@@ -90758,7 +90758,7 @@ class _HazeRig:
     FlameLink.send_frame calls it: (tc, the bytes on the wire, the hazer
     test, sent)."""
 
-    def __init__(self, work=None):
+    def __init__(self, work=None, stale_ms=500):
         import types
         self.work = work or tempfile.mkdtemp()
         self.t = [500.0]
@@ -90770,6 +90770,9 @@ class _HazeRig:
         self.hz = list(_HZF)
         self.link = types.SimpleNamespace(rehearse_on=False,
                                           haze_observer=None)
+        if stale_ms is not None:
+            # flamesafe's frame_stale_ms, as the flame link's config has it.
+            self.link.cfg = types.SimpleNamespace(frame_stale_ms=stale_ms)
         self.tr = self.open()
 
     def open(self):
@@ -91026,12 +91029,16 @@ def test_haze_fluid_counts_haze_not_fan_by_level_and_source():
 def test_haze_fluid_not_sure_on_restart_and_a_stale_link():
     section("haze fluid: never silently dropped or invented: flamesafe's "
             "status stale counts and marks not sure; a frame not sent or a "
-            "gap after haze is not sure up to flamesafe's 0.5 s hold, never "
+            "gap after haze is not sure up to flamesafe's own "
+            "frame_stale_ms hold (100 to 2500 ms) plus a margin, never "
             "counted; a restart without closing is not sure for the hazers "
-            "that were hazing; a clean stop while on, 0.5 s")
+            "that were hazing, one that began after the last timed save "
+            "too; a clean stop while on, the hold")
     from ltcplay import fuelhaze as FH
     R = _HazeRig()
     try:
+        check(R.tr.hold_s == 0.6, f"frame_stale_ms 500: hold 0.6 s: "
+                                  f"{R.tr.hold_s}")
         R.frames(1)
         R.fresh[0] = False
         R.frames(40, haze=((80, 255),))
@@ -91055,19 +91062,84 @@ def test_haze_fluid_not_sure_on_restart_and_a_stale_link():
         on0 = R.u("Hazer 1")["on"]["other"]
         R.frames(80, haze=((80, 255),), ok=False)
         h = R.u("Hazer 1")
-        check(_near(h["unsure_s"] - u0, FH.FLAMESAFE_HOLD_S, 0.001) and
+        check(_near(h["unsure_s"] - u0, R.tr.hold_s, 0.001) and
               h["on"]["other"] == on0 and R.u("Hazer 2") is None,
-              f"2 s of frames not sent after haze: flamesafe holds the last "
-              f"value 0.5 s, so 0.5 s not sure and nothing counted: "
+              f"2 s of frames not sent after haze: flamesafe (500 ms here) "
+              f"holds the last value 0.6 s with the margin, so 0.6 s not "
+              f"sure and nothing counted: "
               f"{h['unsure_s'] - u0}")
         R.frames(4, haze=((80, 255),))
         u0 = R.u("Hazer 1")["unsure_s"]
         R.t[0] += 20.0
         R.frames(1)
         check(_near(R.u("Hazer 1")["unsure_s"] - u0,
-                    FH.FLAMESAFE_HOLD_S, 0.001),
+                    R.tr.hold_s, 0.001),
               f"a 20 s gap after haze: flamesafe's 0.5 s hold is not sure, "
               f"the rest is not counted at all: {R.u('Hazer 1')['unsure_s'] - u0}")
+        # flamesafe set to its longest hold (frame_stale_ms 2500): a stall
+        # of 2 s is all not sure, one of 5 s is 2.6 s not sure; nothing is
+        # left uncounted and unflagged inside the hold.
+        R2 = _HazeRig(stale_ms=2500)
+        try:
+            check(R2.tr.hold_s == 2.6, f"frame_stale_ms 2500: hold 2.6 s: "
+                                       f"{R2.tr.hold_s}")
+            R2.frames(1)
+            R2.frames(4, haze=((80, 255),))
+            u0 = R2.u("Hazer 1")["unsure_s"]
+            R2.frames(80, haze=((80, 255),), ok=False)
+            check(_near(R2.u("Hazer 1")["unsure_s"] - u0, 2.0, 0.001),
+                  f"a 2 s stall inside a 2.5 s hold: all 2 s not sure: "
+                  f"{R2.u('Hazer 1')['unsure_s'] - u0}")
+            R2.frames(4, haze=((80, 255),))
+            u0 = R2.u("Hazer 1")["unsure_s"]
+            R2.frames(200, haze=((80, 255),), ok=False)
+            check(_near(R2.u("Hazer 1")["unsure_s"] - u0, 2.6, 0.001),
+                  f"a 5 s stall: the 2.6 s hold not sure: "
+                  f"{R2.u('Hazer 1')['unsure_s'] - u0}")
+            R2.frames(4, haze=((80, 255),))
+            R2.tr.close()
+            R2.reopen()
+            check(_near(R2.u("Hazer 1")["unsure_s"] - u0, 5.2, 0.001),
+                  "a clean stop with it on: the 2.6 s hold too")
+        finally:
+            R2.close()
+        R3 = _HazeRig(stale_ms=None)
+        try:
+            check(R3.tr.hold_s == FH.HOLD_DEFAULT_S == 2.6,
+                  "frame_stale_ms not known: the longest flamesafe allows")
+        finally:
+            R3.close()
+        from ltcplay import flamelink as fl
+        R3 = _HazeRig(stale_ms=None)
+        try:
+            R3.link.cfg = fl.FlameLinkConfig("127.0.0.1", 9, 1, _fl_key(),
+                                             frame_stale_ms=2500)
+            R3.tr.attach(R3.link)
+            check(R3.tr.hold_s == 2.6,
+                  "the real flame link config's frame_stale_ms is read")
+        finally:
+            R3.close()
+        # A hazer that begins hazing after the last timed save is saved
+        # at once, so a crash right after still names it.
+        R4 = _HazeRig()
+        try:
+            R4.frames(1)
+            R4.frames(40, haze=((80, 255),))
+            R4.tr.tick()
+            R4.frames(40, haze=((80, 255), (84, 255)))
+            R4.tr.tick()
+            import json as _j
+            with open(R4.tr.path, encoding="utf-8") as fh:
+                hz = _j.load(fh)["hazing"]
+            check(hz == ["Hazer 1", "Hazer 3"],
+                  f"Hazer 3 starting is saved at once: {hz}")
+            R4.reopen()
+            check(_near(R4.u("Hazer 3")["unsure_s"], FH.SAVE_EVERY_S,
+                        0.001),
+                  f"and a crash after it is not sure for Hazer 3 too: "
+                  f"{R4.u('Hazer 3')['unsure_s']}")
+        finally:
+            R4.close()
         # A restart without closing (a crash): the hazers hazing since the
         # last save are not sure for up to SAVE_EVERY_S each.
         R.frames(40, haze=((82, 64),))
@@ -91104,7 +91176,7 @@ def test_haze_fluid_not_sure_on_restart_and_a_stale_link():
         R.tr.close()
         R.reopen()
         h3 = R.u("Hazer 3")
-        check(_near(h3["unsure_s"], FH.FLAMESAFE_HOLD_S, 0.001) and
+        check(_near(h3["unsure_s"], R.tr.hold_s, 0.001) and
               _near(h3["on"]["other"], 1.0, 0.001) and R.tr.gaps == 2,
               f"a clean stop with Hazer 3 on: 0.5 s not sure, the rest "
               f"counted, no new gap: {h3['unsure_s']} {R.tr.gaps}")
@@ -91298,6 +91370,126 @@ def test_haze_fluid_refill_settings_and_the_record():
     print("  ok")
 
 
+def test_haze_fluid_undo_bounds_and_the_safe_side():
+    section("haze fluid: an admin's Undo puts a hazer back on its refill "
+            "before (kept, marked undone, on disk); a flow of 0, NaN or "
+            "infinity is refused; not sure seconds count in the litres "
+            "(emptier, never fuller); a NaN in haze.json is refused; a "
+            "programming session is never a show; per show records and "
+            "refills are bounded")
+    import json as _j
+    from ltcplay import fuelhaze as FH
+    R = _HazeRig()
+    try:
+        R.frames(1)
+        R.frames(400, haze=((80, 255),))
+        R.tr.refill("Hazer 1", "Andy", "operator")
+        R.frames(400, haze=((80, 255),))
+        ok, text = R.tr.refill("Hazer 1", "Ola", "operator")
+        bid = R.h("Hazer 1")["last_refill"]["id"]
+        check(R.h("Hazer 1")["on_s"] == 0.0 and R.h("Hazer 1")["refills"] == 2,
+              "two refills")
+        ok, text = R.tr.undo(bid, "Jeff")
+        v = R.h("Hazer 1")
+        check(ok and text == ("The refill of Hazer 1 that Ola logged is "
+                              "undone.") and
+              v["on_s"] == 10.0 and v["refills"] == 1 and
+              v["last_refill"]["who"] == "Andy",
+              f"undone: the hazer counts from the refill before: {text} "
+              f"{v['on_s']} {v['last_refill']}")
+        rec = R.tr.view()["recent_refills"]
+        check(rec[0]["id"] == bid and rec[0]["undone"]["who"] == "Jeff" and
+              rec[1]["who"] == "Andy" and rec[1]["undone"] is None,
+              f"the recent refills say who undid it: {rec}")
+        check(R.tr.undo(bid, "Jeff")[0] is False and
+              R.tr.undo(999, "Jeff")[0] is False,
+              "an undone or unknown refill: nothing changed")
+        check(("Haze: Jeff undid the refill of Hazer 1 that Ola logged.",
+               False) in R.lines, "journaled")
+        R.reopen()
+        check(R.h("Hazer 1")["refills"] == 1 and
+              R.h("Hazer 1")["last_refill"]["who"] == "Andy",
+              "saved at once: still undone after a restart")
+        # The litres estimate: not sure seconds count as full output.
+        R.tr.refill("Hazer 2", "Andy")
+        R.write_fluid({"Hazer 2": {"litres_per_hour": 3.6,
+                                   "tank_litres": 10}})
+        R.frames(1)
+        R.fresh[0] = False
+        R.frames(400, haze=((82, 255),))
+        R.fresh[0] = True
+        v = R.h("Hazer 2")
+        check(v["full_s"] == 10.0 and v["unsure_s"] == 10.0 and
+              v["litres_used"] == 0.02 and v["litres_left"] == 9.98,
+              f"10 s at full output while flamesafe's status was stale: "
+              f"0.02 L (counted and not sure), never 0.01: "
+              f"{v['litres_used']}")
+        for bad in ("0", "NaN", "Infinity", "-Infinity", "1e400"):
+            with open(os.path.join(R.work, "ltcplay_hazers.json"), "w",
+                      encoding="utf-8") as fh:
+                fh.write('{"hazers_format": 1, "levels": {}, "fluid": '
+                         '{"Hazer 2": {"litres_per_hour": ' + bad + '}}}')
+            R.tr._fluid_stamp = None
+            R.tr._reload_fluid()
+            check("litres_per_hour" in R.tr.config_error and
+                  R.h("Hazer 2")["litres_used"] is None,
+                  f"a flow of {bad}: refused, seconds only: "
+                  f"{R.tr.config_error}")
+    finally:
+        R.close()
+    # A NaN in haze.json is never counted with.
+    R = _HazeRig()
+    try:
+        R.frames(1)
+        R.frames(40, haze=((80, 255),))
+        R.tr.save()
+        t = open(R.tr.path, encoding="utf-8").read()
+        t = t.replace('"unsure_s": 0.0', '"unsure_s": NaN', 1)
+        check("NaN" in t, "a NaN written in")
+        open(R.tr.path, "w", encoding="utf-8").write(t)
+        R.reopen()
+        check("could not be read" in R.tr.view()["fault"] and
+              any("unreadable" in n for n in os.listdir(R.work)),
+              f"haze.json with a NaN: set aside: {R.tr.view()['fault']}")
+    finally:
+        R.close()
+    # A programming session is never a show, however long.
+    R = _HazeRig()
+    try:
+        R.rehearsal[0] = True
+        R.frames(1)
+        R.pos[0] = 10.0
+        R.frames(1600, tc=True, haze=((80, 255),))
+        R.end()
+        h = R.u("Hazer 1")
+        check(h["shows"] == 0 and R.tr.shows_total == 0 and
+              h["on"]["show"] == 0.0 and _near(h["on"]["other"], 40.0, 0.03),
+              f"40 s of timecode in a programming session: other, never a "
+              f"show: {h['on']} {h['shows']}")
+    finally:
+        R.close()
+    # Bounded: the last SHOW_BURNS_KEPT shows and REFILLS_KEPT refills.
+    R = _HazeRig()
+    keep = (FH.SHOW_BURNS_KEPT, FH.REFILLS_KEPT)
+    FH.SHOW_BURNS_KEPT, FH.REFILLS_KEPT = 3, 3
+    try:
+        R.frames(1)
+        for i in range(5):
+            R.pos[0] = 10.0
+            R.frames(1240, tc=True, haze=((80, 255),))
+            R.end()
+            R.tr.refill("Hazer 1", f"Op{i}")
+        h = R.u("Hazer 1")
+        check(h["shows"] == 5 and len(h["show_burns"]) == 3 and
+              [r["who"] for r in h["refills"]] == ["Op2", "Op3", "Op4"],
+              f"5 shows and 5 refills: the last 3 of each kept: "
+              f"{len(h['show_burns'])} {[r['who'] for r in h['refills']]}")
+    finally:
+        FH.SHOW_BURNS_KEPT, FH.REFILLS_KEPT = keep
+        R.close()
+    print("  ok")
+
+
 def test_haze_fluid_never_touches_the_haze_output():
     section("haze fluid: observe() on the flame link's sender thread takes "
             "no lock, touches no disk, never sleeps; its queue is bounded "
@@ -91410,7 +91602,8 @@ def test_haze_fluid_routes_wiring_and_audit():
     from ltcplay import users as U
     from ltcplay import web as W
     check("haze-refill" in RM.POST_ROUTES and
-          FH.POST_ROUTES == ("haze-refill",), "the route exists")
+          "haze-undo" in RM.POST_ROUTES and
+          FH.POST_ROUTES == ("haze-refill", "haze-undo"), "the routes exist")
     check(U.classify("/api/remote/haze-refill", {"unit": "Hazer 1"}) is None,
           "not a show control: no role matrix row (the route checks)")
     R = _HazeRig()
@@ -91434,6 +91627,23 @@ def test_haze_fluid_routes_wiring_and_audit():
         check(FH.route_post(None, "haze-refill", {}, here, None)[0] == 404
               and FH.route_view(None) == {"available": False},
               "no tracker: 404 and nothing to show")
+        bid = R.h("Hazer 1")["last_refill"]["id"]
+        st, out = FH.route_post(R.tr, "haze-undo", {"id": bid}, net, None)
+        check(st == 403 and R.h("Hazer 1")["refills"] == 1,
+              f"an undo from the network with no sign-in here: refused "
+              f"(only the show machine itself, never a remote device or a "
+              f"VPN like Tailscale): {out}")
+        st, out = FH.route_post(R.tr, "haze-undo", {"id": "x"}, here, None)
+        check(st == 400, f"an undo needs a refill's number: {out}")
+        st, out = FH.route_post(R.tr, "haze-undo", {"id": bid}, here, None)
+        check(st == 200 and R.h("Hazer 1")["refills"] == 0, f"{out}")
+        st, out = FH.route_post(R.tr, "haze-undo", {"id": bid}, here, None)
+        check(st == 409 and "already undone" in out["error"], f"{out}")
+        check(U.REMOTE_ROUTES["haze-undo"] is None and
+              U.REMOTE_ROUTES["fuel-undo"] is None and
+              U.classify("/api/remote/haze-undo", {"id": 1}) is None and
+              "haze-undo" in RM.POST_ROUTES,
+              "haze-undo has a row as fuel-undo does (the route checks)")
     finally:
         R.close()
     httpd, http, cookie_of, work = _accounts_engine(
@@ -91452,7 +91662,7 @@ def test_haze_fluid_routes_wiring_and_audit():
         check(st == 403 and "Sign in as an operator or admin" in
               out["error"], f"signed out: refused: {out}")
         ck = {}
-        for name in ("Vic", "Ola"):
+        for name in ("Vic", "Ola", "Jeff"):
             st, out, h = http("/api/remote/signin", {
                 "name": name, "password": "",
                 "new_password": name.lower() + "-pw-123"})
@@ -91466,6 +91676,23 @@ def test_haze_fluid_routes_wiring_and_audit():
               f"an operator may, and is named: {out}")
         st, out, _h = http("/api/remote/fuel-refill", {"unit": "g1"},
                            cookie=ck["Ola"])
+        st, out, _h = http("/api/remote/fuel", cookie=ck["Ola"])
+        bid = out["haze"]["recent_refills"][0]["id"]
+        check(out["haze"]["may_undo"] is False,
+              "an operator may not undo a haze refill")
+        st, out, _h = http("/api/remote/haze-undo", {"id": bid},
+                           cookie=ck["Ola"])
+        check(st == 403 and "admin" in out["error"],
+              f"an operator's undo: refused: {out}")
+        st, out, _h = http("/api/remote/fuel", cookie=ck["Jeff"])
+        check(out["haze"]["may_undo"] is True, "an admin may")
+        st, out, _h = http("/api/remote/haze-undo", {"id": bid},
+                           cookie=ck["Jeff"])
+        check(st == 200 and R.h("Hazer 2")["refills"] == 0 and
+              "undone" in out["text"], f"an admin's undo: {out}")
+        st, out, _h = http("/api/remote/fuel-undo",
+                           {"id": FR.tr.view()["recent_refills"][0]["id"]},
+                           cookie=ck["Jeff"])
         rem.audit.flush(5.0)
         lines = _audit_lines(rem.audit.folder)
         hz = [l for l in lines if l["action"] == "haze-refill"]
@@ -91475,6 +91702,12 @@ def test_haze_fluid_routes_wiring_and_audit():
               hz[-1]["target"] == fu[-1]["target"] == "",
               f"every press is audit logged, the same fields as a fuel "
               f"refill and no more: {hz[-1:]} {fu[-1:]}")
+        hu = [l for l in lines if l["action"] == "haze-undo"]
+        fuu = [l for l in lines if l["action"] == "fuel-undo"]
+        check(len(hu) == 2 and fuu and sorted(hu[-1]) == sorted(fuu[-1]) and
+              hu[-1]["target"] == fuu[-1]["target"],
+              f"every undo press is audit logged as fuel-undo is: "
+              f"{hu[-1:]} {fuu[-1:]}")
     finally:
         rem.fuel = rem.haze = None
         httpd.server_close()
@@ -91551,16 +91784,22 @@ def test_haze_fluid_in_the_docs_and_the_page():
     blk = page[i:page.find("async function fuPress", i)]
     check(i > 0 and "—" not in blk and "–" not in blk and
           not _re.search(r"\bRun\b", blk), "no dashes, no Run")
-    head = _re.findall(r"<b>([^<]*)</b>", blk)
+    head = _re.findall(r"<b>([^<]*)</b>", blk)[:1]
     bullets = _re.findall(r"<li>([^<]*)</li>", blk)
     check(head == ["Haze fluid"] and len(bullets) == 3 and
           all(len(b.split()) <= 8 for b in bullets) and
           bullets == ["Counts haze time, never fan time.",
-                      "Tap a hazer you refilled.",
-                      "Litres show once flow and tank are set."],
+                      "Litres show once flow and tank are set.",
+                      "Not sure time counts as full output."],
           f"the text rule: {head} {bullets}")
+    check(_re.findall(r"<b>([^<]*)</b>", blk)[1:] ==
+          ["Recent haze refills"], "the undo list's headline")
     for need in ('confirmBox(`${h.name} refilled?`',
                  'fuPress("haze-refill", {unit:h.name});',
+                 'fuPress("haze-undo", {id:Number(b.dataset.hundo)});',
+                 'confirmBox("Undo this refill?", "It stays in the record, '
+                 'marked undone, and the hazer counts from the refill before '
+                 'it.", "Yes, undo it")',
                  '+ HZF_HTML;', 'renderHazeFluid(f, DAY_FU_REC);'):
         check(page.count(need) == 1, f"the page has {need!r} once")
     for said in _re.findall(r'"([^"]*)"', blk[blk.find("const said"):
@@ -102228,7 +102467,11 @@ def test_ui2_haze_fluid_driven():
           "refill_why": "", "undo_why": "", "fault": "",
           "config_error": "", "notes": [], "recent_refills": [],
           "haze": {"available": True, "hazers": hz, "notes": [],
-                   "config_error": "", "fault": ""}}
+                   "config_error": "", "fault": "", "may_undo": True,
+                   "recent_refills": [{"id": 7, "who": "Andy",
+                                       "name": "Hazer 2",
+                                       "at_ms": 1793600000000,
+                                       "undone": None}]}}
     steps = r"""
 const mark = () => window.__posts.length;
 const since = n => window.__posts.slice(n);
@@ -102254,6 +102497,20 @@ const yes = document.querySelector('#sh-row [data-i="1"]');
 if(yes) yes.click();
 await h.sleep(400);
 out.posts = since(n).filter(p => p.route !== "morning-open" && p.route !== "fuel").map(p => [p.route, p.body]);
+// Refills and notes: the recent haze refills with Undo (an admin).
+document.getElementById("d-fu-rec").click();
+await h.sleep(400);
+out.rec = {main:document.getElementById("d-hzf-main").hidden, rec:!document.getElementById("d-hzf-rec").hidden && !document.getElementById("d-hzf").hidden,
+  text:document.getElementById("d-hzf-recent").textContent};
+n = mark();
+const ub = document.querySelector('#d-hzf-recent [data-hundo="7"]');
+if(ub) ub.click();
+await h.sleep(300);
+out.usheet = {h:document.getElementById("sh-h").textContent, posts:since(n).filter(p => p.route !== "morning-open" && p.route !== "fuel").length};
+const y2 = document.querySelector('#sh-row [data-i="1"]');
+if(y2) y2.click();
+await h.sleep(400);
+out.undo = since(n).filter(p => p.route !== "morning-open" && p.route !== "fuel").map(p => [p.route, p.body]);
 """
     m = _ui2_drive(chrome, page, _ui2_status_day(), steps, size=(1366, 768),
                    frag="?tour=0#day",
@@ -102286,6 +102543,13 @@ out.posts = since(n).filter(p => p.route !== "morning-open" && p.route !== "fuel
           m["posts"] == [["haze-refill", {"unit": "Hazer 4"}]],
           f"a tap asks first, then posts haze-refill: {m['sheet']} "
           f"{m['posts']}")
+    check(m["rec"]["main"] and m["rec"]["rec"] and
+          "Andy refilled Hazer 2" in m["rec"]["text"],
+          f"Refills and notes shows the recent haze refills: {m['rec']}")
+    check(m["usheet"] == {"h": "Undo this refill?", "posts": 0} and
+          m["undo"] == [["haze-undo", {"id": 7}]],
+          f"Undo asks first, then posts haze-undo {{id}}: {m['usheet']} "
+          f"{m['undo']}")
     print("  ok")
 
 
@@ -102819,14 +103083,17 @@ def test_ui2_day_makes_only_1_0_presses():
         check(f1 and f2 and _js_same(f1) == _js_same(f2),
               f"2.0's {n} is 1.0's own code: {(f2 or 'missing')[:160]!r}")
     k1, k2 = _ui2_press_keys(one), _ui2_press_keys(two)
-    # The one DAY press 1.0 never had (it is frozen): haze fluid's
-    # Refilled on the Fuel step (fuelhaze.py, Jeff 2026-11-12), the fuel
-    # refill's own shape for a hazer, {unit}. Nothing else may be new.
+    # The two DAY presses 1.0 never had (it is frozen): haze fluid's
+    # Refilled and its admin Undo on the Fuel step (fuelhaze.py, Jeff
+    # 2026-11-12), fuel-refill's and fuel-undo's own shapes, {unit} and
+    # {id}. Nothing else may be new.
     check(k2.get("haze-refill") == {("unit",)} and
-          "haze-refill" not in k1,
-          f"haze fluid's Refilled is the only new DAY press, body {{unit}}: "
-          f"{k2.get('haze-refill')}")
-    k2 = {r: k for r, k in k2.items() if r != "haze-refill"}
+          k2.get("haze-undo") == {("id",)} and
+          "haze-refill" not in k1 and "haze-undo" not in k1,
+          f"haze fluid's Refilled and Undo are the only new DAY presses: "
+          f"{k2.get('haze-refill')} {k2.get('haze-undo')}")
+    k2 = {r: k for r, k in k2.items() if r not in ("haze-refill",
+                                                    "haze-undo")}
     check(k2 and all(r in k1 and keys <= k1[r] for r, keys in k2.items()),
           f"every DAY press is a 1.0 press, body keys and all: "
           f"{ {r: sorted(k) for r, k in k2.items() if r not in k1 or not k <= k1[r]} }")
@@ -115982,6 +116249,7 @@ if __name__ == "__main__":
         test_haze_fluid_counts_haze_not_fan_by_level_and_source,
         test_haze_fluid_not_sure_on_restart_and_a_stale_link,
         test_haze_fluid_refill_settings_and_the_record,
+        test_haze_fluid_undo_bounds_and_the_safe_side,
         test_haze_fluid_never_touches_the_haze_output,
         test_haze_fluid_routes_wiring_and_audit,
         test_haze_fluid_in_the_docs_and_the_page,

@@ -35,13 +35,14 @@ Each frame goes in one of three piles, as fuel's show/purge/other:
     unsure_s (flamesafe may have held it off).
   - a frame that could not be sent, or a gap between frames, after a
     frame that carried haze: flamesafe holds the last value until its
-    frame_stale_ms (FLAMESAFE_HOLD_S), so up to that much goes on unsure_s
+    frame_stale_ms (the link's own flamesafe config, plus HOLD_MARGIN_S:
+    hold_s), so up to that much goes on unsure_s
     of each hazer that was on. Never on the counted seconds.
   - frames this tracker could not take (it fell behind), an error in the
     tracker, or LTC Player stopping without closing: a "gap" (every hazer
     reads Not sure until its next refill), and for the stop, SAVE_EVERY_S
     on unsure_s of each hazer that was hazing since the last save.
-  - an engine stopping while a hazer was on: FLAMESAFE_HOLD_S on its
+  - an engine stopping while a hazer was on: hold_s on its
     unsure_s.
 
 The litres estimate (only when set) counts unsure seconds as full output:
@@ -83,7 +84,7 @@ import threading
 import time
 
 from .fuel import (EPISODE_JOIN_S, TC_STEP_MAX_S, tc_seconds, may_refill,
-                   median)
+                   may_undo, median)
 
 HAZE_FILE = "haze.json"
 HAZE_FORMAT = 1             # the hazer record's version
@@ -96,13 +97,19 @@ MAX_FRAME_DT_S = 0.1        # one frame never counts for more than this
 QUEUE_MAX = 4000            # frames waiting (100 s at 40 a second)
 # flamesafe's frame_stale_ms: with no fresh frame it holds the last value
 # this long, then zeroes every hazer slot (flamesafe/CONTRACT.md).
-FLAMESAFE_HOLD_S = 0.5
+# flamesafe holds the last value for its frame_stale_ms (100 to 2500,
+# flamesafe.json), read from the flame link's own config at attach();
+# plus a margin. Not known: the longest flamesafe allows, so a stall is
+# never left unflagged.
+HOLD_MARGIN_S = 0.1
+HOLD_DEFAULT_S = 2.5 + HOLD_MARGIN_S
 # flamesafe's status counts as fresh for this long (hazers.STATUS_FRESH_S,
 # the same number that disarms the hazers).
 FLAMESAFE_FRESH_MS = 1000
 MIN_SHOW_S = 30             # fuel's default, when fuel's is not known
 CLOSE_TIMEOUT_S = 2.0
 REFILLS_KEPT = 60
+RECENT_BATCHES = 8          # haze refills an admin can undo from the page
 SHOW_BURNS_KEPT = 50
 RECENT_SHOWS = 10
 MIN_SHOWS = 3
@@ -147,7 +154,8 @@ def parse_fluid(doc, names, where=LEVELS_FILE):
                 continue
             v = d[k]
             if isinstance(v, bool) or not isinstance(v, (int, float)) or \
-                    not math.isfinite(v) or not 0 < v <= hi:
+                    not 0 < v <= hi:
+                # (NaN and infinity fail the range too.)
                 return {}, (f"{w}.{k} is the {what}, a number over 0 and "
                             f"up to {hi:g}, not {v!r}.")
             got[k] = float(v)
@@ -213,7 +221,14 @@ def read_record(doc):
             rw = f"{w}.refills[{i}]"
             if not isinstance(r, dict) or not isinstance(r.get("who"), str):
                 raise ValueError(f"{rw} is not a refill")
-            refills.append({
+            und = r.get("undone")
+            if und is not None:
+                if not isinstance(und, dict) or \
+                        not isinstance(und.get("who"), str):
+                    raise ValueError(f"{rw}.undone is not who undid it")
+                und = {"who": und["who"],
+                       "at": _num(und.get("at", 0.0), f"{rw}.undone.at")}
+            refills.append({"undone": und,
                 "id": _count(r.get("id"), f"{rw}.id", 1),
                 "at": _num(r.get("at"), f"{rw}.at"), "who": r["who"],
                 "role": str(r.get("role") or ""),
@@ -325,8 +340,10 @@ class HazeTracker:
         self._last_save = clock()
         self._last_t = None
         self._last_on = frozenset()      # hazers with haze in the last frame
-        self._hold_left = FLAMESAFE_HOLD_S
+        self.hold_s = HOLD_DEFAULT_S
+        self._hold_left = self.hold_s
         self._hazing = set()             # hazed since the last save
+        self._hazing_saved = set()       # the "hazing" the last save wrote
         self._stop = threading.Event()
         self._thread = None
         self._reload_fluid()
@@ -412,6 +429,14 @@ class HazeTracker:
         """Watch `link`: every frame it sends is handed to observe(),
         exactly as it went on the wire, after it went."""
         self._link = link
+        try:
+            ms = link.cfg.frame_stale_ms
+            if isinstance(ms, (int, float)) and not isinstance(ms, bool) \
+                    and 0 < ms <= 60000:
+                self.hold_s = ms / 1000.0 + HOLD_MARGIN_S
+                self._hold_left = self.hold_s
+        except Exception:
+            pass                 # not known: HOLD_DEFAULT_S, the longest
         link.haze_observer = self.observe
 
     def observe(self, tc, wire, test, ok):
@@ -435,7 +460,11 @@ class HazeTracker:
         try:
             self._reload_fluid()
             self.pump()
-            if self._dirty and \
+            if self._hazing - self._hazing_saved:
+                # A hazer began hazing since the last save: saved now, so
+                # a crash after this still names it as hazing (not sure).
+                self.save()
+            elif self._dirty and \
                     self._clock() - self._last_save >= SAVE_EVERY_S:
                 self.save()
             if self.run_error:
@@ -509,7 +538,7 @@ class HazeTracker:
             self._show_tc(t, secs, rehearsal)
         # Time no frame vouched for after one that carried haze (a frame
         # not sent, or a gap): flamesafe holds the last value up to
-        # FLAMESAFE_HOLD_S, so up to that much is NOT SURE for each hazer
+        # hold_s, so up to that much is NOT SURE for each hazer
         # that was on. Never added to the counted seconds.
         lost = min((raw - dt) if ok else raw, self._hold_left)
         if lost > 0 and self._last_on:
@@ -520,7 +549,7 @@ class HazeTracker:
             self._dirty = True
         if not ok:
             return
-        self._hold_left = FLAMESAFE_HOLD_S
+        self._hold_left = self.hold_s
         on_now = {}
         n_wire = len(wire or b"")
         for name, hs, _fs in hz:
@@ -616,9 +645,11 @@ class HazeTracker:
         raises."""
         with self._save_lock:
             with self._lock:
-                text = json.dumps(self._doc(), indent=1, sort_keys=True)
+                doc = self._doc()
+                text = json.dumps(doc, indent=1, sort_keys=True)
                 self._dirty = False
                 self._last_save = self._clock()
+                self._hazing_saved = set(doc["hazing"])
                 self._hazing = set(self._last_on)
             try:
                 tmp = f"{self.path}.{os.getpid()}.tmp"
@@ -733,7 +764,7 @@ class HazeTracker:
             snap = self._snapshot(name, u)
             u["refills"] = (u["refills"] + [dict(
                 snap, id=bid, at=self._wall(), who=who or "unsigned",
-                role=role or "")])[-REFILLS_KEPT:]
+                role=role or "", undone=None)])[-REFILLS_KEPT:]
             self._dirty = True
         self._note(f"Haze: {who or 'someone'} logged a refill of {name}.")
         if not self.save():
@@ -743,11 +774,48 @@ class HazeTracker:
                           f"{SAVE_EVERY_S:g} s.")
         return True, f"Refill of {name} logged."
 
+    def undo(self, batch_id, who):
+        """Mark haze refill `batch_id` undone (an admin, as fuel's undo):
+        never deleted, the record says who undid it and when, and that
+        hazer counts from its refill before again. (ok, sentence)."""
+        with self._lock:
+            hit = None
+            for name, u in self.units.items():
+                for r in u["refills"]:
+                    if r.get("id") == batch_id and not r.get("undone"):
+                        r["undone"] = {"who": who or "unsigned",
+                                       "at": self._wall()}
+                        hit = (name, r)
+            if hit is None:
+                return False, ("That refill is not in the record or was "
+                               "already undone. Nothing was changed.")
+            self._dirty = True
+        name, r = hit
+        self._note(f"Haze: {who or 'someone'} undid the refill of {name} "
+                   f"that {r.get('who')} logged.")
+        tail = "" if self.save() else (f" haze.json could NOT be written "
+                                       f"({self.save_error}); it is tried "
+                                       f"again every {SAVE_EVERY_S:g} s.")
+        return True, (f"The refill of {name} that {r.get('who')} logged is "
+                      f"undone.{tail}")
+
+    def recent_refills(self):
+        """The newest RECENT_BATCHES haze refills, for an admin's Undo."""
+        out = []
+        for name, u in self.units.items():
+            for r in u["refills"]:
+                out.append({"id": r.get("id"), "who": r.get("who"),
+                            "name": name,
+                            "at_ms": int(float(r.get("at") or 0) * 1000),
+                            "undone": r.get("undone")})
+        return sorted(out, key=lambda b: -(b["id"] or 0))[:RECENT_BATCHES]
+
     # -- what the page shows --------------------------------------------------
     def _hazer_view(self, name, hs, fs):
         u = self.units.get(name) or new_hazer()
         cur = self._snapshot(name, u)
-        rs = u["refills"]
+        # An undone refill never counts (fuel's rule).
+        rs = [r for r in u["refills"] if not r.get("undone")]
         last = rs[-1] if rs else None
         base = last or {"on": {s: 0.0 for s in SOURCES}, "on_total": 0.0,
                         "full_total": 0.0, "shows": 0, "unsure_s": 0.0,
@@ -838,6 +906,7 @@ class HazeTracker:
                                  "sure.")
                 return {"available": bool(hazers), "hazers": hazers,
                         "names": [n for n, _h, _f in hz],
+                        "recent_refills": self.recent_refills(),
                         "notes": notes, "shows_total": self.shows_total,
                         "watching": self._link is not None,
                         "config_error": self.config_error,
@@ -861,7 +930,7 @@ class HazeTracker:
 
     def close(self, timeout=CLOSE_TIMEOUT_S):
         """Stop the thread; count what waits, end a performance, mark
-        FLAMESAFE_HOLD_S not sure on each hazer still on, save marked a
+        hold_s not sure on each hazer still on, save marked a
         clean stop. Waits at most `timeout`; never raises."""
         self._stop.set()
         t = self._thread
@@ -880,7 +949,7 @@ class HazeTracker:
                     if self.episode is not None:
                         self._end_episode("the engine was stopped during it")
                     for n in self._last_on:
-                        self._unit(n)["unsure_s"] += FLAMESAFE_HOLD_S
+                        self._unit(n)["unsure_s"] += self.hold_s
                     self._last_on = frozenset()
                     self._clean = True
             except Exception:                     # noqa: BLE001
@@ -900,26 +969,46 @@ class HazeTracker:
 
 # ------------------------------------------------------- the page's routes --
 
-POST_ROUTES = ("haze-refill",)
+POST_ROUTES = ("haze-refill", "haze-undo")
 
 
-def route_view(tracker):
-    """The Hazers section of GET /api/remote/fuel."""
+def route_view(tracker, ctx=None, users=None):
+    """The Hazers section of GET /api/remote/fuel, with whether this
+    request may undo a haze refill (fuel.may_undo: an admin)."""
     if tracker is None:
         return {"available": False}
-    return tracker.view()
+    v = tracker.view()
+    ok, why = may_undo(ctx, users)
+    v["may_undo"], v["undo_why"] = ok, why
+    return v
 
 
 def route_post(tracker, name, body, ctx, users):
     """POST haze-refill {"unit": hazer name}: the fuel refill's permission
     (fuel.may_refill), its confirmation on the page, its audit line (the
-    engine's one line per POST). (code, body)."""
+    engine's one line per POST). POST haze-undo {"id": n}: fuel-undo's
+    (fuel.may_undo: a signed-in admin; with no users made yet only the
+    show machine itself, never a device on the network or over a VPN).
+    (code, body)."""
     if tracker is None:
         return 404, {"error": "Haze tracking is not set up in this engine "
                               "(it needs hazers in flamesafe's config)."}
-    if name != "haze-refill":
+    if name not in POST_ROUTES:
         return 404, {"error": "no such thing here"}
     body = body if isinstance(body, dict) else {}
+    s = getattr(ctx, "session", None) or {}
+    who = s.get("name") or getattr(ctx, "device", "") or "unsigned"
+    if name == "haze-undo":
+        ok, why = may_undo(ctx, users)
+        if not ok:
+            return 403, {"error": why}
+        bid = body.get("id")
+        if isinstance(bid, bool) or not isinstance(bid, int):
+            return 400, {"error": "Say which refill to undo. Nothing was "
+                                  "changed."}
+        done, text = tracker.undo(bid, who)
+        return (200 if done else 409), ({"text": text} if done
+                                        else {"error": text})
     ok, why = may_refill(ctx, users)
     if not ok:
         return 403, {"error": why}
@@ -927,8 +1016,6 @@ def route_post(tracker, name, body, ctx, users):
     if not isinstance(unit, str) or not unit:
         return 400, {"error": "Say which hazer was refilled. Nothing was "
                               "logged."}
-    s = getattr(ctx, "session", None) or {}
-    who = s.get("name") or getattr(ctx, "device", "") or "unsigned"
     done, text = tracker.refill(unit, who, s.get("role") or "")
     return (200 if done else 400), ({"text": text} if done
                                     else {"error": text})

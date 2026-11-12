@@ -935,8 +935,12 @@ channel, and is either ARMED or DISARMED.
   tanks, a tile per hazer: its haze time since its last refill (fan only
   time never counts), or percent left when its flow and tank size are set
   in ltcplay_hazers.json. Tap a hazer when its fluid tank is full and say
-  yes (**Refilled**, the same sign-in as a fuel refill). FUEL.md has the
-  details; the record is haze.json in the settings folder.
+  yes (**Refilled**, the same sign-in as a fuel refill). An admin can
+  undo a wrong one under **Refills and notes**, as for fuel. Not sure
+  time (a restart, a stale link to flamesafe) counts as full output, on
+  top of any haze already counted, so the litres read emptier, never
+  fuller. FUEL.md has the details; the record is haze.json in the
+  settings folder.
 
 ## The fireball's fuel pump
 

@@ -5667,6 +5667,7 @@ function dayWire(k){
   }
   if(k === "fuel"){
     $("d-hzf-g").addEventListener("click", hzfClick);
+    $("d-hzf-recent").addEventListener("click", hzfUndo);
     $("d-fu-rec").addEventListener("click", () => { DAY_FU_REC = !DAY_FU_REC; renderMorning(); });
     $("d-fuel").addEventListener("click", async ev => {
       const b = ev.target.closest("[data-refill]"); if(!b || b.disabled) return;
@@ -5773,7 +5774,7 @@ function dayUpdate(k){
     // 1.0's fuel warning and recent refills (P9): one button away, in the
     // tanks' place, so the step never grows past the screen.
     const nWarn = [f.config_error, f.fault].concat(f.notes || []).filter(Boolean).length;
-    const hasRec = !!(f.may_undo && (f.recent_refills || []).length);
+    const hasRec = !!(f.may_undo && (f.recent_refills || []).length) || hzfRecent(f).length > 0;
     $("d-fu-rec").hidden = !(nWarn || hasRec);
     if($("d-fu-rec").hidden) DAY_FU_REC = false;
     $("d-fu-rec").className = "b" + (nWarn ? " part" : "");
@@ -5854,14 +5855,25 @@ function dayMachines(){
 // section, the fuel tanks' look. Haze seconds always; litres and percent
 // only when the engine has a flow and a tank size for that hazer. A tap
 // is the fuel refill's: the same question, then haze-refill {unit}.
-const HZF_HTML = `<div id="d-hzf" hidden aria-label="Hazers"><div class="drow"><b>Haze fluid</b></div>` +
-  `<ul class="pline"><li>Counts haze time, never fan time.</li><li>Tap a hazer you refilled.</li><li>Litres show once flow and tank are set.</li></ul>` +
-  `<div class="dgrid" id="d-hzf-g"></div><div class="pline bad" id="d-hzf-warn" hidden></div></div>`;
+// Refills and notes shows its recent refills with Undo (admins), as the
+// fuel tanks' do.
+const HZF_HTML = `<div id="d-hzf" hidden aria-label="Hazers"><div id="d-hzf-main"><div class="drow"><b>Haze fluid</b></div>` +
+  `<ul class="pline"><li>Counts haze time, never fan time.</li><li>Litres show once flow and tank are set.</li><li>Not sure time counts as full output.</li></ul>` +
+  `<div class="dgrid" id="d-hzf-g"></div><div class="pline bad" id="d-hzf-warn" hidden></div></div>` +
+  `<div id="d-hzf-rec" hidden><b>Recent haze refills</b><div id="d-hzf-recent"></div></div></div>`;
 function hzfList(f){ const h = f && f.haze; return (h && h.available && h.hazers) || []; }
+function hzfRecent(f){ const h = (f && f.haze) || {}; return h.may_undo ? (h.recent_refills || []) : []; }
 function renderHazeFluid(f, rec){
   const sec = $("d-hzf"); if(!sec) return;
-  const hz = hzfList(f);
-  sec.hidden = rec || !hz.length;
+  const hz = hzfList(f), rr = hzfRecent(f);
+  sec.hidden = !hz.length || (rec && !rr.length);
+  $("d-hzf-main").hidden = rec; $("d-hzf-rec").hidden = !rec;
+  const rsig = JSON.stringify(rr);
+  const rb = $("d-hzf-recent");
+  if(rb.dataset.sig !== rsig){
+    rb.dataset.sig = rsig;
+    rb.innerHTML = rr.map(b => `<div class="fu-rec"><span>${esc(fuWhen(b.at_ms))}: ${esc(b.who)} refilled ${esc(b.name)}${b.undone ? ". Undone by " + esc(b.undone.who) : ""}</span>${b.undone ? "" : `<button class="ghost" data-hundo="${b.id}">Undo</button>`}</div>`).join("");
+  }
   const hv = (f && f.haze) || {};
   const warn = [hv.config_error, hv.fault].concat(hv.notes || []).filter(Boolean).join(" ");
   const w = $("d-hzf-warn");
@@ -5872,6 +5884,11 @@ function renderHazeFluid(f, rec){
   if(g.dataset.sig === sig) return;
   g.dataset.sig = sig;
   g.innerHTML = hz.map(h => `<button class="b ${h.refill_soon || h.not_sure ? "part" : ""}" data-hrefill="${esc(h.name)}" title="${esc(h.words)}" ${f.may_refill ? "" : "disabled"}>${icon("wind")}<span class="tt">${esc(h.name)}<small>${esc(h.big)}</small></span></button>`).join("");
+}
+async function hzfUndo(ev){
+  const b = ev.target.closest("[data-hundo]"); if(!b) return;
+  const yes = await confirmBox("Undo this refill?", "It stays in the record, marked undone, and the hazer counts from the refill before it.", "Yes, undo it");
+  if(yes) fuPress("haze-undo", {id:Number(b.dataset.hundo)});
 }
 async function hzfClick(ev){
   const b = ev.target.closest("[data-hrefill]"); if(!b || b.disabled) return;
