@@ -1592,10 +1592,11 @@ function isLive(st){
   return sch.state === "SHOW" || sch.state === "PAUSED" || (!sch.attached && !!(show.running || show.starting));
 }
 // Run in force (or on its way in): nothing reaches the rig until it is.
+// The engine's own boolean (remote.py show_control_on), never its
+// sentences: anything but true (missing, an older engine, no answer) is
+// off, never on.
 function runIsOn(st){
-  const show = (st && st.show) || {}, b = ((st && st.schedule) || {}).start_blocked;
-  if(b && b.text && /^Run has not been pressed/.test(String(b.text))) return false;
-  return !!(show.running || show.starting);
+  return !!(st && st.show && st.show.show_control_on === true);
 }
 // A rehearsal (1.0's Programming run): the scheduler starts no show.
 function isRehearsal(st){ return modeLook(st).cls === "prog"; }
@@ -1802,14 +1803,16 @@ function runWarnWords(text, local){
   return t.replace(/Press Run(?=[,.])/, "Press " + where);
 }
 // Run show where the Run warning is (the alert slot, the Schedule tab),
-// with the engine's warning Run is off, on the show PC, with contact and
+// with a Run warning while Run is off (runIsOn: the engine's boolean, not
+// its sentence; a Programming Run's warning is said with Run on), on the
+// show PC, with contact and
 // the Show row (goLook's own gates): "run" while the big button is Run
 // show itself, "held" on a Hold, when the big button is Resume and the
 // engine says "Press Run, then Resume" (Run does not resume: runShow says
 // so); else "". Pure.
 function runHereShown(st, isStaleNow, local, waiting){
   const sch = (st && st.schedule) || {};
-  if(!local || isStaleNow || !/^Run is off/.test(String(sch.run_warning || ""))) return "";
+  if(!local || isStaleNow || !sch.run_warning || runIsOn(st)) return "";
   const g = goLook(st, isStaleNow, local, waiting);
   if(g.off) return "";
   if(g.mode === "run") return "run";
