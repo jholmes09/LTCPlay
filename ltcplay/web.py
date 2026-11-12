@@ -2946,6 +2946,9 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         # announcement service finding out on its own next status() poll.
         # See announce.py's module docstring and on_show_started.
         sched.on_show_started = httpd.announce.on_show_started
+        # A Hold (or a pause) stops pre-show audio at once.
+        sched.on_schedule_held = getattr(httpd.announce,
+                                         "on_schedule_held", None)
         # The third direction: every announcement Holds the scheduler
         # first, through the same path an operator's own Hold uses. See
         # Service.hold_for_announcement and announce.py's play().

@@ -15,21 +15,32 @@ _preshow_lookahead, under its own lock, from memory only):
     back from and gets none.
   - Only when the scheduler would start that show by itself at its time:
     between shows (IDLE or STANDBY), show control on (Run pressed), not on
-    Hold, no show running, no Stop under way, the show not delayed, no
-    alert that would hold it at its time.
+    Hold, no show running, no Stop under way, the show not delayed (Delay
+    next included), no Programming Run, auto start on. An alert open at
+    that moment (the alert hold would hold the show at its time): skipped,
+    journaled (Jeff, 2026-11-12).
   - Never late: first seen with less than LEAD_S - GRACE_S (115 s) to go
     (LTC Player started, or the schedule changed, inside the window), it is
     not played and the journal says so.
   - At most once per show per night, restart safe: the decision is written
     to ltcplay_preshow_audio_played.json BEFORE the sound starts, and a
-    restart inside the window reads it back and does not play again.
-  - Never over an announcement already playing: skipped, journaled.
+    restart inside the window reads it back and does not play again. Kept
+    by night and show number, so a show whose time is edited after it
+    played never plays it again.
+  - Never over an announcement already playing: skipped, journaled
+    (decided under the announcement player's own lock).
+  - An operator always wins: an announcement press (or Test tone) stops
+    it at once and plays; Stop sound stops it; a Hold (or a pause) fades
+    it at once (announce.on_schedule_held).
 
 How it plays: through the announcement player (announce.AnnounceService.
-play_preshow), the same route, limits and fade as an announcement: through
-the show audio while it runs (at most 60 s there), else the announcement's
-own output (at most 5 minutes); a show starting fades it over 0.15 s
-(announce.on_show_started). It never Holds, pauses, delays or blocks a show
+play_preshow), the same route and fade as an announcement: mixed into the
+show audio's front left and right (its "show_outputs", Main L/R) while the
+show audio runs, else the announcement's own output. A file is at most
+MAX_S (110 s, Jeff 2026-11-12), refused when chosen and again when it is
+due, so started 120 s before the show it has ended 10 s before the show
+audio opens; a show starting while it still plays fades it over 0.15 s
+(announce.on_show_started) all the same. It never Holds, pauses, delays or blocks a show
 or the rig check: the scheduler only records a decision in memory under its
 lock; the file, the disk write and the player all run on a thread of their
 own afterwards (Service._locked's pending hooks), and every failure is a
@@ -40,9 +51,13 @@ its only output is the announcement player.
 """
 import json
 import os
+import re
 import threading
 
 LEAD_S = 120
+# The longest pre-show file (Jeff, 2026-11-12): it ends 10 s before the
+# show audio opens. The same number as announce.PRESHOW_MAX_S.
+MAX_S = 110
 # How late after LEAD_S it may still start: a tick or two, never more.
 GRACE_S = 5
 SETTINGS_FILE = "ltcplay_preshow_audio.json"
@@ -53,6 +68,9 @@ KEEP = 200
 # The most WAV files the picker lists.
 CHOICES_MAX = 200
 ACTION = "pre-show audio"
+# announce.PRESHOW_BUSY: the player's word for "an announcement was
+# already playing" (decided under its own lock).
+BUSY = "an announcement was already playing"
 
 
 def key_text(key):
@@ -68,6 +86,31 @@ def _write_json_atomic(path, doc):
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, path)
+
+
+def too_long_words(length_s):
+    """The plain sentence when a file is over MAX_S, else ""."""
+    if length_s is not None and length_s > MAX_S:
+        return (f"That file is {length_s:.0f} s long; pre-show audio is at "
+                f"most {MAX_S} s. Choose a shorter file.")
+    return ""
+
+
+# What the announcement player says to a press, turned into the reason
+# alone, so the journal line stays one clear sentence.
+_PRESS = re.compile(r"^Pre-show audio pressed Play on Pre-show audio on the "
+                    r"schedule(?:, but |\. (?:Refused: |It failed[^:]*: ))")
+
+
+def plain_reason(text):
+    t = str(text or "").strip()
+    t = _PRESS.sub("", t)
+    t = re.sub(r"^Pre-show audio could not be played: ", "", t)
+    for tail in (" Press it again.", " Nothing was changed."):
+        if t.endswith(tail):
+            t = t[:-len(tail)]
+    t = t.strip().rstrip(".")
+    return t[:1].lower() + t[1:] if t[:2] != t[:2].upper() else t
 
 
 def _same(a, b):
@@ -203,7 +246,9 @@ class PreShowAudio:
                 out.append({"path": path, "name": name,
                             "available": bool(st.get("available")),
                             "reason": st.get("reason"),
-                            "length_s": st.get("length_s")})
+                            "length_s": st.get("length_s"),
+                            "too_long": bool(too_long_words(
+                                st.get("length_s")))})
                 if len(out) >= CHOICES_MAX:
                     return out
         return out
@@ -235,6 +280,9 @@ class PreShowAudio:
             raise ValueError(f"That file cannot play: "
                              f"{str(probe.get('reason')).rstrip('.')}. "
                              f"Nothing was changed.")
+        long_why = too_long_words(probe.get("length_s")) if probe else ""
+        if long_why:
+            raise ValueError(f"{long_why} Nothing was changed.")
         doc = {"on": on, "file": file,
                "_note": "Pre-show audio: whether the file plays 2 minutes "
                         "before each scheduled show, and which file. Set "
@@ -251,13 +299,25 @@ class PreShowAudio:
     def is_on(self):
         return bool(self.on and self.file)
 
+    def recheck(self):
+        """Read the chosen file again (the card's GET, when it is shown):
+        a file deleted or replaced since it was chosen is said at once."""
+        with self._lock:
+            f = self.file
+        probe = self._probe_now(f) if f else None
+        with self._lock:
+            if self.file == f:
+                self._probe = probe
+
     def view(self):
-        """The rack screen's card. Memory only: safe on the status path."""
+        """The rack screen's card: the file's name, never its path. Memory
+        only: safe on the status path."""
         with self._lock:
             pr = self._probe or {}
             return {"available": True, "on": self.is_on(),
-                    "file": self.file or "",
                     "name": os.path.basename(self.file) if self.file else "",
+                    "too_long": bool(too_long_words(pr.get("length_s")))
+                    if self.file else False,
                     "file_ok": bool(pr.get("available")) if self.file
                     else None,
                     "file_why": pr.get("reason") if self.file else None,
@@ -317,10 +377,6 @@ class PreShowAudio:
             n = rec["n"]
             if rec["outcome"] == "started" and not self.is_on():
                 rec.update(outcome="skipped", why="it was turned off")
-            elif rec["outcome"] == "started" and \
-                    getattr(self.announce, "playing", None) is not None:
-                rec.update(outcome="skipped",
-                           why="an announcement was already playing")
             outcome, why, path = rec["outcome"], rec["why"], rec["file"]
         ok, disk_why = self._persist()
         if outcome == "skipped":
@@ -347,11 +403,22 @@ class PreShowAudio:
             if not pr.get("available"):
                 raise ValueError(f"the file cannot play: "
                                  f"{str(pr.get('reason')).rstrip('.')}")
+            long_why = too_long_words(pr.get("length_s"))
+            if long_why:
+                raise ValueError(long_why)
             self.announce.play_preshow(path)
         except Exception as e:                   # noqa: BLE001
-            why = str(e).strip().rstrip(".") or type(e).__name__
-            if not isinstance(e, ValueError):
-                why = f"{type(e).__name__}: {why}"
+            why = (plain_reason(e) if isinstance(e, ValueError) else
+                   f"{type(e).__name__}: {str(e).strip().rstrip('.')}")
+            why = why or type(e).__name__
+            if why == BUSY:
+                with self._lock:
+                    rec.update(outcome="skipped", why=why)
+                self._persist()
+                self._say(f"Pre-show audio not played before show {n}: "
+                          f"{why}.", "skipped", n)
+                self._audit("refused", n, why)
+                return
             with self._lock:
                 rec.update(outcome="failed", why=why)
             self._persist()

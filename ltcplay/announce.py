@@ -131,6 +131,12 @@ LABELS[PRESHOW] = "Pre-show audio"
 PRESHOW_WHO, PRESHOW_SCREEN = "Pre-show audio", "schedule"
 PRESHOW_STATES = ("IDLE", "STANDBY")
 PRESHOW_HOLD_NOTE = "Pre-show audio holds nothing."
+# Jeff, 2026-11-12: a pre-show file is at most 110 s, so started 120 s
+# before the show it has ended 10 s before the show audio opens. Through
+# the show audio this is its limit instead of SHOW_ROUTE_MAX_S.
+PRESHOW_MAX_S = 110.0
+# Never over an announcement: decided here, under this service's lock.
+PRESHOW_BUSY = "an announcement was already playing"
 TONE_HZ, TONE_DBFS, TONE_S, TONE_RATE = 440.0, -20.0, 1.0, 48000
 # A recording whose loudest sample is below this is silent (or decoded to
 # nothing): it is never reported as playing (Jeff's field report,
@@ -1614,6 +1620,30 @@ class AnnounceService:
                                         "a show started")
             self._player.start_fade(fade_frames)
 
+    def _preshow_yield(self, why):
+        """Stop pre-show audio at once (lock held): an operator's
+        announcement press. Its own Stop fade only (BUS_STOP_FADE_S)."""
+        elapsed = self._player.elapsed_s if self._player else 0.0
+        state = self._current_state()
+        self._finish()
+        self._emit(actor="system", action="stop", outcome="stopped",
+                   reason="an operator's announcement",
+                   text=f"Pre-show audio was stopped after {elapsed:.0f} s "
+                        f"because {why}.", ann_id=PRESHOW, state=state)
+
+    def on_schedule_held(self):
+        """The scheduler went on Hold or paused (schedule_service's push
+        hook, after its lock is free): pre-show audio fades at once, as a
+        show start fades an announcement. Never touches the stream here
+        (see on_show_started); an operator's announcement is untouched."""
+        with self.lock:
+            if self.playing != PRESHOW or self._player is None or \
+                    self._player.stop_reason is not None:
+                return
+            self._player.stop_reason = "the schedule was held"
+            self._player.start_fade(max(1, int(SHOW_START_FADE_S *
+                                               (self._player.rate or 1))))
+
     def play(self, ann_id, who, screen, surface=False):
         """Play one announcement. `surface` True: the press came from a
         screen or the Stream Deck through the remote routes (remote.py),
@@ -1727,6 +1757,15 @@ class AnnounceService:
                           ann_id=ann_id, who=who, screen=screen, state=state)
                 raise ValueError(reason + " Pick a name from the list. "
                                  "Nothing was changed.")
+            if pre and self.playing is not None:
+                raise ValueError(PRESHOW_BUSY)
+            if not pre and self.playing == PRESHOW:
+                # An operator's press always wins over pre-show audio
+                # (Jeff, 2026-11-12): it stops at once and this press goes
+                # on.
+                self._preshow_yield(f"{who} pressed {label}{screen_txt}")
+            # The show audio's length limit for this attempt (_too_long).
+            self._route_limit_s = PRESHOW_MAX_S if pre else SHOW_ROUTE_MAX_S
             if self.playing is not None:
                 other = LABELS[self.playing]
                 text = (f"{who} pressed Play on {label}{screen_txt}, but "
@@ -2016,7 +2055,13 @@ class AnnounceService:
 
     def _too_long(self, length_s):
         """The sentence when a recording is too long for the show audio
-        (SHOW_ROUTE_MAX_S), or None."""
+        (SHOW_ROUTE_MAX_S), or None. Pre-show audio's own limit is
+        PRESHOW_MAX_S (_route_limit_s, set at its claim)."""
+        limit = getattr(self, "_route_limit_s", SHOW_ROUTE_MAX_S)
+        if limit > SHOW_ROUTE_MAX_S and length_s is not None:
+            return (None if length_s <= limit else
+                    f"It is {length_s:.0f} s long; pre-show audio is at "
+                    f"most {limit:.0f} s. Choose a shorter file.")
         if length_s is not None and length_s > SHOW_ROUTE_MAX_S:
             return (f"It is {length_s:.0f} s long; through the show audio "
                     f"an announcement is at most {SHOW_ROUTE_MAX_S:.0f} s. "

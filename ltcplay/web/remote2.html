@@ -974,7 +974,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
              engine decides when it plays; this card only sets the two. -->
         <div class="card col" id="psa-card" hidden>
           <div class="t"><b>Pre-show audio</b></div>
-          <ul class="psa-say"><li>Plays 2 minutes before each scheduled show.</li><li>Skipped on Start now, Hold, show control off.</li><li>Plays once per show; the show never waits.</li></ul>
+          <ul class="psa-say"><li>Plays 2 minutes before each scheduled show.</li><li>Skipped on Start now, Hold, show control off.</li><li>Announcements, Stop sound and Hold stop it.</li></ul>
           <div class="drow"><b class="dbig" id="psa-now"></b><button class="b green" id="psa-on"><svg class="i"><use href="#i-power"/></svg>Turn on</button><button data-safe class="b safe" id="psa-off"><svg class="i"><use href="#i-shield"/></svg>Turn off</button></div>
           <div class="pbar"><select class="f" id="psa-pick" aria-label="Pre-show audio file"></select>
             <button class="b green" id="psa-save"><svg class="i"><use href="#i-check"/></svg>Save file</button></div>
@@ -3306,11 +3306,12 @@ function renderPreshow(){
   if(TAB === "schedule" && !PSA_TRIED){ PSA_TRIED = true; loadPreshow(); }
   setText($("psa-now"), psaNow(v));
   const may = mayRow(ST, "settings") && v.available !== false;
-  $("psa-on").disabled = !may || !!v.on || !($("psa-pick").value || PSA_FILE || v.file);
+  // Turn on uses the SAVED file only: choose one and Save file first.
+  const fileBad = !!v.name && (v.file_ok === false || !!v.too_long);
+  $("psa-on").disabled = !may || !!v.on || !v.name || fileBad || !PSA_FILE;
   $("psa-off").disabled = !may || !v.on;
   $("psa-save").disabled = !may || !$("psa-pick").value;
-  if(PSA_FILE === null && v.file !== undefined) PSA_FILE = v.file || "";
-  const bad = v.error || (v.file && v.file_ok === false ? "File cannot play: " + (v.file_why || "") : "");
+  const bad = v.error || (fileBad ? (v.too_long ? "Chosen file is over 110 s: it will not play." : "Chosen file is missing or cannot play.") : "");
   if(bad && !$("psa-msg").dataset.mine) setText($("psa-msg"), bad);
 }
 setInterval(renderPreshow, 500);
@@ -3320,7 +3321,7 @@ async function loadPreshow(){
     const j = await getJSON("/api/remote/preshow-audio", 3000);
     PSA_FILE = j.file || "";
     const opts = [`<option value="">Choose a file</option>`].concat((j.choices || []).map(c =>
-      `<option value="${esc(c.path)}"${c.path === j.file ? " selected" : ""}${c.available ? "" : " disabled"}>${esc(c.name + (c.length_s ? ", " + Math.round(c.length_s) + " s" : "") + (c.available ? "" : ", cannot play"))}</option>`));
+      `<option value="${esc(c.path)}" data-warn="${esc(!c.available ? c.name + " cannot play." : c.too_long ? c.name + " is " + Math.round(c.length_s) + " s: over 110 s, it will not play." : "")}"${c.path === j.file ? " selected" : ""}${c.available ? "" : " disabled"}>${esc(c.name + (c.length_s ? ", " + Math.round(c.length_s) + " s" : "") + (c.available ? (c.too_long ? ", over 110 s" : "") : ", cannot play"))}</option>`));
     $("psa-pick").innerHTML = opts.join("");
   }catch(e){ $("psa-msg").textContent = e.message; }
 }
@@ -3330,11 +3331,18 @@ async function psaSave(on, file){
     const j = await post("/api/remote/preshow-audio", {on: on, file: file});
     $("psa-msg").textContent = j.text;
     if(j.preshow_audio && ST) ST.preshow_audio = j.preshow_audio;
-    PSA_FILE = (j.preshow_audio && j.preshow_audio.file) || file;
+    PSA_FILE = file;
   }catch(e){ $("psa-msg").textContent = e.message; }
   $("psa-msg").title = $("psa-msg").textContent;
 }
-$("psa-on").addEventListener("click", () => psaSave(true, $("psa-pick").value || PSA_FILE || ""));
+$("psa-on").addEventListener("click", () => psaSave(true, PSA_FILE || ""));
+// Said when chosen, before any save: a file over 110 s, or one that
+// cannot play.
+$("psa-pick").addEventListener("change", () => {
+  const o = $("psa-pick").selectedOptions[0];
+  $("psa-msg").dataset.mine = "1";
+  $("psa-msg").textContent = (o && o.dataset.warn) || "";
+});
 $("psa-off").addEventListener("click", () => psaSave(false, PSA_FILE || ""));
 $("psa-save").addEventListener("click", () => {
   const f = $("psa-pick").value;
@@ -4343,9 +4351,17 @@ function annWhy(st, isStaleNow, local){
 // Stop sound: never refused on the show PC (a stale page included); the
 // engine refuses it from anywhere else.
 function annStopWhy(st, local){ return local ? "" : "Show PC only"; }
+// Pre-show audio playing never turns the announcement buttons off: a
+// press stops it and plays (announce.py _preshow_yield).
+function annLookFor(s){
+  const L = announceLook(s.announce, s.booth);
+  const p = (s.announce || {}).playing;
+  if(p && p.id === "preshow") L.buttons = announceLook(Object.assign({}, s.announce, {playing: null}), s.booth).buttons;
+  return L;
+}
 function renderAnnounce(){
   const s = ST || {};
-  const L = announceLook(s.announce, s.booth);
+  const L = annLookFor(s);
   const local = !!(ME && ME.local), why = annWhy(ST, stale(), local), stopWhy = annStopWhy(ST, local);
   $("ann").hidden = !L.show;
   if(!L.show) return;

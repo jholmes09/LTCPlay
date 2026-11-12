@@ -23503,9 +23503,92 @@ def build():
   '        if False:\n'),
 
  ("pre-show audio: plays over an announcement already playing",
+  'ltcplay/announce.py',
+  '            if pre and self.playing is not None:\n'
+  '                raise ValueError(PRESHOW_BUSY)\n',
+  '            if False:\n'
+  '                raise ValueError(PRESHOW_BUSY)\n'),
+
+ ("pre-show audio: plays while a Stop is under way",
+  'ltcplay/schedule_service.py',
+  '        if self.halting():\n            return "a Stop is under way"\n',
+  '        if False:\n            return "a Stop is under way"\n'),
+
+ ("pre-show audio: plays over a Programming Run",
+  'ltcplay/schedule_service.py',
+  '        if self.preroll is not None and self.preroll.skip():\n'
+  '            return "a Programming Run is in force"\n',
+  '        if False:\n'
+  '            return "a Programming Run is in force"\n'),
+
+ ("pre-show audio: plays for a scheduler that starts no show",
+  'ltcplay/schedule_service.py',
+  '        if self.dry_run or self.performer is None:\n'
+  '            return "this scheduler does not start shows"\n',
+  '        if False:\n'
+  '            return "this scheduler does not start shows"\n'),
+
+ ("pre-show audio: plays with auto start off",
+  'ltcplay/schedule_service.py',
+  '        if getattr(cfg, "auto_start", "when_run_pressed") == "off":\n'
+  '            return "the scheduler does not start shows by itself"\n',
+  '        if False:\n'
+  '            return "the scheduler does not start shows by itself"\n'),
+
+ ("pre-show audio: plays with an alert open",
+  'ltcplay/schedule_service.py',
+  '        if gate is not None and gate():\n',
+  '        if False:\n'),
+
+ ("pre-show audio: plays before a show the scheduler would not start",
+  'ltcplay/schedule_service.py',
+  '            return f"the scheduler would not start show {n} at its time"\n',
+  '            return ""\n'),
+
+ ("pre-show audio: an operator's announcement press is refused while it plays",
+  'ltcplay/announce.py',
+  '            if not pre and self.playing == PRESHOW:\n',
+  '            if False:\n'),
+
+ ("pre-show audio: a Hold never reaches the player",
+  'ltcplay/schedule_service.py',
+  '                self._pending_hooks.append(self.on_schedule_held)\n',
+  '                pass\n'),
+
+ ("pre-show audio: the player does not stop it on Hold",
+  'ltcplay/announce.py',
+  '            self._player.stop_reason = "the schedule was held"\n',
+  '            return\n'),
+
+ ("pre-show audio: a file over 110 s can be chosen",
   'ltcplay/preshow_audio.py',
-  '                    getattr(self.announce, "playing", None) is not None:\n',
-  '                    False:\n'),
+  '        if long_why:\n            raise ValueError(f"{long_why} Nothing was changed.")\n',
+  '        if False:\n            raise ValueError(f"{long_why} Nothing was changed.")\n'),
+
+ ("pre-show audio: a file over 110 s plays when due",
+  'ltcplay/preshow_audio.py',
+  '            if long_why:\n                raise ValueError(long_why)\n',
+  '            if False:\n                raise ValueError(long_why)\n'),
+
+ ("pre-show audio: held to the 60 s announcement limit through the show audio",
+  'ltcplay/announce.py',
+  '        if limit > SHOW_ROUTE_MAX_S and length_s is not None:\n',
+  '        if False:\n'),
+
+ ("pre-show audio: a show whose time is edited plays it again",
+  'ltcplay/schedule_service.py',
+  '            key = (str(m.date), nxt.n)\n',
+  '            key = self._show_key(m, nxt.n)\n'),
+
+ ("pre-show audio: the journal keeps the player's press sentence",
+  'ltcplay/preshow_audio.py',
+  '    t = _PRESS.sub("", t)\n',
+  '    pass\n'),
+
+ ("pre-show audio: Turn on posts an unsaved choice",
+  'ltcplay/web/remote2.html',
+  '$("psa-on").addEventListener("click", () => psaSave(true, PSA_FILE || ""));\n',
+  '$("psa-on").addEventListener("click", () => psaSave(true, $("psa-pick").value || PSA_FILE || ""));\n'),
 
  ("pre-show audio: the player takes it on Hold, claimed first",
   'ltcplay/announce.py',

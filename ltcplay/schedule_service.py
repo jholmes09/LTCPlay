@@ -912,6 +912,10 @@ class Service:
         # next status() poll. schedule_service.py never imports announce.py
         # to make this call; it only ever calls whatever was set here.
         self.on_show_started = None
+        # A plain callable, or None, set by web.py with the announcements:
+        # called (after the lock is free) when the schedule goes on Hold or
+        # is paused, so pre-show audio stops at once.
+        self.on_schedule_held = None
         # Bumped by _apply() every time the machine crosses into or out of
         # a held or paused state. See hold_for_announcement and
         # hold_still_claimed: the second, read-only check an announcement
@@ -2004,6 +2008,12 @@ class Service:
             is_held = self.machine.state in (sch.HOLD, sch.PAUSED)
             if was_held != is_held:
                 self.hold_epoch += 1
+            # Pre-show audio fades the moment the schedule is held or
+            # paused (announce.on_schedule_held), queued like
+            # on_show_started below.
+            if is_held and not was_held and \
+                    self.on_schedule_held is not None:
+                self._pending_hooks.append(self.on_schedule_held)
         if self.machine.state == sch.OFF and before is not None and \
                 before.state != sch.OFF and self.machine.slots:
             # The night has closed, by Close for the night or after its
@@ -3213,7 +3223,9 @@ class Service:
             left = (nxt.start - now).total_seconds()
             if left > pa.LEAD_S:
                 return
-            key = self._show_key(m, nxt.n)
+            # By night and show number, not its time: a show whose time
+            # is edited after its audio played never plays it again.
+            key = (str(m.date), nxt.n)
             if pa.record(key) is not None:
                 note = pa.restored_note(key)
                 if note:
@@ -3249,6 +3261,12 @@ class Service:
             return "a Programming Run is in force"
         if s.planned is not None and s.start > s.planned:
             return f"show {n} was delayed"
+        gate = self.showtime_gate
+        if gate is not None and gate():
+            # The alert hold would hold the show at its time (Jeff,
+            # 2026-11-12: skip).
+            return (f"an alert is open, so show {n} would be held at its "
+                    f"time")
         if not self._starts(sch.step(m, sch.Event(sch.TICK, "scheduler"),
                                      max(now, s.start))):
             return f"the scheduler would not start show {n} at its time"

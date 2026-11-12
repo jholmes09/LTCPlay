@@ -2017,7 +2017,7 @@ class Remote:
         if name == "preshow-audio":
             if not ctx.local:
                 return 403, {"error": "Only on the show machine itself."}
-            return self.preshow_audio_get()
+            return self.preshow_audio_get(ctx)
         if name in MORNING_GET_ROUTES:
             return self.morning_get(name, query, ctx)
         if name in FUEL_GET_ROUTES:
@@ -3248,14 +3248,24 @@ class Remote:
             return {"available": True, "on": False,
                     "error": f"{type(e).__name__}: {e}"}
 
-    def preshow_audio_get(self):
-        """GET preshow-audio: the card and the files to choose from (the
-        WAV files the announcements know). The show machine only."""
+    def preshow_audio_get(self, ctx):
+        """GET preshow-audio: the card, the chosen file read again, and the
+        files to choose from (the WAV files the announcements know), with
+        their paths. The show machine only, and the same Settings
+        permission as its POST: no file path goes to anyone else."""
         pa = self.preshow_audio
         if pa is None:
             return 409, {"error": self.PRESHOW_OFF}
+        u = getattr(self, "users", None)
+        if self.users_active():
+            me = getattr(ctx, "session", None) or {}
+            if not u.may(me.get("role"), "settings"):
+                return 403, {"error": "Pre-show audio is set by someone "
+                                      "signed in who may change Settings."}
         try:
-            return 200, dict(pa.view(), choices=pa.choices())
+            pa.recheck()
+            return 200, dict(pa.view(), file=pa.file or "",
+                             choices=pa.choices())
         except Exception as e:                   # noqa: BLE001
             return 500, {"error": f"The files could not be listed "
                                   f"({type(e).__name__}: {e})."}
