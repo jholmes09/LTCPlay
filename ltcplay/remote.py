@@ -4316,6 +4316,9 @@ class Remote:
                 if names:
                     out["hazers"] = {"names": names,
                                      "on": sorted(hz.on()),
+                                     # The hazer test running: the deck's
+                                     # keys say HAZE TEST, never DISARMED.
+                                     "test": self._ht_running(),
                                      "down": hz.down(),
                                      "paused": hz.show() == "held"}
             except Exception:                    # noqa: BLE001
@@ -4702,9 +4705,18 @@ class Remote:
             return 404, {"error": "There are no hazers in this engine."}
         who, device, _surface = self._actor(ctx, body)
         if name == "hazers-off":
+            ht = self.hazer_test
+            testing = self._ht_running()
             hz.all_off(f"{who or 'someone'} pressed Hazers off on the "
                        f"{device}", who=who, screen=device, system=False)
-            return 200, {"ok": True, "text": "Every hazer is DISARMED."}
+            if ht is not None:
+                # all_off ended it; once more here, the belt.
+                ht.stop(f"{who or 'someone'} pressed Hazers off on the "
+                        f"{device}", who=who, screen=device, system=False)
+            text = "Every hazer is DISARMED."
+            if testing:
+                text += " Hazer test OFF."
+            return 200, {"ok": True, "text": text}
         if name == "hazers-arm-all":
             # Arm all hazers (2026-11-11): the same screen_arming rule as
             # arming one; each hazer then through Hazers.set, every refusal
@@ -4782,7 +4794,9 @@ class Remote:
         show control on or starting (the timed purge's own test). Fails
         closed."""
         try:
-            st = self.hazer_show_state()
+            # Read here, not through hazer_show_state (which reads an error
+            # as idle): an error is busy (fail closed).
+            st = self._ht_state()
             if st == "playing":
                 return "a show is playing, and the show drives the hazers"
             if st == "held":
@@ -4800,6 +4814,31 @@ class Remote:
             return f"the engine's state could not be read ({type(e).__name__})"
         return ""
 
+    def _ht_state(self):
+        """The scheduled show for the hazer test: "playing", "held" or
+        "idle"; raises when it cannot be read."""
+        m = getattr(self.schedule, "machine", None)
+        state = m.state
+        if state == "SHOW":
+            return "playing"
+        if state in ("HOLD", "PAUSED"):
+            return "held"
+        return "idle"
+
+    def hazer_test_gate(self):
+        """The flame link's per-frame gate for the hazer test: True only
+        with no show playing or held and show control's session not
+        running (plain reads, no locks). False on any error."""
+        try:
+            if self._ht_state() != "idle":
+                return False
+            if getattr(getattr(self.control, "session", None), "running",
+                       False):
+                return False
+            return True
+        except Exception:                        # noqa: BLE001
+            return False
+
     def hazer_test_signed_out(self, token, who):
         """As pump_signed_out, for the hazer test. Never raises."""
         try:
@@ -4816,6 +4855,10 @@ class Remote:
         (users.classify, checked by web.py first). (code, body)."""
         ht = self.hazer_test
         if ht is None:
+            who, device, _surface = self._actor(ctx, body)
+            self._journal(who, device, "hazer-test", "refused",
+                          f"{who or 'Someone'}'s hazer test from the "
+                          f"{device}: there are no hazers in this engine.")
             return 404, {"error": "There are no hazers in this engine."}
         who, device, _surface = self._actor(ctx, body)
         on = body.get("on") is True
@@ -4836,7 +4879,7 @@ class Remote:
             ok, text = ht.beat(beat)
             return (200 if ok else 409), ({"ok": True, "text": text} if ok
                                           else {"error": text})
-        if self.users_active() and not (getattr(ctx, "token", "") or ""):
+        if self.users_active() and not (getattr(ctx, "token", None) or ""):
             why = ("The hazer test needs a sign-in on this screen. Sign in, "
                    "then press again.")
             self._journal(who, device, "hazer-test", "refused",
@@ -4851,12 +4894,22 @@ class Remote:
                 abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:
             why = ("Hazer test not started: this screen's status was old. "
                    "Wait for it to be live, then press again.")
+            self._journal(who, device, "hazer-test", "refused",
+                          f"{who or 'Someone'}'s hazer test from the "
+                          f"{device} was refused. {why}")
             return 409, {"error": why}
         ok, text = ht.start(who=who, screen=device, run=body.get("run"),
                             token=getattr(ctx, "token", "") or "")
         if not ok:
             return 409, {"error": text}
         return 200, {"ok": True, "text": text}
+
+    def _ht_running(self):
+        ht = self.hazer_test
+        try:
+            return ht is not None and (ht.run is not None or ht.on())
+        except Exception:                        # noqa: BLE001
+            return True
 
     def hazer_test_view(self):
         """The status's "hazer_test", or None with no hazers. Fails

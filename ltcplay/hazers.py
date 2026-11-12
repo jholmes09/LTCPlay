@@ -171,6 +171,9 @@ class Hazers:
         self._lock = threading.RLock()
         self._watching = False
         self.last_off = None        # {"reason", "who", "was"}
+        # (reason, who, screen, system): the hazer test's stop, set by
+        # web.serve when it is built; all_off calls it first.
+        self.test_stop = None
         self.levels = Levels(folder, self.names())
         if self.levels.fault:
             self._note("system", "engine", "levels", self.levels.fault,
@@ -475,6 +478,14 @@ class Hazers:
         armed before a cut() already cleared them. True when one was
         armed. Never raises."""
         why = " ".join(str(reason or "Hazers off").split())[:200]
+        # Every Hazers off ends the hazer test too (hazertest.py): no
+        # path says the hazers are off while it hazes.
+        stop = self.test_stop
+        if stop is not None:
+            try:
+                stop(why, who, screen, system)
+            except Exception:
+                pass
         with self._lock:
             before = sorted(set(was or ()) | self.on())
             link = self.link()

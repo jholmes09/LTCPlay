@@ -83,8 +83,11 @@ class HazerTest:
 
     def __init__(self, hazers, show_busy=None, signed_out=None,
                  journal=None, audit=None, clock=time.monotonic,
-                 threaded=True):
+                 threaded=True, gate=None):
         self._hazers = hazers
+        # () -> True while the test may haze, asked by the flame link on
+        # every frame (flamelink.hazer_test_gate). None: no gate.
+        self._gate = gate
         self._show_busy = show_busy or (lambda: "")
         self._signed_out = signed_out or (lambda token, who: "")
         self._journal = journal
@@ -218,6 +221,7 @@ class HazerTest:
             if self.run is None and self._off_gen == off0:
                 try:
                     gen = link.abort_id
+                    link.hazer_test_gate = self._gate
                     now = self._clock()
                     r = {"id": rid, "start": now, "beat": now, "page": now,
                          "deadline": now + MAX_S, "gen": gen, "who": who,

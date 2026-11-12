@@ -895,6 +895,10 @@ class FlameLink:
         self._htest_until = None
         self._htest_beat = None
         self._htest_ended = ""
+        # () -> True while the engine lets the test haze (no show, show
+        # control off); asked on every frame outside self._lock. None:
+        # no gate. A gate that raises is False.
+        self.hazer_test_gate = None
         self.haze_gate = None
         self._haze_live = False
         self.tc_fps = float(tc_fps)
@@ -1949,12 +1953,11 @@ class FlameLink:
         built with (None: asked here)."""
         if not self._hazers and self._pump_name is None:
             return None
-        on = self._hazers_on
-        if self._htest_live() if test is None else test:
-            on = on | frozenset(self._hazers)
+        testing = self._htest_live() if test is None else test
+        extra = frozenset(self._hazers) if testing else frozenset()
         if self._pump_live():
-            return on | {self._pump_name}
-        return on
+            return self._hazers_on | {self._pump_name} | extra
+        return self._hazers_on | extra
 
     # -- the hazer test (2026-11-11) ------------------------------------------
     def _htest_live(self):
@@ -1968,7 +1971,7 @@ class FlameLink:
             until, beat = self._htest_until, self._htest_beat
             if until is None or beat is None:
                 why = "it had no end"
-            elif now >= until:
+            elif until <= now:
                 why = "its time was up"
             elif now - beat > HAZER_TEST_HOLD_S or now < beat:
                 why = (f"the engine's timer stalled (no beat for "
@@ -1981,6 +1984,15 @@ class FlameLink:
         self._htest_until = None
         self._htest_ended = why
         return False
+
+    def _htest_gate_ok(self):
+        gate = self.hazer_test_gate
+        if gate is None:
+            return True
+        try:
+            return gate() is True
+        except Exception:
+            return False
 
     def hazer_test_live_now(self):
         """The hazer test's state for the screens and the engine's checks,
@@ -2013,7 +2025,7 @@ class FlameLink:
                 return False
             with self._lock:
                 mine = self._clock()
-                if gen != self.abort_id or self.abort_repeating():
+                if self.abort_repeating() or gen != self.abort_id:
                     self._htest_on = False
                     self._htest_until = None
                     return False
@@ -2049,6 +2061,14 @@ class FlameLink:
                 return True
         except Exception:
             return False
+
+    def _htest_cut(self, why):
+        """The hazer test OFF now, saying why when it was on."""
+        with self._lock:
+            if self._htest_on:
+                self._htest_ended = why
+            self._htest_on = False
+            self._htest_until = None
 
     def hazer_test_stop(self):
         """The hazer test OFF from the next frame. Never refused."""
@@ -2369,6 +2389,7 @@ class FlameLink:
         with self._read_lock:
             tc, values = self.values_now()
             run = self._haze_running()
+            tgate = self._htest_gate_ok()
             self._frame_tc = tc         # frame timing's show window only
         with self._lock:
             if lgen != self._land_gen:
@@ -2418,9 +2439,16 @@ class FlameLink:
             show = bytes(map(min, sp, values)) \
                 if len(sp) == len(values) and not dropped \
                 else bytes(UNIVERSE_SIZE)
-            test = self._htest_live() and aid == self.abort_id
-            wire = self._with_haze(values, run and gen == self._zero_gen,
-                                   test)
+            # Never while a show cue plays (the show owns the hazers) or the
+            # engine's gate says a show or show control has begun: not
+            # even for the engine's next pass.
+            test = self._htest_live() and aid == self.abort_id and \
+                tgate and not self._haze_live
+            wire = self._with_haze(values, run and gen == self._zero_gen)
+            if test:
+                # The hazer test: every hazer at its levels (no show runs,
+                # so no ARMED hazer is outputting).
+                wire = self._with_haze(values, False, test)
             seq, mono = self._next()
             ok = self._send(encode_flame(seq, tc, mono, self.cfg.universe,
                                          wire, self.cfg.key,
@@ -2505,6 +2533,9 @@ class FlameLink:
         and one zero frame goes out at once rather than at the next tick.
         True when that frame went out. Never asks the providers, so a hung
         one cannot delay it (fix round 1, item 7)."""
+        # The hazer test ends on any zero too (a Hold, a show's end, the
+        # engine closing): at once, before the zero frame.
+        self._htest_cut("the flame cues were zeroed (a Hold)")
         with self._lock:
             self._purge = None
             # Any zero (a Hold, a show's end, the dark sequence) ends live
@@ -2538,6 +2569,12 @@ class FlameLink:
             why = " ".join(str(reason or "Abort").split())[:REASON_MAX] \
                 or "Abort"
             with self._lock:
+                # The hazer test OFF too (2026-11-11), the same way.
+                if self._htest_on:
+                    self._htest_ended = (f"the disarm to every flame group "
+                                         f"was sent: {why}")
+                self._htest_on = False
+                self._htest_until = None
                 # Abort and Stop switch every hazer OFF (Jeff, 2026-10-29),
                 # here at the link before the zero frame and the first
                 # copy, whichever surface sent it. flamesafe does the same
@@ -2554,12 +2591,6 @@ class FlameLink:
                 self._pump_on = False
                 self._pump_until = None
                 self._hazers_on = frozenset()
-                # The hazer test OFF too (2026-11-11), the same way.
-                if self._htest_on:
-                    self._htest_ended = (f"the disarm to every flame group "
-                                         f"was sent: {why}")
-                self._htest_on = False
-                self._htest_until = None
                 self._purge = None
                 # An Abort ends live flame programming at the link, at
                 # once, whichever surface sent it (flameprog.py sees it).
@@ -2735,7 +2766,7 @@ class FlameLink:
                 "hazers_on": sorted(self._hazers_on),
                 "pump_on": self._pump_on,
                 "pump_until": self._pump_until,
-                "hazer_test_on": self._htest_on,
+                "hazer_test_on": self.hazer_test_live_now(),
                 "lock_alarm": self.lock_alarm,
                 "abort_id": self.abort_id,
                 "abort": self.abort_state(),

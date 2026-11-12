@@ -2379,11 +2379,15 @@ def _attach_hazer_test(httpd):
         remote.hazer_test = hazertest_mod.HazerTest(
             hazers=lambda: remote.hazers,
             show_busy=remote.hazer_test_show_busy,
+            gate=remote.hazer_test_gate,
             signed_out=remote.hazer_test_signed_out,
             journal=_journal, audit=getattr(remote, "audit", None))
     except Exception as e:                       # noqa: BLE001
         print(f"The hazer test could not be set up: {type(e).__name__}: {e}")
         return
+    # Hazers off (any path: a screen, the Stream Deck, the watch) ends it.
+    remote.hazers.test_stop = lambda why, who, screen, system: \
+        remote.hazer_test.stop(why, who=who, screen=screen, system=system)
     before = httpd.server_close
 
     def _close_hazer_test():

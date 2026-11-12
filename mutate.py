@@ -23478,8 +23478,8 @@ def build():
 
  ("hazer test: Stop's disarm_all leaves it on at the link",
   'ltcplay/flamelink.py',
-  '                self._htest_on = False\n                self._htest_until = None\n                self._purge = None\n',
-  '                self._purge = None\n'),
+  '                self._htest_on = False\n                self._htest_until = None\n                # Abort and Stop switch every hazer OFF',
+  '                # Abort and Stop switch every hazer OFF'),
 
  ('hazer test: a show starting leaves it on',
   'ltcplay/remote.py',
@@ -23535,6 +23535,81 @@ def build():
   'ltcplay/remote.py',
   '            if not self.may_act_from(ctx.local):\n                why = ("Arming hazers from a device on the show network "\n',
   '            if False:\n                why = ("Arming hazers from a device on the show network "\n'),
+
+ ('hazer test: signing out on the screen leaves it on',
+  'ltcplay/remote.py',
+  '                    ht.end_for_token(getattr(ctx, "token", "") or "",\n',
+  '                    (lambda *a: None)(getattr(ctx, "token", "") or "",\n'),
+
+ ('hazer test: the timer never checks its starter is still signed in',
+  'ltcplay/hazertest.py',
+  '        gone = self._sign_in_gone(r.get("token", ""), r.get("who", ""))\n',
+  '        gone = ""\n'),
+
+ ('hazer test: a running test ignores flamesafe going stale',
+  'ltcplay/hazertest.py',
+  '            why = hz.down() if hz is not None else "the hazers are gone"\n',
+  '            why = ""\n'),
+
+ ('hazer test: a running test ignores live flame programming',
+  'ltcplay/hazertest.py',
+  '                why = hz._blocker() or ""\n',
+  '                why = ""\n'),
+
+ ('hazer test: flamesafe not passing it never ends it',
+  'ltcplay/hazertest.py',
+  '            elif now - since > NOT_PASSING_S:\n',
+  '            elif False:\n'),
+
+ ('hazer test: the plain /api/stop leaves it on at the engine',
+  'ltcplay/web.py',
+  '        fn = getattr(rm, "hazer_test_cut", None)\n',
+  '        fn = None\n'),
+
+ ('hazer test: the engine shutting down leaves it on',
+  'ltcplay/web.py',
+  '            remote.hazer_test.stop("the engine is shutting down")\n',
+  '            pass\n'),
+
+ ('hazer test: Hazers off leaves it on',
+  'ltcplay/hazers.py',
+  '                stop(why, who, screen, system)\n',
+  '                pass\n'),
+
+ ('hazer test: the Stream Deck is not told it runs',
+  'ltcplay/remote.py',
+  '                                     "test": self._ht_running(),\n',
+  '                                     "test": False,\n'),
+
+ ('hazer test: a show state that cannot be read is idle',
+  'ltcplay/remote.py',
+  '        except Exception as e:                   # noqa: BLE001\n            return f"the engine\'s state could not be read ({type(e).__name__})"\n        return ""\n\n    def _ht_state',
+  '        except Exception as e:                   # noqa: BLE001\n            return ""\n        return ""\n\n    def _ht_state'),
+
+ ("hazer test: a Hold's zero leaves it on at the link",
+  'ltcplay/flamelink.py',
+  '        self._htest_cut("the flame cues were zeroed (a Hold)")\n',
+  ''),
+
+ ('hazer test: it drives the hazers while a show cue plays or the gate is shut',
+  'ltcplay/flamelink.py',
+  '                tgate and not self._haze_live\n',
+  '                True\n'),
+
+ ('hazer test: the status reads on past its hard end',
+  'ltcplay/flamelink.py',
+  '                "hazer_test_on": self.hazer_test_live_now(),\n',
+  '                "hazer_test_on": self._htest_on,\n'),
+
+ ('hazer test: the page cannot send Off without contact',
+  'ltcplay/web/remote2.html',
+  '  if(!hztConfirmedOff(v)){ hazerTestOff(); return; }\n',
+  '  if(v && v.on === true){ hazerTestOff(); return; }\n'),
+
+ ("hazer test: the rack screen's hazer tiles read DISARMED during it",
+  'ltcplay/web/remote2.html',
+  '    if(htOn){ setText(b.querySelector(".hw"), "HAZE TEST"); b.className = "b on"; }\n',
+  ''),
 ]
 
 

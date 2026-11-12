@@ -3740,5 +3740,20 @@
 "arm all hazers: a name flamesafe reports as a flame group is armed": "test_arm_all_hazers_only_arms_hazers",
 "arm all hazers: arms every hazer at the link, skipping each one's refusals": "test_arm_all_hazers_only_arms_hazers",
 "arm all hazers: needs no permission (not the arm row)": "test_hazer_test_and_arm_all_need_the_arm_row",
-"arm all hazers: from the show network without screen_arming": "test_arm_all_hazers_only_arms_hazers"
+"arm all hazers: from the show network without screen_arming": "test_arm_all_hazers_only_arms_hazers",
+"hazer test: signing out on the screen leaves it on": "test_hazer_test_and_arm_all_need_the_arm_row",
+"hazer test: the timer never checks its starter is still signed in": "test_hazer_test_and_arm_all_need_the_arm_row",
+"hazer test: a running test ignores flamesafe going stale": "test_hazer_test_at_the_engine",
+"hazer test: a running test ignores live flame programming": "test_hazer_test_at_the_engine",
+"hazer test: flamesafe not passing it never ends it": "test_hazer_test_at_the_engine",
+"hazer test: the plain /api/stop leaves it on at the engine": "test_hazer_test_at_the_engine",
+"hazer test: the engine shutting down leaves it on": "test_hazer_test_at_the_engine",
+"hazer test: Hazers off leaves it on": "test_hazer_test_at_the_engine",
+"hazer test: the Stream Deck is not told it runs": "test_hazer_test_at_the_engine",
+"hazer test: a show state that cannot be read is idle": "test_hazer_test_at_the_engine",
+"hazer test: a Hold's zero leaves it on at the link": "test_hazer_test_flame_link",
+"hazer test: it drives the hazers while a show cue plays or the gate is shut": "test_hazer_test_flame_link",
+"hazer test: the status reads on past its hard end": "test_hazer_test_flame_link",
+"hazer test: the page cannot send Off without contact": "test_ui2_hazer_test_in_a_browser",
+"hazer test: the rack screen's hazer tiles read DISARMED during it": "test_ui2_hazer_test_in_a_browser"
 }

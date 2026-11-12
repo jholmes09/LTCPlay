@@ -4985,6 +4985,11 @@ class Controller:
             if hv is None:
                 fonts.show_key(d, box, [line, "NO STATUS"], AMBER,
                                kind="sans", max_size=12)
+            elif hv.get("test"):
+                # The hazer test running (2026-11-11): never a plain
+                # DISARMED while it hazes.
+                fonts.show_key(d, box, [line, "HAZE TEST"], BLACK, bg=AMBER,
+                               kind="sans", max_size=12)
             elif names[i] in on and hv.get("paused"):
                 # A Hold: still armed, its haze stopped until Resume.
                 fonts.show_key(d, box, [line, "ARMED", "PAUSED"], BLACK,

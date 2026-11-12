@@ -3902,13 +3902,17 @@ function renderHazers(s){
       !(ME && ME.local) && !(s.arming && s.arming.enabled) ? "Arming off here" : "";
     b.disabled = !!hzWhy;
     if(hzWhy) setText(b.querySelector(".hw"), hzWhy);
-    b.title = look.label + ". " + look.act + ". " + look.line + (!look.armed && v.down ? ". Cannot arm: " + v.down : "");
+    // The hazer test running (2026-11-11): every tile says so, never a
+    // plain DISARMED while it hazes.
+    const htOn = !!(s.hazer_test && s.hazer_test.on === true);
+    if(htOn){ setText(b.querySelector(".hw"), "HAZE TEST"); b.className = "b on"; }
+    b.title = (htOn ? "Hazer test running. " : "") + look.label + ". " + look.act + ". " + look.line + (!look.armed && v.down ? ". Cannot arm: " + v.down : "");
     b.setAttribute("aria-label", look.label + ". " + look.act);
   });
   const sum = $("hz-sum");
   if(sum){
     const a = v.hazers.filter(h => h.armed).length;
-    setText(sum, a ? a + " of " + v.hazers.length + " armed" : "All disarmed");
+    setText(sum, s.hazer_test && s.hazer_test.on === true ? "HAZE TEST on" : a ? a + " of " + v.hazers.length + " armed" : "All disarmed");
   }
   $("hz-open").disabled = compact ? false : !mayArm;
   if(HZ_OPEN) renderHazerSheet(s);
@@ -4138,6 +4142,9 @@ function hztBeatStart(run, every){
     catch(e){ hztBeatStop(); hztSay(e.message); }
   }, Math.max(500, (Number(every) || 2) * 1000));
 }
+function hztConfirmedOff(v){
+  return !stale() && !!v && v.available === true && v.on === false && v.state === "off";
+}
 async function hazerTestOff(){
   hztBeatStop();
   try{ const j = await post("/api/remote/hazer-test", actor({on: false})); say(j.text || "Hazer test OFF.", "", "ok"); hztSay(j.text || "Hazer test OFF."); }
@@ -4145,9 +4152,9 @@ async function hazerTestOff(){
 }
 async function hazerTestTap(){
   const v = ST && ST.hazer_test;
+  // Anything but a confirmed Off sends Off (no contact, Not known, On).
+  if(!hztConfirmedOff(v)){ hazerTestOff(); return; }
   if(HZT_BUSY) return;
-  if(v && v.on === true){ hazerTestOff(); return; }
-  if(stale() || !v || !v.available){ hztSay("No contact. Not started."); return; }
   if(v.refusal){ hztSay("Not now: " + v.refusal); return; }
   HZT_BUSY = true;
   const run = "hzt-" + Date.now().toString(36) + "-" + (++HZT_SEQ);
@@ -4172,6 +4179,7 @@ function renderHazerTest(s){
   if(sec) sec.hidden = DAY_K !== "purge";
   const known = !isSt && v.state !== "unknown";
   const on = known && v.on === true;
+  const off = hztConfirmedOff(v);
   // The beat stops when the engine refuses it (the run is over), never on
   // a status read before the start was answered.
   setText($("hzt-max"), "Turns off by itself after " + (Number(v.max_s) || 60) + " s.");
@@ -4179,17 +4187,18 @@ function renderHazerTest(s){
   st.className = "hzt-st" + (on ? " on" : known ? "" : " unk");
   setText(st, !known ? "Not known" : on ? (v.state === "waiting" ? "On: waiting" : "On") + " " + timedLeft(v.left_s) : "Off");
   const b = $("hzt-btn");
-  setText(b, on ? "Hazer test: Off" : "Hazer test: On");
-  b.className = on ? "b safe" : "b green";
-  if(on) b.setAttribute("data-safe", ""); else b.removeAttribute("data-safe");
+  // Off always works: unless the engine confirms Off, the button is Off.
+  setText(b, off ? "Hazer test: On" : on ? "Hazer test: Off" : "Turn hazer test off");
+  b.className = off ? "b green" : "b safe";
+  if(!off) b.setAttribute("data-safe", ""); else b.removeAttribute("data-safe");
   b.setAttribute("aria-pressed", on ? "true" : "false");
-  b.setAttribute("aria-disabled", !on && (!known || !!v.refusal) ? "true" : "false");
-  b.classList.toggle("na", !on && (!known || !!v.refusal));
-  b.title = !on && v.refusal ? v.refusal : "";
+  b.setAttribute("aria-disabled", off && !!v.refusal ? "true" : "false");
+  b.classList.toggle("na", off && !!v.refusal);
+  b.title = off && v.refusal ? v.refusal : "";
   const hz = s.hazers, all = hz && (hz.hazers || []).length && hz.hazers.every(h => h.armed);
   setText($("hz-armall"), all ? "Disarm all hazers" : "Arm all hazers");
   $("hz-armall").className = all ? "b safe" : "b";
-  if(!on && v.refusal && !$("hzt-msg").textContent) hztSay("Not now: " + v.refusal);
+  if(off && v.refusal && !$("hzt-msg").textContent) hztSay("Not now: " + v.refusal);
 }
 async function hazersOff(){
   try{ const j = await post("/api/remote/hazers-off", actor({})); say(j.text || "Every hazer is DISARMED.", "", "ok"); }
