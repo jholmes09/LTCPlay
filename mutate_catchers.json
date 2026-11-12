@@ -3755,5 +3755,13 @@
 "hazer test: it drives the hazers while a show cue plays or the gate is shut": "test_hazer_test_flame_link",
 "hazer test: the status reads on past its hard end": "test_hazer_test_flame_link",
 "hazer test: the page cannot send Off without contact": "test_ui2_hazer_test_in_a_browser",
-"hazer test: the rack screen's hazer tiles read DISARMED during it": "test_ui2_hazer_test_in_a_browser"
+"hazer test: the rack screen's hazer tiles read DISARMED during it": "test_ui2_hazer_test_in_a_browser",
+"hazer test: web.serve gives it no per-frame gate": "test_hazer_test_at_the_engine",
+"hazer test: the flame link is never given the gate": "test_hazer_test_at_the_engine",
+"hazer test: the per-frame gate ignores show control": "test_hazer_test_at_the_engine",
+"hazer test: the per-frame gate lets a held show through": "test_hazer_test_at_the_engine",
+"hazer test: web.serve never hooks it to Hazers off": "test_hazer_test_at_the_engine",
+"hazer test: ON with no sign-in of its own is taken while there are users": "test_hazer_test_and_arm_all_need_the_arm_row",
+"hazer test: an old-status refusal is not journaled": "test_hazer_test_and_arm_all_need_the_arm_row",
+"hazer test: the rack tiles are ARMED's green during it": "test_ui2_hazer_test_in_a_browser"
 }

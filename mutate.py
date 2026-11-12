@@ -23608,8 +23608,48 @@ def build():
 
  ("hazer test: the rack screen's hazer tiles read DISARMED during it",
   'ltcplay/web/remote2.html',
-  '    if(htOn){ setText(b.querySelector(".hw"), "HAZE TEST"); b.className = "b on"; }\n',
+  '    if(htOn){ setText(b.querySelector(".hw"), "HAZE TEST"); b.className = "b hzt"; }\n',
   ''),
+
+ ('hazer test: web.serve gives it no per-frame gate',
+  'ltcplay/web.py',
+  '            gate=remote.hazer_test_gate,\n',
+  ''),
+
+ ('hazer test: the flame link is never given the gate',
+  'ltcplay/hazertest.py',
+  '                    link.hazer_test_gate = self._gate\n',
+  ''),
+
+ ('hazer test: the per-frame gate ignores show control',
+  'ltcplay/remote.py',
+  '            if getattr(getattr(self.control, "session", None), "running",\n                       False):\n                return False\n            return True\n',
+  '            return True\n'),
+
+ ('hazer test: the per-frame gate lets a held show through',
+  'ltcplay/remote.py',
+  '            if self._ht_state() != "idle":\n                return False\n',
+  '            if self._ht_state() == "playing":\n                return False\n'),
+
+ ('hazer test: web.serve never hooks it to Hazers off',
+  'ltcplay/web.py',
+  '    remote.hazers.test_stop = lambda why, who, screen, system: \\\n',
+  '    _unhooked = lambda why, who, screen, system: \\\n'),
+
+ ('hazer test: ON with no sign-in of its own is taken while there are users',
+  'ltcplay/remote.py',
+  '        if self.users_active() and not (getattr(ctx, "token", None) or ""):\n',
+  '        if False:\n'),
+
+ ('hazer test: an old-status refusal is not journaled',
+  'ltcplay/remote.py',
+  '"Wait for it to be live, then press again.")\n            self._journal(who, device, "hazer-test", "refused",\n',
+  '"Wait for it to be live, then press again.")\n            (lambda *a: None)(who, device, "hazer-test", "refused",\n'),
+
+ ("hazer test: the rack tiles are ARMED's green during it",
+  'ltcplay/web/remote2.html',
+  'b.className = "b hzt"; }\n',
+  'b.className = "b on"; }\n'),
 ]
 
 

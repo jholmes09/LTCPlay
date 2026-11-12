@@ -69175,18 +69175,25 @@ def _ht_rig(S, users=False):
     R.remote._ht_state = lambda: R.show[0]
     R.link.state["live"] = False       # no show cue playing
     R.remote.hazers.audit = _Audit()
-    R.ht = R.remote.hazer_test = HT.HazerTest(
-        hazers=lambda: R.remote.hazers,
-        show_busy=R.remote.hazer_test_show_busy,
-        signed_out=R.remote.hazer_test_signed_out,
-        journal=lambda who, screen, outcome, text, fault=False:
-        R.remote._journal(who or "system", screen or "engine",
-                          "hazer-test", outcome, text, fault=fault),
-        audit=_Audit(), clock=lambda: R.mono[0], threaded=False,
-        gate=R.remote.hazer_test_gate)
-    # As web.serve wires it: every Hazers off ends the test.
-    R.remote.hazers.test_stop = lambda why, who, screen, system: \
-        R.ht.stop(why, who=who, screen=screen, system=system)
+    # The REAL wiring (web._attach_hazer_test, as web.serve calls it): its
+    # gate, its Hazers off hook and its shutdown stop; then only the clock,
+    # the timer thread and the audit log are the rig's.
+    from ltcplay import web as web_mod
+    R.closed = []
+
+    class _H:
+        remote = R.remote
+        fire_ice = None
+
+        def server_close(self):
+            R.closed.append(1)
+    R.h = _H()
+    web_mod._attach_hazer_test(R.h)
+    R.ht = R.remote.hazer_test
+    check(isinstance(R.ht, HT.HazerTest), "web.serve's wiring built it")
+    R.ht._threaded = False
+    R.ht._clock = lambda: R.mono[0]
+    R.ht.audit = _Audit()
     return R
 
 
@@ -69349,6 +69356,41 @@ def test_hazer_test_at_the_engine():
         R.ask("POST", "/api/remote/resume", {"seen": R.seen()}, client=loop)
         R.settle()
         reset()
+        # And Stop's hazers_cut alone (its own cut aside) ends it too,
+        # through web.serve's Hazers off hook.
+        st, out, run = tap(True)
+        R.remote.hazers_cut("Stop from the selftest", "Ollie", "Rack screen")
+        end = time.monotonic() + 2.0
+        while time.monotonic() < end and ht.run is not None:
+            time.sleep(0.01)
+        check(ht.run is None and not link.hazer_test_live_now(),
+              f"Stop's hazers_cut ends it through the hook: {ht.last_off}")
+        reset()
+        # The flame link's per-frame gate (web.serve's wiring): the moment
+        # a show plays or is held, or show control's session runs, no
+        # hazer is driven, before the engine's next pass.
+        for what in ("playing", "held"):
+            st, out, run = tap(True)
+            check(st == 200 and wire()[0] == [102, 153, 0, 0, 0, 0],
+                  f"setup: on and hazing: {out}")
+            R.show[0] = what
+            check(wire() == ([0] * 6, []) and ht.run is not None,
+                  f"a show {what}: the very next frame drives no hazer, "
+                  f"before the engine's pass")
+            R.show[0] = "idle"
+            tap(False)
+            reset()
+        st, out, run = tap(True)
+        sess = getattr(R.remote.control, "session", None)
+        R.remote.control.session = type("Sess", (), {"running": True})()
+        try:
+            check(wire() == ([0] * 6, []),
+                  "show control's session running: no hazer driven, before "
+                  "the engine's pass")
+        finally:
+            R.remote.control.session = sess
+        tap(False)
+        reset()
         # A show starting ends it; while one plays it is refused.
         st, out, run = tap(True)
         check(st == 200, f"setup: on: {out}")
@@ -69453,25 +69495,10 @@ def test_hazer_test_at_the_engine():
         R.ask("POST", "/api/remote/resume", {"seen": R.seen()}, client=loop)
         R.settle()
         reset()
-        # The engine shutting down.
-        from ltcplay import web as web_mod
-        closed = []
-
-        class _H:
-            remote = R.remote
-            fire_ice = None
-
-            def server_close(self):
-                closed.append(1)
-        h = _H()
-        keep = R.remote.hazer_test
-        web_mod._attach_hazer_test(h)
-        R.remote.hazer_test = keep
-        R.remote.hazers.test_stop = lambda why, who, screen, system: \
-            keep.stop(why, who=who, screen=screen, system=system)
+        # The engine shutting down (web.serve's own close).
         st, out, run = tap(True)
-        h.server_close()
-        check(closed and ht.run is None and not link.hazer_test_live_now()
+        R.h.server_close()
+        check(R.closed and ht.run is None and not link.hazer_test_live_now()
               and "shutting down" in ht.last_off["reason"],
               f"the engine shutting down: OFF: {ht.last_off}")
         reset()
@@ -69595,6 +69622,26 @@ def test_hazer_test_and_arm_all_need_the_arm_row():
         _ok, _w, otok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True,
                                        "rack")
         oh = {"Cookie": f"{U.COOKIE}={otok}"}
+        # An ON from no sign-in of its own (the Stream Deck's screen) is
+        # refused while there are users, Ollie signed in here or not.
+        import types
+        ctx = types.SimpleNamespace(local=True, token="", user="Ollie",
+                                    device="Stream Deck",
+                                    screen="Stream Deck",
+                                    source="127.0.0.1")
+        st, out = R.remote.hazer_test_post(
+            {"on": True, "run": "deck1", "seen": R.seen(),
+             "screen": "Stream Deck"}, ctx)
+        check(st == 403 and "needs a sign-in" in out.get("error", "") and
+              not R.link.hazer_test_live_now(),
+              f"an ON with no sign-in of its own: refused: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/hazer-test",
+                            {"on": True, "run": "old2",
+                             "seen": R.seen() - 5000},
+                            client=loop, headers=oh)
+        check(st == 409 and any("status was old" in r.get("text", "")
+                                for r in R.lines_for("hazer-test")),
+              f"a press from an old status: refused and journaled: {out}")
         st, _h, out = R.ask("POST", "/api/remote/hazer-test",
                             {"on": False}, client=loop)
         check(st == 200 and not R.link.hazer_test_live_now(),
@@ -100402,6 +100449,8 @@ function look(){
     armall: q("hz-armall").textContent, words: words,
     pins: Array.from(document.querySelectorAll("[data-pin]")).map(x => x.dataset.pin + ":" + x.textContent),
     tiles: Array.from(document.querySelectorAll("#hazers [data-hzb] .hw")).map(x => x.textContent),
+    tile_cls: Array.from(document.querySelectorAll("#hazers [data-hzb]")).map(x => x.className),
+    tile_bg: Array.from(document.querySelectorAll("#hazers [data-hzb]")).map(x => getComputedStyle(x).backgroundColor),
     xscroll: document.scrollingElement.scrollWidth - innerWidth};
 }
 async function go(){
@@ -100551,6 +100600,11 @@ def test_ui2_hazer_test_in_a_browser():
                 check(a["tiles"] and all(t == "HAZE TEST" for t in a["tiles"]),
                       f"{where}: the hazer tiles say HAZE TEST, never "
                       f"DISARMED: {a['tiles']}")
+                check(a["tile_cls"] and
+                      all(c.split() == ["b", "hzt"] for c in a["tile_cls"])
+                      and all(bg == "rgb(42, 29, 5)" for bg in a["tile_bg"]),
+                      f"{where}: the tiles are amber (class hzt), never "
+                      f"ARMED's green 'on': {a['tile_cls']} {a['tile_bg']}")
             if kind == "armed":
                 check(a["btn_na"] and a["state"] == "Off" and
                       not [x for x in r["tap"] if x.get("on") is True],

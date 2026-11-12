@@ -240,6 +240,9 @@ main > #mini{padding:var(--gap) var(--pad) 0}
    its name and ON or OFF, then Hazers off. */
 .hzrow{grid-column:1 / -1;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:var(--gap);min-width:0}
 .hzrow[hidden]{display:none}
+/* The hazer test running (2026-11-11): amber, as the deck's HAZE TEST key,
+   never the green of ARMED. */
+.hzrow .b.hzt{border-color:var(--amber);background:#2a1d05;color:#FFD08A}
 /* The fireball's fuel pump (2026-10-30): one row of its own under the
    hazers: its state and countdown, the run time to set first, Fuel pump:
    On, and Pump off (never disabled, never quieted). */
@@ -3905,7 +3908,7 @@ function renderHazers(s){
     // The hazer test running (2026-11-11): every tile says so, never a
     // plain DISARMED while it hazes.
     const htOn = !!(s.hazer_test && s.hazer_test.on === true);
-    if(htOn){ setText(b.querySelector(".hw"), "HAZE TEST"); b.className = "b on"; }
+    if(htOn){ setText(b.querySelector(".hw"), "HAZE TEST"); b.className = "b hzt"; }
     b.title = (htOn ? "Hazer test running. " : "") + look.label + ". " + look.act + ". " + look.line + (!look.armed && v.down ? ". Cannot arm: " + v.down : "");
     b.setAttribute("aria-label", look.label + ". " + look.act);
   });
