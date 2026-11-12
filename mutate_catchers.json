@@ -3760,5 +3760,6 @@
 "receiver: a different night file is acknowledged as the same": "test_audit_receiver_takes_the_night_journal",
 "receiver: a night that is not a date is taken": "test_audit_receiver_takes_the_night_journal",
 "receiver: what the PC said about an incomplete night is not kept": "test_audit_receiver_takes_the_night_journal",
-"receiver: verify does not check the night journal files": "test_audit_receiver_takes_the_night_journal"
+"receiver: verify does not check the night journal files": "test_audit_receiver_takes_the_night_journal",
+"journal upload: the engine does not hand over the night files' check": "test_journal_upload_sends_closed_nights_and_waits_for_the_ack"
 }

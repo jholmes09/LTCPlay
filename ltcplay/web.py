@@ -1949,7 +1949,7 @@ def _attach_accounts(httpd, users_seed=None, transport=None):
             # (Fire & Ice), and only each closed night.
             r.journal_uploader = auditsend.JournalUploader(
                 book.folder, r.folder, night=sched._night,
-                transport=transport,
+                transport=transport, checker=book.check_night,
                 note=lambda **kw: log.event(user=audit_mod.SYSTEM,
                                             surface="engine", **kw)).start()
         r.audit_watch = auditwatch.EngineWatch(r, log).start()

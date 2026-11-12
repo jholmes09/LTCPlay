@@ -23669,6 +23669,11 @@ def build():
   'tools/audit_receiver.py',
   '                ok = hashlib.sha256(fh.read()).hexdigest() == r.get("sha256")\n',
   '                ok = True\n'),
+
+ ("journal upload: the engine does not hand over the night files' check",
+  'ltcplay/web.py',
+  '                transport=transport, checker=book.check_night,\n',
+  '                transport=transport,\n'),
 ]
 
 

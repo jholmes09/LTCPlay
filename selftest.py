@@ -79429,7 +79429,8 @@ def test_journal_upload_sends_closed_nights_and_waits_for_the_ack():
     mono = [0.0]
     up = A.JournalUploader(nights, settings, night=lambda: "2026-11-09",
                            transport=transport, wall=lambda: wall[0],
-                           clock=lambda: mono[0])
+                           clock=lambda: mono[0],
+                           checker=lambda n: J.check_files(nights, n))
     check(up.run(force=True) == 0 and not sent,
           "off by default: nothing is sent")
     A.save_config(settings, {"enabled": True, "token": "s3cret-token-xyz",
@@ -79521,13 +79522,15 @@ def test_journal_upload_sends_closed_nights_and_waits_for_the_ack():
                     remote_folder=tempfile.mkdtemp())
     try:
         httpd.schedule = types.SimpleNamespace(
-            logbook=types.SimpleNamespace(folder=nights),
-            _night=lambda: "2026-11-09")
+            logbook=J.Logbook(nights), _night=lambda: "2026-11-09")
         W._attach_accounts(httpd, users_seed=[("Jeff", "admin")],
                            transport=transport)
         ju = httpd.remote.journal_uploader
-        check(isinstance(ju, A.JournalUploader) and ju.folder == nights and
-              ju.open_night() == "2026-11-09",
+        check(isinstance(ju, A.JournalUploader) and
+              ju.folder == os.path.abspath(nights) and
+              ju.open_night() == "2026-11-09" and
+              ju.check("2026-11-08")["incomplete"] is True and
+              ju.check("2026-11-07")["incomplete"] is False,
               f"the engine starts the night journal upload: {ju}")
     finally:
         try:
@@ -79612,7 +79615,8 @@ def test_audit_receiver_takes_the_night_journal():
     A.save_config(settings, {"enabled": True, "token": tok,
                              "url": "https://audit.example.com/ltc"})
     up = A.JournalUploader(nights, settings, night=lambda: "2026-11-09",
-                           transport=to_receiver)
+                           transport=to_receiver,
+                           checker=lambda n: J.check_files(nights, n))
     check(up.run(force=True) == 3 and len(up.sent()) == 3,
           f"the receiver acknowledges each night file: {up.last_error}")
     folder = os.path.join(store, "night-journal", "2026-11-08")

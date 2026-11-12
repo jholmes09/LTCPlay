@@ -426,10 +426,15 @@ class JournalUploader:
     injectable, the token never leaves the request."""
 
     def __init__(self, folder, settings_folder, night=None, transport=None,
-                 wall=time.time, clock=time.monotonic, note=None):
+                 wall=time.time, clock=time.monotonic, note=None,
+                 checker=None):
         self.folder = folder
         self.settings_folder = settings_folder
         self._night = night
+        # The night files' own check (journal.Logbook.check_night), handed
+        # in: this module never imports the journal, so the GPL show,
+        # which never loads it, stays as it is.
+        self._checker = checker
         self._transport = transport or _https_post
         self._wall = wall
         self._clock = clock
@@ -519,13 +524,15 @@ class JournalUploader:
 
     def check(self, night):
         """{"incomplete", "gaps", "problems"} for one night: the files'
-        own check (journal.check_files) and the summary's Logging line."""
-        from . import journal
-        f = journal.check_files(self.folder, night)
+        own check (journal.check_files, through `checker`) and the
+        summary's Logging line. Without a checker, the summary alone."""
+        f = {"complete": True, "gaps": [], "problems": []}
+        if self._checker is not None:
+            f = self._checker(night)
         logging_line = ""
         try:
             with open(os.path.join(self.folder,
-                                   journal.summary_name(night)),
+                                   f"night_{night}.summary.md"),
                       encoding="utf-8", errors="replace") as fh:
                 for line in fh:
                     if line.startswith("- Logging:"):

@@ -1342,6 +1342,11 @@ class Logbook:
                 recs.append(r)
         return (recs[-1] if recs else None), recs[-PAGE_LINES:]
 
+    def check_night(self, night):
+        """check_files for one night in this folder, from its own files
+        (what the nightly upload sends with the night)."""
+        return check_files(self.folder, night)
+
     # -- reading a night back ---------------------------------------------
     def night_records(self, night):
         """Every record for one night: the machine log on disk, plus any
