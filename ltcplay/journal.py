@@ -1051,6 +1051,26 @@ class Logbook:
 
     def _append(self, path, todo, stream, encode):
         new = not os.path.exists(path)
+        # A file this run wrote to, now gone or shorter, is found here, at
+        # the next write, not only at the next read back: the write below
+        # would otherwise start it afresh and hide it.
+        with self._lock:
+            had = self._on_disk.get(path)
+        if had is not None:
+            try:
+                size = None if new else os.path.getsize(path)
+            except OSError:
+                size = None
+            if new:
+                self._disk_problem(self.clock(), (
+                    f"{os.path.basename(path)} is gone from "
+                    f"{os.path.dirname(path)} after ltcplay wrote to it: "
+                    f"another program moved or removed it"))
+            elif size is not None and size < had[0]:
+                self._disk_problem(self.clock(), (
+                    f"{path} is shorter than ltcplay wrote it ({size} "
+                    f"bytes, not {had[0]}): another program cut or "
+                    f"replaced it"))
         cut = path not in self._tails_ok and not new and \
             os.path.getsize(path) > 0 and not _tail(path, 1).endswith(b"\n")
         fh = self._opener(path)
@@ -1826,6 +1846,16 @@ def _windows_from_slots(slots):
     return out
 
 
+def _lines_kept(raws):
+    """The non-empty lines of a file, without a line cut short that was
+    then written again whole right after it (a partial write retried):
+    that is one event, not two."""
+    rows = [r.rstrip(b"\r\n") for r in raws if r.strip(b"\r\n\x00 ")]
+    return [r for i, r in enumerate(rows)
+            if not (i + 1 < len(rows) and len(r) < len(rows[i + 1])
+                    and rows[i + 1].startswith(r.lstrip(b"\x00")))]
+
+
 def check_files(folder, night, *, windows=None, made=(), waiting=(),
                 now=None, gap_s=LOG_GAP_S):
     """Do the night files hold the whole night? Read from the files
@@ -1850,7 +1880,7 @@ def check_files(folder, night, *, windows=None, made=(), waiting=(),
     jlines = 0
     try:
         with open(jpath, "rb") as fh:
-            jlines = sum(1 for raw in fh if raw.strip(b"\r\n\x00 "))
+            jlines = len(_lines_kept(fh))
     except FileNotFoundError:
         problems.append(f"There is no journal file {journal_name(night)}.")
     except OSError as e:
@@ -1858,9 +1888,7 @@ def check_files(folder, night, *, windows=None, made=(), waiting=(),
                         f"({e.strerror or e}).")
     try:
         with open(mpath, "rb") as fh:
-            for raw in fh:
-                if not raw.strip(b"\r\n\x00 "):
-                    continue
+            for raw in _lines_kept(fh):
                 try:
                     r = json.loads(raw.decode("utf-8"))
                 except (ValueError, UnicodeDecodeError):
@@ -1875,9 +1903,11 @@ def check_files(folder, night, *, windows=None, made=(), waiting=(),
         problems.append(f"The machine log {mpath} could not be read "
                         f"({e.strerror or e}).")
     if not problems and jlines != len(recs) + cut:
+        short = ("journal file" if jlines < len(recs) + cut
+                 else "machine log")
         problems.append(f"The journal file has {jlines} line(s) and the "
                         f"machine log {len(recs) + cut}; they are written "
-                        f"from the same events, so one of them is missing "
+                        f"from the same events, so the {short} is missing "
                         f"lines.")
     if cut:
         problems.append(f"{cut} line(s) in the machine log were cut short.")
@@ -1904,6 +1934,8 @@ def check_files(folder, night, *, windows=None, made=(), waiting=(),
                      "seconds": round((b - a).total_seconds(), 1),
                      "why": why})
 
+    # The files keep milliseconds; the scheduler's times have microseconds:
+    # every comparison below allows the millisecond the files cut.
     events = []
     for n, a, b in windows:
         events.append((a, f"show {n} started"))
@@ -1913,19 +1945,21 @@ def check_files(folder, night, *, windows=None, made=(), waiting=(),
     if times and now is not None and now > times[-1][0]:
         pairs.append((times[-1], (now, None)))
     for (a, _ra), (b, rb) in pairs:
+        # A clock set back gives a negative span: never a gap below.
         span = (b - a).total_seconds()
-        if span <= 0:
-            continue                    # a clock set back, not a gap
         if rb is not None and rb.get("action") == "program start":
             continue                    # ltcplay was not running
         inside = [w for t, w in events
-                  if a < t and (b - t).total_seconds() > 5]
+                  if (t - a).total_seconds() > 0.001
+                  and (b - t).total_seconds() > 5]
         if inside and span > 60:
             gap(a, b, f"no line for {inside[0]}")
             continue
         if span > gap_s:
             for n, s, e in windows:
-                if s < b and (e is None or e > a):
+                # Overlapping by more than the millisecond the files cut.
+                if (b - s).total_seconds() > 0.001 and (
+                        e is None or (e - a).total_seconds() > 0.001):
                     gap(a, b, f"no line while show {n} ran")
                     break
     for g in gaps:
@@ -2035,6 +2069,12 @@ def summary_text(night, recs, *, slots=None, mismatches=(),
     files_bad = files is not None and not files.get("complete")
     if health and not health.get("ok"):
         log_line = health.get("sentence", "stopped")
+    elif log_gaps and files is not None and not files_bad:
+        # Stopped for a while, and every line was written after all.
+        log_line = (f"complete. The journal file has {files['journal_lines']}"
+                    f" line(s) and the machine log the same number; it "
+                    f"stopped and resumed {len(log_gaps)} time(s) and lost "
+                    f"no line; see Logging below.")
     elif log_gaps:
         log_line = (f"stopped and resumed {len(log_gaps)} time(s); see "
                     f"Logging below.")

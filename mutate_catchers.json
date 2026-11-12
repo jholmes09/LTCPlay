@@ -3741,5 +3741,20 @@
 "journal summary: a show's start or end with no line is not a gap": "test_journal_summary_checks_the_files",
 "journal summary: a restart's gap is called a logging gap": "test_journal_summary_checks_the_files",
 "journal summary: says complete whatever the files say": "test_journal_summary_checks_the_files",
-"journal summary: the scheduler does not hand over when each show ran": "test_journal_summary_checks_the_files"
+"journal summary: the scheduler does not hand over when each show ran": "test_journal_summary_checks_the_files",
+"journal summary: a show time is compared to the microsecond, not the millisecond the files keep": "test_journal_check_and_watchdog_edges",
+"journal summary: a show's run is overlapped by a fraction of a millisecond": "test_journal_check_and_watchdog_edges",
+"journal writer: a file moved away is not found at the next write": "test_journal_check_and_watchdog_edges",
+"journal writer: a file cut shorter is not found at the next write": "test_journal_check_and_watchdog_edges",
+"journal summary: a partial write retried counts as two lines": "test_journal_check_and_watchdog_edges",
+"journal summary: names the wrong file as short": "test_journal_summary_checks_the_files",
+"journal summary: a stop that lost no line reads as not complete": "test_journal_check_and_watchdog_edges",
+"journal ring buffer: a stuck writer reads as logging ok": "test_journal_check_and_watchdog_edges",
+"journal ring buffer: files that did not read back read as logging ok": "test_journal_check_and_watchdog_edges",
+"journal watchdog: lines that arrive mid write wait from the batch's first line": "test_journal_check_and_watchdog_edges",
+"journal summary: lines made tonight are not handed to the check": "test_journal_check_and_watchdog_edges",
+"journal summary: lines still waiting for the disk count as lost": "test_journal_check_and_watchdog_edges",
+"journal watchdog: a file replaced with the same size is not found": "test_journal_check_and_watchdog_edges",
+"journal watchdog: a good read back does not clear the flag": "test_journal_check_and_watchdog_edges",
+"journal watchdog: a stop already flagged is called stuck as well": "test_journal_check_and_watchdog_edges"
 }

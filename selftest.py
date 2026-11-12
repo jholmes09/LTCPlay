@@ -30826,7 +30826,7 @@ def test_journal_watchdog_flags_a_silent_gap():
                        f"moved or removed it",
           f"a file moved away is found: {c.disk_why!r}")
     hang = threading.Event()
-    real = J.Logbook._read_back
+    real = J.Logbook.__dict__["_read_back"]
     J.Logbook._read_back = staticmethod(lambda snap, res: hang.wait())
     try:
         c.disk_why = ""
@@ -30992,8 +30992,9 @@ def test_journal_summary_checks_the_files():
     got = logging_line(p3)
     check(len(got) == 1 and got[0].startswith(
         "- Logging: INCOMPLETE. The journal file has 4 line(s) and the "
-        "machine log 10; they are written from the same events, so one of "
-        "them is missing lines. Also: Logging to disk stopped at 13:22:24: "
+        "machine log 10; they are written from the same events, so the "
+        "journal file is missing lines. Also: Logging to disk stopped at "
+        "13:22:24: "
         "this machine refused to let ltcplay write to " + jpath),
         f"a held journal file: INCOMPLETE, with the counts: {got}")
     # A night with a restart in it: the gap while ltcplay was not running
@@ -31010,6 +31011,245 @@ def test_journal_summary_checks_the_files():
     f4 = J.check_files(work4, night)
     check(f4["complete"] and not f4["gaps"],
           f"a gap that ends at a restart is not a logging gap: {f4}")
+    print("  ok")
+
+
+def test_journal_check_and_watchdog_edges():
+    section("journal (review of #245): a real night on a microsecond clock "
+            "reads complete; a file moved away is found at the next write; "
+            "a partial write retried is one line; a stop with no line lost "
+            "still reads complete; lines made and lines waiting go through "
+            "the real summary; a replaced file, a good read back after a bad "
+            "one, a clock set back, lines arriving mid write and a stopped "
+            "disk each say exactly what they are")
+    S = _sched()
+    if S is None:
+        return
+    import errno
+    import tempfile
+    import threading
+    from datetime import timedelta
+    from ltcplay import journal as J
+    night = "2026-11-14"
+
+    def logging_line(text):
+        return [x for x in text.splitlines() if x.startswith("- Logging:")]
+
+    # 1. The real scheduler on a clock with microseconds: show ends land a
+    # fraction of a millisecond after the line the file keeps for them.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 30, 0, 123456)]
+    svc = _svc(S, work, now).start(thread=False)
+    for hm in ((18, 0, 0, 123456), (18, 7, 20, 987654), (18, 20, 0, 456789),
+               (18, 27, 20, 999999), (18, 40, 0, 1)):
+        now[0] = _den(S, *hm)
+        svc.tick()
+    now[0] = _den(S, 18, 47, 20, 500500)
+    svc.tick()
+    now[0] = _den(S, 18, 50, 0, 123456)
+    svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+    text = open(os.path.join(work, "nights", J.summary_name(night)),
+                encoding="utf-8").read()
+    got = logging_line(text)
+    check(len(got) == 1 and got[0].startswith("- Logging: complete. "),
+          f"a real night on a microsecond clock is complete: {got}")
+    nights = os.path.join(work, "nights")
+    ends = [J._parse_at(r["at"]) for r in _jsonl_rows(os.path.join(
+        nights, J.machine_name(night))) if r and r.get("show") == 1]
+    for shift in (0.0004, -0.0004):
+        f = J.check_files(nights, night, windows=[
+            (1, ends[0] + timedelta(seconds=shift),
+             ends[-1] + timedelta(seconds=shift))])
+        check(not f["gaps"], f"a show time {shift * 1000:+.1f} ms from its "
+                             f"line is that line: {f['gaps']}")
+    # 2. Moved away, and another line written before any read back.
+    work2 = tempfile.mkdtemp()
+    now2 = [_den(S, 13, 19, 4)]
+    b = _book(J, work2, now2, durable=False)
+    b.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="One.")
+    os.remove(os.path.join(work2, J.machine_name(night)))
+    b.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Two.")
+    check(b.disk_why == f"{J.machine_name(night)} is gone from {work2} "
+                        f"after ltcplay wrote to it: another program moved "
+                        f"or removed it" and not b.health()["ok"],
+          f"a file moved away is found at the next write: {b.disk_why!r}")
+    b2 = _book(J, tempfile.mkdtemp(), now2, durable=False)
+    b2.record(actor="scheduler", action="note", outcome="done", reason="r",
+              text="One, a long first line.")
+    jp2 = os.path.join(b2.folder, J.journal_name(night))
+    with open(jp2, "wb") as fh:
+        fh.write(b"x\n")
+    b2.record(actor="scheduler", action="note", outcome="done", reason="r",
+              text="Two.")
+    check(b2.disk_why == f"{jp2} is shorter than ltcplay wrote it (2 bytes, "
+                         f"not 34): another program cut or replaced it",
+          f"a file cut shorter is found at the next write: {b2.disk_why!r}")
+    # 3. The read back: a file replaced with the same size, then a good
+    # read back clears the flag, out loud.
+    mono = [0.0]
+    c = _book(J, tempfile.mkdtemp(), now2, durable=False,
+              mono=lambda: mono[0])
+    c.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="One.")
+    jp = os.path.join(c.folder, J.journal_name(night))
+    data = open(jp, "rb").read()
+    with open(jp, "wb") as fh:
+        fh.write(data.replace(b"One.", b"Won."))
+    c.watch()
+    c._disk_check[0].join()
+    c.watch()
+    check(c.disk_why == f"{jp} no longer holds the last line ltcplay wrote "
+                        f"to it: another program replaced it",
+          f"a file replaced with the same size is found: {c.disk_why!r}")
+    c.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Two.")
+    mono[0] += J.DISK_CHECK_S + 1
+    c.watch()
+    c._disk_check[0].join()
+    c.watch()
+    check(not c.disk_why and c.health()["ok"] and c.memory[-1]["line"] ==
+          "13:19:04  The night files read back correctly again at "
+          "13:19:04.", f"a good read back clears it, said: "
+          f"{c.memory[-1]['line']!r}")
+    # 4. Lines that arrive while a batch is being written wait from then,
+    # not from the first line of the batch.
+    d = _book(J, tempfile.mkdtemp(), now2, durable=False,
+              mono=lambda: mono[0])
+    gate = threading.Event()
+    idle = threading.Thread(target=gate.wait, daemon=True)
+    idle.start()
+    d._writer = idle                 # nothing drains but this test
+    real = d._opener
+    late, looked = [], []
+
+    def opener(path):
+        if not late:
+            late.append(1)
+            mono[0] += 20
+            d.record(actor="scheduler", action="note", outcome="done",
+                     reason="r", text="Arrived mid write.")
+        elif len(late) == 3 and not looked:
+            # The next batch is in the disk; the watchdog looks now.
+            mono[0] += 5
+            d._watch_stall(d.clock())
+            looked.append(bool(d.stalled_why))
+        late.append(1)
+        return real(path)
+    d._opener = opener
+    d.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="First.")
+    d.drain()
+    check(looked == [False],
+          f"a line that arrived mid write has waited 5 s, not 25 s: "
+          f"{looked}")
+    gate.set()
+    d._writer = None
+    # 5. A stopped disk is flagged as stopped, never also as stuck.
+    e = _book(J, tempfile.mkdtemp(), now2, durable=False,
+              mono=lambda: mono[0])
+
+    def refuse(path):
+        raise OSError(errno.EIO, "I/O error", path)
+    e._opener = refuse
+    e.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Kept in memory.")
+    mono[0] += 60
+    e.watch()
+    check(e.stopped_why and not e.stalled_why and
+          not any(r["action"] == "logging stalled" for r in e.memory),
+          "a stop already flagged is not called stuck as well")
+    # 6. The summary's own lists, through the real path: a line lost from
+    # both files is missing; lines still waiting for a held disk are not.
+    work6 = tempfile.mkdtemp()
+    now6 = [_den(S, 12, 0)]
+    g = _book(J, work6, now6, durable=False)
+    for i in range(3):
+        g.record(actor="scheduler", action="note", outcome="done",
+                 reason="r", text=f"Line {i}.")
+    for n in (J.journal_name(night), J.machine_name(night)):
+        path = os.path.join(work6, n)
+        keep = open(path, "rb").read().splitlines(True)[:-1]
+        with open(path, "wb") as fh:
+            fh.write(b"".join(keep))
+    got = logging_line(open(g.write_summary(night, state="OFF", slots=[]),
+                            encoding="utf-8").read())
+    check(got == ["- Logging: INCOMPLETE. 1 line(s) ltcplay made tonight are "
+                  "not in the machine log."],
+          f"a line made and lost is counted: {got}")
+    work7 = tempfile.mkdtemp()
+    h = _book(J, work7, now6, durable=False)
+    h.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Written.")
+    h._opener = refuse
+    h.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Waiting.")
+    h._opener = J._open_append
+    held = [True]
+    real_drain = h.drain
+
+    def no_disk(force=False, timeout=None):
+        return False if held[0] else real_drain(force, timeout)
+    h.drain = no_disk
+    got = logging_line(open(h.write_summary(night, state="OFF", slots=[]),
+                            encoding="utf-8").read())
+    check(h.pending() and len(got) == 1 and
+          "not in the machine log" not in got[0],
+          f"lines still waiting for the disk are waiting, not lost: {got}")
+    # 7. A partial write retried is one line; a clock set back is no gap.
+    work8 = tempfile.mkdtemp()
+    k = _book(J, work8, now6, durable=False)
+    k.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="One.")
+    jp8 = os.path.join(work8, J.journal_name(night))
+    full = open(jp8, "rb").read()
+    with open(jp8, "wb") as fh:
+        fh.write(full[:6] + b"\n" + full)
+    f8 = J.check_files(work8, night)
+    check(f8["complete"] and f8["journal_lines"] == 1,
+          f"a line cut short and written again whole is one line: {f8}")
+    with open(jp8, "ab") as fh:
+        fh.write(b"12:00:01  An extra line.\n")
+    check(J.check_files(work8, night)["problems"] ==
+          ["The journal file has 2 line(s) and the machine log 1; they are "
+           "written from the same events, so the machine log is missing "
+           "lines."], "the file that is short is named")
+    now6[0] = _den(S, 13, 0)
+    k.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Late.")
+    now6[0] = _den(S, 11, 0)
+    k.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Clock set back.")
+    f9 = J.check_files(work8, night, windows=[(1, _den(S, 10, 0), None)])
+    check(not [g_ for g_ in f9["gaps"] if g_["to"].startswith(
+        "2026-11-14T11:00")], f"a clock set back is no gap: {f9['gaps']}")
+    # 8. Stopped, resumed and nothing lost: still complete.
+    work9 = tempfile.mkdtemp()
+    m = _book(J, work9, now6, durable=False)
+    m._opener = refuse
+    m.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Held.")
+    m._opener = J._open_append
+    now6[0] += timedelta(seconds=m.retry_s + 1)
+    m.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Written again.")
+    got = logging_line(open(m.write_summary(night, state="OFF", slots=[]),
+                            encoding="utf-8").read())
+    check(len(got) == 1 and got[0].startswith(
+        "- Logging: complete. The journal file has 4 line(s) and the "
+        "machine log the same number; it stopped and resumed 1 time(s) and "
+        "lost no line"), f"a stop that lost nothing is complete: {got}")
+    # 9. The scheduler's ring buffer says the logging is not well when the
+    # watchdog says so.
+    svc.logbook.stalled_why = "stuck"
+    check(svc._snapshot()["logging_ok"] is False,
+          "a stuck writer reads as logging not ok in the ring buffer")
+    svc.logbook.stalled_why = ""
+    svc.logbook.disk_why = "cut"
+    check(svc._snapshot()["logging_ok"] is False,
+          "and so does a file that did not read back")
+    svc.logbook.disk_why = ""
     print("  ok")
 
 
@@ -114078,6 +114318,7 @@ if __name__ == "__main__":
         test_journal_held_file_and_clock_set_back,
         test_journal_watchdog_flags_a_silent_gap,
         test_journal_summary_checks_the_files,
+        test_journal_check_and_watchdog_edges,
         test_journal_a_clean_stop_reads_as_one,
         test_journal_screens_come_from_a_list,
         test_journal_summary_lists_every_fault,

@@ -23543,6 +23543,87 @@ def build():
   'ltcplay/schedule_service.py',
   '                         "started_at": (s.fired_at.isoformat()\n',
   '                         "started_at": (None\n'),
+
+ ('journal summary: a show time is compared to the microsecond, not the millisecond the files keep',
+  'ltcplay/journal.py',
+  '                  if (t - a).total_seconds() > 0.001\n',
+  '                  if a < t\n'),
+
+ ("journal summary: a show's run is overlapped by a fraction of a millisecond",
+  'ltcplay/journal.py',
+  '                if (b - s).total_seconds() > 0.001 and (\n',
+  '                if s < b and (\n'),
+
+ ('journal writer: a file moved away is not found at the next write',
+  'ltcplay/journal.py',
+  '            if new:\n'
+  '                self._disk_problem(self.clock(), (\n',
+  '            if False:\n'
+  '                self._disk_problem(self.clock(), (\n'),
+
+ ('journal writer: a file cut shorter is not found at the next write',
+  'ltcplay/journal.py',
+  '            elif size is not None and size < had[0]:\n',
+  '            elif False:\n'),
+
+ ('journal summary: a partial write retried counts as two lines',
+  'ltcplay/journal.py',
+  '                    and rows[i + 1].startswith(r.lstrip(b"\\x00")))]\n',
+  '                    and False)]\n'),
+
+ ('journal summary: names the wrong file as short',
+  'ltcplay/journal.py',
+  '        short = ("journal file" if jlines < len(recs) + cut\n',
+  '        short = ("machine log" if jlines < len(recs) + cut\n'),
+
+ ('journal summary: a stop that lost no line reads as not complete',
+  'ltcplay/journal.py',
+  '    elif log_gaps and files is not None and not files_bad:\n',
+  '    elif False:\n'),
+
+ ('journal ring buffer: a stuck writer reads as logging ok',
+  'ltcplay/schedule_service.py',
+  '                                   or self.logbook.stalled_why\n',
+  '                                   or False\n'),
+
+ ('journal ring buffer: files that did not read back read as logging ok',
+  'ltcplay/schedule_service.py',
+  '                                   or self.logbook.disk_why)}\n',
+  '                                   or False)}\n'),
+
+ ("journal watchdog: lines that arrive mid write wait from the batch's first line",
+  'ltcplay/journal.py',
+  '                self._wait_since = self._mono() if self._pending else None\n',
+  '                pass\n'),
+
+ ('journal summary: lines made tonight are not handed to the check',
+  'ltcplay/journal.py',
+  '            made = list(self._made.get(night, ()))\n',
+  '            made = []\n'),
+
+ ('journal summary: lines still waiting for the disk count as lost',
+  'ltcplay/journal.py',
+  '            waiting = [r["id"] for r, _d in self._pending]\n'
+  '        files = check_files(',
+  '            waiting = []\n'
+  '        files = check_files('),
+
+ ('journal watchdog: a file replaced with the same size is not found',
+  'ltcplay/journal.py',
+  '                if got != tail:\n',
+  '                if False:\n'),
+
+ ('journal watchdog: a good read back does not clear the flag',
+  'ltcplay/journal.py',
+  '            elif self.disk_why:\n'
+  '                self.disk_why = ""\n',
+  '            elif False:\n'
+  '                self.disk_why = ""\n'),
+
+ ('journal watchdog: a stop already flagged is called stuck as well',
+  'ltcplay/journal.py',
+  '        if waiting and not self.stopped_why and waited > self.stall_s:\n',
+  '        if waiting and waited > self.stall_s:\n'),
 ]
 
 
