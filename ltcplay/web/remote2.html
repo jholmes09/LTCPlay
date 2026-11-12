@@ -1654,6 +1654,8 @@ function goLook(st, isStaleNow, local, waiting){
   }
   // Signed out is view only: none of these is a safety press.
   if(!["live", "loading", "none", "checking"].includes(L.mode) && !mayRow(st, "show")){ L.off = true; L.why = signWhy(st, "show"); }
+  // From Tailscale, Start now and Resume wait while anything is armed.
+  else if((L.mode === "start" || L.mode === "resume") && tsArmedWhy(st)){ L.off = true; L.why = tsArmedWhy(st, true); }
   return L;
 }
 // The line at the top: what to do next, in eight words or fewer.
@@ -1719,6 +1721,14 @@ function tsBlocked(route, extra){
   if(route === "lock") return e.on === false;
   if(route === "purge-fire" || route === "purge-timed") return e.on === true || e.hold === true;
   return false;
+}
+// Why Start now, Start at a cue and Resume wait from Tailscale: something
+// armed or running at the rig (the engine's own words, whoami), or "".
+function tsArmedWhy(st, short){
+  const me = (st && st.me) || {};
+  const w = me.tailscale && me.tailscale.armed ? String(me.tailscale.armed) : "";
+  if(!w) return "";
+  return short ? (/^Flame state/.test(w) ? "Flame state unknown" : "Something is armed") : w;
 }
 function tsLook(look, busy){
   if(!look || !tsOn(typeof ST !== "undefined" ? ST : null) || look.running) return look;
@@ -2388,7 +2398,7 @@ function cueWords(c){
 // pressed (never polled: the engine opens the show file to answer).
 async function cueRead(mode){
   const f = cueFile(ST);
-  if(!f || !mayRow(ST, "show")) return null;
+  if(!f || !mayRow(ST, "show") || tsArmedWhy(ST)) return null;
   try{ return {file:f, ch:cueChoices(await getJSON("/api/remote/play-from-cues?show=" + encodeURIComponent(f), 3000), f, mode)}; }
   catch(e){ return null; }
 }

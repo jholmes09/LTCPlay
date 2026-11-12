@@ -3730,5 +3730,17 @@
 "tailscale: the door takes any Host": "test_tailscale_door_refuses_wrong_peer_host_and_proxies",
 "tailscale: Start now and Resume signed out": "test_tailscale_reduced_authority",
 "tailscale: the engine itself does not ask": "test_tailscale_reduced_authority",
-"tailscale: on by default": "test_tailscale_address_detection_and_setting"
+"tailscale: on by default": "test_tailscale_address_detection_and_setting",
+"tailscale: a route on no list is let through (no default deny)": "test_tailscale_reduced_authority",
+"tailscale: a 100.64 peer on the show network door is an iPad": "test_tailscale_door_refuses_wrong_peer_host_and_proxies",
+"tailscale: loopback on the Tailscale door is this machine": "test_tailscale_door_refuses_wrong_peer_host_and_proxies",
+"tailscale: Start now and Resume go while something is armed": "test_tailscale_start_waits_while_armed",
+"tailscale: an armed flame group does not count": "test_tailscale_start_waits_while_armed",
+"tailscale: a hazer, laser, pump or purge does not count": "test_tailscale_start_waits_while_armed",
+"tailscale: an unknown flame state counts as nothing armed": "test_tailscale_start_waits_while_armed",
+"tailscale: turning it off leaves the door open": "test_tailscale_off_closes_the_door_now",
+"tailscale: closing keeps the open connections": "test_tailscale_off_closes_the_door_now",
+"tailscale: a closed door still answers a request inside": "test_tailscale_off_closes_the_door_now",
+"tailscale: wrong passwords from Tailscale lock the name out": "test_tailscale_sign_in_lockout_is_its_own",
+"tailscale: the surface's screen is the iPad's": "test_tailscale_door_refuses_wrong_peer_host_and_proxies"
 }

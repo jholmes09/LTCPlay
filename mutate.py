@@ -682,6 +682,77 @@ MUTATIONS = [
   "           \"screen_arming\": False, \"purge_arming\": True, \"booth_alert\": None,\n"
   "           \"tailscale_remote\": True,"),
 
+ ("tailscale: a route on no list is let through (no default deny)",
+  "ltcplay/remote.py",
+  "    if perm == \"safety\":\n        return None\n"
+  "    return (\"not here\", TAILSCALE_WORDS)",
+  "    return None"),
+
+ ("tailscale: a 100.64 peer on the show network door is an iPad",
+  "ltcplay/web.py",
+  "        return not self._local() and \\\n"
+  "            remote_mod.is_tailscale_address(self.client_address[0])",
+  "        return False"),
+
+ ("tailscale: loopback on the Tailscale door is this machine",
+  "ltcplay/web.py",
+  "        if getattr(self.server, \"tailscale_door\", False):\n"
+  "            return False\n"
+  "        return self.client_address[0] in LOOPBACK",
+  "        return self.client_address[0] in LOOPBACK"),
+
+ ("tailscale: Start now and Resume go while something is armed",
+  "ltcplay/remote.py",
+  "        if no is None and name in TAILSCALE_SIGNED_IN_ROUTES:\n"
+  "            armed = self.tailscale_armed_refusal()",
+  "        if False:\n"
+  "            armed = self.tailscale_armed_refusal()"),
+
+ ("tailscale: an armed flame group does not count", "ltcplay/remote.py",
+  "        if any(g.get(\"armed\") != \"disarmed\" or g.get(\"wanted\")\n"
+  "               for g in groups):\n"
+  "            return TAILSCALE_ARMED_WORDS",
+  "        if False:\n"
+  "            return TAILSCALE_ARMED_WORDS"),
+
+ ("tailscale: a hazer, laser, pump or purge does not count",
+  "ltcplay/remote.py",
+  "        return TAILSCALE_ARMED_WORDS if any(busy) else \"\"",
+  "        return \"\""),
+
+ ("tailscale: an unknown flame state counts as nothing armed",
+  "ltcplay/remote.py",
+  "        if fs is None:\n            return TAILSCALE_UNKNOWN_WORDS",
+  "        if fs is None:\n            return \"\""),
+
+ ("tailscale: turning it off leaves the door open", "ltcplay/remote.py",
+  "        if not on:\n"
+  "            # Off closes the Tailscale door now, during a show too: it",
+  "        if False:\n"
+  "            # Off closes the Tailscale door now, during a show too: it"),
+
+ ("tailscale: closing keeps the open connections", "ltcplay/web.py",
+  "    for req in list(getattr(door, \"open_requests\", ())):",
+  "    for req in []:"),
+
+ ("tailscale: a closed door still answers a request inside",
+  "ltcplay/web.py",
+  "        if getattr(self.server, \"tailscale_closed\", False):\n"
+  "            # Turned off: a request already on its way is not answered.\n"
+  "            return TAILSCALE_PEER_REFUSAL",
+  "        if False:\n"
+  "            # Turned off: a request already on its way is not answered.\n"
+  "            return TAILSCALE_PEER_REFUSAL"),
+
+ ("tailscale: wrong passwords from Tailscale lock the name out",
+  "ltcplay/users.py",
+  "        if from_only:\n            keys = [(\"from\", str(source))]",
+  "        if False:\n            keys = [(\"from\", str(source))]"),
+
+ ("tailscale: the surface's screen is the iPad's", "ltcplay/remote.py",
+  "        if self.tailscale:\n            return TAILSCALE_SCREEN\n",
+  ""),
+
  # -- the show network from another machine (Jeff, 2026-10-28: the page
  #    never opened from his Mac): the RFC 1918 picker, the card's view, the
  #    firewall rule read, the wrong-name page, the fallback to this PC

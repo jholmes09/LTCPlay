@@ -1056,6 +1056,20 @@ TAILSCALE_ALWAYS_SAFE = ("stop", "hold", "disarm-all", "group-disarm",
                          "cleaning-stop", "purge-stop", "signout")
 TAILSCALE_ALLOWED_NOTE = "Stop, Hold and disarm still work here."
 TAILSCALE_SIGN_IN_WORDS = "Sign in first to start from Tailscale."
+# Start now, Start at a cue and Resume from Tailscale also wait until
+# nothing at the rig is armed or running (cold review of #244, D1): a
+# Resume or a start from somewhere else must never put an armed rig back
+# into a show with nobody known to be watching it.
+TAILSCALE_ARMED_WORDS = "Something is armed. Use the show PC or an iPad."
+TAILSCALE_UNKNOWN_WORDS = "Flame state unknown. Use the show PC or an iPad."
+# The surface's screen name, for the scheduler's screen list and the
+# journal (cold review of #244): never "iPad".
+TAILSCALE_SCREEN = "Tailscale"
+# What the installer last read for the second firewall rule
+# (installer.iss TailscaleOn): the LOCALAPPDATA it read and on or off, in
+# %PROGRAMDATA%\LTC Player.
+TAILSCALE_SETUP_FILE = "tailscale-setup.txt"
+TAILSCALE_NETS_WORDS = ("100.64.0.0/10", "100.64.0.0-100.127.255.255")
 
 
 def is_tailscale_address(text):
@@ -1228,7 +1242,7 @@ def tailscale_firewall_state(run=None, windows=None, find=None):
         return ("off", "Firewall rule is off. Use the installer again.")
     remote = [ln.split(":", 1)[1].strip() for ln in low
               if ln.startswith("remoteip:")]
-    if not remote or any(r != "100.64.0.0/10" for r in remote):
+    if not remote or any(r not in TAILSCALE_NETS_WORDS for r in remote):
         return ("wide", "Firewall rule too wide. Use the installer again.")
     return ("present", "Firewall rule lets Tailscale in.")
 
@@ -1631,7 +1645,10 @@ class Ctx:
 
     @property
     def screen(self):
-        """The screen-list name the scheduler checks."""
+        """The screen-list name the scheduler checks. Tailscale is its own
+        surface, never "iPad"."""
+        if self.tailscale:
+            return TAILSCALE_SCREEN
         return "Rack screen" if self.local else "iPad"
 
     @property
@@ -2587,7 +2604,8 @@ class Remote:
             # may not make disabled, with these words (tailscale_refusal
             # refuses them at the engine whatever the page does).
             out["tailscale"] = {"words": TAILSCALE_WORDS,
-                                "note": TAILSCALE_ALLOWED_NOTE}
+                                "note": TAILSCALE_ALLOWED_NOTE,
+                                "armed": self.tailscale_armed_refusal()}
         u = self.users
         if u is not None:
             s = getattr(ctx, "session", None) or {}
@@ -2728,9 +2746,13 @@ class Remote:
         cookie = (f"{users_mod.COOKIE}=%s; HttpOnly; SameSite=Strict; "
                   f"Path=/")
         if name == "signin":
+            # From Tailscale the lockout counts that address only, so the
+            # tailnet can never lock a name out on the rack screen or an
+            # iPad (cold review of #244, M3).
             ok, text, token, needs_new = u.sign_in(
                 body.get("name"), body.get("password"), ctx.local,
-                ctx.source, new_password=body.get("new_password"))
+                ctx.source, new_password=body.get("new_password"),
+                from_only=bool(getattr(ctx, "tailscale", False)))
             if not ok:
                 return 401, {"error": text, "needs_new_password": needs_new}, {}
             return 200, {"ok": True, "text": text}, {
@@ -2968,6 +2990,10 @@ class Remote:
             # it is one of the presses that only take risk away.
             no = None if name in TAILSCALE_ALWAYS_SAFE else \
                 ("not here", TAILSCALE_WORDS)
+        if no is None and name in TAILSCALE_SIGNED_IN_ROUTES:
+            armed = self.tailscale_armed_refusal()
+            if armed:
+                no = ("armed", armed)
         if no is None:
             return None
         kind, words = no
@@ -2979,6 +3005,65 @@ class Remote:
             pass
         return 403, {"error": words, "tailscale_refused": kind,
                      "text": words}
+
+    def tailscale_armed_refusal(self):
+        """TAILSCALE_ARMED_WORDS while anything at the rig is armed or
+        running (a flame group armed or asked for, a hazer, a laser, the
+        fuel pump, a purge, a laser test, the Fireball, cleaning, live
+        flame programming, Fireball practice, a hazer test), and
+        TAILSCALE_UNKNOWN_WORDS when the flame groups' state is not known;
+        "" when nothing is. Start now, Start at a cue and Resume from
+        Tailscale wait for it (cold review of #244, D1). Fails closed:
+        anything that cannot be read refuses. Never raises."""
+        try:
+            return self._tailscale_armed()
+        except Exception:                        # noqa: BLE001
+            return TAILSCALE_UNKNOWN_WORDS
+
+    def _tailscale_armed(self):
+        fs = self.flame_status
+        if fs is None:
+            return TAILSCALE_UNKNOWN_WORDS
+        v = fs.view() or {}
+        groups = v.get("groups")
+        if v.get("stale") or not isinstance(groups, list):
+            return TAILSCALE_UNKNOWN_WORDS
+        if any(g.get("armed") != "disarmed" or g.get("wanted")
+               for g in groups):
+            return TAILSCALE_ARMED_WORDS
+        busy = []
+        hz = self.hazers
+        if hz is not None:
+            busy.append(bool(hz.on()))
+        pm = self.pump
+        if pm is not None:
+            busy.append(pm.run is not None or bool(pm.on()))
+        lf = getattr(self, "live_flame", None)
+        busy.append(lf is not None and bool(getattr(lf, "on", False)))
+        fb = getattr(self, "fireball", None)
+        if fb is not None:
+            sm = fb.summary() or {}
+            busy.append(bool(sm.get("on") or sm.get("owner")))
+        cl = getattr(self, "cleaning", None)
+        if cl is not None:
+            busy.append(bool(cl.active()))
+        pr = getattr(self, "fireball_practice", None)
+        if pr is not None:
+            busy.append(str(getattr(pr, "state", "closed") or "closed")
+                        != "closed")
+        m = self.morning
+        if m is not None:
+            mv = m.status_view() or {}
+            busy += [bool(mv.get("purge")), bool(mv.get("timed")),
+                     bool(mv.get("laser_tests_on")),
+                     bool((mv.get("laser_arm") or {}).get("armed"))]
+        # The hazer test (PR #243, not on this branch yet): asked by name,
+        # so it counts the moment it lands.
+        ht = getattr(self, "hazer_test", None)
+        if ht is not None:
+            on = getattr(ht, "on", None)
+            busy.append(bool(on() if callable(on) else on))
+        return TAILSCALE_ARMED_WORDS if any(busy) else ""
 
     def tailscale_view(self):
         """The Schedule tab's Remote access over Tailscale card on the show
@@ -3030,7 +3115,13 @@ class Remote:
             reason = self.reload_engine_refusal()
             restart = {"needed": True, "offered": reason is None,
                        "why": reason or ""}
-        if on and fw_state not in ("present", "none") and len(bullets) < 3:
+        if on and fw_state == "missing" and self.tailscale_setup_other():
+            # Setup read another Windows account's settings (an elevated
+            # account that is not this one), so it did not add the rule.
+            bullets = bullets[:2] + ["Setup ran from another Windows "
+                                     "account."]
+        elif on and fw_state not in ("present", "none") and \
+                len(bullets) < 3:
             bullets.append(fw_text)
         elif not on and fw_state in ("present", "off", "wide") and \
                 len(bullets) < 3:
@@ -3041,6 +3132,25 @@ class Remote:
                 "listening": ts_listen, "url": url,
                 "firewall": {"state": fw_state, "text": fw_text},
                 "restart": restart, "head": head, "bullets": bullets[:3]}
+
+    def tailscale_setup_other(self, read=None, env=None):
+        """True when the installer last read the setting from another
+        Windows account's LOCALAPPDATA than this engine's (TAILSCALE_SETUP_
+        FILE, written by installer.iss TailscaleOn). False when it cannot
+        be told. Never raises."""
+        env = os.environ if env is None else env
+        try:
+            path = os.path.join(env.get("PROGRAMDATA") or r"C:\ProgramData",
+                                "LTC Player", TAILSCALE_SETUP_FILE)
+            text = (read or (lambda p: open(p, encoding="utf-8-sig",
+                                            errors="replace").read()))(path)
+            lines = [ln.strip() for ln in str(text).splitlines()]
+            mine = str(env.get("LOCALAPPDATA") or "").strip()
+            return bool(lines and mine and
+                        os.path.normcase(lines[0].rstrip("\\/")) !=
+                        os.path.normcase(mine.rstrip("\\/")))
+        except Exception:                        # noqa: BLE001
+            return False
 
     def tailscale_found(self):
         """find_tailscale(), asked at most every TAILSCALE_READ_S."""
@@ -3085,13 +3195,24 @@ class Remote:
             return 500, {"error": f"ltcplay_remote.json could not be "
                                   f"written ({e}). Nothing was changed."}
         self._tailscale_cache = None
+        if not on:
+            # Off closes the Tailscale door now, during a show too: it
+            # only takes access away (cold review of #244, M1).
+            close = getattr(self, "tailscale_close", None)
+            if close is not None:
+                try:
+                    close()
+                except Exception:                # noqa: BLE001
+                    pass
         self._journal(who, screen, "tailscale", "on" if on else "off",
                       f"{who} switched remote access over Tailscale "
-                      f"{'ON' if on else 'OFF'} on the {screen}. It takes "
-                      f"effect when the engine restarts.")
+                      f"{'ON' if on else 'OFF'} on the {screen}. "
+                      + ("It takes effect when the engine restarts." if on
+                         else "The Tailscale door is closed now."))
         view = self.tailscale_view()
         return 200, dict(view, ok=True,
-                         note="Saved. Restart the engine to apply.")
+                         note="Saved. Restart the engine to apply." if on
+                         else "Off. Tailscale is closed now.")
 
     def set_screen_arming(self, body, ctx):
         """POST screen-arming {"on": true|false}, on the show machine only

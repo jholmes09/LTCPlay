@@ -192,6 +192,31 @@ this PC's own Tailscale address only (found with Tailscale's own
 `tailscale ip -4` and this PC's address list), never on every interface.
 Tailscale Serve and Funnel are proxies and stay refused.
 
+Run Setup from the same Windows account that runs LTC Player: Setup reads
+the setting from that account's `%LOCALAPPDATA%\ltcplay`. If another
+administrator account runs it, the rule is not added and the card says
+"Setup ran from another Windows account."
+
+Limit the tailnet with a Tailscale access rule, so only your own devices
+reach port 7878 on the show PC (Tailscale admin console, Access
+controls), and remove the default allow-everything rule:
+
+```
+{
+  "tagOwners": {"tag:showpc": ["jeff@example.com"]},
+  "acls": [
+    {"action": "accept", "src": ["jeff@example.com"],
+     "dst": ["tag:showpc:7878"]}
+  ]
+}
+```
+
+Never run Tailscale Serve in TCP mode on the show PC, for example
+`tailscale serve --tcp 7878 tcp://127.0.0.1:7878`: it carries no proxy
+headers and hands every tailnet device to the engine as this PC itself,
+the rack screen, with all its authority. `tailscale serve reset` turns
+every Serve and Funnel off.
+
 ## The booth alert notes
 
 The installer ships the booth speaker's recorded alert notes into the

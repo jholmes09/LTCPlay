@@ -48,7 +48,11 @@ CURRENT_OPERATOR_FILE = "ltcplay_current_operator.json"
 SCREENS_FILE = "ltcplay_screens.json"
 # "iPad": the show-network remote page (ltcplay/remote.py) signs a device in
 # under one of these names, so a list written fresh already has it.
-DEFAULT_SCREENS = ("Rack screen", "Stream Deck", "Phone", "iPad")
+# "Tailscale": remote access over Tailscale (remote.py, 2026-11-12). Only a
+# list written fresh has it; on an existing list, Start now and Resume from
+# Tailscale are refused until someone adds it (Stop and Hold never ask).
+DEFAULT_SCREENS = ("Rack screen", "Stream Deck", "Phone", "iPad",
+                   "Tailscale")
 NTP_SERVER = "pool.ntp.org"
 # The whole clock check, name lookup included, gets this long. It runs on its
 # own thread, so even this never holds up a show.

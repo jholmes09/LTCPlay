@@ -176,12 +176,11 @@ end;
 function TailscaleOn: Boolean;
 var
   Body: AnsiString;
-  S, Base: String;
+  S, Base, Word: String;
 begin
   Result := False;
   Base := GetEnv('LOCALAPPDATA');
-  if Base = '' then Exit;
-  if LoadStringFromFile(AddBackslash(Base) + 'ltcplay\ltcplay_remote.json', Body) then
+  if (Base <> '') and LoadStringFromFile(AddBackslash(Base) + 'ltcplay\ltcplay_remote.json', Body) then
   begin
     S := Lowercase(String(Body));
     StringChangeEx(S, ' ', '', True);
@@ -190,6 +189,12 @@ begin
     StringChangeEx(S, #10, '', True);
     Result := Pos('"tailscale_remote":true', S) > 0;
   end;
+  { Which account's settings were read, for the rack screen's card
+    (remote.Remote.tailscale_setup_other): another account's means the
+    rule may be missing for this one. }
+  if Result then Word := 'on' else Word := 'off';
+  ForceDirectories(ControlDir);
+  SaveStringToFile(ControlDir + '\tailscale-setup.txt', Base + #13#10 + Word + #13#10, False);
 end;
 
 function NotRunFromInstallers: Boolean;

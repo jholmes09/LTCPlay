@@ -1371,6 +1371,9 @@ class Handler(BaseHTTPRequestHandler):
                     f"machine.")
         bind = getattr(self.server, "bind_address", "127.0.0.1")
         port = self.server.server_address[1]
+        if getattr(self.server, "tailscale_closed", False):
+            # Turned off: a request already on its way is not answered.
+            return TAILSCALE_PEER_REFUSAL
         if getattr(self.server, "tailscale_door", False):
             # The Tailscale door: a peer in 100.64.0.0/10 only, naming
             # exactly this address and port. The checks below still run.
@@ -2999,6 +3002,8 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     if tailscale:
         door, ts_why = _tailscale_door(httpd, tailscale, control, port)
         httpd.tailscale_door_server = door
+    # Turning the setting off closes the door now (remote.set_tailscale).
+    httpd.remote.tailscale_close = lambda: close_tailscale_door(httpd)
     _say_listening(httpd, on_network, network_why, ts_why)
     httpd.announce = None
     if announce is not None:
@@ -3358,13 +3363,77 @@ def _tailscale_door(httpd, address, control, port):
         return None, why
     door.control, door.token, door.bind_address = control, None, ts
     door.tailscale_door = True
+    door.tailscale_closed = False
     door.daemon_threads = True
+    # Every connection open on the door, so turning the setting off can
+    # drop them at once (cold review of #244, M1).
+    door.open_requests = set()
+    _pr, _sr = door.process_request, door.shutdown_request
+
+    def _process(request, client_address):
+        if door.tailscale_closed:
+            _sr(request)
+            return
+        door.open_requests.add(request)
+        _pr(request, client_address)
+
+    def _shutdown(request):
+        door.open_requests.discard(request)
+        _sr(request)
+    door.process_request, door.shutdown_request = _process, _shutdown
+    # A connection dropped by close_tailscale_door is expected: no trace.
+    door.handle_error = lambda request, client_address: None
     door.schedule, door.remote = httpd.schedule, httpd.remote
     door.fire_ice_config = getattr(httpd, "fire_ice_config", None)
     threading.Thread(target=door.serve_forever,
                      kwargs={"poll_interval": 0.2}, daemon=True,
                      name="ltcplay-web-tailscale").start()
     return door, ""
+
+
+def close_tailscale_door(httpd, why="Remote access over Tailscale was "
+                                       "turned off."):
+    """Close the Tailscale door now: no new connection is answered, every
+    open one is dropped, and the card no longer says it listens. During a
+    show too: it only takes access away. True when there was a door to
+    close. Never raises."""
+    import socket as _socket
+    door = getattr(httpd, "tailscale_door_server", None)
+    if door is None:
+        return False
+    door.tailscale_closed = True
+    httpd.tailscale_door_server = None
+    for req in list(getattr(door, "open_requests", ())):
+        try:
+            req.shutdown(_socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            req.close()
+        except OSError:
+            pass
+    try:
+        # serve_forever's loop ends within its poll interval; shutdown()
+        # waits for it, on its own thread so no caller ever waits on it.
+        threading.Thread(target=lambda: (door.shutdown(),
+                                         door.server_close()),
+                         daemon=True, name="ltcplay-tailscale-close").start()
+    except Exception:                            # noqa: BLE001
+        try:
+            door.server_close()
+        except Exception:                        # noqa: BLE001
+            pass
+    try:
+        lst = httpd.remote.listen
+        lst["addresses"] = [a for a in lst.get("addresses") or []
+                            if a != door.bind_address]
+        lst["tailscale"] = None
+        lst["tailscale_why"] = why
+    except Exception:                            # noqa: BLE001
+        pass
+    print(f"{why} The Tailscale door at {door.bind_address} is closed.",
+          flush=True)
+    return True
 
 
 def _say_listening(httpd, on_network, why="", ts_why=""):

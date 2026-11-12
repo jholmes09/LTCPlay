@@ -2674,11 +2674,48 @@ nothing fires.
 **Less from Tailscale than an iPad.**
 
 - Signed out: view, Stop, Hold, Acknowledge, disarm.
-- Start now and Resume: signed in only.
+- Start now and Resume: signed in, nothing armed.
 - Never arming, purges, hazers, pump, fireball, lasers.
 
-Turning it off: Turn off, Restart the engine, use the installer again
-(that removes the rule). Tailscale Serve and Funnel are still refused.
+Start now, Start at a cue and Resume from Tailscale also need the screen
+"Tailscale" on the screen list (`ltcplay_screens.json`; a new list has
+it, an older one does not until you add it), and they wait while anything
+at the rig is armed or running. Every page that only shows things (the
+show, the schedule, the alerts, the journal lines on the screen) is
+readable by any device on your tailnet that can reach the show PC, signed
+in or not.
+
+**Limit the tailnet to your own devices.**
+
+- Add a Tailscale access rule for port 7878.
+- Only your devices, only the show PC.
+
+In the Tailscale admin console, Access controls, tag the show PC (for
+example `tag:showpc`) and allow only your own login to it on 7878.
+Remove the default rule that lets every device reach every device.
+
+```
+{
+  "tagOwners": {"tag:showpc": ["jeff@example.com"]},
+  "acls": [
+    {"action": "accept", "src": ["jeff@example.com"],
+     "dst": ["tag:showpc:7878"]}
+  ]
+}
+```
+
+**Never use Tailscale Serve or Funnel here.**
+
+- TCP Serve makes everyone the rack screen.
+- Turn them off: `tailscale serve reset`.
+
+For example `tailscale serve --tcp 7878 tcp://127.0.0.1:7878` carries no
+proxy headers, so the engine would take every tailnet device for this PC.
+
+Turning it off closes the Tailscale door at once, during a show too.
+
+Turning it off: Turn off (the door closes at once), then use the
+installer again (that removes the rule). Tailscale Serve and Funnel are still refused.
 Every press from Tailscale is in the audit log as "Tailscale at
 <address>".
 
