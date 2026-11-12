@@ -54842,9 +54842,38 @@ def test_remote_has_no_arm_route():
     # screen-arming (2026-10-22) is the switch for arming from a screen,
     # set on the show machine itself only; it arms nothing (turning it off
     # lets every hold go). test_screen_arming_switch_and_refusals proves it.
-    check(armish == ["arm-hold", "arm-release", "laser-arm", "screen-arming"],
+    # hazers-arm-all (Jeff, 2026-11-11) arms HAZERS only: each hazer of
+    # the engine's own hazer list that flamesafe types "hazer", through
+    # the per-hazer arm (hazers.Hazers.arm_all); never a flame group or a
+    # laser. Pinned below, and in test_arm_all_hazers_only_arms_hazers.
+    check(armish == ["arm-hold", "arm-release", "hazers-arm-all",
+                     "laser-arm", "screen-arming"],
           f"the only flame arm routes are the hold and its release, the "
-          f"one laser arm route and the switch: {armish}")
+          f"one laser arm route, the hazer-only Arm all hazers and the "
+          f"switch: {armish}")
+    import inspect as _insp
+    from ltcplay import hazers as _HZ
+    from ltcplay import users as _U
+    check("hazers-arm-all" in RM.HAZER_POST_ROUTES and
+          "hazers-arm-all" not in RM.ARM_ROUTES and
+          _U.REMOTE_ROUTES.get("hazers-arm-all") == "arm" and
+          _U.classify("/api/remote/hazers-arm-all", {}) == "arm",
+          "Arm all hazers is a hazer route (not a flame arm route) and "
+          "needs the arm row, the per-hazer arm's own")
+    src = _insp.getsource(_HZ.Hazers.arm_all).split('"""')[2]  # code only
+    check("for n in names:" in src and "names = self.names()" in src and
+          'if k != "hazer":' in src and "self.kind_of(n, fl)" in src and
+          "self.set(n, True" in src and "hazers_set" not in src and
+          "group" not in src and "laser" not in src,
+          "Arm all hazers walks only the engine's hazer list, decides by "
+          "flamesafe's type (never the name), and arms each through the "
+          "per-hazer arm, never the link or a group directly")
+    hp = _insp.getsource(RM.Remote.hazer_post)
+    blk = hp[hp.find('if name == "hazers-arm-all":'):]
+    blk = blk[:blk.find("return 200, out")]
+    check("hz.arm_all(" in blk and "may_act_from" in blk and
+          "arm_group" not in blk and "laser" not in blk,
+          "its route calls only Hazers.arm_all, after screen_arming")
     check("screen-arming" in RM.LOCAL_ONLY,
           "the switch is the show machine's own, never the network's")
     check(RM.ARM_ROUTES == ("arm-hold", "arm-release", "group-disarm"),
@@ -54863,7 +54892,8 @@ def test_remote_has_no_arm_route():
     posted = set(_re.findall(r'/api/remote/([a-z-]+)', page)) | set(
         _re.findall(r'press\("([a-z-]+)"', page))
     check({p for p in posted if _re.search(r"(?<!dis)arm", p)} <=
-          {"arm-hold", "arm-release", "laser-arm", "screen-arming"},
+          {"arm-hold", "arm-release", "laser-arm", "screen-arming",
+           "hazers-arm-all"},
           f"the page posts to no other arm route: {sorted(posted)}")
     S = _sched()
     if S is None:
@@ -100150,6 +100180,11 @@ _UI2_ROUTES = {
     "/api/remote/hazer": "arm",
     "/api/remote/hazer-level": "arm",
     "/api/remote/hazers-off": "safety",
+    # The hazer test and Arm all hazers (2026-11-11): the per-hazer arm's
+    # row. hazer-test only switches the test's own output (OFF is safety
+    # by its body, users.classify); hazers-arm-all arms hazers only.
+    "/api/remote/hazer-test": "arm",
+    "/api/remote/hazers-arm-all": "arm",
     "/api/remote/hold": "safety",
     "/api/remote/idle-signout": "settings",
     "/api/remote/jump": "show",
