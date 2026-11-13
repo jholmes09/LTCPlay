@@ -22950,8 +22950,8 @@ def build():
 
  ("ui2 #227: Run show by the warning is offered on an iPad or with no contact",
   "ltcplay/web/remote2.html",
-  "  if(!local || isStaleNow || !/^Run is off/.test(",
-  "  if(!/^Run is off/.test("),
+  "  if(!local || isStaleNow || !sch.run_warning || runIsOn(st)) return \"\";",
+  "  if(!sch.run_warning || runIsOn(st)) return \"\";"),
 
  ("ui2 #227: Run show by the warning is offered signed out",
   "ltcplay/web/remote2.html",
@@ -23599,7 +23599,7 @@ def build():
 
  ('hazer test: show control on leaves it on',
   'ltcplay/remote.py',
-  '            if cs.get("starting") or cs.get("running"):\n                return "show control is on; press Stop first"\n',
+  '            if cs.get("starting") or cs.get("running") or \\\n                    self.show_control_on(cs):\n                return "show control is on; press Stop first"\n',
   '            if False:\n                return "show control is on; press Stop first"\n'),
 
  ('hazer test: ON skips the checks arming a hazer has',
@@ -23761,6 +23761,50 @@ def build():
   'ltcplay/web/remote2.html',
   'b.className = "b hzt"; }\n',
   'b.className = "b on"; }\n'),
+
+ # Show control, PR 1 (2026-11-11): whether Run is on is the engine's one
+ # boolean, never its sentences, and anything but true is off.
+ ("show control: the page reads a missing Run boolean as on",
+  "ltcplay/web/remote2.html",
+  "  return !!(st && st.show && st.show.show_control_on === true);",
+  "  return !!(st && st.show && st.show.show_control_on !== false);"),
+
+ ("show control: the page reads Run off from the engine's sentence again",
+  "ltcplay/web/remote2.html",
+  "  return !!(st && st.show && st.show.show_control_on === true);",
+  "  const b = ((st && st.schedule) || {}).start_blocked;\n"
+  "  if(b && b.text && /^Run has not been pressed/.test(String(b.text))) return false;\n"
+  "  return !!(st && st.show && (st.show.running || st.show.starting));"),
+
+ ("show control: Start now says Run is off from the sentence again",
+  "ltcplay/web/remote_rules.js",
+  "sub:!(st && st.show && st.show.show_control_on === true) ? \"Run is off\"",
+  "sub:/^Run has not been pressed/.test(String(b.text)) ? \"Run is off\""),
+
+ ("show control: Start now reads a missing Run boolean as on",
+  "ltcplay/web/remote_rules.js",
+  "sub:!(st && st.show && st.show.show_control_on === true) ? \"Run is off\"",
+  "sub:(st && st.show && st.show.show_control_on === false) ? \"Run is off\""),
+
+ ("show control: the status ignores the Run gate",
+  "ltcplay/remote.py",
+  "            return gate() is True\n        except Exception:                        # noqa: BLE001\n            return False\n\n    def disk_view(self):",
+  "            return True\n        except Exception:                        # noqa: BLE001\n            return False\n\n    def disk_view(self):"),
+
+ ("show control: a Run gate that raises reads as on",
+  "ltcplay/remote.py",
+  "            return gate() is True\n        except Exception:                        # noqa: BLE001\n            return False\n\n    def disk_view(self):",
+  "            return gate() is True\n        except Exception:                        # noqa: BLE001\n            return True\n\n    def disk_view(self):"),
+
+ ("show control: the status says Run on with nothing running",
+  "ltcplay/remote.py",
+  "            if not (cs.get(\"running\") or cs.get(\"starting\")):\n                return False\n            gate = getattr(self.schedule, \"run_gate\", None)",
+  "            if False:\n                return False\n            gate = getattr(self.schedule, \"run_gate\", None)"),
+
+ ("hazer test: show control's state unreadable is read as off",
+  'ltcplay/remote.py',
+  '                return "show control\'s state could not be read"\n',
+  '                cs = {}\n'),
 ]
 
 

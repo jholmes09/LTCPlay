@@ -369,14 +369,14 @@ differ) never sound. Every other alert repeats its note every 30 seconds
 | booth_clean_ready.wav, booth_clean_done.wav | the wave flamer cleaning routine, once it is built (PR #159); silent until then |
 
 **START / STOP.** While nothing is running the key reads START NOW. Once
-Run has been pressed and playback is going it reads STOP RUN: hold it for
+Run has been pressed and playback is going it reads STOP ALL: hold it for
 half a second to Stop. Stop first turns every flame group off, at once,
 then does exactly what the Rack screen's Stop does: live flame programming
 ends, every flame group is sent off again through the show's flame link
 (so each group needs a fresh arm), the
 outputs go dark, and the schedule goes on Hold: no show starts until
 Resume (Jeff, 2026-10-30). Run stays on, so the key keeps reading STOP
-RUN after a Stop; that is expected. The deck's Stop is a complete halt:
+ALL after a Stop; that is expected. The deck's Stop is a complete halt:
 every laser is disarmed too. Nothing latches: Resume carries on. A tap
 does nothing; let go before the ring fills
 and nothing is sent.

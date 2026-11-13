@@ -3784,5 +3784,6 @@
 "haze fluid: anyone who may refill may undo": "test_haze_fluid_routes_wiring_and_audit",
 "haze fluid: an undone refill still counts": "test_haze_fluid_undo_bounds_and_the_safe_side",
 "haze fluid: an undo is not saved at once": "test_haze_fluid_undo_bounds_and_the_safe_side",
-"ui 2.0 haze: Undo goes with no question": "test_ui2_haze_fluid_driven"
+"ui 2.0 haze: Undo goes with no question": "test_ui2_haze_fluid_driven",
+"hazer test: show control's state unreadable is read as off": "test_hazer_test_at_the_engine"
 }
