@@ -2463,6 +2463,42 @@ def _attach_fuel(httpd):
     httpd.server_close = _close_fuel
 
 
+def _attach_haze(httpd):
+    """Haze fluid (fuelhaze.py, the Fuel page's Hazers section): the flame
+    link's hazers, watched on the bytes each frame sent. It only observes
+    and is closed last, like the fuel record; a failure to build it leaves
+    the section unavailable and is said once."""
+    from . import fuelhaze
+    remote = httpd.remote
+    link = getattr(getattr(httpd, "fire_ice", None), "flame_link", None)
+    try:
+        if link is None or not link.hazer_names():
+            return
+    except Exception:                            # noqa: BLE001
+        return
+    try:
+        def _journal(text, fault=False):
+            remote._journal("system", "engine", "haze",
+                            "fault" if fault else "done", text, fault=fault)
+        remote.haze = fuelhaze.build(remote, link,
+                                     fuel=getattr(remote, "fuel", None),
+                                     journal=_journal)
+    except Exception as e:                       # noqa: BLE001
+        print(f"Haze fluid tracking could not be set up: "
+              f"{type(e).__name__}: {e}")
+        return
+    _close_before = httpd.server_close
+
+    def _close_haze():
+        # Last, as the fuel record: the flame link goes first, and the
+        # save never waits more than fuelhaze.CLOSE_TIMEOUT_S.
+        try:
+            _close_before()
+        finally:
+            remote.haze.close()
+    httpd.server_close = _close_haze
+
+
 def _attach_fireball(httpd):
     """The Fireball page (fireball.py, OPERATOR.md): the fireball group
     from the Startup page's reading of flamesafe's config, its purge rules
@@ -3172,6 +3208,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         _attach_pump(httpd)
     if httpd.morning is not None:
         _attach_fuel(httpd)
+        _attach_haze(httpd)
         if fire_ice is not None and \
                 getattr(httpd.fire_ice, "flame_link", None) is not None:
             _attach_fireball(httpd)

@@ -213,6 +213,9 @@ MORNING_POST_ROUTES = ("morning-open", "purge-select", "purge-fire",
 # refill needs a signed-in operator or admin, an undo an admin (fuel.py).
 FUEL_GET_ROUTES = ("fuel",)
 FUEL_POST_ROUTES = ("fuel-refill", "fuel-undo")
+# Haze fluid (fuelhaze.py, 2026-11-12): the Fuel page's Hazers section, in
+# the fuel GET; a refill needs what a fuel refill needs, an undo an admin.
+HAZE_POST_ROUTES = ("haze-refill", "haze-undo")
 # The Fireball page (fireball.py): read by anyone; a channel ON needs the
 # arm row (users.classify), everything off never.
 FIREBALL_GET_ROUTES = ("fireball",)
@@ -283,7 +286,7 @@ POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     MORNING_POST_ROUTES + FUEL_POST_ROUTES + FIREBALL_POST_ROUTES + \
     CLEANING_POST_ROUTES + HAZER_POST_ROUTES + PLAY_FROM_POST_ROUTES + \
     PUMP_POST_ROUTES + FIREBALL_TIMELINE_POST_ROUTES + \
-    FIREBALL_CHARGE_POST_ROUTES + HAZER_TEST_POST_ROUTES
+    FIREBALL_CHARGE_POST_ROUTES + HAZER_TEST_POST_ROUTES + HAZE_POST_ROUTES
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
 # on the show machine itself (and the role matrix's Settings, users.py), with
 # a confirm; OFF from any surface, signed in or not: it only takes risk away.
@@ -1686,6 +1689,7 @@ class Remote:
         self._follow_alert_id = None
         self.morning = None          # morning.Morning, set by web.serve
         self.fuel = None             # fuel.FuelTracker, set by web.serve
+        self.haze = None             # fuelhaze.HazeTracker, set by web.serve
         self.fireball = None         # fireball.FireballPanel, web.serve
         # fireball_charge.ChargeTracker, web.serve (display only here)
         self.fireball_charge = None
@@ -2029,7 +2033,18 @@ class Remote:
             return self.morning_get(name, query, ctx)
         if name in FUEL_GET_ROUTES:
             from . import fuel as fuel_mod
-            return fuel_mod.route_get(self.fuel, ctx, self.users, self.wall)
+            code, out = fuel_mod.route_get(self.fuel, ctx, self.users,
+                                           self.wall)
+            if code == 200:
+                # The hazers' section (fuelhaze.py): display only.
+                from . import fuelhaze
+                try:
+                    out["haze"] = fuelhaze.route_view(self.haze, ctx,
+                                                     self.users)
+                except Exception as e:           # noqa: BLE001
+                    out["haze"] = {"available": False,
+                                   "fault": f"{type(e).__name__}: {e}"}
+            return code, out
         if name in FIREBALL_GET_ROUTES:
             from . import fireball as fireball_mod
             return fireball_mod.route_get(self.fireball, ctx, self.wall)
@@ -2097,6 +2112,10 @@ class Remote:
         if name in FUEL_POST_ROUTES:
             from . import fuel as fuel_mod
             return (*fuel_mod.route_post(self.fuel, name, body, ctx,
+                                         self.users),) + ({},)
+        if name in HAZE_POST_ROUTES:
+            from . import fuelhaze
+            return (*fuelhaze.route_post(self.haze, name, body, ctx,
                                          self.users),) + ({},)
         if name in FIREBALL_POST_ROUTES:
             from . import fireball as fireball_mod
