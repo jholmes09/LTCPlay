@@ -5,7 +5,8 @@ Timecode-driven FSEQ show player for Jeff Holmes Presents. Runs GPL 2026 at Doll
 ## Every change
 
 - Run `python3 selftest.py`. Every check must pass. Put its last line in the PR.
-- Run `python3 mutate.py --changed origin/main`: the mutations your change can have broken (every flamesafe, conductor and flame link mutation when a safety file changed). Every one must be caught. CI runs the same per PR; the whole list runs nightly and on every release tag. TESTING.md says what runs when and what a failure means.
+- Run `python3 mutate.py --changed origin/bench-build` when your change touches a safety file (flamesafe, the conductor, the flame link, arming, Stop, the scheduler, the deck, users, fuel): the mutations your change can have broken. Every one must be caught. CI no longer runs them on a PR into bench-build: the nightly sweep does, a release PR into main runs them with the whole safety core, and the weekly sweep runs the whole list. TESTING.md says what runs when and what a failure means.
+- Add a mutation only for safety logic: arming, Stop, Hold, Abort, interlocks and refusals, permissions, what reaches the rig (flame, laser, hazer, pump output), fuel and accounting math, persistence and atomic writes. Never for wording, layout or looks: exact text is checked by the selftest itself. TESTING.md, "What deserves a mutation".
 - Work on your branch and open a PR. Never push to main, never force-push, never rewrite history. Merge only when Jeff says yes in the session.
 - One PR does one thing. A PR never changes show behavior under a title that says something else.
 

@@ -51815,63 +51815,140 @@ def test_mutate_never_runs_stale_bytecode():
 
 
 def test_mutate_shards_fit_their_time_limit():
-    section("the mutate shards: one shard count for a whole sweep in "
-            "selftest.yml and nightly-mutate.yml, small enough that a shard "
-            "ends far inside its 340 minute limit at the speed measured on "
-            "2026-11-09 (32 shards of 135 ran out at 340), at most 16 at "
-            "once so 4 of the account's 20 job slots stay free")
-    import ast
+    section("the mutate shards (the CI diet, 2026-11-13): only a PR into "
+            "main runs them per PR; one rule for how many and how many at "
+            "once in selftest.yml, nightly-mutate.yml and weekly-mutate.yml "
+            "(.github/scripts/mutate_plan.py); a shard ends far inside its "
+            "340 minute limit; never more at once than the job slots minus "
+            "the reserve; shards that trust the selftest job need it")
+    import importlib.util
     import re
-    wfdir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         ".github", "workflows")
-    st = open(os.path.join(wfdir, "selftest.yml"), encoding="utf-8").read()
-    nm = open(os.path.join(wfdir, "nightly-mutate.yml"),
-              encoding="utf-8").read()
-    full = re.findall(r"^\s*FULL_SHARDS=(\d+)\s*$", st, re.M)
-    night = re.findall(r"^\s*NSHARDS: (\d+)\s*$", nm, re.M)
-    check(len(full) == 1 and len(night) == 1 and full == night,
-          f"one shard count, the same in both workflows: selftest.yml "
-          f"{full}, nightly-mutate.yml {night}")
-    n = int(full[0]) if full else 0
-    check('"$FULL_SHARDS"' in st and "release tag: every mutation, ubuntu "
-          "and windows, $FULL_SHARDS shards each" in st and
-          "if (( k > FULL_SHARDS )); then k=$FULL_SHARDS; fi" in st,
-          "a release tag, a change with no base and the affected cap all "
-          "use FULL_SHARDS")
-    check("needs.plan.outputs.shards" in nm and
-          "--shard ${{ matrix.shard }}/${{ needs.plan.outputs.nshards }}" in nm
-          and 'int(os.environ["N"])' in nm and "/32" not in nm,
-          "the nightly sweep's matrix, --shard and timeout report all read "
-          "the one count")
-    for name, text in (("selftest.yml", st), ("nightly-mutate.yml", nm)):
-        par = [int(x) for x in re.findall(r"max-parallel: (\d+)", text)]
-        check(par == [16], f"{name}: max-parallel {par}, want [16] (20 job "
-              "slots, 4 left free)")
-        check(re.findall(r"timeout-minutes: 340\b", text) and
-              re.findall(r"timeout-minutes: 355\b", text),
-              f"{name}: the 340 minute step limit and the 355 minute job "
-              "limit stay as the backstop")
-    tree = ast.parse(open(os.path.join(os.path.dirname(os.path.abspath(
-        __file__)), "mutate.py"), encoding="utf-8").read(), "mutate.py")
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location(
+        "mutate_plan", os.path.join(here, ".github", "scripts",
+                                    "mutate_plan.py"))
+    plan = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plan)
+
+    # Who runs shards: a PR into main, nothing else.
+    for event, ref, base, want in (
+            ("pull_request", "refs/pull/9/merge", "main", "affected"),
+            ("pull_request", "refs/pull/9/merge", "bench-build", "none"),
+            ("pull_request", "refs/pull/9/merge", "haze-fluid-tracker", "none"),
+            ("pull_request", "refs/pull/9/merge", "", "none"),
+            ("push", "refs/heads/main", "", "none"),
+            ("push", "refs/tags/gpl-2026.11.20.1", "", "none"),
+            ("push", "refs/tags/ltc-2026.11.20.1", "", "none")):
+        got, why = plan.mode(event, ref, base)
+        check(got == want and why,
+              f"{event} {ref} into {base or '(none)'}: {got}, want {want}")
+
+    # How many: about 25 a shard, at most MUTATE_SHARDS (30), never more
+    # than 45 a shard; at once, never more than the slots minus the reserve.
+    env = {}
+    check(plan.size(0, env) == (0, 0), "nothing to run: no shard")
+    for n, want in ((1, (1, 1)), (25, (1, 1)), (26, (2, 2)),
+                    (400, (16, 16)), (551, (23, 16)), (750, (30, 16)),
+                    (2649, (59, 16)), (4368, (98, 16))):
+        check(plan.size(n, env) == want,
+              f"{n} mutations: {plan.size(n, env)}, want {want}")
+    check(plan.size(750, {"CI_JOB_SLOTS": "40"}) == (30, 30)
+          and plan.size(4368, {"CI_JOB_SLOTS": "40"}) == (98, 36)
+          and plan.size(4368, {"CI_JOB_SLOTS": "60",
+                               "CI_SLOT_RESERVE": "10"}) == (98, 50),
+          "more job slots: more shards at once, the reserve still free")
+    for bad in ({"CI_JOB_SLOTS": "twenty"}, {"CI_JOB_SLOTS": "4",
+                                             "CI_SLOT_RESERVE": "4"},
+                {"MUTATE_SHARDS": "0"}):
+        try:
+            plan.size(100, bad)
+            ok = False
+        except ValueError:
+            ok = True
+        check(ok, f"a repository variable that cannot be right is an "
+                  f"error, never a guess: {bad}")
+    most = 0
+    for n in range(1, 6000, 7):
+        k, at_once = plan.size(n, env)
+        most = max(most, -(-n // k))
+        if not (1 <= at_once <= 16 and at_once <= k):
+            check(False, f"{n} mutations: {k} shards, {at_once} at once")
+            break
+    # Measured 2026-11-13 (536 finished ubuntu shards, --jobs 3): about
+    # 2.8 minutes of a shard a mutation; the sanity run that stands in for
+    # the baseline is a few minutes; the old baseline was 15 to 19.
+    worst = 19 + most * 2.8
+    check(most <= plan.MOST_PER_SHARD and worst <= 150,
+          f"at most {most} mutations a shard, about {worst:.0f} minutes at "
+          f"the measured speed even with a whole baseline; want 150 or less")
+    tree = __import__("ast").parse(open(os.path.join(here, "mutate.py"),
+                                        encoding="utf-8").read())
     total = 0
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id == "MUTATIONS"
-                for t in node.targets):
+    for node in __import__("ast").walk(tree):
+        if isinstance(node, __import__("ast").Assign) and any(
+                getattr(t, "id", None) == "MUTATIONS" for t in node.targets):
             total = len(node.value.elts)
-    per = -(-total // n) if n else total
-    # Measured in run 42577562836: a baseline of up to 1112 s, then up to
-    # 2.51 minutes a mutation, on ubuntu with --jobs 3.
-    worst = 1112 / 60 + per * 2.51
-    check(total > 1000 and worst <= 150,
-          f"{total} mutations in {n} shards is {per} a shard, about "
-          f"{worst:.0f} minutes at the measured worst; want 150 or less")
-    check("int(os.environ.get(\"NSHARDS\") or 0)" in st and
-          '"no job"' in st,
-          "mutate-report counts a shard that never got a job as red")
-    for name, text in (("selftest.yml", st), ("nightly-mutate.yml", nm)):
-        check("\u2013" not in text and "\u2014" not in text,
+    check(total > 1000 and -(-total // plan.size(total, env)[0]) <= 45,
+          f"the whole list, {total}, fits shards of 45 or fewer")
+
+    # The workflows use that rule and nothing of their own.
+    wfdir = os.path.join(here, ".github", "workflows")
+    text = {}
+    for name in ("selftest.yml", "nightly-mutate.yml", "weekly-mutate.yml"):
+        with open(os.path.join(wfdir, name), encoding="utf-8") as fh:
+            text[name] = fh.read()
+    for name, t in text.items():
+        check("mutate_plan.py size" in t,
+              f"{name}: the shard count comes from mutate_plan.py")
+        par = re.findall(r"max-parallel: (.+)", t)
+        check(par and all(re.fullmatch(
+                  r"\$\{\{ fromJSON\(needs\.\w+\.outputs\.parallel\) \}\}",
+                  p.strip()) for p in par),
+              f"{name}: max-parallel is mutate_plan.py's, never a number of "
+              f"its own: {par}")
+        check(re.findall(r"timeout-minutes: 340\b", t) and
+              re.findall(r"timeout-minutes: 355\b", t),
+              f"{name}: the 340 minute step limit and the 355 minute job "
+              f"limit stay as the backstop")
+        check("python3 .github/scripts/shard_timeout.py" in t,
+              f"{name}: a shard that ran out of time is said as such")
+        check(re.search(r"upload-artifact@v4\n\s+if: always\(\)\n\s+"
+                        r"continue-on-error: true\n\s+with:\n\s+name: "
+                        r"mutate-log-", t),
+              f"{name}: an upload error never turns a shard red")
+        check("\u2013" not in t and "\u2014" not in t,
               f"{name} has no em or en dashes")
+        # --trust-baseline only where the shards need a green selftest of
+        # the same commit in the same run.
+        if "--trust-baseline" in t:
+            check(re.search(r"\n  (mutate|sweep):\n    needs: \[(changes|plan),"
+                            r" selftest\]\n", t),
+                  f"{name}: shards that trust the selftest job need it")
+    st = text["selftest.yml"]
+    check("mutate_plan.py mode \"$EVENT\" \"$REF\" \"$BASE_REF\"" in st
+          and "python3 mutate.py --changed \"$base\" ${core:+\"$core\"} "
+          "--list" in st
+          and "narrow=(--changed \"$BASE\" ${CORE:+\"$CORE\"})" in st,
+          "selftest.yml: the mode is mutate_plan.py's, and a PR into main "
+          "lists and runs its selection with the safety core")
+    check("mutate.py lost --with-core, which its base has" in st,
+          "selftest.yml: a PR into main cannot drop the safety core by "
+          "editing mutate.py")
+    check("int(os.environ.get(\"NSHARDS\") or 0)" in st and '"no job"' in st,
+          "mutate-report counts a shard that never got a job as red")
+    nm = text["nightly-mutate.yml"]
+    check("name: green at ${{ needs.plan.outputs.sha }}" in nm and
+          "sed -n 's/^green at \\([0-9a-f]\\{40\\}\\)$/\\1/p'" in nm and
+          "git merge-base --is-ancestor \"$g\" \"$sha\"" in nm,
+          "the nightly sweep records its green commit and reads the last "
+          "one this commit descends from")
+    check("needs.selftest.result == 'success' && needs.sweep.result == "
+          "'success'" in nm,
+          "a night is recorded green only when its selftest and shards are")
+    for name in ("nightly-mutate.yml", "weekly-mutate.yml"):
+        check("group: mutate-sweeps" in text[name] and
+              "cancel-in-progress: false" in text[name],
+              f"{name}: one sweep at a time, nightly and weekly together")
     print("  ok")
 
 
@@ -52093,7 +52170,8 @@ def test_mutate_fast_path_never_turns_red_green():
     with tempfile.TemporaryDirectory() as tree:
         names = ["m one", "m two"]
 
-        def sweep(behave, hints=None, jobs=1, ci=True, listed=True):
+        def sweep(behave, hints=None, jobs=1, ci=True, listed=True,
+                  extra=()):
             """behave(name, failfast, first, probe) -> (green, stopped in).
             (exit, lines, calls, catchers written)."""
             for i, n in enumerate(names):
@@ -52148,7 +52226,7 @@ def test_mutate_fast_path_never_turns_red_green():
                 sys.argv = (["mutate.py", "--shard", "0/1"]
                             + (["--expected", os.devnull] if listed else [])
                             + ["--hints", hf, "--write-catchers", wf,
-                               "--jobs", str(jobs)])
+                               "--jobs", str(jobs)] + list(extra))
                 with contextlib.redirect_stdout(buf):
                     code = mutate.main()
             finally:
@@ -52329,6 +52407,135 @@ def test_mutate_fast_path_never_turns_red_green():
               and any("FAILS with nothing mutated" in l for l in lines),
               f"a red baseline is run once more, then stops the shard: "
               f"{calls}")
+
+        # --trust-baseline (the CI diet, 2026-11-13): the selftest job of the
+        # same run passed the whole suite on this commit, so no copy runs it
+        # again. Each copy runs its hinted tests first instead (the sanity
+        # run), and every test a caught mutant stopped in is proved green
+        # alone in that copy, or the copy runs its whole baseline after all.
+        trust = ("--trust-baseline", "1200")
+        both = {"m one": "test_guard", "m two": "test_guard"}
+        for jobs in (1, 2):
+            code, lines, calls, learned = sweep(red_in_t_guard, both,
+                                                jobs=jobs, extra=trust)
+            sanity = [c for c in calls if c[0] is None and c[3]]
+            check(code == 0 and not base_runs(calls)
+                  and len(sanity) == jobs
+                  and all(c[2] == "test_guard" for c in sanity)
+                  and "  caught      m one" in lines
+                  and "  caught      m two" in lines
+                  and any(l.startswith("baseline trusted:") for l in lines),
+                  f"--trust-baseline, --jobs {jobs}: no whole baseline, one "
+                  f"sanity run per copy, both caught: {calls} {lines}")
+            check([c for c in calls if c[0] == "m one"] == [
+                      ("m one", True, "test_guard", False, jobs == 1),
+                      ("m one", True, None, False, jobs == 1)],
+                  f"--trust-baseline changes no mutated run: {calls}")
+            check(any(l.startswith("baseline trusted:") and "after 3600 s"
+                      in l for l in lines),
+                  f"the mutant limit is three times the trusted 1200 s: "
+                  f"{lines}")
+        # A sanity run that is red: that copy runs its whole baseline, as
+        # without the option.
+        code, lines, calls, learned = sweep(probe_fails, both, extra=trust)
+        check(code == 0 and len(base_runs(calls)) == 1
+              and any("sanity run" in l and "was red" in l for l in lines)
+              and not any(l.startswith("baseline trusted:") for l in lines),
+              f"a red sanity run costs the copy its whole baseline: {calls}")
+        # No hint at all: nothing can stand in for the baseline.
+        code, lines, calls, learned = sweep(red_in_t_guard, None,
+                                            extra=trust)
+        check(code == 0 and len(base_runs(calls)) == 1
+              and any("nothing can stand in for the baseline" in l
+                      for l in lines),
+              f"--trust-baseline without hints runs the baseline: {calls}")
+
+        # A caught mutant that stopped in a test the sanity run did not run
+        # first: that test is proved green alone in the copy, nothing
+        # mutated, once, and the verdict stands.
+        def stop_other(hit, ff, first, probe):
+            if hit is None:
+                return True, ""
+            return False, ("test_guard" if first == "test_guard"
+                           else "test_other")
+        code, lines, calls, learned = sweep(
+            stop_other, {"m one": "test_guard"}, extra=trust)
+        alone = [c for c in calls if c[0] is None and c[3]
+                 and c[2] == "test_other"]
+        check(code == 0 and not base_runs(calls) and len(alone) == 1
+              and "  caught      m one" in lines
+              and "  caught      m two" in lines,
+              f"a stopping test outside the sanity run is proved alone, "
+              f"once per copy: {calls} {lines}")
+
+        # That test is red alone (it needs a test before it): the copy runs
+        # its whole baseline; green, and the verdict stands.
+        def other_red_alone(hit, ff, first, probe):
+            if probe and first == "test_other":
+                return False, "test_other"
+            if hit is None:
+                return True, ""
+            return False, "test_other"
+        code, lines, calls, learned = sweep(
+            other_red_alone, {"m one": "test_guard"}, extra=trust)
+        check(code == 0 and len(base_runs(calls)) == 1
+              and "  caught      m one" in lines
+              and "  caught      m two" in lines,
+              f"a stopping test red alone costs the copy one whole baseline, "
+              f"then the verdicts stand: {calls} {lines}")
+
+        # And that baseline is red: no caught mutation of the copy counts,
+        # the shard says the suite fails with nothing mutated, exit 2.
+        def copy_broken(hit, ff, first, probe):
+            if probe:
+                return first != "test_other", "test_other"
+            return False, "test_other"
+        code, lines, calls, learned = sweep(
+            copy_broken, {"m one": "test_guard"}, extra=trust)
+        check(code == 2 and "  caught      m one" not in lines
+              and any(l.startswith("  NO VERDICT  m one") for l in lines)
+              and any(l.startswith("The suite FAILS with nothing mutated")
+                      for l in lines)
+              and not learned,
+              f"a copy whose baseline is red gives no verdict at all: "
+              f"exit {code}, {lines}")
+
+    # --with-core: on a PR into main every flamesafe, conductor and flame
+    # link mutation runs, whatever the diff, a doc included.
+    with tempfile.TemporaryDirectory() as tree:
+        saved = {k: getattr(mutate, k) for k in ("HERE", "LOCK", "MUTATIONS")}
+        old_argv = sys.argv
+        try:
+            mutate.HERE = tree
+            mutate.LOCK = os.path.join(tree, ".mutating")
+            mutate.MUTATIONS = [
+                ("core a", "flamesafe/composer.py", "x", "y"),
+                ("core b", "ltcplay/conductor.py", "x", "y"),
+                ("core c", "ltcplay/flamelink.py", "x", "y"),
+                ("other d", "ltcplay/remote.py", "x", "y")]
+
+            def listed(*args):
+                sys.argv = ["mutate.py", "--list"] + list(args)
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    code = mutate.main()
+                return code, sorted(l.split(": ", 1)[1] for l in
+                                    buf.getvalue().splitlines()
+                                    if l.startswith("  would run  "))
+            code, got = listed("--files", "README.md")
+            check(code == 0 and got == [],
+                  f"a doc alone selects nothing: {got}")
+            code, got = listed("--files", "README.md", "--with-core")
+            check(code == 0 and got == ["core a", "core b", "core c"],
+                  f"--with-core adds the safety core to a doc: {got}")
+            code, got = listed("--files", "ltcplay/remote.py", "--with-core")
+            check(code == 0 and got == ["core a", "core b", "core c",
+                                        "other d"],
+                  f"--with-core adds the core to a file's own: {got}")
+        finally:
+            for k, v in saved.items():
+                setattr(mutate, k, v)
+            sys.argv = old_argv
 
 
 def test_the_gpl_path_never_loads_the_flame_link():
