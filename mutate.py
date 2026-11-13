@@ -33,6 +33,10 @@ per-PR gate; the nightly sweep and a release tag still run everything):
     --with-core        with --changed or --files: every flamesafe, conductor
                        and flame link mutation too, whatever the diff (the
                        release PR into main runs these always)
+    --targets a,b,d/   exactly the mutations of these files (a name ending
+                       in / is a folder, one ending in * a name prefix):
+                       a bench-build PR's mutate-safety shards, and a
+                       nightly sweep over its cap
 
 Speed. None of it changes what a mutation has to survive: the baseline runs
 every test in file order, a mutant is caught only when the suite fails under
@@ -24171,7 +24175,7 @@ def main():
 
 OPTS = {"changed": None, "files": None, "list": False, "catchers": None,
         "failfast": True, "hints": None, "write_catchers": None, "jobs": 1,
-        "with_core": False, "trust": None}
+        "with_core": False, "trust": None, "targets": None}
 
 
 def _args(argv):
@@ -24180,7 +24184,7 @@ def _args(argv):
     wants, shard, expected = [], None, None
     OPTS.update(changed=None, files=None, list=False, catchers=None,
                 failfast=True, hints=None, write_catchers=None, jobs=1,
-                with_core=False, trust=None)
+                with_core=False, trust=None, targets=None)
     it = iter(argv)
     for a in it:
         if a == "--shard":
@@ -24206,6 +24210,9 @@ def _args(argv):
             OPTS["jobs"] = max(1, int(next(it)))
         elif a == "--with-core":
             OPTS["with_core"] = True
+        elif a == "--targets":
+            OPTS["targets"] = [t.strip() for t in next(it).split(",")
+                               if t.strip()]
         elif a == "--trust-baseline":
             OPTS["trust"] = float(next(it))
             if not OPTS["trust"] > 0:
@@ -24468,7 +24475,25 @@ def _run():
     if expected_file:
         expected, unknown = _load_expected(expected_file)
     only = None
-    if OPTS["changed"] or OPTS["files"] is not None:
+    if OPTS["targets"] is not None:
+        if OPTS["changed"] or OPTS["files"] is not None:
+            print("--targets names the files itself: not with --changed or "
+                  "--files")
+            fail("bad options", ["--targets with --changed or --files"])
+            return 2
+
+        def hit(rel):
+            return any(rel.startswith(t[:-1]) if t.endswith("*") else
+                       rel.startswith(t) if t.endswith("/") else rel == t
+                       for t in OPTS["targets"])
+        only = {n for n, rel, _o, _n in MUTATIONS if hit(rel)}
+        print(f"targets {', '.join(OPTS['targets']) or '(none)'}: "
+              f"{len(only)} of {len(MUTATIONS)} mutations")
+        if not only:
+            print("nothing this change can have broken is mutated "
+                  "here: nothing to run")
+            return 0
+    elif OPTS["changed"] or OPTS["files"] is not None:
         base = None
         if OPTS["changed"]:
             try:

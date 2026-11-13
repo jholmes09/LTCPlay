@@ -48,22 +48,42 @@ own affected run; no whole sweep ever found one.
 | When | What | How long | Required to merge |
 |---|---|---|---|
 | Every push to a PR (drafts too) | selftest on ubuntu and windows, and `changes`, which prints what the mutation sweep would run for this change | 15 to 20 min (ubuntu), 25 to 35 min (windows); limits 45 and 60 | yes (both, and `changes`) |
-| A PR into bench-build, or stacked on another PR | no mutate shards: the nightly sweep runs them | none | not applicable |
+| A PR into bench-build, or stacked on another PR, ready for review, that touches a safety file (flamesafe, the conductor, the flame link, laserarm, lasertest, users, fuel*, fireball*, flameprog, hazers, hazertest, morning, remote_rules.js) | `mutate-safety`: that file's own mutations (`mutate.py --targets`), and the whole safety core (553) only when a core file itself changed; at most 4 shards at once (the reserve, `MUTATE_SAFETY_AT_ONCE`) | about 25 min to 1 hour for one file; about 6 to 7 hours for the core | no |
+| Any other PR into bench-build (docs, wording, the page, other code) | no mutate shards: the nightly sweep runs them | none | not applicable |
 | A PR into main (a release), once it is ready for review | the mutate shards: the mutations this release can have changed the result of, plus every flamesafe, conductor and flame link mutation (`--with-core`), ubuntu, about 25 a shard, at most 30 shards (at most 45 a shard), 16 at a time on the free plan | about 2 hours for the core alone; 4 to 8 hours for a big release | yes: `ci`, the one required check on main |
-| A push to main, a release tag (`ltc-...`, `gpl-...`) | selftest only (a tag also builds the installer, windows-app.yml); no mutation sweep: the release PR ran it on the same code | 15 to 35 min | the tag is cut from a green main |
-| Every night but Sunday, 01:17 Eastern | `nightly mutate`: what bench-build changed since the last green night (`mutate.py --changed <that commit>`), ubuntu, after one selftest | nothing on a quiet day; 2 to 8 hours after a busy one | a red night opens a `mutate-nightly` issue; fix it before the next release |
-| Sundays, 03:12 Eastern | `weekly mutate`: every mutation on bench-build, ubuntu, after one selftest | 12 to 16 hours on the free plan, about 6 with 40 slots | a red sweep opens a `mutate-sweep` issue; every PR into main warns while it is open |
+| A push to main, an `ltc-...` release tag | selftest only (a tag also builds the installer, windows-app.yml); no mutation sweep: the release PR ran it on the same code | 15 to 35 min | the tag is cut from a green main |
+| A `gpl-...` tag (the old release name) | refused: the `changes` job fails with the reason, nothing is swept or built | seconds | not applicable |
+| Sunday to Friday evenings, 19:17 Mountain Standard Time (20:17 in summer; 02:17 UTC) | `nightly mutate`: what bench-build changed since the last green night (`mutate.py --changed <that commit>`), ubuntu, after one selftest. Over `MUTATE_NIGHTLY_MAX` (default 1,500) selected mutations it runs only the whole safety core and the touched safety files, and leaves the rest to the weekly sweep | nothing on a quiet day; at most about 4,200 runner minutes and 4.5 hours on 16 slots (uncapped, the heaviest night of the last week, 4,182 mutations, would have been about 11,700 runner minutes and 12 hours) | a red night opens a `mutate-nightly` issue; fix it before the next release |
+| Saturday evenings, 19:12 Mountain Standard Time (02:12 UTC Sunday) | `weekly mutate`: every mutation on bench-build, ubuntu, after one selftest | 12 to 16 hours on the free plan (ends Sunday), about 6 with 40 slots | a red sweep opens a `mutate-sweep` issue; every PR into main warns while it is open |
 | On demand | `nightly mutate` or `weekly mutate` from the Actions tab, Run workflow: any branch; weekly can run windows or both (the only whole run on windows, before a tech build) | as above | before any tech build |
 
 Draft PRs run only the selftest and `changes`; a PR into main starts its
 shards when it is marked ready for review.
 
-**What a PR into bench-build gives up.** A test gap a PR opens is no
-longer found before that PR merges; the nightly sweep finds it within a
-day, and the fix is a follow-up PR. For a change to a safety file (the
-list below), run `python3 mutate.py --changed origin/bench-build`
-yourself before asking for the merge (CLAUDE.md says so): it is the check
-the shards used to run.
+**What a PR into bench-build gives up.** A test gap a PR opens outside the
+safety files is no longer found before that PR merges; the nightly sweep
+finds it within a day, and the fix is a follow-up PR. A PR that touches a
+safety file still gets that file's mutations before the merge
+(`mutate-safety`, not required to merge, so read it before asking for
+the merge).
+
+**Only the record sweep counts.** The scheduled night (or Run workflow on
+bench-build with no base of its own) is the only one that opens or closes
+the `mutate-nightly` issue and writes the "green at <commit>" job the next
+night compares with. A sweep of another branch, or with a narrower base,
+reports in its own summary only. The report always runs: a plan that
+failed (a repository variable that is not a number, mutate.py crashing, a
+list too big for the 256 jobs one matrix holds) is red like a missed
+mutation. A scheduled sweep dropped from the queue before it could report
+opens the issue too (`sweep-dropped.yml`).
+
+**`ci` on main.** Green only for a push or a PR whose base is main, with
+selftest, changes and every needed shard green
+(`.github/scripts/ci_verdict.sh`, pinned by `test_ci_verdict_rules`). A
+run on a PR into another branch is red, so a PR moved to main always needs
+a run of its own: main's copy of selftest.yml listens for edits, and an
+edit that moves the base runs everything again; an edit of the title or
+text runs nothing and copies the last verdict on the commit.
 
 **How many shards, how many at once.** `.github/scripts/mutate_plan.py`
 decides, for all three workflows: about 25 mutations a shard, at most
@@ -136,12 +156,20 @@ mutation only for **safety logic**:
 - persistence: atomic writes, the journal, settings and schedule saves
   that must survive a crash.
 
-Not for wording, layout or looks: a sentence, a label, a title, a colour,
-a size in px, which card shows on which screen. The selftest's own checks
-cover those (an exact-text check is fine there); a mutation that only
-proves a string is that string adds time to every sweep. When in doubt,
-ask whether a show could fire, fail to stop, or lose a record if the line
-were wrong. If not, no mutation. The wording and layout mutations already
+Safety logic includes what the program tells the operator to do at a
+safety moment: an arming refusal and its reason, an alert that a group is
+still armed, the sentence that says a Stop did not go, a fuel warning.
+Mutate that the message is raised, refused or shown when it must be, and
+that it says the thing the operator acts on (armed or not, which group,
+what to press); not the exact wording around it.
+
+Not for wording, layout or looks: the phrasing of a sentence, a label, a
+title, a colour, a size in px, which card shows on which screen. The
+selftest's own checks cover those (an exact-text check is fine there); a
+mutation that only proves a string is that string adds time to every
+sweep. When in doubt, ask whether a show could fire, fail to stop, lose a
+record, or leave the operator not knowing what to do if the line were
+wrong. If not, no mutation. The wording and layout mutations already
 in the list stay until Jeff approves the list of candidates to move or
 remove.
 
