@@ -80932,6 +80932,7 @@ _SU_PLAIN_ROUTES = (
     "/api/remote/follow", "/api/remote/forecast", "/api/remote/fuel",
     "/api/remote/fuel-pump", "/api/remote/fuel-refill",
     "/api/remote/fuel-undo", "/api/remote/group-disarm",
+    "/api/remote/haze-refill", "/api/remote/haze-undo",
     "/api/remote/hazer", "/api/remote/hazer-level",
     "/api/remote/hazer-test", "/api/remote/hazers-arm-all",
     "/api/remote/hazers-off", "/api/remote/hold",
