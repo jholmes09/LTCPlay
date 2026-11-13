@@ -2424,6 +2424,13 @@ class Remote:
             from . import users as users_mod
             out.update(u.view())
             out["may_admin"] = u.may(me.get("role"), "users")
+            # A SuperUser this program wrote, reading as an admin now: the
+            # screen offers them Confirm (users op confirm-superuser).
+            try:
+                out["may_confirm"] = bool(me.get("name")) and \
+                    me.get("local") is True and u.may_confirm(me["name"])
+            except Exception:                    # noqa: BLE001
+                out["may_confirm"] = False
             out["may_settings"] = u.may(me.get("role"), "settings")
             out["audit"] = self.audit_view()
             su = self.superuser_here(ctx)
@@ -2680,7 +2687,33 @@ class Remote:
             if name == "users":
                 op = str(body.get("op") or "")
                 who = body.get("name")
-                if op == "add":
+                # Every SuperUser change asks for the SuperUser's own
+                # password again (verification review of #251, M3): a
+                # SuperUser's screen left signed in is not enough.
+                su_change = by == users_mod.SUPERUSER and (
+                    (op in ("add", "role") and
+                     body.get("role") == users_mod.SUPERUSER) or
+                    (op in ("role", "password", "clear-password", "remove")
+                     and u.role_of(who) == users_mod.SUPERUSER))
+                if su_change and not u.confirm(
+                        me.get("name"), body.get("my_password"), ctx.source):
+                    self._audit_rank("superuser-password-refused", ctx,
+                                     f"users {op} {who}")
+                    return 403, {"error": UPLOAD_PASSWORD,
+                                 "password_again": True}, {}
+                if op == "confirm-superuser":
+                    # A SuperUser this program wrote, reading as an admin
+                    # (lockdown, or a record changed outside it), confirms
+                    # themselves with their password, signed in on this
+                    # rack screen (B1b).
+                    if not (ctx.local and me.get("local") is True and
+                            not getattr(ctx, "tailscale", False)):
+                        raise ValueError("Confirm on the show PC's rack "
+                                         "screen. Nothing was changed.")
+                    text = u.confirm_superuser(me.get("name"),
+                                               body.get("my_password"),
+                                               ctx.source)
+                elif op == "add":
                     text = u.add(who, body.get("role"), body.get("password"),
                                  by=by)
                 elif op == "remove":
@@ -2700,7 +2733,8 @@ class Remote:
                     text = u.clear_password(who, by=by)
                 else:
                     raise ValueError("op has to be add, remove, role, "
-                                     "password or clear-password.")
+                                     "password, clear-password or "
+                                     "confirm-superuser.")
             elif name == "role-matrix":
                 mx = body.get("matrix")
                 if isinstance(mx, dict) and any(
@@ -2741,6 +2775,11 @@ class Remote:
                     f"keep {after.get('keep_days')} days")
                 text = "The audit upload settings were saved."
             elif name == "audit-upload-now":
+                if not u.confirm(me.get("name"), body.get("password"),
+                                 ctx.source):
+                    self._audit_rank("upload-password-refused", ctx,
+                                     "audit-upload-now")
+                    return 403, {"error": UPLOAD_PASSWORD}, {}
                 self._audit_rank("upload-now", ctx, "audit-upload-now")
                 up = self.uploader
                 if up is None:

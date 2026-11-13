@@ -23944,8 +23944,8 @@ def build():
   '            u["su_untrusted"] = True\n'),
 
  ("superuser: any fingerprint is this engine's", "ltcplay/users.py",
-  "            if key is not None and isinstance(fp, str) and \\\n                    hmac.compare_digest(fp, self._fp(key, n, u)):",
-  "            if True:"),
+  "                  isinstance(fp, str) and\n                  hmac.compare_digest(fp, self._fp(key, n, u)) and\n",
+  "                  isinstance(fp, str) and\n"),
 
  ("superuser: a SuperUser removed outside the engine is not said", "ltcplay/users.py",
   "                if gone:\n",
@@ -23968,8 +23968,8 @@ def build():
   "SUPERUSER_IDLE_S = 60 * 60"),
 
  ("superuser: an upload change needs no password again", "ltcplay/remote.py",
-  '                if not u.confirm(me.get("name"), body.get("password"),',
-  '                if False and not u.confirm(me.get("name"), body.get("password"),'),
+  '                if not u.confirm(me.get("name"), body.get("password"),\n                                 ctx.source):\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-settings")',
+  '                if False:\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-settings")'),
 
  ("superuser: a reset leaves the SuperUser signed in", "ltcplay/users.py",
   "        self._end_sessions(name)\n        with self._lock:\n            self._fails.pop((\"name\", name.lower()), None)\n        self._note(\"superuser-signal\"",
@@ -24018,6 +24018,67 @@ def build():
  ("superuser: an admin is told the upload's settings file", "ltcplay/remote.py",
   '        out = {"writer": None, "chain": None}\n',
   '        out = {"writer": None, "chain": None, "settings": "ltcplay_audit.json"}\n'),
+
+ # The verification review of #251 (B1, M2, M3, M6).
+ ("superuser: the first SuperUser path opens again", "ltcplay/users.py",
+  "        if not supers and (self.ever_superuser(",
+  "        if False and (self.ever_superuser("),
+
+ ("superuser: the command asks before it refuses the first path again", "ltcplay/users.py",
+  "        elif us.ever_superuser(doc) or \\\n                _audit_history_says_superuser(folder):",
+  "        elif False:"),
+
+ ("superuser: the audit log's history is not asked", "ltcplay/users.py",
+  '            if any(r.get("action") in ("superuser-set",',
+  '            if False and any(r.get("action") in ("superuser-set",'),
+
+ ("superuser: a missing key or set record trusts the SuperUsers", "ltcplay/users.py",
+  "        if missing and not self._lockdown:\n            self._lockdown = True",
+  "        if False:\n            self._lockdown = True"),
+
+ ("superuser: a missing fingerprint is not said", "ltcplay/users.py",
+  '            missing.append("a SuperUser\'s fingerprint")',
+  "            pass"),
+
+ ("superuser: a forged key and set are believed", "ltcplay/users.py",
+  "                  (known is None or n.lower() in known))",
+  "                  True)"),
+
+ ("superuser: the command's change is taken without its audit line", "ltcplay/users.py",
+  '            if any(x["id"] in ids for x in want):',
+  "            if want:"),
+
+ ("superuser: a password changed outside may confirm", "ltcplay/users.py",
+  "                isinstance(u, dict) and u.get(\"role\") != SUPERUSER and \\\n                self._known_pw.get(str(name).lower()) == _pw_digest(u)",
+  "                isinstance(u, dict) and u.get(\"role\") != SUPERUSER"),
+
+ ("superuser: any recovery code works", "ltcplay/users.py",
+  '                    not check_password(str(code or "").strip().upper(), rec):',
+  "                    False:"),
+
+ ("superuser: a used recovery code works again", "ltcplay/users.py",
+  "            self.last_recovery_code = _recovery_code()\n            doc[\"su_recovery\"] = hash_password(self.last_recovery_code,\n                                               params=self._hash_params)\n",
+  ""),
+
+ ("superuser: the command's audit line comes after its change, or never", "ltcplay/users.py",
+  "                hook(said)\n",
+  "                pass\n"),
+
+ ("superuser: a command's missing audit line is not said", "ltcplay/users.py",
+  '                    if x["id"] not in ids:',
+  "                    if False:"),
+
+ ("superuser: a replayed signal is taken", "ltcplay/users.py",
+  '            elif str(doc.get("nonce")) in self._seen_nonces():',
+  "            elif False:"),
+
+ ("superuser: a SuperUser change needs no password again", "ltcplay/remote.py",
+  "                if su_change and not u.confirm(",
+  "                if False and not u.confirm("),
+
+ ("superuser: Send now needs no password", "ltcplay/remote.py",
+  '                if not u.confirm(me.get("name"), body.get("password"),\n                                 ctx.source):\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-upload-now")',
+  '                if False:\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-upload-now")'),
 ]
 
 

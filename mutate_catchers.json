@@ -3838,5 +3838,20 @@
 "superuser: an admin's upload row attempt is not audited": "test_superuser_upload_is_hidden_and_refused",
 "superuser: the upload row has its own words": "test_superuser_role_and_matrix",
 "superuser: the audit card says where the settings are": "test_superuser_upload_is_hidden_and_refused",
-"superuser: an admin is told the upload's settings file": "test_superuser_upload_file_never_named"
+"superuser: an admin is told the upload's settings file": "test_superuser_upload_file_never_named",
+"superuser: the first SuperUser path opens again": "test_superuser_local_command_line",
+"superuser: the command asks before it refuses the first path again": "test_superuser_local_command_line",
+"superuser: the audit log's history is not asked": "test_superuser_local_command_line",
+"superuser: a missing key or set record trusts the SuperUsers": "test_superuser_changed_outside_the_engine",
+"superuser: a missing fingerprint is not said": "test_superuser_changed_outside_the_engine",
+"superuser: a forged key and set are believed": "test_superuser_changed_outside_the_engine",
+"superuser: the command's change is taken without its audit line": "test_superuser_changed_outside_the_engine",
+"superuser: a password changed outside may confirm": "test_superuser_changed_outside_the_engine",
+"superuser: any recovery code works": "test_superuser_local_command_line",
+"superuser: a used recovery code works again": "test_superuser_local_command_line",
+"superuser: the command's audit line comes after its change, or never": "test_superuser_local_command_line",
+"superuser: a command's missing audit line is not said": "test_superuser_local_command_line",
+"superuser: a replayed signal is taken": "test_superuser_local_command_line",
+"superuser: a SuperUser change needs no password again": "test_superuser_session_limit_and_password_again",
+"superuser: Send now needs no password": "test_superuser_session_limit_and_password_again"
 }

@@ -18,7 +18,9 @@ that does not exist. No screen anyone else sees names where its settings
 are kept.
 
 You use the upload's card on the show PC's own rack screen, signed in
-there. Each Save asks for your password again. On an iPad you work as an
+there. Save and Send now ask for your password again, and so does every
+SuperUser change on the Users screen (type it in "Your password, for
+SuperUser changes"). On an iPad you work as an
 admin; over Tailscale the card is never there at all. Your sign-in on the
 rack screen ends after 15 minutes with no press, whatever the idle
 settings say.
@@ -34,7 +36,13 @@ token) and every change to the upload is in the audit log.
 3. Type your name, then your own password (it stays hidden).
 
 It says "Jeff is now a SuperUser." Nothing needs restarting, and nothing
-on the rig changes.
+on the rig changes. It then shows your **recovery code**, once. Write it
+down and keep it somewhere safe: it is the only way back if you forget
+your password.
+
+This works only for the very first SuperUser. Once a SuperUser has ever
+existed on this PC, a new one needs a SuperUser's password (or the
+recovery code), whatever happens to the files.
 
 ## A forgotten password
 
@@ -43,15 +51,11 @@ whose password to reset, then a SuperUser's name and password, then a new
 temporary password twice. That person chooses their own at their next
 sign-in on the rack screen. Any sign-in they still had ends at once.
 
-Once a SuperUser exists, both launchers need a current SuperUser's
-password. So if you are the only SuperUser and you forget yours, a
-technician has to recover it:
-
-1. Remove `su_fp` from your record in `ltcplay_users.json`. You then act
-   as an admin, and every screen shows the alert.
-2. An admin resets your password.
-3. You sign in and choose your own.
-4. Double-click **Make me SuperUser** again.
+If you are the only SuperUser and you forget yours, double-click
+**Recover SuperUser**. Type your name, the recovery code (hidden), and a
+new temporary password twice. You choose your own at your next sign-in.
+It shows a NEW recovery code, once: write it down; the old one no longer
+works. Using the code is in the audit log and raises an alert.
 
 ## If the SuperUser record is changed outside LTC Player
 
@@ -64,6 +68,16 @@ changed a SuperUser, two things happen:
 - The audit log says what changed.
 
 You confirm them by making them superuser again on the Users screen.
+
+If the key, the record of who is a SuperUser, or a SuperUser's
+fingerprint goes missing, NO SuperUser is trusted until one confirms:
+sign in on the rack screen, then Users, "Confirm you are a SuperUser",
+your password, Confirm SuperUser. Only someone LTC Player itself made a
+SuperUser can confirm. The recovery code works too.
+
+This guards against changes while LTC Player is running and through its
+screens and launchers. A hand edit of the settings files while LTC
+Player is stopped is not covered.
 
 ## An older version (after Roll back)
 
@@ -82,7 +96,8 @@ while the older version runs):
 - a password or role an older version changed does not match your
   fingerprint, so you act as an admin and the alert shows;
 - a password an older version cleared or reset can never be claimed;
-- you get your SuperUser back with the steps in "A forgotten password".
+- you get your SuperUser back on the rack screen (Confirm SuperUser) or
+  with the recovery code.
 
 ## The nightly upload (off until you switch it on)
 

@@ -12,7 +12,7 @@ window.ltcUploadCard = function(UV){
     c = document.createElement("section");
     c.className = "card"; c.id = "u-upload";
     c.innerHTML = `<h2>Nightly upload</h2>` +
-      `<ul class="dim" style="font-size:13px;margin:0 0 6px 18px;padding:0"><li>SuperUser only, on this show PC.</li><li>Every change goes in the audit log.</li><li>Saving asks for your password again.</li></ul>` +
+      `<ul class="dim" style="font-size:13px;margin:0 0 6px 18px;padding:0"><li>SuperUser only, on this show PC.</li><li>Every change goes in the audit log.</li><li>Save and Send now need your password.</li></ul>` +
       `<div class="kv" id="au-up"></div>` +
       `<label><input type="checkbox" id="au-en"> Send the audit log to the server every night</label>` +
       `<label for="au-url">Server address (https://)</label>` +
@@ -21,7 +21,7 @@ window.ltcUploadCard = function(UV){
       `<input id="au-tok" type="password" autocomplete="off" placeholder="unchanged">` +
       `<div class="three"><div><label for="au-time">Time of day</label><input id="au-time" placeholder="03:30"></div>` +
       `<div><label for="au-keep">Keep days here</label><input id="au-keep" type="number" min="90"></div></div>` +
-      `<label for="au-pw">Your password, to save</label>` +
+      `<label for="au-pw">Your password, to save or send</label>` +
       `<input id="au-pw" type="password" autocomplete="current-password">` +
       `<div class="row" style="margin-top:8px"><button id="au-upsave">Save</button><button class="ghost" id="au-now">Send now</button></div>` +
       `<div class="toast" id="au-upmsg"></div>`;
@@ -38,7 +38,8 @@ window.ltcUploadCard = function(UV){
       loadUsers();
     });
     $("au-now").addEventListener("click", async () => {
-      try{ const r = await post("/api/remote/audit-upload-now", {}); uMsg("au-upmsg", r.text); }catch(e){ uMsg("au-upmsg", e.message, true); }
+      const pw = $("au-pw").value; $("au-pw").value = "";
+      try{ const r = await post("/api/remote/audit-upload-now", {password:pw}); uMsg("au-upmsg", r.text); }catch(e){ uMsg("au-upmsg", e.message, true); }
     });
   }
   $("au-up").textContent = (u.enabled ? ("On, to " + (u.host || "?") + " at " + u.time + ".") : "Off.") +

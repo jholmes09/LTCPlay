@@ -1192,6 +1192,25 @@ async function loadUsers(){
   const ur = $("ua-role"), su = [...ur.options].find(o => o.value === "superuser");
   if(UV.may_superuser && !su) ur.add(new Option("superuser"));
   if(!UV.may_superuser && su) su.remove();
+  // A SuperUser's changes ask for their own password again: one field,
+  // only on a SuperUser's screen; cleared after each change.
+  let sp = $("u-supw-box");
+  if(UV.may_superuser && !sp){
+    sp = document.createElement("div"); sp.id = "u-supw-box";
+    sp.innerHTML = `<label for="u-supw">Your password, for SuperUser changes</label><input id="u-supw" type="password" autocomplete="current-password">`;
+    $("ua-msg").parentNode.insertBefore(sp, $("ua-msg"));
+  }
+  if(!UV.may_superuser && sp) sp.remove();
+  // A SuperUser this program made, reading as an admin now: Confirm.
+  let cf = $("u-cf-box");
+  if(UV.may_confirm && !cf){
+    cf = document.createElement("div"); cf.id = "u-cf-box";
+    cf.innerHTML = `<label for="u-cfpw">Confirm you are a SuperUser: your password</label><input id="u-cfpw" type="password" autocomplete="current-password">` +
+      `<div class="row" style="margin-top:8px"><button id="u-cf">Confirm SuperUser</button></div>`;
+    $("u-in").appendChild(cf);
+    $("u-cf").addEventListener("click", () => { const pw = $("u-cfpw").value; $("u-cfpw").value = ""; uAdmin({op:"confirm-superuser", my_password:pw}); });
+  }
+  if(!UV.may_confirm && cf) cf.remove();
   renderUserList();
   renderMatrix();
   renderAudit();
@@ -1251,10 +1270,10 @@ function renderAudit(){
   const may = !!UV.may_settings;
   $("au-set").querySelectorAll("input,button").forEach(el => { el.disabled = !may; });
 }
-// The nightly upload (USERS.md): its card's code is not on this page. The
-// engine sends the upload's state only to a SuperUser signed in on this
-// show PC's rack screen, and only then is the card's script fetched
-// (/api/remote/upload-card.js, refused to everyone else) and the card made.
+// A SuperUser's own card: its code is not on this page. The engine sends
+// its state only to a SuperUser signed in on this show PC's rack screen,
+// and only then is the card's script fetched (refused to everyone else)
+// and the card made.
 function dropUpload(){ const c = $("u-upload"); if(c) c.remove(); }
 let UPLOAD_JS = null;
 function renderUpload(){
@@ -1268,6 +1287,8 @@ function renderUpload(){
   document.head.appendChild(UPLOAD_JS);
 }
 async function uAdmin(body, route){
+  const sp = $("u-supw");
+  if(sp && sp.value){ body.my_password = sp.value; sp.value = ""; }
   try{ const r = await post("/api/remote/" + (route || "users"), body); uMsg("ua-msg", r.text); }
   catch(e){ uMsg("ua-msg", e.message, true); }
   loadUsers();

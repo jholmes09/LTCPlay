@@ -2502,7 +2502,10 @@ def main(argv=None):
     for name, what in (("superuser", "make an existing user the SuperUser "
                                      "(this PC only)"),
                        ("superuser-password", "a temporary password for a "
-                                              "SuperUser (this PC only)")):
+                                              "SuperUser (this PC only)"),
+                       ("superuser-recover", "the recovery code, for a "
+                                             "SuperUser's forgotten password "
+                                             "(this PC only)")):
         su = sub.add_parser(name, help=what)
         su.add_argument("name")
         su.add_argument("--folder", default=None,

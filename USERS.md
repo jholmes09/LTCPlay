@@ -115,8 +115,9 @@ A SuperUser that LTC Player did not make itself (the users file edited by
 hand, or changed by an older version) acts as an admin until a SuperUser
 confirms them, and every screen shows an alert saying so.
 
-Jeff: the SuperUser's own guide is SUPERUSER.md (in the program's source,
-not linked from any screen).
+This guards against changes made while LTC Player is running and through
+its screens and tools. A change made by hand to the settings files while
+LTC Player is stopped is not covered.
 
 ## Adding people (admins)
 
