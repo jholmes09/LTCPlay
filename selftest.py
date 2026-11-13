@@ -10622,7 +10622,7 @@ def test_schedule_late_limit_round_two():
                   f"+{off} s with Run off: quietly MISSED: {s1.status}")
         else:
             check(tried and tried[-1]["outcome"] == "refused" and
-                  "Run has not been pressed" in tried[-1]["text"] and
+                  "Show control is off" in tried[-1]["text"] and
                   s1.status in (S2.FAULT, S2.MISSED),
                   f"+{off} s with Run off: refused in words, not started: "
                   f"{s1.status} {[(r['outcome'], r['text']) for r in tried]}")
@@ -16676,8 +16676,9 @@ def test_schedule_run_warning_says_only_what_is_true():
     svc.run_gate = lambda: True
     svc.preroll = types.SimpleNamespace(skip=lambda: "Programming Run")
     w = svc._run_warning(now)
-    check(w == "A Programming Run is in force: the 18:00 show (show 1) "
-              "will NOT start. Press Stop, choose Show, then Run.",
+    check(w == "A rehearsal is on: the 18:00 show (show 1) "
+              "will NOT start. End rehearsal, choose Show, then turn show "
+              "control on.",
           f"a Programming Run says the show will not start: {w!r}")
     _no_dashes(w, "programming run warning")
     svc.preroll = types.SimpleNamespace(skip=lambda: "")
@@ -16699,8 +16700,9 @@ def test_schedule_run_off_says_the_next_show_will_not_start():
     S, svc = n.S, n.svc
     from datetime import timedelta
     sv = svc.state_view()
-    check(sv.get("run_warning") == "Run is off: the 18:00 show (show 1) "
-                                   "will NOT start. Press Run.",
+    check(sv.get("run_warning") == "Show control is off: the 18:00 show "
+                                   "(show 1) will NOT start. Turn show "
+                                   "control on.",
           f"Run off with show 1 to come: {sv.get('run_warning')!r}")
     _no_dashes(sv.get("run_warning"), "run warning")
     check(not svc._run_pressed(), "and nothing pressed Run")
@@ -16734,14 +16736,14 @@ def test_schedule_run_off_says_the_next_show_will_not_start():
           "however far the next show is")
     svc.machine = m0
     n.now[0] = was
-    check("Run is off: the 18:00 show (show 1) will NOT start" in
+    check("Show control is off: the 18:00 show (show 1) will NOT start" in
           svc.tonight_words(), "the answer to a save says it too")
     # On Hold, Run alone would not start it: the warning names Resume too
     # (review of PR #180), from what stands, not from a fixed sentence.
     svc._apply(_op(S, S.HOLD_ON))
     check(svc.state_view().get("run_warning") ==
-          "Run is off: the 18:00 show (show 1) will NOT start. Press Run, "
-          "then Resume.", f"on Hold it says Resume as well: "
+          "Show control is off: the 18:00 show (show 1) will NOT start. "
+          "Turn show control on, then Resume.", f"on Hold it says Resume as well: "
                           f"{svc.state_view().get('run_warning')!r}")
     # Abort and its Reset are removed (2026-10-30): no warning names Reset.
     check("Reset" not in svc.state_view().get("run_warning", ""),
@@ -16774,7 +16776,7 @@ def test_schedule_run_off_says_the_next_show_will_not_start():
           '"warn"' in two,
           "2.0 shows it in the alert slot, a fault only when urgent")
     check('do:runWarnWords(sch.run_warning.split("will NOT start. ")[1] || '
-          '"Press Run.", loc)' in two and
+          '"Turn show control on.", loc)' in two and
           'what:sch.run_warning.split(":")[0]' in two,
           "2.0 takes its headline and its press from the engine's sentence "
           "(Resume on a Hold, a Programming Run), not fixed words; only "
@@ -23262,7 +23264,7 @@ def test_artnet_timecode_never_drifts_from_its_clock():
         check(False, "a stopped clock played a cue")
         m.halt()
     except ValueError as e:
-        check("Run" in str(e), f"the refusal should say to press Run: {e}")
+        check("show control" in str(e), f"the refusal should say to turn show control on: {e}")
     try:
         m2x = _master(C, out=_TcOut())[1]
         m2x.start()
@@ -24458,7 +24460,7 @@ def test_a_stopped_cue_hands_the_rig_back():
             sess.clock_play("Show")
             check(False, "a stopped clock played a cue")
         except SessionError as e:
-            check("Run" in str(e), f"the refusal should say to press Run: {e}")
+            check("show control" in str(e), f"the refusal should say to turn show control on: {e}")
         except Exception as e:
             check(False, f"clock_play let {type(e).__name__} escape: {e}")
         sess.stop()
@@ -33620,7 +33622,7 @@ def test_audio_master_loads_all_or_nothing():
         del sa.open
     check(why is not None and "could not be loaded" in why
           and "could only be read to" in why
-          and "press Stop and Run again" in why and not am.playing,
+          and "turn show control off and on again" in why and not am.playing,
           f"a cue read only halfway could still be started: {why}")
     check(am.snapshot()["audio"]["ready"]["show"] == "failed",
           "the page shows a half-read cue as ready")
@@ -33633,7 +33635,7 @@ def test_audio_master_loads_all_or_nothing():
     real_open(music, "wb").write(raw[:len(raw) // 2])
     why = reload_and_play()
     check(why is not None and "could not be loaded" in why
-          and "press Stop and Run again" in why and not am.playing,
+          and "turn show control off and on again" in why and not am.playing,
           f"a cue cut short after checking could still be started: {why}")
     # Every stem swapped for a whole, consistent, but shorter file after
     # the show was checked: still refused, on the lengths it was checked at.
@@ -42146,7 +42148,7 @@ def test_fire_ice_show_outputs():
     # Nothing running: nothing is playing, and music refuses in words.
     check(show.playing() is False, "nothing running: nothing playing")
     r = show.music_hold(0.25)
-    check(not r.ok and "Run" in r.sentence,
+    check(not r.ok and "show control" in r.sentence,
           f"music with nothing running is refused: {r}")
     check(show.music_frozen() is None, "no clock: frozen is unknown")
     check(not show.pixels_fade_out(0.25).ok, "pixels need a running show")
@@ -42798,7 +42800,7 @@ def test_schedule_never_touches_the_rig_before_run():
     starts = [r for r in svc.journal if r.get("action") == "automatic start"]
     check(len(starts) >= 3 and
           all(r["outcome"] == "refused" and
-              "Run has not been pressed" in r["text"] for r in starts),
+              "Show control is off" in r["text"] for r in starts),
           f"every show that came due (18:00, 18:20, 18:40, 19:00) was "
           f"tried and refused because Run was not pressed: "
           f"{[(r['outcome'], r['text']) for r in starts]}")
@@ -42984,13 +42986,13 @@ def test_refused_starts_say_why_and_what_to_press():
     _fi_walk(n, 18, 1)
     s1 = [s for s in svc.machine.slots if s.n == 1]
     check(s1 and s1[0].status == S.FAULT and R.RUN_OFF in s1[0].reason and
-          "press Run on the Programming screen" in s1[0].reason,
+          "Turn show control on, then Start now" in s1[0].reason,
           f"the slot's status on the rack screen names the reason and what "
           f"to press: {s1}")
     check(got and got[-1][0] == "start" and
-          got[-1][1].startswith("Show 1 did not start: Run has not been "
-                                "pressed") and
-          "press Run on the Programming screen, then Start now" in got[-1][1]
+          got[-1][1].startswith("Show 1 did not start: Show control is "
+                                "off") and
+          "Turn show control on, then Start now" in got[-1][1]
           and "Nothing was sent to the rig" in got[-1][1],
           f"the alert says why and what to press, never only that the show "
           f"did not start: {got[-1:]}")
@@ -43005,8 +43007,8 @@ def test_refused_starts_say_why_and_what_to_press():
           f"{sv.get('start_blocked')}")
     r = svc.operator_press("start-now", "Andy", "Rack screen")
     check(r["ok"] is False and r["text"].startswith(
-              "Start now was refused: Run has not been pressed") and
-          "press Run on the Programming screen" in r["text"] and
+              "Start now was refused: Show control is off") and
+          "Turn show control on, then Start now" in r["text"] and
           "Nothing was started" in r["text"],
           f"Start now with Run off says why at once: {r}")
     check(len(svc.machine.slots) == slots0,
@@ -43293,7 +43295,7 @@ def test_refused_starts_say_why_and_what_to_press():
     r = svc.operator_press("start-now", "Andy", "Rack screen")
     check(r["ok"] is False and "did not load" in r["text"] and
           "show.wav could not be read" in r["text"] and
-          "press Stop and Run again" in r["text"],
+          "turn show control off and on again" in r["text"],
           f"audio that failed to load: says which and what to press: {r}")
     clk._load_failed = {}
     clk._device_ok, clk._fault = False, "The interface was unplugged."
@@ -43333,7 +43335,10 @@ def test_refused_starts_say_why_and_what_to_press():
                  "NEVER_CONFIRMED", "SHOW_START_ERROR"):
         text = getattr(R, name)
         _no_dashes(text, f"ShowRunner.{name}")
-        check("press" in text and not text.rstrip().endswith("."),
+        # What to press: a button ("press ...") or the switch ("turn show
+        # control on/off", Jeff 2026-11-11).
+        check(("press" in text or "turn show control" in text.lower()) and
+              not text.rstrip().endswith("."),
               f"ShowRunner.{name} says what to press and ends without a "
               f"full stop (it is wrapped in FAULT (...)): {text!r}")
     # F8: a failure reported too late to be a failed start (the show runs
@@ -43410,8 +43415,8 @@ def test_reset_says_how_the_rig_stands():
         {"link": "lost"}, {"link": "lost"}, {"connected": False},
         dict(ann, items=[{"name": "Delayed", "available": False}]))
     for part in ("Audio NOT READY (lost): check the show audio interface, "
-                 "then press Stop and Run.",
-                 "Pixels NOT READY: Run is not pressed. Press Run.",
+                 "then turn show control off and on.",
+                 "Pixels NOT READY: show control is off. Turn it on.",
                  "Flame link NOT READY: flamesafe is not connected. Start "
                  "flamesafe.",
                  "Timecode NOT READY: MadMapper (10.250.1.1) is not taking "
@@ -44212,7 +44217,7 @@ def test_fire_ice_runner_reports_the_show():
     _settle(svc, c)
     rows = [r for r in svc.journal if r.get("action") == "automatic start"]
     check(rows and rows[-1]["outcome"] == "refused" and
-          "Run has not been pressed" in rows[-1]["text"],
+          "Show control is off" in rows[-1]["text"],
           f"no Run: the start is refused in words: {rows[-1:]}")
     n.w.runner.poll()
     _settle(svc, c)
@@ -47776,7 +47781,7 @@ def test_every_show_start_clears_the_pixels():
     # 2.0's Schedule tab: from its pane to the next one.
     sched2 = rack2[rack2.find('id="t-schedule"'):]
     sched2 = sched2[:sched2.find('<section class="pane"')]
-    check("Programming: Show file card, Stop, then Run." in said and
+    check("Programming: End rehearsal, then Start rehearsal." in said and
           "On 2.0: the Schedule tab's Show file card." in said and
           "Open in 1.0" not in said and len(said.split()) <= 30 and
           '<div class="card col" id="p-run-card" hidden>' in sched2 and
@@ -54597,7 +54602,7 @@ def test_engine_refuses_run_with_a_bench_hook_outside_the_soak():
                  "LTCPLAY_BENCH_STALLS", "LTCPLAY_BENCH_SENDGAPS",
                  "LTC_TRACEMALLOC", "LTCPLAY_BENCH_SOMETHING_NEW"):
         why = B.run_refusal({name: "1"}, me)
-        check(why and name in why and "Run refused" in why
+        check(why and name in why and "Show control on refused" in why
               and "—" not in why and "–" not in why,
               f"{name} refuses Run in a sentence naming it, no dashes: "
               f"{why}")
@@ -54625,7 +54630,7 @@ def test_engine_refuses_run_with_a_bench_hook_outside_the_soak():
         try:
             c.start("show.json")
         except SessionError as e:
-            check("Run refused" not in str(e),
+            check("Show control on refused" not in str(e),
                   f"with no hook set, Run is not refused for one: {e}")
     finally:
         os.environ.pop("LTCPLAY_BENCH_FAKE_AUDIO", None)
@@ -76146,7 +76151,7 @@ def test_timed_purge_every_end_cause():
             check_end(m)
         # Run (refused or not).
         if start():
-            m = ended("Run", "Run was pressed")
+            m = ended("Run", "Show control was turned on")
             R.ask("POST", "/api/start", {"timeline": "nope.json"},
                   client=loop)
             check_end(m)
@@ -86494,12 +86499,12 @@ def test_artnet_faults_only_for_the_show_in_use():
               f"nothing Run yet: no fault, no alert, the card amber and "
               f"naming the file: {ck} {al}")
         check(NOTE[0].startswith("Art-Net receivers, a note: No show is "
-                                 "loaded, Run or picked yet") and
+                                 "loaded, turned on or picked yet") and
               "soak_show.json: " in NOTE[0] and "10.99.0.1" in NOTE[0],
               f"the rack screen is given one note: {NOTE[0]!r}")
-        check(rm.AMBIGUOUS.startswith("No show is loaded, Run or picked "
-                                      "yet, so no show file is judged as "
-                                      "a fault"),
+        check(rm.AMBIGUOUS.startswith("No show is loaded, turned on or "
+                                      "picked yet, so no show file is "
+                                      "judged as a fault"),
               f"the note says why: {rm.AMBIGUOUS!r}")
         # The only show file in the folder is the show that will run: its
         # fault stands, with nothing picked.
@@ -87824,7 +87829,7 @@ def test_live_flame_engine_routes_roles_and_presses():
         # Run (/api/start) ends it before the session starts.
         lf.on = True
         http("/api/start", {"timeline": "nothing.json"}, cookie=jeff)
-        check(not lf.on and "Run was pressed" in lf.calls[-1][1],
+        check(not lf.on and "Show control was turned on" in lf.calls[-1][1],
               f"Run ends it: {lf.calls[-1]}")
     finally:
         httpd.server_close()
@@ -87879,11 +87884,11 @@ def test_live_flame_engine_routes_roles_and_presses():
     r.control = types.SimpleNamespace(
         session=types.SimpleNamespace(running=True, clock=None),
         state=lambda: {})
-    check("Run is pressed" in r.live_flame_blockers(),
+    check("show control is on" in r.live_flame_blockers(),
           "Run pressed (the session running): named")
     r.control = types.SimpleNamespace(
         session=None, state=lambda: {"starting": True})
-    check("Run is pressed" in r.live_flame_blockers(),
+    check("show control is on" in r.live_flame_blockers(),
           "Run pressed (the engine's state says starting): named")
     r.control = types.SimpleNamespace(session=None, state=lambda: {})
     r.schedule = types.SimpleNamespace(
@@ -91987,7 +91992,7 @@ def test_fireball_at_the_engine():
         check(st == 200 and link.cur[54] == 255 and v["blocked"] == "",
               f"Run pressed: the Fireball page still works (Jeff: at any "
               f"time, during a show too): {out} {v['blocked']!r}")
-        check("Run is pressed" in cl_why,
+        check("Show control is on" in cl_why,
               f"but the cleaning's rules still refuse Run pressed: {cl_why}")
         st, out = beat(set(), "a9", 2)
         check(st == 200 and link.cur is None, "all off")
@@ -95873,7 +95878,7 @@ def test_preroll_start_now_checks_first_and_never_starts_on_a_failure():
           f"Programming Run: the scheduled show is not started: "
           f"{svc.machine.state} {n.ran}")
     rows = [x for x in svc.journal if x.get("outcome") == "programming"]
-    check(rows and "Programming Run" in rows[-1]["text"],
+    check(rows and "a rehearsal is on" in rows[-1]["text"],
           f"and the journal says why: {rows[-1:]}")
     c.close()
     n.link.close()
@@ -98671,6 +98676,45 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
     print("  ok")
 
 
+def test_show_control_refusals_say_turn_it_off():
+    section("show control (Jeff, 2026-11-11; cold review of #240): a "
+            "refusal while show control is on says turn it off (End "
+            "rehearsal in a rehearsal), never press Stop: Stop leaves it "
+            "on. The timed purge, a new show file and the terminal's "
+            "rig-not-answering line")
+    import inspect
+    import types
+    from ltcplay import remote as RM
+    from ltcplay import display as DP
+    want = "turn show control off first (End rehearsal in a rehearsal)"
+    run = types.SimpleNamespace(running=True)
+    for how, ctl in (
+            ("the session running",
+             types.SimpleNamespace(session=run, state=lambda: {})),
+            ("the engine's state starting",
+             types.SimpleNamespace(session=None,
+                                   state=lambda: {"starting": True}))):
+        fake = types.SimpleNamespace(schedule=None, control=ctl)
+        why = RM.Remote.timed_purge_blockers(fake, None)
+        check(why.startswith("Show control is on") and want in why and
+              "press Stop" not in why,
+              f"a timed purge with {how}: {why!r}")
+    fake = types.SimpleNamespace(
+        _show_live=lambda: False,
+        control=types.SimpleNamespace(_starting=False, session=run))
+    code, why = RM.Remote._new_show_refusal(fake)
+    check(code == 409 and "Turn show control off first (End rehearsal in "
+          "a rehearsal)" in why and "Press Stop" not in why and
+          "Nothing was written" in why,
+          f"a new show file with a show file running: {why!r}")
+    src = inspect.getsource(DP.warnings_for)
+    check("Turn show control off and on (on the Mac page: " in src and
+          "Stop and Run after it is back" not in src,
+          "the terminal's rig-not-answering line says turn show control "
+          "off and on (Stop, then Run on the Mac page)")
+    print("  ok")
+
+
 # ------------------------------------------- interface 2.0 (the SHOW tab) --
 
 def _op_shaped(full):
@@ -99995,12 +100039,12 @@ t(goLook(s, false, true).mode === "start" && !goLook(s, false, true).off, "betwe
 // Where Run is, by name (the Windows stress test, 2026-11-09), and Run
 // show in the alert slot on the show PC only, with the Show row.
 s = base(); s.show.running = false; s.show.show_control_on = false;
-s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
+s.schedule.run_warning = "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.";
 let ri = alertItems(s).find(i => i.key === "run");
-t(ri && ri.do === "Press the Run show button on the show PC's main screen." && !ri.act, "an iPad: the button named, on the show PC; no Run here: " + JSON.stringify(ri));
+t(ri && ri.do === "Turn show control on at the show PC." && ri.what === "Show control is off." && !ri.act, "an iPad: turned on at the show PC, 8 words; no button here: " + JSON.stringify(ri));
 globalThis.ME = {local:true};
 ri = alertItems(s).find(i => i.key === "run");
-t(ri && ri.do === "Press the Run show button on the main screen." && ri.act === "run" && ri.full === "Run is off: the 18:00 show (show 1) will NOT start. Press the Run show button on the main screen.", "the show PC: the button named, and Run show in the slot: " + JSON.stringify(ri));
+t(ri && ri.do === "Turn show control on." && ri.what === "Show control is off." && ri.act === "run" && ri.full === "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.", "the show PC: the engine's words, and Turn show control on in the slot: " + JSON.stringify(ri));
 STALE_NOW = true;
 ri = alertItems(s).find(i => i.key === "run");
 t(ri && !ri.act && runHereShown(s, true, true, false) === "", "no contact: no Run show in the slot (the big button's own gate)");
@@ -100013,25 +100057,25 @@ t(ri && !ri.act && runHereShown(s, false, true, false) === "", "without the Show
 // On a Hold the big button is Resume and the engine says Run, then
 // Resume: Run show is by the warning, and named so (cold review of #227).
 s = base(); s.show.running = false; s.show.show_control_on = false; s.schedule.state = "HOLD"; s.schedule.held = true;
-s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run, then Resume.";
+s.schedule.run_warning = "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on, then Resume.";
 t(goLook(s, false, true).mode === "resume" && runHereShown(s, false, true, false) === "held", "held, Run off: Resume on the big button, Run show by the warning");
 ri = alertItems(s).find(i => i.key === "run");
-t(ri && ri.act === "run" && ri.do === "Press the Run show button by this warning, then Resume.", "held, the show PC: the button by the warning: " + JSON.stringify(ri));
+t(ri && ri.act === "run" && ri.do === "Turn show control on, then Resume.", "held, the show PC: the button by the warning: " + JSON.stringify(ri));
 globalThis.ME = undefined;
 ri = alertItems(s).find(i => i.key === "run");
-t(ri && !ri.act && ri.do === "Press Run show on the show PC, then Resume.", "held, an iPad: Run show on the show PC: " + JSON.stringify(ri));
+t(ri && !ri.act && ri.do === "Show PC: turn show control on, then Resume.", "held, an iPad: on the show PC, 8 words: " + JSON.stringify(ri));
 globalThis.ME = {local:true};
 t(runHereShown(s, true, true, false) === "", "held, no contact: no Run show");
 s.me = {may:{show:false}};
 t(runHereShown(s, false, true, false) === "", "held, signed out: no Run show");
-s = base(); s.show.running = true; s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
+s = base(); s.show.running = true; s.schedule.run_warning = "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.";
 t(runHereShown(s, false, true, false) === "", "Run on: no Run show");
 // Run show's press here: the big button's wait after a Stop, its gates
 // at the press, and the Schedule tab's button drawn with contact.
 { let RAN = 0, SAID2 = [];
   const runShow = () => { RAN++; }, say = (a) => SAID2.push(a);
   const FLIPPED = {}; let HALT_BUSY = false, ST = base();
-  ST.show.running = false; ST.show.show_control_on = false; ST.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
+  ST.show.running = false; ST.show.show_control_on = false; ST.schedule.run_warning = "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.";
   const TN = {hidden:true}; const $ = id => id === "tn-run" ? TN : null;
   eval(RUN_HERE_FNS);
   globalThis.ME = {local:true};
@@ -100043,25 +100087,25 @@ t(runHereShown(s, false, true, false) === "", "Run on: no Run show");
   STALE_NOW = false; drawRunHere(false); t(TN.hidden === false, "the Schedule tab's Run show: shown on the show PC, with contact, Run off");
   ST.me = {may:{show:false}}; drawRunHere(false); runShowHere(); t(TN.hidden === true && RAN === 1, "the Schedule tab's Run show: none signed out");
   globalThis.ME = undefined; ST.me = base().me; drawRunHere(false); t(TN.hidden === true, "the Schedule tab's Run show: none on an iPad"); }
-s = base(); s.schedule.run_warning = "A Programming Run is in force: the 18:00 show (show 1) will NOT start. Press Stop, choose Show, then Run.";
+s = base(); s.schedule.run_warning = "A rehearsal is on: the 18:00 show (show 1) will NOT start. End rehearsal, choose Show, then turn show control on.";
 ri = alertItems(s).find(i => i.key === "run");
 t(ri && !ri.act && ri.full === s.schedule.run_warning, "a Programming Run: the engine's words, no Run button");
 // Run show by the warning is decided by the boolean, never the warning's
 // first words (show control, PR 1): the same sentence either way.
 globalThis.ME = {local:true};
-s = base(); s.schedule.run_warning = "A Programming Run is in force: the 18:00 show (show 1) will NOT start. Press Stop, choose Show, then Run.";
+s = base(); s.schedule.run_warning = "A rehearsal is on: the 18:00 show (show 1) will NOT start. End rehearsal, choose Show, then turn show control on.";
 t(runHereShown(s, false, true, false) === "", "a warning with Run on: no Run show");
 s.show.show_control_on = false;
 t(runHereShown(s, false, true, false) === "run", "the same warning with the boolean off: Run show");
 delete s.show.show_control_on;
 t(runHereShown(s, false, true, false) === "run", "the same warning with no boolean: off, so Run show (never treated as on)");
-s = base(); s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
+s = base(); s.schedule.run_warning = "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.";
 t(runHereShown(s, false, true, false) === "", "the Run is off sentence with the boolean on: no Run show (the sentence is not read)");
 s.schedule.run_warning = null; s.show.show_control_on = false;
 t(runHereShown(s, false, true, false) === "", "no warning: no Run show by it");
 globalThis.ME = undefined;
-s = base(); s.schedule.run_warning = "A Programming Run is in force: the 18:00 show (show 1) will NOT start. Press Stop, choose Show, then Run.";
-t(runWarnWords("Run is off: the 18:00 show (show 1) will NOT start. Press Run.", true) === "Run is off: the 18:00 show (show 1) will NOT start. Press the Run show button on the main screen.", "Press Run.");
+s = base(); s.schedule.run_warning = "A rehearsal is on: the 18:00 show (show 1) will NOT start. End rehearsal, choose Show, then turn show control on.";
+t(runWarnWords("Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.", true) === "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on." && runWarnWords("Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.", false) === "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on at the show PC." && runWarnWords("A rehearsal is on: the 18:00 show (show 1) will NOT start. End rehearsal, choose Show, then turn show control on.", false) === "A rehearsal is on: the 18:00 show (show 1) will NOT start. End rehearsal, choose Show, then turn show control on.", "the run warning: the engine's words on the show PC, at the show PC elsewhere; a rehearsal's as it is");
 globalThis.ME = undefined;
 t(goLook(s, true, true).off, "no contact: nothing that starts");
 s = base(); s.schedule.held = true;
@@ -107611,7 +107655,7 @@ def test_fireball_practice_engine():
         trig("the schedule gone", lambda g: setattr(g.svc, "machine", None),
              "not loaded")
         trig("Run off", lambda g: setattr(g.sess, "running", False),
-             "Run was turned off")
+             "Show control was turned off")
         trig("a Hold pressed", lambda g: g.p.request_end(
             "Hold was pressed"), "Hold was pressed")
         trig("a pause during the step", lambda g: setattr(
@@ -113614,7 +113658,8 @@ def test_start_at_cue_route():
         # No show running.
         ctl.session = None
         code, out, _h = press()
-        check(code == 409 and "Press Run" in out["error"] and not presses,
+        check(code == 409 and "Turn show control on" in out["error"] and
+              not presses,
               f"Run not pressed: refused: {out}")
         ctl.session = sess
         # A broken cue file: refused in its words, never guessed.
@@ -114375,8 +114420,8 @@ def _ui2_status_tonight():
     st["schedule"].update({
         "state": "STANDBY", "running": None,
         "next": {"show": 5, "start": "19:50", "in_s": 1500},
-        "run_warning": "Run is off: show 5 at 19:50 will not start until "
-                       "Run is pressed.",
+        "run_warning": "Show control is off: the 19:50 show (show 5) will "
+                       "NOT start. Turn show control on.",
         "slots": [
             {"show": 3, "start": "19:10", "status": "DONE"},
             {"show": 4, "start": "19:32", "planned": "19:30",
@@ -114540,7 +114585,7 @@ def test_ui2_schedule_tab_in_a_browser():
                     "Show 5 19:50 PENDING | ",
                     "Show 6 20:10 PENDING | Added for tonight only."] and
                   a["next"] == "Next: Show 5 at 19:50" and
-                  a["warn"].startswith("Run is off: show 5"),
+                  a["warn"].startswith("Show control is off: the 19:50 show"),
                   f"{where}: tonight's shows with 1.0's notes, Next and "
                   f"the Run warning: {a}")
             check(a["editor"] and r["gets"] >= 1 and
@@ -115899,6 +115944,7 @@ if __name__ == "__main__":
         test_streamdeck_local_schedule_operator_reverts_when_server_drops,
         test_streamdeck_deck_journal_prints_and_posts,
         test_streamdeck_reconnect_never_remembers_old_state,
+        test_show_control_refusals_say_turn_it_off,
         test_streamdeck_never_imports_flamesafe,
         test_conductor_devices_hold_blanks_beyond_before_anything_fades,
         test_conductor_devices_stop_blanks_at_once_never_ramps,

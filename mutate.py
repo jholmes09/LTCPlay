@@ -2054,8 +2054,8 @@ MUTATIONS = [
   '        if length_s is None:\n            length_s = 1e6\n        if False:'),
 
  ('play and halt race each other', 'ltcplay/clock.py',
-  '        with self._lock:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Press Run first.")',
-  '        if True:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Press Run first.")'),
+  '        with self._lock:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Turn show control on first.")',
+  '        if True:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Turn show control on first.")'),
 
  ('an unknown hour is taken as the show', 'ltcplay/clock.py',
   '    role = zones.get(h)\n',
@@ -10266,7 +10266,7 @@ def build():
  ("pixels: the look-in-show CUES FAULT names a button the Fire & Ice "
   "screens do not have",
   'ltcplay/fire_ice.py',
-  '                "Programming: Show file card, Stop, then Run. "\n',
+  '                "Programming: End rehearsal, then Start rehearsal. "\n',
   '                "Programming screen: press Follow timecode. "\n'),
 
  ("pixels: the look-in-show CUES FAULT sends a 2.0 screen to 1.0, not to "
@@ -21907,8 +21907,8 @@ def build():
 
  ("review180: rack screen 2.0 says only Press Run, whatever the warning asks",
   "ltcplay/web/remote2.html",
-  "do:runWarnWords(sch.run_warning.split(\"will NOT start. \")[1] || \"Press Run.\", loc)",
-  "do:runWarnWords(\"Press Run.\", loc)"),
+  "do:runWarnWords(sch.run_warning.split(\"will NOT start. \")[1] || \"Turn show control on.\", loc)",
+  "do:runWarnWords(\"Turn show control on.\", loc)"),
 
  ("play-from cues: a cue right at the end of the show audio is saved",
   "ltcplay/play_from.py",
@@ -23846,6 +23846,23 @@ def build():
   "ltcplay/remote.py",
   "            if not (cs.get(\"running\") or cs.get(\"starting\")):\n                return False\n            gate = getattr(self.schedule, \"run_gate\", None)",
   "            if False:\n                return False\n            gate = getattr(self.schedule, \"run_gate\", None)"),
+
+ # Cold review of #240 (Jeff, 2026-11-11): Stop leaves show control on, so
+ # a refusal while it is on says turn it off, never press Stop.
+ ('show control: the timed purge refusal says press Stop again',
+  'ltcplay/remote.py',
+  '                       False):\n                return ("Show control is on (a show file is running), so "\n                        "the show file owns the flame channels; turn show "\n                        "control off first (End rehearsal in a rehearsal).")\n            try:\n                cs = self.control.state() or {}',
+  '                       False):\n                return ("Run is pressed (a show file is running), so the "\n                        "show file owns the flame channels; press Stop first.")\n            try:\n                cs = self.control.state() or {}'),
+
+ ('show control: a new show file refusal says press Stop again',
+  'ltcplay/remote.py',
+  '            return 409, ("A show file is running. Turn show control off "\n                         "first (End rehearsal in a rehearsal), then make "',
+  '            return 409, ("A show file is running. Press Stop first, then "\n                         "make "'),
+
+ ('show control: the rig-not-answering line says Stop and Run again',
+  'ltcplay/display.py',
+  'f"and the switch. Turn show control off and on (on the Mac page: "\n                f"Stop, then Run) after it is back, or the socket "',
+  'f"and the switch. Stop and Run after it is back, or the socket "'),
 
  ("hazer test: show control's state unreadable is read as off",
   'ltcplay/remote.py',

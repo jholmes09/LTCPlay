@@ -1826,16 +1826,16 @@ const ALERT_DO = {deck:"Check its USB cable.", audio:"Check the audio box.", vid
   timecode:"Tap here. Call Jeff.", lasers:"Disarm lasers if unsure.", link:"Use the Deck to disarm.",
   output:"Turn on MadMapper output."};
 let STOP_SAID = null, DISARM_FAIL = null, ALERT_KEY = null, FAULTS_SEEN = null, KEYS_SEEN = null;
-// The engine's "Press Run" with the button named: on the show PC, "the
-// Run show button on the main screen"; elsewhere, Run is pressed on the
-// show PC. On a Hold ("Press Run, then Resume") the big button is Resume,
-// so Run show is the one by the warning (runHereShown). Every other word
-// is the engine's own. Pure.
+// The engine's run warning ("Show control is off: ... will NOT start. Turn
+// show control on[, then Resume].") as it is on the show PC, where the
+// slot's own button is Turn show control on; elsewhere it is turned on at
+// the show PC, so that is said (8 words or fewer). Every other word is
+// the engine's own. Pure.
 function runWarnWords(text, local){
   const t = String(text || "");
-  if(/Press Run, then Resume/.test(t)) return t.replace(/Press Run(?=,)/, local ? "Press the Run show button by this warning" : "Press Run show on the show PC");
-  const where = local ? "the Run show button on the main screen" : "the Run show button on the show PC's main screen";
-  return t.replace(/Press Run(?=[,.])/, "Press " + where);
+  if(local) return t;
+  if(/Turn show control on, then Resume/.test(t)) return t.replace("Turn show control on, then Resume", "Show PC: turn show control on, then Resume");
+  return t.replace(/Turn show control on(?=\.)/, "Turn show control on at the show PC");
 }
 // Run show where the Run warning is (the alert slot, the Schedule tab),
 // with a Run warning while Run is off (runIsOn: the engine's boolean, not
@@ -1890,14 +1890,14 @@ function alertItems(st){
   if(sch.error) items.push({key:"sch", tone:"bad", what:"Schedule problem.", do:"Tap here for details.", full:sch.error});
   // Run off with a show to come (an engine restart leaves it off): the
   // engine's sentence, and on the show PC Run show (runHereShown).
-  // The headline and the press come from the engine's own sentence ("Run is off: ... will NOT start. Press Run, then Resume."; a Programming Run says so), never fixed here (review of PR #180).
+  // The headline and the press come from the engine's own sentence ("Show control is off: ... will NOT start. Turn show control on, then Resume."; a rehearsal says so), never fixed here (review of PR #180).
   if(sch.run_warning){
     // Where Run is, by name (the Windows stress test, 2026-11-09): "Press
     // Run" named no button. Where the big button is Run show, the slot's
     // button is Run show itself (runShow: its route, role and confirm).
     const loc = typeof ME !== "undefined" && !!(ME && ME.local);
     const runAct = runHereShown(s, stale(), loc, START_WAITING) ? "run" : undefined;
-    items.push({key:"run", tone:sch.run_warning_urgent ? "bad" : "warn", what:sch.run_warning.split(":")[0] + ".", do:runWarnWords(sch.run_warning.split("will NOT start. ")[1] || "Press Run.", loc), full:runWarnWords(sch.run_warning, loc), act:runAct});
+    items.push({key:"run", tone:sch.run_warning_urgent ? "bad" : "warn", what:sch.run_warning.split(":")[0] + ".", do:runWarnWords(sch.run_warning.split("will NOT start. ")[1] || "Turn show control on.", loc), full:runWarnWords(sch.run_warning, loc), act:runAct});
   }
   if(sch.trouble) items.push({key:"tr", tone:"warn", what:"Show PC trouble.", do:"Tap here for details.", full:sch.trouble});
   if(sch.conductor === false && sch.attached) items.push({key:"nocond", tone:"warn", what:"No show conductor here.", do:"Tap here for details.", full:"No show conductor is attached in this engine: Stop, Hold and Resume are journaled by the scheduler only."});

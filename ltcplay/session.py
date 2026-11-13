@@ -845,7 +845,7 @@ class Session:
         any other refuses it. Both left out, the start is exactly as
         before."""
         if not self._running:
-            raise SessionError("Nothing is running. Press Run first.")
+            raise SessionError("Nothing is running. Turn show control on first.")
         if self.clock is None or not self.clock.master:
             raise SessionError("This show follows incoming timecode, so this "
                                "machine cannot start the clock.")
