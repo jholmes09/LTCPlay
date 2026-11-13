@@ -99783,6 +99783,58 @@ console.log(JSON.stringify(out));
     print("  ok")
 
 
+
+def test_ui2_big_button_second_line_is_state_only():
+    section("2.0's big button (Jeff, 2026-11-11: no line under a label that "
+            "only says what the label says): Resume, Start now, Loading, "
+            "Checking rig and Show running have no second line; a second "
+            "line is kept only for live state or a reason (No contact, Held "
+            "after Stop, No shows start, No schedule here, Not ready: tap)")
+    one, two = _ui2_pages()
+    lo = one[one.find("// LOGIC BEGIN"):one.find("// LOGIC END")]
+    fns = "\n".join(_js_function(two, n) or "" for n in (
+        "isHeld", "isLive", "runIsOn", "isRehearsal", "signWhy", "goLook"))
+    check("function goLook(" in fns, "goLook is found")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    js = lo + "\nlet CD = null; const monoNow = () => 0;\n" + fns + r"""
+const base = () => ({schedule:{attached:true, state:"STANDBY", next:{show:4, start:"19:30", in_s:900}},
+  show:{running:true, show_control_on:true}, flames:{connected:true, groups:[]}, me:{may:{show:true, arm:true}}});
+const out = {};
+let s = base(); out.start = goLook(s, false, true);
+out.startStale = goLook(s, true, true);
+s = base(); s.schedule.held = true; out.resume = goLook(s, false, true);
+s = base(); s.schedule.stop_held = true; out.stopHeld = goLook(s, false, true);
+s = base(); s.schedule.state = "SHOW"; out.live = goLook(s, false, true);
+s = base(); s.schedule.start_waiting = true; out.loading = goLook(s, false, true);
+s = base(); s.preroll = {state:"checking", label:"Show 4"}; out.checking = goLook(s, false, true);
+s = base(); s.schedule = {attached:false}; s.show = {running:false}; out.nosched = goLook(s, false, true);
+s = base(); s.schedule.start_blocked = {text:"The show audio is missing."}; out.blocked = goLook(s, false, true);
+const r = {};
+for(const k in out) r[k] = [out[k].label, out[k].why];
+console.log(JSON.stringify(r));
+"""
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        got = json.loads(r.stdout.strip() or "null")
+    except ValueError:
+        got = None
+    want = {"start": ["Start now", ""], "startStale": ["Start now", "No contact"],
+            "resume": ["Resume", ""], "stopHeld": ["Resume", "Held after Stop"],
+            "live": ["Show running", ""], "loading": ["Loading", ""],
+            "checking": ["Checking rig", ""],
+            "nosched": ["Start now", "No schedule here"],
+            "blocked": ["Start now", "Not ready: tap"]}
+    check(r.returncode == 0 and got == want,
+          f"the big button's second line is state or a reason only: {got} "
+          f"{r.stderr.strip()[:600]}")
+    print("  ok")
+
+
 def test_ui2_stop_lone_tap_never_covers_a_stop():
     section("2.0's Stop show (cold review of #227): a lone tap that times "
             "out says \"Stop not sent: tap twice\" for 2 s, never after a "
@@ -108090,6 +108142,15 @@ def test_ui2_arrange_and_switches_are_1_0s():
             check(blk.count(d) == 1, f"1.0's {what} has the dropped part "
                                      f"{d[:40]!r}")
             blk = blk.replace(d, "")
+        if what == "Arming from a screen and Live flame programming":
+            # The one named difference (Jeff, 2026-11-11: less prose): the
+            # switch's words are shorter; remote.py says the same (checked
+            # with the screen arming switch).
+            m1 = re.search(r'const SCREEN_ARMING_ENABLES = "[^"]*";', blk)
+            m2 = re.search(r'const SCREEN_ARMING_ENABLES = "[^"]*";', two)
+            check(m1 and m2, "the arming switch's words are found")
+            if m1 and m2:
+                blk = blk.replace(m1.group(0), m2.group(0))
         check(len(blk) > 300 and blk in two,
               f"2.0's {what} is 1.0's code, word for word ({len(blk)} "
               f"characters)")
@@ -113474,7 +113535,7 @@ def test_ui2_schedule_tab_makes_1_0_presses():
     for need in ('id="tonight"', 'id="tn-run-warn"', 'id="tn-next"',
                  'id="sched-edit" hidden', 'id="se-days"', 'id="se-save"',
                  'id="se-reload"', 'id="se-msg"', 'id="se-note"',
-                 'id="se-tz-now"', "Tap a show to see its notes."):
+                 'id="se-tz-now"'):
         check(need in sched, f"the Schedule tab has {need}")
     # Each field: 1.0's id, type and limits.
     for fid in ("se-tz", "se-first", "se-last", "se-len", "se-guard",
@@ -114206,13 +114267,29 @@ def _ui2_tools_copies(one):
             ("Choose (Stream Deck operator)",
              blk('$("b-deck-op").addEventListener(')),
             ("Use (an address)", blk('$("net-uses").addEventListener(')),
+            # Less prose (Jeff, 2026-11-11): the confirms are shorter,
+            # every condition kept.
             ("Restart the engine",
-             sub(blk('$("net-restart").addEventListener('),
-                 '"Yes, restart", "start"', '"Yes, restart", "green"')),
+             sub(sub(blk('$("net-restart").addEventListener('),
+                     '"Yes, restart", "start"', '"Yes, restart", "green"'),
+                 '"LTC Player restarts the show engine so it listens on the '
+                 'saved show network address. It is refused while a show '
+                 'runs or a flame group is armed. flamesafe and the Stream '
+                 'Deck program keep running."',
+                 '"Restarts the show engine on the saved address. Refused '
+                 'while a show runs or a group is armed. flamesafe and the '
+                 'Stream Deck keep running."')),
             ("Reload engine",
-             sub(sub(blk('$("cfg-reload").addEventListener('),
-                     '"Yes, reload", "start"', '"Yes, reload", "green"'),
-                 '$("ctl-msg")', '$("cfg-msg")', 2)),
+             sub(sub(sub(blk('$("cfg-reload").addEventListener('),
+                         '"Yes, reload", "start"', '"Yes, reload", "green"'),
+                     '$("ctl-msg")', '$("cfg-msg")', 2),
+                 '"LTC Player restarts the show engine so it reads the '
+                 'changed settings files. It is refused while a show runs or '
+                 'a flame group is armed. flamesafe and the Stream Deck '
+                 'program keep running."',
+                 '"Restarts the show engine to read the changed files. '
+                 'Refused while a show runs or a group is armed. flamesafe '
+                 'and the Stream Deck keep running."')),
             ("Check the rig", blk('$("rc-run").addEventListener(')),
             ("Close this window", blk('$("info-exit").addEventListener('))]
     for ln in ('$("net-pick").addEventListener("change", () => { '
@@ -114334,57 +114411,6 @@ const shape = (e) => [e.tag, e.className.trim(), e._t].concat(
           f"opText builds a headline, bullets and paragraphs from text, "
           f"markup kept as text, and setOpText rebuilds only on a change: "
           f"{r.stdout.strip()[:800]} {r.stderr.strip()[:600]}")
-    print("  ok")
-
-
-def test_ui2_big_button_second_line_is_state_only():
-    section("2.0's big button (Jeff, 2026-11-11: no line under a label that "
-            "only says what the label says): Resume, Start now, Loading, "
-            "Checking rig and Show running have no second line; a second "
-            "line is kept only for live state or a reason (No contact, Held "
-            "after Stop, No shows start, No schedule here, Not ready: tap)")
-    one, two = _ui2_pages()
-    lo = one[one.find("// LOGIC BEGIN"):one.find("// LOGIC END")]
-    fns = "\n".join(_js_function(two, n) or "" for n in (
-        "isHeld", "isLive", "runIsOn", "isRehearsal", "signWhy", "goLook"))
-    check("function goLook(" in fns, "goLook is found")
-    import shutil
-    node = shutil.which("node")
-    if not node:
-        check(not IN_CI, "node is missing on this CI runner")
-        print("  ok")
-        return
-    js = lo + "\nlet CD = null; const monoNow = () => 0;\n" + fns + r"""
-const base = () => ({schedule:{attached:true, state:"STANDBY", next:{show:4, start:"19:30", in_s:900}},
-  show:{running:true, show_control_on:true}, flames:{connected:true, groups:[]}, me:{may:{show:true, arm:true}}});
-const out = {};
-let s = base(); out.start = goLook(s, false, true);
-out.startStale = goLook(s, true, true);
-s = base(); s.schedule.held = true; out.resume = goLook(s, false, true);
-s = base(); s.schedule.stop_held = true; out.stopHeld = goLook(s, false, true);
-s = base(); s.schedule.state = "SHOW"; out.live = goLook(s, false, true);
-s = base(); s.schedule.start_waiting = true; out.loading = goLook(s, false, true);
-s = base(); s.preroll = {state:"checking", label:"Show 4"}; out.checking = goLook(s, false, true);
-s = base(); s.schedule = {attached:false}; s.show = {running:false}; out.nosched = goLook(s, false, true);
-s = base(); s.schedule.start_blocked = {text:"The show audio is missing."}; out.blocked = goLook(s, false, true);
-const r = {};
-for(const k in out) r[k] = [out[k].label, out[k].why];
-console.log(JSON.stringify(r));
-"""
-    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
-    try:
-        got = json.loads(r.stdout.strip() or "null")
-    except ValueError:
-        got = None
-    want = {"start": ["Start now", ""], "startStale": ["Start now", "No contact"],
-            "resume": ["Resume", ""], "stopHeld": ["Resume", "Held after Stop"],
-            "live": ["Show running", ""], "loading": ["Loading", ""],
-            "checking": ["Checking rig", ""],
-            "nosched": ["Start now", "No schedule here"],
-            "blocked": ["Start now", "Not ready: tap"]}
-    check(r.returncode == 0 and got == want,
-          f"the big button's second line is state or a reason only: {got} "
-          f"{r.stderr.strip()[:600]}")
     print("  ok")
 
 
@@ -115480,6 +115506,7 @@ if __name__ == "__main__":
         test_remote_rules_file,
         test_ui2_runs_on_ipados15,
         test_ui2_page_makes_only_1_0_presses,
+        test_ui2_big_button_second_line_is_state_only,
         test_ui2_stop_lone_tap_never_covers_a_stop,
         test_ui2_show_tab_in_a_browser,
         test_ui2_day_makes_only_1_0_presses,
@@ -115546,7 +115573,6 @@ if __name__ == "__main__":
         test_ui2_users_audit_driven,
         test_ui2_show_pc_tools_are_1_0s,
         test_ui2_show_pc_tools_driven,
-        test_ui2_big_button_second_line_is_state_only,
         test_ui2_op_text_shapes_text_with_dom_nodes_only,
     ]
     _stopped = _run_tests(TESTS)
