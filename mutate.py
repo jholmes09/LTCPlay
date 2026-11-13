@@ -30,6 +30,13 @@ per-PR gate; the nightly sweep and a release tag still run everything):
     --list             print what would run and why, then stop
     --catchers FILE    {mutation name: test that caught it} from an earlier
                        sweep, so a changed test re-runs only what it guards
+    --with-core        with --changed or --files: every flamesafe, conductor
+                       and flame link mutation too, whatever the diff (the
+                       release PR into main runs these always)
+    --targets a,b,d/   exactly the mutations of these files (a name ending
+                       in / is a folder, one ending in * a name prefix):
+                       a bench-build PR's mutate-safety shards, and a
+                       nightly sweep over its cap
 
 Speed. None of it changes what a mutation has to survive: the baseline runs
 every test in file order, a mutant is caught only when the suite fails under
@@ -52,6 +59,19 @@ it (twice, with --expected), and the restore is proved byte for byte.
                        the tree with its own home and app-data
                        folders, and each copy runs its own whole baseline
                        first
+    --trust-baseline S the caller vouches that the whole suite, nothing
+                       mutated, just passed in file order on this commit on
+                       this OS in about S seconds (CI: the selftest job the
+                       shard needs). No copy runs the whole baseline before
+                       its first mutation; each runs the tests its
+                       mutations are hinted to (--hints) first instead, and
+                       a mutant's limit is measured from S. Every caught
+                       mutation's stopping test is proved green with
+                       nothing mutated in that copy (run first), or that
+                       copy runs its whole baseline after all; a copy whose
+                       sanity run is red runs its whole baseline at once.
+                       So a verdict never rests on less than it did
+                       without it. Without hints it does nothing.
 """
 import json
 import shutil
@@ -12769,6 +12789,232 @@ def build():
                            f"{name}: locked safety slot {slot} = {v}")''',
   '''                    pass'''),
 
+ ('journal upload: the night still open counts as closed',
+  'ltcplay/auditsend.py',
+  '            if m and m.group(1) < open_n and os.path.isfile(\n',
+  '            if m and m.group(1) <= open_n and os.path.isfile(\n'),
+
+ ('journal upload: a night without its summary counts as closed',
+  'ltcplay/auditsend.py',
+  '            if m and m.group(1) < open_n and os.path.isfile(\n'
+  '                    os.path.join(self.folder,\n'
+  '                                 f"night_{m.group(1)}.summary.md")):\n',
+  '            if m and m.group(1) < open_n:\n'),
+
+ ("journal upload: marked sent without the server's checksum",
+  'ltcplay/auditsend.py',
+  '        took = isinstance(ack, dict) and ack.get("ok") is True and \\\n'
+  '            ack.get("sha256") == sha\n',
+  '        took = isinstance(ack, dict) and ack.get("ok") is True\n'),
+
+ ('journal upload: a failure is marked sent',
+  'ltcplay/auditsend.py',
+  '                if result == "sent":\n',
+  '                if result != "failed":\n'),
+
+ ('journal upload: no backoff after a failure',
+  'ltcplay/auditsend.py',
+  '            return self._next_try <= self._clock()\n',
+  '            return True\n'),
+
+ ('journal upload: an incomplete night is sent as complete',
+  'ltcplay/auditsend.py',
+  '        return {"incomplete": bool(not f["complete"] or said_bad),\n',
+  '        return {"incomplete": False,\n'),
+
+ ('journal upload: the gap list is left out of the metadata',
+  'ltcplay/auditsend.py',
+  '               "incomplete": meta["incomplete"], "gaps": meta["gaps"]}\n',
+  '               "incomplete": meta["incomplete"], "gaps": []}\n'),
+
+ ('journal upload: the token is said in an upload error',
+  'ltcplay/auditsend.py',
+  '            why = re.sub(r"(?i)bearer\\s+\\S+", "Bearer [hidden]", why)\n',
+  '            pass\n'),
+
+ ('journal upload: sent while it is off',
+  'ltcplay/auditsend.py',
+  '            if not cfg["enabled"]:\n'
+  '                return 0\n'
+  '            if not force and not self.due(cfg):\n',
+  '            if False:\n'
+  '                return 0\n'
+  '            if not force and not self.due(cfg):\n'),
+
+ ('journal upload: prune removes a night file the server has not acknowledged',
+  'ltcplay/journal.py',
+  '                    if d >= limit:\n'
+  '                        continue\n',
+  '                    if False:\n'
+  '                        continue\n'),
+
+ ('journal upload: prune keeps an unacknowledged night for ever',
+  'ltcplay/journal.py',
+  '                    if d >= limit:\n',
+  '                    if True:\n'),
+
+ ('journal upload: pruning an unacknowledged night is not said',
+  'ltcplay/journal.py',
+  '        if unsent:\n'
+  '            # Said without naming the upload: the journal is read by\n',
+  '        if False:\n'
+  '            # Said without naming the upload: the journal is read by\n'),
+
+ ('journal upload: pruning keeps unsent nights while the upload is off',
+  'ltcplay/journal.py',
+  '    if not isinstance(doc, dict) or doc.get("enabled") is False:\n',
+  '    if not isinstance(doc, dict):\n'),
+
+ ('journal upload: the engine does not start the night journal upload',
+  'ltcplay/web.py',
+  '        if book is not None:\n'
+  '            # The night journal goes to the same server',
+  '        if False:\n'
+  '            # The night journal goes to the same server'),
+
+ ("journal upload: the engine does not hand over the night files' check",
+  'ltcplay/web.py',
+  '                transport=transport, checker=book.check_night,\n',
+  '                transport=transport,\n'),
+
+ ('journal upload: the Users screen does not show the night journal',
+  'ltcplay/remote.py',
+  '                out["journal_upload"] = jup.status()\n',
+  '                out["journal_upload_"] = jup.status()\n'),
+
+ ('journal upload: the setting does not say the night journal is sent',
+  'ltcplay/web/upload_card.js',
+  'Send the audit log and the night journal to the server every night',
+  'Send the audit log to the server every night'),
+
+ ('journal upload: the card does not say the journal names operators',
+  'ltcplay/web/upload_card.js',
+  'The night journal names each operator and screen.',
+  'The night journal is sent.'),
+
+ ('journal upload: the card hides night files refused by the server',
+  'ltcplay/web/upload_card.js',
+  '" NOT SENT, refused by the server: "',
+  '" "'),
+
+ ('journal upload: a refusal for good stops the later nights',
+  'ltcplay/auditsend.py',
+  '            if 400 <= status < 500 and status not in JOURNAL_RETRY_4XX:\n',
+  '            if False:\n'),
+
+ ('journal upload: a file refused for good is tried again',
+  'ltcplay/auditsend.py',
+  '                if isinstance(bad, dict) and bad.get("sha256") == sha:\n',
+  '                if False:\n'),
+
+ ("journal upload: a file refused for good is not said in the audit log",
+  'ltcplay/auditsend.py',
+  '                    self._note("journal-upload-failed", "error", why,\n',
+  '                    dict(action="journal-upload-failed", result="error", reason=why,\n'),
+
+ ('journal upload: a file changed since sent is never sent again',
+  'ltcplay/auditsend.py',
+  '                if held != sha:\n',
+  '                if not held:\n'),
+
+ ('journal upload: a file sent again does not name the copy it replaces',
+  'ltcplay/auditsend.py',
+  '        if replaces:\n'
+  '            headers["X-LTC-Replaces"] = replaces\n',
+  '        if False:\n'
+  '            headers["X-LTC-Replaces"] = replaces\n'),
+
+ ('journal upload: a file that cannot be read is skipped without a backoff',
+  'ltcplay/auditsend.py',
+  '                    if os.path.isfile(p) and not os.path.islink(p):\n',
+  '                    if False:\n'),
+
+ ('journal upload: a link is sent',
+  'ltcplay/auditsend.py',
+  '        if not stat.S_ISREG(st.st_mode):\n'
+  '            return None\n',
+  '        if False:\n'
+  '            return None\n'),
+
+ ('journal upload: a file larger than the receiver takes is read and sent',
+  'ltcplay/auditsend.py',
+  '        if st.st_size > JOURNAL_MAX_BYTES:\n',
+  '        if False:\n'),
+
+ ('journal upload: the switch is not remembered for pruning',
+  'ltcplay/auditsend.py',
+  '            self._mark_enabled(bool(cfg["enabled"]))\n',
+  '            pass\n'),
+
+ ('receiver: night journal files are refused as not audit days',
+  'tools/audit_receiver.py',
+  '    if NIGHT_RE.match(name):\n',
+  '    if False:\n'),
+
+ ('receiver: a night file with the wrong checksum is stored',
+  'tools/audit_receiver.py',
+  '    if not hmac.compare_digest(sha, h("X-LTC-SHA256")):\n'
+  '        return 400, {"ok": False, "error": "the checksum does not match"}\n'
+  '    root = os.path.join(store, NIGHTS)\n',
+  '    if False:\n'
+  '        return 400, {"ok": False, "error": "the checksum does not match"}\n'
+  '    root = os.path.join(store, NIGHTS)\n'),
+
+ ('receiver: a different night file is acknowledged as the same',
+  'tools/audit_receiver.py',
+  '        if sha == have:\n',
+  '        if True:\n'),
+
+ ('receiver: a night file replaces one it does not name',
+  'tools/audit_receiver.py',
+  '        if wants and hmac.compare_digest(wants, have):\n',
+  '        if True:\n'),
+
+ ('receiver: a refused night file is kept again on every try',
+  'tools/audit_receiver.py',
+  '            if not os.path.exists(keep):\n'
+  '                tmp = _part(keep)\n',
+  '            if True:\n'
+  '                keep += str(time.time_ns())\n'
+  '                tmp = _part(keep)\n'),
+
+ ('receiver: a night that is not a date is taken',
+  'tools/audit_receiver.py',
+  '        time.strptime(night, "%Y-%m-%d")\n',
+  '        pass\n'),
+
+ ('receiver: what the PC said about an incomplete night is not kept',
+  'tools/audit_receiver.py',
+  '           "bytes": len(body), "incomplete": meta["incomplete"],\n',
+  '           "bytes": len(body), "incomplete": None,\n'),
+
+ ('receiver: verify does not check the night journal files',
+  'tools/audit_receiver.py',
+  '                ok = hashlib.sha256(fh.read()).hexdigest() == r.get("sha256")\n',
+  '                ok = True\n'),
+
+ ('receiver: a bad header raises instead of answering',
+  'tools/audit_receiver.py',
+  '    except (TypeError, ValueError, UnicodeError):\n',
+  '    except ZeroDivisionError:\n'),
+
+ ('receiver: a store it cannot write raises instead of answering',
+  'tools/audit_receiver.py',
+  '    except OSError as e:\n'
+  '        return 500,',
+  '    except ZeroDivisionError as e:\n'
+  '        return 500,'),
+
+ ('receiver: two requests share a temporary file',
+  'tools/audit_receiver.py',
+  '            f"{next(_PARTS)}.part")\n',
+  '            f"part")\n'),
+
+ ('receiver: a name with a newline after it is taken',
+  'tools/audit_receiver.py',
+  '                      r"\\.(journal\\.txt|jsonl|summary\\.md)\\Z")\n',
+  '                      r"\\.(journal\\.txt|jsonl|summary\\.md)$")\n'),
+
  ("windows round 3: a show its rig check pushed past the limit says only how late",
   "ltcplay/schedule.py",
   "            elif tx.ev.late_show == s.n and tx.ev.late_ok_s:\n",
@@ -12968,232 +13214,6 @@ def build():
   '        if waiting and not self.stopped_why and waited > self.stall_s:\n',
   '        if waiting and waited > self.stall_s:\n'),
 
- ('journal upload: the night still open counts as closed',
-  'ltcplay/auditsend.py',
-  '            if m and m.group(1) < open_n and os.path.isfile(\n',
-  '            if m and m.group(1) <= open_n and os.path.isfile(\n'),
-
- ('journal upload: a night without its summary counts as closed',
-  'ltcplay/auditsend.py',
-  '            if m and m.group(1) < open_n and os.path.isfile(\n'
-  '                    os.path.join(self.folder,\n'
-  '                                 f"night_{m.group(1)}.summary.md")):\n',
-  '            if m and m.group(1) < open_n:\n'),
-
- ("journal upload: marked sent without the server's checksum",
-  'ltcplay/auditsend.py',
-  '        took = isinstance(ack, dict) and ack.get("ok") is True and \\\n'
-  '            ack.get("sha256") == sha\n',
-  '        took = isinstance(ack, dict) and ack.get("ok") is True\n'),
-
- ('journal upload: a failure is marked sent',
-  'ltcplay/auditsend.py',
-  '                if result == "sent":\n',
-  '                if result != "failed":\n'),
-
- ('journal upload: no backoff after a failure',
-  'ltcplay/auditsend.py',
-  '            return self._next_try <= self._clock()\n',
-  '            return True\n'),
-
- ('journal upload: an incomplete night is sent as complete',
-  'ltcplay/auditsend.py',
-  '        return {"incomplete": bool(not f["complete"] or said_bad),\n',
-  '        return {"incomplete": False,\n'),
-
- ('journal upload: the gap list is left out of the metadata',
-  'ltcplay/auditsend.py',
-  '               "incomplete": meta["incomplete"], "gaps": meta["gaps"]}\n',
-  '               "incomplete": meta["incomplete"], "gaps": []}\n'),
-
- ('journal upload: the token is said in an upload error',
-  'ltcplay/auditsend.py',
-  '            why = re.sub(r"(?i)bearer\\s+\\S+", "Bearer [hidden]", why)\n',
-  '            pass\n'),
-
- ('journal upload: sent while it is off',
-  'ltcplay/auditsend.py',
-  '            if not cfg["enabled"]:\n'
-  '                return 0\n'
-  '            if not force and not self.due(cfg):\n',
-  '            if False:\n'
-  '                return 0\n'
-  '            if not force and not self.due(cfg):\n'),
-
- ('journal upload: prune removes a night file the server has not acknowledged',
-  'ltcplay/journal.py',
-  '                    if d >= limit:\n'
-  '                        continue\n',
-  '                    if False:\n'
-  '                        continue\n'),
-
- ('journal upload: prune keeps an unacknowledged night for ever',
-  'ltcplay/journal.py',
-  '                    if d >= limit:\n',
-  '                    if True:\n'),
-
- ('journal upload: pruning an unacknowledged night is not said',
-  'ltcplay/journal.py',
-  '        if unsent:\n'
-  '            self.record(actor="system", action="prune",\n',
-  '        if False:\n'
-  '            self.record(actor="system", action="prune",\n'),
-
- ('journal upload: pruning keeps unsent nights while the upload is off',
-  'ltcplay/journal.py',
-  '    if not isinstance(doc, dict) or doc.get("enabled") is False:\n',
-  '    if not isinstance(doc, dict):\n'),
-
- ('journal upload: the engine does not start the night journal upload',
-  'ltcplay/web.py',
-  '        if book is not None:\n'
-  '            # The night journal goes to the same server',
-  '        if False:\n'
-  '            # The night journal goes to the same server'),
-
- ("journal upload: the engine does not hand over the night files' check",
-  'ltcplay/web.py',
-  '                transport=transport, checker=book.check_night,\n',
-  '                transport=transport,\n'),
-
- ('journal upload: the Users screen does not show the night journal',
-  'ltcplay/remote.py',
-  '                out["journal_upload"] = jup.status()\n',
-  '                out["journal_upload_"] = jup.status()\n'),
-
- ('journal upload: the setting does not say the night journal is sent',
-  'ltcplay/web/remote2.html',
-  'Send the audit log and the night journal to the server every night',
-  'Send the audit log to the server every night'),
-
- ('journal upload: the card does not say the journal names operators',
-  'ltcplay/web/remote2.html',
-  'The night journal names each operator and screen.',
-  'The night journal is sent.'),
-
- ('journal upload: the card hides night files refused by the server',
-  'ltcplay/web/remote2.html',
-  '" NOT SENT, refused by the server: "',
-  '" "'),
-
- ('journal upload: a refusal for good stops the later nights',
-  'ltcplay/auditsend.py',
-  '            if 400 <= status < 500 and status not in JOURNAL_RETRY_4XX:\n',
-  '            if False:\n'),
-
- ('journal upload: a file refused for good is tried again',
-  'ltcplay/auditsend.py',
-  '                if isinstance(bad, dict) and bad.get("sha256") == sha:\n',
-  '                if False:\n'),
-
- ('journal upload: a file refused for good is not said in the journal',
-  'ltcplay/auditsend.py',
-  '                    self._say_once(\n',
-  '                    (\n'),
-
- ('journal upload: a file changed since sent is never sent again',
-  'ltcplay/auditsend.py',
-  '                if held != sha:\n',
-  '                if not held:\n'),
-
- ('journal upload: a file sent again does not name the copy it replaces',
-  'ltcplay/auditsend.py',
-  '        if replaces:\n'
-  '            headers["X-LTC-Replaces"] = replaces\n',
-  '        if False:\n'
-  '            headers["X-LTC-Replaces"] = replaces\n'),
-
- ('journal upload: a file that cannot be read is skipped without a backoff',
-  'ltcplay/auditsend.py',
-  '                    if os.path.isfile(p) and not os.path.islink(p):\n',
-  '                    if False:\n'),
-
- ('journal upload: a link is sent',
-  'ltcplay/auditsend.py',
-  '        if not stat.S_ISREG(st.st_mode):\n'
-  '            return None\n',
-  '        if False:\n'
-  '            return None\n'),
-
- ('journal upload: a file larger than the receiver takes is read and sent',
-  'ltcplay/auditsend.py',
-  '        if st.st_size > JOURNAL_MAX_BYTES:\n',
-  '        if False:\n'),
-
- ('journal upload: the switch is not remembered for pruning',
-  'ltcplay/auditsend.py',
-  '            self._mark_enabled(bool(cfg["enabled"]))\n',
-  '            pass\n'),
-
- ('receiver: night journal files are refused as not audit days',
-  'tools/audit_receiver.py',
-  '    if NIGHT_RE.match(name):\n',
-  '    if False:\n'),
-
- ('receiver: a night file with the wrong checksum is stored',
-  'tools/audit_receiver.py',
-  '    if not hmac.compare_digest(sha, h("X-LTC-SHA256")):\n'
-  '        return 400, {"ok": False, "error": "the checksum does not match"}\n'
-  '    root = os.path.join(store, NIGHTS)\n',
-  '    if False:\n'
-  '        return 400, {"ok": False, "error": "the checksum does not match"}\n'
-  '    root = os.path.join(store, NIGHTS)\n'),
-
- ('receiver: a different night file is acknowledged as the same',
-  'tools/audit_receiver.py',
-  '        if sha == have:\n',
-  '        if True:\n'),
-
- ('receiver: a night file replaces one it does not name',
-  'tools/audit_receiver.py',
-  '        if wants and hmac.compare_digest(wants, have):\n',
-  '        if True:\n'),
-
- ('receiver: a refused night file is kept again on every try',
-  'tools/audit_receiver.py',
-  '            if not os.path.exists(keep):\n'
-  '                tmp = _part(keep)\n',
-  '            if True:\n'
-  '                keep += str(time.time_ns())\n'
-  '                tmp = _part(keep)\n'),
-
- ('receiver: a night that is not a date is taken',
-  'tools/audit_receiver.py',
-  '        time.strptime(night, "%Y-%m-%d")\n',
-  '        pass\n'),
-
- ('receiver: what the PC said about an incomplete night is not kept',
-  'tools/audit_receiver.py',
-  '           "bytes": len(body), "incomplete": meta["incomplete"],\n',
-  '           "bytes": len(body), "incomplete": None,\n'),
-
- ('receiver: verify does not check the night journal files',
-  'tools/audit_receiver.py',
-  '                ok = hashlib.sha256(fh.read()).hexdigest() == r.get("sha256")\n',
-  '                ok = True\n'),
-
- ('receiver: a bad header raises instead of answering',
-  'tools/audit_receiver.py',
-  '    except (TypeError, ValueError, UnicodeError):\n',
-  '    except ZeroDivisionError:\n'),
-
- ('receiver: a store it cannot write raises instead of answering',
-  'tools/audit_receiver.py',
-  '    except OSError as e:\n'
-  '        return 500,',
-  '    except ZeroDivisionError as e:\n'
-  '        return 500,'),
-
- ('receiver: two requests share a temporary file',
-  'tools/audit_receiver.py',
-  '            f"{next(_PARTS)}.part")\n',
-  '            f"part")\n'),
-
- ('receiver: a name with a newline after it is taken',
-  'tools/audit_receiver.py',
-  '                      r"\\.(journal\\.txt|jsonl|summary\\.md)\\Z")\n',
-  '                      r"\\.(journal\\.txt|jsonl|summary\\.md)$")\n'),
-
  ("witness: fire with every safety locked is not fire without arm",
   "tools/stress/witness/check_witness.py",
   '''                if not need:
@@ -13344,8 +13364,8 @@ def build():
  # role matrix; then passwords, the lockout, the last admin, the chain,
  # the never-blocking writer and the nightly upload's acknowledgement.
  ('users: a safety press is restricted like any other', 'ltcplay/users.py',
-  '    if perm == "safety" or perm is None:\n        return True\n    if role is None or role not in ROLES:',
-  '    if perm is None:\n        return True\n    if role is None or role not in ROLES:'),
+  '    if perm == "safety" or perm is None:\n        return True\n    if perm in SUPERUSER_PERMS:',
+  '    if perm is None:\n        return True\n    if perm in SUPERUSER_PERMS:'),
 
  ('users: a purge turned off is an arming press', 'ltcplay/users.py',
   '                body.get("on") is False:\n            return "safety"',
@@ -13392,8 +13412,8 @@ def build():
   '                pass\n            del users[real]'),
 
  ('users: the last admin can be demoted', 'ltcplay/users.py',
-  '            if users[real].get("role") == "admin" and role != "admin" and \\',
-  '            if False and \\'),
+  '            if users[real].get("role") in ADMIN_ROLES and \\\n                    role not in ADMIN_ROLES and \\',
+  '            if False and \\\n                    role not in ADMIN_ROLES and \\'),
 
  ('users: a temporary password signs in as it is', 'ltcplay/users.py',
   '        if first or must:',
@@ -13412,8 +13432,8 @@ def build():
   '                           "changed": self._stamp(), "must_change": False,'),
 
  ("users: an admin's reset is not temporary", 'ltcplay/users.py',
-  '        real = self._set_pw(name, pw, temporary=True)',
-  '        real = self._set_pw(name, pw, temporary=False)'),
+  '        real = self._set_pw(name, pw, temporary=True, by=by)',
+  '        real = self._set_pw(name, pw, temporary=False, by=by)'),
 
  ('users: an admin can be locked out of managing users', 'ltcplay/users.py',
   'FIXED = {("admin", "users"): True}',
@@ -16063,7 +16083,7 @@ def build():
 
  ("fuel: an operator may undo a refill",
   "ltcplay/fuel.py",
-  "    return _may(ctx, users, (\"admin\",), \"undo a refill\")",
+  "    return _may(ctx, users, UNDO_ROLES, \"undo a refill\")",
   "    return _may(ctx, users, REFILL_ROLES, \"undo a refill\")"),
 
  ("fuel: without sign-in a network device may refill",
@@ -16288,6 +16308,117 @@ def build():
   "ltcplay/fuel.py",
   "        q = self._q\n        if len(q) >= QUEUE_MAX:",
   "        q = self._q\n        self.save()\n        if len(q) >= QUEUE_MAX:"),
+
+ # Haze fluid (fuelhaze.py, Jeff 2026-11-12).
+ ("haze fluid: fan only time is counted as fluid",
+  "ltcplay/fuelhaze.py",
+  "            v = wire[hs - 1] if 0 < hs <= n_wire else 0",
+  "            v = (wire[hs - 1] or wire[_fs - 1]) if 0 < hs <= n_wire else 0"),
+
+ ("haze fluid: the haze level is not weighted (every second is full output)",
+  "ltcplay/fuelhaze.py",
+  "            w = dt * (v / FULL)",
+  "            w = dt"),
+
+ ("haze fluid: a restart without closing is not marked not sure",
+  "ltcplay/fuelhaze.py",
+  "                for n in rec[\"hazing\"]:\n"
+  "                    self._unit(n)[\"unsure_s\"] += SAVE_EVERY_S",
+  "                for n in rec[\"hazing\"]:\n"
+  "                    pass"),
+
+ ("haze fluid: haze sent while flamesafe's status is stale is not marked not sure",
+  "ltcplay/fuelhaze.py",
+  "            if fresh is not True:\n                # flamesafe's status stale",
+  "            if False:\n                # flamesafe's status stale"),
+
+ ("haze fluid: a refill does not start the count again",
+  "ltcplay/fuelhaze.py",
+  "        last = rs[-1] if rs else None\n        base = last or",
+  "        last = None\n        base = last or"),
+
+ ("haze fluid: a refill is not saved at once",
+  "ltcplay/fuelhaze.py",
+  "        if not self.save():\n            return True, (f\"Refill of {name} logged, but",
+  "        if not True:\n            return True, (f\"Refill of {name} logged, but"),
+
+ ("haze fluid: only a RuntimeError from the haze observer is kept off the sender",
+  "ltcplay/flamelink.py",
+  "                hobs(tc, wire, test, ok)\n            except Exception:\n                pass\n",
+  "                hobs(tc, wire, test, ok)\n            except RuntimeError:\n                pass\n"),
+
+ ("haze fluid: the observer takes the record lock on the sender thread",
+  "ltcplay/fuelhaze.py",
+  "        q = self._q\n        if len(q) >= QUEUE_MAX:",
+  "        q = self._q\n        with self._lock:\n            pass\n"
+  "        if len(q) >= QUEUE_MAX:"),
+
+ ("haze fluid: a counting error raises out of the tracker's pass",
+  "ltcplay/fuelhaze.py",
+  "        except Exception as e:                    # noqa: BLE001\n"
+  "            why = f\"{type(e).__name__}: {e}\"\n            if not self.run_error:",
+  "        except KeyError as e:\n"
+  "            why = f\"{type(e).__name__}: {e}\"\n            if not self.run_error:"),
+
+ ("haze fluid: the hold is a fixed 0.5 s, not flamesafe's frame_stale_ms",
+  "ltcplay/fuelhaze.py",
+  "                self.hold_s = ms / 1000.0 + HOLD_MARGIN_S",
+  "                self.hold_s = 0.5"),
+
+ ("haze fluid: a hazer starting is not saved at once",
+  "ltcplay/fuelhaze.py",
+  "            if self._hazing - self._hazing_saved:",
+  "            if False:"),
+
+ ("haze fluid: a flow of 0 litres an hour is taken",
+  "ltcplay/fuelhaze.py",
+  "                    not 0 < v <= hi:",
+  "                    not 0 <= v <= hi:"),
+
+ ("haze fluid: a NaN in haze.json is read",
+  "ltcplay/fuelhaze.py",
+  "            not math.isfinite(v) or v < 0:",
+  "            v < 0:"),
+
+ ("haze fluid: not sure seconds are left out of the litres (reads fuller)",
+  "ltcplay/fuelhaze.py",
+  "            used = (full_s + unsure) / 3600.0 * lph",
+  "            used = full_s / 3600.0 * lph"),
+
+ ("haze fluid: a programming session is counted as a show",
+  "ltcplay/fuelhaze.py",
+  "        is_show = (not ep.get(\"rehearsal\")",
+  "        is_show = (True"),
+
+ ("haze fluid: per show records are unbounded",
+  "ltcplay/fuelhaze.py",
+  "                    [round(on, 3), round(full, 3)]])[-SHOW_BURNS_KEPT:]",
+  "                    [round(on, 3), round(full, 3)]])"),
+
+ ("haze fluid: refills are unbounded",
+  "ltcplay/fuelhaze.py",
+  "                role=role or \"\", undone=None)])[-REFILLS_KEPT:]",
+  "                role=role or \"\", undone=None)])"),
+
+ ("haze fluid: anyone who may refill may undo",
+  "ltcplay/fuelhaze.py",
+  "    if name == \"haze-undo\":\n        ok, why = may_undo(ctx, users)",
+  "    if name == \"haze-undo\":\n        ok, why = may_refill(ctx, users)"),
+
+ ("haze fluid: an undone refill still counts",
+  "ltcplay/fuelhaze.py",
+  "        rs = [r for r in u[\"refills\"] if not r.get(\"undone\")]",
+  "        rs = list(u[\"refills\"])"),
+
+ ("haze fluid: an undo is not saved at once",
+  "ltcplay/fuelhaze.py",
+  "        tail = \"\" if self.save() else (f\" haze.json could NOT",
+  "        tail = \"\" if True else (f\" haze.json could NOT"),
+
+ ("ui 2.0 haze: Undo goes with no question",
+  "ltcplay/web/remote2.html",
+  "  const yes = await confirmBox(\"Undo this refill?\",",
+  "  const yes = true || await confirmBox(\"Undo this refill?\","),
 
  # Re-pointed (the #181 sweep, 2026-11-10): Fireball practice's record
  # (#225) went in after the fuel observer, so "pass, return ok" had become
@@ -23573,7 +23704,7 @@ def build():
   "  $(\"u-audit\").hidden = false;"),
 
  ("ui 2.0 Users: the shared token is written into its field",
-  "ltcplay/web/remote2.html",
+  "ltcplay/web/upload_card.js",
   "    $(\"au-tok\").placeholder = u.token_set ?",
   "    $(\"au-tok\").value = u.token || \"\";\n    $(\"au-tok\").placeholder = u.token_set ?"),
 
@@ -23624,8 +23755,8 @@ def build():
 
  ("ui 2.0 Users: the header's Sign out leaves a typed token in the pane",
   "ltcplay/web/remote2.html",
-  "[\"u-pw\", \"u-new\", \"u-old\", \"u-new1\", \"ua-pw\", \"au-tok\"].forEach(id => { $(id).value = \"\"; });",
-  "[\"u-pw\", \"u-new\", \"u-old\", \"u-new1\", \"ua-pw\"].forEach(id => { $(id).value = \"\"; });"),
+  "  [\"u-pw\", \"u-new\", \"u-old\", \"u-new1\", \"ua-pw\"].forEach(id => { $(id).value = \"\"; });\n  dropUpload();\n",
+  "  [\"u-pw\", \"u-new\", \"u-old\", \"u-new1\", \"ua-pw\"].forEach(id => { $(id).value = \"\"; });\n"),
 
  ("ui 2.0 Users: the header's Sign out does not read the open pane again",
   "ltcplay/web/remote2.html",
@@ -24363,6 +24494,322 @@ def build():
   'ltcplay/web/remote2.html',
   '  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return "Arming off here";\n  if(names === "all")',
   '  if(names === "all")'),
+
+ # The SuperUser (2026-11-13): the nightly upload is the SuperUser's alone,
+ # and only a SuperUser changes a SuperUser (users.py, remote.py, web.py).
+ ("superuser: the upload follows a stored matrix", "ltcplay/users.py",
+  "        # Never from a matrix: the role alone.\n        return role == SUPERUSER",
+  "        return role == SUPERUSER or ((matrix or {}).get(role) or {}).get(perm) is True"),
+
+ ("superuser: an admin may use the upload", "ltcplay/users.py",
+  "        # Never from a matrix: the role alone.\n        return role == SUPERUSER",
+  "        return role in ADMIN_ROLES"),
+
+ ("superuser: no route is the upload's", "ltcplay/users.py",
+  '    return n in UPLOAD_ROUTES or "upload" in n',
+  "    return False"),
+
+ ("superuser: a later upload route is anyone's", "ltcplay/users.py",
+  '    return n in UPLOAD_ROUTES or "upload" in n',
+  "    return n in UPLOAD_ROUTES"),
+
+ ("superuser: classify does not name a later upload route", "ltcplay/users.py",
+  "        if is_upload_route(name):\n            return UPLOAD\n",
+  ""),
+
+ ("superuser: an iPad sign-in is a SuperUser here", "ltcplay/users.py",
+  '            session.get("local") is True and bool(session.get("name"))',
+  '            bool(session.get("name"))'),
+
+ ("superuser: Tailscale is a SuperUser here", "ltcplay/users.py",
+  "        return local is True and not tailscale and \\",
+  "        return local is True and \\"),
+
+ ("superuser: an iPad request is a SuperUser here", "ltcplay/users.py",
+  "        return local is True and not tailscale and \\",
+  "        return not tailscale and \\"),
+
+ ("superuser: with no users the upload is open", "ltcplay/users.py",
+  "            return self.active() and allowed(None, role, perm)",
+  "            return allowed(None, role, perm) or not self.active()"),
+
+ ("superuser: a SuperUser's admin rows can be turned off", "ltcplay/users.py",
+  "FIXED.update({(SUPERUSER, p): True for p in PERM_KEYS})\n",
+  ""),
+
+ ("superuser: an admin adds a SuperUser", "ltcplay/users.py",
+  '            _need_superuser(by, f"add {name} as {SUPERUSER}")',
+  "            pass"),
+
+ ("superuser: an admin changes a SuperUser", "ltcplay/users.py",
+  '            _need_superuser(by, f"{what} {real} ({SUPERUSER})")',
+  "            pass"),
+
+ ("superuser: an admin makes a SuperUser", "ltcplay/users.py",
+  '                _need_superuser(by, f"make {real} {SUPERUSER}")',
+  "                pass"),
+
+ ("superuser: anyone at all is a SuperUser's rank", "ltcplay/users.py",
+  "    if by != SUPERUSER:\n        raise RankRefused(what)",
+  "    if False:\n        raise RankRefused(what)"),
+
+ ("superuser: the last SuperUser can be removed", "ltcplay/users.py",
+  '            if users[real].get("role") == SUPERUSER and \\\n                    not self._supers(users, without=real):',
+  '            if False and \\\n                    not self._supers(users, without=real):'),
+
+ ("superuser: the last SuperUser can be demoted", "ltcplay/users.py",
+  '            if users[real].get("role") == SUPERUSER and role != SUPERUSER \\',
+  "            if False \\"),
+
+ ("superuser: an admin resets a SuperUser's password", "ltcplay/users.py",
+  '                self._guard_super(users, real, by, "reset the password of")',
+  "                pass"),
+
+ ("superuser: a SuperUser's password can be cleared", "ltcplay/users.py",
+  '                if pw is None and users[real].get("role") == SUPERUSER:',
+  "                if False:"),
+
+ ("superuser: a SuperUser with no password is claimed", "ltcplay/users.py",
+  '            if u is not None and u.get("role") == SUPERUSER and (',
+  "            if False and ("),
+
+ ("superuser: an admin's temporary password signs in as a SuperUser", "ltcplay/users.py",
+  '                    first or (must and u.get("reset_by") not in',
+  '                    first or (False and u.get("reset_by") not in'),
+
+ ("superuser: a first run makes a SuperUser", "ltcplay/users.py",
+  "                if r not in ROLES or r == SUPERUSER:",
+  "                if r not in ROLES:"),
+
+ ("superuser: a SuperUser's column can be turned off", "ltcplay/users.py",
+  "                    if c == SUPERUSER and v is not True:",
+  "                    if False:"),
+
+ ("superuser: the command line promotes a claimable name", "ltcplay/users.py",
+  '            if u.get("pw") is None or u.get("must_change"):',
+  "            if False:"),
+
+ ("superuser: the command line's grant is not from the command line", "ltcplay/users.py",
+  "                           source=str(x.get(\"source\") or LOCAL_COMMAND))",
+  '                           source="")'),
+
+ ("superuser: the engine never refuses an upload route", "ltcplay/remote.py",
+  '        if self.upload_refused(name, ctx, "POST"):\n            return 404, {"error": UPLOAD_REFUSED}, {}',
+  '        if False:\n            return 404, {"error": UPLOAD_REFUSED}, {}'),
+
+ ("superuser: everyone gets the upload's card", "ltcplay/remote.py",
+  "            su = self.superuser_here(ctx)\n",
+  "            su = True\n"),
+
+ ("superuser: everyone may change a SuperUser on the screen", "ltcplay/remote.py",
+  '            out["users"] = [dict(x, edit=su or x.get("role") !=',
+  '            out["users"] = [dict(x, edit=True or x.get("role") !='),
+
+ ("superuser: every change is made with a SuperUser's rank", "ltcplay/remote.py",
+  "        if self.superuser_here(ctx):\n            return users_mod.SUPERUSER",
+  "        if True:\n            return users_mod.SUPERUSER"),
+
+ ("superuser: a refused SuperUser change is not audited", "ltcplay/remote.py",
+  '            self._audit_rank("superuser-refused", ctx, e.what)\n',
+  ""),
+
+ ("superuser: a refused upload press is not audited", "ltcplay/remote.py",
+  '        self._audit_rank("upload-refused", ctx, f"{method} {name}")\n',
+  ""),
+
+ ("superuser: an upload change is not audited", "ltcplay/remote.py",
+  '                    "upload-settings", ctx, ", ".join(said) or "no change",',
+  '                    "settings", ctx, ", ".join(said) or "no change",'),
+
+ ("superuser: the role check names the upload to an admin", "ltcplay/web.py",
+  "            if perm == users_mod.UPLOAD:\n                # The nightly upload",
+  "            if False:\n                # The nightly upload"),
+
+ ("superuser: a SuperUser may not undo a refill", "ltcplay/fuel.py",
+  'UNDO_ROLES = ("admin", "superuser")',
+  'UNDO_ROLES = ("admin",)'),
+
+ ("superuser: a SuperUser may not log a refill", "ltcplay/fuel.py",
+  'REFILL_ROLES = ("operator", "admin", "superuser")',
+  'REFILL_ROLES = ("operator", "admin")'),
+
+ ("ui 2.0 Users: an admin gets the upload card", "ltcplay/web/remote2.html",
+  "  if(!(UV && UV.local && UV.upload)){ dropUpload(); return; }",
+  "  if(!UV){ dropUpload(); return; }"),
+
+ ("ui 2.0 Users: an admin may change a SuperUser's row", "ltcplay/web/remote2.html",
+  '    if(u.edit === false) return `<tr>',
+  '    if(false) return `<tr>'),
+
+ ("ui 2.0 Users: superuser stays offered to an admin", "ltcplay/web/remote2.html",
+  "  if(!UV.may_superuser && su) su.remove();\n",
+  ""),
+
+ # The cold review of #251 (M1 to M6) and Jeff's 2026-11-13 rule: no
+ # screen a non-SuperUser sees names the upload's settings file.
+ ("superuser: a hand-made SuperUser is trusted", "ltcplay/users.py",
+  '            u["role"] = "admin"\n            u["su_untrusted"] = True\n',
+  '            u["su_untrusted"] = True\n'),
+
+ ("superuser: any fingerprint is this engine's", "ltcplay/users.py",
+  "                  isinstance(fp, str) and\n                  hmac.compare_digest(fp, self._fp(key, n, u)) and\n",
+  "                  isinstance(fp, str) and\n"),
+
+ ("superuser: a SuperUser removed outside the engine is not said", "ltcplay/users.py",
+  "                if gone:\n",
+  "                if False:\n"),
+
+ ("superuser: a changed SuperUser record raises no alert", "ltcplay/users.py",
+  "            if alerts and self.on_alert is not None:",
+  "            if False:"),
+
+ ("superuser: a change found by another process is never audited", "ltcplay/users.py",
+  '            for t in self._tamper:\n                self._pend(doc, "superuser-set-changed", "unknown",',
+  '            for t in ():\n                self._pend(doc, "superuser-set-changed", "unknown",'),
+
+ ("superuser: a SuperUser's session never ends by itself", "ltcplay/users.py",
+  "                and now - s[\"seen\"] > SUPERUSER_IDLE_S]",
+  "                and False]"),
+
+ ("superuser: a SuperUser's session lasts an hour", "ltcplay/users.py",
+  "SUPERUSER_IDLE_S = 15 * 60",
+  "SUPERUSER_IDLE_S = 60 * 60"),
+
+ ("superuser: an upload change needs no password again", "ltcplay/remote.py",
+  '                if not u.confirm(me.get("name"), body.get("password"),\n                                 ctx.source):\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-settings")',
+  '                if False:\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-settings")'),
+
+ ("superuser: a reset leaves the SuperUser signed in", "ltcplay/users.py",
+  "        self._end_sessions(name)\n        with self._lock:\n            self._fails.pop((\"name\", name.lower()), None)\n            self._confirm_fails.pop(",
+  "        with self._lock:\n            self._fails.pop((\"name\", name.lower()), None)\n            self._confirm_fails.pop("),
+
+ ("superuser: a stale signal is taken", "ltcplay/users.py",
+  "            elif abs(self._wall() - at) > SIGNAL_MAX_AGE_S:",
+  "            elif False:"),
+
+ ("superuser: the running engine is never told of a reset", "ltcplay/users.py",
+  "        real = self._change(fn)\n        self._signal(real)\n",
+  "        real = self._change(fn)\n"),
+
+ ("superuser: any password makes a SuperUser", "ltcplay/users.py",
+  '        ok = check_password(str(by_password or ""), rec) if rec else False',
+  "        ok = True"),
+
+ ("superuser: anyone's password makes the first SuperUser", "ltcplay/users.py",
+  "            by = real if \" \".join(str(by_name or \"\").split()).lower() == \\\n                real.lower() else None",
+  "            by = {n.lower(): n for n in users}.get(\n                \" \".join(str(by_name or \"\").split()).lower())"),
+
+ ("superuser: no lock across processes", "ltcplay/users.py",
+  "            with _file_lock(self.lock_path):\n                return self._change_locked(fn)",
+  "            if True:\n                return self._change_locked(fn)"),
+
+ ("superuser: the users routes' own upload check is gone", "ltcplay/remote.py",
+  "        if users_mod.is_upload_route(name) and \\\n                not self.superuser_here(ctx):\n            return 404, {\"error\": UPLOAD_REFUSED}, {}\n        # Everything else",
+  "        if False:\n            return 404, {\"error\": UPLOAD_REFUSED}, {}\n        # Everything else"),
+
+ ("superuser: a GET of the card's script is anyone's", "ltcplay/remote.py",
+  '        if self.upload_refused(name, ctx, "GET"):\n            return 404, {"error": UPLOAD_REFUSED}\n',
+  '        if False:\n            return 404, {"error": UPLOAD_REFUSED}\n'),
+
+ ("superuser: an admin's upload row attempt is not audited", "ltcplay/remote.py",
+  '                    self._audit_rank("superuser-refused", ctx,\n                                     "role matrix: the upload row")',
+  "                    pass"),
+
+ ("superuser: the upload row has its own words", "ltcplay/users.py",
+  '                        raise ValueError(f"{p} is not a row of the matrix.")',
+  '                        raise ValueError(f"{p} is not a row of the matrix." + (" It is the SuperUser\'s." if p in SUPERUSER_PERMS else ""))'),
+
+ ("superuser: the audit card says where the settings are", "ltcplay/remote.py",
+  '                                 if k != "folder"}',
+  "                                 if True}"),
+
+ ("superuser: an admin is told the upload's settings file", "ltcplay/remote.py",
+  '        out = {"writer": None, "chain": None}\n',
+  '        out = {"writer": None, "chain": None, "settings": "ltcplay_audit.json"}\n'),
+
+ # The verification review of #251 (B1, M2, M3, M6).
+ ("superuser: the first SuperUser path opens again", "ltcplay/users.py",
+  "        if not supers and self.ever_superuser():",
+  "        if False:"),
+
+ ("superuser: the command asks before it refuses the first path again", "ltcplay/users.py",
+  "        elif us.ever_superuser(doc):",
+  "        elif False:"),
+
+ ("superuser: the audit log's history is not asked", "ltcplay/users.py",
+  '            if any(r.get("action") in ("superuser-set",',
+  '            if False and any(r.get("action") in ("superuser-set",'),
+
+ ("superuser: a missing key or set record trusts the SuperUsers", "ltcplay/users.py",
+  "        if missing and not self._lockdown:\n            self._lockdown = True",
+  "        if False:\n            self._lockdown = True"),
+
+ ("superuser: a missing fingerprint is not said", "ltcplay/users.py",
+  '            missing.append("a SuperUser\'s fingerprint")',
+  "            pass"),
+
+ ("superuser: a forged key and set are believed", "ltcplay/users.py",
+  "                  (known is None or n.lower() in known))",
+  "                  True)"),
+
+ ("superuser: the command's change is taken without its audit line", "ltcplay/users.py",
+  '            if any(x["id"] in ids for x in want):',
+  "            if want:"),
+
+ ("superuser: a password changed outside may confirm", "ltcplay/users.py",
+  "                isinstance(u, dict) and u.get(\"role\") != SUPERUSER and \\\n                self._known_pw.get(str(name).lower()) == _pw_digest(u)",
+  "                isinstance(u, dict) and u.get(\"role\") != SUPERUSER"),
+
+ # The last round of #251: no recovery code; Jeff's own way back is the
+ # emergency procedure in SUPERUSER.md (the SuperUser files removed by
+ # hand), and the password typed again has its own counter.
+ ("superuser: the SuperUser files removed by hand never reopen the first path", "ltcplay/users.py",
+  "                self._known is not None)",
+  "                self._known is not None or True)"),
+
+ ("superuser: a save with no SuperUser makes the SuperUser's files", "ltcplay/users.py",
+  '            doc.pop("su_set", None)\n            return\n',
+  '            doc.pop("su_set", None)\n'),
+
+ ("superuser: the first SuperUser made again by hand raises no alert", "ltcplay/users.py",
+  "                       alert=again)",
+  "                       alert=False)"),
+
+ ("superuser: a wrong password typed again locks the sign-in out", "ltcplay/users.py",
+  "                self._failed(keys, now, self._confirm_fails)",
+  "                self._failed(keys, now)"),
+
+ ("superuser: a SuperUser changed outside is said on every beat", "ltcplay/users.py",
+  "        new = [f for f in found if f not in self._said]",
+  "        new = list(found)"),
+
+ ("superuser: the engine's own save is said as a change outside", "ltcplay/users.py",
+  "                    if set(str(x) for x in names) - known:",
+  "                    if set(str(x) for x in names) != known:"),
+
+ ("superuser: the password typed again can be guessed forever", "ltcplay/users.py",
+  "            if self._locked(keys, now, self._confirm_fails):",
+  "            if False:"),
+
+ ("superuser: the command's audit line comes after its change, or never", "ltcplay/users.py",
+  "                hook(said)\n",
+  "                pass\n"),
+
+ ("superuser: a command's missing audit line is not said", "ltcplay/users.py",
+  '                    if x["id"] not in ids:',
+  "                    if False:"),
+
+ ("superuser: a replayed signal is taken", "ltcplay/users.py",
+  '            elif str(doc.get("nonce")) in self._seen_nonces():',
+  "            elif False:"),
+
+ ("superuser: a SuperUser change needs no password again", "ltcplay/remote.py",
+  "                if su_change and not u.confirm(",
+  "                if False and not u.confirm("),
+
+ ("superuser: Send now needs no password", "ltcplay/remote.py",
+  '                if not u.confirm(me.get("name"), body.get("password"),\n                                 ctx.source):\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-upload-now")',
+  '                if False:\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-upload-now")'),
 ]
 
 
@@ -24731,7 +25178,8 @@ def main():
 
 
 OPTS = {"changed": None, "files": None, "list": False, "catchers": None,
-        "failfast": True, "hints": None, "write_catchers": None, "jobs": 1}
+        "failfast": True, "hints": None, "write_catchers": None, "jobs": 1,
+        "with_core": False, "trust": None, "targets": None}
 
 
 def _args(argv):
@@ -24739,7 +25187,8 @@ def _args(argv):
     always was."""
     wants, shard, expected = [], None, None
     OPTS.update(changed=None, files=None, list=False, catchers=None,
-                failfast=True, hints=None, write_catchers=None, jobs=1)
+                failfast=True, hints=None, write_catchers=None, jobs=1,
+                with_core=False, trust=None, targets=None)
     it = iter(argv)
     for a in it:
         if a == "--shard":
@@ -24763,6 +25212,15 @@ def _args(argv):
             OPTS["write_catchers"] = next(it)
         elif a == "--jobs":
             OPTS["jobs"] = max(1, int(next(it)))
+        elif a == "--with-core":
+            OPTS["with_core"] = True
+        elif a == "--targets":
+            OPTS["targets"] = [t.strip() for t in next(it).split(",")
+                               if t.strip()]
+        elif a == "--trust-baseline":
+            OPTS["trust"] = float(next(it))
+            if not OPTS["trust"] > 0:
+                raise ValueError("--trust-baseline needs the suite's seconds")
         else:
             wants.append(a.lower())
     return wants or None, shard, expected
@@ -25021,7 +25479,25 @@ def _run():
     if expected_file:
         expected, unknown = _load_expected(expected_file)
     only = None
-    if OPTS["changed"] or OPTS["files"] is not None:
+    if OPTS["targets"] is not None:
+        if OPTS["changed"] or OPTS["files"] is not None:
+            print("--targets names the files itself: not with --changed or "
+                  "--files")
+            fail("bad options", ["--targets with --changed or --files"])
+            return 2
+
+        def hit(rel):
+            return any(rel.startswith(t[:-1]) if t.endswith("*") else
+                       rel.startswith(t) if t.endswith("/") else rel == t
+                       for t in OPTS["targets"])
+        only = {n for n, rel, _o, _n in MUTATIONS if hit(rel)}
+        print(f"targets {', '.join(OPTS['targets']) or '(none)'}: "
+              f"{len(only)} of {len(MUTATIONS)} mutations")
+        if not only:
+            print("nothing this change can have broken is mutated "
+                  "here: nothing to run")
+            return 0
+    elif OPTS["changed"] or OPTS["files"] is not None:
         base = None
         if OPTS["changed"]:
             try:
@@ -25039,6 +25515,12 @@ def _run():
             print(f"  {p}")
         catchers = _load_catchers(OPTS["catchers"]) if OPTS["catchers"] else {}
         only, reasons = select_affected(changed, base, catchers)
+        if OPTS["with_core"] and only is not None:
+            core = {n for n, rel, _o, _n in MUTATIONS
+                    if rel.startswith(SAFETY_CORE)}
+            reasons.append(f"--with-core: every flamesafe, conductor and "
+                           f"flame link mutation ({len(core - only)} more)")
+            only = only | core
         for r in reasons:
             print(f"  -> {r}")
         if only is None:
@@ -25175,8 +25657,45 @@ def _each_worker(workers, fn):
     return out
 
 
+def _sanity(tests, root, env):
+    """--trust-baseline's stand-in for a copy's whole baseline: `tests` run
+    first, nothing mutated, in this copy, and the run stops once they have
+    passed (selftest.py's probe). True when they all passed."""
+    run_suite(None, True, ",".join(tests), True, root, env)
+    return bool(_LAST_STOP[1])
+
+
 def _sweep(todo, workers, expected, unknown, expected_file):
-    bases = _each_worker(workers, _baseline)
+    # --trust-baseline: the tests this shard's mutations are hinted to are
+    # the sanity run. Without any hint there is nothing to stand in for the
+    # baseline, so it runs as before.
+    trust = OPTS["trust"]
+    hinted = {}
+    if OPTS["failfast"] and OPTS["hints"]:
+        hinted = _load_catchers(OPTS["hints"])
+    sanity = sorted({t for item in todo
+                     for t in (hinted.get(item[0]) or "").split(",") if t})
+    if trust is not None and not sanity:
+        print("--trust-baseline: none of these mutations has a catcher hint, "
+              "so nothing can stand in for the baseline: running it")
+        trust = None
+    trusted = set()     # the copies whose sanity run stood in for a baseline
+    if trust is not None:
+        def copy_check(root, env):
+            if _sanity(sanity, root, env):
+                return (True, False, float(trust), [], None, True)
+            with_lines = list(_LAST_FAILS)
+            print(f"  a copy's sanity run ({len(sanity)} hinted tests run "
+                  f"first) was red; that copy runs its whole baseline:",
+                  flush=True)
+            for _l in with_lines:
+                print("    " + _l)
+            return _baseline(root, env) + (False,)
+        checked = _each_worker(workers, copy_check)
+        bases = [c[:5] for c in checked]
+        trusted = {w[0] for w, c in zip(workers, checked) if c[5]}
+    else:
+        bases = _each_worker(workers, _baseline)
     timed = [b for b in bases if b[1]]
     if timed:
         for _l in timed[0][3]:
@@ -25204,6 +25723,9 @@ def _sweep(todo, workers, expected, unknown, expected_file):
     baseline_s = max(b[2] for b in bases)
     limit = mutant_timeout(baseline_s)
     REPORT.baseline = "green" if len(bases) == 1 else f"green x{len(bases)}"
+    if trusted:
+        REPORT.baseline = (f"trusted (selftest job), sanity green in "
+                           f"{len(trusted)} of {len(bases)}")
     # Red once and then green with nothing mutated is a flaky test, not a
     # green baseline: it is let through (the second run was whole and
     # green) but never silently. It is named here and in the summary.
@@ -25219,10 +25741,17 @@ def _sweep(todo, workers, expected, unknown, expected_file):
             for _l in lines:
                 print("    " + _l)
     REPORT.limits = f"{baseline_s:.0f} s / {limit} s"
-    print(f"baseline green in {baseline_s:.0f} s"
-          f"{f' (slowest of {len(bases)} copies)' if len(bases) > 1 else ''}"
-          f"; a mutant's suite is stopped (and counts as caught) after "
-          f"{limit} s")
+    if trusted:
+        print(f"baseline trusted: the whole suite passed this commit in the "
+              f"selftest job (about {baseline_s:.0f} s); the sanity run "
+              f"({len(sanity)} hinted tests run first, nothing mutated) was "
+              f"green in {len(trusted)} of {len(bases)} copies; a mutant's "
+              f"suite is stopped (and counts as caught) after {limit} s")
+    else:
+        print(f"baseline green in {baseline_s:.0f} s"
+              f"{f' (slowest of {len(bases)} copies)' if len(bases) > 1 else ''}"
+              f"; a mutant's suite is stopped (and counts as caught) after "
+              f"{limit} s")
     ff = OPTS["failfast"]
     hints = _load_catchers(OPTS["hints"]) if (ff and OPTS["hints"]) else {}
     if hints:
@@ -25230,6 +25759,7 @@ def _sweep(todo, workers, expected, unknown, expected_file):
               f"caught it last time first")
     caught = missed = 0
     missed_names, caught_names, setup_fails = [], [], []
+    copy_red = []
     learned = {}
     # The bytes of every file this run breaks, before it does: the restore
     # is proved against them at the end, byte for byte, in every copy.
@@ -25237,6 +25767,37 @@ def _sweep(todo, workers, expected, unknown, expected_file):
                  for rel in sorted({m[1] for m in todo})}
     out_lock = threading.Lock()
     probes, probe_locks = {}, {}
+    if trusted and len(trusted) == len(workers):
+        # Every copy has just run each of these first and seen it pass.
+        probes.update({t: True for t in sanity})
+    proved, proved_locks, whole = {}, {}, {}
+
+    def prove(stops, root, env):
+        """In a copy that skipped its whole baseline, after the mutation is
+        put back: each test a caught mutant stopped in passes, run first,
+        with nothing mutated, in this copy. A test that does not (or a run
+        that never said where it stopped) costs this copy its whole
+        baseline, once; only a green one lets the verdict stand."""
+        if root not in trusted:
+            return True
+        for test in stops:
+            with out_lock:
+                lk = proved_locks.setdefault((root, test), threading.Lock())
+            with lk:
+                if (root, test) not in proved:
+                    ok = bool(test) and test in sanity
+                    if test and not ok:
+                        run_suite(limit, True, test, True, root, env)
+                        ok = bool(_LAST_STOP[1])
+                    proved[(root, test)] = ok
+            if not proved[(root, test)]:
+                if root not in whole:
+                    print(f"  {test or 'a run that stopped without saying where'}"
+                          f" is not proved green alone in this copy: running "
+                          f"its whole baseline", flush=True)
+                    whole[root] = _baseline(root, env)
+                return whole[root][0]
+        return True
 
     def probe(test, root, env):
         """Does `test` pass when it runs first, with nothing mutated? Asked
@@ -25302,6 +25863,7 @@ def _sweep(todo, workers, expected, unknown, expected_file):
             # file-order run that fails confirms it, so no such catch counts
             # or is written to --write-catchers. A hinted red is confirmed
             # this way even outside CI.
+            stops = [stop]
             if not green and (expected_file or hinted):
                 green2, stop2, fails2, _h = attempt(None, root, env)
                 if green2:
@@ -25310,17 +25872,24 @@ def _sweep(todo, workers, expected, unknown, expected_file):
                                   f"suite in file order was green"] + fails)
                     green, flaky = True, fails
                 else:
+                    stops.append(stop2)
                     stop = stop or stop2
         finally:
             _write(path, src)
         if green:
             return ("missed", None, flaky, None)
+        if not prove(sorted(set(stops)), root, env):
+            return ("baseline", whole[root][3], None, None)
         return ("caught", fails, None, stop if ff else None)
 
     def tally(item, res):
         nonlocal caught, missed
         name, rel = item[0], item[1]
         kind, info, flaky, catcher = res
+        if kind == "baseline":
+            print(f"  NO VERDICT  {name} (its copy's baseline is red)")
+            copy_red.append((name, info))
+            return
         if kind == "setup":
             print(f"  SETUP FAIL  {name} ({info})")
             missed += 1
@@ -25402,6 +25971,18 @@ def _sweep(todo, workers, expected, unknown, expected_file):
     print(f"tree restored byte for byte ({len(originals)} files"
           f"{f', in each of {len(workers)} copies' if len(workers) > 1 else ''})")
     REPORT.restored = "yes"
+    if copy_red:
+        lines = copy_red[0][1] or ["(no FAIL line)"]
+        REPORT.baseline = "FAILED in a copy that trusted the selftest job"
+        fail("the suite FAILS with nothing mutated, so the shard measured "
+             "nothing", lines)
+        print("The suite FAILS with nothing mutated in a copy that had "
+              "trusted the selftest job, so no caught mutation of that copy "
+              f"counts ({len(copy_red)} have no verdict). Fix that first: "
+              "nothing measured from here would mean anything.")
+        for _l in lines:
+            print("  " + _l)
+        return 2
     return _verdict(expected if expected_file else None, unknown,
                     missed_names, caught_names, setup_fails)
 

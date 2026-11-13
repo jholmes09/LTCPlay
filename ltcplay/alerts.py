@@ -49,7 +49,7 @@ import time
 
 KINDS = ("gate", "audio", "video", "deck", "start", "flames", "link",
          "timecode", "lasers", "users", "aim", "follow", "preroll",
-         "hazers", "timing", "output")
+         "hazers", "timing", "output", "superuser")
 SEVERITY = {"gate": "warning", "audio": "fault", "video": "fault",
             "deck": "fault", "start": "fault", "flames": "fault",
             "link": "fault", "timecode": "fault", "lasers": "fault",
@@ -61,7 +61,10 @@ SEVERITY = {"gate": "warning", "audio": "fault", "video": "fault",
             # MadMapper's video output is off (showwindows.OutputWatch, the
             # supervisor's; Jeff's field report 2026-10-29). Only that
             # watch raises it, and it clears it when the output comes on.
-            "output": "fault"}
+            "output": "fault",
+            # The SuperUsers in the users file are not the ones this
+            # program wrote (users.Users._trust; review of #251, M1, M2).
+            "superuser": "warning"}
 # Display only (2026-10-28): an alert of these kinds is shown on every
 # screen and journaled, and cleared like any other, but it never sounds the
 # booth, never runs the pulse, never holds a show at showtime
@@ -79,6 +82,10 @@ DISPLAY_ONLY = DISPLAY_ONLY | {"hazers"}
 # 2026-10-29). Display only, like "aim": a late frame is over by the time
 # anyone reads it, so it never holds the next show.
 DISPLAY_ONLY = DISPLAY_ONLY | {"timing"}
+# "superuser": the SuperUsers in the users file changed outside LTC Player
+# (users.Users._trust). Display only: who may see the upload never holds a
+# show.
+DISPLAY_ONLY = DISPLAY_ONLY | {"superuser"}
 OPTIONS = ("Acknowledge", "Continue", "Stop", "Start anyway", "Delay",
            "Confirm", "Disarm all")
 # The presses that clear an alert and change nothing on the rig. Any

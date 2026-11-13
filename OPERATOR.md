@@ -937,6 +937,17 @@ channel, and is either ARMED or DISARMED.
   armed, All armed or Not known; Hazers off beside it disarms every hazer,
   always. It never arms a flame group or a laser.
 
+- **Haze fluid (Startup page, Fuel step, 2026-11-12).** Under the fuel
+  tanks, a tile per hazer: its haze time since its last refill (fan only
+  time never counts), or percent left when its flow and tank size are set
+  in ltcplay_hazers.json. Tap a hazer when its fluid tank is full and say
+  yes (**Refilled**, the same sign-in as a fuel refill). An admin can
+  undo a wrong one under **Refills and notes**, as for fuel. Not sure
+  time (a restart, a stale link to flamesafe) counts as full output, on
+  top of any haze already counted, so the litres read emptier, never
+  fuller. FUEL.md has the details; the record is haze.json in the
+  settings folder.
+
 ## The fireball's fuel pump
 
 Jeff, 2026-10-30: "a toggle for a fuel pump. This is something for Andy to
@@ -2945,16 +2956,18 @@ tab, and the hardware e-stop always works.
   leave it empty and they choose their own at their next sign-in),
   Remove (it asks first; their audit lines stay), Add a person, and
   Clear sign-in lockouts. The last admin cannot be removed or made
-  something else. Who may do what: everyone can read it; admins on the
-  show PC change it and press Save who may do what. Stop, Hold and every
-  disarm always work, for everyone. Audit log (show PC only): its state,
-  Check the chain now, the nightly upload of the audit log and the night
-  journal (server, shared token, time, days kept; they go only to your own
-  server, nothing else is read or sent, never a password or token; the
-  night journal names each operator and screen),
-  Idle sign out, sign out after the last show, Save, and
-  Send now. The shared token is never shown: the field says only whether one
-  is saved, and a token typed there is cleared after Save.
+  something else. Only a SuperUser changes a SuperUser: for anyone else
+  that row is read only. Who may do what: everyone can read it; admins on
+  the show PC change it and press Save who may do what. Stop, Hold and
+  every disarm always work, for everyone. Audit log (show PC only): its
+  state, Check the chain now, Idle sign out, sign out after the last show,
+  and Save. Nightly upload of the audit log and the night journal (a
+  SuperUser signed in on the show PC only; for anyone else it is not
+  there): server, shared token, time, days kept, Save and Send now; they
+  go only to Jeff's own server, nothing else is read or sent, never a
+  password or token; the night journal names each operator and screen. The shared token is never shown: the field says only
+  whether one is saved, and a token typed there is cleared after Save.
+  USERS.md, "The SuperUser", says what an admin may not change.
 - The systems badge in the header names a single problem ("Stream Deck:
   check"); one tap opens the list, which starts with what to do first.
   Something not set up here reads Off.

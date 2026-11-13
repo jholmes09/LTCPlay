@@ -1174,7 +1174,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
         <input id="ua-pw" type="password" autocomplete="new-password" placeholder="Temporary password" style="flex:1 1 0">
         <button id="ua-add" style="flex:0 0 auto">Add</button>
       </div>
-      <div class="dim" style="font-size:13px">The temporary password is changed by its person at their first sign-in. The last admin cannot be removed or made something else.</div>
+      <div class="dim" style="font-size:13px">The temporary password is changed by its person at their first sign-in. The last admin cannot be removed or made something else. Only a SuperUser changes a SuperUser.</div>
       <div class="row" style="margin-top:8px"><button class="ghost" id="u-clear">Clear sign-in lockouts</button></div>
       <div class="toast" id="ua-msg"></div>
     </section>
@@ -1189,22 +1189,10 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
       <h2>Audit log</h2>
       <div class="kv" id="au-state"></div>
       <div class="row" style="margin-top:8px"><button class="ghost" id="au-verify">Check the chain now</button></div>
-      <h2 style="margin-top:12px">Nightly upload</h2>
-      <div class="kv" id="au-up"></div>
       <div id="au-set">
-        <label><input type="checkbox" id="au-en"> Send the audit log and the night journal to the server every night</label>
-        <div class="dim" style="font-size:13px">The night journal names each operator and screen.</div>
-        <label for="au-url">Server address (https://)</label>
-        <input id="au-url" placeholder="https://audit.example.com/ltc">
-        <label for="au-tok">Shared token</label>
-        <input id="au-tok" type="password" autocomplete="off" placeholder="unchanged">
-        <div class="three">
-          <div><label for="au-time">Time of day</label><input id="au-time" placeholder="03:30"></div>
-          <div><label for="au-keep">Keep days here</label><input id="au-keep" type="number" min="90"></div>
-          <div><label for="au-idle">Idle sign out, minutes (0 is off)</label><input id="au-idle" type="number" min="0"></div>
-        </div>
+        <div><label for="au-idle">Idle sign out, minutes (0 is off)</label><input id="au-idle" type="number" min="0"></div>
         <div><label for="au-lastshow">Sign everyone out this many minutes after the last show of the night (0 is off)</label><input id="au-lastshow" type="number" min="0" max="1440"></div>
-        <div class="row" style="margin-top:8px"><button id="au-save">Save</button><button class="ghost" id="au-now">Send now</button></div>
+        <div class="row" style="margin-top:8px"><button id="au-save">Save</button></div>
       </div>
       <div class="toast" id="au-msg"></div>
     </section>
@@ -4803,7 +4791,9 @@ $("user").addEventListener("click", openSignIn);
 // an open pane is read again, so it never shows the one signed out.
 function usersSignedOut(){
   UNEED = false; $("u-newbox").hidden = true;
-  ["u-pw", "u-new", "u-old", "u-new1", "ua-pw", "au-tok"].forEach(id => { $(id).value = ""; });
+  ["u-pw", "u-new", "u-old", "u-new1", "ua-pw"].forEach(id => { $(id).value = ""; });
+  dropUpload();
+  ["u-supw-box", "u-cf-box"].forEach(id => { const e = $(id); if(e) e.remove(); });
   if(TAB === "users") loadUsers();
 }
 // 1.0's code word for word, with two differences: 2.0's header button
@@ -4824,7 +4814,7 @@ let UV = null, UNEED = false;
 function uMsg(id, t, bad){ const el = $(id); el.textContent = t || ""; el.className = "toast" + (bad ? " bad" : ""); }
 async function loadUsers(){
   try{ UV = await getJSON("/api/remote/users", 3000); }
-  catch(e){ uMsg("u-msg", e.message, true); return; }
+  catch(e){ uMsg("u-msg", e.message, true); dropUpload(); return; }
   const me = UV.me || {};
   $("u-in").hidden = !me.name;
   $("u-form").hidden = !!me.name;
@@ -4832,15 +4822,41 @@ async function loadUsers(){
   fill($("u-name"), UV.names || [], true);
   $("u-admin").hidden = !(UV.local && UV.may_admin && UV.active !== undefined);
   $("u-audit").hidden = !UV.local;
+  // The superuser role is offered only to a SuperUser on this show PC.
+  const ur = $("ua-role"), su = [...ur.options].find(o => o.value === "superuser");
+  if(UV.may_superuser && !su) ur.add(new Option("superuser"));
+  if(!UV.may_superuser && su) su.remove();
+  // A SuperUser's changes ask for their own password again: one field,
+  // only on a SuperUser's screen; cleared after each change.
+  let sp = $("u-supw-box");
+  if(UV.may_superuser && !sp){
+    sp = document.createElement("div"); sp.id = "u-supw-box";
+    sp.innerHTML = `<label for="u-supw">Your password, for SuperUser changes</label><input id="u-supw" type="password" autocomplete="current-password">`;
+    $("ua-msg").parentNode.insertBefore(sp, $("ua-msg"));
+  }
+  if(!UV.may_superuser && sp) sp.remove();
+  // A SuperUser this program made, reading as an admin now: Confirm.
+  let cf = $("u-cf-box");
+  if(UV.may_confirm && !cf){
+    cf = document.createElement("div"); cf.id = "u-cf-box";
+    cf.innerHTML = `<label for="u-cfpw">Confirm you are a SuperUser: your password</label><input id="u-cfpw" type="password" autocomplete="current-password">` +
+      `<div class="row" style="margin-top:8px"><button id="u-cf">Confirm SuperUser</button></div>`;
+    $("u-in").appendChild(cf);
+    $("u-cf").addEventListener("click", () => { const pw = $("u-cfpw").value; $("u-cfpw").value = ""; uAdmin({op:"confirm-superuser", my_password:pw}); });
+  }
+  if(!UV.may_confirm && cf) cf.remove();
   renderUserList();
   renderMatrix();
   renderAudit();
+  renderUpload();
 }
 function renderUserList(){
   const rows = (UV.users || []).map(u => {
     const pw = !u.password_set ? "chooses one at first sign-in" : (u.temporary ? "temporary" : "set") +
       (u.locked_s ? ", locked " + u.locked_s + " s" : "");
     const roles = (UV.roles || []).map(r => `<option${r === u.role ? " selected" : ""}>${esc(r)}</option>`).join("");
+    // A SuperUser, seen by anyone but a SuperUser here: read only.
+    if(u.edit === false) return `<tr><td>${esc(u.name)}</td><td>${esc(u.role)}</td><td>${esc(pw)}</td><td></td></tr>`;
     return `<tr><td>${esc(u.name)}</td><td><select data-role="${esc(u.name)}">${roles}</select></td><td>${esc(pw)}</td>` +
       `<td><button class="ghost" data-reset="${esc(u.name)}">Reset password</button> <button class="ghost" data-remove="${esc(u.name)}">Remove</button></td></tr>`;
   }).join("");
@@ -4875,32 +4891,38 @@ function renderMatrix(){
   $("um-save").hidden = !edit;
 }
 function renderAudit(){
-  const a = UV.audit || {}, w = a.writer || {}, c = a.chain, u = a.upload || {};
+  const a = UV.audit || {}, w = a.writer || {}, c = a.chain;
   $("au-state").textContent = (w.fault ? "FAULT: " + w.fault + ". " : "Writing. ") +
     (w.written || 0) + " line(s) written since the engine started" + (w.lost ? ", " + w.lost + " lost" : "") + ". " +
     (c ? ("Chain checked " + c.checked_at + ": " + (c.ok ? "OK" : "BROKEN") + ", " + c.files + " file(s), " + c.lines + " line(s)" +
       ((c.problems || []).length ? ". " + c.problems.join(" ") : "")) : "Chain not checked yet.");
-  $("au-up").textContent = (u.enabled ? ("On, to " + (u.host || "?") + " at " + u.time + ".") : "Off.") +
-    " Last upload: " + (u.last_upload_at || "never") + ". Days waiting: " + ((u.pending_days || []).join(", ") || "none") + "." +
-    (u.last_error ? " Last error: " + u.last_error : "") + (u.config_error ? " Settings problem: " + u.config_error : "") +
-    ((u.changed_since_sent || []).length ? " CHANGED SINCE SENT: " + u.changed_since_sent.join(", ") : "") +
-    (a.journal_upload ? " Night journal: nights waiting: " + ((a.journal_upload.pending_nights || []).join(", ") || "none") + "." +
-      (a.journal_upload.last_error ? " Last error: " + a.journal_upload.last_error : "") +
-      ((a.journal_upload.changed_since_sent || []).length ? " CHANGED SINCE SENT, sending again: " + a.journal_upload.changed_since_sent.join(", ") : "") +
-      ((a.journal_upload.failed || []).length ? " NOT SENT, refused by the server: " + a.journal_upload.failed.join(", ") : "") : "");
   const busy = document.activeElement && $("au-set").contains(document.activeElement);
   if(!busy){
-    $("au-en").checked = !!u.enabled;
-    $("au-time").value = u.time || "03:30";
-    $("au-keep").value = u.keep_days || 90;
     $("au-idle").value = UV.idle_signout_min || 0;
     $("au-lastshow").value = UV.signout_after_last_show_min == null ? 10 : UV.signout_after_last_show_min;
-    $("au-tok").placeholder = u.token_set ? "saved (type to replace)" : "not set";
   }
   const may = !!UV.may_settings;
   $("au-set").querySelectorAll("input,button").forEach(el => { el.disabled = !may; });
 }
+// A SuperUser's own card: its code is not on this page. The engine sends
+// its state only to a SuperUser signed in on this show PC's rack screen,
+// and only then is the card's script fetched (refused to everyone else)
+// and the card made.
+function dropUpload(){ const c = $("u-upload"); if(c) c.remove(); }
+let UPLOAD_JS = null;
+function renderUpload(){
+  if(!(UV && UV.local && UV.upload)){ dropUpload(); return; }
+  if(window.ltcUploadCard){ window.ltcUploadCard(UV); return; }
+  if(UPLOAD_JS) return;
+  UPLOAD_JS = document.createElement("script");
+  UPLOAD_JS.src = "/api/remote/upload-card.js";
+  UPLOAD_JS.onload = () => { if(window.ltcUploadCard) renderUpload(); };
+  UPLOAD_JS.onerror = () => { UPLOAD_JS.remove(); UPLOAD_JS = null; };
+  document.head.appendChild(UPLOAD_JS);
+}
 async function uAdmin(body, route){
+  const sp = $("u-supw");
+  if(sp && sp.value){ body.my_password = sp.value; sp.value = ""; }
   try{ const r = await post("/api/remote/" + (route || "users"), body); uMsg("ua-msg", r.text); }
   catch(e){ uMsg("ua-msg", e.message, true); }
   loadUsers();
@@ -4965,21 +4987,12 @@ $("au-save").addEventListener("click", async () => {
     uMsg("au-msg", "Sign out after the last show has to be a whole number of minutes, 0 (off) to 1440. Nothing was saved.", true);
     return;
   }
-  const body = {enabled:$("au-en").checked, url:$("au-url").value.trim() || undefined, time:$("au-time").value.trim(),
-    keep_days:parseInt($("au-keep").value, 10) || 90};
-  if($("au-tok").value) body.token = $("au-tok").value;
-  if(body.url === undefined) delete body.url;
   try{
-    const r = await post("/api/remote/audit-settings", body);
     await post("/api/remote/idle-signout", {minutes:parseInt($("au-idle").value, 10) || 0});
-    await post("/api/remote/last-show-signout", {minutes:lastShow});
+    const r = await post("/api/remote/last-show-signout", {minutes:lastShow});
     uMsg("au-msg", r.text);
   }catch(e){ uMsg("au-msg", e.message, true); }
-  $("au-tok").value = "";
   loadUsers();
-});
-$("au-now").addEventListener("click", async () => {
-  try{ const r = await post("/api/remote/audit-upload-now", {}); uMsg("au-msg", r.text); }catch(e){ uMsg("au-msg", e.message, true); }
 });
 
 
@@ -5531,8 +5544,10 @@ function daySteps(part, s){
   const list = dayList(part, mo);
   if(list && list.total) out.push({key: part === "shut" ? "shutlist" : "startlist", title:"Checklist", icon:"list",
     state: list.done >= list.total ? "done" : "todo", why: list.done + " of " + list.total + " ticked."});
-  if(part !== "shut" && fu && (fu.units || []).length){
-    const soon = fu.units.filter(u => u.refill_soon).length;
+  // Haze fluid's hazers (fuelhaze.py) are tanks on the Fuel step too.
+  const hzs = (fu && fu.haze && fu.haze.available && fu.haze.hazers) || [];
+  if(part !== "shut" && fu && ((fu.units || []).length || hzs.length)){
+    const soon = (fu.units || []).filter(u => u.refill_soon).length + hzs.filter(h => h.refill_soon).length;
     out.push({key:"fuel", title:"Fuel", icon:"flame", state: fu.fault || fu.config_error ? "blocked" : soon ? "todo" : (seen("fuel") ? "done" : "todo"),
       why: fu.fault || fu.config_error ? "Fuel record problem. Tap to read." : soon ? soon + (soon === 1 ? " tank needs a refill." : " tanks need a refill.") : "Tanks OK. Refill any you filled."});
   }
@@ -5824,7 +5839,7 @@ function dayBuild(k){
     `<div class="drow"><button class="b" id="mo-verify">${icon("shield")}Verify records</button>` +
     `<a class="b" id="mo-pdf" href="/api/remote/checklist-pdf?date=" download target="_blank" rel="noopener">${icon("print")}Download today's PDF</a>` +
     `<a class="b" id="mo-export" href="/api/remote/checklist-export" download target="_blank" rel="noopener">${icon("list")}Export all</a></div>`;
-  else if(k === "fuel") box.innerHTML = `<div class="dgrid" id="d-fuel"></div><div class="drow"><button class="b" id="fu-all">${icon("flame")}Refill all</button><button class="b" id="d-fu-rec" hidden>${icon("list")}<span id="d-fu-rec-l">Refills and notes</span></button><span id="fu-why" class="dim"></span></div>`;
+  else if(k === "fuel") box.innerHTML = `<div class="dgrid" id="d-fuel"></div><div class="drow"><button class="b" id="fu-all">${icon("flame")}Refill all</button><button class="b" id="d-fu-rec" hidden>${icon("list")}<span id="d-fu-rec-l">Refills and notes</span></button><span id="fu-why" class="dim"></span></div>` + HZF_HTML;
   else if(k === "purge") box.innerHTML = `<div class="dgrid" id="mo-groups"></div><div class="drow"><button class="b" id="mo-clear">${icon("x")}Clear</button><button class="b" id="d-mach">${icon("list")}Machines</button><button class="b" id="d-map">${icon("list")}<span id="d-map-l">Map</span></button><span class="key" id="mo-key"></span></div>`;
   else if(k === "lasers") box.innerHTML = `<div class="dgrid" id="mo-lasers"></div><div class="drow"><button class="b green" id="mo-cal-on">${icon("laser")}Test grid on</button><button class="b" id="mo-cal-off">${icon("x")}Test grid off</button><button class="b" id="mo-beyond" hidden>${icon("open")}Open BEYOND</button></div>`;
   else if(k === "locks" || k === "locks-shut") box.innerHTML = `<div class="dgrid" id="d-locks"></div>`;
@@ -5873,6 +5888,8 @@ function dayWire(k){
     $("mo-verify").addEventListener("click", () => moPress("checklist-verify", {}, "mo-cmsg"));
   }
   if(k === "fuel"){
+    $("d-hzf-g").addEventListener("click", hzfClick);
+    $("d-hzf-recent").addEventListener("click", hzfUndo);
     $("d-fu-rec").addEventListener("click", () => { DAY_FU_REC = !DAY_FU_REC; renderMorning(); });
     $("d-fuel").addEventListener("click", async ev => {
       const b = ev.target.closest("[data-refill]"); if(!b || b.disabled) return;
@@ -5979,13 +5996,14 @@ function dayUpdate(k){
     // 1.0's fuel warning and recent refills (P9): one button away, in the
     // tanks' place, so the step never grows past the screen.
     const nWarn = [f.config_error, f.fault].concat(f.notes || []).filter(Boolean).length;
-    const hasRec = !!(f.may_undo && (f.recent_refills || []).length);
+    const hasRec = !!(f.may_undo && (f.recent_refills || []).length) || hzfRecent(f).length > 0;
     $("d-fu-rec").hidden = !(nWarn || hasRec);
     if($("d-fu-rec").hidden) DAY_FU_REC = false;
     $("d-fu-rec").className = "b" + (nWarn ? " part" : "");
     setText($("d-fu-rec-l"), DAY_FU_REC ? "Back to the tanks" : "Refills and notes" + (nWarn ? " (" + nWarn + (nWarn === 1 ? " note)" : " notes)") : ""));
     $("d-fuel").hidden = DAY_FU_REC;
     setText($("fu-why"), f.may_refill ? "" : short8(f.refill_why, "Sign in to log a refill."));
+    renderHazeFluid(f, DAY_FU_REC);
   }
   if(k === "purge"){
     const gb = $("mo-groups"), purge = mo.purge_state || {};
@@ -6055,6 +6073,51 @@ function dayMachines(){
   }));
 }
 // 1.0's fuPress: the same route and body (no actor), then a fresh read.
+// Haze fluid (fuelhaze.py, Jeff 2026-11-12): the Fuel step's Hazers
+// section, the fuel tanks' look. Haze seconds always; litres and percent
+// only when the engine has a flow and a tank size for that hazer. A tap
+// is the fuel refill's: the same question, then haze-refill {unit}.
+// Refills and notes shows its recent refills with Undo (admins), as the
+// fuel tanks' do.
+const HZF_HTML = `<div id="d-hzf" hidden aria-label="Hazers"><div id="d-hzf-main"><div class="drow"><b>Haze fluid</b></div>` +
+  `<ul class="pline"><li>Counts haze time, never fan time.</li><li>Litres show once flow and tank are set.</li><li>Not sure time counts as full output.</li></ul>` +
+  `<div class="dgrid" id="d-hzf-g"></div><div class="pline bad" id="d-hzf-warn" hidden></div></div>` +
+  `<div id="d-hzf-rec" hidden><b>Recent haze refills</b><div id="d-hzf-recent"></div></div></div>`;
+function hzfList(f){ const h = f && f.haze; return (h && h.available && h.hazers) || []; }
+function hzfRecent(f){ const h = (f && f.haze) || {}; return h.may_undo ? (h.recent_refills || []) : []; }
+function renderHazeFluid(f, rec){
+  const sec = $("d-hzf"); if(!sec) return;
+  const hz = hzfList(f), rr = hzfRecent(f);
+  sec.hidden = !hz.length || (rec && !rr.length);
+  $("d-hzf-main").hidden = rec; $("d-hzf-rec").hidden = !rec;
+  const rsig = JSON.stringify(rr);
+  const rb = $("d-hzf-recent");
+  if(rb.dataset.sig !== rsig){
+    rb.dataset.sig = rsig;
+    rb.innerHTML = rr.map(b => `<div class="fu-rec"><span>${esc(fuWhen(b.at_ms))}: ${esc(b.who)} refilled ${esc(b.name)}${b.undone ? ". Undone by " + esc(b.undone.who) : ""}</span>${b.undone ? "" : `<button class="ghost" data-hundo="${b.id}">Undo</button>`}</div>`).join("");
+  }
+  const hv = (f && f.haze) || {};
+  const warn = [hv.config_error, hv.fault].concat(hv.notes || []).filter(Boolean).join(" ");
+  const w = $("d-hzf-warn");
+  const said = hv.fault ? "Haze record problem. Counts may be off." : hv.config_error ? "Haze fluid settings wrong. Seconds only." : "Some haze counts are not sure.";
+  w.hidden = !warn; setText(w, warn ? said : ""); w.title = warn;
+  const g = $("d-hzf-g");
+  const sig = JSON.stringify([hz.map(h => [h.name, h.big, h.color, h.refill_soon, h.not_sure, h.words]), f.may_refill]);
+  if(g.dataset.sig === sig) return;
+  g.dataset.sig = sig;
+  g.innerHTML = hz.map(h => `<button class="b ${h.refill_soon || h.not_sure ? "part" : ""}" data-hrefill="${esc(h.name)}" title="${esc(h.words)}" ${f.may_refill ? "" : "disabled"}>${icon("wind")}<span class="tt">${esc(h.name)}<small>${esc(h.big)}</small></span></button>`).join("");
+}
+async function hzfUndo(ev){
+  const b = ev.target.closest("[data-hundo]"); if(!b) return;
+  const yes = await confirmBox("Undo this refill?", "It stays in the record, marked undone, and the hazer counts from the refill before it.", "Yes, undo it");
+  if(yes) fuPress("haze-undo", {id:Number(b.dataset.hundo)});
+}
+async function hzfClick(ev){
+  const b = ev.target.closest("[data-hrefill]"); if(!b || b.disabled) return;
+  const h = hzfList(FU).find(x => x.name === b.dataset.hrefill); if(!h) return;
+  if(await confirmBox(`${h.name} refilled?`, "Log that its fluid tank is full now. The haze count starts again from here.", "Yes, refilled", "green"))
+    fuPress("haze-refill", {unit:h.name});
+}
 async function fuPress(route, body){
   try{ const j = await post("/api/remote/" + route, body); $("fu-msg").textContent = j.text || "Done."; }
   catch(e){ $("fu-msg").textContent = e.message; }

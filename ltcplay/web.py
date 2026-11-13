@@ -1172,6 +1172,12 @@ class Handler(BaseHTTPRequestHandler):
             perm = users_mod.classify(route, body)
             if perm == "safety" or perm is None:
                 return False
+            if perm == users_mod.UPLOAD:
+                # The nightly upload: the engine's one test answers it
+                # (remote.Remote.upload_refused, users.superuser_here),
+                # with the words of a route that is not there. This
+                # check's own words would name the setting.
+                return False
         except Exception:                        # noqa: BLE001
             return False
         try:
@@ -1939,6 +1945,8 @@ def _attach_accounts(httpd, users_seed=None, transport=None):
                       target=target, result=result, reason=reason,
                       source=source)
         r.users = users_mod.Users(r.folder, audit=_note)
+        # The SuperUsers changed outside this program: an alert.
+        r.users.on_alert = r.superuser_alert
         # Sign everyone out after the night's last show (Jeff, 2026-10-26).
         r.users.last_show = r.last_show_over
         r.users.start()
@@ -1957,9 +1965,6 @@ def _attach_accounts(httpd, users_seed=None, transport=None):
             r.journal_uploader = auditsend.JournalUploader(
                 book.folder, r.folder, night=sched._night,
                 transport=transport, checker=book.check_night,
-                say=lambda text: sched._journal_line(
-                    "system", text, action="journal upload",
-                    outcome="failed"),
                 note=lambda **kw: log.event(user=audit_mod.SYSTEM,
                                             surface="engine", **kw)).start()
         r.audit_watch = auditwatch.EngineWatch(r, log).start()
@@ -2477,6 +2482,42 @@ def _attach_fuel(httpd):
         finally:
             remote.fuel.close()
     httpd.server_close = _close_fuel
+
+
+def _attach_haze(httpd):
+    """Haze fluid (fuelhaze.py, the Fuel page's Hazers section): the flame
+    link's hazers, watched on the bytes each frame sent. It only observes
+    and is closed last, like the fuel record; a failure to build it leaves
+    the section unavailable and is said once."""
+    from . import fuelhaze
+    remote = httpd.remote
+    link = getattr(getattr(httpd, "fire_ice", None), "flame_link", None)
+    try:
+        if link is None or not link.hazer_names():
+            return
+    except Exception:                            # noqa: BLE001
+        return
+    try:
+        def _journal(text, fault=False):
+            remote._journal("system", "engine", "haze",
+                            "fault" if fault else "done", text, fault=fault)
+        remote.haze = fuelhaze.build(remote, link,
+                                     fuel=getattr(remote, "fuel", None),
+                                     journal=_journal)
+    except Exception as e:                       # noqa: BLE001
+        print(f"Haze fluid tracking could not be set up: "
+              f"{type(e).__name__}: {e}")
+        return
+    _close_before = httpd.server_close
+
+    def _close_haze():
+        # Last, as the fuel record: the flame link goes first, and the
+        # save never waits more than fuelhaze.CLOSE_TIMEOUT_S.
+        try:
+            _close_before()
+        finally:
+            remote.haze.close()
+    httpd.server_close = _close_haze
 
 
 def _attach_fireball(httpd):
@@ -3188,6 +3229,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         _attach_pump(httpd)
     if httpd.morning is not None:
         _attach_fuel(httpd)
+        _attach_haze(httpd)
         if fire_ice is not None and \
                 getattr(httpd.fire_ice, "flame_link", None) is not None:
             _attach_fireball(httpd)

@@ -48,7 +48,8 @@ import sys
 import threading
 import time
 
-NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.(engine|deck|supervisor)\.jsonl\Z")
+NAME_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})\.(engine|deck|supervisor|cli)\.jsonl\Z")
 NIGHT_RE = re.compile(r"^night_(\d{4})-(\d{2})-(\d{2})"
                       r"\.(journal\.txt|jsonl|summary\.md)\Z")
 NIGHTS = "night-journal"

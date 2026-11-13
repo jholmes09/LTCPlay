@@ -441,8 +441,7 @@ class JournalUploader:
     scheduler is on now (a date or its ISO text): only nights before it, and
     only once their summary is written, are closed and sent. `checker(night)`
     is the night files' own check (journal.Logbook.check_night), handed in
-    so this module never imports the journal. `say(text)` writes one line
-    in the night journal. Everything else is the audit Uploader's shape:
+    so this module never imports the journal. Everything else is the audit Uploader's shape:
     run() never raises, transport is injectable, the token never leaves the
     request.
 
@@ -450,11 +449,13 @@ class JournalUploader:
     (a summary written again), once per change, with X-LTC-Replaces naming
     the checksum the server holds. A file the server refuses for good (too
     large, a different file already there, another 4xx) is marked failed
-    for that checksum, said once, and the later nights go on."""
+    for that checksum, said once in the audit log (never in the night
+    journal, which everyone reads: the upload is a SuperUser's alone), and
+    the later nights go on."""
 
     def __init__(self, folder, settings_folder, night=None, transport=None,
                  wall=time.time, clock=time.monotonic, note=None,
-                 checker=None, say=None):
+                 checker=None):
         self.folder = folder
         self.settings_folder = settings_folder
         self._night = night
@@ -463,7 +464,6 @@ class JournalUploader:
         self._clock = clock
         self._note_fn = note
         self._checker = checker
-        self._say = say
         self._busy = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
@@ -524,14 +524,6 @@ class JournalUploader:
         try:
             self._note_fn(action=action, result=result, reason=reason,
                           target=target)
-        except Exception:                    # noqa: BLE001
-            pass
-
-    def _say_once(self, text):
-        if self._say is None:
-            return
-        try:
-            self._say(text)
         except Exception:                    # noqa: BLE001
             pass
 
@@ -768,11 +760,9 @@ class JournalUploader:
                     self._mark_failed(name, {
                         "sha256": (f[1] or f"size {f[2]}") if f else "",
                         "why": why, "at": audit._iso_local(self._wall())})
-                    self._note("journal-upload", "error", why, target=name)
-                    self._say_once(
-                        f"The night journal file {name} was not sent and "
-                        f"will not be tried again as it is: {why}. The "
-                        f"later nights are sent; the show is not affected.")
+                    # Once: a file failed for good is never tried again.
+                    self._note("journal-upload-failed", "error", why,
+                               target=name)
                     continue
                 self._fails_in_a_row += 1
                 back = BACKOFF_S[min(self._fails_in_a_row,

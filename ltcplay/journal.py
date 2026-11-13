@@ -1584,15 +1584,16 @@ class Logbook:
                         data={"removed": [n for _d, n, _i in removed]})
         unsent = [n for n in unsent if n in [x for _d, x, _i in removed]]
         if unsent:
+            # Said without naming the upload: the journal is read by
+            # everyone, the upload is a SuperUser's alone (PR #251).
             self.record(actor="system", action="prune",
-                        outcome="removed unsent",
-                        reason=f"never acknowledged in "
-                               f"{self.keep_days + UNSENT_GRACE_DAYS} days",
-                        text=(f"Removed {len(unsent)} night file(s) the "
-                              f"server never acknowledged, after "
-                              f"{self.keep_days + UNSENT_GRACE_DAYS} days: "
-                              f"{', '.join(unsent[:5])}. Check the nightly "
-                              f"upload's server and token."),
+                        outcome="removed late",
+                        reason=f"kept {UNSENT_GRACE_DAYS} days past "
+                               f"{self.keep_days}",
+                        text=(f"Removed {len(unsent)} night file(s) kept "
+                              f"{UNSENT_GRACE_DAYS} days past the usual "
+                              f"{self.keep_days}: "
+                              f"{', '.join(unsent[:5])}."),
                         state=state, night=today, data={"removed": unsent})
         if stale:
             self.record(actor="system", action="prune",
