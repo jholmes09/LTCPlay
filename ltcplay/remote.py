@@ -95,8 +95,10 @@ address (web.wrong_host_page); the Host check is not loosened.
 
 Remote access over Tailscale (Jeff, 2026-11-12) is the one exception to
 "one address": OFF unless turned on, it adds a second door on this PC's
-own Tailscale address with less authority than an iPad. See "remote
-access over Tailscale" below (TAILSCALE_NET, tailscale_refusal).
+own Tailscale address, for the Tailscale logins on an allow list only;
+past that a device there is an iPad that signs in to act (Jeff,
+2026-11-13). See "remote access over Tailscale" below (TAILSCALE_NET,
+tailscale_whois).
 """
 import contextlib
 import hmac
@@ -680,7 +682,7 @@ def load_settings(folder=None):
     # On, the engine also listens on this PC's own Tailscale address.
     out = {"show_network_address": None, "flamesafe_config": None,
            "screen_arming": False, "purge_arming": True, "booth_alert": None,
-           "tailscale_remote": False,
+           "tailscale_remote": False, "tailscale_logins": [],
            "alert_pixels": None,
            "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
            "purge_timed_s": TIMED_DEFAULT_S,
@@ -703,7 +705,7 @@ def settings_from_doc(doc, path, out=None):
     if out is None:
         out = {"show_network_address": None, "flamesafe_config": None,
                "screen_arming": False, "purge_arming": True,
-               "tailscale_remote": False,
+               "tailscale_remote": False, "tailscale_logins": [],
                "booth_alert": None, "alert_pixels": None,
                "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
                "purge_timed_s": TIMED_DEFAULT_S,
@@ -731,6 +733,9 @@ def settings_from_doc(doc, path, out=None):
             raise ValueError(f"{path}: tailscale_remote must be true or "
                              f"false.")
         out["tailscale_remote"] = v
+    if "tailscale_logins" in doc:
+        out["tailscale_logins"] = check_tailscale_logins(
+            doc["tailscale_logins"], path)
     if "purge_arming" in doc:
         v = doc["purge_arming"]
         if v is not True and v is not False:
@@ -1027,54 +1032,30 @@ def page_url(address, port=FIXED_PORT):
 # proxies: their requests carry forwarding headers (PROXY_HEADERS) and are
 # refused like any other proxy.
 #
-# What a press from Tailscale may do (tailscale_refusal): the same as a
-# signed-out iPad (Stop, Hold, Acknowledge, every disarm and every off),
-# plus Start now, Start at a cue and Resume for a signed-in person whose
-# role may (the role matrix's Show row). Signed out, or with no users set
-# up, those three are refused too: Tailscale can be anywhere, so nobody
-# at the rig is known to be watching. Arming anything, and anything that
-# makes a physical effect, is ALWAYS refused here, whatever "Arming from a
-# screen" says. Everything not listed as allowed is refused, so a route
-# added later (PR #243's hazer test and Arm all hazers among them) is
-# refused from Tailscale until someone decides otherwise.
+# Who gets in, and what they may do (Jeff, 2026-11-13, option A): only a
+# Tailscale login on the allow list ("tailscale_logins" in
+# ltcplay_remote.json, empty = nobody; an admin edits it on the show PC),
+# asked of this PC's own Tailscale for every connection (tailscale_whois,
+# cached briefly); a lookup that fails, or a login not on the list, is
+# refused. Past that, a Tailscale device is an iPad on the show network:
+# the same role matrix, the same "Arming from a screen" switch, the same
+# show-PC-only settings. One difference: every press that needs a role
+# (users.classify: anything but a safety press) needs a signed-in person
+# from Tailscale, users set up or not (tailscale_sign_in_refusal).
+# Signed out, the allowed login sees the page and may Stop, Hold,
+# Acknowledge and disarm, like a signed-out iPad.
 TAILSCALE_NET = ipaddress.ip_network("100.64.0.0/10")
 # Tailscale's own service address (MagicDNS): never this PC's.
 TAILSCALE_SERVICE_IP = "100.100.100.100"
-TAILSCALE_WORDS = "Not from Tailscale. Use the show PC or an iPad."
 TAILSCALE_FIREWALL_RULE = "LTC Player Tailscale page"
-# Every route that arms a flame, laser or hazer group (or selects a purge,
-# which arms the machine for it). Only their off forms (users.classify
-# "safety") pass, and only as a disarm.
-TAILSCALE_ARM_ROUTES = ("arm-hold", "laser-arm", "hazer", "hazer-level",
-                        "hazers-arm-all", "purge-select",
-                        "fireball-practice")
-# Every route that makes a physical effect with nobody necessarily
-# watching the rig: purges, the hazer test, the fuel pump, the fireball,
-# cleaning, live flame programming, a laser test, unlocking a machine,
-# Programming playback and Continue anyway. Only their off forms pass.
-TAILSCALE_EFFECT_ROUTES = ("purge-fire", "purge-timed", "hazer-test",
-                           "fuel-pump", "fireball-beat", "cleaning-beat",
-                           "live-flame", "laser-test", "lock",
-                           "preroll-continue", "play-from", "jump",
-                           "continue", "loop", "mark-a", "mark-b", "follow")
-# Allowed from Tailscale only for a signed-in person (and the role matrix
-# then asks the Show row, as everywhere).
-TAILSCALE_SIGNED_IN_ROUTES = ("start-now", "start-at-cue", "resume")
-# Never refused from Tailscale, even when the check above cannot be made.
-TAILSCALE_ALWAYS_SAFE = ("stop", "hold", "disarm-all", "group-disarm",
-                         "arm-release", "hazers-off", "fireball-off",
-                         "cleaning-stop", "purge-stop", "signout")
-TAILSCALE_ALLOWED_NOTE = "Stop, Hold and disarm still work here."
-TAILSCALE_SIGN_IN_WORDS = "Sign in first to start from Tailscale."
-# Start now, Start at a cue and Resume from Tailscale also wait until
-# nothing at the rig is armed or running (cold review of #244, D1): a
-# Resume or a start from somewhere else must never put an armed rig back
-# into a show with nobody known to be watching it.
-TAILSCALE_ARMED_WORDS = "Something is armed. Use the show PC or an iPad."
-TAILSCALE_UNKNOWN_WORDS = "Flame state unknown. Use the show PC or an iPad."
-# The surface's screen name, for the scheduler's screen list and the
-# journal (cold review of #244): never "iPad".
-TAILSCALE_SCREEN = "Tailscale"
+# A press that needs a role, from Tailscale with nobody signed in.
+TAILSCALE_SIGN_IN_WORDS = "Sign in first. Tailscale needs a sign-in."
+# A Tailscale login that is not on the allow list, or cannot be told.
+TAILSCALE_LOGIN_WORDS = "This Tailscale login is not allowed here."
+# How long one answer of `tailscale whois` is kept for a peer address.
+TAILSCALE_WHOIS_S = 10.0
+TAILSCALE_WHOIS_TIMEOUT_S = 3.0
+TAILSCALE_LOGINS_MAX = 20
 # What the installer last read for the second firewall rule
 # (installer.iss TailscaleOn): the LOCALAPPDATA it read and on or off, in
 # %PROGRAMDATA%\LTC Player.
@@ -1101,28 +1082,69 @@ def tailscale_host_ok(host_header, address, port):
     return str(host_header or "").strip().lower() == f"{address}:{port}"
 
 
-def tailscale_refusal(name, body, ctx):
-    """None when a POST to /api/remote/<name> from the Tailscale surface
-    may go on to the usual checks, else (kind, sentence). kind is "arming"
-    (arming is never from Tailscale), "effect" (a physical effect),
-    "sign in" (Start now and Resume need a signed-in person here) or
-    "not here" (everything else that is not a safety press). Decided by
-    what the engine will do with the body (users.classify), never by the
-    page's own words."""
+def tailscale_sign_in_refusal(route, body, ctx):
+    """TAILSCALE_SIGN_IN_WORDS when a POST from the Tailscale surface needs
+    a role (users.classify: not a safety press, not harmless) and nobody
+    is signed in on that page; else "". The role matrix then asks as for
+    an iPad. Fails closed: a body that cannot be classified needs a
+    sign-in."""
     from . import users as users_mod
-    body = body if isinstance(body, dict) else {}
-    perm = users_mod.classify("/api/remote/" + str(name), body)
-    if name in TAILSCALE_ARM_ROUTES and perm != "safety":
-        return ("arming", TAILSCALE_WORDS)
-    if name in TAILSCALE_EFFECT_ROUTES and perm != "safety":
-        return ("effect", TAILSCALE_WORDS)
-    if name in TAILSCALE_SIGNED_IN_ROUTES:
-        if getattr(ctx, "user", ""):
-            return None
-        return ("sign in", TAILSCALE_SIGN_IN_WORDS)
-    if perm == "safety":
+    try:
+        perm = users_mod.classify(route, body)
+    except Exception:                            # noqa: BLE001
+        perm = "unknown"
+    if perm in ("safety", None) or getattr(ctx, "user", ""):
+        return ""
+    return TAILSCALE_SIGN_IN_WORDS
+
+
+def check_tailscale_logins(value, path="ltcplay_remote.json"):
+    """The allow list as stored: a list of Tailscale login names (like
+    "andy@example.com"), each one word, at most TAILSCALE_LOGINS_MAX; an
+    empty list lets nobody in. ValueError with a sentence otherwise."""
+    if not isinstance(value, list) or \
+            len(value) > TAILSCALE_LOGINS_MAX:
+        raise ValueError(f"{path}: tailscale_logins must be a list of at "
+                         f"most {TAILSCALE_LOGINS_MAX} Tailscale logins.")
+    out = []
+    for v in value:
+        if not isinstance(v, str) or not v.strip() or \
+                len(v.strip()) > 254 or re.search(r"\s", v.strip()):
+            raise ValueError(f"{path}: {v!r} is not a Tailscale login.")
+        if v.strip().lower() not in out:
+            out.append(v.strip().lower())
+    return out
+
+
+def tailscale_whois(ip, run=None, cli=None):
+    """The Tailscale login of the peer at `ip`, asked of this PC's own
+    Tailscale (`tailscale whois --json <ip>`, by its full path, a short
+    timeout), lower case; None when it cannot be told (Tailscale missing,
+    not running, no answer, an answer that names nobody). Only an address
+    in 100.64.0.0/10 is ever asked. Never raises."""
+    if not is_tailscale_address(ip):
         return None
-    return ("not here", TAILSCALE_WORDS)
+    path = tailscale_cli() if cli is None else cli
+    if not path:
+        return None
+    try:
+        import subprocess
+        if run is None:
+            run = subprocess.run
+        kw = {}
+        if os.name == "nt":
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        p = run([path, "whois", "--json", str(ipaddress.ip_address(ip))],
+                capture_output=True, text=True,
+                timeout=TAILSCALE_WHOIS_TIMEOUT_S, **kw)
+        if p.returncode != 0:
+            return None
+        doc = json.loads(p.stdout or "null")
+        login = ((doc or {}).get("UserProfile") or {}).get("LoginName")
+    except Exception:                            # noqa: BLE001
+        return None
+    login = str(login or "").strip().lower()
+    return login or None
 
 
 # Where Tailscale's command line program is, by where its installer puts
@@ -1629,7 +1651,7 @@ class Ctx:
     nobody has to be). `session` is users.Users.session()'s dict."""
 
     def __init__(self, local, ip, session=None, token="", window="",
-                 tailscale=False):
+                 tailscale=False, login=""):
         self.local = local
         self.ip = ip
         self.session = session
@@ -1637,8 +1659,10 @@ class Ctx:
         self.window = window
         # Came in over Tailscale (web.py: the Tailscale door, or a peer in
         # 100.64.0.0/10 on any door but loopback). Never the machine
-        # itself, whatever else is said.
+        # itself, whatever else is said. `login`: the Tailscale login this
+        # PC's own Tailscale named for the peer (on the allow list).
         self.tailscale = bool(tailscale) and not local
+        self.login = str(login or "") if self.tailscale else ""
 
     @property
     def user(self):
@@ -1648,24 +1672,23 @@ class Ctx:
     @property
     def source(self):
         """The audit log's source: the device, and the page's window id.
-        From Tailscale exactly "Tailscale at <address>"."""
+        From Tailscale exactly "Tailscale at <address> (<login>)"."""
         if self.tailscale:
             return self.device
         return f"{self.device} {self.window}".strip()
 
     @property
     def screen(self):
-        """The screen-list name the scheduler checks. Tailscale is its own
-        surface, never "iPad"."""
-        if self.tailscale:
-            return TAILSCALE_SCREEN
+        """The screen-list name the scheduler checks. A Tailscale device
+        is the show network's screen kind, "iPad" (Jeff, 2026-11-13: it
+        follows the iPad's settings)."""
         return "Rack screen" if self.local else "iPad"
 
     @property
     def device(self):
         """What the journal calls it: the surface, never a person."""
         if self.tailscale:
-            return f"Tailscale at {self.ip}"
+            return f"Tailscale at {self.ip} ({self.login or 'unknown'})"
         return "Rack screen" if self.local else f"iPad at {self.ip}"
 
 
@@ -2226,7 +2249,7 @@ class Remote:
                 screen = str(body.get("screen") or "").strip() or screen
             if getattr(ctx, "tailscale", False):
                 # The journal names the surface too (Jeff, 2026-11-12).
-                return (f"{self.signed_in_name(ctx, body)} ({ctx.device})",
+                return (f"{self.signed_in_name(ctx, body)}, {ctx.device}",
                         screen, True)
             return self.signed_in_name(ctx, body), screen, True
         if ctx.local:
@@ -2327,11 +2350,12 @@ class Remote:
         name = route[len("/api/remote/"):]
         body = body if isinstance(body, dict) else {}
         if getattr(ctx, "tailscale", False):
-            # Remote access over Tailscale: reduced authority, checked
-            # before anything else (web.py asks the same first).
-            no = self.tailscale_refused(name, body, ctx)
-            if no is not None:
-                return no + ({},)
+            # Remote access over Tailscale: a press that needs a role needs
+            # a signed-in person (web.py asks the same first).
+            why = tailscale_sign_in_refusal(route, body, ctx)
+            if why:
+                return 403, {"error": why, "tailscale_refused": "sign in",
+                             "role_refused": True}, {}
         if name in REMOVED_ROUTES:
             # A page from before the change: told plainly, nothing done.
             return 410, {"error": REMOVED_ROUTES[name], "removed": True}, {}
@@ -2615,12 +2639,8 @@ class Remote:
         out = {"local": ctx.local, "device": ctx.device,
                "screen": ctx.screen, "fresh_s": FRESH_S}
         if getattr(ctx, "tailscale", False):
-            # Remote access over Tailscale: the page shows the presses it
-            # may not make disabled, with these words (tailscale_refusal
-            # refuses them at the engine whatever the page does).
-            out["tailscale"] = {"words": TAILSCALE_WORDS,
-                                "note": TAILSCALE_ALLOWED_NOTE,
-                                "armed": self.tailscale_armed_refusal()}
+            # Remote access over Tailscale: which login this page is.
+            out["tailscale"] = {"login": ctx.login}
         u = self.users
         if u is not None:
             s = getattr(ctx, "session", None) or {}
@@ -2651,18 +2671,6 @@ class Remote:
                 except Exception:                # noqa: BLE001
                     mu = None
                 out["machine_user"] = (mu or {}).get("name") or None
-        if getattr(ctx, "tailscale", False):
-            # From Tailscale (2026-11-12): no row but the Show row, and
-            # that only for a signed-in person whose role may. Signed out,
-            # users or not, is view only: Stop, Hold, Acknowledge and every
-            # disarm still work, as they always do.
-            from . import users as users_mod
-            may = dict(out.get("may") or {})
-            for p in users_mod.PERM_KEYS:
-                may[p] = bool(p == "show" and out.get("user") and
-                              may.get("show"))
-            out["may"] = may
-            out["view_only"] = not out.get("user")
         a = self.audit
         if a is not None:
             try:
@@ -2767,7 +2775,8 @@ class Remote:
             ok, text, token, needs_new = u.sign_in(
                 body.get("name"), body.get("password"), ctx.local,
                 ctx.source, new_password=body.get("new_password"),
-                from_only=bool(getattr(ctx, "tailscale", False)))
+                from_only=(f"Tailscale at {ctx.ip}"
+                           if getattr(ctx, "tailscale", False) else False))
             if not ok:
                 return 401, {"error": text, "needs_new_password": needs_new}, {}
             return 200, {"ok": True, "text": text}, {
@@ -3000,91 +3009,49 @@ class Remote:
         return 200, dict(view, ok=True, note=note)
 
     # -- remote access over Tailscale (Jeff, 2026-11-12) ------------------
-    def tailscale_refused(self, name, body, ctx):
-        """(code, body) refusing a press from the Tailscale surface, or
-        None (tailscale_refusal). Every refusal is journaled with the
-        surface; web.py writes its audit line."""
+    def tailscale_logins(self):
+        """The allow list (check_tailscale_logins), read at most every
+        TAILSCALE_WHOIS_S. A file that cannot be read lets nobody in."""
+        now = self.clock()
+        got = getattr(self, "_ts_logins_cache", None)
+        if got is None or now - got[0] >= TAILSCALE_WHOIS_S:
+            try:
+                logins = list(load_settings(self.folder).get(
+                    "tailscale_logins") or [])
+            except ValueError:
+                logins = []
+            got = (now, logins)
+            self._ts_logins_cache = got
+        return got[1]
+
+    def tailscale_login(self, ip):
+        """(login or None, why, seen) for the Tailscale peer at `ip`: its
+        login, when this PC's own Tailscale names one AND it is on the
+        allow list; `seen` is whatever login Tailscale named, for the
+        audit. Asked of Tailscale at most every TAILSCALE_WHOIS_S per
+        address. Fails closed: no answer, an error or an unlisted login is
+        (None, TAILSCALE_LOGIN_WORDS, seen). Never raises."""
+        login = ""
         try:
-            no = tailscale_refusal(name, body, ctx)
-        except Exception:                        # noqa: BLE001
-            # The check could not be made: refused (fail closed), unless
-            # it is one of the presses that only take risk away.
-            no = None if name in TAILSCALE_ALWAYS_SAFE else \
-                ("not here", TAILSCALE_WORDS)
-        if no is None and name in TAILSCALE_SIGNED_IN_ROUTES:
-            armed = self.tailscale_armed_refusal()
-            if armed:
-                no = ("armed", armed)
-        if no is None:
-            return None
-        kind, words = no
-        try:
-            who, screen, _s = self._actor(ctx, body)
-            self._journal(who, screen, name, "refused",
-                          f"{name} from {ctx.device} was refused: {words}")
+            now = self.clock()
+            cache = getattr(self, "_ts_whois_cache", None)
+            if cache is None:
+                cache = self._ts_whois_cache = {}
+            got = cache.get(ip)
+            if got is None or now - got[0] >= TAILSCALE_WHOIS_S:
+                fn = getattr(self, "_tailscale_whois", None) or \
+                    tailscale_whois
+                got = (now, fn(ip))
+                cache[ip] = got
+                if len(cache) > 256:
+                    cache.pop(next(iter(cache)))
+            login = str(got[1] or "").strip().lower()
+            allowed = self.tailscale_logins()
+            if login and login in allowed:
+                return login, "", login
         except Exception:                        # noqa: BLE001
             pass
-        return 403, {"error": words, "tailscale_refused": kind,
-                     "text": words}
-
-    def tailscale_armed_refusal(self):
-        """TAILSCALE_ARMED_WORDS while anything at the rig is armed or
-        running (a flame group armed or asked for, a hazer, a laser, the
-        fuel pump, a purge, a laser test, the Fireball, cleaning, live
-        flame programming, Fireball practice, a hazer test), and
-        TAILSCALE_UNKNOWN_WORDS when the flame groups' state is not known;
-        "" when nothing is. Start now, Start at a cue and Resume from
-        Tailscale wait for it (cold review of #244, D1). Fails closed:
-        anything that cannot be read refuses. Never raises."""
-        try:
-            return self._tailscale_armed()
-        except Exception:                        # noqa: BLE001
-            return TAILSCALE_UNKNOWN_WORDS
-
-    def _tailscale_armed(self):
-        fs = self.flame_status
-        if fs is None:
-            return TAILSCALE_UNKNOWN_WORDS
-        v = fs.view() or {}
-        groups = v.get("groups")
-        if v.get("stale") or not isinstance(groups, list):
-            return TAILSCALE_UNKNOWN_WORDS
-        if any(g.get("armed") != "disarmed" or g.get("wanted")
-               for g in groups):
-            return TAILSCALE_ARMED_WORDS
-        busy = []
-        hz = self.hazers
-        if hz is not None:
-            busy.append(bool(hz.on()))
-        pm = self.pump
-        if pm is not None:
-            busy.append(pm.run is not None or bool(pm.on()))
-        lf = getattr(self, "live_flame", None)
-        busy.append(lf is not None and bool(getattr(lf, "on", False)))
-        fb = getattr(self, "fireball", None)
-        if fb is not None:
-            sm = fb.summary() or {}
-            busy.append(bool(sm.get("on") or sm.get("owner")))
-        cl = getattr(self, "cleaning", None)
-        if cl is not None:
-            busy.append(bool(cl.active()))
-        pr = getattr(self, "fireball_practice", None)
-        if pr is not None:
-            busy.append(str(getattr(pr, "state", "closed") or "closed")
-                        != "closed")
-        m = self.morning
-        if m is not None:
-            mv = m.status_view() or {}
-            busy += [bool(mv.get("purge")), bool(mv.get("timed")),
-                     bool(mv.get("laser_tests_on")),
-                     bool((mv.get("laser_arm") or {}).get("armed"))]
-        # The hazer test (PR #243, not on this branch yet): asked by name,
-        # so it counts the moment it lands.
-        ht = getattr(self, "hazer_test", None)
-        if ht is not None:
-            on = getattr(ht, "on", None)
-            busy.append(bool(on() if callable(on) else on))
-        return TAILSCALE_ARMED_WORDS if any(busy) else ""
+        return None, TAILSCALE_LOGIN_WORDS, login
 
     def tailscale_view(self):
         """The Schedule tab's Remote access over Tailscale card on the show
@@ -3153,7 +3120,14 @@ class Remote:
                 len(bullets) < 3:
             # Removed by the installer, which needs Windows' permission.
             bullets.append("Use the installer again to remove the rule.")
-        return {"on": on, "error": err, "port": port,
+        try:
+            logins = list(load_settings(self.folder).get(
+                "tailscale_logins") or [])
+        except ValueError:
+            logins = []
+        if on and not logins and len(bullets) < 3:
+            bullets.append("Nobody gets in: add Tailscale logins.")
+        return {"on": on, "error": err, "port": port, "logins": logins,
                 "found": found["state"], "address": addr,
                 "listening": ts_listen, "url": url,
                 "firewall": {"state": fw_state, "text": fw_text},
@@ -3209,6 +3183,8 @@ class Remote:
         card. On is saved here and starts listening at the engine's next
         restart (Restart the engine, between shows with every flame group
         disarmed, refused during a show)."""
+        if "logins" in body:
+            return self.set_tailscale_logins(body, ctx)
         on = body.get("on")
         if not isinstance(on, bool):
             return 400, {"error": "on has to be true or false. Nothing was "
@@ -3245,6 +3221,28 @@ class Remote:
         return 200, dict(view, ok=True,
                          note="Saved. Restart the engine to apply." if on
                          else "Off. Tailscale is closed now.")
+
+    def set_tailscale_logins(self, body, ctx):
+        """POST tailscale {"logins": [...]}: the allow list of Tailscale
+        logins, on the show PC only (LOCAL_ONLY; the role matrix's Users
+        row, admin, users.classify). Saved whole; empty lets nobody in.
+        Takes effect within TAILSCALE_WHOIS_S."""
+        try:
+            logins = check_tailscale_logins(body.get("logins"))
+            save_settings(self.folder, tailscale_logins=logins)
+        except ValueError as e:
+            return 400, {"error": f"{e} Nothing was changed."}
+        except OSError as e:
+            return 500, {"error": f"ltcplay_remote.json could not be "
+                                  f"written ({e}). Nothing was changed."}
+        self._ts_logins_cache = None
+        self._ts_whois_cache = {}
+        who = ctx.user or "unsigned"
+        self._journal(who, ctx.screen, "tailscale logins", "saved",
+                      f"{who} set the Tailscale logins allowed in: "
+                      f"{', '.join(logins) or 'nobody'}.")
+        return 200, dict(self.tailscale_view(), ok=True,
+                         note="Saved. Logins: " + str(len(logins)) + ".")
 
     def set_screen_arming(self, body, ctx):
         """POST screen-arming {"on": true|false}, on the show machine only
@@ -3994,12 +3992,6 @@ class Remote:
             return 409, {"error": "There is no scheduler running in this "
                                   "engine, so there is no show to press "
                                   "this on. Nothing was changed."}
-        # From Tailscale the armed rule is asked again by the scheduler right
-        # before Start now or Resume is made, after any wait (verification
-        # of #244, m4).
-        ts_gate = ({"gate": self.tailscale_armed_refusal}
-                   if getattr(ctx, "tailscale", False) and
-                   name in TAILSCALE_SIGNED_IN_ROUTES else {})
         try:
             # surface: the press names the surface, not a person on the
             # operator list (Jeff, 2026-10-07). Every other rule the
@@ -4015,12 +4007,11 @@ class Remote:
                     return 409, {"ok": False, "error": text, "text": text}
                 r = svc.operator_press("start-now", who, screen,
                                        confirmed=body.get("confirmed") is True,
-                                       surface=surface, start_at=start_at,
-                                       **ts_gate)
+                                       surface=surface, start_at=start_at)
             else:
                 r = svc.operator_press(name, who, screen,
                                        confirmed=body.get("confirmed") is True,
-                                       surface=surface, **ts_gate)
+                                       surface=surface)
                 if name == "resume":
                     r = self._resume_health(r, who, screen)
         except ValueError as e:

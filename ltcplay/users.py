@@ -353,6 +353,9 @@ def classify(route, body=None):
         if name == "screen-arming" and body.get("on") is False:
             # Switching arming from a screen OFF only takes risk away.
             return "safety"
+        if name == "tailscale" and "logins" in body:
+            # Who may come in over Tailscale: the Users row (admin).
+            return "users"
         if name == "tailscale" and body.get("on") is False:
             # Remote access over Tailscale OFF only takes something away.
             return "safety"
@@ -876,14 +879,16 @@ class Users:
         in.
 
         `from_only` (remote access over Tailscale): wrong passwords count
-        against `source` alone, never the name, so a device on the tailnet
+        against that key (a string: the peer's address alone; True:
+        `source`), never the name, so a device on the tailnet
         can lock out only itself, never a name on the rack screen or an
         iPad."""
         name = " ".join(str(name or "").split())
         now = self._clock()
         keys = [("name", name.lower()), ("from", str(source))]
         if from_only:
-            keys = [("from", str(source))]
+            keys = [("from", str(from_only if isinstance(from_only, str)
+                                 else source))]
         with self._lock:
             wait = self._locked(keys, now)
         if wait:

@@ -2688,21 +2688,23 @@ nothing fires.
 - The card says: listening, and the firewall rule.
 - No Tailscale running: the card says so, nothing listens.
 
-**Less from Tailscale than an iPad.**
+**Only the logins you list get in.**
 
+- Same card: Tailscale logins allowed in, one per line.
+- Empty means nobody. Only an admin can change it.
+- Tailscale on this PC says who each device is.
+
+**Then it works like an iPad.**
+
+- Sign in to do anything that needs a role.
+- Arming follows "Arming from a screen", as iPads do.
 - Signed out: view, Stop, Hold, Acknowledge, disarm.
-- Start now and Resume: signed in, nothing armed.
-- Never arming, purges, hazers, pump, fireball, lasers.
 
-Start now, Start at a cue and Resume from Tailscale also need an admin to
-add the screen "Tailscale" by hand to the screen list
-(`ltcplay_screens.json` in Settings and logs). No list has it on its own:
-not a new one, not an older one, and not the one used while the file is
-broken. They also wait while anything at the rig is armed or running, and
-are checked again right before the show starts or resumes. Every page that only shows things (the
-show, the schedule, the alerts, the journal lines on the screen) is
-readable by any device on your tailnet that can reach the show PC, signed
-in or not.
+Tailscale follows the iPad's settings: the role matrix (USERS.md), the
+"Arming from a screen" switch and every rule an iPad has. The one
+difference: from Tailscale every press that needs a role needs a sign-in,
+also when no users are set up. Every page that only shows things is
+readable by every listed login, signed in or not.
 
 **Limit the tailnet to your own devices.**
 
@@ -2731,12 +2733,10 @@ Remove the default rule that lets every device reach every device.
 For example `tailscale serve --tcp 7878 tcp://127.0.0.1:7878` carries no
 proxy headers, so the engine would take every tailnet device for this PC.
 
-Turning it off closes the Tailscale door at once, during a show too.
-
-Turning it off: Turn off (the door closes at once), then use the
-installer again (that removes the rule). Tailscale Serve and Funnel are still refused.
-Every press from Tailscale is in the audit log as "Tailscale at
-<address>".
+Turning it off: Turn off (the door closes at once, during a show too),
+then use the installer again (that removes the rule). Tailscale Serve and
+Funnel are still refused. Every press from Tailscale, and every refusal,
+is in the audit log as "Tailscale at <address> (<login>)".
 
 ## What it will not do
 

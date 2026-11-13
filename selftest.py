@@ -53141,7 +53141,10 @@ _TS_ADDR = "100.101.102.103"
 _TS_PEER = ("100.88.1.2", 50000)
 
 
-def _ts_door(R, addr=_TS_ADDR):
+_TS_LOGIN = "andy@example.com"
+
+
+def _ts_door(R, addr=_TS_ADDR, login=_TS_LOGIN):
     """A Tailscale door beside the rig's show network door, as web.serve
     makes it, on loopback (this machine has no Tailscale address); requests
     go through _ask, which names it by `addr` and its real port."""
@@ -53153,6 +53156,14 @@ def _ts_door(R, addr=_TS_ADDR):
     d.daemon_threads = True
     d.schedule, d.remote = R.httpd.schedule, R.httpd.remote
     d.fire_ice_config = None
+    # Who is who on the tailnet: the allow list and a stand-in for this PC's
+    # own `tailscale whois` (test_tailscale_allow_list tests both).
+    if login:
+        from ltcplay import remote as RM
+        RM.save_settings(R.work, tailscale_logins=[login])
+        R.remote._tailscale_whois = lambda ip, _l=login: _l
+        R.remote._ts_logins_cache = None
+        R.remote._ts_whois_cache = {}
     return d
 
 
@@ -53418,11 +53429,12 @@ def test_tailscale_door_refuses_wrong_peer_host_and_proxies():
     try:
         st, _h, out = _ask(D, "GET", "/api/remote/whoami", client=_TS_PEER)
         check(st == 200 and out.get("local") is False and
-              out.get("device") == "Tailscale at 100.88.1.2" and
-              out.get("screen") == "Tailscale" and
-              (out.get("tailscale") or {}).get("words") ==
-              RM.TAILSCALE_WORDS and out.get("view_only") is True,
-              f"a Tailscale peer: the Tailscale surface, view only: {out}")
+              out.get("device") ==
+              "Tailscale at 100.88.1.2 (andy@example.com)" and
+              out.get("screen") == "iPad" and
+              (out.get("tailscale") or {}).get("login") == _TS_LOGIN,
+              f"a Tailscale peer: the Tailscale surface, its login, the "
+              f"iPad's screen kind: {out}")
         st, _h, out = _ask(D, "GET", "/remote", client=_TS_PEER)
         check(st == 200 and "<title>Show remote 2.0</title>" in str(out),
               "it gets the page")
@@ -53455,9 +53467,8 @@ def test_tailscale_door_refuses_wrong_peer_host_and_proxies():
               web_mod.Handler._tailscale(fake) is False,
               "on the show network door loopback is still the rack")
         st, _h, out = _ask(D, "POST", "/api/stop", {}, client=_TS_PEER)
-        check(st == 403 and out.get("tailscale_refused") == "not here",
-              f"a route that is not the remote page's own is refused from "
-              f"Tailscale with the Tailscale words: {st} {out}")
+        check(st == 403, f"a route that is not the remote page's own is "
+                         f"refused from Tailscale: {st} {out}")
         for host in (_TS_ADDR, f"{_TS_ADDR}:7879", "100.101.102.104:" +
                      str(port), f"10.20.0.5:{port}", f"showpc:{port}",
                      f"localhost:{port}", f"{_TS_ADDR}.:{port}",
@@ -53537,15 +53548,24 @@ def test_tailscale_door_refuses_wrong_peer_host_and_proxies():
         # route) has Tailscale's limits there too, never the rack's.
         st, _h, out = _ask(R.httpd, "GET", "/api/remote/whoami",
                            client=_TS_PEER)
-        check(st == 200 and out.get("device") == "Tailscale at 100.88.1.2"
+        check(st == 200 and out.get("device") ==
+              "Tailscale at 100.88.1.2 (andy@example.com)"
               and out.get("local") is False and "tailscale" in out,
               f"a Tailscale peer on the show network door is the Tailscale "
               f"surface: {out}")
         RM.save_settings(R.work, screen_arming=True)
         st, _h, out = _ask(R.httpd, "POST", "/api/remote/arm-hold",
                            {"group": 0, "seen": R.seen()}, client=_TS_PEER)
-        check(st == 403 and out.get("tailscale_refused") == "arming",
-              f"and may not arm there either: {st} {out}")
+        check(st == 403 and out.get("tailscale_refused") == "sign in",
+              f"and needs a sign-in there to arm, like the door: {st} "
+              f"{out}")
+        R.remote._tailscale_whois = lambda ip: "eve@example.com"
+        R.remote._ts_whois_cache = {}
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/whoami",
+                           client=_TS_PEER)
+        check(st == 403 and out.get("error") == RM.TAILSCALE_LOGIN_WORDS,
+              f"a login not on the list is refused on the show network "
+              f"door too: {st} {out}")
     finally:
         D.server_close()
         R.close()
@@ -53554,440 +53574,7 @@ def test_tailscale_door_refuses_wrong_peer_host_and_proxies():
 
 # Every press the Tailscale surface may never make, with the body the page
 # sends for it, and the kind of refusal (remote.tailscale_refusal).
-_TS_REFUSED = (
-    ("arm-hold", {"group": 0}, "arming"),
-    ("laser-arm", {"on": True}, "arming"),
-    ("hazer", {"hazer": "Hazer 1", "on": True}, "arming"),
-    ("hazer-level", {"hazer": "Hazer 1", "level": 50}, "arming"),
-    ("hazers-arm-all", {}, "arming"),
-    ("purge-select", {"machine": "m1", "on": True}, "arming"),
-    ("fireball-practice", {"action": "open"}, "arming"),
-    ("purge-fire", {"fire_id": 1, "on": True}, "effect"),
-    ("purge-timed", {"hold": True, "run": "r1", "seconds": 5}, "effect"),
-    ("hazer-test", {"on": True}, "effect"),
-    ("fuel-pump", {"on": True, "seconds": 60, "run": "p1"}, "effect"),
-    ("fireball-beat", {"run": "f1", "seq": 1, "change": True,
-                       "controls": {"fuel": True}}, "effect"),
-    ("cleaning-beat", {"hold": True, "run": "c1", "seq": 1}, "effect"),
-    ("live-flame", {"on": True, "confirmed": True}, "effect"),
-    ("laser-test", {"laser": "l1", "on": True}, "effect"),
-    ("lock", {"kind": "machine", "id": "m1", "on": False}, "effect"),
-    ("preroll-continue", {"phase": "begin", "token": "t"}, "effect"),
-    ("play-from", {"at": "00:00:10:00"}, "effect"),
-    ("jump", {"seconds": 5}, "effect"),
-    ("pause", {}, "not here"),
-    ("run-off", {}, "not here"),
-    ("fuel-refill", {"kind": "fuel"}, "not here"),
-    ("my-password", {"old": "a", "new": "b"}, "not here"),
-    ("checklist-tick", {"step": 1}, "not here"),
-    ("morning-open", {}, "not here"),
-    ("announce-play", {"id": "delayed"}, "not here"),
-    ("fireball-timeline-save", {}, "not here"),
-    ("a-route-added-later", {"on": True}, "not here"),
-)
 # Presses that only take risk away: never refused from Tailscale.
-_TS_SAFE = (
-    ("hold", {}), ("stop", {}), ("disarm-all", {}), ("group-disarm",
-                                                    {"group": 0}),
-    ("arm-release", {"group": 0}), ("alert", {"action": "acknowledge"}),
-    ("hazers-off", {}), ("hazer", {"hazer": "Hazer 1", "on": False}),
-    ("fuel-pump", {"on": False}), ("fireball-off", {}),
-    ("cleaning-stop", {}), ("purge-stop", {}), ("purge-clear", {}),
-    ("laser-test", {"laser": "l1", "on": False}),
-    ("laser-arm", {"on": False}), ("live-flame", {"on": False}),
-    ("purge-select", {"machine": "m1", "on": False}),
-    ("fireball-practice", {"action": "done"}),
-    ("lock", {"kind": "machine", "id": "m1", "on": True}),
-    ("signout", {}), ("announce-stop", {}),
-)
-
-
-def test_tailscale_reduced_authority():
-    section("remote access over Tailscale: signed out it is view only "
-            "(Stop, Hold, Acknowledge, every disarm and off still work); "
-            "Start now, Start at a cue and Resume only signed in, never "
-            "signed out, users or not; arming and every physical effect "
-            "refused at the engine whatever Arming from a screen says, a "
-            "route added later too; every press and refusal audited and "
-            "journaled as Tailscale at its address")
-    S = _sched()
-    if S is None:
-        return
-    import shutil
-    import tempfile
-    from ltcplay import remote as RM
-    from ltcplay import users as U
-    R = _RemoteRig(S)
-    D = _ts_door(R)
-    udir = tempfile.mkdtemp()
-    audit = []
-
-    class Audit:
-        def event(self, **kw):
-            audit.append(kw)
-    R.remote.audit = Audit()
-    RM.save_settings(R.work, screen_arming=True)
-    # Every flame group disarmed and known (Start now from Tailscale waits
-    # otherwise: test_tailscale_start_waits_while_armed).
-    R.remote.flame_status = _TsFlames()
-
-    def press(name, body, hdr=None, door=None):
-        return _ask(door or D, "POST", "/api/remote/" + name,
-                    dict(body, seen=R.seen()), client=_TS_PEER,
-                    headers=hdr or {})
-    try:
-        for name, body, kind in _TS_REFUSED:
-            n0 = len(audit)
-            st, _h, out = press(name, body)
-            check(st == 403 and out.get("tailscale_refused") == kind and
-                  out.get("error") == (RM.TAILSCALE_WORDS),
-                  f"{name} {body} from Tailscale is refused ({kind}), "
-                  f"said plainly: {st} {out}")
-            a = audit[n0:]
-            check(len(a) == 1 and a[0]["surface"] == "web" and
-                  a[0]["source"] == "Tailscale at 100.88.1.2" and
-                  a[0]["result"] == "refused" and
-                  RM.TAILSCALE_WORDS in a[0]["reason"],
-                  f"and audited: {a}")
-            # The engine refuses it too, whatever called it.
-            ctx = RM.Ctx(False, "100.88.1.2", tailscale=True)
-            code, out2, _hd = R.remote.post("/api/remote/" + name,
-                                            dict(body), ctx)
-            check(code == 403 and out2.get("tailscale_refused") == kind,
-                  f"Remote.post refuses {name} from Tailscale itself: "
-                  f"{code} {out2}")
-        jr = [r for r in R.svc.journal if r.get("outcome") == "refused" and
-              "Tailscale at 100.88.1.2" in str(r.get("text", ""))]
-        check(len(jr) >= len(_TS_REFUSED),
-              f"every refusal is journaled naming the surface: {len(jr)}")
-        for name, body in _TS_SAFE:
-            st, _h, out = press(name, body)
-            check(not out or not (isinstance(out, dict) and
-                                  out.get("tailscale_refused")),
-                  f"{name} {body} only takes risk away: never refused for "
-                  f"Tailscale: {st} {out}")
-        n0 = len(audit)
-        st, _h, out = press("hold", {})
-        held = [r for r in R.svc.journal if "Hold" in str(r.get("text")) and
-                r.get("who") == "Tailscale at 100.88.1.2" and
-                r.get("screen") == "Tailscale"]
-        check(held,
-              f"Hold from Tailscale works and is journaled as Tailscale at "
-              f"its address: {st} {out}")
-        check(audit[n0:] and audit[n0]["source"] ==
-              "Tailscale at 100.88.1.2" and audit[n0]["surface"] == "web"
-              and audit[n0]["action"] == "hold",
-              f"and audited as the web surface, Tailscale at its address: "
-              f"{audit[n0:]}")
-        # Start now and Resume: never signed out, users or not.
-        for name in RM.TAILSCALE_SIGNED_IN_ROUTES:
-            st, _h, out = press(name, {"confirmed": True})
-            check(st == 403 and out.get("tailscale_refused") == "sign in" and
-                  out.get("error") == RM.TAILSCALE_SIGN_IN_WORDS,
-                  f"{name} signed out, no users set up: refused: {st} {out}")
-        # With users.
-        us = U.Users(udir, hash_params=_U_FAST)
-        us.seed([("Jeff", "admin"), ("Ollie", "operator"), ("Vic", "viewer")])
-        R.remote.users = us
-        for who in ("Ollie", "Vic"):
-            us.sign_in(who, "", True, "rack", new_password=who + "-pw-1234")
-        for name in RM.TAILSCALE_SIGNED_IN_ROUTES:
-            st, _h, out = press(name, {"confirmed": True})
-            check(st == 403 and out.get("tailscale_refused") == "sign in",
-                  f"{name} signed out, with users: refused: {st} {out}")
-        ok, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", False,
-                                     "Tailscale at 100.88.1.2")
-        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
-        st, _h, me = _ask(D, "GET", "/api/remote/whoami", client=_TS_PEER,
-                          headers=hdr)
-        check(ok and me.get("user") == "Ollie" and
-              me.get("view_only") is False and
-              me["may"] == {p: p == "show" for p in U.PERM_KEYS},
-              f"Ollie signed in from Tailscale: the Show row only: {me}")
-        for name in RM.TAILSCALE_SIGNED_IN_ROUTES:
-            st, _h, out = press(name, {"confirmed": True}, hdr)
-            check(not out.get("tailscale_refused") and
-                  not out.get("role_refused"),
-                  f"{name} signed in as an operator: past the Tailscale "
-                  f"and role checks: {st} {out}")
-        for name, body, kind in _TS_REFUSED:
-            st, _h, out = press(name, body, hdr)
-            check(st == 403 and out.get("tailscale_refused") == kind,
-                  f"{name} signed in as an operator, Arming from a screen "
-                  f"on: still refused from Tailscale: {st} {out}")
-        n0 = len(audit)
-        press("hold", {}, hdr)
-        check(audit[n0]["user"] == "Ollie" and audit[n0]["source"] ==
-              "Tailscale at 100.88.1.2",
-              f"audited as Ollie on Tailscale: {audit[n0:]}")
-        held = [r for r in R.svc.journal if "Hold" in str(r.get("text")) and
-                r.get("who") == "Ollie (Tailscale at 100.88.1.2)"]
-        check(held, "the journal names the person and the surface")
-        ok, _w, vt, _n = us.sign_in("Vic", "Vic-pw-1234", False,
-                                    "Tailscale at 100.88.1.2")
-        st, _h, out = press("start-now", {"confirmed": True},
-                            {"Cookie": f"{U.COOKIE}={vt}"})
-        check(st == 403 and out.get("role_refused"),
-              f"a viewer from Tailscale: the role matrix still refuses: "
-              f"{st} {out}")
-        st, _h, me = _ask(D, "GET", "/api/remote/whoami", client=_TS_PEER)
-        check(me.get("view_only") is True and
-              not any(me["may"].values()),
-              f"signed out on Tailscale: view only, no row: {me}")
-        # An iPad keeps its own rules: its arming is not Tailscale's.
-        st, _h, me = R.ask("GET", "/api/remote/whoami")
-        check("tailscale" not in me, "an iPad has no Tailscale limits")
-    finally:
-        D.server_close()
-        R.close()
-        shutil.rmtree(udir, ignore_errors=True)
-    print("  ok")
-
-
-class _TsFlames:
-    """A flamesafe status for the Tailscale tests: every group as `armed`
-    says (default all disarmed), or stale."""
-
-    def __init__(self, armed=("disarmed", "disarmed"), stale=False,
-                 wanted=()):
-        self.armed, self.stale = list(armed), stale
-        self.wanted = set(wanted)
-
-    def view(self):
-        return {"stale": self.stale, "connected": True, "age_ms": 100,
-                "groups": [{"name": f"g{i}", "armed": a,
-                            "wanted": i in self.wanted}
-                           for i, a in enumerate(self.armed)]}
-
-
-def test_tailscale_start_waits_while_armed():
-    section("remote access over Tailscale (cold review of #244, D1): Start "
-            "now, Start at a cue and Resume from Tailscale are refused while "
-            "any flame group, hazer, laser, the pump, a purge, a laser test, "
-            "the Fireball, cleaning or a hazer test is armed or running, or "
-            "the flame state is not known; Acknowledge and Hold still go; "
-            "nothing armed, a signed-in person may; an iPad is unchanged")
-    S = _sched()
-    if S is None:
-        return
-    import shutil
-    import tempfile
-    from ltcplay import remote as RM
-    from ltcplay import users as U
-    R = _RemoteRig(S)
-    D = _ts_door(R)
-    udir = tempfile.mkdtemp()
-    rm = R.remote
-    try:
-        us = U.Users(udir, hash_params=_U_FAST)
-        us.seed([("Jeff", "admin"), ("Ollie", "operator")])
-        rm.users = us
-        us.sign_in("Ollie", "", True, "rack", new_password="Ollie-pw-1234")
-        ok, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", False,
-                                     "Tailscale at 100.88.1.2")
-        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
-
-        def press(name, body=None):
-            return _ask(D, "POST", "/api/remote/" + name,
-                        dict(body or {}, seen=R.seen(), confirmed=True),
-                        client=_TS_PEER, headers=hdr)
-
-        def starts(kind, words, why):
-            for name in RM.TAILSCALE_SIGNED_IN_ROUTES:
-                st, _h, out = press(name)
-                if kind is None:
-                    check(out.get("tailscale_refused") is None,
-                          f"{why}: {name} is past the Tailscale check: "
-                          f"{st} {out}")
-                else:
-                    check(st == 403 and out.get("tailscale_refused") == kind
-                          and out.get("error") == words,
-                          f"{why}: {name} refused, said plainly: {st} {out}")
-        rm.flame_status = None
-        starts("armed", RM.TAILSCALE_UNKNOWN_WORDS, "no flame status")
-        rm.flame_status = _TsFlames(stale=True)
-        starts("armed", RM.TAILSCALE_UNKNOWN_WORDS, "a stale flame status")
-        rm.flame_status = _TsFlames(wanted=(1,))
-        starts("armed", RM.TAILSCALE_ARMED_WORDS,
-               "a flame group asked for, not armed yet")
-        rm.flame_status = _TsFlames(("disarmed", "armed"))
-        starts("armed", RM.TAILSCALE_ARMED_WORDS, "a flame group armed")
-        st, _h, me = _ask(D, "GET", "/api/remote/whoami", client=_TS_PEER,
-                          headers=hdr)
-        check(me["tailscale"]["armed"] == RM.TAILSCALE_ARMED_WORDS,
-              f"the page is told why, to grey them: {me.get('tailscale')}")
-        st, _h, out = press("alert", {"action": "acknowledge"})
-        check(not out.get("tailscale_refused"),
-              f"Acknowledge still goes while armed: {st} {out}")
-        st, _h, out = press("resume")
-        check(st == 403 and out.get("tailscale_refused") == "armed",
-              f"and an Acknowledge never lets Resume past it: {st} {out}")
-        st, _h, out = press("hold")
-        check(not out.get("tailscale_refused"),
-              f"Hold still goes while armed: {st} {out}")
-        st, _h, out = R.ask("POST", "/api/remote/resume",
-                            {"seen": R.seen()})
-        check(out.get("tailscale_refused") is None,
-              f"an iPad's Resume is not Tailscale's: {st} {out}")
-        rm.flame_status = _TsFlames()
-        starts(None, "", "every group disarmed, nothing running")
-        st, _h, me = _ask(D, "GET", "/api/remote/whoami", client=_TS_PEER,
-                          headers=hdr)
-        check(me["tailscale"]["armed"] == "", f"nothing armed: {me}")
-        # Each other thing armed or running, one at a time.
-        busy = (
-            ("hazers", types.SimpleNamespace(on=lambda: {"Hazer 1"})),
-            ("pump", types.SimpleNamespace(run=None, on=lambda: True)),
-            # A run reserved, the pump not on yet.
-            ("pump", types.SimpleNamespace(run={"token": "t"},
-                                           on=lambda: False)),
-            ("live_flame", types.SimpleNamespace(on=True)),
-            ("fireball", types.SimpleNamespace(
-                summary=lambda: {"on": ["fuel"], "owner": None})),
-            # The Fireball page held by a screen, nothing on yet.
-            ("fireball", types.SimpleNamespace(
-                summary=lambda: {"on": [], "owner": "Rack screen"})),
-            ("cleaning", types.SimpleNamespace(active=lambda: True)),
-            ("fireball_practice", types.SimpleNamespace(state="ready")),
-            ("hazer_test", types.SimpleNamespace(on=lambda: True)),
-            ("morning", types.SimpleNamespace(
-                status_view=lambda: {"purge": True})),
-            ("morning", types.SimpleNamespace(
-                status_view=lambda: {"laser_tests_on": ["l1"]})),
-            ("morning", types.SimpleNamespace(
-                status_view=lambda: {"laser_arm": {"armed": True}})),
-            ("morning", types.SimpleNamespace(
-                status_view=lambda: {"timed": {"left_s": 3}})))
-        for attr, thing in busy:
-            was = getattr(rm, attr, None)
-            setattr(rm, attr, thing)
-            try:
-                check(rm.tailscale_armed_refusal() ==
-                      RM.TAILSCALE_ARMED_WORDS,
-                      f"{attr} armed or running: Start now and Resume from "
-                      f"Tailscale wait")
-            finally:
-                setattr(rm, attr, was)
-        check(rm.tailscale_armed_refusal() == "", "and with none: nothing")
-        # The engine could not be asked: refused, never Stop or Hold
-        # (verification of #244, m5).
-        was = rm.tailscale_refused
-        rm.tailscale_refused = lambda *a: 1 / 0
-        try:
-            st, _h, out = press("start-now")
-            check(st == 403 and out.get("tailscale_refused") == "not here",
-                  f"a fault in the engine's check refuses: {st} {out}")
-            st, _h, out = press("hold")
-            check(not out.get("tailscale_refused"),
-                  f"but never Hold: {st} {out}")
-        finally:
-            rm.tailscale_refused = was
-        # A check that cannot be made refuses.
-        rm.flame_status = types.SimpleNamespace(view=lambda: 1 / 0)
-        check(rm.tailscale_armed_refusal() == RM.TAILSCALE_UNKNOWN_WORDS,
-              "a fault in the check refuses")
-        page = _ui2_pages()[1]
-        check("tsArmedWhy(st)" in page and
-              "L.why = tsArmedWhy(st, true)" in page and
-              "|| tsArmedWhy(ST)) return null;" in page,
-              "the page greys Start now, Resume and Start at a cue with the "
-              "engine's words")
-    finally:
-        D.server_close()
-        R.close()
-        shutil.rmtree(udir, ignore_errors=True)
-    print("  ok")
-
-
-def test_tailscale_needs_the_screen_listed():
-    section("remote access over Tailscale (verification of #244, M-a): "
-            "Start now and Resume from Tailscale need \"Tailscale\" added "
-            "to the screen list by hand; a fresh list, an older one and a "
-            "broken one all refuse; the scheduler asks the armed rule "
-            "again right before the press is made (m4)")
-    S = _sched()
-    if S is None:
-        return
-    import shutil
-    from ltcplay import remote as RM
-    from ltcplay import schedule_service as SV
-    from ltcplay import users as U
-    check("tailscale" not in [n.lower() for n in SV.DEFAULT_SCREENS],
-          f"never in the defaults: {SV.DEFAULT_SCREENS}")
-    d = tempfile.mkdtemp()
-    names, _w = SV.load_screens(d)
-    check("Tailscale" not in names, f"a fresh list: {names}")
-    with open(SV.screens_path(d), "w", encoding="utf-8") as fh:
-        json.dump({"screens": ["Rack screen", "Stream Deck", "Phone",
-                               "iPad"]}, fh)
-    names, _w = SV.load_screens(d)
-    check("Tailscale" not in names, f"an older list: {names}")
-    with open(SV.screens_path(d), "w", encoding="utf-8") as fh:
-        fh.write("{broken")
-    names, why = SV.load_screens(d)
-    check("Tailscale" not in names and why, f"a broken list: {names}")
-    shutil.rmtree(d, ignore_errors=True)
-    R = _RemoteRig(S)
-    D = _ts_door(R)
-    udir = tempfile.mkdtemp()
-    rm = R.remote
-    try:
-        us = U.Users(udir, hash_params=_U_FAST)
-        us.seed([("Jeff", "admin"), ("Ollie", "operator")])
-        rm.users = us
-        us.sign_in("Ollie", "", True, "rack", new_password="Ollie-pw-1234")
-        ok, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", False,
-                                     "Tailscale at 100.88.1.2")
-        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
-        rm.flame_status = _TsFlames()
-
-        def press(name):
-            return _ask(D, "POST", "/api/remote/" + name,
-                        {"seen": R.seen(), "confirmed": True},
-                        client=_TS_PEER, headers=hdr)
-        for name in ("start-now", "resume"):
-            st, _h, out = press(name)
-            check(st >= 400 and "screen list" in str(out.get("error")),
-                  f"{name} from Tailscale, the list without it: refused by "
-                  f"the scheduler: {st} {out}")
-        R.svc.screens = tuple(R.svc.screens) + ("Tailscale",)
-        st, _h, out = press("start-now")
-        check("screen list" not in str(out),
-              f"added by hand: past the screen list: {st} {out}")
-        # m4: armed meanwhile (after the first check, before the press is
-        # made): refused by the scheduler's own last check.
-        calls = [0]
-
-        def later():
-            calls[0] += 1
-            # The web layer's and the engine's checks at entry see
-            # nothing armed; the scheduler's last one does.
-            return "" if calls[0] <= 2 else RM.TAILSCALE_ARMED_WORDS
-        rm.tailscale_armed_refusal = later
-        n0 = len(list(R.svc.journal))
-        st, _h, out = press("start-now")
-        check(calls[0] >= 3 and out.get("ok") is False and
-              RM.TAILSCALE_ARMED_WORDS in str(out.get("text") or
-                                              out.get("error")),
-              f"something armed while Start now was on its way: refused "
-              f"right before it was made: {st} {out}")
-        check(any(r.get("outcome") == "refused" and
-                  RM.TAILSCALE_ARMED_WORDS in str(r.get("text"))
-                  for r in list(R.svc.journal)[n0:]), "and journaled")
-        del rm.tailscale_armed_refusal
-        # The scheduler's gate itself: a sentence or a fault refuses.
-        for gate in (lambda: "x is armed", lambda: 1 / 0):
-            r = R.svc.operator_press("resume", "Ollie", "Tailscale",
-                                     surface=True, gate=gate)
-            check(r.get("ok") is False and "Resume was refused" in
-                  r.get("text", ""), f"the gate refuses Resume: {r}")
-    finally:
-        D.server_close()
-        R.close()
-        shutil.rmtree(udir, ignore_errors=True)
-    print("  ok")
-
-
 def test_tailscale_off_closes_the_door_now():
     section("remote access over Tailscale (cold review of #244, M1): turning "
             "it off closes the Tailscale door at once, during a show too: "
@@ -54002,7 +53589,8 @@ def test_tailscale_off_closes_the_door_now():
         def __init__(self, addr, handler):
             real.__init__(self, ("127.0.0.1", 0), handler)
     folder, work = tempfile.mkdtemp(), tempfile.mkdtemp()
-    RM.save_settings(work, tailscale_remote=True)
+    RM.save_settings(work, tailscale_remote=True,
+                     tailscale_logins=[_TS_LOGIN])
     web_mod.ThreadingHTTPServer = Rec
     try:
         h = web_mod.serve(folder, port=0, bind="127.0.0.1",
@@ -54014,6 +53602,10 @@ def test_tailscale_off_closes_the_door_now():
         check(door is not None and
               h.remote.listen.get("tailscale") == "100.101.102.103",
               f"on: the door listens: {h.remote.listen}")
+        h.remote._tailscale_whois = lambda ip: _TS_LOGIN
+        st, _h, out = _ask(door, "GET", "/api/remote/whoami",
+                           client=_TS_PEER)
+        check(st == 200, f"open: an allowed login is answered: {st} {out}")
         port = door.server_address[1]
         k = _so.create_connection(("127.0.0.1", port), timeout=5)
         k.sendall(b"GET /api/remote/whoami HTTP/1.1\r\n")   # half sent
@@ -54168,6 +53760,270 @@ def test_tailscale_sign_in_lockout_is_its_own():
                            {"name": "Jeff", "password": "x"}, client=loop)
         check(st == 401 and "Too many" in str(out.get("error")),
               f"an iPad's wrong passwords still lock the name: {st} {out}")
+    finally:
+        D.server_close()
+        R.close()
+        shutil.rmtree(udir, ignore_errors=True)
+    print("  ok")
+
+
+def test_tailscale_allow_list():
+    section("remote access over Tailscale (Jeff, 2026-11-13: specify who "
+            "gets in): only a Tailscale login on the allow list gets in, "
+            "asked of this PC's own Tailscale (tailscale whois, full path, "
+            "cached briefly); empty lets nobody in; a lookup that fails or "
+            "an unlisted login is refused; the list is the admin's, on the "
+            "show PC only; every press and refusal is audited with the login")
+    S = _sched()
+    if S is None:
+        return
+    import shutil
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    check(RM.load_settings(tempfile.mkdtemp())["tailscale_logins"] == [],
+          "the allow list is empty by default: nobody")
+    check(RM.check_tailscale_logins([" Andy@Example.com ", "andy@example.com",
+                                     "bo@x.org"]) ==
+          ["andy@example.com", "bo@x.org"], "logins are kept lower case, once")
+    for bad in ("andy@example.com", [""], ["two words"], [1], None,
+                ["x"] * (RM.TAILSCALE_LOGINS_MAX + 1)):
+        try:
+            RM.check_tailscale_logins(bad)
+            check(False, f"{bad!r} was taken as an allow list")
+        except ValueError:
+            pass
+    # The lookup itself.
+    run = _TsRun(out=json.dumps({"UserProfile": {"LoginName":
+                                                 "Andy@Example.com"},
+                                 "Node": {"Name": "andys-phone"}}))
+    check(RM.tailscale_whois("100.88.1.2", run=run, cli="/x/tailscale") ==
+          "andy@example.com" and run.calls == [["/x/tailscale", "whois",
+                                                "--json", "100.88.1.2"]],
+          f"tailscale whois --json, by its full path: {run.calls}")
+    for r, why in ((_TsRun(rc=1), "an error"), (_TsRun(out="not json"),
+                   "an answer that is not JSON"), (_TsRun(boom=True),
+                   "no program"), (_TsRun(out="{}"), "no login")):
+        check(RM.tailscale_whois("100.88.1.2", run=r, cli="/x/t") is None,
+              f"{why}: nobody")
+    r = _TsRun(out="{}")
+    check(RM.tailscale_whois("10.20.0.44", run=r, cli="/x/t") is None and
+          not r.calls, "an address outside 100.64.0.0/10 is never asked")
+    check(RM.tailscale_whois("100.88.1.2", cli="") is None,
+          "Tailscale not installed: nobody")
+    R = _RemoteRig(S)
+    D = _ts_door(R, login="")
+    rm = R.remote
+    udir = tempfile.mkdtemp()
+    audit = []
+
+    class Audit:
+        def event(self, **kw):
+            audit.append(kw)
+    rm.audit = Audit()
+    asked = []
+
+    def whois(ip):
+        asked.append(ip)
+        return who[0]
+    who = ["andy@example.com"]
+    rm._tailscale_whois = whois
+
+    def look(peer=_TS_PEER):
+        rm._ts_logins_cache = None
+        return _ask(D, "GET", "/api/remote/whoami", client=peer)
+    try:
+        st, _h, out = look()
+        check(st == 403 and out.get("error") == RM.TAILSCALE_LOGIN_WORDS,
+              f"the list empty: nobody gets in: {st} {out}")
+        RM.save_settings(R.work, tailscale_logins=["andy@example.com"])
+        rm._ts_whois_cache = {}
+        st, _h, out = look()
+        check(st == 200 and out["tailscale"]["login"] == "andy@example.com",
+              f"a listed login gets in: {st} {out}")
+        n = len(asked)
+        look()
+        check(len(asked) == n, "asked again within the cache: not asked")
+        R.mono[0] += RM.TAILSCALE_WHOIS_S + 0.1
+        look()
+        check(len(asked) == n + 1, "after it: asked again")
+        who[0] = "eve@example.com"
+        R.mono[0] += RM.TAILSCALE_WHOIS_S + 0.1
+        st, _h, out = look()
+        check(st == 403, f"an unlisted login is refused: {st} {out}")
+        n0 = len(audit)
+        st, _h, out = _ask(D, "POST", "/api/remote/hold",
+                           {"seen": R.seen()}, client=_TS_PEER)
+        check(st == 403 and audit[n0:] and audit[n0]["result"] ==
+              "refused" and audit[n0]["source"] ==
+              "Tailscale at 100.88.1.2 (eve@example.com)",
+              f"and its press is audited as refused, with its login: "
+              f"{audit[n0:]}")
+        who[0] = None
+        R.mono[0] += RM.TAILSCALE_WHOIS_S + 0.1
+        st, _h, out = look()
+        check(st == 403, f"Tailscale cannot tell who it is: refused: {st}")
+
+        def boom(ip):
+            raise OSError("no tailscale")
+        rm._tailscale_whois = boom
+        R.mono[0] += RM.TAILSCALE_WHOIS_S + 0.1
+        st, _h, out = look()
+        check(st == 403, f"the lookup fails: refused: {st}")
+        rm._tailscale_whois = whois
+        who[0] = "andy@example.com"
+        R.mono[0] += RM.TAILSCALE_WHOIS_S + 0.1
+        n0 = len(audit)
+        st, _h, out = _ask(D, "POST", "/api/remote/hold",
+                           {"seen": R.seen()}, client=_TS_PEER)
+        check(audit[n0:] and audit[n0]["source"] ==
+              "Tailscale at 100.88.1.2 (andy@example.com)" and
+              audit[n0]["surface"] == "web",
+              f"an allowed press is audited with its login: {audit[n0:]}")
+        # The list is the admin's, on the show PC only.
+        loop = ("127.0.0.1", 5000)
+        us = U.Users(udir, hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator")])
+        rm.users = us
+        _o, _w, otok, _n = us.sign_in("Ollie", "", True, "rack",
+                                      new_password="Ollie-pw-1234")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/tailscale",
+                           {"logins": ["bo@x.org"]}, client=loop,
+                           headers={"Cookie": f"{U.COOKIE}={otok}"})
+        check(st == 403 and out.get("role_refused"),
+              f"an operator may not change who gets in: {st} {out}")
+        _o, _w, jtok, _n = us.sign_in("Jeff", "", True, "rack",
+                                      new_password="Jeff-pw-1234")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/tailscale",
+                           {"logins": ["Bo@X.org", "andy@example.com"]},
+                           client=loop,
+                           headers={"Cookie": f"{U.COOKIE}={jtok}"})
+        check(st == 200 and out.get("logins") == ["bo@x.org",
+                                                  "andy@example.com"] and
+              RM.load_settings(R.work)["tailscale_logins"] ==
+              ["bo@x.org", "andy@example.com"],
+              f"an admin sets it on the show PC: {st} {out}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/tailscale",
+                           {"logins": "bo@x.org"}, client=loop,
+                           headers={"Cookie": f"{U.COOKIE}={jtok}"})
+        check(st == 400, f"a list that is not a list changes nothing: {st}")
+        st, _h, out = _ask(D, "POST", "/api/remote/tailscale",
+                           {"logins": ["eve@example.com"]}, client=_TS_PEER,
+                           headers={"Cookie": f"{U.COOKIE}={jtok}"})
+        check(st == 403, f"never from Tailscale: {st} {out}")
+        check(U.classify("/api/remote/tailscale", {"logins": []}) ==
+              "users", "classified: the Users row")
+    finally:
+        D.server_close()
+        R.close()
+        shutil.rmtree(udir, ignore_errors=True)
+    print("  ok")
+
+
+def test_tailscale_acts_as_an_ipad_signed_in():
+    section("remote access over Tailscale, option A (Jeff, 2026-11-13): no "
+            "Tailscale-only limits on what a signed-in person may do; arming, "
+            "effects, Start now and Resume follow the role matrix and the "
+            "iPad's \"Arming from a screen\"; every press that needs a role "
+            "needs a sign-in from Tailscale, users set up or not; Stop, Hold, "
+            "Acknowledge and disarm work signed out")
+    S = _sched()
+    if S is None:
+        return
+    import shutil
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    R = _RemoteRig(S)
+    D = _ts_door(R)
+    udir = tempfile.mkdtemp()
+    rm = R.remote
+
+    def press(name, body=None, hdr=None, door=None, client=_TS_PEER):
+        return _ask(door or D, "POST", "/api/remote/" + name,
+                    dict(body or {}, seen=R.seen()), client=client,
+                    headers=hdr or {})
+    role_presses = (("arm-hold", {"group": 0}),
+                    ("start-now", {"confirmed": True}),
+                    ("resume", {}), ("fuel-pump", {"on": True, "seconds": 60,
+                                                   "run": "p1"}),
+                    ("purge-select", {"machine": "m1", "on": True}),
+                    ("hazers-arm-all", {}), ("hazer-test", {"on": True}),
+                    ("laser-test", {"laser": "l1", "on": True}),
+                    ("cleaning-beat", {"hold": True, "run": "c1",
+                                       "seq": 1}))
+    # (Live flame programming ON is the show PC's own, from an iPad too.)
+    try:
+        RM.save_settings(R.work, screen_arming=True)
+        # No users set up: signed out, a press that needs a role is
+        # refused from Tailscale (an iPad would not be).
+        for name, body in role_presses:
+            st, _h, out = press(name, body)
+            check(st == 403 and out.get("tailscale_refused") == "sign in" and
+                  out.get("error") == RM.TAILSCALE_SIGN_IN_WORDS,
+                  f"{name} from Tailscale with nobody signed in: refused, "
+                  f"sign in: {st} {out}")
+            ctx = RM.Ctx(False, "100.88.1.2", tailscale=True,
+                         login=_TS_LOGIN)
+            code, out2, _hd = rm.post("/api/remote/" + name, dict(body), ctx)
+            check(code == 403 and out2.get("tailscale_refused") == "sign in",
+                  f"and the engine refuses it itself: {code} {out2}")
+        for name, body in (("hold", {}), ("stop", {}), ("disarm-all", {}),
+                           ("group-disarm", {"group": 0}),
+                           ("alert", {"action": "acknowledge"}),
+                           ("fuel-pump", {"on": False}),
+                           ("hazers-off", {})):
+            st, _h, out = press(name, body)
+            check(not (isinstance(out, dict) and (
+                out.get("tailscale_refused") or out.get("role_refused"))),
+                  f"{name} signed out from Tailscale: like a signed-out "
+                  f"iPad, it goes: {st} {out}")
+        # With users: the role matrix decides, as on an iPad.
+        us = U.Users(udir, hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator"), ("Vic", "viewer")])
+        rm.users = us
+        for n in ("Ollie", "Vic"):
+            us.sign_in(n, "", True, "rack", new_password=n + "-pw-1234")
+        _o, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", False,
+                                     "Tailscale at 100.88.1.2")
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        st, _h, me = _ask(D, "GET", "/api/remote/whoami", client=_TS_PEER,
+                          headers=hdr)
+        ipad = {p: us.may("operator", p) for p in U.PERM_KEYS}
+        check(me.get("may") == ipad and me.get("view_only") is False,
+              f"Ollie on Tailscale may what an operator may on an iPad: "
+              f"{me.get('may')}")
+        for name, body in role_presses:
+            st, _h, out = press(name, body, hdr)
+            check(not out.get("tailscale_refused") and
+                  not out.get("role_refused"),
+                  f"{name} signed in as an operator, Arming from a screen "
+                  f"on: past every sign-in and role check: {st} {out}")
+        held = [r for r in R.svc.journal if
+                str(r.get("who")).startswith("Ollie, Tailscale at "
+                                             "100.88.1.2 (andy@example.com)")]
+        check(held, "the journal names the person, the surface and the "
+                    "login")
+        # Arming from a screen OFF: refused as an iPad is.
+        RM.save_settings(R.work, screen_arming=False)
+        st, _h, out = press("arm-hold", {"group": 0}, hdr)
+        _o, _w, itok, _n = us.sign_in("Ollie", "Ollie-pw-1234", False,
+                                      "iPad at 10.20.0.44")
+        st2, _h2, out2 = R.ask("POST", "/api/remote/arm-hold",
+                               {"group": 0, "seen": R.seen()},
+                               headers={"Cookie": f"{U.COOKIE}={itok}"})
+        check(st == st2 and st >= 400 and
+              str(out.get("error")) == str(out2.get("error")),
+              f"Arming from a screen off: Tailscale is refused exactly as "
+              f"the iPad is: {st} {out} / {st2} {out2}")
+        _o, _w, vtok, _n = us.sign_in("Vic", "Vic-pw-1234", False,
+                                      "Tailscale at 100.88.1.2")
+        st, _h, out = press("start-now", {"confirmed": True},
+                            {"Cookie": f"{U.COOKIE}={vtok}"})
+        check(st == 403 and out.get("role_refused") and
+              not out.get("tailscale_refused"),
+              f"a viewer: the role matrix refuses, as on an iPad: {st} {out}")
+        check(not hasattr(RM, "tailscale_refusal") and
+              not hasattr(RM, "TAILSCALE_ARM_ROUTES"),
+              "the Tailscale-only refusals of arming and effects are gone")
     finally:
         D.server_close()
         R.close()
@@ -100752,7 +100608,7 @@ def test_ui2_page_makes_only_1_0_presses():
         return
     fns = "\n".join(_js_function(two, n) or "" for n in (
         "isHeld", "isLive", "runIsOn", "isRehearsal", "pinItems", "signWhy",
-        "tsArmedWhy", "goLook", "nextStep", "pillLook", "runWarnWords", "runHereShown",
+        "goLook", "nextStep", "pillLook", "runWarnWords", "runHereShown",
         "alertItems"))
     # alertItems' words and the page's own state it reads.
     for c in ("ALERT_WHAT", "ALERT_DO"):
@@ -102190,126 +102046,6 @@ def test_ui2_fuel_pump_in_a_browser():
                       r["on"] == [] and a["full_shown"] and
                       "Sign in" in a["full"],
                       f"{where}: signed out: On disabled, Sign in: {a}")
-    print("  ok")
-
-
-_UI2_TS_JS = r"""
-<script>
-(function(){
-const posts = [];
-const realFetch = window.fetch;
-window.fetch = function(u, o){
-  if(o && o.method === "POST") posts.push({u:String(u), b:String(o.body || "")});
-  return realFetch.apply(this, arguments);
-};
-const wait = ms => new Promise(r => setTimeout(r, ms));
-const q = id => document.getElementById(id);
-async function go(){
-  for(let i = 0; i < 80 && !(typeof ST !== "undefined" && ST && ST.pump !== undefined); i++) await wait(100);
-  await wait(600);
-  const out = {next: q("next-t").textContent,
-    pm_on_dis: q("pm-on").disabled, pm_on_why: q("pm-on-why").textContent,
-    armall_why: q("armall-why").textContent, armall_dis: q("b-armall").disabled,
-    hold_dis: q("b-hold").disabled, tsl: document.body.classList.contains("tsl"),
-    card_hidden: q("ts-card").hidden, words: TS_WORDS,
-    blocked: [tsBlocked("purge-select", {machine:"m1", on:true}), tsBlocked("purge-select", {machine:"m1", on:false}),
-              tsBlocked("laser-test", {on:true}), tsBlocked("laser-test", {on:false}),
-              tsBlocked("lock", {on:false}), tsBlocked("lock", {on:true}),
-              tsBlocked("purge-fire", {on:true}), tsBlocked("purge-timed", {hold:false})],
-    fb: fbNow().block, wc: wcNow().block};
-  posts.length = 0; q("pm-off").click(); await wait(300);
-  out.off = posts.filter(p => /fuel-pump/.test(p.u)).map(p => JSON.parse(p.b).on);
-  posts.length = 0; q("pm-on").click(); await wait(300);
-  out.on = posts.filter(p => /fuel-pump/.test(p.u)).length;
-  return out;
-}
-setTimeout(() => go().then(o => o, e => ({error: String(e && e.stack || e)})).then(o => {
-  const pre = document.createElement("pre"); pre.id = "rack-measure";
-  pre.textContent = JSON.stringify(o); document.body.appendChild(pre);
-}), 50);
-})();
-</script>
-"""
-
-
-def test_ui2_tailscale_limits_shown():
-    section("remote access over Tailscale on interface 2.0: the page shows "
-            "what Tailscale may not press disabled, with the engine's own "
-            "words (Not from Tailscale. Use the show PC or an iPad.); Stop, "
-            "Hold and every off stay live; the Schedule tab card is the "
-            "show PC's only; nothing in remote_rules.js changed for it")
-    from ltcplay import remote as RM
-    one, two = _ui2_pages()
-    check(f'const TS_WORDS = "{RM.TAILSCALE_WORDS}";' in two,
-          "the page says the engine's own words")
-    for i in ("ts-card", "ts-head", "ts-bul", "ts-facts", "ts-on",
-              "ts-restart", "ts-msg"):
-        check(f'id="{i}"' in two, f"the card has #{i}")
-    check('$("ts-card").hidden = !ME.local;' in two and
-          'id="ts-card" hidden' in two,
-          "the card is drawn on the show PC only")
-    check("tailscale" not in rules_text().lower(),
-          "remote_rules.js is unchanged for it (two cold reviews avoided)")
-    lo = one[one.find('<script id="remote-logic">') +
-             len('<script id="remote-logic">'):]
-    lo = lo[:lo.find("</script>")]
-    page = two.replace('<script src="/remote-logic.js"></script>',
-                       "<script>" + lo + "</script>", 1)
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner: 2.0 could not be "
-              "drawn")
-        print("  note: no Chromium here, so 2.0 was not drawn")
-        print("  ok")
-        return
-    brand = {"/api/brand": {"show": "Fire and Ice"}}
-    perms = ("show", "arm", "unlock", "checklist", "show_files", "settings",
-             "users")
-    for kind in ("signed out", "signed in"):
-        st = _ui2_status_day()
-        st["pump"] = _ui2_status_pump("off")["pump"]
-        st["arming"] = {"enabled": True, "needs_s": 2.0, "fresh_s": 1.0,
-                        "holds": []}
-        st["me"] = {"local": False, "device": "Tailscale at 100.88.1.2",
-                    "screen": "iPad", "users_active": True,
-                    "user": "Ollie" if kind == "signed in" else None,
-                    "role": "operator" if kind == "signed in" else None,
-                    "view_only": kind != "signed in",
-                    "may": {p: (p == "show" and kind == "signed in")
-                            for p in perms},
-                    "tailscale": {"words": RM.TAILSCALE_WORDS,
-                                  "note": RM.TAILSCALE_ALLOWED_NOTE}}
-        got = _rack_screen_in_chromium(chrome, page, st, ((1366, 768),),
-                                       measure_js=_UI2_TS_JS,
-                                       frag="?tour=0", routes=brand,
-                                       budget_ms=12000)
-        r = got[(1366, 768)]
-        where = f"2.0 from Tailscale, {kind}"
-        if not check(isinstance(r, dict) and "next" in r,
-                     f"{where}: drawn and measured: {r!r}"[:900]):
-            continue
-        check(r["tsl"] and r["words"] == RM.TAILSCALE_WORDS,
-              f"{where}: the page knows it is on Tailscale: {r}")
-        check(r["pm_on_dis"] and r["pm_on_why"] == "Not from Tailscale" and
-              r["on"] == 0,
-              f"{where}: Fuel pump On disabled, says why, sends nothing: "
-              f"{r}")
-        check(r["armall_why"] == "Not from Tailscale",
-              f"{where}: Arm flames says why it does nothing: {r}")
-        check(r["off"] == [False] and not r["hold_dis"],
-              f"{where}: Pump off and Hold stay live: {r}")
-        check(r["blocked"] == [True, False, True, False, True, False, True,
-                               False],
-              f"{where}: the Day tab's purge, laser test and unlock never "
-              f"leave the page; their off presses do: {r['blocked']}")
-        check(r["fb"] == RM.TAILSCALE_WORDS and r["wc"] in (
-            RM.TAILSCALE_WORDS, "Not known yet."),
-              f"{where}: the Fireball and cleaning say why: {r}")
-        if kind == "signed out":
-            check(r["next"] == "Tailscale: view only. Stop, Hold, disarm "
-                               "work.",
-                  f"{where}: the next step line says so: {r['next']!r}")
     print("  ok")
 
 
@@ -116498,12 +116234,11 @@ if __name__ == "__main__":
         test_tailscale_address_detection_and_setting,
         test_tailscale_listener_binds_only_its_address,
         test_tailscale_door_refuses_wrong_peer_host_and_proxies,
-        test_tailscale_reduced_authority,
         test_tailscale_card_on_the_show_pc,
-        test_tailscale_start_waits_while_armed,
+        test_tailscale_allow_list,
+        test_tailscale_acts_as_an_ipad_signed_in,
         test_tailscale_off_closes_the_door_now,
         test_tailscale_sign_in_lockout_is_its_own,
-        test_tailscale_needs_the_screen_listed,
         test_remote_controls_reach_the_same_paths_and_journal_who_and_where,
         test_deck_fix_round_2_abort_reset_and_disarm,
         test_deck_presses_reach_the_engine_conductor,
@@ -116633,7 +116368,6 @@ if __name__ == "__main__":
         test_arm_all_hazers_only_arms_hazers,
         test_ui2_fuel_pump_row,
         test_ui2_fuel_pump_in_a_browser,
-        test_ui2_tailscale_limits_shown,
         test_ui2_hazer_test_in_a_browser,
         test_hazers_on_the_rack_screens,
         test_streamdeck_hazers_page,

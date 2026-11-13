@@ -896,9 +896,9 @@ class Handler(BaseHTTPRequestHandler):
     def _tailscale(self):
         """The request came in over Tailscale: on the Tailscale door, or
         from a peer in 100.64.0.0/10 on any other door but this machine's
-        own (a Tailscale subnet route to the show network address). It
-        then has the Tailscale surface's reduced authority
-        (remote.tailscale_refusal)."""
+        own (a Tailscale subnet route to the show network address). Its
+        Tailscale login must then be on the allow list (_refusal), and a
+        press that needs a role needs a sign-in (_tailscale_refused)."""
         if getattr(self.server, "tailscale_door", False):
             return True
         from . import remote as remote_mod
@@ -916,7 +916,8 @@ class Handler(BaseHTTPRequestHandler):
         if ctx is None:
             from . import remote as remote_mod
             ctx = remote_mod.Ctx(self._local(), self.client_address[0],
-                                 tailscale=self._tailscale())
+                                 tailscale=self._tailscale(),
+                                 login=getattr(self, "_ts_login", ""))
             # Who is signed in on this page, if anyone (users.py). Nobody
             # has to be; a cookie that names no live session is nobody.
             users = getattr(getattr(self.server, "remote", None), "users",
@@ -1243,12 +1244,11 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _tailscale_refused(self, route):
-        """Send a 403 and return True when a press from Tailscale is not
-        one it may make (remote.tailscale_refusal): arming, a physical
-        effect, Start now or Resume signed out, or anything that is not a
-        safety press. Every route but the remote page's own is refused
-        from the network anyway (network_may_reach). A press that only
-        takes risk away is never refused here."""
+        """Send a 403 and return True when a press from Tailscale needs a
+        role (users.classify: not a safety press) and nobody is signed in
+        on that page (remote.tailscale_sign_in_refusal), users set up or
+        not. Past that, the role matrix and every iPad rule apply. Fails
+        closed: a check that cannot be made refuses."""
         from . import remote as remote_mod
         try:
             ts = self._tailscale()
@@ -1256,24 +1256,15 @@ class Handler(BaseHTTPRequestHandler):
             ts = self.client_address[0] not in LOOPBACK
         if not ts:
             return False
-        if not route.startswith("/api/remote/"):
-            self._send(403, {"error": remote_mod.TAILSCALE_WORDS,
-                             "tailscale_refused": "not here"})
-            return True
-        name = route[len("/api/remote/"):]
-        body = self._body()
-        rm = getattr(self.server, "remote", None)
         try:
-            no = rm.tailscale_refused(name, body, self._ctx())
+            why = remote_mod.tailscale_sign_in_refusal(route, self._body(),
+                                                       self._ctx())
         except Exception:                        # noqa: BLE001
-            # The engine could not be asked: refused (fail closed), but
-            # never Stop, Hold or a disarm (verification of #244, m5).
-            no = None if name in remote_mod.TAILSCALE_ALWAYS_SAFE else (
-                403, {"error": remote_mod.TAILSCALE_WORDS,
-                      "tailscale_refused": "not here"})
-        if no is None:
+            why = remote_mod.TAILSCALE_SIGN_IN_WORDS
+        if not why:
             return False
-        self._send(*no)
+        self._send(403, {"error": why, "tailscale_refused": "sign in",
+                         "role_refused": True})
         return True
 
     # Presses repeated many times a second while a finger is down (or a
@@ -1389,6 +1380,19 @@ class Handler(BaseHTTPRequestHandler):
         if not remote_mod.host_ok(self.headers.get("Host"), self._local(),
                                   bind, port):
             return HOST_REFUSAL
+        self._ts_login = ""
+        if self._tailscale():
+            # Who it is (Jeff, 2026-11-13: "specify who gets in"): this PC's
+            # own Tailscale names the peer's login, and only a login on the
+            # allow list gets in. Fails closed.
+            try:
+                login, why, seen = self.server.remote.tailscale_login(
+                    self.client_address[0])
+            except Exception:                    # noqa: BLE001
+                login, why, seen = None, remote_mod.TAILSCALE_LOGIN_WORDS, ""
+            self._ts_login = login or seen or ""
+            if not login:
+                return why or remote_mod.TAILSCALE_LOGIN_WORDS
         if post:
             # Fix round 1 of #39, F2: a sandboxed iframe or a data: page on
             # this machine sends Origin "null", and a text/plain or bodiless
@@ -1706,8 +1710,8 @@ class Handler(BaseHTTPRequestHandler):
         why = self._refusal(post=True)
         if why:
             return self._send(403, {"error": why})
-        # Remote access over Tailscale (2026-11-12): its reduced authority
-        # first, so its own words are what the page says.
+        # Remote access over Tailscale: a press that needs a role needs a
+        # sign-in there, users set up or not (Jeff, 2026-11-13).
         if self._tailscale_refused(route):
             return None
         # The role matrix (users.py): never in front of a safety press.
