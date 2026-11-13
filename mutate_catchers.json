@@ -3786,5 +3786,19 @@
 "hazer test: ON with no sign-in of its own is taken while there are users": "test_hazer_test_and_arm_all_need_the_arm_row",
 "hazer test: an old-status refusal is not journaled": "test_hazer_test_and_arm_all_need_the_arm_row",
 "hazer test: the rack tiles are ARMED's green during it": "test_ui2_hazer_test_in_a_browser",
-"hazer test: show control's state unreadable is read as off": "test_hazer_test_at_the_engine"
+"hazer test: show control's state unreadable is read as off": "test_hazer_test_at_the_engine",
+"hazer test: the link runs every hazer, not only the selected ones": "test_hazer_test_per_hazer",
+"hazer test: a second On restarts a hazer already running (its 60 s extended)": "test_hazer_test_per_hazer",
+"hazer test: a name the engine does not have is dropped, the rest turned on": "test_hazer_test_per_hazer",
+"hazer test: Off needs screen_arming like On (Off no longer always works)": "test_hazer_test_per_hazer",
+"hazer test: All on is refused (\"all\" is not read)": "test_hazer_test_per_hazer",
+"hazer test: the page's All off sends a selection, not every hazer": "test_ui2_hazer_test_in_a_browser",
+"hazer test: the page's All on sends nothing": "test_ui2_hazer_test_in_a_browser",
+"arm all hazers: the show screen's button is never disabled": "test_ui2_arm_all_hazers_on_the_show_screen",
+"arm all hazers: the show screen reads a state not known as known": "test_ui2_arm_all_hazers_on_the_show_screen",
+"hazer test: one screen's beat keeps every screen's hazers on": "test_hazer_test_per_hazer",
+"hazer test: signing out ends every person's hazers": "test_hazer_test_and_arm_all_need_the_arm_row",
+"hazer test: the link extends a hazer already running": "test_hazer_test_flame_link",
+"hazer test: the page's reason comes from every hazer, not the ticked ones": "test_ui2_hazer_test_in_a_browser",
+"hazer test: the page lets an iPad with arming off press Turn on": "test_ui2_hazer_test_in_a_browser"
 }

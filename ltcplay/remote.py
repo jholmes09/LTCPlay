@@ -4337,7 +4337,7 @@ class Remote:
                                      "on": sorted(hz.on()),
                                      # The hazer test running: the deck's
                                      # keys say HAZE TEST, never DISARMED.
-                                     "test": self._ht_running(),
+                                     "test": self._ht_names(),
                                      "down": hz.down(),
                                      "paused": hz.show() == "held"}
             except Exception:                    # noqa: BLE001
@@ -4873,9 +4873,11 @@ class Remote:
             .replace("pump turned off", "hazer test turned off")
 
     def hazer_test_post(self, body, ctx):
-        """POST hazer-test {"on": true, "run": "<press id>", "seen": ms},
+        """POST hazer-test {"on": true, "hazers": [names] or "all", "run":
+        "<press id>", "seen": ms} (the Purge page's On and All on),
         {"beat": "<press id>"} from the page that started it, or anything
-        else: OFF, never refused. ON and the beat are arm presses
+        else: OFF (for "hazers" when it names some, else every hazer;
+        All off), never refused. ON and the beat are arm presses
         (users.classify, checked by web.py first). (code, body)."""
         ht = self.hazer_test
         if ht is None:
@@ -4888,19 +4890,22 @@ class Remote:
         on = body.get("on") is True
         beat = body.get("beat")
         if not on and not isinstance(beat, str):
-            ht.stop(f"{who or 'someone'} pressed Hazer test off on the "
-                    f"{device}", who=who, screen=device, system=False)
-            return 200, {"ok": True, "text": "Hazer test OFF."}
+            why = (f"{who or 'someone'} pressed Off on the {device}")
+            sel = body.get("hazers")
+            if isinstance(sel, list) and sel:
+                ok, text = ht.stop_names(sel, why, who=who, screen=device)
+                return 200, {"ok": True, "text": text}
+            ht.stop(why, who=who, screen=device, system=False)
+            return 200, {"ok": True, "text": "Every hazer OFF."}
         if not self.may_act_from(ctx.local):
-            why = ("The hazer test from a device on the show network needs "
-                   "screen_arming (on the show machine itself: Programming, "
-                   "Arming from a screen, Turn on). Nothing was changed.")
+            why = ("Hazers not turned on: this device may not turn hazers "
+                   "on. Turn them on at the show PC. Nothing was changed.")
             self._journal(who, device, "hazer-test", "refused",
                           f"{who or 'Someone'}'s hazer test from the "
                           f"{device} was refused. {why}")
             return 403, {"error": why}
         if not on:
-            ok, text = ht.beat(beat)
+            ok, text = ht.beat(beat, body.get("page"))
             return (200 if ok else 409), ({"ok": True, "text": text} if ok
                                           else {"error": text})
         if self.users_active() and not (getattr(ctx, "token", None) or ""):
@@ -4922,11 +4927,29 @@ class Remote:
                           f"{who or 'Someone'}'s hazer test from the "
                           f"{device} was refused. {why}")
             return 409, {"error": why}
-        ok, text = ht.start(who=who, screen=device, run=body.get("run"),
-                            token=getattr(ctx, "token", "") or "")
+        sel = body.get("hazers")
+        if sel == "all":
+            sel = ht.names()
+        ok, text = ht.start(sel, who=who, screen=device,
+                            run=body.get("run"),
+                            token=getattr(ctx, "token", "") or "",
+                            page=body.get("page"))
         if not ok:
             return 409, {"error": text}
         return 200, {"ok": True, "text": text}
+
+    def _ht_names(self):
+        """The hazers the hazer test runs now, for the deck's keys; every
+        hazer when that cannot be read (never a plain DISARMED by
+        mistake)."""
+        ht = self.hazer_test
+        try:
+            return sorted(ht.running()) if ht is not None else []
+        except Exception:                        # noqa: BLE001
+            try:
+                return sorted(self.hazers.names())
+            except Exception:                    # noqa: BLE001
+                return []
 
     def _ht_running(self):
         ht = self.hazer_test

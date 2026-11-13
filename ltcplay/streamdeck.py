@@ -4985,7 +4985,7 @@ class Controller:
             if hv is None:
                 fonts.show_key(d, box, [line, "NO STATUS"], AMBER,
                                kind="sans", max_size=12)
-            elif hv.get("test"):
+            elif names[i] in set(hv.get("test") or ()):
                 # The hazer test running (2026-11-11): never a plain
                 # DISARMED while it hazes.
                 fonts.show_key(d, box, [line, "HAZE TEST"], BLACK, bg=AMBER,
