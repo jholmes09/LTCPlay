@@ -492,7 +492,12 @@ def show_folder_mismatch(served, wanted):
     wanted = wanted.strip()
     if served and _norm_folder(served) == _norm_folder(wanted):
         return ""
-    return (f"showpc.json names the show folder {wanted}, but this engine "
+    # A headline, bullets, the paths behind More (Jeff, 2026-11-11).
+    return (f"Wrong show folder in use.\n"
+            f"- It switches by itself once no show runs.\n"
+            f"- If it stays: stop and start LTC Player.\n"
+            f"\n"
+            f"More: showpc.json names the show folder {wanted}, but this engine "
             f"is serving {served or 'no folder'}: the show files listed "
             f"here, and the show that runs, come from "
             f"{served or 'nowhere'}. LTC Player restarts the engine with "
@@ -4218,8 +4223,15 @@ class Remote:
         label = who or "An unnamed operator"
         lead, why = cause
         ok, said = sent
+        # A headline, bullets, the rest behind More (Jeff, 2026-11-11).
+        # The first line is the footer's short line.
         if ok:
-            alert = (f"{lead}: ALL groups disarm sent. Disarm {gname} "
+            alert = (f"{lead}: ALL groups disarm sent.\n"
+                     f"- Disarm sent to every group. Hazers off.\n"
+                     f"- Flames stay zero until Hold then Resume.\n"
+                     f"- Do: Arm each group again to fire.\n"
+                     f"\n"
+                     f"More: Disarm {gname} "
                      f"forced ({why}): the flame link has no one-group "
                      f"disarm, so the Stop's disarm was sent to every "
                      f"flame group, every hazer is off, and the show's "
@@ -4227,11 +4239,14 @@ class Remote:
                      f"run. Each group needs Arm again (let go, then hold) "
                      f"before it can fire. {said}").strip()
         else:
-            alert = (f"Disarm {gname} COULD NOT be confirmed: {why}, and "
-                     f"the forced disarm did not go out either "
+            alert = (f"Disarm {gname} COULD NOT be confirmed.\n"
+                     f"- {gname} may still be armed.\n"
+                     f"- Do: Press Stop, or use the Stream Deck.\n"
+                     f"\n"
+                     f"More: Disarm {gname} COULD NOT be confirmed: {why}, "
+                     f"and the forced disarm did not go out either "
                      f"({said or 'no answer'}). {gname} may still be "
-                     f"armed: press "
-                     f"Stop, or disarm at the Stream Deck.")
+                     f"armed: press Stop, or disarm at the Stream Deck.")
         self._journal(who, device, "disarm", "forced" if ok else "fault",
                       f"{label} pressed Disarm {gname} on the {device}. "
                       f"{alert}", fault=True)
@@ -5280,11 +5295,12 @@ class Remote:
             seen = None
         if seen is None or seen != seen or \
                 abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:
-            why = ("The fuel pump was not turned on: the press came from a "
-                   "screen whose status was more than 1 s old (or said "
-                   "nothing of its age), so it may be from before a Pump "
-                   "off or a Stop. Wait for the screen to be live, then "
-                   "press again.")
+            why = ("Fuel pump NOT turned on.\n"
+                   "Wait for the screen to be live, then press again.\n"
+                   "\n"
+                   "More: the press came from a screen whose status was "
+                   "more than 1 s old (or said nothing of its age), so it "
+                   "may be from before a Pump off or a Stop.")
             self._journal(who, device, "fuel-pump", "refused",
                           f"{who or 'Someone'}'s fuel pump ON from the "
                           f"{device} was refused. {why}")
@@ -7167,7 +7183,9 @@ class Remote:
                           f"{type(e).__name__}: {e}"]
             out.append({"id": "renders", "title": "Flame cue renders",
                         "level": "bad" if faults else "ok",
-                        "text": " ".join(faults) if faults else
+                        # One block per show file, each with its own
+                        # headline (Jeff, 2026-11-11: less prose).
+                        "text": "\n\n".join(faults) if faults else
                         "Every show file's renders are newer than its "
                         "xlights_networks.xml, so their flame cues can "
                         "play."})
@@ -7961,10 +7979,16 @@ class Remote:
         warns = list(sch.rule_warnings(rule))
         warned = (" Warnings, saved anyway: " + " ".join(warns)) \
             if warns else ""
+        # The answer as a headline, what tonight holds, each warning a
+        # bullet, the path behind More (Jeff, 2026-11-11: less prose).
+        answer = ("Schedule saved.\n" + loaded.strip() + "\n" +
+                  ("Warnings, saved anyway:\n" +
+                   "".join(f"- {w}\n" for w in warns) if warns else "") +
+                  f"\nMore: saved to {path}.")
         self._journal("", "Rack screen", "schedule file", "saved",
                       f"The schedule file {path} was saved from the "
                       f"Programming screen.{loaded}{warned}")
-        return 200, {"ok": True, "text": f"Saved to {path}.{loaded}{warned}",
+        return 200, {"ok": True, "text": answer,
                      "doc": doc, "path": path, "warnings": warns}
 
     def open_folder(self, body):
