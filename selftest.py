@@ -35632,11 +35632,11 @@ def test_streamdeck_stop_hold_face_and_ring_from_the_first_instant():
     cases = [
         ("during a show", True, False, "PLAYING", False, ["NOW", "PLAYING"]),
         ("a show held", True, False, "HELD", False, ["PAUSED"]),
-        ("a run going", False, True, "BETWEEN", False, ["STOP", "RUN"]),
+        ("a run going", False, True, "BETWEEN", False, ["STOP", "ALL"]),
         ("the state unknown", None, False, "BETWEEN", False,
          ["STOP", "ALL"]),
         ("aborted during a show", True, False, "PLAYING", True,
-         ["STOP", "RUN"]),
+         ["STOP", "ALL"]),
     ]
     try:
         for what, running, live, look, latched, calm in cases:
@@ -43581,6 +43581,15 @@ t(wt.mode === "stop" && wt.label === "Stop" && wt.disabled === false && /startin
 t(startLook({schedule:{attached:true, state:"STANDBY"}, show:{running:true}}, false, true).label === "Loading", "this page's own wait reads Loading");
 const off = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"Run has not been pressed, so nothing may reach the rig; press Run", loading:false}}, show:{running:false}}, false, false);
 t(off.mode === "start" && off.sub === "Run is off" && /^Run has not been pressed/.test(off.why), "Run off: says so, and the why: " + JSON.stringify(off));
+// "Run is off" on Start now is the engine's boolean, never its sentence
+// (show control, PR 1); anything but true is off, never on.
+const blk = (text, on) => ({schedule:{attached:true, state:"STANDBY", start_blocked:{text:text, loading:false}}, show:{running:true, show_control_on:on}});
+t(startLook(blk("Run has not been pressed, so nothing may reach the rig; press Run", true), false, false).sub === "not ready, tap for why", "the old sentence with the boolean on: not read, so not ready");
+t(startLook(blk("the show audio interface is not available", true), false, false).sub === "not ready, tap for why", "Run on, blocked for another reason: not ready");
+for(const v of [false, undefined, null, "true", 1]){
+  const lk = startLook(blk("Fireball practice is on", v), false, false);
+  t(lk.sub === "Run is off" && lk.why === "Fireball practice is on", "the boolean " + JSON.stringify(v) + ": Run is off, with the engine's own why: " + JSON.stringify(lk));
+}
 // Run becomes Stop while Run is in force and there is something to stop;
 // with nothing to stop it is Run off (Stop no longer turns Run off).
 const att = (st, show, extra) => Object.assign({schedule:{attached:true, state:st}, show:show}, extra || {});
@@ -54856,9 +54865,38 @@ def test_remote_has_no_arm_route():
     # screen-arming (2026-10-22) is the switch for arming from a screen,
     # set on the show machine itself only; it arms nothing (turning it off
     # lets every hold go). test_screen_arming_switch_and_refusals proves it.
-    check(armish == ["arm-hold", "arm-release", "laser-arm", "screen-arming"],
+    # hazers-arm-all (Jeff, 2026-11-11) arms HAZERS only: each hazer of
+    # the engine's own hazer list that flamesafe types "hazer", through
+    # the per-hazer arm (hazers.Hazers.arm_all); never a flame group or a
+    # laser. Pinned below, and in test_arm_all_hazers_only_arms_hazers.
+    check(armish == ["arm-hold", "arm-release", "hazers-arm-all",
+                     "laser-arm", "screen-arming"],
           f"the only flame arm routes are the hold and its release, the "
-          f"one laser arm route and the switch: {armish}")
+          f"one laser arm route, the hazer-only Arm all hazers and the "
+          f"switch: {armish}")
+    import inspect as _insp
+    from ltcplay import hazers as _HZ
+    from ltcplay import users as _U
+    check("hazers-arm-all" in RM.HAZER_POST_ROUTES and
+          "hazers-arm-all" not in RM.ARM_ROUTES and
+          _U.REMOTE_ROUTES.get("hazers-arm-all") == "arm" and
+          _U.classify("/api/remote/hazers-arm-all", {}) == "arm",
+          "Arm all hazers is a hazer route (not a flame arm route) and "
+          "needs the arm row, the per-hazer arm's own")
+    src = _insp.getsource(_HZ.Hazers.arm_all).split('"""')[2]  # code only
+    check("for n in names:" in src and "names = self.names()" in src and
+          'if k != "hazer":' in src and "self.kind_of(n, fl)" in src and
+          "self.set(n, True" in src and "hazers_set" not in src and
+          "group" not in src and "laser" not in src,
+          "Arm all hazers walks only the engine's hazer list, decides by "
+          "flamesafe's type (never the name), and arms each through the "
+          "per-hazer arm, never the link or a group directly")
+    hp = _insp.getsource(RM.Remote.hazer_post)
+    blk = hp[hp.find('if name == "hazers-arm-all":'):]
+    blk = blk[:blk.find("return 200, out")]
+    check("hz.arm_all(" in blk and "may_act_from" in blk and
+          "arm_group" not in blk and "laser" not in blk,
+          "its route calls only Hazers.arm_all, after screen_arming")
     check("screen-arming" in RM.LOCAL_ONLY,
           "the switch is the show machine's own, never the network's")
     check(RM.ARM_ROUTES == ("arm-hold", "arm-release", "group-disarm"),
@@ -54877,7 +54915,8 @@ def test_remote_has_no_arm_route():
     posted = set(_re.findall(r'/api/remote/([a-z-]+)', page)) | set(
         _re.findall(r'press\("([a-z-]+)"', page))
     check({p for p in posted if _re.search(r"(?<!dis)arm", p)} <=
-          {"arm-hold", "arm-release", "laser-arm", "screen-arming"},
+          {"arm-hold", "arm-release", "laser-arm", "screen-arming",
+           "hazers-arm-all"},
           f"the page posts to no other arm route: {sorted(posted)}")
     S = _sched()
     if S is None:
@@ -64116,8 +64155,13 @@ def test_stream_deck_start_stop_is_one_key():
         return
     try:
         c.draw(fonts, blink_on=True, chase=0)
-        check(faces[0][0] == ["STOP", "RUN"],
-              f"Run live: the key reads STOP RUN: {faces[0]}")
+        # STOP ALL, never STOP RUN: Stop leaves Run on (Jeff, 2026-11-11).
+        check(faces[0][0] == ["STOP", "ALL"] and
+              c.start_key_mode() == "stop",
+              f"Run live: the key is Stop and reads STOP ALL: {faces[0]}")
+        with open(sd.__file__, encoding="utf-8") as fh:
+            check('"STOP", "RUN"' not in fh.read(),
+                  "no Stream Deck key face reads STOP RUN")
         down()
         wait(sd.STOP_HOLD_S / 2)
         c.draw(fonts, blink_on=True, chase=0)
@@ -64131,18 +64175,21 @@ def test_stream_deck_start_stop_is_one_key():
         show[0] = False
         run[0] = False
         c.draw(fonts, blink_on=True, chase=0)
-        check(faces[0][0] != ["STOP", "RUN"],
+        check(faces[0][0] != ["STOP", "ALL"] and
+              c.start_key_mode() not in sd.STOP_MODES,
               f"stopped: the key reads Start again: {faces[0]}")
         show[0] = None
         run[0] = True
         c.draw(fonts, blink_on=True, chase=0)
-        check(faces[0][0] != ["STOP", "RUN"],
-              f"the scheduler not known: never STOP RUN: {faces[0]}")
+        check(c.start_key_mode() == "unknown" and
+              faces[0][0] == ["STOP", "ALL"],
+              f"the scheduler not known: never the run's Stop, but Stop "
+              f"(STOP ALL) all the same: {faces[0]}")
         show[0] = False
         e.latched = True
         c.draw(fonts, blink_on=True, chase=0)
-        check(faces[0][0] == ["STOP", "RUN"],
-              f"aborted with a run going: STOP RUN, reachable: {faces[0]}")
+        check(faces[0][0] == ["STOP", "ALL"],
+              f"aborted with a run going: STOP ALL, reachable: {faces[0]}")
         e.latched = False
         check(sd.SPARE_KEY not in faces,
               f"no Hold or Abort face, the spare key blank: {sorted(faces)}")
@@ -67039,7 +67086,7 @@ def test_hazers_at_the_engine():
         check(di.get("hazers") == {"names": ["Hazer 1", "Hazer 2",
                                              "Hazer 3"],
                                    "on": ["Hazer 1"], "down": "",
-                                   "paused": False},
+                                   "paused": False, "test": False},
               f"the Stream Deck reads them on deck-input: "
               f"{di.get('hazers')}")
         # Reviewer B, 2: the state is flamesafe's word.
@@ -69089,6 +69136,705 @@ def test_pump_end_to_end_against_the_real_flamesafe():
         status_rx.close()
         import shutil
         shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_hazer_test_flame_link():
+    section("hazer test at the flame link (2026-11-11): every hazer named "
+            "and at its stored levels with no show playing, only while "
+            "beaten and inside its hard end; Stop's disarm_all ends it "
+            "before its first copy; it never arms a hazer")
+    from ltcplay import flamelink as fl
+    from ltcplay import hazertest as HT
+    check(HT.BEAT_STALE_S == fl.HAZER_TEST_HOLD_S,
+          "the engine's stall and the link's beat are the same 0.5 s")
+    link = _hz_link(live=False, gate=False)
+    T = [500.0]
+    link._clock = lambda: T[0]
+    link.hazer_levels_set({"Hazer 1": (102, 153), "Hazer 2": (51, 0)})
+
+    def frame():
+        link.send_frame()
+        o = _hz_last(link)
+        return o["values"][79:85], o.get("hazers_on")
+    check(frame() == ([0] * 6, []), "off: every hazer slot zero, none named")
+    check(link.hazer_test_start(5, link.abort_id + 1) is False and
+          not link.hazer_test_live_now(),
+          "a start carrying an old Abort id is refused")
+    check(link.hazer_test_start(5, link.abort_id) is True and
+          link.hazer_test_live_now(), "started for 5 s")
+    vals, on = frame()
+    check(vals == [102, 153, 51, 0, 0, 0] and
+          on == ["Hazer 1", "Hazer 2", "Hazer 3"] and
+          link.hazers_on == frozenset(),
+          f"no show playing: every hazer named at its levels, none ARMED: "
+          f"{vals} {on}")
+    for _ in range(80):
+        T[0] += 0.1
+        link.hazer_test_beat(link.abort_id)
+    check(not link.hazer_test_live_now() and frame() == ([0] * 6, []) and
+          link.hazer_test_ended() == "its time was up",
+          f"its hard end on the link's own clock ends it, beats or not: "
+          f"{link.hazer_test_ended()}")
+    link.hazer_test_start(30, link.abort_id)
+    T[0] += 0.6
+    check(frame() == ([0] * 6, []) and
+          link.hazer_test_beat(link.abort_id) is False,
+          "no beat for 0.6 s: off for good, a later beat never relights it")
+    link.hazer_test_start(30, link.abort_id)
+    link.disarm_all("Stop from the selftest")
+    check(not link.hazer_test_live_now() and
+          "Stop from the selftest" in link.hazer_test_ended(),
+          f"Stop's disarm_all ends it at the link: {link.hazer_test_ended()}")
+    check(link.hazer_test_start(30, link.abort_id) is False,
+          "and no start while the Stop is still being sent")
+    link._abort_repeat = None
+    check(frame()[1] == [], "after the Stop no hazer is named")
+    link.hazer_test_start(30, link.abort_id)
+    link.zero()
+    check(not link.hazer_test_live_now() and frame() == ([0] * 6, []) and
+          "zeroed" in link.hazer_test_ended(),
+          f"a Hold's zero ends it at the link at once: "
+          f"{link.hazer_test_ended()}")
+    link.release()
+    link.hazer_test_start(30, link.abort_id)
+    link.state["live"] = True
+    check(frame() == ([0] * 6, []),
+          "a show cue playing: the test drives no hazer, not even for the "
+          "engine's next pass")
+    link.state["live"] = False
+    link.hazer_test_beat(link.abort_id)
+    link.hazer_test_gate = lambda: False
+    check(frame() == ([0] * 6, []),
+          "the engine's gate closed (a show or show control began): none")
+    link.hazer_test_gate = lambda: 1 / 0
+    check(frame() == ([0] * 6, []), "a gate that raises: none")
+    link.hazer_test_gate = lambda: True
+    link.hazer_test_beat(link.abort_id)
+    check(frame()[0] == [102, 153, 51, 0, 0, 0], "the gate open: it hazes")
+    link.hazer_test_start(5, link.abort_id)
+    check(link.snapshot()["hazer_test_on"] is True, "the status: on")
+    T[0] += 6.0
+    check(link.snapshot()["hazer_test_on"] is False,
+          "the status never reads on past its hard end, before any frame")
+    print("  ok")
+
+
+def _ht_rig(S, users=False):
+    """_hz_rig with the hazer test built as web.serve builds it, on the
+    rig's clock, no timer thread; flamesafe's status passes every hazer
+    the link names (ARMED or the test) and types each "hazer"."""
+    import json as _j
+    from ltcplay import hazertest as HT
+    R = _hz_rig(S)
+    R.audit = []
+
+    class _Audit:
+        def event(self, **kw):
+            R.audit.append(kw)
+    R.kinds = {n: "hazer" for n, _sl in _HZ}
+    R.extra_groups = []
+    R.no_pass = False
+
+    def feed():
+        on = set(R.link.hazers_on)
+        if R.link.hazer_test_live_now():
+            on |= {n for n, _sl in _HZ}
+        for p in R.pt:
+            p["asked"] = p["enabled"] = p["name"] in on
+            p["passing"] = p["name"] in on and not R.no_pass
+            k = R.kinds.get(p["name"])
+            if k is None:
+                p.pop("kind", None)
+            else:
+                p["kind"] = k
+        R.remote.flame_status.note(_j.dumps({
+            "t": "status", "k": "k" * 20, "fault": "",
+            "groups": R.groups + R.extra_groups,
+            "passthrough": R.pt}).encode())
+    R.feed = feed
+    feed()
+    R.remote._ht_state = lambda: R.show[0]
+    R.link.state["live"] = False       # no show cue playing
+    R.remote.hazers.audit = _Audit()
+    # The REAL wiring (web._attach_hazer_test, as web.serve calls it): its
+    # gate, its Hazers off hook and its shutdown stop; then only the clock,
+    # the timer thread and the audit log are the rig's.
+    from ltcplay import web as web_mod
+    R.closed = []
+
+    class _H:
+        remote = R.remote
+        fire_ice = None
+
+        def server_close(self):
+            R.closed.append(1)
+    R.h = _H()
+    web_mod._attach_hazer_test(R.h)
+    R.ht = R.remote.hazer_test
+    check(isinstance(R.ht, HT.HazerTest), "web.serve's wiring built it")
+    R.ht._threaded = False
+    R.ht._clock = lambda: R.mono[0]
+    R.ht.audit = _Audit()
+    return R
+
+
+def test_hazer_test_at_the_engine():
+    section("hazer test at the engine (hazertest.py, Jeff 2026-11-11): a "
+            "tap ON, a tap OFF, with show control off and no show; the arm "
+            "row (the hazer's own) for ON, OFF never refused; every check "
+            "arming a hazer has; refused while a show plays or show "
+            "control is on, and ended when either starts; off by itself "
+            "after 60 s, on Stop, on a quiet screen, on any error; the "
+            "state is the engine's; each on and off audited with who")
+    S = _sched()
+    if S is None:
+        return
+    import itertools
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import hazertest as HT
+    check("hazer-test" in RM.POST_ROUTES and
+          RM.HAZER_TEST_POST_ROUTES == ("hazer-test",), "the route exists")
+    check(U.REMOTE_ROUTES.get("hazer-test") == "arm" and
+          U.classify("/api/remote/hazer-test", {"on": True}) == "arm" and
+          U.classify("/api/remote/hazer-test", {"beat": "r1"}) == "arm" and
+          all(U.classify("/api/remote/hazer-test", b) == "safety"
+              for b in ({"on": False}, {"on": "true"}, {"on": 1}, {}, None,
+                        {"beat": 1})),
+          "the role matrix: ON and its beat are arm presses (the row that "
+          "arms a hazer), anything else safety")
+    check("the hazer test" in dict(U.PERMS)["arm"] and
+          "the hazer test off" in U.SAFETY_ROWS, "the matrix rows say so")
+    check(HT.MAX_S == 60 and HT.PAGE_QUIET_S == 10.0,
+          "60 s at most, 10 s without the screen's beat")
+    loop, ipad = ("127.0.0.1", 5000), ("10.20.0.44", 50000)
+    R = _ht_rig(S)
+    link, hz, ht = R.link, R.remote.hazers, R.ht
+    ids = itertools.count(1)
+
+    def tap(on, client=loop, run=None, **kw):
+        body = {"on": on, "seen": R.seen()}
+        if on is True:
+            body["run"] = run if run is not None else f"h{next(ids)}"
+        st, _h, out = R.ask("POST", "/api/remote/hazer-test", body,
+                            client=client, **kw)
+        return st, out, body.get("run")
+
+    def beat(run, client=loop):
+        return R.ask("POST", "/api/remote/hazer-test", {"beat": run},
+                     client=client)[0]
+
+    def wire():
+        link.send_frame()
+        o = _hz_last(link)
+        return o["values"][79:85], o.get("hazers_on")
+
+    def view():
+        R.feed()
+        _st, _h, s = R.ask("GET", "/api/remote/status", client=ipad)
+        return s.get("hazer_test") or {}
+
+    def run_for(seconds, beat_every=None, run=None, feed=True):
+        """The timer's passes for `seconds` of engine time; the screen's
+        beat every `beat_every` s. The reason it ended, or ""."""
+        n = int(round(seconds / HT.SEND_S))
+        last = R.mono[0]
+        for _ in range(n):
+            R.mono[0] += HT.SEND_S
+            if beat_every and run and R.mono[0] - last >= beat_every:
+                beat(run)
+                last = R.mono[0]
+            if feed:
+                R.feed()
+            why = ht.send()
+            if why:
+                return why
+        return ""
+
+    def reset():
+        link._abort_repeat = None
+        R.feed()
+    try:
+        v = view()
+        check(v.get("available") and v["on"] is False and
+              v["state"] == "off" and v["max_s"] == 60 and
+              "Haze level is 0" in v["refusal"],
+              f"OFF at start; every level 0: ON would be refused: {v}")
+        st, out, _r = tap(True)
+        check(st == 409 and "Haze level is 0" in out["error"] and
+              not link.hazer_test_live_now(),
+              f"no level set: refused in words: {st} {out}")
+        hz.set_levels("Hazer 1", 40, 60)
+        st, out, run = tap(True)
+        check(st == 200 and out["text"] == "Hazer test ON for 60 s." and
+              link.hazer_test_live_now() and ht.run is not None,
+              f"a tap: ON, with show control off and no show: {st} {out}")
+        check(wire() == ([102, 153, 0, 0, 0, 0],
+                         ["Hazer 1", "Hazer 2", "Hazer 3"]) and
+              hz.on() == set(),
+              "every hazer named at its levels; nothing ARMED")
+        v = view()
+        check(v["on"] is True and v["state"] == "on" and
+              v["left_s"] == 60.0 and "run" not in v,
+              f"the status: ON, 60 s left, the press id not given out: {v}")
+        st2, out2, _r = tap(True)
+        check(st2 == 409 and "already on" in out2["error"],
+              f"a second ON never adds time: {out2}")
+        check(R.audit and R.audit[-1]["action"] == "hazer test on" and
+              R.audit[-1]["result"] == "accepted",
+              f"ON audited: {R.audit[-1:]}")
+        # The screen's beat keeps it; 10 s without one ends it.
+        why = run_for(9.0, beat_every=2.0, run=run)
+        check(why == "" and link.hazer_test_live_now(),
+              "beaten every 2 s: still on at 9 s")
+        why = run_for(11.0)
+        check("went quiet for 10 s" in why and ht.run is None and
+              not link.hazer_test_live_now() and
+              "went quiet" in ht.last_off["reason"],
+              f"no beat for 10 s: OFF, said: {why}")
+        check(beat(run) == 409, "a beat after the end starts nothing")
+        reset()
+        # 60 s at most, beaten or not.
+        st, out, run = tap(True)
+        why = run_for(70.0, beat_every=2.0, run=run)
+        check(why == "its 60 s were up" and not link.hazer_test_live_now()
+              and wire() == ([0] * 6, []),
+              f"the 60 s are up: OFF by itself, zero on the wire: {why}")
+        check(v["left_s"] == 60.0 and R.audit[-1]["action"] ==
+              "hazer test off" and "60 s" in R.audit[-1]["reason"],
+              f"auto-off audited: {R.audit[-1:]}")
+        reset()
+        # OFF: a tap, never refused, from anyone.
+        st, out, run = tap(True)
+        st, out, _r = tap(False, client=ipad)
+        check(st == 200 and out["text"] == "Hazer test OFF." and
+              ht.run is None and not link.hazer_test_live_now(),
+              f"OFF from an iPad without screen_arming: taken: {st} {out}")
+        reset()
+        RM.save_settings(R.work, screen_arming=False)
+        st, out, _r = tap(True, client=ipad)
+        check(st == 403 and "screen_arming" in out["error"] and
+              not link.hazer_test_live_now(),
+              f"ON from the show network needs screen_arming: {st} {out}")
+        RM.save_settings(R.work, screen_arming=True)
+        # Stop ends it at the press, by its own cut (Hazers off's hook,
+        # which Stop also reaches on a thread, set aside here).
+        hook = hz.test_stop
+        hz.test_stop = None
+        st, out, run = tap(True)
+        check(st == 200, f"setup: on: {out}")
+        R.ask("POST", "/api/remote/stop", {"seen": R.seen()}, client=loop)
+        check(ht.run is None and not link.hazer_test_live_now() and
+              wire()[1] == [],
+              f"Stop: OFF at the press: {ht.last_off}")
+        end = time.monotonic() + 2.0
+        while time.monotonic() < end and "Stop" not in \
+                (ht.last_off or {}).get("reason", ""):
+            time.sleep(0.01)
+        check("Stop" in (ht.last_off or {}).get("reason", ""),
+              f"and said: {ht.last_off}")
+        hz.test_stop = hook
+        R.ask("POST", "/api/remote/resume", {"seen": R.seen()}, client=loop)
+        R.settle()
+        reset()
+        # And Stop's hazers_cut alone (its own cut aside) ends it too,
+        # through web.serve's Hazers off hook.
+        st, out, run = tap(True)
+        R.remote.hazers_cut("Stop from the selftest", "Ollie", "Rack screen")
+        end = time.monotonic() + 2.0
+        while time.monotonic() < end and ht.run is not None:
+            time.sleep(0.01)
+        check(ht.run is None and not link.hazer_test_live_now(),
+              f"Stop's hazers_cut ends it through the hook: {ht.last_off}")
+        reset()
+        # The flame link's per-frame gate (web.serve's wiring): the moment
+        # a show plays or is held, or show control's session runs, no
+        # hazer is driven, before the engine's next pass.
+        for what in ("playing", "held"):
+            st, out, run = tap(True)
+            check(st == 200 and wire()[0] == [102, 153, 0, 0, 0, 0],
+                  f"setup: on and hazing: {out}")
+            R.show[0] = what
+            check(wire() == ([0] * 6, []) and ht.run is not None,
+                  f"a show {what}: the very next frame drives no hazer, "
+                  f"before the engine's pass")
+            R.show[0] = "idle"
+            tap(False)
+            reset()
+        st, out, run = tap(True)
+        sess = getattr(R.remote.control, "session", None)
+        R.remote.control.session = type("Sess", (), {"running": True})()
+        try:
+            check(wire() == ([0] * 6, []),
+                  "show control's session running: no hazer driven, before "
+                  "the engine's pass")
+        finally:
+            R.remote.control.session = sess
+        tap(False)
+        reset()
+        # A show starting ends it; while one plays it is refused.
+        st, out, run = tap(True)
+        check(st == 200, f"setup: on: {out}")
+        R.show[0] = "playing"
+        why = run_for(0.2)
+        check("a show is playing" in why and not link.hazer_test_live_now(),
+              f"a show starts: OFF: {why}")
+        st, out, _r = tap(True)
+        check(st == 409 and "show drives the hazers" in out["error"],
+              f"refused while a show plays, in words: {out}")
+        R.show[0] = "held"
+        st, out, _r = tap(True)
+        check(st == 409 and "Hold" in out["error"],
+              f"refused on Hold: {out}")
+        R.show[0] = "idle"
+        real = R.remote.control.state
+        R.remote.control.state = lambda: {"running": True}
+        try:
+            st, out, _r = tap(True)
+            check(st == 409 and "show control is on" in out["error"],
+                  f"refused with show control on: {out}")
+        finally:
+            R.remote.control.state = real
+        st, out, run = tap(True)
+        R.remote.control.state = lambda: {"starting": True}
+        try:
+            why = run_for(0.2)
+            check("show control is on" in why and
+                  not link.hazer_test_live_now(),
+                  f"show control turning on ends it: {why}")
+        finally:
+            R.remote.control.state = real
+        reset()
+        def _boom():
+            raise RuntimeError("selftest")
+        R.remote.control.state = _boom
+        try:
+            st, out, _r = tap(True)
+            check(st == 409 and "could not be read" in out["error"],
+                  f"show control's state unreadable: refused (fail "
+                  f"closed): {out}")
+        finally:
+            R.remote.control.state = real
+        reset()
+        # Every check arming a hazer has.
+        R.remote.live_flame = type("LF", (), {"on": True})()
+        st, out, _r = tap(True)
+        check(st == 409 and out["error"].startswith(
+            "Hazer test not started: live flame programming"),
+              f"live flame programming on: refused: {out}")
+        R.remote.live_flame = None
+        st, _h, out = R.ask("POST", "/api/remote/hazer-test",
+                            {"on": True, "run": "old1",
+                             "seen": R.seen() - 5000}, client=loop)
+        check(st == 409 and not link.hazer_test_live_now(),
+              f"a press from a status 5 s old: refused: {out}")
+        R.mono[0] += 2.0
+        st, out, _r = tap(True)
+        check(st == 409 and out["error"].startswith(
+            "Hazer test not started: flamesafe has not reported") and
+              not link.hazer_test_live_now(),
+              f"flamesafe's status stale: refused: {out}")
+        reset()
+        # A RUNNING test ends on live flame programming, flamesafe going
+        # stale, and flamesafe not passing it for 1.5 s.
+        st, out, run = tap(True)
+        check(st == 200, f"setup: on: {out}")
+        R.remote.live_flame = type("LF", (), {"on": True})()
+        why = run_for(0.2)
+        R.remote.live_flame = None
+        check("live flame programming" in why and
+              not link.hazer_test_live_now(),
+              f"live flame programming turned on: OFF: {why}")
+        reset()
+        st, out, run = tap(True)
+        why = run_for(2.0, feed=False)
+        check("flamesafe has not reported" in why and
+              not link.hazer_test_live_now(),
+              f"flamesafe stale while it runs: OFF: {why}")
+        reset()
+        st, out, run = tap(True)
+        R.no_pass = True
+        why = run_for(2.0, beat_every=1.0, run=run)
+        R.no_pass = False
+        check("did not pass it for 1.5 s" in why and
+              not link.hazer_test_live_now(),
+              f"flamesafe not passing it for 1.5 s: OFF: {why}")
+        reset()
+        # Hazers off (a screen, the Stream Deck's key 4, the watch) ends it.
+        st, out, run = tap(True)
+        check(R.remote.deck_input().get("hazers", {}).get("test") is True,
+              "the Stream Deck's hazers page is told the test runs")
+        st, _h, out = R.ask("POST", "/api/remote/hazers-off", {},
+                            client=ipad)
+        check(st == 200 and out["text"] ==
+              "Every hazer is DISARMED. Hazer test OFF." and
+              ht.run is None and not link.hazer_test_live_now(),
+              f"Hazers off ends it and says so: {out}")
+        reset()
+        st, out, run = tap(True)
+        hz.all_off("the hazers' watch")
+        check(ht.run is None and not link.hazer_test_live_now(),
+              "every Hazers off path ends it (the watch's own all_off)")
+        reset()
+        # The plain /api/stop route, by its own cut.
+        hz.test_stop = None
+        st, out, run = tap(True)
+        R.ask("POST", "/api/stop", {}, client=loop)
+        check(ht.run is None and not link.hazer_test_live_now(),
+              f"Stop (the plain /api/stop): OFF at the press: "
+              f"{ht.last_off}")
+        hz.test_stop = hook
+        R.ask("POST", "/api/remote/resume", {"seen": R.seen()}, client=loop)
+        R.settle()
+        reset()
+        # The engine shutting down (web.serve's own close).
+        st, out, run = tap(True)
+        R.h.server_close()
+        check(R.closed and ht.run is None and not link.hazer_test_live_now()
+              and "shutting down" in ht.last_off["reason"],
+              f"the engine shutting down: OFF: {ht.last_off}")
+        reset()
+        # The show's state that cannot be read is busy (fail closed).
+        real_state = R.remote._ht_state
+        R.remote._ht_state = lambda: 1 / 0
+        try:
+            st, out, _r = tap(True)
+        finally:
+            R.remote._ht_state = real_state
+        check(st == 409 and "could not be read" in out["error"],
+              f"the show's state unreadable: refused: {out}")
+        # Fail closed: an error ends it and says so.
+        st, out, run = tap(True)
+        good = link.hazer_test_beat
+
+        def boom(gen):
+            raise RuntimeError("selftest")
+        link.hazer_test_beat = boom
+        try:
+            R.mono[0] += HT.SEND_S
+            why = ht.send()
+        finally:
+            link.hazer_test_beat = good
+        check("check failed" in why and ht.run is None and
+              not link.hazer_test_live_now(),
+              f"an error in a pass: OFF, said: {why}")
+        reset()
+        st, out, run = tap(True)
+        ht._passing = lambda: 1 / 0
+        try:
+            v = ht.view()
+        finally:
+            del ht._passing
+        check(v["on"] is False and v["state"] == "unknown" and
+              ht.run is None and not link.hazer_test_live_now(),
+              f"a state that cannot be read: OFF, shown as not known: {v}")
+        reset()
+        lines = [r.get("text", "") for r in R.lines_for("hazer-test")]
+        check(any("turned the hazer test on" in t for t in lines) and
+              any("Hazer test off" in t for t in lines) and
+              not any("—" in t or "–" in t for t in lines),
+              f"the journal says each on and off, no dashes: {lines[-3:]}")
+        whos = {(a["action"], a["user"]) for a in R.audit}
+        check(("hazer test on", "unsigned") in whos or
+              any(a == "hazer test on" for a, _u in whos),
+              f"each on and off audited with who: {sorted(whos)[:6]}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_hazer_test_and_arm_all_need_the_arm_row():
+    section("hazer test and Arm all hazers (2026-11-11): with users, a "
+            "viewer may not turn the test on or arm all hazers; an "
+            "operator may; anyone may turn the test off; the audit names "
+            "who")
+    S = _sched()
+    if S is None:
+        return
+    import shutil
+    import tempfile
+    from ltcplay import users as U
+    loop = ("127.0.0.1", 5000)
+    R = _ht_rig(S)
+    udir = tempfile.mkdtemp()
+    try:
+        us = U.Users(udir, hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator"),
+                 ("Vic", "viewer")])
+        R.remote.users = us
+        R.remote.hazers.set_levels("Hazer 1", 40, 60)
+        _ok, _w, vtok, _n = us.sign_in("Vic", "", True, "rack",
+                                       new_password="Vic-pw-12345")
+        vh = {"Cookie": f"{U.COOKIE}={vtok}"}
+        st, _h, out = R.ask("POST", "/api/remote/hazer-test",
+                            {"on": True, "run": "v1", "seen": R.seen()},
+                            client=loop, headers=vh)
+        check(st == 403 and not R.link.hazer_test_live_now(),
+              f"a viewer: the test is refused: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/hazers-arm-all",
+                            {"seen": R.seen()}, client=loop, headers=vh)
+        check(st == 403 and R.link.hazers_on == frozenset(),
+              f"a viewer: Arm all hazers is refused: {st} {out}")
+        us.sign_out(vtok, "rack", local=True)
+        _ok, _w, otok, _n = us.sign_in("Ollie", "", True, "rack",
+                                       new_password="Ollie-pw-1234")
+        oh = {"Cookie": f"{U.COOKIE}={otok}"}
+        st, _h, out = R.ask("POST", "/api/remote/hazer-test",
+                            {"on": True, "run": "o1", "seen": R.seen()},
+                            client=loop, headers=oh)
+        check(st == 200 and R.link.hazer_test_live_now(),
+              f"an operator: ON: {st} {out}")
+        check(any(a["action"] == "hazer test on" and a["user"] == "Ollie"
+                  for a in R.audit), f"audited as Ollie: {R.audit[-1:]}")
+        R.ask("POST", "/api/remote/signout", {}, client=loop, headers=oh)
+        check(R.ht.run is None and not R.link.hazer_test_live_now() and
+              "Ollie signed out" in (R.ht.last_off or {}).get("reason", ""),
+              f"Ollie signs out on his screen: OFF at once: "
+              f"{R.ht.last_off}")
+        R.link._abort_repeat = None
+        R.feed()
+        _ok, _w, otok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True,
+                                       "rack")
+        oh = {"Cookie": f"{U.COOKIE}={otok}"}
+        st, _h, out = R.ask("POST", "/api/remote/hazer-test",
+                            {"on": True, "run": "o2", "seen": R.seen()},
+                            client=loop, headers=oh)
+        check(st == 200, f"setup: on again: {out}")
+        us.sign_out(otok, "rack", local=False)
+        R.mono[0] += 0.1
+        why = R.ht.send()
+        check("Ollie signed out" in why and R.ht.run is None,
+              f"his sign-in ended another way: the timer ends it: {why}")
+        R.feed()
+        st, _h, out = R.ask("POST", "/api/remote/hazer-test",
+                            {"on": True, "run": "n1", "seen": R.seen()},
+                            client=loop)
+        check(st == 403 and not R.link.hazer_test_live_now(),
+              f"no sign-in while there are users: refused: {st} {out}")
+        _ok, _w, otok, _n = us.sign_in("Ollie", "Ollie-pw-1234", True,
+                                       "rack")
+        oh = {"Cookie": f"{U.COOKIE}={otok}"}
+        # An ON from no sign-in of its own (the Stream Deck's screen) is
+        # refused while there are users, Ollie signed in here or not.
+        import types
+        ctx = types.SimpleNamespace(local=True, token="", user="Ollie",
+                                    device="Stream Deck",
+                                    screen="Stream Deck",
+                                    source="127.0.0.1")
+        st, out = R.remote.hazer_test_post(
+            {"on": True, "run": "deck1", "seen": R.seen(),
+             "screen": "Stream Deck"}, ctx)
+        check(st == 403 and "needs a sign-in" in out.get("error", "") and
+              not R.link.hazer_test_live_now(),
+              f"an ON with no sign-in of its own: refused: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/hazer-test",
+                            {"on": True, "run": "old2",
+                             "seen": R.seen() - 5000},
+                            client=loop, headers=oh)
+        check(st == 409 and any("status was old" in r.get("text", "")
+                                for r in R.lines_for("hazer-test")),
+              f"a press from an old status: refused and journaled: {out}")
+        st, _h, out = R.ask("POST", "/api/remote/hazer-test",
+                            {"on": False}, client=loop)
+        check(st == 200 and not R.link.hazer_test_live_now(),
+              f"OFF with no sign-in at all: taken: {st} {out}")
+        R.link._abort_repeat = None
+        R.feed()
+        st, _h, out = R.ask("POST", "/api/remote/hazers-arm-all",
+                            {"seen": R.seen()}, client=loop, headers=oh)
+        check(st == 200 and out["text"] == "All hazers armed." and
+              R.link.hazers_on == {n for n, _s in _HZ},
+              f"an operator: Arm all hazers: {st} {out}")
+    finally:
+        R.close()
+        shutil.rmtree(udir, ignore_errors=True)
+    print("  ok")
+
+
+def test_arm_all_hazers_only_arms_hazers():
+    section("Arm all hazers (Jeff, 2026-11-11): only entries typed hazer "
+            "by the engine's config and flamesafe's status; a name of "
+            "unknown type, another kind or a flame group's name is skipped "
+            "and named; every refusal arming one hazer has applies; "
+            "screen_arming from the show network; partial results said "
+            "plainly; no flame group is ever armed")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import remote as RM
+    loop, ipad = ("127.0.0.1", 5000), ("10.20.0.44", 50000)
+    R = _ht_rig(S)
+    link, hz = R.link, R.remote.hazers
+
+    def arm_all(client=loop):
+        R.feed()
+        st, _h, out = R.ask("POST", "/api/remote/hazers-arm-all",
+                            {"seen": R.seen()}, client=client)
+        return st, out
+    try:
+        groups_before = [dict(g) for g in R.groups]
+        R.extra_groups = [{"name": "Hazer 2", "armed": "disarmed",
+                           "wanted": False}]
+        st, out = arm_all()
+        check(st == 200 and link.hazers_on == {"Hazer 1", "Hazer 3"} and
+              out["text"] == "2 of 3 hazers armed: Hazer 2 type not "
+                             "known." and
+              out["armed"] == ["Hazer 1", "Hazer 3"],
+              f"a name flamesafe also reports as a flame group is skipped "
+              f"and named; the rest armed: {st} {out}")
+        check(R.groups == groups_before and
+              all(n in {h for h, _s in _HZ} for n in link.hazers_on),
+              "no flame group was touched: only hazer names are ARMED")
+        R.extra_groups = []
+        hz.all_off("selftest")
+        R.kinds["Hazer 3"] = "fogger"
+        st, out = arm_all()
+        check(st == 409 and link.hazers_on == frozenset() and
+              out["text"] == "0 of 3 hazers armed: Hazer 1 refused; "
+                             "Hazer 2 refused; Hazer 3 type not known.",
+              f"a kind not known: skipped and named, and flamesafe's "
+              f"hazers then differ from the engine's, so arming each one "
+              f"is refused as today: {st} {out}")
+        R.kinds["Hazer 3"] = "switch"
+        st, out = arm_all()
+        check(st == 409 and link.hazers_on == frozenset() and
+              "Hazer 3 not a hazer (switch)." in out["text"],
+              f"another kind is never armed: {out}")
+        hz.all_off("selftest")
+        R.kinds["Hazer 3"] = "hazer"
+        RM.save_settings(R.work, screen_arming=False)
+        st, out = arm_all(client=ipad)
+        check(st == 403 and "screen_arming" in out["error"] and
+              link.hazers_on == frozenset(),
+              f"from the show network, screen_arming off: refused, nothing "
+              f"armed: {st} {out}")
+        RM.save_settings(R.work, screen_arming=True)
+        R.remote.live_flame = type("LF", (), {"on": True})()
+        st, out = arm_all()
+        check(st == 409 and link.hazers_on == frozenset() and
+              out["text"] == "0 of 3 hazers armed: Hazer 1 refused; "
+                             "Hazer 2 refused; Hazer 3 refused.",
+              f"a refusal arming one hazer has (live flame programming) "
+              f"refuses each: {st} {out}")
+        R.remote.live_flame = None
+        st, out = arm_all()
+        check(st == 200 and out["text"] == "All hazers armed." and
+              link.hazers_on == {n for n, _s in _HZ},
+              f"all known hazers: All hazers armed: {out}")
+        check(any(a.get("action") == "hazers arm all" and
+                  a.get("result") == "accepted" for a in R.audit),
+              f"audited: {[a.get('action') for a in R.audit][-3:]}")
+        st, out = arm_all()
+        check(st == 200 and out["text"] == "All hazers armed.",
+              f"already armed: nothing changes, said the same: {out}")
+        _st, _h, s = R.ask("POST", "/api/remote/hazers-off", {}, client=ipad)
+        check(link.hazers_on == frozenset(),
+              "Hazers off disarms them all, from anywhere")
+        for t in (out["text"],):
+            check("—" not in t and "–" not in t, "no dashes")
+    finally:
+        R.close()
     print("  ok")
 
 
@@ -86769,6 +87515,53 @@ def test_live_flame_engine_routes_roles_and_presses():
     print("  ok")
 
 
+def test_status_says_show_control_on_as_a_boolean():
+    section("the status says whether Run is on as one boolean, "
+            "show.show_control_on, from the scheduler's own Run gate: true "
+            "only with a show file running (or starting) AND the gate "
+            "pressed; a gate that is off, raises or answers anything but "
+            "True is off, never on (show control, PR 1: the rack screen no "
+            "longer reads the engine's sentences for it)")
+    import types
+    from ltcplay import remote as RM
+    r = RM.Remote.__new__(RM.Remote)
+    r.schedule = None
+    on = r.show_control_on
+    check(on({"running": True}) is True and on({"starting": True}) is True,
+          "no scheduler: a show file running or starting is Run on")
+    check(on({}) is False and on({"running": False}) is False,
+          "no scheduler, nothing running: off")
+    gate = [True]
+
+    def g():
+        if gate[0] == "raise":
+            raise RuntimeError("gate")
+        return gate[0]
+    r.schedule = types.SimpleNamespace(run_gate=g)
+    check(on({"running": True}) is True, "the gate pressed, running: on")
+    for v in (False, None, 1, "True", "raise"):
+        gate[0] = v
+        check(on({"running": True}) is False and
+              on({"starting": True}) is False,
+              f"the gate answering {v!r}: off, never on")
+    gate[0] = True
+    check(on({}) is False, "the gate pressed but nothing running: off")
+    check(on(None) is False, "no engine state at all: off, never raises")
+    r.schedule = types.SimpleNamespace(run_gate=None)
+    check(on({"running": True}) is True,
+          "a scheduler with no Run to wait for (run_gate None): as running")
+    # The gate is the one Service._hold_back_unattended uses: fire_ice
+    # wires the same function (show._session() is not None).
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ltcplay", "remote.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    check('"show_control_on": self.show_control_on(cs)' in src and
+          '"show_control_on": False' in src,
+          "status carries it on every answer, False when the engine "
+          "state could not be read")
+    print("  ok")
+
+
 def _lf_free_udps(n):
     """n DIFFERENT free loopback UDP ports: every socket is held open until
     all are chosen (one closed and asked for again can come back the same,
@@ -92460,6 +93253,9 @@ def test_cleaning_at_the_engine():
         st = R.remote.status(ctx)
         check(st.get("cleaning", {}).get("state") == "phase1",
               f"every screen's status carries it: {st.get('cleaning')}")
+        check(st.get("show", {}).get("show_control_on") is False,
+              f"the cleaning runs with Run off, and the status says so as "
+              f"its boolean: {st.get('show')}")
         # Phase 1 on its own: armed 3 s, the disarm to the deck.
         for _i in range(31):
             step()
@@ -98424,6 +99220,11 @@ _UI2_ROUTES = {
     "/api/remote/hazer": "arm",
     "/api/remote/hazer-level": "arm",
     "/api/remote/hazers-off": "safety",
+    # The hazer test and Arm all hazers (2026-11-11): the per-hazer arm's
+    # row. hazer-test only switches the test's own output (OFF is safety
+    # by its body, users.classify); hazers-arm-all arms hazers only.
+    "/api/remote/hazer-test": "arm",
+    "/api/remote/hazers-arm-all": "arm",
     "/api/remote/hold": "safety",
     "/api/remote/idle-signout": "settings",
     "/api/remote/jump": "show",
@@ -98691,7 +99492,7 @@ def test_ui2_page_makes_only_1_0_presses():
 const out = [];
 const t = (c, m) => { if(!c) out.push(m); };
 const base = () => ({schedule:{attached:true, state:"STANDBY", next:{show:4, start:"19:30", in_s:900}},
-  show:{running:true}, flames:{connected:true, groups:[{name:"a", armed:"disarmed"}]}, arming:{enabled:true}, me:{may:{show:true, arm:true}}});
+  show:{running:true, show_control_on:true}, flames:{connected:true, groups:[{name:"a", armed:"disarmed"}]}, arming:{enabled:true}, me:{may:{show:true, arm:true}}});
 let s = base(); s.schedule.aborted = true;
 t(goLook(s, false, true).mode === "start", "an older engine's aborted flag is not read: no Reset (removed)");
 s = base(); s.schedule.held = true;
@@ -98702,16 +99503,27 @@ s = base(); s.announce = {playing:{held_schedule:true}};
 t(goLook(s, false, true).mode === "resume", "held for an announcement: Resume");
 s = base(); s.schedule.state = "SHOW";
 t(goLook(s, false, true).mode === "live" && goLook(s, false, true).off, "a show live: nothing to start");
-s = base(); s.show.running = false;
+s = base(); s.show.running = false; s.show.show_control_on = false;
 t(goLook(s, false, true).mode === "run" && !goLook(s, false, true).off, "Run off, on the show PC: Run show");
 t(goLook(s, false, false).mode === "run" && goLook(s, false, false).off, "Run off, on an iPad: Run is not offered");
+// Whether Run is on is the engine's boolean, never its sentence: the
+// sentence alone changes nothing, the boolean alone decides, and a
+// missing or non-true boolean is off, never on (show control, PR 1).
 s = base(); s.schedule.start_blocked = {text:"Run has not been pressed yet."};
-t(goLook(s, false, true).mode === "run", "the engine saying Run is off: Run show");
+t(goLook(s, false, true).mode === "start" && runIsOn(s), "the engine's old sentence with the boolean on: Run is on (the sentence is not read)");
+s = base(); s.show.show_control_on = false;
+t(goLook(s, false, true).mode === "run" && !runIsOn(s), "the boolean off with a show file running: Run show");
+for(const v of [undefined, null, "true", 1, "yes", {}]){
+  s = base(); if(v === undefined) delete s.show.show_control_on; else s.show.show_control_on = v;
+  t(!runIsOn(s) && goLook(s, false, true).mode === "run" && pillLook(s).text === "NOT RUNNING", "the boolean " + JSON.stringify(v) + ": off, never on");
+}
+s = base(); delete s.show;
+t(!runIsOn(s) && !runIsOn(null) && !runIsOn({}), "no show answer at all: off");
 s = base();
 t(goLook(s, false, true).mode === "start" && !goLook(s, false, true).off, "between shows: Start now");
 // Where Run is, by name (the Windows stress test, 2026-11-09), and Run
 // show in the alert slot on the show PC only, with the Show row.
-s = base(); s.show.running = false;
+s = base(); s.show.running = false; s.show.show_control_on = false;
 s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
 let ri = alertItems(s).find(i => i.key === "run");
 t(ri && ri.do === "Press the Run show button on the show PC's main screen." && !ri.act, "an iPad: the button named, on the show PC; no Run here: " + JSON.stringify(ri));
@@ -98729,7 +99541,7 @@ ri = alertItems(s).find(i => i.key === "run");
 t(ri && !ri.act && runHereShown(s, false, true, false) === "", "without the Show row: no Run show in the slot");
 // On a Hold the big button is Resume and the engine says Run, then
 // Resume: Run show is by the warning, and named so (cold review of #227).
-s = base(); s.show.running = false; s.schedule.state = "HOLD"; s.schedule.held = true;
+s = base(); s.show.running = false; s.show.show_control_on = false; s.schedule.state = "HOLD"; s.schedule.held = true;
 s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run, then Resume.";
 t(goLook(s, false, true).mode === "resume" && runHereShown(s, false, true, false) === "held", "held, Run off: Resume on the big button, Run show by the warning");
 ri = alertItems(s).find(i => i.key === "run");
@@ -98748,7 +99560,7 @@ t(runHereShown(s, false, true, false) === "", "Run on: no Run show");
 { let RAN = 0, SAID2 = [];
   const runShow = () => { RAN++; }, say = (a) => SAID2.push(a);
   const FLIPPED = {}; let HALT_BUSY = false, ST = base();
-  ST.show.running = false; ST.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
+  ST.show.running = false; ST.show.show_control_on = false; ST.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
   const TN = {hidden:true}; const $ = id => id === "tn-run" ? TN : null;
   eval(RUN_HERE_FNS);
   globalThis.ME = {local:true};
@@ -98763,12 +99575,27 @@ t(runHereShown(s, false, true, false) === "", "Run on: no Run show");
 s = base(); s.schedule.run_warning = "A Programming Run is in force: the 18:00 show (show 1) will NOT start. Press Stop, choose Show, then Run.";
 ri = alertItems(s).find(i => i.key === "run");
 t(ri && !ri.act && ri.full === s.schedule.run_warning, "a Programming Run: the engine's words, no Run button");
+// Run show by the warning is decided by the boolean, never the warning's
+// first words (show control, PR 1): the same sentence either way.
+globalThis.ME = {local:true};
+s = base(); s.schedule.run_warning = "A Programming Run is in force: the 18:00 show (show 1) will NOT start. Press Stop, choose Show, then Run.";
+t(runHereShown(s, false, true, false) === "", "a warning with Run on: no Run show");
+s.show.show_control_on = false;
+t(runHereShown(s, false, true, false) === "run", "the same warning with the boolean off: Run show");
+delete s.show.show_control_on;
+t(runHereShown(s, false, true, false) === "run", "the same warning with no boolean: off, so Run show (never treated as on)");
+s = base(); s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
+t(runHereShown(s, false, true, false) === "", "the Run is off sentence with the boolean on: no Run show (the sentence is not read)");
+s.schedule.run_warning = null; s.show.show_control_on = false;
+t(runHereShown(s, false, true, false) === "", "no warning: no Run show by it");
+globalThis.ME = undefined;
+s = base(); s.schedule.run_warning = "A Programming Run is in force: the 18:00 show (show 1) will NOT start. Press Stop, choose Show, then Run.";
 t(runWarnWords("Run is off: the 18:00 show (show 1) will NOT start. Press Run.", true) === "Run is off: the 18:00 show (show 1) will NOT start. Press the Run show button on the main screen.", "Press Run.");
 globalThis.ME = undefined;
 t(goLook(s, true, true).off, "no contact: nothing that starts");
 s = base(); s.schedule.held = true;
 t(goLook(s, true, true).off, "held, no contact: Resume is off");
-s = base(); s.show.running = false;
+s = base(); s.show.running = false; s.show.show_control_on = false;
 t(goLook(s, true, true).off, "Run off, no contact: Run is off");
 s = base(); s.me = {may:{show:false}};
 t(goLook(s, false, true).off, "signed out: view only");
@@ -98787,7 +99614,7 @@ t(/Rig check failed/.test(nextStep(s, false, true, []).text), "a failed rig chec
 const words = [];
 const states = [null, base()];
 for(const f of [x => x.schedule.aborted = true, x => x.schedule.held = true, x => x.alert_hold = {held:true}, x => x.me.view_only = true,
-                x => x.show.running = false, x => { x.schedule.state = "SHOW"; x.schedule.running = 4; }, x => x.schedule.start_waiting = true,
+                x => { x.show.running = false; x.show.show_control_on = false; }, x => { x.schedule.state = "SHOW"; x.schedule.running = 4; }, x => x.schedule.start_waiting = true,
                 x => x.schedule.next = null, x => x.schedule.next = {show:5, start:"19:50", in_s:120}, x => { x.schedule.next = null; x.schedule.delayed = {show:3}; }]){
   const x = base(); f(x); states.push(x);
 }
@@ -98989,13 +99816,13 @@ window.fetch = function(u, o){
   if(window.__live && /\/api\/remote\/status/.test(String(u)))
     return realFetch.apply(this, arguments).then(r => r.json()).then(j => {
       j.schedule = Object.assign({}, j.schedule, {state:"SHOW", running:1});
-      j.show = Object.assign({}, j.show, {running:true});
+      j.show = Object.assign({}, j.show, {running:true, show_control_on:true});
       return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}});
     });
   // Run on with nothing playing (between shows): Run off is drawn.
   if(window.__runon && /\/api\/remote\/status/.test(String(u)))
     return realFetch.apply(this, arguments).then(r => r.json()).then(j => {
-      j.show = Object.assign({}, j.show, {running:true});
+      j.show = Object.assign({}, j.show, {running:true, show_control_on:true});
       if(j.schedule) j.schedule.start_blocked = null;
       return new Response(JSON.stringify(j), {status:200, headers:{"Content-Type":"application/json"}});
     });
@@ -99404,7 +100231,7 @@ def _ui2_status_running():
     st["schedule"].update({"state": "SHOW", "running": 4,
                            "next": {"show": 5, "start": "19:50",
                                     "in_s": 1500}})
-    st["show"] = {"running": True, "timecode": "01:03:12:08"}
+    st["show"] = {"running": True, "show_control_on": True, "timecode": "01:03:12:08"}
     st["countdown"] = {"kind": "left", "label": "Time left", "s": 312,
                        "running": True}
     st["laser_arm"]["lasers"][0]["armed"] = True
@@ -99770,6 +100597,200 @@ def _ui2_status_pump(kind):
     return st
 
 
+_UI2_HAZER_TEST_JS = r"""
+<script>
+(function(){
+const posts = [];
+const realFetch = window.fetch;
+window.fetch = function(u, o){
+  if(window.__dead && /\/api\/remote\/status/.test(String(u))) return Promise.reject(new Error("no contact"));
+  if(o && o.method === "POST") posts.push({u:String(u), b:String(o.body || "")});
+  return realFetch.apply(this, arguments);
+};
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const q = id => document.getElementById(id);
+const sent = r => posts.filter(p => r.test(p.u)).map(p => JSON.parse(p.b));
+function look(){
+  // The Purge step, as the DAY page shows it (no morning data here).
+  if(typeof showTab === "function" && TAB !== "day") showTab("day");
+  q("t-day").hidden = false; daySections("purge"); renderHazerTest(ST);
+  const sec = q("d-hz"), b = q("hzt-btn");
+  const words = [q("hzt").querySelector("b").textContent].concat(
+    Array.from(q("hzt").querySelectorAll("li")).map(l => l.textContent));
+  return {shown: !!sec && !sec.hidden && sec.getClientRects().length > 0,
+    state: q("hzt-st").textContent, on_cls: q("hzt-st").classList.contains("on"),
+    btn: b.textContent, btn_na: b.getAttribute("aria-disabled") === "true",
+    armall: q("hz-armall").textContent, words: words,
+    pins: Array.from(document.querySelectorAll("[data-pin]")).map(x => x.dataset.pin + ":" + x.textContent),
+    tiles: Array.from(document.querySelectorAll("#hazers [data-hzb] .hw")).map(x => x.textContent),
+    tile_cls: Array.from(document.querySelectorAll("#hazers [data-hzb]")).map(x => x.className),
+    tile_bg: Array.from(document.querySelectorAll("#hazers [data-hzb]")).map(x => getComputedStyle(x).backgroundColor),
+    xscroll: document.scrollingElement.scrollWidth - innerWidth};
+}
+async function go(){
+  for(let i = 0; i < 80 && !(typeof ST !== "undefined" && ST && ST.hazer_test !== undefined); i++) await wait(100);
+  await wait(400);
+  const out = {first: look()};
+  posts.length = 0; q("hzt-btn").click(); await wait(2600);
+  out.tap = sent(/hazer-test/);
+  posts.length = 0; q("hz-armall").click(); await wait(300);
+  out.armall = sent(/hazers-arm-all|hazers-off/).length;
+  out.armall_u = posts.map(p => p.u).filter(u => /hazer/.test(u));
+  window.__dead = true; await wait(2800);
+  out.dead = look();
+  posts.length = 0; q("hzt-btn").click(); await wait(300);
+  out.dead_tap = sent(/hazer-test/);
+  return out;
+}
+setTimeout(() => go().then(o => o, e => ({error: String(e && e.stack || e)})).then(o => {
+  const pre = document.createElement("pre"); pre.id = "rack-measure";
+  pre.textContent = JSON.stringify(o); document.body.appendChild(pre);
+}), 50);
+})();
+</script>
+"""
+
+
+def _ui2_status_hazer_test(kind):
+    """Show control off, no show: the hazers and the hazer test in one of
+    its states."""
+    st = _ui2_status_running()
+    st["show"] = {"running": False, "starting": False}
+    st["flames"]["groups"] = st["flames"]["groups"][:3]
+    st["hazers"] = {"available": True, "down": "", "last_off": None,
+                    "agree": True, "show": "idle", "levels_fault": "",
+                    "hazers": [{"name": f"Hazer {n}", "haze_slot": 78 + 2 * n,
+                                "fan_slot": 79 + 2 * n,
+                                "armed": kind == "armed",
+                                "label": f"Hazer {n}", "state": "disarmed",
+                                "haze": 102, "fan": 153, "haze_pct": 40,
+                                "fan_pct": 60, "why": None}
+                               for n in (1, 2, 3)]}
+    ht = {"available": True, "names": ["Hazer 1", "Hazer 2", "Hazer 3"],
+          "on": False, "state": "off", "left_s": None, "max_s": 60,
+          "beat_s": 2, "refusal": "", "last_off": None}
+    if kind == "on":
+        ht.update(on=True, state="on", left_s=41.6)
+    if kind == "armed":
+        ht["refusal"] = "a show is playing, and the show drives the hazers."
+    if kind == "unknown":
+        ht.update(on=True, state="unknown")
+    st["hazer_test"] = ht
+    return st
+
+
+def test_ui2_hazer_test_in_a_browser():
+    section("interface 2.0's hazer test and Arm all hazers drawn (Jeff, "
+            "2026-11-11): on the Purge step with the other purges; Off or "
+            "On as the engine says, a visible indicator and countdown when "
+            "on, pinned with its own off; a tap posts on true with a press "
+            "id, then the screen's beat with the same id; a tap when on "
+            "posts on false; Not known with no contact, never On; Arm all "
+            "hazers posts once, Disarm all hazers when all are armed; the "
+            "text rule: a headline of 6 words or fewer, bullets of 8 words "
+            "or fewer, no dashes")
+    one, two = _ui2_pages()
+    lo = one[one.find('<script id="remote-logic">') +
+             len('<script id="remote-logic">'):]
+    lo = lo[:lo.find("</script>")]
+    page = two.replace('<script src="/remote-logic.js"></script>',
+                       "<script>" + lo + "</script>", 1)
+    check("—" not in page[page.find('id="d-hz"'):
+                               page.find('id="d-hz"') + 900] and
+          "–" not in page[page.find('id="d-hz"'):
+                               page.find('id="d-hz"') + 900],
+          "no dashes in the hazer test's words")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    brand = {"/api/brand": {"show": "Fire and Ice"}}
+    ok_on = {"/api/remote/hazer-test": {"ok": True,
+                                        "text": "Hazer test ON for 60 s."},
+             "/api/remote/hazers-arm-all": {"ok": True,
+                                            "text": "All hazers armed."}}
+    for kind in ("off", "on", "armed"):
+        got = _rack_screen_in_chromium(chrome, page,
+                                       _ui2_status_hazer_test(kind),
+                                       ((1366, 768),),
+                                       measure_js=_UI2_HAZER_TEST_JS,
+                                       frag="?tour=0", routes=brand,
+                                       posts=ok_on, budget_ms=12000)
+        for (w, h), r in got.items():
+            where = f"2.0 hazer test, {kind}, {w}x{h}"
+            if not check(isinstance(r, dict) and "first" in r,
+                         f"{where}: drawn and measured: {r!r}"[:900]):
+                continue
+            a = r["first"]
+            check(a["shown"] and a["xscroll"] <= 0,
+                  f"{where}: on the Purge step, nothing off the side: {a}")
+            head, bullets = a["words"][0], a["words"][1:]
+            check(len(head.split()) <= 6 and len(bullets) <= 3 and
+                  all(len(b.split()) <= 8 for b in bullets),
+                  f"{where}: the text rule: {a['words']}")
+            check(r["dead"]["state"] == "Not known" and
+                  not r["dead"]["on_cls"] and
+                  r["dead"]["btn"] == "Turn hazer test off" and
+                  not r["dead"]["btn_na"],
+                  f"{where}: no contact: Not known, never On, and the "
+                  f"button turns it off: {r['dead']}")
+            check([{k: v for k, v in x.items() if k != "seen"}
+                   for x in r["dead_tap"]] == [{"on": False}],
+                  f"{where}: no contact: a tap sends Off: {r['dead_tap']}")
+            if kind == "off":
+                check(a["state"] == "Off" and not a["on_cls"] and
+                      a["btn"] == "Hazer test: On" and not a["btn_na"] and
+                      not any(p.startswith("hzt") for p in a["pins"]),
+                      f"{where}: Off, ready: {a}")
+                t = r["tap"]
+                check(len(t) >= 2 and t[0]["on"] is True and t[0]["run"] and
+                      t[1].get("beat") == t[0]["run"],
+                      f"{where}: a tap posts on true with a press id, then "
+                      f"the screen's beat with it: {t}")
+            if kind == "off":
+                check(a["armall"] == "Arm all hazers" and
+                      r["armall_u"] == ["/api/remote/hazers-arm-all"],
+                      f"{where}: Arm all hazers posts once: {r['armall_u']}")
+            if kind == "armed":
+                check(a["armall"] == "Disarm all hazers" and
+                      r["armall_u"] == ["/api/remote/hazers-off"],
+                      f"{where}: all armed: Disarm all hazers: "
+                      f"{r['armall_u']}")
+            if kind == "on":
+                check(a["state"] == "On 42 s" and a["on_cls"] and
+                      a["btn"] == "Hazer test: Off" and
+                      "hzt:" + "Hazer test off" in
+                      [p.replace(" ", " ").strip() for p in a["pins"]]
+                      or any(p.startswith("hzt") and "Hazer test off" in p
+                             for p in a["pins"]),
+                      f"{where}: On, its countdown, the indicator and its "
+                      f"pinned off: {a}")
+                check([x.get("on") for x in r["tap"]][:1] == [False],
+                      f"{where}: a tap when on posts on false: {r['tap']}")
+                check(a["tiles"] and all(t == "HAZE TEST" for t in a["tiles"]),
+                      f"{where}: the hazer tiles say HAZE TEST, never "
+                      f"DISARMED: {a['tiles']}")
+                check(a["tile_cls"] and
+                      all(c.split() == ["b", "hzt"] for c in a["tile_cls"])
+                      and all(bg == "rgb(42, 29, 5)" for bg in a["tile_bg"]),
+                      f"{where}: the tiles are amber (class hzt), never "
+                      f"ARMED's green 'on': {a['tile_cls']} {a['tile_bg']}")
+            if kind == "armed":
+                check(a["btn_na"] and a["state"] == "Off" and
+                      not [x for x in r["tap"] if x.get("on") is True],
+                      f"{where}: refused now (a show plays): the button "
+                      f"says so and a tap sends no ON: {a} {r['tap']}")
+            if kind == "unknown":
+                check(a["state"] == "Not known" and not a["on_cls"],
+                      f"{where}: a state the engine cannot read: Not known: "
+                      f"{a}")
+    print("  ok")
+
+
 def test_ui2_fuel_pump_in_a_browser():
     section("interface 2.0's fuel pump drawn (Jeff, 2026-10-30): the row "
             "shows only with a pump; the engine's default run time; On "
@@ -100031,7 +101052,7 @@ def _ui2_page_inline():
 def _ui2_status_day():
     st = _ui2_status_running()
     st["schedule"].update({"state": "STANDBY", "running": None})
-    st["show"] = {"running": True, "timecode": None}
+    st["show"] = {"running": True, "show_control_on": True, "timecode": None}
     st["countdown"] = None
     st["fireball"] = {"available": True, "on": [], "owner": None}
     st["laser_arm"]["lasers"][0]["armed"] = False
@@ -110055,7 +111076,7 @@ def _ui2_status_stopped():
     st = _ui2_status_running()
     st["schedule"].update({"state": "STANDBY", "running": None,
                            "stop_held": True, "held": True})
-    st["show"] = {"running": True, "timecode": "01:08:20:05",
+    st["show"] = {"running": True, "show_control_on": True, "timecode": "01:08:20:05",
                   "state": "STOPPED", "timeline": "Fire and Ice.json"}
     st["countdown"] = None
     st["transport"] = {"programming": False}
@@ -112006,7 +113027,7 @@ def _ui2_status_prog():
     stopped, mark A set, the show's flame cues following it."""
     st = _ui2_status_running()
     st["schedule"].update({"state": "STANDBY", "running": None})
-    st["show"] = {"running": True, "timecode": "01:00:42:10",
+    st["show"] = {"running": True, "show_control_on": True, "timecode": "01:00:42:10",
                   "state": "STOPPED", "timeline": "Fire and Ice.json",
                   "rate_note": ""}
     st["countdown"] = None
@@ -112133,7 +113154,7 @@ async function go(){
   }
   if(/run=1/.test(location.search)){
     // Run off: Run, in Show or Programming, each asked first.
-    window.__mod = j => { j.show.running = false; j.transport = {programming:false, why:"No show file is running."}; j.programming_flames = {available:false}; };
+    window.__mod = j => { j.show.running = false; j.show.show_control_on = false; j.transport = {programming:false, why:"No show file is running."}; j.programming_flames = {available:false}; };
     await settle(2600); posts.length = 0;
     out.off = look();
     document.querySelector('#p-mode [data-mode="programming"]').click(); await wait(200);
@@ -112151,7 +113172,7 @@ async function go(){
     q("p-file").value = "Other.json"; q("p-file").dispatchEvent(new Event("change")); await wait(300);
     out.select = bodies();
     // A scheduled show live: Programming is refused before any question.
-    window.__mod = j => { j.show.running = false; j.transport = {programming:false}; j.programming_flames = {available:false}; j.schedule.state = "SHOW"; };
+    window.__mod = j => { j.show.running = false; j.show.show_control_on = false; j.transport = {programming:false}; j.programming_flames = {available:false}; j.schedule.state = "SHOW"; };
     await settle(); posts.length = 0;
     document.querySelector('#p-mode [data-mode="programming"]').click(); await wait(200);
     out.locked = look();
@@ -114169,8 +115190,13 @@ if __name__ == "__main__":
         test_pump_signout_stops_it,
         test_pump_timer_thread_ends_it,
         test_pump_end_to_end_against_the_real_flamesafe,
+        test_hazer_test_flame_link,
+        test_hazer_test_at_the_engine,
+        test_hazer_test_and_arm_all_need_the_arm_row,
+        test_arm_all_hazers_only_arms_hazers,
         test_ui2_fuel_pump_row,
         test_ui2_fuel_pump_in_a_browser,
+        test_ui2_hazer_test_in_a_browser,
         test_hazers_on_the_rack_screens,
         test_streamdeck_hazers_page,
         test_aim_slots_are_seen_on_the_rack_screen,
@@ -114265,6 +115291,7 @@ if __name__ == "__main__":
         test_live_flame_review_round_two,
         test_live_flame_from_a_mac,
         test_live_flame_from_a_mac_round_two,
+        test_status_says_show_control_on_as_a_boolean,
         test_programming_moves_are_flame_landings,
         test_programming_flames_end_to_end_real_flamesafe,
         test_programming_flames_engine_routes_and_page,
