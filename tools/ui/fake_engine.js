@@ -73,9 +73,10 @@ function baseStatus(){
   s.hazers = {available: true, down: "", last_off: null, agree: true, show: "idle", levels_fault: "",
     hazers: [1, 2, 3].map(n => ({name: "Hazer " + n, haze_slot: 78 + 2 * n, fan_slot: 79 + 2 * n, armed: false,
       label: "Hazer " + n + " DISARMED", state: "disarmed", haze: 102, fan: 153, haze_pct: 40, fan_pct: 60, why: null}))};
-  // The hazer test (hazertest.py, 2026-11-11): off, ready.
-  s.hazer_test = {available: true, names: ["Hazer 1", "Hazer 2", "Hazer 3"], on: false, state: "off", left_s: null,
-    max_s: 60, beat_s: 2, refusal: "", last_off: null};
+  // The Purge page's hazers (hazertest.py, 2026-11-13): each off, ready.
+  s.hazer_test = {available: true, names: ["Hazer 1", "Hazer 2", "Hazer 3"], on: false, names_on: [], state: "off", left_s: null,
+    max_s: 60, beat_s: 2, refusal: "", last_off: null,
+    hazers: [1, 2, 3].map(n => ({name: "Hazer " + n, on: false, state: "off", left_s: null, haze_pct: 40, fan_pct: 60}))};
   return s;
 }
 
@@ -284,10 +285,17 @@ class FakeEngine {
       case "/api/remote/hazers-arm-all": s.hazers.hazers.forEach(h => { h.armed = true; h.state = "standby"; }); return ok("All hazers armed.");
       case "/api/remote/hazer-test": {
         const t = s.hazer_test;
+        const sync = () => { t.names_on = t.hazers.filter(h => h.on).map(h => h.name); t.on = t.names_on.length > 0;
+          t.state = t.on ? "on" : "off"; t.left_s = t.on ? t.max_s : null; };
         if(body.on === true){ if(t.refusal) return {code: 409, body: {error: "Hazer test not started: " + t.refusal}};
-          Object.assign(t, {on: true, state: "on", left_s: t.max_s}); return ok("Hazer test ON for " + t.max_s + " s."); }
+          const want = body.hazers === "all" ? t.names : (body.hazers || []);
+          if(!want.length || want.some(n => !t.names.includes(n))) return {code: 409, body: {error: "Hazer test not started: select one hazer or more."}};
+          t.hazers.forEach(h => { if(want.includes(h.name) && !h.on) Object.assign(h, {on: true, state: "on", left_s: t.max_s}); });
+          sync(); return ok("Hazer test ON: " + want.join(", ") + ", " + t.max_s + " s."); }
         if(typeof body.beat === "string") return t.on ? ok("Hazer test on.") : {code: 409, body: {error: "The hazer test is off."}};
-        Object.assign(t, {on: false, state: "off", left_s: null}); return ok("Hazer test OFF.");
+        const off = Array.isArray(body.hazers) && body.hazers.every(n => t.names.includes(n)) ? body.hazers : t.names;
+        t.hazers.forEach(h => { if(off.includes(h.name)) Object.assign(h, {on: false, state: "off", left_s: null}); });
+        sync(); return ok(off.length === t.names.length ? "Every hazer OFF." : "Hazer test OFF: " + off.join(", ") + ".");
       }
       case "/api/remote/hazer-level": s.hazers.hazers.forEach(h => { if(body.hazer === "all" || h.name === body.hazer){
         if(typeof body.haze === "number") h.haze_pct = body.haze; if(typeof body.fan === "number") h.fan_pct = body.fan; } }); return ok("Set.");

@@ -795,7 +795,7 @@ def check_audio(p, clk, refusal=""):
     from the audio process within a second), and the show cue's audio is
     loaded. Nothing is played."""
     if clk is None or getattr(clk, "source", None) != "audio_master":
-        return False, ("the show audio is not this program's: Run a show "
+        return False, ("the show audio is not this program's: use a show "
                        "file whose clock is \"audio_master\"")
     if refusal:
         return False, refusal

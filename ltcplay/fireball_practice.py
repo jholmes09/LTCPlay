@@ -477,7 +477,7 @@ class Practice:
             return "the schedule left the Stop's Hold"
         s = self._session()
         if s is None or s is not b.get("session"):
-            return "Run was turned off or another show file was chosen"
+            return "Show control was turned off or another show file was chosen"
         view, raw = self._flames()
         why = self._flamesafe_why(view, raw)
         if why:

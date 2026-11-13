@@ -109,6 +109,15 @@ with nothing mutated in that copy; when one is not, that copy runs its
 whole baseline after all, and a red one stops the shard as before. Without
 hints, or with a red sanity run, the copy runs its whole baseline.
 
+**Release tags are ltc-YYYY.MM.DD.N** (from 2026-11-14; before that they
+were gpl-..., and the Dollywood Mac stays at gpl-2026.09.15.10). Only an
+ltc-* tag builds the installer (windows-app.yml). A new gpl-* tag builds
+nothing, on purpose, so nobody can cut a release under the old name; the
+selftest workflow's `changes` job fails for it with a sentence saying to
+use ltc- (`mutate_plan.py mode`), so it is never silent. `test_release_tags_are_ltc_only` fails
+if a workflow trigger names a gpl- tag again. The release steps are in
+packaging/windows/INSTALL.md, "Make a release (Jeff)".
+
 ## Which mutations a PR runs
 
 `mutate.py --changed BASE` works it out from the diff; the rules are in
