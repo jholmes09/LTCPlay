@@ -23975,8 +23975,8 @@ def build():
 
  ('hazer test: show control on leaves it on',
   'ltcplay/remote.py',
-  '            if cs.get("starting") or cs.get("running") or \\\n                    self.show_control_on(cs):\n                return "show control is on; press Stop first"\n',
-  '            if False:\n                return "show control is on; press Stop first"\n'),
+  '            if cs.get("starting") or cs.get("running") or \\\n                    self.show_control_on(cs):\n                return ("show control is on; turn show control off first "\n',
+  '            if False:\n                return ("show control is on; turn show control off first "\n'),
 
  ('hazer test: ON skips the checks arming a hazer has',
   'ltcplay/hazertest.py',
