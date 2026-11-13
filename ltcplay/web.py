@@ -1224,6 +1224,12 @@ class Handler(BaseHTTPRequestHandler):
             perm = users_mod.classify(route, body)
             if perm == "safety" or perm is None:
                 return False
+            if perm == users_mod.UPLOAD:
+                # The nightly upload: the engine's one test answers it
+                # (remote.Remote.upload_refused, users.superuser_here),
+                # with the words of a route that is not there. This
+                # check's own words would name the setting.
+                return False
         except Exception:                        # noqa: BLE001
             return False
         try:
@@ -1827,7 +1833,7 @@ class Handler(BaseHTTPRequestHandler):
                 # not: it only takes risk away.
                 _rm0 = getattr(self.server, "remote", None)
                 if _rm0 is not None and hasattr(_rm0, "timed_purge_cut"):
-                    _rm0.timed_purge_cut("Run was pressed on the " +
+                    _rm0.timed_purge_cut("Show control was turned on at the " +
                                          str(self._ctx().screen),
                                          self._ctx().user or "unsigned",
                                          self._ctx().screen)
@@ -1837,7 +1843,7 @@ class Handler(BaseHTTPRequestHandler):
                 _svc = getattr(self.server, "schedule", None)
                 if getattr(_svc, "halting", lambda: False)() is True:
                     return self._send(409, {"error": (
-                        "Run was refused: " + _svc.HALTING + ". Nothing was "
+                        "Show control on was refused: " + _svc.HALTING + ". Nothing was "
                         "started.")})
                 # Never over Programming playback (playhead.py): the same
                 # sentence as Start now's.
@@ -1851,7 +1857,7 @@ class Handler(BaseHTTPRequestHandler):
                 # source of fire values.
                 _rm = getattr(self.server, "remote", None)
                 if _rm is not None and hasattr(_rm, "live_flame_end"):
-                    _rm.live_flame_end("Run was pressed",
+                    _rm.live_flame_end("Show control was turned on",
                                        self._ctx().user or "unsigned",
                                        self._ctx().screen)
                 s = c.start(body.get("timeline", ""),
@@ -2054,6 +2060,8 @@ def _attach_accounts(httpd, users_seed=None, transport=None):
                       target=target, result=result, reason=reason,
                       source=source)
         r.users = users_mod.Users(r.folder, audit=_note)
+        # The SuperUsers changed outside this program: an alert.
+        r.users.on_alert = r.superuser_alert
         # Sign everyone out after the night's last show (Jeff, 2026-10-26).
         r.users.last_show = r.last_show_over
         r.users.start()
@@ -2576,6 +2584,42 @@ def _attach_fuel(httpd):
         finally:
             remote.fuel.close()
     httpd.server_close = _close_fuel
+
+
+def _attach_haze(httpd):
+    """Haze fluid (fuelhaze.py, the Fuel page's Hazers section): the flame
+    link's hazers, watched on the bytes each frame sent. It only observes
+    and is closed last, like the fuel record; a failure to build it leaves
+    the section unavailable and is said once."""
+    from . import fuelhaze
+    remote = httpd.remote
+    link = getattr(getattr(httpd, "fire_ice", None), "flame_link", None)
+    try:
+        if link is None or not link.hazer_names():
+            return
+    except Exception:                            # noqa: BLE001
+        return
+    try:
+        def _journal(text, fault=False):
+            remote._journal("system", "engine", "haze",
+                            "fault" if fault else "done", text, fault=fault)
+        remote.haze = fuelhaze.build(remote, link,
+                                     fuel=getattr(remote, "fuel", None),
+                                     journal=_journal)
+    except Exception as e:                       # noqa: BLE001
+        print(f"Haze fluid tracking could not be set up: "
+              f"{type(e).__name__}: {e}")
+        return
+    _close_before = httpd.server_close
+
+    def _close_haze():
+        # Last, as the fuel record: the flame link goes first, and the
+        # save never waits more than fuelhaze.CLOSE_TIMEOUT_S.
+        try:
+            _close_before()
+        finally:
+            remote.haze.close()
+    httpd.server_close = _close_haze
 
 
 def _attach_fireball(httpd):
@@ -3306,6 +3350,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         _attach_pump(httpd)
     if httpd.morning is not None:
         _attach_fuel(httpd)
+        _attach_haze(httpd)
         if fire_ice is not None and \
                 getattr(httpd.fire_ice, "flame_link", None) is not None:
             _attach_fireball(httpd)

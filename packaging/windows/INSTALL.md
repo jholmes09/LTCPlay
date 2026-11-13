@@ -19,7 +19,11 @@ command prompt. Every step is a double-click or a Start menu item.
 ## Install or update (under 5 minutes)
 
 1. On the Releases page, https://github.com/jholmes09/LTCPlay/releases,
-   take the newest release. Download "LTC Player Setup <version>.exe".
+   take the newest release marked "Latest" (titled "LTC Player release
+   YYYY.MM.DD.N" with the tag ltc-YYYY.MM.DD.N, for example
+   ltc-2026.11.14.1). The ones named "bench-..." and marked
+   "Pre-release" are bench builds, not for a show. Download
+   "LTC Player Setup <version>.exe".
    If this PC is on the show network only, download it on another
    computer and bring it here on a USB stick.
 2. Check the download (optional). Beside every installer on the Releases
@@ -37,7 +41,7 @@ command prompt. Every step is a double-click or a Start menu item.
    zeros), replaces the program, and starts LTC Player again. The rack
    screen comes back by itself within about 30 seconds and shows the new
    version in its header, next to the device name, like
-   "LTC Player release bench-2026.10.15-abc1234, build 1a2b3c4d5e".
+   "LTC Player release 2026.11.14.1, build 1a2b3c4d5e".
    That string must match the release you downloaded.
 
 Your settings, logs, schedule, flamesafe.json and show files are never
@@ -48,7 +52,10 @@ Start menu, LTC Player, "Settings and logs" and in the show folder.
 
 Start menu, LTC Player, "Check for an update". It looks at the Releases
 page, says whether this PC has the newest, and offers to download, check
-the SHA-256 and install it. It refuses while a show is running. With no
+the SHA-256 and install it. A PC running a release is only offered the
+newest full release ("Latest"), never a bench pre-release and never an
+older release; a PC running a bench build is offered the newest of
+either, so it moves on to the release. It refuses while a show is running. With no
 internet on the show PC it says so and you use the USB stick way above.
 
 ## Go back to the version you had before
@@ -284,8 +291,8 @@ exactly as xLights made them. A fresh install has none. To make one:
    rate the timecode really runs at (add `"drop": true` for 29.97
    drop-frame); 29.97 and 30 look identical but drift about 2 seconds over
    a half hour.
-4. Press "Check the show file", then Run in Programming mode to rehearse.
-   Nothing reaches the rig until Run.
+4. Press "Check the show file", then Start rehearsal in Programming mode.
+   Nothing reaches the rig until show control is on.
 
 ## Show PC setup the soak taught us (2026-10-21)
 
@@ -302,7 +309,7 @@ exactly as xLights made them. A fresh install has none. To make one:
 - **MadMapper's Sync Source.** After reopening the project it can be
   empty. Set it to Art-Net and save the project.
 - **48 kHz.** Set the interface to 48 kHz in its own app (PreSonus
-  Universal Control). Otherwise Run is refused with "will not play N
+  Universal Control). Otherwise Show control on is refused with "will not play N
   output(s) at 48000 Hz".
 - **Windows Time running.** With the service stopped the clock was 2.7 s
   behind. services.msc, Windows Time, Startup type Automatic, Start. The
@@ -321,8 +328,8 @@ exactly as xLights made them. A fresh install has none. To make one:
 - The header's MODE pill says it on every screen: SHOW (a show file is
   running for real; the scheduler starts each show at its time),
   PROGRAMMING (a rehearsal is running; the scrubbing controls work and the
-  scheduler starts nothing) or NOT RUNNING (nothing reaches the rig until
-  Run is pressed on the Programming screen). The small "i" button next to
+  scheduler starts nothing) or SHOW CONTROL OFF (nothing reaches the rig
+  until show control is on). The small "i" button next to
   it explains, and shows this LTC Player's version.
 - Start menu, LTC Player opens the rack screen as an ordinary Edge app
   window, maximized on the show monitor, with Minimize, Maximize and
@@ -359,3 +366,37 @@ PreSonus or the Scarlett). With it unplugged, the rack screen's Show
 audio chip reads "not attached" and a banner names the device and the outputs
 Windows can see. Plug it into the same USB port as always; the engine
 finds it within half a minute. Nothing reaches the rig until it is there.
+
+## Make a release (Jeff)
+
+A release is a tag on main named ltc-YYYY.MM.DD.N: the date it is made,
+then 1 for the first that day, 2 for a second, and so on (for example
+ltc-2026.11.14.1). The rack screen header and the installer show the
+number alone: "LTC Player release 2026.11.14.1" and
+"LTC Player Setup 2026.11.14.1.exe". Make it only once the release PR is
+merged into main.
+
+On the Releases page (https://github.com/jholmes09/LTCPlay/releases):
+
+1. Draft a new release.
+2. Choose a tag: type ltc-YYYY.MM.DD.N (for example ltc-2026.11.14.1)
+   and pick "Create new tag on publish". Target: main.
+3. Title: LTC Player release YYYY.MM.DD.N (the same number).
+4. Untick "Set as a pre-release". Tick "Set as the latest release".
+5. Publish release.
+
+Or with git, on a computer that has the repo:
+
+    git checkout main
+    git pull
+    git tag ltc-2026.11.14.1
+    git push origin ltc-2026.11.14.1
+
+Either way, the windows-app workflow then builds the installer, runs the
+installer test on a clean Windows machine and attaches
+"LTC Player Setup <number>.exe" and its .sha256 to the release (with git
+it also makes the release, marked Latest). If the release was left marked
+pre-release, that job fails and says to untick it. Tags named gpl-...
+are the old name (the Dollywood Mac's gpl-2026.09.15.10): a new gpl-*
+tag builds nothing, on purpose, and the selftest run for it fails with a
+sentence saying to use ltc-.

@@ -2399,11 +2399,19 @@ def installers_dir():
     return os.path.join(ltcwin.app_dir(), "Installers")
 
 
+def _release_digits(ver):
+    """A release's dated number without its tag's prefix: new releases are
+    tagged ltc-YYYY.MM.DD.N, the ones before 2026-11-14 gpl-YYYY.MM.DD.N,
+    and the number after either is what compares (updater.release_number
+    reads them the same way)."""
+    return updater.release_number(ver)
+
+
 def _installer_key(path):
     """Sorts saved installers by the version in their name, then by date."""
     name = os.path.basename(path)[:-4]
     ver = name.rsplit(" ", 1)[-1]
-    parts = ver.replace("gpl-", "").split(".")
+    parts = _release_digits(ver).split(".")
     try:
         nums = tuple(int(x) for x in parts)
     except ValueError:
@@ -2449,7 +2457,7 @@ def cmd_rollback():
 
 def _installer_key_for_version(ver):
     try:
-        return tuple(int(x) for x in ver.replace("gpl-", "").split("."))
+        return tuple(int(x) for x in _release_digits(ver).split("."))
     except ValueError:
         return ()
 

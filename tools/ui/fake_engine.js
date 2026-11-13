@@ -11,6 +11,7 @@ const clone = o => JSON.parse(JSON.stringify(o));
 
 const PERMS = ["show", "arm", "unlock", "checklist", "show_files", "settings", "users"];
 const ROLE_MAY = {
+  superuser: Object.fromEntries(PERMS.map(p => [p, true])),
   admin: Object.fromEntries(PERMS.map(p => [p, true])),
   operator: {show: true, arm: true, unlock: true, checklist: true, show_files: false, settings: false, users: false},
   viewer: Object.fromEntries(PERMS.map(p => [p, false])),
@@ -73,9 +74,10 @@ function baseStatus(){
   s.hazers = {available: true, down: "", last_off: null, agree: true, show: "idle", levels_fault: "",
     hazers: [1, 2, 3].map(n => ({name: "Hazer " + n, haze_slot: 78 + 2 * n, fan_slot: 79 + 2 * n, armed: false,
       label: "Hazer " + n + " DISARMED", state: "disarmed", haze: 102, fan: 153, haze_pct: 40, fan_pct: 60, why: null}))};
-  // The hazer test (hazertest.py, 2026-11-11): off, ready.
-  s.hazer_test = {available: true, names: ["Hazer 1", "Hazer 2", "Hazer 3"], on: false, state: "off", left_s: null,
-    max_s: 60, beat_s: 2, refusal: "", last_off: null};
+  // The Purge page's hazers (hazertest.py, 2026-11-13): each off, ready.
+  s.hazer_test = {available: true, names: ["Hazer 1", "Hazer 2", "Hazer 3"], on: false, names_on: [], state: "off", left_s: null,
+    max_s: 60, beat_s: 2, refusal: "", last_off: null,
+    hazers: [1, 2, 3].map(n => ({name: "Hazer " + n, on: false, state: "off", left_s: null, haze_pct: 40, fan_pct: 60}))};
   return s;
 }
 
@@ -92,6 +94,9 @@ const SCENARIOS = {
   // announcements and a hazer's arm are refused there, so they say why.
   ipad: s => { s.me.local = false; s.me.device = "iPad"; s.arming = Object.assign({}, s.arming || {}, {enabled: false}); },
   admin: s => { s.me = me("Jeff", "admin"); },
+  // The SuperUser (users.py, 2026-11-13): the only view with the nightly
+  // upload's card (fx/real_users_superuser.json); an admin's has none.
+  superuser: s => { s.me = me("Jeff", "superuser"); },
   show_pending: s => { s.show = Object.assign({}, s.show, {running: true, show_control_on: true});  s.schedule.next = {show: 4, start: "19:30", in_s: 45, in_s_exact: 45}; s.countdown = {kind: "next", label: "Next show", s: 45, running: true};
     s.flames.groups.forEach(g => g.armed = "armed"); s.subsystems[3].word = "armed"; },
   running: s => { Object.assign(s.schedule, {state: "SHOW", running: 4, next: {show: 5, start: "19:50", in_s: 1500, in_s_exact: 1500}});
@@ -175,7 +180,7 @@ function dayState(name, st){
   if(/^day_shut|^day_clean/.test(name)){ const su = lists.find(l => l.id !== "shutdown"); su.steps.forEach(x => { x.done = true; }); su.done = su.total; }
   const fu = FX("fuel");
   if(!st.me.user){ fu.may_refill = false; fu.may_undo = false; fu.refill_why = "Sign in as an operator or admin to log a refill (the user chip at the top)."; }
-  else if(st.me.role !== "admin") fu.may_undo = false;
+  else if(st.me.role !== "admin" && st.me.role !== "superuser") fu.may_undo = false;
   const wc = {available: true, problem: "", state: "idle", running: false, holder: null, mine: false, run: null, armed: "disarmed",
     settings: {armed_s: 2, disarmed_s: 3, cycles: 5, burst_on_s: 0.5, burst_off_s: 1.5, max_burst_min: 5}, progress: null};
   if(name === "day_clean_paused") Object.assign(wc, {state: "paused", running: true, progress: {phase: 1, text: "waiting for the go-ahead hold", left_s: null, elapsed_s: 42}});
@@ -213,7 +218,7 @@ function routesFor(name, st){
     served_at: Date.now()};
   const wx = FX("weather");
   r["/api/remote/weather"] = wx;
-  const users = FX("real_users");
+  const users = FX(st.me.role === "superuser" ? "real_users_superuser" : "real_users");
   users.me = {name: st.me.user, role: st.me.role};
   users.users.forEach(u => u.password_set = true);
   r["/api/remote/users"] = users;
@@ -284,10 +289,17 @@ class FakeEngine {
       case "/api/remote/hazers-arm-all": s.hazers.hazers.forEach(h => { h.armed = true; h.state = "standby"; }); return ok("All hazers armed.");
       case "/api/remote/hazer-test": {
         const t = s.hazer_test;
+        const sync = () => { t.names_on = t.hazers.filter(h => h.on).map(h => h.name); t.on = t.names_on.length > 0;
+          t.state = t.on ? "on" : "off"; t.left_s = t.on ? t.max_s : null; };
         if(body.on === true){ if(t.refusal) return {code: 409, body: {error: "Hazer test not started: " + t.refusal}};
-          Object.assign(t, {on: true, state: "on", left_s: t.max_s}); return ok("Hazer test ON for " + t.max_s + " s."); }
+          const want = body.hazers === "all" ? t.names : (body.hazers || []);
+          if(!want.length || want.some(n => !t.names.includes(n))) return {code: 409, body: {error: "Hazer test not started: select one hazer or more."}};
+          t.hazers.forEach(h => { if(want.includes(h.name) && !h.on) Object.assign(h, {on: true, state: "on", left_s: t.max_s}); });
+          sync(); return ok("Hazer test ON: " + want.join(", ") + ", " + t.max_s + " s."); }
         if(typeof body.beat === "string") return t.on ? ok("Hazer test on.") : {code: 409, body: {error: "The hazer test is off."}};
-        Object.assign(t, {on: false, state: "off", left_s: null}); return ok("Hazer test OFF.");
+        const off = Array.isArray(body.hazers) && body.hazers.every(n => t.names.includes(n)) ? body.hazers : t.names;
+        t.hazers.forEach(h => { if(off.includes(h.name)) Object.assign(h, {on: false, state: "off", left_s: null}); });
+        sync(); return ok(off.length === t.names.length ? "Every hazer OFF." : "Hazer test OFF: " + off.join(", ") + ".");
       }
       case "/api/remote/hazer-level": s.hazers.hazers.forEach(h => { if(body.hazer === "all" || h.name === body.hazer){
         if(typeof body.haze === "number") h.haze_pct = body.haze; if(typeof body.fan === "number") h.fan_pct = body.fan; } }); return ok("Set.");

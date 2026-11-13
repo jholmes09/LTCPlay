@@ -62,7 +62,7 @@ def run_refusal(env=None, ppid=None):
         return None
     why = "; ".join(f"{n} ({WHAT.get(n, 'a bench test setting')})"
                     for n in on)
-    return (f"Run refused. This engine was started with bench test "
+    return (f"Show control on refused. This engine was started with bench test "
             f"settings that must never be on in a show: {why}. Remove "
             f"them from the Windows environment variables of the show "
             f"account, then quit and start LTC Player again. Nothing was "

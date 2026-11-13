@@ -33,7 +33,7 @@ def _audio(lamps):
         return True, "Audio ready."
     if st == "bad":
         return False, (f"Audio NOT READY ({word}): check the show audio "
-                       f"interface, then press Stop and Run.")
+                       f"interface, then turn show control off and on.")
     if st == "off":
         return None, "Audio: no show audio is running."
     return None, f"Audio: {word or 'not known'}."
@@ -44,7 +44,7 @@ def _pixels(lamps):
     if st == "ok":
         return True, "Pixels ready."
     if st == "off":
-        return False, "Pixels NOT READY: Run is not pressed. Press Run."
+        return False, "Pixels NOT READY: show control is off. Turn it on."
     if st == "bad":
         return False, ("Pixels NOT READY: nothing is leaving this PC. Check "
                        "the lighting network.")

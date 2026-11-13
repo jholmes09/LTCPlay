@@ -89,6 +89,9 @@ class Levels:
         self.names = list(names)
         self.fault = ""
         self.levels = {n: (0, 0) for n in self.names}
+        # Every other key of the file (the haze fluid settings, "fluid",
+        # read by fuelhaze.py), written back as it was.
+        self.other = {}
         self._lock = threading.Lock()
         self.load()
 
@@ -113,6 +116,8 @@ class Levels:
                         raise ValueError(f"{n}: a level is not 0 to 255")
                 got[n] = (h, f)
             self.levels.update(got)
+            self.other = {k: v for k, v in doc.items()
+                          if k not in ("hazers_format", "levels")}
         except (OSError, ValueError, AttributeError, TypeError) as e:
             self.fault = (f"{self.path} could not be read ({e}); every "
                           f"hazer level is 0 until they are set again.")
@@ -132,15 +137,28 @@ class Levels:
     def _write(self, levels):
         if not self.path:
             return
-        doc = {"hazers_format": LEVELS_FORMAT,
-               "levels": {n: {"haze": h, "fan": f}
-                          for n, (h, f) in levels.items()}}
+        # The file's other keys as they are on disk now (an edit to the
+        # fluid settings while the engine runs is kept), else as read.
+        other = dict(self.other)
+        try:
+            with open(self.path, encoding="utf-8-sig") as fh:
+                was = json.load(fh)
+            if isinstance(was, dict):
+                other = {k: v for k, v in was.items()
+                         if k not in ("hazers_format", "levels")}
+        except (OSError, ValueError):
+            pass
+        doc = dict(other)
+        doc.update({"hazers_format": LEVELS_FORMAT,
+                    "levels": {n: {"haze": h, "fan": f}
+                               for n, (h, f) in levels.items()}})
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(doc, fh, indent=1)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, self.path)
+        self.other = other
         self.fault = ""
 
 
