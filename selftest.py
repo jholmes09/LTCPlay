@@ -99774,6 +99774,9 @@ _UI2_ROUTES = {
     "/api/remote/announce-test-tone": "settings",
     "/api/remote/arm-hold": "arm",
     "/api/remote/arm-release": "safety",
+    # The machine rows (morning.Arrangement, 2026-11-13): a save is the
+    # map's Arrange row; its beat saves nothing (None by its body).
+    "/api/remote/arrangement": "show_files",
     "/api/remote/audit-settings": "settings",
     "/api/remote/audit-upload-now": "settings",
     "/api/remote/audit-verify": None,
