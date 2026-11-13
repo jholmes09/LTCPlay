@@ -520,7 +520,12 @@ class PreRoll:
             return r
         r["failed"] = frozenset(i["name"] for i in bad)
         r["alert"] = (
-            f"The rig check before {label} FAILED: "
+            f"Rig check FAILED before {label}.\n"
+            f"- Failed: {', '.join(i['name'] for i in bad)}.\n"
+            f"- The show will not start by itself.\n"
+            f"- Do: Fix it, then Resume and Start now.\n"
+            f"\n"
+            f"More: The rig check before {label} FAILED: "
             + "; ".join(item_text(i) for i in bad)
             + ". The show does not start by itself while this alert is "
               "open. Fix it, then press Resume and Start now (Start now "
@@ -554,7 +559,13 @@ class PreRoll:
                 v["failed"] = r["failed"]
                 v["done"] = r["done"]
                 v["alert"] = (
-                    f"The rig check before {lbl} FAILED, and failed again "
+                    f"Rig check FAILED before {lbl}.\n"
+                    f"- Failed again: "
+                    f"{', '.join(i['name'] for i in bad)}.\n"
+                    f"- The show will not start by itself.\n"
+                    f"- Do: Fix it, then Resume and Start now.\n"
+                    f"\n"
+                    f"More: The rig check before {lbl} FAILED, and failed again "
                     f"on {r.get('label') or 'a later check'}: {why}. The "
                     f"show does not start by itself while this alert is "
                     f"open. Fix it, then press Check again, or Resume and "
@@ -562,7 +573,12 @@ class PreRoll:
             sh = self._last_show
             text = sh.get("alert") if sh is not None and \
                 sh["state"] == "failed" and sh.get("alert") else (
-                f"The rig check FAILED again on "
+                f"Rig check FAILED again.\n"
+                f"- Failed: {', '.join(i['name'] for i in bad)}.\n"
+                f"- The show will not start by itself.\n"
+                f"- Do: Fix it, then press Check again.\n"
+                f"\n"
+                f"More: The rig check FAILED again on "
                 f"{r.get('label') or 'a later check'}: {why}. The show "
                 f"does not start by itself while this alert is open. Fix "
                 f"it, then press Check again, or Resume and Start now.")
