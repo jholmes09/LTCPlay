@@ -440,7 +440,7 @@ each flame group as flamesafe last reported it with its Hold to arm and
 Disarm, Disarm all flame groups, and a status strip (deck, flamesafe, audio, video, lasers, pixels). All through the
 same scheduler and conductor paths. Tonight's list is its own compact screen
 (Schedule), and everything else is on the Programming screen: the transport
-below, Run and Stop, the Stream Deck operator and the show network, the last
+below, Show control on/off (Start or End rehearsal in Programming) and Stop, the Stream Deck operator and the show network, the last
 three on the machine itself only. Each has a Back to the show button. There
 is no Abort (removed, Jeff, 2026-10-30): Stop does everything it did, and
 the hardware e-stop is the emergency layer. If the page has not heard from

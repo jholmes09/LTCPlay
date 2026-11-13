@@ -15,7 +15,7 @@ Show renders and media (`.fseq`, `.xsq`, audio, video), `.venv/`, `LTC Player.ap
 
 ## Show safety
 
-- Nothing reaches the rig until the operator presses Run.
+- Nothing reaches the rig until the operator turns show control on (the switch called Run until 2026-11-11; the Mac page's button is still Run).
 - `on_lost` for GPL is freerun to the end of the show.
 - Direct FSEQ playback is primary. Advatek scene triggering (sACN universe 6999, channels 101 to 123, multicast) is the alternate.
 - The native window app stays BETA until Jeff releases it.
@@ -25,7 +25,7 @@ Show renders and media (`.fseq`, `.xsq`, audio, video), `.venv/`, `LTC Player.ap
 - This repo is the flat dev layout. A shipped install moves the rarely used launchers into `Tools/` and adds `packaging/full/START HERE.txt`. The full show package root carries `packaging/full/READ ME FIRST.txt`.
 - The update pack is `Apply this update.command` and `packaging/update/READ ME.txt` at its root, with the program under `_payload/`.
 - `ltcplay/version.py` hashes the package, every top-level and `Tools/` `.command`, `ltc` and `selftest.py`. Moving or adding a launcher changes the build id.
-- `VERSION` is written by `Cut a release.command` at packaging time. A release is also a tag on main named `gpl-YYYY.MM.DD.N`.
+- `VERSION` is written by `Cut a release.command` at packaging time. A release is also a tag on main named `ltc-YYYY.MM.DD.N` (for example `ltc-2026.11.14.1`; the rack header and installer show the number alone). Before 2026-11-14 tags were named `gpl-...`; the Dollywood Mac stays frozen at `gpl-2026.09.15.10`, and a new `gpl-*` tag builds nothing. The steps are in packaging/windows/INSTALL.md, "Make a release (Jeff)".
 
 ## Where the work happens
 
