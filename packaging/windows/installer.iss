@@ -108,7 +108,6 @@ Source: "register_soak_task.ps1"; DestDir: "{app}"; Flags: ignoreversion
 ; ask for names and passwords in their own window, passwords hidden.
 Source: "Make me SuperUser.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "Reset SuperUser sign-in.bat"; DestDir: "{app}"; Flags: ignoreversion
-Source: "Recover SuperUser.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\USERS.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\flamesafe\flamesafe.example.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\ltcplay\ltcplay_schedule.example.json"; DestDir: "{app}"; Flags: ignoreversion

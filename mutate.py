@@ -23982,8 +23982,8 @@ def build():
   '                if False:\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-settings")'),
 
  ("superuser: a reset leaves the SuperUser signed in", "ltcplay/users.py",
-  "        self._end_sessions(name)\n        with self._lock:\n            self._fails.pop((\"name\", name.lower()), None)\n        self._note(\"superuser-signal\"",
-  "        with self._lock:\n            self._fails.pop((\"name\", name.lower()), None)\n        self._note(\"superuser-signal\""),
+  "        self._end_sessions(name)\n        with self._lock:\n            self._fails.pop((\"name\", name.lower()), None)\n            self._confirm_fails.pop(",
+  "        with self._lock:\n            self._fails.pop((\"name\", name.lower()), None)\n            self._confirm_fails.pop("),
 
  ("superuser: a stale signal is taken", "ltcplay/users.py",
   "            elif abs(self._wall() - at) > SIGNAL_MAX_AGE_S:",
@@ -24031,11 +24031,11 @@ def build():
 
  # The verification review of #251 (B1, M2, M3, M6).
  ("superuser: the first SuperUser path opens again", "ltcplay/users.py",
-  "        if not supers and (self.ever_superuser(",
-  "        if False and (self.ever_superuser("),
+  "        if not supers and self.ever_superuser():",
+  "        if False:"),
 
  ("superuser: the command asks before it refuses the first path again", "ltcplay/users.py",
-  "        elif us.ever_superuser(doc) or \\\n                _audit_history_says_superuser(folder):",
+  "        elif us.ever_superuser(doc):",
   "        elif False:"),
 
  ("superuser: the audit log's history is not asked", "ltcplay/users.py",
@@ -24062,13 +24062,36 @@ def build():
   "                isinstance(u, dict) and u.get(\"role\") != SUPERUSER and \\\n                self._known_pw.get(str(name).lower()) == _pw_digest(u)",
   "                isinstance(u, dict) and u.get(\"role\") != SUPERUSER"),
 
- ("superuser: any recovery code works", "ltcplay/users.py",
-  '                    not check_password(str(code or "").strip().upper(), rec):',
-  "                    False:"),
+ # The last round of #251: no recovery code; Jeff's own way back is the
+ # emergency procedure in SUPERUSER.md (the SuperUser files removed by
+ # hand), and the password typed again has its own counter.
+ ("superuser: the SuperUser files removed by hand never reopen the first path", "ltcplay/users.py",
+  "                self._known is not None)",
+  "                self._known is not None or True)"),
 
- ("superuser: a used recovery code works again", "ltcplay/users.py",
-  "            self.last_recovery_code = _recovery_code()\n            doc[\"su_recovery\"] = hash_password(self.last_recovery_code,\n                                               params=self._hash_params)\n",
-  ""),
+ ("superuser: a save with no SuperUser makes the SuperUser's files", "ltcplay/users.py",
+  '            doc.pop("su_set", None)\n            return\n',
+  '            doc.pop("su_set", None)\n'),
+
+ ("superuser: the first SuperUser made again by hand raises no alert", "ltcplay/users.py",
+  "                       alert=again)",
+  "                       alert=False)"),
+
+ ("superuser: a wrong password typed again locks the sign-in out", "ltcplay/users.py",
+  "                self._failed(keys, now, self._confirm_fails)",
+  "                self._failed(keys, now)"),
+
+ ("superuser: a SuperUser changed outside is said on every beat", "ltcplay/users.py",
+  "        new = [f for f in found if f not in self._said]",
+  "        new = list(found)"),
+
+ ("superuser: the engine's own save is said as a change outside", "ltcplay/users.py",
+  "                    if set(str(x) for x in names) - known:",
+  "                    if set(str(x) for x in names) != known:"),
+
+ ("superuser: the password typed again can be guessed forever", "ltcplay/users.py",
+  "            if self._locked(keys, now, self._confirm_fails):",
+  "            if False:"),
 
  ("superuser: the command's audit line comes after its change, or never", "ltcplay/users.py",
   "                hook(said)\n",

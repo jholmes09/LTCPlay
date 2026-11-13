@@ -3,6 +3,11 @@
 Jeff's own guide. No screen links to it. USERS.md says the rest about
 users and roles.
 
+What this protects against: someone using the screens and the
+double-click tools. A person who can write the settings folder and knows
+the file formats can still change it, and that is by design: it is your
+own emergency access ("In an emergency", below). See "The honest limit".
+
 ## What only the SuperUser sees
 
 - **The nightly upload:** on or off, the server address, the token, the
@@ -36,13 +41,11 @@ token) and every change to the upload is in the audit log.
 3. Type your name, then your own password (it stays hidden).
 
 It says "Jeff is now a SuperUser." Nothing needs restarting, and nothing
-on the rig changes. It then shows your **recovery code**, once. Write it
-down and keep it somewhere safe: it is the only way back if you forget
-your password.
+on the rig changes.
 
-This works only for the very first SuperUser. Once a SuperUser has ever
-existed on this PC, a new one needs a SuperUser's password (or the
-recovery code), whatever happens to the files.
+This works only for the very first SuperUser. While the SuperUser's own
+files are in the settings folder ("In an emergency", below), a new one
+needs a SuperUser's password.
 
 ## A forgotten password
 
@@ -51,11 +54,13 @@ whose password to reset, then a SuperUser's name and password, then a new
 temporary password twice. That person chooses their own at their next
 sign-in on the rack screen. Any sign-in they still had ends at once.
 
-If you are the only SuperUser and you forget yours, double-click
-**Recover SuperUser**. Type your name, the recovery code (hidden), and a
-new temporary password twice. You choose your own at your next sign-in.
-It shows a NEW recovery code, once: write it down; the old one no longer
-works. Using the code is in the audit log and raises an alert.
+If you are the only SuperUser and you forget yours, use "In an
+emergency", below.
+
+A wrong password typed again (for Save, Send now or a SuperUser change)
+never counts toward your sign-in lockout, so someone at a screen you
+left signed in cannot lock you out. After more than 5 wrong ones in a
+row the password typed again pauses for a while; signing in still works.
 
 ## If the SuperUser record is changed outside LTC Player
 
@@ -73,11 +78,60 @@ If the key, the record of who is a SuperUser, or a SuperUser's
 fingerprint goes missing, NO SuperUser is trusted until one confirms:
 sign in on the rack screen, then Users, "Confirm you are a SuperUser",
 your password, Confirm SuperUser. Only someone LTC Player itself made a
-SuperUser can confirm. The recovery code works too.
+SuperUser can confirm, with the password LTC Player last saved for them.
+If that does not work, use "In an emergency", below.
 
-This guards against changes while LTC Player is running and through its
-screens and launchers. A hand edit of the settings files while LTC
-Player is stopped is not covered.
+The alert is raised once for each change found, not on every beat. A
+users file edited by hand never stops LTC Player from starting: it
+starts, says what changed, trusts no changed SuperUser for the upload
+until they confirm, and then works.
+
+## In an emergency (your own way back)
+
+You can always get back in by hand, from the settings folder (Start
+menu, LTC Player, "Settings and logs"). This is on purpose. Nothing
+else is needed: no code, no other person.
+
+**You know your password but are not a SuperUser any more** (the alert
+says so and Confirm does not work):
+
+1. Start menu, **Stop LTC Player**. Wait until it has stopped.
+2. In the settings folder, delete these files (some may not be there):
+   - `ltcplay_superuser.made`
+   - `ltcplay_users_key.json`
+   - `logs\audit\ltcplay_superusers.json`
+   - `ltcplay_users_signal.json`
+3. Start LTC Player. It raises one "SuperUser record changed outside LTC
+   Player" alert; you are an admin for now.
+4. Sign in as Jeff on the rack screen.
+5. Double-click **Make me SuperUser**, type `Jeff` and your password.
+   The first SuperUser path is open again because those files are gone.
+
+**You forgot your password:**
+
+1. Start menu, **Stop LTC Player**. Wait until it has stopped.
+2. Delete the same four files as above.
+3. Copy `ltcplay_users.json` somewhere safe first. Then open it in
+   Notepad. Find your record (`"Jeff": {`). Its `"pw":` is followed by a
+   block in `{ }` braces. Replace that whole block, braces included, with
+   `null`, so the line reads `"pw": null,`. Save.
+4. Start LTC Player. On the rack screen sign in as Jeff with no password:
+   it asks you to choose one. Choose it.
+5. Double-click **Make me SuperUser**, type `Jeff` and the new password.
+
+If LTC Player then says the users file could not be read, a brace or
+comma went missing: stop it, put your copy back, and do step 3 again.
+
+Notes:
+- Never delete `ltcplay_users.json` or `ltcplay_users.made`: that starts
+  the users over for everyone (USERS.md).
+- Leave the audit log alone. The audit log keeps the old lines, and the
+  new grant is written there with an alert saying the first SuperUser
+  path was used again after the SuperUser files were removed by hand.
+- While any one of the four files above is there, Make me SuperUser asks
+  for a current SuperUser's password instead.
+- A test (`test_superuser_emergency_procedure_by_hand`) does exactly these
+  steps, so a later change cannot break them unnoticed.
 
 ## An older version (after Roll back)
 
@@ -96,8 +150,8 @@ while the older version runs):
 - a password or role an older version changed does not match your
   fingerprint, so you act as an admin and the alert shows;
 - a password an older version cleared or reset can never be claimed;
-- you get your SuperUser back on the rack screen (Confirm SuperUser) or
-  with the recovery code.
+- you get your SuperUser back on the rack screen (Confirm SuperUser) or,
+  if that does not work, with "In an emergency", above.
 
 ## The nightly upload (off until you switch it on)
 
@@ -125,11 +179,16 @@ Your server needs a receiver: `tools/audit_receiver.py` is one, and
 
 ## The honest limit
 
-This is software separation only. Anyone with Windows administrator
-rights on the show PC can edit the settings files or stop LTC Player. A
-SuperUser record changed that way is caught (it acts as an admin and the
-alert shows), but an upload setting changed by hand is not. Give Andy a
-standard (not administrator) Windows account on the show PC.
+This protects against someone using the screens and the double-click
+tools. A person who can write the settings folder and knows the file
+formats can still change it: the users file, the SuperUser's files and
+the upload's settings. That is by design: it is your own emergency
+access ("In an emergency", above). Most changes to a SuperUser made that
+way are caught (that person acts as an admin and the alert shows), but
+the emergency procedure itself works for anyone who follows it, and an
+upload setting changed by hand is not caught. The only way to prevent
+it is a separate Windows account for LTC Player, so other accounts
+cannot write its settings folder. That is not built.
 
 ## What you decide
 

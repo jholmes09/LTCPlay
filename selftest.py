@@ -78710,7 +78710,8 @@ def test_superuser_changed_outside_the_engine():
           "demoted in the file, never deleted")
     check(not us.may_confirm("Jeff"),
           "a password changed outside the engine cannot confirm: whoever "
-          "set it knows it (the recovery code is the way back)")
+          "set it knows it (SUPERUSER.md's emergency procedure is the way "
+          "back)")
     hand(lambda doc: doc["users"]["Jeff"].update(
         role="superuser"))
     us._doc = None
@@ -78884,6 +78885,25 @@ def test_superuser_session_limit_and_password_again():
         code, out, _h = rem.users_post(
             "users", dict(body, my_password="jeff-own-pw-1"), ctx)
         check(code == 200, f"{body['op']} with it: {code} {out}")
+    # Wrong passwords typed again never count toward the sign-in lockout
+    # (last round of #251): someone at a borrowed SuperUser session
+    # cannot lock Jeff out of signing in. They have their own small
+    # counter, which pauses only the password typed again.
+    us.clear_lockouts()
+    for _i in range(U.FREE_TRIES + 3):
+        check(not us.confirm("Jeff", "wrong-again", "Rack screen"),
+              "a wrong password typed again")
+    check(not us._locked([("name", "jeff"), ("from", "Rack screen")],
+                         us._clock()),
+          "wrong passwords typed again never lock Jeff's sign-in")
+    ok, _w, jt2, _n = us.sign_in("Jeff", "jeff-own-pw-1", True,
+                                 "Rack screen")
+    check(ok and jt2, "Jeff still signs in at once")
+    check(not us.confirm("Jeff", "jeff-own-pw-1", "Rack screen"),
+          "the password typed again pauses after too many wrong ones")
+    now[0] += U.LOCK_MAX_S + 1
+    check(us.confirm("Jeff", "jeff-own-pw-1", "Rack screen"),
+          "and takes the right one after the pause")
     print("  ok")
 
 
@@ -78944,16 +78964,9 @@ def test_superuser_local_command_line():
     check(run(["superuser", "Jeff"], ["jeff-own-1"],
               who="Windows account showpc") == 0 and
           us.role_of("Jeff") == U.SUPERUSER, f"made: {out[-2:]}")
-    # The recovery code (B1e): shown once, kept only as a salted hash.
-    codes = re.findall(r" - ([A-Z2-9]{5}(?:-[A-Z2-9]{5}){3})", out[-1])
-    code = codes[0] if codes else ""
-    doc = json.load(open(us.path, encoding="utf-8"))
-    check(code and out[-1].startswith("Write down your recovery code.") and
-          "shown only this once" in out[-1] and code not in json.dumps(doc)
-          and U.check_password(code, doc["su_recovery"]),
-          f"the recovery code is shown once and kept only hashed: "
-          f"{out[-1]!r}")
-    _no_dashes(U._code_words("ABCDE"), "the recovery code's words")
+    check(out[-1].startswith("Jeff is now a SuperUser") and
+          "su_recovery" not in json.load(open(us.path, encoding="utf-8")),
+          f"no recovery code is made or shown: {out[-1]!r}")
     # Its own audit line, written before it returned (B1d), with the id
     # the engine checks.
     from ltcplay import audit as A
@@ -79073,33 +79086,9 @@ def test_superuser_local_command_line():
         U.Users.promote_local = real
     check(rc == 1 and "could not be saved" in out[-1] and
           "Traceback" not in out[-1], f"an OSError is a sentence: {out[-1]}")
-    # The recovery code: a wrong one changes nothing; the right one gives
-    # Jeff a temporary password and a NEW code, the old one used up, with
-    # an audit line and an alert.
+    # A command's own audit line missing (B1d): the engine says so.
     got_alert = []
     us.on_alert = got_alert.append
-    check(run(["superuser-recover", "Jeff"], ["WRONG-CODE0-00000-00000",
-                                              "rec-temp-1", "rec-temp-1"])
-          == 1 and "does not match" in out[-1], "a wrong code: nothing")
-    check(run(["superuser-recover", "Andy"], [code, "rec-temp-1",
-                                              "rec-temp-1"]) == 1,
-          "never for someone who was not a SuperUser")
-    check(run(["superuser-recover", "Jeff"], [code.lower(), "rec-temp-1",
-                                              "rec-temp-1"]) == 0,
-          f"the code (any case): {out[-2:]}")
-    new_code = re.findall(r" - ([A-Z2-9]{5}(?:-[A-Z2-9]{5}){3})", out[-1])
-    check(new_code and new_code[0] != code, "a new code, shown once")
-    us.flush_pending_audit()
-    check(got_alert and any(n["action"] == "superuser-recovered"
-                            for n in notes), "audited and alerted")
-    ok, _w, _t, need = us.sign_in("Jeff", "rec-temp-1", True, "Rack screen")
-    check(not ok and need, "the recovered password is temporary")
-    us.sign_in("Jeff", "rec-temp-1", True, "Rack screen",
-               new_password="jeff-own-2")
-    check(run(["superuser-recover", "Jeff"], [code, "rec-temp-2",
-                                              "rec-temp-2"]) == 1,
-          "the old code is used up")
-    # A command's own audit line missing (B1d): the engine says so.
     us._audit_id = "not-in-the-log"
     us._change(lambda doc: us._pend(doc, "superuser-set", "x", "Jeff"))
     us._audit_id = None
@@ -79107,35 +79096,44 @@ def test_superuser_local_command_line():
     us.flush_pending_audit()
     check(any(n["action"] == "superuser-audit-missing" for n in notes) and
           got_alert, "a command line change with no audit line is said")
-    # B1a: once a SuperUser has existed, the first SuperUser path is gone
-    # for good, whatever is removed: the key, the set record, the
-    # fingerprints, the mark and the second copy (the audit log still
-    # says one was made).
+    # B1a: once a SuperUser has existed, the first SuperUser path is shut
+    # while ANY ONE of the SuperUser's files is here (the mark, the key,
+    # the second copy), whatever else is removed: the set record and the
+    # fingerprints in the users file. Removing all three by hand is the
+    # emergency procedure (test_superuser_emergency_procedure_by_hand).
     def strip(doc):
         doc.pop("su_set", None)
         for u in doc["users"].values():
             u.pop("su_fp", None)
-    doc = json.load(open(us.path, encoding="utf-8"))
-    strip(doc)
-    U._write_private(us.path, doc)
-    for f in (us.key_path, os.path.join(d, U.SU_MARK),
-              os.path.join(d, U.SU_SECOND)):
-        if os.path.exists(f):
-            os.remove(f)
-    for who_ in ("Andy", "Jeff"):
-        check(run(["superuser", who_], []) == 1 and
-              out[-1] == U.Users.EVER_REFUSED,
-              f"{who_} cannot take the first SuperUser path again, and is "
-              f"not even asked for a password: {out[-1]}")
-    fresh = U.Users(d, hash_params=_U_FAST)
-    try:
-        fresh.promote_local("Andy", "x", by_name="Andy",
-                            by_password="andy-own-1")
-        check(False, "promote_local took the first SuperUser path again")
-    except ValueError as e:
-        check(str(e) == U.Users.EVER_REFUSED, f"refused: {e}")
-    check(fresh.role_of("Jeff") == "admin" and fresh.role_of("Andy") ==
-          "admin", "and nobody is promoted by any of it")
+    files = (us.key_path, os.path.join(d, U.SU_MARK),
+             os.path.join(d, U.SU_SECOND))
+    saved = {f: open(f, "rb").read() for f in files}
+    for left in files:
+        doc = json.load(open(us.path, encoding="utf-8"))
+        strip(doc)
+        U._write_private(us.path, doc)
+        for f in files:
+            if f != left and os.path.exists(f):
+                os.remove(f)
+            elif f == left:
+                with open(f, "wb") as fh:
+                    fh.write(saved[f])
+        for who_ in ("Andy", "Jeff"):
+            check(run(["superuser", who_], []) == 1 and
+                  out[-1] == U.Users.EVER_REFUSED,
+                  f"{who_} cannot take the first SuperUser path while "
+                  f"{os.path.basename(left)} is here, and is not even "
+                  f"asked for a password: {out[-1]}")
+        fresh = U.Users(d, hash_params=_U_FAST)
+        try:
+            fresh.promote_local("Andy", "x", by_name="Andy",
+                                by_password="andy-own-1")
+            check(False, "promote_local took the first SuperUser path "
+                         "again")
+        except ValueError as e:
+            check(str(e) == U.Users.EVER_REFUSED, f"refused: {e}")
+        check(fresh.role_of("Jeff") == "admin" and fresh.role_of("Andy") ==
+              "admin", "and nobody is promoted by any of it")
     # The packaged show PC has no Python: the same through ltcplay.exe.
     import builtins
     import contextlib
@@ -79165,8 +79163,7 @@ def test_superuser_local_command_line():
     iss = open(os.path.join(here, "packaging", "windows", "installer.iss"),
                encoding="utf-8").read()
     for bat, cmd in (("Make me SuperUser.bat", "superuser"),
-                     ("Reset SuperUser sign-in.bat", "superuser-password"),
-                     ("Recover SuperUser.bat", "superuser-recover")):
+                     ("Reset SuperUser sign-in.bat", "superuser-password")):
         b = open(os.path.join(here, "packaging", "windows", bat),
                  encoding="utf-8").read()
         check(f'Source: "{bat}"; DestDir: "{{app}}"' in iss and
@@ -79175,6 +79172,186 @@ def test_superuser_local_command_line():
               b.count("ltcplay.exe\" ") == 1,
               f"{bat}: installed, asks for the name, passes no password")
         _no_dashes(b, bat)
+    print("  ok")
+
+
+def test_superuser_emergency_procedure_by_hand():
+    section("Jeff's own way back (SUPERUSER.md, \"In an emergency\"): with "
+            "LTC Player stopped, the SuperUser's three files removed by "
+            "hand (and, for a forgotten password, his pw set to null in "
+            "the users file), LTC Player starts, alerts once, trusts no "
+            "SuperUser, and Make me SuperUser makes Jeff a working "
+            "SuperUser again; a users file Jeff hand-edits while LTC "
+            "Player is stopped never bricks it: it starts, alerts once, "
+            "trusts no edited SuperUser for the upload until he confirms "
+            "with his password on the rack screen, and then works")
+    U = _su_fast()
+    from ltcplay import remote as RM
+    import shutil
+
+    def engine(d):
+        """LTC Player started on the settings folder `d`: (Users, notes,
+        alerts, Remote)."""
+        notes, alerts = [], []
+        eng = U.Users(d, hash_params=_U_FAST,
+                      audit=lambda **kw: notes.append(kw))
+        eng.on_alert = alerts.append
+        rem = RM.Remote.__new__(RM.Remote)
+        rem.users, rem.audit, rem.uploader, rem.folder = eng, None, None, d
+        return eng, notes, alerts, rem
+
+    def rack(eng, rem, name, pw, new=None):
+        """Signed in on the rack screen: (ctx, superuser_here)."""
+        ok, why, tok, _n = eng.sign_in(name, pw, True, "Rack screen",
+                                       new_password=new)
+        check(ok, f"{name} signs in on the rack screen: {why}")
+        ctx = RM.Ctx(True, "127.0.0.1", session=eng.session(tok), token=tok)
+        return ctx, rem.superuser_here(ctx)
+
+    def beats(eng, alerts, n=4):
+        """The engine's beats: the alert is raised once, then never
+        again for the same edit."""
+        for _i in range(n):
+            eng.flush_pending_audit()
+            eng._doc = None
+        return len(alerts)
+
+    def make_me_superuser(d, pw, name="Jeff"):
+        out = []
+        rc = U.main(["superuser", name], folder=d, who="account showpc",
+                    read_password=lambda _p: pw, read_line=lambda _p: "",
+                    out=out.append, pause=lambda _s: None)
+        return rc, out
+
+    files = (U.SU_MARK, U.USERS_KEY, U.SU_SECOND, U.USERS_SIGNAL)
+    # 1. The SuperUser role lost (the password known): delete the three
+    # files, start, Make me SuperUser.
+    us, d, _n0 = _su_users()
+    check(all(os.path.exists(os.path.join(d, f)) for f in files[:3]),
+          "a SuperUser leaves the mark, the key and the second copy")
+    us = None                                   # LTC Player stopped
+    for f in files:
+        if os.path.exists(os.path.join(d, f)):
+            os.remove(os.path.join(d, f))
+    eng, notes, alerts, rem = engine(d)
+    check(eng.active() and not eng.broken() and
+          eng.role_of("Jeff") == "admin",
+          f"it starts; Jeff reads as an admin: {eng.broken()!r}")
+    check(beats(eng, alerts) == 1, f"one alert: {alerts}")
+    ctx, here = rack(eng, rem, "Jeff", "jeff-own-pw-1")
+    check(not here and not eng.ever_superuser(),
+          "no SuperUser is trusted for the upload, and no SuperUser file "
+          "came back by itself")
+    rc, out = make_me_superuser(d, "jeff-own-pw-1")
+    check(rc == 0 and "Jeff is now a SuperUser" in out[-1],
+          f"Make me SuperUser takes the first path again: {out}")
+    beats(eng, alerts)
+    check(any(x["action"] == "superuser-set" and "removed by hand" in
+              x["reason"] for x in notes) and len(alerts) == 2,
+          "the engine writes it down with an alert: a SuperUser had been "
+          "made here before")
+    ctx, here = rack(eng, rem, "Jeff", "jeff-own-pw-1")
+    check(here and eng.role_of("Jeff") == U.SUPERUSER and
+          eng.role_of("Andy") == "admin",
+          "Jeff is a working SuperUser on the running engine; Andy is not")
+    code, body, _h = rem.users_post("audit-settings",
+                                    {"enabled": False,
+                                     "password": "jeff-own-pw-1"}, ctx)
+    check(code == 200, f"and the upload's settings take his change: {code} "
+                       f"{body}")
+    eng2, _n2, alerts2, rem2 = engine(d)
+    _c, here = rack(eng2, rem2, "Jeff", "jeff-own-pw-1")
+    check(here and beats(eng2, alerts2) == 0,
+          "after a restart too, with nothing to say")
+    rc, out = make_me_superuser(d, "andy-own-pw-1", "Andy")
+    check(rc == 1 and eng2.role_of("Andy") == "admin" and
+          eng2.ever_superuser(),
+          f"the files are back, so the first path is shut again: {out}")
+    # 2. A forgotten password: the same, and Jeff's "pw" set to null in
+    # the users file, so he chooses a new one on the rack screen.
+    for f in files:
+        if os.path.exists(os.path.join(d, f)):
+            os.remove(os.path.join(d, f))
+    doc = json.load(open(os.path.join(d, U.USERS_FILE), encoding="utf-8"))
+    doc["users"]["Jeff"]["pw"] = None
+    with open(os.path.join(d, U.USERS_FILE), "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2)            # a hand edit: no fsync, no
+    eng, notes, alerts, rem = engine(d)         # fingerprints redone
+    check(eng.active() and not eng.broken() and beats(eng, alerts) == 1,
+          f"it starts and alerts once: {alerts}")
+    _c, here = rack(eng, rem, "Jeff", "", new="jeff-new-pw-2")
+    check(not here and not eng.ever_superuser(),
+          "Jeff chooses a new password on the rack screen, as an admin; "
+          "no SuperUser file came back by itself")
+    check(eng.sign_in("Jeff", "", False, "iPad",
+                      new_password="x-taken-1")[0] is False,
+          "(a name with no password is claimed on the rack screen only)")
+    rc, out = make_me_superuser(d, "jeff-new-pw-2")
+    _c, here = rack(eng, rem, "Jeff", "jeff-new-pw-2")
+    check(rc == 0 and here, f"Make me SuperUser: Jeff works again: {out}")
+    beats(eng, alerts)
+    # 3. Any hand edit of the users file while LTC Player is stopped: it
+    # starts, says it once, trusts no edited SuperUser for the upload,
+    # and Jeff confirms with his password on the rack screen.
+    good = tempfile.mkdtemp()
+    shutil.rmtree(good)
+    shutil.copytree(d, good)
+
+    def edit_pw_hash(doc):
+        doc["users"]["Jeff"]["pw"]["hash"] = "00" * 32
+
+    for what, fn, can_confirm in (
+            ("Jeff's role", lambda doc: doc["users"]["Jeff"].update(
+                role="admin"), True),
+            ("the set record", lambda doc: doc.pop("su_set"), True),
+            ("Jeff's fingerprint", lambda doc: doc["users"]["Jeff"].update(
+                su_fp=5), True),
+            ("odd values", lambda doc: doc.update(
+                su_set="x", su_nonces=[1], pending_audit="x"), True),
+            ("a SuperUser added", lambda doc: doc["users"]["Andy"].update(
+                role="superuser"), None),
+            ("the key", None, True),
+            ("Jeff's password hash", edit_pw_hash, False)):
+        shutil.rmtree(d)
+        shutil.copytree(good, d)
+        if fn is None:
+            os.remove(os.path.join(d, U.USERS_KEY))
+        else:
+            doc = json.load(open(os.path.join(d, U.USERS_FILE),
+                                 encoding="utf-8"))
+            fn(doc)
+            with open(os.path.join(d, U.USERS_FILE), "w",
+                      encoding="utf-8") as fh:
+                json.dump(doc, fh, indent=2)
+        eng, notes, alerts, rem = engine(d)
+        check(eng.active() and not eng.broken() and beats(eng, alerts) == 1,
+              f"{what} edited by hand: it starts and alerts once: "
+              f"{eng.broken()!r} {alerts}")
+        ctx, here = rack(eng, rem, "Andy", "andy-own-pw-1")
+        check(not here, f"{what}: Andy is never trusted for the upload")
+        if can_confirm is None:
+            continue
+        if not can_confirm:
+            check(not eng.may_confirm("Jeff") and
+                  eng.role_of("Jeff") == "admin",
+                  f"{what}: no confirm with a password set outside LTC "
+                  f"Player (the emergency procedure is the way)")
+            continue
+        ctx, here = rack(eng, rem, "Jeff", "jeff-new-pw-2")
+        check(not here and eng.role_of("Jeff") == "admin",
+              f"{what}: Jeff is not trusted for the upload yet")
+        code, body, _h = rem.users_post(
+            "users", {"op": "confirm-superuser",
+                      "my_password": "jeff-new-pw-2"}, ctx)
+        check(code == 200, f"{what}: Jeff confirms on the rack screen: "
+                           f"{code} {body}")
+        ctx, here = rack(eng, rem, "Jeff", "jeff-new-pw-2")
+        code, body, _h = rem.users_post("audit-settings",
+                                        {"enabled": False,
+                                         "password": "jeff-new-pw-2"}, ctx)
+        check(here and code == 200 and beats(eng, alerts) == 1,
+              f"{what}: then it works, with nothing more to say: {code} "
+              f"{alerts}")
     print("  ok")
 
 
@@ -79698,9 +79875,12 @@ def test_superuser_upload_file_never_named():
               f"{doc} does not name the upload's file")
     su = open(os.path.join(here, "SUPERUSER.md"), encoding="utf-8").read()
     check(name in su and "Make me SuperUser" in su and
-          "Reset SuperUser sign-in" in su and "Recover SuperUser" in su and
-          "recovery code" in su,
-          "SUPERUSER.md, Jeff's own guide, names it and the launchers")
+          "Reset SuperUser sign-in" in su and "Recover SuperUser" not in su
+          and "recovery code" not in su and
+          "## In an emergency" in su and U.SU_MARK in su and
+          U.USERS_KEY in su and U.SU_SECOND.replace(os.sep, "\\") in su,
+          "SUPERUSER.md, Jeff's own guide, names it, the launchers and the "
+          "emergency procedure's files; no recovery code")
     _no_dashes(su, "SUPERUSER.md")
     page = open(os.path.join(here, "ltcplay", "web", "remote2.html"),
                 encoding="utf-8").read()
@@ -117134,6 +117314,7 @@ if __name__ == "__main__":
         test_superuser_changed_outside_the_engine,
         test_superuser_session_limit_and_password_again,
         test_superuser_local_command_line,
+        test_superuser_emergency_procedure_by_hand,
         test_superuser_cross_process_lock,
         test_superuser_route_table,
         test_superuser_upload_is_hidden_and_refused,

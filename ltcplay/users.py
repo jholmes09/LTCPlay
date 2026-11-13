@@ -633,15 +633,18 @@ def _pw_digest(u):
 
 
 def _audit_history_says_superuser(folder):
-    """True when any audit line here ever recorded a SuperUser being made
-    (B1a): read only by the local command line, never on a hot path."""
+    """True when any audit line here ever recorded a SuperUser being made:
+    read only by the local command line, never on a hot path. It never
+    refuses anything (the files decide, ever_superuser); a first
+    SuperUser made again after the SuperUser files were removed by hand
+    (SUPERUSER.md, the emergency procedure) is written down with an
+    alert."""
     try:
         from . import audit
         d = audit.default_folder(folder)
         for n in audit.audit_files(d):
             recs, _p = audit.read_lines(os.path.join(d, n))
             if any(r.get("action") in ("superuser-set",
-                                       "superuser-recovered",
                                        "superuser-confirmed")
                    for r in recs):
                 return True
@@ -677,13 +680,6 @@ def _cli_audit(folder, action, user, target, reason, ident):
               reason=reason, source=LOCAL_COMMAND, id=ident)
     if log.fault:
         raise OSError(f"the audit log could not be written: {log.fault}")
-
-
-def _recovery_code():
-    """XXXXX-XXXXX-XXXXX-XXXXX: 100 bits, no look-alike letters."""
-    abc = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-    raw = "".join(secrets.choice(abc) for _ in range(20))
-    return "-".join(raw[i:i + 5] for i in range(0, 20, 5))
 
 
 def _write_private(path, doc):
@@ -725,6 +721,10 @@ class Users:
         # sign-ins in one tick are still told apart.
         self._signin_seq = 0
         self._fails = {}          # key -> [count, locked_until]
+        # The password typed again (confirm): its own small counter, so a
+        # borrowed session's wrong guesses never lock the person out of
+        # signing in.
+        self._confirm_fails = {}
         self._doc = None
         self._mtime = None
         self._good = None         # the last users file read whole and good
@@ -751,6 +751,11 @@ class Users:
         # the engine's alert (remote.py); None: no alert.
         self._tamper = []
         self.on_alert = None
+        # What _trust has already said since the file was last found
+        # consistent: a SuperUser demoted outside the engine stays that
+        # way until confirmed, and is said (and alerted) once, not on
+        # every beat that reads the file again.
+        self._said = set()
         # The SuperUsers this program last wrote (B1c), a digest of each
         # one's password hash as written, and lockdown (B1b).
         self._known = None
@@ -842,22 +847,25 @@ class Users:
             pass
 
     def ever_superuser(self, doc=None):
-        """True once a SuperUser has ever existed here (B1a): the mark, the
-        key, the second copy, a set record or any fingerprint."""
-        doc = doc if doc is not None else (self._good or {})
-        users = doc.get("users") or {}
+        """True while any of the SuperUser's own files is here (B1a): the
+        mark (SU_MARK), the key (USERS_KEY) or the second copy (SU_SECOND),
+        or this engine wrote a SuperUser since it started. While any one
+        is here the first SuperUser path is refused. What the users file
+        itself says (su_set, su_fp) never keeps it shut: removing the
+        three files by hand, with LTC Player stopped, is Jeff's own way
+        back (SUPERUSER.md, the emergency procedure). `doc` is unused and
+        kept for the callers."""
         return (os.path.exists(os.path.join(self.folder, SU_MARK)) or
                 os.path.exists(self.key_path) or
                 os.path.exists(self._second_path()) or
-                "su_set" in doc or self._known is not None or
-                any(isinstance(u, dict) and "su_fp" in u
-                    for u in users.values()))
+                self._known is not None)
 
     def lockdown(self):
         """True while no SuperUser is trusted at all (B1b): a key, set
         record or fingerprint that had existed went missing. Ends when a
         SuperUser this program wrote confirms with their password on the
-        rack screen (confirm_superuser) or by the recovery code."""
+        rack screen (confirm_superuser), or by the emergency procedure in
+        SUPERUSER.md (the SuperUser files removed by hand)."""
         with self._lock:
             self._load()
             return bool(self._lockdown)
@@ -927,15 +935,21 @@ class Users:
                 gone = sorted(set(str(x) for x in names) - set(trusted))
                 if known is not None:
                     gone = sorted(set(gone) | (known - set(trusted)))
-                    if set(str(x) for x in names) != known:
+                    # A name added to the record is said here; one
+                    # taken out is said once below ("No longer").
+                    if set(str(x) for x in names) - known:
                         found.append("The record of who is a SuperUser "
                                      "differs from the one this program "
                                      "wrote last.")
                 if gone:
                     found.append(f"No longer a SuperUser, changed outside "
                                  f"this program: {', '.join(gone)}.")
-        if found:
-            self._tamper.extend(found)
+        if not found:
+            self._said = set()
+        new = [f for f in found if f not in self._said]
+        self._said |= set(new)
+        if new:
+            self._tamper.extend(new)
         return doc
 
     def _accept_local_command(self, doc, known):
@@ -957,8 +971,7 @@ class Users:
         for n in sorted(new):
             want = [x for x in q if isinstance(x, dict) and
                     str(x.get("target", "")).lower() == n and
-                    x.get("action") in ("superuser-set",
-                                        "superuser-recovered") and
+                    x.get("action") == "superuser-set" and
                     x.get("id") and x.get("source") == LOCAL_COMMAND]
             if not want or n not in second["names"]:
                 continue
@@ -986,7 +999,13 @@ class Users:
         for u in users.values():
             if isinstance(u, dict):
                 u.pop("su_untrusted", None)
-        if not supers and "su_set" not in doc and self._known is None:
+        if not supers and self._known is None and \
+                not os.path.exists(self.key_path):
+            # No SuperUser and none of the SuperUser's files: nothing is
+            # made here, and a stale set record (the files removed by
+            # hand, SUPERUSER.md) goes, so the first SuperUser path stays
+            # open for the emergency procedure.
+            doc.pop("su_set", None)
             return
         key = self._key(create=True)
         for n in supers:
@@ -1010,9 +1029,9 @@ class Users:
             try:
                 with open(os.path.join(self.folder, SU_MARK), "w",
                           encoding="utf-8") as fh:
-                    fh.write("A SuperUser was made on this machine. From "
-                             "now on a SuperUser is made only with a "
-                             "SuperUser's password or the recovery code.\n")
+                    fh.write("A SuperUser was made on this machine. While "
+                             "this file is here a SuperUser is made only "
+                             "with a SuperUser's password (SUPERUSER.md).\n")
             except OSError:
                 pass
 
@@ -1223,12 +1242,17 @@ class Users:
 
     def confirm(self, name, password, source):
         """True when `password` is `name`'s own: a SuperUser's again before
-        an upload change (M3). A wrong one counts toward the name's
-        lockout like a wrong sign-in, and is audited."""
+        an upload change (M3). A wrong one is audited and counts on its own
+        small counter (self._confirm_fails), never toward the sign-in
+        lockout: a session someone borrowed cannot lock its owner out of
+        signing in. Too many wrong ones pause only the password again."""
         now = self._clock()
         keys = [("name", str(name).lower()), ("from", str(source))]
         with self._lock:
-            if self._locked(keys, now):
+            if self._locked(keys, now, self._confirm_fails):
+                self._note("password-confirm", name, "refused",
+                           "too many wrong passwords typed again; wait",
+                           source=source)
                 return False
             rec = (self._load().get("users", {}).get(name) or {}).get("pw")
         with self._check_lock:
@@ -1236,9 +1260,9 @@ class Users:
         with self._lock:
             if ok:
                 for k in keys:
-                    self._fails.pop(k, None)
+                    self._confirm_fails.pop(k, None)
             else:
-                self._failed(keys, now)
+                self._failed(keys, now, self._confirm_fails)
         if not ok:
             self._note("password-confirm", name, "refused",
                        "the password typed again did not match",
@@ -1255,7 +1279,8 @@ class Users:
             u = (doc.get("users") or {}).get(name)
             # Only with the password this program last wrote for them: a
             # password changed outside it (an older build's reset someone
-            # else knows) confirms nothing; the recovery code does.
+            # else knows) confirms nothing; the emergency procedure in
+            # SUPERUSER.md does.
             return bool(known) and str(name).lower() in known and \
                 isinstance(u, dict) and u.get("role") != SUPERUSER and \
                 self._known_pw.get(str(name).lower()) == _pw_digest(u)
@@ -1336,6 +1361,7 @@ class Users:
         self._end_sessions(name)
         with self._lock:
             self._fails.pop(("name", name.lower()), None)
+            self._confirm_fails.pop(("name", name.lower()), None)
         self._note("superuser-signal", "unknown", reason=(
             "a SuperUser's password was reset on this PC: their sessions "
             "ended and their lockout cleared"), target=name,
@@ -1478,17 +1504,19 @@ class Users:
             return {"name": best["name"],
                     "role": users[best["name"]].get("role")}
 
-    def _locked(self, keys, now):
+    def _locked(self, keys, now, table=None):
+        table = self._fails if table is None else table
         worst = 0.0
         for k in keys:
-            f = self._fails.get(k)
+            f = table.get(k)
             if f and f[1] > now:
                 worst = max(worst, f[1] - now)
         return worst
 
-    def _failed(self, keys, now):
+    def _failed(self, keys, now, table=None):
+        table = self._fails if table is None else table
         for k in keys:
-            f = self._fails.setdefault(k, [0, 0.0])
+            f = table.setdefault(k, [0, 0.0])
             f[0] += 1
             extra = f[0] - FREE_TRIES
             if extra > 0:
@@ -1912,6 +1940,7 @@ class Users:
         with self._lock:
             n = len(self._fails)
             self._fails.clear()
+            self._confirm_fails.clear()
         return f"Sign-in lockouts cleared ({n})."
 
     # -- the SuperUser, from the local command line only (main()) ----------
@@ -1931,62 +1960,11 @@ class Users:
                   "alert": bool(alert)})
         doc["pending_audit"] = q[-PENDING_AUDIT_MAX:]
 
-    def superuser_recover(self, name, code, password, who):
-        """The forgotten SuperUser password (B1e): the recovery code made
-        with the first SuperUser, typed (hidden) at the local command line,
-        gives `name` (a SuperUser this program wrote) a temporary password
-        and their SuperUser back, ends lockdown, and makes a NEW code
-        (self.last_recovery_code), the old one used up. Audited, with an
-        alert. Never the first SuperUser path."""
-        pw = check_new_password(password)
-
-        def fn(doc):
-            users = doc["users"]
-            real = self._real(users, name)
-            known, _l = self._known_set()
-            u = users[real] if isinstance(users[real], dict) else {}
-            rec = doc.get("su_recovery")
-            if not (u.get("role") == SUPERUSER or
-                    (known and real.lower() in known)) or \
-                    not isinstance(rec, dict) or \
-                    not check_password(str(code or "").strip().upper(), rec):
-                time.sleep(AUTH_FAIL_PAUSE_S)
-                raise ValueError("That recovery code does not match, or "
-                                 f"{real} is not a SuperUser. Nothing was "
-                                 f"changed.")
-            self._lockdown = False
-            u["role"] = SUPERUSER
-            u.pop("su_untrusted", None)
-            u["pw"] = hash_password(pw, params=self._hash_params)
-            u["must_change"] = True
-            u["reset_by"] = LOCAL_COMMAND
-            u["changed"] = self._stamp()
-            users[real] = u
-            self.last_recovery_code = _recovery_code()
-            doc["su_recovery"] = hash_password(self.last_recovery_code,
-                                               params=self._hash_params)
-            self._pend(doc, "superuser-recovered", who, real,
-                       "the recovery code was used; a new one was made",
-                       alert=True)
-            return real
-        with self._lock:
-            keep, keep_pw = self._known, dict(self._known_pw)
-            real = self._change(fn)
-            self._known = set(keep or ()) | {real.lower()}
-            self._known_pw = dict(keep_pw, **self._known_pw)
-            self._write_second()
-        self._signal(real)
-        self._end_sessions(real)
-        return (f"{real} has a temporary password and is a SuperUser again. "
-                f"{real} chooses their own at the next sign-in on the rack "
-                f"screen.")
-
     NOT_A_SUPERUSER = ("That is not a SuperUser's name and password. "
                        "Nothing was changed.")
 
     EVER_REFUSED = ("A SuperUser was made on this PC before, so a new one "
-                    "needs a SuperUser's password, or the recovery code "
-                    "(Recover SuperUser). Nothing was changed.")
+                    "needs a SuperUser's password. Nothing was changed.")
 
     def _authorize(self, users, real, by_name, by_password, doc=None):
         """The local command line's own check (review of #251, M1): once a
@@ -1994,12 +1972,11 @@ class Users:
         any, the person being made one types their own password. Never a
         password on the command line itself (main() asks for it)."""
         supers = self._supers(users)
-        if not supers and (self.ever_superuser(
-                doc if doc is not None else {"users": users}) or
-                _audit_history_says_superuser(self.folder)):
-            # The "first SuperUser" path is gone for good once one has
-            # ever existed here (B1a): no takeover by deleting the key,
-            # the set record or a fingerprint.
+        if not supers and self.ever_superuser():
+            # The "first SuperUser" path is shut while any of the
+            # SuperUser's files is here (B1a): removing the key, the set
+            # record or a fingerprint through anything but a hand edit of
+            # the settings folder never reopens it.
             time.sleep(AUTH_FAIL_PAUSE_S)
             raise ValueError(self.EVER_REFUSED)
         if supers:
@@ -2039,19 +2016,17 @@ class Users:
                 return f"{real} is already a SuperUser. Nothing was changed."
             first = not self._supers(users)
             by = self._authorize(users, real, by_name, by_password, doc)
-            if first:
-                # The recovery code (B1e): made once, with the first
-                # SuperUser, shown once by the command, kept only as a
-                # salted hash.
-                self.last_recovery_code = _recovery_code()
-                doc["su_recovery"] = hash_password(
-                    self.last_recovery_code, params=self._hash_params)
+            again = first and _audit_history_says_superuser(self.folder)
             before = u.get("role")
             u["role"] = SUPERUSER
             u["changed"] = self._stamp()
             users[real] = u
             self._pend(doc, "superuser-set", who, real,
-                       f"was {before}; confirmed with {by}'s password")
+                       f"was {before}; confirmed with {by}'s password" +
+                       ("; the first SuperUser path again, after the "
+                        "SuperUser files were removed by hand (the "
+                        "emergency procedure)" if again else ""),
+                       alert=again)
             return (f"{real} is now a SuperUser. LTC Player picks this up "
                     f"by itself; no restart is needed.")
         return self._change(fn)
@@ -2202,36 +2177,26 @@ class Users:
 USAGE = ("usage: ltcplay superuser NAME  (or python -m ltcplay.users "
          "superuser NAME)\n"
          "       ltcplay superuser-password NAME\n"
-         "       ltcplay superuser-recover NAME\n"
          "  [--folder SETTINGS_FOLDER]\n"
-         "Passwords and codes are asked for, hidden; never put one on this "
-         "line.")
+         "Passwords are asked for, hidden; never put one on this line.")
 # The local command line tries this many times, a second apart, while the
 # engine (or an antivirus) holds the users file.
 LOCAL_TRIES = 5
 _BUSY = ("Another program is changing", "cannot be opened just now")
 COMMANDS = {"superuser": "superuser-set",
-            "superuser-password": "superuser-password-reset",
-            "superuser-recover": "superuser-recovered"}
-
-
-def _code_words(code):
-    return ("Write down your recovery code.\n"
-            f" - {code}\n"
-            " - It is shown only this once.\n"
-            " - It resets a forgotten SuperUser password.")
+            "superuser-password": "superuser-password-reset"}
 
 
 def main(argv=None, folder=None, who=None, read_password=None,
          read_line=None, out=print, pause=time.sleep):
     """ltcplay superuser NAME: make an existing user a SuperUser.
     ltcplay superuser-password NAME: a temporary password for a SuperUser.
-    ltcplay superuser-recover NAME: the recovery code, for a SuperUser who
-    forgot their password. Run on the show PC itself (the double-click
-    launchers run it); nothing on the web page can do any of them. The
-    first SuperUser needs their own password, and only if no SuperUser
-    ever existed here; after that a CURRENT SuperUser's password, or the
-    recovery code. Every password and code is asked for, hidden. Each
+    Run on the show PC itself (the double-click launchers run it); nothing
+    on the web page can do either. The first SuperUser needs their own
+    password, and only while none of the SuperUser's files is here
+    (ever_superuser); after that a CURRENT SuperUser's password. A
+    forgotten password with no other SuperUser: SUPERUSER.md, the
+    emergency procedure. Every password is asked for, hidden. Each
     writes its own audit line (fsynced) before it returns, and leaves one
     for the engine, which checks they match. Exit 0 when done; never a
     traceback."""
@@ -2272,18 +2237,11 @@ def main(argv=None, folder=None, who=None, read_password=None,
             out(f"{us.error}. Nothing was changed.")
             return 1
         has = bool(us._supers(doc.get("users") or {}))
-        by_name = by_pw = new = code = None
-        if cmd == "superuser-recover":
-            code = ask("Recovery code: ")
-            new = ask("New temporary password (6 or more characters): ")
-            if new != ask("The same again: "):
-                out("The two did not match. Nothing was changed.")
-                return 1
-        elif has:
+        by_name = by_pw = new = None
+        if has:
             by_name = line("A SuperUser's name (yours, if you are one): ")
             by_pw = ask("That SuperUser's password: ")
-        elif us.ever_superuser(doc) or \
-                _audit_history_says_superuser(folder):
+        elif us.ever_superuser(doc):
             out(Users.EVER_REFUSED)
             return 1
         else:
@@ -2296,7 +2254,6 @@ def main(argv=None, folder=None, who=None, read_password=None,
                 return 1
         ident = secrets.token_hex(8)
         us._audit_id = ident
-        us.last_recovery_code = None
         for n in range(LOCAL_TRIES):
             try:
                 def before(said, cmd=cmd, name=name):
@@ -2311,17 +2268,13 @@ def main(argv=None, folder=None, who=None, read_password=None,
                     try:
                         if cmd == "superuser":
                             said = us.promote_local(name, who, by_name, by_pw)
-                        elif cmd == "superuser-password":
+                        else:
                             said = us.superuser_password_local(
                                 name, new, who, by_name, by_pw)
-                        else:
-                            said = us.superuser_recover(name, code, new, who)
                     finally:
                         us._xheld = False
                         us._before_save = None
                 out(said)
-                if us.last_recovery_code:
-                    out(_code_words(us.last_recovery_code))
                 return 0
             except ValueError as e:
                 if n + 1 < LOCAL_TRIES and any(b in str(e) for b in _BUSY):

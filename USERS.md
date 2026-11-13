@@ -115,9 +115,12 @@ A SuperUser that LTC Player did not make itself (the users file edited by
 hand, or changed by an older version) acts as an admin until a SuperUser
 confirms them, and every screen shows an alert saying so.
 
-This guards against changes made while LTC Player is running and through
-its screens and tools. A change made by hand to the settings files while
-LTC Player is stopped is not covered.
+This protects against someone using the screens and the double-click
+tools. A person who can write the settings folder and knows the file
+formats can still change the users file and the SuperUser's files. That
+is by design: it is Jeff's own way in, in an emergency. The only way to
+prevent it is a separate Windows account for LTC Player, and that is not
+built.
 
 ## Adding people (admins)
 
