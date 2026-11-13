@@ -704,9 +704,9 @@ MUTATIONS = [
   '            if [[ ! "$GITHUB_REF_NAME" =~ ^(ltc|gpl)-[0-9]+(\\.[0-9]+){1,3}$ ]]; then\n'),
 
  ("release tags: a gpl-* tag is silent in the selftest run",
-  ".github/workflows/selftest.yml",
-  '          if [[ "$REF" == refs/tags/gpl-* ]]; then\n',
-  '          if false; then\n'),
+  ".github/scripts/mutate_plan.py",
+  '    if ref.startswith("refs/tags/gpl-"):\n',
+  '    if False:\n'),
 
  ("release tags: the updater no longer reads an ltc- release",
   "packaging/windows/updater.py",
@@ -5951,7 +5951,7 @@ def build():
 
  ('resume: a Resume says nothing about the rig (it carries what Reset said)', 'ltcplay/remote.py',
   '                r = self._resume_health(r, who, screen)\n',
-  ""),
+  '                pass\n'),
 
  ('reset: a lost audio interface reads ready',
   'ltcplay/righealth.py',
@@ -12428,9 +12428,11 @@ def build():
  ("morning: one window's ordinary beat clears another window's Arrange mode",
   "ltcplay/morning.py",
   '''                mine.pop(inst, None)
-                if not mine:''',
+                if not mine:
+                    del self._arranging[device]''',
   '''                mine.clear()
-                if not mine:'''),
+                if not mine:
+                    del self._arranging[device]'''),
 
  ("morning: an overtaken (older) beat still changes Arrange mode",
   "ltcplay/morning.py",
@@ -16129,8 +16131,9 @@ def build():
  ("programming flames: the loop is no landing",
   "ltcplay/playhead.py",
   "        self._landing()\n        try:\n            return s.clock_set_loop(a, b)\n"
-  "        finally:\n            self._landing()",
-  "        return s.clock_set_loop(a, b)"),
+  "        finally:\n            self._landing()\n            self._tc_reset()",
+  "        try:\n            return s.clock_set_loop(a, b)\n"
+  "        finally:\n            self._tc_reset()"),
 
  ("programming flames: moves while flames follow need only the Show permission",
   "ltcplay/remote.py",
@@ -23585,8 +23588,8 @@ def build():
 
  ("ui 2.0 Arrange: leaving the Purge step stays arranging",
   "ltcplay/web/remote2.html",
-  "  if(DAY_STEP === \"purge\") mapOff();\n  if(DAY_STEP === \"fireball\") fireballView(false);\n  DAY_STEP = k;",
-  "  if(DAY_STEP === \"fireball\") fireballView(false);\n  DAY_STEP = k;"),
+  "  if(DAY_STEP === \"purge\") mapOff();\n  if(DAY_STEP === \"fuel\") fuArrExit(\"left\");\n",
+  "  if(DAY_STEP === \"fuel\") fuArrExit(\"left\");\n"),
 
  ("ui 2.0 Arrange: leaving DAY stays arranging",
   "ltcplay/web/remote2.html",
