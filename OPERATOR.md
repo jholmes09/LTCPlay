@@ -60,8 +60,10 @@ sign-in.
   under way, and the screen is view only straight away. It does not disarm
   anything or stop live flame programming: use Disarm all or Stop for that.
 - **If the users file is damaged or missing** after users were set up, an
-  alert says so on every screen and every control is locked except Stop,
-  Hold, Acknowledge and the disarms. Nobody can sign in. A good
+  alert on every screen says "Users file cannot be used." (or "cannot be
+  opened." while another program holds it) and "Only Stop, Hold,
+  Acknowledge, Disarm work.": every other control is locked. Nobody can
+  sign in. Its Details say the reason and the folder under More. A good
   `ltcplay_users.json` put back in the settings folder is used at once, with
   no restart. To start over with no users: close LTC Player, remove
   `ltcplay_users.json` and `ltcplay_users.made` from the settings folder
@@ -915,6 +917,25 @@ channel, and is either ARMED or DISARMED.
   each one again (wait a second after a Stop).
 - **If a tile says Waiting for flamesafe,** flamesafe has not taken the
   arm yet; if it stays that way, disarm it and arm it again.
+- **Purge page: Hazers: turn on or off (Startup page, Purge step).**
+  This runs hazers NOW, for checking them; it never arms one. Tick the
+  hazers you want (each shows its Haze and Fan level), then **Turn on**
+  or **Turn off**. **All on** runs every hazer; **All off** turns every
+  one off and always works, for anyone. Each reads On with its countdown
+  (HAZE ON in the top bar, HAZE TEST on its tile) only when the engine
+  says so; Not known with no contact, and then the button is Turn off.
+  - Each turns off by itself 60 s after its press.
+  - Off on Stop, Hold, Hazers off, a show or show control starting.
+  - Off if this screen goes quiet 10 s.
+  It needs the arm row (as arming a hazer) and every check arming a
+  hazer has, and a Haze level above 0 on each hazer turned on.
+- **Arm all hazers (SHOW tab, the Hazers row, beside Hazers off; and
+  the Levels sheet).** Armed hazers run during the show. One tap arms
+  every hazer through the same checks as arming one, and says which did
+  not arm ("2 of 3 hazers armed: Hazer 2 refused"). A name flamesafe does
+  not report as a hazer is skipped and named. It reads None armed, 2 of 3
+  armed, All armed or Not known; Hazers off beside it disarms every hazer,
+  always. It never arms a flame group or a laser.
 
 ## The fireball's fuel pump
 
@@ -1852,7 +1873,7 @@ example "Show 1 did not start: Show control is off. Nothing reaches the
 rig. Turn show control on, then Start now". Start
 now that cannot work is refused at once with the same words, and adds no
 FAULT line. Right after show control is turned on the show audio takes a few seconds to load:
-Start now then says "audio loading, starts when ready". Pressed then, it
+Start now then says "audio loading". Pressed then, it
 waits for the audio (at most 20 seconds) and reads **Loading, starting when
 ready**; the show starts as soon as the audio is in. Hold or Stop
 cancels the wait and nothing starts, and so does any Hold the program
@@ -2612,8 +2633,8 @@ flamesafe and LTC Player have the same aim list. Asked is what the show
 asked for on those slots, sent is what flamesafe really sent: 0 while the
 group is not armed (it then reads held or disarmed), by design: the head
 then sits at its end stop. Hover
-the line to read all of it. If it says NOT loaded, an Aim slots alert says
-the same in full: flamesafe's list, LTC Player's list, the flamesafe.json LTC
+the line to read all of it. If it says NOT loaded, an alert says "Wave
+flamer aim lists differ." and, under More in its Details, the same in full: flamesafe's list, LTC Player's list, the flamesafe.json LTC
 Player read when it started, and what to do (put the aim list in the
 flamesafe.json flamesafe uses, check LTC Player reads that same file, then
 quit LTC Player and start it again). It is display only: it never holds
