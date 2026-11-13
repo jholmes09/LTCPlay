@@ -240,6 +240,14 @@ main > #mini{padding:var(--gap) var(--pad) 0}
    its name and ON or OFF, then Hazers off. */
 .hzrow{grid-column:1 / -1;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:var(--gap);min-width:0}
 .hzrow[hidden]{display:none}
+/* The hazer test running (2026-11-11): amber, as the deck's HAZE TEST key,
+   never the green of ARMED. */
+.hzrow .b.hzt{border-color:var(--amber);background:#2a1d05;color:#FFD08A}
+/* Arm all hazers on the SHOW tab (2026-11-13): in the hazers' own row,
+   amber outline and a plain tap, never the flames' green Hold: arm flames. */
+.hzrow .b.hzall{border-color:var(--amber);border-style:dashed;color:#FFD08A}
+.hzrow .b.hzall .hn{white-space:normal}
+.hzrow.inset .hzb2.three{grid-template-columns:1fr 1fr 1fr}
 /* The fireball's fuel pump (2026-10-30): one row of its own under the
    hazers: its state and countdown, the run time to set first, Fuel pump:
    On, and Pump off (never disabled, never quieted). */
@@ -325,7 +333,7 @@ main > #mini{padding:var(--gap) var(--pad) 0}
 .dtitle span{color:var(--muted);flex:1 1 auto;min-width:0}
 .dtitle span.bad{color:#FFB3AB} .dtitle span.ok{color:#9BF5B7}
 .dtitle > svg{width:28px;height:28px}
-#d-ctl{display:flex;flex-direction:column;gap:var(--gap);min-height:0;min-width:0;flex:1 1 auto}
+#d-ctl{display:flex;flex-direction:column;gap:var(--gap);min-height:0;min-width:0;flex:1 0 auto}
 .drow{display:flex;flex-wrap:wrap;gap:var(--gap);align-items:center;min-width:0}
 .drow .b{min-height:64px;padding:0 20px}
 .dgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:var(--gap);min-width:0}
@@ -449,6 +457,7 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 #info h2{font:700 calc(var(--fs) - 4px)/1.2 var(--caps);letter-spacing:.2em;text-transform:uppercase;color:var(--gold);margin:14px 0 4px}
 #info h2:first-child{margin-top:0}
 #info .kv{color:var(--cream)} #info .kv b{color:var(--gold)}
+#info .kvl{margin:4px 0;padding-left:1.1em} #info .kvl li{margin:4px 0} #info .kv .dim{color:var(--muted)}
 #info .vers{color:var(--muted);-webkit-user-select:text;user-select:text;word-break:break-all}
 #info .row{display:flex;flex-wrap:wrap;gap:var(--gap);margin-top:14px}
 #info button{font:inherit;min-height:56px;padding:0 20px;border-radius:10px;border:2px solid var(--line);background:var(--panel2);color:var(--cream);font-weight:700}
@@ -529,6 +538,22 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 #t-day{flex:1 1 0}
 .dpanel{overflow-y:auto}
 .dsec{display:flex;flex-direction:column;gap:var(--gap);min-width:0;flex:0 0 auto}
+/* The Purge step's hazers (2026-11-13): turn the ticked ones on or off
+   now; no arming here. Compact: the buttons first, then the hazers. */
+.hzt-st{font-weight:800;padding:2px 10px;border-radius:999px;border:2px solid var(--line)}
+.hzt-st.on{color:#06210f;background:var(--green);border-color:var(--green);animation:hztpulse 1.2s ease-in-out infinite}
+.hzt-st.unk{border-style:dashed;color:var(--grey)}
+@keyframes hztpulse{50%{opacity:.55}}
+#hzt ul{margin:0;padding-left:1.2em}
+#hzt-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:4px}
+#hzt-list label{display:flex;align-items:center;gap:10px;min-height:44px;padding:0 8px;border:2px solid var(--line);border-radius:10px;min-width:0}
+#hzt-list label b{white-space:nowrap}
+#hzt-list .lv{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+#hzt ul{font-size:calc(var(--fs) - 2px)}
+#hzt-list label.on{border-color:var(--amber);background:#2a1d05}
+#hzt-list input{width:24px;height:24px}
+#hzt-list .lv{color:var(--muted);font-weight:700}
+#hzt-list .ws{margin-left:auto;font-weight:800}
 #fb-note,#fb-charge,#fb-block{font-size:calc(var(--fs) - 2px)}
 /* All off and Disarm Fireball stay in sight while the panel scrolls. */
 #fb-top{position:sticky;top:0;z-index:1;background:var(--panel);padding-bottom:4px}
@@ -583,6 +608,12 @@ button.fb-pad.na{opacity:.45}
 #sh-body li{margin:6px 0}
 #sh-body .full{white-space:pre-wrap;color:var(--cream)}
 #sh-body .dim{color:var(--muted)}
+.op b{display:block}
+.op p{margin:0}
+.op .gap{margin-top:.8em}
+.op .dim{color:var(--muted)}
+.op ul{margin:4px 0 0;padding-left:1.1em}
+.op li{margin:4px 0}
 #sh-row{display:flex;gap:var(--gap);flex-wrap:wrap;justify-content:flex-end}
 #sh-row.flip{flex-direction:row-reverse;justify-content:flex-start}
 #sh-row .b{flex:0 1 auto;min-width:140px}
@@ -837,6 +868,20 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
             <div class="pline" id="tp-st" aria-live="polite"></div>
           </div>
         </div>
+        <!-- The Purge step's hazers (hazertest.py, Jeff and Andy
+             2026-11-13): tick hazers, then Turn on or Turn off; All on,
+             All off. They run now, 60 s each; no arming here. -->
+        <div id="d-hz" class="dsec" hidden>
+          <div id="hzt" aria-label="Hazers: turn on or off">
+            <div class="drow"><b>Hazers: turn on or off</b><span class="hzt-st" id="hzt-st" role="status">Off</span>
+              <button class="b green" id="hzt-btn">Turn on</button>
+              <button class="b green" id="hzt-allon">All on</button>
+              <button data-safe class="b safe" id="hzt-alloff">All off</button></div>
+            <div class="pline" id="hzt-msg" aria-live="polite"></div>
+            <div id="hzt-list" role="group" aria-label="Hazers"></div>
+            <ul class="pline"><li>Runs now, at each hazer's levels.</li><li id="hzt-max">Each turns off after 60 s.</li><li>Stop or a lost screen turns all off.</li></ul>
+          </div>
+        </div>
         <!-- The message lines 1.0's presses write to, one shown per step. -->
         <div id="d-msg"><span id="mo-msg"></span><span id="mo-lmsg" hidden></span><span id="mo-cmsg" hidden></span><span id="wc-msg" hidden></span><span id="fu-msg" hidden></span>
           <span id="mo-lkundo" hidden><span></span><button class="b" id="mo-lkundo-go"><svg class="i"><use href="#i-back"/></svg>Undo</button></span></div>
@@ -871,15 +916,14 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
         <div class="pline bad" id="tn-run-warn" role="alert" hidden></div>
         <button class="b green" id="tn-run" hidden><svg class="i"><use href="#i-power"/></svg>Show control on</button>
         <div id="tonight"></div>
-        <div class="pline">Tap a show to see its notes.</div>
-      </div>
+              </div>
       <!-- SCHEDULE EDITOR (P4): 1.0's "Schedule: the show times" card, on
            the show PC only, with 1.0's element ids so its code is copied
            word for word (selftest.py checks): the same route
            (schedule-file, GET and POST), the same body, the same refusals,
            all the engine's (schedule.py, Remote.schedule_file_save). -->
       <div class="card col" id="sched-edit" hidden>
-        <div class="t"><b>Schedule: the show times</b><span>On this machine. Saved to the schedule file and loaded at once; nothing is started by it.</span></div>
+        <div class="t"><b>Schedule: the show times</b><span>On this machine. Saving loads it and starts nothing.</span></div>
         <div class="pline">The scheduler starts a show at each time below (once show control is on and the Fire &amp; Ice settings say it performs). Tonight's list is rebuilt from a save straight away, even after the night has closed, and nothing is started by it. Any times work: a last show end after midnight is the next morning, on the same night. Anything to know is said when it is saved, and the save stands. A save writes the whole schedule: a save from another window or iPad since this one read the file is overwritten, so Reload first if someone else may have changed it.</div>
         <div class="segrid">
           <label class="fl"><span>Time zone</span><select class="f" id="se-tz"></select><span class="pline" id="se-tz-now"></span></label>
@@ -951,18 +995,18 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
              as the pinned line's) and the announcement output. -->
         <div class="card col" id="arming-card" hidden>
           <div class="t"><b>Arming from a screen, on this machine</b><span id="sa-what"></span></div>
-          <div class="pline">The Stream Deck has to be running for a hold to arm. Off: arm flames from the Stream Deck only; this rack screen can still purge, unlock and test lasers.</div>
+          <div class="pline">A hold needs the Stream Deck running. Off: arm from the Stream Deck; this screen still purges, unlocks and tests lasers.</div>
           <div class="drow"><b class="dbig" id="sa-now"></b><button class="b green" id="sa-on"><svg class="i"><use href="#i-power"/></svg>Turn on</button><button data-safe class="b safe" id="sa-off"><svg class="i"><use href="#i-shield"/></svg>Turn off</button></div>
           <div class="pline" id="sa-msg" role="status"></div>
         </div>
         <div class="card col" id="lf-card">
           <div class="t"><b>Live flame programming</b><span id="lf-what"></span></div>
-          <div class="pline">Turned on here on the show machine only (Settings permission). Anyone can turn it off, from any screen, signed in or not. The steps for xLights are in LIVE_FLAME_PROGRAMMING.md.</div>
+          <div class="pline">On: here only (Settings). Off: anyone, any screen. xLights steps: LIVE_FLAME_PROGRAMMING.md.</div>
           <div class="drow"><b class="dbig" id="lf-now"></b><button class="b green" id="lf-on"><svg class="i"><use href="#i-flame"/></svg>Turn on</button><button data-safe class="b safe" id="lf-off"><svg class="i"><use href="#i-shield"/></svg>Turn off</button></div>
           <div class="pline" id="lf-msg" role="status"></div>
         </div>
         <div class="card col" id="annout-card" hidden>
-          <div class="t"><b>Announcement output, on this machine</b><span>While the show audio is running, announcements play through it, on the front left and right (Main L/R). The output picked here is used only when the show audio is not running. The system default is never used.</span></div>
+          <div class="t"><b>Announcement output, on this machine</b><span>Used only while the show audio is off. Otherwise announcements play on Main L/R. Never the system default.</span></div>
           <div class="pbar"><select class="f" id="annout-pick" aria-label="Announcement output"></select>
             <button class="b green" id="annout-save"><svg class="i"><use href="#i-check"/></svg>Save</button>
             <button class="b" id="annout-tone" title="1 s of a soft 440 Hz tone at -20 dBFS through the same route and output as the announcements. Never during a show; holds nothing."><svg class="i"><use href="#i-mega"/></svg>Test tone</button></div>
@@ -973,20 +1017,20 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
              (selftest.py checks). The engine refuses each from anywhere
              else, and Restart and Reload engine while a show runs. -->
         <div class="card col" id="cfg-card" hidden>
-          <div class="t"><b>Settings changed</b><span>A settings file changed on disk since a program read it.</span></div>
+          <div class="t"><b>Settings changed</b><span>A settings file changed since a program read it.</span></div>
           <div class="pline warn" id="cfg-note" hidden></div>
           <div class="pbar"><button class="b blue" id="cfg-reload" hidden><svg class="i"><use href="#i-reset"/></svg>Reload engine</button></div>
           <div class="pline" id="cfg-msg" role="status"></div>
         </div>
         <div class="card col" id="rigcheck" hidden>
-          <div class="t"><b>Rig check (pre-roll)</b><span>Before every show the engine checks the rig by itself: audio, announcements, timecode, video, the flame link, the lasers and the network. Check the rig runs the same checks now, between shows: nothing is started, armed or played, and the screens go black until the next show.</span></div>
+          <div class="t"><b>Rig check (pre-roll)</b><span>Checked by itself before every show. Starts, arms and plays nothing; the screens go black until the next show.</span></div>
           <div class="pbar"><b class="dbig" id="rc-now"></b><button class="b" id="rc-run"><svg class="i"><use href="#i-check"/></svg>Check the rig</button></div>
           <div class="pline bad" id="rc-warn" hidden></div>
           <div class="pline" id="rc-items"></div>
           <div class="pline" id="rc-msg" role="status"></div>
         </div>
         <div class="card col" id="folders" hidden>
-          <div class="t"><b>Show folder, on this machine</b><span>The show folder holds the show file (a .json), the renders it names and the show's music, as stems under the folder the show file names. There is no separate music folder.</span></div>
+          <div class="t"><b>Show folder, on this machine</b><span>Holds the show file (.json), its renders and its music stems. No separate music folder.</span></div>
           <div class="pline">The show file is the playlist: which render (.fseq) plays at which timecode. The renders stay exactly as xLights made them.</div>
           <div class="pline" id="fo-now"></div>
           <div class="pbar">
@@ -1076,8 +1120,8 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <button class="b green" id="fbp-step"><svg class="i"><use href="#i-play"/></svg>Step</button>
           <button data-safe class="b safe" id="fbp-done"><svg class="i"><use href="#i-shield"/></svg>Done</button>
         </div>
-        <div class="pline">Done, Stop, any disarm or leaving this card disarms every group. The Fireball page pads stay live between steps. Timing edits go into the show's real timeline file. Between steps the rig shows the between-shows look.</div>
-        <div class="pline" id="fbp-fuel">Every charge and shot of a step is recorded in the fuel and air charge record like a show's (never a double charge), and its flame time is in the fuel totals as Programming (Other). A step is not a show.</div>
+        <div class="pline">Done, Stop, any disarm or leaving this card disarms every group. The Fireball page pads stay live between steps. Timing edits go into the show's real timeline file.</div>
+        <div class="pline" id="fbp-fuel">Each charge and shot is in the fuel and air charge record, never a double charge. Flame time counts as Programming (Other), not a show.</div>
         <div class="pline bad" id="fbp-deck" hidden></div>
         <div id="fbp-table"></div>
         <div class="pline" id="fbp-note"></div>
@@ -1204,7 +1248,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <div class="kv" id="info-mode"></div>
     <div class="kv" style="margin-top:4px;color:var(--muted)">SHOW: a show file is running for real and the scheduler starts each show at its time. PROGRAMMING: a rehearsal is running; the scrubbing controls work and the scheduler starts nothing. SHOW CONTROL OFF: no show file is running; nothing reaches the rig until show control is on (on the Schedule tab). To switch between Show and Programming: the Show and Programming switch on the Schedule tab's Show file card, then Show control on or Start rehearsal (turn show control off or End rehearsal first).</div>
     <h2>Leaving this window</h2>
-    <div class="kv">This window is only a view. Closing it never stops a show: the engine runs on its own. It is an ordinary window: the Minimize, Maximize and Close buttons are at its top right. To minimize without them, press the <kbd>Windows</kbd> key + <kbd>Down arrow</kbd> (twice if it is maximized); <kbd>Alt</kbd>+<kbd>F4</kbd> closes it, or use the button below. A folder opened from this page comes to the front; if you do not see it, it is on the taskbar.</div>
+    <div class="kv"><b>Closing this window is safe.</b><ul class="kvl"><li>The show keeps running without it.</li><li>Minimize: <kbd>Windows</kbd> key + <kbd>Down arrow</kbd>.</li><li>Close: <kbd>Alt</kbd>+<kbd>F4</kbd>, or the button below.</li></ul><span class="dim">More: this window is only a view; the engine runs on its own. The Minimize, Maximize and Close buttons are at its top right. Press <kbd>Down arrow</kbd> twice if it is maximized. A folder opened from this page comes to the front; if you do not see it, it is on the taskbar.</span></div>
     <div class="row">
       <button id="info-exit" class="ghost" hidden>Close this window</button>
       <button id="info-close">Back</button>
@@ -1366,6 +1410,44 @@ function actor(extra){
 const icon = (n) => `<svg class="i"><use href="#i-${n}"/></svg>`;
 function setIcon(svg, n){ const u = svg && svg.querySelector("use"); if(u && u.getAttribute("href") !== "#i-" + n) u.setAttribute("href", "#i-" + n); }
 function setText(el, t){ if(el && el.textContent !== t) el.textContent = t; }
+// Operator text with a shape (Jeff, 2026-11-11: less prose, bullets and
+// paragraph breaks). Plain text in: the first line is the headline (bold),
+// a line that starts "- " is a bullet, a blank line starts a new
+// paragraph, and a paragraph that starts "More:" is dimmed. Text with no
+// line break and no leading "- " reads exactly as before. Built from DOM
+// nodes and textContent only, never innerHTML: engine text carries file
+// and device names.
+function opText(text){
+  const box = document.createElement("div");
+  box.className = "full op";
+  const t = String(text == null ? "" : text).replace(/\r\n?/g, "\n");
+  if(t.indexOf("\n") < 0 && !/^\s*- /.test(t)){ box.textContent = t; return box; }
+  let list = null, gap = false;
+  t.split("\n").forEach((raw, i) => {
+    const line = raw.trim();
+    if(!line){ list = null; gap = box.childNodes.length > 0; return; }
+    if(/^- /.test(line)){
+      if(!list){ list = box.appendChild(document.createElement("ul")); if(gap) list.className = "gap"; }
+      list.appendChild(document.createElement("li")).textContent = line.slice(2).trim();
+    } else {
+      list = null;
+      const el = box.appendChild(document.createElement(i ? "p" : "b"));
+      el.textContent = line;
+      el.className = (gap ? "gap" : "") + (/^More:/.test(line) ? " dim" : "");
+    }
+    gap = false;
+  });
+  return box;
+}
+// opText into an element on the page, rebuilt only when the text changed
+// (cards redraw every 250 ms).
+function setOpText(el, text){
+  const t = String(text == null ? "" : text);
+  if(!el || (el.dataset.op === t && el.firstChild && el.firstChild.className === "full op")) return;
+  el.dataset.op = t;
+  el.textContent = "";
+  el.appendChild(opText(t));
+}
 function stale(){ return isStale(Date.now(), LAST_OK, FRESH_S); }
 
 // The room under the page (1.0's bottomPad): a window that reaches
@@ -1403,7 +1485,7 @@ function short8(text, fallback){
   const first = end ? t.slice(0, end.index + 1) : t;
   return first.split(/\s+/).length <= 8 ? first : (fallback || "Done. Tap Details.");
 }
-$("msg-more").addEventListener("click", () => sheet("Details", `<div class="full">${esc(MSG_FULL)}</div>`, [{label:"Close", cls:"blue"}]));
+$("msg-more").addEventListener("click", () => sheet("Details", opText(MSG_FULL), [{label:"Close", cls:"blue"}]));
 
 // ---- sheets: confirm, details, help, sign in. Never over the footer.
 let SHEET_DONE = null;
@@ -1411,7 +1493,9 @@ function sheet(title, html, buttons, flip){
   return new Promise(res => {
     if(SHEET_DONE) SHEET_DONE(null);
     $("sh-h").textContent = title;
-    $("sh-body").innerHTML = html || "";
+    // A node (opText's) goes in as it is; a string is the page's own markup.
+    if(html instanceof Node){ $("sh-body").textContent = ""; $("sh-body").appendChild(html); }
+    else $("sh-body").innerHTML = html || "";
     const row = $("sh-row");
     row.className = flip ? "flip" : "";
     row.innerHTML = (buttons || [{label:"Close"}]).map((b, i) => `<button class="b ${b.cls || ""}"${b.safe ? " data-safe" : ""} data-i="${i}">${b.icon ? icon(b.icon) : ""}${esc(b.label)}</button>`).join("");
@@ -1596,6 +1680,10 @@ function pinItems(st){
   const tp = s.morning && s.morning.timed;
   if(tp) out.push({key:"tp", text:"Purging: " + timedLeft(tp.left_s) + " left. Stop when done.", pill:"PURGING " + timedLeft(tp.left_s),
     btn:"Stop purge", full:"Timed purge: " + timedBanner(tp)});
+  // The hazer test (2026-11-11): the engine's word and its countdown.
+  const ht = s.hazer_test;
+  if(ht && ht.on === true) out.push({key:"hzt", text:"Hazers on: " + timedLeft(ht.left_s) + " left.", pill:"HAZE ON " + timedLeft(ht.left_s),
+    btn:"Hazers all off", full:"Hazers running now from the Purge page, at their levels. Each turns off by itself."});
   const wc = s.cleaning;
   if(wc && wc.state && wc.state !== "idle") out.push({key:"wc", text:wc.state === "unknown" ? "Cleaning state not known. Stop it." : "Cleaning running. Stop when done.",
     pill:"CLEANING", btn:"Stop cleaning", full:String(wc.text || "") + (wc.state === "paused" ? " (on the Startup page, Shutdown)." : ".")});
@@ -1614,7 +1702,10 @@ function pinItems(st){
   return out;
 }
 // The big button: the next step, one of Resume, Run show, Start now. Each
-// press is 1.0's own press.
+// press is 1.0's own press. Its second line is only live state or a
+// reason (Jeff, 2026-11-11: no line that says what the label says):
+// No contact, Held after Stop, No shows start, No schedule here, Not
+// ready: tap, a sign-in reason.
 function goLook(st, isStaleNow, local, waiting){
   if(!st) return {mode:"none", label:"Start now", icon:"play", tone:"green", off:true, why:"Waiting"};
   const sch = st.schedule || {};
@@ -1623,20 +1714,20 @@ function goLook(st, isStaleNow, local, waiting){
   // A Stop's Hold (Jeff, 2026-10-30): it stands until Resume, also when
   // nothing is held right now (the night closing, over, or without shows).
   if(sch.stop_held && !isLive(st)) L = {mode:"resume", label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "Held after Stop" : "No contact"};
-  else if(isHeld(st)) L = {mode:"resume", label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "Carries on" : "No contact"};
-  else if(isLive(st)) L = {mode:"live", label:"Show running", icon:"play", tone:"green", off:true, why:"Hold pauses it"};
+  else if(isHeld(st)) L = {mode:"resume", label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "" : "No contact"};
+  else if(isLive(st)) L = {mode:"live", label:"Show running", icon:"play", tone:"green", off:true, why:""};
   // A rehearsal: the scheduler starts nothing, so nothing to start here.
   else if(isRehearsal(st)) L = {mode:"none", label:"Rehearsal", icon:"info", tone:"green", off:true, why:"No shows start"};
   // The rig check before a show (1.0's startLook: Checking, nothing to press).
-  else if(sch.attached && prerollLook(st.preroll).checking) L = {mode:"checking", label:"Checking rig", icon:"clock", tone:"green", off:true, why:"Hold or Stop cancels"};
-  else if(waiting || sch.start_waiting) L = {mode:"loading", label:"Loading", icon:"clock", tone:"green", off:true, why:"Starts when ready"};
+  else if(sch.attached && prerollLook(st.preroll).checking) L = {mode:"checking", label:"Checking rig", icon:"clock", tone:"green", off:true, why:""};
+  else if(waiting || sch.start_waiting) L = {mode:"loading", label:"Loading", icon:"clock", tone:"green", off:true, why:""};
   else if(!sch.attached) L = {mode:"none", label:"Start now", icon:"play", tone:"green", off:true, why:"No schedule here"};
   else if(!runIsOn(st)) L = local ? {mode:"run", label:"Show control on", icon:"power", tone:"green", off:!fresh, why:fresh ? "Shows may start" : "No contact"}
                                   : {mode:"run", label:"Show control on", icon:"power", tone:"green", off:true, why:"Only on the show PC"};
   else {
     const b = sch.start_blocked;
     if(b && b.text && !b.loading) L = {mode:"start", label:"Start now", icon:"play", tone:"green", off:!fresh, why:"Not ready: tap", blocked:String(b.text)};
-    else L = {mode:"start", label:"Start now", icon:"play", tone:"green", off:!fresh, why:fresh ? "Starts the next show" : "No contact"};
+    else L = {mode:"start", label:"Start now", icon:"play", tone:"green", off:!fresh, why:fresh ? "" : "No contact"};
   }
   // Signed out is view only: none of these is a safety press.
   if(!["live", "loading", "none", "checking"].includes(L.mode) && !mayRow(st, "show")){ L.off = true; L.why = signWhy(st, "show"); }
@@ -1776,7 +1867,7 @@ function alertItems(st){
   else if(pch) items.push({key:"preroll", tone:"bad", what:"Rig check failed.", do:"Fix it, or hold to continue.", full:pch.text, act:"pr-continue", recheck:true, holdMs:pch.holdMs || 1000});
   else { const prl = prerollLook(s.preroll); if(prl.trouble) items.push({key:"pr-trouble", tone:"warn", what:"Rig check failed.", do:"Tap here for details.", full:prl.trouble}); }
   (s.alerts || []).forEach(a => items.push({key:"a" + a.id, tone:a.severity === "fault" ? "bad" : "warn",
-    what:ALERT_WHAT[a.kind] || "Alert.", do:ALERT_DO[a.kind] || "Tap here for details.", full:a.text, act:"ack", id:a.id}));
+    what:ALERT_WHAT[a.kind] || "Alert.", do:ALERT_DO[a.kind] || "Tap here for details.", full:a.full || a.text, act:"ack", id:a.id}));
   // flamesafe.json not valid JSON (Jeff, 2026-11-06): flames are off and
   // the engine runs without its flame link; the file, line and column.
   if(s.flamesafe_config_error) items.push({key:"fscfg", tone:"bad", what:"Flame settings file broken.", do:"Flames are off. Tap here.", full:s.flamesafe_config_error});
@@ -1883,7 +1974,15 @@ $("al-text").addEventListener("click", async () => {
   const it = ALERTS.find(i => i.key === ALERT_KEY); if(!it) return;
   // A failed rig check: 1.0's Check the rig again, on the show PC only.
   const again = it.recheck && ME && ME.local;
-  const v = await sheet(it.what, `<div class="full">${esc(it.full)}</div><div class="dim">${esc(it.do || "")}</div>`,
+  // The engine's words, headline and bullets kept (opText); the slot's Do
+  // under them, unless the words carry their own bullets (said once).
+  const body = document.createElement("div");
+  body.appendChild(opText(it.full));
+  if(!/\n- /.test(String(it.full || ""))){
+    body.appendChild(document.createElement("div")).className = "dim";
+    body.lastChild.textContent = it.do || "";
+  }
+  const v = await sheet(it.what, body,
     again ? [{label:"Close", value:null}, {label:"Check again", value:"recheck", cls:"blue", icon:"reset"}] : [{label:"Close", cls:"blue"}]);
   if(v === "recheck"){
     try{ const j = await post("/api/remote/preroll-check", actor({})); say(short8(j.text, "Checking the rig."), String(j.text || ""), "ok"); }
@@ -1959,6 +2058,8 @@ $("pins").addEventListener("click", async e => {
     // purge (review of #172).
     try{ const j = await post("/api/remote/purge-stop", actor({})); say("Purge stopped.", j.text || "Stopped.", "ok"); }
     catch(e2){ say("Purge NOT stopped.", e2.message + " Disarm flames ends it from any screen.", "bad"); }
+  } else if(k === "hzt"){
+    hazerTestOff();
   } else if(k === "wc"){
     // 1.0's wcStopPress: the cleaning's Stop, always pressable.
     try{ const j = await post("/api/remote/cleaning-stop", actor({})); say("Cleaning stopped.", j.text || "Stopped.", "ok"); }
@@ -2027,6 +2128,7 @@ function render(){
   renderGroups(s.flames || {});
   renderHazers(s);
   renderPump(s);
+  try{ renderHazerTest(s); }catch(e){}
   renderAnnounce();
   renderSys();
   document.querySelector('.tab[data-tab="settings"]').hidden = !(ME && ME.local && mayRow(s, "settings"));
@@ -2058,6 +2160,7 @@ function renderStale(){
   // A hazer's arm goes quiet the moment contact is lost, not at the next poll.
   if(ST) try{ renderHazers(ST); }catch(e){}
   if(ST) try{ renderPump(ST); }catch(e){}
+  try{ renderHazerTest(ST); }catch(e){}
   // The calm tone (Jeff, 2026-10-29): signed out, no contact or the show
   // not running, everything that is not an emergency control is quieter.
   const calm = inactiveNow(ST, isSt);
@@ -3195,7 +3298,7 @@ async function loadSchedule(){
 }
 $("se-reload").addEventListener("click", loadSchedule);
 $("se-save").addEventListener("click", async () => {
-  try{ const j = await post("/api/remote/schedule-file", {doc:readSchedule()}); $("se-msg").textContent = j.text; if(j.doc) drawSchedule(j.doc); }
+  try{ const j = await post("/api/remote/schedule-file", {doc:readSchedule()}); setOpText($("se-msg"), j.text); if(j.doc) drawSchedule(j.doc); }
   catch(e){ $("se-msg").textContent = e.message; }
 });
 // Tonight's card (1.0's Schedule screen): what is next, 1.0's words, and
@@ -3292,7 +3395,7 @@ $("annout-save").addEventListener("click", async () => {
 });
 // What the switch lets screens do: every one of it (review of PR #90,
 // P2-1). remote.py SCREEN_ARMING_ENABLES says the same words.
-const SCREEN_ARMING_ENABLES = "On, this rack screen and every device on the show network can hold to arm a flame group (through the Stream Deck, with all of its rules and flamesafe's) and disarm one flame group. Devices on the show network can also select and fire a purge, unlock a machine, turn a laser test on and arm a laser (this rack screen does those without this switch).";
+const SCREEN_ARMING_ENABLES = "On: this screen and every show network device can hold to arm a flame group and disarm one flame group, under the Stream Deck's and flamesafe's rules. Show network devices can also select and fire a purge, unlock a machine, turn a laser test on and arm a laser; this screen can without the switch.";
 $("sa-what").textContent = SCREEN_ARMING_ENABLES;
 // Arming from a screen (2026-10-22): its switch, on the show machine only.
 // The engine refuses it from anywhere else and keeps it off unless it is
@@ -3477,7 +3580,7 @@ async function loadFolders(){
   try{
     const j = await getJSON("/api/remote/setup", 3000);
     $("fo-now").innerHTML = `This engine serves: <b>${esc(j.show_folder)}</b> (${j.show_files} show file(s)${j.show_folder_exists ? "" : "; the folder does not exist"}).` +
-      (j.show_folder_problem ? `<div class="bad" style="color:var(--red);font-weight:700;margin-top:4px">${esc(j.show_folder_problem)}</div>` : "");
+      (j.show_folder_problem ? `<div class="bad" style="color:var(--red);font-weight:700;margin-top:4px;white-space:pre-line">${esc(j.show_folder_problem)}</div>` : "");
     if(!$("fo-path").value) $("fo-path").placeholder = j.show_folder || "";
     $("info-settings").textContent = j.settings_folder || "";
     $("info-exit").hidden = !(ME && ME.local && j.kiosk_closable);
@@ -3536,7 +3639,7 @@ $("net-uses").addEventListener("click", ev => {
   if(b) saveNetwork(b.dataset.addr);
 });
 $("net-restart").addEventListener("click", async () => {
-  if(!(await confirmBox("Restart the engine?", "LTC Player restarts the show engine so it listens on the saved show network address. It is refused while a show runs or a flame group is armed. flamesafe and the Stream Deck program keep running.", "Yes, restart", "green"))) return;
+  if(!(await confirmBox("Restart the engine?", "Restarts the show engine on the saved address. Refused while a show runs or a group is armed. flamesafe and the Stream Deck keep running.", "Yes, restart", "green"))) return;
   try{ const j = await post("/api/remote/reload-engine", {}); $("net-msg").textContent = j.text; }
   catch(e){ $("net-msg").textContent = e.message; }
 });
@@ -3553,7 +3656,7 @@ function cfgNote(cc){
   return {text:t, offer:!!r.offered};
 }
 $("cfg-reload").addEventListener("click", async () => {
-  if(!(await confirmBox("Reload the engine?", "LTC Player restarts the show engine so it reads the changed settings files. It is refused while a show runs or a flame group is armed. flamesafe and the Stream Deck program keep running.", "Yes, reload", "green"))) return;
+  if(!(await confirmBox("Reload the engine?", "Restarts the show engine to read the changed files. Refused while a show runs or a group is armed. flamesafe and the Stream Deck keep running.", "Yes, reload", "green"))) return;
   try{ const j = await post("/api/remote/reload-engine", {}); $("cfg-msg").textContent = j.text; }
   catch(e){ $("cfg-msg").textContent = e.message; }
 });
@@ -3586,7 +3689,8 @@ function renderTools(stale){
     $("rc-now").textContent = prl.now;
     $("rc-warn").hidden = !prl.warn;
     $("rc-warn").textContent = prl.warn;
-    $("rc-items").textContent = prl.items.join(". ");
+    // One check to a line (Jeff, 2026-11-11), not one run-on sentence.
+    setOpText($("rc-items"), prl.items.map(t => "- " + String(t).replace(/\s+/g, " ")).join("\n"));
     $("rc-run").disabled = prl.checking;
   }
   const cn = cfgNote(s.config_changed);
@@ -3598,7 +3702,7 @@ function renderTools(stale){
   setText($("info-version"), s.version ? ("LTC Player " + s.version) : "LTC Player, version not known yet");
   const unconf = !!(s.flames && s.flames.confirmed === false);
   $("info-flames").hidden = !unconf;
-  $("info-flames").textContent = unconf ? "flamesafe's config is not yet confirmed by Andy (confirmed is false in it): the flame universe, group map and arm value it sends are the config's own numbers. The lamps and the Stream Deck keys show each group's real state as usual." : "";
+  $("info-flames").textContent = unconf ? "flamesafe's config is not yet confirmed by Andy (confirmed is false). It sends the config's own universe, group map and arm value. Lamps and Stream Deck keys show real state." : "";
   renderSetup(s.setup, s.programs);
 }
 // The info panel (version, screen, mode, leaving the window), from Help.
@@ -3848,6 +3952,8 @@ window.addEventListener("resize", layoutGroups);
 // (layoutGroups). Levels, and in the compact tile each hazer's arm, are on
 // the Hazers sheet.
 var HZ_KEY = "", HZ_SAME = false, HZ_OPEN = false;
+// Arm all hazers' button, in the hazers' own row (hzAllLook below).
+var HZ_ALL_BTN = `<button class="b hzall" id="hz-all"><span class="hn">Arm all hazers</span><span class="hw"></span></button>`;
 function renderHazers(s){
   const v = s && s.hazers, row = $("hazers");
   if(!v || !v.available || !(v.hazers || []).length){
@@ -3860,13 +3966,18 @@ function renderHazers(s){
   if(key !== HZ_KEY){
     HZ_KEY = key;
     row.innerHTML = compact ?
-      `<div class="tn">Hazers</div><div class="hzs" id="hz-sum"></div><div class="hzb2">` +
+      `<div class="tn">Hazers</div><div class="hzs" id="hz-sum"></div><div class="hzb2 three">` +
+      HZ_ALL_BTN +
       `<button data-safe class="b safe" id="hz-off"><span class="hn">Hazers off</span></button>` +
       `<button class="b" id="hz-open"><span class="hn">Hazers</span></button></div>` :
       v.hazers.map((h, i) =>
         `<button class="b off" data-hzb="${i}"><span class="hn"></span><span class="hw"></span></button>`).join("") +
+      HZ_ALL_BTN +
       `<button data-safe class="b safe" id="hz-off"><span class="hn">Hazers off</span></button>` +
       `<button class="b" id="hz-open"><span class="hn">Levels</span></button>`;
+    // Wraps rather than squeezing: never a cut "Hazers off" or DISARMED.
+    row.style.gridTemplateColumns = compact ? "" : "repeat(auto-fit,minmax(140px,1fr))";
+    $("hz-all").addEventListener("click", hzAllTap);
     row.querySelectorAll("[data-hzb]").forEach(b => b.addEventListener("click", () => hazerTap(Number(b.dataset.hzb))));
     $("hz-off").addEventListener("click", hazersOff);
     $("hz-open").addEventListener("click", openHazerSheet);
@@ -3890,23 +4001,65 @@ function renderHazers(s){
       !(ME && ME.local) && !(s.arming && s.arming.enabled) ? "Arming off here" : "";
     b.disabled = !!hzWhy;
     if(hzWhy) setText(b.querySelector(".hw"), hzWhy);
-    b.title = look.label + ". " + look.act + ". " + look.line + (!look.armed && v.down ? ". Cannot arm: " + v.down : "");
+    // The hazer test running (2026-11-11): every tile says so, never a
+    // plain DISARMED while it hazes.
+    const htOn = !!(s.hazer_test && (s.hazer_test.names_on || []).includes(h.name));
+    if(htOn){ setText(b.querySelector(".hw"), "HAZE TEST"); b.className = "b hzt"; }
+    b.title = (htOn ? "Hazer test running. " : "") + look.label + ". " + look.act + ". " + look.line + (!look.armed && v.down ? ". Cannot arm: " + v.down : "");
     b.setAttribute("aria-label", look.label + ". " + look.act);
   });
   const sum = $("hz-sum");
   if(sum){
     const a = v.hazers.filter(h => h.armed).length;
-    setText(sum, a ? a + " of " + v.hazers.length + " armed" : "All disarmed");
+    setText(sum, s.hazer_test && s.hazer_test.on === true ? "HAZE TEST on" : a ? a + " of " + v.hazers.length + " armed" : "All disarmed");
+    sum.title = "Armed hazers run during the show.";
   }
   $("hz-open").disabled = compact ? false : !mayArm;
+  // Arm all hazers (2026-11-13): its state is the engine's, its gating the
+  // per-hazer arm's; anything not known offers only the disarm.
+  const al = hzAllLook(s), ab = $("hz-all");
+  ab.className = "b hzall";
+  setText(ab.querySelector(".hn"), "Arm all hazers");
+  setText(ab.querySelector(".hw"), al.why || al.state);
+  ab.disabled = al.mode !== "arm" || !!al.why;
+  ab.setAttribute("aria-label", "Arm all hazers. " + al.state + ". Armed hazers run during the show. Hazers only, never flames.");
+  ab.title = "Armed hazers run during the show. Hazers only, never a flame group or a laser.";
   if(HZ_OPEN) renderHazerSheet(s);
+}
+// Arm all hazers on the SHOW tab (Jeff, 2026-11-13): hazers-arm-all,
+// which arms each hazer through the per-hazer arm. All armed, or a state
+// not known, leaves nothing to press; Hazers off, beside it, always
+// works. Who may arm is the engine's answer (mayRow, Arming from a
+// screen), never a guess from the address.
+function hzAllLook(s){
+  const v = s && s.hazers, fl = (s && s.flames) || {};
+  const list = (v && v.hazers) || [];
+  const known = !stale() && !!v && v.available === true && list.length > 0 && fl.connected === true && !fl.stale &&
+    list.every(h => h.armed === true || h.armed === false);
+  // Not known, or all armed: nothing to arm (Hazers off, beside it,
+  // always works).
+  if(!known) return {mode: "none", state: "Not known", why: ""};
+  const a = list.filter(h => h.armed).length;
+  if(a === list.length) return {mode: "none", state: "All armed", why: ""};
+  const state = a ? a + " of " + list.length + " armed" : "None armed";
+  const why = !mayRow(s, "arm") ? signWhy(s, "arm") :
+    !(ME && ME.local) && !(s.arming && s.arming.enabled) ? "Arming off here" : "";
+  return {mode: "arm", state: state, why: why};
+}
+async function hzAllTap(){
+  const al = hzAllLook(ST);
+  if(al.mode !== "arm"){ say(al.state, "", "bad"); return; }
+  if(al.why){ say(al.why, "", "bad"); return; }
+  try{ const j = await post("/api/remote/hazers-arm-all", actor({})); say(j.text || "", "", "ok"); }
+  catch(e){ say(armShort(e.message), e.message, "bad"); }
 }
 function openHazerSheet(){
   HZ_OPEN = true;
-  sheet("Hazers", `<div class="dim">Arm a hazer to run it at its levels while a show plays. Levels take effect at once.</div><div id="hz-sheet"></div>`,
-    [{label: "Hazers off", value: "off", cls: "safe"}, {label: "Same for all: off", value: "same"}, {label: "Done", value: null}]).then(v => {
+  sheet("Hazers", `<div class="dim">Armed hazers run during the show. Levels take effect at once.</div><div id="hz-sheet"></div>`,
+    [{label: "Arm all hazers", value: "armall"}, {label: "Hazers off", value: "off", cls: "safe"}, {label: "Same for all: off", value: "same"}, {label: "Done", value: null}]).then(v => {
     HZ_OPEN = false;
     if(v === "off") hazersOff();
+    if(v === "armall") hzAllTap();
     if(v === "same"){ HZ_SAME = !HZ_SAME; openHazerSheet(); }
   });
   const box = $("hz-sheet");
@@ -4110,6 +4263,127 @@ $("pm-off").addEventListener("click", async () => {
   try{ const j = await post("/api/remote/fuel-pump", actor({on: false})); say(j.text || "The fuel pump is OFF.", "", "ok"); }
   catch(e){ say(armShort(e.message), e.message, "bad"); }
 });
+// The Purge page's hazers (hazertest.py, Jeff 2026-11-11, per hazer
+// 2026-11-13): select hazers, then Turn on (each runs NOW at its levels,
+// 60 s from its own press) or Turn off; All on and All off. No arming
+// here. The state shown is only ever the engine's: no contact is "Not
+// known", never On, and the toggle then turns the selection off. While
+// this screen's own presses run it beats the engine every beat_s; the
+// engine ends them after 10 s with no beat, after max_s, and on Stop.
+// Off and All off are never refused.
+let HZT_RUN = null, HZT_TIMER = null, HZT_SEQ = 0, HZT_BUSY = false, HZT_KEY = "";
+const HZT_SEL = new Set();
+// This screen's own id: the engine keeps a hazer on only while the screen
+// that turned it on still beats (10 s), never on another screen's beat.
+const HZT_PAGE = "pg-" + Math.random().toString(36).slice(2, 10);
+function hztSay(t){ setText($("hzt-msg"), String(t || "")); $("hzt-msg").title = String(t || ""); }
+function hztBeatStop(){ clearInterval(HZT_TIMER); HZT_TIMER = null; HZT_RUN = null; }
+function hztBeatStart(run, every){
+  clearInterval(HZT_TIMER); HZT_RUN = run;
+  HZT_TIMER = setInterval(async () => {
+    if(!HZT_RUN) return;
+    try{ await post("/api/remote/hazer-test", actor({beat: HZT_RUN, page: HZT_PAGE})); }
+    catch(e){ hztBeatStop(); hztSay(e.message); }
+  }, Math.max(500, (Number(every) || 2) * 1000));
+}
+function hztKnown(v){ return !stale() && !!v && v.available === true && v.state !== "unknown" && Array.isArray(v.hazers); }
+// The toggle's look: Turn off unless the engine confirms every selected
+// hazer is off (then Turn on). Nothing selected: nothing to toggle.
+function hztToggle(v){
+  const sel = [...HZT_SEL];
+  if(!sel.length) return {mode: "none", label: "Select hazers"};
+  if(!hztKnown(v)) return {mode: "off", label: "Turn off"};
+  const rows = v.hazers.filter(h => HZT_SEL.has(h.name));
+  if(rows.length !== sel.length) return {mode: "off", label: "Turn off"};
+  // Any selected hazer on (or not a plain false): Turn off, the safe side.
+  return rows.every(h => h.on === false) ? {mode: "on", label: "Turn on"} : {mode: "off", label: "Turn off"};
+}
+async function hztOff(names){
+  try{
+    const j = await post("/api/remote/hazer-test", actor(names ? {on: false, hazers: names} : {on: false}));
+    say(j.text || "Off.", "", "ok"); hztSay(j.text || "Off.");
+  }catch(e){ say("Hazers NOT off.", e.message + " Stop turns them off.", "bad"); hztSay(e.message); }
+}
+// Why the ticked hazers (or "all") may not be turned on now, in a few
+// words, or "": the engine's own reason for those hazers only, after who
+// may (the engine's may-arm answer and Arming from a screen).
+function hztWhy(s, names){
+  const v = s && s.hazer_test;
+  if(!hztKnown(v)) return "No contact";
+  if(!mayRow(s, "arm")) return signWhy(s, "arm");
+  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return "Arming off here";
+  if(names === "all") return v.refusal || "";
+  const rows = v.hazers.filter(h => names.includes(h.name) && h.on === false);
+  const r = rows.find(h => h.refusal);
+  return r ? r.refusal : "";
+}
+async function hztOn(names){
+  const v = ST && ST.hazer_test;
+  if(HZT_BUSY) return;
+  const why = hztWhy(ST, names);
+  if(why){ hztSay("Not now: " + why); return; }
+  HZT_BUSY = true;
+  const run = "hzt-" + Date.now().toString(36) + "-" + (++HZT_SEQ);
+  try{
+    const j = await post("/api/remote/hazer-test", actor({on: true, hazers: names, run: run, page: HZT_PAGE}));
+    hztBeatStart(run, v.beat_s); hztSay(j.text || "On."); say(j.text || "On.", "", "ok");
+  }catch(e){ hztSay(e.message); say(armShort(e.message), e.message, "bad"); }
+  finally{ HZT_BUSY = false; }
+}
+function hazerTestTap(){
+  const t = hztToggle(ST && ST.hazer_test);
+  if(t.mode === "none"){ hztSay("Select one hazer or more."); return; }
+  if(t.mode === "off"){ hztOff([...HZT_SEL]); return; }
+  hztOn([...HZT_SEL]);
+}
+function hazerTestOff(){ hztOff(null); }
+$("hzt-btn").addEventListener("click", hazerTestTap);
+$("hzt-allon").addEventListener("click", () => hztOn("all"));
+$("hzt-alloff").addEventListener("click", () => hztOff(null));
+function renderHazerTest(s){
+  const v = s && s.hazer_test;
+  const sec = $("d-hz");
+  if(!v || !v.available){ if(sec) sec.hidden = true; hztBeatStop(); return; }
+  if(sec) sec.hidden = DAY_K !== "purge";
+  const known = hztKnown(v);
+  const on = known && v.on === true;
+  setText($("hzt-max"), "Each turns off after " + (Number(v.max_s) || 60) + " s.");
+  const st = $("hzt-st");
+  st.className = "hzt-st" + (on ? " on" : known ? "" : " unk");
+  setText(st, !known ? "Not known" : on ? (v.names_on || []).length + " on, " + timedLeft(v.left_s) : "Off");
+  const rows = known ? v.hazers : ((s.hazers && s.hazers.hazers) || []).map(h => ({name: h.name, haze_pct: h.haze_pct, fan_pct: h.fan_pct}));
+  const list = $("hzt-list"), key = rows.map(h => h.name).join("|");
+  if(key !== HZT_KEY){
+    HZT_KEY = key;
+    list.innerHTML = rows.map((h, i) => `<label data-hzt="${i}"><input type="checkbox" data-n="${esc(h.name)}"><b>${esc(h.name)}</b><span class="lv"></span><span class="ws"></span></label>`).join("");
+    list.querySelectorAll("input").forEach(c => c.addEventListener("change", () => {
+      if(c.checked) HZT_SEL.add(c.dataset.n); else HZT_SEL.delete(c.dataset.n);
+      renderHazerTest(ST);
+    }));
+  }
+  rows.forEach((h, i) => {
+    const l = list.querySelector(`[data-hzt="${i}"]`); if(!l) return;
+    l.querySelector("input").checked = HZT_SEL.has(h.name);
+    setText(l.querySelector(".lv"), "Haze " + (h.haze_pct || 0) + "%, Fan " + (h.fan_pct || 0) + "%");
+    setText(l.querySelector(".ws"), !known ? "Not known" : h.on ? "On " + timedLeft(h.left_s) : "Off");
+    l.classList.toggle("on", known && h.on === true);
+  });
+  for(const n of [...HZT_SEL]) if(!rows.some(h => h.name === n)) HZT_SEL.delete(n);
+  const t = hztToggle(v), b = $("hzt-btn");
+  setText(b, t.label);
+  b.className = t.mode === "on" ? "b green" : t.mode === "off" ? "b safe" : "b";
+  if(t.mode === "off") b.setAttribute("data-safe", ""); else b.removeAttribute("data-safe");
+  const selWhy = t.mode === "on" ? hztWhy(s, [...HZT_SEL]) : "";
+  const no = t.mode === "none" || !!selWhy;
+  b.setAttribute("aria-disabled", no ? "true" : "false");
+  b.classList.toggle("na", no);
+  const ao = $("hzt-allon"), allWhy = hztWhy(s, "all");
+  ao.setAttribute("aria-disabled", allWhy ? "true" : "false");
+  ao.classList.toggle("na", !!allWhy);
+  b.title = selWhy; ao.title = allWhy;
+  if(selWhy && known) hztSay("Not now: " + selWhy);
+  else if(/^Not now: /.test($("hzt-msg").textContent)) hztSay("");
+}
 async function hazersOff(){
   try{ const j = await post("/api/remote/hazers-off", actor({})); say(j.text || "Every hazer is DISARMED.", "", "ok"); }
   catch(e){ say(armShort(e.message), e.message, "bad"); }
@@ -4403,6 +4677,23 @@ function sysLook(subs, isStaleNow){
   return {cls: probs.some(i => i.state === "bad") ? "bad" : "warn", icon:"warn", text:text, items:items,
     first:"First: " + worst.label + ". " + worst.say};
 }
+// One Systems row (Jeff, 2026-11-11: "Stream Deck: OK. OK." said it
+// twice): the state word once, then only what the words add. "Stream
+// Deck: OK", "Laser arm: Off, not in use here", "Lasers: FAULT. BEYOND
+// not answering. Check laser PC." Never drops words that add a reason
+// or a number. Pure.
+const SYS_WORD = {ok:"OK", warn:"Check", bad:"FAULT", off:"Off", on:"All armed"};
+function sysRow(x){
+  const word = SYS_WORD[x.state] || "Check", lw = word.toLowerCase();
+  let rest = String(x.say || "").trim();
+  const bare = rest.replace(/[\s.:,!]+$/, "").toLowerCase();
+  if(bare === lw || bare === "ok") rest = "";
+  else if(rest.toLowerCase().indexOf(lw) === 0 && /^[.:,]/.test(rest.slice(word.length)))
+    rest = rest.slice(word.length).replace(/^[\s.:,]+/, "");
+  if(!rest) return {head:x.label + ": " + word, rest:""};
+  if(/^[a-z]/.test(rest)) return {head:x.label + ": " + word, rest:", " + rest};
+  return {head:x.label + ": " + word + ".", rest:" " + rest};
+}
 function renderSys(){
   const L = sysLook((ST && ST.subsystems) || [], stale());
   const b = $("sys");
@@ -4413,9 +4704,9 @@ setInterval(renderSys, 1000);
 // is wrong and what to do.
 $("sys").addEventListener("click", () => {
   const L = sysLook((ST && ST.subsystems) || [], stale());
-  const word = {ok:"OK", warn:"Check", bad:"FAULT", off:"Off", on:"On"};
   const ic = {ok:"check", warn:"warn", bad:"warn", off:"power", on:"check"};
-  const rows = L.items.map(x => `<li class="sys-${x.state}">${icon(ic[x.state] || "info")}<b>${esc(x.label)}: ${esc(word[x.state] || "Check")}.</b> ${esc(x.say)}</li>`).join("");
+  const rows = L.items.map(x => { const r = sysRow(x);
+    return `<li class="sys-${x.state}">${icon(ic[x.state] || "info")}<b>${esc(r.head)}</b>${esc(r.rest)}</li>`; }).join("");
   sheet("Systems", (L.first ? `<div class="first">${esc(L.first)}</div>` : "") +
     (L.items.length ? `<ul class="sys">${rows}</ul>` : `<div>${esc(L.first || "Not known yet.")}</div>`) +
     `<div class="dim">${esc(ST && ST.version ? "LTC Player " + ST.version : "")}</div>`, [{label:"Close", cls:"blue"}]);
@@ -5464,10 +5755,13 @@ function fbFit(){
 try{ new MutationObserver(fbFit).observe($("d-fb"), {childList:true, subtree:true, characterData:true}); }catch(e){}
 window.addEventListener("resize", fbFit);
 setInterval(fbFit, 250);
+let DAY_K = null;
 function daySections(k){
+  DAY_K = k;
   $("d-fb").hidden = k !== "fireball";
   $("d-fu").hidden = k !== "fuel" || !DAY_FU_REC;
   $("d-tp").hidden = k !== "purge";
+  $("d-hz").hidden = k !== "purge" || !(ST && ST.hazer_test && ST.hazer_test.available);
   fireballView(k === "fireball");
   fbFit();
   if(k === "fuel") renderFuelUndo();
@@ -5536,7 +5830,7 @@ function dayWire(k){
   if(k === "checks") $("d-checks").addEventListener("click", e => {
     const b = e.target.closest("[data-ck]"); if(!b) return;
     const c = ((MO && MO.checks) || [])[Number(b.dataset.ck)]; if(!c) return;
-    sheet(c.title, `<div class="full">${esc(checkLook(c.level).word)}. ${esc(c.text)}</div>`, [{label:"Close", cls:"blue"}]);
+    sheet(c.title, opText(/\n/.test(String(c.text || "")) ? String(c.text) : checkLook(c.level).word + ". " + String(c.text || "")), [{label:"Close", cls:"blue"}]);
   });
   if(k === "startlist" || k === "shutlist"){
     // A tick is for the step drawn on the screen (review of #169, 2): its
