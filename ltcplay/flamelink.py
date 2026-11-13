@@ -264,6 +264,18 @@ PUMP_HOLD_S = 0.5
 # refuses a longer run time (fuelpump.MAX_LIMIT_S, the same number, held
 # equal by the selftest); this link's own hard end is never later either.
 PUMP_MAX_S = 600
+# The hazer test (Jeff, 2026-11-11: "a hazer test that toggles on/off
+# even when the show isn't running"): every hazer at its stored levels,
+# with no show playing, for a short run the engine starts (hazer_test_start,
+# a hard end on this link's own clock) and its timer re-asserts every
+# hazertest.SEND_S (hazer_test_beat), exactly as the fuel pump's. Past the
+# hard end or with no beat for HAZER_TEST_HOLD_S the link ends it itself,
+# for good. disarm_all (Stop, Abort) ends it before its first copy; zero()
+# (Hold) does not, the engine's timer does. It never arms a hazer: the
+# names ARMED (hazers_on) are untouched, and when it ends the frame names
+# only those again.
+HAZER_TEST_HOLD_S = 0.5
+HAZER_TEST_MAX_S = 300
 SWITCH_KEYS = frozenset(("name", "switch", "on"))
 SWITCH_ON_MIN, SWITCH_ON_MAX = 1, 255
 LOCK_ALARM_S = 1.0         # CONTRACT.md: "for more than 1 s"
@@ -877,6 +889,16 @@ class FlameLink:
         self._pump_until = None
         self._pump_beat = None
         self._pump_ended = ""
+        # The hazer test (2026-11-11): ON or not, its hard end and last
+        # beat on this link's clock, and why it last ended by itself here.
+        self._htest_on = False
+        self._htest_until = None
+        self._htest_beat = None
+        self._htest_ended = ""
+        # () -> True while the engine lets the test haze (no show, show
+        # control off); asked on every frame outside self._lock. None:
+        # no gate. A gate that raises is False.
+        self.hazer_test_gate = None
         self.haze_gate = None
         self._haze_live = False
         self.tc_fps = float(tc_fps)
@@ -1923,15 +1945,137 @@ class FlameLink:
             self._hazers_on = want
             return self._hazers_on
 
-    def _hazers_said(self):
-        """The frame's hazers_on: the names ON (the hazers, and the fuel
-        pump while it is ON), or None (the field left out) when flamesafe's
-        config lists no hazers and no pump."""
+    def _hazers_said(self, test=None):
+        """The frame's hazers_on: the names ON (the hazers, every hazer
+        while the hazer test runs, and the fuel pump while it is ON), or
+        None (the field left out) when flamesafe's config lists no hazers
+        and no pump. `test`: the hazer test's state the frame's values were
+        built with (None: asked here)."""
         if not self._hazers and self._pump_name is None:
             return None
+        testing = self._htest_live() if test is None else test
+        extra = frozenset(self._hazers) if testing else frozenset()
         if self._pump_live():
-            return self._hazers_on | {self._pump_name}
-        return self._hazers_on
+            return self._hazers_on | {self._pump_name} | extra
+        return self._hazers_on | extra
+
+    # -- the hazer test (2026-11-11) ------------------------------------------
+    def _htest_live(self):
+        """True while the hazer test is ON and inside its hard end and its
+        beat (HAZER_TEST_HOLD_S). Past either it goes OFF here, for good.
+        Under self._lock. Never raises."""
+        if not self._htest_on or not self._hazers:
+            return False
+        try:
+            now = self._clock()
+            until, beat = self._htest_until, self._htest_beat
+            if until is None or beat is None:
+                why = "it had no end"
+            elif until <= now:
+                why = "its time was up"
+            elif now - beat > HAZER_TEST_HOLD_S or now < beat:
+                why = (f"the engine's timer stalled (no beat for "
+                       f"{now - beat:.2f} s)")
+            else:
+                return True
+        except Exception as e:
+            why = f"its check failed ({type(e).__name__})"
+        self._htest_on = False
+        self._htest_until = None
+        self._htest_ended = why
+        return False
+
+    def _htest_gate_ok(self):
+        gate = self.hazer_test_gate
+        if gate is None:
+            return True
+        try:
+            return gate() is True
+        except Exception:
+            return False
+
+    def hazer_test_live_now(self):
+        """The hazer test's state for the screens and the engine's checks,
+        without self._lock; it changes nothing. Never raises."""
+        try:
+            on, until, beat = self._htest_on, self._htest_until, \
+                self._htest_beat
+            if not on or until is None or beat is None or not self._hazers:
+                return False
+            now = self._clock()
+            return now < until and 0 <= now - beat <= HAZER_TEST_HOLD_S
+        except Exception:
+            return False
+
+    def hazer_test_ended(self):
+        """Why the link last ended the hazer test by itself, or ""."""
+        return self._htest_ended
+
+    def hazer_test_start(self, seconds, gen, deadline=None, clock=None):
+        """The hazer test ON from the next frame, for `seconds` on this
+        link's clock at most, as pump_start: refused (False) with no
+        hazers, a bad duration, an Abort or Stop still being repeated, or
+        `gen` not the Abort id now. Never raises."""
+        try:
+            if isinstance(seconds, bool) or \
+                    not isinstance(seconds, (int, float)):
+                return False
+            s = float(seconds)
+            if not self._hazers or not s > 0 or not math.isfinite(s):
+                return False
+            with self._lock:
+                mine = self._clock()
+                if self.abort_repeating() or gen != self.abort_id:
+                    self._htest_on = False
+                    self._htest_until = None
+                    return False
+                if deadline is not None and clock is not None:
+                    left = float(deadline) - float(clock())
+                    if not math.isfinite(left):
+                        return False
+                    if left < s:
+                        s = left
+                    if not s > 0:
+                        return False
+                s = min(s, HAZER_TEST_MAX_S)
+                self._htest_until = mine + s
+                self._htest_beat = mine
+                self._htest_ended = ""
+                self._htest_on = True
+            return True
+        except Exception:
+            return False
+
+    def hazer_test_beat(self, gen):
+        """The hazer test's timer: True and it stays ON for
+        HAZER_TEST_HOLD_S more, or False and it is OFF. Never raises."""
+        try:
+            with self._lock:
+                if gen != self.abort_id:
+                    self._htest_on = False
+                    self._htest_until = None
+                    return False
+                if not self._htest_live():
+                    return False
+                self._htest_beat = self._clock()
+                return True
+        except Exception:
+            return False
+
+    def _htest_cut(self, why):
+        """The hazer test OFF now, saying why when it was on."""
+        with self._lock:
+            if self._htest_on:
+                self._htest_ended = why
+            self._htest_on = False
+            self._htest_until = None
+
+    def hazer_test_stop(self):
+        """The hazer test OFF from the next frame. Never refused."""
+        with self._lock:
+            self._htest_on = False
+            self._htest_until = None
+        return True
 
     # -- the fuel pump (2026-10-30) -------------------------------------------
     def pump_name(self):
@@ -2071,12 +2215,12 @@ class FlameLink:
             self.pump_stop()
         return self.pump_on
 
-    def _with_haze(self, values, run):
+    def _with_haze(self, values, run, test=False):
         """`values` with every hazer channel and the fuel pump's channel
         replaced: zero, whatever the FSEQ or xLights carried there; then,
-        when `run`, each ARMED hazer's stored haze and fan levels. The
-        pump's channel stays zero: flamesafe writes its on value. Under
-        self._lock."""
+        when `run`, each ARMED hazer's stored haze and fan levels, and when
+        `test` (the hazer test) every hazer's. The pump's channel stays
+        zero: flamesafe writes its on value. Under self._lock."""
         if not self._hazer_chans and self._pump_chan is None:
             return values
         out = bytearray(values)
@@ -2084,8 +2228,8 @@ class FlameLink:
             out[self._pump_chan] = 0
         for c in self._hazer_chans:
             out[c] = 0
-        if run:
-            for n in self._hazers_on:
+        if run or test:
+            for n in (self._hazers if test else self._hazers_on):
                 ch = self._hazers.get(n)
                 lv = self._hazer_levels.get(n)
                 if ch and lv:
@@ -2245,6 +2389,7 @@ class FlameLink:
         with self._read_lock:
             tc, values = self.values_now()
             run = self._haze_running()
+            tgate = self._htest_gate_ok()
             self._frame_tc = tc         # frame timing's show window only
         with self._lock:
             if lgen != self._land_gen:
@@ -2294,11 +2439,20 @@ class FlameLink:
             show = bytes(map(min, sp, values)) \
                 if len(sp) == len(values) and not dropped \
                 else bytes(UNIVERSE_SIZE)
+            # Never while a show cue plays (the show owns the hazers) or the
+            # engine's gate says a show or show control has begun: not
+            # even for the engine's next pass.
+            test = self._htest_live() and aid == self.abort_id and \
+                tgate and not self._haze_live
             wire = self._with_haze(values, run and gen == self._zero_gen)
+            if test:
+                # The hazer test: every hazer at its levels (no show runs,
+                # so no ARMED hazer is outputting).
+                wire = self._with_haze(values, False, test)
             seq, mono = self._next()
             ok = self._send(encode_flame(seq, tc, mono, self.cfg.universe,
                                          wire, self.cfg.key,
-                                         self._hazers_said()))
+                                         self._hazers_said(test)))
             self._last_frame_at = self._clock()
             self.show_sent = show if ok else bytes(UNIVERSE_SIZE)
             sent_rec = (mono, tc, self.show_sent, ok)
@@ -2379,6 +2533,9 @@ class FlameLink:
         and one zero frame goes out at once rather than at the next tick.
         True when that frame went out. Never asks the providers, so a hung
         one cannot delay it (fix round 1, item 7)."""
+        # The hazer test ends on any zero too (a Hold, a show's end, the
+        # engine closing): at once, before the zero frame.
+        self._htest_cut("the flame cues were zeroed (a Hold)")
         with self._lock:
             self._purge = None
             # Any zero (a Hold, a show's end, the dark sequence) ends live
@@ -2412,6 +2569,12 @@ class FlameLink:
             why = " ".join(str(reason or "Abort").split())[:REASON_MAX] \
                 or "Abort"
             with self._lock:
+                # The hazer test OFF too (2026-11-11), the same way.
+                if self._htest_on:
+                    self._htest_ended = (f"the disarm to every flame group "
+                                         f"was sent: {why}")
+                self._htest_on = False
+                self._htest_until = None
                 # Abort and Stop switch every hazer OFF (Jeff, 2026-10-29),
                 # here at the link before the zero frame and the first
                 # copy, whichever surface sent it. flamesafe does the same
@@ -2603,6 +2766,7 @@ class FlameLink:
                 "hazers_on": sorted(self._hazers_on),
                 "pump_on": self._pump_on,
                 "pump_until": self._pump_until,
+                "hazer_test_on": self.hazer_test_live_now(),
                 "lock_alarm": self.lock_alarm,
                 "abort_id": self.abort_id,
                 "abort": self.abort_state(),
