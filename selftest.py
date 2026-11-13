@@ -98935,6 +98935,65 @@ def test_ui2_runs_on_ipados15():
     print("  ok")
 
 
+
+def test_ui2_systems_rows_say_each_word_once():
+    section("2.0's Systems sheet (Jeff, 2026-11-11: 'Stream Deck: OK. OK.' "
+            "said it twice): each row says its state once and then only "
+            "what the words add; a reason or a number is never dropped")
+    two = _ui2_pages()[1]
+    fns = ""
+    for c in ("SYS_LABEL", "SYS_OFF", "SYS_SAY", "SYS_WORD"):
+        m = re.search(r"^const " + c + r" = .*?;$", two, re.M | re.S)
+        check(m is not None, f"{c} is found")
+        fns += "\n" + (m.group(0) if m else "")
+    for n in ("short8", "sysItem", "sysRow"):
+        f = _js_function(two, n)
+        check(f is not None, f"{n} is found")
+        fns += "\n" + (f or "")
+    check("const r = sysRow(x);" in two and
+          "<b>${esc(r.head)}</b>${esc(r.rest)}</li>" in two,
+          "the Systems sheet draws each row with sysRow, escaped")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    cases = [
+        (["Deck", "ok", "ok"], "Stream Deck: OK"),
+        (["Flamesafe", "ok", "linked"], "Flames: OK"),
+        (["Laser arm", "warn", "disarmed"], "Laser arm: Off, not in use here."),
+        (["Video", "warn", "not set up"], "Video: Off, not in use here."),
+        (["Laser arm", "ok", "ARMED"], "Laser arm: All armed"),
+        (["Lasers", "bad", "LINK LOST"],
+         "Laser output: FAULT. BEYOND not answering. Check laser PC."),
+        (["Deck", "warn", "late 1.2 s"],
+         "Stream Deck: Check. Slow. Check its USB cable."),
+        (["Laser arm", "warn", "2 of 4 armed"],
+         "Laser arm: Check. Some armed, output dark. Arm all or disarm."),
+        (["Video", "warn", "MadMapper running, no heartbeat"],
+         "Video: Check. Check the video PC."),
+        (["Somethingnew", "warn", "3 retries"],
+         "Somethingnew: Check. 3 retries."),
+        (["Somethingnew", "warn", "ok"], "Somethingnew: Check"),
+    ]
+    js = fns + "\nconst cases = " + json.dumps(cases) + ";\n" \
+        "const out = cases.map(([x]) => { const r = sysRow(sysItem(" \
+        "{name:x[0], state:x[1], word:x[2]})); return r.head + r.rest; });\n" \
+        "console.log(JSON.stringify(out));\n"
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        got = json.loads(r.stdout.strip() or "null")
+    except ValueError:
+        got = None
+    want = [w for _x, w in cases]
+    bad = [(c[0], g) for c, g in zip(cases, got or []) if g != c[1]]
+    check(r.returncode == 0 and got == want,
+          f"each Systems row says its state once: {bad or got} "
+          f"{r.stderr.strip()[:600]}")
+    print("  ok")
+
+
 def test_ui2_screen_served():
     section("the one screen (R1): /remote, the show network's / and /remote2 "
             "(old bookmarks) are remote2.html byte for byte with its rules "
@@ -115649,6 +115708,7 @@ if __name__ == "__main__":
         test_ui2_is_the_default_screen,
         test_remote_rules_file,
         test_ui2_runs_on_ipados15,
+        test_ui2_systems_rows_say_each_word_once,
         test_ui2_page_makes_only_1_0_presses,
         test_ui2_big_button_second_line_is_state_only,
         test_ui2_stop_lone_tap_never_covers_a_stop,

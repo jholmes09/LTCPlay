@@ -4557,6 +4557,23 @@ function sysLook(subs, isStaleNow){
   return {cls: probs.some(i => i.state === "bad") ? "bad" : "warn", icon:"warn", text:text, items:items,
     first:"First: " + worst.label + ". " + worst.say};
 }
+// One Systems row (Jeff, 2026-11-11: "Stream Deck: OK. OK." said it
+// twice): the state word once, then only what the words add. "Stream
+// Deck: OK", "Laser arm: Off, not in use here", "Lasers: FAULT. BEYOND
+// not answering. Check laser PC." Never drops words that add a reason
+// or a number. Pure.
+const SYS_WORD = {ok:"OK", warn:"Check", bad:"FAULT", off:"Off", on:"All armed"};
+function sysRow(x){
+  const word = SYS_WORD[x.state] || "Check", lw = word.toLowerCase();
+  let rest = String(x.say || "").trim();
+  const bare = rest.replace(/[\s.:,!]+$/, "").toLowerCase();
+  if(bare === lw || bare === "ok") rest = "";
+  else if(rest.toLowerCase().indexOf(lw) === 0 && /^[.:,]/.test(rest.slice(word.length)))
+    rest = rest.slice(word.length).replace(/^[\s.:,]+/, "");
+  if(!rest) return {head:x.label + ": " + word, rest:""};
+  if(/^[a-z]/.test(rest)) return {head:x.label + ": " + word, rest:", " + rest};
+  return {head:x.label + ": " + word + ".", rest:" " + rest};
+}
 function renderSys(){
   const L = sysLook((ST && ST.subsystems) || [], stale());
   const b = $("sys");
@@ -4567,9 +4584,9 @@ setInterval(renderSys, 1000);
 // is wrong and what to do.
 $("sys").addEventListener("click", () => {
   const L = sysLook((ST && ST.subsystems) || [], stale());
-  const word = {ok:"OK", warn:"Check", bad:"FAULT", off:"Off", on:"On"};
   const ic = {ok:"check", warn:"warn", bad:"warn", off:"power", on:"check"};
-  const rows = L.items.map(x => `<li class="sys-${x.state}">${icon(ic[x.state] || "info")}<b>${esc(x.label)}: ${esc(word[x.state] || "Check")}.</b> ${esc(x.say)}</li>`).join("");
+  const rows = L.items.map(x => { const r = sysRow(x);
+    return `<li class="sys-${x.state}">${icon(ic[x.state] || "info")}<b>${esc(r.head)}</b>${esc(r.rest)}</li>`; }).join("");
   sheet("Systems", (L.first ? `<div class="first">${esc(L.first)}</div>` : "") +
     (L.items.length ? `<ul class="sys">${rows}</ul>` : `<div>${esc(L.first || "Not known yet.")}</div>`) +
     `<div class="dim">${esc(ST && ST.version ? "LTC Player " + ST.version : "")}</div>`, [{label:"Close", cls:"blue"}]);
