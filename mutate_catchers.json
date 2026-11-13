@@ -30,6 +30,7 @@
 "ui 2.0 cue: an offer with no show number says show null": "test_ui2_resume_from_a_cue_in_a_browser",
 "ui 2.0 cue: the landing rounds the lead-in instead of the engine's int()": "test_ui2_resume_from_a_cue",
 "ui 2.0 Programming: a late answer paints over a newer one": "test_ui2_programming_tab_in_a_browser",
+"ui 2.0 DAY: a step's buttons shrink and the rows under them overlap them": "test_ui2_startup_steps_never_overlap",
 "ui 2.0 cue: Start at a cue goes with no question": "test_ui2_resume_from_a_cue_in_a_browser",
 "ui 2.0 cue: a cue starts after the show changed under the question": "test_ui2_resume_from_a_cue_in_a_browser",
 "ui 2.0 cue: Resume's offer is made from a cue retimed since": "test_ui2_resume_from_a_cue",
