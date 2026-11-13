@@ -12,7 +12,7 @@ own emergency access ("In an emergency", below). See "The honest limit".
 
 - **The nightly upload:** on or off, the server address, the token, the
   time, the days kept, Send now, and its state (last upload, days waiting,
-  errors).
+  nights waiting, errors).
 - **SuperUser changes:** adding, changing the role of, resetting or
   removing a SuperUser, or making someone one.
 - **Remote access over Tailscale:** on or off, who gets in, its address
@@ -160,9 +160,21 @@ while the older version runs):
 In the Nightly upload card you set the server address (it must start
 with https://), the shared token, the time of day (03:30 unless changed)
 and how many days to keep here (at least 90). Then tick "Send the audit
-log to the server every night", type your password, and Save.
+log and the night journal to the server every night", type your
+password, and Save.
 
-- Only the audit day files are ever sent. Nothing else leaves the PC.
+- The audit log and the night journal go only to your own server.
+  Nothing else is read or sent, never a password or token. The night
+  journal names each operator and the screen they pressed on.
+- The night journal is each closed night's three files
+  (`night_YYYY-MM-DD.journal.txt`, `.jsonl` and `.summary.md`), each whole,
+  with its checksum. A night still open is never sent. A night whose
+  logging was incomplete is still sent, marked "incomplete" with its gap
+  times, so your server can flag it. Incident folders are never sent.
+  A file that changed after it was sent (a summary written again) is
+  sent once more. A file your server refuses for good is listed on the
+  card as not sent (and in the audit log), and the later nights still
+  go. `tools/JOURNAL_FORMAT.md` says what the lines look like.
 - Each finished day is sent once, whole, with its checksum and its chain
   fingerprints. It counts as sent only when your server answers that it
   got exactly that file.
@@ -170,6 +182,9 @@ log to the server every night", type your password, and Save.
   A night the PC was off is caught up the next time.
 - A day is removed from the PC only once the server has it AND it is
   older than the keep. A day not yet on the server is never removed.
+  Night journal files keep their own 120 days. While the upload is on, a
+  night file not yet on the server is kept up to 30 days longer, then
+  removed.
 - The settings and the token are kept in the settings folder, in
   `ltcplay_audit.json`, like flamesafe's link key. They are never in the
   program's files on GitHub, never on the screen, and never in the log

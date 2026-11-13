@@ -122,6 +122,9 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'_-]{0,39}$")
 # person's press can read as the engine's, and refused (Jeff, 2026-10-30).
 RESERVED = ("unsigned", "system", "signed out", "nobody", "deck", "engine",
             "scheduler", "ltc player", "ltcplay")
+# Pre-show audio's name in the journal (announce.PRESHOW_WHO): no person's
+# account may carry it, so its automatic play never reads as a press.
+RESERVED += ("pre-show audio",)
 # Who a press is from when nobody is signed in (the journal, the audit).
 UNSIGNED = "unsigned"
 PW_MIN, PW_MAX = 6, 128
@@ -278,6 +281,8 @@ REMOTE_ROUTES = {
     "preroll-continue": "show",
     # The announcement output picker (remote.announce_output).
     "announce-output": "settings", "announce-test-tone": "settings",
+    # Pre-show audio's On/Off and file (remote.preshow_audio_post).
+    "preshow-audio": "settings",
     "live-flame": "settings",
     # The nightly upload: the SuperUser's alone (UPLOAD, is_upload_route).
     "audit-settings": UPLOAD,

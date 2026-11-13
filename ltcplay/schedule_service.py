@@ -834,6 +834,11 @@ class Service:
         # checked PreRoll.window_s before a show's time, and before Start
         # now. None: no pre-roll, every start exactly as before.
         self.preroll = None
+        # Pre-show audio (preshow_audio.PreShowAudio, Jeff 2026-11-12), set
+        # by web.serve when the announcements run too: a chosen file plays
+        # 120 s before a scheduled show (_preshow_lookahead). None: nothing
+        # plays, every tick exactly as before.
+        self.preshow_audio = None
         # (night, show) -> late_ok_s, for a show whose pre-roll could only
         # run at its time: it starts late rather than unchecked.
         self._preroll_late = {}
@@ -907,6 +912,10 @@ class Service:
         # next status() poll. schedule_service.py never imports announce.py
         # to make this call; it only ever calls whatever was set here.
         self.on_show_started = None
+        # A plain callable, or None, set by web.py with the announcements:
+        # called (after the lock is free) when the schedule goes on Hold or
+        # is paused, so pre-show audio stops at once.
+        self.on_schedule_held = None
         # Bumped by _apply() every time the machine crosses into or out of
         # a held or paused state. See hold_for_announcement and
         # hold_still_claimed: the second, read-only check an announcement
@@ -1998,6 +2007,12 @@ class Service:
             is_held = self.machine.state in (sch.HOLD, sch.PAUSED)
             if was_held != is_held:
                 self.hold_epoch += 1
+            # Pre-show audio fades the moment the schedule is held or
+            # paused (announce.on_schedule_held), queued like
+            # on_show_started below.
+            if is_held and not was_held and \
+                    self.on_schedule_held is not None:
+                self._pending_hooks.append(self.on_schedule_held)
         if self.machine.state == sch.OFF and before is not None and \
                 before.state != sch.OFF and self.machine.slots:
             # The night has closed, by Close for the night or after its
@@ -2905,6 +2920,7 @@ class Service:
             self._follow_rule(now, deferred=True)
             ev = self._tick_event()
             self._preroll_lookahead(now)
+            self._preshow_lookahead(now)
             self._preroll_before_gate(now, ev)
             self._hold_at_showtime_for_alerts(now, ev)
             if self._halt_defers(now, ev):
@@ -3190,6 +3206,88 @@ class Service:
                 self._preroll_kick(n)
         except Exception:                        # noqa: BLE001
             return
+
+    # -- pre-show audio (preshow_audio.py, Jeff 2026-11-12) -----------------
+    def _preshow_lookahead(self, now):
+        """With the lock held, before the tick: the next scheduled show is
+        preshow_audio.LEAD_S (120 s) away, so pre-show audio is decided for
+        it, once (in memory), and the rest (the record on disk, the player)
+        queued to run on a thread of its own once the lock is free. Never
+        waits on a file or the player, never raises, never changes what
+        the tick does next."""
+        pa = self.preshow_audio
+        if pa is None:
+            return
+        try:
+            if not pa.is_on():
+                return
+            m = self.machine
+            nxt = m.next_slot() if m is not None else None
+            if nxt is None:
+                return
+            left = (nxt.start - now).total_seconds()
+            if left > pa.LEAD_S:
+                return
+            # By night and show number, not its time: a show whose time
+            # is edited after its audio played never plays it again.
+            key = (str(m.date), nxt.n)
+            if pa.record(key) is not None:
+                note = pa.restored_note(key)
+                if note:
+                    self._journal_line("system", note, action="pre-show audio",
+                                       outcome="already handled", show=nxt.n)
+                return
+            why = self._preshow_refusal(m, nxt, now, left, pa)
+            if pa.claim(key, nxt.n, why, now):
+                self._pending_hooks.append(lambda: pa.settle(key))
+        except Exception:                        # noqa: BLE001
+            return
+
+    def _preshow_refusal(self, m, s, now, left, pa):
+        """Why pre-show audio does not play for show `s` now, or "". Lock
+        held. Pure: asks the machine, never acts."""
+        n = s.n
+        if self.halting():
+            return "a Stop is under way"
+        if m.state == sch.HOLD:
+            return "the schedule is on Hold"
+        if m.state in (sch.SHOW, sch.PAUSED):
+            return "a show is running"
+        if m.state not in self.SHOWTIME_FROM:
+            return f"the schedule is not between shows ({m.state})"
+        if self.dry_run or self.performer is None:
+            return "this scheduler does not start shows"
+        if not self._run_pressed():
+            return "show control is off"
+        cfg = getattr(self.performer, "cfg", None)
+        if getattr(cfg, "auto_start", "when_run_pressed") == "off":
+            return "the scheduler does not start shows by itself"
+        if self.preroll is not None and self.preroll.skip():
+            return "a Programming Run is in force"
+        if s.planned is not None and s.start > s.planned:
+            return f"show {n} was delayed"
+        gate = self.showtime_gate
+        if gate is not None and gate():
+            # The alert hold would hold the show at its time (Jeff,
+            # 2026-11-12: skip).
+            return (f"an alert is open, so show {n} would be held at its "
+                    f"time")
+        if not self._starts(sch.step(m, sch.Event(sch.TICK, "scheduler"),
+                                     max(now, s.start))):
+            return f"the scheduler would not start show {n} at its time"
+        if left < pa.LEAD_S - pa.GRACE_S:
+            return (f"only {max(0.0, left):.0f} s were left when it could "
+                    f"first play (LTC Player started, or the schedule "
+                    f"changed, inside the last {pa.LEAD_S} s), and it "
+                    f"never plays late")
+        return ""
+
+    def preshow_journal(self, text, outcome="done", show=None):
+        """A pre-show audio line in the night journal, from its own thread
+        (preshow_audio.PreShowAudio.journal)."""
+        with self._locked():
+            self._journal_line("system", text, action="pre-show audio",
+                               outcome=outcome, show=show)
 
     def _preroll_before_gate(self, now, ev):
         """At showtime, a failed pre-roll's alert is open, so the alert

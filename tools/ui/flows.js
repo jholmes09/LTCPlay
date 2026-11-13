@@ -129,6 +129,13 @@ const TASKS = [
     const said = await o.page.$eval("#msg-t", e => e.textContent).catch(() => "");
     const cls = await o.page.$eval("#msg", e => e.className).catch(() => "");
     if(!/^Not confirmed: ALL groups disarm sent\./.test(said) || cls !== "warn") o.notes.push("FORCED DISARM NOT SAID: '" + said + "' " + cls); }],
+  // Pre-show audio (preshow_audio.py, Jeff 2026-11-12): an admin turns it
+  // on for the chosen file on the Schedule tab.
+  ["12 Turn on pre-show audio", "day_jeff", async o => {
+    await o.tap('.tab[data-tab="schedule"]', "Schedule"); await o.page.waitForTimeout(600); await o.shot("12_card");
+    await o.tap("#psa-on", "Turn on"); await o.shot("12_on");
+    const now = await o.page.$eval("#psa-now", e => e.textContent).catch(() => "");
+    if(now !== "ON: welcome.wav") o.notes.push("PRE-SHOW AUDIO NOT SHOWN ON: '" + now + "'"); }],
 ];
 
 (async () => {

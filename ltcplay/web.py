@@ -2076,6 +2076,17 @@ def _attach_accounts(httpd, users_seed=None, transport=None):
             log.folder, r.folder, transport=transport,
             note=lambda **kw: log.event(user=audit_mod.SYSTEM,
                                         surface="engine", **kw)).start()
+        sched = getattr(httpd, "schedule", None)
+        book = getattr(sched, "logbook", None)
+        if book is not None:
+            # The night journal goes to the same server with the same
+            # settings (Jeff, 2026-11-12), only on an engine that keeps one
+            # (Fire & Ice), and only each closed night.
+            r.journal_uploader = auditsend.JournalUploader(
+                book.folder, r.folder, night=sched._night,
+                transport=transport, checker=book.check_night,
+                note=lambda **kw: log.event(user=audit_mod.SYSTEM,
+                                            surface="engine", **kw)).start()
         r.audit_watch = auditwatch.EngineWatch(r, log).start()
         log.event(user=audit_mod.SYSTEM, surface="engine",
                   action="engine-start", target=r.folder)
@@ -2086,6 +2097,8 @@ def _attach_accounts(httpd, users_seed=None, transport=None):
                 r.audit_watch.stop()
                 r.users.stop()
                 r.uploader.stop()
+                if r.journal_uploader is not None:
+                    r.journal_uploader.stop()
                 log.event(user=audit_mod.SYSTEM, surface="engine",
                           action="engine-stop")
                 log.flush(1.0)
@@ -3143,6 +3156,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     httpd.remote.tailscale_close = lambda: close_tailscale_door(httpd)
     _say_listening(httpd, on_network, network_why, ts_why)
     httpd.announce = None
+    httpd.preshow_audio = None
     if announce is not None:
         if isinstance(announce, str):
             from . import announce as announce_mod
@@ -3175,6 +3189,9 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         # announcement service finding out on its own next status() poll.
         # See announce.py's module docstring and on_show_started.
         sched.on_show_started = httpd.announce.on_show_started
+        # A Hold (or a pause) stops pre-show audio at once.
+        sched.on_schedule_held = getattr(httpd.announce,
+                                         "on_schedule_held", None)
         # The third direction: every announcement Holds the scheduler
         # first, through the same path an operator's own Hold uses. See
         # Service.hold_for_announcement and announce.py's play().
@@ -3187,6 +3204,20 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         # 2026-09-26: audit15_resume_race.py). See Service.hold_still_claimed
         # and announce.py's _check_still_held.
         httpd.announce.hold_still_claimed = sched.hold_still_claimed
+        # Pre-show audio (preshow_audio.py, Jeff 2026-11-12): off unless an
+        # admin turns it on; its settings beside ltcplay_announce.json. It
+        # plays through this same announcement player and nothing else.
+        try:
+            from . import preshow_audio as preshow_mod
+            httpd.preshow_audio = preshow_mod.PreShowAudio(
+                os.path.dirname(os.path.abspath(
+                    httpd.announce.config_path)),
+                httpd.announce, journal=sched.preshow_journal,
+                audit=getattr(httpd.remote, "audit", None))
+            sched.preshow_audio = httpd.preshow_audio
+        except Exception as e:                   # noqa: BLE001
+            httpd.preshow_audio = None
+            print(f"Pre-show audio is off: {type(e).__name__}: {e}")
     httpd.fire_ice_config = fire_ice
     if fire_ice is not None:
         if madmapper is None:
@@ -3285,6 +3316,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         # The rack screen's and the Stream Deck's announcement presses go
         # through the remote routes (remote.announce_post).
         httpd.remote.announce = httpd.announce
+        httpd.remote.preshow_audio = httpd.preshow_audio
     httpd.morning = None
     if fire_ice is not None:
         # The Morning and Shutdown page (Jeff, 2026-10-17; morning.py,

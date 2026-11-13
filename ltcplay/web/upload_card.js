@@ -7,6 +7,7 @@
 // the page's own $, post, uMsg and loadUsers.
 window.ltcUploadCard = function(UV){
   const u = (UV.upload && UV.upload.upload) || {};
+  const j = UV.upload && UV.upload.journal_upload;
   let c = $("u-upload");
   if(!c){
     c = document.createElement("section");
@@ -14,7 +15,8 @@ window.ltcUploadCard = function(UV){
     c.innerHTML = `<h2>Nightly upload</h2>` +
       `<ul class="dim" style="font-size:13px;margin:0 0 6px 18px;padding:0"><li>SuperUser only, on this show PC.</li><li>Every change goes in the audit log.</li><li>Save and Send now need your password.</li></ul>` +
       `<div class="kv" id="au-up"></div>` +
-      `<label><input type="checkbox" id="au-en"> Send the audit log to the server every night</label>` +
+      `<label><input type="checkbox" id="au-en"> Send the audit log and the night journal to the server every night</label>` +
+      `<div class="dim" style="font-size:13px">The night journal names each operator and screen.</div>` +
       `<label for="au-url">Server address (https://)</label>` +
       `<input id="au-url" placeholder="https://audit.example.com/ltc">` +
       `<label for="au-tok">Shared token</label>` +
@@ -45,7 +47,11 @@ window.ltcUploadCard = function(UV){
   $("au-up").textContent = (u.enabled ? ("On, to " + (u.host || "?") + " at " + u.time + ".") : "Off.") +
     " Last upload: " + (u.last_upload_at || "never") + ". Days waiting: " + ((u.pending_days || []).join(", ") || "none") + "." +
     (u.last_error ? " Last error: " + u.last_error : "") + (u.config_error ? " Settings problem: " + u.config_error : "") +
-    ((u.changed_since_sent || []).length ? " CHANGED SINCE SENT: " + u.changed_since_sent.join(", ") : "");
+    ((u.changed_since_sent || []).length ? " CHANGED SINCE SENT: " + u.changed_since_sent.join(", ") : "") +
+    (j ? " Night journal: nights waiting: " + ((j.pending_nights || []).join(", ") || "none") + "." +
+      (j.last_error ? " Last error: " + j.last_error : "") +
+      ((j.changed_since_sent || []).length ? " CHANGED SINCE SENT, sending again: " + j.changed_since_sent.join(", ") : "") +
+      ((j.failed || []).length ? " NOT SENT, refused by the server: " + j.failed.join(", ") : "") : "");
   if(!(document.activeElement && c.contains(document.activeElement))){
     $("au-en").checked = !!u.enabled;
     $("au-time").value = u.time || "03:30";
