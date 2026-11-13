@@ -101459,6 +101459,150 @@ if(out.look.fits){
     print("  ok")
 
 
+# The Startup steps' layout (Jeff, 2026-11-13, the show PC at 125 percent,
+# bench-2026.11.13-c1f7a73): the Purge step's own rows were drawn on top of
+# each other. #d-ctl (the step's buttons) could shrink below its content
+# when the step's sections were taller than the DAY panel, so the timed
+# purge and the hazer test below it were drawn over its buttons. Every
+# step is drawn at every size here and every visible control is measured.
+_UI2_STEP_LAYOUT_JS = r"""
+await h.sleep(900);
+out.vw = [innerWidth, innerHeight, devicePixelRatio];
+out.steps = {};
+const P = document.getElementById("d-panel");
+const vis = e => e.getClientRects().length && getComputedStyle(e).visibility !== "hidden";
+const nm = e => e.id || e.textContent.trim().replace(/\s+/g, " ").slice(0, 24);
+for(const k of [...document.querySelectorAll("#d-steps .st")].map(b => b.dataset.step)){
+  document.querySelector('#d-steps [data-step="' + k + '"]').click();
+  await h.sleep(700);
+  const els = [...P.querySelectorAll("button, input, select, textarea, a, [role=button]")].filter(vis);
+  const over = [];
+  for(let i = 0; i < els.length; i++) for(let j = i + 1; j < els.length; j++){
+    const a = els[i], c = els[j];
+    if(a.contains(c) || c.contains(a)) continue;
+    const A = a.getBoundingClientRect(), C = c.getBoundingClientRect();
+    if(Math.min(A.right, C.right) - Math.max(A.left, C.left) > 1 && Math.min(A.bottom, C.bottom) - Math.max(A.top, C.top) > 1)
+      over.push(nm(a) + " / " + nm(c));
+  }
+  // Clipped: a box a child of which sticks out of it (overflow visible,
+  // so the next row is drawn over it), or anything past the panel's sides.
+  const spill = [];
+  for(const e of [...P.querySelectorAll("*")].filter(vis)){
+    const cs = getComputedStyle(e);
+    if(cs.display === "inline" || cs.overflowX !== "visible" || cs.overflowY !== "visible") continue;
+    const E = e.getBoundingClientRect();
+    for(const c of [...e.children].filter(vis)){
+      const C = c.getBoundingClientRect();
+      if(C.top < E.top - 1 || C.bottom > E.bottom + 1 || C.left < E.left - 1 || C.right > E.right + 1)
+        spill.push(nm(c) + " out of " + nm(e));
+    }
+  }
+  const R = P.getBoundingClientRect();
+  const side = els.filter(e => { const r = e.getBoundingClientRect(); return r.left < R.left - 1 || r.right > R.right + 1; }).map(nm);
+  out.steps[k] = {n:els.length, over:over.slice(0, 8), spill:spill.slice(0, 8), side:side.slice(0, 8), hs:P.scrollWidth - P.clientWidth};
+}
+"""
+
+
+def _ui2_status_startup_steps():
+    """The show PC's Startup page as Jeff had it (2026-11-13): Andy signed
+    in, the engine held after a Stop, four purge groups, the timed purge,
+    fuel, the Fireball, lasers, the hazers and their test, the lockout."""
+    st = _ui2_status_stopped()
+    st["me"] = {"local": True, "device": "this PC (rack screen)",
+                "fresh_s": 2.0, "user": "Andy", "role": "admin",
+                "users_active": True, "view_only": False,
+                "may": {p: True for p in ("show", "arm", "unlock",
+                                          "checklist", "show_files",
+                                          "settings", "users")}}
+    names = ["Ground G-Flames", "Scaffold G-Flames", "Scaffold Wavers",
+             "Fireball"]
+    st["flames"]["groups"] = [{"name": n, "armed": "disarmed"}
+                              for n in names]
+    st["fireball"] = {"available": True, "on": [], "owner": None}
+    hz = _ui2_status_hazer_test("armed")
+    st["hazers"] = hz["hazers"]
+    st["hazer_test"] = dict(hz["hazer_test"], refusal="")
+    mo = _morning_view_pico()
+    ms = []
+    for gi, g in enumerate(names):
+        for n in range(3 if gi < 3 else 1):
+            ms.append({"id": f"m{len(ms) + 1}", "name": f"{g} {n + 1}",
+                       "kind": "flame", "group": g})
+    mo["machines"] = ms
+    mo["groups"] = {}
+    for m in ms:
+        mo["groups"].setdefault(m["group"], []).append(m["id"])
+    mo["layout"] = {m["id"]: {"x": 12 + (i % 4) * 25, "y": 25 + (i // 4) * 30}
+                    for i, m in enumerate(ms)}
+    mo["flamesafe_groups"] = names
+    mo["checks"] = [c for c in mo["checks"] if c["level"] == "ok"]
+    mo["checklists"]["checklists"][0].update(steps=[], done=0, total=0)
+    mo["timed_settings"] = {"presets": [2, 5, 10, 20, 30], "default_s": 5,
+                            "max_s": 30, "min_s": 1, "hold_s": 1.0}
+    mo["timed"] = None
+    fu = {"units": [{"id": f"G{n}", "name": f"Ground {n}", "shows_left": 3,
+                     "percent": 40, "refill_soon": n == 1, "color": "",
+                     "locked": False, "status": "ok"} for n in (1, 2, 3)],
+          "unit_ids": ["G1", "G2", "G3"], "may_refill": True,
+          "may_undo": True, "refill_why": "", "undo_why": "", "fault": "",
+          "config_error": "", "notes": [], "recent_refills": []}
+    return st, {"/api/remote/morning": mo, "/api/remote/fuel": fu,
+                "/api/remote/fireball": _fb_view()}
+
+
+# (window width, height, device pixel ratio): the show PC's 2000x1250 at
+# 100, 125 and 150 percent, 1920x1080, laptops, a short 1024x600 window,
+# a 2560 wide screen and a 2x screen.
+UI2_STEP_SIZES = ((1024, 600, 1), (1024, 768, 1), (1280, 720, 1),
+                  (1366, 768, 1), (1600, 1000, 1), (1920, 1080, 1),
+                  (2000, 1250, 1), (2560, 1440, 1), (1600, 1000, 1.25),
+                  (1333, 833, 1.5), (1280, 800, 2))
+
+
+def test_ui2_startup_steps_never_overlap():
+    section("2.0's Startup steps drawn in a real browser at eleven sizes "
+            "(1024 to 2560 wide, device pixel ratio 1 to 2), Andy signed "
+            "in, held after a Stop, four purge groups: on every step "
+            "(Checks, Fuel, Purge, Fireball, Lasers, Hazers, Locks) no "
+            "two controls overlap and nothing spills out of its row "
+            "(Jeff, 2026-11-13: the Purge step's rows drawn on top of each "
+            "other on the show PC)")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2_page_inline()
+    st, routes = _ui2_status_startup_steps()
+    base = list(chrome) if isinstance(chrome, (list, tuple)) else [chrome]
+    for w, h, dpr in UI2_STEP_SIZES:
+        where = f"2.0 Startup, {w}x{h} at {dpr}x"
+        m = _ui2_drive(base + [f"--force-device-scale-factor={dpr}"], page,
+                       st, _UI2_STEP_LAYOUT_JS, size=(w, h),
+                       frag="?tour=0#day", routes=routes, budget_ms=20000)
+        if not check(isinstance(m, dict) and isinstance(m.get("steps"),
+                                                        dict),
+                     f"{where}: drawn and measured: {m!r}"[:1500]):
+            continue
+        steps = m["steps"]
+        check({"checks", "fuel", "purge", "fireball", "lasers", "hazers",
+               "locks"} <= set(steps),
+              f"{where}: every Startup step is drawn: {sorted(steps)}")
+        check(steps.get("purge", {}).get("n", 0) >= 14,
+              f"{where}: the Purge step's groups, timed purge and hazer "
+              f"test are all there to measure: {steps.get('purge')}")
+        for k, r in steps.items():
+            check(not r["over"] and not r["spill"] and not r["side"] and
+                  r["hs"] <= 1,
+                  f"{where} (CSS {m.get('vw')}), step {k}: no two controls "
+                  f"overlap, nothing spills out of its row or past the "
+                  f"panel: overlap {r['over']}, spills {r['spill']}, "
+                  f"sides {r['side']}, sideways {r['hs']}")
+    print("  ok")
+
+
 def test_ui2_timed_purge_and_fuel_undo_driven():
     section("2.0's Purge step's timed purge and Fuel step's recent refills "
             "pressed in a real browser (1.0's code): a preset, the hold "
@@ -115462,6 +115606,7 @@ if __name__ == "__main__":
         test_ui2_fireball_page_driven,
         test_ui2_fireball_pads_only_whole,
         test_ui2_timed_purge_and_fuel_undo_driven,
+        test_ui2_startup_steps_never_overlap,
         test_ui2_calm_screens_and_brand,
         test_config_watch_supervisor_and_rack_screen_note,
         test_fireball_timeline_model,
