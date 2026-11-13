@@ -16834,7 +16834,10 @@ def test_remote_schedule_save_says_what_tonight_holds():
         st, _h, out = _ask(R.httpd, "POST", "/api/remote/schedule-file",
                            {"doc": doc}, client=loop)
         check(st == 200 and "Warnings, saved anyway:" in out["text"] and
-              out.get("warnings") and "overlap" in out["text"],
+              out.get("warnings") and "overlap" in out["text"] and
+              out["text"].startswith("Schedule saved.\n") and
+              "\n- weekly sat: shows overlap and can run late." in
+              out["text"] and "\nMore: saved to " in out["text"],
               f"shows closer than a show and its guard are saved, with a "
               f"warning: {st} {out.get('text') or out}")
         doc["weekly"] = {"sat": {"first_start": "23:30", "interval_min": 30,
@@ -50869,9 +50872,11 @@ def test_flame_frame_timing_alert_and_systems_line():
     al = rm.alerts.open()
     r = row()
     check(len(al) == 1 and al[0].kind == "timing" and
-          al[0].text.startswith("Flame frames late: 1 in the last hour, "
-                                "worst 178 ms") and
-          "nothing was changed" in al[0].text and
+          al[0].text.startswith("Flame frames late, last hour: 1. ") and
+          "worst 178 ms" in al[0].text and
+          "Nothing was changed" in al[0].text and
+          _op_shaped(al[0].full) and "worst" not in
+          al[0].full.split("\n\n")[0] and
           "\u2013" not in al[0].text and "\u2014" not in al[0].text,
           f"a frame 178 ms late: the alert, in plain words: "
           f"{[a.text for a in al]}")
@@ -50889,7 +50894,7 @@ def test_flame_frame_timing_alert_and_systems_line():
     rm._frame_timing_work()
     al = rm.alerts.open()
     check(len(al) == 1 and al[0].text.startswith(
-        "Flame frames late: 2 in the last hour, worst 178 ms"),
+        "Flame frames late, last hour: 2.") and "worst 178 ms" in al[0].text,
           f"a new late frame raises it again: {[a.text for a in al]}")
     print("  ok")
 
@@ -51380,6 +51385,20 @@ def test_audio_interface_watch():
               f"the missing interface raises the audio alert, naming the "
               f"device, its show file and the outputs seen: {st} "
               f"{[x.text for x in a]}")
+        # Less prose (Jeff, 2026-11-11): a headline of 6 words or fewer,
+        # bullets of 8 or fewer, the names behind More. The rack screen's
+        # Details reads the lines; the journal and text are one line.
+        full = a[0].full.split("\n")
+        bullets = [x[2:] for x in full if x.startswith("- ")]
+        check(len(full[0].split()) <= 6 and len(bullets) == 3 and
+              all(len(x.split()) <= 8 for x in bullets) and
+              bullets[0].startswith("Do: ") and full[-1].startswith("More: ")
+              and "second.json" in full[-1] and "second.json" not in
+              "".join(full[:-1]) and "\n" not in a[0].text and
+              not any("\n" in t for t, _kw in journal) and
+              not any("\n" in x for x in log),
+              f"the audio alert is a headline, Do, Then, Why and More; "
+              f"one line in the journal and the log: {full}")
         raised = [t for t, kw in journal if kw.get("outcome") == "raised"]
         w.check()
         w.check()
@@ -56339,7 +56358,7 @@ def test_remote_setup_routes_this_machine_only():
                                  "last_end": "22:00"}}
         st, _h, out = _ask(R.httpd, "POST", "/api/remote/schedule-file",
                            {"doc": doc}, client=loop)
-        check(st == 200 and "Saved" in out["text"] and
+        check(st == 200 and "Schedule saved." in out["text"] and
               "loaded" in out["text"],
               f"a good schedule is written and loaded: {st} {out}")
         with open(R.svc.path, encoding="utf-8") as fh:
@@ -65830,6 +65849,27 @@ def test_alerts_pure_logic():
                   if k != "gate" and k not in AL.DISPLAY_ONLY),
           "the gate and a display only kind (the aim slots) are warnings; "
           "everything else is a fault")
+    # Line breaks (Jeff, 2026-11-11: bullets, not blocks of text): kept in
+    # full for the rack screen's Details only; text, the journal and every
+    # other reader stay one line, spaces made single as before.
+    jl = []
+    C = AL.Alerts(journal=lambda text, **kw: jl.append(text), booth=None,
+                  clock=lambda: t[0], wall=lambda: w[0])
+    y = C.raise_("audio", "\n  Audio  box gone.\r\n- Do:  plug it in.\n"
+                 "\n\n\nMore: 'X'  in  show.json.\n\n")
+    vy = y.view()
+    check(y.text == "Audio box gone. Do: plug it in. More: 'X' in "
+          "show.json." and vy["full"] == "Audio box gone.\n- Do: plug it "
+          "in.\n\nMore: 'X' in show.json.\n\n" + AL.BOOTH_UNAVAILABLE + "."
+          and vy["text"] == y.text + " " + AL.BOOTH_UNAVAILABLE + "." and
+          not any("\n" in x for x in jl),
+          f"an alert keeps its line breaks in full only, one blank line "
+          f"at most; text and the journal are one line: {vy} {jl}")
+    z = C.raise_("deck", "  The deck\tis  gone. ")
+    check("full" not in z.view() and z.full == z.text and
+          z.view()["text"] == "The deck is gone. " + AL.BOOTH_UNAVAILABLE +
+          ".", f"one line in: no full in the view, text as before: "
+               f"{z.view()}")
     print("  ok")
 
 
@@ -68323,6 +68363,8 @@ def test_pump_review_fixes():
             st, _h, out = R.ask("POST", "/api/remote/fuel-pump", body,
                                 client=loop)
             check(st == 409 and "more than 1 s old" in out.get("error", "")
+                  and out.get("error", "").startswith(
+                      "Fuel pump NOT turned on.\nWait for the screen")
                   and pm.run is None and not link.pump_on,
                   f"an ON whose screen status is {label}: refused: {st} "
                   f"{out}")
@@ -70405,8 +70447,9 @@ def test_aim_slots_are_seen_on_the_rack_screen():
           al[0].kind == "aim" and
           "flamesafe has 1, 7, 13 and LTC Player has none" in al[0].text
           and path in al[0].text and "quit LTC Player and start it again"
-          in al[0].text and "Stop, Hold and Disarm all work as "
-          "usual" in al[0].text,
+          in al[0].text and "Stop, Hold and Disarm all still work" in
+          al[0].text and _op_shaped(al[0].full) and path not in
+          al[0].full.split("\n\n")[0],
           f"a difference is an aim alert saying what to do: "
           f"{[x.text for x in al]}")
     check(v["groups"][1]["aim"]["loaded"] is False and
@@ -79195,6 +79238,8 @@ def test_users_file_broken_or_lost_locks_and_says_so():
               U.USERS_MARK in ua[0]["text"] and
               rem.users.folder in ua[0]["text"] and
               "backup" not in ua[0]["text"] and
+              _op_shaped(ua[0].get("full")) and U.USERS_MARK not in
+              ua[0]["full"].split("\n\n")[0] and
               s2["me"]["view_only"] is True,
               f"the alert says why and what to do, on every screen: "
               f"{ua} {s2.get('me')}")
@@ -79237,7 +79282,8 @@ def test_users_file_broken_or_lost_locks_and_says_so():
         check(len(ua) == 1 and "cannot be opened just now" in ua[0]["text"]
               and "antivirus" in ua[0]["text"] and
               U.USERS_MARK not in ua[0]["text"] and
-              "remove" not in ua[0]["text"],
+              "remove" not in ua[0]["text"] and
+              _op_shaped(ua[0].get("full")),
               f"held: wait and check, never delete: {ua}")
     finally:
         httpd.server_close()
@@ -80699,7 +80745,11 @@ def test_soak_render_older_than_layout_is_a_cues_fault_at_show_load():
         text = F.render_age_sentence(rig.net, [rig.render], "bench.json")
         check(text.startswith("CUES FAULT in bench.json") and
               "Show.fseq" in text and rig.net in text and
-              "Render them again" in text and "touching" in text,
+              "Render them again" in text and "touching" in text and
+              text.split("\n")[:2] == [
+                  "CUES FAULT in bench.json: flame cues are off.",
+                  "Render these again in xLights: Show.fseq."] and
+              "\n\nMore: flame cues will be zero." in text,
               f"the sentence names the show, the file, the layout and "
               f"what to do: {text!r}")
         _no_dashes(text, "the render age sentence")
@@ -80789,11 +80839,13 @@ def test_soak_render_older_than_layout_is_a_cues_fault_at_show_load():
                 check(len(al) == 1 and "Show.fseq" in al[0]["text"],
                       f"and it is an alert on every screen: {out['alerts']}")
                 # The Morning checks, from the show folder's show files.
-                with open(os.path.join(R.folder, "bench.json"), "w",
-                          encoding="utf-8") as fh:
-                    json.dump({"fps": 30, "show_dir": rig.show, "cues": [
-                        {"tc": "00:00:00:00", "fseq": "Show.fseq",
-                         "name": "Show"}]}, fh)
+                for sf in ("bench.json", "second.json"):
+                    with open(os.path.join(R.folder, sf), "w",
+                              encoding="utf-8") as fh:
+                        json.dump({"fps": 30, "show_dir": rig.show,
+                                   "cues": [{"tc": "00:00:00:00",
+                                             "fseq": "Show.fseq",
+                                             "name": "Show"}]}, fh)
                 R.remote.morning = types.SimpleNamespace(
                     full_view=lambda device: {})
                 st, out = R.remote.morning_get(
@@ -80805,6 +80857,17 @@ def test_soak_render_older_than_layout_is_a_cues_fault_at_show_load():
                       "Show.fseq" in rc.get("text", ""),
                       f"the Morning checks name the show file and the "
                       f"render: {out.get('checks')}")
+                # Two show files: each its own block and headline, never
+                # one inside the other's More (cold review of #238).
+                rt = rc.get("text", "")
+                check("\n\nCUES FAULT in second.json: flame cues are off.\n"
+                      in rt and
+                      "\n\nCUES FAULT in bench.json: flame cues are off.\n"
+                      in rt and rt.startswith("CUES FAULT") and
+                      rt.count("CUES FAULT") ==
+                      1 + rt.count("\n\nCUES FAULT"),
+                      f"two show files: two blocks, each with its "
+                      f"headline: {rc.get('text')!r}")
                 check(F.show_folder_render_faults(R.folder) and
                       F.show_file_render_fault(
                           os.path.join(R.folder, "bench.json")),
@@ -80937,7 +81000,9 @@ def test_soak_show_folder_served_is_said_and_followed():
               RM.show_folder_mismatch(a, os.path.join(a, ".")) == "",
               "the same folder, however spelled, or none named: nothing")
         text = RM.show_folder_mismatch(a, b)
-        check(text.startswith(f"showpc.json names the show folder {b}") and
+        check(text.startswith("Wrong show folder in use.\n") and
+              f"More: showpc.json names the show folder {b}" in text and
+              _op_shaped(text) and
               f"serving {a}" in text and "Stop" in text,
               f"another folder: both named and what to do: {text!r}")
         _no_dashes(text, "the show folder sentence")
@@ -80967,7 +81032,7 @@ def test_soak_show_folder_served_is_said_and_followed():
                 st, _h, out = R.ask("GET", "/api/remote/status")
                 pr = out["show_folder"]["problem"]
                 check(out["show_folder"]["served"] == R.folder and
-                      pr.startswith(f"showpc.json names the show folder {b}"),
+                      f"More: showpc.json names the show folder {b}" in pr,
                       f"showpc.json names another: the status says so, on "
                       f"every screen: {out['show_folder']}")
                 st, _h, su = _ask(R.httpd, "GET", "/api/remote/setup",
@@ -84579,7 +84644,7 @@ def test_group_disarm_is_confirmed_or_forced():
         check(st == 200 and out.get("forced") is True and
               out.get("confirmed") is False and
               out.get("text", "").startswith(
-                  "Deck did not answer: ALL groups disarm sent. Disarm "
+                  "Deck did not answer: ALL groups disarm sent.\n- Disarm sent to every group. Hazers off.\n- Flames stay zero until Hold then Resume.\n- Do: Arm each group again to fire.\n\nMore: Disarm "
                   "front row forced (the Stream Deck program has not read "
                   "this engine in the last 0.5 s") and
               "every hazer is off" in out["text"] and
@@ -84595,7 +84660,7 @@ def test_group_disarm_is_confirmed_or_forced():
               f"write: {seen_at_journal} (before: {n})")
         _no_dashes(out.get("text", ""), "the forced answer")
         al = flames_alerts()
-        check(len(al) == 1 and al[0]["text"].startswith(out["text"]) and
+        check(len(al) == 1 and al[0]["full"].startswith(out["text"]) and
               al[0]["severity"] == "fault",
               f"and a flames alert says the same: {al}")
         f = rows("forced")
@@ -84616,7 +84681,7 @@ def test_group_disarm_is_confirmed_or_forced():
                             {"group": "front row"}, client=other)
         check(st == 200 and out.get("forced") is True and
               out.get("text", "").startswith(
-                  "No word from flamesafe: ALL groups disarm sent. Disarm "
+                  "No word from flamesafe: ALL groups disarm sent.\n- Disarm sent to every group. Hazers off.\n- Flames stay zero until Hold then Resume.\n- Do: Arm each group again to fire.\n\nMore: Disarm "
                   "front row forced (flamesafe's status is not reaching "
                   "this engine") and
               R.rig.count("flames_disarm_all") == n + 1 and not paused,
@@ -84634,7 +84699,7 @@ def test_group_disarm_is_confirmed_or_forced():
         st, _h, out = disarm("front row")
         check(st == 200 and out.get("forced") is True and
               out.get("text", "").startswith(
-                  "Not confirmed: ALL groups disarm sent. Disarm front row "
+                  "Not confirmed: ALL groups disarm sent.\n- Disarm sent to every group. Hazers off.\n- Flames stay zero until Hold then Resume.\n- Do: Arm each group again to fire.\n\nMore: Disarm front row "
                   "forced (flamesafe did not report front row off within "
                   "1 s") and
               R.rig.count("flames_disarm_all") == n + 1 and
@@ -85077,7 +85142,7 @@ def test_group_disarm_across_two_screens_real_flamesafe():
             screen.new_disarms = real_new
             check(code == 200 and out.get("forced") is True and
                   out.get("text", "").startswith(
-                      "Not confirmed: ALL groups disarm sent. Disarm "
+                      "Not confirmed: ALL groups disarm sent.\n- Disarm sent to every group. Hazers off.\n- Flames stay zero until Hold then Resume.\n- Do: Arm each group again to fire.\n\nMore: Disarm "
                       "front row forced (flamesafe did not report front "
                       "row off") and
                   took >= RM.PLAIN_CONFIRM_S - 0.05,
@@ -95057,6 +95122,12 @@ def test_preroll_runner_unknown_is_failure_and_cancel_is_clean():
     check([a.kind for a in al.open()] == ["preroll"] and
           "Lasers FAILED: BEYOND is not running" in al.open()[0].text,
           f"a failure raises the preroll alert: {al.view()}")
+    # Less prose (Jeff, 2026-11-11): what failed above More.
+    full = al.open()[0].full if al.open() else ""
+    check(full.startswith("Rig check FAILED before show 1 (18:00).\n"
+                          "- Failed: Lasers.\n") and
+          "\n\nMore: The rig check before show 1 (18:00) FAILED: " in full,
+          f"the preroll alert: headline, what failed, More: {full!r}")
     check(pr.verdict(("n", 1)) == "failed" and pr.alert_open(),
           "the verdict stands for its show")
     check(any(k.get("fault") and "FAILED" in t for t, k in lines),
@@ -98257,6 +98328,24 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
 
 
 # ------------------------------------------- interface 2.0 (the SHOW tab) --
+
+def _op_shaped(full):
+    """Jeff's rule for operator text (2026-11-11): a headline of 6 words or
+    fewer, then 1 to 3 "- " bullets of 8 words or fewer, then anything
+    more after a blank line, starting "More:". The view's booth note may
+    end it."""
+    full = str(full or "")
+    tail = "\n\nBooth speaker not available."
+    full = full[:-len(tail)] if full.endswith(tail) else full
+    parts = full.split("\n\n")
+    head = parts[0].split("\n")
+    bullets = [x[2:] for x in head[1:]]
+    return (len(head[0].split()) <= 6 and 1 <= len(bullets) <= 3 and
+            all(x.startswith("- ") for x in head[1:]) and
+            all(len(x.split()) <= 8 for x in bullets) and
+            all(p.startswith("More: ") for p in parts[1:]) and
+            "\u2013" not in full and "\u2014" not in full)
+
 
 def _ui2_pages():
     here = os.path.dirname(os.path.abspath(__file__))
@@ -113374,9 +113463,14 @@ def test_ui2_schedule_tab_makes_1_0_presses():
     check(t1 in two, "2.0's tonight list and its tap are 1.0's code, word "
                      "for word (slotNotes, renderSchedule, toggleSlot, the "
                      "tap's three listeners)")
+    # One named difference (Jeff, 2026-11-11: less prose): Save's answer
+    # keeps its lines (headline, warnings as bullets, More).
+    s1 = s1.replace('{doc:readSchedule()}); $("se-msg").textContent = '
+                    'j.text;',
+                    '{doc:readSchedule()}); setOpText($("se-msg"), j.text);')
     check(s1 in two, "2.0's schedule editor is 1.0's code, word for word "
                      "(the zones, drawSchedule, readSchedule, loadSchedule, "
-                     "Save and Reload)")
+                     "Save and Reload), Save's answer in lines")
     for need in ('id="tonight"', 'id="tn-run-warn"', 'id="tn-next"',
                  'id="sched-edit" hidden', 'id="se-days"', 'id="se-save"',
                  'id="se-reload"', 'id="se-msg"', 'id="se-note"',
@@ -114077,9 +114171,15 @@ def _ui2_tools_copies(one):
     ps = ("the Programming screen", "the Schedule tab")
     fit = "  try{ fitSetup(); }catch(e){}\n"
     out = [(n, fn(n)) for n in (
-        "fill", "makeOffered", "checkWords", "loadFolders", "loadDeckOp",
+        "fill", "makeOffered", "checkWords", "loadDeckOp",
         "renderNetwork", "loadNetwork", "saveNetwork", "cfgNote",
         "setWarn")]
+    # A named difference (Jeff, 2026-11-11: less prose): the show folder
+    # problem keeps its line breaks (headline, bullets, More).
+    out += [("loadFolders", sub(fn("loadFolders"),
+                                "margin-top:4px\">${esc(j.show_folder_problem)}",
+                                "margin-top:4px;white-space:pre-line\">"
+                                "${esc(j.show_folder_problem)}"))]
     out += [("renderSetupFold", sub(fn("renderSetupFold"), fit, "")),
             ("renderSetup", sub(sub(fn("renderSetup"), fit, ""), ps[0],
                                 ps[1], 2)),
@@ -114148,8 +114248,93 @@ def _ui2_tools_copies(one):
                # 1.0's renderMode: the info panel's flamesafe line
                '  $("info-flames").textContent = unconf ? "flamesafe\'s '
                'config is not yet confirmed by Andy'):
-        out.append((ln[:60], ln if ln in one else ""))
+        # The one named difference here (Jeff, 2026-11-11): the rig
+        # check's items one to a line (opText), not one run-on sentence.
+        two_ln = ln.replace(
+            '    $("rc-items").textContent = prl.items.join(". ");\n',
+            '    // One check to a line (Jeff, 2026-11-11), not one run-on '
+            'sentence.\n'
+            '    setOpText($("rc-items"), prl.items.map(t => "- " + '
+            'String(t).replace(/\\s+/g, " ")).join("\\n"));\n')
+        out.append((ln[:60], two_ln if ln in one else ""))
     return out
+
+
+def test_ui2_op_text_shapes_text_with_dom_nodes_only():
+    section("2.0's opText (Jeff, 2026-11-11: less prose): the first line a "
+            "bold headline, '- ' lines bullets, a blank line a new "
+            "paragraph, More dimmed; one line of text reads as before; "
+            "built from DOM nodes and textContent only, so a name with "
+            "markup in it is shown as text; the alert Details, and the rig "
+            "check's items one to a line, use it")
+    two = _ui2_pages()[1]
+    fns = [_js_function(two, n) for n in ("opText", "setOpText")]
+    check(all(fns) and not any("innerHTML" in f or "insertAdjacent" in f or
+                               "outerHTML" in f for f in fns),
+          "opText and setOpText never write markup")
+    check('const v = await sheet(it.what, body,' in two and
+          'body.appendChild(opText(it.full));' in two and
+          'full:a.full || a.text, act:"ack"' in two and
+          '$("sh-body").appendChild(html); }' in two and
+          'setOpText($("rc-items"), prl.items.map(' in two,
+          "the alert Details sheet takes opText's nodes, an engine alert "
+          "gives its lines (full), and the rig check card lists its items")
+    import shutil
+    node = shutil.which("node")
+    if not node or not all(fns):
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    stub = r"""
+function El(tag){ this.tag = tag; this.className = ""; this.childNodes = [];
+  this.dataset = {}; this._t = ""; }
+Object.defineProperty(El.prototype, "textContent", {
+  get(){ return this._t + this.childNodes.map(c => c.textContent).join(""); },
+  set(v){ this._t = String(v); this.childNodes = []; }});
+Object.defineProperty(El.prototype, "innerHTML", {
+  set(v){ throw new Error("innerHTML used"); }});
+El.prototype.appendChild = function(c){ this.childNodes.push(c); return c; };
+Object.defineProperty(El.prototype, "firstChild", {
+  get(){ return this.childNodes[0] || null; }});
+const document = {createElement: (t) => new El(t)};
+const shape = (e) => [e.tag, e.className.trim(), e._t].concat(
+  e.childNodes.length ? [e.childNodes.map(shape)] : []);
+"""
+    cases = {
+        "plain": "One line. With <b>x</b> & 'y'.",
+        "shaped": "Head <i>line</i>.\n- Do: a.\n- Then: b.\n\nMore: 'n'.",
+        "items": "- Audio OK\n- Video FAILED: gone",
+        "one": "- Audio OK",
+    }
+    js = stub + fns[0] + "\n" + fns[1] + "\n" + \
+        "const cases = " + json.dumps(cases) + ";\nconst out = {};\n" \
+        "for(const k in cases) out[k] = shape(opText(cases[k]));\n" \
+        "const host = new El('div'); setOpText(host, cases.items); " \
+        "const first = host.childNodes[0]; setOpText(host, cases.items);\n" \
+        "out.same = host.childNodes[0] === first;\n" \
+        "console.log(JSON.stringify(out));\n"
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        got = json.loads(r.stdout.strip() or "null")
+    except ValueError:
+        got = None
+    want = {
+        "plain": ["div", "full op", "One line. With <b>x</b> & 'y'."],
+        "shaped": ["div", "full op", "", [
+            ["b", "", "Head <i>line</i>."],
+            ["ul", "", "", [["li", "", "Do: a."], ["li", "", "Then: b."]]],
+            ["p", "gap dim", "More: 'n'."]]],
+        "items": ["div", "full op", "", [["ul", "", "", [
+            ["li", "", "Audio OK"], ["li", "", "Video FAILED: gone"]]]]],
+        "one": ["div", "full op", "", [["ul", "", "", [
+            ["li", "", "Audio OK"]]]]],
+        "same": True,
+    }
+    check(r.returncode == 0 and got == want,
+          f"opText builds a headline, bullets and paragraphs from text, "
+          f"markup kept as text, and setOpText rebuilds only on a change: "
+          f"{r.stdout.strip()[:800]} {r.stderr.strip()[:600]}")
+    print("  ok")
 
 
 def test_ui2_show_pc_tools_are_1_0s():
@@ -114205,9 +114390,20 @@ def test_ui2_show_pc_tools_are_1_0s():
     ii = one.find('<div id="info" hidden>')
     ij = one.find('</div>\n</div>\n', ii) + 13
     info = one[ii:ij]
-    check(ii > 0 and info.count("the Programming screen") == 2 and
-          info.replace("the Programming screen", "the Schedule tab") in two,
-          "the info panel is 1.0's, its Programming screen the Schedule tab")
+    # The one other named difference (Jeff, 2026-11-11: less prose):
+    # Leaving this window is a headline, three bullets and More.
+    leave1 = ('<div class="kv">This window is only a view. Closing it '
+              'never stops a show')
+    l1 = info.find(leave1)
+    l1e = info.find("</div>\n", l1) + 7
+    leave2 = two.find('<div class="kv"><b>Closing this window is safe.</b>')
+    leave2 = two[leave2:two.find("</div>\n", leave2) + 7]
+    info2 = info[:l1] + leave2 + info[l1e:] if l1 > 0 else info
+    check(ii > 0 and l1 > 0 and info.count("the Programming screen") == 2
+          and info2.replace("the Programming screen", "the Schedule tab")
+          in two,
+          "the info panel is 1.0's, its Programming screen the Schedule tab, "
+          "Leaving this window in bullets")
     hp = two[two.find('$("help").addEventListener('):]
     hp = hp[:hp.find("\n});\n")]
     check('{label:"This LTC Player", value:"info", cls:"blue", '
@@ -115299,6 +115495,7 @@ if __name__ == "__main__":
         test_ui2_users_audit_driven,
         test_ui2_show_pc_tools_are_1_0s,
         test_ui2_show_pc_tools_driven,
+        test_ui2_op_text_shapes_text_with_dom_nodes_only,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):
