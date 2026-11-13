@@ -1569,7 +1569,9 @@ class FuelTracker:
 
 # ------------------------------------------------------- who may do what --
 
-REFILL_ROLES = ("operator", "admin")
+REFILL_ROLES = ("operator", "admin", "superuser")
+# An admin's (a SuperUser has every admin power, users.ADMIN_ROLES).
+UNDO_ROLES = ("admin", "superuser")
 
 
 def may_refill(ctx, users):
@@ -1581,7 +1583,7 @@ def may_refill(ctx, users):
 
 def may_undo(ctx, users):
     """Undoing a refill: an admin, signed in."""
-    return _may(ctx, users, ("admin",), "undo a refill")
+    return _may(ctx, users, UNDO_ROLES, "undo a refill")
 
 
 def _may(ctx, users, roles, what):
@@ -1599,11 +1601,11 @@ def _may(ctx, users, roles, what):
     s = getattr(ctx, "session", None) or {}
     name, role = s.get("name"), s.get("role")
     if not name:
-        need = "an admin" if roles == ("admin",) else "an operator or admin"
+        need = "an admin" if roles == UNDO_ROLES else "an operator or admin"
         return False, (f"Sign in as {need} to {what} (the user chip at the "
                        f"top). Nothing was changed.")
     if role not in roles:
-        need = "an admin" if roles == ("admin",) else "an operator or admin"
+        need = "an admin" if roles == UNDO_ROLES else "an operator or admin"
         return False, (f"{name} is signed in as {role}; only {need} may "
                        f"{what}. Nothing was changed.")
     return True, ""
@@ -1614,9 +1616,9 @@ POST_ROUTES = ("fuel-refill", "fuel-undo", "fuel-shows")
 
 
 def may_set_shows(ctx, users):
-    """Setting shows per refill: an admin, signed in (the show machine
-    itself when nobody can sign in), as for an undo."""
-    return _may(ctx, users, ("admin",), "set shows per refill")
+    """Setting shows per refill: an admin or SuperUser, signed in (the
+    show machine itself when nobody can sign in), as for an undo."""
+    return _may(ctx, users, UNDO_ROLES, "set shows per refill")
 
 
 def route_get(tracker, ctx, users, wall=time.time):

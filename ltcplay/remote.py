@@ -135,6 +135,12 @@ CONTROL_ROUTES = ("start-now", "hold", "resume",
 # stopped, Run off (the Programming Run card). A live show's fade is let
 # run this long at most first (web.HALT_FADE_WAIT_S).
 STOP_FADE_WAIT_S = 3.0
+# Play from with the box left empty (Windows stress round 3, 2026-11-10:
+# the box's grey example was taken for a typed time). Still refused: an
+# empty box never means "from the top".
+PLAY_FROM_EMPTY = ("Nothing to play from: the box is empty. Type a "
+                   "timecode (example: 00:01:30:00) or a cue name; the grey "
+                   "example in the box is not a value.")
 # Programming-session transport (Jeff, 2026-10-03): play from a timecode,
 # jump, pause and continue, an A/B loop, back to following timecode. Only
 # in a programming session (a show started from the page as Rehearse, or in
@@ -379,6 +385,16 @@ ARMING_OFF = ("Arming from a screen is switched off. Arm from the Stream "
 # Users and the audit log (users.py, Jeff, 2026-10-20). Sign in and out
 # from any page; the Users screen's changes from the show machine only.
 USER_GET_ROUTES = ("users",)
+# What a refused upload route answers (users.UPLOAD_REFUSED): the words of
+# a route that is not there.
+UPLOAD_REFUSED = "no such thing here"
+# The nightly upload card's script (web/upload_card.js): served only to a
+# SuperUser signed in on this show PC's rack screen, never part of the page.
+UPLOAD_CARD_ROUTE = "upload-card.js"
+UPLOAD_CARD_JS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "web", "upload_card.js")
+# An upload change without the SuperUser's own password typed again.
+UPLOAD_PASSWORD = "Type your password to save. Nothing was changed."
 USER_POST_ROUTES = ("signin", "signout", "my-password", "users",
                     "role-matrix", "clear-lockouts", "idle-signout",
                     "last-show-signout",
@@ -1991,6 +2007,16 @@ class Remote:
     # -- the routes --------------------------------------------------------
     def get(self, route, ctx, query=""):
         name = route[len("/api/remote/"):]
+        if self.upload_refused(name, ctx, "GET"):
+            return 404, {"error": UPLOAD_REFUSED}
+        if name == UPLOAD_CARD_ROUTE:
+            # The upload card's script: a SuperUser here only (above).
+            try:
+                with open(UPLOAD_CARD_JS, encoding="utf-8") as fh:
+                    return 200, fh.read(), \
+                        "application/javascript; charset=utf-8"
+            except OSError:
+                return 404, {"error": UPLOAD_REFUSED}
         if name in SETUP_GET_ROUTES:
             if not ctx.local:
                 return 403, {"error": "Only on the show machine itself."}
@@ -2062,6 +2088,11 @@ class Remote:
         """(code, body, extra headers)."""
         name = route[len("/api/remote/"):]
         body = body if isinstance(body, dict) else {}
+        # The nightly upload (users.UPLOAD): a SuperUser here, or the same
+        # answer as a route that is not there. Before everything else, so
+        # no other route's check can say more.
+        if self.upload_refused(name, ctx, "POST"):
+            return 404, {"error": UPLOAD_REFUSED}, {}
         if name in REMOVED_ROUTES:
             # A page from before the change: told plainly, nothing done.
             return 410, {"error": REMOVED_ROUTES[name], "removed": True}, {}
@@ -2423,29 +2454,156 @@ class Remote:
                "me": {"name": me.get("name"), "role": me.get("role")},
                "local": ctx.local}
         if ctx.local:
+            from . import users as users_mod
             out.update(u.view())
             out["may_admin"] = u.may(me.get("role"), "users")
+            # A SuperUser this program wrote, reading as an admin now: the
+            # screen offers them Confirm (users op confirm-superuser).
+            try:
+                out["may_confirm"] = bool(me.get("name")) and \
+                    me.get("local") is True and u.may_confirm(me["name"])
+            except Exception:                    # noqa: BLE001
+                out["may_confirm"] = False
             out["may_settings"] = u.may(me.get("role"), "settings")
             out["audit"] = self.audit_view()
+            su = self.superuser_here(ctx)
+            # Who this screen may change: a SuperUser only by a SuperUser
+            # here; the superuser role offered only to one.
+            out["users"] = [dict(x, edit=su or x.get("role") !=
+                                 users_mod.SUPERUSER)
+                            for x in out.get("users") or []]
+            if not su:
+                out["roles"] = [r for r in out.get("roles") or []
+                                if r != users_mod.SUPERUSER]
+            else:
+                # Only a SuperUser here gets the upload's card, its state
+                # and its fixed row in who may do what. Nobody else gets
+                # a word of it (selftest walks the answer).
+                out["may_superuser"] = True
+                out["upload"] = self.upload_view()
+                out["perms"] = list(out.get("perms") or []) + [
+                    {"key": k, "label": l}
+                    for k, l in users_mod.SUPERUSER_ROWS]
+                m = out.get("matrix") or {}
+                for c in m:
+                    for k in users_mod.SUPERUSER_PERMS:
+                        m[c][k] = users_mod.allowed(None, c, k)
+                out["fixed"] = list(out.get("fixed") or []) + [
+                    [c, k] for c in m for k in users_mod.SUPERUSER_PERMS]
         return 200, out
 
     def audit_view(self):
-        """The Users screen's audit card: the writer, the chain, the upload."""
-        out = {"writer": None, "chain": None, "upload": None}
+        """The Users screen's audit card: the writer and the chain. Never
+        the upload (upload_view, a SuperUser's alone)."""
+        out = {"writer": None, "chain": None}
         a = self.audit
         if a is not None:
             try:
-                out["writer"] = a.status()
+                # Never a folder: where the settings live is not said on
+                # this card (Jeff, 2026-11-13: nothing a non-SuperUser sees
+                # says where the upload's settings are).
+                out["writer"] = {k: v for k, v in a.status().items()
+                                 if k != "folder"}
             except Exception as e:               # noqa: BLE001
                 out["writer"] = {"fault": f"{type(e).__name__}: {e}"}
+        out["chain"] = getattr(self, "_chain_said", None)
+        return out
+
+    def upload_view(self):
+        """The nightly upload's card: its settings (never the token) and
+        state. Only users_get for superuser_here() calls this; a later
+        upload (the night journal's, PR #246) puts its state here too."""
+        out = {"upload": None}
         up = self.uploader
         if up is not None:
             try:
                 out["upload"] = up.status()
             except Exception as e:               # noqa: BLE001
                 out["upload"] = {"last_error": f"{type(e).__name__}: {e}"}
-        out["chain"] = getattr(self, "_chain_said", None)
         return out
+
+    def superuser_here(self, ctx):
+        """users.superuser_here for this request: a SuperUser signed in on
+        this show PC's rack screen, never Tailscale, never a users file
+        that cannot be used. False on any fault (fail closed)."""
+        u = self.users
+        if u is None:
+            return False
+        try:
+            from . import users as users_mod
+            if not u.active() or u.broken():
+                return False
+            return users_mod.superuser_here(
+                getattr(ctx, "session", None), getattr(ctx, "local", False),
+                bool(getattr(ctx, "tailscale", False)))
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def rank(self, ctx):
+        """The rank a Users screen change is made with: SUPERUSER only for
+        superuser_here(); a SuperUser anywhere else acts as an admin."""
+        from . import users as users_mod
+        if self.superuser_here(ctx):
+            return users_mod.SUPERUSER
+        role = ((getattr(ctx, "session", None) or {}).get("role"))
+        return "admin" if role == users_mod.SUPERUSER else role
+
+    def upload_refused(self, name, ctx, method):
+        """True (and an audit line: who, what) when `name` is a route of
+        the nightly upload and this request is not superuser_here(). Fails
+        closed: a fault refuses."""
+        try:
+            from . import users as users_mod
+            if not users_mod.is_upload_route(name):
+                return False
+            if self.superuser_here(ctx):
+                return False
+        except Exception:                        # noqa: BLE001
+            pass
+        self._audit_rank("upload-refused", ctx, f"{method} {name}")
+        return True
+
+    def superuser_alert(self, found):
+        """users.Users.on_alert: the SuperUsers in the users file changed
+        outside this program (users.Users._trust). A display only alert on
+        every screen; it never holds a show. Never raises."""
+        more = " ".join(str(x) for x in (found or []))[:900]
+        text = ("SuperUser record changed outside LTC Player.\n"
+                "- Unconfirmed SuperUsers act as admins.\n"
+                "- Do: A SuperUser checks the Users screen.\n"
+                "\n"
+                f"More: {more} The audit log says the same (superuser-set-"
+                f"changed). A SuperUser confirms someone by making them "
+                f"superuser again on the Users screen of the show PC.")
+        try:
+            self.alerts.raise_("superuser", text)
+        except Exception:                        # noqa: BLE001
+            try:
+                self._journal("system", "engine", "users", "fault", text,
+                              fault=True)
+            except Exception:                    # noqa: BLE001
+                pass
+
+    def _audit_rank(self, action, ctx, target, reason=""):
+        """One audit line for a SuperUser's power asked or used: who (the
+        signed-in name, or unsigned) and from where. Never a body, a token
+        or a password. Never raises."""
+        a = self.audit
+        if a is None:
+            return
+        try:
+            s = getattr(ctx, "session", None) or {}
+            refused = action.endswith("-refused")
+            a.event(user=s.get("name") or "unsigned", surface="web",
+                    action=action, target=str(target)[:120],
+                    result="refused" if refused else "accepted",
+                    reason=reason or (
+                        f"role {s.get('role') or 'none'}"
+                        f"{', tailscale' if getattr(ctx, 'tailscale', False) else ''}"
+                        f"{'' if getattr(ctx, 'local', False) else ', not the show PC'}"),
+                    source=getattr(ctx, "source", ""))
+        except Exception:                        # noqa: BLE001
+            pass
 
     def audit_verify(self):
         """Every day file here, verified now (audit.verify_folder)."""
@@ -2541,6 +2699,13 @@ class Remote:
             return 200, {"ok": True, "text": text}, {}
         if name == "audit-verify":
             return (*self.audit_verify(),) + ({},)
+        # The nightly upload's own check, before anything else can answer
+        # (post() already refused it): only a SuperUser on this rack
+        # screen, everyone else the words of a route that is not there,
+        # never the role check's, which would name the setting.
+        if users_mod.is_upload_route(name) and \
+                not self.superuser_here(ctx):
+            return 404, {"error": UPLOAD_REFUSED}, {}
         # Everything else changes users or settings: the show machine only.
         if not ctx.local:
             return 403, {"error": "Users and settings are changed on the "
@@ -2550,29 +2715,69 @@ class Remote:
             return 403, {"error": f"Sign in as someone who may: "
                                   f"{users_mod.perm_label(perm)}. Nothing "
                                   f"was changed.", "role_refused": True}, {}
+        by = self.rank(ctx)
         try:
             if name == "users":
                 op = str(body.get("op") or "")
                 who = body.get("name")
-                if op == "add":
-                    text = u.add(who, body.get("role"), body.get("password"))
+                # Every SuperUser change asks for the SuperUser's own
+                # password again (verification review of #251, M3): a
+                # SuperUser's screen left signed in is not enough.
+                su_change = by == users_mod.SUPERUSER and (
+                    (op in ("add", "role") and
+                     body.get("role") == users_mod.SUPERUSER) or
+                    (op in ("role", "password", "clear-password", "remove")
+                     and u.role_of(who) == users_mod.SUPERUSER))
+                if su_change and not u.confirm(
+                        me.get("name"), body.get("my_password"), ctx.source):
+                    self._audit_rank("superuser-password-refused", ctx,
+                                     f"users {op} {who}")
+                    return 403, {"error": UPLOAD_PASSWORD,
+                                 "password_again": True}, {}
+                if op == "confirm-superuser":
+                    # A SuperUser this program wrote, reading as an admin
+                    # (lockdown, or a record changed outside it), confirms
+                    # themselves with their password, signed in on this
+                    # rack screen (B1b).
+                    if not (ctx.local and me.get("local") is True and
+                            not getattr(ctx, "tailscale", False)):
+                        raise ValueError("Confirm on the show PC's rack "
+                                         "screen. Nothing was changed.")
+                    text = u.confirm_superuser(me.get("name"),
+                                               body.get("my_password"),
+                                               ctx.source)
+                elif op == "add":
+                    text = u.add(who, body.get("role"), body.get("password"),
+                                 by=by)
                 elif op == "remove":
                     if str(who or "").lower() == str(me.get("name") or
                                                      "").lower():
                         raise ValueError("You cannot remove yourself while "
                                          "signed in.")
-                    text = u.remove(who)
+                    text = u.remove(who, by=by)
                 elif op == "role":
-                    text = u.set_role(who, body.get("role"))
+                    text = u.set_role(who, body.get("role"), by=by)
+                    if body.get("role") == users_mod.SUPERUSER:
+                        self._audit_rank("superuser-set", ctx, str(who),
+                                         "made a SuperUser by a SuperUser")
                 elif op == "password":
-                    text = u.set_password(who, body.get("password"))
+                    text = u.set_password(who, body.get("password"), by=by)
                 elif op == "clear-password":
-                    text = u.clear_password(who)
+                    text = u.clear_password(who, by=by)
                 else:
                     raise ValueError("op has to be add, remove, role, "
-                                     "password or clear-password.")
+                                     "password, clear-password or "
+                                     "confirm-superuser.")
             elif name == "role-matrix":
-                text = u.set_matrix(body.get("matrix"))
+                mx = body.get("matrix")
+                if isinstance(mx, dict) and any(
+                        isinstance(r, dict) and set(r) & set(
+                            users_mod.SUPERUSER_PERMS) for r in mx.values()):
+                    # Refused below with the words of any unknown row;
+                    # written down here with who asked.
+                    self._audit_rank("superuser-refused", ctx,
+                                     "role matrix: the upload row")
+                text = u.set_matrix(mx)
             elif name == "clear-lockouts":
                 text = u.clear_lockouts()
             elif name == "idle-signout":
@@ -2581,11 +2786,34 @@ class Remote:
                 text = u.set_last_show(body.get("minutes"))
             elif name == "audit-settings":
                 from . import auditsend
+                # Every upload change asks for the SuperUser's password
+                # again (review of #251, M3).
+                if not u.confirm(me.get("name"), body.get("password"),
+                                 ctx.source):
+                    self._audit_rank("upload-password-refused", ctx,
+                                     "audit-settings")
+                    return 403, {"error": UPLOAD_PASSWORD}, {}
                 ch = {k: body[k] for k in ("enabled", "url", "token", "time",
                                            "keep_days") if k in body}
+                before, _e = auditsend.load_config(self.folder)
                 auditsend.save_config(self.folder, ch)
+                after, _e = auditsend.load_config(self.folder)
+                said = [k for k in ("enabled", "url", "time", "keep_days")
+                        if before.get(k) != after.get(k)]
+                if ch.get("token"):
+                    said.append("token")
+                self._audit_rank(
+                    "upload-settings", ctx, ", ".join(said) or "no change",
+                    f"on {after.get('enabled')}, at {after.get('time')}, "
+                    f"keep {after.get('keep_days')} days")
                 text = "The audit upload settings were saved."
             elif name == "audit-upload-now":
+                if not u.confirm(me.get("name"), body.get("password"),
+                                 ctx.source):
+                    self._audit_rank("upload-password-refused", ctx,
+                                     "audit-upload-now")
+                    return 403, {"error": UPLOAD_PASSWORD}, {}
+                self._audit_rank("upload-now", ctx, "audit-upload-now")
                 up = self.uploader
                 if up is None:
                     raise ValueError("The audit upload is not running in "
@@ -2597,6 +2825,11 @@ class Remote:
                         "says how it went.")
             else:
                 return 404, {"error": "no such thing here"}, {}
+        except users_mod.RankRefused as e:
+            # An admin asking for a SuperUser's change: refused, and the
+            # audit log says who asked for what (never a password).
+            self._audit_rank("superuser-refused", ctx, e.what)
+            return 403, {"error": str(e), "role_refused": True}, {}
         except (ValueError, OSError) as e:
             return 400, {"error": str(e)}, {}
         return 200, {"ok": True, "text": text}, {}
@@ -3716,8 +3949,7 @@ class Remote:
             if name == "play-from":
                 at = str(body.get("at") or "").strip()
                 if not at:
-                    raise ValueError("Type a timecode to play from, like "
-                                     "00:01:30:00, or a cue name.")
+                    raise ValueError(PLAY_FROM_EMPTY)
                 if ph is not None:
                     pos = ph.resolve(at)
                     said = (f"played from "
