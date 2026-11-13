@@ -1,89 +1,217 @@
 name: nightly mutate
 
-# The whole mutation list, every night, on main. The per-PR gate
-# (selftest.yml) runs only the mutations a diff can have changed the result
-# of; this is the sweep that proves the rest is still caught, so a test
-# weakened without being renamed, or a change in one file that silenced a
-# test of another, shows here within a day and never reaches a release tag
-# unseen (a tag runs the whole list too, on ubuntu and windows).
+# What bench-build changed since the last green night, every evening but
+# Saturday's (Saturday evening is the weekly sweep of everything,
+# weekly-mutate.yml).
 #
-# Run it by hand from the Actions tab (Run workflow) before a tech build or
-# whenever a full proof is wanted, choosing the OS. Each ubuntu shard takes
-# about 2 to 2.5 hours (45 mutations). The account runs at most 20 jobs at
-# once, shared with every PR's selftest and installer, so the sweep runs at
-# most 16 shards at a time (max-parallel below) and leaves 4 slots for PRs:
-# every one of the 96 shards still runs, in 6 waves, so a ubuntu sweep
-# takes 11 to 14 hours of wall time (both OSes, about twice that).
-# Starting the workflow again while a sweep runs cancels the older sweep,
-# on any branch: a new start means the old one's result is no longer
-# wanted, and two sweeps at once would take 32 slots. A failure here is a
-# NOT CAUGHT mutation (the suite stayed green with that line broken:
-# strengthen the test), an UNEXPECTED MISS or NOW CAUGHT against
-# mutate_expected_misses.txt, a SETUP FAIL (the mutation's text no longer
-# matches the code: refresh it), or a shard that ran out of time (re-run
-# it). TESTING.md has the longer version.
+# PRs into bench-build run no release shards (the CI diet, 2026-11-13: the
+# shards were nine tenths of the account's runner time and queued the
+# required checks for hours); a PR that touches a safety file runs that
+# file's own mutations (mutate-safety, selftest.yml). This is where the rest
+# runs: `mutate.py --changed BASE` on bench-build's head, where BASE is the
+# commit the last green night proved. A red night is therefore run again,
+# with whatever merged since, every night until it is fixed. With no green
+# night on record (the first night, or none in the last 30 runs), BASE is
+# where bench-build last met main: everything since the last release.
+#
+# The cap. A night that selects more than MUTATE_NIGHTLY_MAX mutations
+# (a repository variable, default 1500: about 4,200 runner minutes, 4.5
+# hours on 16 slots) runs only the whole safety core and the touched safety
+# files' own mutations (mutate.py --targets), and leaves the rest to the
+# weekly sweep, which runs everything; the summary and the issue say so.
+# Uncapped, a heavy night (4,182 mutations on 2026-11-07) would be about
+# 11,700 runner minutes and 12 hours on 16 slots, into the next working day.
+#
+# Each night: one selftest on ubuntu, then the shards, ubuntu only, each
+# trusting that selftest instead of running the whole suite again
+# (mutate.py --trust-baseline). How many shards and how many at once is
+# .github/scripts/mutate_plan.py. Only the scheduled night (or a Run
+# workflow on bench-build with no base of its own) is the record: it alone
+# opens or closes the `mutate-nightly` issue, and a green one alone writes
+# the "green at <commit>" job the next night reads. A run on another branch
+# or with a narrower base reports in its own summary only. The report
+# always runs: a plan that failed (a repository variable that is not a
+# number, mutate.py crashing) is a red night like any other.
+#
+# GitHub starts scheduled workflows only from the default branch (main), so
+# the schedule below runs main's copy of this file, against bench-build.
 on:
   schedule:
-    # 07:12 UTC, 03:12 Eastern: after the day's merges, before anyone is up.
-    - cron: "12 7 * * *"
+    # 02:17 UTC Monday to Saturday: 19:17 Mountain Standard Time (20:17 in
+    # summer) the evening before, Sunday to Friday. Done before the next
+    # working day: the cap keeps a night under about 5 hours.
+    - cron: "17 2 * * 1-6"
   workflow_dispatch:
     inputs:
-      os:
-        description: "Where to run the whole list"
-        type: choice
-        default: ubuntu-latest
-        options: [ubuntu-latest, windows-latest, both]
+      ref:
+        description: "Branch or commit to sweep"
+        type: string
+        default: bench-build
+      base:
+        description: "Compare against this commit (empty: the last green night)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
-# One sweep at a time for the whole repository (not per branch), so the
-# sweep can never hold more than 16 job slots. A newer start cancels the
-# running one; scheduled starts (only ever on the default branch) do the
-# same, so a sweep that overruns a day gives way to the next night's.
+# One sweep at a time, nightly and weekly together, so two sweeps never
+# hold twice the shard slots. A start while one runs waits for it (GitHub
+# keeps the newest waiting run only; a scheduled one dropped that way is
+# reported by sweep-dropped.yml).
 concurrency:
-  group: ${{ github.workflow }}
-  cancel-in-progress: true
+  group: mutate-sweeps
+  cancel-in-progress: false
+
+env:
+  # The record night: scheduled, or by hand on bench-build with no base.
+  OFFICIAL: ${{ github.event_name == 'schedule' || (inputs.ref == 'bench-build' && inputs.base == '') }}
 
 jobs:
   plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
     outputs:
-      oses: ${{ steps.pick.outputs.oses }}
+      mode: ${{ steps.pick.outputs.mode }}
+      base: ${{ steps.pick.outputs.base }}
+      sha: ${{ steps.pick.outputs.sha }}
+      targets: ${{ steps.pick.outputs.targets }}
+      capped: ${{ steps.pick.outputs.capped }}
+      selected: ${{ steps.pick.outputs.selected }}
       shards: ${{ steps.pick.outputs.shards }}
       nshards: ${{ steps.pick.outputs.nshards }}
+      parallel: ${{ steps.pick.outputs.parallel }}
     steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || 'bench-build' }}
+          fetch-depth: 0
       - id: pick
         shell: bash
         env:
-          CHOICE: ${{ inputs.os || 'ubuntu-latest' }}
-          # The same shard count as a whole sweep in selftest.yml
-          # (FULL_SHARDS there; the reason is there).
-          NSHARDS: 96
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          WANT_BASE: ${{ inputs.base }}
+          CI_JOB_SLOTS: ${{ vars.CI_JOB_SLOTS }}
+          CI_SLOT_RESERVE: ${{ vars.CI_SLOT_RESERVE }}
+          MUTATE_SHARDS: ${{ vars.MUTATE_SHARDS }}
+          MUTATE_NIGHTLY_MAX: ${{ vars.MUTATE_NIGHTLY_MAX }}
         run: |
-          echo "nshards=$NSHARDS" >> "$GITHUB_OUTPUT"
-          echo "shards=$(python3 -c "import json,sys; print(json.dumps(list(range(int(sys.argv[1])))))" "$NSHARDS")" >> "$GITHUB_OUTPUT"
-          case "$CHOICE" in
-            both) echo 'oses=["ubuntu-latest","windows-latest"]' >> "$GITHUB_OUTPUT" ;;
-            *)    echo "oses=[\"$CHOICE\"]" >> "$GITHUB_OUTPUT" ;;
-          esac
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          base="$WANT_BASE"
+          why="the base asked for by hand"
+          if [[ -z "$base" ]]; then
+            # The newest "green at <commit>" job of an earlier night whose
+            # commit this one descends from. A failed lookup is not fatal:
+            # it falls back to the wider base below, never a narrower one.
+            ids=$(gh api "repos/$REPO/actions/workflows/nightly-mutate.yml/runs?status=completed&per_page=30" \
+                    --jq '.workflow_runs[].id' 2>/dev/null) || ids=""
+            for id in $ids; do
+              g=$(gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" \
+                    --jq '.jobs[] | select(.conclusion == "success") | .name' 2>/dev/null \
+                  | sed -n 's/^green at \([0-9a-f]\{40\}\)$/\1/p' | head -n 1) || g=""
+              if [[ -n "$g" ]] && git merge-base --is-ancestor "$g" "$sha" 2>/dev/null; then
+                base="$g"
+                why="the last green night (run $id)"
+                break
+              fi
+            done
+          fi
+          if [[ -z "$base" ]]; then
+            base=$(git merge-base "$sha" origin/main 2>/dev/null) || base=""
+            why="no green night on record: everything since bench-build last met main"
+          fi
+          targets=""
+          capped=false
+          if [[ -z "$base" ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "no base to compare against: every mutation"
+            mode=full
+            base=""
+            n=$(python3 mutate.py --list | grep -c '^  would run' || true)
+          else
+            echo "base ${base:0:10}: $why"
+            out="$RUNNER_TEMP/selection.txt"
+            if ! python3 mutate.py --changed "$base" --list > "$out"; then
+              cat "$out"
+              echo "::error::mutate.py could not work out what changed since ${base:0:10}"
+              exit 1
+            fi
+            grep -v '^  would run' "$out" || true
+            n=$(grep -c '^  would run' "$out" || true)
+            mode=affected
+            if grep -q 'nothing to run' "$out" || (( n == 0 )); then mode=none; n=0; fi
+          fi
+          echo "selected=$n" >> "$GITHUB_OUTPUT"
+          python3 .github/scripts/mutate_plan.py nightly-cap "$n" | tee "$RUNNER_TEMP/cap.txt"
+          if grep -q '^capped=true' "$RUNNER_TEMP/cap.txt"; then
+            if grep -q -- '"--targets"' mutate.py; then
+              if [[ -n "$base" ]]; then
+                git diff --name-only "$(git merge-base "$base" "$sha")" "$sha" > "$RUNNER_TEMP/changed.txt"
+              else
+                : > "$RUNNER_TEMP/changed.txt"
+              fi
+              python3 .github/scripts/mutate_plan.py safety-targets --with-core < "$RUNNER_TEMP/changed.txt" | tee "$RUNNER_TEMP/targets.txt"
+              targets=$(sed -n 's/^safety_targets=//p' "$RUNNER_TEMP/targets.txt")
+              n=$(python3 mutate.py --targets "$targets" --list | grep -c '^  would run' || true)
+              mode=targets
+              capped=true
+              echo "::warning title=nightly capped::$(sed -n 's/^selected=//p' "$GITHUB_OUTPUT") mutations selected, over the cap of $(sed -n 's/^cap=//p' "$RUNNER_TEMP/cap.txt"): running the safety core and the touched safety files ($n); the rest is left to the weekly sweep"
+            else
+              echo "::warning::over the cap, but this mutate.py has no --targets: running the whole selection"
+            fi
+          fi
+          echo "$n mutations to run ($mode)"
+          python3 .github/scripts/mutate_plan.py size "$n" | tee -a "$GITHUB_OUTPUT"
+          { echo "mode=$mode"; echo "base=$base"; echo "targets=$targets"; echo "capped=$capped"; } >> "$GITHUB_OUTPUT"
+
+  # The whole suite once, on the commit the shards sweep. The shards need it
+  # green, and then trust it instead of each running it again.
+  selftest:
+    needs: plan
+    if: needs.plan.outputs.mode != 'none'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .github/workflows/nightly-mutate.yml
+      - run: python -m pip install numpy zstandard tzdata pillow
+      - shell: bash
+        run: python -u selftest.py 2>&1 | tee "$RUNNER_TEMP/selftest.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: selftest-log-ubuntu-latest
+          path: ${{ runner.temp }}/selftest.log
+          retention-days: 7
+          if-no-files-found: ignore
 
   sweep:
-    needs: plan
+    needs: [plan, selftest]
     strategy:
       fail-fast: false
-      # 16 of the account's 20 job slots at most, whatever the OS choice:
-      # max-parallel counts every combination of the matrix.
-      max-parallel: 16
+      max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
       matrix:
-        os: ${{ fromJSON(needs.plan.outputs.oses) }}
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     # The same limits as selftest.yml's mutate job (the reason is there).
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -93,121 +221,85 @@ jobs:
       - id: sweep
         shell: bash
         timeout-minutes: 340
-        run: python -u mutate.py --shard ${{ matrix.shard }}/${{ needs.plan.outputs.nshards }} --expected mutate_expected_misses.txt --hints mutate_catchers.json --jobs ${{ matrix.os == 'ubuntu-latest' && 3 || 1 }} 2>&1 | tee "$RUNNER_TEMP/mutate.log"
+        env:
+          MODE: ${{ needs.plan.outputs.mode }}
+          BASE: ${{ needs.plan.outputs.base }}
+          TARGETS: ${{ needs.plan.outputs.targets }}
+          N: ${{ needs.plan.outputs.nshards }}
+        run: |
+          narrow=()
+          if [[ "$MODE" == affected ]]; then narrow=(--changed "$BASE"); fi
+          if [[ "$MODE" == targets ]]; then narrow=(--targets "$TARGETS"); fi
+          trust=()
+          if grep -q -- '"--trust-baseline"' mutate.py; then trust=(--trust-baseline 1200); fi
+          python -u mutate.py --shard "${{ matrix.shard }}/$N" --expected mutate_expected_misses.txt --hints mutate_catchers.json --jobs 3 "${narrow[@]}" "${trust[@]}" 2>&1 | tee "$RUNNER_TEMP/mutate.log"
       - name: Report a shard that ran out of time
-        if: always() && steps.sweep.outcome != 'success'
+        if: always() && steps.sweep.outcome != 'success' && steps.sweep.outcome != 'skipped'
         shell: bash
         env:
           SHARD: ${{ matrix.shard }}
           N: ${{ needs.plan.outputs.nshards }}
           LOG: ${{ runner.temp }}/mutate.log
-        run: |
-          python - <<'PY'
-          import ast, os
-
-          shard, total = int(os.environ["SHARD"]), int(os.environ["N"])
-          log = []
-          try:
-              with open(os.environ["LOG"], encoding="utf-8", errors="replace") as fh:
-                  log = [l.rstrip("\r\n") for l in fh]
-          except OSError:
-              pass
-          if any(l.startswith("caught ") and ", missed " in l for l in log):
-              print("the sweep finished; any failure is in its own lines above")
-              raise SystemExit(0)
-          if any("The suite FAILS with nothing mutated" in l for l in log):
-              print("the baseline failed; that is not a timeout")
-              raise SystemExit(0)
-          if any(l.startswith("INFRASTRUCTURE FAILURE") for l in log):
-              print("the unmutated suite did not finish, twice: an infrastructure failure, said above")
-              raise SystemExit(0)
-          tree = ast.parse(open("mutate.py", encoding="utf-8").read(), "mutate.py")
-          names = None
-          for node in ast.walk(tree):
-              if isinstance(node, ast.Assign) and any(
-                      isinstance(t, ast.Name) and t.id == "MUTATIONS" for t in node.targets):
-                  names = [e.elts[0].value for e in node.value.elts]
-          mine = [n for i, n in enumerate(names) if i % total == shard]
-          done = set()
-          for l in log:
-              for pre in ("  caught      ", "  NOT CAUGHT  "):
-                  if l.startswith(pre):
-                      done.add(l[len(pre):])
-              if l.startswith("  SETUP FAIL  "):
-                  done.add(l[len("  SETUP FAIL  "):].split(" (pattern", 1)[0])
-          todo = [n for n in mine if n not in done]
-          if not todo:
-              print("no mutation is missing a result; the shard stopped some other way")
-              raise SystemExit(0)
-          head = (f"shard {shard}/{total} TIMED OUT, it did not finish: "
-                  f"{len(todo)} of its {len(mine)} mutations did not run to a result. "
-                  "This is a timeout, not a missed mutation; re-run the shard.")
-          esc = lambda s: s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-          print("::error title=mutate shard timed out::" + esc(head + " Not run: " + " | ".join(todo))[:3500])
-          summary = os.environ.get("GITHUB_STEP_SUMMARY")
-          if summary:
-              with open(summary, "a", encoding="utf-8") as fh:
-                  fh.write("### " + head + "\n\n" + "\n".join("- " + n for n in todo) + "\n")
-          print(head)
-          for n in todo:
-              print("  did not run  " + n)
-          raise SystemExit(1)
-          PY
-      # The whole shard log, kept a week, on the run page under Artifacts.
+        run: python3 .github/scripts/shard_timeout.py
       - uses: actions/upload-artifact@v4
         if: always()
+        continue-on-error: true
         with:
-          name: mutate-log-${{ matrix.os }}-shard-${{ matrix.shard }}
+          name: mutate-log-ubuntu-latest-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/mutate.log
           retention-days: 7
           if-no-files-found: ignore
 
-  # Which shards are red, with a link to each, in the run's summary. Each
-  # shard's own summary says why. Green whatever it finds.
+  # Which jobs are red, in the run's summary and (the record night only) in
+  # an issue labelled mutate-nightly; a green record night closes it. Always
+  # runs: a failed plan is red too.
   report:
-    needs: sweep
-    if: always() && needs.sweep.result != 'skipped' && needs.sweep.result != 'cancelled'
+    needs: [plan, selftest, sweep]
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       actions: read
+      issues: write
+      contents: read
     steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.sha || github.sha }}
       - shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.run_id }}
           REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WHAT: nightly mutation sweep
+          LABEL: mutate-nightly
+          SWEPT: ${{ inputs.ref || 'bench-build' }} at ${{ needs.plan.outputs.sha || 'an unknown commit' }}
+          PLAN: ${{ needs.plan.result }}
+          MODE: ${{ needs.plan.outputs.mode }}
+          SELFTEST: ${{ needs.selftest.result }}
+          NSHARDS: ${{ needs.plan.outputs.nshards }}
+          CAPPED: ${{ needs.plan.outputs.capped }}
+          SELECTED: ${{ needs.plan.outputs.selected }}
           JOB_PREFIX: "sweep ("
-        run: |
-          gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
-            --jq '.jobs[] | [.name, (.conclusion // .status), .html_url] | @tsv' > "$RUNNER_TEMP/jobs.tsv"
-          python3 - "$RUNNER_TEMP/jobs.tsv" <<'PY'
-          import os, sys
+        run: bash .github/scripts/sweep_report.sh
 
-          prefix = os.environ["JOB_PREFIX"]
-          shards = []
-          with open(sys.argv[1], encoding="utf-8") as fh:
-              for line in fh:
-                  parts = line.rstrip("\n").split("\t")
-                  if len(parts) == 3 and parts[0].startswith(prefix):
-                      shards.append(parts)
-          red = [s for s in shards if s[1] not in ("success", "skipped")]
-          out = []
-          if not shards:
-              out.append("### nightly mutate: no shard jobs were found in this run")
-          elif not red:
-              out.append(f"### nightly mutate: all {len(shards)} shards green")
-          else:
-              out += [f"### nightly mutate: {len(red)} of {len(shards)} shards red", "",
-                      "| shard | result | job |", "|---|---|---|"]
-              out += [f"| {n} | {c} | [open]({u}) |" for n, c, u in red]
-              out += ["",
-                      "Each red shard's own summary (above, under its job) says "
-                      "why: the kind of failure and the mutation or test. Its "
-                      "annotations say the same, and its full log is the "
-                      "artifact named `mutate-log-<os>-shard-<n>`, kept 7 days."]
-          text = "\n".join(out) + "\n"
-          print(text)
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
-              fh.write(text)
-          PY
+  # The record the next night reads: this commit is proved. Only on the
+  # record night (scheduled, or by hand on bench-build with no base), and
+  # only when it had nothing to run or its selftest and every shard were
+  # green. A capped night counts: its rest is the weekly sweep's.
+  green:
+    name: green at ${{ needs.plan.outputs.sha }}
+    needs: [plan, selftest, sweep]
+    if: always() && (github.event_name == 'schedule' || (inputs.ref == 'bench-build' && inputs.base == '')) && needs.plan.result == 'success' && (needs.plan.outputs.mode == 'none' || (needs.selftest.result == 'success' && needs.sweep.result == 'success'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - shell: bash
+        env:
+          BASE: ${{ needs.plan.outputs.base }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          CAPPED: ${{ needs.plan.outputs.capped }}
+        run: |
+          echo "every mutation selected since ${BASE:-the start} is caught at $SHA"
+          if [[ "$CAPPED" == true ]]; then echo "(capped: the safety core and the touched safety files only; the rest is the weekly sweep's)"; fi

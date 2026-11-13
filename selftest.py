@@ -10622,7 +10622,7 @@ def test_schedule_late_limit_round_two():
                   f"+{off} s with Run off: quietly MISSED: {s1.status}")
         else:
             check(tried and tried[-1]["outcome"] == "refused" and
-                  "Run has not been pressed" in tried[-1]["text"] and
+                  "Show control is off" in tried[-1]["text"] and
                   s1.status in (S2.FAULT, S2.MISSED),
                   f"+{off} s with Run off: refused in words, not started: "
                   f"{s1.status} {[(r['outcome'], r['text']) for r in tried]}")
@@ -16676,8 +16676,9 @@ def test_schedule_run_warning_says_only_what_is_true():
     svc.run_gate = lambda: True
     svc.preroll = types.SimpleNamespace(skip=lambda: "Programming Run")
     w = svc._run_warning(now)
-    check(w == "A Programming Run is in force: the 18:00 show (show 1) "
-              "will NOT start. Press Stop, choose Show, then Run.",
+    check(w == "A rehearsal is on: the 18:00 show (show 1) "
+              "will NOT start. End rehearsal, choose Show, then turn show "
+              "control on.",
           f"a Programming Run says the show will not start: {w!r}")
     _no_dashes(w, "programming run warning")
     svc.preroll = types.SimpleNamespace(skip=lambda: "")
@@ -16699,8 +16700,9 @@ def test_schedule_run_off_says_the_next_show_will_not_start():
     S, svc = n.S, n.svc
     from datetime import timedelta
     sv = svc.state_view()
-    check(sv.get("run_warning") == "Run is off: the 18:00 show (show 1) "
-                                   "will NOT start. Press Run.",
+    check(sv.get("run_warning") == "Show control is off: the 18:00 show "
+                                   "(show 1) will NOT start. Turn show "
+                                   "control on.",
           f"Run off with show 1 to come: {sv.get('run_warning')!r}")
     _no_dashes(sv.get("run_warning"), "run warning")
     check(not svc._run_pressed(), "and nothing pressed Run")
@@ -16734,14 +16736,14 @@ def test_schedule_run_off_says_the_next_show_will_not_start():
           "however far the next show is")
     svc.machine = m0
     n.now[0] = was
-    check("Run is off: the 18:00 show (show 1) will NOT start" in
+    check("Show control is off: the 18:00 show (show 1) will NOT start" in
           svc.tonight_words(), "the answer to a save says it too")
     # On Hold, Run alone would not start it: the warning names Resume too
     # (review of PR #180), from what stands, not from a fixed sentence.
     svc._apply(_op(S, S.HOLD_ON))
     check(svc.state_view().get("run_warning") ==
-          "Run is off: the 18:00 show (show 1) will NOT start. Press Run, "
-          "then Resume.", f"on Hold it says Resume as well: "
+          "Show control is off: the 18:00 show (show 1) will NOT start. "
+          "Turn show control on, then Resume.", f"on Hold it says Resume as well: "
                           f"{svc.state_view().get('run_warning')!r}")
     # Abort and its Reset are removed (2026-10-30): no warning names Reset.
     check("Reset" not in svc.state_view().get("run_warning", ""),
@@ -16774,7 +16776,7 @@ def test_schedule_run_off_says_the_next_show_will_not_start():
           '"warn"' in two,
           "2.0 shows it in the alert slot, a fault only when urgent")
     check('do:runWarnWords(sch.run_warning.split("will NOT start. ")[1] || '
-          '"Press Run.", loc)' in two and
+          '"Turn show control on.", loc)' in two and
           'what:sch.run_warning.split(":")[0]' in two,
           "2.0 takes its headline and its press from the engine's sentence "
           "(Resume on a Hold, a Programming Run), not fixed words; only "
@@ -23262,7 +23264,7 @@ def test_artnet_timecode_never_drifts_from_its_clock():
         check(False, "a stopped clock played a cue")
         m.halt()
     except ValueError as e:
-        check("Run" in str(e), f"the refusal should say to press Run: {e}")
+        check("show control" in str(e), f"the refusal should say to turn show control on: {e}")
     try:
         m2x = _master(C, out=_TcOut())[1]
         m2x.start()
@@ -24458,7 +24460,7 @@ def test_a_stopped_cue_hands_the_rig_back():
             sess.clock_play("Show")
             check(False, "a stopped clock played a cue")
         except SessionError as e:
-            check("Run" in str(e), f"the refusal should say to press Run: {e}")
+            check("show control" in str(e), f"the refusal should say to turn show control on: {e}")
         except Exception as e:
             check(False, f"clock_play let {type(e).__name__} escape: {e}")
         sess.stop()
@@ -33620,7 +33622,7 @@ def test_audio_master_loads_all_or_nothing():
         del sa.open
     check(why is not None and "could not be loaded" in why
           and "could only be read to" in why
-          and "press Stop and Run again" in why and not am.playing,
+          and "turn show control off and on again" in why and not am.playing,
           f"a cue read only halfway could still be started: {why}")
     check(am.snapshot()["audio"]["ready"]["show"] == "failed",
           "the page shows a half-read cue as ready")
@@ -33633,7 +33635,7 @@ def test_audio_master_loads_all_or_nothing():
     real_open(music, "wb").write(raw[:len(raw) // 2])
     why = reload_and_play()
     check(why is not None and "could not be loaded" in why
-          and "press Stop and Run again" in why and not am.playing,
+          and "turn show control off and on again" in why and not am.playing,
           f"a cue cut short after checking could still be started: {why}")
     # Every stem swapped for a whole, consistent, but shorter file after
     # the show was checked: still refused, on the lengths it was checked at.
@@ -42146,7 +42148,7 @@ def test_fire_ice_show_outputs():
     # Nothing running: nothing is playing, and music refuses in words.
     check(show.playing() is False, "nothing running: nothing playing")
     r = show.music_hold(0.25)
-    check(not r.ok and "Run" in r.sentence,
+    check(not r.ok and "show control" in r.sentence,
           f"music with nothing running is refused: {r}")
     check(show.music_frozen() is None, "no clock: frozen is unknown")
     check(not show.pixels_fade_out(0.25).ok, "pixels need a running show")
@@ -42798,7 +42800,7 @@ def test_schedule_never_touches_the_rig_before_run():
     starts = [r for r in svc.journal if r.get("action") == "automatic start"]
     check(len(starts) >= 3 and
           all(r["outcome"] == "refused" and
-              "Run has not been pressed" in r["text"] for r in starts),
+              "Show control is off" in r["text"] for r in starts),
           f"every show that came due (18:00, 18:20, 18:40, 19:00) was "
           f"tried and refused because Run was not pressed: "
           f"{[(r['outcome'], r['text']) for r in starts]}")
@@ -42984,13 +42986,13 @@ def test_refused_starts_say_why_and_what_to_press():
     _fi_walk(n, 18, 1)
     s1 = [s for s in svc.machine.slots if s.n == 1]
     check(s1 and s1[0].status == S.FAULT and R.RUN_OFF in s1[0].reason and
-          "press Run on the Programming screen" in s1[0].reason,
+          "Turn show control on, then Start now" in s1[0].reason,
           f"the slot's status on the rack screen names the reason and what "
           f"to press: {s1}")
     check(got and got[-1][0] == "start" and
-          got[-1][1].startswith("Show 1 did not start: Run has not been "
-                                "pressed") and
-          "press Run on the Programming screen, then Start now" in got[-1][1]
+          got[-1][1].startswith("Show 1 did not start: Show control is "
+                                "off") and
+          "Turn show control on, then Start now" in got[-1][1]
           and "Nothing was sent to the rig" in got[-1][1],
           f"the alert says why and what to press, never only that the show "
           f"did not start: {got[-1:]}")
@@ -43005,8 +43007,8 @@ def test_refused_starts_say_why_and_what_to_press():
           f"{sv.get('start_blocked')}")
     r = svc.operator_press("start-now", "Andy", "Rack screen")
     check(r["ok"] is False and r["text"].startswith(
-              "Start now was refused: Run has not been pressed") and
-          "press Run on the Programming screen" in r["text"] and
+              "Start now was refused: Show control is off") and
+          "Turn show control on, then Start now" in r["text"] and
           "Nothing was started" in r["text"],
           f"Start now with Run off says why at once: {r}")
     check(len(svc.machine.slots) == slots0,
@@ -43293,7 +43295,7 @@ def test_refused_starts_say_why_and_what_to_press():
     r = svc.operator_press("start-now", "Andy", "Rack screen")
     check(r["ok"] is False and "did not load" in r["text"] and
           "show.wav could not be read" in r["text"] and
-          "press Stop and Run again" in r["text"],
+          "turn show control off and on again" in r["text"],
           f"audio that failed to load: says which and what to press: {r}")
     clk._load_failed = {}
     clk._device_ok, clk._fault = False, "The interface was unplugged."
@@ -43333,7 +43335,10 @@ def test_refused_starts_say_why_and_what_to_press():
                  "NEVER_CONFIRMED", "SHOW_START_ERROR"):
         text = getattr(R, name)
         _no_dashes(text, f"ShowRunner.{name}")
-        check("press" in text and not text.rstrip().endswith("."),
+        # What to press: a button ("press ...") or the switch ("turn show
+        # control on/off", Jeff 2026-11-11).
+        check(("press" in text or "turn show control" in text.lower()) and
+              not text.rstrip().endswith("."),
               f"ShowRunner.{name} says what to press and ends without a "
               f"full stop (it is wrapped in FAULT (...)): {text!r}")
     # F8: a failure reported too late to be a failed start (the show runs
@@ -43410,8 +43415,8 @@ def test_reset_says_how_the_rig_stands():
         {"link": "lost"}, {"link": "lost"}, {"connected": False},
         dict(ann, items=[{"name": "Delayed", "available": False}]))
     for part in ("Audio NOT READY (lost): check the show audio interface, "
-                 "then press Stop and Run.",
-                 "Pixels NOT READY: Run is not pressed. Press Run.",
+                 "then turn show control off and on.",
+                 "Pixels NOT READY: show control is off. Turn it on.",
                  "Flame link NOT READY: flamesafe is not connected. Start "
                  "flamesafe.",
                  "Timecode NOT READY: MadMapper (10.250.1.1) is not taking "
@@ -43586,7 +43591,7 @@ t(startLook({schedule:{attached:true, state:"STANDBY"}, show:{running:true}}, fa
 t(startLook({schedule:{attached:true, state:"SHOW"}, show:{running:true, show_control_on:true}}, false, false).sub === "tap twice" &&
   runLook({schedule:{attached:true, state:"SHOW"}, show:{running:true, show_control_on:true}}, false).sub === "tap twice", "a live show: Stop, tap twice");
 const off = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"Run has not been pressed, so nothing may reach the rig; press Run", loading:false}}, show:{running:false}}, false, false);
-t(off.mode === "start" && off.sub === "Run is off" && /^Run has not been pressed/.test(off.why), "Run off: says so, and the why: " + JSON.stringify(off));
+t(off.mode === "start" && off.sub === "Show control is off" && /^Run has not been pressed/.test(off.why), "Run off: says so, and the why: " + JSON.stringify(off));
 // "Run is off" on Start now is the engine's boolean, never its sentence
 // (show control, PR 1); anything but true is off, never on.
 const blk = (text, on) => ({schedule:{attached:true, state:"STANDBY", start_blocked:{text:text, loading:false}}, show:{running:true, show_control_on:on}});
@@ -43594,13 +43599,17 @@ t(startLook(blk("Run has not been pressed, so nothing may reach the rig; press R
 t(startLook(blk("the show audio interface is not available", true), false, false).sub === "not ready, tap for why", "Run on, blocked for another reason: not ready");
 for(const v of [false, undefined, null, "true", 1]){
   const lk = startLook(blk("Fireball practice is on", v), false, false);
-  t(lk.sub === "Run is off" && lk.why === "Fireball practice is on", "the boolean " + JSON.stringify(v) + ": Run is off, with the engine's own why: " + JSON.stringify(lk));
+  t(lk.sub === "Show control is off" && lk.why === "Fireball practice is on", "the boolean " + JSON.stringify(v) + ": Show control is off, with the engine's own why: " + JSON.stringify(lk));
 }
 // Run becomes Stop while Run is in force and there is something to stop;
 // with nothing to stop it is Run off (Stop no longer turns Run off).
 const att = (st, show, extra) => Object.assign({schedule:{attached:true, state:st}, show:show}, extra || {});
-t(runLook(att("SHOW", {running:true})).mode === "stop" && runLook(att("STANDBY", {running:false})).mode === "run" && runLook(null).label === "Run", "Run becomes Stop while a show is live");
-t(runLook(att("STANDBY", {running:true})).mode === "runoff" && runLook(att("STANDBY", {running:true})).label === "Run off", "Run in force, nothing to stop: Run off");
+t(runLook(att("SHOW", {running:true})).mode === "stop" && runLook(att("STANDBY", {running:false})).mode === "run" && runLook(null).label === "Show control on", "Run becomes Stop while a show is live");
+// Its words (Jeff, 2026-11-11): Show control on/off; Programming's Run is
+// a rehearsal (Start rehearsal, End rehearsal). The modes are the same.
+t(runLook(att("STANDBY", {running:false}), false, "show").label === "Show control on" && runLook(att("STANDBY", {running:false}), false, "programming").label === "Start rehearsal" && runLook(att("STANDBY", {running:false}), false, "programming").mode === "run", "Run's words: Show control on, or Start rehearsal with Programming picked");
+t(runLook(att("STANDBY", {running:true}, {transport:{programming:true}}), false, "show").label === "End rehearsal" && runLook(att("STANDBY", {running:true}, {transport:{programming:true}}), false, "show").mode === "runoff" && runLook(att("STANDBY", {running:true}), false, "programming").label === "Show control off", "Run off's words: End rehearsal while a rehearsal is in force, else Show control off");
+t(runLook(att("STANDBY", {running:true})).mode === "runoff" && runLook(att("STANDBY", {running:true})).label === "Show control off", "Run in force, nothing to stop: Run off");
 t(runLook(att("HOLD", {running:false, starting:true})).mode === "runoff", "Run starting with nothing to stop: Run off (F4 now)");
 t(runLook({schedule:{attached:false}, show:{running:true}}).mode === "stop" && runLook({schedule:{attached:false}, show:{running:false, starting:true}}).mode === "stop", "no scheduler: Run playing or starting is the show, so Stop");
 t(runLook(att("STANDBY", {running:true}, {transport:{programming:true, playhead:"show_audio", playing:true}})).mode === "stop", "Programming playback on: Stop");
@@ -43627,10 +43636,10 @@ t(JSON.stringify(stopLines(null, false)) === '["Stop show","tap twice"]' && JSON
 t(stopLeftS(3000) === 3 && stopLeftS(2001) === 3 && stopLeftS(2000) === 2 && stopLeftS(10) === 1 && stopLeftS(-50) === 1, "the countdown: whole seconds left, never 0: " + stopLeftS(2000));
 t(stopTapStep({at:1000, kind:"mouse"}, 1500, "touch", false).fire === false, "a different pointer kind is a first tap");
 t(stopTapKind({pointerType:"pen"}) === "pen" && stopTapKind({detail:0}) === "key", "the tap's kind");
-t(/^Stopped\. The show ended/.test(stopWords({stopped:true, show:{ok:true}, flames:{disarmed:true}, lasers:{disarmed:true}})) && /Run is off/.test(stopWords({stopped:true, run_on:false})), "Run off's answer: the show ended, Run is off");
+t(/^Stopped\. The show ended/.test(stopWords({stopped:true, show:{ok:true}, flames:{disarmed:true}, lasers:{disarmed:true}})) && /Show control is off/.test(stopWords({stopped:true, run_on:false})), "Run off's answer: the show ended, show control is off");
 const held = stopWords({stopped:true, run_on:true, show:{ok:true}, hold:{ok:true, text:""}, flames:{disarmed:true}});
-t(/^Stopped\. The show ended/.test(held) && /on Hold/.test(held) && /Resume/.test(held) && !/Run is off/.test(held), "Stop's answer: the show ended, the schedule is on Hold, Run stays on: " + held);
-t(/Run is still on/.test(stopWords({stopped:true, run_on:true})), "a Stop with nothing to hold says Run is still on");
+t(/^Stopped\. The show ended/.test(held) && /on Hold/.test(held) && /Resume/.test(held) && !/Show control is off/.test(held), "Stop's answer: the show ended, the schedule is on Hold, Run stays on: " + held);
+t(/Show control is still on/.test(stopWords({stopped:true, run_on:true})), "a Stop with nothing to hold says show control is still on");
 t(/did NOT work: show/.test(stopWords({stopped:true, failed:["show"], flames:{disarmed:true}})), "a failed step is named");
 t(/did NOT work: playback stop/.test(stopWords({stopped:false, failed:["playback stop"]})), "a failed playback stop is named");
 t(/^Stopped\. /.test(stopWords({stopped:false, failed:[]})), "nothing was playing: still Stopped, no false failure");
@@ -44208,7 +44217,7 @@ def test_fire_ice_runner_reports_the_show():
     _settle(svc, c)
     rows = [r for r in svc.journal if r.get("action") == "automatic start"]
     check(rows and rows[-1]["outcome"] == "refused" and
-          "Run has not been pressed" in rows[-1]["text"],
+          "Show control is off" in rows[-1]["text"],
           f"no Run: the start is refused in words: {rows[-1:]}")
     n.w.runner.poll()
     _settle(svc, c)
@@ -47772,7 +47781,7 @@ def test_every_show_start_clears_the_pixels():
     # 2.0's Schedule tab: from its pane to the next one.
     sched2 = rack2[rack2.find('id="t-schedule"'):]
     sched2 = sched2[:sched2.find('<section class="pane"')]
-    check("Programming: Show file card, Stop, then Run." in said and
+    check("Programming: End rehearsal, then Start rehearsal." in said and
           "On 2.0: the Schedule tab's Show file card." in said and
           "Open in 1.0" not in said and len(said.split()) <= 30 and
           '<div class="card col" id="p-run-card" hidden>' in sched2 and
@@ -51814,64 +51823,536 @@ def test_mutate_never_runs_stale_bytecode():
     print("  ok")
 
 
-def test_mutate_shards_fit_their_time_limit():
-    section("the mutate shards: one shard count for a whole sweep in "
-            "selftest.yml and nightly-mutate.yml, small enough that a shard "
-            "ends far inside its 340 minute limit at the speed measured on "
-            "2026-11-09 (32 shards of 135 ran out at 340), at most 16 at "
-            "once so 4 of the account's 20 job slots stay free")
-    import ast
+def test_release_tags_are_ltc_only():
+    section("release tags: a new release is tagged ltc-YYYY.MM.DD.N and only "
+            "an ltc-* tag builds the installer (no workflow trigger names a "
+            "gpl- tag, and a gpl-* tag fails the selftest run with the "
+            "reason); the updater and the rollback still read the old gpl- "
+            "names, so an old install is offered the new release by its "
+            "date digits")
     import re
-    wfdir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         ".github", "workflows")
-    st = open(os.path.join(wfdir, "selftest.yml"), encoding="utf-8").read()
-    nm = open(os.path.join(wfdir, "nightly-mutate.yml"),
-              encoding="utf-8").read()
-    full = re.findall(r"^\s*FULL_SHARDS=(\d+)\s*$", st, re.M)
-    night = re.findall(r"^\s*NSHARDS: (\d+)\s*$", nm, re.M)
-    check(len(full) == 1 and len(night) == 1 and full == night,
-          f"one shard count, the same in both workflows: selftest.yml "
-          f"{full}, nightly-mutate.yml {night}")
-    n = int(full[0]) if full else 0
-    check('"$FULL_SHARDS"' in st and "release tag: every mutation, ubuntu "
-          "and windows, $FULL_SHARDS shards each" in st and
-          "if (( k > FULL_SHARDS )); then k=$FULL_SHARDS; fi" in st,
-          "a release tag, a change with no base and the affected cap all "
-          "use FULL_SHARDS")
-    check("needs.plan.outputs.shards" in nm and
-          "--shard ${{ matrix.shard }}/${{ needs.plan.outputs.nshards }}" in nm
-          and 'int(os.environ["N"])' in nm and "/32" not in nm,
-          "the nightly sweep's matrix, --shard and timeout report all read "
-          "the one count")
-    for name, text in (("selftest.yml", st), ("nightly-mutate.yml", nm)):
-        par = [int(x) for x in re.findall(r"max-parallel: (\d+)", text)]
-        check(par == [16], f"{name}: max-parallel {par}, want [16] (20 job "
-              "slots, 4 left free)")
-        check(re.findall(r"timeout-minutes: 340\b", text) and
-              re.findall(r"timeout-minutes: 355\b", text),
-              f"{name}: the 340 minute step limit and the 355 minute job "
-              "limit stay as the backstop")
-    tree = ast.parse(open(os.path.join(os.path.dirname(os.path.abspath(
-        __file__)), "mutate.py"), encoding="utf-8").read(), "mutate.py")
+    here = os.path.dirname(os.path.abspath(__file__))
+    wfdir = os.path.join(here, ".github", "workflows")
+    names = sorted(n for n in os.listdir(wfdir) if n.endswith((".yml",
+                                                               ".yaml")))
+    check("windows-app.yml" in names and "selftest.yml" in names,
+          f"the workflows are where this test reads them: {names}")
+    texts = {}
+    for n in names:
+        texts[n] = open(os.path.join(wfdir, n), encoding="utf-8").read()
+        # The trigger block: from "on:" to the next top-level key. Comments
+        # may name the old tag (as history); a pattern may not.
+        m = re.search(r"^on:\s*\n(.*?)(?=^\S)", texts[n], re.M | re.S)
+        block = m.group(1) if m else ""
+        live = "\n".join(ln.split("#", 1)[0] for ln in block.splitlines())
+        check("gpl" not in live.lower(),
+              f"{n}: a trigger still names a gpl- tag, so a release could "
+              f"be cut under the old name: "
+              f"{[ln.strip() for ln in live.splitlines() if 'gpl' in ln.lower()]}")
+    wa = texts.get("windows-app.yml", "")
+    tags = re.findall(r"^\s*tags:\s*(\[.*?\])\s*$", wa, re.M)
+    check(tags == ['["ltc-*"]'],
+          f"windows-app.yml builds a release for ltc-* tags only: {tags}")
+    check('v="${GITHUB_REF_NAME#ltc-}"' in wa and "#gpl-" not in wa,
+          "the installer's version is the tag without ltc- (ltc-2026.11.14.1 "
+          "-> 2026.11.14.1, as on the rack screen and the installer's name)")
+    check('if [[ ! "$GITHUB_REF_NAME" =~ ^ltc-[0-9]+(\\.[0-9]+){1,3}$ ]]; '
+          'then' in wa,
+          "Run workflow pointed at an old gpl- tag (or any tag that is not "
+          "ltc- and a dated number) fails with the reason, never builds")
+    check('--title "LTC Player release $VER"' in wa and
+          '"LTC Player $TAG"' not in wa,
+          "the Release's title is the dated number, never the tag name")
+    # The refusal lives in .github/scripts/mutate_plan.py's mode (the CI
+    # diet, #255): the changes job asks it first, under set -euo pipefail,
+    # so a gpl-* tag stops the run red with the reason before anything
+    # else is decided. test_mutate_shards_fit_their_time_limit runs it.
+    st = texts.get("selftest.yml", "")
+    ask = st.find('python3 .github/scripts/mutate_plan.py mode "$EVENT" '
+                  '"$REF" "$BASE_REF" | tee')
+    check(ask > 0 and st.rfind("set -euo pipefail", 0, ask) > 0
+          and st.find("say ", ask) > ask,
+          "selftest.yml asks mutate_plan.py first, so a gpl-* tag fails "
+          "with the reason before anything else is decided")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "mutate_plan", os.path.join(here, ".github", "scripts",
+                                    "mutate_plan.py"))
+    plan = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plan)
+    m_, why_ = plan.mode("push", "refs/tags/gpl-2026.11.14.1", "")
+    check(m_ == "refuse" and "ltc-YYYY.MM.DD.N" in why_
+          and plan.mode("push", "refs/tags/ltc-2026.11.14.1", "")[0] == "none",
+          "a gpl-* tag is refused with the reason; an ltc-* tag is not: "
+          f"{m_} {why_!r}")
+    sp = os.path.join(here, "packaging", "windows")
+    sys.path.insert(0, sp)
+    for m_ in ("supervisor", "ltcwin", "updater"):
+        sys.modules.pop(m_, None)
+    was = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        import updater as U
+        import supervisor as S
+    finally:
+        sys.dont_write_bytecode = was
+    try:
+        for old, want in (("ltc-2026.11.14.1", "2026.11.14.1"),
+                          ("gpl-2026.10.30.1", "2026.10.30.1"),
+                          ("GPL-2026.09.15.10", "2026.09.15.10"),
+                          ("2026.11.14.1", "2026.11.14.1"),
+                          ("bench-2026.11.13-abc1234",
+                           "bench-2026.11.13-abc1234")):
+            check(U.release_number(old) == want,
+                  f"updater reads {old} as {U.release_number(old)!r}, "
+                  f"want {want!r}")
+        check(U.is_release("ltc-2026.11.14.1") and
+              U.is_release("gpl-2026.09.15.10") and
+              U.is_release("2026.10.30.1") and
+              not U.is_release("bench-2026.11.13-abc1234") and
+              not U.is_release("ltc-") and not U.is_release(""),
+              "ltc- and gpl- release names are releases; bench and empty "
+              "are not")
+        for new, old in (("2026.11.14.1", "2026.10.30.1"),
+                         ("2026.11.14.1", "gpl-2026.10.30.1"),
+                         ("ltc-2026.11.14.1", "gpl-2026.09.15.10"),
+                         ("2026.11.14.2", "ltc-2026.11.14.1")):
+            check(U.is_newer(new, old) and not U.is_newer(old, new),
+                  f"{new} is newer than {old} by its date digits, and "
+                  f"never the other way round")
+        check(not U.is_newer("2026.10.30.1", "gpl-2026.10.30.1") and
+              not U.is_newer("ltc-2026.11.14.1", "2026.11.14.1"),
+              "the same number with or without its prefix is up to date")
+        lines = list(U.self_test())
+        check(any("ltc- release is newer than a gpl- one" in ln
+                  for ln in lines),
+              f"the updater's own self-check proves the ltc- release: "
+              f"{lines}")
+        for v_, want in (("ltc-2026.11.14.1", (2026, 11, 14, 1)),
+                         ("gpl-2026.10.30.1", (2026, 10, 30, 1)),
+                         ("2026.09.15.10", (2026, 9, 15, 10)),
+                         ("bench-2026.11.13-abc1234", ())):
+            got = S._installer_key_for_version(v_)
+            check(got == want, f"the rollback reads {v_} as {got}, want "
+                               f"{want}")
+        import tempfile
+        d = tempfile.mkdtemp()
+        try:
+            files = []
+            for i, n in enumerate(("LTC Player Setup ltc-2026.11.14.1.exe",
+                                   "LTC Player Setup 2026.09.15.10.exe",
+                                   "LTC Player Setup gpl-2026.10.30.1.exe",
+                                   "LTC Player Setup 2026.11.14.2.exe")):
+                p = os.path.join(d, n)
+                with open(p, "wb") as fh:
+                    fh.write(b"x")
+                os.utime(p, (1000 + i, 1000 + i))
+                files.append(p)
+            order = [os.path.basename(p) for p in
+                     sorted(files, key=S._installer_key)]
+            check(order == ["LTC Player Setup 2026.09.15.10.exe",
+                            "LTC Player Setup gpl-2026.10.30.1.exe",
+                            "LTC Player Setup ltc-2026.11.14.1.exe",
+                            "LTC Player Setup 2026.11.14.2.exe"],
+                  f"saved installers sort by their date digits, whatever "
+                  f"the prefix, so Roll back picks the one before: {order}")
+        finally:
+            import shutil as _sh
+            _sh.rmtree(d, ignore_errors=True)
+    finally:
+        if sp in sys.path:
+            sys.path.remove(sp)
+        for m_ in ("supervisor", "ltcwin", "updater"):
+            sys.modules.pop(m_, None)
+    for doc in (os.path.join(here, "CLAUDE.md"),
+                os.path.join(sp, "INSTALL.md")):
+        t = open(doc, encoding="utf-8").read()
+        check("ltc-YYYY.MM.DD.N" in t and "gpl-YYYY" not in t,
+              f"{os.path.relpath(doc, here)} names new release tags "
+              f"ltc-YYYY.MM.DD.N")
+    print("  ok")
+
+
+def test_mutate_shards_fit_their_time_limit():
+    section("the mutate shards (the CI diet, 2026-11-13): only a PR into "
+            "main runs them per PR; one rule for how many and how many at "
+            "once in selftest.yml, nightly-mutate.yml and weekly-mutate.yml "
+            "(.github/scripts/mutate_plan.py); a shard ends far inside its "
+            "340 minute limit; never more at once than the job slots minus "
+            "the reserve; shards that trust the selftest job need it")
+    import importlib.util
+    import re
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location(
+        "mutate_plan", os.path.join(here, ".github", "scripts",
+                                    "mutate_plan.py"))
+    plan = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plan)
+
+    # Who runs shards: a PR into main, nothing else.
+    for event, ref, base, want in (
+            ("pull_request", "refs/pull/9/merge", "main", "affected"),
+            ("pull_request", "refs/pull/9/merge", "bench-build", "none"),
+            ("pull_request", "refs/pull/9/merge", "haze-fluid-tracker", "none"),
+            ("pull_request", "refs/pull/9/merge", "", "none"),
+            ("push", "refs/heads/main", "", "none"),
+            ("push", "refs/tags/ltc-2026.11.20.1", "", "none"),
+            ("push", "refs/tags/gpl-2026.11.20.1", "", "refuse")):
+        got, why = plan.mode(event, ref, base)
+        check(got == want and why,
+              f"{event} {ref} into {base or '(none)'}: {got}, want {want}")
+    # A gpl-* tag (the old release name) builds nothing: the changes job
+    # stops red with the reason, and no shard, no sweep starts.
+    import subprocess as _sp
+    r = _sp.run([sys.executable, os.path.join(here, ".github", "scripts",
+                                              "mutate_plan.py"),
+                 "mode", "push", "refs/tags/gpl-2026.11.20.1", ""],
+                capture_output=True, text=True, timeout=60)
+    check(r.returncode == 1 and "mode=refuse" in r.stdout
+          and "::error::gpl-2026.11.20.1 uses the old release tag name"
+          in r.stdout and "ltc-YYYY.MM.DD.N" in r.stdout,
+          f"a gpl-* tag is refused with the reason, exit 1: "
+          f"{r.returncode} {r.stdout[-300:]!r}")
+
+    # mutate-safety on a bench-build PR: a touched safety file's own
+    # mutations; the whole core only when a core file changed; nothing for
+    # docs, wording or the page.
+    for changed, want in (
+            (["README.md", "ltcplay/web/remote2.html", "ltcplay/remote.py"],
+             []),
+            (["ltcplay/users.py", "TESTING.md"], ["ltcplay/users.py"]),
+            (["flamesafe/CONTRACT.md", "flamesafe/flamesafe.example.json"],
+             []),
+            (["ltcplay/fuelpump.py", "ltcplay/laserarm.py"],
+             ["ltcplay/fuelpump.py", "ltcplay/laserarm.py"]),
+            (["flamesafe/link.py"], ["flamesafe/", "flamesafe/link.py",
+                                     "ltcplay/conductor.py",
+                                     "ltcplay/flamelink.py"]),
+            (["ltcplay/conductor.py", "ltcplay/users.py"],
+             ["flamesafe/", "ltcplay/conductor.py", "ltcplay/flamelink.py",
+              "ltcplay/users.py"])):
+        got, why = plan.safety_targets(changed)
+        check(got == want and why,
+              f"mutate-safety for {changed}: {got}, want {want}")
+    check(plan.safety_size(0, {}) == (0, 0)
+          and plan.safety_size(553, {}) == (23, 4)
+          and plan.safety_size(78, {}) == (4, 4)
+          and plan.safety_size(30, {}) == (2, 2)
+          and plan.safety_size(553, {"CI_SLOT_RESERVE": "6",
+                                     "CI_JOB_SLOTS": "40"}) == (23, 6)
+          and plan.safety_size(553, {"MUTATE_SAFETY_AT_ONCE": "2"}) == (23, 2),
+          "mutate-safety runs at most the reserve (4) at once, or "
+          "MUTATE_SAFETY_AT_ONCE")
+    check(plan.nightly_cap({}) == 1500
+          and plan.nightly_cap({"MUTATE_NIGHTLY_MAX": "900"}) == 900,
+          "the nightly cap is 1500 mutations unless MUTATE_NIGHTLY_MAX says")
+    # A matrix holds at most 256 jobs: a list that would need more stops
+    # the plan with a sentence, never a red run with nothing said.
+    for n, oses, ok in ((256 * 45, 1, True), (256 * 45 + 1, 1, False),
+                        (128 * 45, 2, True), (128 * 45 + 1, 2, False)):
+        try:
+            plan.size(n, {}, oses)
+            fine = True
+        except ValueError as e:
+            fine = False
+            check("256 jobs one matrix may hold" in str(e),
+                  f"the matrix limit is said plainly: {e}")
+        check(fine == ok, f"{n} mutations on {oses} OS(es): "
+                          f"{'fits' if fine else 'refused'}")
+
+    # How many: about 25 a shard, at most MUTATE_SHARDS (30), never more
+    # than 45 a shard; at once, never more than the slots minus the reserve.
+    env = {}
+    check(plan.size(0, env) == (0, 0), "nothing to run: no shard")
+    for n, want in ((1, (1, 1)), (25, (1, 1)), (26, (2, 2)),
+                    (400, (16, 16)), (551, (23, 16)), (750, (30, 16)),
+                    (2649, (59, 16)), (4368, (98, 16))):
+        check(plan.size(n, env) == want,
+              f"{n} mutations: {plan.size(n, env)}, want {want}")
+    check(plan.size(750, {"CI_JOB_SLOTS": "40"}) == (30, 30)
+          and plan.size(4368, {"CI_JOB_SLOTS": "40"}) == (98, 36)
+          and plan.size(4368, {"CI_JOB_SLOTS": "60",
+                               "CI_SLOT_RESERVE": "10"}) == (98, 50),
+          "more job slots: more shards at once, the reserve still free")
+    for bad in ({"CI_JOB_SLOTS": "twenty"}, {"CI_JOB_SLOTS": "4",
+                                             "CI_SLOT_RESERVE": "4"},
+                {"MUTATE_SHARDS": "0"}):
+        try:
+            plan.size(100, bad)
+            ok = False
+        except ValueError:
+            ok = True
+        check(ok, f"a repository variable that cannot be right is an "
+                  f"error, never a guess: {bad}")
+    most = 0
+    for n in range(1, 6000, 7):
+        k, at_once = plan.size(n, env)
+        most = max(most, -(-n // k))
+        if not (1 <= at_once <= 16 and at_once <= k):
+            check(False, f"{n} mutations: {k} shards, {at_once} at once")
+            break
+    # Measured 2026-11-13 (536 finished ubuntu shards, --jobs 3): about
+    # 2.8 minutes of a shard a mutation; the sanity run that stands in for
+    # the baseline is a few minutes; the old baseline was 15 to 19.
+    worst = 19 + most * 2.8
+    check(most <= plan.MOST_PER_SHARD and worst <= 150,
+          f"at most {most} mutations a shard, about {worst:.0f} minutes at "
+          f"the measured speed even with a whole baseline; want 150 or less")
+    tree = __import__("ast").parse(open(os.path.join(here, "mutate.py"),
+                                        encoding="utf-8").read())
     total = 0
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id == "MUTATIONS"
-                for t in node.targets):
+    for node in __import__("ast").walk(tree):
+        if isinstance(node, __import__("ast").Assign) and any(
+                getattr(t, "id", None) == "MUTATIONS" for t in node.targets):
             total = len(node.value.elts)
-    per = -(-total // n) if n else total
-    # Measured in run 42577562836: a baseline of up to 1112 s, then up to
-    # 2.51 minutes a mutation, on ubuntu with --jobs 3.
-    worst = 1112 / 60 + per * 2.51
-    check(total > 1000 and worst <= 150,
-          f"{total} mutations in {n} shards is {per} a shard, about "
-          f"{worst:.0f} minutes at the measured worst; want 150 or less")
-    check("int(os.environ.get(\"NSHARDS\") or 0)" in st and
-          '"no job"' in st,
-          "mutate-report counts a shard that never got a job as red")
-    for name, text in (("selftest.yml", st), ("nightly-mutate.yml", nm)):
-        check("\u2013" not in text and "\u2014" not in text,
+    check(total > 1000 and -(-total // plan.size(total, env)[0]) <= 45,
+          f"the whole list, {total}, fits shards of 45 or fewer")
+
+    # The workflows use that rule and nothing of their own.
+    wfdir = os.path.join(here, ".github", "workflows")
+    text = {}
+    for name in ("selftest.yml", "nightly-mutate.yml", "weekly-mutate.yml"):
+        with open(os.path.join(wfdir, name), encoding="utf-8") as fh:
+            text[name] = fh.read()
+    for name, t in text.items():
+        check("mutate_plan.py size" in t,
+              f"{name}: the shard count comes from mutate_plan.py")
+        par = re.findall(r"max-parallel: (.+)", t)
+        check(par and all(re.fullmatch(
+                  r"\$\{\{ fromJSON\(needs\.\w+\.outputs\."
+                  r"(safety_)?parallel\) \}\}", p.strip()) for p in par),
+              f"{name}: max-parallel is mutate_plan.py's, never a number of "
+              f"its own: {par}")
+        check(re.findall(r"timeout-minutes: 340\b", t) and
+              re.findall(r"timeout-minutes: 355\b", t),
+              f"{name}: the 340 minute step limit and the 355 minute job "
+              f"limit stay as the backstop")
+        check("python3 .github/scripts/shard_timeout.py" in t,
+              f"{name}: a shard that ran out of time is said as such")
+        check(re.search(r"upload-artifact@v4\n\s+if: always\(\)\n\s+"
+                        r"continue-on-error: true\n\s+with:\n\s+name: "
+                        r"mutate-log-", t),
+              f"{name}: an upload error never turns a shard red")
+        check("\u2013" not in t and "\u2014" not in t,
               f"{name} has no em or en dashes")
+        # --trust-baseline only where the shards need a green selftest of
+        # the same commit in the same run: every job that passes it.
+        for job in re.split(r"\n  (?=[\w-]+:\n)",
+                            t.split("\njobs:\n", 1)[-1]):
+            if "--trust-baseline" in job:
+                check(re.match(r"[\w-]+:\n    needs: \[(changes|plan), "
+                               r"selftest\]\n", job),
+                      f"{name}: {job.split(':')[0]} trusts the selftest job "
+                      f"and needs it")
+    st = text["selftest.yml"]
+    check("mutate_plan.py mode \"$EVENT\" \"$REF\" \"$BASE_REF\"" in st
+          and "python3 mutate.py --changed \"$base\" ${core:+\"$core\"} "
+          "--list" in st
+          and "narrow=(--changed \"$BASE\" ${CORE:+\"$CORE\"})" in st,
+          "selftest.yml: the mode is mutate_plan.py's, and a PR into main "
+          "lists and runs its selection with the safety core")
+    check("mutate.py lost --with-core, which its base has" in st,
+          "selftest.yml: a PR into main cannot drop the safety core by "
+          "editing mutate.py")
+    check("int(os.environ.get(\"NSHARDS\") or 0)" in st and '"no job"' in st,
+          "mutate-report counts a shard that never got a job as red")
+    nm = text["nightly-mutate.yml"]
+    check("name: green at ${{ needs.plan.outputs.sha }}" in nm and
+          "sed -n 's/^green at \\([0-9a-f]\\{40\\}\\)$/\\1/p'" in nm and
+          "git merge-base --is-ancestor \"$g\" \"$sha\"" in nm,
+          "the nightly sweep records its green commit and reads the last "
+          "one this commit descends from")
+    check("needs.selftest.result == 'success' && needs.sweep.result == "
+          "'success'" in nm,
+          "a night is recorded green only when its selftest and shards are")
+    for name in ("nightly-mutate.yml", "weekly-mutate.yml"):
+        t = text[name]
+        check("group: mutate-sweeps" in t and
+              "cancel-in-progress: false" in t,
+              f"{name}: one sweep at a time, nightly and weekly together")
+        check(re.search(r"\n  report:\n    needs: \[plan, selftest, sweep\]"
+                        r"\n    if: always\(\)\n", t)
+              and "PLAN: ${{ needs.plan.result }}" in t,
+              f"{name}: the report always runs, and a failed plan is red")
+    check('if [[ "${OFFICIAL:-}" != true ]]; then' in open(
+              os.path.join(here, ".github", "scripts", "sweep_report.sh"),
+              encoding="utf-8").read()
+          and 'env("PLAN") != "success"' in open(
+              os.path.join(here, ".github", "scripts", "sweep_report.sh"),
+              encoding="utf-8").read(),
+          "only the record sweep touches the issue; a failed plan is red")
+    # The night is the evening, Mountain time, and only the record night
+    # moves the marker.
+    check('- cron: "17 2 * * 1-6"' in nm and "19:17 Mountain" in nm,
+          "the nightly sweep starts at 19:17 Mountain Standard Time")
+    check("if: always() && (github.event_name == 'schedule' || (inputs.ref == "
+          "'bench-build' && inputs.base == '')) && needs.plan.result == "
+          "'success'" in nm,
+          "only a scheduled night, or one by hand on bench-build with no "
+          "base of its own, writes the green marker")
+    check("mutate_plan.py nightly-cap" in nm and
+          "safety-targets --with-core" in nm and
+          'narrow=(--targets "$TARGETS")' in nm,
+          "a night over its cap runs the core and the touched safety files")
+    check('- cron: "12 2 * * 0"' in text["weekly-mutate.yml"] and
+          'mutate_plan.py size "$n" "$noses"' in text["weekly-mutate.yml"],
+          "the weekly sweep starts Saturday evening, Mountain time, and "
+          "checks the matrix limit for every OS it runs")
+    with open(os.path.join(wfdir, "sweep-dropped.yml"), encoding="utf-8") as fh:
+        dropped = fh.read()
+    check('workflows: ["nightly mutate", "weekly mutate"]' in dropped and
+          "github.event.workflow_run.conclusion == 'cancelled'" in dropped,
+          "a scheduled sweep dropped from the queue still opens its issue")
+    # mutate-safety: a ready PR that touches a safety file, never required,
+    # the reserve at most at once.
+    check(re.search(r"\n  mutate-safety:\n    needs: \[changes, selftest\]\n"
+                    r"    if: github\.event_name == 'pull_request' && "
+                    r"github\.event\.pull_request\.draft == false", st)
+          and "--targets \"$TARGETS\"" in st,
+          "selftest.yml: mutate-safety runs on a ready PR, its targets only")
+    # An edit that did not move the base runs nothing but ci, and never
+    # cancels the real run.
+    check("github.event.action != 'edited' || github.event.changes.base"
+          in st and st.count("    if: github.event.action != 'edited' || "
+                             "github.event.changes.base\n") == 2,
+          "selftest.yml: an edit of a PR's text runs no selftest or changes")
+    print("  ok")
+
+
+def test_ci_verdict_rules():
+    section("ci, the one required check on main (.github/scripts/"
+            "ci_verdict.sh): green only for a push or a PR into main whose "
+            "selftest, changes and needed shards are green; red when the "
+            "base is not main, the mode is unknown, or a needed shard did "
+            "not pass; an edit of a PR's text copies the last verdict on "
+            "the commit, never invents one")
+    import re
+    import shutil
+    import subprocess as _sp
+    here = os.path.dirname(os.path.abspath(__file__))
+    script = os.path.join(here, ".github", "scripts", "ci_verdict.sh")
+    with open(script, encoding="utf-8") as fh:
+        src = fh.read()
+    check("\u2013" not in src and "\u2014" not in src,
+          "ci_verdict.sh has no em or en dashes")
+    # Run on ubuntu only: on windows `bash` may be WSL's, not Git's, and
+    # the verdict is run by an ubuntu job anyway.
+    bash = shutil.which("bash")
+    if sys.platform == "win32" or not bash:
+        print("  (the verdict runs are skipped here: no plain bash)")
+    else:
+        with tempfile.TemporaryDirectory() as d:
+            fake = os.path.join(d, "gh")
+            with open(fake, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("#!/bin/sh\n[ -n \"$FAKE_GH\" ] && echo \"$FAKE_GH\"\n"
+                         "[ -n \"$FAKE_GH\" ]\n")
+            os.chmod(fake, 0o755)
+
+            def verdict(**kw):
+                env = {"PATH": d + os.pathsep + os.environ.get("PATH", ""),
+                       "REPO": "o/r", "RUN_ID": "7", "HEAD_SHA": "abc",
+                       "GH_TOKEN": "x"}
+                env.update({k.upper(): v for k, v in kw.items()})
+                r = _sp.run([bash, script], capture_output=True, text=True,
+                            env=env, timeout=60)
+                return r.returncode, r.stdout + r.stderr
+
+            ok = dict(selftest="success", changes="success")
+            cases = [
+                # (what, event, settings, green?)
+                ("a PR into main, nothing to mutate",
+                 dict(event="pull_request", base_ref="main", mode="none",
+                      mutate="skipped", **ok), True),
+                ("a PR into main, every shard green",
+                 dict(event="pull_request", base_ref="main", mode="affected",
+                      mutate="success", **ok), True),
+                ("a push to main", dict(event="push", mode="none",
+                                        mutate="skipped", **ok), True),
+                ("a PR into bench-build, all green",
+                 dict(event="pull_request", base_ref="bench-build",
+                      mode="none", mutate="skipped", **ok), False),
+                ("a PR with no base", dict(event="pull_request", mode="none",
+                                           mutate="skipped", **ok), False),
+                ("the mode is empty (changes failed to say)",
+                 dict(event="pull_request", base_ref="main", mode="",
+                      mutate="skipped", **ok), False),
+                ("an unknown mode", dict(event="pull_request", base_ref="main",
+                                         mode="weird", mutate="skipped", **ok),
+                 False),
+                ("shards skipped while required",
+                 dict(event="pull_request", base_ref="main", mode="affected",
+                      mutate="skipped", **ok), False),
+                ("shards cancelled", dict(event="pull_request", base_ref="main",
+                                          mode="affected", mutate="cancelled",
+                                          **ok), False),
+                ("shards failed", dict(event="pull_request", base_ref="main",
+                                       mode="full", mutate="failure", **ok),
+                 False),
+                ("shards ran with mode none",
+                 dict(event="pull_request", base_ref="main", mode="none",
+                      mutate="success", **ok), False),
+                ("selftest red", dict(event="pull_request", base_ref="main",
+                                      mode="none", mutate="skipped",
+                                      selftest="failure", changes="success"),
+                 False),
+                ("changes red", dict(event="pull_request", base_ref="main",
+                                     mode="none", mutate="skipped",
+                                     selftest="success", changes="failure"),
+                 False),
+                ("a scheduled event", dict(event="schedule", mode="none",
+                                           mutate="skipped", **ok), False),
+                ("a text edit, the last verdict green",
+                 dict(event="pull_request", action="edited", base_ref="main",
+                      fake_gh="success"), True),
+                ("a text edit, the last verdict red",
+                 dict(event="pull_request", action="edited", base_ref="main",
+                      fake_gh="failure"), False),
+                ("a text edit, no verdict to copy (lookup fails)",
+                 dict(event="pull_request", action="edited", base_ref="main"),
+                 False),
+                ("a text edit of a PR into bench-build",
+                 dict(event="pull_request", action="edited",
+                      base_ref="bench-build", fake_gh="success"), False),
+                ("a retarget to main (edited, base changed) judged in full",
+                 dict(event="pull_request", action="edited", base_changed="true",
+                      base_ref="main", mode="affected", mutate="success",
+                      fake_gh="failure", **ok), True),
+                ("a retarget to main with shards not run",
+                 dict(event="pull_request", action="edited", base_changed="true",
+                      base_ref="main", mode="affected", mutate="skipped",
+                      fake_gh="success", **ok), False)]
+            for what, kw, green in cases:
+                code, out = verdict(**kw)
+                check((code == 0) == green,
+                      f"ci for {what}: exit {code}, want "
+                      f"{'green' if green else 'red'}: {out[-300:]!r}")
+
+    # The workflow on main runs exactly this script with the needed jobs'
+    # results, whatever happened to them, and listens for a retarget.
+    with open(os.path.join(here, ".github", "workflows", "selftest.yml"),
+              encoding="utf-8") as fh:
+        st = fh.read()
+    if "\n  ci:\n" in st:
+        ci = st.split("\n  ci:\n", 1)[1]
+        check(ci.startswith("    needs: [selftest, changes, mutate]\n"
+                            "    if: always() && (github.event_name != "
+                            "'pull_request' || github.event.pull_request."
+                            "draft == false)\n"),
+              "ci needs selftest, changes and mutate, and runs whatever "
+              "they did")
+        for line in ("SELFTEST: ${{ needs.selftest.result }}",
+                     "CHANGES: ${{ needs.changes.result }}",
+                     "MUTATE: ${{ needs.mutate.result }}",
+                     "MODE: ${{ needs.changes.outputs.mode }}",
+                     "BASE_REF: ${{ github.base_ref }}",
+                     "ACTION: ${{ github.event.action }}",
+                     "BASE_CHANGED: ${{ github.event.changes.base != null }}",
+                     "\n          bash .github/scripts/ci_verdict.sh\n"):
+            check(line in ci, f"ci passes {line!r}")
+        check(re.search(r"types: \[[^\]]*\bedited\b[^\]]*\]", st)
+              and re.search(r"types: \[[^\]]*\breopened\b[^\]]*\]", st),
+              "main's selftest.yml runs again when a PR is edited "
+              "(retargeted) or reopened")
     print("  ok")
 
 
@@ -52093,7 +52574,8 @@ def test_mutate_fast_path_never_turns_red_green():
     with tempfile.TemporaryDirectory() as tree:
         names = ["m one", "m two"]
 
-        def sweep(behave, hints=None, jobs=1, ci=True, listed=True):
+        def sweep(behave, hints=None, jobs=1, ci=True, listed=True,
+                  extra=()):
             """behave(name, failfast, first, probe) -> (green, stopped in).
             (exit, lines, calls, catchers written)."""
             for i, n in enumerate(names):
@@ -52148,7 +52630,7 @@ def test_mutate_fast_path_never_turns_red_green():
                 sys.argv = (["mutate.py", "--shard", "0/1"]
                             + (["--expected", os.devnull] if listed else [])
                             + ["--hints", hf, "--write-catchers", wf,
-                               "--jobs", str(jobs)])
+                               "--jobs", str(jobs)] + list(extra))
                 with contextlib.redirect_stdout(buf):
                     code = mutate.main()
             finally:
@@ -52329,6 +52811,135 @@ def test_mutate_fast_path_never_turns_red_green():
               and any("FAILS with nothing mutated" in l for l in lines),
               f"a red baseline is run once more, then stops the shard: "
               f"{calls}")
+
+        # --trust-baseline (the CI diet, 2026-11-13): the selftest job of the
+        # same run passed the whole suite on this commit, so no copy runs it
+        # again. Each copy runs its hinted tests first instead (the sanity
+        # run), and every test a caught mutant stopped in is proved green
+        # alone in that copy, or the copy runs its whole baseline after all.
+        trust = ("--trust-baseline", "1200")
+        both = {"m one": "test_guard", "m two": "test_guard"}
+        for jobs in (1, 2):
+            code, lines, calls, learned = sweep(red_in_t_guard, both,
+                                                jobs=jobs, extra=trust)
+            sanity = [c for c in calls if c[0] is None and c[3]]
+            check(code == 0 and not base_runs(calls)
+                  and len(sanity) == jobs
+                  and all(c[2] == "test_guard" for c in sanity)
+                  and "  caught      m one" in lines
+                  and "  caught      m two" in lines
+                  and any(l.startswith("baseline trusted:") for l in lines),
+                  f"--trust-baseline, --jobs {jobs}: no whole baseline, one "
+                  f"sanity run per copy, both caught: {calls} {lines}")
+            check([c for c in calls if c[0] == "m one"] == [
+                      ("m one", True, "test_guard", False, jobs == 1),
+                      ("m one", True, None, False, jobs == 1)],
+                  f"--trust-baseline changes no mutated run: {calls}")
+            check(any(l.startswith("baseline trusted:") and "after 3600 s"
+                      in l for l in lines),
+                  f"the mutant limit is three times the trusted 1200 s: "
+                  f"{lines}")
+        # A sanity run that is red: that copy runs its whole baseline, as
+        # without the option.
+        code, lines, calls, learned = sweep(probe_fails, both, extra=trust)
+        check(code == 0 and len(base_runs(calls)) == 1
+              and any("sanity run" in l and "was red" in l for l in lines)
+              and not any(l.startswith("baseline trusted:") for l in lines),
+              f"a red sanity run costs the copy its whole baseline: {calls}")
+        # No hint at all: nothing can stand in for the baseline.
+        code, lines, calls, learned = sweep(red_in_t_guard, None,
+                                            extra=trust)
+        check(code == 0 and len(base_runs(calls)) == 1
+              and any("nothing can stand in for the baseline" in l
+                      for l in lines),
+              f"--trust-baseline without hints runs the baseline: {calls}")
+
+        # A caught mutant that stopped in a test the sanity run did not run
+        # first: that test is proved green alone in the copy, nothing
+        # mutated, once, and the verdict stands.
+        def stop_other(hit, ff, first, probe):
+            if hit is None:
+                return True, ""
+            return False, ("test_guard" if first == "test_guard"
+                           else "test_other")
+        code, lines, calls, learned = sweep(
+            stop_other, {"m one": "test_guard"}, extra=trust)
+        alone = [c for c in calls if c[0] is None and c[3]
+                 and c[2] == "test_other"]
+        check(code == 0 and not base_runs(calls) and len(alone) == 1
+              and "  caught      m one" in lines
+              and "  caught      m two" in lines,
+              f"a stopping test outside the sanity run is proved alone, "
+              f"once per copy: {calls} {lines}")
+
+        # That test is red alone (it needs a test before it): the copy runs
+        # its whole baseline; green, and the verdict stands.
+        def other_red_alone(hit, ff, first, probe):
+            if probe and first == "test_other":
+                return False, "test_other"
+            if hit is None:
+                return True, ""
+            return False, "test_other"
+        code, lines, calls, learned = sweep(
+            other_red_alone, {"m one": "test_guard"}, extra=trust)
+        check(code == 0 and len(base_runs(calls)) == 1
+              and "  caught      m one" in lines
+              and "  caught      m two" in lines,
+              f"a stopping test red alone costs the copy one whole baseline, "
+              f"then the verdicts stand: {calls} {lines}")
+
+        # And that baseline is red: no caught mutation of the copy counts,
+        # the shard says the suite fails with nothing mutated, exit 2.
+        def copy_broken(hit, ff, first, probe):
+            if probe:
+                return first != "test_other", "test_other"
+            return False, "test_other"
+        code, lines, calls, learned = sweep(
+            copy_broken, {"m one": "test_guard"}, extra=trust)
+        check(code == 2 and "  caught      m one" not in lines
+              and any(l.startswith("  NO VERDICT  m one") for l in lines)
+              and any(l.startswith("The suite FAILS with nothing mutated")
+                      for l in lines)
+              and not learned,
+              f"a copy whose baseline is red gives no verdict at all: "
+              f"exit {code}, {lines}")
+
+    # --with-core: on a PR into main every flamesafe, conductor and flame
+    # link mutation runs, whatever the diff, a doc included.
+    with tempfile.TemporaryDirectory() as tree:
+        saved = {k: getattr(mutate, k) for k in ("HERE", "LOCK", "MUTATIONS")}
+        old_argv = sys.argv
+        try:
+            mutate.HERE = tree
+            mutate.LOCK = os.path.join(tree, ".mutating")
+            mutate.MUTATIONS = [
+                ("core a", "flamesafe/composer.py", "x", "y"),
+                ("core b", "ltcplay/conductor.py", "x", "y"),
+                ("core c", "ltcplay/flamelink.py", "x", "y"),
+                ("other d", "ltcplay/remote.py", "x", "y")]
+
+            def listed(*args):
+                sys.argv = ["mutate.py", "--list"] + list(args)
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    code = mutate.main()
+                return code, sorted(l.split(": ", 1)[1] for l in
+                                    buf.getvalue().splitlines()
+                                    if l.startswith("  would run  "))
+            code, got = listed("--files", "README.md")
+            check(code == 0 and got == [],
+                  f"a doc alone selects nothing: {got}")
+            code, got = listed("--files", "README.md", "--with-core")
+            check(code == 0 and got == ["core a", "core b", "core c"],
+                  f"--with-core adds the safety core to a doc: {got}")
+            code, got = listed("--files", "ltcplay/remote.py", "--with-core")
+            check(code == 0 and got == ["core a", "core b", "core c",
+                                        "other d"],
+                  f"--with-core adds the core to a file's own: {got}")
+        finally:
+            for k, v in saved.items():
+                setattr(mutate, k, v)
+            sys.argv = old_argv
 
 
 def test_the_gpl_path_never_loads_the_flame_link():
@@ -54456,7 +55067,7 @@ def test_engine_refuses_run_with_a_bench_hook_outside_the_soak():
                  "LTCPLAY_BENCH_STALLS", "LTCPLAY_BENCH_SENDGAPS",
                  "LTC_TRACEMALLOC", "LTCPLAY_BENCH_SOMETHING_NEW"):
         why = B.run_refusal({name: "1"}, me)
-        check(why and name in why and "Run refused" in why
+        check(why and name in why and "Show control on refused" in why
               and "—" not in why and "–" not in why,
               f"{name} refuses Run in a sentence naming it, no dashes: "
               f"{why}")
@@ -54484,7 +55095,7 @@ def test_engine_refuses_run_with_a_bench_hook_outside_the_soak():
         try:
             c.start("show.json")
         except SessionError as e:
-            check("Run refused" not in str(e),
+            check("Show control on refused" not in str(e),
                   f"with no hook set, Run is not refused for one: {e}")
     finally:
         os.environ.pop("LTCPLAY_BENCH_FAKE_AUDIO", None)
@@ -76015,7 +76626,7 @@ def test_timed_purge_every_end_cause():
             check_end(m)
         # Run (refused or not).
         if start():
-            m = ended("Run", "Run was pressed")
+            m = ended("Run", "Show control was turned on")
             R.ask("POST", "/api/start", {"timeline": "nope.json"},
                   client=loop)
             check_end(m)
@@ -87887,12 +88498,12 @@ def test_artnet_faults_only_for_the_show_in_use():
               f"nothing Run yet: no fault, no alert, the card amber and "
               f"naming the file: {ck} {al}")
         check(NOTE[0].startswith("Art-Net receivers, a note: No show is "
-                                 "loaded, Run or picked yet") and
+                                 "loaded, turned on or picked yet") and
               "soak_show.json: " in NOTE[0] and "10.99.0.1" in NOTE[0],
               f"the rack screen is given one note: {NOTE[0]!r}")
-        check(rm.AMBIGUOUS.startswith("No show is loaded, Run or picked "
-                                      "yet, so no show file is judged as "
-                                      "a fault"),
+        check(rm.AMBIGUOUS.startswith("No show is loaded, turned on or "
+                                      "picked yet, so no show file is "
+                                      "judged as a fault"),
               f"the note says why: {rm.AMBIGUOUS!r}")
         # The only show file in the folder is the show that will run: its
         # fault stands, with nothing picked.
@@ -88382,7 +88993,7 @@ for(const k of ["prog", '{"on_lost": "hold"}', '{"no_output": true, "on_lost": "
   t(runningMode(L[k].snap) === "rehearsal", k + ": the old page reads " + runningMode(L[k].snap));
 }
 const idle = L.restart_idle.st;
-t(modeLook(idle).word === "Not running", "after a restart: Not running");
+t(modeLook(idle).word === "Show control off", "after a restart: Show control off");
 t(reload(idle) === "show", "after a restart the switch starts on Show");
 // An engine older than this change (no mode): on_lost, as before.
 t(runningMode({on_lost:"hold"}) === "rehearsal" && runningMode({on_lost:"freerun"}) === "show", "no mode field: on_lost as before");
@@ -89217,7 +89828,7 @@ def test_live_flame_engine_routes_roles_and_presses():
         # Run (/api/start) ends it before the session starts.
         lf.on = True
         http("/api/start", {"timeline": "nothing.json"}, cookie=jeff)
-        check(not lf.on and "Run was pressed" in lf.calls[-1][1],
+        check(not lf.on and "Show control was turned on" in lf.calls[-1][1],
               f"Run ends it: {lf.calls[-1]}")
     finally:
         httpd.server_close()
@@ -89272,11 +89883,11 @@ def test_live_flame_engine_routes_roles_and_presses():
     r.control = types.SimpleNamespace(
         session=types.SimpleNamespace(running=True, clock=None),
         state=lambda: {})
-    check("Run is pressed" in r.live_flame_blockers(),
+    check("show control is on" in r.live_flame_blockers(),
           "Run pressed (the session running): named")
     r.control = types.SimpleNamespace(
         session=None, state=lambda: {"starting": True})
-    check("Run is pressed" in r.live_flame_blockers(),
+    check("show control is on" in r.live_flame_blockers(),
           "Run pressed (the engine's state says starting): named")
     r.control = types.SimpleNamespace(session=None, state=lambda: {})
     r.schedule = types.SimpleNamespace(
@@ -93380,7 +93991,7 @@ def test_fireball_at_the_engine():
         check(st == 200 and link.cur[54] == 255 and v["blocked"] == "",
               f"Run pressed: the Fireball page still works (Jeff: at any "
               f"time, during a show too): {out} {v['blocked']!r}")
-        check("Run is pressed" in cl_why,
+        check("Show control is on" in cl_why,
               f"but the cleaning's rules still refuse Run pressed: {cl_why}")
         st, out = beat(set(), "a9", 2)
         check(st == 200 and link.cur is None, "all off")
@@ -93990,7 +94601,7 @@ def test_fireball_doc_in_plain_words():
                  "Stop", "Hold", "signing out", "All off",
                  "fuel valve closed", "One screen at a time",
                  "turn\nFuel, Air, Purge off before arming",
-                 "During a show too", "while Run is pressed",
+                 "During a show too", "while show control is on",
                  "the higher of the\nshow's value",
                  "never turn\noff one the show has on",
                  "is a top-off, not a double\ncharge",
@@ -97266,7 +97877,7 @@ def test_preroll_start_now_checks_first_and_never_starts_on_a_failure():
           f"Programming Run: the scheduled show is not started: "
           f"{svc.machine.state} {n.ran}")
     rows = [x for x in svc.journal if x.get("outcome") == "programming"]
-    check(rows and "Programming Run" in rows[-1]["text"],
+    check(rows and "a rehearsal is on" in rows[-1]["text"],
           f"and the journal says why: {rows[-1:]}")
     c.close()
     n.link.close()
@@ -100064,6 +100675,45 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
     print("  ok")
 
 
+def test_show_control_refusals_say_turn_it_off():
+    section("show control (Jeff, 2026-11-11; cold review of #240): a "
+            "refusal while show control is on says turn it off (End "
+            "rehearsal in a rehearsal), never press Stop: Stop leaves it "
+            "on. The timed purge, a new show file and the terminal's "
+            "rig-not-answering line")
+    import inspect
+    import types
+    from ltcplay import remote as RM
+    from ltcplay import display as DP
+    want = "turn show control off first (End rehearsal in a rehearsal)"
+    run = types.SimpleNamespace(running=True)
+    for how, ctl in (
+            ("the session running",
+             types.SimpleNamespace(session=run, state=lambda: {})),
+            ("the engine's state starting",
+             types.SimpleNamespace(session=None,
+                                   state=lambda: {"starting": True}))):
+        fake = types.SimpleNamespace(schedule=None, control=ctl)
+        why = RM.Remote.timed_purge_blockers(fake, None)
+        check(why.startswith("Show control is on") and want in why and
+              "press Stop" not in why,
+              f"a timed purge with {how}: {why!r}")
+    fake = types.SimpleNamespace(
+        _show_live=lambda: False,
+        control=types.SimpleNamespace(_starting=False, session=run))
+    code, why = RM.Remote._new_show_refusal(fake)
+    check(code == 409 and "Turn show control off first (End rehearsal in "
+          "a rehearsal)" in why and "Press Stop" not in why and
+          "Nothing was written" in why,
+          f"a new show file with a show file running: {why!r}")
+    src = inspect.getsource(DP.warnings_for)
+    check("Turn show control off and on (on the Mac page: " in src and
+          "Stop and Run after it is back" not in src,
+          "the terminal's rig-not-answering line says turn show control "
+          "off and on (Stop, then Run on the Mac page)")
+    print("  ok")
+
+
 # ------------------------------------------- interface 2.0 (the SHOW tab) --
 
 def _op_shaped(full):
@@ -101369,6 +102019,8 @@ s = base(); s.schedule.state = "SHOW";
 t(goLook(s, false, true).mode === "live" && goLook(s, false, true).off, "a show live: nothing to start");
 s = base(); s.show.running = false; s.show.show_control_on = false;
 t(goLook(s, false, true).mode === "run" && !goLook(s, false, true).off, "Run off, on the show PC: Run show");
+// Its words (Jeff, 2026-11-11): Show control on/off.
+t(goLook(s, false, true).label === "Show control on" && goLook(s, false, true).why === "Shows may start" && goLook(s, false, false).label === "Show control on" && goLook(s, false, false).why === "Only on the show PC", "Run show reads Show control on: " + JSON.stringify(goLook(s, false, true)));
 t(goLook(s, false, false).mode === "run" && goLook(s, false, false).off, "Run off, on an iPad: Run is not offered");
 // Whether Run is on is the engine's boolean, never its sentence: the
 // sentence alone changes nothing, the boolean alone decides, and a
@@ -101379,7 +102031,7 @@ s = base(); s.show.show_control_on = false;
 t(goLook(s, false, true).mode === "run" && !runIsOn(s), "the boolean off with a show file running: Run show");
 for(const v of [undefined, null, "true", 1, "yes", {}]){
   s = base(); if(v === undefined) delete s.show.show_control_on; else s.show.show_control_on = v;
-  t(!runIsOn(s) && goLook(s, false, true).mode === "run" && pillLook(s).text === "NOT RUNNING", "the boolean " + JSON.stringify(v) + ": off, never on");
+  t(!runIsOn(s) && goLook(s, false, true).mode === "run" && pillLook(s).text === "SHOW CONTROL OFF", "the boolean " + JSON.stringify(v) + ": off, never on");
 }
 s = base(); delete s.show;
 t(!runIsOn(s) && !runIsOn(null) && !runIsOn({}), "no show answer at all: off");
@@ -101388,12 +102040,12 @@ t(goLook(s, false, true).mode === "start" && !goLook(s, false, true).off, "betwe
 // Where Run is, by name (the Windows stress test, 2026-11-09), and Run
 // show in the alert slot on the show PC only, with the Show row.
 s = base(); s.show.running = false; s.show.show_control_on = false;
-s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
+s.schedule.run_warning = "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.";
 let ri = alertItems(s).find(i => i.key === "run");
-t(ri && ri.do === "Press the Run show button on the show PC's main screen." && !ri.act, "an iPad: the button named, on the show PC; no Run here: " + JSON.stringify(ri));
+t(ri && ri.do === "Turn show control on at the show PC." && ri.what === "Show control is off." && !ri.act, "an iPad: turned on at the show PC, 8 words; no button here: " + JSON.stringify(ri));
 globalThis.ME = {local:true};
 ri = alertItems(s).find(i => i.key === "run");
-t(ri && ri.do === "Press the Run show button on the main screen." && ri.act === "run" && ri.full === "Run is off: the 18:00 show (show 1) will NOT start. Press the Run show button on the main screen.", "the show PC: the button named, and Run show in the slot: " + JSON.stringify(ri));
+t(ri && ri.do === "Turn show control on." && ri.what === "Show control is off." && ri.act === "run" && ri.full === "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.", "the show PC: the engine's words, and Turn show control on in the slot: " + JSON.stringify(ri));
 STALE_NOW = true;
 ri = alertItems(s).find(i => i.key === "run");
 t(ri && !ri.act && runHereShown(s, true, true, false) === "", "no contact: no Run show in the slot (the big button's own gate)");
@@ -101406,25 +102058,25 @@ t(ri && !ri.act && runHereShown(s, false, true, false) === "", "without the Show
 // On a Hold the big button is Resume and the engine says Run, then
 // Resume: Run show is by the warning, and named so (cold review of #227).
 s = base(); s.show.running = false; s.show.show_control_on = false; s.schedule.state = "HOLD"; s.schedule.held = true;
-s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run, then Resume.";
+s.schedule.run_warning = "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on, then Resume.";
 t(goLook(s, false, true).mode === "resume" && runHereShown(s, false, true, false) === "held", "held, Run off: Resume on the big button, Run show by the warning");
 ri = alertItems(s).find(i => i.key === "run");
-t(ri && ri.act === "run" && ri.do === "Press the Run show button by this warning, then Resume.", "held, the show PC: the button by the warning: " + JSON.stringify(ri));
+t(ri && ri.act === "run" && ri.do === "Turn show control on, then Resume.", "held, the show PC: the button by the warning: " + JSON.stringify(ri));
 globalThis.ME = undefined;
 ri = alertItems(s).find(i => i.key === "run");
-t(ri && !ri.act && ri.do === "Press Run show on the show PC, then Resume.", "held, an iPad: Run show on the show PC: " + JSON.stringify(ri));
+t(ri && !ri.act && ri.do === "Show PC: turn show control on, then Resume.", "held, an iPad: on the show PC, 8 words: " + JSON.stringify(ri));
 globalThis.ME = {local:true};
 t(runHereShown(s, true, true, false) === "", "held, no contact: no Run show");
 s.me = {may:{show:false}};
 t(runHereShown(s, false, true, false) === "", "held, signed out: no Run show");
-s = base(); s.show.running = true; s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
+s = base(); s.show.running = true; s.schedule.run_warning = "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.";
 t(runHereShown(s, false, true, false) === "", "Run on: no Run show");
 // Run show's press here: the big button's wait after a Stop, its gates
 // at the press, and the Schedule tab's button drawn with contact.
 { let RAN = 0, SAID2 = [];
   const runShow = () => { RAN++; }, say = (a) => SAID2.push(a);
   const FLIPPED = {}; let HALT_BUSY = false, ST = base();
-  ST.show.running = false; ST.show.show_control_on = false; ST.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
+  ST.show.running = false; ST.show.show_control_on = false; ST.schedule.run_warning = "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.";
   const TN = {hidden:true}; const $ = id => id === "tn-run" ? TN : null;
   eval(RUN_HERE_FNS);
   globalThis.ME = {local:true};
@@ -101436,25 +102088,25 @@ t(runHereShown(s, false, true, false) === "", "Run on: no Run show");
   STALE_NOW = false; drawRunHere(false); t(TN.hidden === false, "the Schedule tab's Run show: shown on the show PC, with contact, Run off");
   ST.me = {may:{show:false}}; drawRunHere(false); runShowHere(); t(TN.hidden === true && RAN === 1, "the Schedule tab's Run show: none signed out");
   globalThis.ME = undefined; ST.me = base().me; drawRunHere(false); t(TN.hidden === true, "the Schedule tab's Run show: none on an iPad"); }
-s = base(); s.schedule.run_warning = "A Programming Run is in force: the 18:00 show (show 1) will NOT start. Press Stop, choose Show, then Run.";
+s = base(); s.schedule.run_warning = "A rehearsal is on: the 18:00 show (show 1) will NOT start. End rehearsal, choose Show, then turn show control on.";
 ri = alertItems(s).find(i => i.key === "run");
 t(ri && !ri.act && ri.full === s.schedule.run_warning, "a Programming Run: the engine's words, no Run button");
 // Run show by the warning is decided by the boolean, never the warning's
 // first words (show control, PR 1): the same sentence either way.
 globalThis.ME = {local:true};
-s = base(); s.schedule.run_warning = "A Programming Run is in force: the 18:00 show (show 1) will NOT start. Press Stop, choose Show, then Run.";
+s = base(); s.schedule.run_warning = "A rehearsal is on: the 18:00 show (show 1) will NOT start. End rehearsal, choose Show, then turn show control on.";
 t(runHereShown(s, false, true, false) === "", "a warning with Run on: no Run show");
 s.show.show_control_on = false;
 t(runHereShown(s, false, true, false) === "run", "the same warning with the boolean off: Run show");
 delete s.show.show_control_on;
 t(runHereShown(s, false, true, false) === "run", "the same warning with no boolean: off, so Run show (never treated as on)");
-s = base(); s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
+s = base(); s.schedule.run_warning = "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.";
 t(runHereShown(s, false, true, false) === "", "the Run is off sentence with the boolean on: no Run show (the sentence is not read)");
 s.schedule.run_warning = null; s.show.show_control_on = false;
 t(runHereShown(s, false, true, false) === "", "no warning: no Run show by it");
 globalThis.ME = undefined;
-s = base(); s.schedule.run_warning = "A Programming Run is in force: the 18:00 show (show 1) will NOT start. Press Stop, choose Show, then Run.";
-t(runWarnWords("Run is off: the 18:00 show (show 1) will NOT start. Press Run.", true) === "Run is off: the 18:00 show (show 1) will NOT start. Press the Run show button on the main screen.", "Press Run.");
+s = base(); s.schedule.run_warning = "A rehearsal is on: the 18:00 show (show 1) will NOT start. End rehearsal, choose Show, then turn show control on.";
+t(runWarnWords("Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.", true) === "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on." && runWarnWords("Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.", false) === "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on at the show PC." && runWarnWords("A rehearsal is on: the 18:00 show (show 1) will NOT start. End rehearsal, choose Show, then turn show control on.", false) === "A rehearsal is on: the 18:00 show (show 1) will NOT start. End rehearsal, choose Show, then turn show control on.", "the run warning: the engine's words on the show PC, at the show PC elsewhere; a rehearsal's as it is");
 globalThis.ME = undefined;
 t(goLook(s, true, true).off, "no contact: nothing that starts");
 s = base(); s.schedule.held = true;
@@ -101489,7 +102141,7 @@ for(const x of states) for(const st of [false, true]) for(const local of [true, 
   t(!/flamesafe|beats|seq|engine/i.test(n.text + " " + p.text), "no engine words on the SHOW tab: " + n.text);
 }
 t(/Stop, Hold, Disarm/.test(nextStep(base(), true, true, []).text) && !/Abort/.test(nextStep(base(), true, true, []).text), "no contact says Stop, Hold and Disarm still work");
-t(/Run show/.test(nextStep(states[6], false, true, []).text), "Run off says press Run show");
+t(nextStep(states[6], false, true, []).text === "Show control is off." && nextStep(states[6], false, false, []).text === "Show control off: turn on at show PC.", "Run off says show control is off (the big button says how): " + nextStep(states[6], false, true, []).text);
 // The systems badge names what to check (Jeff, 2026-10-29).
 const okSubs = [{name:"Deck", state:"ok", word:"ok"}, {name:"Flamesafe", state:"ok", word:"linked"}];
 let L = sysLook(okSubs.concat([{name:"Deck", state:"warn", word:"USB slow 0.9 s"}]).slice(1), false);
@@ -104023,7 +104675,7 @@ def test_ui2_calm_screens_and_brand():
                       f"are disabled and say why: {a}"[:900])
 
             if kind == "run off":
-                check(a["next"] == "Show not running. Press Run show.",
+                check(a["next"] == "Show control is off.",
                       f"{where}: the top line says to press Run: "
                       f"{a['next']!r}")
                 # The engine plays an announcement with Run off (it holds
@@ -104055,8 +104707,7 @@ def test_ui2_calm_screens_and_brand():
                       f"No contact, Abort and the rest stay live: {sl} "
                       f"{r['stale_taps']}"[:1200])
                 check(not r["back"]["inactive"] or
-                      r["back"]["next"] == "Show not running. Press Run "
-                                           "show.",
+                      r["back"]["next"] == "Show control is off.",
                       f"{where}: contact back, the screen is as before: "
                       f"{r['back']['next']!r}")
     print("  ok")
@@ -109005,7 +109656,7 @@ def test_fireball_practice_engine():
         trig("the schedule gone", lambda g: setattr(g.svc, "machine", None),
              "not loaded")
         trig("Run off", lambda g: setattr(g.sess, "running", False),
-             "Run was turned off")
+             "Show control was turned off")
         trig("a Hold pressed", lambda g: g.p.request_end(
             "Hold was pressed"), "Hold was pressed")
         trig("a pause during the step", lambda g: setattr(
@@ -115008,7 +115659,8 @@ def test_start_at_cue_route():
         # No show running.
         ctl.session = None
         code, out, _h = press()
-        check(code == 409 and "Press Run" in out["error"] and not presses,
+        check(code == 409 and "Turn show control on" in out["error"] and
+              not presses,
               f"Run not pressed: refused: {out}")
         ctl.session = sess
         # A broken cue file: refused in its words, never guessed.
@@ -115201,19 +115853,40 @@ def test_ui2_programming_tab_makes_1_0_presses():
              '{timeline:f})',
              'post("/api/start", prog ? {timeline:f, on_lost:"hold"} : '
              '{timeline:f})'),
-            ('confirmBox(prog ? "Run in Programming?" : "Press Run?", prog '
-             '? "Run " + f + " as a rehearsal. Play from, jump and loop '
-             'work, and the scheduler starts no show." : "Run " + f + ". '
-             'The scheduler then starts each show by itself.", "Yes, Run"',
-             'confirmBox(prog ? "Run in Programming?" : "Press Run?", prog '
-             '? "Run " + f + " as a rehearsal. Play from, jump and loop '
-             'work, and the scheduler starts no show." : "Run " + f + ". '
-             'The scheduler then starts each show by itself.", "Yes, Run"'),
-            ('confirmBox("Turn Run off?", RUN_OFF_CONFIRM, "Yes, Run off"',
-             'confirmBox("Turn Run off?", RUN_OFF_CONFIRM, "Yes, Run off"'),
+            ('confirmBox(prog ? "Start rehearsal?" : "Turn show control '
+             'on?", prog ? "Rehearses " + f + ". Play from, jump and loop '
+             'work, and the scheduler starts no show." : "Uses " + f + ". '
+             'The scheduler then starts each show by itself.", prog ? '
+             '"Yes, start" : "Yes, turn on"',
+             'confirmBox(prog ? "Start rehearsal?" : "Turn show control '
+             'on?", prog ? "Rehearses " + f + ". Play from, jump and loop '
+             'work, and the scheduler starts no show." : "Uses " + f + ". '
+             'The scheduler then starts each show by itself.", prog ? '
+             '"Yes, start" : "Yes, turn on"'),
+            ('confirmBox("Turn show control off?", RUN_OFF_CONFIRM, "Yes, '
+             'turn off"',
+             'confirmBox("Turn show control off?", RUN_OFF_CONFIRM, "Yes, '
+             'turn off"'),
             ('if(runLook(ST, nowStale()).mode !== "runoff")',
              'if(runLook(ST, stale()).mode !== "runoff")')):
         check(p1 in one and p2 in two, f"1.0 presses {p1} and 2.0 {p2}")
+    # A rehearsal's Run off is End rehearsal everywhere it is said (cold
+    # reviews of #239): the Show file card's tooltip and question, the
+    # SHOW tab's button and its question; the card's heading claims no
+    # state it may not be in.
+    check('const REHEARSAL_END_CONFIRM = "Stops everything, as Stop does, '
+          'and ends the rehearsal.";' in two and
+          'reh ? confirmBox("End rehearsal?", REHEARSAL_END_CONFIRM, '
+          '"Yes, end it", "red")' in two and
+          '? await confirmBox("End rehearsal?", REHEARSAL_END_CONFIRM, '
+          '"Yes, end it", "red")' in two and
+          'rk.mode === "runoff" ? (tr.programming ? REHEARSAL_END_CONFIRM '
+          ': RUN_OFF_CONFIRM) : ""' in two and
+          'setText($("ro-l"), roReh ? "End" : "Show ctrl"); '
+          'setText($("ro-s"), roReh ? "rehearsal" : "off");' in two and
+          "<b>Show file, on this machine</b></div>" in two,
+          "a rehearsal's Run off says End rehearsal: tooltip, questions "
+          "and the SHOW tab's button")
     check('const v = runModeView(ST, RUN_MODE || "show");\n  if(v.locked)'
           in one and
           'const v = runModeView(ST, RUN_MODE || "show");\n  if(v.locked)'
@@ -115230,15 +115903,16 @@ def test_ui2_programming_tab_makes_1_0_presses():
     dp = _js_function(two, "drawProg") or ""
     check("const can = controlStates(ST, isSt).transport && "
           'mayRow(ST, "show");' in dp and
-          "runLook(ST, isSt)" in dp,
+          'runLook(ST, isSt, RUN_MODE || "show")' in dp,
           "the session controls follow 1.0's controlStates and sign-in "
           "lock; Run follows 1.0's runLook")
     here = os.path.dirname(os.path.abspath(__file__))
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
     i = op.find("- Programming (Schedule tab):")
     para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
-    for words in ("Run asks first", "refused while a scheduled show is live",
-                  "Stop (tap twice)", "Run off", "Play from", "Set A",
+    for words in ("It asks first", "refused while a scheduled show is live",
+                  "Stop (tap twice)", "End rehearsal", "Start rehearsal",
+                  "Play from", "Set A",
                   "Follow timecode again", "flame cue fault", "Show row",
                   "show PC tools"):
         check(words in para, f"OPERATOR.md, 2.0 Programming, says "
@@ -115512,7 +116186,7 @@ def test_ui2_programming_tab_in_a_browser():
                   a["files"] == ["Fire and Ice.json", "Other.json"] and
                   a["file"] == "Fire and Ice.json" and
                   a["mode"] == "programming" and "Running now." in a["what"]
-                  and a["run"] == "runoff" and a["run_l"] == "Run off" and
+                  and a["run"] == "runoff" and a["run_l"] == "End rehearsal" and
                   not a["run_dis"] and not any(a["tr_dis"]) and
                   len(a["tr_dis"]) == 11,
                   f"{where}: the show PC in a rehearsal: both cards, the "
@@ -115587,13 +116261,13 @@ def test_ui2_programming_tab_in_a_browser():
                       f"{r['ipad']}")
             if "run=1" in frag:
                 check(r["off"]["run"] == "run" and
-                      r["off"]["run_l"] == "Run" and
+                      r["off"]["run_l"] == "Start rehearsal" and
                       not r["off"]["run_dis"] and all(r["off"]["tr_dis"]) and
                       r["off"]["why"] == "No show file is running.",
                       f"{where}: Run off: Run, the session not pressable, "
                       f"the engine's reason: {r['off']}")
                 check(r["prog_sheet"]["sheet"] and
-                      r["prog_sheet"]["sheet_h"] == "Run in Programming?" and
+                      r["prog_sheet"]["sheet_h"] == "Start rehearsal?" and
                       r["prog_before"] == [] and
                       r["prog_after"] == [["/api/start", {
                           "timeline": "Fire and Ice.json",
@@ -115601,7 +116275,7 @@ def test_ui2_programming_tab_in_a_browser():
                       f"{where}: Run in Programming asks first, then posts "
                       f"1.0's rehearsal body: {r['prog_sheet']} "
                       f"{r['prog_after']}")
-                check(r["show_sheet"]["sheet_h"] == "Press Run?" and
+                check(r["show_sheet"]["sheet_h"] == "Turn show control on?" and
                       r["show_cancel"] == [] and
                       r["show_after"] == [["/api/start", {
                           "timeline": "Fire and Ice.json"}]],
@@ -115620,7 +116294,7 @@ def test_ui2_programming_tab_in_a_browser():
                       f"refused before any question, nothing sent: "
                       f"{r['locked_press']}")
                 check(r["runon"]["run"] == "runoff" and
-                      r["runoff_sheet"]["sheet_h"] == "Turn Run off?" and
+                      r["runoff_sheet"]["sheet_h"] == "End rehearsal?" and
                       r["runoff_before"] == [] and
                       [p[0] for p in r["runoff_after"]] == ["run-off"],
                       f"{where}: Run off asks first, then posts run-off: "
@@ -115715,7 +116389,7 @@ def test_ui2_schedule_tab_makes_1_0_presses():
     for need in ("and the Fire &amp; Ice settings say it performs",
                  "Any times work:", "is overwritten, so Reload first"):
         check(need in sched, f"the editor says, as 1.0 does: {need!r}")
-    for words in ("tap a show", "Run warning", "show PC only",
+    for words in ("tap a show", "show control warning", "show PC only",
                   "Save the schedule", "Reload from the file",
                   "Late start allowed", "exceptions",
                   "Unsaved schedule", "is overwritten"):
@@ -115748,8 +116422,8 @@ def _ui2_status_tonight():
     st["schedule"].update({
         "state": "STANDBY", "running": None,
         "next": {"show": 5, "start": "19:50", "in_s": 1500},
-        "run_warning": "Run is off: show 5 at 19:50 will not start until "
-                       "Run is pressed.",
+        "run_warning": "Show control is off: the 19:50 show (show 5) will "
+                       "NOT start. Turn show control on.",
         "slots": [
             {"show": 3, "start": "19:10", "status": "DONE"},
             {"show": 4, "start": "19:32", "planned": "19:30",
@@ -115913,7 +116587,7 @@ def test_ui2_schedule_tab_in_a_browser():
                     "Show 5 19:50 PENDING | ",
                     "Show 6 20:10 PENDING | Added for tonight only."] and
                   a["next"] == "Next: Show 5 at 19:50" and
-                  a["warn"].startswith("Run is off: show 5"),
+                  a["warn"].startswith("Show control is off: the 19:50 show"),
                   f"{where}: tonight's shows with 1.0's notes, Next and "
                   f"the Run warning: {a}")
             check(a["editor"] and r["gets"] >= 1 and
@@ -117329,6 +118003,7 @@ if __name__ == "__main__":
         test_streamdeck_local_schedule_operator_reverts_when_server_drops,
         test_streamdeck_deck_journal_prints_and_posts,
         test_streamdeck_reconnect_never_remembers_old_state,
+        test_show_control_refusals_say_turn_it_off,
         test_streamdeck_never_imports_flamesafe,
         test_conductor_devices_hold_blanks_beyond_before_anything_fades,
         test_conductor_devices_stop_blanks_at_once_never_ramps,
@@ -117535,6 +118210,8 @@ if __name__ == "__main__":
         test_mutate_fast_path_never_turns_red_green,
         test_mutate_never_runs_stale_bytecode,
         test_mutate_shards_fit_their_time_limit,
+        test_ci_verdict_rules,
+        test_release_tags_are_ltc_only,
         test_alerts_pure_logic,
         test_alerts_route_status_and_acknowledge,
         test_boothaudio_never_holds_and_never_uses_the_pa,
