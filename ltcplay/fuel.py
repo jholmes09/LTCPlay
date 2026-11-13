@@ -109,6 +109,8 @@ import os
 import threading
 import time
 
+from . import fuelshows
+
 FUEL_FILE = "fuel.json"
 FUEL_FORMAT = 1
 CONFIG_FILE = "ltcplay_morning.json"
@@ -163,6 +165,9 @@ KIND_KEYS = frozenset(("label", "fire_at", "count_purge",
                        "start_shows_per_tank"))
 KIND_WORDS = {"gflame": "G-Flame", "waver": "Showven"}
 SOURCES = ("show", "purge", "other")
+# How a performance ends when a restart cuts it (_load, close): shows per
+# refill counts it even if it was short, marked not sure (fuelshows.py).
+CUT_HOWS = ("the engine stopped during it", "the engine was stopped during it")
 
 
 class FuelConfigError(ValueError):
@@ -568,8 +573,13 @@ class FuelTracker:
         self._last_purges = None
         self._stop = threading.Event()
         self._thread = None
+        # Shows per refill (fuelshows.py, fuel_shows.json): read before
+        # fuel.json, whose performance under way may end in _load.
+        self.shows = fuelshows.ShowsCounter(folder, clock, wall, self._note)
+        self.audit = None            # audit.AuditLog, set by build()
         self._reload_config()
         self._load()
+        self._shows_start()
         if threaded:
             self._thread = threading.Thread(target=self._run, daemon=True,
                                             name="ltcplay-fuel")
@@ -671,6 +681,7 @@ class FuelTracker:
         try:
             self._reload_config()
             self.pump()
+            self.shows_commit_due()
             if self._dirty and \
                     self._clock() - self._last_save >= SAVE_EVERY_S:
                 self.save()
@@ -840,6 +851,12 @@ class FuelTracker:
                 u["shows"] += 1
                 u["show_burns"] = (u["show_burns"] + [round(b, 3)])[
                     -SHOW_BURNS_KEPT:]
+        try:
+            self.shows.show_ended(ep, burn, is_show, how in CUT_HOWS,
+                                  machines, self._locked, self.units,
+                                  self._new_id)
+        except Exception as e:                    # noqa: BLE001
+            self.shows.fault = f"{type(e).__name__}: {e}"
         if is_show:
             self.shows_total += 1
             self._note(f"Fuel: a show was counted ({how}; "
@@ -860,8 +877,14 @@ class FuelTracker:
         with self._save_lock:
             with self._lock:
                 text = json.dumps(self._doc(), indent=1, sort_keys=True)
+                stext = self.shows.text()
                 self._dirty = False
                 self._last_save = self._clock()
+            # fuel_shows.json FIRST: a show it counted is then never lost
+            # (fuelshows.py); a failure there never stops fuel.json.
+            if not self.shows.write(stext):
+                with self._lock:
+                    self._dirty = True
             try:
                 tmp = f"{self.path}.{os.getpid()}.tmp"
                 with open(tmp, "w", encoding="utf-8") as fh:
@@ -976,16 +999,7 @@ class FuelTracker:
         if not pick:
             return False, "No unit is tracked, so nothing was logged."
         with self._lock:
-            bid = self.next_id
-            self.next_id += 1
-            at = self._wall()
-            for m in pick:
-                u = self._unit(m)
-                snap = self._snapshot(m.id, u)
-                u["refills"] = (u["refills"] + [dict(
-                    snap, id=bid, at=at, who=who or "unsigned",
-                    role=role or "", undone=None)])[-REFILLS_KEPT:]
-            self._dirty = True
+            self._log_refills(pick, self._new_id(), who, role)
         names = ("every unit" if which == "all" and len(pick) > 1
                  else pick[0].name)
         self._note(f"Fuel: {who or 'someone'} logged a refill of {names}.")
@@ -998,11 +1012,191 @@ class FuelTracker:
                           f"until the page says it is saved.")
         return True, f"Refill of {names} logged."
 
+    def _new_id(self):
+        """The next refill number, past every shows per refill entry too
+        (fuel_shows.json may have been written after fuel.json)."""
+        bid = max(self.next_id, self.shows.max_id() + 1)
+        self.next_id = bid + 1
+        return bid
+
+    def _log_refills(self, pick, bid, who, role):
+        """A full tank for each machine in `pick`, as refill number `bid`.
+        Under the lock."""
+        at = self._wall()
+        for m in pick:
+            u = self._unit(m)
+            snap = self._snapshot(m.id, u)
+            u["refills"] = (u["refills"] + [dict(
+                snap, id=bid, at=at, who=who or "unsigned",
+                role=role or "", undone=None)])[-REFILLS_KEPT:]
+        self._dirty = True
+
+    # -- shows per refill (fuelshows.py) ---------------------------------------
+    def _shows_start(self):
+        """After fuel.json is read: a +1 batch left open is written (not
+        confirmed), and shows fuel.json counted that fuel_shows.json never
+        saw are counted down."""
+        try:
+            with self._lock:
+                self.shows.reconcile(self._machines(), self.units,
+                                     self._new_id)
+                if self.shows.dirty:
+                    self._dirty = True
+            self._audit_written()
+        except Exception as e:                    # noqa: BLE001
+            self.shows.fault = f"{type(e).__name__}: {e}"
+
+    def shows_commit_due(self):
+        """Write each +1 batch whose shows left has sat COMMIT_S as its one
+        entry (the tracker's pass, every DRAIN_S), and audit it."""
+        with self._lock:
+            for mid in self.shows.due():
+                self.shows.commit(mid, self._new_id)
+            if self.shows.dirty:
+                self._dirty = True
+        if self._audit_written():
+            self.save()
+
+    def _audit_written(self):
+        """One audit line per entry written since the last call."""
+        with self._lock:
+            got, self.shows.written = self.shows.written, []
+        for a in got:
+            (mid, ch), = a["changes"].items()
+            self._audit(a.get("who"), "fuel-refueled", f"unit={mid}",
+                        old=ch[0], new=ch[1], clicks=a.get("clicks", 0),
+                        wraps=a.get("wraps", 0),
+                        confirmed=bool(a.get("confirmed", True)),
+                        words=a.get("words", ""))
+        return len(got)
+
+    def _audit(self, who, action, target, **extra):
+        """One audit line of what a shows per refill press changed. Never
+        raises, never waits (audit.AuditLog.event)."""
+        log = self.audit
+        if log is None:
+            return
+        try:
+            log.event(user=who or "unsigned", surface="web", action=action,
+                      target=target, result="accepted", **extra)
+        except Exception:                         # noqa: BLE001
+            pass
+
+    def _saved(self, text):
+        if self.save():
+            return text
+        return (f"{text} NOT saved yet ({self.save_error}); "
+                f"tried again every {SAVE_EVERY_S:g} s.")
+
+    def shows_step(self, unit, who, role=""):
+        """Refueled +1 on `unit`, whose type has shows per refill: (ok,
+        sentence, answer). Shows left changes and is saved at once; its
+        log entry is written COMMIT_S after the last press
+        (fuelshows.py)."""
+        m = next((x for x in self._machines() if x.id == unit), None)
+        if m is None:
+            return False, "No such flame unit. Nothing was changed.", {}
+        with self._lock:
+            n = self.shows.top(m.kind)
+            if n is None:
+                return False, (f"Set shows per refill for "
+                               f"{fuelshows.KIND_NAMES[m.kind]}s first."), {}
+            old, new, _first = self.shows.step(m, who, role, self.gaps,
+                                               self._new_id)
+            self._dirty = True
+        self._audit_written()
+        return True, self._saved(
+            f"{m.name}: {fuelshows.left_words(new)}."), {
+            "unit": m.id, "left": new, "n": n}
+
+    def shows_set(self, kind, n, who, role=""):
+        """Shows per refill for one machine type, or None for tracking
+        only: (ok, sentence)."""
+        if kind not in fuelshows.KINDS:
+            return False, "Say which machine type. Nothing was changed."
+        n, why = fuelshows.check_n(n)
+        if n is False:
+            return False, why
+        word = fuelshows.KIND_NAMES[kind]
+        with self._lock:
+            self.shows.commit_all(self._new_id)
+            old, low = self.shows.set_n(kind, n, self._new_id(), who, role)
+            self._dirty = True
+        self._audit_written()
+        down = "".join(f" {self.shows.units[k]['name']} {a} to {b}."
+                       for k, (a, b) in low.items())
+        self._note(f"Fuel: {who or 'someone'} set shows per refill for "
+                   f"{word}s from {old} to {n}.{down}")
+        self._audit(who, "fuel-shows-set", f"kind={kind} from={old} to={n}",
+                    lowered=len(low))
+        return True, self._saved(
+            f"{word}: tracking only." if n is None else
+            f"{word}: {n} shows per refill.")
+
+    def fill(self, units, hazers, who, role="", haze=None):
+        """Fill selected: each flame unit in `units` gets a refill logged
+        (Refill all's full tank) and, when its type has shows per refill,
+        shows left = N, all as ONE refill number (one Undo); each hazer in
+        `hazers` gets a haze refill (fuelhaze.py, its own Undo). Refused,
+        nothing logged, when a unit or hazer is not listed now. (ok,
+        sentence)."""
+        by_id = {m.id: m for m in self._machines()}
+        hz = []
+        if hazers:
+            try:
+                hz = [n for n, _h, _f in haze.hazers()] if haze else []
+            except Exception:                     # noqa: BLE001
+                hz = []
+        if not units and not hazers:
+            return False, "Select a unit first. Nothing was logged."
+        if any(u not in by_id for u in units) or \
+                any(h not in hz for h in hazers) or \
+                len(set(units)) != len(units) or \
+                len(set(hazers)) != len(hazers):
+            return False, ("The unit list changed. Look again. Nothing was "
+                           "logged.")
+        pick = [by_id[u] for u in units]
+        changed = {}
+        if pick:
+            with self._lock:
+                self.shows.commit_all(self._new_id)
+                bid = self._new_id()
+                self._log_refills(pick, bid, who, role)
+                changed = self.shows.fill(pick, bid, who, role, self.gaps)
+            self._audit_written()
+            for m in pick:
+                ch = changed.get(m.id)
+                self._audit(who, "fuel-fill", f"unit={m.id}", refill=bid,
+                            **({"old": ch[0], "new": ch[1]} if ch else {}))
+            self._note(f"Fuel: {who or 'someone'} filled "
+                       f"{', '.join(m.name for m in pick)}" + "".join(
+                           f"; {by_id[k].name} shows left {a} to {b}"
+                           for k, (a, b) in changed.items()) + ".")
+            if not self.save():
+                return True, (f"Filled, but fuel.json could NOT be written "
+                              f"({self.save_error}); tried again every "
+                              f"{SAVE_EVERY_S:g} s.")
+        bad = []
+        for h in hazers:
+            ok, text = haze.refill(h, who, role)
+            if ok:
+                self._audit(who, "fuel-fill", f"hazer={h}")
+            else:
+                bad.append(text)
+        n = len(pick) + len(hazers) - len(bad)
+        said = f"{n} unit{'' if n == 1 else 's'} filled."
+        return True, said + (" " + " ".join(bad) if bad else "")
+
+
     def undo(self, batch_id, who):
         """Mark the refill `batch_id` (one press: a unit, or every unit)
         undone. Never deleted: the record says who undid it and when.
         (ok, sentence)."""
         with self._lock:
+            sv = self.shows.undo(batch_id, who)
+            if sv is not None and not sv[0]:
+                return False, (f"{', '.join(sv[2])} changed since. Press "
+                               f"Refueled +1 round to fix it.")
             hit = []
             for u in self.units.values():
                 for r in u["refills"]:
@@ -1010,10 +1204,19 @@ class FuelTracker:
                         r["undone"] = {"who": who or "unsigned",
                                        "at": self._wall()}
                         hit.append((u, r))
-            if not hit:
+            if not hit and sv is None:
                 return False, ("That refill is not in the record or was "
                                "already undone. Nothing was changed.")
             self._dirty = True
+        if sv is not None:
+            self._note(f"Fuel: {who or 'someone'} undid shows left of "
+                       f"{', '.join(sv[1])}" + (
+                           f"; kept {', '.join(sv[2])} (changed since)"
+                           if sv[2] else "") + ".")
+            self._audit(who, "fuel-shows-undo", f"id={batch_id}",
+                        units=", ".join(sv[1]), kept=", ".join(sv[2]))
+        if not hit:
+            return True, self._saved(f"Undone: {', '.join(sv[1])}.")
         r0 = hit[0][1]
         names = (hit[0][0]["name"] if len(hit) == 1
                  else _plural(len(hit), "unit"))
@@ -1187,6 +1390,12 @@ class FuelTracker:
                                     kc["start_shows_per_tank"]}
                 units = [self._unit_view(m, cfg, kinds[m.kind])
                          for m in machines]
+                for m, u in zip(machines, units):
+                    w = self.shows.unit_view(m, self.gaps)
+                    if w is not None:
+                        u["countdown"] = w
+                        if w["refuel_now"]:
+                            u["refill_soon"] = True
                 gone = sorted(set(self.units) - {m.id for m in machines})
                 batches = {}
                 for u in self.units.values():
@@ -1196,10 +1405,18 @@ class FuelTracker:
                             "at_ms": int(float(r.get("at") or 0) * 1000),
                             "units": [], "undone": r.get("undone")})
                         b["units"].append(u["name"])
+                for bid, b in self.shows.recent().items():
+                    batches.setdefault(bid, b)
                 recent = sorted(batches.values(),
                                 key=lambda b: -(b["id"] or 0))[
                     :RECENT_BATCHES]
                 notes = list(self.gap_notes)
+                if self.shows.load_error:
+                    notes.append(self.shows.load_error)
+                if self.shows.fault or self.shows.save_error:
+                    notes.append(f"Shows left: "
+                                 f"{self.shows.fault or self.shows.save_error}"
+                                 f". It may read high; check the tanks.")
                 if self._link is None:
                     notes.insert(0, "No flame link in this engine, so no "
                                     "flame is being counted.")
@@ -1238,6 +1455,12 @@ class FuelTracker:
                         if self.run_error else "") if x),
                     "saved_at_ms": None if self.saved_at is None
                     else int(float(self.saved_at) * 1000),
+                    "shows_per_refill": {
+                        k: {"name": fuelshows.KIND_NAMES[k],
+                            "n": self.shows.top(k)}
+                        for k in TRACKED_KINDS
+                        if any(m.kind == k for m in machines)},
+                    "shows_per_refill_max": fuelshows.N_MAX,
                     "settings": {k: cfg[k] for k in (
                         "learn_refills", "recent_shows", "min_shows",
                         "min_show_s", "amber_below_percent",
@@ -1337,7 +1560,13 @@ def _may(ctx, users, roles, what):
 
 
 GET_ROUTES = ("fuel",)
-POST_ROUTES = ("fuel-refill", "fuel-undo")
+POST_ROUTES = ("fuel-refill", "fuel-undo", "fuel-shows")
+
+
+def may_set_shows(ctx, users):
+    """Setting shows per refill: an admin, signed in (the show machine
+    itself when nobody can sign in), as for an undo."""
+    return _may(ctx, users, ("admin",), "set shows per refill")
 
 
 def route_get(tracker, ctx, users, wall=time.time):
@@ -1351,13 +1580,16 @@ def route_get(tracker, ctx, users, wall=time.time):
     v["may_refill"], v["refill_why"] = ok, why
     ok, why = may_undo(ctx, users)
     v["may_undo"], v["undo_why"] = ok, why
+    ok, why = may_set_shows(ctx, users)
+    v["may_set_shows"], v["set_shows_why"] = ok, why
     v["served_at"] = int(wall() * 1000)
     return 200, v
 
 
-def route_post(tracker, name, body, ctx, users):
+def route_post(tracker, name, body, ctx, users, haze=None):
     """POST fuel-refill {"unit": id} or {"all": true, "confirm": true};
-    fuel-undo {"id": n}. (code, body)."""
+    fuel-undo {"id": n}; fuel-shows (_shows_post, `haze` the hazers'
+    tracker for Fill selected). (code, body)."""
     if tracker is None:
         return 404, {"error": "The fuel page is not set up in this engine."}
     body = body if isinstance(body, dict) else {}
@@ -1389,6 +1621,8 @@ def route_post(tracker, name, body, ctx, users):
             done, text = tracker.refill(unit, who, role)
         return (200 if done else 400), ({"text": text} if done
                                         else {"error": text})
+    if name == "fuel-shows":
+        return _shows_post(tracker, body, ctx, users, who, role, haze)
     if name == "fuel-undo":
         ok, why = may_undo(ctx, users)
         if not ok:
@@ -1401,6 +1635,48 @@ def route_post(tracker, name, body, ctx, users):
         return (200 if done else 409), ({"text": text} if done
                                         else {"error": text})
     return 404, {"error": "no such thing here"}
+
+
+def _shows_post(tracker, body, ctx, users, who, role, haze):
+    """POST fuel-shows (fuelshows.py): {"action": "step", "unit": id} is
+    Refueled +1, {"action": "fill", "confirm": true, "units": [ids],
+    "hazers": [names]} is Fill selected (each needs what a fuel refill
+    needs); {"action": "set", "kind": k, "shows_per_refill": N or null}
+    sets a type's N (an admin). Anything else is refused."""
+    act = body.get("action")
+    if act == "set":
+        ok, why = may_set_shows(ctx, users)
+        if not ok:
+            return 403, {"error": why}
+        if "shows_per_refill" not in body:
+            return 400, {"error": "Say the number. Nothing was changed."}
+        done, text = tracker.shows_set(body.get("kind"),
+                                       body.get("shows_per_refill"), who,
+                                       role)
+        return (200 if done else 400), ({"text": text} if done
+                                        else {"error": text})
+    if act not in ("step", "fill"):
+        return 400, {"error": "Say what to do. Nothing was changed."}
+    ok, why = may_refill(ctx, users)
+    if not ok:
+        return 403, {"error": why}
+    if act == "step":
+        unit = body.get("unit")
+        if not isinstance(unit, str) or not unit:
+            return 400, {"error": "Say which unit. Nothing was changed."}
+        done, text, out = tracker.shows_step(unit, who, role)
+        return (200, dict(out, text=text)) if done else \
+            (400, {"error": text})
+    if body.get("confirm") is not True:
+        return 400, {"error": "Fill selected needs its confirm. Nothing was "
+                              "logged."}
+    units, hazers = body.get("units", []), body.get("hazers", [])
+    if not isinstance(units, list) or not isinstance(hazers, list) or \
+            not all(isinstance(x, str) for x in units + hazers):
+        return 400, {"error": "Fill selected has to say which units. "
+                              "Nothing was logged."}
+    done, text = tracker.fill(units, hazers, who, role, haze)
+    return (200, {"text": text}) if done else (409, {"error": text})
 
 
 def build(remote, morning, link, journal=None, threaded=True):
@@ -1427,6 +1703,7 @@ def build(remote, morning, link, journal=None, threaded=True):
         config_path=morning.config_path, armed_get=armed,
         locked_get=lambda mid: morning.lockout.is_locked("machine", mid),
         rehearsal_get=rehearsal, journal=journal, threaded=threaded)
+    tr.audit = getattr(remote, "audit", None)
     if link is not None:
         tr.attach(link)
     return tr

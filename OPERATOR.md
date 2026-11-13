@@ -877,6 +877,27 @@ screen never opened. Now:
   own once the file is valid; then stop LTC Player and start it again, so
   the engine reads the file too.
 
+## Shows per refill (Fuel step)
+
+**Shows left on each flame unit.**
+
+- Admins set Shows per refill per type.
+- Each show it fires in takes one off.
+- 0 reads Refuel now.
+
+**Refueled +1: one tap, one show.**
+
+- Tap once per show of fuel added.
+- Past full it goes round to 0.
+- Too many taps? Keep tapping round.
+
+**Select to fill, then Fill selected.**
+
+- Tap units and hazers, or Select all.
+- It asks first, naming what it fills.
+
+FUEL.md has the details.
+
 ## The hazers
 
 Jeff, 2026-10-29. The three haze machines share the flame universe, but

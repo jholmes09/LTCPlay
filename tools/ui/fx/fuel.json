@@ -122,7 +122,16 @@
    "shows_left": null,
    "refill_soon": false,
    "status": "learning",
-   "words": "Learning: 0 s of flame and 17 shows since the refill. It knows how long a 15 gal tank lasts once one Showven has been refilled twice."
+   "words": "Learning: 0 s of flame and 17 shows since the refill. It knows how long a 15 gal tank lasts once one Showven has been refilled twice.",
+   "countdown": {
+    "left": 2,
+    "n": 4,
+    "refuel_now": false,
+    "not_sure": false,
+    "pending": false,
+    "refills": 1,
+    "words": "Shows left: 2"
+   }
   }
  ],
  "kinds": {
@@ -202,5 +211,18 @@
  "may_refill": true,
  "may_undo": true,
  "refill_why": "",
- "undo_why": ""
+ "undo_why": "",
+ "shows_per_refill": {
+  "gflame": {
+   "name": "G-Flame",
+   "n": null
+  },
+  "waver": {
+   "name": "Wave Flamer",
+   "n": 4
+  }
+ },
+ "shows_per_refill_max": 99,
+ "may_set_shows": true,
+ "set_shows_why": ""
 }

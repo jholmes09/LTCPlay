@@ -56,13 +56,60 @@ Flame time goes in one of three piles:
 ## How to refill
 
 When a tank has been filled, press **Refilled** on that unit's tile and say
-yes. If every tank was filled, press **Refill all** at the top and say yes. If
+yes (a tile with shows left has **Refueled +1**, below). Several at once:
+**Select to fill**, then **Fill selected** (it was Refill all). If
 the list of units changed since the page was drawn, it refuses and asks you
 to look again.
 
 You need to be signed in as an **operator** or an **admin** to log a refill
 (the user chip at the top of the screen). Anyone can look at the page.
 Each refill is saved at once with who logged it and when.
+
+## Shows per refill
+
+For planning, each flame unit can also count down the shows its tank has
+left.
+
+- **Shows per refill (N).** One whole number, 1 to 99, per machine type
+  (Wave Flamer, G-Flame). An admin sets it with **Shows per refill** on
+  the Fuel step; blank is count only. A type with no number keeps its
+  usual tile (shows since the refill), with no countdown. Lowering it
+  lowers any unit above it. A unit starts at 0, **Refuel now**, until it
+  is filled.
+- **Shows left.** The tile says **Shows left: 3**, or **Refuel now** at 0.
+  A show (as above: 30 seconds of show timecode, not Programming, not a
+  rehearsal, not a purge, not live flame programming) takes one off each
+  unit whose own flame was counted in it. A show it sat out takes nothing
+  off. Never below 0.
+- **Exactly once.** Each show is counted once, even across a restart. A
+  show cut by a restart counts for every unit that fired in it, short or
+  not, and those units read **Not sure** until they are filled to the top.
+  Flame that could not be counted (the note at the top) also reads Not
+  sure.
+- **Refueled +1.** On those tiles a tap adds one show at once, no
+  question. Past the top it goes to 0, then 1, 2 and on, so an extra tap
+  is fixed by tapping on round. The number is saved at once.
+- **One log line, not one per tap.** The taps are written as ONE entry 5
+  seconds after the last one, for example "Andy refilled Wave Flamer 2:
+  set from 0 to 3 shows left (clicked 3 times)". If it went round past
+  full, the line says so and calls the lower number a
+  correction, not usage. If LTC Player stops in those 5 seconds, the entry is written at
+  the next start, marked not confirmed. Each entry is one refill for
+  planning. An admin can Undo it in Recent refills until that unit
+  changes again. A +1 is never a full tank, so how long a tank lasts is
+  not changed by it.
+- **Select to fill.** Opens the list of flame units and hazers. Tap the
+  ones you filled, or **Select all Wave Flamers**, **Select all
+  G-Flames**, **Select all hazers**; **Clear** starts again. **Fill
+  selected** asks first, naming what it fills. Each flame unit gets a full
+  tank logged (as Refilled does) and, if its type has a number, shows
+  left at the top; one Undo takes the flame units back. Each hazer gets a
+  haze refill, with its own Undo. It replaces Refill all.
+- **Where it is kept.** `fuel_shows.json`, beside `fuel.json`, written the
+  same safe way with its own format number. `fuel.json` is not changed,
+  so an older LTC Player reads it as before and ignores the new file.
+  Shows played while an older LTC Player ran are counted at the next
+  start of this one, and marked Not sure.
 
 ## How it learns
 

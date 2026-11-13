@@ -3785,5 +3785,21 @@
 "haze fluid: an undone refill still counts": "test_haze_fluid_undo_bounds_and_the_safe_side",
 "haze fluid: an undo is not saved at once": "test_haze_fluid_undo_bounds_and_the_safe_side",
 "ui 2.0 haze: Undo goes with no question": "test_ui2_haze_fluid_driven",
-"hazer test: show control's state unreadable is read as off": "test_hazer_test_at_the_engine"
+"hazer test: show control's state unreadable is read as off": "test_hazer_test_at_the_engine",
+"shows per refill: Refueled +1 stops at N instead of going round to 0": "test_fuel_shows_refueled_plus_one_and_its_one_entry",
+"shows per refill: Refueled +1 goes one above N before going round": "test_fuel_shows_refueled_plus_one_and_its_one_entry",
+"shows per refill: a show takes shows left below 0": "test_fuel_shows_count_down_once_per_show",
+"shows per refill: a show replayed after a crash is counted again": "test_fuel_shows_count_down_once_per_show",
+"shows per refill: a failed start counts as a show": "test_fuel_shows_count_down_once_per_show",
+"shows per refill: a show the unit sat out counts for it": "test_fuel_shows_count_down_once_per_show",
+"shows per refill: a show cut by a restart is dropped": "test_fuel_shows_count_down_once_per_show",
+"shows per refill: a show cut by a restart is not marked not sure": "test_fuel_shows_count_down_once_per_show",
+"shows per refill: a +1 batch is written at once, one entry per tap": "test_fuel_shows_refueled_plus_one_and_its_one_entry",
+"shows per refill: a batch open at a restart reads confirmed": "test_fuel_shows_refueled_plus_one_and_its_one_entry",
+"shows per refill: a wrap reads as usage, not a correction": "test_fuel_shows_refueled_plus_one_and_its_one_entry",
+"shows per refill: each accepted +1 tap gets its own audit line": "test_fuel_shows_routes_and_who_may",
+"shows per refill: Fill selected fills every unit, not only the selected": "test_fuel_shows_fill_selected",
+"shows per refill: Fill selected leaves shows left where it was": "test_fuel_shows_fill_selected",
+"ui 2.0 shows per refill: Fill selected goes with no question": "test_ui2_fuel_shows_driven",
+"ui 2.0 shows per refill: a junk shows per refill is posted": "test_ui2_fuel_shows_driven"
 }

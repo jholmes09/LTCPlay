@@ -111,6 +111,22 @@ const TASKS = [
     const st2 = await o.page.$eval("#hzt-st", e => e.textContent).catch(() => "");
     if(st2 !== "Off") o.notes.push("HAZER TEST NOT SHOWN OFF: '" + st2 + "'");
     await o.tap("#hz-armall", "Arm all hazers"); await o.shot("12_armed_all"); }],
+  // Shows per refill (2026-11-13), on the Fuel step: Refueled +1 taps,
+  // one too many fixed by tapping round, then select and Fill selected.
+  ["13 Refueled +1 and Fill selected", "day_jeff", async o => {
+    await o.tap('.tab[data-tab="day"]', "Day");
+    await o.tap("#d-next", "Next step (startup list)"); for(let i = 0; i < 3; i++) await o.tap("#d-tick", "Tick");
+    await o.tap("#d-next", "Next step (fuel)");
+    const words = async () => o.page.$eval('#d-fuel [data-step-unit="w1"]', e => e.innerText.replace(/\s+/g, " ").trim()).catch(() => "");
+    for(let i = 0; i < 3; i++) await o.tap('#d-fuel [data-step-unit="w1"]', "Refueled +1");
+    await o.page.waitForTimeout(2500);
+    const w3 = await words(); if(!/Refuel now/.test(w3)) o.notes.push("NOT ROUND TO 0: '" + w3 + "'");
+    for(let i = 0; i < 4; i++) await o.tap('#d-fuel [data-step-unit="w1"]', "Refueled +1 (round the loop)");
+    await o.page.waitForTimeout(2500);
+    const w4 = await words(); if(!/Shows left: 4/.test(w4)) o.notes.push("NOT AT THE TOP: '" + w4 + "'");
+    await o.shot("13_refueled");
+    await o.tap("#fu-fill", "Select to fill"); await o.tap('#fs-kinds [data-fs-kind="gflame"]', "Select all G-Flames");
+    await o.shot("13_selected"); await o.yes("fill selected"); await o.yes("fill these"); await o.shot("13_filled"); }],
   // A group's Disarm the Stream Deck does not act on (2026-10-29): the
   // engine forces the Stop's disarm and the page says so in amber.
   ["11 Disarm a group the deck does not answer", "deck_not_answering", async o => {

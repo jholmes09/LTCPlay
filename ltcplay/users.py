@@ -253,6 +253,9 @@ REMOTE_ROUTES = {
     # The charge record (fireball_charge.py): an admin confirms NOT KNOWN
     # tanks are empty.
     "fireball-charge-empty": "settings",
+    # Shows per refill (fuel.py): like fuel-refill, no matrix row; the
+    # route checks who (a refill's operator or admin, N an admin).
+    "fuel-shows": None,
     # Fireball practice (fireball_practice.py): open, Step and the beat
     # that keeps it open are arm presses (the engine also asks the Show
     # row, at every press, on any screen); Done only takes risk away
