@@ -201,7 +201,8 @@ MORNING_POST_ROUTES = ("morning-open", "purge-select", "purge-fire",
                        "purge-stop", "purge-clear", "laser-test",
                        "open-beyond",
                        "laser-arm", "lock",
-                       "layout", "checklist-tick", "checklist-note",
+                       "layout", "arrangement",
+                       "checklist-tick", "checklist-note",
                        "checklist-verify", "checklist-tally-retry")
 # The Fuel page (fuel.py, FUEL.md): read by anyone on the show network; a
 # refill needs a signed-in operator or admin, an undo an admin (fuel.py).
@@ -2088,6 +2089,13 @@ class Remote:
             return self.users_post(name, body, ctx)
         if name in MORNING_POST_ROUTES:
             return (*self.morning_post(name, body, ctx),) + ({},)
+        if name == "fuel-refill" and self.morning is not None:
+            # The Fuel step's Arrange (morning.Arrangement): while this
+            # device arranges the machine rows, no refill is logged from
+            # it, whatever its page let through. A drag is never a refill.
+            why = self.morning.rows_refill_refusal(ctx.device)
+            if why:
+                return 409, {"error": why}, {}
         if name in FUEL_POST_ROUTES:
             from . import fuel as fuel_mod
             return (*fuel_mod.route_post(self.fuel, name, body, ctx,
@@ -5949,7 +5957,8 @@ class Remote:
             # (adversarial review of PR #73, finding 2).
             m.open_beat(device, arranging=body.get("arranging") is True,
                         inst=body.get("inst"), seq=body.get("seq"),
-                        mark_open=False)
+                        mark_open=False,
+                        rows_arranging=body.get("rows_arranging") is True)
             return 200, {"ok": True, "open": False, "view_only": True,
                          "arranging": m.device_arranging(device)}
         # A purge fire is gated by what it DOES, never by whether "on" is

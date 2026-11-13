@@ -213,6 +213,9 @@ REMOTE_ROUTES = {
     # a settings press (the Settings row, admin by default).
     "reload-engine": "settings",
     "layout": "show_files",
+    # The machine rows the Fuel and Purge steps share (morning.Arrangement):
+    # the same row as the map's Arrange.
+    "arrangement": "show_files",
     "checklist-tick": "checklist", "checklist-note": "checklist",
     "morning-open": None, "checklist-verify": None,
     "checklist-tally-retry": None, "open-folder": "show_files",

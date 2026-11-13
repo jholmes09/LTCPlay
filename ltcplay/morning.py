@@ -8,6 +8,8 @@ Everything here is settings and state in the machine's settings folder:
   ltcplay_morning.json          machines, groups, purge values, lasers,
                                 checklist steps, names, the tally server
   ltcplay_morning_layout.json   where each machine sits on the page
+  ltcplay_arrangement.json      the machine rows the Fuel and Purge steps
+                                both show (Arrangement)
   ltcplay_lockout.json          what is locked out (this engine writes it,
                                 flamesafe reads it: ONE writer)
 
@@ -38,6 +40,17 @@ LAYOUT_FILE = "ltcplay_morning_layout.json"
 LOCKOUT_FILE = "ltcplay_lockout.json"
 LOCKOUT_FORMAT = 1
 LAYOUT_FORMAT = 1
+# The machine rows (Jeff, 2026-11-13: "if the Fuel Tab and the Purge tab
+# both follow the same arrangement, then we're looking at the same JSON").
+# A file of its own, never ltcplay_morning_layout.json: a build from before
+# it never opens this file, and its Arrange save (which rewrites the map
+# file with positions only) can never drop the rows.
+ARRANGEMENT_FILE = "ltcplay_arrangement.json"
+ARRANGEMENT_FORMAT = 1
+# Each row's label is its machine type.
+ROW_LABELS = {"gflame": "G-Flames", "waver": "Wave Flamers",
+              "fireball": "Fireball"}
+ARRANGEMENT_MAX_ROWS = 32
 # Jeff's group names, exactly (RULINGS 2026-10-17). A group button is a
 # fast multi-select; the machines in each come from the config.
 GROUP_NAMES = ("Ground G-Flames", "Scaffold G-Flames", "Scaffold Wavers",
@@ -849,6 +862,156 @@ class Layout:
     def reset(self):
         """Back to the default (the page's Reset layout): the file is
         removed, so load() lays the groups out by row again."""
+        try:
+            os.remove(self.path)
+        except FileNotFoundError:
+            pass
+
+
+# --------------------------------------------------- the machine rows --
+
+def row_label(kind):
+    return ROW_LABELS.get(kind, str(kind))
+
+
+def default_rows(cfg):
+    """One row per machine type (all the Wave Flamers on one row, all the
+    G-Flames on another), the types in the order they first come in
+    ltcplay_morning.json's machines, each row in that order too."""
+    rows, by_kind = [], {}
+    for m in cfg.machines:
+        r = by_kind.get(m.kind)
+        if r is None:
+            r = by_kind[m.kind] = {"kind": m.kind, "label": row_label(m.kind),
+                                   "machines": []}
+            rows.append(r)
+        r["machines"].append(m.id)
+    return rows
+
+
+def fit_rows(cfg, rows):
+    """Saved rows fitted to the machines the config has now: an id that is
+    not a machine any more (or comes twice) is left out, a row left empty
+    goes, and a machine the rows do not name (a new one in
+    ltcplay_morning.json) goes at the end of the first row of its type, or
+    on a new row of its own type at the bottom. Pure."""
+    out, seen = [], set()
+    for r in rows:
+        kind = r.get("kind")
+        ids = []
+        for mid in r.get("machines") or []:
+            if mid in cfg.by_id and mid not in seen:
+                seen.add(mid)
+                ids.append(mid)
+        if not ids:
+            continue
+        if kind not in ROW_LABELS:
+            kind = cfg.by_id[ids[0]].kind
+        out.append({"kind": kind, "label": row_label(kind), "machines": ids})
+    for m in cfg.machines:
+        if m.id in seen:
+            continue
+        seen.add(m.id)
+        row = next((r for r in out if r["kind"] == m.kind), None)
+        if row is None:
+            row = {"kind": m.kind, "label": row_label(m.kind), "machines": []}
+            out.append(row)
+        row["machines"].append(m.id)
+    return out
+
+
+def _rows_in(raw):
+    """[{"kind", "machines": [ids]}] from what a file or a page sent, or
+    ValueError naming what is wrong. A row is an object with a machines
+    list, or a plain list of ids."""
+    if not isinstance(raw, list):
+        raise ValueError("rows has to be a list of rows.")
+    if len(raw) > ARRANGEMENT_MAX_ROWS:
+        raise ValueError(f"at most {ARRANGEMENT_MAX_ROWS} rows.")
+    out = []
+    for i, r in enumerate(raw, 1):
+        kind = None
+        if isinstance(r, dict):
+            kind = r.get("kind")
+            r = r.get("machines")
+        if not isinstance(r, list) or \
+                not all(isinstance(x, str) for x in r):
+            raise ValueError(f"row {i} has to be a list of machine ids.")
+        out.append({"kind": kind, "machines": list(r)})
+    return out
+
+
+def rows_words(rows):
+    """The rows in one line for the journal: "Wave Flamers: w1, w2 | ..."."""
+    return " | ".join(f"{r['label']}: {', '.join(r['machines'])}"
+                      for r in rows) or "(none)"
+
+
+class Arrangement:
+    """ltcplay_arrangement.json: {"arrangement_format": 1, "rows": [{"kind",
+    "label", "machines": [ids]}]}. Written by the Fuel step's Arrange
+    (Save layout), read by the Fuel step and the Purge step alike. A file
+    that is missing, unreadable, of another format or wrong in any way is
+    never used: the default rows (one per type) stand, and load() says
+    why. Atomic writes (_write_json), like every other settings file."""
+
+    def __init__(self, path):
+        self.path = path
+
+    def load(self, cfg):
+        """(rows, saved, problem): rows fitted to cfg; saved True when the
+        file was read and used; problem "" or why the file was not used."""
+        name = os.path.basename(self.path)
+        try:
+            with open(self.path, encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+        except FileNotFoundError:
+            return default_rows(cfg), False, ""
+        except (OSError, ValueError) as e:
+            return default_rows(cfg), False, \
+                f"{name} could not be read ({type(e).__name__})"
+        if not isinstance(doc, dict) or \
+                doc.get("arrangement_format") != ARRANGEMENT_FORMAT:
+            got = doc.get("arrangement_format") if isinstance(doc, dict) \
+                else None
+            return default_rows(cfg), False, \
+                f"{name} has format {got!r}, and this build reads " \
+                f"{ARRANGEMENT_FORMAT}"
+        try:
+            rows = _rows_in(doc.get("rows"))
+        except ValueError as e:
+            return default_rows(cfg), False, f"{name}: {e}"
+        return fit_rows(cfg, rows), True, ""
+
+    def save(self, cfg, raw, who="", device=""):
+        """Check and write the rows; returns them fitted. ValueError when a
+        row names something that is not a machine or a machine twice."""
+        rows = _rows_in(raw)
+        seen = set()
+        for r in rows:
+            for mid in r["machines"]:
+                if mid not in cfg.by_id:
+                    raise ValueError(f"{mid!r} is not a machine.")
+                if mid in seen:
+                    raise ValueError(f"{mid!r} is in two places.")
+                seen.add(mid)
+            if r["kind"] is not None and r["kind"] not in ROW_LABELS:
+                raise ValueError(f"{r['kind']!r} is not a machine type.")
+        out = fit_rows(cfg, rows)
+        _write_json(self.path, {
+            "arrangement_format": ARRANGEMENT_FORMAT,
+            "note": "Written by LTC Player from the Fuel step's Arrange. "
+                    "The Fuel and Purge steps both show these rows. "
+                    "Machines not named here go at the end of their type's "
+                    "row.",
+            "saved_by": str(who or "")[:64],
+            "saved_on": str(device or "")[:64],
+            "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "rows": out})
+        return out
+
+    def reset(self):
+        """Back to one row per type: the file is removed."""
         try:
             os.remove(self.path)
         except FileNotFoundError:
@@ -2158,6 +2321,8 @@ class Morning:
                 except Exception:                # noqa: BLE001
                     pass
         self.layout = Layout(os.path.join(folder, LAYOUT_FILE))
+        self.arrangement = Arrangement(os.path.join(folder, ARRANGEMENT_FILE))
+        self._arrangement_said = ""   # the last unreadable-file line
         self.lockout = Lockout(os.path.join(folder, LOCKOUT_FILE),
                                journal=journal, wall=wall)
         self._link_get = link_get
@@ -2212,6 +2377,7 @@ class Morning:
         self._open_devices = {}      # device -> clock of its last beat
         self._arranging = {}         # device -> {page instance: clock of
         #                              its last beat saying Arrange mode}
+        self._rows_arranging = {}    # the same for the Fuel step's Arrange
         self._beat_seq = {}          # (device, instance) -> (last beat
         #                              seq, clock it came)
         self._was_live = False       # the watcher's last word on live_check
@@ -2379,7 +2545,7 @@ class Morning:
         return at is not None and self._clock() - at <= OPEN_STALE_S
 
     def open_beat(self, device, arranging=False, inst="", seq=None,
-                  mark_open=True):
+                  mark_open=True, rows_arranging=False):
         """The page says it is open (every 500 ms while it is), and whether
         it is in Arrange mode (Jeff, 2026-10-19). A screen that is
         arranging has nothing armed: its purge selection is cleared here,
@@ -2419,6 +2585,7 @@ class Morning:
             if last is not None and seq <= last[0]:
                 return                   # an older beat, overtaken
             self._beat_seq[key] = (seq, now)
+        self._rows_beat(device, inst, rows_arranging, now)
         if arranging:
             first = device not in self._arranging
             self._arranging.setdefault(device, {})[inst] = now
@@ -2465,6 +2632,69 @@ class Morning:
                 return (bool(fire) and fire <= locked) or \
                     (len(saf) > 1 and saf <= locked)
         return False
+
+    def _rows_beat(self, device, inst, on, now):
+        """The Fuel step's Arrange mode, per page load, as for the map's:
+        while ANY instance of a device says it is arranging the rows, a
+        refill from that device is held back (rows_refill_refusal)."""
+        for d in list(self._rows_arranging):
+            live = {i: t for i, t in self._rows_arranging[d].items()
+                    if now - t <= OPEN_STALE_S}
+            if live:
+                self._rows_arranging[d] = live
+            else:
+                del self._rows_arranging[d]
+        if on:
+            first = device not in self._rows_arranging
+            self._rows_arranging.setdefault(device, {})[inst] = now
+            if first:
+                self._note(f"{device} is arranging the machine rows: no "
+                           f"refill is logged from it until it saves or "
+                           f"cancels.", action="arrangement",
+                           outcome="arranging", screen=device)
+        else:
+            mine = self._rows_arranging.get(device)
+            if mine is not None:
+                mine.pop(inst, None)
+                if not mine:
+                    del self._rows_arranging[device]
+
+    def device_rows_arranging(self, device):
+        """True while ANY instance of THAT device said, in its last open
+        beat within OPEN_STALE_S, that the Fuel step is arranging."""
+        now = self._clock()
+        return any(now - t <= OPEN_STALE_S
+                   for t in (self._rows_arranging.get(device) or {}).values())
+
+    def rows_refill_refusal(self, device):
+        """The sentence that refuses a fuel refill from `device` while it
+        arranges the machine rows, or "". A drag is never a refill."""
+        try:
+            on = self.device_rows_arranging(device)
+        except Exception as e:                           # noqa: BLE001
+            return (f"No refill: whether {device} is arranging could not "
+                    f"be read ({type(e).__name__}). Nothing was logged.")
+        if not on:
+            return ""
+        return (f"{device} is arranging the machine rows. Press Save "
+                f"layout or Cancel first. Nothing was logged.")
+
+    def arrangement_view(self):
+        """The rows both steps show, from the one file. An unreadable file
+        is said once in the journal (again only after it was fine)."""
+        try:
+            rows, saved, problem = self.arrangement.load(self.cfg)
+        except Exception as e:                           # noqa: BLE001
+            rows, saved = default_rows(self.cfg), False
+            problem = f"the machine rows could not be read " \
+                      f"({type(e).__name__})"
+        if problem and problem != self._arrangement_said:
+            self._note(f"The saved machine rows were not used: {problem}. "
+                       f"Both steps show one row per type.",
+                       action="arrangement", outcome="default", fault=True)
+        self._arrangement_said = problem
+        return {"rows": rows, "saved": saved, "problem": problem,
+                "file": ARRANGEMENT_FILE}
 
     def device_arranging(self, device):
         """True while ANY instance of THAT device said, in its last open
@@ -2796,6 +3026,7 @@ class Morning:
         v = self.cfg.view()
         v["layout"] = pos
         v["layout_saved"] = saved
+        v["arrangement"] = self.arrangement_view()
         v["lockout"] = self.lockout.view(self.cfg)
         v["purge_state"] = self.purge.view()
         v["timed"] = self.purge.timed_view()
@@ -2829,7 +3060,8 @@ class Morning:
         if name == "morning-open":
             self.open_beat(device, arranging=body.get("arranging") is True,
                            inst=body.get("inst"), seq=body.get("seq"),
-                           mark_open=body.get("leaving") is not True)
+                           mark_open=body.get("leaving") is not True,
+                           rows_arranging=body.get("rows_arranging") is True)
             return 200, {"ok": True, "open": True,
                          "arranging": self.device_arranging(device)}
         # A screen in Arrange mode (Jeff, 2026-10-19): the engine's own
@@ -3010,9 +3242,35 @@ class Morning:
             self._note(f"{device} saved the machine layout.", action="layout",
                        outcome="saved", screen=device)
             return 200, {"ok": True, "text": "Layout saved.", "layout": pos}
+        if name == "arrangement":
+            return self._arrangement_post(body, device, who)
         if name.startswith("checklist-"):
             return self.checklist.post(name, body, device, screen, local)
         return 404, {"error": "no such thing here"}
+
+    def _arrangement_post(self, body, device, who):
+        """POST arrangement: {"rows": [...]} saves the machine rows both
+        steps show; {"reset": true} goes back to one row per type. Each is
+        in the journal with who, and the rows before and after."""
+        old = self.arrangement_view()["rows"]
+        try:
+            if body.get("reset") is True:
+                self.arrangement.reset()
+                new = default_rows(self.cfg)
+                what, text = "reset", "Rows back to one per type."
+            else:
+                new = self.arrangement.save(self.cfg, body.get("rows"),
+                                            who=who, device=device)
+                what, text = "saved", "Rows saved."
+        except (ValueError, OSError) as e:
+            return 400, {"error": f"Rows not saved: {e}"}
+        self._arrangement_said = ""
+        self._note(f"{who or 'Someone'} on {device} {what} the machine "
+                   f"rows. Before: {rows_words(old)}. After: "
+                   f"{rows_words(new)}.", action="arrangement",
+                   outcome=what, who=who, screen=device)
+        return 200, {"ok": True, "text": text,
+                     "arrangement": self.arrangement_view()}
 
     def _laser_arm_post(self, body, who, device):
         """POST laser-arm: {"on": true, "confirmed": true} with "laser",
