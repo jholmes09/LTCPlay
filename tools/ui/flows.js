@@ -98,6 +98,19 @@ const TASKS = [
     await o.tap("#d-next", "Next step (sign out)");
     await o.tap("#d-signout", "Sign out"); await o.tap('#sh-row [data-i="2"]', "Sign out (sheet)");
     await o.shot("10_done"); }],
+  // The hazer test and Arm all hazers (2026-11-11), on the Purge step
+  // with the other purges: a tap on, a tap off.
+  ["12 Hazer test on and off", "day_jeff", async o => {
+    await o.tap('.tab[data-tab="day"]', "Day");
+    await o.tap("#d-next", "Next step (startup list)"); for(let i = 0; i < 3; i++) await o.tap("#d-tick", "Tick");
+    await o.tap("#d-next", "Next step (fuel)"); await o.tap("#d-next", "Next step (purge)");
+    await o.tap("#hzt-btn", "Hazer test: On"); await o.page.waitForTimeout(1200); await o.shot("12_hazer_on");
+    const st = await o.page.$eval("#hzt-st", e => e.textContent).catch(() => "");
+    if(!/^On/.test(st)) o.notes.push("HAZER TEST NOT SHOWN ON: '" + st + "'");
+    await o.tap("#hzt-btn", "Hazer test: Off"); await o.page.waitForTimeout(1200);
+    const st2 = await o.page.$eval("#hzt-st", e => e.textContent).catch(() => "");
+    if(st2 !== "Off") o.notes.push("HAZER TEST NOT SHOWN OFF: '" + st2 + "'");
+    await o.tap("#hz-armall", "Arm all hazers"); await o.shot("12_armed_all"); }],
   // A group's Disarm the Stream Deck does not act on (2026-10-29): the
   // engine forces the Stop's disarm and the page says so in amber.
   ["11 Disarm a group the deck does not answer", "deck_not_answering", async o => {
