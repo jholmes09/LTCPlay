@@ -1956,6 +1956,17 @@ def _attach_accounts(httpd, users_seed=None, transport=None):
             log.folder, r.folder, transport=transport,
             note=lambda **kw: log.event(user=audit_mod.SYSTEM,
                                         surface="engine", **kw)).start()
+        sched = getattr(httpd, "schedule", None)
+        book = getattr(sched, "logbook", None)
+        if book is not None:
+            # The night journal goes to the same server with the same
+            # settings (Jeff, 2026-11-12), only on an engine that keeps one
+            # (Fire & Ice), and only each closed night.
+            r.journal_uploader = auditsend.JournalUploader(
+                book.folder, r.folder, night=sched._night,
+                transport=transport, checker=book.check_night,
+                note=lambda **kw: log.event(user=audit_mod.SYSTEM,
+                                            surface="engine", **kw)).start()
         r.audit_watch = auditwatch.EngineWatch(r, log).start()
         log.event(user=audit_mod.SYSTEM, surface="engine",
                   action="engine-start", target=r.folder)
@@ -1966,6 +1977,8 @@ def _attach_accounts(httpd, users_seed=None, transport=None):
                 r.audit_watch.stop()
                 r.users.stop()
                 r.uploader.stop()
+                if r.journal_uploader is not None:
+                    r.journal_uploader.stop()
                 log.event(user=audit_mod.SYSTEM, surface="engine",
                           action="engine-stop")
                 log.flush(1.0)

@@ -3000,9 +3000,11 @@ tab, and the hardware e-stop always works.
   the show PC change it and press Save who may do what. Stop, Hold and
   every disarm always work, for everyone. Audit log (show PC only): its
   state, Check the chain now, Idle sign out, sign out after the last show,
-  and Save. Nightly upload (a SuperUser signed in on the show PC only; for
-  anyone else it is not there): server, shared token, time, days kept,
-  Save and Send now. The shared token is never shown: the field says only
+  and Save. Nightly upload of the audit log and the night journal (a
+  SuperUser signed in on the show PC only; for anyone else it is not
+  there): server, shared token, time, days kept, Save and Send now; they
+  go only to Jeff's own server, nothing else is read or sent, never a
+  password or token; the night journal names each operator and screen. The shared token is never shown: the field says only
   whether one is saved, and a token typed there is cleared after Save.
   USERS.md, "The SuperUser", says what an admin may not change.
 - The systems badge in the header names a single problem ("Stream Deck:

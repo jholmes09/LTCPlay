@@ -1861,6 +1861,7 @@ class Remote:
         self.users = None
         self.audit = None
         self.uploader = None
+        self.journal_uploader = None
 
     DISARM_IDS_FILE = "ltcplay_disarm_ids.json"
     DISARM_ID_RESERVE = 10_000_000
@@ -2527,6 +2528,13 @@ class Remote:
                 out["upload"] = up.status()
             except Exception as e:               # noqa: BLE001
                 out["upload"] = {"last_error": f"{type(e).__name__}: {e}"}
+        jup = getattr(self, "journal_uploader", None)
+        if jup is not None:
+            try:
+                out["journal_upload"] = jup.status()
+            except Exception as e:               # noqa: BLE001
+                out["journal_upload"] = {
+                    "last_error": f"{type(e).__name__}: {e}"}
         return out
 
     def superuser_here(self, ctx):
@@ -2828,6 +2836,12 @@ class Remote:
                 threading.Thread(target=up.run, kwargs={"force": True},
                                  daemon=True,
                                  name="ltcplay-audit-upload-now").start()
+                jup = getattr(self, "journal_uploader", None)
+                if jup is not None:
+                    threading.Thread(target=jup.run, kwargs={"force": True},
+                                     daemon=True,
+                                     name="ltcplay-journal-upload-now"
+                                     ).start()
                 text = ("Sending now, in the background. The status below "
                         "says how it went.")
             else:

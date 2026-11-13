@@ -495,6 +495,29 @@ def _tail(path, limit=65536):
         return b""
 
 
+# An unacknowledged night file is kept past keep_days for at most this
+# much longer, while the upload is on; then it goes, said in the journal.
+UNSENT_GRACE_DAYS = 30
+
+
+def _acknowledged(folder):
+    """The night files the upload's server acknowledged (sent.json, written
+    by auditsend.JournalUploader), or None when the upload is not on (never
+    used, or switched off since: then pruning is as it always was)."""
+    path = os.path.join(folder, "sent.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return set()        # unreadable: nothing counts as acknowledged
+    if not isinstance(doc, dict) or doc.get("enabled") is False:
+        return None
+    files = doc.get("files")
+    return set(files) if isinstance(files, dict) else set()
+
+
 # ------------------------------------------------------------ the book --
 
 class Logbook:
@@ -1347,6 +1370,11 @@ class Logbook:
                 recs.append(r)
         return (recs[-1] if recs else None), recs[-PAGE_LINES:]
 
+    def check_night(self, night):
+        """check_files for one night in this folder, from its own files
+        (what the nightly upload sends with the night)."""
+        return check_files(self.folder, night)
+
     # -- reading a night back ---------------------------------------------
     def night_records(self, night):
         """Every record for one night: the machine log on disk, plus any
@@ -1486,9 +1514,19 @@ class Logbook:
                 keep_from = nights[-1] if nights else None
             else:
                 keep_from = cutoff
+            # The nightly upload (auditsend.JournalUploader) keeps its
+            # record here once it has sent anything: then a night file the
+            # server has not acknowledged is never removed.
+            acked = _acknowledged(self.folder)
+            limit = today - timedelta(days=self.keep_days + UNSENT_GRACE_DAYS)
+            unsent = []
             for d, name, root, incident in found:
                 if keep_from is None or d >= keep_from:
                     continue
+                if acked is not None and not incident and name not in acked:
+                    if d >= limit:
+                        continue
+                    unsent.append(name)
                 p = os.path.join(root, name)
                 try:
                     mode = os.lstat(p).st_mode
@@ -1544,6 +1582,19 @@ class Logbook:
             self.record(actor="system", action="prune", outcome="removed",
                         reason=reason, text=text, state=state, night=today,
                         data={"removed": [n for _d, n, _i in removed]})
+        unsent = [n for n in unsent if n in [x for _d, x, _i in removed]]
+        if unsent:
+            # Said without naming the upload: the journal is read by
+            # everyone, the upload is a SuperUser's alone (PR #251).
+            self.record(actor="system", action="prune",
+                        outcome="removed late",
+                        reason=f"kept {UNSENT_GRACE_DAYS} days past "
+                               f"{self.keep_days}",
+                        text=(f"Removed {len(unsent)} night file(s) kept "
+                              f"{UNSENT_GRACE_DAYS} days past the usual "
+                              f"{self.keep_days}: "
+                              f"{', '.join(unsent[:5])}."),
+                        state=state, night=today, data={"removed": unsent})
         if stale:
             self.record(actor="system", action="prune",
                         outcome="removed stale partial",

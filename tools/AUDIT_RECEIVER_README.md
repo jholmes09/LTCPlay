@@ -1,7 +1,8 @@
 # The audit receiver, for Jeff's server
 
-`audit_receiver.py` takes the nightly audit upload from LTC Player and
-keeps it. It is one file and needs only Python 3 (nothing to install).
+`audit_receiver.py` takes the nightly audit and night journal upload from
+LTC Player and keeps it. It is one file and needs only Python 3.7 or
+newer (nothing to install).
 
 ## What it does
 
@@ -17,6 +18,30 @@ keeps it. It is one file and needs only Python 3 (nothing to install).
 - Never overwrites: the same file sent twice is simply acknowledged again;
   a different file under a name it already has is kept beside it, named
   `.conflict-<time>`, and refused.
+
+## The night journal
+
+Since 2026-11-12 LTC Player also sends each closed night's journal, with
+the same token, to the same address:
+
+- `night_2026-11-09.journal.txt` (one plain line per event),
+  `night_2026-11-09.jsonl` (the same events, every field) and
+  `night_2026-11-09.summary.md` (the morning read).
+- Each is checked against its checksum and kept under
+  `<store>/night-journal/<night>/`, listed in
+  `<store>/night-journal/index.jsonl`, and answered with the same "got it"
+  as an audit file.
+- A night file that changed on the PC after it was sent (a summary
+  written again) comes once more, naming the copy it replaces. The newer
+  is kept, and the older stays beside it as `.replaced-<checksum>`. Any
+  other different file under a stored name is refused and kept beside it
+  once, as `.conflict-<checksum>`.
+- The journal names the operators and the screens they pressed on.
+- A night whose logging was not complete still comes, marked
+  `"incomplete": true` with its gap times. The index keeps both, so a
+  cross-check can flag that night.
+- Any other file name, or one with a folder in it, is refused.
+- `tools/JOURNAL_FORMAT.md` says what each line looks like.
 
 ## Running it
 
@@ -38,7 +63,8 @@ keeps it. It is one file and needs only Python 3 (nothing to install).
 
 3. In LTC Player set the server address to the https address that reaches
    it, for example `https://audit.example.com:8443/ltc` (any path works),
-   tick "Send the audit log to the server every night", and Save. "Send
+   tick "Send the audit log and the night journal to the server every
+   night", and Save. "Send
    now" sends at once.
 
 LTC Player only ever sends to an https:// address.
@@ -48,8 +74,9 @@ LTC Player only ever sends to an https:// address.
     python3 audit_receiver.py verify /srv/ltc-audit
 
 It reads every stored day again and says "ok" or "BAD" for each, and
-whether each day follows on from the one before. Exit code 0 means every
-day verifies.
+whether each day follows on from the one before. It also checks every
+night journal file against the checksum it came with. Exit code 0 means
+everything verifies.
 
 ## Keep in mind
 
