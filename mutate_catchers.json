@@ -3725,6 +3725,8 @@
 "systems rows: a row says its state word twice again": "test_ui2_systems_rows_say_each_word_once",
 "systems rows: a row drops what its words add": "test_ui2_systems_rows_say_each_word_once",
 "systems rows: a row cuts its own verb when it starts like the state": "test_ui2_systems_rows_say_each_word_once",
+"less prose: Programming's Stop explains itself again": "test_rack_screen_stop_in_place_of_start_now",
+"less prose: arming off no longer says to arm from the Stream Deck": "test_screen_arming_switch_and_refusals",
 "less prose: the aim alert's file path leaves More for the bullets": "test_aim_slots_are_seen_on_the_rack_screen",
 "less prose: the late frame alert's numbers leave More for the bullets": "test_flame_frame_timing_alert_and_systems_line",
 "less prose: the users alert's file names leave More for the bullets": "test_users_file_broken_or_lost_locks_and_says_so",
