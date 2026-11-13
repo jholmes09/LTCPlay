@@ -578,7 +578,7 @@ class FuelTracker:
         self.shows = fuelshows.ShowsCounter(
             folder, clock, wall, self._note,
             fuel_get=lambda mid: self.units.get(mid))
-        self.audit = None            # audit.AuditLog, set by build()
+        self._audit_log = None       # audit.AuditLog, set by build()
         self._unclean = False        # fuel.json said it did not close
         self._reload_config()
         self._load()
@@ -1092,15 +1092,34 @@ class FuelTracker:
         """Write each +1 batch whose shows left has sat COMMIT_S as its one
         entry (the tracker's pass, every DRAIN_S), and audit it."""
         with self._lock:
-            for mid in self.shows.due():
-                self.shows.commit(mid, self._new_id)
-        if self._audit_written():
+            done = [self.shows.commit(mid, self._new_id)
+                    for mid in self.shows.due()]
+        self._audit_written()
+        if done:
             with self._lock:
                 self._dirty = True       # the refill numbers in fuel.json
             self.save()
 
+    @property
+    def audit(self):
+        """The engine's audit log (audit.AuditLog), set by build() after
+        this tracker is made; None until then."""
+        return self._audit_log
+
+    @audit.setter
+    def audit(self, log):
+        # Entries written before there was a log (a +1 batch left open at
+        # the last stop, written "not confirmed" while this tracker was
+        # being made) were kept: they go to the log now.
+        self._audit_log = log
+        if log is not None:
+            self._audit_written()
+
     def _audit_written(self):
-        """One audit line per entry written since the last call."""
+        """One audit line per entry written since the last call. With no
+        audit log yet, they wait for one (the audit setter)."""
+        if self._audit_log is None:
+            return 0
         with self._lock:
             got, self.shows.written = self.shows.written, []
         for a in got:

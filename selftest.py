@@ -80931,7 +80931,9 @@ _SU_PLAIN_ROUTES = (
     "/api/remote/fireball-timeline", "/api/remote/fireball-timeline-save",
     "/api/remote/follow", "/api/remote/forecast", "/api/remote/fuel",
     "/api/remote/fuel-pump", "/api/remote/fuel-refill",
+    "/api/remote/fuel-shows",
     "/api/remote/fuel-undo", "/api/remote/group-disarm",
+    "/api/remote/haze-refill", "/api/remote/haze-undo",
     "/api/remote/hazer", "/api/remote/hazer-level",
     "/api/remote/hazer-test", "/api/remote/hazers-arm-all",
     "/api/remote/hazers-off", "/api/remote/hold",
@@ -94323,6 +94325,87 @@ def test_fuel_shows_restart_not_sure_and_once():
               doc["shows_per_refill"] == {"waver": 10},
               f"fuel_shows.json has its own format number: "
               f"{doc['shows_format']} {doc['shows_per_refill']}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fuel_shows_refill_during_a_show_counts_its_flame_once():
+    section("shows per refill (cold review of #252, 1): a Fill selected or "
+            "a Refueled +1 while a performance is still open takes in its "
+            "flame so far, so when it closes that flame is not counted "
+            "again: a fill stays at N, a +1 can reach N and wrap")
+    R = _FuelRig()
+    try:
+        tr = R.tr
+        tr.shows_set("waver", 10, "Andy", "admin")
+        for _ in range(3):
+            R.show(100, 60, on=_WAVE_ON)
+        check(_use(R, "w1")["per_show_s"] == 60.0,
+              f"60 s of flame a show: {_use(R, 'w1')['per_show_s']}")
+        # A: the show's flame is over, its performance not yet closed
+        # (inside EPISODE_JOIN_S); Fill selected now.
+        tr.fill(["w1"], [], "Andy", "operator")
+        R.pos[0] = 10.0
+        R.frames(2400, tc=True, on=_WAVE_ON)
+        R.frames(400, tc=True)
+        check(tr.episode is not None and _near(_cd(R)["x"], 9.0, 0.05),
+              f"under way: 60 s burned, 9 left: {_cd(R)}")
+        tr.fill(["w1"], [], "Andy", "operator")
+        check(_left(R) == 10, f"filled during it: 10: {_cd(R)}")
+        R.end()
+        check(tr.episode is None and _left(R) == 10 and
+              _near(_cd(R)["x"], 10.0),
+              f"the performance closes: still 10, its flame counted once: "
+              f"{_cd(R)}")
+        # B: Refueled +1 with 30 s of a show's flame under way.
+        R.pos[0] = 10.0
+        R.frames(1200, tc=True, on=_WAVE_ON)
+        check(_near(_cd(R)["x"], 9.5), f"9.5 under way: {_cd(R)}")
+        ok, _t, out = tr.shows_step("w1", "Ola", "operator")
+        check(ok and out["left"] == 10 and _near(_cd(R)["x"], 10.0),
+              f"+1 reaches 10: {out} {_cd(R)}")
+        R.frames(400, tc=True)
+        R.end()
+        check(_near(_cd(R)["x"], 10.0),
+              f"the performance closes: still 10: {_cd(R)}")
+        ok, _t, out = tr.shows_step("w1", "Ola", "operator")
+        check(ok and out["left"] == 0,
+              f"at 10 the next +1 goes round to 0: {out}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fuel_shows_entry_written_at_start_reaches_the_audit_log():
+    section("shows per refill (cold review of #252, 2): a +1 batch left "
+            "open at a stop is written \"not confirmed\" while the tracker "
+            "is made, before build() gives it the audit log; the audit "
+            "line waits for the log and is written once it is attached, "
+            "once")
+    import types as _types
+    from ltcplay import fuelshows as FS
+    R = _FuelRig()
+    try:
+        tr = R.tr
+        tr.shows_set("waver", 4, "Andy", "admin")
+        tr.shows_step("w1", "Ola", "operator")
+        tr.shows_step("w1", "Ola", "operator")
+        tr = R.reopen()                   # made with no audit log
+        check(tr.audit is None and tr.shows.actions[-1]["confirmed"] is False
+              and any(FS.NOT_CONFIRMED in t for t, _f in R.lines),
+              "written at the start, not confirmed, journaled")
+        got = []
+        tr.audit = _types.SimpleNamespace(event=lambda **kw: got.append(kw))
+        rf = [a for a in got if a["action"] == "fuel-refueled"]
+        check(len(rf) == 1 and rf[0]["user"] == "Ola" and
+              rf[0]["confirmed"] is False and rf[0]["clicks"] == 2 and
+              rf[0]["words"].endswith(FS.NOT_CONFIRMED),
+              f"attached: the waiting audit line is written: {rf}")
+        _commit(R)
+        tr.audit = tr.audit
+        check(len([a for a in got if a["action"] == "fuel-refueled"]) == 1,
+              "and only once")
     finally:
         R.close()
     print("  ok")
@@ -121339,6 +121422,8 @@ if __name__ == "__main__":
         test_fuel_shows_counts_every_flame_in_its_pile,
         test_fuel_shows_left_from_every_flame,
         test_fuel_shows_restart_not_sure_and_once,
+        test_fuel_shows_refill_during_a_show_counts_its_flame_once,
+        test_fuel_shows_entry_written_at_start_reaches_the_audit_log,
         test_fuel_shows_refueled_plus_one_and_its_one_entry,
         test_fuel_shows_fill_selected,
         test_fuel_shows_routes_and_who_may,

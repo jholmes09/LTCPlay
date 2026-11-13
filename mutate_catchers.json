@@ -3869,6 +3869,8 @@
 "shows per refill: the type's flame per show is never used": "test_fuel_shows_left_from_every_flame",
 "shows per refill: a crash while burning adds no not sure flame": "test_fuel_shows_restart_not_sure_and_once",
 "shows per refill: a crash adds not sure flame to a unit that burned long before": "test_fuel_shows_restart_not_sure_and_once",
+"shows per refill: a refill during a show counts the show's flame again when it ends": "test_fuel_shows_refill_during_a_show_counts_its_flame_once",
+"shows per refill: an entry written before the audit log is attached is lost": "test_fuel_shows_entry_written_at_start_reaches_the_audit_log",
 "shows per refill: a +1 batch is written at once, one entry per tap": "test_fuel_shows_refueled_plus_one_and_its_one_entry",
 "shows per refill: a batch open at a restart reads confirmed": "test_fuel_shows_refueled_plus_one_and_its_one_entry",
 "shows per refill: a wrap reads as usage, not a correction": "test_fuel_shows_refueled_plus_one_and_its_one_entry",

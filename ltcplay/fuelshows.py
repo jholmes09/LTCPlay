@@ -599,8 +599,14 @@ class ShowsCounter:
             used = st["shows"] - a["shows"]
         return max(0.0, min(float(n), a["x"] - used))
 
-    def _anchor(self, st, x):
-        return {"x": x, "at": self._wall(), "life": dict(st["life"]),
+    def _anchor(self, st, x, extra=0.0):
+        """X at this moment. Its flame totals take in `extra`, the flame of
+        a performance still under way (not yet in a pile), as fuel.json's
+        _snapshot does: when that performance ends and its flame goes in
+        the Shows pile, only flame after this moment counts against X."""
+        life = dict(st["life"])
+        life["show"] += float(extra or 0.0)
+        return {"x": x, "at": self._wall(), "life": life,
                 "shows": st["shows"]}
 
     # -- presses ---------------------------------------------------------------
@@ -630,7 +636,7 @@ class ShowsCounter:
         if old >= n - EPS:
             p["wraps"] += 1
         p["clicks"] += 1
-        st["anchor"] = self._anchor(st, new)
+        st["anchor"] = self._anchor(st, new, extra)
         if new >= n - EPS:
             st["unsure"], st["gaps"] = False, gaps
         st["rev"] += 1
@@ -688,7 +694,7 @@ class ShowsCounter:
                              "prev": st["anchor"], "unsure": st["unsure"],
                              "gaps": st["gaps"]}
             st["anchor"] = self._anchor(st, None if n is None
-                                        else float(n))
+                                        else float(n), extra.get(m.id, 0.0))
             st["unsure"], st["gaps"] = False, gaps
             st["rev"] += 1
             changes[m.id]["rev"] = st["rev"]

@@ -15897,6 +15897,16 @@ def build():
   "                    self.saved_at - st[\"last_burn_at\"] <= lost_s:",
   "                    True:"),
 
+ ("shows per refill: a refill during a show counts the show's flame again when it ends",
+  "ltcplay/fuelshows.py",
+  "        life[\"show\"] += float(extra or 0.0)\n        return {\"x\": x, \"at\": self._wall(), \"life\": life,",
+  "        return {\"x\": x, \"at\": self._wall(), \"life\": life,"),
+
+ ("shows per refill: an entry written before the audit log is attached is lost",
+  "ltcplay/fuel.py",
+  "        if self._audit_log is None:\n            return 0\n",
+  ""),
+
  ("shows per refill: a +1 batch is written at once, one entry per tap",
   "ltcplay/fuelshows.py",
   "                now - self._last_t.get(mid, float(\"-inf\")) >= COMMIT_S]",
@@ -15924,7 +15934,7 @@ def build():
 
  ("shows per refill: a refill leaves shows left where it was",
   "ltcplay/fuelshows.py",
-  "            st[\"anchor\"] = self._anchor(st, None if n is None\n                                        else float(n))\n",
+  "            st[\"anchor\"] = self._anchor(st, None if n is None\n                                        else float(n), extra.get(m.id, 0.0))\n",
   "            st[\"anchor\"] = st[\"anchor\"]\n"),
 
  ("ui 2.0 shows per refill: Fill selected goes with no question",
