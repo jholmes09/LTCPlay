@@ -51377,6 +51377,20 @@ def test_audio_interface_watch():
               f"the missing interface raises the audio alert, naming the "
               f"device, its show file and the outputs seen: {st} "
               f"{[x.text for x in a]}")
+        # Less prose (Jeff, 2026-11-11): a headline of 6 words or fewer,
+        # bullets of 8 or fewer, the names behind More. The rack screen's
+        # Details reads the lines; the journal and text are one line.
+        full = a[0].full.split("\n")
+        bullets = [x[2:] for x in full if x.startswith("- ")]
+        check(len(full[0].split()) <= 6 and len(bullets) == 3 and
+              all(len(x.split()) <= 8 for x in bullets) and
+              bullets[0].startswith("Do: ") and full[-1].startswith("More: ")
+              and "second.json" in full[-1] and "second.json" not in
+              "".join(full[:-1]) and "\n" not in a[0].text and
+              not any("\n" in t for t, _kw in journal) and
+              not any("\n" in x for x in log),
+              f"the audio alert is a headline, Do, Then, Why and More; "
+              f"one line in the journal and the log: {full}")
         raised = [t for t, kw in journal if kw.get("outcome") == "raised"]
         w.check()
         w.check()
@@ -65818,6 +65832,27 @@ def test_alerts_pure_logic():
                   if k != "gate" and k not in AL.DISPLAY_ONLY),
           "the gate and a display only kind (the aim slots) are warnings; "
           "everything else is a fault")
+    # Line breaks (Jeff, 2026-11-11: bullets, not blocks of text): kept in
+    # full for the rack screen's Details only; text, the journal and every
+    # other reader stay one line, spaces made single as before.
+    jl = []
+    C = AL.Alerts(journal=lambda text, **kw: jl.append(text), booth=None,
+                  clock=lambda: t[0], wall=lambda: w[0])
+    y = C.raise_("audio", "\n  Audio  box gone.\r\n- Do:  plug it in.\n"
+                 "\n\n\nMore: 'X'  in  show.json.\n\n")
+    vy = y.view()
+    check(y.text == "Audio box gone. Do: plug it in. More: 'X' in "
+          "show.json." and vy["full"] == "Audio box gone.\n- Do: plug it "
+          "in.\n\nMore: 'X' in show.json.\n\n" + AL.BOOTH_UNAVAILABLE + "."
+          and vy["text"] == y.text + " " + AL.BOOTH_UNAVAILABLE + "." and
+          not any("\n" in x for x in jl),
+          f"an alert keeps its line breaks in full only, one blank line "
+          f"at most; text and the journal are one line: {vy} {jl}")
+    z = C.raise_("deck", "  The deck\tis  gone. ")
+    check("full" not in z.view() and z.full == z.text and
+          z.view()["text"] == "The deck is gone. " + AL.BOOTH_UNAVAILABLE +
+          ".", f"one line in: no full in the view, text as before: "
+               f"{z.view()}")
     print("  ok")
 
 
@@ -114136,8 +114171,91 @@ def _ui2_tools_copies(one):
                # 1.0's renderMode: the info panel's flamesafe line
                '  $("info-flames").textContent = unconf ? "flamesafe\'s '
                'config is not yet confirmed by Andy'):
-        out.append((ln[:60], ln if ln in one else ""))
+        # The one named difference here (Jeff, 2026-11-11): the rig
+        # check's items one to a line (opText), not one run-on sentence.
+        two_ln = ln.replace(
+            '    $("rc-items").textContent = prl.items.join(". ");\n',
+            '    // One check to a line (Jeff, 2026-11-11), not one run-on '
+            'sentence.\n'
+            '    setOpText($("rc-items"), prl.items.map(t => "- " + '
+            'String(t).replace(/\\s+/g, " ")).join("\\n"));\n')
+        out.append((ln[:60], two_ln if ln in one else ""))
     return out
+
+
+def test_ui2_op_text_shapes_text_with_dom_nodes_only():
+    section("2.0's opText (Jeff, 2026-11-11: less prose): the first line a "
+            "bold headline, '- ' lines bullets, a blank line a new "
+            "paragraph, More dimmed; one line of text reads as before; "
+            "built from DOM nodes and textContent only, so a name with "
+            "markup in it is shown as text; the alert Details, and the rig "
+            "check's items one to a line, use it")
+    two = _ui2_pages()[1]
+    fns = [_js_function(two, n) for n in ("opText", "setOpText")]
+    check(all(fns) and not any("innerHTML" in f or "insertAdjacent" in f or
+                               "outerHTML" in f for f in fns),
+          "opText and setOpText never write markup")
+    check('const v = await sheet(it.what, body,' in two and
+          'body.appendChild(opText(it.full));' in two and
+          'full:a.full || a.text, act:"ack"' in two and
+          '$("sh-body").appendChild(html); }' in two and
+          'setOpText($("rc-items"), prl.items.map(' in two,
+          "the alert Details sheet takes opText's nodes, an engine alert "
+          "gives its lines (full), and the rig check card lists its items")
+    import shutil
+    node = shutil.which("node")
+    if not node or not all(fns):
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    stub = r"""
+function El(tag){ this.tag = tag; this.className = ""; this.childNodes = [];
+  this.dataset = {}; this._t = ""; }
+Object.defineProperty(El.prototype, "textContent", {
+  get(){ return this._t + this.childNodes.map(c => c.textContent).join(""); },
+  set(v){ this._t = String(v); this.childNodes = []; }});
+Object.defineProperty(El.prototype, "innerHTML", {
+  set(v){ throw new Error("innerHTML used"); }});
+El.prototype.appendChild = function(c){ this.childNodes.push(c); return c; };
+const document = {createElement: (t) => new El(t)};
+const shape = (e) => [e.tag, e.className.trim(), e._t].concat(
+  e.childNodes.length ? [e.childNodes.map(shape)] : []);
+"""
+    cases = {
+        "plain": "One line. With <b>x</b> & 'y'.",
+        "shaped": "Head <i>line</i>.\n- Do: a.\n- Then: b.\n\nMore: 'n'.",
+        "items": "- Audio OK\n- Video FAILED: gone",
+        "one": "- Audio OK",
+    }
+    js = stub + fns[0] + "\n" + fns[1] + "\n" + \
+        "const cases = " + json.dumps(cases) + ";\nconst out = {};\n" \
+        "for(const k in cases) out[k] = shape(opText(cases[k]));\n" \
+        "const host = new El('div'); setOpText(host, cases.items); " \
+        "const first = host.childNodes[0]; setOpText(host, cases.items);\n" \
+        "out.same = host.childNodes[0] === first;\n" \
+        "console.log(JSON.stringify(out));\n"
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        got = json.loads(r.stdout.strip() or "null")
+    except ValueError:
+        got = None
+    want = {
+        "plain": ["div", "full op", "One line. With <b>x</b> & 'y'."],
+        "shaped": ["div", "full op", "", [
+            ["b", "", "Head <i>line</i>."],
+            ["ul", "", "", [["li", "", "Do: a."], ["li", "", "Then: b."]]],
+            ["p", "gap dim", "More: 'n'."]]],
+        "items": ["div", "full op", "", [["ul", "", "", [
+            ["li", "", "Audio OK"], ["li", "", "Video FAILED: gone"]]]]],
+        "one": ["div", "full op", "", [["ul", "", "", [
+            ["li", "", "Audio OK"]]]]],
+        "same": True,
+    }
+    check(r.returncode == 0 and got == want,
+          f"opText builds a headline, bullets and paragraphs from text, "
+          f"markup kept as text, and setOpText rebuilds only on a change: "
+          f"{r.stdout.strip()[:800]} {r.stderr.strip()[:600]}")
+    print("  ok")
 
 
 def test_ui2_show_pc_tools_are_1_0s():
@@ -115287,6 +115405,7 @@ if __name__ == "__main__":
         test_ui2_users_audit_driven,
         test_ui2_show_pc_tools_are_1_0s,
         test_ui2_show_pc_tools_driven,
+        test_ui2_op_text_shapes_text_with_dom_nodes_only,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):
