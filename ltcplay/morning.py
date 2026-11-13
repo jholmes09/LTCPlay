@@ -2545,7 +2545,7 @@ class Morning:
         return at is not None and self._clock() - at <= OPEN_STALE_S
 
     def open_beat(self, device, arranging=False, inst="", seq=None,
-                  mark_open=True, rows_arranging=False):
+                  mark_open=True):
         """The page says it is open (every 500 ms while it is), and whether
         it is in Arrange mode (Jeff, 2026-10-19). A screen that is
         arranging has nothing armed: its purge selection is cleared here,
@@ -2585,7 +2585,6 @@ class Morning:
             if last is not None and seq <= last[0]:
                 return                   # an older beat, overtaken
             self._beat_seq[key] = (seq, now)
-        self._rows_beat(device, inst, rows_arranging, now)
         if arranging:
             first = device not in self._arranging
             self._arranging.setdefault(device, {})[inst] = now
@@ -2633,10 +2632,14 @@ class Morning:
                     (len(saf) > 1 and saf <= locked)
         return False
 
-    def _rows_beat(self, device, inst, on, now):
-        """The Fuel step's Arrange mode, per page load, as for the map's:
-        while ANY instance of a device says it is arranging the rows, a
-        refill from that device is held back (rows_refill_refusal)."""
+    def rows_beat(self, device, inst, on):
+        """The Fuel step's Arrange mode: its page beats every 500 ms while
+        it arranges, and once more when it stops. Per page load, as for the
+        map's: while ANY instance of a device said so within OPEN_STALE_S,
+        a refill from that device is held back (rows_refill_refusal). A
+        beat that comes late can only hold refills back longer."""
+        now = self._clock()
+        inst = str(inst or "")[:64]
         for d in list(self._rows_arranging):
             live = {i: t for i, t in self._rows_arranging[d].items()
                     if now - t <= OPEN_STALE_S}
@@ -3060,8 +3063,7 @@ class Morning:
         if name == "morning-open":
             self.open_beat(device, arranging=body.get("arranging") is True,
                            inst=body.get("inst"), seq=body.get("seq"),
-                           mark_open=body.get("leaving") is not True,
-                           rows_arranging=body.get("rows_arranging") is True)
+                           mark_open=body.get("leaving") is not True)
             return 200, {"ok": True, "open": True,
                          "arranging": self.device_arranging(device)}
         # A screen in Arrange mode (Jeff, 2026-10-19): the engine's own
@@ -3251,7 +3253,20 @@ class Morning:
     def _arrangement_post(self, body, device, who):
         """POST arrangement: {"rows": [...]} saves the machine rows both
         steps show; {"reset": true} goes back to one row per type. Each is
-        in the journal with who, and the rows before and after."""
+        in the journal with who, and the rows before and after.
+        {"beat": true, "arranging": bool, "inst"} is the Fuel step's
+        Arrange beat (rows_beat): it saves nothing."""
+        if body.get("beat") is True:
+            self.rows_beat(device, body.get("inst"),
+                           body.get("arranging") is True)
+            return 200, {"ok": True,
+                         "arranging": self.device_rows_arranging(device)}
+        if self.config_error:
+            # The machines shown are the default ones, not Andy's: rows
+            # saved against them would replace the real rows.
+            return 409, {"error": f"Rows not saved: ltcplay_morning.json "
+                                  f"could not be read "
+                                  f"({self.config_error})."}
         old = self.arrangement_view()["rows"]
         try:
             if body.get("reset") is True:

@@ -5957,8 +5957,7 @@ class Remote:
             # (adversarial review of PR #73, finding 2).
             m.open_beat(device, arranging=body.get("arranging") is True,
                         inst=body.get("inst"), seq=body.get("seq"),
-                        mark_open=False,
-                        rows_arranging=body.get("rows_arranging") is True)
+                        mark_open=False)
             return 200, {"ok": True, "open": False, "view_only": True,
                          "arranging": m.device_arranging(device)}
         # A purge fire is gated by what it DOES, never by whether "on" is

@@ -361,6 +361,10 @@ def classify(route, body=None):
             # morning.py arms only for "on" the JSON word true; every other
             # body disarms (Jeff, 2026-10-22).
             return "safety"
+        if name == "arrangement" and body.get("beat") is True:
+            # The Fuel step's Arrange beat saves nothing; it only holds
+            # this screen's refills back (morning.Morning.rows_beat).
+            return None
         if name == "lock" and body.get("on") is not False:
             return "safety" if body.get("kind") != "rewrite" else "settings"
         return REMOTE_ROUTES.get(name)

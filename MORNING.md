@@ -88,6 +88,7 @@ rule written there.
 | Names allowed to tick | `ltcplay_morning.json` | `names` |
 | Tally server (off by default) | `ltcplay_morning.json` | `tally` |
 | Machine positions | `ltcplay_morning_layout.json` | (the page writes it) |
+| Machine rows on the Fuel and Purge steps | `ltcplay_arrangement.json` | (the Fuel step's Arrange writes it; `arrangement_format` 1; older builds never read it) |
 | Lock state | `ltcplay_lockout.json` | (the engine writes it; flamesafe reads it) |
 | Purge arming from a network device | `ltcplay_remote.json` | `screen_arming` (the existing switch) |
 | Purge arming at all | `ltcplay_remote.json` | `purge_arming` (default true) |

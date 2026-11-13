@@ -73564,6 +73564,256 @@ def test_morning_no_unlock_while_group_armed():
     print("  ok")
 
 
+# ---------------------------------------------------------------------------
+# The machine rows (morning.Arrangement; Jeff, 2026-11-13): one file of rows
+# that the Fuel step and the Purge step both show, one row per type by
+# default, arranged on the Fuel step.
+# ---------------------------------------------------------------------------
+
+def _rows_morning(d, journal, clock=None, config=None):
+    import json as _j
+    from ltcplay import morning as MO
+    fs = os.path.join(d, "flamesafe.json")
+    with open(fs, "w", encoding="utf-8") as fh:
+        _j.dump(_MO_FLAMESAFE, fh)
+    with open(os.path.join(d, MO.CONFIG_FILE), "w", encoding="utf-8") as fh:
+        _j.dump(config or _MO_CONFIG, fh)
+    kw = {"clock": clock} if clock is not None else {}
+    return MO.Morning(d, flamesafe_config=fs, link_get=lambda: None,
+                      flames_get=lambda: None, laser_output=_FakeLaserOutput,
+                      live_check=lambda: "", journal=journal,
+                      wall=lambda: 1_800_000_000.0, threaded=False, **kw)
+
+
+def test_machine_rows_one_file_both_steps():
+    section("the machine rows (Jeff, 2026-11-13): one row per type by "
+            "default; Save writes ltcplay_arrangement.json (format 1, "
+            "atomic) and the one view both steps read follows it; a new "
+            "machine joins the end of its type's row, one gone is left "
+            "out; a broken or newer file falls back to the default and is "
+            "said once; the map's layout file is never touched, and an old "
+            "build's Layout reads its own file as before; every save and "
+            "reset is in the journal with who and the rows before and after")
+    import json as _j
+    import shutil
+    import tempfile
+    from ltcplay import morning as MO
+    d = tempfile.mkdtemp()
+    lines = []
+    try:
+        m = _rows_morning(d, lambda t, **f: lines.append((t, f)))
+        rack = ("Rack screen", "Andy", "Rack screen", True, True)
+        v = m.full_view("Rack screen")["arrangement"]
+        check([(r["label"], r["machines"]) for r in v["rows"]] ==
+              [("G-Flames", ["g1", "g2", "s1"]), ("Wave Flamers", ["w1"])]
+              and v["saved"] is False and v["problem"] == "",
+              f"no file: one row per type, types in the config's order: "
+              f"{v}")
+        # The map's layout, saved first: the rows must never touch it.
+        st, _o = m.post("layout", {"positions": {"g1": {"x": 10, "y": 20}}},
+                        *rack)
+        lay = os.path.join(d, MO.LAYOUT_FILE)
+        with open(lay, "rb") as fh:
+            lay_bytes = fh.read()
+        st, out = m.post("arrangement", {"rows": [
+            {"kind": "waver", "machines": ["w1"]},
+            {"kind": "gflame", "machines": ["s1", "g2"]},
+            ["g1"]]}, *rack)
+        path = os.path.join(d, MO.ARRANGEMENT_FILE)
+        with open(path, encoding="utf-8") as fh:
+            doc = _j.load(fh)
+        check(st == 200 and doc["arrangement_format"] == 1 and
+              [r["machines"] for r in doc["rows"]] ==
+              [["w1"], ["s1", "g2"], ["g1"]] and doc["saved_by"] == "Andy",
+              f"saved: the file has the rows, format 1, who: {st} {out} "
+              f"{doc}")
+        check(not [n for n in os.listdir(d) if n.endswith(".tmp")],
+              "written atomically: no temp file left")
+        v = m.full_view("Rack screen")["arrangement"]
+        check([r["machines"] for r in v["rows"]] ==
+              [["w1"], ["s1", "g2"], ["g1"]] and v["saved"] is True and
+              [r["label"] for r in v["rows"]] ==
+              ["Wave Flamers", "G-Flames", "G-Flames"],
+              f"the view both steps read follows the file, each row "
+              f"labelled by its type: {v}")
+        said = [t for t, f in lines if f.get("action") == "arrangement"
+                and f.get("outcome") == "saved"]
+        check(len(said) == 1 and "Andy" in said[0] and
+              "Before: G-Flames: g1, g2, s1 | Wave Flamers: w1." in said[0]
+              and "After: Wave Flamers: w1 | G-Flames: s1, g2 | "
+              "G-Flames: g1." in said[0],
+              f"the save is in the journal: who, before, after: {said}")
+        with open(lay, "rb") as fh:
+            check(fh.read() == lay_bytes,
+                  "the map's ltcplay_morning_layout.json is untouched")
+        pos, saved = MO.Layout(lay).load(m.cfg)
+        check(saved and pos["g1"] == {"x": 10.0, "y": 20.0},
+              f"an old build reads only its own layout file, as before: "
+              f"{pos.get('g1')}")
+        MO.Layout(lay).reset()
+        check(os.path.isfile(path), "Reset layout on the map keeps the rows")
+        # Refused: not a machine, twice, not a type, not rows at all.
+        for bad in ({"rows": [["g1", "nope"]]}, {"rows": [["g1"], ["g1"]]},
+                    {"rows": [{"kind": "laser", "machines": ["g1"]}]},
+                    {"rows": "g1"}, {}):
+            st, out = m.post("arrangement", bad, *rack)
+            check(st == 400 and out["error"].startswith("Rows not saved"),
+                  f"refused, file kept: {bad} -> {st} {out}")
+        with open(path, encoding="utf-8") as fh:
+            check([r["machines"] for r in _j.load(fh)["rows"]] ==
+                  [["w1"], ["s1", "g2"], ["g1"]], "a refused save writes nothing")
+        # A new machine in ltcplay_morning.json, one gone.
+        cfg2 = _j.loads(_j.dumps(_MO_CONFIG))
+        cfg2["machines"] = [x for x in cfg2["machines"] if x["id"] != "g2"]
+        cfg2["machines"].append({"id": "g3", "name": "Ground 3",
+                                 "kind": "gflame", "group": "front row",
+                                 "fire": [413]})
+        cfg2["groups"]["Ground G-Flames"] = ["g1", "g3"]
+        m2 = _rows_morning(d, lambda t, **f: lines.append((t, f)),
+                           config=cfg2)
+        v = m2.full_view("Rack screen")["arrangement"]
+        check([r["machines"] for r in v["rows"]] ==
+              [["w1"], ["s1", "g3"], ["g1"]],
+              f"a new machine goes at the end of its type's (first) row, "
+              f"one gone from the config is left out: {v['rows']}")
+        # A broken file: the default, said once.
+        for text in ("{not json", _j.dumps({"arrangement_format": 2,
+                                            "rows": [["w1"]]}),
+                     _j.dumps({"arrangement_format": 1, "rows": 7}),
+                     _j.dumps([1, 2])):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            del lines[:]
+            vs = [m.full_view("Rack screen")["arrangement"] for _ in range(3)]
+            faults = [t for t, f in lines if f.get("action") == "arrangement"
+                      and f.get("fault")]
+            check(all([r["machines"] for r in x["rows"]] ==
+                      [["g1", "g2", "s1"], ["w1"]] and not x["saved"] and
+                      x["problem"] for x in vs) and len(faults) == 1,
+                  f"{text[:30]!r}: one row per type, the problem said once "
+                  f"in three reads: {vs[0]} {faults}")
+            m._arrangement_said = ""
+        with open(path, encoding="utf-8") as fh:
+            check(fh.read() == _j.dumps([1, 2]),
+                  "a file that is not used is never rewritten by a read")
+        # Default rows: the file goes, and the journal says so.
+        del lines[:]
+        st, out = m.post("arrangement", {"reset": True}, *rack)
+        check(st == 200 and not os.path.exists(path) and
+              any(f.get("outcome") == "reset" and "Andy" in t
+                  for t, f in lines),
+              f"Default rows removes the file, journalled: {st} {out}")
+        # A config that could not be read: nothing saved over the rows.
+        m.config_error = "broken"
+        st, out = m.post("arrangement", {"rows": [["g1"]]}, *rack)
+        check(st == 409 and not os.path.exists(path),
+              f"no save on the default machine list: {st} {out}")
+        m.config_error = ""
+        ex = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          ".gitignore")
+        with open(ex, encoding="utf-8") as fh:
+            check("ltcplay_arrangement.json" in fh.read().split(),
+                  "the rows file is machine state, never committed")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def test_machine_rows_refills_held_back_while_arranging():
+    section("the Fuel step's Arrange at the engine: while a screen's beat "
+            "says it is arranging the rows, a refill (one tank or Refill "
+            "all) from it is refused and nothing is logged, whatever its "
+            "page sent; its beat ending, or stopping for 2 s, lets "
+            "refills through again; another screen is not held; saving "
+            "the rows needs the Show files row (a viewer is refused) and "
+            "the beat needs nothing; every press is audited")
+    import json as _j
+    import shutil
+    from ltcplay import users as U
+    from ltcplay import morning as MO
+    check(U.classify("/api/remote/arrangement", {"rows": []}) ==
+          "show_files" and
+          U.classify("/api/remote/arrangement", {"reset": True}) ==
+          "show_files" and
+          U.classify("/api/remote/arrangement", {"beat": True,
+                                                 "arranging": True}) is None,
+          "a save or reset is the Show files row (as the map's layout); "
+          "the beat saves nothing")
+    httpd, http, cookie_of, work = _accounts_engine(
+        seed=(("Jeff", "admin"), ("Vic", "viewer")))
+    rem = httpd.remote
+    R = _FuelRig()
+    d = tempfile.mkdtemp()
+    t = [100.0]
+    try:
+        rem.fuel = R.tr
+        rem.morning = _rows_morning(d, lambda t, **f: None,
+                                    clock=lambda: t[0])
+        ck = {}
+        for name in ("Vic", "Jeff"):
+            st, out, h = http("/api/remote/signin", {
+                "name": name, "password": "",
+                "new_password": name.lower() + "-pw-123"})
+            ck[name] = cookie_of(h)
+        st, out, _h = http("/api/remote/arrangement", {"rows": [["w1"]]},
+                           cookie=ck["Vic"])
+        check(st == 403 and not os.path.exists(
+            os.path.join(d, MO.ARRANGEMENT_FILE)),
+              f"a viewer may not save the rows: {st} {out}")
+        st, out, _h = http("/api/remote/arrangement",
+                           {"beat": True, "arranging": True, "inst": "a"},
+                           cookie=ck["Jeff"])
+        check(st == 200 and out.get("arranging") is True,
+              f"the arranging beat is heard: {st} {out}")
+        for body in ({"unit": "g1"},
+                     {"all": True, "confirm": True,
+                      "units": [m.id for m in R.ms
+                                if m.kind in ("gflame", "waver")]}):
+            st, out, _h = http("/api/remote/fuel-refill", body,
+                               cookie=ck["Jeff"])
+            check(st == 409 and "arranging" in out.get("error", "") and
+                  R.unit("g1")["status"] == "never",
+                  f"arranging: no refill logged ({body}): {st} {out}")
+        dev = next(iter(rem.morning._rows_arranging))
+        check(rem.morning.rows_refill_refusal("iPad at 10.20.0.44") == "",
+              "another screen is not held back")
+        t[0] += MO.OPEN_STALE_S + 0.1
+        check(rem.morning.rows_refill_refusal(dev) == "",
+              "beats that stop for 2 s let go by the clock alone")
+        st, out, _h = http("/api/remote/arrangement",
+                           {"beat": True, "arranging": True, "inst": "a"},
+                           cookie=ck["Jeff"])
+        st, out, _h = http("/api/remote/arrangement",
+                           {"beat": True, "arranging": False, "inst": "a"},
+                           cookie=ck["Jeff"])
+        st, out, _h = http("/api/remote/fuel-refill", {"unit": "g1"},
+                           cookie=ck["Jeff"])
+        check(st == 200 and R.unit("g1")["status"] != "never",
+              f"Save or Cancel (the beat says so): refills again: {st} {out}")
+        st, out, _h = http("/api/remote/arrangement",
+                           {"rows": [["w1"], ["g1", "g2", "s1"]]},
+                           cookie=ck["Jeff"])
+        check(st == 200 and [r["machines"] for r in
+                             out["arrangement"]["rows"]] ==
+              [["w1"], ["g1", "g2", "s1"]], f"an admin saves: {st} {out}")
+        rem.audit.flush(5.0)
+        acts = [l for l in _audit_lines(rem.audit.folder)
+                if l.get("action") == "arrangement"]
+        check(any(l["user"] == "Jeff" and l["result"] == "accepted"
+                  for l in acts) and
+              any(l["user"] == "Vic" and l["result"] == "refused"
+                  for l in acts),
+              f"every rows press is audited with who: {acts[:3]}")
+    finally:
+        rem.fuel = None
+        rem.morning = None
+        httpd.server_close()
+        R.close()
+        shutil.rmtree(work, ignore_errors=True)
+        shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
 def test_morning_lockout_trust_link_and_close():
     section("Morning and Shutdown, the lock table when it cannot be trusted: "
             "an unreadable lockout file, or one naming a machine the config "
@@ -101655,6 +101905,344 @@ def test_ui2_startup_steps_never_overlap():
     print("  ok")
 
 
+# ---------------------------------------------------------------------------
+# The machine rows drawn (morning.Arrangement; Jeff, 2026-11-13: "currently
+# the wave flamers span two rows and he was hoping to get them all on the
+# same row"): the Fuel step's tanks and the Purge step's Machines in the
+# same saved rows, at the show PC's sizes.
+# ---------------------------------------------------------------------------
+
+def _ui2_rows_fixture():
+    """tools/ui/fx/rows.json: 16 machines of 3 types in saved rows (one
+    machine new, one id gone), and the Fuel view's 15 tanks."""
+    import json as _j
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "tools", "ui", "fx", "rows.json"),
+              encoding="utf-8") as fh:
+        return _j.load(fh)
+
+
+def _ui2_status_rows(problem=""):
+    import copy
+    st, routes = _ui2_status_startup_steps()
+    fx = _ui2_rows_fixture()
+    mo = routes["/api/remote/morning"]
+    mo["machines"] = copy.deepcopy(fx["machines"])
+    mo["groups"] = copy.deepcopy(fx["groups"])
+    mo["arrangement"] = dict(copy.deepcopy(fx["arrangement"]),
+                             problem=problem)
+    mo["layout"] = {m["id"]: {"x": 50, "y": 50} for m in fx["machines"]}
+    routes["/api/remote/fuel"].update(
+        units=copy.deepcopy(fx["units"]),
+        unit_ids=[u["id"] for u in fx["units"]])
+    return st, routes, fx
+
+
+# The overlap and spill measure of _UI2_STEP_LAYOUT_JS, for any box.
+_UI2_ROWS_MEASURE_JS = r"""
+const vis = e => e.getClientRects().length && getComputedStyle(e).visibility !== "hidden";
+const nm = e => e.id || (e.dataset && (e.dataset.refill || e.dataset.mid || e.dataset.m)) || e.textContent.trim().replace(/\s+/g, " ").slice(0, 24);
+const measure = P => {
+  const els = [...P.querySelectorAll("button, input, select, textarea, a, [role=button]")].filter(vis);
+  const over = [];
+  for(let i = 0; i < els.length; i++) for(let j = i + 1; j < els.length; j++){
+    const a = els[i], c = els[j];
+    if(a.contains(c) || c.contains(a)) continue;
+    const A = a.getBoundingClientRect(), C = c.getBoundingClientRect();
+    if(Math.min(A.right, C.right) - Math.max(A.left, C.left) > 1 && Math.min(A.bottom, C.bottom) - Math.max(A.top, C.top) > 1)
+      over.push(nm(a) + " / " + nm(c));
+  }
+  const spill = [];
+  for(const e of [...P.querySelectorAll("*")].filter(vis)){
+    const cs = getComputedStyle(e);
+    if(cs.display === "inline" || cs.overflowX !== "visible" || cs.overflowY !== "visible") continue;
+    const E = e.getBoundingClientRect();
+    for(const c of [...e.children].filter(vis)){
+      const C = c.getBoundingClientRect();
+      if(C.top < E.top - 1 || C.bottom > E.bottom + 1 || C.left < E.left - 1 || C.right > E.right + 1)
+        spill.push(nm(c) + " out of " + nm(e));
+    }
+  }
+  const R = P.getBoundingClientRect();
+  const side = els.filter(e => { const r = e.getBoundingClientRect(); return r.left < R.left - 1 || r.right > R.right + 1; }).map(nm);
+  return {n:els.length, over:over.slice(0, 8), spill:spill.slice(0, 8), side:side.slice(0, 8), hs:P.scrollWidth - P.clientWidth};
+};
+// Each row: its label, its ids in order, on how many lines its cards
+// sit, and whether they could all sit on one line at their least width.
+const rowsOf = box => [...box.querySelectorAll(".mrow")].map(r => {
+  const c = r.querySelector(".mrow-c"), bs = [...c.children].filter(vis);
+  const gap = parseFloat(getComputedStyle(c).columnGap) || 0, min = bs.length ? parseFloat(getComputedStyle(bs[0]).minWidth) : 0;
+  return {label:r.querySelector(".mrow-l").textContent, ids:bs.map(nm), min:min,
+    lines:new Set(bs.map(b => Math.round(b.getBoundingClientRect().top))).size,
+    fits:bs.length * min + (bs.length - 1) * gap <= c.clientWidth + 0.5};
+});
+const step = k => { const b = document.querySelector('#d-steps [data-step="' + k + '"]'); if(b) b.click(); return !!b; };
+"""
+
+_UI2_ROWS_LAYOUT_JS = _UI2_ROWS_MEASURE_JS + r"""
+await h.sleep(900);
+out.vw = [innerWidth, innerHeight, devicePixelRatio];
+const P = document.getElementById("d-panel");
+step("fuel");
+await h.sleep(700);
+out.fuel = {rows:rowsOf(document.getElementById("d-fuel")), m:measure(P)};
+document.getElementById("fu-arrange").click();
+await h.sleep(500);
+out.arr = {bar:!document.getElementById("fu-arr-bar").hidden, rows:rowsOf(document.getElementById("d-fuel")), m:measure(P)};
+document.getElementById("fu-arr-cancel").click();
+await h.sleep(300);
+step("purge");
+await h.sleep(700);
+out.groups = [...document.querySelectorAll("#mo-groups [data-grp]")].map(b => b.dataset.grp);
+out.purge = measure(P);
+document.getElementById("d-mach").click();
+await h.sleep(500);
+const S = document.getElementById("sh-body");
+out.mach = {rows:rowsOf(S), m:measure(S)};
+"""
+
+# (CSS width, height, device pixel ratio): 1024 to 2560 wide at 1x, 1.25x,
+# 1.5x and 2x (Jeff's request: "1024 to 2560 CSS px at device scale up to
+# 2").
+UI2_ROWS_SIZES = tuple((w, h, d) for w, h in ((1024, 768), (1280, 800),
+                                             (1600, 1000), (1920, 1080),
+                                             (2560, 1440))
+                       for d in (1, 1.25, 1.5, 2))
+
+
+def test_ui2_machine_rows_fit_and_never_overlap():
+    section("the machine rows drawn in a real browser at 1024, 1280, "
+            "1600, 1920 and 2560 CSS px wide, each at 1x, 1.25x, 1.5x and "
+            "2x (Jeff, 2026-11-13: all the Wave Flamers on one row): the "
+            "Fuel step's tanks, its Arrange mode and the Purge step's "
+            "Machines are the same saved rows (a new machine at the end of "
+            "its type's row, a gone one left out), each type's row on one "
+            "line whenever its cards fit at their least width and wrapped "
+            "only when they do not; no two controls overlap, nothing "
+            "spills or goes off the side; the group buttons follow the rows")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2_page_inline()
+    st, routes, fx = _ui2_status_rows()
+    want = fx["expect"]["fuel"]
+    base = list(chrome) if isinstance(chrome, (list, tuple)) else [chrome]
+    for w, h, dpr in UI2_ROWS_SIZES:
+        where = f"machine rows, {w}x{h} at {dpr}x"
+        m = _ui2_drive(base + [f"--force-device-scale-factor={dpr}"], page,
+                       st, _UI2_ROWS_LAYOUT_JS, size=(w, h),
+                       frag="?tour=0#day", routes=routes, budget_ms=20000)
+        if not check(isinstance(m, dict) and isinstance(m.get("fuel"), dict)
+                     and isinstance(m.get("mach"), dict) and
+                     not m.get("problems"),
+                     f"{where}: drawn and measured: {m!r}"[:1500]):
+            continue
+        fuel, arr, mach = m["fuel"]["rows"], m["arr"]["rows"], m["mach"]["rows"]
+        check([r["ids"] for r in fuel] == want and
+              [r["label"] for r in fuel] == ["Wave Flamers", "G-Flames"],
+              f"{where}: the Fuel step's tanks are the saved rows, the new "
+              f"machine last in its type's row: {fuel}")
+        check([r["ids"] for r in arr] == want and m["arr"]["bar"],
+              f"{where}: Arrange shows the same rows, and its bar: {arr}")
+        check([r["ids"] for r in mach] == want + [["fireball"]],
+              f"{where}: the Purge step's Machines are the same rows: "
+              f"{mach}")
+        check(m["groups"] == fx["expect"]["groups"],
+              f"{where}: the group buttons follow the rows: {m['groups']}")
+        for name, rows in (("Fuel", fuel), ("Arrange", arr),
+                           ("Machines", mach)):
+            for r in rows:
+                check((r["lines"] == 1) == r["fits"] and r["min"] >= 120,
+                      f"{where}, {name}, {r['label']}: on one line when its "
+                      f"cards fit, wrapped only when they cannot: {r}")
+            wv = [r for r in rows if r["label"] == "Wave Flamers"]
+            check(wv and wv[0]["lines"] == 1,
+                  f"{where}, {name}: all six Wave Flamers on one row: {wv}")
+        for name, r in (("Fuel", m["fuel"]["m"]), ("Arrange", m["arr"]["m"]),
+                        ("Purge", m["purge"]), ("Machines", m["mach"]["m"])):
+            check(not r["over"] and not r["spill"] and not r["side"] and
+                  r["hs"] <= 1,
+                  f"{where} (CSS {m.get('vw')}), {name}: no two controls "
+                  f"overlap, nothing spills or goes off the side: {r}")
+    print("  ok")
+
+
+_UI2_ROWS_DRIVE_JS = _UI2_ROWS_MEASURE_JS + r"""
+const ids = () => rowsOf(document.getElementById("d-fuel")).map(r => r.ids);
+const card = id => document.querySelector('#d-fuel [data-mid="' + id + '"]');
+const pev = (el, type, x, y) => el.dispatchEvent(new PointerEvent(type, {bubbles:true, cancelable:true, pointerId:7, pointerType:"mouse", isPrimary:true, buttons:type === "pointerup" ? 0 : 1, clientX:x, clientY:y}));
+const mid = el => { const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+const fuelPosts = () => window.__posts.filter(p => p.route === "fuel-refill");
+const beats = () => window.__posts.filter(p => p.route === "arrangement" && p.body.beat === true);
+const saves = () => window.__posts.filter(p => p.route === "arrangement" && p.body.beat !== true);
+await h.sleep(900);
+step("fuel");
+await h.sleep(700);
+out.said = document.getElementById("fu-msg").textContent;
+document.getElementById("fu-msg").textContent = "";
+await h.sleep(1200);
+out.said_again = document.getElementById("fu-msg").textContent;
+const ab = document.getElementById("fu-arrange");
+out.btn = {hidden:ab.hidden, disabled:ab.disabled, text:ab.textContent.trim()};
+out.before = ids();
+ab.click();
+await h.sleep(400);
+const bar = document.getElementById("fu-arr-bar");
+out.bar = {shown:!bar.hidden, head:bar.querySelector("b").textContent, bullets:[...bar.querySelectorAll("li")].map(l => l.textContent),
+  buttons:[...bar.querySelectorAll("button")].map(b => b.textContent.trim()), refills:document.querySelectorAll("#d-fuel [data-refill]").length,
+  all:document.getElementById("fu-all").disabled, mv:[...bar.querySelectorAll("[data-mv]")].every(b => b.disabled)};
+out.beat_on = beats().length > 0 && beats().every(p => p.body.arranging === true && p.body.inst);
+// Every way a finger can press a tank while arranging: no refill leaves.
+const c1 = card("ground-3");
+h.tap(c1); await h.sleep(300);
+c1.click(); await h.sleep(200);
+document.getElementById("fu-all").click(); await h.sleep(300);
+out.picked = (card("ground-3") || {}).className;
+document.querySelector('#fu-arr-mv [data-mv="right"]').click(); await h.sleep(200);
+out.right = ids();
+document.querySelector('#fu-arr-mv [data-mv="up"]').click(); await h.sleep(200);
+out.up = ids();
+document.querySelector('#fu-arr-mv [data-mv="new"]').click(); await h.sleep(200);
+out.newrow = {ids:ids(), labels:rowsOf(document.getElementById("d-fuel")).map(r => r.label)};
+// A drag: wave-1 picked up, moved, let go on the right half of scaffold-1.
+{ const a = card("wave-1"), b = card("scaffold-1");
+  b.scrollIntoView({block:"center"}); await h.sleep(100);
+  const [ax, ay] = mid(a), [bx, by] = mid(b), rb = b.getBoundingClientRect();
+  pev(a, "pointerdown", ax, ay); await h.sleep(50);
+  pev(a, "pointermove", ax + 20, ay + 5); await h.sleep(50);
+  pev(a, "pointermove", rb.right - 5, by); await h.sleep(50);
+  pev(a, "pointerup", rb.right - 5, by); a.click(); await h.sleep(300); }
+out.drag = ids();
+out.refills_while = fuelPosts().length;
+// Save layout: the rows go, every one of the config's tanks is in them.
+const nb = beats().length;
+document.getElementById("fu-arr-save").click();
+await h.sleep(700);
+out.save = saves().map(p => p.body);
+out.beat_off = beats().slice(nb).some(p => p.body.arranging === false);
+out.after = {bar:!bar.isConnected || bar.hidden, refills:document.querySelectorAll("#d-fuel [data-refill]").length, msg:document.getElementById("fu-msg").textContent};
+// Cancel: nothing saved.
+const ns = saves().length;
+document.getElementById("fu-arrange").click(); await h.sleep(300);
+h.tap(card("wave-2")); await h.sleep(200);
+document.querySelector('#fu-arr-mv [data-mv="left"]').click(); await h.sleep(200);
+document.getElementById("fu-arr-cancel").click(); await h.sleep(400);
+out.cancel = {saves:saves().length - ns, msg:document.getElementById("fu-msg").textContent};
+// Another step while arranging: Arrange ends, nothing saved.
+document.getElementById("fu-arrange").click(); await h.sleep(300);
+const nb2 = beats().length;
+step("purge"); await h.sleep(500);
+out.left = {saves:saves().length - ns, off:beats().slice(nb2).some(p => p.body.arranging === false)};
+step("fuel"); await h.sleep(500);
+// Out of Arrange: a tap on a tank asks to log its refill again.
+document.querySelector('#d-fuel [data-refill="ground-1"]').click(); await h.sleep(400);
+out.ask = !document.getElementById("sheet").hidden && document.getElementById("sh-h").textContent === "Ground 1 refilled?";
+// The Show files row off: Arrange is shown, and disabled.
+ST.me.may.show_files = false; renderMorning(); await h.sleep(50);
+out.noperm = {hidden:document.getElementById("fu-arrange").hidden, disabled:document.getElementById("fu-arrange").disabled};
+ST.me.may.show_files = true; ST.me.local = false; ME.local = false; renderMorning(); await h.sleep(50);
+out.ipad = {hidden:document.getElementById("fu-arrange").hidden};
+// The Purge step: its group buttons and Machines follow the same rows.
+document.querySelector("#sh-row [data-i]").click(); await h.sleep(200);
+step("purge"); await h.sleep(500);
+out.groups = [...document.querySelectorAll("#mo-groups [data-grp]")].map(b => b.dataset.grp);
+document.getElementById("d-mach").click(); await h.sleep(400);
+out.mach = rowsOf(document.getElementById("sh-body")).map(r => r.ids);
+"""
+
+
+def test_ui2_fuel_arrange_driven():
+    section("the Fuel step's Arrange pressed in a real browser: Arrange "
+            "(show PC, Show files row) shows ARRANGING: refills held back; "
+            "while arranging no tap, click or Refill all sends a refill "
+            "and the engine hears the arranging beat; tap and Right, Row "
+            "up, New row, and a drag move tanks; Save layout sends every "
+            "row, Cancel and leaving the step send nothing; afterwards a "
+            "tap asks to log a refill again; a broken rows file is said "
+            "once; the new strings are short, with no dashes")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2_page_inline()
+    st, routes, fx = _ui2_status_rows(
+        problem="ltcplay_arrangement.json could not be read (ValueError)")
+    m = _ui2_drive([chrome] if not isinstance(chrome, (list, tuple))
+                   else list(chrome), page, st, _UI2_ROWS_DRIVE_JS,
+                   size=(1600, 1000), frag="?tour=0#day", routes=routes,
+                   budget_ms=30000)
+    if not check(isinstance(m, dict) and "bar" in m and not m.get("problems"),
+                 f"drawn and pressed: {m!r}"[:1500]):
+        print("  ok")
+        return
+    want = fx["expect"]["fuel"]
+    check(m["said"] == "Saved rows unreadable. One row per type shown." and
+          m["said_again"] == "",
+          f"a broken rows file is said once: {m['said']!r} "
+          f"{m['said_again']!r}")
+    check(m["btn"] == {"hidden": False, "disabled": False,
+                       "text": "Arrange"} and m["before"] == want,
+          f"Arrange on the show PC with Show files: {m['btn']}")
+    b = m["bar"]
+    check(b["shown"] and b["head"] == "ARRANGING: refills held back" and
+          b["refills"] == 0 and b["all"] and b["mv"] and m["beat_on"],
+          f"arranging: the banner, no refill button anywhere, Refill all "
+          f"off, the engine told: {b} {m['beat_on']}")
+    words = [b["head"]] + b["bullets"] + b["buttons"]
+    check(len(b["head"].split()) <= 6 and len(b["bullets"]) <= 3 and
+          all(len(x.split()) <= 8 for x in b["bullets"]) and
+          not any(ch in x for x in words for ch in "–—") and
+          not any("Run" in x.split() for x in words),
+          f"the bar's words: a short headline, three short bullets, no "
+          f"dashes: {words}")
+    check(m["refills_while"] == 0,
+          f"no tap, click, drag or Refill all sent a refill while "
+          f"arranging: {m['refills_while']}")
+    check("sel" in (m["picked"] or ""), f"a tap picks a tank: {m['picked']}")
+    g = want[1]
+    i = g.index("ground-3")
+    right = list(g)
+    right[i], right[i + 1] = right[i + 1], right[i]
+    check(m["right"] == [want[0], right],
+          f"Right moves it one place: {m['right']}")
+    check(m["up"] == [want[0] + ["ground-3"],
+                      [x for x in right if x != "ground-3"]],
+          f"Row up puts it at the end of the row above: {m['up']}")
+    check(m["newrow"]["ids"] == [want[0], ["ground-3"],
+                                 [x for x in right if x != "ground-3"]] and
+          m["newrow"]["labels"] == ["Wave Flamers", "G-Flames", "G-Flames"],
+          f"New row: a row of its own, labelled by its type: {m['newrow']}")
+    gl = [x for x in right if x != "ground-3"]
+    j = gl.index("scaffold-1")
+    check(m["drag"] == [[x for x in want[0] if x != "wave-1"], ["ground-3"],
+                        gl[:j + 1] + ["wave-1"] + gl[j + 1:]],
+          f"a drag drops it after the card it is let go on: {m['drag']}")
+    sv = m["save"]
+    check(len(sv) == 1 and [r["machines"] for r in sv[0]["rows"]] ==
+          m["drag"] + [["fireball"]] and m["beat_off"] and m["after"]["bar"]
+          and m["after"]["refills"] == 15,
+          f"Save layout: every row (the Fireball's too), the engine told "
+          f"arranging is over, the refill buttons back: {sv} {m['after']}")
+    check(m["cancel"]["saves"] == 0 and m["left"]["saves"] == 0 and
+          m["left"]["off"],
+          f"Cancel and leaving the step save nothing and end arranging: "
+          f"{m['cancel']} {m['left']}")
+    check(m["ask"], "out of Arrange a tap asks to log the refill again")
+    check(m["noperm"] == {"hidden": False, "disabled": True} and
+          m["ipad"] == {"hidden": True},
+          f"no Show files row: Arrange disabled; off the show PC: not "
+          f"shown: {m['noperm']} {m['ipad']}")
+    check(m["groups"] == fx["expect"]["groups"] and
+          m["mach"] == want + [["fireball"]],
+          f"the Purge step reads the same rows: {m['groups']} {m['mach']}")
+    print("  ok")
+
+
 def test_ui2_timed_purge_and_fuel_undo_driven():
     section("2.0's Purge step's timed purge and Fuel step's recent refills "
             "pressed in a real browser (1.0's code): a preset, the hold "
@@ -115540,6 +116128,8 @@ if __name__ == "__main__":
         test_checklist_audit_chain_pdf_export_and_tally,
         test_morning_lockout_trust_link_and_close,
         test_morning_no_unlock_while_group_armed,
+        test_machine_rows_one_file_both_steps,
+        test_machine_rows_refills_held_back_while_arranging,
         test_morning_arrange_mode_arms_nothing,
         test_morning_arrange_disables_firing,
         test_purge_release_can_never_start_a_fire,
@@ -115660,6 +116250,8 @@ if __name__ == "__main__":
         test_ui2_fireball_pads_only_whole,
         test_ui2_timed_purge_and_fuel_undo_driven,
         test_ui2_startup_steps_never_overlap,
+        test_ui2_machine_rows_fit_and_never_overlap,
+        test_ui2_fuel_arrange_driven,
         test_ui2_calm_screens_and_brand,
         test_config_watch_supervisor_and_rack_screen_note,
         test_fireball_timeline_model,
