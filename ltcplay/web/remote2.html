@@ -336,6 +336,7 @@ main > #mini{padding:var(--gap) var(--pad) 0}
 #d-ctl{display:flex;flex-direction:column;gap:var(--gap);min-height:0;min-width:0;flex:1 0 auto}
 .drow{display:flex;flex-wrap:wrap;gap:var(--gap);align-items:center;min-width:0}
 .drow .b{min-height:64px;padding:0 20px}
+.psa-say{margin:0;padding-left:20px}
 .dgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:var(--gap);min-width:0}
 .dgrid .b{min-height:64px;justify-content:flex-start;text-align:left;padding:4px 12px}
 #wc-hold,#wc-stop{min-height:clamp(64px,10vh,96px);font-size:calc(var(--fs) + 4px)}
@@ -442,6 +443,35 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 #mo-arrange-bar[hidden]{display:none}
 #mo-arrange-bar b{flex:1 1 auto;color:var(--amber)}
 #mo-arrange-bar .pline{flex:1 1 100%}
+/* The machine rows (morning.Arrangement, ltcplay_arrangement.json): one
+   row per type, the same rows on the Fuel and Purge steps. A card shrinks
+   to --mrow-min (128 px) before its row wraps, so a type stays on one
+   line whenever it fits, and a row that cannot fit wraps (never overlaps,
+   never scrolls a tank out of sight). */
+.mrows{display:flex;flex-direction:column;gap:var(--gap);min-width:0}
+.mrow{display:flex;flex-direction:column;gap:4px;min-width:0;border-radius:12px}
+.mrow-l{font-size:16px;font-weight:700;color:var(--muted);line-height:1.1}
+.mrow-c{display:flex;flex-wrap:wrap;gap:6px;min-width:0;min-height:56px}
+.mrow-c .b{flex:1 1 0;min-width:var(--mrow-min);max-width:300px;min-height:64px;justify-content:flex-start;text-align:left;padding:4px 8px;gap:4px;font-size:18px}
+.mrow-c .b svg.i{width:18px;height:18px}
+.mrow-c .b .tt{display:flex;flex-direction:column;min-width:0;line-height:1.1}
+.mrow-c .b .tt > *{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrow-c .b .tt small{font-weight:400;font-size:15px;color:var(--muted)}
+.mrow-c .b.on{border-color:var(--green);background:#0b2414}
+.mrow-c .b.part{border-color:var(--amber);background:#241703}
+.mrow-c .b.mv{border-style:dashed;border-color:var(--cream);cursor:grab;touch-action:none;-webkit-user-select:none;user-select:none}
+.mrow-c .b.mv.sel{border-style:solid;border-color:var(--amber);background:#3A2606}
+.mrow-c .b.mv.lift{cursor:grabbing;box-shadow:0 0 0 3px var(--cream),0 10px 28px rgba(0,0,0,.7)}
+.mrow-c .b.mv.tgt{box-shadow:inset 6px 0 0 var(--amber)}
+.mrow-c .b.mv.tgt.aft{box-shadow:inset -6px 0 0 var(--amber)}
+.mrow.tgt{outline:3px dashed var(--amber);outline-offset:2px}
+:root{--mrow-min:128px}
+#fu-arr-bar{display:flex;flex-wrap:wrap;align-items:center;gap:var(--gap);border:2px solid var(--amber);background:rgba(245,160,30,.16);border-radius:12px;padding:6px 10px}
+#fu-arr-bar[hidden]{display:none}
+#fu-arr-bar > b{flex:1 1 auto;color:var(--amber)}
+#fu-arr-bar .drow,#fu-arr-bar ul{flex:1 1 100%;margin:0}
+/* The Purge step's Machines: the sheet as wide as the rows need. */
+#sheet .box:has(> #sh-body > .mrows){width:min(1400px,100%)}
 /* The show PC's tools (P12, P14, P15, P16). */
 #setup .surow{align-items:center}
 #setup .surow .t{flex:3 1 16em}
@@ -1018,6 +1048,17 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
             <button class="b" id="annout-tone" title="1 s of a soft 440 Hz tone at -20 dBFS through the same route and output as the announcements. Never during a show; holds nothing."><svg class="i"><use href="#i-mega"/></svg>Test tone</button></div>
           <div class="pline" id="annout-msg" role="status"></div>
         </div>
+        <!-- Pre-show audio (preshow_audio.py, Jeff 2026-11-12): On or Off
+             and one file, on the show machine, Settings permission. The
+             engine decides when it plays; this card only sets the two. -->
+        <div class="card col" id="psa-card" hidden>
+          <div class="t"><b>Pre-show audio</b></div>
+          <ul class="psa-say"><li>Plays 2 minutes before each scheduled show.</li><li>Skipped on Start now, Hold, show control off.</li><li>Announcements, Stop sound and Hold stop it.</li></ul>
+          <div class="drow"><b class="dbig" id="psa-now"></b><button class="b green" id="psa-on"><svg class="i"><use href="#i-power"/></svg>Turn on</button><button data-safe class="b safe" id="psa-off"><svg class="i"><use href="#i-shield"/></svg>Turn off</button></div>
+          <div class="pbar"><select class="f" id="psa-pick" aria-label="Pre-show audio file"></select>
+            <button class="b green" id="psa-save"><svg class="i"><use href="#i-check"/></svg>Save file</button></div>
+          <div class="pline" id="psa-msg" role="status"></div>
+        </div>
         <!-- THE SHOW PC'S TOOLS (P14, P15): 1.0's Programming screen cards,
              their words and ids, on this machine only; their code is 1.0's
              (selftest.py checks). The engine refuses each from anywhere
@@ -1576,6 +1617,7 @@ function showTab(t){
   if(t === "schedule"){ fbtOpen(); progFiles(); try{ drawProg(stale()); }catch(e){} if(ME && ME.local && !SE_READ){ SE_READ = true; loadSchedule(); } }
   // 1.0's Programming screen read the outputs when it opened (P13).
   if(t === "schedule" && ME && ME.local) loadAnnOutputs();
+  if(t === "schedule" && ME && ME.local){ PSA_TRIED = true; loadPreshow(); }
   if(prog) try{ $("t-prog").scrollIntoView(); }catch(e){}
   if(t === "show") layoutGroups();
   $("mini").hidden = t === "show";
@@ -3388,6 +3430,65 @@ $("annout-save").addEventListener("click", async () => {
   }catch(e){ $("annout-msg").textContent = e.message; }
   $("annout-msg").title = $("annout-msg").textContent;
 });
+// Pre-show audio (preshow_audio.py, Jeff 2026-11-12): On or Off and one
+// file, the WAV files the announcements know. The show machine only, the
+// Settings row; the engine decides everything else and says it.
+var PSA_FILE = null, PSA_TRIED = false;
+function psaNow(v){
+  return (v.on ? "ON: " : "OFF: ") + (v.name || "no file chosen");
+}
+function renderPreshow(){
+  const local = !!(ME && ME.local);
+  const v = ST && ST.preshow_audio;
+  const show = local && !!v && v.available !== false;
+  if($("psa-card").hidden !== !show) $("psa-card").hidden = !show;
+  if(!show) return;
+  if(TAB === "schedule" && !PSA_TRIED){ PSA_TRIED = true; loadPreshow(); }
+  setText($("psa-now"), psaNow(v));
+  const may = mayRow(ST, "settings") && v.available !== false;
+  // Turn on uses the SAVED file only: choose one and Save file first.
+  const fileBad = !!v.name && (v.file_ok === false || !!v.too_long);
+  $("psa-on").disabled = !may || !!v.on || !v.name || fileBad || !PSA_FILE;
+  $("psa-off").disabled = !may || !v.on;
+  $("psa-save").disabled = !may || !$("psa-pick").value;
+  const bad = v.error || (fileBad ? (v.too_long ? "Chosen file is over 110 s: it will not play." : "Chosen file is missing or cannot play.") : "");
+  if(bad && !$("psa-msg").dataset.mine) setText($("psa-msg"), bad);
+}
+setInterval(renderPreshow, 500);
+async function loadPreshow(){
+  if(!(ST && ST.preshow_audio && ST.preshow_audio.available)) return;
+  try{
+    const j = await getJSON("/api/remote/preshow-audio", 3000);
+    PSA_FILE = j.file || "";
+    const opts = [`<option value="">Choose a file</option>`].concat((j.choices || []).map(c =>
+      `<option value="${esc(c.path)}" data-warn="${esc(!c.available ? c.name + " cannot play." : c.too_long ? c.name + " is " + Math.round(c.length_s) + " s: over 110 s, it will not play." : "")}"${c.path === j.file ? " selected" : ""}${c.available ? "" : " disabled"}>${esc(c.name + (c.length_s ? ", " + Math.round(c.length_s) + " s" : "") + (c.available ? (c.too_long ? ", over 110 s" : "") : ", cannot play"))}</option>`));
+    $("psa-pick").innerHTML = opts.join("");
+  }catch(e){ $("psa-msg").textContent = e.message; }
+}
+async function psaSave(on, file){
+  $("psa-msg").dataset.mine = "1";
+  try{
+    const j = await post("/api/remote/preshow-audio", {on: on, file: file});
+    $("psa-msg").textContent = j.text;
+    if(j.preshow_audio && ST) ST.preshow_audio = j.preshow_audio;
+    PSA_FILE = file;
+  }catch(e){ $("psa-msg").textContent = e.message; }
+  $("psa-msg").title = $("psa-msg").textContent;
+}
+$("psa-on").addEventListener("click", () => psaSave(true, PSA_FILE || ""));
+// Said when chosen, before any save: a file over 110 s, or one that
+// cannot play.
+$("psa-pick").addEventListener("change", () => {
+  const o = $("psa-pick").selectedOptions[0];
+  $("psa-msg").dataset.mine = "1";
+  $("psa-msg").textContent = (o && o.dataset.warn) || "";
+});
+$("psa-off").addEventListener("click", () => psaSave(false, PSA_FILE || ""));
+$("psa-save").addEventListener("click", () => {
+  const f = $("psa-pick").value;
+  if(!f){ $("psa-msg").textContent = "Choose a file first. Nothing was changed."; return; }
+  psaSave(!!(ST && ST.preshow_audio && ST.preshow_audio.on), f);
+});
 // What the switch lets screens do: every one of it (review of PR #90,
 // P2-1). remote.py SCREEN_ARMING_ENABLES says the same words.
 const SCREEN_ARMING_ENABLES = "On: this screen and every show network device can hold to arm a flame group and disarm one flame group, under the Stream Deck's and flamesafe's rules. Show network devices can also select and fire a purge, unlock a machine, turn a laser test on and arm a laser; this screen can without the switch.";
@@ -4561,9 +4662,17 @@ function annWhy(st, isStaleNow, local){
 // Stop sound: never refused on the show PC (a stale page included); the
 // engine refuses it from anywhere else.
 function annStopWhy(st, local){ return local ? "" : "Show PC only"; }
+// Pre-show audio playing never turns the announcement buttons off: a
+// press stops it and plays (announce.py _preshow_yield).
+function annLookFor(s){
+  const L = announceLook(s.announce, s.booth);
+  const p = (s.announce || {}).playing;
+  if(p && p.id === "preshow") L.buttons = announceLook(Object.assign({}, s.announce, {playing: null}), s.booth).buttons;
+  return L;
+}
 function renderAnnounce(){
   const s = ST || {};
-  const L = announceLook(s.announce, s.booth);
+  const L = annLookFor(s);
   const local = !!(ME && ME.local), why = annWhy(ST, stale(), local), stopWhy = annStopWhy(ST, local);
   $("ann").hidden = !L.show;
   if(!L.show) return;
@@ -5628,6 +5737,7 @@ function dayView(on){
   cleaningView(on);
   // 1.0's morningView: leaving the page leaves Arrange mode.
   if(!on) mapOff();
+  if(!on) fuArrExit("left");
 }
 // This screen's own purge selection goes when its Purge step does (review
 // of #169, 1): leaving the step, switching Startup and Shutdown, or
@@ -5647,6 +5757,7 @@ function dayGo(k){
   if(DAY_STEP === "purge"){ fireStop("another step was chosen"); tpLetGo("another step was chosen"); purgeDrop(); }
   if(DAY_STEP === "clean" && WC_HOLD) wcLetGo("another step was chosen");
   if(DAY_STEP === "purge") mapOff();
+  if(DAY_STEP === "fuel") fuArrExit("left");
   if(DAY_STEP === "fireball") fireballView(false);
   DAY_STEP = k; DAY_CTL = ""; renderMorning();
 }
@@ -5724,6 +5835,7 @@ function renderMorning(){
     // Purge step's fire and this screen's selection with it.
     if(DAY_STEP === "purge"){ fireStop("the Purge step went"); tpLetGo("the Purge step went"); purgeDrop(); }
     if(DAY_STEP === "purge") mapOff();
+    if(DAY_STEP === "fuel") fuArrExit("left");
     if(DAY_STEP === "fireball") fireballView(false);
     DAY_STEP = (steps.find(x => x.state !== "done") || steps[0] || {}).key || null;
   }
@@ -5839,7 +5951,7 @@ function dayBuild(k){
     `<div class="drow"><button class="b" id="mo-verify">${icon("shield")}Verify records</button>` +
     `<a class="b" id="mo-pdf" href="/api/remote/checklist-pdf?date=" download target="_blank" rel="noopener">${icon("print")}Download today's PDF</a>` +
     `<a class="b" id="mo-export" href="/api/remote/checklist-export" download target="_blank" rel="noopener">${icon("list")}Export all</a></div>`;
-  else if(k === "fuel") box.innerHTML = `<div class="dgrid" id="d-fuel"></div><div class="drow">${fsRowHtml()}<button class="b" id="d-fu-rec" hidden>${icon("list")}<span id="d-fu-rec-l">Refills and notes</span></button><span id="fu-why" class="dim"></span></div>` + HZF_HTML;
+  else if(k === "fuel") box.innerHTML = FU_ARR_BAR + `<div class="mrows" id="d-fuel"></div><div class="drow">${fsRowHtml()}<button class="b" id="fu-arrange" hidden>${icon("list")}Arrange</button><button class="b" id="d-fu-rec" hidden>${icon("list")}<span id="d-fu-rec-l">Refills and notes</span></button><span id="fu-why" class="dim"></span></div>` + HZF_HTML;
   else if(k === "purge") box.innerHTML = `<div class="dgrid" id="mo-groups"></div><div class="drow"><button class="b" id="mo-clear">${icon("x")}Clear</button><button class="b" id="d-mach">${icon("list")}Machines</button><button class="b" id="d-map">${icon("list")}<span id="d-map-l">Map</span></button><span class="key" id="mo-key"></span></div>`;
   else if(k === "lasers") box.innerHTML = `<div class="dgrid" id="mo-lasers"></div><div class="drow"><button class="b green" id="mo-cal-on">${icon("laser")}Test grid on</button><button class="b" id="mo-cal-off">${icon("x")}Test grid off</button><button class="b" id="mo-beyond" hidden>${icon("open")}Open BEYOND</button></div>`;
   else if(k === "locks" || k === "locks-shut") box.innerHTML = `<div class="dgrid" id="d-locks"></div>`;
@@ -5892,6 +6004,8 @@ function dayWire(k){
     $("d-hzf-recent").addEventListener("click", hzfUndo);
     $("d-fu-rec").addEventListener("click", () => { DAY_FU_REC = !DAY_FU_REC; renderMorning(); });
     $("d-fuel").addEventListener("click", async ev => {
+      // Arranging: a press moves a tank, never refills it.
+      if(FU_ARR) return;
       // A unit whose type has shows per refill: Refueled +1, each tap one
       // show, no question (fuelshows.py: past N it goes round to 0).
       const w = ev.target.closest("[data-step-unit]");
@@ -5901,6 +6015,7 @@ function dayWire(k){
       if(await confirmBox(`${u.name} refilled?`, "Log that its tank is full now. The count of shows and flame starts again from here.", "Yes, refilled", "green"))
         fuPress("fuel-refill", {unit:u.id});
     });
+    fuArrWire();
     $("fu-fill").addEventListener("click", fsSelect);
     $("fu-top").addEventListener("click", fsTopAsk);
     $("fu-use").addEventListener("click", fsUseAsk);
@@ -5986,15 +6101,21 @@ function dayUpdate(k){
   if(k === "fuel"){
     const f = FU || {}, units = f.units || [];
     const box = $("d-fuel");
-    const sig = JSON.stringify([units.map(u => [u.id, u.shows_left, u.percent, u.refill_soon, u.color, u.locked, u.countdown]), f.may_refill]);
+    // The tanks in the shared machine rows (fuArrRows): one row per type
+    // unless rows were saved. Arranging: cards that move, never refill.
+    const rows = fuArrRows(units);
+    const sig = JSON.stringify([units.map(u => [u.id, u.shows_left, u.percent, u.refill_soon, u.color, u.locked, u.countdown]), f.may_refill,
+      rows.map(r => [r.ri, r.label, r.items.map(u => u.id)]), !!FU_ARR, FU_ARR && FU_ARR.sel]);
     if(box.dataset.sig !== sig){
       box.dataset.sig = sig;
-      box.innerHTML = units.map(u => {
-        if(u.countdown) return fsTile(u, f);
+      box.innerHTML = rows.map(r => `<div class="mrow" data-ri="${r.ri}"><div class="mrow-l">${esc(r.label)}</div><div class="mrow-c">` + r.items.map(u => {
         const big = u.shows_left != null ? `${u.shows_left} show${u.shows_left === 1 ? "" : "s"} left` : u.percent != null ? `${u.percent}% left` : u.status === "never" ? "No refill logged" : "Learning";
-        return `<button class="b ${u.refill_soon ? "part" : ""}" data-refill="${esc(u.id)}" ${f.may_refill ? "" : "disabled"}>${icon(u.locked ? "lock" : "flame")}<span class="tt">${esc(u.name)}<small>${esc(big)}</small></span></button>`;
-      }).join("");
+        if(FU_ARR) return `<button class="b mv ${FU_ARR.sel === u.id ? "sel" : ""}" data-mid="${esc(u.id)}" aria-pressed="${FU_ARR.sel === u.id}" title="${esc(u.name)}">${icon("list")}<span class="tt"><span>${esc(u.name)}</span><small>${esc(big)}</small></span></button>`;
+        if(u.countdown) return fsTile(u, f);
+        return `<button class="b ${u.refill_soon ? "part" : ""}" data-refill="${esc(u.id)}" ${f.may_refill ? "" : "disabled"} title="${esc(u.name)}: ${esc(big)}">${icon(u.locked ? "lock" : "flame")}<span class="tt"><span>${esc(u.name)}</span><small>${esc(big)}</small></span></button>`;
+      }).join("") + `</div></div>`).join("");
     }
+    fuArrRender(units);
     fsRow(f);
     // 1.0's fuel warning and recent refills (P9): one button away, in the
     // tanks' place, so the step never grows past the screen.
@@ -6010,10 +6131,12 @@ function dayUpdate(k){
   }
   if(k === "purge"){
     const gb = $("mo-groups"), purge = mo.purge_state || {};
-    const gkey = JSON.stringify(Object.keys(mo.groups || {}));
+    // The group buttons in the shared machine rows' order (groupsInRows).
+    const gnames = groupsInRows(mo);
+    const gkey = JSON.stringify(gnames);
     if(gb.dataset.key !== gkey){
       gb.dataset.key = gkey;
-      gb.innerHTML = Object.keys(mo.groups || {}).map(g => `<button class="b" data-grp="${esc(g)}">${icon("flame")}<span class="tt">${esc(g)}<small class="gd">\u00a0</small></span></button>`).join("");
+      gb.innerHTML = gnames.map(g => `<button class="b" data-grp="${esc(g)}">${icon("flame")}<span class="tt">${esc(g)}<small class="gd">\u00a0</small></span></button>`).join("");
     }
     gb.querySelectorAll("[data-grp]").forEach(b => {
       const ids = (mo.groups || {})[b.dataset.grp] || [];
@@ -6065,8 +6188,9 @@ function dayUpdate(k){
 function dayMachines(){
   const mo = MO || {}, sel = ((mo.purge_state || {}).selected) || [];
   const fl = (ST && ST.flames) || {};
-  const html = `<div class="dgrid">` + (mo.machines || []).map(m => { const look = machineLook(m, mo, fl, mo.purge_state || {});
-    return `<button class="b ${sel.includes(m.id) ? "on" : ""}" data-m="${esc(m.id)}">${icon("flame")}<span class="tt">${esc(m.name)}<small>${esc(look.word)}</small></span></button>`; }).join("") + `</div>`;
+  // The same rows as the Fuel step (rowsFor, ltcplay_arrangement.json).
+  const html = `<div class="mrows" id="d-mach-rows">` + rowsFor(mo.arrangement, mo.machines || []).map(r => `<div class="mrow" data-ri="${r.ri}"><div class="mrow-l">${esc(r.label)}</div><div class="mrow-c">` + r.items.map(m => { const look = machineLook(m, mo, fl, mo.purge_state || {});
+    return `<button class="b ${sel.includes(m.id) ? "on" : ""}" data-m="${esc(m.id)}" title="${esc(m.name)}">${icon("flame")}<span class="tt"><span>${esc(m.name)}</span><small>${esc(look.word)}</small></span></button>`; }).join("") + `</div></div>`).join("") + `</div>`;
   sheet("Machines", html, [{label:"Done", cls:"blue"}]);
   $("sh-body").querySelectorAll("[data-m]").forEach(b => b.addEventListener("click", async () => {
     const s2 = (((MO || {}).purge_state || {}).selected) || [];
@@ -6133,12 +6257,14 @@ async function fuPress(route, body){
 // admin's, one number per machine type. Its own container (fu-shows).
 function fsRowHtml(){ return `<span id="fu-shows" class="drow"><button class="b" id="fu-fill">${icon("flame")}Select to fill</button><button class="b" id="fu-top" hidden>${icon("list")}Shows per refill</button><button class="b" id="fu-use">${icon("list")}Fuel use</button></span>`; }
 function fsTile(u, f){
+  // #257's tank card, in its rows (.mrow-c); not drawn while arranging.
   const w = u.countdown || {};
-  return `<button class="b ${w.refuel_now || w.not_sure ? "part" : ""}" data-step-unit="${esc(u.id)}" ${f.may_refill ? "" : "disabled"}>${icon(u.locked ? "lock" : "flame")}<span class="tt">${esc(u.name)}<small>${esc(w.words || "")}</small><small>Refueled +1</small></span></button>`;
+  return `<button class="b ${w.refuel_now || w.not_sure ? "part" : ""}" data-step-unit="${esc(u.id)}" ${f.may_refill ? "" : "disabled"} title="${esc(u.name)}: ${esc(w.words || "")}">${icon(u.locked ? "lock" : "flame")}<span class="tt"><span>${esc(u.name)}</span><small>${esc(w.words || "")}</small><small>Refueled +1</small></span></button>`;
 }
 function fsRow(f){
   const units = f.units || [], hz = hzfList(f);
-  $("fu-fill").disabled = !f.may_refill || !(units.length || hz.length);
+  // While arranging (#257) refills are held back: no Select to fill.
+  $("fu-fill").disabled = !f.may_refill || !(units.length || hz.length) || !!FU_ARR;
   $("fu-top").hidden = !f.may_set_shows || !Object.keys(f.shows_per_refill || {}).length;
   $("fu-use").disabled = !units.length;
 }
@@ -6225,6 +6351,219 @@ async function fsTopAsk(){
   for(const b of sends) await fuPress("fuel-shows", b);
 }
 document.addEventListener("input", e => { const k = e.target && e.target.dataset && e.target.dataset.fsTop; if(k) FS_TOP_IN[k] = e.target.value; });
+// ---- The machine rows (morning.Arrangement; Jeff, 2026-11-13) -----------
+// One arrangement of the machines, in ONE file (ltcplay_arrangement.json),
+// read by the Fuel step and the Purge step alike: one row per type unless
+// rows were saved. The Fuel step's Arrange (show PC, the Show files row,
+// as the map's Arrange) moves tanks within and between rows; Save layout
+// writes the file, Cancel forgets. While arranging, a press on a tank
+// moves it and never refills it, Refill all is off, and the engine holds
+// this screen's refills back on its own (the arrangement beat).
+const ROW_LABELS = {gflame:"G-Flames", waver:"Wave Flamers", fireball:"Fireball"};
+function rowLabel(kind){ return ROW_LABELS[kind] || String(kind || "Other"); }
+// Saved rows ([{kind, label, machines}]) with every item ([{id, kind}])
+// placed: one the rows do not name goes at the end of the first row of
+// its type, or on a new row of its type. Ids are kept as given. Pure.
+function fitRows(rows, items){
+  const out = (rows || []).map(r => ({kind:r.kind, label:r.label || rowLabel(r.kind), machines:(r.machines || []).slice()}));
+  const seen = {};
+  out.forEach(r => { r.machines = r.machines.filter(id => !seen[id] && (seen[id] = true)); });
+  (items || []).forEach(x => {
+    if(seen[x.id]) return;
+    seen[x.id] = true;
+    let r = out.find(o => o.kind === x.kind);
+    if(!r){ r = {kind:x.kind, label:rowLabel(x.kind), machines:[]}; out.push(r); }
+    r.machines.push(x.id);
+  });
+  return out;
+}
+// The rows to draw: [{ri, kind, label, items}], the items that are in the
+// rows (an id that is not among `items` is left out), empty rows gone.
+// `ri` is the row's place in fitRows' rows. Pure.
+function rowsFor(arr, items){
+  const by = {};
+  (items || []).forEach(x => { by[x.id] = x; });
+  return fitRows((arr && arr.rows) || [], items).map((r, ri) => ({ri:ri, kind:r.kind, label:r.label,
+    items:r.machines.filter(id => by[id]).map(id => by[id])})).filter(r => r.items.length);
+}
+// The Purge step's group buttons in the rows' order: a group goes where
+// its first machine is. Pure.
+function groupsInRows(mo){
+  const names = Object.keys((mo && mo.groups) || {});
+  const at = {};
+  rowsFor(mo && mo.arrangement, (mo && mo.machines) || []).forEach((r, i) => r.items.forEach((m, j) => { if(!(m.id in at)) at[m.id] = i * 10000 + j; }));
+  const first = g => Math.min.apply(null, (mo.groups[g] || []).map(id => id in at ? at[id] : 1e9).concat([1e9]));
+  return names.map((g, i) => [first(g), i, g]).sort((a, b) => a[0] - b[0] || a[1] - b[1]).map(x => x[2]);
+}
+// One move on the rows, returning new rows. `how`: left, right (within its
+// row, past what is not shown), up, down (to the next row with something
+// shown), new (a row of its own below), drop (t: {id, after} a card, or
+// {ri} a row's end). `kinds`: {id: kind} of what is shown. Pure.
+function rowsMove(rows, id, how, kinds, t){
+  const out = (rows || []).map(r => ({kind:r.kind, label:r.label, machines:r.machines.slice()}));
+  const vis = x => !kinds || (x in kinds);
+  const ri = out.findIndex(r => r.machines.includes(id));
+  if(ri < 0) return out;
+  const row = out[ri], i = row.machines.indexOf(id);
+  if(how === "left" || how === "right"){
+    const step = how === "left" ? -1 : 1;
+    let j = i + step;
+    while(j >= 0 && j < row.machines.length && !vis(row.machines[j])) j += step;
+    if(j < 0 || j >= row.machines.length) return out;
+    row.machines.splice(i, 1); row.machines.splice(j, 0, id);
+  } else if(how === "up" || how === "down"){
+    const step = how === "up" ? -1 : 1;
+    let k = ri + step;
+    while(k >= 0 && k < out.length && !out[k].machines.some(vis)) k += step;
+    if(k < 0 || k >= out.length) return out;
+    row.machines.splice(i, 1); out[k].machines.push(id);
+  } else if(how === "new"){
+    if(row.machines.filter(vis).length <= 1) return out;
+    const kind = (kinds && kinds[id]) || row.kind;
+    row.machines.splice(i, 1); out.splice(ri + 1, 0, {kind:kind, label:rowLabel(kind), machines:[id]});
+  } else if(how === "drop" && t && t.id !== id){
+    row.machines.splice(i, 1);
+    const r2 = t.id ? out.find(r => r.machines.includes(t.id)) : out[t.ri];
+    if(!r2){ row.machines.splice(i, 0, id); return out; }
+    if(t.id) r2.machines.splice(r2.machines.indexOf(t.id) + (t.after ? 1 : 0), 0, id);
+    else r2.machines.push(id);
+  }
+  return out.filter(r => r.machines.length);
+}
+// Arrange mode on the Fuel step: FU_ARR {rows, sel} or null.
+let FU_ARR = null, FU_ARR_BEAT = null, FU_DRAG = null, FU_ARR_SAID = "";
+const FU_ARR_BANNER = "ARRANGING: refills held back";
+const FU_ARR_BAR = `<div id="fu-arr-bar" hidden><b>${FU_ARR_BANNER}</b>` +
+  `<button class="b green" id="fu-arr-save">${icon("check")}Save layout</button><button class="b" id="fu-arr-def">${icon("reset")}Default rows</button><button data-safe class="b" id="fu-arr-cancel">${icon("x")}Cancel</button>` +
+  `<div class="drow" id="fu-arr-mv"><button class="b" data-mv="left">${icon("left")}Left</button><button class="b" data-mv="right">${icon("right")}Right</button>` +
+  `<button class="b" data-mv="up">Row up</button><button class="b" data-mv="down">Row down</button><button class="b" data-mv="new">New row</button></div>` +
+  `<ul class="pline"><li>Drag a tank, or tap it and move.</li><li>Save layout sets Fuel and Purge rows.</li><li>Cancel forgets every move.</li></ul></div>`;
+function fuArrRows(units){
+  return rowsFor(FU_ARR ? {rows:FU_ARR.rows} : (MO && MO.arrangement), units);
+}
+function fuArrKinds(){
+  const k = {};
+  ((FU && FU.units) || []).forEach(u => { k[u.id] = u.kind; });
+  return k;
+}
+// May this screen arrange? The show PC only, and the Show files row (the
+// map's Arrange needs the same: users.REMOTE_ROUTES "layout").
+function fuArrMay(){ return !!(ME && ME.local) && mayRow(ST, "show_files"); }
+function fuArrBeat(on){
+  return post("/api/remote/arrangement", actor({beat:true, arranging:on, inst:BEAT_INST})).catch(() => {});
+}
+function fuArrEnter(){
+  if(FU_ARR || !fuArrMay()) return;
+  const units = (FU && FU.units) || [], known = {};
+  ((MO && MO.machines) || []).concat(units).forEach(x => { known[x.id] = true; });
+  // Only machines there are (the engine sends no others; a stale page
+  // might), every tank placed.
+  const saved = (((MO && MO.arrangement) || {}).rows || []).map(r => Object.assign({}, r, {machines:(r.machines || []).filter(id => known[id])}));
+  FU_ARR = {rows:fitRows(saved, units).filter(r => r.machines.length), sel:null};
+  DAY_FU_REC = false;
+  fuArrBeat(true);
+  clearInterval(FU_ARR_BEAT);
+  FU_ARR_BEAT = setInterval(() => { if(FU_ARR) fuArrBeat(true); }, 500);
+  $("fu-msg").textContent = "Drag a tank, or tap it and move.";
+  renderMorning();
+}
+// `how`: save, cancel, default or left (another step, the page left).
+async function fuArrExit(how){
+  fuArrDragEnd(null);
+  if(!FU_ARR) return;
+  const rows = FU_ARR.rows;
+  FU_ARR = null;
+  clearInterval(FU_ARR_BEAT); FU_ARR_BEAT = null;
+  fuArrBeat(false);
+  if(how === "save" && MO) MO.arrangement = Object.assign({}, MO.arrangement || {}, {rows:rows});
+  // Left (another step, the page): the caller redraws.
+  if(how === "left") return;
+  renderMorning();
+  if(how === "save" || how === "default"){
+    try{
+      const j = await post("/api/remote/arrangement", actor(how === "save" ? {rows:rows.map(r => ({kind:r.kind, machines:r.machines}))} : {reset:true}));
+      $("fu-msg").textContent = j.text || "Rows saved.";
+    }catch(e){ $("fu-msg").textContent = e.message; }
+    try{ MO = await getJSON("/api/remote/morning", 1500); }catch(e2){}
+  } else if(how === "cancel") $("fu-msg").textContent = "Arrange cancelled. Rows as saved.";
+  renderMorning();
+}
+function fuArrMove(how, t){
+  if(!FU_ARR || !FU_ARR.sel && how !== "drop") return;
+  FU_ARR.rows = rowsMove(FU_ARR.rows, how === "drop" ? t.from : FU_ARR.sel, how, fuArrKinds(), t);
+  renderMorning();
+}
+// A drag: pointer down on a card, moved 8 px or more, let go on another
+// card (before or after it) or on a row. Under 8 px it is a tap, which
+// picks the card for Left, Right, Row up, Row down and New row.
+function fuArrTarget(x, y){
+  const box = $("d-fuel"), d = FU_DRAG;
+  for(const el of (document.elementsFromPoint ? document.elementsFromPoint(x, y) : [])){
+    const c = el.closest && el.closest("[data-mid]");
+    if(c && box.contains(c) && (!d || c !== d.el)){ const r = c.getBoundingClientRect(); return {id:c.dataset.mid, after:x >= r.left + r.width / 2, el:c}; }
+    const row = el.closest && el.closest(".mrow");
+    if(row && box.contains(row)) return {ri:Number(row.dataset.ri), el:row};
+  }
+  return null;
+}
+function fuArrMark(t){
+  $("d-fuel").querySelectorAll(".tgt").forEach(e => e.classList.remove("tgt", "aft"));
+  if(t && t.el){ t.el.classList.add("tgt"); if(t.after) t.el.classList.add("aft"); }
+}
+function fuArrDragEnd(e){
+  const d = FU_DRAG; FU_DRAG = null;
+  if(!d) return;
+  try{ d.el.releasePointerCapture(d.pointerId); }catch(_){ /* already released */ }
+  d.el.classList.remove("lift");
+  if(!FU_ARR || !e) { if($("d-fuel")) fuArrMark(null); return; }
+  if(!d.moved){ FU_ARR.sel = FU_ARR.sel === d.id ? null : d.id; renderMorning(); return; }
+  const t = fuArrTarget(e.clientX, e.clientY);
+  fuArrMark(null);
+  if(t) fuArrMove("drop", {from:d.id, id:t.id, after:t.after, ri:t.ri});
+}
+function fuArrWire(){
+  const box = $("d-fuel");
+  box.addEventListener("pointerdown", e => {
+    const b = FU_ARR && e.target.closest("[data-mid]");
+    if(!b) return;
+    e.preventDefault();
+    if(FU_DRAG) fuArrDragEnd(null);
+    FU_DRAG = {id:b.dataset.mid, el:b, pointerId:e.pointerId, x:e.clientX, y:e.clientY, moved:false};
+    try{ b.setPointerCapture(e.pointerId); }catch(_){ /* the window listeners still end it */ }
+  });
+  box.addEventListener("pointermove", e => {
+    const d = FU_DRAG;
+    if(!d || e.pointerId !== d.pointerId) return;
+    if(!d.moved && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 8) return;
+    d.moved = true; d.el.classList.add("lift");
+    fuArrMark(fuArrTarget(e.clientX, e.clientY));
+  });
+  box.addEventListener("pointerup", e => { if(FU_DRAG && e.pointerId === FU_DRAG.pointerId) fuArrDragEnd(e); });
+  box.addEventListener("pointercancel", () => fuArrDragEnd(null));
+  box.addEventListener("lostpointercapture", e => { if(FU_DRAG && e.pointerId === FU_DRAG.pointerId) fuArrDragEnd(null); });
+  $("fu-arrange").addEventListener("click", fuArrEnter);
+  $("fu-arr-save").addEventListener("click", () => fuArrExit("save"));
+  $("fu-arr-cancel").addEventListener("click", () => fuArrExit("cancel"));
+  $("fu-arr-def").addEventListener("click", async () => {
+    if(await confirmBox("Back to one row per type?", "Every tank goes back to its type's row.", "Default rows", "")) fuArrExit("default");
+  });
+  $("fu-arr-mv").addEventListener("click", e => { const b = e.target.closest("[data-mv]"); if(b && !b.disabled) fuArrMove(b.dataset.mv); });
+}
+window.addEventListener("blur", () => fuArrDragEnd(null));
+document.addEventListener("keydown", e => { if(e.key === "Escape" && FU_DRAG) fuArrDragEnd(null); });
+// The bar, the Arrange button and the unreadable-file line (said once).
+function fuArrRender(units){
+  const bar = $("fu-arr-bar"), ab = $("fu-arrange");
+  if(!bar || !ab) return;
+  bar.hidden = !FU_ARR;
+  ab.hidden = !(ME && ME.local) || !!FU_ARR;
+  ab.disabled = !fuArrMay() || !units.length || !MO;
+  ab.title = mayRow(ST, "show_files") ? "" : "Arranging needs the Show files permission.";
+  $("fu-arr-mv").querySelectorAll("[data-mv]").forEach(b => { b.disabled = !(FU_ARR && FU_ARR.sel); });
+  const prob = (MO && MO.arrangement && MO.arrangement.problem) || "";
+  if(prob && prob !== FU_ARR_SAID) $("fu-msg").textContent = "Saved rows unreadable. One row per type shown.";
+  FU_ARR_SAID = prob;
+}
 // The cleaning's panel (1.0's renderCleaning, drawn for DAY).
 function renderCleaning(){
   if(TAB !== "day" || DAY_STEP !== "clean" || !$("wc-hold")) return;

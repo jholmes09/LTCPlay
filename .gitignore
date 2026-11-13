@@ -37,6 +37,8 @@ ltcplay_tonight_*.json
 ltcplay_operators.json
 ltcplay_current_operator.json
 ltcplay_announce.json
+ltcplay_preshow_audio.json
+ltcplay_preshow_audio_played.json
 ltcplay_screens.json
 ltcplay_abort_latch.json
 # The iPad remote: the show network address, and the operators' PIN hashes
@@ -51,6 +53,7 @@ ltcplay_disarm_ids.json
 # is locked out. Only ltcplay/ltcplay_morning.example.json is committed.
 ltcplay_morning.json
 ltcplay_morning_layout.json
+ltcplay_arrangement.json
 ltcplay_lockout.json
 
 # Users and the audit log (USERS.md): password hashes, the upload token

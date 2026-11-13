@@ -207,7 +207,8 @@ MORNING_POST_ROUTES = ("morning-open", "purge-select", "purge-fire",
                        "purge-stop", "purge-clear", "laser-test",
                        "open-beyond",
                        "laser-arm", "lock",
-                       "layout", "checklist-tick", "checklist-note",
+                       "layout", "arrangement",
+                       "checklist-tick", "checklist-note",
                        "checklist-verify", "checklist-tally-retry")
 # The Fuel page (fuel.py, FUEL.md): read by anyone on the show network; a
 # refill needs a signed-in operator or admin, an undo an admin (fuel.py).
@@ -275,14 +276,14 @@ PRACTICE_REFUSED_ROUTES = ("start-now", "start-at-cue", "resume",
                            "show-file-new", "reload-engine")
 PRACTICE_ENDS_ROUTES = ("hold", "pause", "follow")
 GET_ROUTES = ("whoami", "status", "network", "deck-input",
-              "announce-outputs") + \
+              "announce-outputs", "preshow-audio") + \
     MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES + \
     CLEANING_GET_ROUTES + PLAY_FROM_GET_ROUTES + FIREBALL_TIMELINE_GET_ROUTES
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     "network", "screen-arming", "alert", "live-flame",
-    "announce-output", "announce-test-tone") + \
+    "announce-output", "announce-test-tone", "preshow-audio") + \
     MORNING_POST_ROUTES + FUEL_POST_ROUTES + FIREBALL_POST_ROUTES + \
     CLEANING_POST_ROUTES + HAZER_POST_ROUTES + PLAY_FROM_POST_ROUTES + \
     PUMP_POST_ROUTES + FIREBALL_TIMELINE_POST_ROUTES + \
@@ -334,6 +335,10 @@ REMOVED_ROUTES = {
 # Programming, Announcement output; Settings permission (users.py).
 LOCAL_ONLY = frozenset(("network", "screen-arming", "announce-output",
                         "announce-test-tone", "preroll-check"))
+# Pre-show audio (preshow_audio.py, Jeff 2026-11-12): its On/Off and file,
+# set on the show machine itself, Settings permission, like the
+# announcement output beside it.
+LOCAL_ONLY = LOCAL_ONLY | {"preshow-audio"}
 # Operator announcements (announce.py; Jeff, 2026-10-26): the rack screen's
 # three buttons and its Stop, and the Stream Deck's page 2 keys, which post
 # here from this machine. One press plays (no double tap). From the show
@@ -1817,6 +1822,10 @@ class Remote:
         self._announce = None
         self._ann_cache = None       # (clock(), view)
         self._ann_thread = None
+        # Pre-show audio (preshow_audio.PreShowAudio), set by web.serve when
+        # the announcements and the scheduler both run; None: its card says
+        # it is not available here.
+        self.preshow_audio = None
         # The Windows supervisor's word on the disk (housekeeping.py writes
         # disk-low.txt in the settings folder while it is low or critical,
         # and removes it when it is fine again). Read at most every 30 s.
@@ -1858,6 +1867,7 @@ class Remote:
         self.users = None
         self.audit = None
         self.uploader = None
+        self.journal_uploader = None
 
     DISARM_IDS_FILE = "ltcplay_disarm_ids.json"
     DISARM_ID_RESERVE = 10_000_000
@@ -2054,6 +2064,10 @@ class Remote:
             if not ctx.local:
                 return 403, {"error": "Only on the show machine itself."}
             return self.announce_outputs()
+        if name == "preshow-audio":
+            if not ctx.local:
+                return 403, {"error": "Only on the show machine itself."}
+            return self.preshow_audio_get(ctx)
         if name in MORNING_GET_ROUTES:
             return self.morning_get(name, query, ctx)
         if name in FUEL_GET_ROUTES:
@@ -2118,6 +2132,8 @@ class Remote:
                     if name == "announce-output" else
                     "The test tone is played"
                     if name == "announce-test-tone" else
+                    "Pre-show audio is set"
+                    if name == "preshow-audio" else
                     "The show network is set")
             return 403, {"error": f"{what} on the show machine itself, not "
                                   f"from here. Nothing was changed."}, {}
@@ -2133,16 +2149,32 @@ class Remote:
             return (*self.announce_output(body, ctx),) + ({},)
         if name == "announce-test-tone":
             return (*self.announce_test_tone(ctx),) + ({},)
+        if name == "preshow-audio":
+            return (*self.preshow_audio_post(body, ctx),) + ({},)
         if name == "live-flame":
             return (*self.live_flame_post(body, ctx),) + ({},)
         if name in USER_POST_ROUTES:
             return self.users_post(name, body, ctx)
         if name in SHOWS_POST_ROUTES:
+            if body.get("action") != "set" and self.morning is not None:
+                # As fuel-refill below (#257): Refueled +1 and Fill
+                # selected from a device arranging the machine rows are
+                # refused; shows per refill is a setting, not a refill.
+                held = self.morning.rows_refill_refusal(ctx.device)
+                if held:
+                    return 409, {"error": held}, {}
             from . import fuel as fuel_mod
             return (*fuel_mod.route_post(self.fuel, name, body, ctx,
                                          self.users, haze=self.haze),) + ({},)
         if name in MORNING_POST_ROUTES:
             return (*self.morning_post(name, body, ctx),) + ({},)
+        if name == "fuel-refill" and self.morning is not None:
+            # The Fuel step's Arrange (morning.Arrangement): while this
+            # device arranges the machine rows, no refill is logged from
+            # it, whatever its page let through. A drag is never a refill.
+            why = self.morning.rows_refill_refusal(ctx.device)
+            if why:
+                return 409, {"error": why}, {}
         if name in FUEL_POST_ROUTES:
             from . import fuel as fuel_mod
             return (*fuel_mod.route_post(self.fuel, name, body, ctx,
@@ -2520,6 +2552,13 @@ class Remote:
                 out["upload"] = up.status()
             except Exception as e:               # noqa: BLE001
                 out["upload"] = {"last_error": f"{type(e).__name__}: {e}"}
+        jup = getattr(self, "journal_uploader", None)
+        if jup is not None:
+            try:
+                out["journal_upload"] = jup.status()
+            except Exception as e:               # noqa: BLE001
+                out["journal_upload"] = {
+                    "last_error": f"{type(e).__name__}: {e}"}
         return out
 
     def superuser_here(self, ctx):
@@ -2821,6 +2860,12 @@ class Remote:
                 threading.Thread(target=up.run, kwargs={"force": True},
                                  daemon=True,
                                  name="ltcplay-audit-upload-now").start()
+                jup = getattr(self, "journal_uploader", None)
+                if jup is not None:
+                    threading.Thread(target=jup.run, kwargs={"force": True},
+                                     daemon=True,
+                                     name="ltcplay-journal-upload-now"
+                                     ).start()
                 text = ("Sending now, in the background. The status below "
                         "says how it went.")
             else:
@@ -3500,6 +3545,65 @@ class Remote:
                      "text": f"Test tone sent: {sent_words(p.get('sent'))}. "
                              f"Listen for it; nothing was held.",
                      "announce": self.announce_view()}
+
+    # -- pre-show audio (preshow_audio.py, Jeff 2026-11-12) -------------------
+    PRESHOW_OFF = ("Pre-show audio needs the announcements and the schedule "
+                   "running in this engine.")
+
+    def preshow_audio_view(self):
+        """The Schedule tab's Pre-show audio card. Memory only; never
+        raises."""
+        pa = self.preshow_audio
+        if pa is None:
+            return {"available": False, "on": False, "why": self.PRESHOW_OFF}
+        try:
+            return pa.view()
+        except Exception as e:                   # noqa: BLE001
+            return {"available": True, "on": False,
+                    "error": f"{type(e).__name__}: {e}"}
+
+    def preshow_audio_get(self, ctx):
+        """GET preshow-audio: the card, the chosen file read again, and the
+        files to choose from (the WAV files the announcements know), with
+        their paths. The show machine only, and the same Settings
+        permission as its POST: no file path goes to anyone else."""
+        pa = self.preshow_audio
+        if pa is None:
+            return 409, {"error": self.PRESHOW_OFF}
+        u = getattr(self, "users", None)
+        if self.users_active():
+            me = getattr(ctx, "session", None) or {}
+            if not u.may(me.get("role"), "settings"):
+                return 403, {"error": "Pre-show audio is set by someone "
+                                      "signed in who may change Settings."}
+        try:
+            pa.recheck()
+            return 200, dict(pa.view(), file=pa.file or "",
+                             choices=pa.choices())
+        except Exception as e:                   # noqa: BLE001
+            return 500, {"error": f"The files could not be listed "
+                                  f"({type(e).__name__}: {e})."}
+
+    def preshow_audio_post(self, body, ctx):
+        """POST preshow-audio {"on": true or false, "file": path}: saved to
+        ltcplay_preshow_audio.json and used at once. The show machine only
+        (LOCAL_ONLY), Settings permission (users.py)."""
+        pa = self.preshow_audio
+        if pa is None:
+            return 409, {"error": self.PRESHOW_OFF + " Nothing was changed."}
+        who = ctx.user or "unsigned"
+        screen = ctx.screen or "Rack screen"
+        try:
+            text = pa.save(body.get("on"), body.get("file"), who=who,
+                           screen=screen)
+        except ValueError as e:
+            return 409, {"error": str(e), "preshow_audio": pa.view()}
+        except OSError as e:
+            return 500, {"error": f"The pre-show audio setting could not be "
+                                  f"saved ({e}). Nothing was changed."}
+        self._journal(who, screen, "pre-show audio", "saved",
+                      f"{who} set pre-show audio on the {screen}. {text}")
+        return 200, {"ok": True, "text": text, "preshow_audio": pa.view()}
 
     # -- presses -----------------------------------------------------------
     def _stale(self, body):
@@ -5082,9 +5186,12 @@ class Remote:
                 return "a show is playing, and the show drives the hazers"
             if st == "held":
                 return "a show is on Hold; the show drives the hazers"
+            # Stop leaves show control on (#231): the way out is to turn
+            # it off (End rehearsal in a rehearsal), as the timed purge says.
             if getattr(getattr(self.control, "session", None), "running",
                        False):
-                return "show control is on; press Stop first"
+                return ("show control is on; turn show control off first "
+                        "(End rehearsal in a rehearsal)")
             try:
                 cs = self.control.state() or {}
             except Exception:                    # noqa: BLE001
@@ -5095,7 +5202,8 @@ class Remote:
             # as off): the test never runs while show control may be on.
             if cs.get("starting") or cs.get("running") or \
                     self.show_control_on(cs):
-                return "show control is on; press Stop first"
+                return ("show control is on; turn show control off first "
+                        "(End rehearsal in a rehearsal)")
         except Exception as e:                   # noqa: BLE001
             return f"the engine's state could not be read ({type(e).__name__})"
         return ""
@@ -9120,6 +9228,7 @@ class Remote:
         if ctx.local:
             # Operator announcements: the rack screen's block (announce.py).
             out["announce"] = self.announce_view()
+            out["preshow_audio"] = self.preshow_audio_view()
         # The lock banner and the purge, on every screen (morning.py).
         m = self.morning
         if m is not None:

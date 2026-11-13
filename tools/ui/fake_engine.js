@@ -57,6 +57,8 @@ function baseStatus(){
             {id: "cancellation", name: "Cancellation", available: true, missing: false, reason: null, length_s: 9.0},
             {id: "cannot_continue", name: "Cannot continue", available: true, missing: false, reason: null, length_s: 14.0}],
     playing: null};
+  // Pre-show audio (preshow_audio.py): off, a file chosen (fx/preshow_audio).
+  s.preshow_audio = (({choices, ...v}) => v)(FX("preshow_audio"));
   s.morning = {locked_machines: [], locked_lasers: [], flamesafe_confirmed: true, lock_error: "",
     flamesafe_extra: [], purge: false, laser_tests_on: [], open: false, config_error: "", purge_enabled: true,
     laser_arm: {armed: [], total: 4, output_permitted: false, output_fault: ""},
@@ -153,6 +155,9 @@ const SCENARIOS = {
   day_shut: s => { s.schedule.next = null; s.countdown = null; },
   day_shut_jeff: s => { s.schedule.next = null; s.countdown = null; s.me = me("Jeff", "admin"); },
   day_jeff: s => { s.me = me("Jeff", "admin"); },
+  // The machine rows (morning.Arrangement): 16 machines of 3 types in
+  // saved rows, one new and one gone (fx/rows.json).
+  day_rows: s => { s.me = me("Jeff", "admin"); },
   day_firing: s => s,
   day_locked: s => s,
   day_clean_paused: s => { s.schedule.next = null; s.countdown = null; s.cleaning = {available: true, state: "paused", text: "Waiting: hold for the purge bursts"}; },
@@ -179,6 +184,11 @@ function dayState(name, st){
   sh.total = 3; sh.done = 0;
   if(/^day_shut|^day_clean/.test(name)){ const su = lists.find(l => l.id !== "shutdown"); su.steps.forEach(x => { x.done = true; }); su.done = su.total; }
   const fu = FX("fuel");
+  if(name === "day_rows"){
+    const rw = FX("rows");
+    Object.assign(mo, {machines: rw.machines, groups: rw.groups, arrangement: rw.arrangement});
+    Object.assign(fu, {units: rw.units, unit_ids: rw.units.map(u => u.id)});
+  }
   if(!st.me.user){ fu.may_refill = false; fu.may_undo = false; fu.refill_why = "Sign in as an operator or admin to log a refill (the user chip at the top)."; }
   else if(st.me.role !== "admin" && st.me.role !== "superuser") fu.may_undo = false;
   if(!st.me.user || (st.me.role !== "admin" && st.me.role !== "superuser")) fu.may_set_shows = false;
@@ -204,6 +214,8 @@ function routesFor(name, st){
   if(tm){ mo.purge_state = Object.assign({}, mo.purge_state, {timed: true, firing: true, selected: ["m1", "m2", "m3", "m4"]}); }
   r["/api/remote/morning"] = mo;
   r["/api/remote/fireball"] = FX("fireball");
+  // Pre-show audio's card and its list (GET preshow-audio).
+  r["/api/remote/preshow-audio"] = Object.assign(FX("preshow_audio"), st.preshow_audio || {});
   // Fireball practice's card (GET fireball-practice), as the engine answers it.
   const fp = st.fireball_practice || {state: "closed", mode: "live", ended_why: ""};
   r["/api/remote/fireball-practice"] = {state: fp.state, mode: fp.mode, yours: fp.state !== "closed", who: "Dallen", screen: "iPad",
@@ -331,6 +343,11 @@ class FakeEngine {
       case "/api/remote/announce-play": { const it = s.announce.items.find(i => i.id === body.id);
         s.announce.playing = {id: body.id, name: it ? it.name : body.id, elapsed_s: 0, length_s: it ? it.length_s : 10, held_schedule: sch.state !== "SHOW"};
         if(sch.state !== "SHOW") sch.held = true; return ok("Playing."); }
+      case "/api/remote/preshow-audio": {
+        const c = FX("preshow_audio").choices.find(x => x.path === body.file);
+        if(body.on === true && !c) return {code: 409, body: {error: "Choose the audio file first. Nothing was changed."}};
+        s.preshow_audio = Object.assign({}, s.preshow_audio, {on: body.on === true, file: c ? c.path : s.preshow_audio.file, name: c ? c.name : s.preshow_audio.name});
+        return {code: 200, body: {ok: true, text: "Pre-show audio is " + (body.on === true ? "on" : "off") + ": " + s.preshow_audio.name + ".", preshow_audio: s.preshow_audio}}; }
       case "/api/remote/preroll-continue": if(body.phase === "done"){ s.preroll.continued = {by: s.me.user, off: ["video"], failed: "Video"}; delete s.preroll.show_check; s.alert_hold = {held: false}; s.alerts = []; } return ok("Continuing.");
       case "/api/remote/cleaning-stop": s.cleaning = {available: true, state: "idle", text: ""}; return ok("Stopped.");
       case "/api/remote/morning-open": return ok();
@@ -350,6 +367,11 @@ class FakeEngine {
       case "/api/remote/checklist-tick": { const l = this.mo.checklists.checklists.find(x => x.id === body.checklist); const st2 = l && l.steps.find(x => x.id === body.step);
         if(st2){ st2.done = !!body.done; st2.who = body.who; st2.at = "18:00"; l.done = l.steps.filter(x => x.done).length; } return ok("Ticked."); }
       case "/api/remote/checklist-note": return ok("Noted.");
+      case "/api/remote/arrangement":
+        if(body.beat === true) return {code: 200, body: {ok: true, arranging: body.arranging === true}};
+        this.mo.arrangement = body.reset === true ? {rows: [], saved: false, problem: ""} :
+          {rows: (body.rows || []).map(r => ({kind: r.kind, machines: r.machines})), saved: true, problem: ""};
+        return {code: 200, body: {ok: true, text: body.reset === true ? "Rows back to one per type." : "Rows saved.", arrangement: this.mo.arrangement}};
       case "/api/remote/fuel-refill": (this.fu.units || []).forEach(u => { if(body.all || u.id === body.unit){ u.refill_soon = false; u.shows_left = 12; u.percent = 100; } }); return ok("Refill logged.");
       // Shows per refill (fuelshows.py): +1 round to 0 after N, Fill
       // selected to N, a type's N.

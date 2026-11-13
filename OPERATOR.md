@@ -142,9 +142,10 @@ Jeff, 2026-10-30: nothing plays on the public PA automatically.
 "I want to delete the function where the delay audio plays
 automatically in any scenario. We can still notify Andy of issues with
 the in-booth speaker, but nothing on the public PA." The only things LTC
-Player plays by itself are the booth notes, on the booth speaker. The
-Delayed, Cancellation and Cannot continue announcements play on the PA
-only when someone presses them.
+Player plays by itself are the booth notes, on the booth speaker, and
+**Pre-show audio** when an admin has turned it on (below; off unless
+turned on). The Delayed, Cancellation and Cannot continue announcements
+play on the PA only when someone presses them.
 
 **An alert still open when a show is due** (Jeff, 2026-10-26). Between
 shows an alert does nothing automatic. But if a show's time comes while
@@ -331,6 +332,44 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   pressable.
 - Announcements are pressed on the show PC itself (the rack screen and the
   Stream Deck), not from an iPad.
+
+**Pre-show audio** (Jeff, 2026-11-12). One recording played by itself 2
+minutes before each scheduled show. This is the one thing LTC Player plays
+on the public PA by itself, an exception Jeff approved to "nothing plays on
+the PA automatically": it is OFF until an admin turns it on. Two settings
+and nothing else, on the rack screen, Schedule tab, **Pre-show audio** card
+(admin, show PC only): **Turn on** or **Turn off**, and which file (choose
+it, then **Save file**; Turn on uses the saved file). The list is every
+WAV file in the Announcements folder (and beside ltcplay_announce.json):
+copy the file there first. Saved in ltcplay_preshow_audio.json in the
+settings folder; kept over a restart.
+
+- **At most 110 seconds long.** A longer file is refused when you choose
+  it, and again when it is due. Started 120 seconds before the show, it
+  has ended 10 seconds before the show's own audio starts.
+- It plays once, 120 seconds before the show's scheduled time, through
+  the announcement player: mixed into the show audio's front left and
+  right (Main L/R) while the show audio runs, else the announcement
+  output. It holds nothing.
+- **You always win.** Pressing an announcement (Delayed, Cancellation,
+  Cannot continue, Test tone) stops it at once and plays yours. Stop
+  sound stops it. Hold (or a pause) stops it at once.
+- It does not play for a show started with Start now, or when, at that
+  moment, the schedule is on Hold, show control is off, a show is
+  running, a Stop is under way, the show was delayed (Delay next
+  included), an alert is open, the show will not start by itself at its
+  time, or an announcement is playing. LTC Player started (or the
+  schedule changed) with less than 115 seconds to go: it does not play
+  late.
+- Each show gets it at most once a night, even across a restart, and
+  even if the show's time is changed after it played.
+- The show never waits for it. A missing file or a player problem is one
+  line in the log and the show starts on time. If anything still plays
+  when the show starts, it fades out over 0.15 s.
+- It touches no flame, laser, hazer or pump.
+- The log says "Pre-show audio played before show N: file.wav." or why
+  not, for example "Pre-show audio not played before show 2: the schedule
+  is on Hold."
 
 The **booth speaker** is separate from announcements: it plays the short
 alert notes (the Stream Deck unplugged, a show that did not start) to a
@@ -2929,6 +2968,17 @@ tab, and the hardware e-stop always works.
   and Lock is one tap per machine with Undo. The Purge step has the
   machine map and Arrange; the checklist steps have Verify records, the
   PDF and Export all.
+- DAY tab, machine rows. The Fuel step shows the tanks one row per type
+  (all Wave Flamers on one row, all G-Flames on another); a row wraps only
+  when its tanks cannot fit. The Purge step's group buttons and Machines
+  follow the same rows. Arrange on the Fuel step (show PC, Show files
+  permission) moves tanks: drag one, or tap it and press Left, Right,
+  Row up, Row down or New row. While ARRANGING no refill is logged, from
+  the page or the engine. Save layout writes `ltcplay_arrangement.json`
+  (both steps read it; the journal keeps who and the rows before and
+  after), Cancel or leaving the step forgets, Default rows (asks first)
+  goes back to one row per type. A new machine joins the end of its
+  type's row; a broken file is said once and the default rows are shown.
 - DAY tab, Fireball, fuel and timed purge.
   The Fireball step (Startup, only when the show has a fireball group):
   a pad per channel. Fuel Charge, Air Charge and Purge stay on until
@@ -2986,9 +3036,11 @@ tab, and the hardware e-stop always works.
   the show PC change it and press Save who may do what. Stop, Hold and
   every disarm always work, for everyone. Audit log (show PC only): its
   state, Check the chain now, Idle sign out, sign out after the last show,
-  and Save. Nightly upload (a SuperUser signed in on the show PC only; for
-  anyone else it is not there): server, shared token, time, days kept,
-  Save and Send now. The shared token is never shown: the field says only
+  and Save. Nightly upload of the audit log and the night journal (a
+  SuperUser signed in on the show PC only; for anyone else it is not
+  there): server, shared token, time, days kept, Save and Send now; they
+  go only to Jeff's own server, nothing else is read or sent, never a
+  password or token; the night journal names each operator and screen. The shared token is never shown: the field says only
   whether one is saved, and a token typed there is cleared after Save.
   USERS.md, "The SuperUser", says what an admin may not change.
 - The systems badge in the header names a single problem ("Stream Deck:

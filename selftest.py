@@ -21995,7 +21995,9 @@ def test_nothing_plays_on_the_pa_without_an_operator_press():
             "re-sounded, the showtime hold, a failed rig check, a failed "
             "start, missed and delayed shows, Hold, Resume, Start now, "
             "Stop, Abort and the night's end: the announcement player is "
-            "never asked to play. A person's press still plays")
+            "never asked to play. A person's press still plays. The one "
+            "exception, pre-show audio (Jeff, 2026-11-12), is off unless "
+            "turned on and has exactly one way in")
     import ast
     import inspect
     root = os.path.dirname(os.path.abspath(__file__))
@@ -22010,7 +22012,14 @@ def test_nothing_plays_on_the_pa_without_an_operator_press():
     allowed = {("ltcplay/remote.py", "announce_post", "play"),
                ("ltcplay/remote.py", "announce_test_tone", "test_tone"),
                ("ltcplay/announce.py", "test_tone", "play"),
-               ("ltcplay/announce.py", "post", "play")}
+               ("ltcplay/announce.py", "post", "play"),
+               # play() and play_preshow() share one player (_play).
+               ("ltcplay/announce.py", "play", "_play"),
+               ("ltcplay/announce.py", "play_preshow", "_play"),
+               # Pre-show audio (Jeff, 2026-11-12: "play an audio file
+               # automatically two minutes prior to the show"): its one
+               # call, on its own thread after the scheduler's decision.
+               ("ltcplay/preshow_audio.py", "_settle", "play_preshow")}
     found = set()
     files = []
     for top in ("ltcplay", "flamesafe", os.path.join("packaging",
@@ -22027,11 +22036,12 @@ def test_nothing_plays_on_the_pa_without_an_operator_press():
             for node in ast.walk(fn):
                 if not (isinstance(node, ast.Call) and
                         isinstance(node.func, ast.Attribute) and
-                        node.func.attr in ("play", "test_tone")):
+                        node.func.attr in ("play", "test_tone", "_play",
+                                           "play_preshow")):
                     continue
                 recv = ast.unparse(node.func.value).lower()
-                if "ann" in recv or (rel == "ltcplay/announce.py" and
-                                     recv == "self"):
+                if "ann" in recv or node.func.attr == "play_preshow" or (
+                        rel == "ltcplay/announce.py" and recv == "self"):
                     found.add((rel, fn.name, node.func.attr))
     check(found == allowed,
           f"the only calls that start an announcement are the operator's "
@@ -22222,6 +22232,18 @@ def test_nothing_plays_on_the_pa_without_an_operator_press():
         check(len(rows) == 4 and rows[-1]["action"] == "test tone" and
               rows[-1]["reason"] == "not an operator press",
               f"a refused Test tone journals as a Test tone: {rows[-1:]}")
+        # Pre-show audio is never one of the routes' ids: a Play press
+        # cannot ask for it, whoever presses it.
+        try:
+            ann.play(A.PRESHOW, "Andy", "Rack screen", surface=True)
+            check(False, "a Play press asked for pre-show audio and played")
+        except ValueError as e:
+            check(ann.playing is None and "is not one of" in str(e),
+                  f"a press cannot play pre-show audio: {e}")
+        check(A.PRESHOW not in A.IDS and
+              A.PRESHOW_WHO.lower() in U.RESERVED and
+              A.PRESHOW_WHO.lower() not in A.ENGINE_NAMES,
+              "pre-show audio is no route's id, and its name is reserved")
         ann.play("delayed", "Andy", "Rack screen", surface=True)
         check(ann.playing == "delayed",
               "the operator's own press still plays the Delayed")
@@ -75086,6 +75108,272 @@ def test_morning_no_unlock_while_group_armed():
     print("  ok")
 
 
+# ---------------------------------------------------------------------------
+# The machine rows (morning.Arrangement; Jeff, 2026-11-13): one file of rows
+# that the Fuel step and the Purge step both show, one row per type by
+# default, arranged on the Fuel step.
+# ---------------------------------------------------------------------------
+
+def _rows_morning(d, journal, clock=None, config=None):
+    import json as _j
+    from ltcplay import morning as MO
+    fs = os.path.join(d, "flamesafe.json")
+    with open(fs, "w", encoding="utf-8") as fh:
+        _j.dump(_MO_FLAMESAFE, fh)
+    with open(os.path.join(d, MO.CONFIG_FILE), "w", encoding="utf-8") as fh:
+        _j.dump(config or _MO_CONFIG, fh)
+    kw = {"clock": clock} if clock is not None else {}
+    return MO.Morning(d, flamesafe_config=fs, link_get=lambda: None,
+                      flames_get=lambda: None, laser_output=_FakeLaserOutput,
+                      live_check=lambda: "", journal=journal,
+                      wall=lambda: 1_800_000_000.0, threaded=False, **kw)
+
+
+def test_machine_rows_one_file_both_steps():
+    section("the machine rows (Jeff, 2026-11-13): one row per type by "
+            "default; Save writes ltcplay_arrangement.json (format 1, "
+            "atomic) and the one view both steps read follows it; a new "
+            "machine joins the end of its type's row, one gone is left "
+            "out; a broken or newer file falls back to the default and is "
+            "said once; the map's layout file is never touched, and an old "
+            "build's Layout reads its own file as before; every save and "
+            "reset is in the journal with who and the rows before and after")
+    import json as _j
+    import shutil
+    import tempfile
+    from ltcplay import morning as MO
+    d = tempfile.mkdtemp()
+    lines = []
+    try:
+        m = _rows_morning(d, lambda t, **f: lines.append((t, f)))
+        rack = ("Rack screen", "Andy", "Rack screen", True, True)
+        v = m.full_view("Rack screen")["arrangement"]
+        check([(r["label"], r["machines"]) for r in v["rows"]] ==
+              [("G-Flames", ["g1", "g2", "s1"]), ("Wave Flamers", ["w1"])]
+              and v["saved"] is False and v["problem"] == "",
+              f"no file: one row per type, types in the config's order: "
+              f"{v}")
+        # The map's layout, saved first: the rows must never touch it.
+        st, _o = m.post("layout", {"positions": {"g1": {"x": 10, "y": 20}}},
+                        *rack)
+        lay = os.path.join(d, MO.LAYOUT_FILE)
+        with open(lay, "rb") as fh:
+            lay_bytes = fh.read()
+        st, out = m.post("arrangement", {"rows": [
+            {"kind": "waver", "machines": ["w1"]},
+            {"kind": "gflame", "machines": ["s1", "g2"]},
+            ["g1"]]}, *rack)
+        path = os.path.join(d, MO.ARRANGEMENT_FILE)
+        with open(path, encoding="utf-8") as fh:
+            doc = _j.load(fh)
+        check(st == 200 and doc["arrangement_format"] == 1 and
+              [r["machines"] for r in doc["rows"]] ==
+              [["w1"], ["s1", "g2"], ["g1"]] and doc["saved_by"] == "Andy",
+              f"saved: the file has the rows, format 1, who: {st} {out} "
+              f"{doc}")
+        check(not [n for n in os.listdir(d) if n.endswith(".tmp")],
+              "written atomically: no temp file left")
+        v = m.full_view("Rack screen")["arrangement"]
+        check([r["machines"] for r in v["rows"]] ==
+              [["w1"], ["s1", "g2"], ["g1"]] and v["saved"] is True and
+              [r["label"] for r in v["rows"]] ==
+              ["Wave Flamers", "G-Flames", "G-Flames"],
+              f"the view both steps read follows the file, each row "
+              f"labelled by its type: {v}")
+        said = [t for t, f in lines if f.get("action") == "arrangement"
+                and f.get("outcome") == "saved"]
+        check(len(said) == 1 and "Andy" in said[0] and
+              "Before: G-Flames: g1, g2, s1 | Wave Flamers: w1." in said[0]
+              and "After: Wave Flamers: w1 | G-Flames: s1, g2 | "
+              "G-Flames: g1." in said[0],
+              f"the save is in the journal: who, before, after: {said}")
+        with open(lay, "rb") as fh:
+            check(fh.read() == lay_bytes,
+                  "the map's ltcplay_morning_layout.json is untouched")
+        pos, saved = MO.Layout(lay).load(m.cfg)
+        check(saved and pos["g1"] == {"x": 10.0, "y": 20.0},
+              f"an old build reads only its own layout file, as before: "
+              f"{pos.get('g1')}")
+        MO.Layout(lay).reset()
+        check(os.path.isfile(path), "Reset layout on the map keeps the rows")
+        # Refused: not a machine, twice, not a type, not rows at all.
+        for bad in ({"rows": [["g1", "nope"]]}, {"rows": [["g1"], ["g1"]]},
+                    {"rows": [{"kind": "laser", "machines": ["g1"]}]},
+                    {"rows": "g1"}, {}):
+            st, out = m.post("arrangement", bad, *rack)
+            check(st == 400 and out["error"].startswith("Rows not saved"),
+                  f"refused, file kept: {bad} -> {st} {out}")
+        with open(path, encoding="utf-8") as fh:
+            check([r["machines"] for r in _j.load(fh)["rows"]] ==
+                  [["w1"], ["s1", "g2"], ["g1"]], "a refused save writes nothing")
+        # A new machine in ltcplay_morning.json, one gone.
+        cfg2 = _j.loads(_j.dumps(_MO_CONFIG))
+        cfg2["machines"] = [x for x in cfg2["machines"] if x["id"] != "g2"]
+        cfg2["machines"].append({"id": "g3", "name": "Ground 3",
+                                 "kind": "gflame", "group": "front row",
+                                 "fire": [413]})
+        cfg2["groups"]["Ground G-Flames"] = ["g1", "g3"]
+        m2 = _rows_morning(d, lambda t, **f: lines.append((t, f)),
+                           config=cfg2)
+        v = m2.full_view("Rack screen")["arrangement"]
+        check([r["machines"] for r in v["rows"]] ==
+              [["w1"], ["s1", "g3"], ["g1"]],
+              f"a new machine goes at the end of its type's (first) row, "
+              f"one gone from the config is left out: {v['rows']}")
+        # A broken file: the default, said once.
+        for text in ("{not json", _j.dumps({"arrangement_format": 2,
+                                            "rows": [["w1"]]}),
+                     _j.dumps({"arrangement_format": 1, "rows": 7}),
+                     _j.dumps([1, 2])):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            del lines[:]
+            vs = [m.full_view("Rack screen")["arrangement"] for _ in range(3)]
+            faults = [t for t, f in lines if f.get("action") == "arrangement"
+                      and f.get("fault")]
+            check(all([r["machines"] for r in x["rows"]] ==
+                      [["g1", "g2", "s1"], ["w1"]] and not x["saved"] and
+                      x["problem"] for x in vs) and len(faults) == 1,
+                  f"{text[:30]!r}: one row per type, the problem said once "
+                  f"in three reads: {vs[0]} {faults}")
+            m._arrangement_said = ""
+        with open(path, encoding="utf-8") as fh:
+            check(fh.read() == _j.dumps([1, 2]),
+                  "a file that is not used is never rewritten by a read")
+        # Default rows: the file goes, and the journal says so.
+        del lines[:]
+        st, out = m.post("arrangement", {"reset": True}, *rack)
+        check(st == 200 and not os.path.exists(path) and
+              any(f.get("outcome") == "reset" and "Andy" in t
+                  for t, f in lines),
+              f"Default rows removes the file, journalled: {st} {out}")
+        # A config that could not be read: nothing saved over the rows.
+        m.config_error = "broken"
+        st, out = m.post("arrangement", {"rows": [["g1"]]}, *rack)
+        check(st == 409 and not os.path.exists(path),
+              f"no save on the default machine list: {st} {out}")
+        m.config_error = ""
+        ex = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          ".gitignore")
+        with open(ex, encoding="utf-8") as fh:
+            check("ltcplay_arrangement.json" in fh.read().split(),
+                  "the rows file is machine state, never committed")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def test_machine_rows_refills_held_back_while_arranging():
+    section("the Fuel step's Arrange at the engine: while a screen's beat "
+            "says it is arranging the rows, a refill (one tank or Refill "
+            "all) from it is refused and nothing is logged, whatever its "
+            "page sent; its beat ending, or stopping for 2 s, lets "
+            "refills through again; another screen is not held; saving "
+            "the rows needs the Show files row (a viewer is refused) and "
+            "the beat needs nothing; every press is audited")
+    import json as _j
+    import shutil
+    from ltcplay import users as U
+    from ltcplay import morning as MO
+    check(U.classify("/api/remote/arrangement", {"rows": []}) ==
+          "show_files" and
+          U.classify("/api/remote/arrangement", {"reset": True}) ==
+          "show_files" and
+          U.classify("/api/remote/arrangement", {"beat": True,
+                                                 "arranging": True}) is None,
+          "a save or reset is the Show files row (as the map's layout); "
+          "the beat saves nothing")
+    httpd, http, cookie_of, work = _accounts_engine(
+        seed=(("Jeff", "admin"), ("Vic", "viewer")))
+    rem = httpd.remote
+    R = _FuelRig()
+    d = tempfile.mkdtemp()
+    t = [100.0]
+    try:
+        rem.fuel = R.tr
+        rem.morning = _rows_morning(d, lambda t, **f: None,
+                                    clock=lambda: t[0])
+        ck = {}
+        for name in ("Vic", "Jeff"):
+            st, out, h = http("/api/remote/signin", {
+                "name": name, "password": "",
+                "new_password": name.lower() + "-pw-123"})
+            ck[name] = cookie_of(h)
+        st, out, _h = http("/api/remote/arrangement", {"rows": [["w1"]]},
+                           cookie=ck["Vic"])
+        check(st == 403 and not os.path.exists(
+            os.path.join(d, MO.ARRANGEMENT_FILE)),
+              f"a viewer may not save the rows: {st} {out}")
+        st, out, _h = http("/api/remote/arrangement",
+                           {"beat": True, "arranging": True, "inst": "a"},
+                           cookie=ck["Jeff"])
+        check(st == 200 and out.get("arranging") is True,
+              f"the arranging beat is heard: {st} {out}")
+        for body in ({"unit": "g1"},
+                     {"all": True, "confirm": True,
+                      "units": [m.id for m in R.ms
+                                if m.kind in ("gflame", "waver")]}):
+            st, out, _h = http("/api/remote/fuel-refill", body,
+                               cookie=ck["Jeff"])
+            check(st == 409 and "arranging" in out.get("error", "") and
+                  R.unit("g1")["status"] == "never",
+                  f"arranging: no refill logged ({body}): {st} {out}")
+        # Shows per refill's presses (fuelshows.py, #252): Refueled +1 and
+        # Fill selected are refills too; shows per refill is a setting.
+        st, out, _h = http("/api/remote/fuel-shows",
+                           {"action": "set", "kind": "waver",
+                            "shows_per_refill": 4}, cookie=ck["Jeff"])
+        check(st == 200 and R.tr.shows.top("waver") == 4,
+              f"arranging: shows per refill is still set: {st} {out}")
+        for body in ({"action": "step", "unit": "w1"},
+                     {"action": "fill", "confirm": True, "units": ["g1"]}):
+            st, out, _h = http("/api/remote/fuel-shows", body,
+                               cookie=ck["Jeff"])
+            check(st == 409 and "arranging" in out.get("error", "") and
+                  R.unit("g1")["status"] == "never" and
+                  R.unit("w1")["countdown"]["left"] == 0,
+                  f"arranging: no Refueled +1 or Fill selected ({body}): "
+                  f"{st} {out}")
+        dev = next(iter(rem.morning._rows_arranging))
+        check(rem.morning.rows_refill_refusal("iPad at 10.20.0.44") == "",
+              "another screen is not held back")
+        t[0] += MO.OPEN_STALE_S + 0.1
+        check(rem.morning.rows_refill_refusal(dev) == "",
+              "beats that stop for 2 s let go by the clock alone")
+        st, out, _h = http("/api/remote/arrangement",
+                           {"beat": True, "arranging": True, "inst": "a"},
+                           cookie=ck["Jeff"])
+        st, out, _h = http("/api/remote/arrangement",
+                           {"beat": True, "arranging": False, "inst": "a"},
+                           cookie=ck["Jeff"])
+        st, out, _h = http("/api/remote/fuel-refill", {"unit": "g1"},
+                           cookie=ck["Jeff"])
+        check(st == 200 and R.unit("g1")["status"] != "never",
+              f"Save or Cancel (the beat says so): refills again: {st} {out}")
+        st, out, _h = http("/api/remote/arrangement",
+                           {"rows": [["w1"], ["g1", "g2", "s1"]]},
+                           cookie=ck["Jeff"])
+        check(st == 200 and [r["machines"] for r in
+                             out["arrangement"]["rows"]] ==
+              [["w1"], ["g1", "g2", "s1"]], f"an admin saves: {st} {out}")
+        rem.audit.flush(5.0)
+        acts = [l for l in _audit_lines(rem.audit.folder)
+                if l.get("action") == "arrangement"]
+        check(any(l["user"] == "Jeff" and l["result"] == "accepted"
+                  for l in acts) and
+              any(l["user"] == "Vic" and l["result"] == "refused"
+                  for l in acts),
+              f"every rows press is audited with who: {acts[:3]}")
+    finally:
+        rem.fuel = None
+        rem.morning = None
+        httpd.server_close()
+        R.close()
+        shutil.rmtree(work, ignore_errors=True)
+        shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
 def test_morning_lockout_trust_link_and_close():
     section("Morning and Shutdown, the lock table when it cannot be trusted: "
             "an unreadable lockout file, or one naming a machine the config "
@@ -80918,6 +81206,7 @@ _SU_PLAIN_ROUTES = (
     "/api/remote/announce-play", "/api/remote/announce-stop",
     "/api/remote/announce-test-tone", "/api/remote/arm-hold",
     "/api/remote/arm-release", "/api/remote/audit-verify",
+    "/api/remote/arrangement",
     "/api/remote/awc", "/api/remote/awc:", "/api/remote/checklist-",
     "/api/remote/checklist-export", "/api/remote/checklist-note",
     "/api/remote/checklist-pdf", "/api/remote/checklist-tally-retry",
@@ -80948,7 +81237,8 @@ _SU_PLAIN_ROUTES = (
     "/api/remote/open-folder", "/api/remote/pause",
     "/api/remote/play-from", "/api/remote/play-from-cues",
     "/api/remote/play-from-cues-save", "/api/remote/preroll-check",
-    "/api/remote/preroll-continue", "/api/remote/purge-clear",
+    "/api/remote/preroll-continue", "/api/remote/preshow-audio",
+    "/api/remote/purge-clear",
     "/api/remote/purge-fire", "/api/remote/purge-select",
     "/api/remote/purge-stop", "/api/remote/purge-timed",
     "/api/remote/reload-engine", "/api/remote/restart-check",
@@ -82759,6 +83049,699 @@ def test_audit_upload_retries_resumes_and_waits_for_the_ack():
     check(code == 409 and os.path.exists(os.path.join(
         store, name[:10], name)), "a different file under a stored name is "
           "kept beside it and refused; nothing is overwritten")
+
+
+def test_journal_upload_sends_closed_nights_and_waits_for_the_ack():
+    section("night journal upload (Jeff, 2026-11-12): off until switched "
+            "on, sends each CLOSED night's journal, machine log and summary "
+            "whole with its SHA-256, an incomplete night marked so with its "
+            "gaps, never an open night, an incident folder or anything "
+            "else; marked sent only on the server's acknowledgement; "
+            "retried with backoff; an unacknowledged night file is never "
+            "pruned; the audit upload is untouched")
+    S = _sched()
+    if S is None:
+        return
+    import hashlib
+    import json as _j
+    import tempfile
+    import types
+    from datetime import timedelta
+    from ltcplay import auditsend as A
+    from ltcplay import journal as J
+    from ltcplay import remote as RM
+    settings = tempfile.mkdtemp()
+    nights = os.path.join(settings, "nights")
+    now = [_den(S, 13, 0, d=(2026, 11, 7))]
+    for day in (6, 7, 8, 9):
+        now[0] = _den(S, 13, 0, d=(2026, 11, day))
+        b = _book(J, nights, now, durable=False)
+        b.record(actor="scheduler", action="fire", outcome="fired",
+                 reason="FIRED", show=1,
+                 text="Show 1 started on schedule at 13:00.")
+        now[0] += timedelta(seconds=444)
+        b.record(actor="system", action="SHOW_ENDED", outcome="done",
+                 reason="DONE", show=1, text="Show 1 finished at 13:07.")
+        if day != 6:
+            # The 6th never got its summary (a crash, not yet looked back
+            # on); the 9th has one written on request, but is still open.
+            b.write_summary(f"2026-11-0{day}", state="OFF")
+    # The 8th lost its last journal line: the files disagree.
+    jp = os.path.join(nights, J.journal_name("2026-11-08"))
+    keep = open(jp, "rb").read().splitlines(True)[:-1]
+    with open(jp, "wb") as fh:
+        fh.write(b"".join(keep))
+    os.makedirs(os.path.join(nights, "incidents",
+                             "incident_2026-11-08_130500"))
+    with open(os.path.join(nights, "incidents",
+                           "incident_2026-11-08_130500", "journal.txt"),
+              "w") as fh:
+        fh.write("an incident\n")
+    with open(os.path.join(nights, "notes.txt"), "w") as fh:
+        fh.write("not a night file")
+    sent, answers = [], []
+
+    def transport(url, data, headers, timeout):
+        sent.append((url, data, dict(headers)))
+        a = answers.pop(0) if answers else "ack"
+        if a == "fail":
+            return 503, "busy Bearer s3cret-token-xyz"
+        if a == "badack":
+            return 200, _j.dumps({"ok": True, "sha256": "0" * 64})
+        return 200, _j.dumps({"ok": True, "sha256": headers["X-LTC-SHA256"]})
+    wall = [time.mktime((2026, 11, 9, 20, 0, 0, 0, 0, -1))]
+    mono = [0.0]
+    up = A.JournalUploader(nights, settings, night=lambda: "2026-11-09",
+                           transport=transport, wall=lambda: wall[0],
+                           clock=lambda: mono[0],
+                           checker=lambda n: J.check_files(nights, n))
+    check(up.run(force=True) == 0 and not sent,
+          "off by default: nothing is sent")
+    A.save_config(settings, {"enabled": True, "token": "s3cret-token-xyz",
+                             "url": "https://audit.example.com/ltc"})
+    check(up.closed_nights() == ["2026-11-07", "2026-11-08"],
+          f"the night still open, and a night without its summary, are "
+          f"never closed: {up.closed_nights()}")
+    answers[:] = ["fail"]
+    check(up.run() == 0 and len(sent) == 1 and not up.sent() and
+          up.last_error == "HTTP 503: busy Bearer [hidden]",
+          f"a failure marks nothing, and the token is never said: "
+          f"{up.last_error!r}")
+    check(up.run() == 0 and len(sent) == 1, "it waits out its backoff")
+    mono[0] += A.BACKOFF_S[0] + 1
+    answers[:] = ["badack"]
+    check(up.run() == 0 and not up.sent(),
+          "an answer that does not acknowledge the checksum marks nothing")
+    mono[0] += A.BACKOFF_S[1] + 1
+    went = up.run()
+    names = [h["X-LTC-File"] for _u, _d, h in sent[2:]]
+    check(went == 6 and names == [
+        "night_2026-11-07.journal.txt", "night_2026-11-07.jsonl",
+        "night_2026-11-07.summary.md", "night_2026-11-08.journal.txt",
+        "night_2026-11-08.jsonl", "night_2026-11-08.summary.md"],
+        f"each closed night's three files, oldest first: {names}")
+    for _u, data, h in sent[2:]:
+        name = h["X-LTC-File"]
+        check(data == open(os.path.join(nights, name), "rb").read() and
+              h["X-LTC-SHA256"] == hashlib.sha256(data).hexdigest() and
+              h["Authorization"] == "Bearer s3cret-token-xyz" and
+              h["X-LTC-Kind"] == "night-journal" and
+              h["X-LTC-Night"] == name[6:16],
+              f"{name} goes whole with its checksum")
+    by = {h["X-LTC-File"]: h for _u, _d, h in sent[2:]}
+    m7 = _j.loads(by["night_2026-11-07.jsonl"]["X-LTC-Meta"])
+    m8 = _j.loads(by["night_2026-11-08.summary.md"]["X-LTC-Meta"])
+    check(by["night_2026-11-07.jsonl"]["X-LTC-Incomplete"] == "false" and
+          m7 == {"gaps": [], "incomplete": False, "kind": "jsonl",
+                 "night": "2026-11-07"},
+          f"a whole night says so: {m7}")
+    check(by["night_2026-11-08.summary.md"]["X-LTC-Incomplete"] == "true"
+          and m8["incomplete"] is True and m8["kind"] == "summary.md",
+          f"a night whose files disagree is sent marked incomplete: {m8}")
+    gapped = {"incomplete": True, "gaps": [{
+        "from": "2026-11-09T13:19:04-07:00", "to": "2026-11-09T20:31:10-07:00",
+        "seconds": 26526.0, "why": "no line while show 4 ran"}],
+        "problems": ["x"], "logging": "Logging: INCOMPLETE"}
+    up2 = A.JournalUploader(nights, settings, night=lambda: "2026-11-09",
+                            transport=transport)
+    sent.clear()
+    answers[:] = ["fail"]
+    up2.send_one("night_2026-11-07.jsonl", A.load_config(settings)[0],
+                 gapped)
+    check(sent[0][2]["X-LTC-Meta"] ==
+          '{"gaps":[{"from":"2026-11-09T13:19:04-07:00","seconds":26526.0,'
+          '"to":"2026-11-09T20:31:10-07:00","why":"no line while show 4 '
+          'ran"}],"incomplete":true,"kind":"jsonl","night":"2026-11-07"}',
+          f"the gap list goes in the metadata: {sent[0][2]['X-LTC-Meta']}")
+    sent.clear()
+    check(set(up.sent()) == set(names) and
+          all(up.sent()[n]["sha256"] == hashlib.sha256(open(os.path.join(
+              nights, n), "rb").read()).hexdigest() for n in names) and
+          up.sent()["night_2026-11-08.jsonl"]["incomplete"] is True,
+          f"each file is recorded sent with its checksum: {up.sent()}")
+    check(up.run(force=True) == 0 and not sent,
+          "a night acknowledged is never sent again; the open night, the "
+          "incident folder and other files never at all")
+    st = up.status()
+    check(st["pending_nights"] == [] and "s3cret" not in _j.dumps(st) and
+          st["incomplete_sent"] == ["night_2026-11-08.journal.txt",
+                                    "night_2026-11-08.jsonl",
+                                    "night_2026-11-08.summary.md"],
+          f"the status, never the token: {st}")
+    check(up.send_one("../ltcplay_audit.json", A.load_config(settings)[0])
+          == ("failed", "not a night journal file") and
+          up.send_one("incidents/x.jsonl", A.load_config(settings)[0])
+          == ("failed", "not a night journal file"),
+          "nothing but a night file's own name is ever read")
+    # Its state goes only to the SuperUser's upload card (PR #251), never
+    # into the audit card every admin sees.
+    fake = types.SimpleNamespace(audit=None, uploader=None,
+                                 journal_uploader=up, _chain_said=None)
+    view = RM.Remote.upload_view(fake)
+    check(view["journal_upload"]["pending"] == 0 and view["upload"] is None,
+          f"the SuperUser's upload card shows the night journal too: "
+          f"{view}")
+    check("journal_upload" not in RM.Remote.audit_view(fake),
+          "and the admins' audit card does not")
+    # Wired in by the engine, beside the audit upload, with the
+    # scheduler's own nights folder and night.
+    from ltcplay import web as W
+    httpd = W.serve(tempfile.mkdtemp(), port=0, bind="127.0.0.1",
+                    remote_folder=tempfile.mkdtemp())
+    try:
+        httpd.schedule = types.SimpleNamespace(
+            logbook=J.Logbook(nights), _night=lambda: "2026-11-09")
+        W._attach_accounts(httpd, users_seed=[("Jeff", "admin")],
+                           transport=transport)
+        ju = httpd.remote.journal_uploader
+        check(isinstance(ju, A.JournalUploader) and
+              ju.folder == os.path.abspath(nights) and
+              ju.open_night() == "2026-11-09" and
+              ju.check("2026-11-08")["incomplete"] is True and
+              ju.check("2026-11-07")["incomplete"] is False,
+              f"the engine starts the night journal upload: {ju}")
+    finally:
+        try:
+            httpd.remote.journal_uploader.stop()
+            httpd.remote.uploader.stop()
+        except Exception:
+            pass
+        httpd.server_close()
+    # The promise, wherever it is said (deliberately changed 2026-11-12).
+    here = os.path.dirname(os.path.abspath(__file__))
+
+    def text_of(*parts):
+        return open(os.path.join(here, *parts), encoding="utf-8").read()
+    check("- The audit log and the night journal go only to your own "
+          "server.\n  Nothing else is read or sent, never a password or "
+          "token. The night\n  journal names each operator and the screen "
+          "they pressed on.\n" in text_of("SUPERUSER.md"),
+          "SUPERUSER.md says what is sent, and nothing else")
+    check("What it sends: the audit log and the night journal, only to "
+          "Jeff's own\nserver; nothing else is read or sent, never a "
+          "password or token.\n" in A.__doc__,
+          "auditsend.py says the same")
+    check("Save and Send now; they\n  go only to Jeff's own server, nothing "
+          "else is read or sent, never a\n  password or token; the night "
+          "journal names each operator and screen." in text_of("OPERATOR.md"),
+          "OPERATOR.md says the same")
+    card = text_of("ltcplay", "web", "upload_card.js")
+    check('<label><input type="checkbox" id="au-en"> Send the audit log and '
+          'the night journal to the server every night</label>' in card,
+          "the SuperUser's setting says what it sends")
+    check('<div class="dim" style="font-size:13px">The night journal names '
+          'each operator and screen.</div>' in card,
+          "and that the night journal names operators and screens")
+    check('const j = UV.upload && UV.upload.journal_upload;' in card and
+          '" CHANGED SINCE SENT, sending again: " + '
+          'j.changed_since_sent.join(", ")' in card and
+          '" NOT SENT, refused by the server: " + '
+          'j.failed.join(", ")' in card,
+          "the card shows night files changed since sent and refused")
+    page = text_of("ltcplay", "web", "remote2.html")
+    check("journal_upload" not in page and "night journal" not in page,
+          "the page every screen gets never mentions the journal upload")
+    # Pruning: while the upload is on, a night file the server has not
+    # acknowledged stays past keep_days, up to UNSENT_GRACE_DAYS more.
+    now[0] = _den(S, 13, 0, d=(2027, 3, 20))
+    c = _book(J, nights, now, durable=False)
+    gone = c.prune(now[0].date())
+    unsent = [f(n) for n in ("2026-11-06", "2026-11-09")
+              for f in (J.machine_name, J.journal_name)]
+    check(sorted(gone) == sorted(names + ["incident_2026-11-08_130500"])
+          and all(os.path.exists(os.path.join(nights, n)) for n in unsent),
+          f"past keep_days: acknowledged files go, unacknowledged ones "
+          f"stay: {gone}")
+    now[0] = _den(S, 13, 0, d=(2027, 6, 1))
+    gone = c.prune(now[0].date())
+    said = [r for r in c.memory if r["outcome"] == "removed late"]
+    check(sorted(gone) == sorted(unsent + [J.summary_name("2026-11-09")])
+          and said and said[-1]["text"].startswith(
+              "Removed 5 night file(s) kept 30 days past the usual 120: ")
+          and "upload" not in said[-1]["text"] and
+          "server" not in said[-1]["text"],
+          f"but never for good, said without naming the upload: {gone} "
+          f"{said and said[-1]['text']}")
+    # The upload switched off: pruning is as it always was.
+    work_off = tempfile.mkdtemp()
+    now[0] = _den(S, 13, 0, d=(2026, 11, 7))
+    off = _book(J, work_off, now, durable=False)
+    off.record(actor="system", action="note", outcome="done", reason="r",
+               text="A night.")
+    with open(os.path.join(work_off, A.JOURNAL_SENT_FILE), "w") as fh:
+        fh.write('{"enabled": false, "files": {}}')
+    now[0] = _den(S, 13, 0, d=(2027, 3, 20))
+    check(sorted(off.prune(now[0].date())) == sorted(
+        [J.machine_name("2026-11-07"), J.journal_name("2026-11-07")]),
+          "with the upload off, an unsent night ages out as before")
+    print("  ok")
+
+
+def test_journal_upload_failures_and_changes():
+    section("night journal upload (review of #246): a file the server "
+            "refuses for good is marked failed for its checksum, said once, "
+            "and the later nights still go; a file changed after it was "
+            "sent goes once more, naming the copy it replaces; a file that "
+            "cannot be read waits out the backoff; a link or a file over "
+            "the receiver's 64 MB is never read; the switch is remembered "
+            "for pruning")
+    import hashlib
+    import json as _j
+    import tempfile
+    from ltcplay import auditsend as A
+    from ltcplay import journal as J
+    S = _sched()
+    if S is None:
+        return
+    settings = tempfile.mkdtemp()
+    nights = os.path.join(settings, "nights")
+    now = [_den(S, 13, 0, d=(2026, 11, 7))]
+    for day in (7, 8):
+        now[0] = _den(S, 13, 0, d=(2026, 11, day))
+        b = _book(J, nights, now, durable=False)
+        b.record(actor="system", action="note", outcome="done", reason="r",
+                 text=f"Night {day}.")
+        b.write_summary(f"2026-11-0{day}", state="OFF")
+    A.save_config(settings, {"enabled": True, "token": "s3cret-token-xyz",
+                             "url": "https://audit.example.com/ltc"})
+    sent, answers, said = [], [], []
+
+    def transport(url, data, headers, timeout):
+        sent.append(dict(headers))
+        a = answers.pop(0) if answers else "ack"
+        if isinstance(a, int):
+            return a, "refused"
+        return 200, _j.dumps({"ok": True, "sha256": headers["X-LTC-SHA256"]})
+    mono = [0.0]
+    up = A.JournalUploader(nights, settings, night=lambda: "2026-11-09",
+                           transport=transport, clock=lambda: mono[0],
+                           note=lambda **kw: said.append(kw))
+    answers[:] = [409]
+    went = up.run(force=True)
+    first = "night_2026-11-07.journal.txt"
+    check(went == 5 and up.failed() == {first: {
+        "sha256": up.failed()[first]["sha256"],
+        "why": "HTTP 409: refused", "at": up.failed()[first]["at"]}} and
+          len(sent) == 6, f"a refusal for good marks that file and the rest "
+                          f"go on: {went} {up.failed()}")
+    failed_said = [k for k in said
+                   if k["action"] == "journal-upload-failed"]
+    check(failed_said == [{"action": "journal-upload-failed",
+                           "result": "error", "reason": "HTTP 409: refused",
+                           "target": first}],
+          f"said once, in the audit log only: {failed_said}")
+    check(up.run(force=True) == 0 and len(sent) == 6 and len([
+        k for k in said if k["action"] == "journal-upload-failed"]) == 1,
+          "never tried again as it is, never said again")
+    check(up.status()["failed"] == [first] and
+          up.status()["failed_why"] == {first: "HTTP 409: refused"},
+          f"the status names it: {up.status()}")
+    # A summary written again after it was sent: sent once more, naming
+    # the copy the server holds.
+    summ = os.path.join(nights, "night_2026-11-08.summary.md")
+    held = up.sent()["night_2026-11-08.summary.md"]["sha256"]
+    with open(summ, "a", encoding="utf-8") as fh:
+        fh.write("Written again.\n")
+    check(up.changed_since_sent() == ["night_2026-11-08.summary.md"],
+          "a file changed since sent is listed")
+    check(up.run(force=True) == 1 and sent[-1]["X-LTC-File"] ==
+          "night_2026-11-08.summary.md" and
+          sent[-1]["X-LTC-Replaces"] == held and
+          up.changed_since_sent() == [],
+          f"and sent once more, replacing: {sent[-1]}")
+    check(up.run(force=True) == 0, "once per change")
+    # Another server answer: tried again later with the backoff.
+    with open(summ, "a", encoding="utf-8") as fh:
+        fh.write("And again.\n")
+    answers[:] = [503]
+    check(up.run(force=True) == 0 and up.last_error == "HTTP 503: refused"
+          and up._next_try == mono[0] + A.BACKOFF_S[0],
+          f"a 503 waits out the backoff: {up.last_error}")
+    check(not up.due(A.load_config(settings)[0]), "and is not due before")
+    # A file that cannot be read: the backoff, not a 30 s loop.
+    mono[0] += A.BACKOFF_S[0] + 1
+    import builtins
+    orig = builtins.open
+
+    def no_read(path, *a, **k):
+        if str(path).endswith("night_2026-11-08.summary.md") and \
+                "b" in (a[0] if a else k.get("mode", "r")):
+            raise PermissionError(13, "held", path)
+        return orig(path, *a, **k)
+    up._hashes.clear()
+    builtins.open = no_read
+    try:
+        went = up.run(force=True)
+    finally:
+        builtins.open = orig
+    check(went == 0 and up._fails_in_a_row == 2 and
+          up._next_try == mono[0] + A.BACKOFF_S[1] and
+          "could not be read" in up.last_error,
+          f"a file that cannot be read waits out the backoff: "
+          f"{up.last_error!r}")
+    # A link, and a file over what the receiver takes, are never read.
+    os.symlink(summ, os.path.join(nights, "night_2026-11-06.summary.md"))
+    for k in ("jsonl", "journal.txt"):
+        os.symlink(os.path.join(nights, f"night_2026-11-08.{k}"),
+                   os.path.join(nights, f"night_2026-11-06.{k}"))
+    check(not [n for n, _h in up.pending() if "11-06" in n],
+          "a link is never sent")
+    big = os.path.join(nights, "night_2026-11-08.jsonl")
+    before = len(sent)
+    with open(big, "ab") as fh:
+        fh.truncate(A.JOURNAL_MAX_BYTES + 1)
+    mono[0] += A.BACKOFF_S[2] + 1
+    up.run(force=True)
+    check("night_2026-11-08.jsonl" in up.failed() and
+          up.failed()["night_2026-11-08.jsonl"]["why"] ==
+          f"night_2026-11-08.jsonl is {A.JOURNAL_MAX_BYTES + 1} bytes, more "
+          f"than the {A.JOURNAL_MAX_BYTES} the server takes" and
+          not any(h["X-LTC-File"] == "night_2026-11-08.jsonl"
+                  for h in sent[before:]),
+          f"too large: failed, never sent: {up.failed()}")
+    # The switch is remembered for pruning.
+    doc = _j.load(open(os.path.join(nights, A.JOURNAL_SENT_FILE)))
+    check(doc["enabled"] is True, "on is recorded")
+    A.save_config(settings, {"enabled": False})
+    up.run(force=True)
+    doc = _j.load(open(os.path.join(nights, A.JOURNAL_SENT_FILE)))
+    check(doc["enabled"] is False and J._acknowledged(nights) is None,
+          "off is recorded, and pruning is then as it always was")
+    print("  ok")
+
+
+def test_audit_receiver_takes_the_night_journal():
+    section("audit receiver (tools/audit_receiver.py): takes the night "
+            "journal files beside the audit days, checks the SHA-256, keeps "
+            "them in night-journal/<night>/, acknowledges with the same "
+            "checksum, keeps what the PC said about an incomplete night, "
+            "never overwrites, refuses path tricks and wrong names; one file "
+            "end to end with the uploader")
+    S = _sched()
+    if S is None:
+        return
+    import hashlib
+    import json as _j
+    import importlib.util as _iu
+    import tempfile
+    from ltcplay import auditsend as A
+    from ltcplay import journal as J
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = _iu.spec_from_file_location(
+        "audit_receiver", os.path.join(here, "tools", "audit_receiver.py"))
+    R = _iu.module_from_spec(spec)
+    spec.loader.exec_module(R)
+    src = open(os.path.join(here, "tools", "audit_receiver.py")).read()
+    check("import ltcplay" not in src and "from ltcplay" not in src,
+          "the receiver stands alone: one file, the standard library only")
+    store = tempfile.mkdtemp()
+    tok = "s3cret-token-xyz"
+    settings = tempfile.mkdtemp()
+    nights = os.path.join(settings, "nights")
+    now = [_den(S, 13, 0, d=(2026, 11, 8))]
+    b = _book(J, nights, now, durable=False)
+    b.record(actor="scheduler", action="fire", outcome="fired",
+             reason="FIRED", show=1, text="Show 1 started on schedule at "
+                                          "13:00.")
+    b.write_summary("2026-11-08", state="OFF")
+
+    def to_receiver(url, data, headers, timeout):
+        code, doc = R.receive(store, tok, headers, data)
+        return code, _j.dumps(doc)
+    A.save_config(settings, {"enabled": True, "token": tok,
+                             "url": "https://audit.example.com/ltc"})
+    up = A.JournalUploader(nights, settings, night=lambda: "2026-11-09",
+                           transport=to_receiver,
+                           checker=lambda n: J.check_files(nights, n))
+    check(up.run(force=True) == 3 and len(up.sent()) == 3,
+          f"the receiver acknowledges each night file: {up.last_error}")
+    folder = os.path.join(store, "night-journal", "2026-11-08")
+    check(sorted(os.listdir(folder)) == [
+        "night_2026-11-08.journal.txt", "night_2026-11-08.jsonl",
+        "night_2026-11-08.summary.md"] and all(
+        open(os.path.join(folder, n), "rb").read() ==
+        open(os.path.join(nights, n), "rb").read() for n in os.listdir(
+            folder)),
+        "stored whole in night-journal/<night>/, beside the audit store")
+    idx = [_j.loads(x) for x in open(os.path.join(
+        store, "night-journal", "index.jsonl"))]
+    check(len(idx) == 3 and all(r["incomplete"] is False and
+                                r["night"] == "2026-11-08" for r in idx),
+          f"the index keeps what the PC said: {idx}")
+    ok, out = R.verify_nights(store)
+    check(ok and out == ["ok  night_2026-11-08.journal.txt",
+                         "ok  night_2026-11-08.jsonl",
+                         "ok  night_2026-11-08.summary.md"],
+          f"and the stored files verify: {out}")
+    tampered = os.path.join(folder, "night_2026-11-08.summary.md")
+    keep_bytes = open(tampered, "rb").read()
+    with open(tampered, "ab") as fh:
+        fh.write(b"edited\n")
+    ok, out = R.verify_nights(store)
+    check(not ok and out[2] == "BAD night_2026-11-08.summary.md",
+          f"a stored file changed since is found: {out}")
+    with open(tampered, "wb") as fh:
+        fh.write(keep_bytes)
+    data = b"19:44:12  Andy pressed Stop.\n"
+    sha = hashlib.sha256(data).hexdigest()
+
+    def post(name, body=data, digest=None, token=tok, meta=None):
+        hd = {"Authorization": "Bearer " + token, "X-LTC-File": name,
+              "X-LTC-SHA256": digest or hashlib.sha256(body).hexdigest()}
+        if meta is not None:
+            hd["X-LTC-Meta"] = meta
+        return R.receive(store, tok, hd, body)
+    code, doc = post("night_2026-11-09.journal.txt", meta=_j.dumps(
+        {"incomplete": True, "gaps": [{"from": "13:19:04", "to":
+                                       "20:31:10"}]}))
+    check(code == 200 and doc == {"ok": True, "sha256": sha,
+                                  "incomplete": True},
+          f"an incomplete night is taken and acknowledged: {doc}")
+    last = _j.loads(open(os.path.join(store, "night-journal",
+                                      "index.jsonl")).readlines()[-1])
+    check(last["incomplete"] is True and
+          last["gaps"] == [{"from": "13:19:04", "to": "20:31:10"}],
+          f"and its gaps are kept for the cross-check: {last}")
+    check(post("night_2026-11-09.journal.txt") ==
+          (200, {"ok": True, "sha256": sha, "again": True}),
+          "the same file again is acknowledged again")
+    other = data.replace(b"Stop", b"Stap")
+    code, doc = post("night_2026-11-09.journal.txt", body=other)
+    check(code == 409 and open(os.path.join(
+        store, "night-journal", "2026-11-09",
+        "night_2026-11-09.journal.txt"), "rb").read() == data,
+        "a different file under a stored name is refused; nothing is "
+        "overwritten")
+    nightdir = os.path.join(store, "night-journal", "2026-11-09")
+    conflicts = [n for n in os.listdir(nightdir) if ".conflict-" in n]
+    check(post("night_2026-11-09.journal.txt", body=other)[0] == 409 and
+          [n for n in os.listdir(nightdir) if ".conflict-" in n] ==
+          conflicts and len(conflicts) == 1,
+          f"sent again, the refused file is kept once, not once an hour: "
+          f"{os.listdir(nightdir)}")
+    hd = {"Authorization": "Bearer " + tok,
+          "X-LTC-File": "night_2026-11-09.journal.txt",
+          "X-LTC-SHA256": hashlib.sha256(other).hexdigest(),
+          "X-LTC-Replaces": "1" * 64}
+    check(R.receive(store, tok, hd, other)[0] == 409,
+          "replacing a copy the server does not hold is refused")
+    hd["X-LTC-Replaces"] = sha
+    code, doc = R.receive(store, tok, hd, other)
+    check(code == 200 and doc["sha256"] == hashlib.sha256(other).hexdigest()
+          and open(os.path.join(nightdir, "night_2026-11-09.journal.txt"),
+                   "rb").read() == other and
+          open(os.path.join(nightdir, "night_2026-11-09.journal.txt"
+                            ".replaced-" + sha[:16]), "rb").read() == data,
+          f"naming the copy it replaces, the newer is kept and the older "
+          f"stays beside it: {doc} {os.listdir(nightdir)}")
+    ok, out = R.verify_nights(store)
+    check(ok, f"and the store still verifies: {out}")
+    code, doc = R.receive(store, tok, {
+        "Authorization": "Bearer " + tok,
+        "X-LTC-File": "night_2026-11-11.jsonl",
+        "X-LTC-SHA256": "\u00e9" * 64}, data)
+    check(code == 400 and doc == {"ok": False,
+                                  "error": "a header could not be read"},
+          f"a checksum that is not ASCII is a 400, not a crash: {doc}")
+    blocked = tempfile.mkdtemp()
+    with open(os.path.join(blocked, "night-journal"), "w") as fh:
+        fh.write("a file where the folder should be")
+    code, doc = R.receive(blocked, tok, {
+        "Authorization": "Bearer " + tok,
+        "X-LTC-File": "night_2026-11-11.jsonl",
+        "X-LTC-SHA256": sha}, data)
+    check(code == 500 and doc["ok"] is False and
+          doc["error"].startswith("the file could not be stored ("),
+          f"a store it cannot write is a 500 with a sentence: {doc}")
+    # On Windows the clock moves in steps of about 15 ms: two requests in
+    # one step still write different temporary files.
+    real_ns = R.time.time_ns
+    R.time.time_ns = lambda: 1
+    try:
+        parts = {R._part("x") for _ in range(50)}
+    finally:
+        R.time.time_ns = real_ns
+    check(len(parts) == 50,
+          f"each request writes its own temporary file, whatever the "
+          f"clock: {len(parts)} names for 50")
+    check(post(name="night_2026-11-12.jsonl\n")[0] == 400,
+          "a name with a newline after it is refused")
+    check(post("night_2026-11-10.jsonl", digest="0" * 64) ==
+          (400, {"ok": False, "error": "the checksum does not match"}),
+          "a wrong checksum is refused")
+    check(post("night_2026-11-10.jsonl", token="wrong-token-xxxxxx")[0]
+          == 401, "a wrong token is refused")
+    for bad in ("../night_2026-11-10.jsonl", "night_2026-11-10.jsonl/x",
+                "nights/night_2026-11-10.jsonl",
+                "/etc/night_2026-11-10.jsonl", "night_2026-02-30.jsonl",
+                "night_2026-11-10.txt", "incident_2026-11-10_130000",
+                "night_2026-11-10.jsonl\x00", "ltcplay_audit.json", ""):
+        code, doc = post(bad)
+        check(code == 400 and doc["ok"] is False,
+              f"refused: {bad!r} ({code} {doc})")
+    check(not os.path.exists(os.path.join(store, "night-journal",
+                                          "2026-11-10")) and
+          not os.path.exists(os.path.join(os.path.dirname(store),
+                                          "night_2026-11-10.jsonl")),
+          "nothing refused was written anywhere")
+    ok, out = R.verify_store(store)
+    check(ok and out == [], f"the audit store is not confused by the night "
+                            f"journal folder: {out}")
+    print("  ok")
+
+
+def test_journal_format_doc_is_real_output():
+    section("tools/JOURNAL_FORMAT.md: every journal line and machine log "
+            "record it shows for a show's start, finish, Stop, failed "
+            "start, Start now, Start at a cue, Hold and Resume and a restart "
+            "is what the real scheduler writes, run again here on a test "
+            "clock; the counting table names the real action and outcome "
+            "values; no dashes")
+    S = _sched()
+    if S is None:
+        return
+    import json as _j
+    import tempfile
+    from ltcplay import journal as J
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 30)]
+    svc = _svc(S, work, now).start(thread=False)
+    steps = [
+        ((18, 0), lambda: svc.tick()),
+        ((18, 0, 3), lambda: svc._apply(S.Event(S.SHOW_CONFIRMED, "reader",
+                                                 show=1))),
+        ((18, 7, 20), lambda: svc._apply(S.Event(
+            S.SHOW_ENDED, "system", show=1,
+            detail="timecode reached the end"))),
+        ((18, 20), lambda: svc.tick()),
+        ((18, 22), lambda: svc._apply(_op(S, S.STOP_SHOW, confirmed=True))),
+        ((18, 25), lambda: svc._apply(_op(S, S.RESUME))),
+        ((18, 26), lambda: svc._apply(_op(S, S.START_NOW, who="Jeff",
+                                          screen="Stream Deck"))),
+        ((18, 26, 6), lambda: svc._apply(S.Event(
+            S.SHOW_FAILED, "system",
+            detail="no timecode came back within 10 s of the start"))),
+        ((18, 30), lambda: svc._apply(_op(
+            S, S.START_NOW, detail="from the cue Finale (00:05:10:00)"))),
+        ((18, 32), lambda: svc._apply(_op(S, S.HOLD_ON))),
+        ((18, 33), lambda: svc._apply(_op(S, S.RESUME))),
+        ((18, 40), lambda: svc._apply(S.Event(
+            S.SHOW_ENDED, "system", detail="timecode reached the end"))),
+        ((19, 0), lambda: svc.tick())]
+    for hm, act in steps:
+        now[0] = _den(S, *hm)
+        act()
+    now[0] = _den(S, 19, 3)
+    svc = _svc(S, work, now).start(thread=False)    # cut by a restart
+    for hm, act in (
+            ((19, 20), lambda: svc.tick()),
+            ((19, 27, 30), lambda: svc._apply(S.Event(
+                S.SHOW_ENDED, "system", show=5,
+                detail="timecode reached the end"))),
+            ((19, 35), lambda: svc._apply(_op(S, S.HOLD_ON))),
+            ((19, 40, 1), lambda: svc.tick()),
+            ((19, 45), lambda: svc._apply(_op(S, S.START_NOW)))):
+        now[0] = _den(S, *hm)
+        act()
+    nights = os.path.join(work, "nights")
+    build = re.compile(r"\((?:unreleased|release|version)[^()]*"
+                       r"(?:\([^()]*\))?[^()]*\)")
+    lines = {build.sub("(BUILD)", x) for x in
+             _lines(os.path.join(nights, J.journal_name("2026-11-14")))}
+    recs = []
+    for r in _jsonl_rows(os.path.join(nights,
+                                      J.machine_name("2026-11-14"))):
+        r = dict(r)
+        r.pop("id")
+        recs.append(r)
+    # A Programming Run at a show's time (the rig check on, as on the
+    # show PC): no fire, no START_NOW.
+    pn = _pr_night()
+    pn.pr.skip = lambda: "Programming"
+    pn.svc.tick()
+    for t in ((17, 59, 50), (18, 0, 0), (18, 0, 1)):
+        pn.now[0] = _den(S, *t)
+        pn.svc.tick()
+        _settle(pn.svc, pn.c)
+    prog = [dict(r) for r in pn.svc.journal]
+    pn.c.close()
+    pn.link.close()
+    check(not [r for r in prog if r["action"] in ("fire", "START_NOW")] and
+          [r for r in prog if r["outcome"] == "programming"],
+          "a Programming Run writes no fire and no START_NOW record")
+    for r in prog:
+        lines.add(build.sub("(BUILD)", r["line"]))
+        r.pop("id")
+        recs.append(r)
+    here = os.path.dirname(os.path.abspath(__file__))
+    doc = open(os.path.join(here, "tools", "JOURNAL_FORMAT.md"),
+               encoding="utf-8").read()
+    for words in (
+            "Count on `action` and `outcome` (and `reason`), never on "
+            "`actor`",
+            "They are told apart only by `text`: \"pressed Start at a cue\"",
+            "is counted as unknown, cut short",
+            "### A Programming Run at a show's time"):
+        check(words in doc, f"JOURNAL_FORMAT.md says {words!r}")
+    shown_lines, shown_recs = 0, 0
+    for block in re.findall(r"```\n(.*?)```", doc, re.S):
+        for x in block.splitlines():
+            if re.match(r"^\d\d:\d\d:\d\d  ", x):
+                shown_lines += 1
+                check(build.sub("(BUILD)", x) in lines,
+                      f"the doc's journal line is real: {x[:120]!r}")
+            elif x.startswith("{"):
+                shown_recs += 1
+                r = _j.loads(x)
+                r.pop("id")
+                check(r in recs, f"the doc's machine log record is real: "
+                                 f"{x[:160]!r}")
+    check(shown_lines >= 14 and shown_recs >= 13,
+          f"the doc shows every kind ({shown_lines} lines, {shown_recs} "
+          f"records)")
+    for row in (
+            "| Scheduled start | `fire` | `fired` | `FIRED` | `scheduler` |",
+            "| Start now (an extra show) | `START_NOW` | `fired` | `EXTRA "
+            "SHOW (operator)` | `operator` |",
+            "| Start now (the delayed show) | `START_NOW` | `fired` | "
+            "`DELAYED START (operator hold)` | `operator` |",
+            "| Finished | `SHOW_ENDED` | `done` | `DONE` | `system` (the "
+            "show runner) |",
+            "| Operator Stop | `STOP_SHOW` | `aborted` | `STOPPED (operator "
+            "Stop)` | `operator` |",
+            "| Failed start | `SHOW_FAILED` | `fault` | `FAULT (` and why | "
+            "`system` (the show runner) |",
+            "| Cut off by a restart | `BOOT_DONE` | `fault` | `FAULT (ltcplay "
+            "restarted during the show)` | `system` |"):
+        check(row in doc, f"the counting table has {row[:60]!r}")
+        cells = [c.strip().strip("`") for c in row.split("|")[1:-1]]
+        action, outcome, reason = cells[1], cells[2], cells[3]
+        reason = reason.split("`")[0]
+        check(any(r["action"] == action and r["outcome"] == outcome and
+                  str(r["reason"]).startswith(reason) for r in recs),
+              f"and the real night wrote it: {action} {outcome} {reason}")
+    _no_dashes(doc, "JOURNAL_FORMAT.md")
+    print("  ok")
 
 
 def test_audit_never_blocks_or_fails_a_press():
@@ -101186,6 +102169,843 @@ def test_preroll_wiring_in_the_engine():
     rig.baseline = None
     check("10.0.1.2" in [ip for _l, ip in W._preroll_hosts(h, cfg)],
           "before the first sweep: every pixel controller")
+# ------------------------------------------------- pre-show audio (Jeff, 11-12)
+class _PsaPlayer:
+    """Stands in for the announcement player behind pre-show audio: records
+    every play_preshow, and can block (an Event) or raise. Has what
+    PreShowAudio reads of a real AnnounceService: config_path, files,
+    _probe_file and playing."""
+
+    def __init__(self, folder, block=None, fail=None):
+        A = _ann()
+        self.config_path = os.path.join(folder, "ltcplay_announce.json")
+        self.files = {}
+        self._probe_file = A.AnnounceService._probe_file
+        self.playing = None
+        self.calls = []
+        self.block = block
+        self.fail = fail
+
+    def play_preshow(self, path):
+        if self.playing is not None:
+            # As the real player decides it, under its own lock.
+            raise ValueError(_ann().PRESHOW_BUSY)
+        self.calls.append((path, time.monotonic()))
+        if self.block is not None:
+            self.block.wait(5)
+        if self.fail is not None:
+            raise self.fail
+        return {}
+
+
+def _psa_rig(n=None, player=None, on=True, folder=None, block=None,
+             fail=None, **night):
+    """A Fire & Ice night (_fi_night: show 1 at 18:00, the clock at 17:55,
+    Run pressed) with pre-show audio attached as web.serve attaches it:
+    welcome.wav in its folder, turned on unless `on` is False."""
+    from ltcplay import preshow_audio as PA
+    n = n or _fi_night(**night)
+    folder = folder or tempfile.mkdtemp()
+    if not os.path.exists(os.path.join(folder, "welcome.wav")):
+        _ann_write_wav(os.path.join(folder, "welcome.wav"), seconds=0.5)
+    player = player or _PsaPlayer(folder, block=block, fail=fail)
+    pa = PA.PreShowAudio(folder, player, journal=n.svc.preshow_journal)
+    if on:
+        pa.save(True, os.path.join(folder, "welcome.wav"), who="Jeff",
+                screen="Rack screen")
+    n.svc.preshow_audio = pa
+    n.pa, n.player, n.folder = pa, player, folder
+    return n
+
+
+def _psa_lines(svc):
+    return [r["text"] for r in list(svc.journal)
+            if r.get("action") == "pre-show audio"]
+
+
+def _psa_at(n, *hms):
+    n.now[0] = _den(n.S, *hms)
+    n.svc.tick()
+
+
+def test_preshow_audio_plays_at_exactly_two_minutes_once():
+    section("pre-show audio (Jeff, 2026-11-12): with it on, the chosen file "
+            "plays once, exactly 120 s before a scheduled show's time and "
+            "not a moment before, through the announcement player; once "
+            "only, said in the journal in one plain line; the show starts "
+            "at its time; off by default, and off plays nothing")
+    from ltcplay import preshow_audio as PA
+    S = _sched()
+    if S is None:
+        return
+    # Off by default: no settings file, nothing plays, nothing is said.
+    n = _psa_rig(on=False)
+    check(not n.pa.is_on() and n.pa.view()["on"] is False and
+          not os.path.exists(n.pa.settings_path()),
+          f"off until turned on: {n.pa.view()}")
+    for hms in ((17, 57, 59), (17, 58), (17, 58, 1), (17, 59)):
+        _psa_at(n, *hms)
+    time.sleep(0.2)
+    check(n.player.calls == [] and _psa_lines(n.svc) == [],
+          f"off: nothing played, nothing said: {n.player.calls} "
+          f"{_psa_lines(n.svc)}")
+    n.c.close()
+    n.link.close()
+    # On: not a moment before T-120.
+    n = _psa_rig()
+    check(n.pa.LEAD_S == 120 and PA.LEAD_S == 120 and PA.GRACE_S == 5,
+          "two minutes, five seconds of grace")
+    _psa_at(n, 17, 57, 59, 999000)
+    time.sleep(0.2)
+    check(n.player.calls == [] and n.pa.record(("2026-11-14", 1)) is None,
+          f"1 ms before 120 s: nothing yet: {n.player.calls}")
+    _psa_at(n, 17, 58)
+    check(wait_for(lambda: len(n.player.calls) == 1, 3),
+          f"at exactly 120 s before the show: played: {n.player.calls}")
+    check(wait_for(lambda: "Pre-show audio played before show 1: "
+                   "welcome.wav." in _psa_lines(n.svc), 3),
+          f"the journal says so in one line: {_psa_lines(n.svc)}")
+    check(n.player.calls[0][0] == os.path.join(n.folder, "welcome.wav"),
+          f"the chosen file: {n.player.calls}")
+    for hms in ((17, 58, 0, 250000), (17, 58, 1), (17, 58, 4), (17, 59),
+                (17, 59, 59)):
+        _psa_at(n, *hms)
+    time.sleep(0.2)
+    check(len(n.player.calls) == 1 and len(_psa_lines(n.svc)) == 1,
+          f"once only: {n.player.calls} {_psa_lines(n.svc)}")
+    _psa_at(n, 18, 0)
+    _settle(n.svc, n.c)
+    check(n.svc.machine.state == S.SHOW and
+          n.svc.machine.slot(1).fired_at == _den(S, 18, 0),
+          f"the show starts at its time: {n.svc.machine.state}")
+    for t in _psa_lines(n.svc):
+        _no_dashes(t, "the pre-show audio journal")
+    # On disk before it plays, so a restart never plays it twice.
+    with open(n.pa.played_path(), encoding="utf-8") as fh:
+        doc = json.load(fh)
+    recs = list(doc["shows"].values())
+    check(len(recs) == 1 and recs[0]["n"] == 1 and
+          recs[0]["outcome"] == "played",
+          f"written down: {doc}")
+    n.c.close()
+    n.link.close()
+    print("  ok")
+
+
+def test_preshow_audio_restart_inside_the_window_never_replays():
+    section("pre-show audio: LTC Player restarted inside the two minutes "
+            "after it played: the record read back, not played again, said "
+            "once; the settings themselves survive the restart")
+    from ltcplay import preshow_audio as PA
+    S = _sched()
+    if S is None:
+        return
+    n = _psa_rig()
+    _psa_at(n, 17, 58)
+    check(wait_for(lambda: len(n.player.calls) == 1 and any(
+              "played before show 1" in t for t in _psa_lines(n.svc)), 3),
+          f"setup: played once: {n.player.calls}")
+    # The restart: a new PreShowAudio on the same settings folder.
+    p2 = _PsaPlayer(n.folder)
+    pa2 = PA.PreShowAudio(n.folder, p2, journal=n.svc.preshow_journal)
+    check(pa2.is_on() and pa2.view()["name"] == "welcome.wav",
+          f"the setting survives a restart: {pa2.view()}")
+    n.svc.preshow_audio = pa2
+    for hms in ((17, 58, 2), (17, 58, 3), (17, 59)):
+        _psa_at(n, *hms)
+    time.sleep(0.3)
+    said = [t for t in _psa_lines(n.svc) if "restarted" in t]
+    check(p2.calls == [] and len(said) == 1 and
+          said[0] == "Pre-show audio for show 1 was already handled before "
+                     "LTC Player restarted, so it is not played again.",
+          f"not played again, said once: {p2.calls} {said}")
+    n.c.close()
+    n.link.close()
+    print("  ok")
+
+
+def test_preshow_audio_never_plays_when_it_should_not():
+    section("pre-show audio is skipped, with the reason in the journal: on "
+            "Hold, show control off, a show already running, a show started "
+            "with Start now, a delayed show, an announcement already "
+            "playing, and LTC Player starting (or the schedule changing) "
+            "inside the last 115 s; 5 s late still plays")
+    from dataclasses import replace as _dc_replace
+    S = _sched()
+    if S is None:
+        return
+
+    def skipped(n, why):
+        want = f"Pre-show audio not played before show 1: {why}."
+        ok = wait_for(lambda: want in _psa_lines(n.svc), 3)
+        time.sleep(0.1)
+        return ok and n.player.calls == []
+
+    def done(n):
+        n.c.close()
+        n.link.close()
+    # On Hold.
+    n = _psa_rig()
+    _psa_at(n, 17, 56)
+    with n.svc._locked():
+        n.svc._apply(_op(S, S.HOLD_ON))
+    _psa_at(n, 17, 58)
+    check(skipped(n, "the schedule is on Hold"),
+          f"on Hold: {_psa_lines(n.svc)} {n.player.calls}")
+    done(n)
+    # Show control off (Run not pressed).
+    n = _psa_rig()
+    n.svc.run_gate = lambda: False
+    _psa_at(n, 17, 58)
+    check(skipped(n, "show control is off"),
+          f"show control off: {_psa_lines(n.svc)} {n.player.calls}")
+    done(n)
+    # A show already running at T-120 (the machine as it is mid-show).
+    n = _psa_rig()
+    _psa_at(n, 17, 56)
+    m = n.svc.machine
+    n.svc.machine = _dc_replace(m, state=S.SHOW)
+    n.now[0] = _den(S, 17, 58)
+    with n.svc._locked():
+        n.svc._preshow_lookahead(n.now[0])
+    n.svc.machine = m
+    check(skipped(n, "a show is running"),
+          f"a show running: {_psa_lines(n.svc)} {n.player.calls}")
+    done(n)
+    # Start now before the time: that show is started by hand and gets
+    # none; nothing plays at its old T-120.
+    n = _psa_rig()
+    _psa_at(n, 17, 57)
+    with n.svc._locked():
+        n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    check(n.svc.machine.state == S.SHOW, f"setup: Start now started it: "
+                                         f"{n.svc.machine.state}")
+    for hms in ((17, 58), (17, 58, 1), (17, 59)):
+        _psa_at(n, *hms)
+    time.sleep(0.3)
+    check(n.player.calls == [] and _psa_lines(n.svc) == [
+              "Pre-show audio not played before show 1: a show is "
+              "running."],
+          f"Start now: no pre-show audio for it, and none over it: "
+          f"{n.player.calls} {_psa_lines(n.svc)}")
+    done(n)
+    # Delayed (Delay next, before the window).
+    n = _psa_rig()
+    _psa_at(n, 17, 56)
+    with n.svc._locked():
+        n.svc._apply(_op(S, S.DELAY_NEXT, minutes=5))
+    s1 = n.svc.machine.slot(1)
+    check(s1.start == _den(S, 18, 5), f"setup: delayed to 18:05: {s1}")
+    for hms in ((17, 58), (18, 3)):
+        _psa_at(n, *hms)
+    check(skipped(n, "show 1 was delayed"),
+          f"delayed: {_psa_lines(n.svc)} {n.player.calls}")
+    done(n)
+    # An announcement already playing: skipped, never queued.
+    n = _psa_rig()
+    n.player.playing = "delayed"
+    _psa_at(n, 17, 58)
+    check(skipped(n, "an announcement was already playing"),
+          f"an announcement playing: {_psa_lines(n.svc)} {n.player.calls}")
+    n.player.playing = None
+    _psa_at(n, 17, 58, 2)
+    time.sleep(0.2)
+    check(n.player.calls == [], "and not played once it ends")
+    done(n)
+    # Started inside the window: never late.
+    n = _psa_rig()
+    _psa_at(n, 17, 58, 6)
+    check(skipped(n, "only 114 s were left when it could first play (LTC "
+                     "Player started, or the schedule changed, inside the "
+                     "last 120 s), and it never plays late"),
+          f"late: {_psa_lines(n.svc)} {n.player.calls}")
+    _psa_at(n, 17, 59)
+    _psa_at(n, 18, 0)
+    _settle(n.svc, n.c)
+    check(n.player.calls == [] and n.svc.machine.state == S.SHOW,
+          f"and the show starts at its time: {n.svc.machine.state}")
+    done(n)
+    # Five seconds late is still in time.
+    n = _psa_rig()
+    _psa_at(n, 17, 58, 5)
+    check(wait_for(lambda: len(n.player.calls) == 1, 3),
+          f"5 s late plays: {_psa_lines(n.svc)}")
+    done(n)
+    print("  ok")
+
+
+def test_preshow_audio_never_blocks_the_show():
+    section("pre-show audio never delays, blocks or faults the show: a "
+            "player that hangs leaves the scheduler's tick quick and the "
+            "show starting at its time; a player that raises, a missing "
+            "file: one plain journal line and the show carries on")
+    S = _sched()
+    if S is None:
+        return
+    ev = threading.Event()
+    n = _psa_rig(block=ev)
+    try:
+        t0 = time.monotonic()
+        _psa_at(n, 17, 58)
+        took = time.monotonic() - t0
+        check(wait_for(lambda: len(n.player.calls) == 1, 3),
+              "setup: the player was asked and is hanging")
+        with open(n.pa.played_path(), encoding="utf-8") as fh:
+            recs = list(json.load(fh)["shows"].values())
+        check([r["outcome"] for r in recs] == ["started"],
+              f"written down BEFORE the sound starts, so a restart while "
+              f"it plays never plays it again: {recs}")
+        check(took < 1.0, f"the tick did not wait for the player: {took:.3f}"
+                          f" s")
+        t0 = time.monotonic()
+        for hms in ((17, 59), (17, 59, 59), (18, 0)):
+            _psa_at(n, *hms)
+        took = time.monotonic() - t0
+        _settle(n.svc, n.c)
+        check(took < 1.0 and n.svc.machine.state == S.SHOW and
+              n.svc.machine.slot(1).fired_at == _den(S, 18, 0),
+              f"the show started at its time while the player hung: "
+              f"{n.svc.machine.state} {took:.3f} s")
+    finally:
+        ev.set()
+    n.c.close()
+    n.link.close()
+    # The player raises.
+    n = _psa_rig(fail=RuntimeError("the output went away"))
+    _psa_at(n, 17, 58)
+    want = ("Pre-show audio did not play before show 1 (welcome.wav): "
+            "RuntimeError: the output went away. The show carries on.")
+    check(wait_for(lambda: want in _psa_lines(n.svc), 3),
+          f"a player failure: one line: {_psa_lines(n.svc)}")
+    _psa_at(n, 18, 0)
+    _settle(n.svc, n.c)
+    check(n.svc.machine.state == S.SHOW, f"the show started: "
+                                         f"{n.svc.machine.state}")
+    n.c.close()
+    n.link.close()
+    # The real announcement player, the file gone since it was chosen.
+    A = _ann()
+    work, cfg, _l = _ann_workdir()
+    _ann_write_wav(os.path.join(work, "welcome.wav"), seconds=0.5)
+    n = _fi_night()
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: n.svc.machine.state)
+    n = _psa_rig(n=n, player=ann, folder=work)
+    os.remove(os.path.join(work, "welcome.wav"))
+    _psa_at(n, 17, 58)
+    check(wait_for(lambda: "Pre-show audio did not play before show 1 "
+                   "(welcome.wav): the file is not on this PC. The show "
+                   "carries on." in _psa_lines(n.svc), 3) and
+          ann.playing is None,
+          f"a missing file: said, nothing playing: {_psa_lines(n.svc)}")
+    _psa_at(n, 18, 0)
+    _settle(n.svc, n.c)
+    check(n.svc.machine.state == S.SHOW, "the show started anyway")
+    n.c.close()
+    n.link.close()
+    print("  ok")
+
+
+def test_preshow_audio_through_the_announcement_player():
+    section("pre-show audio plays through the announcement player itself "
+            "(one audio path): its output, its journal, never a Hold, "
+            "refused unless between shows, faded when the show starts; and "
+            "nothing in its path touches flames, lasers or hazers")
+    import ast
+    A = _ann()
+    S = _sched()
+    if S is None:
+        return
+    work, cfg, _l = _ann_workdir()
+    _ann_write_wav(os.path.join(work, "welcome.wav"), seconds=0.5)
+    n = _fi_night()
+    sd = FakeSD()
+    ann = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: n.svc.machine.state)
+    held = []
+    ann.hold_requester = lambda *a, **k: held.append(a) or ("no", None)
+    n.svc.on_show_started = ann.on_show_started
+    n = _psa_rig(n=n, player=ann, folder=work)
+    _psa_at(n, 17, 58)
+    check(wait_for(lambda: ann.playing == A.PRESHOW, 3),
+          f"playing on the announcement player: {ann.playing} "
+          f"{_psa_lines(n.svc)}")
+    st = ann.status()
+    check(st["playing"]["name"] == "Pre-show audio" and
+          st["playing"]["held_schedule"] is False and held == [] and
+          len(sd.output_opened) == 1 and
+          n.svc.machine.state == S.STANDBY,
+          f"its own output, nothing held: {st['playing']} {held}")
+    rows = [r for r in ann.journal if r.get("action") == "play" and
+            r.get("outcome") == "started"]
+    check(len(rows) == 1 and rows[0]["announcement"] == A.PRESHOW and
+          rows[0]["who"] == A.PRESHOW_WHO and
+          "Pre-show audio holds nothing." in rows[0]["text"],
+          f"the announcement journal has it: {rows}")
+    # A show starting fades it (on_show_started), as an announcement.
+    n.now[0] = _den(S, 18, 0)
+    n.svc.tick()
+    _settle(n.svc, n.c)
+    check(wait_for(lambda: ann._player is None or
+                   ann._player.stop_reason == "a show started", 3),
+          f"the show start fades it: "
+          f"{getattr(ann._player, 'stop_reason', None)}")
+    # Refused unless between shows, before anything is claimed.
+    try:
+        ann.close()
+        ann.play_preshow(os.path.join(work, "welcome.wav"))
+        check(False, "pre-show audio played during a show")
+    except ValueError as e:
+        check(str(e) == "a show is running" and ann.playing is None,
+              f"during a show: refused: {e}")
+    sd2 = FakeSD()
+    ann2 = A.AnnounceService(cfg, sd=sd2, operators_folder=work,
+                             state_provider=lambda: "HOLD")
+    try:
+        ann2.play_preshow(os.path.join(work, "welcome.wav"))
+        check(False, "pre-show audio played on Hold")
+    except ValueError as e:
+        check(str(e) == "the schedule is on Hold" and
+              ann2._claim_gen == 0 and not sd2.output_opened,
+              f"on Hold: refused before anything is claimed: {e}")
+    # A show starting while it loads: never started over the show.
+    seen = iter(["STANDBY"])
+    sd3 = FakeSD()
+    ann3 = A.AnnounceService(cfg, sd=sd3, operators_folder=work,
+                             state_provider=lambda: next(seen, "SHOW"))
+    try:
+        ann3.play_preshow(os.path.join(work, "welcome.wav"))
+        check(False, "pre-show audio started over a show that began while "
+                     "it loaded")
+    except ValueError as e:
+        check(str(e) == "a show is running" and ann3.playing is None and
+              not sd3.output_opened,
+              f"a show started while it loaded: not played: {e}")
+    n.c.close()
+    n.link.close()
+    # Its only output is the announcement player: the module imports and
+    # calls nothing of the rig.
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, "ltcplay", "preshow_audio.py"),
+              encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    mods = {a.name for nd in ast.walk(tree)
+            if isinstance(nd, (ast.Import, ast.ImportFrom))
+            for a in nd.names} | {nd.module for nd in ast.walk(tree)
+                                   if isinstance(nd, ast.ImportFrom)
+                                   and nd.module}
+    check(mods <= {"json", "os", "re", "threading", "audit"},
+          f"pre-show audio imports nothing of the rig: {sorted(mods)}")
+    calls = {nd.func.attr for nd in ast.walk(tree)
+             if isinstance(nd, ast.Call) and
+             isinstance(nd.func, ast.Attribute)}
+    bad = {c for c in calls if any(w in c.lower() for w in (
+        "flame", "laser", "hazer", "pump", "arm", "fire", "disarm"))}
+    check(not bad, f"no flame, laser or hazer call: {sorted(bad)}")
+    print("  ok")
+
+
+def test_preshow_audio_every_skip_guard_on_its_own():
+    section("pre-show audio (review of #247, M3): each skip guard on its "
+            "own, each with its own reason: a Stop under way, a Programming "
+            "Run, a dry run or no performer, auto start off, an alert open "
+            "(Jeff: skip), and a show the scheduler would not start at its "
+            "time")
+    import types
+    from dataclasses import replace as _dc_replace
+    S = _sched()
+    if S is None:
+        return
+
+    def one(why, setup, **night):
+        n = _psa_rig(**night)
+        _psa_at(n, 17, 56)
+        undo = setup(n)
+        n.now[0] = _den(S, 17, 58)
+        with n.svc._locked():
+            n.svc._preshow_lookahead(n.now[0])
+        if undo:
+            undo()
+        want = f"Pre-show audio not played before show 1: {why}."
+        ok = wait_for(lambda: want in _psa_lines(n.svc), 3)
+        time.sleep(0.1)
+        check(ok and n.player.calls == [],
+              f"{why}: skipped and said: {_psa_lines(n.svc)} "
+              f"{n.player.calls}")
+        n.c.close()
+        n.link.close()
+
+    def stop_under_way(n):
+        n.svc.halt_begin()
+        return n.svc.halt_end
+    one("a Stop is under way", stop_under_way)
+
+    def programming(n):
+        n.svc.preroll = types.SimpleNamespace(skip=lambda: True)
+    one("a Programming Run is in force", programming)
+
+    def dry(n):
+        n.svc.dry_run = True
+    one("this scheduler does not start shows", dry)
+
+    def no_performer(n):
+        n.svc.performer = None
+    one("this scheduler does not start shows", no_performer)
+    one("the scheduler does not start shows by itself", lambda n: None,
+        auto_start="off")
+
+    def alert(n):
+        n.svc.showtime_gate = lambda: ("Video: MadMapper did not answer",
+                                       frozenset({7}))
+    one("an alert is open, so show 1 would be held at its time", alert)
+
+    def guard(n):
+        m = n.svc.machine
+        n.svc.machine = _dc_replace(m, last_end=_den(S, 17, 55),
+                                    guard_s=900)
+
+        def undo():
+            n.svc.machine = m
+        return undo
+    one("the scheduler would not start show 1 at its time", guard)
+    print("  ok")
+
+
+def test_preshow_audio_an_operator_always_wins():
+    section("pre-show audio (review of #247, M1): an operator's "
+            "announcement press stops it at once and plays; Stop sound stops "
+            "it; a Hold fades it at once; the rack screen's announcement "
+            "buttons stay on while it plays")
+    A = _ann()
+    S = _sched()
+    if S is None:
+        return
+
+    def rig():
+        work, cfg, _l = _ann_workdir()
+        _ann_write_wav(os.path.join(work, "welcome.wav"), seconds=5.0)
+        n = _fi_night()
+        ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                                state_provider=lambda: n.svc.machine.state)
+        n.svc.on_schedule_held = ann.on_schedule_held
+        n = _psa_rig(n=n, player=ann, folder=work)
+        _psa_at(n, 17, 58)
+        check(wait_for(lambda: ann.playing == A.PRESHOW and
+                       ann._player is not None, 3),
+              f"setup: pre-show audio playing: {ann.playing}")
+        return n, ann
+    n, ann = rig()
+    st = ann.play(A.DELAYED, "Andy", "rack screen")
+    rows = [r["text"] for r in ann.journal if r.get("outcome") == "stopped"]
+    check(ann.playing == A.DELAYED and st["playing"]["id"] == A.DELAYED and
+          rows and rows[-1].startswith("Pre-show audio was stopped after") and
+          "because Andy pressed Delayed on the rack screen" in rows[-1],
+          f"a press wins: pre-show audio stopped, Delayed plays: {rows}")
+    ann.stop("Andy", "rack screen")
+    n.c.close()
+    n.link.close()
+    n, ann = rig()
+    ann.stop("Andy", "rack screen")
+    check(ann.playing is None, "Stop sound stops it")
+    n.c.close()
+    n.link.close()
+    n, ann = rig()
+    with n.svc._locked():
+        n.svc._apply(_op(S, S.HOLD_ON))
+    check(wait_for(lambda: ann._player is None or
+                   ann._player.stop_reason == "the schedule was held", 3),
+          f"a Hold fades it at once: "
+          f"{getattr(ann._player, 'stop_reason', None)}")
+    n.c.close()
+    n.link.close()
+    # An operator's announcement playing: a Hold never touches it.
+    work, cfg, _l = _ann_workdir()
+    ann2 = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                             state_provider=lambda: "IDLE")
+    ann2.play(A.DELAYED, "Andy", "rack screen")
+    ann2.on_schedule_held()
+    check(ann2.playing == A.DELAYED and ann2._player.stop_reason is None,
+          "an operator's own announcement is not stopped by a Hold")
+    # And pre-show audio never starts over it: decided under the player's
+    # own lock.
+    try:
+        ann2.play_preshow(os.path.join(work, "delayed.wav"))
+        check(False, "pre-show audio started over an announcement")
+    except ValueError as e:
+        check(str(e) == A.PRESHOW_BUSY and ann2.playing == A.DELAYED,
+              f"over an announcement: refused, it plays on: {e}")
+    page = _ui2_page_inline()
+    check("function annLookFor(s)" in page and
+          "const L = annLookFor(s);" in page,
+          "the footer's buttons are drawn with pre-show audio not counted "
+          "as playing")
+    print("  ok")
+
+
+def test_preshow_audio_110_s_cap_and_one_clear_line():
+    section("pre-show audio (Jeff, 2026-11-12): a file over 110 s is refused "
+            "when chosen and again when due, with its length; through the "
+            "show audio its limit is 110 s, not 60; the journal reads one "
+            "clear line, never the player's press sentence; a show whose "
+            "time is edited after it played never plays it again")
+    from dataclasses import replace as _dc_replace
+    from ltcplay import preshow_audio as PA
+    A = _ann()
+    S = _sched()
+    if S is None:
+        return
+    check(PA.MAX_S == 110 and A.PRESHOW_MAX_S == 110.0, "110 s")
+    n = _psa_rig()
+    long_ = os.path.join(n.folder, "long.wav")
+    _ann_write_wav(long_, seconds=120.0, rate=800)
+    ch = {c["name"]: c for c in n.pa.choices()}
+    check(ch["long.wav"]["too_long"] and not ch["welcome.wav"]["too_long"],
+          f"the list says which are too long: {ch}")
+    try:
+        n.pa.save(True, long_)
+        check(False, "a 120 s file was saved")
+    except ValueError as e:
+        check(str(e) == "That file is 120 s long; pre-show audio is at "
+                        "most 110 s. Choose a shorter file. Nothing was "
+                        "changed." and n.pa.view()["name"] == "welcome.wav",
+              f"refused when chosen, its length said: {e}")
+    # Replaced by a long file after it was chosen: refused when due.
+    os.replace(long_, os.path.join(n.folder, "welcome.wav"))
+    _psa_at(n, 17, 58)
+    want = ("Pre-show audio did not play before show 1 (welcome.wav): that "
+            "file is 120 s long; pre-show audio is at most 110 s. Choose a "
+            "shorter file. The show carries on.")
+    check(wait_for(lambda: want in _psa_lines(n.svc), 3) and
+          n.player.calls == [],
+          f"refused again when due: {_psa_lines(n.svc)}")
+    n.c.close()
+    n.link.close()
+    # The player's own show audio limit for it.
+    work, cfg, _l = _ann_workdir()
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work)
+    ann._route_limit_s = A.PRESHOW_MAX_S
+    check(ann._too_long(100.0) is None and "at most 110 s" in
+          (ann._too_long(111.0) or ""),
+          "through the show audio pre-show audio may be 110 s")
+    ann._route_limit_s = A.SHOW_ROUTE_MAX_S
+    check("at most 60 s" in (ann._too_long(61.0) or ""),
+          "an announcement still at most 60 s")
+    # One clear line from a refusal of the real player (no output picked).
+    work, cfg, _l = _ann_workdir(device="")
+    _ann_write_wav(os.path.join(work, "welcome.wav"), seconds=0.5)
+    n = _fi_night()
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: n.svc.machine.state)
+    n = _psa_rig(n=n, player=ann, folder=work)
+    _psa_at(n, 17, 58)
+    check(wait_for(lambda: any(t.startswith(
+              "Pre-show audio did not play before show 1 (welcome.wav): "
+              "no announcement output is picked") for t in
+              _psa_lines(n.svc)), 3),
+          f"one clear line: {_psa_lines(n.svc)}")
+    check(not any("pressed" in t or "Nothing was changed" in t
+                  for t in _psa_lines(n.svc)),
+          f"never the press sentence: {_psa_lines(n.svc)}")
+    n.c.close()
+    n.link.close()
+    # Played, then the show's time edited (a new time, as a save gives):
+    # never again.
+    n = _psa_rig()
+    _psa_at(n, 17, 58)
+    check(wait_for(lambda: len(n.player.calls) == 1, 3), "setup: played")
+    m = n.svc.machine
+    n.svc.machine = _dc_replace(m, slots=tuple(
+        _dc_replace(s, start=_den(S, 18, 1), planned=None) if s.n == 1
+        else s for s in m.slots))
+    n.now[0] = _den(S, 17, 59)
+    with n.svc._locked():
+        n.svc._preshow_lookahead(n.now[0])
+    n.svc.machine = m
+    time.sleep(0.3)
+    check(len(n.player.calls) == 1, f"a new time for show 1: not played "
+                                    f"again: {n.player.calls}")
+    n.c.close()
+    n.link.close()
+    print("  ok")
+
+
+def test_preshow_audio_setting_and_routes():
+    section("pre-show audio's two settings: On or Off and one file the "
+            "announcements know, saved in the settings folder; the show "
+            "machine only, Settings permission; web.serve wires it off; the "
+            "status carries the chosen name; refusals in a sentence")
+    from ltcplay import preshow_audio as PA
+    from ltcplay import remote as RM, users as U
+    S = _sched()
+    if S is None:
+        return
+    A = _ann()
+    work, cfg, _l = _ann_workdir()
+    sub = os.path.join(work, "Announcements")
+    os.makedirs(sub)
+    _ann_write_wav(os.path.join(sub, "welcome.wav"), seconds=0.5)
+    with open(os.path.join(work, "notes.txt"), "w") as fh:
+        fh.write("not audio")
+    with open(os.path.join(work, "broken.wav"), "wb") as fh:
+        fh.write(b"RIFF....nope")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work)
+    ann.files[A.DELAYED] = os.path.join(sub, "welcome.wav")
+    pa = PA.PreShowAudio(work, ann)
+    ch = {c["name"]: c for c in pa.choices()}
+    check(set(ch) == {"delayed.wav", "cancellation.wav",
+                      "cannot_continue.wav", "broken.wav", "welcome.wav"} and
+          ch["welcome.wav"]["available"] and
+          not ch["broken.wav"]["available"],
+          f"the WAV files the announcements know, each said: {ch}")
+    for bad, why in ((("yes", ""), "On has to be true or false"),
+                     ((True, ""), "Choose the audio file first"),
+                     ((True, "/etc/passwd"), "not one the announcements "
+                                             "know"),
+                     ((True, os.path.join(work, "broken.wav")),
+                      "That file cannot play")):
+        try:
+            pa.save(*bad)
+            check(False, f"saved: {bad}")
+        except ValueError as e:
+            check(why in str(e) and "Nothing was changed" in str(e) and
+                  not pa.is_on(), f"{bad}: {e}")
+            _no_dashes(str(e), "a pre-show audio refusal")
+    text = pa.save(True, os.path.join(sub, "welcome.wav"))
+    check(text == "Pre-show audio is on: welcome.wav, played 2 minutes "
+                  "before each scheduled show." and pa.is_on(),
+          f"on: {text}")
+    with open(os.path.join(work, PA.SETTINGS_FILE), encoding="utf-8") as fh:
+        doc = json.load(fh)
+    check(doc["on"] is True and doc["file"] == os.path.join(sub,
+                                                            "welcome.wav"),
+          f"saved in the settings folder: {doc}")
+    check(PA.PreShowAudio(work, ann).view()["on"] is True,
+          "read back as on")
+    check(pa.save(False, os.path.join(sub, "welcome.wav")) ==
+          "Pre-show audio is off: welcome.wav." and not pa.is_on(),
+          "off keeps the file")
+    v = PA.PreShowAudio(work, ann).view()
+    check(v["on"] is False and v["name"] == "welcome.wav",
+          f"read back as off, the file kept: {v}")
+    with open(os.path.join(work, PA.SETTINGS_FILE), "w") as fh:
+        fh.write("{not json")
+    v = PA.PreShowAudio(work, ann).view()
+    check(v["on"] is False and "could not be used" in (v["error"] or ""),
+          f"a broken settings file: off, said: {v}")
+    os.remove(os.path.join(work, PA.SETTINGS_FILE))
+    # The routes.
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    try:
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/preshow-audio",
+                           client=loop)
+        check(st == 409 and "needs the announcements" in out.get("error", ""),
+              f"not wired: said: {st} {out}")
+        R.remote.preshow_audio = pa
+        st, _h, out = R.ask("GET", "/api/remote/preshow-audio")
+        check(st == 403, f"the show machine only: {st}")
+        st, _h, out = R.ask("POST", "/api/remote/preshow-audio",
+                            {"on": True, "file": os.path.join(
+                                sub, "welcome.wav")})
+        check(st == 403 and not pa.is_on(), f"never from the network: {st}")
+        check(U.classify("/api/remote/preshow-audio", {"on": False}) ==
+              "settings" and "preshow-audio" in RM.LOCAL_ONLY,
+              "Settings permission, the show machine only")
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/preshow-audio",
+                           client=loop)
+        check(st == 200 and out["on"] is False and
+              any(c["name"] == "welcome.wav" for c in out["choices"]),
+              f"the card and the files: {st} {out}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/preshow-audio",
+                           {"on": True, "file": os.path.join(
+                               sub, "welcome.wav")}, client=loop)
+        check(st == 200 and pa.is_on() and
+              out["preshow_audio"]["name"] == "welcome.wav",
+              f"turned on from the show machine: {st} {out}")
+        rows = [r for r in R.svc.journal if r.get("action") ==
+                "pre-show audio"]
+        check(rows and "Pre-show audio is on: welcome.wav" in rows[-1]["text"],
+              f"journaled: {rows[-1:]}")
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/status",
+                           client=loop)
+        v = out.get("preshow_audio") or {}
+        check(v.get("on") is True and v.get("name") == "welcome.wav" and
+              v.get("lead_s") == 120,
+              f"the status carries the chosen name: {v}")
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        check("preshow_audio" not in out, "not on an iPad's status")
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/status",
+                           client=loop)
+        check("file" not in out.get("preshow_audio", {}) and
+              sub not in json.dumps(out),
+              "the status names the file, never its path")
+        # With users: the GET needs Settings, as its POST does.
+        us = U.Users(tempfile.mkdtemp(), hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator")])
+        R.remote.users = us
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/preshow-audio",
+                           client=loop)
+        check(st == 403 and "choices" not in out and sub not in
+              json.dumps(out), f"signed out: no list, no path: {st} {out}")
+        ok, why, tok, _n = us.sign_in("Ollie", "", True, "rack",
+                                      new_password="Ollie-pw-1234")
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/preshow-audio",
+                           client=loop,
+                           headers={"Cookie": f"{U.COOKIE}={tok}"})
+        check(ok and st == 403, f"an operator: refused: {st} {out}")
+        us.sign_out(tok, "rack", local=True)
+        ok, why, tok, _n = us.sign_in("Jeff", "", True, "rack",
+                                      new_password="Jeff-pw-1234")
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/preshow-audio",
+                           client=loop,
+                           headers={"Cookie": f"{U.COOKIE}={tok}"})
+        check(ok and st == 200 and out.get("file") ==
+              os.path.join(sub, "welcome.wav"),
+              f"an admin: the list and the path: {st}")
+        # The card reads the chosen file again when shown.
+        os.remove(os.path.join(sub, "welcome.wav"))
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/preshow-audio",
+                           client=loop,
+                           headers={"Cookie": f"{U.COOKIE}={tok}"})
+        check(st == 200 and out["file_ok"] is False and
+              pa.view()["file_ok"] is False,
+              f"a file deleted since: said when shown: {out}")
+    finally:
+        R.close()
+    # web.serve: wired with both the announcements and the scheduler, off.
+    from ltcplay import web as web_mod
+    from ltcplay import schedule_service as SV
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc())
+    now = [_den(S, 17, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    work2, cfg2, _l = _ann_workdir()
+    ann2 = A.AnnounceService(cfg2, sd=FakeSD(), operators_folder=work2)
+    httpd = web_mod.serve(work2, port=_free_port(), schedule=svc,
+                          announce=ann2)
+    try:
+        pa2 = httpd.preshow_audio
+        check(isinstance(pa2, PA.PreShowAudio) and svc.preshow_audio is pa2
+              and httpd.remote.preshow_audio is pa2 and
+              pa2.announce is ann2 and pa2.folder == work2 and
+              not pa2.is_on(),
+              f"web.serve wires it beside ltcplay_announce.json, off: "
+              f"{pa2 and pa2.view()}")
+    finally:
+        httpd.server_close()
+        svc.stop()
+    httpd = web_mod.serve(work2, port=_free_port(), announce=ann2)
+    try:
+        check(httpd.preshow_audio is None,
+              "no scheduler: no pre-show audio")
+    finally:
+        httpd.server_close()
+    print("  ok")
+
+
 def _pr_notes(n):
     """The pre-roll's own journal lines, collected (the engine's go to the
     schedule journal; _pr_night's PreRoll has none)."""
@@ -103260,8 +105080,8 @@ def test_show_control_refusals_say_turn_it_off():
     section("show control (Jeff, 2026-11-11; cold review of #240): a "
             "refusal while show control is on says turn it off (End "
             "rehearsal in a rehearsal), never press Stop: Stop leaves it "
-            "on. The timed purge, a new show file and the terminal's "
-            "rig-not-answering line")
+            "on. The timed purge, a new show file, the Purge page's hazers "
+            "and the terminal's rig-not-answering line")
     import inspect
     import types
     from ltcplay import remote as RM
@@ -103287,6 +105107,22 @@ def test_show_control_refusals_say_turn_it_off():
           "a rehearsal)" in why and "Press Stop" not in why and
           "Nothing was written" in why,
           f"a new show file with a show file running: {why!r}")
+    # The Purge page's hazers (hazertest.py): the same words, both ways
+    # show control can be on.
+    for how, ctl in (
+            ("the session running",
+             types.SimpleNamespace(session=run, state=lambda: {})),
+            ("the engine's state starting",
+             types.SimpleNamespace(session=None,
+                                   state=lambda: {"starting": True}))):
+        fake = types.SimpleNamespace(schedule=None, control=ctl,
+                                     _ht_state=lambda: "idle",
+                                     show_control_on=lambda cs: False)
+        why = RM.Remote.hazer_test_show_busy(fake)
+        check(why == "show control is on; turn show control off first "
+                     "(End rehearsal in a rehearsal)" and
+              "press Stop" not in why,
+              f"the hazers on the Purge page with {how}: {why!r}")
     src = inspect.getsource(DP.warnings_for)
     check("Turn show control off and on (on the Mac page: " in src and
           "Stop and Run after it is back" not in src,
@@ -104289,6 +106125,9 @@ _UI2_ROUTES = {
     "/api/remote/announce-test-tone": "settings",
     "/api/remote/arm-hold": "arm",
     "/api/remote/arm-release": "safety",
+    # The machine rows (morning.Arrangement, 2026-11-13): a save is the
+    # map's Arrange row; its beat saves nothing (None by its body).
+    "/api/remote/arrangement": "show_files",
     "/api/remote/audit-verify": None,
     "/api/remote/checklist-export": None,
     "/api/remote/cleaning": None,
@@ -104335,6 +106174,9 @@ _UI2_ROUTES = {
     "/api/remote/play-from-cues-save": "settings",
     "/api/remote/preroll-check": "settings",
     "/api/remote/preroll-continue": "show",
+    # Pre-show audio (preshow_audio.py, Jeff 2026-11-12): its card's GET and
+    # its one setting's POST, the Settings row.
+    "/api/remote/preshow-audio": "settings",
     "/api/remote/purge-clear": "safety",
     "/api/remote/purge-fire": "arm",
     "/api/remote/purge-stop": "safety",
@@ -106895,6 +108737,344 @@ def test_ui2_startup_steps_never_overlap():
                   f"overlap, nothing spills out of its row or past the "
                   f"panel: overlap {r['over']}, spills {r['spill']}, "
                   f"sides {r['side']}, sideways {r['hs']}")
+    print("  ok")
+
+
+# ---------------------------------------------------------------------------
+# The machine rows drawn (morning.Arrangement; Jeff, 2026-11-13: "currently
+# the wave flamers span two rows and he was hoping to get them all on the
+# same row"): the Fuel step's tanks and the Purge step's Machines in the
+# same saved rows, at the show PC's sizes.
+# ---------------------------------------------------------------------------
+
+def _ui2_rows_fixture():
+    """tools/ui/fx/rows.json: 16 machines of 3 types in saved rows (one
+    machine new, one id gone), and the Fuel view's 15 tanks."""
+    import json as _j
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "tools", "ui", "fx", "rows.json"),
+              encoding="utf-8") as fh:
+        return _j.load(fh)
+
+
+def _ui2_status_rows(problem=""):
+    import copy
+    st, routes = _ui2_status_startup_steps()
+    fx = _ui2_rows_fixture()
+    mo = routes["/api/remote/morning"]
+    mo["machines"] = copy.deepcopy(fx["machines"])
+    mo["groups"] = copy.deepcopy(fx["groups"])
+    mo["arrangement"] = dict(copy.deepcopy(fx["arrangement"]),
+                             problem=problem)
+    mo["layout"] = {m["id"]: {"x": 50, "y": 50} for m in fx["machines"]}
+    routes["/api/remote/fuel"].update(
+        units=copy.deepcopy(fx["units"]),
+        unit_ids=[u["id"] for u in fx["units"]])
+    return st, routes, fx
+
+
+# The overlap and spill measure of _UI2_STEP_LAYOUT_JS, for any box.
+_UI2_ROWS_MEASURE_JS = r"""
+const vis = e => e.getClientRects().length && getComputedStyle(e).visibility !== "hidden";
+const nm = e => e.id || (e.dataset && (e.dataset.refill || e.dataset.mid || e.dataset.m)) || e.textContent.trim().replace(/\s+/g, " ").slice(0, 24);
+const measure = P => {
+  const els = [...P.querySelectorAll("button, input, select, textarea, a, [role=button]")].filter(vis);
+  const over = [];
+  for(let i = 0; i < els.length; i++) for(let j = i + 1; j < els.length; j++){
+    const a = els[i], c = els[j];
+    if(a.contains(c) || c.contains(a)) continue;
+    const A = a.getBoundingClientRect(), C = c.getBoundingClientRect();
+    if(Math.min(A.right, C.right) - Math.max(A.left, C.left) > 1 && Math.min(A.bottom, C.bottom) - Math.max(A.top, C.top) > 1)
+      over.push(nm(a) + " / " + nm(c));
+  }
+  const spill = [];
+  for(const e of [...P.querySelectorAll("*")].filter(vis)){
+    const cs = getComputedStyle(e);
+    if(cs.display === "inline" || cs.overflowX !== "visible" || cs.overflowY !== "visible") continue;
+    const E = e.getBoundingClientRect();
+    for(const c of [...e.children].filter(vis)){
+      const C = c.getBoundingClientRect();
+      if(C.top < E.top - 1 || C.bottom > E.bottom + 1 || C.left < E.left - 1 || C.right > E.right + 1)
+        spill.push(nm(c) + " out of " + nm(e));
+    }
+  }
+  const R = P.getBoundingClientRect();
+  const side = els.filter(e => { const r = e.getBoundingClientRect(); return r.left < R.left - 1 || r.right > R.right + 1; }).map(nm);
+  return {n:els.length, over:over.slice(0, 8), spill:spill.slice(0, 8), side:side.slice(0, 8), hs:P.scrollWidth - P.clientWidth};
+};
+// Each row: its label, its ids in order, on how many lines its cards
+// sit, and whether they could all sit on one line at their least width.
+const rowsOf = box => [...box.querySelectorAll(".mrow")].map(r => {
+  const c = r.querySelector(".mrow-c"), bs = [...c.children].filter(vis);
+  const gap = parseFloat(getComputedStyle(c).columnGap) || 0, min = bs.length ? parseFloat(getComputedStyle(bs[0]).minWidth) : 0;
+  return {label:r.querySelector(".mrow-l").textContent, ids:bs.map(nm), min:min,
+    lines:new Set(bs.map(b => Math.round(b.getBoundingClientRect().top))).size,
+    fits:bs.length * min + (bs.length - 1) * gap <= c.clientWidth + 0.5};
+});
+const step = k => { const b = document.querySelector('#d-steps [data-step="' + k + '"]'); if(b) b.click(); return !!b; };
+"""
+
+_UI2_ROWS_LAYOUT_JS = _UI2_ROWS_MEASURE_JS + r"""
+await h.sleep(900);
+out.vw = [innerWidth, innerHeight, devicePixelRatio];
+const P = document.getElementById("d-panel");
+step("fuel");
+await h.sleep(700);
+out.fuel = {rows:rowsOf(document.getElementById("d-fuel")), m:measure(P)};
+document.getElementById("fu-arrange").click();
+await h.sleep(500);
+out.arr = {bar:!document.getElementById("fu-arr-bar").hidden, rows:rowsOf(document.getElementById("d-fuel")), m:measure(P)};
+document.getElementById("fu-arr-cancel").click();
+await h.sleep(300);
+step("purge");
+await h.sleep(700);
+out.groups = [...document.querySelectorAll("#mo-groups [data-grp]")].map(b => b.dataset.grp);
+out.purge = measure(P);
+document.getElementById("d-mach").click();
+await h.sleep(500);
+const S = document.getElementById("sh-body");
+out.mach = {rows:rowsOf(S), m:measure(S)};
+"""
+
+# (CSS width, height, device pixel ratio): 1024 to 2560 wide at 1x, 1.25x,
+# 1.5x and 2x (Jeff's request: "1024 to 2560 CSS px at device scale up to
+# 2").
+UI2_ROWS_SIZES = tuple((w, h, d) for w, h in ((1024, 768), (1280, 800),
+                                             (1600, 1000), (1920, 1080),
+                                             (2560, 1440))
+                       for d in (1, 1.25, 1.5, 2))
+
+
+def test_ui2_machine_rows_fit_and_never_overlap():
+    section("the machine rows drawn in a real browser at 1024, 1280, "
+            "1600, 1920 and 2560 CSS px wide, each at 1x, 1.25x, 1.5x and "
+            "2x (Jeff, 2026-11-13: all the Wave Flamers on one row): the "
+            "Fuel step's tanks, its Arrange mode and the Purge step's "
+            "Machines are the same saved rows (a new machine at the end of "
+            "its type's row, a gone one left out), each type's row on one "
+            "line whenever its cards fit at their least width and wrapped "
+            "only when they do not; no two controls overlap, nothing "
+            "spills or goes off the side; the group buttons follow the rows")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2_page_inline()
+    st, routes, fx = _ui2_status_rows()
+    want = fx["expect"]["fuel"]
+    base = list(chrome) if isinstance(chrome, (list, tuple)) else [chrome]
+    for w, h, dpr in UI2_ROWS_SIZES:
+        where = f"machine rows, {w}x{h} at {dpr}x"
+        m = _ui2_drive(base + [f"--force-device-scale-factor={dpr}"], page,
+                       st, _UI2_ROWS_LAYOUT_JS, size=(w, h),
+                       frag="?tour=0#day", routes=routes, budget_ms=20000)
+        if not check(isinstance(m, dict) and isinstance(m.get("fuel"), dict)
+                     and isinstance(m.get("mach"), dict) and
+                     not m.get("problems"),
+                     f"{where}: drawn and measured: {m!r}"[:1500]):
+            continue
+        fuel, arr, mach = m["fuel"]["rows"], m["arr"]["rows"], m["mach"]["rows"]
+        check([r["ids"] for r in fuel] == want and
+              [r["label"] for r in fuel] == ["Wave Flamers", "G-Flames"],
+              f"{where}: the Fuel step's tanks are the saved rows, the new "
+              f"machine last in its type's row: {fuel}")
+        check([r["ids"] for r in arr] == want and m["arr"]["bar"],
+              f"{where}: Arrange shows the same rows, and its bar: {arr}")
+        check([r["ids"] for r in mach] == want + [["fireball"]],
+              f"{where}: the Purge step's Machines are the same rows: "
+              f"{mach}")
+        check(m["groups"] == fx["expect"]["groups"],
+              f"{where}: the group buttons follow the rows: {m['groups']}")
+        for name, rows in (("Fuel", fuel), ("Arrange", arr),
+                           ("Machines", mach)):
+            for r in rows:
+                check((r["lines"] == 1) == r["fits"] and r["min"] >= 120,
+                      f"{where}, {name}, {r['label']}: on one line when its "
+                      f"cards fit, wrapped only when they cannot: {r}")
+            wv = [r for r in rows if r["label"] == "Wave Flamers"]
+            check(wv and wv[0]["lines"] == 1,
+                  f"{where}, {name}: all six Wave Flamers on one row: {wv}")
+        for name, r in (("Fuel", m["fuel"]["m"]), ("Arrange", m["arr"]["m"]),
+                        ("Purge", m["purge"]), ("Machines", m["mach"]["m"])):
+            check(not r["over"] and not r["spill"] and not r["side"] and
+                  r["hs"] <= 1,
+                  f"{where} (CSS {m.get('vw')}), {name}: no two controls "
+                  f"overlap, nothing spills or goes off the side: {r}")
+    print("  ok")
+
+
+_UI2_ROWS_DRIVE_JS = _UI2_ROWS_MEASURE_JS + r"""
+const ids = () => rowsOf(document.getElementById("d-fuel")).map(r => r.ids);
+const card = id => document.querySelector('#d-fuel [data-mid="' + id + '"]');
+const pev = (el, type, x, y) => el.dispatchEvent(new PointerEvent(type, {bubbles:true, cancelable:true, pointerId:7, pointerType:"mouse", isPrimary:true, buttons:type === "pointerup" ? 0 : 1, clientX:x, clientY:y}));
+const mid = el => { const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+const fuelPosts = () => window.__posts.filter(p => p.route === "fuel-refill");
+const beats = () => window.__posts.filter(p => p.route === "arrangement" && p.body.beat === true);
+const saves = () => window.__posts.filter(p => p.route === "arrangement" && p.body.beat !== true);
+await h.sleep(900);
+step("fuel");
+await h.sleep(700);
+out.said = document.getElementById("fu-msg").textContent;
+document.getElementById("fu-msg").textContent = "";
+await h.sleep(1200);
+out.said_again = document.getElementById("fu-msg").textContent;
+const ab = document.getElementById("fu-arrange");
+out.btn = {hidden:ab.hidden, disabled:ab.disabled, text:ab.textContent.trim()};
+out.before = ids();
+ab.click();
+await h.sleep(400);
+const bar = document.getElementById("fu-arr-bar");
+out.bar = {shown:!bar.hidden, head:bar.querySelector("b").textContent, bullets:[...bar.querySelectorAll("li")].map(l => l.textContent),
+  buttons:[...bar.querySelectorAll("button")].map(b => b.textContent.trim()), refills:document.querySelectorAll("#d-fuel [data-refill]").length,
+  all:document.getElementById("fu-fill").disabled, mv:[...bar.querySelectorAll("[data-mv]")].every(b => b.disabled)};
+out.beat_on = beats().length > 0 && beats().every(p => p.body.arranging === true && p.body.inst);
+// Every way a finger can press a tank while arranging: no refill leaves.
+const c1 = card("ground-3");
+h.tap(c1); await h.sleep(300);
+c1.click(); await h.sleep(200);
+document.getElementById("fu-fill").click(); await h.sleep(300);
+out.picked = (card("ground-3") || {}).className;
+document.querySelector('#fu-arr-mv [data-mv="right"]').click(); await h.sleep(200);
+out.right = ids();
+document.querySelector('#fu-arr-mv [data-mv="up"]').click(); await h.sleep(200);
+out.up = ids();
+document.querySelector('#fu-arr-mv [data-mv="new"]').click(); await h.sleep(200);
+out.newrow = {ids:ids(), labels:rowsOf(document.getElementById("d-fuel")).map(r => r.label)};
+// A drag: wave-1 picked up, moved, let go on the right half of scaffold-1.
+{ const a = card("wave-1"), b = card("scaffold-1");
+  b.scrollIntoView({block:"center"}); await h.sleep(100);
+  const [ax, ay] = mid(a), [bx, by] = mid(b), rb = b.getBoundingClientRect();
+  pev(a, "pointerdown", ax, ay); await h.sleep(50);
+  pev(a, "pointermove", ax + 20, ay + 5); await h.sleep(50);
+  pev(a, "pointermove", rb.right - 5, by); await h.sleep(50);
+  pev(a, "pointerup", rb.right - 5, by); a.click(); await h.sleep(300); }
+out.drag = ids();
+out.refills_while = fuelPosts().length;
+// Save layout: the rows go, every one of the config's tanks is in them.
+const nb = beats().length;
+document.getElementById("fu-arr-save").click();
+await h.sleep(700);
+out.save = saves().map(p => p.body);
+out.beat_off = beats().slice(nb).some(p => p.body.arranging === false);
+out.after = {bar:!bar.isConnected || bar.hidden, refills:document.querySelectorAll("#d-fuel [data-refill]").length, msg:document.getElementById("fu-msg").textContent};
+// Cancel: nothing saved.
+const ns = saves().length;
+document.getElementById("fu-arrange").click(); await h.sleep(300);
+h.tap(card("wave-2")); await h.sleep(200);
+document.querySelector('#fu-arr-mv [data-mv="left"]').click(); await h.sleep(200);
+document.getElementById("fu-arr-cancel").click(); await h.sleep(400);
+out.cancel = {saves:saves().length - ns, msg:document.getElementById("fu-msg").textContent};
+// Another step while arranging: Arrange ends, nothing saved.
+document.getElementById("fu-arrange").click(); await h.sleep(300);
+const nb2 = beats().length;
+step("purge"); await h.sleep(500);
+out.left = {saves:saves().length - ns, off:beats().slice(nb2).some(p => p.body.arranging === false)};
+step("fuel"); await h.sleep(500);
+// Out of Arrange: a tap on a tank asks to log its refill again.
+document.querySelector('#d-fuel [data-refill="ground-1"]').click(); await h.sleep(400);
+out.ask = !document.getElementById("sheet").hidden && document.getElementById("sh-h").textContent === "Ground 1 refilled?";
+// The Show files row off: Arrange is shown, and disabled.
+ST.me.may.show_files = false; renderMorning(); await h.sleep(50);
+out.noperm = {hidden:document.getElementById("fu-arrange").hidden, disabled:document.getElementById("fu-arrange").disabled};
+ST.me.may.show_files = true; ST.me.local = false; ME.local = false; renderMorning(); await h.sleep(50);
+out.ipad = {hidden:document.getElementById("fu-arrange").hidden};
+// The Purge step: its group buttons and Machines follow the same rows.
+document.querySelector("#sh-row [data-i]").click(); await h.sleep(200);
+step("purge"); await h.sleep(500);
+out.groups = [...document.querySelectorAll("#mo-groups [data-grp]")].map(b => b.dataset.grp);
+document.getElementById("d-mach").click(); await h.sleep(400);
+out.mach = rowsOf(document.getElementById("sh-body")).map(r => r.ids);
+"""
+
+
+def test_ui2_fuel_arrange_driven():
+    section("the Fuel step's Arrange pressed in a real browser: Arrange "
+            "(show PC, Show files row) shows ARRANGING: refills held back; "
+            "while arranging no tap, click or Refill all sends a refill "
+            "and the engine hears the arranging beat; tap and Right, Row "
+            "up, New row, and a drag move tanks; Save layout sends every "
+            "row, Cancel and leaving the step send nothing; afterwards a "
+            "tap asks to log a refill again; a broken rows file is said "
+            "once; the new strings are short, with no dashes")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2_page_inline()
+    st, routes, fx = _ui2_status_rows(
+        problem="ltcplay_arrangement.json could not be read (ValueError)")
+    m = _ui2_drive([chrome] if not isinstance(chrome, (list, tuple))
+                   else list(chrome), page, st, _UI2_ROWS_DRIVE_JS,
+                   size=(1600, 1000), frag="?tour=0#day", routes=routes,
+                   budget_ms=30000)
+    if not check(isinstance(m, dict) and "bar" in m and not m.get("problems"),
+                 f"drawn and pressed: {m!r}"[:1500]):
+        print("  ok")
+        return
+    want = fx["expect"]["fuel"]
+    check(m["said"] == "Saved rows unreadable. One row per type shown." and
+          m["said_again"] == "",
+          f"a broken rows file is said once: {m['said']!r} "
+          f"{m['said_again']!r}")
+    check(m["btn"] == {"hidden": False, "disabled": False,
+                       "text": "Arrange"} and m["before"] == want,
+          f"Arrange on the show PC with Show files: {m['btn']}")
+    b = m["bar"]
+    check(b["shown"] and b["head"] == "ARRANGING: refills held back" and
+          b["refills"] == 0 and b["all"] and b["mv"] and m["beat_on"],
+          f"arranging: the banner, no refill button anywhere, Refill all "
+          f"off, the engine told: {b} {m['beat_on']}")
+    words = [b["head"]] + b["bullets"] + b["buttons"]
+    check(len(b["head"].split()) <= 6 and len(b["bullets"]) <= 3 and
+          all(len(x.split()) <= 8 for x in b["bullets"]) and
+          not any(ch in x for x in words for ch in "–—") and
+          not any("Run" in x.split() for x in words),
+          f"the bar's words: a short headline, three short bullets, no "
+          f"dashes: {words}")
+    check(m["refills_while"] == 0,
+          f"no tap, click, drag or Refill all sent a refill while "
+          f"arranging: {m['refills_while']}")
+    check("sel" in (m["picked"] or ""), f"a tap picks a tank: {m['picked']}")
+    g = want[1]
+    i = g.index("ground-3")
+    right = list(g)
+    right[i], right[i + 1] = right[i + 1], right[i]
+    check(m["right"] == [want[0], right],
+          f"Right moves it one place: {m['right']}")
+    check(m["up"] == [want[0] + ["ground-3"],
+                      [x for x in right if x != "ground-3"]],
+          f"Row up puts it at the end of the row above: {m['up']}")
+    check(m["newrow"]["ids"] == [want[0], ["ground-3"],
+                                 [x for x in right if x != "ground-3"]] and
+          m["newrow"]["labels"] == ["Wave Flamers", "G-Flames", "G-Flames"],
+          f"New row: a row of its own, labelled by its type: {m['newrow']}")
+    gl = [x for x in right if x != "ground-3"]
+    j = gl.index("scaffold-1")
+    check(m["drag"] == [[x for x in want[0] if x != "wave-1"], ["ground-3"],
+                        gl[:j + 1] + ["wave-1"] + gl[j + 1:]],
+          f"a drag drops it after the card it is let go on: {m['drag']}")
+    sv = m["save"]
+    check(len(sv) == 1 and [r["machines"] for r in sv[0]["rows"]] ==
+          m["drag"] + [["fireball"]] and m["beat_off"] and m["after"]["bar"]
+          and m["after"]["refills"] == 15,
+          f"Save layout: every row (the Fireball's too), the engine told "
+          f"arranging is over, the refill buttons back: {sv} {m['after']}")
+    check(m["cancel"]["saves"] == 0 and m["left"]["saves"] == 0 and
+          m["left"]["off"],
+          f"Cancel and leaving the step save nothing and end arranging: "
+          f"{m['cancel']} {m['left']}")
+    check(m["ask"], "out of Arrange a tap asks to log the refill again")
+    check(m["noperm"] == {"hidden": False, "disabled": True} and
+          m["ipad"] == {"hidden": True},
+          f"no Show files row: Arrange disabled; off the show PC: not "
+          f"shown: {m['noperm']} {m['ipad']}")
+    check(m["groups"] == fx["expect"]["groups"] and
+          m["mach"] == want + [["fireball"]],
+          f"the Purge step reads the same rows: {m['groups']} {m['mach']}")
     print("  ok")
 
 
@@ -114253,6 +116433,115 @@ ME.local = true;
     print("  ok")
 
 
+def test_ui2_preshow_audio_card_driven():
+    section("2.0's Pre-show audio card pressed in a real browser: on the "
+            "Schedule tab of the show PC, the chosen file's name shown, its "
+            "list from the engine; Turn on and Save file post the one "
+            "setting; signed in without Settings both are off; an iPad gets "
+            "no card; its words: a headline of 6 words or fewer, up to 3 "
+            "lines of 8 words, no dashes, show control not Run")
+    chrome = _find_chromium()
+    page = _ui2_page_inline()
+    card = page[page.find('id="psa-card"'):]
+    card = card[:card.find("</div>\n        <!--")]
+    head = re.findall(r"<b>([^<]*)</b>", card)
+    lines = re.findall(r"<li>([^<]*)</li>", card)
+    check(head == ["Pre-show audio"] and len(head[0].split()) <= 6 and
+          1 <= len(lines) <= 3 and all(len(t.split()) <= 8 for t in lines)
+          and not re.search(r"\bRun\b", card) and "show control" in card,
+          f"the card's words keep the rules: {head} {lines}")
+    _no_dashes(card, "the Pre-show audio card")
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _ui2_status_day()
+    st["preshow_audio"] = {"available": True, "on": False,
+                           "name": "welcome.wav", "file_ok": True,
+                           "length_s": 30.0, "lead_s": 120}
+    got = {"on": False, "file": "C:/LTC/Announcements/welcome.wav",
+           "choices": [
+               {"path": "C:/LTC/Announcements/welcome.wav",
+                "name": "welcome.wav", "available": True, "length_s": 30.0},
+               {"path": "C:/LTC/Announcements/doors.wav",
+                "name": "doors.wav", "available": True, "length_s": 12.0},
+               {"path": "C:/LTC/Announcements/bad.wav", "name": "bad.wav",
+                "available": False, "length_s": None},
+               {"path": "C:/LTC/Announcements/long.wav", "name": "long.wav",
+                "available": True, "length_s": 130.0, "too_long": True}]}
+    steps = r"""
+const mark = () => window.__posts.length;
+const since = n => window.__posts.slice(n);
+const q = id => document.getElementById(id);
+const bare = b => { const o = Object.assign({}, b); delete o.seen; return o; };
+document.querySelector('.tab[data-tab="schedule"]').click();
+await h.sleep(1200);
+out.card = {shown:!q("psa-card").hidden, now:q("psa-now").textContent,
+  opts:[...q("psa-pick").options].map(o => o.textContent + (o.disabled ? " (off)" : "")),
+  picked:q("psa-pick").value, on_dis:q("psa-on").disabled, off_dis:q("psa-off").disabled};
+// A file chosen but not saved: Turn on still uses the SAVED file.
+q("psa-pick").selectedIndex = 2; q("psa-pick").dispatchEvent(new Event("change"));
+let n = mark();
+q("psa-on").click(); await h.sleep(400);
+out.on = since(n).filter(p => p.route === "preshow-audio").map(p => bare(p.body));
+window.__patch = s => Object.assign(s, {preshow_audio:Object.assign({}, s.preshow_audio, {on:true})});
+await h.sleep(900);
+out.while_on = {now:q("psa-now").textContent, on_dis:q("psa-on").disabled, off_dis:q("psa-off").disabled};
+q("psa-pick").selectedIndex = 4; q("psa-pick").dispatchEvent(new Event("change"));
+out.warn = q("psa-msg").textContent;
+n = mark();
+q("psa-pick").selectedIndex = 2; q("psa-save").click(); await h.sleep(400);
+q("psa-off").click(); await h.sleep(400);
+out.saved = since(n).filter(p => p.route === "preshow-audio").map(p => bare(p.body));
+window.__patch = s => Object.assign(s, {preshow_audio:Object.assign({}, s.preshow_audio, {on:false}), me:{users_active:true, user:"Ola", may:{show:true, arm:true, settings:false}}});
+await h.sleep(900);
+out.nosettings = {on:q("psa-on").disabled, save:q("psa-save").disabled};
+window.__patch = null; await h.sleep(600);
+ME.local = false; await h.sleep(900);
+out.ipad = !q("psa-card").hidden;
+ME.local = true;
+"""
+    m = _ui2_drive(chrome, page, st, steps, size=(1366, 768),
+                   frag="?tour=0#day",
+                   routes={"/api/remote/morning": _morning_view_pico(),
+                           "/api/remote/preshow-audio": got,
+                           "/api/timelines": {"timelines": []}},
+                   budget_ms=30000)
+    if not check(isinstance(m, dict) and not m.get("problems"),
+                 f"2.0's Pre-show audio card, pressed: {m!r}"[:1500]):
+        print("  ok")
+        return
+    c = m["card"]
+    check(c["shown"] and c["now"] == "OFF: welcome.wav" and
+          c["opts"] == ["Choose a file", "welcome.wav, 30 s",
+                        "doors.wav, 12 s", "bad.wav, cannot play (off)",
+                        "long.wav, 130 s, over 110 s"] and
+          c["picked"] == "C:/LTC/Announcements/welcome.wav" and
+          not c["on_dis"] and c["off_dis"],
+          f"the show PC: the card, off, the chosen name, the engine's "
+          f"list: {c}")
+    check(m["on"] == [{"on": True,
+                       "file": "C:/LTC/Announcements/welcome.wav"}],
+          f"Turn on posts on true with the SAVED file, not an unsaved "
+          f"choice: {m['on']}")
+    check(m["warn"] == "long.wav is 130 s: over 110 s, it will not play.",
+          f"a file over 110 s is said when chosen: {m['warn']!r}")
+    check(m["while_on"] == {"now": "ON: welcome.wav", "on_dis": True,
+                            "off_dis": False},
+          f"while on: ON with the name, Turn off works: {m['while_on']}")
+    check(m["saved"] == [{"on": True,
+                          "file": "C:/LTC/Announcements/doors.wav"},
+                         {"on": False,
+                          "file": "C:/LTC/Announcements/doors.wav"}],
+          f"Save file keeps it on with the new file; Turn off keeps the "
+          f"file: {m['saved']}")
+    check(m["nosettings"] == {"on": True, "save": True},
+          f"a sign-in without Settings: both off: {m['nosettings']}")
+    check(m["ipad"] is False, "an iPad gets no Pre-show audio card")
+    print("  ok")
+
+
 def test_ui2_show_machine_switches_driven():
     section("2.0's show machine switches pressed in a real browser (1.0's "
             "code): Arming from a screen asks first and posts on true, "
@@ -120907,6 +123196,15 @@ if __name__ == "__main__":
         test_preroll_continue_anyway_starts_now_with_failed_outputs_off,
         test_preroll_continue_anyway_needs_a_signed_in_hold,
         test_preroll_wiring_in_the_engine,
+        test_preshow_audio_plays_at_exactly_two_minutes_once,
+        test_preshow_audio_restart_inside_the_window_never_replays,
+        test_preshow_audio_never_plays_when_it_should_not,
+        test_preshow_audio_never_blocks_the_show,
+        test_preshow_audio_through_the_announcement_player,
+        test_preshow_audio_setting_and_routes,
+        test_preshow_audio_every_skip_guard_on_its_own,
+        test_preshow_audio_an_operator_always_wins,
+        test_preshow_audio_110_s_cap_and_one_clear_line,
         test_preroll_a_pass_clears_the_failure_and_keeps_the_hold,
         test_preroll_a_pass_never_clears_a_newer_or_other_failure,
         test_preroll_a_clear_never_meets_a_newer_raise_or_a_deadlock,
@@ -121342,6 +123640,8 @@ if __name__ == "__main__":
         test_checklist_audit_chain_pdf_export_and_tally,
         test_morning_lockout_trust_link_and_close,
         test_morning_no_unlock_while_group_armed,
+        test_machine_rows_one_file_both_steps,
+        test_machine_rows_refills_held_back_while_arranging,
         test_morning_arrange_mode_arms_nothing,
         test_morning_arrange_disables_firing,
         test_purge_release_can_never_start_a_fire,
@@ -121367,6 +123667,10 @@ if __name__ == "__main__":
         test_review_143_sign_out_holds_and_deck_fallbacks,
         test_audit_chain_verify_finds_every_kind_of_tamper,
         test_audit_upload_retries_resumes_and_waits_for_the_ack,
+        test_journal_upload_sends_closed_nights_and_waits_for_the_ack,
+        test_journal_upload_failures_and_changes,
+        test_audit_receiver_takes_the_night_journal,
+        test_journal_format_doc_is_real_output,
         test_audit_never_blocks_or_fails_a_press,
         test_soak_render_older_than_layout_is_a_cues_fault_at_show_load,
         test_flame_cues_refused_while_the_reader_is_mid_pass,
@@ -121481,6 +123785,8 @@ if __name__ == "__main__":
         test_ui2_fuel_shows_driven,
         test_ui2_haze_fluid_driven,
         test_ui2_startup_steps_never_overlap,
+        test_ui2_machine_rows_fit_and_never_overlap,
+        test_ui2_fuel_arrange_driven,
         test_ui2_calm_screens_and_brand,
         test_config_watch_supervisor_and_rack_screen_note,
         test_fireball_timeline_model,
@@ -121508,6 +123814,7 @@ if __name__ == "__main__":
         test_ui2_arrange_and_switches_are_1_0s,
         test_ui2_map_and_arrange_driven,
         test_ui2_show_machine_switches_driven,
+        test_ui2_preshow_audio_card_driven,
         test_ui2_fireball_timeline_editor,
         test_play_from_cue_model,
         test_play_from_cue_store,
