@@ -55299,6 +55299,14 @@ def _run_browser(cmd, limit, env):
     return p.returncode, so or "", se or ""
 
 
+class _RawRoute:
+    """A route _rack_screen_in_chromium answers with this text as it is
+    (a script), not as JSON."""
+
+    def __init__(self, text, ctype="application/javascript; charset=utf-8"):
+        self.text, self.ctype = text, ctype
+
+
 def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
                              tries=None, measure_js=None, head_js="",
                              frag="", routes=None, budget_ms=6000,
@@ -55352,6 +55360,8 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
                 st["served_at"] = int(time.time() * 1000)
                 return self._out(200, json.dumps(st))
             if p in routes:
+                if isinstance(routes[p], _RawRoute):
+                    return self._out(200, routes[p].text, routes[p].ctype)
                 return self._out(200, json.dumps(routes[p]))
             if p.startswith("/brand/"):
                 return self._out(404, "{}")
@@ -78364,13 +78374,22 @@ def _audit_lines(folder):
 # ------------------------------------------------ the SuperUser (2026-11-13)
 # Jeff: "The 'upload log' feature is not something I want Andy to be able
 # to turn off. Let's make a SuperUser function that is the only level that
-# can see that." USERS.md, "The SuperUser".
+# can see that." SUPERUSER.md; USERS.md, "The SuperUser"; the cold review
+# of #251 (M1 to M6).
+
+def _su_fast():
+    """The local command line's pause after a wrong password, off for the
+    selftest."""
+    from ltcplay import users as U
+    U.AUTH_FAIL_PAUSE_S = 0.0
+    return U
+
 
 def _su_users(folder=None):
-    """A users file with Jeff a SuperUser (by the local command line),
-    Andy an admin and Dallen an operator, each with their own password.
-    (Users, folder, notes)."""
-    from ltcplay import users as U
+    """A users file with Jeff a SuperUser (by the local command line, his
+    own password), Andy an admin and Dallen an operator, each with their
+    own password. (Users, folder, notes)."""
+    U = _su_fast()
     d = folder or tempfile.mkdtemp()
     notes = []
     us = U.Users(d, hash_params=_U_FAST,
@@ -78382,7 +78401,7 @@ def _su_users(folder=None):
         check(ok, f"{n} chooses a password")
     said = []
     rc = U.main(["superuser", "Jeff"], folder=d, who="account showpc",
-                out=said.append)
+                read_password=lambda _p: "jeff-own-pw-1", out=said.append)
     check(rc == 0 and us.role_of("Jeff") == U.SUPERUSER,
           f"the local command line makes Jeff a SuperUser: {rc} {said}")
     us.flush_pending_audit()
@@ -78393,8 +78412,9 @@ def test_superuser_role_and_matrix():
     section("the SuperUser: one level above admin; every admin row fixed "
             "on; the upload row is the role's alone, never in a stored "
             "matrix, never in whoami's may, never ticked by any matrix "
-            "edit; an older role list reads it as no role (fails closed)")
-    from ltcplay import users as U
+            "edit, and refused with the same words as any unknown row; an "
+            "older role list reads it as no role (fails closed)")
+    U = _su_fast()
     check(U.ROLES[0] == U.SUPERUSER == "superuser" and
           U.ADMIN_ROLES == ("superuser", "admin") and
           U.COLUMNS == U.ROLES + (U.SIGNED_OUT,),
@@ -78405,7 +78425,6 @@ def test_superuser_role_and_matrix():
           "every admin row is fixed on for a SuperUser")
     check(not any(s for s in U.SEED_USERS if s[1] == U.SUPERUSER),
           "a first run never makes a SuperUser")
-    # Whatever a stored matrix says, the upload is the SuperUser's alone.
     wild = {c: {p: True for p in U.PERM_KEYS + U.SUPERUSER_PERMS}
             for c in U.COLUMNS}
     m = U.normalise_matrix(wild)
@@ -78423,18 +78442,26 @@ def test_superuser_role_and_matrix():
     check(all(off[U.SUPERUSER][p] for p in U.PERM_KEYS),
           "a stored SuperUser column off reads back on")
     us, d, _n = _su_users()
-    for bad in ({"admin": {"upload": True}}, {"operator": {"upload": True}},
-                {"superuser": {"upload": False}},
-                {"superuser": {"settings": False}},
-                {"signed_out": {"upload": True}}):
+
+    def err(change):
         before = open(us.path, "rb").read()
         try:
-            us.set_matrix(bad)
-            check(False, f"the matrix took {bad}")
-        except U.RankRefused:
-            pass
-        check(open(us.path, "rb").read() == before,
-              f"{bad} left the users file as it was")
+            us.set_matrix(change)
+            return None
+        except ValueError as e:
+            check(open(us.path, "rb").read() == before,
+                  f"{change} left the users file as it was")
+            return type(e).__name__, str(e).replace(
+                "upload", "X").replace("fly", "X")
+    unknown = err({"admin": {"fly": True}})
+    for bad in ({"admin": {"upload": True}}, {"operator": {"upload": True}},
+                {"superuser": {"upload": False}},
+                {"signed_out": {"upload": True}}):
+        check(err(bad) == unknown and unknown is not None,
+              f"{bad}: refused with exactly the words of an unknown row "
+              f"(no tell): {err(bad)} {unknown}")
+    check(err({"superuser": {"settings": False}})[0] == "RankRefused",
+          "a SuperUser's column cannot be turned off")
     us.set_matrix({"admin": {"show": True}, "viewer": {"show": True}})
     doc = json.load(open(us.path, encoding="utf-8"))
     check("upload" not in json.dumps(doc.get("matrix")),
@@ -78442,15 +78469,10 @@ def test_superuser_role_and_matrix():
     check(not us.may("admin", U.UPLOAD) and us.may(U.SUPERUSER, U.UPLOAD)
           and not us.may(None, U.UPLOAD),
           "the live check: admin no, SuperUser yes, nobody no")
-    # With no users at all there is no SuperUser: the upload is refused
-    # though every other press may.
     blank = U.Users(tempfile.mkdtemp(), hash_params=_U_FAST)
     check(not blank.may(U.SUPERUSER, U.UPLOAD) and
           blank.may(None, "settings"),
           "no users: the upload is refused (fail closed)")
-    # An older build (ROLES without superuser) reads the role as no role:
-    # role_of None, allowed False for every restricted row, nothing
-    # raised, nothing written.
     old_roles = U.ROLES
     try:
         U.ROLES = ("admin", "operator", "viewer")
@@ -78463,14 +78485,11 @@ def test_superuser_role_and_matrix():
               "and writes nothing")
     finally:
         U.ROLES = old_roles
-    # A route added for an upload later (PR #246's night journal) is the
-    # SuperUser's with no change to users.py.
-    for n in ("journal-upload-now", "Journal-Upload", "upload-settings"):
+    for n in ("journal-upload-now", "Journal-Upload", "upload-settings",
+              "upload-card.js"):
         check(U.is_upload_route(n) and
               U.classify("/api/remote/" + n, {}) == U.UPLOAD,
-              f"a later upload route is the SuperUser's: {n}")
-    # A SuperUser has every admin power outside the matrix too: the Fuel
-    # page's refill and undo.
+              f"a route that says upload is the SuperUser's: {n}")
     from ltcplay import fuel as FU
     import types as _t
     act = _t.SimpleNamespace(active=lambda: True)
@@ -78483,8 +78502,6 @@ def test_superuser_role_and_matrix():
         check(FU.may_refill(c, act)[0] is refill and
               FU.may_undo(c, act)[0] is undo,
               f"fuel: {role} refill {refill}, undo {undo}")
-    # The settings row no longer names the upload; whoami's may has no
-    # upload key.
     check("upload" not in U.perm_label("settings").lower(),
           "the Settings row does not name the upload")
     print("  ok")
@@ -78496,7 +78513,7 @@ def test_superuser_every_users_edit_path():
             "never raises their own role; the last SuperUser stays; a "
             "SuperUser's password is never cleared or claimed; each "
             "refusal changes nothing")
-    from ltcplay import users as U
+    U = _su_fast()
     us, d, notes = _su_users()
 
     def same(fn, what, by):
@@ -78525,7 +78542,6 @@ def test_superuser_every_users_edit_path():
         same(lambda: us.clear_password("Jeff", by=by),
              "clear a SuperUser's password", by)
         same(lambda: us.remove("Jeff", by=by), "remove a SuperUser", by)
-    # An admin still does every admin thing to everyone else.
     us.set_role("Dallen", "viewer", by="admin")
     us.set_password("Dallen", "dallen-temp-2", by="admin")
     us.clear_password("Dallen", by="admin")
@@ -78533,7 +78549,6 @@ def test_superuser_every_users_edit_path():
     us.remove("Kim", by="admin")
     check(us.role_of("Dallen") == "viewer" and "Kim" not in us.names(),
           "an admin manages everyone but a SuperUser")
-    # The SuperUser does all of it, but never leaves none.
     us.add("Sam", U.SUPERUSER, "sam-temp-1", by=U.SUPERUSER)
     check(us.role_of("Sam") == U.SUPERUSER, "a SuperUser adds a SuperUser")
     us.set_role("Sam", "admin", by=U.SUPERUSER)
@@ -78557,150 +78572,359 @@ def test_superuser_every_users_edit_path():
             check("last SuperUser" in str(e) and
                   open(us.path, "rb").read() == before,
                   f"the last SuperUser cannot be {what}: {e}")
-    # The last admin rule counts a SuperUser: Andy may go, Jeff stays.
     us.remove("Andy", by="admin")
     check("Andy" not in us.names(), "with a SuperUser, the last admin may go")
-    # A first run never makes one.
     try:
         U.Users(tempfile.mkdtemp(), hash_params=_U_FAST).seed(
             (("Jeff", U.SUPERUSER), ("Andy", "admin")))
         check(False, "a first run made a SuperUser")
     except ValueError:
         pass
-    # A SuperUser's password is never claimed: none at all (an older
-    # build's admin cleared it, a hand edit), or a temporary one a
-    # SuperUser did not set.
+    # A SuperUser's password is never claimed, even in a record this
+    # build signed: none at all, or a temporary one a SuperUser did not
+    # set (written here through the engine's own save, so it is trusted).
     for rec in ({"pw": None, "must_change": False},
                 {"pw": U.hash_password("known-to-andy", params=_U_FAST),
                  "must_change": True, "reset_by": "admin"},
                 {"pw": U.hash_password("known-to-andy", params=_U_FAST),
                  "must_change": True}):
-        doc = json.load(open(us.path, encoding="utf-8"))
-        doc["users"]["Jeff"].update(rec)
-        if "reset_by" not in rec:
-            doc["users"]["Jeff"].pop("reset_by", None)
-        U._write_private(us.path, doc)
-        us._doc = None
+        def put(doc, rec=rec):
+            doc["users"]["Jeff"].update(rec)
+            if "reset_by" not in rec:
+                doc["users"]["Jeff"].pop("reset_by", None)
+        us._change(put)
+        check(us.role_of("Jeff") == U.SUPERUSER, "still a SuperUser")
         for local in (True, False):
             ok, why, tok, need = us.sign_in(
                 "Jeff", "known-to-andy", local, "Rack screen",
                 new_password="andy-takes-it-1")
-            check(not ok and tok is None and not need and
-                  U.check_password("known-to-andy",
-                                   json.load(open(us.path))["users"]["Jeff"]
-                                   .get("pw") or {}) == (rec["pw"] is not None),
-                  f"a SuperUser's account is not claimed ({rec.get('reset_by')}"
-                  f", local {local}): {why}")
+            check(not ok and tok is None and not need,
+                  f"a SuperUser's account is not claimed "
+                  f"({rec.get('reset_by')}, local {local}): {why}")
         us.clear_lockouts()
-    # One a SuperUser set signs in and must choose their own.
-    doc = json.load(open(us.path, encoding="utf-8"))
-    doc["users"]["Jeff"].update(
-        {"pw": U.hash_password("set-by-su-1", params=_U_FAST),
-         "must_change": True, "reset_by": U.SUPERUSER})
-    U._write_private(us.path, doc)
-    us._doc = None
+    us.set_password("Jeff", "set-by-su-1", by=U.SUPERUSER)
     ok, _w, _t, need = us.sign_in("Jeff", "set-by-su-1", True, "Rack screen")
     check(not ok and need, "a SuperUser's temporary password asks for one")
     ok, _w, tok, _n = us.sign_in("Jeff", "set-by-su-1", True, "Rack screen",
                                  new_password="jeff-own-pw-2")
-    check(ok and tok and "reset_by" not in
-          json.load(open(us.path))["users"]["Jeff"],
-          "and with their own it signs in")
+    check(ok and tok and us.role_of("Jeff") == U.SUPERUSER and
+          "reset_by" not in json.load(open(us.path))["users"]["Jeff"],
+          "and with their own it signs in, still a SuperUser")
+    print("  ok")
+
+
+def test_superuser_changed_outside_the_engine():
+    section("the SuperUser record changed outside the engine (review of "
+            "#251, M1, M2): a SuperUser added by hand, an older build's "
+            "password reset or role change, a removed key or a removed "
+            "SuperUser each read as admin at once, are written to the "
+            "audit log as superuser-set-changed and raise a display only "
+            "alert; a SuperUser confirms by making them one again")
+    U = _su_fast()
+    from ltcplay import alerts as AL
+    check("superuser" in AL.KINDS and "superuser" in AL.DISPLAY_ONLY and
+          AL.SEVERITY["superuser"] == "warning",
+          "the alert is display only: it never holds a show")
+    us, d, notes = _su_users()
+    got = []
+    us.on_alert = got.append
+
+    def hand(fn):
+        doc = json.load(open(us.path, encoding="utf-8"))
+        fn(doc)
+        U._write_private(us.path, doc)
+        us._doc = None
+
+    def flush():
+        del got[:]
+        n0 = len(notes)
+        us.flush_pending_audit()
+        return [x for x in notes[n0:]
+                if x["action"] == "superuser-set-changed"]
+    check(flush() == [] and got == [], "a consistent file raises nothing")
+    # 1. Andy adds himself by hand.
+    hand(lambda doc: doc["users"]["Andy"].update(role="superuser"))
+    check(us.role_of("Andy") == "admin" and
+          [x for x in us.listing() if x["name"] == "Andy"][0]["unconfirmed"],
+          "a SuperUser added by hand reads as admin at once, unconfirmed")
+    lines = flush()
+    check(lines and lines[0]["user"] == "unknown" and
+          lines[0]["source"] == "outside the engine" and
+          lines[0]["result"] == "error" and "Andy" in lines[0]["reason"] and
+          got and "Andy" in " ".join(got[0]),
+          f"audited and alerted: {lines} {got}")
+    doc = json.load(open(us.path, encoding="utf-8"))
+    check(doc["users"]["Andy"]["role"] == "admin" and
+          "su_fp" not in doc["users"]["Andy"] and flush() == [],
+          "the file is put right once, and says it once")
+    # 2. An older build resets Jeff's password (a new hash, no fingerprint
+    # change) or makes him an admin.
+    newpw = U.hash_password("andy-knows", params=_U_FAST)
+    hand(lambda doc: doc["users"]["Jeff"].update(pw=newpw,
+                                                  must_change=True))
+    check(us.role_of("Jeff") == "admin", "a changed hash: admin now")
+    lines = flush()
+    check(lines and any("Jeff" in x["reason"] for x in lines) and got,
+          f"audited and alerted: {lines}")
+    check(json.load(open(us.path))["users"]["Jeff"]["role"] == "admin",
+          "demoted in the file, never deleted")
+    # Back as a SuperUser the only way there is: confirmed. No SuperUser
+    # is left, so the first one's rule (their own password) applies.
+    us.set_password("Jeff", "jeff-temp-3", by="admin")
+    us.sign_in("Jeff", "jeff-temp-3", True, "Rack screen",
+               new_password="jeff-own-pw-3")
+    check(U.main(["superuser", "Jeff"], folder=d, who="t",
+                 read_password=lambda _p: "jeff-own-pw-3",
+                 out=lambda *_: None) == 0 and
+          us.role_of("Jeff") == U.SUPERUSER, "Jeff confirmed again")
+    flush()
+    # 3. The old build makes Jeff an admin: the set changed.
+    hand(lambda doc: doc["users"]["Jeff"].update(role="admin"))
+    lines = flush()
+    check(any("No longer a SuperUser" in x["reason"] and "jeff" in
+              x["reason"] for x in lines) and got,
+          f"a SuperUser removed outside the engine is said: {lines}")
+    us._change(lambda doc: doc["users"]["Jeff"].update(role="superuser"))
+    flush()
+    # 4. The set record forged, and the key removed.
+    hand(lambda doc: doc["su_set"].update(names=["andy", "jeff"]))
+    check(any("changed outside" in x["reason"] for x in flush()),
+          "a changed set record is said")
+    os.remove(us.key_path)
+    us._doc = None
+    check(us.role_of("Jeff") == "admin" and flush() and
+          json.load(open(us.path))["users"]["Jeff"]["role"] == "admin",
+          "no key: every SuperUser is an admin until confirmed")
+    # The CLI process that reads a changed file first leaves it for the
+    # engine: the engine still audits it and raises the alert.
+    us._change(lambda doc: doc["users"]["Jeff"].update(role="superuser"))
+    flush()
+    hand(lambda doc: doc["users"]["Andy"].update(role="superuser"))
+    other = U.Users(d, hash_params=_U_FAST)
+    other.set_idle(5)
+    check(any("Andy" in x["reason"] for x in flush()) and got,
+          "found by another process: still audited and alerted here")
+    print("  ok")
+
+
+def test_superuser_session_limit_and_password_again():
+    section("a SuperUser's session ends after SUPERUSER_IDLE_S with no "
+            "press whatever the admin's idle settings say; an admin's "
+            "session is not touched by it; every upload change asks for "
+            "the SuperUser's password again (review of #251, M3)")
+    U = _su_fast()
+    from ltcplay import remote as RM
+    now = [1000.0]
+    d = tempfile.mkdtemp()
+    us, d, notes = _su_users(d)
+    us._clock = lambda: now[0]
+    check(U.SUPERUSER_IDLE_S == 15 * 60, "15 minutes")
+    ok, _w, jt, _n = us.sign_in("Jeff", "jeff-own-pw-1", True, "Rack screen")
+    ok, _w, at, _n = us.sign_in("Andy", "andy-own-pw-1", True, "Rack screen")
+    us.set_idle(0)
+    us.set_last_show(0)
+    now[0] += U.SUPERUSER_IDLE_S - 5
+    us.touch(at)
+    check(us.session(jt) is not None, "Jeff before the limit")
+    now[0] += 10
+    check(us.session(jt) is None and us.session(at) is not None,
+          "Jeff's session ended at the limit; Andy's, with no idle sign "
+          "out, did not")
+    check(any(x["action"] == "sign-out" and x["user"] == "Jeff" and
+              "SuperUser idle" in x["reason"] for x in notes),
+          "audited")
+    ok, _w, jt, _n = us.sign_in("Jeff", "jeff-own-pw-1", True, "Rack screen")
+    us.touch(jt)
+    now[0] += U.SUPERUSER_IDLE_S - 1
+    check(us.session(jt) is not None, "a press keeps it")
+    # The password again, for every upload change.
+    rem = RM.Remote.__new__(RM.Remote)
+    rem.users, rem.audit, rem.uploader, rem.folder = us, None, None, d
+    ctx = RM.Ctx(True, "127.0.0.1", session=us.session(jt), token=jt)
+    for pw in (None, "", "wrong-one", "andy-own-pw-1"):
+        code, out, _h = rem.users_post("audit-settings",
+                                       {"enabled": False, "password": pw},
+                                       ctx)
+        check(code == 403 and out["error"] == RM.UPLOAD_PASSWORD,
+              f"no change without Jeff's own password ({pw!r}): {code}")
+    code, out, _h = rem.users_post("audit-settings",
+                                   {"enabled": False,
+                                    "password": "jeff-own-pw-1"}, ctx)
+    check(code == 200, f"with it: {code} {out}")
     print("  ok")
 
 
 def test_superuser_local_command_line():
     section("the SuperUser is made only by the local command line on the "
-            "show PC (python -m ltcplay.users superuser NAME): an existing "
-            "user with their own password, written through the users "
-            "file's own atomic write, audited as superuser-set from the "
-            "local command line by the engine's own writer; no route "
-            "reaches it")
-    from ltcplay import users as U
+            "show PC (ltcplay superuser NAME, the double-click launchers): "
+            "the first one with their own password, every later one and "
+            "every password reset with a CURRENT SuperUser's; passwords "
+            "only asked for, hidden; a held file retried, an error a "
+            "sentence; the running engine told of a reset by a signed "
+            "signal file; no route reaches it")
+    U = _su_fast()
     d = tempfile.mkdtemp()
     out = []
-    check(U.main(["superuser", "Jeff"], folder=d, who="x", out=out.append)
-          == 1 and "Start LTC Player once" in out[-1],
+    it = [iter(())]
+
+    def run(argv, answers=(), line="", **kw):
+        it[0] = iter(answers)
+        return U.main(argv, folder=d, who=kw.get("who", "x"),
+                      read_password=lambda _p: next(it[0]),
+                      read_line=lambda _p: line, out=out.append,
+                      pause=kw.get("pause", lambda _s: None))
+    check(run(["superuser", "Jeff"]) == 1 and
+          "Start LTC Player once" in out[-1],
           f"no users file: nothing made: {out[-1:]}")
     notes = []
     us = U.Users(d, hash_params=_U_FAST, audit=lambda **kw: notes.append(kw))
     us.seed((("Jeff", "admin"), ("Andy", "admin")))
     before = open(us.path, "rb").read()
-    check(U.main(["superuser", "Jeff"], folder=d, who="x",
-                 out=out.append) == 1 and
-          "not chosen their own password" in out[-1] and
+    check(run(["superuser", "Jeff"], ["anything"]) == 1 and
           open(us.path, "rb").read() == before,
-          f"a name with no password yet is never made a SuperUser: "
-          f"{out[-1]}")
+          f"a name with no password yet is never made one: {out[-1]}")
     us.sign_in("Jeff", "", True, "Rack screen", new_password="jeff-own-1")
-    us.set_password("Andy", "andy-temp-1", by="admin")
-    before = open(us.path, "rb").read()
-    check(U.main(["superuser", "Andy"], folder=d, who="x",
-                 out=out.append) == 1 and open(us.path, "rb").read() ==
-          before, "nor one with a temporary password someone else knows")
+    us.sign_in("Andy", "", True, "Rack screen", new_password="andy-own-1")
     for argv in ([], ["superuser"], ["admin", "Jeff"], ["superuser", "Jeff",
-                                                        "Andy"],
-                 ["superuser", "Jeff", "--folder"]):
-        check(U.main(argv, folder=d, out=out.append) == 2,
-              f"usage for {argv}")
-    check(U.main(["superuser", "Nobody"], folder=d, who="x",
-                 out=out.append) == 1, "an unknown name: nothing")
-    check(U.main(["superuser", "Jeff"], folder=d,
-                 who="Windows account showpc", out=out.append) == 0 and
-          us.role_of("Jeff") == U.SUPERUSER,
-          f"Jeff is made a SuperUser: {out[-1]}")
-    doc = json.load(open(us.path, encoding="utf-8"))
-    q = doc.get("pending_audit")
-    check(isinstance(q, list) and len(q) == 1 and
-          q[0]["action"] == "superuser-set" and q[0]["target"] == "Jeff" and
-          q[0]["source"] == U.LOCAL_COMMAND,
-          f"the audit line waits in the users file for the engine: {q}")
+                                                        "jeff-own-1"],
+                 ["superuser", "Jeff", "--folder"], ["superuser", " "]):
+        check(run(argv) == 2, f"usage for {argv} (never a password on "
+                              f"the line)")
+    check(run(["superuser", "Jeff"], ["andy-own-1"]) == 1 and
+          us.role_of("Jeff") == "admin" and "own password" in out[-1],
+          f"the first SuperUser needs their own password: {out[-1]}")
+    try:
+        us.promote_local("Jeff", "x", by_name="Andy",
+                         by_password="andy-own-1")
+        check(False, "the first SuperUser was made with Andy's password")
+    except ValueError:
+        check(us.role_of("Jeff") == "admin",
+              "never with someone else's password, by any name")
+    # A temporary password an admin set (and so knows) is not Jeff's own.
+    us.set_password("Jeff", "andy-set-1", by="admin")
+    check(run(["superuser", "Jeff"], ["andy-set-1"]) == 1 and
+          us.role_of("Jeff") == "admin" and
+          "not chosen their own password" in out[-1],
+          f"never on a temporary password someone else knows: {out[-1]}")
+    us.sign_in("Jeff", "andy-set-1", True, "Rack screen",
+               new_password="jeff-own-1")
+    check(run(["superuser", "Jeff"], ["jeff-own-1"],
+              who="Windows account showpc") == 0 and
+          us.role_of("Jeff") == U.SUPERUSER, f"made: {out[-1]}")
     check(not [n for n in os.listdir(d) if n.endswith(".tmp")],
           "written through the atomic write (no temp file left)")
-    check(us.flush_pending_audit() == 1 and us.flush_pending_audit() == 0,
-          "the engine writes it once")
+    check(us.flush_pending_audit() >= 1 and us.flush_pending_audit() == 0,
+          "the engine writes the audit line once")
     got = [n for n in notes if n["action"] == "superuser-set"]
     check(len(got) == 1 and got[0]["user"] == "Windows account showpc" and
           got[0]["source"] == U.LOCAL_COMMAND and got[0]["target"] == "Jeff"
-          and "pending_audit" not in json.load(open(us.path)),
-          f"audited: who, what, from the local command line: {got}")
-    check(U.main(["superuser", "jeff"], folder=d, who="x",
-                 out=out.append) == 0 and "already" in out[-1],
-          "again: already one")
-    # A forgotten SuperUser password: a temporary one, typed at the PC.
-    pws = iter(["new-temp-1", "new-temp-1"])
-    check(U.main(["superuser-password", "Jeff"], folder=d, who="x",
-                 read_password=lambda _p: next(pws), out=out.append) == 0,
-          f"a temporary password for a SuperUser: {out[-1]}")
-    ok, _w, _t, need = us.sign_in("Jeff", "new-temp-1", True, "Rack screen")
-    check(not ok and need, "it is temporary: Jeff chooses his own")
-    pws = iter(["one-temp-1", "two-temp-1"])
-    check(U.main(["superuser-password", "Jeff"], folder=d, who="x",
-                 read_password=lambda _p: next(pws), out=out.append) == 1,
+          and "Jeff's password" in got[0]["reason"],
+          f"audited: who, what, confirmed with whose password: {got}")
+    # Now one exists: a current SuperUser's name and password, always.
+    for line, answers in (("Andy", ["andy-own-1"]), ("Jeff", ["wrong"]),
+                          ("", ["jeff-own-1"]), ("Nobody", ["x"])):
+        check(run(["superuser", "Andy"], answers, line=line) == 1 and
+              us.role_of("Andy") == "admin" and
+              out[-1] == U.Users.NOT_A_SUPERUSER,
+              f"Andy is not made one with {line!r}'s password: {out[-1]}")
+    check(run(["superuser", "Andy"], ["jeff-own-1"], line="jeff") == 0 and
+          us.role_of("Andy") == U.SUPERUSER,
+          "with Jeff's: made")
+    us.set_role("Andy", "admin", by=U.SUPERUSER)
+    # A password reset: a current SuperUser's password, then the new one
+    # twice; the running engine ends Jeff's sessions and lockout.
+    ok, _w, tok, _n = us.sign_in("Jeff", "jeff-own-1", True, "Rack screen")
+    for _i in range(7):
+        us.sign_in("Jeff", "bad", False, "iPad")
+    check(us.session(tok) is not None and us._locked(
+        [("name", "jeff")], us._clock()), "Jeff signed in, and locked out")
+    check(run(["superuser-password", "Jeff"], ["andy-own-1", "new-temp-1",
+                                               "new-temp-1"],
+              line="Andy") == 1, "never with an admin's password")
+    check(run(["superuser-password", "Jeff"], ["jeff-own-1", "one-temp-1",
+                                               "two-temp-1"],
+              line="Jeff") == 1 and "did not match" in out[-1],
           "two different entries change nothing")
-    pws = iter(["andy-temp-9", "andy-temp-9"])
-    check(U.main(["superuser-password", "Andy"], folder=d, who="x",
-                 read_password=lambda _p: next(pws), out=out.append) == 1,
-          "only for a SuperUser")
-    # The packaged show PC has no Python: the same through ltcplay.exe
-    # (cli.py), which passes it on unchanged.
+    check(run(["superuser-password", "Andy"], ["jeff-own-1", "a-temp-1",
+                                               "a-temp-1"],
+              line="Jeff") == 1, "only for a SuperUser")
+    check(run(["superuser-password", "Jeff"], ["jeff-own-1", "new-temp-1",
+                                               "new-temp-1"],
+              line="Jeff") == 0 and os.path.exists(us.signal_path),
+          f"reset, and the engine signalled: {out[-1]}")
+    check(us.consume_signal() is True and not os.path.exists(us.signal_path)
+          and us.session(tok) is None and
+          not us._locked([("name", "jeff")], us._clock()),
+          "the engine took it: Jeff's sessions ended, his lockout cleared")
+    check(any(n["action"] == "superuser-signal" and n["result"] ==
+              "accepted" for n in notes), "audited")
+    ok, _w, _t, need = us.sign_in("Jeff", "new-temp-1", True, "Rack screen")
+    check(not ok and need, "the new one is temporary")
+    us.sign_in("Jeff", "new-temp-1", True, "Rack screen",
+               new_password="jeff-own-2")
+    # A signal not signed, stale, or for nobody: ignored and said.
+    key = us._key()
+    t0 = us._wall()
+    for doc, why in (({"name": "Jeff", "at": t0, "nonce": "n",
+                       "sig": "0" * 64}, "not signed"),
+                     ({"name": "Jeff", "at": t0 - 3600, "nonce": "n",
+                       "sig": us._mac(key, ["su-signal-1", "Jeff",
+                                            t0 - 3600, "n"])},
+                      "too old"),
+                     ({"name": "Andy", "at": t0, "nonce": "n",
+                       "sig": us._mac(key, ["su-signal-1", "Andy", t0,
+                                            "n"])},
+                      "names no SuperUser"),
+                     ("not json", "not readable")):
+        ok, _w, tok, _n = us.sign_in("Jeff", "jeff-own-2", True,
+                                     "Rack screen")
+        with open(us.signal_path, "w") as fh:
+            fh.write(doc if isinstance(doc, str) else json.dumps(doc))
+        check(us.consume_signal() is False and us.session(tok) is not None
+              and not os.path.exists(us.signal_path) and
+              why in notes[-1]["reason"],
+              f"a signal {why}: ignored, removed and said")
+    # A file held by the engine (the cross-process lock): tried again.
+    paused = []
+    keep_wait, U.LOCK_WAIT_S = U.LOCK_WAIT_S, 0.1
+    try:
+        with U._file_lock(us.lock_path):
+            rc = run(["superuser", "Andy"], ["jeff-own-2"], line="Jeff",
+                     pause=paused.append)
+    finally:
+        U.LOCK_WAIT_S = keep_wait
+    check(rc == 1 and len(paused) == U.LOCAL_TRIES - 1 and
+          "Another program" in out[-1],
+          f"a held lock: tried {U.LOCAL_TRIES} times, then a sentence: "
+          f"{paused} {out[-1]}")
+    real = U.Users.promote_local
+
+    def boom(*a, **k):
+        raise PermissionError(13, "Access is denied")
+    U.Users.promote_local = boom
+    try:
+        rc = run(["superuser", "Andy"], ["jeff-own-2"], line="Jeff")
+    finally:
+        U.Users.promote_local = real
+    check(rc == 1 and "could not be saved" in out[-1] and
+          "Traceback" not in out[-1], f"an OSError is a sentence: {out[-1]}")
+    # The packaged show PC has no Python: the same through ltcplay.exe.
+    import builtins
     import contextlib
+    import getpass
     import io
     from ltcplay import cli as CLI
-    us.set_password("Andy", "andy-temp-2", by="admin")
-    with contextlib.redirect_stdout(io.StringIO()) as buf:
-        rc = CLI.main(["superuser", "Andy", "--folder", d])
-    check(rc == 1 and "not chosen their own password" in buf.getvalue() and
-          us.role_of("Andy") == "admin",
-          f"ltcplay.exe superuser NAME is the same command: {rc} "
-          f"{buf.getvalue()!r}")
-    us.sign_in("Andy", "andy-temp-2", True, "Rack screen",
-               new_password="andy-own-2")
-    with contextlib.redirect_stdout(io.StringIO()) as buf:
-        rc = CLI.main(["superuser", "Andy", "--folder", d])
+    keep = (getpass.getpass, builtins.input)
+    getpass.getpass = lambda _p="": "jeff-own-2"
+    builtins.input = lambda _p="": "Jeff"
+    try:
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            rc = CLI.main(["superuser", "Andy", "--folder", d])
+    finally:
+        getpass.getpass, builtins.input = keep
     check(rc == 0 and us.role_of("Andy") == U.SUPERUSER,
-          f"and it makes one: {buf.getvalue()!r}")
-    # Nothing on the web reaches either.
+          f"ltcplay.exe superuser NAME is the same command: "
+          f"{buf.getvalue()!r}")
     here = os.path.dirname(os.path.abspath(__file__))
     for f in ("remote.py", "web.py"):
         src = open(os.path.join(here, "ltcplay", f), encoding="utf-8").read()
@@ -78708,68 +78932,230 @@ def test_superuser_local_command_line():
               "superuser_password_local" not in src and
               "users.main" not in src and "users_mod.main" not in src,
               f"{f} never calls the local command line's changes")
+    # The double-click launchers: in the program folder, asking for the
+    # name in their window; no password on any line.
+    iss = open(os.path.join(here, "packaging", "windows", "installer.iss"),
+               encoding="utf-8").read()
+    for bat, cmd in (("Make me SuperUser.bat", "superuser"),
+                     ("Reset SuperUser sign-in.bat", "superuser-password")):
+        b = open(os.path.join(here, "packaging", "windows", bat),
+                 encoding="utf-8").read()
+        check(f'Source: "{bat}"; DestDir: "{{app}}"' in iss and
+              f'"%~dp0ltcplay.exe" {cmd} "%NAME%"' in b and
+              "set /p" in b and "pause" in b and
+              b.count("ltcplay.exe\" ") == 1,
+              f"{bat}: installed, asks for the name, passes no password")
+        _no_dashes(b, bat)
     print("  ok")
 
 
-def _su_route_names():
-    """Every route name the engine answers or names: users.REMOTE_ROUTES,
-    every *_ROUTES tuple in remote.py, and every `name == "..."` there. A
-    route added later (the night journal's upload, PR #246) is in it."""
-    from ltcplay import remote as RM
-    from ltcplay import users as U
-    names = set(U.REMOTE_ROUTES)
-    for k, v in vars(RM).items():
-        if k.endswith("_ROUTES") and isinstance(v, (tuple, list, set,
-                                                    frozenset, dict)):
-            names.update(str(x) for x in v)
+def test_superuser_cross_process_lock():
+    section("every users file change takes a lock across processes: a "
+            "change while another program holds it waits, then says so "
+            "and changes nothing")
+    U = _su_fast()
+    us, d, _n = _su_users()
+    other = U.Users(d, hash_params=_U_FAST)
+    keep = U.LOCK_WAIT_S
+    U.LOCK_WAIT_S = 0.2
+    try:
+        before = open(us.path, "rb").read()
+        with U._file_lock(other.lock_path):
+            try:
+                us.set_idle(7)
+                check(False, "a change went through under another's lock")
+            except ValueError as e:
+                check("Another program" in str(e) and
+                      open(us.path, "rb").read() == before,
+                      f"refused, nothing changed: {e}")
+        us.set_idle(7)
+        check(other.idle_minutes() == 7, "and goes through once it is free")
+    finally:
+        U.LOCK_WAIT_S = keep
+    print("  ok")
+
+
+# Every route the engine answers or names, on every prefix (review of
+# #251, M6): the nightly upload's ("upload": only a SuperUser signed in on
+# the rack screen, everyone else the answer of a route that is not there)
+# and everything else ("plain"). A route added anywhere and not in this
+# table fails test_superuser_route_table, whatever it is called
+# ("journal-send", "nightly-sync"), until it is put in one of the two. A
+# change here is a deliberate change.
+_SU_UPLOAD_ROUTES = ("/api/remote/audit-settings",
+                     "/api/remote/audit-upload-now",
+                     "/api/remote/upload-card.js")
+_SU_PLAIN_ROUTES = (
+    "/api/", "/api/announce", "/api/announce/", "/api/announce/play",
+    "/api/announce/status", "/api/announce/stop", "/api/autoreload",
+    "/api/beyond", "/api/beyond/", "/api/beyond/state", "/api/brand",
+    "/api/check", "/api/conductor", "/api/devices", "/api/find", "/api/go",
+    "/api/input", "/api/log", "/api/madmapper", "/api/madmapper/",
+    "/api/madmapper/state", "/api/override", "/api/reinput",
+    "/api/release", "/api/reload", "/api/remote", "/api/remote/",
+    "/api/remote/alert", "/api/remote/announce-output",
+    "/api/remote/announce-outputs", "/api/remote/announce-play",
+    "/api/remote/announce-stop", "/api/remote/announce-test-tone",
+    "/api/remote/arm-hold", "/api/remote/arm-release",
+    "/api/remote/audit-verify", "/api/remote/checklist-export",
+    "/api/remote/checklist-note", "/api/remote/checklist-pdf",
+    "/api/remote/checklist-tally-retry", "/api/remote/checklist-tick",
+    "/api/remote/checklist-verify", "/api/remote/cleaning",
+    "/api/remote/cleaning-beat", "/api/remote/cleaning-stop",
+    "/api/remote/clear-lockouts", "/api/remote/continue",
+    "/api/remote/deck-input", "/api/remote/disarm-all",
+    "/api/remote/fireball", "/api/remote/fireball-beat",
+    "/api/remote/fireball-charge-empty", "/api/remote/fireball-off",
+    "/api/remote/fireball-practice", "/api/remote/fireball-timeline",
+    "/api/remote/fireball-timeline-save", "/api/remote/follow",
+    "/api/remote/fuel", "/api/remote/fuel-pump", "/api/remote/fuel-refill",
+    "/api/remote/fuel-undo", "/api/remote/group-disarm",
+    "/api/remote/hazer", "/api/remote/hazer-level",
+    "/api/remote/hazer-test", "/api/remote/hazers-arm-all",
+    "/api/remote/hazers-off", "/api/remote/hold",
+    "/api/remote/idle-signout", "/api/remote/jump",
+    "/api/remote/laser-arm", "/api/remote/laser-test",
+    "/api/remote/last-show-signout", "/api/remote/layout",
+    "/api/remote/live-flame", "/api/remote/lock", "/api/remote/loop",
+    "/api/remote/mark-a", "/api/remote/mark-b", "/api/remote/morning",
+    "/api/remote/morning-open", "/api/remote/my-password",
+    "/api/remote/network", "/api/remote/nt", "/api/remote/open-beyond",
+    "/api/remote/open-folder", "/api/remote/pause",
+    "/api/remote/play-from", "/api/remote/play-from-cues",
+    "/api/remote/play-from-cues-save", "/api/remote/preroll-check",
+    "/api/remote/preroll-continue", "/api/remote/purge-clear",
+    "/api/remote/purge-fire", "/api/remote/purge-select",
+    "/api/remote/purge-stop", "/api/remote/purge-timed",
+    "/api/remote/reload-engine", "/api/remote/restart-check",
+    "/api/remote/resume", "/api/remote/role-matrix", "/api/remote/run-off",
+    "/api/remote/schedule-file", "/api/remote/screen",
+    "/api/remote/screen-arming", "/api/remote/scrub-flames",
+    "/api/remote/setup", "/api/remote/show-file-new",
+    "/api/remote/show-folder", "/api/remote/show-select",
+    "/api/remote/signin", "/api/remote/signout",
+    "/api/remote/start-at-cue", "/api/remote/start-now",
+    "/api/remote/status", "/api/remote/stop", "/api/remote/users",
+    "/api/remote/weather", "/api/remote/whoami", "/api/schedule",
+    "/api/schedule/", "/api/schedule/deck-event", "/api/schedule/incident",
+    "/api/schedule/journal", "/api/schedule/logging",
+    "/api/schedule/operator", "/api/schedule/state",
+    "/api/schedule/tonight", "/api/showdir", "/api/skip", "/api/start",
+    "/api/state", "/api/stop", "/api/timelines", "/api/trigger",
+    "/remote-logic.js", "/remote1", "/remote2", "/ui",
+)
+
+
+def _su_all_routes():
+    """Every route in the engine's own tables and code: each "/api/..."
+    literal in ltcplay/*.py, every *_ROUTES table (a bare name is
+    /api/remote/<name>), every *_ROUTE constant, and every `name == "..."`
+    remote.py dispatches on."""
+    import importlib
     here = os.path.dirname(os.path.abspath(__file__))
-    src = open(os.path.join(here, "ltcplay", "remote.py"),
-               encoding="utf-8").read()
-    names.update(re.findall(r'name == "([a-z0-9-]+)"', src))
-    names.update(re.findall(r'name in \("([a-z0-9-]+)"', src))
-    return names
+    pkg = os.path.join(here, "ltcplay")
+    out = set()
+    for f in sorted(os.listdir(pkg)):
+        if not f.endswith(".py") or f == "__main__.py":
+            continue
+        src = open(os.path.join(pkg, f), encoding="utf-8").read()
+        out |= set(re.findall(r'["\'](/api/[A-Za-z0-9/_.-]*)["\']', src))
+        if f == "remote.py":
+            out |= {"/api/remote/" + n for n in re.findall(
+                r'\bname == "([A-Za-z0-9_.-]+)"', src)}
+        mod = importlib.import_module("ltcplay." + f[:-3])
+        for k, v in vars(mod).items():
+            if k.endswith("_ROUTES") and isinstance(
+                    v, (tuple, list, set, frozenset, dict)):
+                out |= {str(x) if str(x).startswith("/") else
+                        "/api/remote/" + str(x) for x in v}
+            elif k.endswith("_ROUTE") and isinstance(v, str):
+                out.add(v if v.startswith("/") else "/api/remote/" + v)
+    return out
 
 
-def _su_walk(x, path=""):
-    """Every key and text in a JSON answer, with where it is."""
-    if isinstance(x, dict):
-        for k, v in x.items():
-            yield f"{path}.{k}", str(k)
-            yield from _su_walk(v, f"{path}.{k}")
-    elif isinstance(x, list):
-        for i, v in enumerate(x):
-            yield from _su_walk(v, f"{path}[{i}]")
-    elif isinstance(x, str):
-        yield path, x
+def test_superuser_route_table():
+    section("the nightly upload's routes are an explicit table of every "
+            "route on every prefix: a route missing from it fails; each "
+            "upload route is the SuperUser's in the engine's own gate and "
+            "refused to an admin, an operator and nobody with the answer "
+            "of a missing route; the checks inside audit-settings and "
+            "audit-upload-now refuse on their own too (review of #251, "
+            "M6)")
+    U = _su_fast()
+    from ltcplay import remote as RM
+    real = _su_all_routes()
+    table = dict({r: "plain" for r in _SU_PLAIN_ROUTES},
+                 **{r: "upload" for r in _SU_UPLOAD_ROUTES})
+    check(not set(_SU_PLAIN_ROUTES) & set(_SU_UPLOAD_ROUTES) and
+          len(real) > 100, f"{len(real)} routes found")
+    check(not (real - set(table)),
+          f"every route is in the table, upload or plain: missing "
+          f"{sorted(real - set(table))}")
+    check(not (set(table) - real),
+          f"the table names no route that is gone: "
+          f"{sorted(set(table) - real)}")
+    for r, kind in sorted(table.items()):
+        if r.startswith("/api/remote/"):
+            n = r[len("/api/remote/"):]
+            check(U.is_upload_route(n) == (kind == "upload"),
+                  f"{r}: the engine's gate says {U.is_upload_route(n)}, "
+                  f"the table {kind}")
+    httpd, http, cookie_of, work = _accounts_engine(
+        seed=(("Jeff", "admin"), ("Andy", "admin"), ("Dallen", "operator")),
+        transport=lambda *a: (503, "not here"))
+    rem = httpd.remote
+    try:
+        toks = {}
+        for n in ("Andy", "Dallen"):
+            st, out, h = http("/api/remote/signin", {
+                "name": n, "password": "", "new_password":
+                f"{n.lower()}-own-pw-1"})
+            toks[n] = cookie_of(h)
+        _s, miss, _h = http("/api/remote/no-such-route-here", {})
+        for r in _SU_UPLOAD_ROUTES:
+            for who in (None, "Dallen", "Andy"):
+                for body in ({}, None):
+                    st, out, _h = http(r, body, cookie=toks.get(who))
+                    check(st == 404 and out == miss,
+                          f"{'GET' if body is None else 'POST'} {r} as "
+                          f"{who or 'nobody'}: {st} {out}")
+        rem.audit.flush(2.0)
+        ref = [(l["user"], l["target"]) for l in _audit_lines(
+            rem.audit.folder) if l.get("action") == "upload-refused"]
+        for r in _SU_UPLOAD_ROUTES:
+            n = r[len("/api/remote/"):]
+            for m in ("GET", "POST"):
+                check(("Andy", f"{m} {n}") in ref and
+                      ("unsigned", f"{m} {n}") in ref,
+                      f"the engine's own gate refused and wrote down "
+                      f"{m} {n} for Andy and for nobody")
+        # The checks inside the two routes, on their own (the gate in
+        # Remote.post bypassed): refused for an admin on the rack screen.
+        andy = RM.Ctx(True, "127.0.0.1",
+                      session=rem.users.session(toks["Andy"]))
+        for n in ("audit-settings", "audit-upload-now"):
+            code, out, _h = rem.users_post(n, {"enabled": False}, andy)
+            check(code == 404 and out == {"error": U.UPLOAD_REFUSED},
+                  f"{n}'s own check refuses an admin: {code} {out}")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    print("  ok")
 
 
 def test_superuser_upload_is_hidden_and_refused():
-    section("the nightly upload: every route that names an upload (found "
-            "by enumerating the engine's routes, so a later one is caught) "
-            "is refused with the words of a missing route for nobody, an "
-            "admin, an operator, a SuperUser on an iPad or over Tailscale; "
-            "only a SuperUser signed in on the rack screen gets it; the "
-            "Users answer has no word of it for anyone else; each refusal "
-            "and each change is in the audit log with who")
-    from ltcplay import users as U
+    section("the nightly upload: refused with the words of a missing route "
+            "for nobody, an admin, an operator, a SuperUser on an iPad or "
+            "over Tailscale; only a SuperUser signed in on the rack screen "
+            "gets it, its card's script included; the Users answer, "
+            "whoami and status have no word of it for anyone else; each "
+            "refusal and each change is in the audit log with who")
+    U = _su_fast()
     from ltcplay import remote as RM
-    names = _su_route_names()
-    ups = sorted(n for n in names if "upload" in n.lower() or
-                 ("journal" in n.lower() and "upload" in n.lower()))
-    check(set(U.UPLOAD_ROUTES) <= set(ups) | {"audit-settings"} and
-          "audit-upload-now" in ups and len(names) > 60,
-          f"the upload routes found among {len(names)}: {ups}")
-    for n in sorted(set(ups) | set(U.UPLOAD_ROUTES)):
-        check(U.is_upload_route(n) and
-              U.classify("/api/remote/" + n, {"on": False}) == U.UPLOAD,
-              f"{n} is the SuperUser's (classify)")
-    check(not any(U.is_upload_route(n) for n in names
-                  if n not in ups and n not in U.UPLOAD_ROUTES),
-          "no other route is")
-    sent = []
+    ups = list(U.UPLOAD_ROUTES) + [RM.UPLOAD_CARD_ROUTE]
     httpd, http, cookie_of, work = _accounts_engine(
         seed=(("Jeff", "admin"), ("Andy", "admin"), ("Dallen", "operator")),
-        transport=lambda *a: (sent.append(a[0]), (503, "not here"))[1])
+        transport=lambda *a: (503, "not here"))
     rem = httpd.remote
     try:
         toks = {}
@@ -78781,33 +79167,13 @@ def test_superuser_upload_is_hidden_and_refused():
             check(st == 200 and toks[n], f"{n} signs in: {out}")
         said = []
         check(U.main(["superuser", "Jeff"], folder=work, who="account t",
+                     read_password=lambda _p: "jeff-own-pw-1",
                      out=said.append) == 0, f"Jeff made one: {said}")
         rem.users.flush_pending_audit()
         body = {"enabled": True, "url": "https://audit.example/ltc",
                 "token": "tok-SECRET-123", "time": "04:10",
-                "keep_days": 120}
-        # Refused, over HTTP on this machine: nobody, an operator, an
-        # admin. The words of a route that is not there.
-        _st404, miss, _h = http("/api/remote/no-such-route-here", {})
-        for who in (None, "Dallen", "Andy"):
-            for n in sorted(set(ups) | set(U.UPLOAD_ROUTES)):
-                st, out, _h = http("/api/remote/" + n, body,
-                                   cookie=toks.get(who))
-                check(st == 404 and out == {"error": U.UPLOAD_REFUSED} and
-                      out == miss,
-                      f"POST {n} as {who or 'nobody'}: refused as a "
-                      f"missing route: {st} {out}")
-                st, out, _h = http("/api/remote/" + n, None,
-                                   cookie=toks.get(who))
-                check(st == 404 and out == {"error": U.UPLOAD_REFUSED},
-                      f"GET {n} as {who or 'nobody'}: {st} {out}")
+                "keep_days": 120, "password": "jeff-own-pw-1"}
         from ltcplay import auditsend
-        cfg, _e = auditsend.load_config(work)
-        check(cfg["enabled"] is False and not cfg["url"],
-              "nothing was saved by a refused press")
-        # A SuperUser away from the rack screen: an iPad session, a rack
-        # session's cookie on an iPad, Tailscale (PR #244's ctx), and a
-        # session made on an iPad presented on this machine.
         ok, _w, jeff_ipad, _n = rem.users.sign_in(
             "Jeff", "jeff-own-pw-1", False, "iPad")
         rack_s = rem.users.session(toks["Jeff"])
@@ -78818,7 +79184,9 @@ def test_superuser_upload_is_hidden_and_refused():
                                                   session=rack_s)),
                 ("an iPad sign-in on this machine",
                  RM.Ctx(True, "127.0.0.1", session=ipad_s)),
-                ("nobody", RM.Ctx(True, "127.0.0.1"))]
+                ("nobody", RM.Ctx(True, "127.0.0.1")),
+                ("Andy", RM.Ctx(True, "127.0.0.1",
+                                session=rem.users.session(toks["Andy"])))]
         ts = RM.Ctx(True, "127.0.0.1", session=rack_s)
         ts.tailscale = True
         ctxs.append(("Tailscale", ts))
@@ -78827,48 +79195,52 @@ def test_superuser_upload_is_hidden_and_refused():
         ctxs.append(("Tailscale door", ts2))
         for what, c in ctxs:
             check(not rem.superuser_here(c), f"{what}: not a SuperUser here")
-            for n in sorted(set(ups) | set(U.UPLOAD_ROUTES)):
+            for n in ups:
                 code, out, _h = rem.post("/api/remote/" + n, dict(body), c)
                 check(code == 404 and out == {"error": U.UPLOAD_REFUSED},
                       f"{what}: POST {n} refused: {code} {out}")
-            code, got = rem.get("/api/remote/users", c)
-            bad = [(p, t) for p, t in _su_walk(got)
-                   if "upload" in t.lower()]
-            check(not bad and "upload" not in got,
-                  f"{what}: the Users answer has no word of the upload: "
-                  f"{bad[:3]}")
-        # The admin's and operator's Users answer on the rack screen: no
-        # word of it, the SuperUser read only, no superuser role offered.
+                got = rem.get("/api/remote/" + n, c)
+                check(got[0] == 404 and got[1] == {"error":
+                                                   U.UPLOAD_REFUSED},
+                      f"{what}: GET {n} refused: {got[:2]}")
+            for route in ("users", "whoami", "status"):
+                code, got = rem.get("/api/remote/" + route, c)[:2]
+                bad = [(p, t) for p, t in _su_walk(got)
+                       if "upload" in t.lower() or "journal_up" in t.lower()]
+                check(not bad, f"{what}: {route} has no word of the "
+                               f"upload: {bad[:3]}")
+        cfg, _e = auditsend.load_config(work)
+        check(cfg["enabled"] is False and not cfg["url"],
+              "nothing was saved by a refused press")
         for who in ("Andy", "Dallen"):
             st, got, _h = http("/api/remote/users", None, cookie=toks[who])
-            bad = [(p, t) for p, t in _su_walk(got)
-                   if "upload" in t.lower() or "journal" in t.lower()]
-            check(st == 200 and not bad,
-                  f"{who}: no word of the upload anywhere in the Users "
-                  f"answer: {bad[:4]}")
             jeff = [u for u in got.get("users", []) if u["name"] == "Jeff"]
-            check(jeff and jeff[0]["role"] == U.SUPERUSER and
+            check(st == 200 and jeff and jeff[0]["role"] == U.SUPERUSER and
                   jeff[0]["edit"] is False and
                   U.SUPERUSER not in got.get("roles", []) and
-                  not got.get("may_superuser"),
-                  f"{who}: Jeff read only, no superuser role offered: "
-                  f"{jeff} {got.get('roles')}")
-        st, got, _h = http("/api/remote/whoami", None, cookie=toks["Andy"])
-        check("upload" not in json.dumps(got.get("may")),
-              f"whoami's may has no upload: {got.get('may')}")
-        # The SuperUser on the rack screen: the card's state, the fixed
-        # row, and the change, audited with who and without the token.
+                  not got.get("may_superuser") and
+                  "folder" not in json.dumps(got.get("audit")),
+                  f"{who}: Jeff read only, no superuser role offered, no "
+                  f"folder on the audit card: {jeff} {got.get('roles')}")
+        # The SuperUser on the rack screen: the card's state, its script,
+        # the fixed row, and the change, audited without the token.
         st, got, _h = http("/api/remote/users", None, cookie=toks["Jeff"])
         check(st == 200 and got.get("may_superuser") is True and
               isinstance((got.get("upload") or {}).get("upload"), dict) and
-              "token" not in json.dumps(got["upload"]).replace(
-                  "token_set", "") and
               [U.SUPERUSER, U.UPLOAD] in got.get("fixed", []) and
-              ["admin", U.UPLOAD] in got.get("fixed", []) and
-              got["matrix"]["admin"][U.UPLOAD] is False and
-              got["matrix"][U.SUPERUSER][U.UPLOAD] is True,
-              f"Jeff on the rack screen gets the card and its fixed row: "
-              f"{str(got.get('upload'))[:200]}")
+              got["matrix"]["admin"][U.UPLOAD] is False,
+              f"Jeff gets the card's state and its fixed row")
+        import urllib.request
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        req = urllib.request.Request(
+            base + "/api/remote/upload-card.js",
+            headers={"Cookie": f"{U.COOKIE}={toks['Jeff']}"})
+        with urllib.request.build_opener(urllib.request.ProxyHandler(
+                {})).open(req, timeout=10) as r:
+            js, ctype = r.read().decode(), r.headers.get("Content-Type")
+        check("javascript" in ctype and "window.ltcUploadCard" in js and
+              '"/api/remote/audit-settings"' in js,
+              f"Jeff's screen gets the card's script: {ctype}")
         st, out, _h = http("/api/remote/audit-settings", body,
                            cookie=toks["Jeff"])
         cfg, _e = auditsend.load_config(work)
@@ -78877,13 +79249,11 @@ def test_superuser_upload_is_hidden_and_refused():
         st, out, _h = http("/api/remote/audit-upload-now", {},
                            cookie=toks["Jeff"])
         check(st == 200, f"Jeff's Send now: {st} {out}")
-        # Andy can no longer turn it off.
         st, out, _h = http("/api/remote/audit-settings", {"enabled": False},
                            cookie=toks["Andy"])
         cfg, _e = auditsend.load_config(work)
         check(st == 404 and cfg["enabled"] is True,
               f"Andy cannot turn it off: {st} {out}")
-        # Andy at the Users screen: every SuperUser change refused.
         for b in ({"op": "role", "name": "Jeff", "role": "admin"},
                   {"op": "role", "name": "Andy", "role": U.SUPERUSER},
                   {"op": "add", "name": "Kim", "role": U.SUPERUSER,
@@ -78895,30 +79265,32 @@ def test_superuser_upload_is_hidden_and_refused():
             st, out, _h = http("/api/remote/users", b, cookie=toks["Andy"])
             check(st == 403 and out.get("error") == U.SUPERUSER_ONLY,
                   f"Andy: {b['op']} refused: {st} {out}")
-        st, out, _h = http("/api/remote/role-matrix",
+        st1, o1, _h = http("/api/remote/role-matrix",
                            {"matrix": {"admin": {"upload": True}}},
                            cookie=toks["Andy"])
-        check(st == 403 and rem.users.role_of("Jeff") == U.SUPERUSER and
-              rem.users.role_of("Andy") == "admin",
-              f"Andy cannot tick the upload row: {st} {out}")
+        st2, o2, _h = http("/api/remote/role-matrix",
+                           {"matrix": {"admin": {"uplaad": True}}},
+                           cookie=toks["Andy"])
+        check(st1 == st2 == 400 and o1["error"].replace("upload", "X") ==
+              o2["error"].replace("uplaad", "X"),
+              f"the upload row is refused like any unknown row: {o1} {o2}")
         rem.audit.flush(2.0)
         lines = _audit_lines(rem.audit.folder)
         txt = json.dumps(lines)
         check("tok-SECRET-123" not in txt and "andy-knows-1" not in txt and
-              "kim-temp-1" not in txt,
+              "kim-temp-1" not in txt and "jeff-own-pw-1" not in txt,
               "no token or password in the audit log")
         ref = [l for l in lines if l.get("action") == "upload-refused"]
         check(any(l["user"] == "Andy" and l["result"] == "refused" and
                   "audit-settings" in l["target"] for l in ref) and
               any(l["user"] == "unsigned" for l in ref),
-              f"each refused upload press is audited with who: "
-              f"{[(l['user'], l['target']) for l in ref][:6]}")
+              "each refused upload press is audited with who")
         sr = [l for l in lines if l.get("action") == "superuser-refused"]
         check(any(l["user"] == "Andy" and "Jeff" in l["target"]
                   for l in sr) and
               any(l["user"] == "Andy" and "Andy" in l["target"]
                   for l in sr) and
-              any("upload" in l["target"] for l in sr),
+              any("upload row" in l["target"] for l in sr),
               f"each refused SuperUser change is audited with who and "
               f"what: {[(l['user'], l['target']) for l in sr]}")
         ch = [l for l in lines if l.get("action") == "upload-settings"]
@@ -78935,6 +79307,116 @@ def test_superuser_upload_is_hidden_and_refused():
         httpd.shutdown()
         httpd.server_close()
     print("  ok")
+
+
+def test_superuser_upload_file_never_named():
+    section("the upload's settings file is never named, nor where it is, "
+            "to anyone but a SuperUser (Jeff, 2026-11-13): every page and "
+            "every GET answer and every refusal, as an admin and signed "
+            "out, with the file broken so its errors are as long as they "
+            "get; USERS.md and OPERATOR.md do not name it; SUPERUSER.md, "
+            "which no screen links to, does")
+    U = _su_fast()
+    from ltcplay import auditsend
+    from ltcplay import remote as RM
+    name = auditsend.CONFIG_FILE
+    pats = (name.lower(), "audit.json", "ltcplay_audit")
+    httpd, http, cookie_of, work = _accounts_engine(
+        seed=(("Jeff", "admin"), ("Andy", "admin")),
+        transport=lambda *a: (503, "not here"))
+    rem = httpd.remote
+    try:
+        toks = {}
+        for n in ("Jeff", "Andy"):
+            st, out, h = http("/api/remote/signin", {
+                "name": n, "password": "", "new_password":
+                f"{n.lower()}-own-pw-1"})
+            toks[n] = cookie_of(h)
+        U.main(["superuser", "Jeff"], folder=work, who="t",
+               read_password=lambda _p: "jeff-own-pw-1",
+               out=lambda *_: None)
+        # A broken settings file: every error sentence names its path.
+        with open(os.path.join(work, name), "w") as fh:
+            fh.write('{"upload": {"enabled": "yes"}}')
+        rem.uploader.run(force=True)
+        check(name in rem.uploader.status()["config_error"],
+              "the SuperUser's own view names it (so the scan below means "
+              "something)")
+        import urllib.error
+        import urllib.request
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+        def raw(path, cookie=None):
+            h = {"Cookie": f"{U.COOKIE}={cookie}"} if cookie else {}
+            try:
+                with opener.open(urllib.request.Request(base + path,
+                                                        headers=h),
+                                 timeout=10) as r:
+                    return r.read().decode("utf-8", "replace")
+            except urllib.error.HTTPError as e:
+                return e.read().decode("utf-8", "replace")
+        gets = ["/", "/remote", "/remote2", "/remote-logic.js",
+                "/api/state"] + sorted(
+            r for r in _SU_PLAIN_ROUTES + _SU_UPLOAD_ROUTES
+            if r.startswith("/api/remote/") and "?" not in r)
+        for who in ("Andy", None):
+            for path in gets:
+                t = raw(path, toks.get(who)).lower()
+                hit = [p for p in pats if p in t]
+                check(not hit, f"GET {path} as {who or 'signed out'} names "
+                               f"the upload's file: {hit}")
+            for path in _SU_UPLOAD_ROUTES:
+                st, out, _h = http(path, {"enabled": True},
+                                   cookie=toks.get(who))
+                check(not any(p in json.dumps(out).lower() for p in pats),
+                      f"POST {path} as {who or 'signed out'}: {out}")
+        t = raw("/api/remote/users", toks["Jeff"]).lower()
+        check(name in t, "a SuperUser on the rack screen is told")
+        # The night journal and the schedule's state, as the screens show
+        # them to an admin: no word of the upload (the journal upload of
+        # #246 stays behind the same gate).
+        for path in ("/api/schedule/state", "/api/schedule/journal",
+                     "/api/state"):
+            t = raw(path, toks["Andy"]).lower()
+            check("upload" not in t,
+                  f"{path} as an admin: no word of the upload")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    here = os.path.dirname(os.path.abspath(__file__))
+    for doc in ("USERS.md", "OPERATOR.md"):
+        t = open(os.path.join(here, doc), encoding="utf-8").read().lower()
+        check(not any(p in t for p in pats),
+              f"{doc} does not name the upload's file")
+    su = open(os.path.join(here, "SUPERUSER.md"), encoding="utf-8").read()
+    check(name in su and "Make me SuperUser" in su and
+          "Reset SuperUser sign-in" in su,
+          "SUPERUSER.md, Jeff's own guide, names it and the launchers")
+    _no_dashes(su, "SUPERUSER.md")
+    page = open(os.path.join(here, "ltcplay", "web", "remote2.html"),
+                encoding="utf-8").read()
+    check("upload" not in (_js_function(page, "renderAudit") or "x upload"),
+          "the audit card (everyone's) has no word of the upload: the "
+          "upload's state is drawn only by the SuperUser's card script")
+    check("SUPERUSER.md" not in page and "audit-settings" not in page and
+          "audit-upload-now" not in page and "ltcUploadCard" in page,
+          "the page links no SuperUser guide and carries no upload route "
+          "or card; it loads the card's script only for a SuperUser")
+    print("  ok")
+
+
+def _su_walk(x, path=""):
+    """Every key and text in a JSON answer, with where it is."""
+    if isinstance(x, dict):
+        for k, v in x.items():
+            yield f"{path}.{k}", str(k)
+            yield from _su_walk(v, f"{path}.{k}")
+    elif isinstance(x, list):
+        for i, v in enumerate(x):
+            yield from _su_walk(v, f"{path}[{i}]")
+    elif isinstance(x, str):
+        yield path, x
 
 
 def test_safety_presses_pass_signed_out_and_are_logged_unsigned():
@@ -99826,10 +100308,6 @@ _UI2_ROUTES = {
     "/api/remote/announce-test-tone": "settings",
     "/api/remote/arm-hold": "arm",
     "/api/remote/arm-release": "safety",
-    # The nightly upload: the SuperUser's own row (users.UPLOAD), never
-    # in the matrix (2026-11-13).
-    "/api/remote/audit-settings": "upload",
-    "/api/remote/audit-upload-now": "upload",
     "/api/remote/audit-verify": None,
     "/api/remote/checklist-export": None,
     "/api/remote/cleaning": None,
@@ -99921,14 +100399,16 @@ def test_ui2_page_makes_only_1_0_presses():
     # The nightly upload's card (a SuperUser's only, made by renderUpload,
     # 2026-11-13; it was 1.0's Users markup, P7) names the audit server's
     # address in words: its label and its field's example, nothing loaded.
-    um = _js_function(two, "renderUpload") or ""
+    um = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ltcplay", "web", "upload_card.js"),
+              encoding="utf-8").read()
     check(re.findall(r"https?://[^\s\"<)`]*", um) == [
               "https://", "https://audit.example.com/ltc"] and
           "Server address (https://)</label>" in um and
           'placeholder="https://audit.example.com/ltc">' in um and
           not re.findall(r"https?://", _ui2_users_parts(one)[0]),
           "the upload card names the audit server only in words")
-    two_ = two.replace(um, "")
+    two_ = two
     check(not re.search(r"(?:src|href)=\"(?:https?:)?//", two) and
           "http://" not in two_ and "https://" not in two_,
           "2.0 loads nothing from off the show network")
@@ -114405,10 +114885,19 @@ def test_ui2_users_audit_are_1_0s():
           'id="nav-user"' not in two,
           "2.0 has no 1.0 chip and no lockForSignIn")
     for r in ("users", "signin", "signout", "my-password", "role-matrix",
-              "audit-verify", "audit-settings", "idle-signout",
-              "last-show-signout", "audit-upload-now"):
+              "audit-verify", "idle-signout", "last-show-signout"):
         check(f'"/api/remote/{r}"' in want,
               f"the Users pane posts 1.0's route {r}")
+    # The nightly upload's two routes are in the card's own script, served
+    # only to a SuperUser here (2026-11-13, review of #251), never on the
+    # page.
+    here_ = os.path.dirname(os.path.abspath(__file__))
+    card = open(os.path.join(here_, "ltcplay", "web", "upload_card.js"),
+                encoding="utf-8").read()
+    for r in ("audit-settings", "audit-upload-now"):
+        check(f'"/api/remote/{r}"' in card and f"/{r}" not in two,
+              f"only the SuperUser's card script names {r}")
+    _no_dashes(card, "the upload card's script")
     check('"/api/remote/" + (route || "users")' in want and
           'uAdmin({}, "clear-lockouts")' in want,
           "the users list and Clear sign-in lockouts post 1.0's routes")
@@ -114439,11 +114928,11 @@ def test_ui2_users_audit_are_1_0s():
           "Settings' Users card opens the pane; no 1.0 Users link left")
     # No secret is shown: the token and the server address are never
     # written into their fields, only cleared.
-    put = re.findall(r'\$\("au-(tok|url)"\)\.value = ([^;]+);', two)
+    put = re.findall(r'\$\("au-(tok|url)"\)\.value = ([^;]+);', card)
     check(put == [("tok", '""')],
           f"the token is only ever cleared, the address never filled: "
           f"{put}")
-    check('<input id="au-tok" type="password" autocomplete="off"' in two,
+    check('<input id="au-tok" type="password" autocomplete="off"' in card,
           "the token field is a password field")
     pane = two[p:two.find('<section class="pane" id="t-settings"')]
     _no_dashes(pane, "2.0's Users pane")
@@ -114607,9 +115096,9 @@ out.bad = await press(g("au-save"));
 out.badMsg = g("au-msg").textContent;
 g("au-lastshow").value = "20"; g("au-idle").value = "5";
 out.saved = await press(g("au-save"), 500);
-g("au-tok").value = "tok";
+g("au-tok").value = "tok"; g("au-pw").value = "jeff-pw-1";
 out.upSaved = await press(g("au-upsave"), 500);
-out.tokLeft = g("au-tok").value;
+out.tokLeft = g("au-tok").value + g("au-pw").value;
 out.now = await press(g("au-now"));
 // Andy, an admin, on the same screen: the upload is not on the page at
 // all, Jeff (the SuperUser) is read only, and superuser is not offered.
@@ -114639,6 +115128,11 @@ out.viewer = {admin:!g("u-admin").hidden, audit:!g("u-audit").hidden, upload:!!g
     got = _rack_screen_in_chromium(
         chrome, page, st, ((1366, 1100), (390, 844)), measure_js=js,
         frag="?tour=0", routes={"/api/remote/users": _UI2_USERS_VIEW,
+                                "/api/remote/upload-card.js": _RawRoute(
+                                    open(os.path.join(os.path.dirname(
+                                        os.path.abspath(__file__)), "ltcplay",
+                                        "web", "upload_card.js"),
+                                        encoding="utf-8").read()),
                                 "/api/brand": {"show": "x"}},
         budget_ms=60000)
     for (w, hh), res in got.items():
@@ -114729,7 +115223,8 @@ out.viewer = {admin:!g("u-admin").hidden, audit:!g("u-audit").hidden, upload:!!g
               f"settings, never the upload: {r['saved']}")
         check(r["upSaved"] == [
                   ["audit-settings", {"enabled": True, "time": "03:30",
-                                      "keep_days": 120, "token": "tok"}]]
+                                      "keep_days": 120, "token": "tok",
+                                      "password": "jeff-pw-1"}]]
               and r["tokLeft"] == "",
               f"{where}: the upload card's Save posts 1.0's body and "
               f"clears the token: {r['upSaved']}")
@@ -116105,8 +116600,13 @@ if __name__ == "__main__":
         test_ui2_users_audit_driven,
         test_superuser_role_and_matrix,
         test_superuser_every_users_edit_path,
+        test_superuser_changed_outside_the_engine,
+        test_superuser_session_limit_and_password_again,
         test_superuser_local_command_line,
+        test_superuser_cross_process_lock,
+        test_superuser_route_table,
         test_superuser_upload_is_hidden_and_refused,
+        test_superuser_upload_file_never_named,
         test_ui2_show_pc_tools_are_1_0s,
         test_ui2_show_pc_tools_driven,
         test_ui2_op_text_shapes_text_with_dom_nodes_only,

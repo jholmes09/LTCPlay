@@ -23075,7 +23075,7 @@ def build():
   "  $(\"u-audit\").hidden = false;"),
 
  ("ui 2.0 Users: the shared token is written into its field",
-  "ltcplay/web/remote2.html",
+  "ltcplay/web/upload_card.js",
   "    $(\"au-tok\").placeholder = u.token_set ?",
   "    $(\"au-tok\").value = u.token || \"\";\n    $(\"au-tok\").placeholder = u.token_set ?"),
 
@@ -23843,10 +23843,6 @@ def build():
   "                if r not in ROLES or r == SUPERUSER:",
   "                if r not in ROLES:"),
 
- ("superuser: the upload row can be saved in the matrix", "ltcplay/users.py",
-  "                    if p in SUPERUSER_PERMS:\n                        # Never in the matrix",
-  "                    if False:\n                        # Never in the matrix"),
-
  ("superuser: a SuperUser's column can be turned off", "ltcplay/users.py",
   "                    if c == SUPERUSER and v is not True:",
   "                    if False:"),
@@ -23856,7 +23852,7 @@ def build():
   "            if False:"),
 
  ("superuser: the command line's grant is not from the command line", "ltcplay/users.py",
-  "                           source=LOCAL_COMMAND)",
+  "                           source=str(x.get(\"source\") or LOCAL_COMMAND))",
   '                           source="")'),
 
  ("superuser: the engine never refuses an upload route", "ltcplay/remote.py",
@@ -23910,6 +23906,88 @@ def build():
  ("ui 2.0 Users: superuser stays offered to an admin", "ltcplay/web/remote2.html",
   "  if(!UV.may_superuser && su) su.remove();\n",
   ""),
+
+ # The cold review of #251 (M1 to M6) and Jeff's 2026-11-13 rule: no
+ # screen a non-SuperUser sees names the upload's settings file.
+ ("superuser: a hand-made SuperUser is trusted", "ltcplay/users.py",
+  '            u["role"] = "admin"\n            u["su_untrusted"] = True\n',
+  '            u["su_untrusted"] = True\n'),
+
+ ("superuser: any fingerprint is this engine's", "ltcplay/users.py",
+  "            if key is not None and isinstance(fp, str) and \\\n                    hmac.compare_digest(fp, self._fp(key, n, u)):",
+  "            if True:"),
+
+ ("superuser: a SuperUser removed outside the engine is not said", "ltcplay/users.py",
+  "                if gone:\n",
+  "                if False:\n"),
+
+ ("superuser: a changed SuperUser record raises no alert", "ltcplay/users.py",
+  "            if alerts and self.on_alert is not None:",
+  "            if False:"),
+
+ ("superuser: a change found by another process is never audited", "ltcplay/users.py",
+  '            for t in self._tamper:\n                self._pend(doc, "superuser-set-changed", "unknown",',
+  '            for t in ():\n                self._pend(doc, "superuser-set-changed", "unknown",'),
+
+ ("superuser: a SuperUser's session never ends by itself", "ltcplay/users.py",
+  "                and now - s[\"seen\"] > SUPERUSER_IDLE_S]",
+  "                and False]"),
+
+ ("superuser: a SuperUser's session lasts an hour", "ltcplay/users.py",
+  "SUPERUSER_IDLE_S = 15 * 60",
+  "SUPERUSER_IDLE_S = 60 * 60"),
+
+ ("superuser: an upload change needs no password again", "ltcplay/remote.py",
+  '                if not u.confirm(me.get("name"), body.get("password"),',
+  '                if False and not u.confirm(me.get("name"), body.get("password"),'),
+
+ ("superuser: a reset leaves the SuperUser signed in", "ltcplay/users.py",
+  "        self._end_sessions(name)\n        with self._lock:\n            self._fails.pop((\"name\", name.lower()), None)\n        self._note(\"superuser-signal\"",
+  "        with self._lock:\n            self._fails.pop((\"name\", name.lower()), None)\n        self._note(\"superuser-signal\""),
+
+ ("superuser: a stale signal is taken", "ltcplay/users.py",
+  "            elif abs(self._wall() - at) > SIGNAL_MAX_AGE_S:",
+  "            elif False:"),
+
+ ("superuser: the running engine is never told of a reset", "ltcplay/users.py",
+  "        real = self._change(fn)\n        self._signal(real)\n",
+  "        real = self._change(fn)\n"),
+
+ ("superuser: any password makes a SuperUser", "ltcplay/users.py",
+  '        ok = check_password(str(by_password or ""), rec) if rec else False',
+  "        ok = True"),
+
+ ("superuser: anyone's password makes the first SuperUser", "ltcplay/users.py",
+  "            by = real if \" \".join(str(by_name or \"\").split()).lower() == \\\n                real.lower() else None",
+  "            by = {n.lower(): n for n in users}.get(\n                \" \".join(str(by_name or \"\").split()).lower())"),
+
+ ("superuser: no lock across processes", "ltcplay/users.py",
+  "            with _file_lock(self.lock_path):\n                return self._change_locked(fn)",
+  "            if True:\n                return self._change_locked(fn)"),
+
+ ("superuser: the users routes' own upload check is gone", "ltcplay/remote.py",
+  "        if users_mod.is_upload_route(name) and \\\n                not self.superuser_here(ctx):\n            return 404, {\"error\": UPLOAD_REFUSED}, {}\n        # Everything else",
+  "        if False:\n            return 404, {\"error\": UPLOAD_REFUSED}, {}\n        # Everything else"),
+
+ ("superuser: a GET of the card's script is anyone's", "ltcplay/remote.py",
+  '        if self.upload_refused(name, ctx, "GET"):\n            return 404, {"error": UPLOAD_REFUSED}\n',
+  '        if False:\n            return 404, {"error": UPLOAD_REFUSED}\n'),
+
+ ("superuser: an admin's upload row attempt is not audited", "ltcplay/remote.py",
+  '                    self._audit_rank("superuser-refused", ctx,\n                                     "role matrix: the upload row")',
+  "                    pass"),
+
+ ("superuser: the upload row has its own words", "ltcplay/users.py",
+  '                        raise ValueError(f"{p} is not a row of the matrix.")',
+  '                        raise ValueError(f"{p} is not a row of the matrix." + (" It is the SuperUser\'s." if p in SUPERUSER_PERMS else ""))'),
+
+ ("superuser: the audit card says where the settings are", "ltcplay/remote.py",
+  '                                 if k != "folder"}',
+  "                                 if True}"),
+
+ ("superuser: an admin is told the upload's settings file", "ltcplay/remote.py",
+  '        out = {"writer": None, "chain": None}\n',
+  '        out = {"writer": None, "chain": None, "settings": "ltcplay_audit.json"}\n'),
 ]
 
 

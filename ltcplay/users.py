@@ -62,6 +62,7 @@ the minutes. It is checked on every session read and on its own beat
 (start(), every LAST_SHOW_BEAT_S), so it happens on time with no page
 open.
 """
+import contextlib
 import hashlib
 import hmac
 import json
@@ -78,6 +79,23 @@ USERS_FILE = "ltcplay_users.json"
 # controls instead of opening them (review of PR #143, 2).
 USERS_MARK = "ltcplay_users.made"
 COOKIE = "ltcplay_user"
+# The SuperUser's own files beside the users file (2026-11-13, review of
+# #251): the engine's key that fingerprints every SuperUser record and the
+# set of SuperUsers (Users._trust: one this build did not write is an admin
+# until a SuperUser confirms it), the cross-process lock every change takes
+# (the engine and the local command line), and the local command line's
+# signal to the running engine after a SuperUser's password reset. "key"
+# in the name keeps it out of the diagnostics bundle (diagnostics.py).
+USERS_KEY = "ltcplay_users_key.json"
+USERS_LOCK = "ltcplay_users.lock"
+USERS_SIGNAL = "ltcplay_users_signal.json"
+# How long the lock is waited for, and how old a signal may be.
+LOCK_WAIT_S = 2.0
+AUTH_FAIL_PAUSE_S = 1.0     # the local command line, after a wrong password
+SIGNAL_MAX_AGE_S = 600.0
+# A SuperUser's session ends after this long with no press, whatever the
+# admin's idle and last show settings say (M3, review of #251).
+SUPERUSER_IDLE_S = 15 * 60
 # THE SUPERUSER (Jeff, 2026-11-13): one level above admin. A SuperUser may
 # do everything an admin may (its matrix column is fixed all on), and is
 # the only one who may see or change the nightly upload (SUPERUSER_ROWS)
@@ -555,6 +573,49 @@ def check_new_password(pw):
     return pw
 
 
+@contextlib.contextmanager
+def _file_lock(path, timeout=None):
+    """An exclusive lock on `path` across processes (the engine and the
+    local command line), released by the system if the holder dies.
+    Raises ValueError with a sentence when it cannot be had in time."""
+    fh = open(path, "a+b")
+    got = False
+    try:
+        deadline = time.monotonic() + (LOCK_WAIT_S if timeout is None
+                                       else timeout)
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                got = True
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise ValueError("Another program is changing the users "
+                                     "file just now. Nothing was changed; "
+                                     "try again in a moment.")
+                time.sleep(0.05)
+        yield
+    finally:
+        if got:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        fh.close()
+
+
 def _write_private(path, doc):
     tmp = f"{path}.{os.getpid()}.tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -611,6 +672,118 @@ class Users:
         self._last_show_done = None   # the night already signed out
         self._beat_stop = threading.Event()
         self._beat = None
+        self.key_path = os.path.join(folder, USERS_KEY)
+        self.lock_path = os.path.join(folder, USERS_LOCK)
+        self.signal_path = os.path.join(folder, USERS_SIGNAL)
+        # What the last read found wrong with the SuperUsers (_trust):
+        # sentences, written to the audit log and raised as an alert by
+        # the engine (reconcile, flush_pending_audit). `on_alert(text)` is
+        # the engine's alert (remote.py); None: no alert.
+        self._tamper = []
+        self.on_alert = None
+
+    # -- the SuperUser's fingerprints (review of #251, M1, M2) -----------
+    def _key(self, create=False):
+        """The engine's key (bytes), or None. Made once, private, when a
+        SuperUser is first written."""
+        try:
+            with open(self.key_path, encoding="utf-8") as fh:
+                k = bytes.fromhex(json.load(fh)["key"])
+            if len(k) >= 32:
+                return k
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        if not create:
+            return None
+        k = secrets.token_bytes(32)
+        os.makedirs(self.folder, exist_ok=True)
+        _write_private(self.key_path, {"key": k.hex(), "note": (
+            "LTC Player's SuperUser fingerprints. Removing or changing this "
+            "file makes every SuperUser an admin until a SuperUser "
+            "confirms them again.")})
+        return k
+
+    @staticmethod
+    def _mac(key, what):
+        return hmac.new(key, json.dumps(what, sort_keys=True).encode(
+            "utf-8"), hashlib.sha256).hexdigest()
+
+    def _fp(self, key, name, u):
+        """A SuperUser record's fingerprint: its name, role and password
+        hash (and whether that is temporary, and who set it), as this
+        build wrote them. An older build's reset, a hand edit or a copy
+        from elsewhere does not match."""
+        pw = u.get("pw") if isinstance(u.get("pw"), dict) else {}
+        return self._mac(key, ["su-fp-1", str(name).lower(), u.get("role"),
+                               str(pw.get("alg", "")), str(pw.get("salt",
+                                                              "")),
+                               str(pw.get("hash", "")),
+                               bool(u.get("must_change")),
+                               str(u.get("reset_by", ""))])
+
+    def _trust(self, doc):
+        """On every read of the file: a SuperUser whose fingerprint is not
+        this engine's (added, copied or changed outside it: a hand edit,
+        an older build's reset, a missing key) reads as an admin until a
+        SuperUser confirms them; and the set of SuperUsers is compared with
+        the set this engine last wrote. Anything found is kept in
+        self._tamper for the audit log and an alert. Changes `doc`."""
+        users = doc.get("users") or {}
+        key = self._key()
+        found = []
+        trusted = []
+        for n, u in list(users.items()):
+            if not isinstance(u, dict) or u.get("role") != SUPERUSER:
+                continue
+            fp = u.get("su_fp")
+            if key is not None and isinstance(fp, str) and \
+                    hmac.compare_digest(fp, self._fp(key, n, u)):
+                trusted.append(n.lower())
+                continue
+            u["role"] = "admin"
+            u["su_untrusted"] = True
+            found.append(f"{n} is a SuperUser in the users file, but not "
+                         f"one this program wrote (a hand edit, an older "
+                         f"version's change, or a missing key). {n} is an "
+                         f"admin until a SuperUser confirms them.")
+        st = doc.get("su_set")
+        if isinstance(st, dict):
+            names = st.get("names")
+            ok = key is not None and isinstance(names, list) and \
+                isinstance(st.get("sig"), str) and hmac.compare_digest(
+                    st["sig"], self._mac(key, ["su-set-1", sorted(
+                        str(x) for x in names)]))
+            if not ok:
+                found.append("The record of who is a SuperUser was changed "
+                             "outside this program.")
+            else:
+                gone = sorted(set(str(x) for x in names) - set(trusted))
+                if gone:
+                    found.append(f"No longer a SuperUser, changed outside "
+                                 f"this program: {', '.join(gone)}.")
+        if found:
+            self._tamper.extend(found)
+        return doc
+
+    def _sign(self, doc):
+        """Before every save: each SuperUser's fingerprint and the set of
+        SuperUsers, as this build writes them."""
+        users = doc.get("users") or {}
+        supers = [n for n, u in users.items()
+                  if isinstance(u, dict) and u.get("role") == SUPERUSER]
+        for u in users.values():
+            if isinstance(u, dict):
+                u.pop("su_untrusted", None)
+                if u.get("role") != SUPERUSER:
+                    u.pop("su_fp", None)
+        if not supers and "su_set" not in doc:
+            return
+        key = self._key(create=True)
+        for n in supers:
+            users[n]["su_fp"] = self._fp(key, n, users[n])
+        names = sorted(n.lower() for n in supers)
+        doc["su_set"] = {"names": names,
+                         "sig": self._mac(key, ["su-set-1", names])}
 
     # -- the file -------------------------------------------------------
     def _load(self):
@@ -663,6 +836,7 @@ class Users:
                     doc.get("users", {}), dict):
                 raise ValueError("not a users object")
             doc.setdefault("users", {})
+            doc = self._trust(doc)
             self.error, self.error_kind = "", ""
             self._good = doc
             if doc["users"] and not os.path.exists(self.mark):
@@ -679,6 +853,7 @@ class Users:
     def _save(self, doc):
         os.makedirs(self.folder, exist_ok=True)
         clean = {k: v for k, v in doc.items() if k != "broken"}
+        self._sign(clean)
         _write_private(self.path, clean)
         if clean.get("users"):
             self._write_mark()
@@ -767,6 +942,7 @@ class Users:
                 out.append({"name": n, "role": u.get("role", ""),
                             "password_set": u.get("pw") is not None,
                             "temporary": bool(u.get("must_change")),
+                            "unconfirmed": bool(u.get("su_untrusted")),
                             "created": u.get("created", ""),
                             "changed": u.get("changed", ""),
                             "locked_s": (round(f[1] - now) if f and
@@ -787,6 +963,7 @@ class Users:
 
     # -- sessions -----------------------------------------------------------
     def _drop_idle(self, now):
+        self._drop_superuser_idle(now)
         mins = self.idle_minutes()
         if not mins:
             return
@@ -796,6 +973,93 @@ class Users:
             del self._sessions[t]
             self._note("sign-out", s["name"], reason=f"idle for {mins} min",
                        source=s["source"])
+
+    def _drop_superuser_idle(self, now):
+        """A SuperUser's session ends SUPERUSER_IDLE_S after its last press,
+        whatever the admin's idle and last show settings are (review of
+        #251, M3): an admin cannot keep a SuperUser's rack screen session
+        open for themselves."""
+        users = self._load().get("users", {})
+        gone = [(t, s) for t, s in self._sessions.items()
+                if (users.get(s["name"]) or {}).get("role") == SUPERUSER
+                and now - s["seen"] > SUPERUSER_IDLE_S]
+        for t, s in gone:
+            del self._sessions[t]
+            self._note("sign-out", s["name"],
+                       reason=f"SuperUser idle for "
+                              f"{SUPERUSER_IDLE_S // 60} min",
+                       source=s["source"])
+
+    def confirm(self, name, password, source):
+        """True when `password` is `name`'s own: a SuperUser's again before
+        an upload change (M3). A wrong one counts toward the name's
+        lockout like a wrong sign-in, and is audited."""
+        now = self._clock()
+        keys = [("name", str(name).lower()), ("from", str(source))]
+        with self._lock:
+            if self._locked(keys, now):
+                return False
+            rec = (self._load().get("users", {}).get(name) or {}).get("pw")
+        with self._check_lock:
+            ok = rec is not None and check_password(str(password or ""), rec)
+        with self._lock:
+            if ok:
+                for k in keys:
+                    self._fails.pop(k, None)
+            else:
+                self._failed(keys, now)
+        if not ok:
+            self._note("password-confirm", name, "refused",
+                       "the password typed again did not match",
+                       source=source)
+        return ok
+
+    def consume_signal(self):
+        """The local command line's word to this engine after a SuperUser's
+        password reset (USERS_SIGNAL, M4): end that person's sessions and
+        clear their lockout. Taken once and removed; one that is not
+        signed with this engine's key, names nobody, or is older than
+        SIGNAL_MAX_AGE_S is ignored, and said in the audit log. Never
+        raises."""
+        try:
+            with open(self.signal_path, encoding="utf-8") as fh:
+                raw = fh.read()
+        except OSError:
+            return None
+        try:
+            os.remove(self.signal_path)
+        except OSError:
+            pass
+        why, name = "", ""
+        try:
+            doc = json.loads(raw)
+            name = str(doc.get("name") or "")
+            at = float(doc.get("at"))
+            key = self._key()
+            if key is None or not isinstance(doc.get("sig"), str) or \
+                    not hmac.compare_digest(doc["sig"], self._mac(
+                        key, ["su-signal-1", name, doc.get("at"),
+                              doc.get("nonce")])):
+                why = "not signed by this program"
+            elif abs(self._wall() - at) > SIGNAL_MAX_AGE_S:
+                why = "too old"
+            elif self.role_of(name) != SUPERUSER:
+                why = "names no SuperUser"
+        except (ValueError, TypeError, AttributeError):
+            why = "not readable"
+        if why:
+            self._note("superuser-signal", "unknown", "refused",
+                       f"a signal file was ignored: {why}",
+                       target=name[:40], source="outside the engine")
+            return False
+        self._end_sessions(name)
+        with self._lock:
+            self._fails.pop(("name", name.lower()), None)
+        self._note("superuser-signal", "unknown", reason=(
+            "a SuperUser's password was reset on this PC: their sessions "
+            "ended and their lockout cleared"), target=name,
+                   source=LOCAL_COMMAND)
+        return True
 
     def _drop_after_last_show(self):
         """Every session signed in before the night's last show ended plus
@@ -848,9 +1112,11 @@ class Users:
 
         def loop():
             self.flush_pending_audit()
+            self.consume_signal()
             while not self._beat_stop.wait(every_s):
                 self.after_last_show_tick()
                 self.flush_pending_audit()
+                self.consume_signal()
         self._beat = threading.Thread(target=loop, daemon=True,
                                       name="ltcplay-users-beat")
         self._beat.start()
@@ -1066,6 +1332,14 @@ class Users:
     # -- changes (the Users screen) -----------------------------------------
     def _change(self, fn):
         with self._lock:
+            os.makedirs(self.folder, exist_ok=True)
+            # One change at a time across processes too (the engine and
+            # the local command line), each from a fresh read.
+            with _file_lock(self.lock_path):
+                return self._change_locked(fn)
+
+    def _change_locked(self, fn):
+        with self._lock:
             loaded = self._load()
             if self._fail_since is not None:
                 # Only ever changed from a fresh read: a change made from
@@ -1083,6 +1357,14 @@ class Users:
                                  f"{self.folder} and start it again.")
             doc.setdefault("users", {})
             said = fn(doc)
+            # What _trust found goes into the file for the engine's audit
+            # log and alert (flush_pending_audit), whichever process saw
+            # it first: the save below makes the file consistent again.
+            for t in self._tamper:
+                self._pend(doc, "superuser-set-changed", "unknown",
+                           "users file", t, alert=True,
+                           source="outside the engine")
+            self._tamper = []
             self._save(doc)
             return said
 
@@ -1280,12 +1562,9 @@ class Users:
                 if c not in COLUMNS or not isinstance(row, dict):
                     raise ValueError(f"{c} is not a column of the matrix.")
                 for p, v in row.items():
-                    if p in SUPERUSER_PERMS:
-                        # Never in the matrix, never changed: refused and
-                        # written down, whoever asks.
-                        raise RankRefused(f"role matrix {c}/{p}",
-                                          f"{p} is not a row of the "
-                                          f"matrix.")
+                    # The upload row is not a row of the matrix: the same
+                    # words as any unknown row, so they tell nothing
+                    # (remote.py audits the attempt).
                     if p not in PERM_KEYS or not isinstance(v, bool):
                         raise ValueError(f"{p} is not a row of the matrix.")
                     if c == SUPERUSER and v is not True:
@@ -1335,7 +1614,8 @@ class Users:
         return f"Sign-in lockouts cleared ({n})."
 
     # -- the SuperUser, from the local command line only (main()) ----------
-    def _pend(self, doc, action, who, target, reason=""):
+    def _pend(self, doc, action, who, target, reason="", alert=False,
+              source=LOCAL_COMMAND):
         """An audit line for the engine to write (flush_pending_audit): the
         command line has no audit writer of its own, and a second writer
         on the engine's day file would break its chain."""
@@ -1344,13 +1624,40 @@ class Users:
             else []
         q.append({"action": action, "user": str(who or UNSIGNED)[:80],
                   "target": str(target)[:120], "reason": str(reason)[:200],
-                  "source": LOCAL_COMMAND, "at": self._stamp()})
+                  "source": str(source)[:80], "at": self._stamp(),
+                  "alert": bool(alert)})
         doc["pending_audit"] = q[-PENDING_AUDIT_MAX:]
 
-    def promote_local(self, name, who):
+    NOT_A_SUPERUSER = ("That is not a SuperUser's name and password. "
+                       "Nothing was changed.")
+
+    def _authorize(self, users, real, by_name, by_password):
+        """The local command line's own check (review of #251, M1): once a
+        SuperUser exists, a CURRENT SuperUser's name and password; before
+        any, the person being made one types their own password. Never a
+        password on the command line itself (main() asks for it)."""
+        supers = self._supers(users)
+        if supers:
+            by = {n.lower(): n for n in supers}.get(
+                " ".join(str(by_name or "").split()).lower())
+        else:
+            by = real if " ".join(str(by_name or "").split()).lower() == \
+                real.lower() else None
+        rec = (users.get(by) or {}).get("pw") if by else None
+        ok = check_password(str(by_password or ""), rec) if rec else False
+        if not ok or (supers and (users.get(by) or {}).get("must_change")):
+            time.sleep(AUTH_FAIL_PAUSE_S)      # slow a guesser down
+            raise ValueError(self.NOT_A_SUPERUSER if supers else
+                             f"That is not {real}'s own password. Nothing "
+                             f"was changed.")
+        return by
+
+    def promote_local(self, name, who, by_name=None, by_password=None):
         """Make an existing user a SuperUser. ONLY the local command line
         calls this (main(): run on the show PC by an account that can
-        write the settings folder); no route reaches it. Refused for a name
+        write the settings folder); no route reaches it. Once a SuperUser
+        exists it needs a current SuperUser's name and password; the very
+        first one needs the person's own password. Refused for a name
         whose password is not their own yet (none, or a temporary one
         someone else knows): that name could be claimed. Returns a
         sentence; raises ValueError."""
@@ -1365,21 +1672,26 @@ class Users:
                                  f"changed.")
             if u.get("role") == SUPERUSER:
                 return f"{real} is already a SuperUser. Nothing was changed."
+            by = self._authorize(users, real, by_name, by_password)
             before = u.get("role")
             u["role"] = SUPERUSER
             u["changed"] = self._stamp()
             users[real] = u
             self._pend(doc, "superuser-set", who, real,
-                       f"was {before}")
+                       f"was {before}; confirmed with {by}'s password")
             return (f"{real} is now a SuperUser. LTC Player picks this up "
                     f"by itself; no restart is needed.")
         return self._change(fn)
 
-    def superuser_password_local(self, name, password, who):
-        """A temporary password for a SuperUser who cannot sign in (the
-        local command line only, like promote_local). They choose their
-        own at their next sign-in on the rack screen."""
+    def superuser_password_local(self, name, password, who, by_name=None,
+                                 by_password=None):
+        """A temporary password for a SuperUser (the local command line
+        only, like promote_local), confirmed with a current SuperUser's
+        name and password. They choose their own at their next sign-in on
+        the rack screen. The running engine is told (USERS_SIGNAL): it ends
+        their sessions and clears their lockout."""
         pw = check_new_password(password)
+        said = []
 
         def fn(doc):
             users = doc["users"]
@@ -1388,19 +1700,32 @@ class Users:
             if u.get("role") != SUPERUSER:
                 raise ValueError(f"{real} is not a SuperUser. Nothing was "
                                  f"changed.")
+            said.append(self._authorize(users, real, by_name, by_password))
             u["pw"] = hash_password(pw, params=self._hash_params)
             u["must_change"] = True
             u["reset_by"] = LOCAL_COMMAND
             u["changed"] = self._stamp()
             users[real] = u
-            self._pend(doc, "superuser-password-reset", who, real)
+            self._pend(doc, "superuser-password-reset", who, real,
+                       f"confirmed with {said[0]}'s password")
             return real
         real = self._change(fn)
+        self._signal(real)
         self._end_sessions(real)
         with self._lock:
             self._fails.pop(("name", real.lower()), None)
         return (f"{real} has a temporary password. {real} chooses their own "
                 f"at the next sign-in on the rack screen.")
+
+    def _signal(self, name):
+        """USERS_SIGNAL for the running engine (consume_signal): signed with
+        the engine's key, written whole (atomic)."""
+        key = self._key(create=True)
+        at = self._wall()
+        nonce = secrets.token_hex(8)
+        _write_private(self.signal_path, {
+            "name": name, "at": at, "nonce": nonce,
+            "sig": self._mac(key, ["su-signal-1", name, at, nonce])})
 
     def flush_pending_audit(self):
         """Write the local command line's audit lines (pending_audit in the
@@ -1409,22 +1734,41 @@ class Users:
         try:
             with self._lock:
                 q = self._load().get("pending_audit")
-                if not q:
+                if not q and not self._tamper:
                     return 0
                 taken = []
 
                 def fn(doc):
+                    # What this engine's own read found (_trust), then
+                    # what another process left in the file. The save
+                    # makes the file consistent again (_sign).
+                    for t in self._tamper:
+                        taken.append({"action": "superuser-set-changed",
+                                      "user": "unknown",
+                                      "target": "users file", "reason": t,
+                                      "source": "outside the engine",
+                                      "at": self._stamp(), "alert": True})
+                    self._tamper = []
                     got = doc.pop("pending_audit", None)
                     taken.extend(x for x in (got or [])
                                  if isinstance(x, dict))
                 self._change(fn)
+            alerts = []
             for x in taken:
                 self._note(str(x.get("action") or "superuser-set")[:40],
                            str(x.get("user") or UNSIGNED),
+                           "error" if x.get("alert") else "accepted",
                            reason=(str(x.get("reason") or "") +
                                    f" (at {x.get('at', '')})").strip(),
                            target=str(x.get("target") or ""),
-                           source=LOCAL_COMMAND)
+                           source=str(x.get("source") or LOCAL_COMMAND))
+                if x.get("alert"):
+                    alerts.append(str(x.get("reason") or ""))
+            if alerts and self.on_alert is not None:
+                try:
+                    self.on_alert(alerts)
+                except Exception:                # noqa: BLE001
+                    pass
             return len(taken)
         except Exception:                        # noqa: BLE001
             return 0
@@ -1443,20 +1787,29 @@ class Users:
 
 # ---------------------------------------------- the local command line --
 
-USAGE = ("usage: python -m ltcplay.users superuser NAME\n"
-         "       python -m ltcplay.users superuser-password NAME\n"
-         "  [--folder SETTINGS_FOLDER]")
+USAGE = ("usage: ltcplay superuser NAME  (or python -m ltcplay.users "
+         "superuser NAME)\n"
+         "       ltcplay superuser-password NAME\n"
+         "  [--folder SETTINGS_FOLDER]\n"
+         "Passwords are asked for, hidden; never put one on this line.")
+# The local command line tries this many times, a second apart, while the
+# engine (or an antivirus) holds the users file.
+LOCAL_TRIES = 5
+_BUSY = ("Another program is changing", "cannot be opened just now")
 
 
-def main(argv=None, folder=None, who=None, read_password=None, out=print):
-    """python -m ltcplay.users superuser NAME: make an existing user a
-    SuperUser. superuser-password NAME: a temporary password for a
-    SuperUser who cannot sign in. Run on the show PC itself, by an account
-    that can write the settings folder; nothing on the web page can do
-    either. The engine does not need to be stopped: it reads the users
-    file again when it changes, and writes the audit line
-    ("superuser-set", source "local command line") on its next beat.
-    Exit 0 when done."""
+def main(argv=None, folder=None, who=None, read_password=None,
+         read_line=None, out=print, pause=time.sleep):
+    """ltcplay superuser NAME: make an existing user a SuperUser.
+    ltcplay superuser-password NAME: a temporary password for a SuperUser.
+    Run on the show PC itself (the double-click launchers "Make me
+    SuperUser.bat" and "Reset SuperUser sign-in.bat" run it); nothing on
+    the web page can do either. Once a SuperUser exists, both need a
+    CURRENT SuperUser's name and password; the very first one needs the
+    person's own password. Every password is asked for, hidden. The
+    engine does not need to be stopped: it reads the users file again
+    when it changes, and writes the audit line on its next beat. Exit 0
+    when done; never a traceback."""
     import getpass
     import sys
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -1467,36 +1820,74 @@ def main(argv=None, folder=None, who=None, read_password=None, out=print):
             return 2
         folder = argv[i + 1]
         del argv[i:i + 2]
-    if len(argv) != 2 or argv[0] not in ("superuser", "superuser-password"):
+    if len(argv) != 2 or argv[0] not in ("superuser", "superuser-password") \
+            or not argv[1].strip():
         out(USAGE)
         return 2
-    if folder is None:
-        from . import remote
-        folder = remote.settings_folder()
-    if who is None:
-        try:
-            who = f"Windows account {getpass.getuser()}" if os.name == "nt" \
-                else f"account {getpass.getuser()}"
-        except Exception:                        # noqa: BLE001
-            who = LOCAL_COMMAND
-    us = Users(folder)
-    if not os.path.exists(us.path):
-        out(f"No users file in {folder}. Start LTC Player once first.")
-        return 1
+    ask = read_password or getpass.getpass
+    line = read_line or input
     try:
-        if argv[0] == "superuser":
-            out(us.promote_local(argv[1], who))
+        if folder is None:
+            from . import remote
+            folder = remote.settings_folder()
+        if who is None:
+            try:
+                who = (f"Windows account {getpass.getuser()}"
+                       if os.name == "nt" else
+                       f"account {getpass.getuser()}")
+            except Exception:                    # noqa: BLE001
+                who = LOCAL_COMMAND
+        us = Users(folder)
+        if not os.path.exists(us.path):
+            out(f"No users file in {folder}. Start LTC Player once first.")
+            return 1
+        name = " ".join(argv[1].split())
+        doc = us._load()
+        if doc.get("broken"):
+            out(f"{us.error}. Nothing was changed.")
+            return 1
+        if us._supers(doc.get("users") or {}):
+            by_name = line("A SuperUser's name (yours, if you are one): ")
+            by_pw = ask("That SuperUser's password: ")
         else:
-            ask = read_password or getpass.getpass
-            pw = ask("Temporary password (6 or more characters): ")
-            if pw != ask("The same again: "):
+            by_name = name
+            by_pw = ask(f"{name}'s own password: ")
+        new = None
+        if argv[0] == "superuser-password":
+            new = ask("New temporary password (6 or more characters): ")
+            if new != ask("The same again: "):
                 out("The two did not match. Nothing was changed.")
                 return 1
-            out(us.superuser_password_local(argv[1], pw, who))
-    except ValueError as e:
-        out(str(e))
+        for n in range(LOCAL_TRIES):
+            try:
+                if argv[0] == "superuser":
+                    out(us.promote_local(name, who, by_name, by_pw))
+                else:
+                    out(us.superuser_password_local(name, new, who, by_name,
+                                                    by_pw))
+                return 0
+            except ValueError as e:
+                if n + 1 < LOCAL_TRIES and any(b in str(e) for b in _BUSY):
+                    pause(1.0)
+                    continue
+                out(str(e))
+                return 1
+            except OSError as e:
+                if n + 1 < LOCAL_TRIES:
+                    pause(1.0)
+                    continue
+                out(f"The users file could not be saved "
+                    f"({e.strerror or type(e).__name__}). Nothing was "
+                    f"changed. Close anything that has it open and try "
+                    f"again.")
+                return 1
+    except (KeyboardInterrupt, EOFError):
+        out("Stopped. Nothing was changed.")
         return 1
-    return 0
+    except Exception as e:                       # noqa: BLE001
+        out(f"Nothing was changed: {type(e).__name__}: {e}")
+        return 1
+    return 1
 
 
 if __name__ == "__main__":

@@ -2945,7 +2945,7 @@ tab, and the hardware e-stop always works.
   anyone else it is not there): server, shared token, time, days kept,
   Save and Send now. The shared token is never shown: the field says only
   whether one is saved, and a token typed there is cleared after Save.
-  USERS.md, "The SuperUser", says how Jeff becomes one.
+  USERS.md, "The SuperUser", says what an admin may not change.
 - The systems badge in the header names a single problem ("Stream Deck:
   check"); one tap opens the list, which starts with what to do first.
   Something not set up here reads Off.

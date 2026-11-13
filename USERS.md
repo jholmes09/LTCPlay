@@ -9,8 +9,7 @@ is signed in on the rack screen, every button they press, every Stream
 Deck key and every setting they change is written down under their name,
 with the time, the screen it came from and whether it worked. If nobody
 is signed in it is still written down, as "unsigned". Once a night LTC
-Player can send that record to your server; only a SuperUser (you) sees
-or changes that. Signed out, every screen is
+Player can send that record to your server. Signed out, every screen is
 view only, the rack screen on the show machine too: it shows everything
 but may only Stop, Hold, Acknowledge and disarm. Signing in never
 stands in the way of those: they work for everyone, signed in or not,
@@ -29,8 +28,7 @@ password yet:
 | Dave   | operator |
 | Jared  | operator |
 
-Nobody is made a SuperUser at first run: you become one once, with the
-local command below ("The SuperUser").
+Nobody is made a SuperUser at first run ("The SuperUser", below).
 
 No password is shipped with the program. The first time each person signs
 in they pick their own (6 characters or more), at the rack screen on the
@@ -101,55 +99,24 @@ screen itself has no sign-in form on it.
 
 ## The SuperUser
 
-One level above admin, for you (Jeff). A SuperUser can do everything an
-admin can, and is the only one who:
-
-- sees the nightly upload at all. For anyone else its card is not on the
-  Users screen (not greyed out: not there), its row is not in "Who may do
-  what", and its routes answer exactly like a route that does not exist.
-  That is: on or off, the server address, the token, the time, the days
-  kept, Send now, and its state (last upload, days waiting, errors);
-- adds, changes the role of, resets the password of, or removes a
-  SuperUser, or makes someone one.
+One level above admin, for Jeff. A SuperUser can do everything an admin
+can, and is the only one who adds, changes the role of, resets the
+password of, or removes a SuperUser, and the only one who sees a few
+things that are Jeff's alone. Nobody else is shown those at all.
 
 An admin (Andy) keeps everything else: users, roles, who may do what,
 idle sign out, sign out after the last show, the audit log's state and
 "Check the chain now". An admin can never make anyone a SuperUser
 (themselves included), never change, reset or remove a SuperUser, and no
-tick in "Who may do what" can give the upload to anyone: that row is
-written into the program. The last SuperUser can never be removed or
-made something else. A SuperUser's password is never cleared (only
-replaced with a temporary one), so it can never be claimed by whoever
-signs in first.
+tick in "Who may do what" can change that. The last SuperUser can never
+be removed or made something else.
 
-The upload's card is used on the show PC's own rack screen, signed in
-there. Signed in on an iPad, a SuperUser works as an admin; over
-Tailscale it is never there at all.
+A SuperUser that LTC Player did not make itself (the users file edited by
+hand, or changed by an older version) acts as an admin until a SuperUser
+confirms them, and every screen shows an alert saying so.
 
-Every grant, every refused attempt (who and what, never a password or the
-token) and every change to the upload is in the audit log.
-
-**Becoming one, once, on the show PC.** Sign in as Jeff on the rack screen
-first (so the name has your own password), then on the show PC, signed in
-to Windows with the account that runs LTC Player, open a command prompt in
-the LTC Player install folder (where `ltcplay.exe` is) and run:
-
-    ltcplay.exe superuser Jeff
-
-(On a Mac or a dev copy: `python -m ltcplay.users superuser Jeff`.) It
-says "Jeff is now a SuperUser." The engine does not need to be stopped
-(it reads the users file again by itself, and nothing on the rig
-changes). If you ever forget your password, `ltcplay.exe
-superuser-password Jeff` asks for a temporary one; you choose your own
-at the next sign-in.
-
-**The honest limit.** This is software separation only. Anyone with
-Windows administrator rights on the show PC can edit
-`ltcplay_audit.json` or the users file, or stop LTC Player. So give Andy a
-standard (not administrator) Windows account on the show PC. Locking the
-settings folder so only your Windows account can write
-`ltcplay_audit.json` is possible (the installer could set that file's
-permissions), but it is not done yet: say if you want it.
+Jeff: the SuperUser's own guide is SUPERUSER.md (in the program's source,
+not linked from any screen).
 
 ## Adding people (admins)
 
@@ -234,37 +201,10 @@ lost lines are counted and written as a "gap" line once it can write
 again, and the rack screen's status strip shows "Audit: not writing"
 meanwhile.
 
-## The nightly upload (off until you switch it on)
-
-On the Users screen, in the Nightly upload card (a SuperUser on the show
-PC's rack screen only), you set: the server address
-(it must start with https://), the shared token, the time of day (03:30
-unless changed) and how many days to keep here (at least 90). Then tick
-"Send the audit log to the server every night" and Save.
-
-- Only the audit day files are ever sent. Nothing else leaves the PC.
-- Each finished day is sent once, whole, with its checksum and its chain
-  fingerprints. It counts as sent only when your server answers that it
-  got exactly that file.
-- A failed send is tried again later (1 minute, then 5, 15, then hourly).
-  A night the PC was off is caught up the next time.
-- A day is removed from the PC only once the server has it AND it is older
-  than the keep. A day not yet on the server is never removed.
-- The token is kept in the settings folder (`ltcplay_audit.json`), like
-  flamesafe's link key: never in the program's files on GitHub, never on
-  the screen, never in the log or the diagnostics bundle.
-- A failure to send changes nothing about the show.
-
-Your server needs a receiver: `tools/audit_receiver.py` is one, and
-`tools/AUDIT_RECEIVER_README.md` says how to run it.
-
 ## What you decide
 
 1. The names and roles above, and whether the matrix defaults are right
-   ("signed out" is now view only and fixed). Whether anyone besides you
-   should ever be a SuperUser.
-2. Your server's address, and the token (the upload stays off until then).
-3. How long to keep the log on the show PC (90 days unless you say more).
-4. Whether the Stream Deck should ever need its own sign-in (today: no,
+   ("signed out" is now view only and fixed).
+2. Whether the Stream Deck should ever need its own sign-in (today: no,
    it acts as the rack screen's user, and with nobody signed in there it
    cannot arm or start).
