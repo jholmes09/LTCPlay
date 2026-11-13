@@ -365,9 +365,9 @@ SCREEN_ARMING_ENABLES = (
     "purge, unlock a machine, turn a laser test on and arm a laser; this "
     "screen can without the switch.")
 # What the page says when screen arming is switched off (the default).
-ARMING_OFF = ("Arming from a screen is switched off on this show PC. To turn "
-              "it on: on the show machine itself, Programming, Arming from "
-              "a screen, Turn on. Until then arm from the Stream Deck.")
+ARMING_OFF = ("Arming from a screen is switched off. Arm from the Stream "
+              "Deck, or turn it on at the show machine itself: Programming, "
+              "Arming from a screen, Turn on.")
 # Users and the audit log (users.py, Jeff, 2026-10-20). Sign in and out
 # from any page; the Users screen's changes from the show machine only.
 USER_GET_ROUTES = ("users",)

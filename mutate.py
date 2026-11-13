@@ -23150,6 +23150,17 @@ def build():
   '"Restarts the show engine on the saved address. Refused while a show runs or a group is armed.',
   '"Restarts the show engine on the saved address.'),
 
+ # Less prose in the rules (Jeff, 2026-11-11).
+ ("less prose: arming off no longer says to arm from the Stream Deck",
+  'ltcplay/web/remote_rules.js',
+  'const ARMING_OFF = "Arming from a screen is switched off. Arm from the Stream Deck, or turn it on',
+  'const ARMING_OFF = "Arming from a screen is switched off. Or turn it on'),
+
+ ("less prose: Programming's Stop explains itself again",
+  "ltcplay/web/remote_rules.js",
+  '  return stopShows(st) ? {mode:"stop", label:"Stop", sub:"tap twice"}',
+  '  return stopShows(st) ? {mode:"stop", label:"Stop", sub:"end the show, rig dark"}'),
+
  # Less prose, engine answers and alerts (Jeff, 2026-11-11).
  ("less prose: the Morning check runs two shows' CUES FAULTs together",
   'ltcplay/remote.py',
