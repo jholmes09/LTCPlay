@@ -457,6 +457,7 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 #info h2{font:700 calc(var(--fs) - 4px)/1.2 var(--caps);letter-spacing:.2em;text-transform:uppercase;color:var(--gold);margin:14px 0 4px}
 #info h2:first-child{margin-top:0}
 #info .kv{color:var(--cream)} #info .kv b{color:var(--gold)}
+#info .kvl{margin:4px 0;padding-left:1.1em} #info .kvl li{margin:4px 0} #info .kv .dim{color:var(--muted)}
 #info .vers{color:var(--muted);-webkit-user-select:text;user-select:text;word-break:break-all}
 #info .row{display:flex;flex-wrap:wrap;gap:var(--gap);margin-top:14px}
 #info button{font:inherit;min-height:56px;padding:0 20px;border-radius:10px;border:2px solid var(--line);background:var(--panel2);color:var(--cream);font-weight:700}
@@ -603,6 +604,12 @@ button.fb-pad.na{opacity:.45}
 #sh-body li{margin:6px 0}
 #sh-body .full{white-space:pre-wrap;color:var(--cream)}
 #sh-body .dim{color:var(--muted)}
+.op b{display:block}
+.op p{margin:0}
+.op .gap{margin-top:.8em}
+.op .dim{color:var(--muted)}
+.op ul{margin:4px 0 0;padding-left:1.1em}
+.op li{margin:4px 0}
 #sh-row{display:flex;gap:var(--gap);flex-wrap:wrap;justify-content:flex-end}
 #sh-row.flip{flex-direction:row-reverse;justify-content:flex-start}
 #sh-row .b{flex:0 1 auto;min-width:140px}
@@ -1012,7 +1019,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <div class="pline" id="cfg-msg" role="status"></div>
         </div>
         <div class="card col" id="rigcheck" hidden>
-          <div class="t"><b>Rig check (pre-roll)</b><span>Before every show the engine checks the rig by itself: audio, announcements, timecode, video, the flame link, the lasers and the network. Check the rig runs the same checks now, between shows: nothing is started, armed or played, and the screens go black until the next show.</span></div>
+          <div class="t"><b>Rig check (pre-roll)</b><span>Checked by itself before every show. Starts, arms and plays nothing; the screens go black until the next show.</span></div>
           <div class="pbar"><b class="dbig" id="rc-now"></b><button class="b" id="rc-run"><svg class="i"><use href="#i-check"/></svg>Check the rig</button></div>
           <div class="pline bad" id="rc-warn" hidden></div>
           <div class="pline" id="rc-items"></div>
@@ -1237,7 +1244,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <div class="kv" id="info-mode"></div>
     <div class="kv" style="margin-top:4px;color:var(--muted)">SHOW: a show file is running for real and the scheduler starts each show at its time. PROGRAMMING: a rehearsal is running; the scrubbing controls work and the scheduler starts nothing. NOT RUNNING: no show file is running; nothing reaches the rig until Run is pressed on the Schedule tab. To switch between Show and Programming: the Show and Programming switch on the Schedule tab's Show file card, then Run (Stop first if something is running).</div>
     <h2>Leaving this window</h2>
-    <div class="kv">This window is only a view. Closing it never stops a show: the engine runs on its own. It is an ordinary window: the Minimize, Maximize and Close buttons are at its top right. To minimize without them, press the <kbd>Windows</kbd> key + <kbd>Down arrow</kbd> (twice if it is maximized); <kbd>Alt</kbd>+<kbd>F4</kbd> closes it, or use the button below. A folder opened from this page comes to the front; if you do not see it, it is on the taskbar.</div>
+    <div class="kv"><b>Closing this window is safe.</b><ul class="kvl"><li>The show keeps running without it.</li><li>Minimize: <kbd>Windows</kbd> key + <kbd>Down arrow</kbd>.</li><li>Close: <kbd>Alt</kbd>+<kbd>F4</kbd>, or the button below.</li></ul><span class="dim">More: this window is only a view; the engine runs on its own. The Minimize, Maximize and Close buttons are at its top right. Press <kbd>Down arrow</kbd> twice if it is maximized. A folder opened from this page comes to the front; if you do not see it, it is on the taskbar.</span></div>
     <div class="row">
       <button id="info-exit" class="ghost" hidden>Close this window</button>
       <button id="info-close">Back</button>
@@ -1399,6 +1406,44 @@ function actor(extra){
 const icon = (n) => `<svg class="i"><use href="#i-${n}"/></svg>`;
 function setIcon(svg, n){ const u = svg && svg.querySelector("use"); if(u && u.getAttribute("href") !== "#i-" + n) u.setAttribute("href", "#i-" + n); }
 function setText(el, t){ if(el && el.textContent !== t) el.textContent = t; }
+// Operator text with a shape (Jeff, 2026-11-11: less prose, bullets and
+// paragraph breaks). Plain text in: the first line is the headline (bold),
+// a line that starts "- " is a bullet, a blank line starts a new
+// paragraph, and a paragraph that starts "More:" is dimmed. Text with no
+// line break and no leading "- " reads exactly as before. Built from DOM
+// nodes and textContent only, never innerHTML: engine text carries file
+// and device names.
+function opText(text){
+  const box = document.createElement("div");
+  box.className = "full op";
+  const t = String(text == null ? "" : text).replace(/\r\n?/g, "\n");
+  if(t.indexOf("\n") < 0 && !/^\s*- /.test(t)){ box.textContent = t; return box; }
+  let list = null, gap = false;
+  t.split("\n").forEach((raw, i) => {
+    const line = raw.trim();
+    if(!line){ list = null; gap = box.childNodes.length > 0; return; }
+    if(/^- /.test(line)){
+      if(!list){ list = box.appendChild(document.createElement("ul")); if(gap) list.className = "gap"; }
+      list.appendChild(document.createElement("li")).textContent = line.slice(2).trim();
+    } else {
+      list = null;
+      const el = box.appendChild(document.createElement(i ? "p" : "b"));
+      el.textContent = line;
+      el.className = (gap ? "gap" : "") + (/^More:/.test(line) ? " dim" : "");
+    }
+    gap = false;
+  });
+  return box;
+}
+// opText into an element on the page, rebuilt only when the text changed
+// (cards redraw every 250 ms).
+function setOpText(el, text){
+  const t = String(text == null ? "" : text);
+  if(!el || (el.dataset.op === t && el.firstChild && el.firstChild.className === "full op")) return;
+  el.dataset.op = t;
+  el.textContent = "";
+  el.appendChild(opText(t));
+}
 function stale(){ return isStale(Date.now(), LAST_OK, FRESH_S); }
 
 // The room under the page (1.0's bottomPad): a window that reaches
@@ -1436,7 +1481,7 @@ function short8(text, fallback){
   const first = end ? t.slice(0, end.index + 1) : t;
   return first.split(/\s+/).length <= 8 ? first : (fallback || "Done. Tap Details.");
 }
-$("msg-more").addEventListener("click", () => sheet("Details", `<div class="full">${esc(MSG_FULL)}</div>`, [{label:"Close", cls:"blue"}]));
+$("msg-more").addEventListener("click", () => sheet("Details", opText(MSG_FULL), [{label:"Close", cls:"blue"}]));
 
 // ---- sheets: confirm, details, help, sign in. Never over the footer.
 let SHEET_DONE = null;
@@ -1444,7 +1489,9 @@ function sheet(title, html, buttons, flip){
   return new Promise(res => {
     if(SHEET_DONE) SHEET_DONE(null);
     $("sh-h").textContent = title;
-    $("sh-body").innerHTML = html || "";
+    // A node (opText's) goes in as it is; a string is the page's own markup.
+    if(html instanceof Node){ $("sh-body").textContent = ""; $("sh-body").appendChild(html); }
+    else $("sh-body").innerHTML = html || "";
     const row = $("sh-row");
     row.className = flip ? "flip" : "";
     row.innerHTML = (buttons || [{label:"Close"}]).map((b, i) => `<button class="b ${b.cls || ""}"${b.safe ? " data-safe" : ""} data-i="${i}">${b.icon ? icon(b.icon) : ""}${esc(b.label)}</button>`).join("");
@@ -1813,7 +1860,7 @@ function alertItems(st){
   else if(pch) items.push({key:"preroll", tone:"bad", what:"Rig check failed.", do:"Fix it, or hold to continue.", full:pch.text, act:"pr-continue", recheck:true, holdMs:pch.holdMs || 1000});
   else { const prl = prerollLook(s.preroll); if(prl.trouble) items.push({key:"pr-trouble", tone:"warn", what:"Rig check failed.", do:"Tap here for details.", full:prl.trouble}); }
   (s.alerts || []).forEach(a => items.push({key:"a" + a.id, tone:a.severity === "fault" ? "bad" : "warn",
-    what:ALERT_WHAT[a.kind] || "Alert.", do:ALERT_DO[a.kind] || "Tap here for details.", full:a.text, act:"ack", id:a.id}));
+    what:ALERT_WHAT[a.kind] || "Alert.", do:ALERT_DO[a.kind] || "Tap here for details.", full:a.full || a.text, act:"ack", id:a.id}));
   // flamesafe.json not valid JSON (Jeff, 2026-11-06): flames are off and
   // the engine runs without its flame link; the file, line and column.
   if(s.flamesafe_config_error) items.push({key:"fscfg", tone:"bad", what:"Flame settings file broken.", do:"Flames are off. Tap here.", full:s.flamesafe_config_error});
@@ -1920,7 +1967,15 @@ $("al-text").addEventListener("click", async () => {
   const it = ALERTS.find(i => i.key === ALERT_KEY); if(!it) return;
   // A failed rig check: 1.0's Check the rig again, on the show PC only.
   const again = it.recheck && ME && ME.local;
-  const v = await sheet(it.what, `<div class="full">${esc(it.full)}</div><div class="dim">${esc(it.do || "")}</div>`,
+  // The engine's words, headline and bullets kept (opText); the slot's Do
+  // under them, unless the words carry their own bullets (said once).
+  const body = document.createElement("div");
+  body.appendChild(opText(it.full));
+  if(!/\n- /.test(String(it.full || ""))){
+    body.appendChild(document.createElement("div")).className = "dim";
+    body.lastChild.textContent = it.do || "";
+  }
+  const v = await sheet(it.what, body,
     again ? [{label:"Close", value:null}, {label:"Check again", value:"recheck", cls:"blue", icon:"reset"}] : [{label:"Close", cls:"blue"}]);
   if(v === "recheck"){
     try{ const j = await post("/api/remote/preroll-check", actor({})); say(short8(j.text, "Checking the rig."), String(j.text || ""), "ok"); }
@@ -3226,7 +3281,7 @@ async function loadSchedule(){
 }
 $("se-reload").addEventListener("click", loadSchedule);
 $("se-save").addEventListener("click", async () => {
-  try{ const j = await post("/api/remote/schedule-file", {doc:readSchedule()}); $("se-msg").textContent = j.text; if(j.doc) drawSchedule(j.doc); }
+  try{ const j = await post("/api/remote/schedule-file", {doc:readSchedule()}); setOpText($("se-msg"), j.text); if(j.doc) drawSchedule(j.doc); }
   catch(e){ $("se-msg").textContent = e.message; }
 });
 // Tonight's card (1.0's Schedule screen): what is next, 1.0's words, and
@@ -3508,7 +3563,7 @@ async function loadFolders(){
   try{
     const j = await getJSON("/api/remote/setup", 3000);
     $("fo-now").innerHTML = `This engine serves: <b>${esc(j.show_folder)}</b> (${j.show_files} show file(s)${j.show_folder_exists ? "" : "; the folder does not exist"}).` +
-      (j.show_folder_problem ? `<div class="bad" style="color:var(--red);font-weight:700;margin-top:4px">${esc(j.show_folder_problem)}</div>` : "");
+      (j.show_folder_problem ? `<div class="bad" style="color:var(--red);font-weight:700;margin-top:4px;white-space:pre-line">${esc(j.show_folder_problem)}</div>` : "");
     if(!$("fo-path").value) $("fo-path").placeholder = j.show_folder || "";
     $("info-settings").textContent = j.settings_folder || "";
     $("info-exit").hidden = !(ME && ME.local && j.kiosk_closable);
@@ -3617,7 +3672,8 @@ function renderTools(stale){
     $("rc-now").textContent = prl.now;
     $("rc-warn").hidden = !prl.warn;
     $("rc-warn").textContent = prl.warn;
-    $("rc-items").textContent = prl.items.join(". ");
+    // One check to a line (Jeff, 2026-11-11), not one run-on sentence.
+    setOpText($("rc-items"), prl.items.map(t => "- " + String(t).replace(/\s+/g, " ")).join("\n"));
     $("rc-run").disabled = prl.checking;
   }
   const cn = cfgNote(s.config_changed);
@@ -5720,7 +5776,7 @@ function dayWire(k){
   if(k === "checks") $("d-checks").addEventListener("click", e => {
     const b = e.target.closest("[data-ck]"); if(!b) return;
     const c = ((MO && MO.checks) || [])[Number(b.dataset.ck)]; if(!c) return;
-    sheet(c.title, `<div class="full">${esc(checkLook(c.level).word)}. ${esc(c.text)}</div>`, [{label:"Close", cls:"blue"}]);
+    sheet(c.title, opText(/\n/.test(String(c.text || "")) ? String(c.text) : checkLook(c.level).word + ". " + String(c.text || "")), [{label:"Close", cls:"blue"}]);
   });
   if(k === "startlist" || k === "shutlist"){
     // A tick is for the step drawn on the screen (review of #169, 2): its

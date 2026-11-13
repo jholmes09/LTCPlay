@@ -73,12 +73,18 @@ def missing(wanted, outputs):
 
 
 def sentence(name, show_file, outputs, every_s=CHECK_S):
+    """The alert's words (Jeff, 2026-11-11: less prose): a headline, then
+    Do, Then and Why, then the names behind More. The alert keeps the
+    line breaks for the rack screen's Details; the journal, the log and
+    every other screen read it as one line."""
     listed = ", ".join(sorted(outputs)) or "none"
-    return (f"The show audio interface {name!r} (named in {show_file}) is "
-            f"not attached: there is no audio output by that name on this "
-            f"PC. Outputs seen: {listed}. The show cannot start until it is "
-            f"plugged in, into the same USB port as always. It is looked "
-            f"for again every {every_s:g} seconds.")
+    return (f"Show audio box not found.\n"
+            f"- Do: Plug it into the same USB port.\n"
+            f"- Then: It is looked for every {every_s:g} seconds.\n"
+            f"- Why: No show can start without it.\n"
+            f"\n"
+            f"More: {name!r} is named in {show_file}. Outputs seen on this "
+            f"PC: {listed}.")
 
 
 def _list_outputs_child(conn):
@@ -183,7 +189,7 @@ class AudioInterfaceWatch:
                 st["missing_since"] = now
                 text = sentence(miss[0], wanted[miss[0]], outputs,
                                 self.interval_s)
-                self.log("Audio interface: " + text)
+                self.log("Audio interface: " + " ".join(text.split()))
                 if self.alerts is not None:
                     try:
                         self.alerts.raise_("audio", text)
