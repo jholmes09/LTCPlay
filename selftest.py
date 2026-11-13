@@ -103940,7 +103940,9 @@ def test_preshow_audio_through_the_announcement_player():
     if S is None:
         return
     work, cfg, _l = _ann_workdir()
-    _ann_write_wav(os.path.join(work, "welcome.wav"), seconds=0.5)
+    # Long enough to still be playing at every look below, the show
+    # start's fade included, however slow the runner.
+    _ann_write_wav(os.path.join(work, "welcome.wav"), seconds=30.0)
     n = _fi_night()
     sd = FakeSD()
     ann = A.AnnounceService(cfg, sd=sd, operators_folder=work,
@@ -103950,7 +103952,12 @@ def test_preshow_audio_through_the_announcement_player():
     n.svc.on_show_started = ann.on_show_started
     n = _psa_rig(n=n, player=ann, folder=work)
     _psa_at(n, 17, 58)
-    check(wait_for(lambda: ann.playing == A.PRESHOW, 3),
+    # Claimed (ann.playing) comes before started (ann._player): the file is
+    # read and the output opened on the pre-show thread in between, and
+    # status() reports nothing playing until it has started. Wait for the
+    # start itself, not the claim (the race that failed on a busy runner).
+    check(wait_for(lambda: ann.playing == A.PRESHOW and
+                   ann._player is not None, 5),
           f"playing on the announcement player: {ann.playing} "
           f"{_psa_lines(n.svc)}")
     st = ann.status()
@@ -103969,7 +103976,7 @@ def test_preshow_audio_through_the_announcement_player():
     n.now[0] = _den(S, 18, 0)
     n.svc.tick()
     _settle(n.svc, n.c)
-    check(wait_for(lambda: ann._player is None or
+    check(wait_for(lambda: ann._player is not None and
                    ann._player.stop_reason == "a show started", 3),
           f"the show start fades it: "
           f"{getattr(ann._player, 'stop_reason', None)}")
