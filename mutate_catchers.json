@@ -3721,5 +3721,12 @@
 "practice: a pending mark reads as charged tanks": "test_fireball_practice_engine",
 "practice: a Stop that came back failed is pressed again at once": "test_fireball_practice_engine",
 "practice: a person's Done waits for the retry": "test_fireball_practice_engine",
-"practice: open goes on after Done during its engine check": "test_fireball_practice_engine"
+"practice: open goes on after Done during its engine check": "test_fireball_practice_engine",
+"release tags: a gpl-* tag builds a release again": "test_release_tags_are_ltc_only",
+"release tags: the installer's version keeps the ltc- prefix": "test_release_tags_are_ltc_only",
+"release tags: Run workflow on an old gpl- tag builds it": "test_release_tags_are_ltc_only",
+"release tags: a gpl-* tag is silent in the selftest run": "test_release_tags_are_ltc_only",
+"release tags: the updater no longer reads an ltc- release": "test_release_tags_are_ltc_only",
+"release tags: the updater no longer reads an old gpl- release": "test_release_tags_are_ltc_only",
+"release tags: an ltc- or gpl- stamp is compared as text again": "test_release_tags_are_ltc_only"
 }

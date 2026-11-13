@@ -51783,6 +51783,111 @@ def test_mutate_never_runs_stale_bytecode():
     print("  ok")
 
 
+def test_release_tags_are_ltc_only():
+    section("release tags: a new release is tagged ltc-YYYY.MM.DD.N and only "
+            "an ltc-* tag builds the installer (no workflow trigger names a "
+            "gpl- tag, and a gpl-* tag fails the selftest run with the "
+            "reason); the updater still reads the old gpl- "
+            "names, so an old install is offered the new release by its "
+            "date digits")
+    import re
+    here = os.path.dirname(os.path.abspath(__file__))
+    wfdir = os.path.join(here, ".github", "workflows")
+    names = sorted(n for n in os.listdir(wfdir) if n.endswith((".yml",
+                                                               ".yaml")))
+    check("windows-app.yml" in names and "selftest.yml" in names,
+          f"the workflows are where this test reads them: {names}")
+    texts = {}
+    for n in names:
+        texts[n] = open(os.path.join(wfdir, n), encoding="utf-8").read()
+        # The trigger block: from "on:" to the next top-level key. Comments
+        # may name the old tag (as history); a pattern may not.
+        m = re.search(r"^on:\s*\n(.*?)(?=^\S)", texts[n], re.M | re.S)
+        block = m.group(1) if m else ""
+        live = "\n".join(ln.split("#", 1)[0] for ln in block.splitlines())
+        check("gpl" not in live.lower(),
+              f"{n}: a trigger still names a gpl- tag, so a release could "
+              f"be cut under the old name: "
+              f"{[ln.strip() for ln in live.splitlines() if 'gpl' in ln.lower()]}")
+    wa = texts.get("windows-app.yml", "")
+    tags = re.findall(r"^\s*tags:\s*(\[.*?\])\s*$", wa, re.M)
+    check(tags == ['["ltc-*"]'],
+          f"windows-app.yml builds a release for ltc-* tags only: {tags}")
+    check('v="${GITHUB_REF_NAME#ltc-}"' in wa and "#gpl-" not in wa,
+          "the installer's version is the tag without ltc- (ltc-2026.11.14.1 "
+          "-> 2026.11.14.1, as on the rack screen and the installer's name)")
+    check('if [[ ! "$GITHUB_REF_NAME" =~ ^ltc-[0-9]+(\\.[0-9]+){1,3}$ ]]; '
+          'then' in wa,
+          "Run workflow pointed at an old gpl- tag (or any tag that is not "
+          "ltc- and a dated number) fails with the reason, never builds")
+    check('--title "LTC Player release $VER"' in wa and
+          '"LTC Player $TAG"' not in wa,
+          "the Release's title is the dated number, never the tag name")
+    st = texts.get("selftest.yml", "")
+    refuse = re.search(r'if \[\[ "\$REF" == refs/tags/gpl-\* \]\]; then\n'
+                       r'\s*echo "::error::[^"\n]*ltc-YYYY\.MM\.DD\.N[^"\n]*"'
+                       r'\n\s*exit 1\n', st)
+    check(refuse is not None and
+          st.find("refs/tags/gpl-*") < st.find('say "release tag'),
+          "selftest.yml fails a gpl-* tag with the reason before it would "
+          "start a release sweep, so a tag under the old name is never "
+          "silent")
+    sp = os.path.join(here, "packaging", "windows")
+    sys.path.insert(0, sp)
+    for m_ in ("supervisor", "ltcwin", "updater"):
+        sys.modules.pop(m_, None)
+    was = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        import updater as U
+    finally:
+        sys.dont_write_bytecode = was
+    try:
+        for old, want in (("ltc-2026.11.14.1", "2026.11.14.1"),
+                          ("gpl-2026.10.30.1", "2026.10.30.1"),
+                          ("GPL-2026.09.15.10", "2026.09.15.10"),
+                          ("2026.11.14.1", "2026.11.14.1"),
+                          ("bench-2026.11.13-abc1234",
+                           "bench-2026.11.13-abc1234")):
+            check(U.release_number(old) == want,
+                  f"updater reads {old} as {U.release_number(old)!r}, "
+                  f"want {want!r}")
+        check(U.is_release("ltc-2026.11.14.1") and
+              U.is_release("gpl-2026.09.15.10") and
+              U.is_release("2026.10.30.1") and
+              not U.is_release("bench-2026.11.13-abc1234") and
+              not U.is_release("ltc-") and not U.is_release(""),
+              "ltc- and gpl- release names are releases; bench and empty "
+              "are not")
+        for new, old in (("2026.11.14.1", "2026.10.30.1"),
+                         ("2026.11.14.1", "gpl-2026.10.30.1"),
+                         ("ltc-2026.11.14.1", "gpl-2026.09.15.10"),
+                         ("2026.11.14.2", "ltc-2026.11.14.1")):
+            check(U.is_newer(new, old) and not U.is_newer(old, new),
+                  f"{new} is newer than {old} by its date digits, and "
+                  f"never the other way round")
+        check(not U.is_newer("2026.10.30.1", "gpl-2026.10.30.1") and
+              not U.is_newer("ltc-2026.11.14.1", "2026.11.14.1"),
+              "the same number with or without its prefix is up to date")
+        lines = list(U.self_test())
+        check(any("ltc- release is newer than a gpl- one" in ln
+                  for ln in lines),
+              f"the updater's own self-check proves the ltc- release: "
+              f"{lines}")
+    finally:
+        if sp in sys.path:
+            sys.path.remove(sp)
+        for m_ in ("supervisor", "ltcwin", "updater"):
+            sys.modules.pop(m_, None)
+    for doc in (os.path.join(here, "CLAUDE.md"),
+                os.path.join(sp, "INSTALL.md")):
+        t = open(doc, encoding="utf-8").read()
+        check("ltc-YYYY.MM.DD.N" in t and "gpl-YYYY" not in t,
+              f"{os.path.relpath(doc, here)} names new release tags "
+              f"ltc-YYYY.MM.DD.N")
+    print("  ok")
+
+
 def test_mutate_shards_fit_their_time_limit():
     section("the mutate shards: one shard count for a whole sweep in "
             "selftest.yml and weekly-mutate.yml, small enough that a shard "
@@ -114033,6 +114138,7 @@ if __name__ == "__main__":
         test_mutate_fast_path_never_turns_red_green,
         test_mutate_never_runs_stale_bytecode,
         test_mutate_shards_fit_their_time_limit,
+        test_release_tags_are_ltc_only,
         test_alerts_pure_logic,
         test_alerts_route_status_and_acknowledge,
         test_boothaudio_never_holds_and_never_uses_the_pa,

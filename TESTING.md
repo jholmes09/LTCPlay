@@ -40,7 +40,7 @@ Written 2026-10-06, after the audit that simplified it.
 | Every push to a PR | selftest on ubuntu and windows | 15 to 20 min (ubuntu), 25 to 35 min (windows); limits 45 and 60 | yes, through `ci` |
 | A PR marked ready for review, and every push to it after | the mutate shards, each running only the mutations this PR can have changed the result of (below); about 25 a shard, 96 shards at most, 16 at a time, none at all for a doc or UI change | nothing for a doc; 10 to 90 min for a change to a safety file; 11 to 14 hours when nearly everything is selected (a release PR) | yes, through `ci` |
 | A push to main | the same, against the previous main | as above | not applicable |
-| A release tag (`gpl-...` or a tech build) | every mutation, ubuntu and windows, 96 shards each, 16 at a time | 11 to 14 hours on ubuntu; windows longer | the tag is not cut until it is green |
+| A release tag (`ltc-...` or a tech build; a new `gpl-*` tag is refused, see below) | every mutation, ubuntu and windows, 96 shards each, 16 at a time | 11 to 14 hours on ubuntu; windows longer | the tag is not cut until it is green |
 | Every Sunday, 03:12 Eastern | every mutation on main, ubuntu (`weekly mutate` workflow), 96 shards, 16 at a time | 11 to 14 hours | a red sweep opens an issue; it is fixed before the next merge |
 | On demand | the same, from the Actions tab: `weekly mutate`, Run workflow, pick ubuntu, windows or both | 11 to 14 hours (ubuntu) | before any tech build |
 
@@ -54,6 +54,15 @@ no shard job at all.
 
 Draft PRs run only the selftest. The mutate shards, and `ci`, start when
 the PR is marked ready for review.
+
+**Release tags are ltc-YYYY.MM.DD.N** (from 2026-11-14; before that they
+were gpl-..., and the Dollywood Mac stays at gpl-2026.09.15.10). Only an
+ltc-* tag builds the installer (windows-app.yml). A new gpl-* tag builds
+nothing, on purpose, so nobody can cut a release under the old name; the
+selftest workflow's `changes` job fails for it with a sentence saying to
+use ltc-, so it is never silent. `test_release_tags_are_ltc_only` fails
+if a workflow trigger names a gpl- tag again. The release steps are in
+packaging/windows/INSTALL.md, "Make a release (Jeff)".
 
 **Why 96 shards, 16 at a time.** The whole list is about 4300 mutations.
 On ubuntu with `--jobs 3` a shard spends 15 to 19 minutes on its
