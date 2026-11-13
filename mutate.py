@@ -19189,6 +19189,21 @@ def build():
   "  const text = probs.length === 1 ?",
   "  const text = false ?"),
 
+ ("systems rows: a row says its state word twice again",
+  "ltcplay/web/remote2.html",
+  '  if(bare === lw || bare === "ok") rest = "";',
+  '  if(false) rest = "";'),
+
+ ("systems rows: a row cuts its own verb when it starts like the state",
+  "ltcplay/web/remote2.html",
+  '  else if(rest.toLowerCase().indexOf(lw) === 0 && /^[.:,]/.test(rest.slice(word.length)))',
+  '  else if(rest.toLowerCase().indexOf(lw) === 0 && /^[\\s.:,]/.test(rest.slice(word.length)))'),
+
+ ("systems rows: a row drops what its words add",
+  "ltcplay/web/remote2.html",
+  '  if(!rest) return {head:x.label + ": " + word, rest:""};',
+  '  return {head:x.label + ": " + word, rest:""};'),
+
  ("ui2 page: a system not set up here reads Check", "ltcplay/web/remote2.html",
   "  if(state !== \"bad\" && SYS_OFF.test(w.trim())) state = \"off\";\n",
   ""),
@@ -23139,21 +23154,16 @@ def build():
   "#t-users input[type=checkbox]{width:56px;height:56px;",
   "#t-users input[type=checkbox]{width:40px;height:40px;"),
 
- # The Systems sheet says each state once (Jeff, 2026-11-11).
- ("systems rows: a row says its state word twice again",
+ # Less prose on the Schedule tab's cards (Jeff, 2026-11-11).
+ ("less prose: the arming card stops naming a laser arm",
   "ltcplay/web/remote2.html",
-  '  if(bare === lw || bare === "ok") rest = "";',
-  '  if(false) rest = "";'),
+  'turn a laser test on and arm a laser; this screen can without the switch.";',
+  'turn a laser test on; this screen can without the switch.";'),
 
- ("systems rows: a row cuts its own verb when it starts like the state",
+ ("less prose: Restart the engine no longer says it is refused during a show",
   "ltcplay/web/remote2.html",
-  '  else if(rest.toLowerCase().indexOf(lw) === 0 && /^[.:,]/.test(rest.slice(word.length)))',
-  '  else if(rest.toLowerCase().indexOf(lw) === 0 && /^[\\s.:,]/.test(rest.slice(word.length)))'),
-
- ("systems rows: a row drops what its words add",
-  "ltcplay/web/remote2.html",
-  '  if(!rest) return {head:x.label + ": " + word, rest:""};',
-  '  return {head:x.label + ": " + word, rest:""};'),
+  '"Restarts the show engine on the saved address. Refused while a show runs or a group is armed.',
+  '"Restarts the show engine on the saved address.'),
 
  # Less prose in the rules (Jeff, 2026-11-11).
  ("less prose: arming off no longer says to arm from the Stream Deck",

@@ -98935,6 +98935,65 @@ def test_ui2_runs_on_ipados15():
     print("  ok")
 
 
+
+def test_ui2_systems_rows_say_each_word_once():
+    section("2.0's Systems sheet (Jeff, 2026-11-11: 'Stream Deck: OK. OK.' "
+            "said it twice): each row says its state once and then only "
+            "what the words add; a reason or a number is never dropped")
+    two = _ui2_pages()[1]
+    fns = ""
+    for c in ("SYS_LABEL", "SYS_OFF", "SYS_SAY", "SYS_WORD"):
+        m = re.search(r"^const " + c + r" = .*?;$", two, re.M | re.S)
+        check(m is not None, f"{c} is found")
+        fns += "\n" + (m.group(0) if m else "")
+    for n in ("short8", "sysItem", "sysRow"):
+        f = _js_function(two, n)
+        check(f is not None, f"{n} is found")
+        fns += "\n" + (f or "")
+    check("const r = sysRow(x);" in two and
+          "<b>${esc(r.head)}</b>${esc(r.rest)}</li>" in two,
+          "the Systems sheet draws each row with sysRow, escaped")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    cases = [
+        (["Deck", "ok", "ok"], "Stream Deck: OK"),
+        (["Flamesafe", "ok", "linked"], "Flames: OK"),
+        (["Laser arm", "warn", "disarmed"], "Laser arm: Off, not in use here."),
+        (["Video", "warn", "not set up"], "Video: Off, not in use here."),
+        (["Laser arm", "ok", "ARMED"], "Laser arm: All armed"),
+        (["Lasers", "bad", "LINK LOST"],
+         "Laser output: FAULT. BEYOND not answering. Check laser PC."),
+        (["Deck", "warn", "late 1.2 s"],
+         "Stream Deck: Check. Slow. Check its USB cable."),
+        (["Laser arm", "warn", "2 of 4 armed"],
+         "Laser arm: Check. Some armed, output dark. Arm all or disarm."),
+        (["Video", "warn", "MadMapper running, no heartbeat"],
+         "Video: Check. Check the video PC."),
+        (["Somethingnew", "warn", "3 retries"],
+         "Somethingnew: Check. 3 retries."),
+        (["Somethingnew", "warn", "ok"], "Somethingnew: Check"),
+    ]
+    js = fns + "\nconst cases = " + json.dumps(cases) + ";\n" \
+        "const out = cases.map(([x]) => { const r = sysRow(sysItem(" \
+        "{name:x[0], state:x[1], word:x[2]})); return r.head + r.rest; });\n" \
+        "console.log(JSON.stringify(out));\n"
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        got = json.loads(r.stdout.strip() or "null")
+    except ValueError:
+        got = None
+    want = [w for _x, w in cases]
+    bad = [(c[0], g) for c, g in zip(cases, got or []) if g != c[1]]
+    check(r.returncode == 0 and got == want,
+          f"each Systems row says its state once: {bad or got} "
+          f"{r.stderr.strip()[:600]}")
+    print("  ok")
+
+
 def test_ui2_screen_served():
     section("the one screen (R1): /remote, the show network's / and /remote2 "
             "(old bookmarks) are remote2.html byte for byte with its rules "
@@ -108090,6 +108149,15 @@ def test_ui2_arrange_and_switches_are_1_0s():
             check(blk.count(d) == 1, f"1.0's {what} has the dropped part "
                                      f"{d[:40]!r}")
             blk = blk.replace(d, "")
+        if what == "Arming from a screen and Live flame programming":
+            # The one named difference (Jeff, 2026-11-11: less prose): the
+            # switch's words are shorter; remote.py says the same (checked
+            # with the screen arming switch).
+            m1 = re.search(r'const SCREEN_ARMING_ENABLES = "[^"]*";', blk)
+            m2 = re.search(r'const SCREEN_ARMING_ENABLES = "[^"]*";', two)
+            check(m1 and m2, "the arming switch's words are found")
+            if m1 and m2:
+                blk = blk.replace(m1.group(0), m2.group(0))
         check(len(blk) > 300 and blk in two,
               f"2.0's {what} is 1.0's code, word for word ({len(blk)} "
               f"characters)")
@@ -113474,7 +113542,7 @@ def test_ui2_schedule_tab_makes_1_0_presses():
     for need in ('id="tonight"', 'id="tn-run-warn"', 'id="tn-next"',
                  'id="sched-edit" hidden', 'id="se-days"', 'id="se-save"',
                  'id="se-reload"', 'id="se-msg"', 'id="se-note"',
-                 'id="se-tz-now"', "Tap a show to see its notes."):
+                 'id="se-tz-now"'):
         check(need in sched, f"the Schedule tab has {need}")
     # Each field: 1.0's id, type and limits.
     for fid in ("se-tz", "se-first", "se-last", "se-len", "se-guard",
@@ -114206,13 +114274,29 @@ def _ui2_tools_copies(one):
             ("Choose (Stream Deck operator)",
              blk('$("b-deck-op").addEventListener(')),
             ("Use (an address)", blk('$("net-uses").addEventListener(')),
+            # Less prose (Jeff, 2026-11-11): the confirms are shorter,
+            # every condition kept.
             ("Restart the engine",
-             sub(blk('$("net-restart").addEventListener('),
-                 '"Yes, restart", "start"', '"Yes, restart", "green"')),
+             sub(sub(blk('$("net-restart").addEventListener('),
+                     '"Yes, restart", "start"', '"Yes, restart", "green"'),
+                 '"LTC Player restarts the show engine so it listens on the '
+                 'saved show network address. It is refused while a show '
+                 'runs or a flame group is armed. flamesafe and the Stream '
+                 'Deck program keep running."',
+                 '"Restarts the show engine on the saved address. Refused '
+                 'while a show runs or a group is armed. flamesafe and the '
+                 'Stream Deck keep running."')),
             ("Reload engine",
-             sub(sub(blk('$("cfg-reload").addEventListener('),
-                     '"Yes, reload", "start"', '"Yes, reload", "green"'),
-                 '$("ctl-msg")', '$("cfg-msg")', 2)),
+             sub(sub(sub(blk('$("cfg-reload").addEventListener('),
+                         '"Yes, reload", "start"', '"Yes, reload", "green"'),
+                     '$("ctl-msg")', '$("cfg-msg")', 2),
+                 '"LTC Player restarts the show engine so it reads the '
+                 'changed settings files. It is refused while a show runs or '
+                 'a flame group is armed. flamesafe and the Stream Deck '
+                 'program keep running."',
+                 '"Restarts the show engine to read the changed files. '
+                 'Refused while a show runs or a group is armed. flamesafe '
+                 'and the Stream Deck keep running."')),
             ("Check the rig", blk('$("rc-run").addEventListener(')),
             ("Close this window", blk('$("info-exit").addEventListener('))]
     for ln in ('$("net-pick").addEventListener("change", () => { '
@@ -114334,64 +114418,6 @@ const shape = (e) => [e.tag, e.className.trim(), e._t].concat(
           f"opText builds a headline, bullets and paragraphs from text, "
           f"markup kept as text, and setOpText rebuilds only on a change: "
           f"{r.stdout.strip()[:800]} {r.stderr.strip()[:600]}")
-    print("  ok")
-
-
-def test_ui2_systems_rows_say_each_word_once():
-    section("2.0's Systems sheet (Jeff, 2026-11-11: 'Stream Deck: OK. OK.' "
-            "said it twice): each row says its state once and then only "
-            "what the words add; a reason or a number is never dropped")
-    two = _ui2_pages()[1]
-    fns = ""
-    for c in ("SYS_LABEL", "SYS_OFF", "SYS_SAY", "SYS_WORD"):
-        m = re.search(r"^const " + c + r" = .*?;$", two, re.M | re.S)
-        check(m is not None, f"{c} is found")
-        fns += "\n" + (m.group(0) if m else "")
-    for n in ("short8", "sysItem", "sysRow"):
-        f = _js_function(two, n)
-        check(f is not None, f"{n} is found")
-        fns += "\n" + (f or "")
-    check("const r = sysRow(x);" in two and
-          "<b>${esc(r.head)}</b>${esc(r.rest)}</li>" in two,
-          "the Systems sheet draws each row with sysRow, escaped")
-    import shutil
-    node = shutil.which("node")
-    if not node:
-        check(not IN_CI, "node is missing on this CI runner")
-        print("  ok")
-        return
-    cases = [
-        (["Deck", "ok", "ok"], "Stream Deck: OK"),
-        (["Flamesafe", "ok", "linked"], "Flames: OK"),
-        (["Laser arm", "warn", "disarmed"], "Laser arm: Off, not in use here."),
-        (["Video", "warn", "not set up"], "Video: Off, not in use here."),
-        (["Laser arm", "ok", "ARMED"], "Laser arm: All armed"),
-        (["Lasers", "bad", "LINK LOST"],
-         "Laser output: FAULT. BEYOND not answering. Check laser PC."),
-        (["Deck", "warn", "late 1.2 s"],
-         "Stream Deck: Check. Slow. Check its USB cable."),
-        (["Laser arm", "warn", "2 of 4 armed"],
-         "Laser arm: Check. Some armed, output dark. Arm all or disarm."),
-        (["Video", "warn", "MadMapper running, no heartbeat"],
-         "Video: Check. Check the video PC."),
-        (["Somethingnew", "warn", "3 retries"],
-         "Somethingnew: Check. 3 retries."),
-        (["Somethingnew", "warn", "ok"], "Somethingnew: Check"),
-    ]
-    js = fns + "\nconst cases = " + json.dumps(cases) + ";\n" \
-        "const out = cases.map(([x]) => { const r = sysRow(sysItem(" \
-        "{name:x[0], state:x[1], word:x[2]})); return r.head + r.rest; });\n" \
-        "console.log(JSON.stringify(out));\n"
-    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
-    try:
-        got = json.loads(r.stdout.strip() or "null")
-    except ValueError:
-        got = None
-    want = [w for _x, w in cases]
-    bad = [(c[0], g) for c, g in zip(cases, got or []) if g != c[1]]
-    check(r.returncode == 0 and got == want,
-          f"each Systems row says its state once: {bad or got} "
-          f"{r.stderr.strip()[:600]}")
     print("  ok")
 
 
@@ -115486,6 +115512,7 @@ if __name__ == "__main__":
         test_ui2_is_the_default_screen,
         test_remote_rules_file,
         test_ui2_runs_on_ipados15,
+        test_ui2_systems_rows_say_each_word_once,
         test_ui2_page_makes_only_1_0_presses,
         test_ui2_stop_lone_tap_never_covers_a_stop,
         test_ui2_show_tab_in_a_browser,
@@ -115553,7 +115580,6 @@ if __name__ == "__main__":
         test_ui2_users_audit_driven,
         test_ui2_show_pc_tools_are_1_0s,
         test_ui2_show_pc_tools_driven,
-        test_ui2_systems_rows_say_each_word_once,
         test_ui2_op_text_shapes_text_with_dom_nodes_only,
     ]
     _stopped = _run_tests(TESTS)
