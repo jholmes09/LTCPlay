@@ -56,6 +56,9 @@ LEVELS_FILE = "ltcplay_hazers.json"
 LEVELS_FORMAT = 1
 STATUS_FRESH_S = 1.0        # flamesafe's status, as for arming (ARM_FRESH_S)
 WATCH_S = 0.25
+# The passthrough kinds LTC Player knows (flamesafe/CONTRACT.md): Arm all
+# hazers arms only "hazer"; any other kind, or none known, is skipped.
+KINDS_KNOWN = ("hazer", "switch")
 
 
 def pct_to_value(p):
@@ -168,6 +171,9 @@ class Hazers:
         self._lock = threading.RLock()
         self._watching = False
         self.last_off = None        # {"reason", "who", "was"}
+        # (reason, who, screen, system): the hazer test's stop, set by
+        # web.serve when it is built; all_off calls it first.
+        self.test_stop = None
         self.levels = Levels(folder, self.names())
         if self.levels.fault:
             self._note("system", "engine", "levels", self.levels.fault,
@@ -356,6 +362,70 @@ class Hazers:
         self._audit(who, screen, "hazer arm", name, "accepted", "")
         return True, f"{name} is ARMED."
 
+    def kind_of(self, name, fl=None):
+        """What flamesafe's fresh status says `name` is: "hazer", another
+        known kind ("switch"), or None when it is not known (no fresh
+        status, no entry, a kind not in KINDS_KNOWN, or a name flamesafe
+        also reports as a flame group).
+        Decided by type, never by the name's words."""
+        fl = self._flames() if fl is None else fl
+        if not fl or fl.get("stale"):
+            return None
+        try:
+            groups = {str(g.get("name")) for g in fl.get("groups") or []
+                      if isinstance(g, dict)}
+        except Exception:
+            return None
+        if name in groups:
+            return None
+        for p in fl.get("passthrough") or []:
+            if isinstance(p, dict) and p.get("name") == name:
+                k = p.get("kind")
+                # The status reader (remote.FlameStatus) reads an entry
+                # that says no kind as a hazer, as arming one does today;
+                # a kind LTC Player does not know is not known here.
+                return k if k in KINDS_KNOWN else None
+        return None
+
+    def arm_all(self, who="", screen=""):
+        """Arm All Hazers (Jeff, 2026-11-11): every hazer in the engine's
+        own hazer list (flamesafe's haze and fan entries; never a flame
+        group, a laser or a switch) that flamesafe's status also types
+        "hazer", each through set(), so every refusal arming one hazer has
+        applies to each. A hazer whose type is not known is skipped and
+        named. (ok, sentence, armed, not_armed [(name, why)])."""
+        names = self.names()
+        if not names:
+            return (False, "No hazers in flamesafe's config.", [], [])
+        fl = self._flames()
+        armed, missed = [], []
+        for n in names:
+            k = self.kind_of(n, fl)
+            if k != "hazer":
+                missed.append((n, "type not known" if k is None
+                               else f"not a hazer ({k})"))
+                continue
+            if n in self.on():
+                armed.append(n)
+                continue
+            ok, text = self.set(n, True, who=who, screen=screen)
+            if ok:
+                armed.append(n)
+            else:
+                missed.append((n, "refused"))
+        if not missed:
+            text = "All hazers armed."
+        else:
+            text = (f"{len(armed)} of {len(names)} hazers armed: " +
+                    "; ".join(f"{n} {w}" for n, w in missed) + ".")
+        self._audit(who, screen, "hazers arm all", ", ".join(names),
+                    "accepted" if not missed else
+                    ("refused" if not armed else "partial"), text)
+        self._note(who, screen, "arm all",
+                   f"{who or 'Someone'} pressed Arm all hazers on the "
+                   f"{screen}: {text}")
+        return (bool(armed) and not missed, text, armed, missed)
+
     def _disarm(self, name, who, screen):
         with self._lock:
             link = self.link()
@@ -408,6 +478,14 @@ class Hazers:
         armed before a cut() already cleared them. True when one was
         armed. Never raises."""
         why = " ".join(str(reason or "Hazers off").split())[:200]
+        # Every Hazers off ends the hazer test too (hazertest.py): no
+        # path says the hazers are off while it hazes.
+        stop = self.test_stop
+        if stop is not None:
+            try:
+                stop(why, who, screen, system)
+            except Exception:
+                pass
         with self._lock:
             before = sorted(set(was or ()) | self.on())
             link = self.link()
