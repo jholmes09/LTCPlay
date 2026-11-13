@@ -73,9 +73,10 @@ function baseStatus(){
   s.hazers = {available: true, down: "", last_off: null, agree: true, show: "idle", levels_fault: "",
     hazers: [1, 2, 3].map(n => ({name: "Hazer " + n, haze_slot: 78 + 2 * n, fan_slot: 79 + 2 * n, armed: false,
       label: "Hazer " + n + " DISARMED", state: "disarmed", haze: 102, fan: 153, haze_pct: 40, fan_pct: 60, why: null}))};
-  // The hazer test (hazertest.py, 2026-11-11): off, ready.
-  s.hazer_test = {available: true, names: ["Hazer 1", "Hazer 2", "Hazer 3"], on: false, state: "off", left_s: null,
-    max_s: 60, beat_s: 2, refusal: "", last_off: null};
+  // The Purge page's hazers (hazertest.py, 2026-11-13): each off, ready.
+  s.hazer_test = {available: true, names: ["Hazer 1", "Hazer 2", "Hazer 3"], on: false, names_on: [], state: "off", left_s: null,
+    max_s: 60, beat_s: 2, refusal: "", last_off: null,
+    hazers: [1, 2, 3].map(n => ({name: "Hazer " + n, on: false, state: "off", left_s: null, haze_pct: 40, fan_pct: 60}))};
   return s;
 }
 
@@ -92,16 +93,16 @@ const SCENARIOS = {
   // announcements and a hazer's arm are refused there, so they say why.
   ipad: s => { s.me.local = false; s.me.device = "iPad"; s.arming = Object.assign({}, s.arming || {}, {enabled: false}); },
   admin: s => { s.me = me("Jeff", "admin"); },
-  show_pending: s => { s.show = Object.assign({}, s.show, {running: true});  s.schedule.next = {show: 4, start: "19:30", in_s: 45, in_s_exact: 45}; s.countdown = {kind: "next", label: "Next show", s: 45, running: true};
+  show_pending: s => { s.show = Object.assign({}, s.show, {running: true, show_control_on: true});  s.schedule.next = {show: 4, start: "19:30", in_s: 45, in_s_exact: 45}; s.countdown = {kind: "next", label: "Next show", s: 45, running: true};
     s.flames.groups.forEach(g => g.armed = "armed"); s.subsystems[3].word = "armed"; },
   running: s => { Object.assign(s.schedule, {state: "SHOW", running: 4, next: {show: 5, start: "19:50", in_s: 1500, in_s_exact: 1500}});
-    s.show = {running: true, starting: false, show: "Fire and Ice", timeline: "fireice_timeline.json", timecode: "01:03:12:08", state: "playing", rate_note: ""};
+    s.show = {running: true, show_control_on: true, starting: false, show: "Fire and Ice", timeline: "fireice_timeline.json", timecode: "01:03:12:08", state: "playing", rate_note: ""};
     s.countdown = {kind: "left", label: "Time left", s: 312, running: true};
     s.flames.groups.forEach(g => g.armed = "armed");
     s.laser_arm.lasers.forEach(l => l.armed = true); s.subsystems[3].word = "armed"; },
   held: s => { SCENARIOS.running(s); Object.assign(s.schedule, {state: "PAUSED", held: true}); s.countdown.running = false; },
   stop_held: s => { SCENARIOS.running(s); Object.assign(s.schedule, {state: "HOLD", running: null, held: true, stop_held: true});
-    s.show.running = false; s.flames.groups.forEach(g => { g.armed = "held"; g.reason = "Disarmed by the show's Stop. Cycle the arm to re-arm."; });
+    s.show.running = false; s.show.show_control_on = false; s.flames.groups.forEach(g => { g.armed = "held"; g.reason = "Disarmed by the show's Stop. Cycle the arm to re-arm."; });
     s.laser_arm.lasers.forEach(l => l.armed = false); s.countdown = {kind: "next", label: "Next show", s: 1500, running: true}; },
   alerts_open: s => { const p = FX("status_pico"); s.alerts = p.alerts; s.flames.cues_fault = p.flames.cues_fault;
     s.deck = p.deck; s.morning.locked_machines = ["wave flamer 3"]; s.disk = p.disk;
@@ -114,19 +115,19 @@ const SCENARIOS = {
     s.morning.group_machines["wave flamer"].locked = 1; s.morning.group_machines["cat-walk"].locked = 1;
     s.laser_arm.lasers[2].locked = true; },
   programming: s => { s.me = me("Jeff", "admin"); s.transport = {programming: true, why: "", freerun: false, paused: false, loop: ["01:00:30:00", "01:01:10:00"], marks: {a: "01:00:30:00", b: "01:01:10:00"}, playhead: "show_audio", playing: true};
-    s.show = {running: true, starting: false, show: "Fire and Ice", timeline: "fireice_timeline.json", timecode: "01:00:44:12", state: "playing", rate_note: ""}; },
-  announcing: s => { s.show = Object.assign({}, s.show, {running: true});  s.schedule.held = true; s.schedule.state = "STANDBY";
+    s.show = {running: true, show_control_on: true, starting: false, show: "Fire and Ice", timeline: "fireice_timeline.json", timecode: "01:00:44:12", state: "playing", rate_note: ""}; },
+  announcing: s => { s.show = Object.assign({}, s.show, {running: true, show_control_on: true});  s.schedule.held = true; s.schedule.state = "STANDBY";
     s.announce.playing = {id: "delayed", name: "Delayed", elapsed_s: 4, length_s: 12, held_schedule: true}; },
-  alert_hold: s => { s.show = Object.assign({}, s.show, {running: true});  s.alert_hold = {held: true, text: "Held at showtime: an alert is open. Acknowledge it, then press Resume (or Start now)."};
+  alert_hold: s => { s.show = Object.assign({}, s.show, {running: true, show_control_on: true});  s.alert_hold = {held: true, text: "Held at showtime: an alert is open. Acknowledge it, then press Resume (or Start now)."};
     const p = FX("status_pico"); s.alerts = [p.alerts[0]]; s.schedule.next = {show: 4, start: "19:30", in_s: 0, in_s_exact: 0}; },
   live_flame: s => { const p = FX("status_live_flame"); s.me = me("Jeff", "admin"); s.live_flame = p.live_flame; s.artnet_note = p.artnet_note; s.flames.groups[0].armed = "armed"; },
   getting_started: s => { const p = FX("status_nofile"); Object.assign(s, {setup: p.setup || s.setup}); s.selected_show = null; s.schedule = Object.assign(s.schedule, p.schedule || {}); },
-  ready: s => { s.show = Object.assign({}, s.show, {running: true}); },
+  ready: s => { s.show = Object.assign({}, s.show, {running: true, show_control_on: true}); },
   weather_alert: s => { s.flames.groups[0].armed = "armed"; },
   stale: s => s,
-  rig_checking: s => { s.show = Object.assign({}, s.show, {running: true}); s.schedule.next = {show: 4, start: "19:30", in_s: 50, in_s_exact: 50};
+  rig_checking: s => { s.show = Object.assign({}, s.show, {running: true, show_control_on: true}); s.schedule.next = {show: 4, start: "19:30", in_s: 50, in_s_exact: 50};
     s.countdown = {kind: "next", label: "Next show", s: 50, running: true}; s.preroll = {state: "checking", label: "show 4", items: [], text: ""}; },
-  rig_failed: s => { s.show = Object.assign({}, s.show, {running: true}); s.schedule.next = {show: 4, start: "19:30", in_s: 0, in_s_exact: 0};
+  rig_failed: s => { s.show = Object.assign({}, s.show, {running: true, show_control_on: true}); s.schedule.next = {show: 4, start: "19:30", in_s: 0, in_s_exact: 0};
     s.countdown = {kind: "next", label: "Next show", s: 0, running: true};
     s.preroll = {state: "failed", label: "show 4", age_s: 20, manual: false, continue_hold_s: 1.0, items: [], text: "",
       show_check: {label: "show 4", off: ["video"], items: [{name: "Video", ok: false, required: true, text: "MadMapper did not move"}]}};
@@ -137,7 +138,7 @@ const SCENARIOS = {
     s.live_flame = {available: true, on: true, who: "Jeff"}; },
   hazers_on: s => { SCENARIOS.running(s); s.hazers.show = "playing"; s.hazers.hazers.forEach((h, i) => { h.armed = i !== 1; h.state = h.armed ? "running" : "disarmed"; }); },
   hazers_held: s => { SCENARIOS.held(s); s.hazers.show = "held"; s.hazers.hazers.forEach(h => { h.armed = true; h.state = "held"; }); },
-  flames_unknown: s => { s.flames.connected = false; s.flames.why = "flamesafe is not connected."; s.show = Object.assign({}, s.show, {running: true}); },
+  flames_unknown: s => { s.flames.connected = false; s.flames.why = "flamesafe is not connected."; s.show = Object.assign({}, s.show, {running: true, show_control_on: true}); },
   rehearsal: s => { SCENARIOS.programming(s); },
   cleaning: s => { s.cleaning = {available: true, state: "phase1", text: "Phase 1 of 2: firing the wave flamers"}; },
   // The systems badge: one to check, several, and only things not set up.
@@ -272,8 +273,8 @@ class FakeEngine {
       case "/api/remote/resume": sch.held = false; sch.stop_held = false; if(sch.state === "PAUSED") sch.state = "SHOW"; else if(sch.state === "HOLD") sch.state = "STANDBY"; s.alert_hold = {held: false};
         if(s.announce) s.announce.playing = null; return ok("Resumed.");
       case "/api/remote/start-now": sch.state = "SHOW"; sch.running = (sch.next || {}).show || 1; sch.held = false;
-        s.show = {running: true, show: "Fire and Ice", timecode: "01:00:01:00", state: "playing"}; s.countdown = {kind: "left", label: "Time left", s: 440, running: true}; return ok("Started.");
-      case "/api/start": s.show = Object.assign({}, s.show || {}, {running: true, starting: false, show: "Fire and Ice", timeline: body.timeline, state: "idle"});
+        s.show = {running: true, show_control_on: true, show: "Fire and Ice", timecode: "01:00:01:00", state: "playing"}; s.countdown = {kind: "left", label: "Time left", s: 440, running: true}; return ok("Started.");
+      case "/api/start": s.show = Object.assign({}, s.show || {}, {running: true, show_control_on: true, starting: false, show: "Fire and Ice", timeline: body.timeline, state: "idle"});
         if(sch.start_blocked) sch.start_blocked = null; return {code: 200, body: {ok: true, banner: "Running " + body.timeline + "."}};
       case "/api/remote/stop": this.dropHolds(); sch.state = "STANDBY"; sch.running = null; s.show = {running: false};
         s.flames.groups.forEach(g => g.armed = "disarmed"); return ok("Stopped.");
@@ -284,10 +285,17 @@ class FakeEngine {
       case "/api/remote/hazers-arm-all": s.hazers.hazers.forEach(h => { h.armed = true; h.state = "standby"; }); return ok("All hazers armed.");
       case "/api/remote/hazer-test": {
         const t = s.hazer_test;
+        const sync = () => { t.names_on = t.hazers.filter(h => h.on).map(h => h.name); t.on = t.names_on.length > 0;
+          t.state = t.on ? "on" : "off"; t.left_s = t.on ? t.max_s : null; };
         if(body.on === true){ if(t.refusal) return {code: 409, body: {error: "Hazer test not started: " + t.refusal}};
-          Object.assign(t, {on: true, state: "on", left_s: t.max_s}); return ok("Hazer test ON for " + t.max_s + " s."); }
+          const want = body.hazers === "all" ? t.names : (body.hazers || []);
+          if(!want.length || want.some(n => !t.names.includes(n))) return {code: 409, body: {error: "Hazer test not started: select one hazer or more."}};
+          t.hazers.forEach(h => { if(want.includes(h.name) && !h.on) Object.assign(h, {on: true, state: "on", left_s: t.max_s}); });
+          sync(); return ok("Hazer test ON: " + want.join(", ") + ", " + t.max_s + " s."); }
         if(typeof body.beat === "string") return t.on ? ok("Hazer test on.") : {code: 409, body: {error: "The hazer test is off."}};
-        Object.assign(t, {on: false, state: "off", left_s: null}); return ok("Hazer test OFF.");
+        const off = Array.isArray(body.hazers) && body.hazers.every(n => t.names.includes(n)) ? body.hazers : t.names;
+        t.hazers.forEach(h => { if(off.includes(h.name)) Object.assign(h, {on: false, state: "off", left_s: null}); });
+        sync(); return ok(off.length === t.names.length ? "Every hazer OFF." : "Hazer test OFF: " + off.join(", ") + ".");
       }
       case "/api/remote/hazer-level": s.hazers.hazers.forEach(h => { if(body.hazer === "all" || h.name === body.hazer){
         if(typeof body.haze === "number") h.haze_pct = body.haze; if(typeof body.fan === "number") h.fan_pct = body.fan; } }); return ok("Set.");

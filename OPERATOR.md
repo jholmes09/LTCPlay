@@ -44,13 +44,13 @@ sign-in.
 - **Signed out, every screen is view only.** It still shows the show
   state, the schedule, the flame and laser lamps and the alerts. The chip
   at the top right reads "Sign in to use controls", and Start now, Resume,
-  Run, every Hold to arm, a laser's Arm, the announcements and the
+  Show control on/off, every Hold to arm, a laser's Arm, the announcements and the
   settings switches are greyed out. Stop, Hold, Disarm all and every
   Disarm stay live.
 - **Always, signed in or not:** Stop, Hold, Acknowledge an alert,
   Disarm all flame groups, disarming one group, and disarming lasers.
-- **Needs a signed-in operator or admin:** Start now, Resume, Run,
-  arming a flame group (hold to arm and Arm all), a purge, arming a laser,
+- **Needs a signed-in operator or admin:** Start now, Resume, Show
+  control on/off, arming a flame group (hold to arm and Arm all), a purge, arming a laser,
   a laser test, unlocking, playing an announcement, the checklists,
   choosing the operator and editing tonight's list. Settings, show files
   and users need an admin as before.
@@ -60,8 +60,10 @@ sign-in.
   under way, and the screen is view only straight away. It does not disarm
   anything or stop live flame programming: use Disarm all or Stop for that.
 - **If the users file is damaged or missing** after users were set up, an
-  alert says so on every screen and every control is locked except Stop,
-  Hold, Acknowledge and the disarms. Nobody can sign in. A good
+  alert on every screen says "Users file cannot be used." (or "cannot be
+  opened." while another program holds it) and "Only Stop, Hold,
+  Acknowledge, Disarm work.": every other control is locked. Nobody can
+  sign in. Its Details say the reason and the folder under More. A good
   `ltcplay_users.json` put back in the settings folder is used at once, with
   no restart. To start over with no users: close LTC Player, remove
   `ltcplay_users.json` and `ltcplay_users.made` from the settings folder
@@ -238,7 +240,7 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   delayed.wav, cancellation.wav and cannot_continue.wav, then restart LTC
   Player.
 - **Where the sound goes** (Jeff, 2026-10-28). While the show audio is
-  running (after Run, with a show file that plays its own audio), an
+  running (show control on, with a show file that plays its own audio), an
   announcement plays THROUGH THE SHOW AUDIO: mixed into the show's own
   front left and right, outputs 1 and 2, which are the Main L/R (USB
   return 1/2 on the StudioLive 16R). There is no second device: it plays
@@ -282,7 +284,7 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   announcement holds the schedule, the Programming playback pauses with it
   (the same as pressing Hold): the music does not play on under the
   announcement. Continue on the Programming screen carries on.
-- **When the show audio is not running** (the PC idle, nothing Run, or a
+- **When the show audio is not running** (the PC idle, show control off, or a
   show file with no audio of its own), an announcement plays on its own
   output instead, never the system default. Pick it on the rack screen:
   Programming, **Announcement output, on this machine**: a list of every
@@ -369,14 +371,14 @@ differ) never sound. Every other alert repeats its note every 30 seconds
 | booth_clean_ready.wav, booth_clean_done.wav | the wave flamer cleaning routine, once it is built (PR #159); silent until then |
 
 **START / STOP.** While nothing is running the key reads START NOW. Once
-Run has been pressed and playback is going it reads STOP RUN: hold it for
+show control is on and playback is going it reads STOP ALL: hold it for
 half a second to Stop. Stop first turns every flame group off, at once,
 then does exactly what the Rack screen's Stop does: live flame programming
 ends, every flame group is sent off again through the show's flame link
 (so each group needs a fresh arm), the
 outputs go dark, and the schedule goes on Hold: no show starts until
-Resume (Jeff, 2026-10-30). Run stays on, so the key keeps reading STOP
-RUN after a Stop; that is expected. The deck's Stop is a complete halt:
+Resume (Jeff, 2026-10-30). Show control stays on, so the key keeps reading STOP
+ALL after a Stop; that is expected. The deck's Stop is a complete halt:
 every laser is disarmed too. Nothing latches: Resume carries on. A tap
 does nothing; let go before the ring fills
 and nothing is sent.
@@ -385,8 +387,8 @@ and nothing is sent.
 NOW PLAYING, PAUSED or AUDIO LOST, but holding it half a second still
 stops everything: every flame group and laser is disarmed, the show ends
 (faded to dark over 1 second, nothing latched),
-and the schedule goes on Hold, so no later show starts until Resume. Run
-stays on (Jeff, 2026-10-30). A show whose time comes during the Hold
+and the schedule goes on Hold, so no later show starts until Resume. Show
+control stays on (Jeff, 2026-10-30). A show whose time comes during the Hold
 waits as a delayed show for Start now. Stopping the last show of the
 night closes the night a moment later. To disarm just
 one group during a show, tap its key on the deck, or use the Rack
@@ -406,7 +408,7 @@ off. An alert waiting on the deck never eats a
 Stop: a quick tap only acknowledges it, and a full half second hold stops
 (the key switches to HOLD TO STOP as soon as it is held, so let go to
 cancel). With the Morning page open, key 0 is FIRE for the purge, except
-whenever anything is running (a show live, Run pressed and playback
+whenever anything is running (a show live, show control on and playback
 going, or live flame programming or Programming playback with flames on), the deck
 cannot read the show computer, or a group is armed for
 anything but the purge (a group the purge selection wants counts as the
@@ -523,7 +525,7 @@ stop by themselves, even if the page or the iPad is closed. The rack
 screen, the line at the top of every tab and the Stream Deck's key 0
 (PURGING and the seconds) count down. To end it early press Stop purge
 (on the Startup page or the banner, from any screen, signed in or
-not), or Stop or Hold; Start now, Run, a disarm of one of
+not), or Stop or Hold; Start now, Show control on, a disarm of one of
 its groups, a lock, signing out and any other purge press (Space, the
 deck's FIRE, the button again) also end it at once. Only one purge at a
 time; the Fireball page, the cleaning and live flame programming wait for
@@ -580,7 +582,7 @@ clicked) lets go of Valve Open and Igniter. After any of these nothing
 comes back on by itself: press again.
 
 **During a show too** (Jeff, 2026-10-30: Andy may start any phase by hand
-at any time). The page works while a show plays, while Run is pressed and
+at any time). The page works while a show plays, while show control is on and
 during Programming playback, and Programming's Play from and Loop work
 with a Fireball channel on (it stays on). On each Fireball channel the higher of the
 show's value (its FSEQ, or its fireball timeline) and this page's goes
@@ -677,8 +679,8 @@ gave the go-ahead) signing out; any refusal. If flamesafe does not report
 the wave flamers off within a second, Disarm all flame groups goes.
 Nothing comes back by itself: start again with a hold.
 
-**When it will not start** it says why: a show live or on Hold, Run
-pressed, live flame programming on,
+**When it will not start** it says why: a show live or on Hold, show
+control on, live flame programming on,
 a purge selected (and the purge waits while the cleaning runs), the
 Fireball page with a channel on, any screen in Arrange mode, another flame
 group armed or being armed, the wave flamers already armed (it starts
@@ -915,21 +917,25 @@ channel, and is either ARMED or DISARMED.
   each one again (wait a second after a Stop).
 - **If a tile says Waiting for flamesafe,** flamesafe has not taken the
   arm yet; if it stays that way, disarm it and arm it again.
-- **Hazer test (Startup page, Purge step, 2026-11-11).** Tap **Hazer
-  test: On** to run every hazer at its levels with show control off
-  and no show; tap **Hazer test: Off** to stop it. It reads On with a
-  countdown (and HAZE ON in the top bar) only when the engine says so,
-  Not known with no contact.
-  - Off by itself after 60 s.
-  - Off on Stop, a show or show control starting.
+- **Purge page: Hazers: turn on or off (Startup page, Purge step).**
+  This runs hazers NOW, for checking them; it never arms one. Tick the
+  hazers you want (each shows its Haze and Fan level), then **Turn on**
+  or **Turn off**. **All on** runs every hazer; **All off** turns every
+  one off and always works, for anyone. Each reads On with its countdown
+  (HAZE ON in the top bar, HAZE TEST on its tile) only when the engine
+  says so; Not known with no contact, and then the button is Turn off.
+  - Each turns off by itself 60 s after its press.
+  - Off on Stop, Hold, Hazers off, a show or show control starting.
   - Off if this screen goes quiet 10 s.
-  It needs the arm row (as arming a hazer), and every check arming a
-  hazer has; it never arms a hazer. Set a Haze level first.
-- **Arm all hazers (same place).** One tap arms every hazer through the
-  same checks as arming one, and says which did not arm
-  ("2 of 3 hazers armed: Hazer 2 refused"). A name flamesafe does not
-  report as a hazer is skipped and named. With all armed it reads
-  **Disarm all hazers** (Hazers off).
+  It needs the arm row (as arming a hazer) and every check arming a
+  hazer has, and a Haze level above 0 on each hazer turned on.
+- **Arm all hazers (SHOW tab, the Hazers row, beside Hazers off; and
+  the Levels sheet).** Armed hazers run during the show. One tap arms
+  every hazer through the same checks as arming one, and says which did
+  not arm ("2 of 3 hazers armed: Hazer 2 refused"). A name flamesafe does
+  not report as a hazer is skipped and named. It reads None armed, 2 of 3
+  armed, All armed or Not known; Hazers off beside it disarms every hazer,
+  always. It never arms a flame group or a laser.
 
 - **Haze fluid (Startup page, Fuel step, 2026-11-12).** Under the fuel
   tanks, a tile per hazer: its haze time since its last refill (fan only
@@ -1351,8 +1357,8 @@ the Schedule tab, under the Fireball timeline card. It works on the
 Programming screen's playhead, never as a show: a step adds no show to
 tonight's count.
 
-**Before you start:** on the Programming screen, choose the show file and
-press Run in Programming. The show's fireball must be set to Timeline.
+**Before you start:** on the Show file card (Schedule tab), choose the
+show file and press Start rehearsal in Programming. The show's fireball must be set to Timeline.
 
 **Open practice.** Press **Open practice (Live)** for real flame, or
 **Open practice (Dry)** to step with nothing armed. Opening presses Stop:
@@ -1389,7 +1395,7 @@ Stop, any disarm, the Fireball disarmed, anything else armed, a lockout of
 the Fireball, the Stream Deck's spoof ALARM, a second sender on the arm or
 flame link, flamesafe not reporting for a second, a fault in the flame cues, the
 fireball timeline or the charge record, a Hold or pause during a step, a
-step running over its time, the schedule leaving its Hold, Run off,
+step running over its time, the schedule leaving its Hold, show control off,
 another show file, leaving the Schedule tab for 5 s, and 10 minutes with
 no step. If the Stop does not complete, practice says so with a flames
 alert and presses Stop again every second until it does.
@@ -1439,10 +1445,11 @@ It was 15 seconds before.
   ..., more than its 120 s grace)"; a last show that starts as late as the
   grace allows is counted too).
 - After a restart a show that came due while the program was down starts
-  if it is no more than the limit late, and Run is pressed. A restart
-  always leaves Run off, so unless Run was pressed before the show's time
-  the show is refused and marked FAULT, with the alert "did not start" and
-  the sentence "Run has not been pressed". Pressing Run afterwards, even
+  if it is no more than the limit late, and show control is on. A restart
+  always leaves show control off, so unless it was turned on before the
+  show's time the show is refused and marked FAULT, with the alert "did
+  not start" and the sentence "Show control is off". Turning show control
+  on afterwards, even
   inside the 120 seconds, does not start it: press Start now. Past the
   limit the show is simply MISSED.
 - The rig check (pre-roll) never stretches the limit. A show whose rig
@@ -1477,7 +1484,7 @@ It was 15 seconds before.
   every start, however late, goes through the alert hold, the rig check and
   the Stop check.
 - It never overrides anything that says wait. A Hold, a Stop's Hold,
-  Run not pressed, the guard after the previous show, a show that
+  show control off, the guard after the previous show, a show that
   is running and a Stop under way all still hold a show back, however
   close to its time. Resume's journal line says "Show N ... starts at the next tick,
   N s late" only when it really will (no
@@ -1616,7 +1623,7 @@ MISSED. Now a night ends where it hands over to the next one:
 A show still delayed when the night hands over is MISSED, as before; the
 journal says "when the night ended, as the next night began" when that
 is not 2 AM. A restart in the middle of such a wait carries on with it. The hand over never drops a planned show, never starts a
-show early and never presses or releases Run. The night only moves
+show early and never turns show control on or off. The night only moves
 forward. If two nights run into each other, the earlier one finishes
 first and a show of the next night whose time has gone by by then is
 missed: the save warns about it.
@@ -1682,12 +1689,12 @@ until the engine was restarted. Now:
   scheduler goes back to STANDBY with the rig dark: unlike a fresh start
   at that time, the intermission does not come back by itself. Nothing is
   started and no look is sent; the next show starts at its time only while
-  Run is pressed, by the usual rules.
+  show control is on, by the usual rules.
 - **A night that had no shows at all** (the engine started on a dark
   night: another weekday's schedule, before the season, or a night an
   exception made dark) never closed, so a save that gives it shows starts
   it exactly as a restart would: IDLE with the preshow look, or STANDBY
-  close to the first show. Those looks go out only while Run is pressed,
+  close to the first show. Those looks go out only while show control is on,
   as after a restart.
 - **A night closed with Close for the night stays closed.** The engine
   remembers the press (in tonight's file, so a restart remembers it too),
@@ -1713,27 +1720,28 @@ until the engine was restarted. Now:
   it pushes aside is DELAYED and waits for Start now; the later shows still
   run on time, and the night closes only after its last scheduled show.
 
-**After an engine restart, press Run.** A restart always leaves Run off,
-and LTC Player never presses it for you (no show starts unattended). While
-Run is off and a show is still to come, the rack screen says so: "Run is
-off: the 22:50 show (show 5) will NOT start. Press Run." It is amber until
-30 minutes before that show, then red, a fault. Once the night's first
-show time has gone by it is red at once. On a Hold
-it says "Press Run, then Resume.". The screen names the button: "Press
-the Run show button on the main screen" on the show PC (on an iPad, "on
-the show PC's main screen"), and on the show PC, signed in with the Start
-now permission, a Run show button stands beside it, in the alert and on
-the Schedule tab: the same Run as the main screen's, asking first. It is
-there only with contact. On a Hold the main screen's big button is
-Resume, so the warning says "Press the Run show button by this warning,
-then Resume": Run does not end the Hold, and its question says so. During
-a Programming Run
-(Run reads as pressed, but the schedule starts nothing over a rehearsal)
-it says "A Programming Run is in force: the 22:50 show (show 5) will NOT
-start. Press Stop, choose Show, then Run." It is an alert on the SHOW
-tab, a line on the Schedule tab, and part of the
+**After an engine restart, turn show control on.** Show control on/off
+is the switch that used to be called Run (Jeff, 2026-11-11); nothing
+reaches the rig while it is off. A restart always leaves show control
+off, and LTC Player never turns it on for you (no show starts
+unattended). While it is off and a show is still to come, the rack screen
+says so: "Show control is off: the 22:50 show (show 5) will NOT start.
+Turn show control on." It is amber until 30 minutes before that show,
+then red, a fault. Once the night's first show time has gone by it is
+red at once. On a Hold it says "Turn show control on, then Resume.". On
+an iPad it says where: "Turn show control on at the show PC." ("Show PC:
+turn show control on, then Resume." on a Hold). On the show PC, signed in with the
+Start now permission, a Show control on button stands beside it, in
+the alert and on the Schedule tab: the same as the main screen's big
+button, asking first. It is there only with contact. On a Hold the main
+screen's big button is Resume: turning show control on does not end the
+Hold, and its question says so. During a rehearsal (Programming mode;
+show control reads as on, but the schedule starts nothing over a
+rehearsal) it says "A rehearsal is on: the 22:50 show (show 5) will NOT
+start. End rehearsal, choose Show, then turn show control on." It is an
+alert on the SHOW tab, a line on the Schedule tab, and part of the
 answer to a schedule save.
-It goes as soon as Run is pressed.
+It goes as soon as show control is on.
 
 ## Stop, Hold and Resume on the rack screen
 
@@ -1744,9 +1752,9 @@ stop:
 - **Stop.** On the SHOW tab, **Stop show** is there, solid red,
   while a show is live (playing, or paused on Hold), while the rig is
   being checked before a show, while Start now waits for the show audio,
-  while Programming playback plays, and during a rehearsal Run (the
-  Programming mode) while its timecode is moving. On the Programming screen, Run
-  turns into **Stop** at those same times. Stop show sits in the SHOW
+  while Programming playback plays, and during a rehearsal (the
+  Programming mode) while its timecode is moving. On the Show file card,
+  the show control button turns into **Stop** at those same times. Stop show sits in the SHOW
   tab's controls and in the strip on every other tab, and its place is
   empty when nothing is playing. With no contact with
   the engine (what is playing is not known) Stop is always there.
@@ -1769,7 +1777,7 @@ stop:
   whatever was happening: during a show, between shows, on the night's
   last show, while the night is closing, on a night with no shows. While
   it stands no show starts by itself, tonight or on any later night, even
-  with Run on: the next night with shows comes up on Hold (Jeff,
+  with show control on: the next night with shows comes up on Hold (Jeff,
   2026-10-30). It is kept in `ltcplay_stop_hold.json` next to tonight's
   file, so a restart keeps it too. If that file cannot be written, the
   fault flag says so and it is tried again on every tick until it is; a
@@ -1796,22 +1804,23 @@ stop:
   show. A show start already on its way when the Stop lands is refused,
   and one whose music already began is stopped and faded again. While a
   Stop is still disarming and fading to dark (until the show conductor
-  has taken it), Resume, Start now and Run are refused until it has
+  has taken it), Resume, Start now and Show control on are refused until it has
   finished. The Stop's fade never waits on a file being written or on
   the scheduler.
-- **Stop never turns Run off.** Run stays on: Hold (or a Stop's Hold) is
+- **Stop never turns show control off.** It stays on: Hold (or a Stop's Hold) is
   how the schedule is stopped. Each flame group needs arming again, and
   the lasers can only be armed again after Resume. The line under the
   buttons says what happened ("Stopped. The show ended and the rig is
   fading to dark. ... The schedule is on Hold: no show starts until you
   press Resume.") or, if any part did not work, which part, and what to
   press. If the engine refuses, it says why in its own words.
-- **Run off** is on the Programming screen's Run button: with Run on and
-  nothing playing, the button reads Run off. It is also in Stop's place
-  on the SHOW tab at those times, in full colour. It asks first, then does
-  a Stop and stops playback, so Run is off. Run off needs the Show
-  permission; Stop never does. Right after Stop turns back into Start
-  now, Run or Run off, the button waits 2 seconds before it takes a
+- **Show control off** is on the Show file card's button: with show
+  control on and nothing playing, the button reads Show control off
+  (End rehearsal in a rehearsal). It is also in Stop's place on the SHOW
+  tab at those times, in full colour, reading Show ctrl off. It asks first, then does a Stop and
+  stops playback, so show control is off. It needs the Show permission;
+  Stop never does. Right after Stop turns back into Start now, Show
+  control on or off, the button waits 2 seconds before it takes a
   press, and a press made just as the show ended or started does nothing
   and says so: a Stop never turns into a start.
 - The Stream Deck starts every flame group's re-arm wait when it sees
@@ -1871,17 +1880,17 @@ show network interface, offset 0).
 
 **When a show does not start, it says why.** The alert, and the show's
 line on the Schedule screen, give the real reason and what to press, for
-example "Show 1 did not start: Run has not been pressed, so nothing may
-reach the rig; press Run on the Programming screen, then Start now". Start
+example "Show 1 did not start: Show control is off. Nothing reaches the
+rig. Turn show control on, then Start now". Start
 now that cannot work is refused at once with the same words, and adds no
-FAULT line. Right after Run the show audio takes a few seconds to load:
-Start now then says "audio loading, starts when ready". Pressed then, it
+FAULT line. Right after show control is turned on the show audio takes a few seconds to load:
+Start now then says "audio loading". Pressed then, it
 waits for the audio (at most 20 seconds) and reads **Loading, starting when
 ready**; the show starts as soon as the audio is in. Hold or Stop
 cancels the wait and nothing starts, and so does any Hold the program
 makes itself (for an announcement, or at showtime for an open alert).
-While a Stop is still disarming and fading to dark, Start now and Run on
-any screen are refused until it has finished, and say so. Only the show's own audio counts: a
+While a Stop is still disarming and fading to dark, Start now and Show
+control on, on any screen, are refused until it has finished, and say so. Only the show's own audio counts: a
 slow or broken intermission file never holds the show back.
 
 ## The pixels at the end of a show, and at the next start
@@ -1898,7 +1907,7 @@ What each end leaves on the pixels:
 | The night's last scheduled show ends by itself | black (the closing) |
 | A Start now show ends by itself | the idle look, even with nothing else tonight |
 | Programming's Play reaches the end of the cue | the idle look |
-| Stop | black, and the schedule on Hold (Run stays on) |
+| Stop | black, and the schedule on Hold (show control stays on) |
 | A show that started and then failed | black |
 | A start refused before anything went out (Auto start off, the show audio not ready) | left as they were |
 
@@ -1928,7 +1937,7 @@ night, until the next show starts. Stop then still disarms every flame
 group, blanks and disarms the lasers, turns the hazers off, lets go of
 any hold to arm and clears the purge selection and laser tests (a
 complete halt), takes whatever look is up down to dark, and puts on a
-Stop's Hold; it never turns Run off.
+Stop's Hold; it never turns show control off.
 
 **Every start clears it.** Start now, a scheduled start and Programming's
 Play from all clear the pixels for the show in the same one place,
@@ -1940,8 +1949,8 @@ whatever ended the show before:
   on the pixel output before the start. The Fire & Ice screens have no
   Black or Preshow button; only the engine's override can set one. On
   the Programming cards such a look stays through Play from. To clear
-  it: press Stop on the "Show file, on this machine" card (Schedule tab),
-  then Run (Run starts with no look on the pixels). That card is only on
+  it: on the "Show file, on this machine" card (Schedule tab) turn show
+  control off, then on again (it starts with no look on the pixels). That card is only on
   the show machine's own screen.
   The Programming card's "Follow timecode again" button does not clear a
   look, and while the show audio is the playhead it reads "Stop the show
@@ -1968,10 +1977,10 @@ first show frame went out on the pixels 0.21 s after the start was sent."
 **If the pixels are ever on a look while a show plays** (anything but a
 Hold's or a Stop's own fade), after 1.5 s the rack screen and the Stream
 Deck show it as a flame cues fault: "CUES FAULT: pixels show black, not
-the show. Programming: Show file card, Stop, then Run. On 2.0: the
-Schedule tab's Show file card. Scheduled show: tell Jeff." That Stop is
-the one on the "Show file, on this machine" card (it ends playback and
-turns Run off), not "Stop the show audio". The screen shows it as "Flame
+the show. Programming: Show file card, End rehearsal, then Start
+rehearsal. On 2.0: the Schedule tab's Show file card. Scheduled show:
+tell Jeff." End rehearsal is the button on the "Show file, on this
+machine" card (it ends playback), not "Stop the show audio". The screen shows it as "Flame
 cues are off" with the full text behind a tap. It is display only.
 
 **Other flame cue faults while a show plays.** The flame cues are cut from
@@ -2006,11 +2015,11 @@ passes, starts at 6:00:00 to the second. The rack screen says **Checking
 the rig before show 2** and Start now reads Checking; the Stream Deck's
 Start key reads CHECKING RIG (still Stop if held). Start now checks first
 too, then starts (a few seconds, at most the window). If the check could
-not run in time (Run pressed late, LTC Player started inside the window,
+not run in time (show control turned on late, LTC Player started inside the window,
 the schedule changed), the show waits for it and starts late, and the
 journal says so: the check is never skipped. Programming's Play from
-does not check; a scheduled show is never started during a Programming
-Run (the journal says so), and Start now checks there too.
+does not check; a scheduled show is never started during a rehearsal
+(the journal says so), and Start now checks there too.
 
 **What it proves, now, not from memory.** Unknown counts as failed: a
 check with no answer within the window fails. If the rig check itself
@@ -2135,7 +2144,7 @@ choices:
 
 - **Check the rig again** (an admin, on the show PC): the same checks,
   nothing started. Also on the Programming screen's Rig check card, any
-  time between shows with Run pressed, never in the minute before a show
+  time between shows with show control on, never in the minute before a show
   unless a rig check failure stands (a failed show is never checked
   again by itself). Once it passes, press what the screen says: Resume
   while the show is held (it is checked once more, then starts), else
@@ -2244,7 +2253,7 @@ refuses too.
   the scene starts fresh from its own top rather than in the middle. If no
   cue is before that point, start from the top with Start now. It is
   tonight's only: forgotten at the night change, at Close for the night
-  and when Run goes off.
+  and when show control goes off.
 - **The cue is checked again at the start.** If the cue was changed or
   deleted in Settings after it was chosen (for example while the rig
   check failed), Start at a cue and Continue anyway are refused and
@@ -2262,20 +2271,20 @@ video's length from MadMapper, so a video longer than both the audio and
 the lights file needs that setting. The schedule's own show_len_s is the
 time the night plans for a show and is not used here.
 
-- **Audio shorter than the lights file.** Run says so first, naming both
+- **Audio shorter than the lights file.** Turning show control on says so first, naming both
   lengths, for example "The show audio for Show is 451.46 s, shorter than
   the lights file (454.17 s)". The show still starts. After the audio
   ends the rest plays in silence on this computer's clock: the Art-Net
   timecode, the lights, the flame cues and the video carry on to the end,
   and nothing reads as the audio lost. An LTC timecode track inside the
   show audio (`clock.audio.ltc_output`) is part of the audio, so it ends
-  with the audio; Run says so when there is one. Export the audio to the
+  with the audio; turning show control on says so when there is one. Export the audio to the
   full length to hear it to the end.
 - **`clock.zones.show_len_s`** may make the show at most 60 s longer than
-  its audio and lights file. More than that refuses Run, naming the
+  its audio and lights file. More than that refuses show control on, naming the
   numbers (a typo must never run an hour of silent timecode). Past the
-  end of the lights file the lights and the flame cues are dark, Run says
-  so, and that is not a fault.
+  end of the lights file the lights and the flame cues are dark, turning
+  show control on says so, and that is not a fault.
 - **The schedule's show_len_s** must be at least the show's real length.
   If it is shorter, ltcplay does not start and says which number to put
   in the schedule file.
@@ -2294,7 +2303,7 @@ time the night plans for a show and is not used here.
   a show (MadMapper alone, never BEYOND, never by broadcast, never the
   pixels), until the next show starts. A Stop after the end keeps the
   held frame. Everything is disarmed and the lasers stay blanked.
-- **Stop on the show file card** (it ends playback and turns Run off)
+- **Turn show control off on the show file card** (it ends playback)
   stops the timecode at once, including after the audio has ended. A
   longer show never delays either Stop.
 
@@ -2513,12 +2522,14 @@ Schedule (it was called Tonight) shows the night's shows on one screen; tap
 a show to see its notes (why it was moved, skipped or added, or "No notes";
 tap again to close). Programming has the scrubbing controls and, on the
 show machine only, the Show file card (the Show and Programming switch, the
-show file, and Run, which reads Stop in the same place while Run is in
-force), the Stream Deck operator and the show network.
+show file, and Show control on, or Start rehearsal in Programming,
+which reads Stop in the same place while it is on and something plays),
+the Stream Deck operator and the show network.
 Show: the scheduler starts each show at its time and scrubbing is off.
 Programming: a rehearsal; play from, jump and loop work and the scheduler
-starts no show. To switch, press Stop, pick the other side of the switch,
-then Run. While a scheduled show is live, Programming is locked and the
+starts no show. To switch, turn show control off (or End rehearsal),
+pick the other side of the switch, then Show control on (or Start
+rehearsal). While a scheduled show is live, Programming is locked and the
 switch says so. Back to the show returns to the show screen.
 
 In Programming on a show that plays its own show audio (Fire & Ice), the
@@ -2543,7 +2554,7 @@ pauses it the same as Pause, and also holds the schedule, so no show
 starts until someone presses Resume (Continue carries the playback on but
 leaves the schedule held). Stop (after it disarms every flame group and
 laser, as always) stops the playback the way Stop the show audio does.
-Start now and Run are refused while Programming is playing: stop the
+Start now and Show control on are refused while Programming is playing: stop the
 Programming playback first.
 The Rack screen's Stop and the Stream Deck's Stop stop it too. If no
 operator page is open for 60 seconds, the playback stops by itself and
@@ -2633,8 +2644,8 @@ flamesafe and LTC Player have the same aim list. Asked is what the show
 asked for on those slots, sent is what flamesafe really sent: 0 while the
 group is not armed (it then reads held or disarmed), by design: the head
 then sits at its end stop. Hover
-the line to read all of it. If it says NOT loaded, an Aim slots alert says
-the same in full: flamesafe's list, LTC Player's list, the flamesafe.json LTC
+the line to read all of it. If it says NOT loaded, an alert says "Wave
+flamer aim lists differ." and, under More in its Details, the same in full: flamesafe's list, LTC Player's list, the flamesafe.json LTC
 Player read when it started, and what to do (put the aim list in the
 flamesafe.json flamesafe uses, check LTC Player reads that same file, then
 quit LTC Player and start it again). It is display only: it never holds
@@ -2706,22 +2717,22 @@ The MODE pill in the header says which mode the engine is in, on every
 screen, from the engine's own state and never from which screen is open:
 SHOW (a show file is running for real; the scheduler starts each show at
 its time; scrubbing is off), PROGRAMMING (a rehearsal is running; the
-scrubbing controls work and the scheduler starts nothing) or NOT RUNNING
-(no show file is running; nothing reaches the rig until Run is pressed on
-the Programming screen). The small "i" button beside it opens a panel with
+scrubbing controls work and the scheduler starts nothing) or SHOW
+CONTROL OFF (no show file is running; nothing reaches the rig until show
+control is on). The small "i" button beside it opens a panel with
 this LTC Player's release and build id (also in `/api/remote/status` as
 `version`), the device, the mode sentence, and how to leave a full screen
 window (Alt+F4, or its Close this window button on the show PC).
 
 Show stays Show (Jeff, 2026-10-28: "even when I press show mode, it turns
-on programming mode"). The mode is what Run asked for, nothing else: Run
-with Show picked is a real show and the pill reads SHOW; it reads
-PROGRAMMING only after Run with Programming picked (or Rehearse, or
+on programming mode"). The mode is what was asked for, nothing else: Show
+control on with Show picked is a real show and the pill reads SHOW;
+it reads PROGRAMMING only after Start rehearsal (or Rehearse, or
 Rehearsal on the old page). A Fire & Ice show is on this machine's own
 clock (the show audio), and such a show always holds its frame when its
 clock stops, Show or Programming; before this fix that hold made every
-Fire & Ice Run read PROGRAMMING and turned the switch to Programming after
-a page reload, so the next Run really was a rehearsal. The switch on the
+Fire & Ice show read PROGRAMMING and turned the switch to Programming after
+a page reload, so the next one really was a rehearsal. The switch on the
 Show file card starts on the mode the engine is in, and on Show when
 nothing is running (after a restart too); no mode is kept across a
 restart. The old page's "When the timecode stops" switch follows the same
@@ -2798,17 +2809,17 @@ tab, and the hardware e-stop always works.
   PC reads the list but nobody can save it until an admin exists.
 - The SHOW tab, top to bottom: one line that says what to do next;
   the show state, the timecode and the time left; the big button for the
-  next step (Run show, Start now or Resume; Resume and Start now offer
+  next step (Show control on, Start now or Resume; Resume and Start now offer
   the saved play-from cues, see Start at a cue), Hold and Stop show; one
   alert at a time with Acknowledge (tap the words for the details); a tile
   per flame group and one for the lasers, with Hold: arm flames and Disarm
   flames (flames only; the lasers' tile has its own Disarm lasers); the
   announcements and the wind along the bottom. Tap "Announce" for what
-  the announcements do. Run show is Run in Show mode, on the show PC only.
+  the announcements do. Show control on is on the show PC only.
 - Schedule tab: tonight's shows and the schedule editor. Tonight's shows, two columns: tap a show to see its notes
   (why it moved, how it was added, a late warning), tap again to close
-  them. "Next:" says the next show, and the engine's Run warning shows in
-  amber when Run is off with a show to come. On the show PC only, the
+  them. "Next:" says the next show, and the engine's show control warning
+  shows in amber when show control is off with a show to come. On the show PC only, the
   card "Schedule: the show times": the time zone (with the show's local
   time now), the season's first and last date, the show nights (tick a
   night, then its first show, minutes apart and when the last show ends),
@@ -2849,15 +2860,15 @@ tab, and the hardware e-stop always works.
   to arm and flamesafe's rules.
 - Programming (Schedule tab): the Programming cards, on the Schedule tab (there is no room in the header for a tab
   of its own; `/remote2#prog` opens it). On the show PC, the Show file
-  card: Show or Programming (which mode Run
-  starts), the show file, and Run. Run asks first ("Press Run?" in Show,
-  "Run in Programming?" in Programming); Programming is a rehearsal (Play
-  from, jump and loop work, the scheduler starts no show). Programming is
-  refused while a scheduled show is live: press Hold, and once the show
-  has ended Stop, then Run in Programming. While Run is on, the same
-  button is Stop (tap twice) when something is playing, else Run off
-  (asks first); to switch modes, Stop or Run off, choose the other mode,
-  then Run. On every screen, the Programming session card: Play from (a
+  card: Show or Programming, the show file, and the button: Show
+  control on in Show, Start rehearsal in Programming. It asks first ("Turn
+  show control on?" or "Start rehearsal?"); Programming is a rehearsal
+  (Play from, jump and loop work, the scheduler starts no show).
+  Programming is refused while a scheduled show is live: press Hold, and
+  once the show has ended Stop, then Start rehearsal. While it is on, the
+  same button is Stop (tap twice) when something is playing, else Show
+  control off (End rehearsal in a rehearsal; asks first); to switch
+  modes, turn it off, choose the other mode, then turn it on. On every screen, the Programming session card: Play from (a
   timecode or a cue name), Back 10 s, Back 5 s, Ahead 5 s, Ahead 10 s,
   Pause, Continue, Set A, Set B, Loop on or off, and Follow timecode again
   (Stop the show audio while the show audio plays). They work only in a
@@ -2993,5 +3004,5 @@ To make one from a folder of renders, on the show machine:
 5. Press "Check the show file" on the same card. It says how many cues it
    found, any render it could not find, any cue that starts before the one
    before it has ended, and anything else wrong.
-6. Run it in Programming mode (the Show file card: Programming, then Run)
-   to rehearse it. Nothing reaches the rig until Run.
+6. Rehearse it (the Show file card: Programming, then Start rehearsal).
+   Nothing reaches the rig until show control is on.

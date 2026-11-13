@@ -737,13 +737,11 @@ def _rule_warnings(rule, most):
     for where, n in nights:
         if n.interval_min * 60 < need:
             out.append(
-                f"{where}: shows are {n.interval_min} minutes apart, but a "
-                f"show takes {rule.show_len_s} s and the guard after it is "
-                f"{rule.guard_s} s, so they overlap: a show whose time comes "
-                f"while the one before it is still running waits, and is "
-                f"missed once it is more than {rule.late_grace_s} s late; "
-                f"one inside the guard starts as soon as the guard is over "
-                f"if that is within {rule.late_grace_s} s of its time, so "
+                f"{where}: shows overlap and can run late. They are "
+                f"{n.interval_min} minutes apart; a show plus its guard is "
+                f"{rule.show_len_s + rule.guard_s} s ({rule.show_len_s} s "
+                f"and {rule.guard_s} s). A show more than "
+                f"{rule.late_grace_s} s late is missed, so "
                 f"lateness can add up from show to show. Saved as it is.")
         start, end = night_window(n, date(2000, 1, 3), timezone.utc)
         if (end - start).total_seconds() < need:
@@ -2043,7 +2041,7 @@ def _resume_words(tx, nxt, now):
         return (f" Show {nxt.n}, due at {at}, is still inside its late "
                 f"limit and starts at the next tick, "
                 f"{lateness_s(nxt.start, now)} s late, unless something "
-                f"else holds it (an open alert, Run, the rig check).")
+                f"else holds it (an open alert, show control, the rig check).")
     if how == "close":
         return (f" Show {nxt.n}, due at {at}, is close to its limit "
                 f"({lateness_s(nxt.start, now)} s late of "
@@ -3511,7 +3509,7 @@ def follow_rule(rule, m, now, dropped=None, past=SAVED_PAST, skipped=None):
                     "the schedule just saved has a show tonight, so "
                     "tonight starts now as a restart would start it. "
                     "Nothing is started by the save; a show starts by "
-                    "itself only while Run is pressed.", actor="scheduler")
+                    "itself only while show control is on.", actor="scheduler")
         return tx.done(), notes
     if was == OFF and tx.m.waiting() and not closed_by_operator(tx.m):
         tx.m = replace(tx.m, held_from="")
@@ -3525,7 +3523,7 @@ def follow_rule(rule, m, now, dropped=None, past=SAVED_PAST, skipped=None):
                 f"show still to come tonight, so the scheduler is back in "
                 f"STANDBY: {what}. Nothing was started and the rig stays "
                 f"dark until the next show. A show starts by itself only "
-                f"while Run is pressed.", actor="scheduler")
+                f"while show control is on.", actor="scheduler")
     return tx.done(), notes
 
 

@@ -101,7 +101,7 @@ REAL, unconditionally, the moment this runs against the real hardware:
 
 THE START/STOP KEY (Jeff, 2026-10-26): key 0 is Start Now while nothing is
 running (unchanged: it journals a refusal, there is no start entry point)
-and STOP RUN while Run has been pressed and playback is going and the
+and STOP ALL while Run has been pressed and playback is going and the
 scheduler is known to have no show live; during a scheduled show it says
 what the show is doing (NOW PLAYING, PAUSED, AUDIO LOST) and is Stop too.
 Stop is a HOLD of STOP_HOLD_S,
@@ -2975,7 +2975,7 @@ class Controller:
 
     `show_running_provider` () -> True/False/None: whether a scheduled
     show is live, for the Start/Stop key (start_key_mode). None
-    (unreachable) never shows STOP RUN.
+    (unreachable) never shows the run's Stop ("stop" mode).
 
     `held_provider` () -> True/False/None: whether the scheduler itself is
     on hold or paused (LocalSchedule.held), for the Start key's PAUSED
@@ -3364,7 +3364,7 @@ class Controller:
         complete halt: the show ends, Jeff's ruling of 2026-10-26),
         "stop" while Run has been pressed and playback is going AND the
         scheduler is known to have no show live (review of PR #120, P2-4:
-        an unknown scheduler never shows STOP RUN), else as below. Stop
+        an unknown scheduler is never "stop"), else as below. Stop
         holds in "show" and "stop" (STOP_MODES), and in "unknown": the
         scheduler cannot be read (the engine down, or not heard from yet;
         LocalSchedule reads the run and the show in one poll). Then the
@@ -4712,10 +4712,9 @@ class Controller:
             # Aborted with a run still going: Stop is reachable, as on the
             # Rack screen (Jeff, 2026-10-26). It never touches the latch.
             # Aborted with nothing running but a group armed or live
-            # flames on: STOP ALL (delta review of #132, D1).
-            fonts.show_key(d, b0, ["STOP", "RUN"]
-                           if self.start_key_mode() in STOP_MODES
-                           else ["STOP", "ALL"], CHAMPAGNE, bg=BRONZE,
+            # flames on: STOP ALL (delta review of #132, D1). Both read
+            # STOP ALL: Stop no longer turns Run off (Jeff, 2026-11-11).
+            fonts.show_key(d, b0, ["STOP", "ALL"], CHAMPAGNE, bg=BRONZE,
                            kind="sans")
         elif latched:
             fonts.show_key(d, b0, ["START", "NOW"], DIM_TEXT)
@@ -4776,8 +4775,9 @@ class Controller:
             elif self.start_key_mode() == "stop":
                 # Run pressed and playback going: this key is Stop (Jeff,
                 # 2026-10-26), held STOP_HOLD_S: every flame group
-                # disarmed, then the Rack screen's Stop.
-                fonts.show_key(d, b0, ["STOP", "RUN"], CHAMPAGNE, bg=BRONZE,
+                # disarmed, then the Rack screen's Stop. It reads STOP ALL,
+                # not STOP RUN: Stop leaves Run on (Jeff, 2026-11-11).
+                fonts.show_key(d, b0, ["STOP", "ALL"], CHAMPAGNE, bg=BRONZE,
                                kind="sans")
             elif self.start_key_mode() == "unknown" or \
                     self._idle_stop():
@@ -4985,7 +4985,7 @@ class Controller:
             if hv is None:
                 fonts.show_key(d, box, [line, "NO STATUS"], AMBER,
                                kind="sans", max_size=12)
-            elif hv.get("test"):
+            elif names[i] in set(hv.get("test") or ()):
                 # The hazer test running (2026-11-11): never a plain
                 # DISARMED while it hazes.
                 fonts.show_key(d, box, [line, "HAZE TEST"], BLACK, bg=AMBER,

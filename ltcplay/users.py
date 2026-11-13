@@ -108,7 +108,7 @@ LOCK_MAX_S = 300.0
 # screen does is either safety (never restricted) or harmless (reading,
 # opening a folder, checking a file).
 PERMS = (
-    ("show", "Start now, Start at a cue, Resume, Run a show file, "
+    ("show", "Start now, Start at a cue, Resume, Show control on/off, "
              "rehearsal scrubbing"),
     ("arm", "Arm flames and lasers: hold to arm, the Stream Deck's arm "
             "keys, a purge (momentary or timed), the Fireball page's "
