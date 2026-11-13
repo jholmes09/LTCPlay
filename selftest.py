@@ -43578,10 +43578,13 @@ for(const s of ["IDLE", "STANDBY", "HOLD"]){
 t(startLook({schedule:{attached:false}, show:{running:true}}, false, false).mode === "stop", "no scheduler, Run playing: Stop");
 t(startLook({schedule:{attached:false}, show:{running:false, starting:true}}, false, false).mode === "stop", "no scheduler, Run starting: Stop");
 const ld = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"the show audio is still loading", loading:true}}, show:{running:true}}, false, false);
-t(ld.label === "Start now" && ld.disabled === false && /starts when ready/.test(ld.sub) && ld.why === "", "loading: Start now still works and waits: " + JSON.stringify(ld));
+t(ld.label === "Start now" && ld.disabled === false && ld.sub === "audio loading" && ld.why === "", "loading: Start now still works and waits: " + JSON.stringify(ld));
 const wt = startLook({schedule:{attached:true, state:"STANDBY", start_waiting:true}, show:{running:true}}, false, false);
 t(wt.mode === "stop" && wt.label === "Stop" && wt.disabled === false && /starting when ready/.test(wt.sub), "waiting for the audio: a show is about to play, so Stop, starting when ready: " + JSON.stringify(wt));
 t(startLook({schedule:{attached:true, state:"STANDBY"}, show:{running:true}}, false, true).label === "Loading", "this page's own wait reads Loading");
+// Stop's second line is the gesture, never a sentence (Jeff, 2026-11-11).
+t(startLook({schedule:{attached:true, state:"SHOW"}, show:{running:true, show_control_on:true}}, false, false).sub === "tap twice" &&
+  runLook({schedule:{attached:true, state:"SHOW"}, show:{running:true, show_control_on:true}}, false).sub === "tap twice", "a live show: Stop, tap twice");
 const off = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"Run has not been pressed, so nothing may reach the rig; press Run", loading:false}}, show:{running:false}}, false, false);
 t(off.mode === "start" && off.sub === "Run is off" && /^Run has not been pressed/.test(off.why), "Run off: says so, and the why: " + JSON.stringify(off));
 // "Run is off" on Start now is the engine's boolean, never its sentence
@@ -65300,6 +65303,15 @@ def test_screen_arming_switch_and_refusals():
     m = _re.search(r'const ARMING_OFF = "([^"]*)";', page)
     check(m and m.group(1) == RM.ARMING_OFF,
           "the page and the engine say the same about arming off")
+    # Shorter (Jeff, 2026-11-11), never without the way on: the Stream
+    # Deck, and the steps to turn it on (cold review B of #237).
+    for where, words in (("remote.py", RM.ARMING_OFF),
+                         ("the page", m.group(1) if m else "")):
+        check("Arm from the Stream Deck" in words and
+              "turn it on at the show machine itself: Programming, Arming "
+              "from a screen, Turn on." in words,
+              f"{where}'s ARMING_OFF says how to arm and how to turn it "
+              f"on: {words!r}")
     m = _re.search(r'const SCREEN_ARMING_ENABLES = "([^"]*)";', page)
     check(m and m.group(1) == RM.SCREEN_ARMING_ENABLES and
           all(w in RM.SCREEN_ARMING_ENABLES for w in (
@@ -109138,6 +109150,15 @@ def test_ui2_arrange_and_switches_are_1_0s():
             check(blk.count(d) == 1, f"1.0's {what} has the dropped part "
                                      f"{d[:40]!r}")
             blk = blk.replace(d, "")
+        if what == "Arming from a screen and Live flame programming":
+            # The one named difference (Jeff, 2026-11-11: less prose): the
+            # switch's words are shorter; remote.py says the same (checked
+            # with the screen arming switch).
+            m1 = re.search(r'const SCREEN_ARMING_ENABLES = "[^"]*";', blk)
+            m2 = re.search(r'const SCREEN_ARMING_ENABLES = "[^"]*";', two)
+            check(m1 and m2, "the arming switch's words are found")
+            if m1 and m2:
+                blk = blk.replace(m1.group(0), m2.group(0))
         check(len(blk) > 300 and blk in two,
               f"2.0's {what} is 1.0's code, word for word ({len(blk)} "
               f"characters)")
@@ -114522,7 +114543,7 @@ def test_ui2_schedule_tab_makes_1_0_presses():
     for need in ('id="tonight"', 'id="tn-run-warn"', 'id="tn-next"',
                  'id="sched-edit" hidden', 'id="se-days"', 'id="se-save"',
                  'id="se-reload"', 'id="se-msg"', 'id="se-note"',
-                 'id="se-tz-now"', "Tap a show to see its notes."):
+                 'id="se-tz-now"'):
         check(need in sched, f"the Schedule tab has {need}")
     # Each field: 1.0's id, type and limits.
     for fid in ("se-tz", "se-first", "se-last", "se-len", "se-guard",
@@ -115311,13 +115332,29 @@ def _ui2_tools_copies(one):
             ("Choose (Stream Deck operator)",
              blk('$("b-deck-op").addEventListener(')),
             ("Use (an address)", blk('$("net-uses").addEventListener(')),
+            # Less prose (Jeff, 2026-11-11): the confirms are shorter,
+            # every condition kept.
             ("Restart the engine",
-             sub(blk('$("net-restart").addEventListener('),
-                 '"Yes, restart", "start"', '"Yes, restart", "green"')),
+             sub(sub(blk('$("net-restart").addEventListener('),
+                     '"Yes, restart", "start"', '"Yes, restart", "green"'),
+                 '"LTC Player restarts the show engine so it listens on the '
+                 'saved show network address. It is refused while a show '
+                 'runs or a flame group is armed. flamesafe and the Stream '
+                 'Deck program keep running."',
+                 '"Restarts the show engine on the saved address. Refused '
+                 'while a show runs or a group is armed. flamesafe and the '
+                 'Stream Deck keep running."')),
             ("Reload engine",
-             sub(sub(blk('$("cfg-reload").addEventListener('),
-                     '"Yes, reload", "start"', '"Yes, reload", "green"'),
-                 '$("ctl-msg")', '$("cfg-msg")', 2)),
+             sub(sub(sub(blk('$("cfg-reload").addEventListener('),
+                         '"Yes, reload", "start"', '"Yes, reload", "green"'),
+                     '$("ctl-msg")', '$("cfg-msg")', 2),
+                 '"LTC Player restarts the show engine so it reads the '
+                 'changed settings files. It is refused while a show runs or '
+                 'a flame group is armed. flamesafe and the Stream Deck '
+                 'program keep running."',
+                 '"Restarts the show engine to read the changed files. '
+                 'Refused while a show runs or a group is armed. flamesafe '
+                 'and the Stream Deck keep running."')),
             ("Check the rig", blk('$("rc-run").addEventListener(')),
             ("Close this window", blk('$("info-exit").addEventListener('))]
     for ln in ('$("net-pick").addEventListener("change", () => { '

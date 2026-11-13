@@ -23139,6 +23139,28 @@ def build():
   "#t-users input[type=checkbox]{width:56px;height:56px;",
   "#t-users input[type=checkbox]{width:40px;height:40px;"),
 
+ # Less prose on the Schedule tab's cards (Jeff, 2026-11-11).
+ ("less prose: the arming card stops naming a laser arm",
+  "ltcplay/web/remote2.html",
+  'turn a laser test on and arm a laser; this screen can without the switch.";',
+  'turn a laser test on; this screen can without the switch.";'),
+
+ ("less prose: Restart the engine no longer says it is refused during a show",
+  "ltcplay/web/remote2.html",
+  '"Restarts the show engine on the saved address. Refused while a show runs or a group is armed.',
+  '"Restarts the show engine on the saved address.'),
+
+ # Less prose in the rules (Jeff, 2026-11-11).
+ ("less prose: arming off no longer says to arm from the Stream Deck",
+  'ltcplay/web/remote_rules.js',
+  'const ARMING_OFF = "Arming from a screen is switched off. Arm from the Stream Deck, or turn it on',
+  'const ARMING_OFF = "Arming from a screen is switched off. Or turn it on'),
+
+ ("less prose: Programming's Stop explains itself again",
+  "ltcplay/web/remote_rules.js",
+  '  return stopShows(st) ? {mode:"stop", label:"Stop", sub:"tap twice"}',
+  '  return stopShows(st) ? {mode:"stop", label:"Stop", sub:"end the show, rig dark"}'),
+
  # Less prose, engine answers and alerts (Jeff, 2026-11-11).
  ("less prose: the Morning check runs two shows' CUES FAULTs together",
   'ltcplay/remote.py',
