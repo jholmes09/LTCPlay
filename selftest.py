@@ -14,6 +14,7 @@ import tempfile
 import threading
 import sys
 import time
+import types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -54451,6 +54452,1395 @@ def test_remote_localhost_unaffected_and_proxies_refused():
     print("  ok")
 
 
+# ---------------------------------------------------------------------------
+# Remote access over Tailscale (Jeff, 2026-11-12): off by default; on, a
+# second door on this PC's own Tailscale address (100.64.0.0/10 only), with
+# less authority than an iPad.
+# ---------------------------------------------------------------------------
+
+_TS_ADDR = "100.101.102.103"
+_TS_PEER = ("100.88.1.2", 50000)
+
+
+_TS_LOGIN = "andy@example.com"
+
+
+def _ts_door(R, addr=_TS_ADDR, login=_TS_LOGIN):
+    """A Tailscale door beside the rig's show network door, as web.serve
+    makes it, on loopback (this machine has no Tailscale address); requests
+    go through _ask, which names it by `addr` and its real port."""
+    import http.server
+    from ltcplay import web as web_mod
+    d = http.server.ThreadingHTTPServer(("127.0.0.1", 0), web_mod.Handler)
+    d.control, d.token, d.bind_address = R.httpd.control, None, addr
+    d.tailscale_door = True
+    d.daemon_threads = True
+    d.schedule, d.remote = R.httpd.schedule, R.httpd.remote
+    d.fire_ice_config = None
+    # Who is who on the tailnet: the allow list and a stand-in for this PC's
+    # own `tailscale whois` (test_tailscale_allow_list tests both).
+    if login:
+        from ltcplay import remote as RM
+        RM.save_settings(R.work, tailscale_logins=[login])
+        R.remote._tailscale_whois = lambda ip, _l=login: _l
+        R.remote._ts_logins_cache = None
+        R.remote._ts_whois_cache = {}
+    return d
+
+
+class _TsRun:
+    """A stand-in for subprocess.run answering `tailscale ip -4`."""
+
+    def __init__(self, out="", rc=0, boom=False):
+        self.out, self.rc, self.boom, self.calls = out, rc, boom, []
+
+    def __call__(self, cmd, **kw):
+        self.calls.append(cmd)
+        if self.boom:
+            raise OSError("no such program")
+
+        class P:
+            pass
+        p = P()
+        p.returncode, p.stdout, p.stderr = self.rc, self.out, ""
+        return p
+
+
+class _TsRunBy:
+    """subprocess.run for Tailscale's program, answering by its command:
+    {"ip": stdout, "status": stdout, "whois": stdout}."""
+
+    def __init__(self, answers):
+        self.answers, self.calls = answers, []
+
+    def __call__(self, cmd, **kw):
+        self.calls.append(cmd)
+        out = self.answers.get(cmd[1])
+
+        class P:
+            pass
+        p = P()
+        p.returncode, p.stdout, p.stderr = (1, "", "") if out is None \
+            else (0, out, "")
+        return p
+
+
+# Jeff's show PC as he read it (2026-11-13): Tailscale 100.75.53.81 on
+# "Unknown adapter Tailscale", Show LAN 10.112.4.10, ShowNet MadMapper
+# 10.250.1.1, ShowNet BEYOND 10.250.2.1 ('Pico Ethernet Port2' has no
+# IPv4); MagicDNS ignite-player.tail342a0a.ts.net.
+_TS_SHOWPC_ADDRS = ["10.112.4.10", "10.250.1.1", "10.250.2.1",
+                    "100.75.53.81"]
+_TS_SHOWPC_STATUS = {"Self": {"DNSName": "ignite-player.tail342a0a.ts.net.",
+                              "HostName": "ignite-player",
+                              "TailscaleIPs": ["100.75.53.81",
+                                               "fd7a:115c:a1e0::1"],
+                              "AllowedIPs": ["100.75.53.81/32",
+                                             "fd7a:115c:a1e0::1/128"]}}
+# A device shared in from Andy's own tailnet (his login invented here).
+_TS_SHARED_WHOIS = {"Node": {"ComputedName": "andys-iphone",
+                             "Name": "andys-iphone.tail9999.ts.net.",
+                             "Sharer": 12345, "Tags": None},
+                    "UserProfile": {"LoginName": "andy.example@gmail.com",
+                                    "DisplayName": "Andy"}}
+
+
+def _ts_words_ok(head, bullets):
+    """The text rules: a headline of 6 words or fewer, up to 3 bullets of 8
+    words or fewer, no em or en dashes, never "Run"."""
+    allw = " ".join([head] + list(bullets))
+    return (bool(head) and len(head.split()) <= 6 and len(bullets) <= 3 and
+            all(len(b.split()) <= 8 for b in bullets) and
+            "\u2013" not in allw and "\u2014" not in allw and
+            not re.search(r"\bRun\b", allw))
+
+
+def test_tailscale_address_detection_and_setting():
+    section("remote access over Tailscale (Jeff, 2026-11-12): 100.64.0.0/10 "
+            "only; the setting is OFF by default and only true turns it on; "
+            "the address is Tailscale's own (its program) AND this PC's (its "
+            "address list), else it says why in plain words; the engine "
+            "asks only when it serves other machines")
+    import tempfile
+    from ltcplay import remote as RM
+    from ltcplay import cli as cli_mod
+    for a in ("100.64.0.0", "100.64.0.1", "100.101.102.103",
+              "100.127.255.255", " 100.90.1.1 "):
+        check(RM.is_tailscale_address(a), f"{a!r} is a Tailscale address")
+    for a in ("100.63.255.255", "100.128.0.0", "100.100.100.100", "10.0.0.1",
+              "192.168.1.5", "172.16.0.1", "127.0.0.1", "0.0.0.0", "::", "",
+              None, "fd7a:115c:a1e0::1", "100.64.0.1%eth0", "100.64.0.1/10",
+              "tailscale", "8.8.8.8", "169.254.1.1"):
+        check(not RM.is_tailscale_address(a),
+              f"{a!r} is not a Tailscale address")
+    work = tempfile.mkdtemp()
+    check(RM.load_settings(work)["tailscale_remote"] is False,
+          "no settings file: Tailscale access is off")
+    with open(os.path.join(work, RM.SETTINGS_FILE), "w") as fh:
+        json.dump({"show_network_address": "10.20.0.5"}, fh)
+    check(RM.load_settings(work)["tailscale_remote"] is False,
+          "a settings file that does not mention it: off")
+    for bad in ("yes", 1, "true", None, [True]):
+        try:
+            RM.save_settings(work, tailscale_remote=bad)
+            check(False, f"tailscale_remote {bad!r} was saved")
+        except ValueError as e:
+            check("tailscale_remote" in str(e),
+                  f"tailscale_remote {bad!r} is refused: {e}")
+    check(RM.load_settings(work)["tailscale_remote"] is False,
+          "and nothing was written")
+    check(RM.save_settings(work, tailscale_remote=True)["tailscale_remote"]
+          is True, "only true turns it on")
+    check(RM.load_settings(work)["show_network_address"] == "10.20.0.5",
+          "and the show network address is kept")
+    # Finding the address.
+    got = RM.find_tailscale(cli="")
+    check(got["state"] == "not_installed" and got["address"] is None and
+          _ts_words_ok(got["head"], got["bullets"]) and
+          "not installed" in got["head"],
+          f"no Tailscale program: not installed, in plain words: {got}")
+    for run in (_TsRun(rc=1, out=""), _TsRun(out=""), _TsRun(boom=True),
+                _TsRun(out="100.100.100.100\n"), _TsRun(out="10.0.0.5\n")):
+        got = RM.find_tailscale(run=run, cli="/x/tailscale",
+                                found=["100.101.102.103"])
+        check(got["state"] == "not_running" and got["address"] is None and
+              "not running" in got["head"] and
+              _ts_words_ok(got["head"], got["bullets"]),
+              f"Tailscale not answering an address: not running: {got}")
+    run = _TsRun(out="100.101.102.103\n")
+    got = RM.find_tailscale(run=run, cli="/x/tailscale",
+                            found=["10.20.0.5", "100.101.102.103"])
+    check(got["state"] == "found" and got["address"] == "100.101.102.103" and
+          run.calls[0] == ["/x/tailscale", "ip", "-4"] and
+          _ts_words_ok(got["head"], got["bullets"]),
+          f"Tailscale's address that this PC has: found, the program run "
+          f"by its full path: {got} {run.calls}")
+    got = RM.find_tailscale(run=_TsRun(out="100.101.102.103\n"),
+                            cli="/x/tailscale", found=["100.64.9.9"])
+    check(got["state"] == "not_here" and got["address"] is None and
+          _ts_words_ok(got["head"], got["bullets"]),
+          f"a carrier's 100.64 address that is not Tailscale's is never "
+          f"taken: {got}")
+    # Jeff's show PC: several private adapters, Tailscale's listed as
+    # "Unknown adapter"; the route to 100.100.100.100 goes over Tailscale.
+    run = _TsRunBy({"ip": "100.75.53.81\n",
+                    "status": json.dumps(_TS_SHOWPC_STATUS)})
+    got = RM.find_tailscale(run=run, cli="/x/tailscale",
+                            found=list(_TS_SHOWPC_ADDRS))
+    check(got["state"] == "found" and got["address"] == "100.75.53.81" and
+          got["names"] == ["ignite-player.tail342a0a.ts.net",
+                           "ignite-player"],
+          f"the show PC's layout: found, with its MagicDNS names: {got}")
+    got = RM.find_tailscale(run=_TsRunBy({"ip": "100.75.53.81\n"}),
+                            cli="/x/tailscale", found=list(_TS_SHOWPC_ADDRS))
+    check(got["state"] == "found" and got["names"] == [],
+          f"status cannot be read: the address only, no names: {got}")
+    bad = {"Self": {"DNSName": "*.evil.example.", "HostName": "a b"}}
+    check(RM.tailscale_dns_names(run=_TsRunBy({"status": json.dumps(bad)}),
+                                 cli="/x/t") == [],
+          "a wildcard or a name that is not one is never taken")
+    p = RM.tailscale_cli(windows=True, exists=lambda x: x.endswith(
+        "Tailscale\\tailscale.exe"))
+    check(p is not None and p.endswith("\\Tailscale\\tailscale.exe") and
+          ":" in p, f"on Windows, the program under Program Files: {p}")
+    check(RM.tailscale_cli(windows=True, exists=lambda x: False) is None,
+          "not installed: none")
+    # The engine asks only when it serves other machines, and only on.
+
+    class A:
+        network_if_saved, network = True, False
+    on = lambda: {"tailscale_remote": True}
+    off = lambda: {"tailscale_remote": False}
+    found = lambda: {"state": "found", "address": "100.101.102.103",
+                     "head": "x", "bullets": []}
+    missing = lambda: RM.find_tailscale(cli="")
+    check(cli_mod._tailscale_if_on(A(), load=off, find=found) == (None, ""),
+          "setting off: nothing listens for Tailscale")
+    check(cli_mod._tailscale_if_on(A(), load=on, find=found) ==
+          ("100.101.102.103", ""), "setting on: its address")
+    addr, why = cli_mod._tailscale_if_on(A(), load=on, find=missing)
+    check(addr is None and "not installed" in why,
+          f"setting on, no Tailscale: nothing listens, said: {why}")
+    bad = lambda: {"state": "found", "address": "0.0.0.0"}
+    check(cli_mod._tailscale_if_on(A(), load=on, find=bad)[0] is None,
+          "an answer that is not a Tailscale address is never used")
+
+    def broken():
+        raise ValueError("broken file")
+    check(cli_mod._tailscale_if_on(A(), load=broken, find=found) ==
+          (None, ""), "a broken settings file: off")
+
+    class B:
+        network_if_saved, network = False, False
+    check(cli_mod._tailscale_if_on(B(), load=on, find=found) == (None, ""),
+          "an engine for this machine only never listens for Tailscale")
+    # The second firewall rule, read with netsh like the first.
+
+    def fw(out, rc=0):
+        return RM.tailscale_firewall_state(
+            run=_TsRun(out=out, rc=rc), windows=True,
+            find=lambda *a: r"C:\Windows\System32\netsh.exe")
+    good = ("Rule Name: LTC Player Tailscale page\nEnabled: Yes\n"
+            "RemoteIP: 100.64.0.0/10\nLocalPort: 7878\n")
+    check(fw(good)[0] == "present", f"the rule: present: {fw(good)}")
+    check(fw("", rc=1)[0] == "missing", "no rule: missing")
+    check(fw(good.replace("Enabled: Yes", "Enabled: No"))[0] == "off",
+          "switched off: off")
+    check(fw(good.replace("100.64.0.0/10", "Any"))[0] == "wide",
+          "from anywhere: too wide")
+    check(fw(good.replace("100.64.0.0/10",
+                          "100.64.0.0-100.127.255.255"))[0] == "present",
+          "netsh's range form of 100.64.0.0/10 is the same rule")
+    check(fw(good.replace("100.64.0.0/10", "100.64.0.0-100.255.255.255"))[0]
+          == "wide", "a wider range is too wide")
+    check(RM.tailscale_firewall_state(windows=False)[0] == "none",
+          "not Windows: no rule needed")
+    check(RM.tailscale_firewall_state(windows=True,
+                                      find=lambda *a: None)[0] == "unknown",
+          "no netsh: unknown")
+    for st in ("present", "missing", "off", "wide"):
+        w = fw({"present": good, "missing": "", "off": good.replace(
+            "Enabled: Yes", "Enabled: No"), "wide": good.replace(
+            "100.64.0.0/10", "Any")}[st], rc=1 if st == "missing" else 0)
+        check(len(w[1].split()) <= 8, f"its words are short: {w}")
+    print("  ok")
+
+
+def test_tailscale_listener_binds_only_its_address():
+    section("remote access over Tailscale: the second door binds this PC's "
+            "Tailscale address and nothing else, never 0.0.0.0, a show "
+            "network, loopback or a public address; one that cannot be "
+            "bound leaves the engine running and says why; off, there is "
+            "no second door")
+    import http.server
+    from ltcplay import web as web_mod
+    check(web_mod.tailscale_bind("100.101.102.103") == "100.101.102.103",
+          "a Tailscale address is bound as written")
+    for bad in ("0.0.0.0", "0", "0.0", "000.000.000.000", "::", "", None,
+                "10.20.0.5", "127.0.0.1", "localhost", "100.100.100.100",
+                "100.128.0.1", "8.8.8.8", "192.168.1.5"):
+        try:
+            web_mod.tailscale_bind(bad)
+            check(False, f"the Tailscale door would bind {bad!r}")
+        except ValueError as e:
+            check("Tailscale" in str(e), f"{bad!r} refused: {e}")
+    folder = tempfile.mkdtemp()
+    for wild in ("0.0.0.0", "::", "10.20.0.5"):
+        try:
+            h = web_mod.serve(folder, port=0, bind="127.0.0.1",
+                              tailscale=wild)
+            h.server_close()
+            check(False, f"serve listened for Tailscale on {wild}")
+        except ValueError as e:
+            check("Tailscale" in str(e), f"serve refuses {wild}: {e}")
+    # Off (the default): no second door, nothing about Tailscale.
+    h = web_mod.serve(folder, port=0, bind="127.0.0.1")
+    try:
+        check(h.tailscale_door_server is None and
+              not getattr(h, "tailscale_door", False) and
+              h.remote.listen.get("tailscale") is None and
+              h.remote.listen["addresses"] == ["127.0.0.1"],
+              f"off: only this PC: {h.remote.listen}")
+    finally:
+        h.server_close()
+    # On, with an address this machine does not have: nothing bound there,
+    # the engine runs, and why is kept for the card.
+    h = web_mod.serve(folder, port=0, bind="127.0.0.1",
+                      tailscale="100.101.102.103")
+    try:
+        lst = h.remote.listen
+        check(h.tailscale_door_server is None and
+              lst.get("tailscale") is None and
+              "100.101.102.103" in lst.get("tailscale_why", "") and
+              lst["addresses"] == ["127.0.0.1"],
+              f"an address that cannot be bound: nothing listens there, "
+              f"said: {lst}")
+    finally:
+        h.server_close()
+    # The door itself: bound on exactly the address and the engine's port.
+    seen = []
+    real = web_mod.ThreadingHTTPServer
+
+    class Rec(real):
+        def __init__(self, addr, handler):
+            seen.append(addr)
+            real.__init__(self, ("127.0.0.1", 0), handler)
+    h = web_mod.serve(folder, port=0, bind="127.0.0.1")
+    web_mod.ThreadingHTTPServer = Rec
+    try:
+        door, why = web_mod._tailscale_door(h, "100.101.102.103",
+                                            h.control, 7878)
+        check(seen == [("100.101.102.103", 7878)] and why == "" and
+              door.tailscale_door is True and
+              door.bind_address == "100.101.102.103" and
+              door.remote is h.remote and door.control is h.control,
+              f"the door binds 100.101.102.103:7878 and nothing else: "
+              f"{seen}")
+        door.shutdown()
+        door.server_close()
+        try:
+            web_mod._tailscale_door(h, "0.0.0.0", h.control, 7878)
+            check(False, "the door bound 0.0.0.0")
+        except ValueError:
+            check(seen == [("100.101.102.103", 7878)],
+                  "0.0.0.0 is refused before anything is bound")
+    finally:
+        web_mod.ThreadingHTTPServer = real
+        h.server_close()
+    print("  ok")
+
+
+def test_tailscale_door_refuses_wrong_peer_host_and_proxies():
+    section("remote access over Tailscale: its door answers only a peer in "
+            "100.64.0.0/10 naming exactly its address and port; proxied, "
+            "cross-site and non-JSON presses stay refused; never the rack, "
+            "even from loopback; the show network door is unchanged and a "
+            "Tailscale peer there has Tailscale's limits")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import remote as RM
+    from ltcplay import web as web_mod
+    R = _RemoteRig(S)
+    D = _ts_door(R)
+    port = D.server_address[1]
+    try:
+        st, _h, out = _ask(D, "GET", "/api/remote/whoami", client=_TS_PEER)
+        check(st == 200 and out.get("local") is False and
+              out.get("device") ==
+              "Tailscale at 100.88.1.2 (andy@example.com)" and
+              out.get("screen") == "iPad" and
+              (out.get("tailscale") or {}).get("login") == _TS_LOGIN,
+              f"a Tailscale peer: the Tailscale surface, its login, the "
+              f"iPad's screen kind: {out}")
+        st, _h, out = _ask(D, "GET", "/remote", client=_TS_PEER)
+        check(st == 200 and "<title>Show remote 2.0</title>" in str(out),
+              "it gets the page")
+        for peer in (("10.20.0.44", 5), ("127.0.0.1", 5), ("8.8.8.8", 5),
+                     ("100.128.0.1", 5), ("100.100.100.100", 5)):
+            st, _h, out = _ask(D, "GET", "/api/remote/whoami", client=peer,
+                               host=f"{_TS_ADDR}:{port}")
+            check(st == 403 and out.get("error") ==
+                  web_mod.TAILSCALE_PEER_REFUSAL,
+                  f"a peer outside 100.64.0.0/10 ({peer[0]}) is refused on "
+                  f"the Tailscale door: {st} {out}")
+            st, _h, out = _ask(D, "POST", "/api/remote/stop", {},
+                               client=peer, host=f"{_TS_ADDR}:{port}")
+            check(st == 403, f"and cannot press there ({peer[0]}): {st}")
+        st, _h, out = _ask(D, "GET", "/api/remote/whoami",
+                           client=("127.0.0.1", 5),
+                           host=f"127.0.0.1:{port}")
+        check(st == 403, f"loopback is never the rack on this door: {st}")
+        # The door's own _local and _tailscale, apart from the peer check
+        # (which would refuse loopback first anyway).
+        fake = types.SimpleNamespace(server=D, client_address=("127.0.0.1",
+                                                               5))
+        fake._local = lambda: web_mod.Handler._local(fake)
+        check(web_mod.Handler._local(fake) is False and
+              web_mod.Handler._tailscale(fake) is True,
+              "on the Tailscale door even loopback is not this machine, and "
+              "is the Tailscale surface")
+        fake.server = R.httpd
+        check(web_mod.Handler._local(fake) is True and
+              web_mod.Handler._tailscale(fake) is False,
+              "on the show network door loopback is still the rack")
+        st, _h, out = _ask(D, "POST", "/api/stop", {}, client=_TS_PEER)
+        check(st == 403, f"a route that is not the remote page's own is "
+                         f"refused from Tailscale: {st} {out}")
+        for host in (_TS_ADDR, f"{_TS_ADDR}:7879", "100.101.102.104:" +
+                     str(port), f"10.20.0.5:{port}", f"showpc:{port}",
+                     f"localhost:{port}", f"{_TS_ADDR}.:{port}",
+                     f"127.0.0.1:{port}"):
+            st, _h, out = _ask(D, "GET", "/api/remote/whoami",
+                               client=_TS_PEER, host=host)
+            check(st == 403, f"Host {host!r} is refused: {st} {out}")
+        st, _h, out = _ask(D, "GET", "/api/remote/whoami", client=_TS_PEER,
+                           headers={"Host": None})
+        check(st == 403, f"no Host at all is refused: {st} {out}")
+        # This PC's own MagicDNS names, learned with the address.
+        fq = "ignite-player.tail342a0a.ts.net"
+        st, _h, out = _ask(D, "GET", "/api/remote/whoami", client=_TS_PEER,
+                           host=f"{fq}:{port}")
+        check(st == 403, f"no names learned: the name is refused (fail "
+                         f"closed): {st}")
+        D.tailscale_names = (fq, "ignite-player")
+        for host in (f"{fq}:{port}", f"ignite-player:{port}",
+                     f"IGNITE-PLAYER.TAIL342A0A.TS.NET:{port}"):
+            st, _h, out = _ask(D, "GET", "/api/remote/whoami",
+                               client=_TS_PEER, host=host)
+            check(st == 200 and out["tailscale"]["login"] == _TS_LOGIN,
+                  f"Host {host!r} from a listed login: let in: {st} {out}")
+        for host in (fq, f"{fq}:7879", f"other.tail342a0a.ts.net:{port}",
+                     f"attacker.example:{port}", f"ignite-player.:{port}",
+                     f"x.{fq}:{port}"):
+            st, _h, out = _ask(D, "GET", "/api/remote/whoami",
+                               client=_TS_PEER, host=host)
+            check(st == 403, f"Host {host!r} is refused (a DNS rebinding "
+                             f"name too): {st}")
+        st, _h, out = _ask(D, "GET", "/api/remote/whoami",
+                           client=("10.20.0.44", 5), host=f"{fq}:{port}")
+        check(st == 403, "the name never lets a peer outside 100.64/10 in")
+        R.remote._tailscale_whois = lambda ip: "eve@example.com"
+        R.remote._ts_whois_cache = {}
+        st, _h, out = _ask(D, "GET", "/api/remote/whoami", client=_TS_PEER,
+                           host=f"{fq}:{port}")
+        check(st == 403, "nor an unlisted login")
+        R.remote._tailscale_whois = lambda ip: _TS_LOGIN
+        R.remote._ts_whois_cache = {}
+        D.tailscale_names = ()
+        st, _h, out = _ask(D, "GET", "/remote", client=_TS_PEER,
+                           host=f"showpc:{port}")
+        check(st == 403 and f"http://{_TS_ADDR}:{port}/" in str(out),
+              f"a person typing another name gets the short page naming "
+              f"the Tailscale address: {st}")
+        for hname, val in (("X-Forwarded-For", "203.0.113.9"),
+                           ("Forwarded", "for=203.0.113.9"),
+                           ("Via", "1.1 tailscale"),
+                           ("Tailscale-User-Login", "jeff@example.com"),
+                           ("Tailscale-User-Name", "Jeff"),
+                           ("Tailscale-Headers-Info", "x"),
+                           ("Tailscale-Funnel-Request", "?1")):
+            st, _h, out = _ask(D, "GET", "/api/remote/whoami",
+                               client=_TS_PEER, headers={hname: val})
+            check(st == 403 and "proxy" in str(out.get("error")),
+                  f"{hname} (Serve, Funnel or any proxy) is refused on the "
+                  f"Tailscale door: {st} {out}")
+            st, _h, out = _ask(R.httpd, "GET", "/api/state",
+                               client=("127.0.0.1", 5),
+                               headers={hname: val})
+            check(st == 403, f"and on loopback ({hname}): {st}")
+        n0 = len(R.svc.journal)
+        st, _h, out = _ask(D, "POST", "/api/remote/hold", {"seen": R.seen()},
+                           client=_TS_PEER,
+                           headers={"Origin": "http://evil.example"})
+        check(st == 403, f"a cross-site press is refused: {st}")
+        st, _h, out = _ask(D, "POST", "/api/remote/hold", {"seen": R.seen()},
+                           client=_TS_PEER,
+                           headers={"Sec-Fetch-Site": "cross-site"})
+        check(st == 403, f"Sec-Fetch-Site cross-site is refused: {st}")
+        st, _h, out = _ask(D, "POST", "/api/remote/hold", {"seen": R.seen()},
+                           client=_TS_PEER,
+                           headers={"Content-Type": "text/plain"})
+        check(st == 403 and "JSON" in str(out.get("error")),
+              f"a press not sent as JSON is refused: {st} {out}")
+        check(not R.lines_for("HOLD") and len(R.svc.journal) == n0,
+              "and nothing was held")
+        for method, path in (("GET", "/api/state"), ("POST", "/api/stop"),
+                             ("POST", "/api/start"),
+                             ("GET", "/api/schedule/state"),
+                             ("GET", "/api/remote/network"),
+                             ("GET", "/api/remote/tailscale"),
+                             ("GET", "/api/remote/deck-input"),
+                             ("POST", "/api/remote/network"),
+                             ("POST", "/api/remote/tailscale"),
+                             ("POST", "/api/remote/screen-arming")):
+            st, _h, out = _ask(D, method, path,
+                               {"on": True, "address": "10.0.0.9"}
+                               if method == "POST" else None,
+                               client=_TS_PEER)
+            check(st in (403, 404), f"{method} {path} from Tailscale is "
+                                    f"refused: {st} {out}")
+        # The show network door: unchanged for the show network.
+        st, _h, out = R.ask("GET", "/api/remote/whoami")
+        check(st == 200 and out.get("device") == "iPad at 10.20.0.44" and
+              "tailscale" not in out,
+              f"an iPad on the show network is an iPad, as before: {out}")
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/whoami",
+                           client=("127.0.0.1", 5000))
+        check(out.get("local") is True and out.get("device") ==
+              "Rack screen" and "tailscale" not in out,
+              f"the machine itself is still the Rack screen: {out}")
+        st, _h, out = R.ask("GET", "/api/remote/whoami",
+                            host="evil.example:7878")
+        check(st == 403, "and its Host check is unchanged")
+        # A Tailscale peer reaching the show network address (a subnet
+        # route) has Tailscale's limits there too, never the rack's.
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/whoami",
+                           client=_TS_PEER)
+        check(st == 200 and out.get("device") ==
+              "Tailscale at 100.88.1.2 (andy@example.com)"
+              and out.get("local") is False and "tailscale" in out,
+              f"a Tailscale peer on the show network door is the Tailscale "
+              f"surface: {out}")
+        RM.save_settings(R.work, screen_arming=True)
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/arm-hold",
+                           {"group": 0, "seen": R.seen()}, client=_TS_PEER)
+        check(st == 403 and out.get("tailscale_refused") == "sign in",
+              f"and needs a sign-in there to arm, like the door: {st} "
+              f"{out}")
+        R.remote._tailscale_whois = lambda ip: "eve@example.com"
+        R.remote._ts_whois_cache = {}
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/whoami",
+                           client=_TS_PEER)
+        check(st == 403 and out.get("error") == RM.TAILSCALE_LOGIN_WORDS,
+              f"a login not on the list is refused on the show network "
+              f"door too: {st} {out}")
+    finally:
+        D.server_close()
+        R.close()
+    print("  ok")
+
+
+# Every press the Tailscale surface may never make, with the body the page
+# sends for it, and the kind of refusal (remote.tailscale_refusal).
+# Presses that only take risk away: never refused from Tailscale.
+def test_tailscale_off_closes_the_door_now():
+    section("remote access over Tailscale (cold review of #244, M1): turning "
+            "it off closes the Tailscale door at once, during a show too: "
+            "open connections are dropped, no new one is answered, the card "
+            "says nothing listens; the show network and loopback doors stay")
+    import socket as _so
+    from ltcplay import remote as RM
+    from ltcplay import web as web_mod
+    real = web_mod.ThreadingHTTPServer
+
+    class Rec(real):
+        def __init__(self, addr, handler):
+            real.__init__(self, ("127.0.0.1", 0), handler)
+    folder, work = tempfile.mkdtemp(), tempfile.mkdtemp()
+    RM.save_settings(work, tailscale_remote=True,
+                     tailscale_logins=[_TS_LOGIN])
+    web_mod.ThreadingHTTPServer = Rec
+    try:
+        h = web_mod.serve(folder, port=0, bind="127.0.0.1",
+                          remote_folder=work, tailscale="100.101.102.103")
+    finally:
+        web_mod.ThreadingHTTPServer = real
+    door = h.tailscale_door_server
+    try:
+        check(door is not None and
+              h.remote.listen.get("tailscale") == "100.101.102.103",
+              f"on: the door listens: {h.remote.listen}")
+        h.remote._tailscale_whois = lambda ip: _TS_LOGIN
+        st, _h, out = _ask(door, "GET", "/api/remote/whoami",
+                           client=_TS_PEER)
+        check(st == 200, f"open: an allowed login is answered: {st} {out}")
+        port = door.server_address[1]
+        k = _so.create_connection(("127.0.0.1", port), timeout=5)
+        k.sendall(b"GET /api/remote/whoami HTTP/1.1\r\n")   # half sent
+        t0 = time.time()
+        while not door.open_requests and time.time() - t0 < 5:
+            time.sleep(0.02)
+        check(len(door.open_requests) == 1,
+              f"the open connection is known: {door.open_requests}")
+        h.remote.show_busy_for_reload = lambda: True        # a show runs
+        ctx = RM.Ctx(True, "127.0.0.1")
+        code, out = h.remote.set_tailscale({"on": False}, ctx)
+        check(code == 200 and out.get("listening") is None and
+              out["head"].startswith("Off") and
+              h.tailscale_door_server is None and door.tailscale_closed,
+              f"off during a show: closed now, the card says so: {code} "
+              f"{out}")
+        k.settimeout(5)
+        try:
+            got = k.recv(100)
+        except _so.timeout:
+            got = None                  # still open: not dropped
+        except OSError:
+            got = b""
+        check(got == b"", f"the open Tailscale connection is dropped: "
+                          f"{got!r}")
+        k.close()
+        t0 = time.time()
+        gone = False
+        while time.time() - t0 < 5 and not gone:
+            try:
+                k2 = _so.create_connection(("127.0.0.1", port), timeout=1)
+                k2.sendall(b"GET /api/remote/whoami HTTP/1.1\r\nHost: "
+                           b"100.101.102.103:%d\r\n\r\n" % port)
+                gone = k2.recv(100) == b""
+                k2.close()
+            except OSError:
+                gone = True
+            if not gone:
+                time.sleep(0.1)
+        check(gone, "no new connection is answered on the door")
+        st, _h, out = _ask(door, "GET", "/api/remote/whoami",
+                           client=_TS_PEER)
+        check(st == 403, f"a request already inside is refused: {st}")
+        st, _h, out = _ask(h, "GET", "/api/remote/whoami",
+                           client=("127.0.0.1", 5))
+        check(st == 200 and out.get("local") is True,
+              "this PC's own door is untouched")
+        check(web_mod.close_tailscale_door(h) is False,
+              "closing again does nothing")
+        # The door's own loop has ended, and a connection the operating
+        # system had already taken is dropped, never handled (m3).
+        t0 = time.time()
+        while not door._BaseServer__is_shut_down.is_set() and \
+                time.time() - t0 < 5:
+            time.sleep(0.02)
+        check(door._BaseServer__is_shut_down.is_set(),
+              "the door's serve loop has stopped")
+        a, b = _so.socketpair()
+        door.process_request(a, ("100.88.1.2", 5))
+        b.settimeout(2)
+        try:
+            got = b.recv(10)
+        except _so.timeout:
+            got = None
+        check(got == b"" and a not in door.open_requests,
+              f"a request reaching a closed door is dropped: {got!r}")
+        b.close()
+    finally:
+        if door is not None:
+            door.server_close()
+        h.server_close()
+    # Off when the setting cannot be saved: the door is closed all the
+    # same, and the card says so (verification of #244, m2).
+    work2 = tempfile.mkdtemp()
+    RM.save_settings(work2, tailscale_remote=True)
+    web_mod.ThreadingHTTPServer = Rec
+    try:
+        h = web_mod.serve(folder, port=0, bind="127.0.0.1",
+                          remote_folder=work2, tailscale="100.101.102.103")
+    finally:
+        web_mod.ThreadingHTTPServer = real
+    door = h.tailscale_door_server
+    saver = RM.save_settings
+
+    def broken(*a, **k):
+        raise OSError("disk full")
+    RM.save_settings = broken
+    try:
+        code, out = h.remote.set_tailscale({"on": False},
+                                           RM.Ctx(True, "127.0.0.1"))
+        check(code == 500 and door.tailscale_closed and
+              h.tailscale_door_server is None and
+              out.get("head") == "Closed now, setting not saved" and
+              out.get("listening") is None,
+              f"a save that fails never leaves the door open, and says "
+              f"so: {code} {out}")
+    finally:
+        RM.save_settings = saver
+        if door is not None:
+            door.server_close()
+        h.server_close()
+    print("  ok")
+
+
+def test_tailscale_sign_in_lockout_is_its_own():
+    section("remote access over Tailscale (cold review of #244, M3): wrong "
+            "passwords from Tailscale lock out that Tailscale address only, "
+            "never the name on the rack screen or an iPad; from the show "
+            "network the lockout is as before")
+    S = _sched()
+    if S is None:
+        return
+    import shutil
+    import tempfile
+    from ltcplay import users as U
+    R = _RemoteRig(S)
+    D = _ts_door(R)
+    udir = tempfile.mkdtemp()
+    loop = ("127.0.0.1", 5000)
+    try:
+        us = U.Users(udir, hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator")])
+        R.remote.users = us
+        us.sign_in("Ollie", "", True, "rack", new_password="Ollie-pw-1234")
+        for _i in range(U.FREE_TRIES + 3):
+            st, _h, out = _ask(D, "POST", "/api/remote/signin",
+                               {"name": "Ollie", "password": "wrong"},
+                               client=_TS_PEER)
+        st, _h, out = _ask(D, "POST", "/api/remote/signin",
+                           {"name": "Ollie", "password": "Ollie-pw-1234"},
+                           client=_TS_PEER)
+        check(st == 401 and "Too many" in str(out.get("error")),
+              f"that Tailscale address is locked out: {st} {out}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/signin",
+                           {"name": "Ollie", "password": "Ollie-pw-1234"},
+                           client=loop)
+        check(st == 200, f"Ollie still signs in on the rack screen: {st} "
+                         f"{out}")
+        st, _h, out = R.ask("POST", "/api/remote/signin",
+                            {"name": "Ollie", "password": "Ollie-pw-1234"})
+        check(st == 200, f"and on an iPad: {st} {out}")
+        st, _h, out = _ask(D, "POST", "/api/remote/signin",
+                           {"name": "Ollie", "password": "Ollie-pw-1234"},
+                           client=("100.88.1.3", 5))
+        check(st == 200, f"and from another Tailscale address: {st} {out}")
+        # From the show network, as before: the name is locked too.
+        us.sign_in("Jeff", "", True, "rack", new_password="Jeff-pw-1234")
+        for _i in range(U.FREE_TRIES + 3):
+            R.ask("POST", "/api/remote/signin",
+                  {"name": "Jeff", "password": "wrong"})
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/signin",
+                           {"name": "Jeff", "password": "x"}, client=loop)
+        check(st == 401 and "Too many" in str(out.get("error")),
+              f"an iPad's wrong passwords still lock the name: {st} {out}")
+    finally:
+        D.server_close()
+        R.close()
+        shutil.rmtree(udir, ignore_errors=True)
+    print("  ok")
+
+
+def test_tailscale_allow_list():
+    section("remote access over Tailscale (Jeff, 2026-11-13: specify who "
+            "gets in): only a Tailscale login on the allow list gets in, "
+            "asked of this PC's own Tailscale (tailscale whois, full path, "
+            "cached briefly); empty lets nobody in; a lookup that fails or "
+            "an unlisted login is refused; the list is the admin's, on the "
+            "show PC only; every press and refusal is audited with the login")
+    S = _sched()
+    if S is None:
+        return
+    import shutil
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    check(RM.load_settings(tempfile.mkdtemp())["tailscale_logins"] == [],
+          "the allow list is empty by default: nobody")
+    check(RM.check_tailscale_logins([" Andy@Example.com ", "andy@example.com",
+                                     "bo@x.org"]) ==
+          ["andy@example.com", "bo@x.org"], "logins are kept lower case, once")
+    for bad in ("andy@example.com", [""], ["two words"], [1], None,
+                ["x@y"] * (RM.TAILSCALE_LOGINS_MAX + 1), ["tagged-devices"],
+                ["andy"], ["tag:server"], ["@example.com"], ["andy@"]):
+        try:
+            RM.check_tailscale_logins(bad)
+            check(False, f"{bad!r} was taken as an allow list")
+        except ValueError:
+            pass
+    # The lookup itself.
+    run = _TsRun(out=json.dumps({"UserProfile": {"LoginName":
+                                                 "Andy@Example.com"},
+                                 "Node": {"Name": "andys-phone"}}))
+    check(RM.tailscale_whois("100.88.1.2", run=run, cli="/x/tailscale") ==
+          {"login": "andy@example.com", "node": "andys-phone",
+           "tagged": False} and
+          run.calls == [["/x/tailscale", "whois", "--json", "100.88.1.2"]],
+          f"tailscale whois --json, by its full path: {run.calls}")
+    tag = _TsRun(out=json.dumps({"UserProfile": {"LoginName":
+                                                 "tagged-devices"},
+                                 "Node": {"ComputedName": "build-box",
+                                          "Tags": ["tag:server"]}}))
+    check(RM.tailscale_whois("100.88.1.9", run=tag, cli="/x/t") ==
+          {"login": "tagged-devices", "node": "build-box", "tagged": True},
+          "a tagged device is told apart")
+    for r, why in ((_TsRun(rc=1), "an error"), (_TsRun(out="not json"),
+                   "an answer that is not JSON"), (_TsRun(boom=True),
+                   "no program"), (_TsRun(out="{}"), "no login")):
+        check(RM.tailscale_whois("100.88.1.2", run=r, cli="/x/t") is None,
+              f"{why}: nobody")
+    r = _TsRun(out="{}")
+    check(RM.tailscale_whois("10.20.0.44", run=r, cli="/x/t") is None and
+          not r.calls, "an address outside 100.64.0.0/10 is never asked")
+    check(RM.tailscale_whois("100.88.1.2", cli="") is None,
+          "Tailscale not installed: nobody")
+    r = _TsRunBy({"whois": json.dumps(_TS_SHARED_WHOIS)})
+    check(RM.tailscale_whois("100.101.7.8", run=r, cli="/x/t") ==
+          {"login": "andy.example@gmail.com", "node": "andys-iphone",
+           "tagged": False},
+          "a device shared in from another tailnet: its login, as whois "
+          "names it")
+    r = _TsRunBy({"whois": json.dumps({"UserProfile": {
+        "LoginName": "JeffHolmesPresents@gmail.com"}, "Node": {}})})
+    check(RM.tailscale_whois("100.70.1.1", run=r, cli="/x/t")["login"] ==
+          "jeffholmespresents@gmail.com", "Jeff's own login, lower case")
+    check(RM.TAILSCALE_WHOIS_S <= 3.0,
+          "a hand edit of the list takes effect within 3 seconds")
+    # The route check (M1): this PC sharing routes or being an exit node.
+    for st_, want in (({"Self": {"TailscaleIPs": ["100.101.102.103"],
+                                 "AllowedIPs": ["100.101.102.103/32"]}},
+                       False),
+                      ({"Self": {"TailscaleIPs": ["100.101.102.103"],
+                                 "AllowedIPs": ["100.101.102.103/32",
+                                                "10.20.0.0/24"]}}, True),
+                      ({"Self": {"PrimaryRoutes": ["10.20.0.0/24"]}}, True),
+                      ({"Self": {"ExitNodeOption": True}}, True)):
+        r = _TsRun(out=json.dumps(st_))
+        check(RM.tailscale_routes(run=r, cli="/x/t") is want and
+              r.calls == [["/x/t", "status", "--json"]],
+              f"tailscale status says routes {want}: {st_}")
+    check(RM.tailscale_routes(run=_TsRun(rc=1), cli="/x/t") is None and
+          RM.tailscale_routes(cli="") is None, "cannot tell: None")
+    R = _RemoteRig(S)
+    D = _ts_door(R, login="")
+    rm = R.remote
+    udir = tempfile.mkdtemp()
+    audit = []
+
+    class Audit:
+        def event(self, **kw):
+            audit.append(kw)
+    rm.audit = Audit()
+    asked = []
+
+    def whois(ip):
+        asked.append(ip)
+        return who[0]
+    who = ["andy@example.com"]
+    rm._tailscale_whois = whois
+
+    def look(peer=_TS_PEER):
+        rm._ts_logins_cache = None
+        return _ask(D, "GET", "/api/remote/whoami", client=peer)
+    try:
+        st, _h, out = look()
+        check(st == 403 and out.get("error") == RM.TAILSCALE_LOGIN_WORDS,
+              f"the list empty: nobody gets in: {st} {out}")
+        RM.save_settings(R.work, tailscale_logins=["andy@example.com"])
+        rm._ts_whois_cache = {}
+        st, _h, out = look()
+        check(st == 200 and out["tailscale"]["login"] == "andy@example.com",
+              f"a listed login gets in: {st} {out}")
+        n = len(asked)
+        look()
+        check(len(asked) == n, "asked again within the cache: not asked")
+        R.mono[0] += RM.TAILSCALE_WHOIS_S + 0.1
+        look()
+        check(len(asked) == n + 1, "after it: asked again")
+        who[0] = "eve@example.com"
+        R.mono[0] += RM.TAILSCALE_WHOIS_S + 0.1
+        st, _h, out = look()
+        check(st == 403, f"an unlisted login is refused: {st} {out}")
+        n0 = len(audit)
+        st, _h, out = _ask(D, "POST", "/api/remote/hold",
+                           {"seen": R.seen()}, client=_TS_PEER)
+        check(st == 403 and audit[n0:] and audit[n0]["result"] ==
+              "refused" and audit[n0]["source"] ==
+              "Tailscale at 100.88.1.2 (eve@example.com)",
+              f"and its press is audited as refused, with its login: "
+              f"{audit[n0:]}")
+        who[0] = None
+        R.mono[0] += RM.TAILSCALE_WHOIS_S + 0.1
+        st, _h, out = look()
+        check(st == 403, f"Tailscale cannot tell who it is: refused: {st}")
+        # A tagged device: refused whatever the list says, and audited
+        # "refused: tagged device" with its node name (M3).
+        RM.save_settings(R.work, tailscale_logins=["andy@example.com"])
+        who[0] = {"login": "andy@example.com", "node": "build-box",
+                  "tagged": True}
+        R.mono[0] += RM.TAILSCALE_WHOIS_S + 0.1
+        n0 = len(audit)
+        st, _h, out = look()
+        check(st == 403 and any(
+            a.get("reason") == "tagged device" and a.get("result") ==
+            "refused" and "node=build-box" in a.get("target", "")
+            for a in audit[n0:]),
+              f"a tagged device is refused and audited: {st} "
+              f"{audit[n0:]}")
+        who[0] = {"login": "tagged-devices", "node": "x", "tagged": False}
+        R.mono[0] += RM.TAILSCALE_WHOIS_S + 0.1
+        st, _h, out = look()
+        check(st == 403, f"no person's login: refused: {st}")
+
+        def boom(ip):
+            raise OSError("no tailscale")
+        rm._tailscale_whois = boom
+        R.mono[0] += RM.TAILSCALE_WHOIS_S + 0.1
+        st, _h, out = look()
+        check(st == 403, f"the lookup fails: refused: {st}")
+        rm._tailscale_whois = whois
+        who[0] = "andy@example.com"
+        R.mono[0] += RM.TAILSCALE_WHOIS_S + 0.1
+        n0 = len(audit)
+        st, _h, out = _ask(D, "POST", "/api/remote/hold",
+                           {"seen": R.seen()}, client=_TS_PEER)
+        check(audit[n0:] and audit[n0]["source"] ==
+              "Tailscale at 100.88.1.2 (andy@example.com)" and
+              audit[n0]["surface"] == "web",
+              f"an allowed press is audited with its login: {audit[n0:]}")
+        # The list is the SuperUser's, on the show PC only (#251).
+        loop = ("127.0.0.1", 5000)
+        us, _sud, _n = _su_users()
+        rm.users = us
+        _o, _w, otok, _n = us.sign_in("Dallen", "dallen-own-pw-1", True,
+                                      "Rack screen")
+        _o, _w, atok, _n = us.sign_in("Andy", "andy-own-pw-1", True,
+                                      "Rack screen")
+        for who, tok in (("an operator", otok), ("an admin", atok)):
+            st, _h, out = _ask(R.httpd, "POST", "/api/remote/tailscale",
+                               {"logins": ["bo@x.org"]}, client=loop,
+                               headers={"Cookie": f"{U.COOKIE}={tok}"})
+            check(st == 404, f"{who} may not change who gets in, and is "
+                             f"not told it exists: {st} {out}")
+        _o, _w, jtok, _n = us.sign_in("Jeff", "jeff-own-pw-1", True,
+                                      "Rack screen")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/tailscale",
+                           {"logins": ["Bo@X.org", "andy@example.com",
+                                       "andy.example@gmail.com",
+                                       "JeffHolmesPresents@gmail.com"]},
+                           client=loop,
+                           headers={"Cookie": f"{U.COOKIE}={jtok}"})
+        want = ["bo@x.org", "andy@example.com", "andy.example@gmail.com",
+                "jeffholmespresents@gmail.com"]
+        check(st == 200 and out.get("logins") == want and
+              RM.load_settings(R.work)["tailscale_logins"] == want,
+              f"a SuperUser sets it on the show PC, any person's login as "
+              f"whois names it: {st} {out}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/tailscale",
+                           {"logins": "bo@x.org"}, client=loop,
+                           headers={"Cookie": f"{U.COOKIE}={jtok}"})
+        check(st == 400, f"a list that is not a list changes nothing: {st}")
+        st, _h, out = _ask(D, "POST", "/api/remote/tailscale",
+                           {"logins": ["eve@example.com"]}, client=_TS_PEER,
+                           headers={"Cookie": f"{U.COOKIE}={jtok}"})
+        check(st in (403, 404), f"never from Tailscale: {st} {out}")
+        # Who may edit it: ONE function and one constant (#251's
+        # SuperUser), pinned here.
+        check(U.TAILSCALE_ALLOWLIST_ROLE == U.SUPERUSER,
+              "the allow list's editor role is pinned: the SuperUser")
+        may = U.may_edit_tailscale_allowlist
+        check(may(us.session(jtok), True) is True and
+              may(us.session(jtok), False) is False and
+              may(us.session(jtok), True, True) is False and
+              may(us.session(atok), True) is False and
+              may(us.session(otok), True) is False and
+              may(None, True) is False and may({}, True) is False,
+              "only a SuperUser, signed in, on the show PC")
+        rm.users = None
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/tailscale",
+                           {"logins": ["eve@example.com"]}, client=loop)
+        check(st == 404 and "eve@example.com" not in
+              RM.load_settings(R.work)["tailscale_logins"],
+              f"no users: never changed: {st} {out}")
+        rm.users = us
+    finally:
+        D.server_close()
+        R.close()
+        shutil.rmtree(udir, ignore_errors=True)
+    print("  ok")
+
+
+def test_tailscale_acts_as_an_ipad_signed_in():
+    section("remote access over Tailscale, option A (Jeff, 2026-11-13): no "
+            "Tailscale-only limits on what a signed-in person may do; arming, "
+            "effects, Start now and Resume follow the role matrix and the "
+            "iPad's \"Arming from a screen\"; every press that needs a role "
+            "needs a sign-in from Tailscale, users set up or not; Stop, Hold, "
+            "Acknowledge and disarm work signed out")
+    S = _sched()
+    if S is None:
+        return
+    import shutil
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    R = _RemoteRig(S)
+    D = _ts_door(R)
+    udir = tempfile.mkdtemp()
+    rm = R.remote
+
+    def press(name, body=None, hdr=None, door=None, client=_TS_PEER):
+        return _ask(door or D, "POST", "/api/remote/" + name,
+                    dict(body or {}, seen=R.seen()), client=client,
+                    headers=hdr or {})
+    role_presses = (("arm-hold", {"group": 0}),
+                    ("start-now", {"confirmed": True}),
+                    ("resume", {}), ("fuel-pump", {"on": True, "seconds": 60,
+                                                   "run": "p1"}),
+                    ("purge-select", {"machine": "m1", "on": True}),
+                    ("hazers-arm-all", {}), ("hazer-test", {"on": True}),
+                    ("laser-test", {"laser": "l1", "on": True}),
+                    ("cleaning-beat", {"hold": True, "run": "c1",
+                                       "seq": 1}))
+    # (Live flame programming ON is the show PC's own, from an iPad too.)
+    try:
+        RM.save_settings(R.work, screen_arming=True)
+        # No users set up: signed out, a press that needs a role is
+        # refused from Tailscale (an iPad would not be).
+        for name, body in role_presses:
+            st, _h, out = press(name, body)
+            check(st == 403 and out.get("tailscale_refused") == "sign in" and
+                  out.get("error") == RM.TAILSCALE_SIGN_IN_WORDS,
+                  f"{name} from Tailscale with nobody signed in: refused, "
+                  f"sign in: {st} {out}")
+            ctx = RM.Ctx(False, "100.88.1.2", tailscale=True,
+                         login=_TS_LOGIN)
+            code, out2, _hd = rm.post("/api/remote/" + name, dict(body), ctx)
+            check(code == 403 and out2.get("tailscale_refused") == "sign in",
+                  f"and the engine refuses it itself: {code} {out2}")
+        for name, body in (("hold", {}), ("stop", {}), ("disarm-all", {}),
+                           ("group-disarm", {"group": 0}),
+                           ("alert", {"action": "acknowledge"}),
+                           ("fuel-pump", {"on": False}),
+                           ("hazers-off", {})):
+            st, _h, out = press(name, body)
+            check(not (isinstance(out, dict) and (
+                out.get("tailscale_refused") or out.get("role_refused"))),
+                  f"{name} signed out from Tailscale: like a signed-out "
+                  f"iPad, it goes: {st} {out}")
+        # With users: the role matrix decides, as on an iPad.
+        us = U.Users(udir, hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator"), ("Vic", "viewer")])
+        rm.users = us
+        for n in ("Ollie", "Vic"):
+            us.sign_in(n, "", True, "rack", new_password=n + "-pw-1234")
+        _o, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", False,
+                                     "Tailscale at 100.88.1.2")
+        us.bind_tailscale(tok, _TS_LOGIN, "100.88.1.2")   # as signin does
+        hdr = {"Cookie": f"{U.COOKIE}={tok}"}
+        st, _h, me = _ask(D, "GET", "/api/remote/whoami", client=_TS_PEER,
+                          headers=hdr)
+        ipad = {p: us.may("operator", p) for p in U.PERM_KEYS}
+        check(me.get("may") == ipad and me.get("view_only") is False,
+              f"Ollie on Tailscale may what an operator may on an iPad: "
+              f"{me.get('may')}")
+        for name, body in role_presses:
+            st, _h, out = press(name, body, hdr)
+            check(not out.get("tailscale_refused") and
+                  not out.get("role_refused"),
+                  f"{name} signed in as an operator, Arming from a screen "
+                  f"on: past every sign-in and role check: {st} {out}")
+        held = [r for r in R.svc.journal if
+                str(r.get("who")).startswith("Ollie, Tailscale at "
+                                             "100.88.1.2 (andy@example.com)")]
+        check(held, "the journal names the person, the surface and the "
+                    "login")
+        # Arming from a screen OFF: refused as an iPad is.
+        RM.save_settings(R.work, screen_arming=False)
+        st, _h, out = press("arm-hold", {"group": 0}, hdr)
+        _o, _w, itok, _n = us.sign_in("Ollie", "Ollie-pw-1234", False,
+                                      "iPad at 10.20.0.44")
+        st2, _h2, out2 = R.ask("POST", "/api/remote/arm-hold",
+                               {"group": 0, "seen": R.seen()},
+                               headers={"Cookie": f"{U.COOKIE}={itok}"})
+        check(st == st2 and st >= 400 and
+              str(out.get("error")) == str(out2.get("error")),
+              f"Arming from a screen off: Tailscale is refused exactly as "
+              f"the iPad is: {st} {out} / {st2} {out2}")
+        _o, _w, vtok, _n = us.sign_in("Vic", "Vic-pw-1234", False,
+                                      "Tailscale at 100.88.1.2")
+        us.bind_tailscale(vtok, _TS_LOGIN, "100.88.1.2")
+        st, _h, out = press("start-now", {"confirmed": True},
+                            {"Cookie": f"{U.COOKIE}={vtok}"})
+        check(st == 403 and out.get("role_refused") and
+              not out.get("tailscale_refused"),
+              f"a viewer: the role matrix refuses, as on an iPad: {st} {out}")
+        check(not hasattr(RM, "tailscale_refusal") and
+              not hasattr(RM, "TAILSCALE_ARM_ROUTES"),
+              "the Tailscale-only refusals of arming and effects are gone")
+    finally:
+        D.server_close()
+        R.close()
+        shutil.rmtree(udir, ignore_errors=True)
+    print("  ok")
+
+
+def test_tailscale_session_idle_and_binding():
+    section("remote access over Tailscale (cold review of #244, M2 and "
+            "minors): a Tailscale sign-in signs out after 30 minutes with no "
+            "press or beat (the admin's idle sign out only shortens it; "
+            "status polls never count; the rack screen's rule unchanged); a "
+            "Tailscale session presented by another login, address or "
+            "surface is ended and audited; a rack sign-in is never taken "
+            "over Tailscale; checklist records carry the login")
+    S = _sched()
+    if S is None:
+        return
+    import shutil
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import checklist as CL
+    R = _RemoteRig(S)
+    D = _ts_door(R)
+    rm = R.remote
+    udir = tempfile.mkdtemp()
+    now = [5000.0]
+    audit = []
+
+    class Audit:
+        def event(self, **kw):
+            audit.append(kw)
+    rm.audit = Audit()
+    loop = ("127.0.0.1", 5000)
+    try:
+        us = U.Users(udir, clock=lambda: now[0], hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator")])
+        rm.users = us
+        us.sign_in("Ollie", "", True, "rack", new_password="Ollie-pw-1234")
+
+        def ts_sign_in(peer=_TS_PEER):
+            st, h, out = _ask(D, "POST", "/api/remote/signin",
+                              {"name": "Ollie", "password": "Ollie-pw-1234"},
+                              client=peer)
+            check(st == 200, f"Ollie signs in over Tailscale: {st} {out}")
+            return h["set-cookie"][0].split(";")[0]
+
+        def me(cookie, peer=_TS_PEER, door=None):
+            st, _h, out = _ask(door or D, "GET", "/api/remote/whoami",
+                               client=peer, headers={"Cookie": cookie})
+            return out.get("user")
+        ck = ts_sign_in()
+        tok = ck.split("=", 1)[1]
+        check(us.session(tok).get("tailscale") ==
+              {"login": _TS_LOGIN, "ip": "100.88.1.2"},
+              "the session is bound to its login and address")
+        now[0] += 29 * 60
+        check(me(ck) == "Ollie", "29 minutes: still signed in")
+        _ask(D, "POST", "/api/remote/hold", {"seen": R.seen()},
+             client=_TS_PEER, headers={"Cookie": ck})
+        now[0] += 29 * 60
+        for _i in range(5):
+            me(ck)                       # polls never count as a press
+        check(me(ck) == "Ollie", "a press keeps it signed in")
+        now[0] += 2 * 60
+        check(me(ck) is None and us.session(tok) is None,
+              "31 minutes with no press: signed out by itself")
+        check(U.TAILSCALE_IDLE_S == 30 * 60, "30 minutes, a named constant")
+        # The admin's idle sign out only shortens it.
+        us.set_idle(10)
+        ck = ts_sign_in()
+        now[0] += 11 * 60
+        check(me(ck) is None, "idle sign out 10 min: 10 min on Tailscale")
+        us.set_idle(120)
+        ck = ts_sign_in()
+        now[0] += 31 * 60
+        check(me(ck) is None, "idle sign out 120 min: still 30 on Tailscale")
+        us.set_idle(0)
+        _o, _w, jtok, _n = us.sign_in("Jeff", "", True, "rack",
+                                      new_password="Jeff-pw-1234")
+        # The rack screen keeps its own rule (off): hours later, signed in.
+        now[0] += 4 * 3600
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/whoami",
+                           client=loop,
+                           headers={"Cookie": f"{U.COOKIE}={jtok}"})
+        check(out.get("user") == "Jeff", f"the rack screen's sign-in is "
+                                         f"untouched: {out}")
+        # Bound: another address, another login, another surface.
+        for why, act in (
+                ("another address", lambda c: me(c, ("100.88.1.3", 5))),
+                ("an iPad", lambda c: me(c, ("10.20.0.44", 5), R.httpd)),
+                ("another login", None)):
+            ck = ts_sign_in()
+            tok = ck.split("=", 1)[1]
+            n0 = len(audit)
+            if act is None:
+                rm._tailscale_whois = lambda ip: "bo@x.org"
+                RM.save_settings(R.work, tailscale_logins=[_TS_LOGIN,
+                                                           "bo@x.org"])
+                rm._ts_whois_cache, rm._ts_logins_cache = {}, None
+                got = me(ck)
+                rm._tailscale_whois = lambda ip: _TS_LOGIN
+                rm._ts_whois_cache = {}
+            else:
+                got = act(ck)
+            check(got is None and us.session(tok) is None and any(
+                a.get("action") == "session" and a.get("result") ==
+                "refused" for a in audit[n0:]),
+                  f"presented by {why}: rejected, ended, audited: "
+                  f"{audit[n0:]}")
+        # A rack sign-in over Tailscale: signed out there, kept here.
+        got = me(f"{U.COOKIE}={jtok}")
+        check(got is None and us.session(jtok) is not None,
+              "a rack sign-in is never taken over Tailscale, and not ended")
+        check(CL.tailscale_login_of("Tailscale at 100.88.1.2 "
+                                    "(andy@example.com)") ==
+              "andy@example.com" and CL.tailscale_login_of("iPad at 1.2.3.4")
+              == "", "checklist records name the login, or none")
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "ltcplay", "checklist.py"),
+                   encoding="utf-8").read()
+        check('"login": tailscale_login_of(device)}' in src,
+              "every checklist record carries the login field")
+    finally:
+        D.server_close()
+        R.close()
+        shutil.rmtree(udir, ignore_errors=True)
+    print("  ok")
+
+
+def test_tailscale_card_on_the_show_pc():
+    section("remote access over Tailscale: the Schedule tab card on the "
+            "show PC only says on or off, the address to type, listening "
+            "and the firewall rule, in a headline and short bullets; on and "
+            "off for a SuperUser on the show PC only (everyone else: no such "
+            "route), applied by Restart the engine, which is refused "
+            "during a show")
+    S = _sched()
+    if S is None:
+        return
+    import shutil
+    import tempfile
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    R = _RemoteRig(S)
+    D = _ts_door(R)
+    loop = ("127.0.0.1", 5000)
+    udir = tempfile.mkdtemp()
+    rm = R.remote
+    state = {"find": {"state": "not_installed", "address": None,
+                      "head": "Tailscale is not installed",
+                      "bullets": ["Install Tailscale on this PC first."]}}
+    rm._tailscale_find = lambda: state["find"]
+    rm._firewall_windows = False
+    # A SuperUser signed in on the rack screen (#251): the card's own.
+    us, _sud, _n = _su_users()
+    rm.users = us
+    _o, _w, jtok, _n = us.sign_in("Jeff", "jeff-own-pw-1", True,
+                                  "Rack screen")
+    su = {"Cookie": f"{U.COOKIE}={jtok}"}
+
+    def card():
+        rm._tailscale_cache = None
+        rm._ts_firewall_cache = None
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/tailscale",
+                           client=loop, headers=su)
+        check(st == 200, f"the card answers on the show PC: {st} {out}")
+        check(_ts_words_ok(out.get("head", ""), out.get("bullets", [])),
+              f"its words keep the rules: {out.get('head')!r} "
+              f"{out.get('bullets')}")
+        return out
+    try:
+        for who, door, client in (("an iPad", R.httpd, ("10.20.0.44", 5)),
+                                  ("Tailscale", D, _TS_PEER)):
+            st, _h, out = _ask(door, "GET", "/api/remote/tailscale",
+                               client=client)
+            check(st in (403, 404), f"{who} cannot read the card: {st}")
+            st, _h, out = _ask(door, "POST", "/api/remote/tailscale",
+                               {"on": True}, client=client)
+            check(st in (403, 404), f"{who} cannot turn it on: {st} {out}")
+        check(RM.load_settings(R.work)["tailscale_remote"] is False,
+              "and it stayed off")
+        c = card()
+        check(c["on"] is False and c["listening"] is None and
+              c["url"] is None and c["restart"] is None and
+              c["head"].startswith("Off"),
+              f"off by default: {c}")
+        for bad in ("yes", 1, None):
+            st, _h, out = _ask(R.httpd, "POST", "/api/remote/tailscale",
+                               {"on": bad}, client=loop, headers=su)
+            check(st == 400, f"on {bad!r} changes nothing: {st}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/tailscale",
+                           {"on": True}, client=loop, headers=su)
+        check(st == 200 and out.get("on") is True and
+              RM.load_settings(R.work)["tailscale_remote"] is True and
+              len(out.get("note", "").split()) <= 8,
+              f"turned on, on the show PC: {st} {out}")
+        check([r for r in R.svc.journal if r.get("action") == "tailscale"
+               and r.get("outcome") == "on"], "journaled")
+        c = card()
+        check(c["on"] and c["found"] == "not_installed" and
+              "not installed" in c["head"] and c["restart"] is None,
+              f"on, no Tailscale: the card says so, nothing listens: {c}")
+        state["find"] = {"state": "not_running", "address": None,
+                         "head": "Tailscale is not running", "bullets": []}
+        c = card()
+        check("not running" in c["head"] and c["listening"] is None,
+              f"on, Tailscale not running: said: {c}")
+        state["find"] = {"state": "found", "address": _TS_ADDR,
+                         "head": "Tailscale is running", "bullets": []}
+        c = card()
+        check(c["head"] == "On: restart the engine" and
+              c["restart"]["needed"] and c["listening"] is None,
+              f"on, found, not listening yet: Restart the engine: {c}")
+        rm.listen = {"addresses": ["127.0.0.1", _TS_ADDR], "port": 7878,
+                     "why": "", "tailscale": _TS_ADDR, "tailscale_why": ""}
+        c = card()
+        check(c["listening"] == _TS_ADDR and
+              c["url"] == f"http://{_TS_ADDR}:7878/" and
+              c["restart"] is None and
+              any(c["url"] in b for b in c["bullets"]),
+              f"listening: the address to type: {c}")
+        rm._firewall_windows = True
+        rm._tool_find = lambda *a: r"C:\Windows\System32\netsh.exe"
+        rm._firewall_run = _TsRun(rc=1)
+        c = card()
+        check(c["firewall"]["state"] == "missing" and
+              any("installer" in b for b in c["bullets"]),
+              f"the rule missing: said, with what to do: {c}")
+        other = rm.tailscale_setup_other
+        env = {"PROGRAMDATA": "/pd", "LOCALAPPDATA": r"C:\Users\show\AppData\Local"}
+        check(other(read=lambda p: "C:\\Users\\admin\\AppData\\Local\r\noff\r\n",
+                    env=env) is True and
+              other(read=lambda p: env["LOCALAPPDATA"] + "\r\non\r\n",
+                    env=env) is False and
+              other(read=lambda p: 1 / 0, env=env) is False,
+              "Setup reading another account's settings is told apart")
+        rm.tailscale_setup_other = lambda: True
+        c = card()
+        check(any("another Windows account" in b for b in c["bullets"]),
+              f"and the card says so: {c}")
+        del rm.tailscale_setup_other
+        rm._firewall_run = _TsRun(out="Enabled: Yes\nRemoteIP: "
+                                      "100.64.0.0/10\n")
+        c = card()
+        check(c["firewall"]["state"] == "present", f"the rule there: {c}")
+        rm._tailscale_routes = lambda: True
+        rm._ts_routes_cache = None
+        c = card()
+        check(c["bullets"][0] == "This PC shares routes: turn that off.",
+              f"this PC sharing routes: said first: {c}")
+        rm._tailscale_routes = lambda: None
+        rm._ts_routes_cache = None
+        c = card()
+        check(not any("routes" in b for b in c["bullets"]),
+              f"cannot tell: nothing said: {c}")
+        st, _h, js = _ask(R.httpd, "GET", "/api/remote/tailscale-card.js",
+                          client=loop, headers=su)
+        check(st == 200 and 'id="ts-pw">Long passwords matter: Tailscale '
+              'reaches past the venue.</div>' in str(js) and
+              "Tailscale Serve and HTTPS stay refused." in str(js),
+              "the card's script, for the SuperUser: passwords matter, "
+              "Serve and HTTPS refused")
+        page = _ui2_pages()[1]
+        check("Remote access over Tailscale" not in page and
+              "ts-logins" not in page,
+              "the page itself carries none of the card")
+        rm.listen["tailscale_names"] = ["ignite-player.tail342a0a.ts.net",
+                                        "ignite-player"]
+        c = card()
+        check(c["name_url"] ==
+              "http://ignite-player.tail342a0a.ts.net:7878/",
+              f"the URL to type, by its MagicDNS name: {c}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/tailscale",
+                           {"on": False}, client=loop, headers=su)
+        c = card()
+        check(st == 200 and c["on"] is False and
+              c["head"] == "Off: restart the engine" and
+              c["restart"]["needed"] and
+              any("remove the rule" in b for b in c["bullets"]),
+              f"off while still listening: restart, and the installer "
+              f"removes the rule: {c}")
+        # During a show Restart the engine is refused (the same rule as
+        # the show network's).
+        rm.show_busy_for_reload = lambda: True
+        check(rm.restart_refusal().startswith("A show is running"),
+              "a restart is refused during a show")
+        # Nobody but a SuperUser on the rack screen: no such route, not
+        # even the card's script; and audited (#251's pattern).
+        _o, _w, atok, _n = us.sign_in("Andy", "andy-own-pw-1", True,
+                                      "Rack screen")
+        _o, _w, ipad, _n = us.sign_in("Jeff", "jeff-own-pw-1", False,
+                                      "iPad at 10.20.0.44")
+        for who, door, client, hdr in (
+                ("an admin on the rack screen", R.httpd, loop,
+                 {"Cookie": f"{U.COOKIE}={atok}"}),
+                ("nobody signed in", R.httpd, loop, {}),
+                ("the SuperUser on an iPad", R.httpd, ("10.20.0.44", 5),
+                 {"Cookie": f"{U.COOKIE}={ipad}"})):
+            for m, path, body in (("GET", "/api/remote/tailscale", None),
+                                  ("GET", "/api/remote/tailscale-card.js",
+                                   None),
+                                  ("POST", "/api/remote/tailscale",
+                                   {"on": True}),
+                                  ("POST", "/api/remote/tailscale",
+                                   {"logins": ["eve@example.com"]})):
+                st, _h, out = _ask(door, m, path, body, client=client,
+                                   headers=hdr)
+                check(st == 404 and out == {"error": RM.UPLOAD_REFUSED},
+                      f"{who}, {m} {path}: answered like no such route: "
+                      f"{st} {out}")
+        check(RM.load_settings(R.work)["tailscale_logins"] !=
+              ["eve@example.com"] and
+              RM.load_settings(R.work)["tailscale_remote"] is False,
+              "and nothing was changed")
+        check(U.TAILSCALE_ALLOWLIST_ROLE == U.SUPERUSER and
+              U.may_manage_tailscale(us.session(jtok), True) and
+              not U.may_manage_tailscale(us.session(jtok), True, True) and
+              not U.may_manage_tailscale(us.session(atok), True) and
+              not U.may_manage_tailscale(None, True),
+              "one function: a SuperUser here, nobody else")
+        check(U.classify("/api/remote/tailscale", {"on": True}) is None,
+              "never the role matrix's (so it says nothing)")
+    finally:
+        D.server_close()
+        R.close()
+        shutil.rmtree(udir, ignore_errors=True)
+    print("  ok")
+
+
 def test_show_network_card_firewall_and_wrong_name_page():
     section("show network (Jeff, 2026-10-28: the page never opened from "
             "his Mac): 0.0.0.0 still refused; the picker offers RFC 1918 "
@@ -54855,9 +56245,38 @@ def test_show_network_card_firewall_and_wrong_name_page():
     run_part = iss.split("[Run]", 1)[1].split("[UninstallRun]", 1)[0]
     un_part = iss.split("[UninstallRun]", 1)[1].split("[", 1)[0]
     rule = 'name=""LTC Player rack page""'
-    adds = [ln for ln in run_part.splitlines() if "firewall add rule" in ln]
+    # Remote access over Tailscale (2026-11-12): the second rule, checked
+    # below; this rule is still exactly one.
+    ts_rule = 'name=""LTC Player Tailscale page""'
+    all_adds = [ln for ln in run_part.splitlines()
+                if "firewall add rule" in ln]
+    adds = [ln for ln in all_adds if ts_rule not in ln]
     dels = [ln for ln in run_part.splitlines()
-            if "firewall delete rule" in ln]
+            if "firewall delete rule" in ln and ts_rule not in ln]
+    ts_adds = [ln for ln in all_adds if ts_rule in ln]
+    ts_dels = [ln for ln in run_part.splitlines()
+               if "firewall delete rule" in ln and ts_rule in ln]
+    check(len(all_adds) == 2 and len(ts_adds) == 1 and
+          len(ts_dels) == 1 and "Check:" not in ts_dels[0] and
+          run_part.index(ts_dels[0]) < run_part.index(ts_adds[0]) and
+          ts_adds[0].rstrip().endswith("Check: TailscaleOn") and
+          all(w in ts_adds[0] for w in (
+              "dir=in", "action=allow", "protocol=TCP", "localport=7878",
+              "remoteip=100.64.0.0/10", "localip=100.64.0.0/10",
+              'program=""{app}\\ltcplay.exe""', "profile=any")) and
+          "remoteip=any" not in ts_adds[0].lower() and
+          "localsubnet" not in ts_adds[0].lower() and
+          "0.0.0.0" not in ts_adds[0],
+          f"the Tailscale rule: deleted every install, added only while "
+          f"the setting is on, TCP 7878, ltcplay.exe, 100.64.0.0/10 to "
+          f"100.64.0.0/10 only: {ts_adds} {ts_dels}")
+    check("function TailscaleOn: Boolean;" in iss and
+          "'\"tailscale_remote\":true'" in iss and
+          "ltcplay\\ltcplay_remote.json" in iss,
+          "the installer reads the setting from ltcplay_remote.json")
+    check(any("firewall delete rule" in ln and ts_rule in ln and
+              "RemoveTailscaleRule" in ln for ln in un_part.splitlines()),
+          f"the uninstaller deletes the Tailscale rule: {un_part}")
     check(len(adds) == 1 and len(dels) == 1 and
           run_part.index(dels[0]) < run_part.index(adds[0]) and
           rule in adds[0] and rule in dels[0],
@@ -54880,7 +56299,10 @@ def test_show_network_card_firewall_and_wrong_name_page():
                  'check_firewall_rule("after the update")',
                  "rc, out = firewall_rule()\n        check(rc != 0, ",
                  "network_check(net_ip, logs)", '"remoteip": "localsubnet"',
-                 'get("/api/remote/network"'):
+                 'get("/api/remote/network"',
+                 'check_tailscale_rule("after install", False)',
+                 'check_tailscale_rule("after the update", True)',
+                 "firewall_rule(TAILSCALE_RULE)", "tailscale_card_check(logs)"):
         check(want in smoke, f"the smoke test checks {want!r}")
     print("  ok")
 
@@ -81182,16 +82604,15 @@ _SU_PLAIN_ROUTES = (
     "/api/beyond/state", "/api/brand", "/api/check", "/api/conductor",
     "/api/data/metar?ids=", "/api/devices", "/api/find", "/api/go",
     "/api/input", "/api/log", "/api/madmapper", "/api/madmapper/",
-    "/api/madmapper/state", "/api/override", "/api/reinput",
-    "/api/release", "/api/reload", "/api/remote", "/api/remote/",
-    "/api/remote/.", "/api/remote/alert", "/api/remote/alerts",
-    "/api/remote/all", "/api/remote/announce-",
-    "/api/remote/announce-output", "/api/remote/announce-outputs",
-    "/api/remote/announce-play", "/api/remote/announce-stop",
-    "/api/remote/announce-test-tone", "/api/remote/arm-hold",
-    "/api/remote/arm-release", "/api/remote/audit-verify",
-    "/api/remote/arrangement",
-    "/api/remote/awc", "/api/remote/awc:", "/api/remote/checklist-",
+    "/api/madmapper/state", "/api/override", "/api/reinput", "/api/release",
+    "/api/reload", "/api/remote", "/api/remote/", "/api/remote/.",
+    "/api/remote/alert", "/api/remote/alerts", "/api/remote/all",
+    "/api/remote/announce-", "/api/remote/announce-output",
+    "/api/remote/announce-outputs", "/api/remote/announce-play",
+    "/api/remote/announce-stop", "/api/remote/announce-test-tone",
+    "/api/remote/arm-hold", "/api/remote/arm-release",
+    "/api/remote/arrangement", "/api/remote/audit-verify", "/api/remote/awc",
+    "/api/remote/awc:", "/api/remote/checklist-",
     "/api/remote/checklist-export", "/api/remote/checklist-note",
     "/api/remote/checklist-pdf", "/api/remote/checklist-tally-retry",
     "/api/remote/checklist-tick", "/api/remote/checklist-verify",
@@ -81205,43 +82626,40 @@ _SU_PLAIN_ROUTES = (
     "/api/remote/follow", "/api/remote/forecast", "/api/remote/fuel",
     "/api/remote/fuel-pump", "/api/remote/fuel-refill",
     "/api/remote/fuel-undo", "/api/remote/group-disarm",
-    "/api/remote/haze-refill", "/api/remote/haze-undo",
-    "/api/remote/hazer", "/api/remote/hazer-level",
-    "/api/remote/hazer-test", "/api/remote/hazers-arm-all",
-    "/api/remote/hazers-off", "/api/remote/hold",
-    "/api/remote/idle-signout", "/api/remote/jump",
+    "/api/remote/haze-refill", "/api/remote/haze-undo", "/api/remote/hazer",
+    "/api/remote/hazer-level", "/api/remote/hazer-test",
+    "/api/remote/hazers-arm-all", "/api/remote/hazers-off",
+    "/api/remote/hold", "/api/remote/idle-signout", "/api/remote/jump",
     "/api/remote/laser-arm", "/api/remote/laser-test",
     "/api/remote/last-show-signout", "/api/remote/layout",
     "/api/remote/live-flame", "/api/remote/lock", "/api/remote/loop",
     "/api/remote/mark-a", "/api/remote/mark-b", "/api/remote/mesonet",
     "/api/remote/morning", "/api/remote/morning-open",
-    "/api/remote/my-password", "/api/remote/network",
-    "/api/remote/nws_obs", "/api/remote/open-beyond",
-    "/api/remote/open-folder", "/api/remote/pause",
+    "/api/remote/my-password", "/api/remote/network", "/api/remote/nws_obs",
+    "/api/remote/open-beyond", "/api/remote/open-folder", "/api/remote/pause",
     "/api/remote/play-from", "/api/remote/play-from-cues",
     "/api/remote/play-from-cues-save", "/api/remote/preroll-check",
     "/api/remote/preroll-continue", "/api/remote/preshow-audio",
-    "/api/remote/purge-clear",
-    "/api/remote/purge-fire", "/api/remote/purge-select",
-    "/api/remote/purge-stop", "/api/remote/purge-timed",
-    "/api/remote/reload-engine", "/api/remote/restart-check",
-    "/api/remote/resume", "/api/remote/role-matrix", "/api/remote/run-off",
+    "/api/remote/purge-clear", "/api/remote/purge-fire",
+    "/api/remote/purge-select", "/api/remote/purge-stop",
+    "/api/remote/purge-timed", "/api/remote/reload-engine",
+    "/api/remote/restart-check", "/api/remote/resume",
+    "/api/remote/role-matrix", "/api/remote/run-off",
     "/api/remote/schedule-file", "/api/remote/screen",
     "/api/remote/screen-arming", "/api/remote/scrub-flames",
     "/api/remote/setup", "/api/remote/show-file-new",
     "/api/remote/show-folder", "/api/remote/show-select",
-    "/api/remote/signin", "/api/remote/signout",
-    "/api/remote/start-at-cue", "/api/remote/start-now",
-    "/api/remote/status", "/api/remote/stop", "/api/remote/users",
-    "/api/remote/weather", "/api/remote/whoami", "/api/schedule",
-    "/api/schedule/", "/api/schedule/deck-event", "/api/schedule/incident",
-    "/api/schedule/journal", "/api/schedule/logging",
-    "/api/schedule/operator", "/api/schedule/state",
+    "/api/remote/signin", "/api/remote/signout", "/api/remote/start-at-cue",
+    "/api/remote/start-now", "/api/remote/status", "/api/remote/stop",
+    "/api/remote/tailscale", "/api/remote/tailscale-card.js",
+    "/api/remote/users", "/api/remote/weather", "/api/remote/whoami",
+    "/api/schedule", "/api/schedule/", "/api/schedule/deck-event",
+    "/api/schedule/incident", "/api/schedule/journal",
+    "/api/schedule/logging", "/api/schedule/operator", "/api/schedule/state",
     "/api/schedule/tonight", "/api/showdir", "/api/skip", "/api/start",
     "/api/state", "/api/stop", "/api/timelines", "/api/trigger", "/brand/",
     "/index.html", "/remote", "/remote-logic.js", "/remote1", "/remote2",
-    "/ui",
-)
+    "/ui")
 
 
 def _su_routes_in_source(src, prefix="/api/remote/"):
@@ -105366,6 +106784,9 @@ _UI2_ROUTES = {
     "/api/remote/morning-open": None,
     "/api/remote/my-password": None,
     "/api/remote/network": "settings",
+    # Remote access over Tailscale: the SuperUser's card (its own gate,
+    # users.may_manage_tailscale), never the role matrix's.
+    "/api/remote/tailscale": None,
     "/api/remote/open-folder": "show_files",
     "/api/remote/pause": "show",
     "/api/remote/play-from": "show",
@@ -122346,6 +123767,15 @@ if __name__ == "__main__":
         test_remote_cross_site_posts_refused_on_loopback,
         test_remote_localhost_unaffected_and_proxies_refused,
         test_show_network_card_firewall_and_wrong_name_page,
+        test_tailscale_address_detection_and_setting,
+        test_tailscale_listener_binds_only_its_address,
+        test_tailscale_door_refuses_wrong_peer_host_and_proxies,
+        test_tailscale_card_on_the_show_pc,
+        test_tailscale_allow_list,
+        test_tailscale_acts_as_an_ipad_signed_in,
+        test_tailscale_off_closes_the_door_now,
+        test_tailscale_sign_in_lockout_is_its_own,
+        test_tailscale_session_idle_and_binding,
         test_remote_controls_reach_the_same_paths_and_journal_who_and_where,
         test_deck_fix_round_2_abort_reset_and_disarm,
         test_deck_presses_reach_the_engine_conductor,

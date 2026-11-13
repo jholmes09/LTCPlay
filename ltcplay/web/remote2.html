@@ -1115,6 +1115,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <div class="pbar"><button class="b green" id="net-save"><svg class="i"><use href="#i-check"/></svg>Save address</button></div>
           <div class="pline" id="net-msg" role="status"></div>
         </div>
+        <div id="ts-slot"></div>
       </div>
       <!-- The fireball timeline (fireball_timeline.py, Jeff 2026-10-30):
            per show file, a start timecode and a duration for each stage.
@@ -1613,6 +1614,7 @@ function showTab(t){
   document.querySelectorAll(".tab").forEach(b => { b.classList.toggle("on", b.dataset.tab === t); b.setAttribute("aria-selected", b.dataset.tab === t ? "true" : "false"); });
   if(t === "settings") loadPlayFrom();
   if(t === "schedule" && ME && ME.local){ loadNetwork(); loadDeckOp(); loadFolders(); }
+  if(t === "schedule" && ME && ME.local) loadTailscale();
   if(t === "users") loadUsers();
   if(t === "schedule"){ fbtOpen(); progFiles(); try{ drawProg(stale()); }catch(e){} if(ME && ME.local && !SE_READ){ SE_READ = true; loadSchedule(); } }
   // 1.0's Programming screen read the outputs when it opened (P13).
@@ -3740,6 +3742,26 @@ $("net-restart").addEventListener("click", async () => {
   catch(e){ $("net-msg").textContent = e.message; }
 });
 $("net-pick").addEventListener("change", () => { if($("net-pick").value) $("net-addr").value = $("net-pick").value; });
+// A SuperUser's own card (the upload card's pattern): its code is not on
+// this page. Only a SuperUser signed in on this show PC's rack screen gets
+// an answer from its route; only then is its script fetched and the card
+// made. Everyone else: nothing, not even an empty card.
+let TS_JS = null;
+async function loadTailscale(){
+  let v = null;
+  try{
+    const u = await getJSON("/api/remote/users", 3000);
+    if(u && u.tailscale_card === true) v = await getJSON("/api/remote/tailscale", 3000);
+  }catch(e){ v = null; }
+  if(!v){ $("ts-slot").innerHTML = ""; return; }
+  if(window.ltcTailscaleCard){ window.ltcTailscaleCard(v); return; }
+  if(TS_JS) return;
+  TS_JS = document.createElement("script");
+  TS_JS.src = "/api/remote/tailscale-card.js";
+  TS_JS.onload = () => { if(window.ltcTailscaleCard) window.ltcTailscaleCard(v); };
+  TS_JS.onerror = () => { TS_JS.remove(); TS_JS = null; };
+  document.head.appendChild(TS_JS);
+}
 $("net-save").addEventListener("click", () => saveNetwork($("net-addr").value));
 // Settings changed on disk, and Reload engine.
 function cfgNote(cc){

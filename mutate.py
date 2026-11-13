@@ -647,6 +647,230 @@ MUTATIONS = [
  # -- the iPad remote (2026-10-03; no sign-in since Jeff, 2026-10-07): the
  #    show network, the controls, stale state, no arm route, scrubbing and
  #    the seek guard --
+ # -- remote access over Tailscale (Jeff, 2026-11-12; option A 2026-11-13):
+ #    100.64.0.0/10 only, never every interface, its own Host and peer
+ #    checks, an allow list of people's Tailscale logins asked of this PC's
+ #    own Tailscale, then the iPad's rules with a sign-in for anything that
+ #    needs a role; tagged devices never; the door closes when turned off --
+ ("tailscale: any IPv4 address counts as a Tailscale address",
+  "ltcplay/remote.py",
+  "    return ip.version == 4 and ip in TAILSCALE_NET and \\\n"
+  "        str(ip) != TAILSCALE_SERVICE_IP",
+  "    return ip.version == 4"),
+
+ ("tailscale: the door binds every interface", "ltcplay/web.py",
+  "    if ts in WILDCARD or not remote_mod.is_tailscale_address(ts):",
+  "    if False:"),
+
+ ("tailscale: the door answers a peer outside 100.64.0.0/10",
+  "ltcplay/web.py",
+  "            if not remote_mod.is_tailscale_address(self.client_address[0]):\n"
+  "                return TAILSCALE_PEER_REFUSAL",
+  "            if False:\n"
+  "                return TAILSCALE_PEER_REFUSAL"),
+
+ ("tailscale: on by default", "ltcplay/remote.py",
+  "           \"screen_arming\": False, \"purge_arming\": True, \"booth_alert\": None,\n"
+  "           \"tailscale_remote\": False,",
+  "           \"screen_arming\": False, \"purge_arming\": True, \"booth_alert\": None,\n"
+  "           \"tailscale_remote\": True,"),
+
+ ("tailscale: a 100.64 peer on the show network door is an iPad",
+  "ltcplay/web.py",
+  "        return not self._local() and \\\n"
+  "            remote_mod.is_tailscale_address(self.client_address[0])",
+  "        return False"),
+
+ ("tailscale: loopback on the Tailscale door is this machine",
+  "ltcplay/web.py",
+  "        if getattr(self.server, \"tailscale_door\", False):\n"
+  "            return False\n"
+  "        return self.client_address[0] in LOOPBACK",
+  "        return self.client_address[0] in LOOPBACK"),
+
+ ("tailscale: turning it off leaves the door open", "ltcplay/remote.py",
+  "        if not on:\n"
+  "            # Off closes the Tailscale door FIRST, during a show too: it",
+  "        if False:\n"
+  "            # Off closes the Tailscale door FIRST, during a show too: it"),
+
+ ("tailscale: an off that cannot be saved is not said", "ltcplay/remote.py",
+  "            if on:\n"
+  "                return 409, {\"error\": f\"{e} Nothing was changed.\"}",
+  "            return 409, {\"error\": f\"{e} Nothing was changed.\"}"),
+
+ ("tailscale: closing never stops the door's loop", "ltcplay/web.py",
+  "        threading.Thread(target=lambda: (door.shutdown(),\n"
+  "                                         door.server_close()),",
+  "        threading.Thread(target=lambda: (door.server_close(),),"),
+
+ ("tailscale: a closed door still takes a connection", "ltcplay/web.py",
+  "        if door.tailscale_closed:\n            _sr(request)\n            return\n",
+  ""),
+
+ ("tailscale: closing keeps the open connections", "ltcplay/web.py",
+  "    for req in list(getattr(door, \"open_requests\", ())):",
+  "    for req in []:"),
+
+ ("tailscale: a closed door still answers a request inside",
+  "ltcplay/web.py",
+  "        if getattr(self.server, \"tailscale_closed\", False):\n"
+  "            # Turned off: a request already on its way is not answered.\n"
+  "            return TAILSCALE_PEER_REFUSAL",
+  "        if False:\n"
+  "            # Turned off: a request already on its way is not answered.\n"
+  "            return TAILSCALE_PEER_REFUSAL"),
+
+ ("tailscale: any login on Tailscale gets in", "ltcplay/remote.py",
+  "            if login and login in allowed:",
+  "            if login:"),
+
+ ("tailscale: the door lets an unlisted login in", "ltcplay/web.py",
+  "            if not login:\n"
+  "                return why or remote_mod.TAILSCALE_LOGIN_WORDS",
+  "            if False:\n"
+  "                return why or remote_mod.TAILSCALE_LOGIN_WORDS"),
+
+ ("tailscale: a lookup that names nobody lets the peer in",
+  "ltcplay/remote.py",
+  "        return None, TAILSCALE_LOGIN_WORDS, login\n",
+  "        return login or \"nobody\", \"\", login\n"),
+
+ ("tailscale: an empty allow list lets everyone in", "ltcplay/remote.py",
+  "            allowed = self.tailscale_logins()",
+  "            allowed = self.tailscale_logins() or [login]"),
+
+ ("tailscale: whois is started by a bare name", "ltcplay/remote.py",
+  "        p = run([path, \"whois\", \"--json\", str(ipaddress.ip_address(ip))],",
+  "        p = run([\"tailscale\", \"whois\", \"--json\", str(ip)],"),
+
+ ("tailscale: whois asks about any address", "ltcplay/remote.py",
+  "    if not is_tailscale_address(ip):\n        return None\n"
+  "    path = tailscale_cli() if cli is None else cli",
+  "    path = tailscale_cli() if cli is None else cli"),
+
+ ("tailscale: whois is asked for every request", "ltcplay/remote.py",
+  "            if got is None or now - got[0] >= TAILSCALE_WHOIS_S:\n"
+  "                fn = getattr(self, \"_tailscale_whois\", None) or \\",
+  "            if True:\n"
+  "                fn = getattr(self, \"_tailscale_whois\", None) or \\"),
+
+ ("tailscale: a press that needs a role goes signed out",
+  "ltcplay/remote.py",
+  "    if perm in (\"safety\", None) or getattr(ctx, \"user\", \"\"):\n"
+  "        return \"\"",
+  "    if True:\n        return \"\""),
+
+ ("tailscale: Stop and Hold need a sign-in", "ltcplay/remote.py",
+  "    if perm in (\"safety\", None) or getattr(ctx, \"user\", \"\"):\n"
+  "        return \"\"",
+  "    if perm is None or getattr(ctx, \"user\", \"\"):\n"
+  "        return \"\""),
+
+ ("tailscale: the engine does not ask for a sign-in itself",
+  "ltcplay/remote.py",
+  "        if getattr(ctx, \"tailscale\", False):\n"
+  "            # Remote access over Tailscale: a press that needs a role needs",
+  "        if False:\n"
+  "            # Remote access over Tailscale: a press that needs a role needs"),
+
+ ("tailscale: wrong passwords from Tailscale lock the name out",
+  "ltcplay/users.py",
+  "            keys = [(\"from\", str(from_only if isinstance(from_only, str)\n"
+  "                                 else source))]",
+  "            keys = [(\"name\", name.lower()), (\"from\", str(source))]"),
+
+ ("tailscale: the audit line names no login", "ltcplay/remote.py",
+  "            return f\"Tailscale at {self.ip} ({self.login or 'unknown'})\"",
+  "            return f\"Tailscale at {self.ip}\""),
+
+ ("tailscale: the door takes any Host", "ltcplay/remote.py",
+  "    return h == f\"{address}:{port}\" or \\\n"
+  "        h in {f\"{n}:{port}\" for n in names or () if n}",
+  "    return True"),
+
+ ("tailscale: the door takes any name on its port", "ltcplay/remote.py",
+  "        h in {f\"{n}:{port}\" for n in names or () if n}",
+  "        h.endswith(f\":{port}\")"),
+
+ ("tailscale: the door forgets its MagicDNS names", "ltcplay/web.py",
+  "                    getattr(self.server, \"tailscale_names\", ())):",
+  "                    ()):"),
+
+ ("tailscale: a wildcard MagicDNS name is taken", "ltcplay/remote.py",
+  "                all(_DNS_LABEL.match(x) for x in n.split(\".\")) and \\",
+  "                True and \\"),
+
+ ("tailscale: anyone on the show PC may manage Tailscale",
+  "ltcplay/users.py",
+  "        return superuser_here(session, local, tailscale) and \\\n"
+  "            (session or {}).get(\"role\") == TAILSCALE_ALLOWLIST_ROLE",
+  "        return bool(local)"),
+
+ ("tailscale: the card's routes answer an admin", "ltcplay/remote.py",
+  "            if users_mod.may_manage_tailscale(\n"
+  "                    getattr(ctx, \"session\", None),",
+  "            if True or users_mod.may_manage_tailscale(\n"
+  "                    getattr(ctx, \"session\", None),"),
+
+ ("tailscale: a tagged device gets in", "ltcplay/remote.py",
+  "            if ans.get(\"tagged\") or (login and not is_user_login(login)):",
+  "            if False:"),
+
+ ("tailscale: the allow list takes a login that is no person's",
+  "ltcplay/remote.py",
+  "    return bool(t) and \"@\" in t and not t.startswith(\"@\") and \\",
+  "    return bool(t) and \\"),
+
+ ("tailscale: a tagged device refused is not audited", "ltcplay/remote.py",
+  "                self._tailscale_tagged_audit(ip, ans)\n",
+  ""),
+
+ ("tailscale: the card never says this PC shares routes",
+  "ltcplay/remote.py",
+  "        if (on or ts_listen) and self.tailscale_routes_view():",
+  "        if False:"),
+
+ ("tailscale: an exit node is not seen", "ltcplay/remote.py",
+  "    return bool(me.get(\"ExitNodeOption\") or me.get(\"PrimaryRoutes\") or",
+  "    return bool(me.get(\"PrimaryRoutes\") or"),
+
+ ("tailscale: a Tailscale sign-in never signs out when idle",
+  "ltcplay/users.py",
+  "        self._drop_tailscale_idle(now)\n",
+  ""),
+
+ ("tailscale: the admin's idle sign-out may lengthen Tailscale's",
+  "ltcplay/users.py",
+  "            min(TAILSCALE_IDLE_S, mins * 60)",
+  "            max(TAILSCALE_IDLE_S, mins * 60)"),
+
+ ("tailscale: a status poll keeps a Tailscale sign-in alive",
+  "ltcplay/web.py",
+  "                    self._tailscale_session_check(ctx, users)\n",
+  "                    self._tailscale_session_check(ctx, users)\n"
+  "                    users.touch(tok)\n"),
+
+ ("tailscale: a session is not bound at sign-in", "ltcplay/remote.py",
+  "                u.bind_tailscale(token, ctx.login, ctx.ip)",
+  "                pass"),
+
+ ("tailscale: a session presented by another device is kept",
+  "ltcplay/web.py",
+  "                if ctx.tailscale and bound.get(\"login\") == ctx.login and \\\n"
+  "                        bound.get(\"ip\") == ctx.ip:",
+  "                if True:"),
+
+ ("tailscale: a rack sign-in is taken over Tailscale", "ltcplay/web.py",
+  "            elif ctx.tailscale:\n"
+  "                why = \"a sign-in from another screen presented over Tailscale\"",
+  "            elif False:\n"
+  "                why = \"a sign-in from another screen presented over Tailscale\""),
+
+ ("tailscale: checklist records drop the login", "ltcplay/checklist.py",
+  "    return m.group(1) if m else \"\"",
+  "    return \"\""),
+
  # -- the show network from another machine (Jeff, 2026-10-28: the page
  #    never opened from his Mac): the RFC 1918 picker, the card's view, the
  #    firewall rule read, the wrong-name page, the fallback to this PC

@@ -139,6 +139,10 @@ PBKDF2_ITERATIONS = 600_000
 # name and the device for LOCK_BASE_S * 2**(extra - 1), at most LOCK_MAX_S.
 # A right password clears the name's count. Never permanent.
 FREE_TRIES = 5
+# A session made over Tailscale (remote.py) signs out after this long
+# without a press or a beat (cold review of #244, M2); the admin's idle
+# sign-out (idle_signout_min) may only shorten it.
+TAILSCALE_IDLE_S = 30 * 60
 LOCK_BASE_S = 30.0
 LOCK_MAX_S = 300.0
 
@@ -267,6 +271,10 @@ REMOTE_ROUTES = {
     "loop": "show", "follow": "show",
     "arm-hold": "arm",
     "network": "settings", "screen-arming": "settings",
+    # Remote access over Tailscale: never the role matrix's; only
+    # may_manage_tailscale (remote.py), which answers everyone else like a
+    # route that is not there.
+    "tailscale": None,
     # Check the rig (preroll.py): an admin's, between shows.
     "preroll-check": "settings",
     # Continue anyway after a failed rig check: a run press (Show row).
@@ -411,6 +419,32 @@ def fireball_on_wanted(body):
     engine (fireball.py, controls_on) never refuses."""
     c = body.get("controls") if isinstance(body, dict) else None
     return isinstance(c, dict) and any(v is True for v in c.values())
+
+
+# Who may see and change anything about remote access over Tailscale (Jeff,
+# 2026-11-13: "the Tailscale settings ... me, as a superuser, would set up"):
+# the whole card (on and off, the logins allowed in, the address, the
+# firewall and route status, Restart) and its routes. THE single switch:
+# this role, through may_manage_tailscale, on top of superuser_here (a
+# SuperUser signed in on the show PC's own rack screen, never Tailscale).
+TAILSCALE_ALLOWLIST_ROLE = SUPERUSER
+TAILSCALE_ROUTES = ("tailscale", "tailscale-card.js")
+
+
+def may_manage_tailscale(session, local, tailscale=False):
+    """True only for superuser_here() whose role is TAILSCALE_ALLOWLIST_ROLE.
+    Everyone else is never told the card exists (remote.py answers its
+    routes like a route that is not there)."""
+    try:
+        return superuser_here(session, local, tailscale) and \
+            (session or {}).get("role") == TAILSCALE_ALLOWLIST_ROLE
+    except Exception:                            # noqa: BLE001
+        return False
+
+
+def may_edit_tailscale_allowlist(session, local, tailscale=False):
+    """The allow list's editor: may_manage_tailscale (one switch)."""
+    return may_manage_tailscale(session, local, tailscale)
 
 
 def classify(route, body=None):
@@ -1227,7 +1261,25 @@ class Users:
         return allowed(self.matrix(), role, perm)
 
     # -- sessions -----------------------------------------------------------
+    def _drop_tailscale_idle(self, now):
+        """A session made over Tailscale signs out after TAILSCALE_IDLE_S
+        without a press or a beat, or the admin's idle sign-out when that
+        is shorter, never longer (cold review of #244, M2): a phone left
+        signed in does not keep its rights all night. The rack screen and
+        iPads keep their own rule."""
+        mins = self.idle_minutes()
+        limit = TAILSCALE_IDLE_S if not mins else \
+            min(TAILSCALE_IDLE_S, mins * 60)
+        gone = [(t, s) for t, s in self._sessions.items()
+                if s.get("tailscale") and now - s["seen"] > limit]
+        for t, s in gone:
+            del self._sessions[t]
+            self._note("sign-out", s["name"],
+                       reason=f"idle for {limit / 60:g} min on Tailscale",
+                       source=s["source"])
+
     def _drop_idle(self, now):
+        self._drop_tailscale_idle(now)
         self._drop_superuser_idle(now)
         mins = self.idle_minutes()
         if not mins:
@@ -1494,6 +1546,17 @@ class Users:
         finally:
             self._lock.release()
 
+    def bind_tailscale(self, token, login, ip):
+        """Mark a session as made over Tailscale by `login` from `ip`: it
+        signs out after TAILSCALE_IDLE_S without a press (or the admin's
+        idle sign-out, when that is shorter), and web.py ends it when any
+        other login, address or surface presents it."""
+        with self._lock:
+            s = self._sessions.get(token)
+            if s is not None:
+                s["tailscale"] = {"login": str(login or ""),
+                                  "ip": str(ip or "")}
+
     def touch(self, token):
         """A command from this session: it is not idle."""
         with self._lock:
@@ -1537,7 +1600,8 @@ class Users:
             if extra > 0:
                 f[1] = now + min(LOCK_MAX_S, LOCK_BASE_S * 2 ** (extra - 1))
 
-    def sign_in(self, name, password, local, source, new_password=None):
+    def sign_in(self, name, password, local, source, new_password=None,
+                from_only=False):
         """(ok, sentence, token or None, needs_new). Never says whether the
         name exists; never logs a password.
 
@@ -1545,10 +1609,19 @@ class Users:
         admin) signs in by choosing one: `new_password`. A user whose
         password is temporary (set by an admin) signs in with it AND a new
         one of their own. Until then needs_new is True and nobody is signed
-        in."""
+        in.
+
+        `from_only` (remote access over Tailscale): wrong passwords count
+        against that key (a string: the peer's address alone; True:
+        `source`), never the name, so a device on the tailnet
+        can lock out only itself, never a name on the rack screen or an
+        iPad."""
         name = " ".join(str(name or "").split())
         now = self._clock()
         keys = [("name", name.lower()), ("from", str(source))]
+        if from_only:
+            keys = [("from", str(from_only if isinstance(from_only, str)
+                                 else source))]
         with self._lock:
             wait = self._locked(keys, now)
         if wait:
