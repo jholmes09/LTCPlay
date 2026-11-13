@@ -188,14 +188,15 @@ counter that follows rule 1 counts nothing. (This night ran with the rig
 check on and a late grace of 0 s.)
 
 ```
-18:00:00  Show 1 is not started: a Programming Run is in force. Press Stop, choose Show, then Run, and Start now.
+18:00:00  Show 1 is not started: a rehearsal is on. End rehearsal, choose Show, turn show control on, then Start now.
 18:00:01  Show 1 at 18:00 did not start: MISSED (late by 1s). It will not start by itself; Start now is still there.
 ```
 
 ```
-{"id":"1ea9f53fa11-9","at":"2026-11-14T18:00:00.000-07:00","night":"2026-11-14","state":"STANDBY","to_state":"STANDBY","actor":"system","action":"pre-roll","outcome":"programming","reason":"Show 1 is not started: a Programming Run is in force. Press Stop, choose Show, then Run, and Start now.","show":1,"screen":null,"who":null,"fault":false,"text":"Show 1 is not started: a Programming Run is in force. Press Stop, choose Show, then Run, and Start now.","line":"18:00:00  Show 1 is not started: a Programming Run is in force. Press Stop, choose Show, then Run, and Start now."}
-{"id":"1ea9f53fa11-10","at":"2026-11-14T18:00:01.000-07:00","night":"2026-11-14","state":"STANDBY","to_state":"STANDBY","actor":"scheduler","action":"miss","outcome":"missed","reason":"MISSED (late by 1s)","show":1,"screen":null,"who":null,"fault":false,"text":"Show 1 at 18:00 did not start: MISSED (late by 1s). It will not start by itself; Start now is still there.","line":"18:00:01  Show 1 at 18:00 did not start: MISSED (late by 1s). It will not start by itself; Start now is still there."}
+{"id":"7c8ef702351-9","at":"2026-11-14T18:00:00.000-07:00","night":"2026-11-14","state":"STANDBY","to_state":"STANDBY","actor":"system","action":"pre-roll","outcome":"programming","reason":"Show 1 is not started: a rehearsal is on. End rehearsal, choose Show, turn show control on, then Start now.","show":1,"screen":null,"who":null,"fault":false,"text":"Show 1 is not started: a rehearsal is on. End rehearsal, choose Show, turn show control on, then Start now.","line":"18:00:00  Show 1 is not started: a rehearsal is on. End rehearsal, choose Show, turn show control on, then Start now."}
+{"id":"7c8ef702351-10","at":"2026-11-14T18:00:01.000-07:00","night":"2026-11-14","state":"STANDBY","to_state":"STANDBY","actor":"scheduler","action":"miss","outcome":"missed","reason":"MISSED (late by 1s)","show":1,"screen":null,"who":null,"fault":false,"text":"Show 1 at 18:00 did not start: MISSED (late by 1s). It will not start by itself; Start now is still there.","line":"18:00:01  Show 1 at 18:00 did not start: MISSED (late by 1s). It will not start by itself; Start now is still there."}
 ```
+
 ### A Hold between shows, then Start now of the delayed show
 
 ```
