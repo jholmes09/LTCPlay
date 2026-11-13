@@ -240,6 +240,9 @@ main > #mini{padding:var(--gap) var(--pad) 0}
    its name and ON or OFF, then Hazers off. */
 .hzrow{grid-column:1 / -1;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:var(--gap);min-width:0}
 .hzrow[hidden]{display:none}
+/* The hazer test running (2026-11-11): amber, as the deck's HAZE TEST key,
+   never the green of ARMED. */
+.hzrow .b.hzt{border-color:var(--amber);background:#2a1d05;color:#FFD08A}
 /* The fireball's fuel pump (2026-10-30): one row of its own under the
    hazers: its state and countdown, the run time to set first, Fuel pump:
    On, and Pump off (never disabled, never quieted). */
@@ -529,6 +532,12 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 #t-day{flex:1 1 0}
 .dpanel{overflow-y:auto}
 .dsec{display:flex;flex-direction:column;gap:var(--gap);min-width:0;flex:0 0 auto}
+/* The hazer test and Arm all hazers (2026-11-11), on the Purge step. */
+.hzt-st{font-weight:800;padding:2px 10px;border-radius:999px;border:2px solid var(--line)}
+.hzt-st.on{color:#06210f;background:var(--green);border-color:var(--green);animation:hztpulse 1.2s ease-in-out infinite}
+.hzt-st.unk{border-style:dashed;color:var(--grey)}
+@keyframes hztpulse{50%{opacity:.55}}
+#hzt ul{margin:0;padding-left:1.2em}
 #fb-note,#fb-charge,#fb-block{font-size:calc(var(--fs) - 2px)}
 /* All off and Disarm Fireball stay in sight while the panel scrolls. */
 #fb-top{position:sticky;top:0;z-index:1;background:var(--panel);padding-bottom:4px}
@@ -835,6 +844,17 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
             <div class="drow"><button class="b green hold" id="tp-hold" title="Hold it like a Hold to arm button. The selected machines fire for the seconds chosen, then stop by themselves.">Hold to start a timed purge</button>
               <button data-safe class="b red" id="tp-stop" title="Ends a timed purge now, from any screen.">Stop purge</button></div>
             <div class="pline" id="tp-st" aria-live="polite"></div>
+          </div>
+        </div>
+        <!-- The hazer test and Arm all hazers (hazertest.py, hazers.py,
+             Jeff 2026-11-11): on the Purge step with the other purges. -->
+        <div id="d-hz" class="dsec" hidden>
+          <div id="hzt" aria-label="Hazer test">
+            <div class="drow"><b>Hazer test</b><span class="hzt-st" id="hzt-st" role="status">Off</span></div>
+            <ul class="pline"><li>Runs every hazer at its levels.</li><li id="hzt-max">Turns off by itself after 60 s.</li><li>Stop or a lost screen turns it off.</li></ul>
+            <div class="drow"><button class="b green" id="hzt-btn">Hazer test: On</button>
+              <button class="b" id="hz-armall">Arm all hazers</button></div>
+            <div class="pline" id="hzt-msg" aria-live="polite"></div>
           </div>
         </div>
         <!-- The message lines 1.0's presses write to, one shown per step. -->
@@ -1596,6 +1616,10 @@ function pinItems(st){
   const tp = s.morning && s.morning.timed;
   if(tp) out.push({key:"tp", text:"Purging: " + timedLeft(tp.left_s) + " left. Stop when done.", pill:"PURGING " + timedLeft(tp.left_s),
     btn:"Stop purge", full:"Timed purge: " + timedBanner(tp)});
+  // The hazer test (2026-11-11): the engine's word and its countdown.
+  const ht = s.hazer_test;
+  if(ht && ht.on === true) out.push({key:"hzt", text:"Hazer test on: " + timedLeft(ht.left_s) + " left.", pill:"HAZE ON " + timedLeft(ht.left_s),
+    btn:"Hazer test off", full:"Hazer test: every hazer at its levels. It turns off by itself."});
   const wc = s.cleaning;
   if(wc && wc.state && wc.state !== "idle") out.push({key:"wc", text:wc.state === "unknown" ? "Cleaning state not known. Stop it." : "Cleaning running. Stop when done.",
     pill:"CLEANING", btn:"Stop cleaning", full:String(wc.text || "") + (wc.state === "paused" ? " (on the Startup page, Shutdown)." : ".")});
@@ -1959,6 +1983,8 @@ $("pins").addEventListener("click", async e => {
     // purge (review of #172).
     try{ const j = await post("/api/remote/purge-stop", actor({})); say("Purge stopped.", j.text || "Stopped.", "ok"); }
     catch(e2){ say("Purge NOT stopped.", e2.message + " Disarm flames ends it from any screen.", "bad"); }
+  } else if(k === "hzt"){
+    hazerTestOff();
   } else if(k === "wc"){
     // 1.0's wcStopPress: the cleaning's Stop, always pressable.
     try{ const j = await post("/api/remote/cleaning-stop", actor({})); say("Cleaning stopped.", j.text || "Stopped.", "ok"); }
@@ -2027,6 +2053,7 @@ function render(){
   renderGroups(s.flames || {});
   renderHazers(s);
   renderPump(s);
+  try{ renderHazerTest(s); }catch(e){}
   renderAnnounce();
   renderSys();
   document.querySelector('.tab[data-tab="settings"]').hidden = !(ME && ME.local && mayRow(s, "settings"));
@@ -2058,6 +2085,7 @@ function renderStale(){
   // A hazer's arm goes quiet the moment contact is lost, not at the next poll.
   if(ST) try{ renderHazers(ST); }catch(e){}
   if(ST) try{ renderPump(ST); }catch(e){}
+  try{ renderHazerTest(ST); }catch(e){}
   // The calm tone (Jeff, 2026-10-29): signed out, no contact or the show
   // not running, everything that is not an emergency control is quieter.
   const calm = inactiveNow(ST, isSt);
@@ -3880,13 +3908,17 @@ function renderHazers(s){
       !(ME && ME.local) && !(s.arming && s.arming.enabled) ? "Arming off here" : "";
     b.disabled = !!hzWhy;
     if(hzWhy) setText(b.querySelector(".hw"), hzWhy);
-    b.title = look.label + ". " + look.act + ". " + look.line + (!look.armed && v.down ? ". Cannot arm: " + v.down : "");
+    // The hazer test running (2026-11-11): every tile says so, never a
+    // plain DISARMED while it hazes.
+    const htOn = !!(s.hazer_test && s.hazer_test.on === true);
+    if(htOn){ setText(b.querySelector(".hw"), "HAZE TEST"); b.className = "b hzt"; }
+    b.title = (htOn ? "Hazer test running. " : "") + look.label + ". " + look.act + ". " + look.line + (!look.armed && v.down ? ". Cannot arm: " + v.down : "");
     b.setAttribute("aria-label", look.label + ". " + look.act);
   });
   const sum = $("hz-sum");
   if(sum){
     const a = v.hazers.filter(h => h.armed).length;
-    setText(sum, a ? a + " of " + v.hazers.length + " armed" : "All disarmed");
+    setText(sum, s.hazer_test && s.hazer_test.on === true ? "HAZE TEST on" : a ? a + " of " + v.hazers.length + " armed" : "All disarmed");
   }
   $("hz-open").disabled = compact ? false : !mayArm;
   if(HZ_OPEN) renderHazerSheet(s);
@@ -4100,6 +4132,80 @@ $("pm-off").addEventListener("click", async () => {
   try{ const j = await post("/api/remote/fuel-pump", actor({on: false})); say(j.text || "The fuel pump is OFF.", "", "ok"); }
   catch(e){ say(armShort(e.message), e.message, "bad"); }
 });
+// The hazer test (hazertest.py, Jeff 2026-11-11): a tap turns every hazer
+// ON at its levels, a second tap OFF. The state shown is only ever the
+// engine's: no contact is "Not known", never On. While this screen's own
+// run is on it beats the engine every beat_s; the engine ends the test
+// after 10 s with no beat, after max_s, and on Stop. Off is never refused.
+let HZT_RUN = null, HZT_TIMER = null, HZT_SEQ = 0, HZT_BUSY = false;
+function hztSay(t){ setText($("hzt-msg"), String(t || "")); $("hzt-msg").title = String(t || ""); }
+function hztBeatStop(){ clearInterval(HZT_TIMER); HZT_TIMER = null; HZT_RUN = null; }
+function hztBeatStart(run, every){
+  hztBeatStop(); HZT_RUN = run;
+  HZT_TIMER = setInterval(async () => {
+    if(!HZT_RUN) return;
+    try{ await post("/api/remote/hazer-test", actor({beat: HZT_RUN})); }
+    catch(e){ hztBeatStop(); hztSay(e.message); }
+  }, Math.max(500, (Number(every) || 2) * 1000));
+}
+function hztConfirmedOff(v){
+  return !stale() && !!v && v.available === true && v.on === false && v.state === "off";
+}
+async function hazerTestOff(){
+  hztBeatStop();
+  try{ const j = await post("/api/remote/hazer-test", actor({on: false})); say(j.text || "Hazer test OFF.", "", "ok"); hztSay(j.text || "Hazer test OFF."); }
+  catch(e){ say("Hazer test NOT off.", e.message + " Stop turns it off.", "bad"); hztSay(e.message); }
+}
+async function hazerTestTap(){
+  const v = ST && ST.hazer_test;
+  // Anything but a confirmed Off sends Off (no contact, Not known, On).
+  if(!hztConfirmedOff(v)){ hazerTestOff(); return; }
+  if(HZT_BUSY) return;
+  if(v.refusal){ hztSay("Not now: " + v.refusal); return; }
+  HZT_BUSY = true;
+  const run = "hzt-" + Date.now().toString(36) + "-" + (++HZT_SEQ);
+  try{
+    const j = await post("/api/remote/hazer-test", actor({on: true, run: run}));
+    hztBeatStart(run, v.beat_s); hztSay(j.text || "Hazer test ON."); say(j.text || "Hazer test ON.", "", "ok");
+  }catch(e){ hztSay(e.message); say(armShort(e.message), e.message, "bad"); }
+  finally{ HZT_BUSY = false; }
+}
+async function hazersArmAll(){
+  const v = ST && ST.hazers, all = v && (v.hazers || []).length && v.hazers.every(h => h.armed);
+  if(all){ hazersOff(); return; }
+  try{ const j = await post("/api/remote/hazers-arm-all", actor({})); say(j.text || "", "", "ok"); hztSay(j.text || ""); }
+  catch(e){ say(armShort(e.message), e.message, "bad"); hztSay(e.message); }
+}
+$("hzt-btn").addEventListener("click", hazerTestTap);
+$("hz-armall").addEventListener("click", hazersArmAll);
+function renderHazerTest(s){
+  const v = s && s.hazer_test, isSt = stale();
+  const sec = $("d-hz");
+  if(!v || !v.available){ if(sec) sec.hidden = true; hztBeatStop(); return; }
+  if(sec) sec.hidden = DAY_K !== "purge";
+  const known = !isSt && v.state !== "unknown";
+  const on = known && v.on === true;
+  const off = hztConfirmedOff(v);
+  // The beat stops when the engine refuses it (the run is over), never on
+  // a status read before the start was answered.
+  setText($("hzt-max"), "Turns off by itself after " + (Number(v.max_s) || 60) + " s.");
+  const st = $("hzt-st");
+  st.className = "hzt-st" + (on ? " on" : known ? "" : " unk");
+  setText(st, !known ? "Not known" : on ? (v.state === "waiting" ? "On: waiting" : "On") + " " + timedLeft(v.left_s) : "Off");
+  const b = $("hzt-btn");
+  // Off always works: unless the engine confirms Off, the button is Off.
+  setText(b, off ? "Hazer test: On" : on ? "Hazer test: Off" : "Turn hazer test off");
+  b.className = off ? "b green" : "b safe";
+  if(!off) b.setAttribute("data-safe", ""); else b.removeAttribute("data-safe");
+  b.setAttribute("aria-pressed", on ? "true" : "false");
+  b.setAttribute("aria-disabled", off && !!v.refusal ? "true" : "false");
+  b.classList.toggle("na", off && !!v.refusal);
+  b.title = off && v.refusal ? v.refusal : "";
+  const hz = s.hazers, all = hz && (hz.hazers || []).length && hz.hazers.every(h => h.armed);
+  setText($("hz-armall"), all ? "Disarm all hazers" : "Arm all hazers");
+  $("hz-armall").className = all ? "b safe" : "b";
+  if(off && v.refusal && !$("hzt-msg").textContent) hztSay("Not now: " + v.refusal);
+}
 async function hazersOff(){
   try{ const j = await post("/api/remote/hazers-off", actor({})); say(j.text || "Every hazer is DISARMED.", "", "ok"); }
   catch(e){ say(armShort(e.message), e.message, "bad"); }
@@ -5454,10 +5560,13 @@ function fbFit(){
 try{ new MutationObserver(fbFit).observe($("d-fb"), {childList:true, subtree:true, characterData:true}); }catch(e){}
 window.addEventListener("resize", fbFit);
 setInterval(fbFit, 250);
+let DAY_K = null;
 function daySections(k){
+  DAY_K = k;
   $("d-fb").hidden = k !== "fireball";
   $("d-fu").hidden = k !== "fuel" || !DAY_FU_REC;
   $("d-tp").hidden = k !== "purge";
+  $("d-hz").hidden = k !== "purge" || !(ST && ST.hazer_test && ST.hazer_test.available);
   fireballView(k === "fireball");
   fbFit();
   if(k === "fuel") renderFuelUndo();
