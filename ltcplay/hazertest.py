@@ -227,9 +227,12 @@ class HazerTest:
         return ""
 
     # -- the presses -------------------------------------------------------
-    def start(self, names, who="", screen="", run=None, token=""):
+    def start(self, names, who="", screen="", run=None, token="",
+              page=None):
         """The SELECTED hazers ON for MAX_S each, named by the press id
-        `run`: (ok, sentence). A hazer already on keeps its own end."""
+        `run`, from the screen `page` (its own id; the press id when none):
+        (ok, sentence). A hazer already on keeps its own end and its own
+        screen."""
         rid = run if isinstance(run, str) and 0 < len(run) <= 64 else None
         if rid is None:
             return False, "Not started: press again."
@@ -274,15 +277,20 @@ class HazerTest:
                         clock=self._clock, names=new) is True
                     if ok:
                         if r is None:
-                            r = {"beat": now, "gen": gen, "page": now,
+                            r = {"beat": now, "gen": gen,
                                  "ids": collections.deque(
                                      maxlen=RUN_IDS_KEPT), "names": {}}
-                        r["page"] = now
                         r["ids"].append(rid)
+                        owner = page if isinstance(page, str) and \
+                            0 < len(page) <= 64 else rid
                         for n in new:
+                            # Each hazer's own silence clock: only the
+                            # screen that turned it on keeps it.
                             r["names"][n] = {"deadline": now + MAX_S,
                                              "who": who, "token": token or "",
-                                             "screen": screen, "np": None}
+                                             "screen": screen, "np": None,
+                                             "owner": owner, "rid": rid,
+                                             "page": now}
                         self.run = r
                 except Exception:
                     ok = False
@@ -311,14 +319,24 @@ class HazerTest:
                              name="ltcplay-hazer-test").start()
         return True, f"Hazer test ON: {', '.join(new)}, {MAX_S} s."
 
-    def beat(self, run):
-        """The page that started it is still there. (ok, sentence). A beat
-        never starts anything and never moves an end."""
+    def beat(self, run, page=None):
+        """A screen that turned hazers on is still there: the hazers IT
+        turned on (its `page` id, or else the press `run`) stay on; no
+        other screen's. (ok, sentence). A beat never starts anything and
+        never moves an end."""
         with self._lock:
             r = self.run
             if r is None or not isinstance(run, str) or run not in r["ids"]:
                 return False, "The hazer test is off."
-            r["page"] = self._clock()
+            now = self._clock()
+            kept = 0
+            for e in r["names"].values():
+                if (isinstance(page, str) and page and e["owner"] == page) \
+                        or e["rid"] == run:
+                    e["page"] = now
+                    kept += 1
+            if not kept:
+                return False, "The hazer test is off."
         return True, "Hazer test on."
 
     def _end_reason(self, r, now):
@@ -327,9 +345,6 @@ class HazerTest:
         if now - r["beat"] > BEAT_STALE_S or now < r["beat"]:
             return (f"the engine's timer stalled (nothing sent for "
                     f"{now - r['beat']:.2f} s)"), []
-        if now - r["page"] > PAGE_QUIET_S:
-            return (f"the screen that started it went quiet for "
-                    f"{PAGE_QUIET_S:g} s"), []
         busy = self._busy()
         if busy:
             return busy.rstrip("."), []
@@ -354,6 +369,10 @@ class HazerTest:
         for n, e in list(r["names"].items()):
             if now >= e["deadline"]:
                 ends.append((n, f"its {MAX_S} s were up"))
+                continue
+            if now - e["page"] > PAGE_QUIET_S:
+                ends.append((n, f"the screen that turned it on went quiet "
+                                f"for {PAGE_QUIET_S:g} s"))
                 continue
             gone = self._sign_in_gone(e.get("token", ""), e.get("who", ""))
             if gone:
@@ -573,11 +592,15 @@ class HazerTest:
                 e = r["names"].get(n) if r is not None and on else None
                 left = None if e is None else \
                     round(max(0.0, e["deadline"] - self._clock()), 1)
+                try:
+                    why = "" if on else self.refusal([n])
+                except Exception as e:
+                    why = f"its check failed ({type(e).__name__})."
                 rows.append({"name": n, "on": on,
                              "state": "off" if not on else (
                                  "on" if passing.get(n) else "waiting"),
                              "left_s": left, "haze_pct": value_to_pct(h),
-                             "fan_pct": value_to_pct(f)})
+                             "fan_pct": value_to_pct(f), "refusal": why})
             try:
                 refusal = self.refusal(
                     [x["name"] for x in rows if not x["on"]] or names)

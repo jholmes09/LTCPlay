@@ -4898,15 +4898,14 @@ class Remote:
             ht.stop(why, who=who, screen=device, system=False)
             return 200, {"ok": True, "text": "Every hazer OFF."}
         if not self.may_act_from(ctx.local):
-            why = ("The hazer test from a device on the show network needs "
-                   "screen_arming (on the show machine itself: Programming, "
-                   "Arming from a screen, Turn on). Nothing was changed.")
+            why = ("Hazers not turned on: this device may not turn hazers "
+                   "on. Turn them on at the show PC. Nothing was changed.")
             self._journal(who, device, "hazer-test", "refused",
                           f"{who or 'Someone'}'s hazer test from the "
                           f"{device} was refused. {why}")
             return 403, {"error": why}
         if not on:
-            ok, text = ht.beat(beat)
+            ok, text = ht.beat(beat, body.get("page"))
             return (200 if ok else 409), ({"ok": True, "text": text} if ok
                                           else {"error": text})
         if self.users_active() and not (getattr(ctx, "token", None) or ""):
@@ -4933,7 +4932,8 @@ class Remote:
             sel = ht.names()
         ok, text = ht.start(sel, who=who, screen=device,
                             run=body.get("run"),
-                            token=getattr(ctx, "token", "") or "")
+                            token=getattr(ctx, "token", "") or "",
+                            page=body.get("page"))
         if not ok:
             return 409, {"error": text}
         return 200, {"ok": True, "text": text}

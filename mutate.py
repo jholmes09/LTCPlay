@@ -23534,8 +23534,8 @@ def build():
 
  ('hazer test: a quiet screen leaves it on',
   'ltcplay/hazertest.py',
-  '        if now - r["page"] > PAGE_QUIET_S:\n',
-  '        if False:\n'),
+  '            if now - e["page"] > PAGE_QUIET_S:\n',
+  '            if False:\n'),
 
  ('hazer test: ON needs no permission (not the arm row)',
   'ltcplay/users.py',
@@ -23549,8 +23549,8 @@ def build():
 
  ('hazer test: ON from the show network without screen_arming',
   'ltcplay/remote.py',
-  '            why = ("The hazer test from a device on the show network needs "\n',
-  '            return 200, {}\n            why = ("The hazer test from a device on the show network needs "\n'),
+  '            why = ("Hazers not turned on: this device may not turn hazers "\n',
+  '            return 200, {}\n            why = ("Hazers not turned on: this device may not turn hazers "\n'),
 
  ('hazer test: Stop leaves it on at the engine',
   'ltcplay/remote.py',
@@ -23820,6 +23820,31 @@ def build():
   'ltcplay/web/remote2.html',
   '  if(!known) return {mode: "none", state: "Not known", why: ""};\n',
   '  if(false) return {mode: "none", state: "Not known", why: ""};\n'),
+
+ ("hazer test: one screen's beat keeps every screen's hazers on",
+  'ltcplay/hazertest.py',
+  '                if (isinstance(page, str) and page and e["owner"] == page) \\\n                        or e["rid"] == run:\n',
+  '                if True:\n'),
+
+ ("hazer test: signing out ends every person's hazers",
+  'ltcplay/hazertest.py',
+  '            mine = [n for n, e in r["names"].items()\n                    if e.get("token") == token]\n',
+  '            mine = list(r["names"])\n'),
+
+ ('hazer test: the link extends a hazer already running',
+  'ltcplay/flamelink.py',
+  '                    if n not in running:\n                        until[n] = mine + s\n',
+  '                    until[n] = mine + s\n'),
+
+ ("hazer test: the page's reason comes from every hazer, not the ticked ones",
+  'ltcplay/web/remote2.html',
+  '  const rows = v.hazers.filter(h => names.includes(h.name) && h.on === false);\n',
+  '  const rows = v.hazers.filter(h => h.on === false);\n'),
+
+ ('hazer test: the page lets an iPad with arming off press Turn on',
+  'ltcplay/web/remote2.html',
+  '  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return "Arming off here";\n  if(names === "all")',
+  '  if(names === "all")'),
 ]
 
 

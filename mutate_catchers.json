@@ -3788,5 +3788,10 @@
 "hazer test: the page's All off sends a selection, not every hazer": "test_ui2_hazer_test_in_a_browser",
 "hazer test: the page's All on sends nothing": "test_ui2_hazer_test_in_a_browser",
 "arm all hazers: the show screen's button is never disabled": "test_ui2_arm_all_hazers_on_the_show_screen",
-"arm all hazers: the show screen reads a state not known as known": "test_ui2_arm_all_hazers_on_the_show_screen"
+"arm all hazers: the show screen reads a state not known as known": "test_ui2_arm_all_hazers_on_the_show_screen",
+"hazer test: one screen's beat keeps every screen's hazers on": "test_hazer_test_per_hazer",
+"hazer test: signing out ends every person's hazers": "test_hazer_test_and_arm_all_need_the_arm_row",
+"hazer test: the link extends a hazer already running": "test_hazer_test_flame_link",
+"hazer test: the page's reason comes from every hazer, not the ticked ones": "test_ui2_hazer_test_in_a_browser",
+"hazer test: the page lets an iPad with arming off press Turn on": "test_ui2_hazer_test_in_a_browser"
 }

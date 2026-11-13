@@ -538,14 +538,18 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 #t-day{flex:1 1 0}
 .dpanel{overflow-y:auto}
 .dsec{display:flex;flex-direction:column;gap:var(--gap);min-width:0;flex:0 0 auto}
-/* The hazer test and Arm all hazers (2026-11-11), on the Purge step. */
+/* The Purge step's hazers (2026-11-13): turn the ticked ones on or off
+   now; no arming here. Compact: the buttons first, then the hazers. */
 .hzt-st{font-weight:800;padding:2px 10px;border-radius:999px;border:2px solid var(--line)}
 .hzt-st.on{color:#06210f;background:var(--green);border-color:var(--green);animation:hztpulse 1.2s ease-in-out infinite}
 .hzt-st.unk{border-style:dashed;color:var(--grey)}
 @keyframes hztpulse{50%{opacity:.55}}
 #hzt ul{margin:0;padding-left:1.2em}
-#hzt-list{display:flex;flex-direction:column;gap:4px}
-#hzt-list label{display:flex;align-items:center;gap:10px;min-height:44px;padding:0 8px;border:2px solid var(--line);border-radius:10px}
+#hzt-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:4px}
+#hzt-list label{display:flex;align-items:center;gap:10px;min-height:44px;padding:0 8px;border:2px solid var(--line);border-radius:10px;min-width:0}
+#hzt-list label b{white-space:nowrap}
+#hzt-list .lv{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+#hzt ul{font-size:calc(var(--fs) - 2px)}
 #hzt-list label.on{border-color:var(--amber);background:#2a1d05}
 #hzt-list input{width:24px;height:24px}
 #hzt-list .lv{color:var(--muted);font-weight:700}
@@ -864,17 +868,18 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
             <div class="pline" id="tp-st" aria-live="polite"></div>
           </div>
         </div>
-        <!-- The hazer test and Arm all hazers (hazertest.py, hazers.py,
-             Jeff 2026-11-11): on the Purge step with the other purges. -->
+        <!-- The Purge step's hazers (hazertest.py, Jeff and Andy
+             2026-11-13): tick hazers, then Turn on or Turn off; All on,
+             All off. They run now, 60 s each; no arming here. -->
         <div id="d-hz" class="dsec" hidden>
           <div id="hzt" aria-label="Hazers: turn on or off">
-            <div class="drow"><b>Hazers: turn on or off</b><span class="hzt-st" id="hzt-st" role="status">Off</span></div>
-            <ul class="pline"><li>Runs now, at each hazer's levels.</li><li id="hzt-max">Each turns off after 60 s.</li><li>Stop or a lost screen turns all off.</li></ul>
-            <div id="hzt-list" role="group" aria-label="Hazers"></div>
-            <div class="drow"><button class="b green" id="hzt-btn">Turn on</button>
+            <div class="drow"><b>Hazers: turn on or off</b><span class="hzt-st" id="hzt-st" role="status">Off</span>
+              <button class="b green" id="hzt-btn">Turn on</button>
               <button class="b green" id="hzt-allon">All on</button>
               <button data-safe class="b safe" id="hzt-alloff">All off</button></div>
             <div class="pline" id="hzt-msg" aria-live="polite"></div>
+            <div id="hzt-list" role="group" aria-label="Hazers"></div>
+            <ul class="pline"><li>Runs now, at each hazer's levels.</li><li id="hzt-max">Each turns off after 60 s.</li><li>Stop or a lost screen turns all off.</li></ul>
           </div>
         </div>
         <!-- The message lines 1.0's presses write to, one shown per step. -->
@@ -3958,7 +3963,8 @@ function renderHazers(s){
       HZ_ALL_BTN +
       `<button data-safe class="b safe" id="hz-off"><span class="hn">Hazers off</span></button>` +
       `<button class="b" id="hz-open"><span class="hn">Levels</span></button>`;
-    row.style.gridTemplateColumns = compact ? "" : "repeat(" + (v.hazers.length + 3) + ",minmax(0,1fr))";
+    // Wraps rather than squeezing: never a cut "Hazers off" or DISARMED.
+    row.style.gridTemplateColumns = compact ? "" : "repeat(auto-fit,minmax(140px,1fr))";
     $("hz-all").addEventListener("click", hzAllTap);
     row.querySelectorAll("[data-hzb]").forEach(b => b.addEventListener("click", () => hazerTap(Number(b.dataset.hzb))));
     $("hz-off").addEventListener("click", hazersOff);
@@ -4008,10 +4014,11 @@ function renderHazers(s){
   ab.title = "Armed hazers run during the show. Hazers only, never a flame group or a laser.";
   if(HZ_OPEN) renderHazerSheet(s);
 }
-// Arm all hazers on the SHOW tab (Jeff, 2026-11-13): the same route as
-// the Purge step's (hazers-arm-all), which arms each hazer through the
-// per-hazer arm. All armed, or a state not known, offers Disarm all
-// hazers (Hazers off), never refused.
+// Arm all hazers on the SHOW tab (Jeff, 2026-11-13): hazers-arm-all,
+// which arms each hazer through the per-hazer arm. All armed, or a state
+// not known, leaves nothing to press; Hazers off, beside it, always
+// works. Who may arm is the engine's answer (mayRow, Arming from a
+// screen), never a guess from the address.
 function hzAllLook(s){
   const v = s && s.hazers, fl = (s && s.flames) || {};
   const list = (v && v.hazers) || [];
@@ -4254,13 +4261,16 @@ $("pm-off").addEventListener("click", async () => {
 // Off and All off are never refused.
 let HZT_RUN = null, HZT_TIMER = null, HZT_SEQ = 0, HZT_BUSY = false, HZT_KEY = "";
 const HZT_SEL = new Set();
+// This screen's own id: the engine keeps a hazer on only while the screen
+// that turned it on still beats (10 s), never on another screen's beat.
+const HZT_PAGE = "pg-" + Math.random().toString(36).slice(2, 10);
 function hztSay(t){ setText($("hzt-msg"), String(t || "")); $("hzt-msg").title = String(t || ""); }
 function hztBeatStop(){ clearInterval(HZT_TIMER); HZT_TIMER = null; HZT_RUN = null; }
 function hztBeatStart(run, every){
   clearInterval(HZT_TIMER); HZT_RUN = run;
   HZT_TIMER = setInterval(async () => {
     if(!HZT_RUN) return;
-    try{ await post("/api/remote/hazer-test", actor({beat: HZT_RUN})); }
+    try{ await post("/api/remote/hazer-test", actor({beat: HZT_RUN, page: HZT_PAGE})); }
     catch(e){ hztBeatStop(); hztSay(e.message); }
   }, Math.max(500, (Number(every) || 2) * 1000));
 }
@@ -4282,15 +4292,28 @@ async function hztOff(names){
     say(j.text || "Off.", "", "ok"); hztSay(j.text || "Off.");
   }catch(e){ say("Hazers NOT off.", e.message + " Stop turns them off.", "bad"); hztSay(e.message); }
 }
+// Why the ticked hazers (or "all") may not be turned on now, in a few
+// words, or "": the engine's own reason for those hazers only, after who
+// may (the engine's may-arm answer and Arming from a screen).
+function hztWhy(s, names){
+  const v = s && s.hazer_test;
+  if(!hztKnown(v)) return "No contact";
+  if(!mayRow(s, "arm")) return signWhy(s, "arm");
+  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return "Arming off here";
+  if(names === "all") return v.refusal || "";
+  const rows = v.hazers.filter(h => names.includes(h.name) && h.on === false);
+  const r = rows.find(h => h.refusal);
+  return r ? r.refusal : "";
+}
 async function hztOn(names){
   const v = ST && ST.hazer_test;
   if(HZT_BUSY) return;
-  if(!hztKnown(v)){ hztSay("No contact. Not turned on."); return; }
-  if(v.refusal){ hztSay("Not now: " + v.refusal); return; }
+  const why = hztWhy(ST, names);
+  if(why){ hztSay("Not now: " + why); return; }
   HZT_BUSY = true;
   const run = "hzt-" + Date.now().toString(36) + "-" + (++HZT_SEQ);
   try{
-    const j = await post("/api/remote/hazer-test", actor({on: true, hazers: names, run: run}));
+    const j = await post("/api/remote/hazer-test", actor({on: true, hazers: names, run: run, page: HZT_PAGE}));
     hztBeatStart(run, v.beat_s); hztSay(j.text || "On."); say(j.text || "On.", "", "ok");
   }catch(e){ hztSay(e.message); say(armShort(e.message), e.message, "bad"); }
   finally{ HZT_BUSY = false; }
@@ -4338,14 +4361,16 @@ function renderHazerTest(s){
   setText(b, t.label);
   b.className = t.mode === "on" ? "b green" : t.mode === "off" ? "b safe" : "b";
   if(t.mode === "off") b.setAttribute("data-safe", ""); else b.removeAttribute("data-safe");
-  const no = t.mode === "none" || t.mode === "on" && !!v.refusal;
+  const selWhy = t.mode === "on" ? hztWhy(s, [...HZT_SEL]) : "";
+  const no = t.mode === "none" || !!selWhy;
   b.setAttribute("aria-disabled", no ? "true" : "false");
   b.classList.toggle("na", no);
-  const ao = $("hzt-allon"), noAll = !known || !!v.refusal;
-  ao.setAttribute("aria-disabled", noAll ? "true" : "false");
-  ao.classList.toggle("na", noAll);
-  b.title = ao.title = t.mode !== "off" && v.refusal ? v.refusal : "";
-  if(!on && v.refusal && known && !$("hzt-msg").textContent) hztSay("Not now: " + v.refusal);
+  const ao = $("hzt-allon"), allWhy = hztWhy(s, "all");
+  ao.setAttribute("aria-disabled", allWhy ? "true" : "false");
+  ao.classList.toggle("na", !!allWhy);
+  b.title = selWhy; ao.title = allWhy;
+  if(selWhy && known) hztSay("Not now: " + selWhy);
+  else if(/^Not now: /.test($("hzt-msg").textContent)) hztSay("");
 }
 async function hazersOff(){
   try{ const j = await post("/api/remote/hazers-off", actor({})); say(j.text || "Every hazer is DISARMED.", "", "ok"); }
