@@ -1,0 +1,4 @@
+# Mutations removed from mutate.py, one a line: `exact name | why`.
+# A mutation that disappears from mutate.py without a line here fails the
+# changes job (release_gate.py --check-removed), so the whole list can only
+# shrink on purpose and with a reason. A renamed mutation counts as removed.

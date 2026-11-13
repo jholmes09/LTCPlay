@@ -590,6 +590,41 @@ still true by design.
    During a run, "0 send errors" means the packets left this Mac, not that
    anything received them.
 
+## How long a release takes to test, and what that can miss
+
+For Jeff. A release is a PR into main. Its one required check is `ci`. The
+computer decides how much testing a release needs by reading which files
+changed, using the copy of the rules already on main, so a release cannot
+change the rules that judge it. Nobody can talk it down, Claude included.
+If it cannot tell, it runs everything.
+
+Two honest limits. A release that edits the workflows themselves (the
+files under `.github/`) could weaken the check that judges it, and only a
+person reading that part of the change stops it: such a PR always runs
+everything and carries a red "THIS PR EDITS THE CI ITSELF" note, so read
+that part before saying yes. And one setting for Jeff: in GitHub,
+Settings, Branches, main, turn on "Require branches to be up to date
+before merging", so a release is always tested against main as it is.
+
+| What the release changes | What runs before it can merge | About how long |
+|---|---|---|
+| Only docs (`.md` files no test reads) | the full test suite on Windows and Linux | 30 to 40 minutes |
+| Code, or new tests, or only the wording inside existing tests | the test suite, plus the "break it on purpose" checks near the changed lines, plus a fixed safety set of about 900 (flame and laser gates, Stop, Hold and Abort, the flamesafe interlocks, fireball, fuel and flame programming, arming, the Run gate, the remote's rules) | about 3 hours |
+| The testing machinery itself (`mutate.py`, its lists, the workflows, `release_gate.py`, the shared test code, anything in `tools/`, `remote_rules.js`), any change to how an existing test works, or the last full check on main is red | everything, the old way | 13 to 17 hours |
+
+**After it merges,** main runs every check anyway (13 to 17 hours; nobody
+waits for it), and again every Sunday. If any of those finds a problem, an
+issue called "A whole mutation sweep on main is red" opens by itself, every
+PR shows a warning, and the next release with any code in it has to run
+everything until it is fixed.
+
+**What the faster check can miss.** It proves the safety set and the code
+near the change. It does not re-prove distant code whose test the change
+quietly weakened, or two changes that only go wrong together. The full
+check after the merge catches those, usually within a day, but after the
+merge, not before. A docs-only release cannot change the program, so
+nothing is lost there.
+
 ## Moving it to another Mac
 
     ./ltc bundle gpl2026_timeline.json ~/Desktop/GPL_Show --zip

@@ -30,6 +30,9 @@ per-PR gate; the nightly sweep and a release tag still run everything):
     --list             print what would run and why, then stop
     --catchers FILE    {mutation name: test that caught it} from an earlier
                        sweep, so a changed test re-runs only what it guards
+    --only FILE        run exactly the mutations named in FILE, one a line
+                       (the release gate's scoped tier: release_gate.py
+                       writes it); a name not in this file stops the run
 
 Speed. None of it changes what a mutation has to survive: the baseline runs
 every test in file order, a mutant is caught only when the suite fails under
@@ -23846,7 +23849,8 @@ def main():
 
 
 OPTS = {"changed": None, "files": None, "list": False, "catchers": None,
-        "failfast": True, "hints": None, "write_catchers": None, "jobs": 1}
+        "failfast": True, "hints": None, "write_catchers": None, "jobs": 1,
+        "only": None}
 
 
 def _args(argv):
@@ -23854,7 +23858,8 @@ def _args(argv):
     always was."""
     wants, shard, expected = [], None, None
     OPTS.update(changed=None, files=None, list=False, catchers=None,
-                failfast=True, hints=None, write_catchers=None, jobs=1)
+                failfast=True, hints=None, write_catchers=None, jobs=1,
+                only=None)
     it = iter(argv)
     for a in it:
         if a == "--shard":
@@ -23878,6 +23883,8 @@ def _args(argv):
             OPTS["write_catchers"] = next(it)
         elif a == "--jobs":
             OPTS["jobs"] = max(1, int(next(it)))
+        elif a == "--only":
+            OPTS["only"] = next(it)
         else:
             wants.append(a.lower())
     return wants or None, shard, expected
@@ -24136,7 +24143,30 @@ def _run():
     if expected_file:
         expected, unknown = _load_expected(expected_file)
     only = None
-    if OPTS["changed"] or OPTS["files"] is not None:
+    if OPTS["only"] is not None:
+        if OPTS["changed"] or OPTS["files"] is not None:
+            print("--only cannot be combined with --changed or --files")
+            fail("bad options", ["--only with --changed or --files"])
+            return 2
+        try:
+            with open(OPTS["only"], encoding="utf-8") as fh:
+                only = {l.rstrip("\r\n") for l in fh if l.strip()}
+        except OSError as e:
+            print(f"cannot read the --only list: {e}")
+            fail("cannot read the --only list", [str(e)])
+            return 2
+        unknown_only = sorted(only - {m[0] for m in MUTATIONS})
+        if unknown_only:
+            print(f"--only names {len(unknown_only)} mutations that are not "
+                  f"in this file: {unknown_only[:5]}")
+            fail("the --only list names unknown mutations", unknown_only)
+            return 2
+        print(f"running the {len(only)} of {len(MUTATIONS)} mutations "
+              f"named in {OPTS['only']}")
+        if not only:
+            print("nothing to run")
+            return 0
+    elif OPTS["changed"] or OPTS["files"] is not None:
         base = None
         if OPTS["changed"]:
             try:
@@ -24239,31 +24269,45 @@ def _worker_tree(base, n):
 
 
 def _baseline(root, env):
-    """One worker's baseline, every test in file order: (green, timed out
-    twice, seconds, what failed, what failed the first time when it was
-    red once and then green, else None)."""
-    first_red = None
+    """One worker's first baseline, every test in file order: (green, timed
+    out twice, seconds, what failed, None, ran twice already). A red one is
+    run again by _retry_red_baselines, alone."""
     green = run_suite(root=root, extra_env=env)
+    twice = False
     if _LAST_RUN[1]:
         # Stopped at its limit with nothing mutated: the runner, not the
         # code. Once more before giving up, since a loaded runner passes.
         print(f"the baseline did not finish inside {SUITE_TIMEOUT} s with "
               f"nothing mutated; running it once more", flush=True)
         green = run_suite(root=root, extra_env=env)
-    elif not green:
-        # Red with nothing mutated, inside its limit. One wall-clock check
-        # can miss its bound on a busy runner (three copies at once with
-        # --jobs; CI shard 12 on PR #55). A leftover mutation or a real
-        # break fails again, every check run again, so the baseline gets one
-        # more full run, with the first failure printed. No bound in
-        # selftest.py is loosened.
-        print("  baseline failed once, running it again:", flush=True)
-        for _l in _LAST_FAILS:
-            print("    " + _l)
-        first_red = list(_LAST_FAILS)
-        green = run_suite(root=root, extra_env=env)
+        twice = True
     return (green, bool(_LAST_RUN[1]), _LAST_RUN[0], list(_LAST_FAILS),
-            first_red if green else None)
+            None, twice)
+
+
+def _retry_red_baselines(bases, workers):
+    """Red with nothing mutated, inside its limit: that copy's baseline runs
+    once more, whole, ALONE, after every copy's first baseline has ended.
+    With --jobs N the first runs share one runner, its CPU and its loopback
+    ports, and a test can fail for that alone (CI shard 12 on PR #55; shard
+    58 of run 42991299120, a stray datagram in a flame node's socket). A
+    leftover mutation or a real break fails again, alone too. No bound in
+    selftest.py is loosened. Returns the bases with each retry's result:
+    green after a red is (True, ..., what failed the first time)."""
+    out = list(bases)
+    alone = " alone, after the other copies finished" if len(workers) > 1 else ""
+    for i, b in enumerate(bases):
+        if b[0] or b[1] or b[5]:
+            continue
+        print(f"  baseline failed once{f' (copy {i})' if len(workers) > 1 else ''}"
+              f", running it again{alone}:", flush=True)
+        for _l in b[3]:
+            print("    " + _l)
+        green = run_suite(root=workers[i][0], extra_env=workers[i][1])
+        out[i] = (green, bool(_LAST_RUN[1]), max(b[2], _LAST_RUN[0]),
+                  list(_LAST_FAILS) if not green else [],
+                  b[3] if green else None, True, b[3])
+    return out
 
 
 def _each_worker(workers, fn):
@@ -24291,7 +24335,7 @@ def _each_worker(workers, fn):
 
 
 def _sweep(todo, workers, expected, unknown, expected_file):
-    bases = _each_worker(workers, _baseline)
+    bases = _retry_red_baselines(_each_worker(workers, _baseline), workers)
     timed = [b for b in bases if b[1]]
     if timed:
         for _l in timed[0][3]:
@@ -24308,9 +24352,24 @@ def _sweep(todo, workers, expected, unknown, expected_file):
     if red:
         for _l in red[0][3]:
             print("  " + _l)
+        why = list(red[0][3])
+        if len(red[0]) > 6:
+            # Red twice, the second time alone: say both, and whether they
+            # agree. The same failure twice is the code; two different
+            # ones point at a flaky test, but the shard still measured
+            # nothing, so it stays red.
+            same = red[0][6] == red[0][3]
+            print(f"  red twice with nothing mutated, "
+                  f"{'the same failure both times' if same else 'a different failure each time'}"
+                  f"; the first time:")
+            for _l in red[0][6]:
+                print("    " + _l)
+            why = ([f"red twice, {'the same failure' if same else 'different failures'}"
+                    f"; the run alone:"] + why + ["the first run:"]
+                   + list(red[0][6]))
         REPORT.baseline = "FAILED"
         fail("the suite FAILS with nothing mutated, so the shard measured "
-             "nothing", red[0][3])
+             "nothing", why)
         print("The suite FAILS with nothing mutated. A previous run was "
               "killed before it restored the tree, or something else is "
               "broken. Fix that first: nothing measured from here would "
@@ -24328,11 +24387,16 @@ def _sweep(todo, workers, expected, unknown, expected_file):
         for lines in shaky:
             REPORT.flaky.append(("baseline, nothing mutated", lines))
         print(f"FLAKY BASELINE: {len(shaky)} of {len(bases)} baselines failed "
-              f"once with nothing mutated and passed on the second run. "
-              f"What failed:")
+              f"once with nothing mutated and passed on the second run"
+              f"{' (run alone)' if len(bases) > 1 else ''}. The shard goes "
+              f"on; this is a flaky test, not a missed mutation. What failed:")
         for lines in shaky:
             for _l in lines:
                 print("    " + _l)
+        if CI:
+            print(annotation(
+                f"mutate {REPORT.where}: FLAKY BASELINE, retried green, the "
+                f"shard went on", shaky[0]).replace("::error", "::warning", 1))
     REPORT.limits = f"{baseline_s:.0f} s / {limit} s"
     print(f"baseline green in {baseline_s:.0f} s"
           f"{f' (slowest of {len(bases)} copies)' if len(bases) > 1 else ''}"
