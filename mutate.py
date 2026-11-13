@@ -30,6 +30,13 @@ per-PR gate; the nightly sweep and a release tag still run everything):
     --list             print what would run and why, then stop
     --catchers FILE    {mutation name: test that caught it} from an earlier
                        sweep, so a changed test re-runs only what it guards
+    --with-core        with --changed or --files: every flamesafe, conductor
+                       and flame link mutation too, whatever the diff (the
+                       release PR into main runs these always)
+    --targets a,b,d/   exactly the mutations of these files (a name ending
+                       in / is a folder, one ending in * a name prefix):
+                       a bench-build PR's mutate-safety shards, and a
+                       nightly sweep over its cap
 
 Speed. None of it changes what a mutation has to survive: the baseline runs
 every test in file order, a mutant is caught only when the suite fails under
@@ -52,6 +59,19 @@ it (twice, with --expected), and the restore is proved byte for byte.
                        the tree with its own home and app-data
                        folders, and each copy runs its own whole baseline
                        first
+    --trust-baseline S the caller vouches that the whole suite, nothing
+                       mutated, just passed in file order on this commit on
+                       this OS in about S seconds (CI: the selftest job the
+                       shard needs). No copy runs the whole baseline before
+                       its first mutation; each runs the tests its
+                       mutations are hinted to (--hints) first instead, and
+                       a mutant's limit is measured from S. Every caught
+                       mutation's stopping test is proved green with
+                       nothing mutated in that copy (run first), or that
+                       copy runs its whole baseline after all; a copy whose
+                       sanity run is red runs its whole baseline at once.
+                       So a verdict never rests on less than it did
+                       without it. Without hints it does nothing.
 """
 import json
 import shutil
@@ -24306,7 +24326,8 @@ def main():
 
 
 OPTS = {"changed": None, "files": None, "list": False, "catchers": None,
-        "failfast": True, "hints": None, "write_catchers": None, "jobs": 1}
+        "failfast": True, "hints": None, "write_catchers": None, "jobs": 1,
+        "with_core": False, "trust": None, "targets": None}
 
 
 def _args(argv):
@@ -24314,7 +24335,8 @@ def _args(argv):
     always was."""
     wants, shard, expected = [], None, None
     OPTS.update(changed=None, files=None, list=False, catchers=None,
-                failfast=True, hints=None, write_catchers=None, jobs=1)
+                failfast=True, hints=None, write_catchers=None, jobs=1,
+                with_core=False, trust=None, targets=None)
     it = iter(argv)
     for a in it:
         if a == "--shard":
@@ -24338,6 +24360,15 @@ def _args(argv):
             OPTS["write_catchers"] = next(it)
         elif a == "--jobs":
             OPTS["jobs"] = max(1, int(next(it)))
+        elif a == "--with-core":
+            OPTS["with_core"] = True
+        elif a == "--targets":
+            OPTS["targets"] = [t.strip() for t in next(it).split(",")
+                               if t.strip()]
+        elif a == "--trust-baseline":
+            OPTS["trust"] = float(next(it))
+            if not OPTS["trust"] > 0:
+                raise ValueError("--trust-baseline needs the suite's seconds")
         else:
             wants.append(a.lower())
     return wants or None, shard, expected
@@ -24596,7 +24627,25 @@ def _run():
     if expected_file:
         expected, unknown = _load_expected(expected_file)
     only = None
-    if OPTS["changed"] or OPTS["files"] is not None:
+    if OPTS["targets"] is not None:
+        if OPTS["changed"] or OPTS["files"] is not None:
+            print("--targets names the files itself: not with --changed or "
+                  "--files")
+            fail("bad options", ["--targets with --changed or --files"])
+            return 2
+
+        def hit(rel):
+            return any(rel.startswith(t[:-1]) if t.endswith("*") else
+                       rel.startswith(t) if t.endswith("/") else rel == t
+                       for t in OPTS["targets"])
+        only = {n for n, rel, _o, _n in MUTATIONS if hit(rel)}
+        print(f"targets {', '.join(OPTS['targets']) or '(none)'}: "
+              f"{len(only)} of {len(MUTATIONS)} mutations")
+        if not only:
+            print("nothing this change can have broken is mutated "
+                  "here: nothing to run")
+            return 0
+    elif OPTS["changed"] or OPTS["files"] is not None:
         base = None
         if OPTS["changed"]:
             try:
@@ -24614,6 +24663,12 @@ def _run():
             print(f"  {p}")
         catchers = _load_catchers(OPTS["catchers"]) if OPTS["catchers"] else {}
         only, reasons = select_affected(changed, base, catchers)
+        if OPTS["with_core"] and only is not None:
+            core = {n for n, rel, _o, _n in MUTATIONS
+                    if rel.startswith(SAFETY_CORE)}
+            reasons.append(f"--with-core: every flamesafe, conductor and "
+                           f"flame link mutation ({len(core - only)} more)")
+            only = only | core
         for r in reasons:
             print(f"  -> {r}")
         if only is None:
@@ -24750,8 +24805,45 @@ def _each_worker(workers, fn):
     return out
 
 
+def _sanity(tests, root, env):
+    """--trust-baseline's stand-in for a copy's whole baseline: `tests` run
+    first, nothing mutated, in this copy, and the run stops once they have
+    passed (selftest.py's probe). True when they all passed."""
+    run_suite(None, True, ",".join(tests), True, root, env)
+    return bool(_LAST_STOP[1])
+
+
 def _sweep(todo, workers, expected, unknown, expected_file):
-    bases = _each_worker(workers, _baseline)
+    # --trust-baseline: the tests this shard's mutations are hinted to are
+    # the sanity run. Without any hint there is nothing to stand in for the
+    # baseline, so it runs as before.
+    trust = OPTS["trust"]
+    hinted = {}
+    if OPTS["failfast"] and OPTS["hints"]:
+        hinted = _load_catchers(OPTS["hints"])
+    sanity = sorted({t for item in todo
+                     for t in (hinted.get(item[0]) or "").split(",") if t})
+    if trust is not None and not sanity:
+        print("--trust-baseline: none of these mutations has a catcher hint, "
+              "so nothing can stand in for the baseline: running it")
+        trust = None
+    trusted = set()     # the copies whose sanity run stood in for a baseline
+    if trust is not None:
+        def copy_check(root, env):
+            if _sanity(sanity, root, env):
+                return (True, False, float(trust), [], None, True)
+            with_lines = list(_LAST_FAILS)
+            print(f"  a copy's sanity run ({len(sanity)} hinted tests run "
+                  f"first) was red; that copy runs its whole baseline:",
+                  flush=True)
+            for _l in with_lines:
+                print("    " + _l)
+            return _baseline(root, env) + (False,)
+        checked = _each_worker(workers, copy_check)
+        bases = [c[:5] for c in checked]
+        trusted = {w[0] for w, c in zip(workers, checked) if c[5]}
+    else:
+        bases = _each_worker(workers, _baseline)
     timed = [b for b in bases if b[1]]
     if timed:
         for _l in timed[0][3]:
@@ -24779,6 +24871,9 @@ def _sweep(todo, workers, expected, unknown, expected_file):
     baseline_s = max(b[2] for b in bases)
     limit = mutant_timeout(baseline_s)
     REPORT.baseline = "green" if len(bases) == 1 else f"green x{len(bases)}"
+    if trusted:
+        REPORT.baseline = (f"trusted (selftest job), sanity green in "
+                           f"{len(trusted)} of {len(bases)}")
     # Red once and then green with nothing mutated is a flaky test, not a
     # green baseline: it is let through (the second run was whole and
     # green) but never silently. It is named here and in the summary.
@@ -24794,10 +24889,17 @@ def _sweep(todo, workers, expected, unknown, expected_file):
             for _l in lines:
                 print("    " + _l)
     REPORT.limits = f"{baseline_s:.0f} s / {limit} s"
-    print(f"baseline green in {baseline_s:.0f} s"
-          f"{f' (slowest of {len(bases)} copies)' if len(bases) > 1 else ''}"
-          f"; a mutant's suite is stopped (and counts as caught) after "
-          f"{limit} s")
+    if trusted:
+        print(f"baseline trusted: the whole suite passed this commit in the "
+              f"selftest job (about {baseline_s:.0f} s); the sanity run "
+              f"({len(sanity)} hinted tests run first, nothing mutated) was "
+              f"green in {len(trusted)} of {len(bases)} copies; a mutant's "
+              f"suite is stopped (and counts as caught) after {limit} s")
+    else:
+        print(f"baseline green in {baseline_s:.0f} s"
+              f"{f' (slowest of {len(bases)} copies)' if len(bases) > 1 else ''}"
+              f"; a mutant's suite is stopped (and counts as caught) after "
+              f"{limit} s")
     ff = OPTS["failfast"]
     hints = _load_catchers(OPTS["hints"]) if (ff and OPTS["hints"]) else {}
     if hints:
@@ -24805,6 +24907,7 @@ def _sweep(todo, workers, expected, unknown, expected_file):
               f"caught it last time first")
     caught = missed = 0
     missed_names, caught_names, setup_fails = [], [], []
+    copy_red = []
     learned = {}
     # The bytes of every file this run breaks, before it does: the restore
     # is proved against them at the end, byte for byte, in every copy.
@@ -24812,6 +24915,37 @@ def _sweep(todo, workers, expected, unknown, expected_file):
                  for rel in sorted({m[1] for m in todo})}
     out_lock = threading.Lock()
     probes, probe_locks = {}, {}
+    if trusted and len(trusted) == len(workers):
+        # Every copy has just run each of these first and seen it pass.
+        probes.update({t: True for t in sanity})
+    proved, proved_locks, whole = {}, {}, {}
+
+    def prove(stops, root, env):
+        """In a copy that skipped its whole baseline, after the mutation is
+        put back: each test a caught mutant stopped in passes, run first,
+        with nothing mutated, in this copy. A test that does not (or a run
+        that never said where it stopped) costs this copy its whole
+        baseline, once; only a green one lets the verdict stand."""
+        if root not in trusted:
+            return True
+        for test in stops:
+            with out_lock:
+                lk = proved_locks.setdefault((root, test), threading.Lock())
+            with lk:
+                if (root, test) not in proved:
+                    ok = bool(test) and test in sanity
+                    if test and not ok:
+                        run_suite(limit, True, test, True, root, env)
+                        ok = bool(_LAST_STOP[1])
+                    proved[(root, test)] = ok
+            if not proved[(root, test)]:
+                if root not in whole:
+                    print(f"  {test or 'a run that stopped without saying where'}"
+                          f" is not proved green alone in this copy: running "
+                          f"its whole baseline", flush=True)
+                    whole[root] = _baseline(root, env)
+                return whole[root][0]
+        return True
 
     def probe(test, root, env):
         """Does `test` pass when it runs first, with nothing mutated? Asked
@@ -24877,6 +25011,7 @@ def _sweep(todo, workers, expected, unknown, expected_file):
             # file-order run that fails confirms it, so no such catch counts
             # or is written to --write-catchers. A hinted red is confirmed
             # this way even outside CI.
+            stops = [stop]
             if not green and (expected_file or hinted):
                 green2, stop2, fails2, _h = attempt(None, root, env)
                 if green2:
@@ -24885,17 +25020,24 @@ def _sweep(todo, workers, expected, unknown, expected_file):
                                   f"suite in file order was green"] + fails)
                     green, flaky = True, fails
                 else:
+                    stops.append(stop2)
                     stop = stop or stop2
         finally:
             _write(path, src)
         if green:
             return ("missed", None, flaky, None)
+        if not prove(sorted(set(stops)), root, env):
+            return ("baseline", whole[root][3], None, None)
         return ("caught", fails, None, stop if ff else None)
 
     def tally(item, res):
         nonlocal caught, missed
         name, rel = item[0], item[1]
         kind, info, flaky, catcher = res
+        if kind == "baseline":
+            print(f"  NO VERDICT  {name} (its copy's baseline is red)")
+            copy_red.append((name, info))
+            return
         if kind == "setup":
             print(f"  SETUP FAIL  {name} ({info})")
             missed += 1
@@ -24977,6 +25119,18 @@ def _sweep(todo, workers, expected, unknown, expected_file):
     print(f"tree restored byte for byte ({len(originals)} files"
           f"{f', in each of {len(workers)} copies' if len(workers) > 1 else ''})")
     REPORT.restored = "yes"
+    if copy_red:
+        lines = copy_red[0][1] or ["(no FAIL line)"]
+        REPORT.baseline = "FAILED in a copy that trusted the selftest job"
+        fail("the suite FAILS with nothing mutated, so the shard measured "
+             "nothing", lines)
+        print("The suite FAILS with nothing mutated in a copy that had "
+              "trusted the selftest job, so no caught mutation of that copy "
+              f"counts ({len(copy_red)} have no verdict). Fix that first: "
+              "nothing measured from here would mean anything.")
+        for _l in lines:
+            print("  " + _l)
+        return 2
     return _verdict(expected if expected_file else None, unknown,
                     missed_names, caught_names, setup_fails)
 
